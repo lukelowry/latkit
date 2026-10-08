@@ -6,15 +6,16 @@ Name a catalog colormap wherever a scale takes one, or pass your own.
 import { colormaps, colormapCss, reverseColormap } from '@latkit/gpu';
 
 network.set({
-  vertices: { node: { color: { field: 'temperature', domain: [250, 350], colormap: 'thermal' } } },
+  vertices: { Bus: { color: { field: 'temperature', domain: [250, 350], colormap: 'thermal' } } },
 });
 legend.style.backgroundImage = colormapCss(colormaps.thermal, { direction: 'to right' });
 const reversed = reverseColormap(colormaps.thermal);
 ```
 
-Use sequential maps for magnitude, diverging maps for a center, cyclic maps for
-phase, and categorical maps for labels. The catalog contains 46 maps, including
-`viridis`, `cividis`, `thermal`, `balance`, `phase`, and `okabeito`.
+The catalog holds 46 maps, such as `viridis`, `cividis`, `thermal`, `balance`, `phase`, and
+`okabeito`. Use sequential maps for magnitude, diverging maps around a center, cyclic maps for
+phase, and categorical maps for labels. A `colormapCss` legend shows the same colors the GPU draws.
+The network example's `/colors.html` previews the whole catalog.
 
 ## Create a palette
 
@@ -32,13 +33,9 @@ const temperature = createColormap({
 });
 ```
 
-Keep palettes immutable and reuse their identity.
-RGBA components are in `[0, 1]`, with sRGB color and straight alpha.
-CPU, CSS, and GPU sampling share a quantized rendering table.
-Continuous inputs clamp; cyclic inputs wrap; categories use hard bins.
-
-`parseColor` parses CSS color literals without a DOM.
+Colors are RGBA in `[0, 1]`: sRGB with straight alpha. `parseColor` reads a CSS color literal
+without a DOM. Continuous maps clamp, cyclic maps wrap, and categorical maps use hard bins. Create a
+palette once and reuse it, since it is cached by identity.
 
 Palette licenses are in
 [THIRD_PARTY_NOTICES](https://github.com/lukelowry/latkit/blob/main/packages/gpu/THIRD_PARTY_NOTICES.md).
-The network example's `/colors.html` previews the full catalog.

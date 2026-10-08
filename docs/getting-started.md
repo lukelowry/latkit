@@ -6,7 +6,7 @@ Use a WebGPU-capable browser and an ESM bundler such as Vite.
 npm install @latkit/model @latkit/gpu @latkit/network
 ```
 
-Add `@latkit/monitor`, `@latkit/diagram`, or `@latkit/video` as needed.
+Add `@latkit/monitor`, `@latkit/diagram`, `@latkit/video`, or `@latkit/connect` as needed.
 
 ```ts
 import { createGpu } from '@latkit/gpu';
@@ -21,8 +21,9 @@ const network = createNetwork(gpu, {
 });
 ```
 
-`canvas` needs a CSS size. `source` is a `Data`: an application-owned value, including data delivered over
-[`@latkit/connect`](ports-and-protocols.md). [Views](views.md) covers what every view shares.
+`canvas` needs a CSS size. `source` is a [`Data`](document-sessions.md) value, built with
+`createData` or delivered over [`@latkit/connect`](ports-and-protocols.md). [Views](views.md)
+covers what every view shares.
 
 ## Run an example
 
@@ -33,11 +34,11 @@ pnpm install
 pnpm --filter @latkit/network-example dev
 ```
 
-| Example | Command filter            | URL                   |
+Each dev command builds its dependencies first.
+
+| Example | Filter                    | URL                   |
 | ------- | ------------------------- | --------------------- |
 | Network | `@latkit/network-example` | http://127.0.0.1:5188 |
 | Monitor | `@latkit/monitor-example` | http://127.0.0.1:5190 |
 | Diagram | `@latkit/diagram-example` | http://127.0.0.1:5192 |
 | Video   | `@latkit/video-example`   | http://127.0.0.1:5194 |
-
-Each dev command builds its dependencies first. Network's `/colors.html` previews palettes.

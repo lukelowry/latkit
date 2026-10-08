@@ -6,25 +6,22 @@
 '@latkit/monitor': minor
 ---
 
-Every view answers the pointer with what it drew, and lights what is selected: selected and hovered items glow, a network draws them over the rest so a crowded region never covers them, and the rest can fade. A network's and a monitor's glow draws with pipelines of its own, built after the rest, so the first frame never waits on it.
+Selected and hovered items glow in every view, picks answer with what the frame draws, and a network draws its selection over the rest, so a crowded region never hides it.
 
 Added
 
-- model: `itemKey(item, ...qualifiers)`, an item's identity as a string, which every view's identity builds on.
-- gpu: `unselectedAlpha` for every view, which only a monitor had.
-- gpu: `glowAlpha` in `kit.outputShader()` and `stroke_nearest` in `kit.strokeShader()` for renderers of your own, and a view's `detail` for hits that carry more than their item.
+- model: `itemKey(item, ...qualifiers)`, the identity every view's selection builds on.
+- gpu: `unselectedAlpha` for every view, `glowAlpha` and `stroke_nearest` in the kit shaders, and a view's `detail` hook.
 
 Changed
 
-- gpu: `hoverColor` and `selectedColor` color a glow, whose alpha is its strength, and `hoverWidthPx` and `selectedWidthPx`, now 6 and 8, set how far it reaches. `'none'` glows in each item's own color.
-- gpu: a click, double click, or menu supersedes one still finding its hits, and answers with what the presented frame draws, as `pick` does. Clicking again in place cycles only while the same items lie there. `select` with the items it holds does nothing.
-- gpu: hover reports again when it finds the same item with other detail.
-- gpu: `BufferData.touch` takes several ranges as one revision, so editing many places never makes a consumer upload the whole buffer.
-- network: selected and hovered rows draw over everything but labels, lit by their glow, and the ends a focused edge joins draw over the rest. A curve's or path's glow never doubles where its pieces meet. Picks keep one hit per item, take `limit`, and break ties by what draws on top. An item from an earlier `Data` value has its neighbors.
-- network: a selection or hover uploads only the focus words that change, far-apart runs each on their own, rather than every word between them.
-- diagram: selected, hovered, and targeted items glow instead of taking a ring and a new color, and a block's ports stay lit with it. Selecting a row of another row space throws `conflict`, as in every view. Focus changes mark one revision.
-- monitor: pick and hover hit a line anywhere it draws, steps and width included, one reading per row, and readings stand through playback while the drawn lines do. A reading selects its row wherever along the line. A selected trace glows, and a lone sample between gaps draws as a dot.
+- gpu: `hoverColor` and `selectedColor` color a glow, and `hoverWidthPx` and `selectedWidthPx`, now 6 and 8, set its reach. `'none'` glows in each item's own color.
+- gpu: clicks, double clicks, and menus answer with what the presented frame draws; a later one supersedes one still finding its hits. Clicking again in place cycles only while the same items lie there.
+- gpu: `BufferData.touch` takes several ranges as one revision.
+- network: selected and hovered rows, and the ends of a focused edge, draw over everything but labels. Picks keep one hit per item and take `limit`.
+- diagram: selected, hovered, and targeted items glow. Selecting a row of another row space throws `conflict`.
+- monitor: pick and hover hit a line anywhere it draws, one reading per row, and a reading selects its row. A selected trace glows, and a lone sample between gaps draws as a dot.
 
 Removed
 
-- monitor: its own `unselectedAlpha`, now every view's, and the selected traces' minimum width, which their glow replaces.
+- monitor: its own `unselectedAlpha`, now every view's, and the selected traces' minimum width.

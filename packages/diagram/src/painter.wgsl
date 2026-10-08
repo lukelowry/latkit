@@ -77,7 +77,7 @@ fn shifted(slot: u32) -> vec2f {
 }
 fn wired(k: u32) -> bool { return k == SEGMENT || k == CORNER || k == ARROW || k == JUNCTION; }
 fn hidden(i: u32) -> Out { return Out(vec4f(2., 2., 2., 1.), vec2f(0.), i, vec4f(0.), vec4f(0.)); }
-/** How far past a shape its quad reaches: a selected, targeted, or hovered item's glow, else its rings. */
+/** How far past a shape its quad reaches: its glow when lit, and always its rings. */
 fn rim(flags: u32) -> f32 {
   var reach = 4.;
   if ((flags & 9u) != 0u) { reach = max(reach, view.metrics.y); }
@@ -175,7 +175,7 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
       d = abs(across) - 0.75;
       if (fract((along) / 10.) > 0.6) { discard; }
     } else {
-      // A connection's target widens and takes the selection's color; what is selected glows.
+      // A drawn wire's target widens and takes the selection's color; what is selected glows.
       let extra = select(0., 1., targeted);
       d = flowing(abs(across) - style.width * 0.5 - extra, along, across, style.flow);
       if (targeted) { color = chosen(color); }
@@ -238,7 +238,7 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
   let shaded = shade(ShadeFragment(color, v.position.xy / view.viewport.z, style.shade));
   var result = outputColor(shaded, aa(d));
   if (shadow > 0.) { result = result + vec4f(0., 0., 0., shadow * (1. - aa(d))) * (1. - result.a); }
-  // Beneath it, a glow: soft for a connection's compatible ends, whole for what is selected or
+  // Beneath it, a glow: soft for the ports a drawn wire can reach, whole for what is selected or
   // targeted, in its own color for `none`, and for what is hovered.
   var accent = chosen(style.color);
   var ring = 0.;

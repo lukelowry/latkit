@@ -1,43 +1,28 @@
 # Diagram studio
 
-A local, interactive showcase of the unified diagram API. All scenes are synthetic.
-The example owns immutable columnar Data whose block ports reference signal
-wires; the application accepts editing proposals and owns undo/redo.
+An interactive showcase of the diagram view on synthetic scenes. The application owns immutable
+`Data`, accepts the view's edit proposals, and keeps undo and redo.
 
 ```sh
 pnpm install
 pnpm --filter @latkit/diagram-example dev
 ```
 
-Open http://127.0.0.1:5192. WebGPU requires a supported browser and graphics device.
+Open http://127.0.0.1:5192. The dev command builds the packages first.
 
 - Control loop: ports, arrows, feedback, and one wire fanning out to two inputs.
-- Grouped plants: nested groups, collapse/expand, proxy routing, and group movement.
+- Grouped plants: nested groups, collapse and expand, and wires routed through group boundaries.
 - Shape atlas: rounded rectangles, rectangles, ellipses, and diamonds.
-- Scale study: 1,024 blocks, 992 wires, zoom-dependent text, and live render statistics.
-- Controls: layered/stress/custom-grid layout, direction, orthogonal/straight/custom routing,
-  tags, native color and width scales, status colors, live synthetic values, shared
-  spotlight/custom shading, MSAA, snapping, labels, and reduced motion. Appearance controls
-  include system/light/dark themes, density, title placement, corner radius, directional
-  port markers, port labels, and adaptive detail. The inspector and controls can be hidden.
-- Editing: add or drag in blocks; move, connect, reconnect, join a wire, rename,
-  delete, select, additive marquee, inspect, reveal neighbors, undo, and redo. The example
-  exposes background-drag and edge-panning preferences. Empty drops leave the wiring
-  unchanged unless creation is enabled; dropping a reconnected input on empty space
-  unplugs it. Arrangement and history can animate accepted positions.
-- Export: application-owned data and an independent offscreen diagram produce a
-  2048 × 1280 PNG through `image()`.
+- Scale study: 1,024 blocks and live render statistics.
 
-The API panel shows the minimal integration. Source is split into graph.ts (domain
-edits and history), source.ts (application data), presentation.ts (bindings), and main.ts
-(the application). No legacy imports or adapter APIs are used.
+Controls switch layout, routing, scales, shading, themes, and labels. Edit mode adds, moves,
+connects, reconnects, renames, and deletes blocks. Export renders a 2048 × 1280 PNG from an
+offscreen diagram with `image()`.
 
 ```sh
 pnpm --filter @latkit/diagram-example test
-pnpm --filter @latkit/diagram-example build
 node examples/diagram/tests/browser.mjs
 ```
 
-The browser check expects the local dev server to be running. It exercises the
-real controls, verifies every preset and export, and records desktop/mobile
-screenshots in output/diagram-example/.
+The browser check needs the dev server running. It drives every preset and the export, and saves
+desktop and mobile screenshots to `output/diagram-example/`.

@@ -237,7 +237,7 @@ export abstract class BaseItemView<
   readonly #parameters = new Float32Array(64);
   #shadeAnimating = false;
   readonly #formats = new Set<GPUTextureFormat>();
-  /** Where the last click landed, what it found there, and which of it it chose. */
+  /** Where the last click landed, the hits it found there, and which it chose. */
   #clicked?: { readonly point: Point; readonly found: string; readonly turn: number };
   /** The click, double click, or menu still finding what it hit; the next one supersedes it. */
   #asking?: AbortController;

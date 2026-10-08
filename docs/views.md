@@ -1,8 +1,8 @@
 # Views
 
-A network, monitor, diagram, or composition is a view: one object, created from a GPU and a config,
-updated with `set`, and destroyed when done. Network, monitor, and diagram are item views: they also
-share one camera, selection, picking, hover, and style contract, `ItemView` in `@latkit/gpu`.
+A network, monitor, diagram, or composition is a view. Create it from a GPU and a config, change it
+with `set`, and destroy it when done. Network, monitor, and diagram are item views: they also share
+a camera, selection, picking, hover, and style, the `ItemView` contract in `@latkit/gpu`.
 
 ```ts
 import { createGpu } from '@latkit/gpu';
@@ -14,9 +14,8 @@ const network = createNetwork(gpu, { canvas, source, vertices: { Bus: {} } });
 
 ## Present
 
-With a `canvas`, the view draws itself. It sizes the canvas to its CSS size and pixel ratio, attaches
-pointer and keyboard input, and redraws only after something changes. Without one, it renders only
-[images](#images) and [video](video.md).
+With a `canvas`, a view sizes it to its CSS size and pixel ratio, handles its input, and redraws
+only after something changes. Without one, it renders only [images](#images) and [video](video.md).
 
 ```ts
 network.set({ at: 12 }); // model coordinate shown, such as a time
@@ -25,16 +24,19 @@ network.set({ input: 'inspect' }); // 'navigate', 'inspect', or 'none'; a diagra
 network.on('frame', () => showStats(network.stats())); // after each drawn frame
 ```
 
-Every item view handles the same input: hover follows the pointer; a click selects what it hits,
-and clicking again in place cycles through overlapping hits while they stay the same; Shift, Ctrl, or
-⌘ toggles the topmost hit; a click, double click, or menu answers with what the presented frame draws
-there, and a later one supersedes one still finding its hits; a double click or Enter reports
-`open`, and a double click on nothing fits the data while
-navigating; a right click opens a menu where the button comes up (a right drag never does); the
-context menu key or Shift+F10 opens a menu at the selection; Escape ends a gesture or clears the
-selection; and, when navigating, the wheel zooms (or only with Ctrl or ⌘ under
-`input: { wheel: 'modifier' }`), Home fits the data, and + and − zoom. Each view adds its own
-gestures, such as dragging.
+Every item view handles the same input:
+
+- A click selects what it hits. Clicking again in place cycles through overlapping hits while they
+  stay the same. Shift, Ctrl, or ⌘ toggles the topmost hit.
+- A double click or Enter reports `open`. A double click on nothing fits the data while navigating.
+- A right click opens a menu where the button comes up, unless it dragged. A held touch opens one
+  too, and the menu key or Shift+F10 opens one at the selection.
+- Escape ends a gesture or clears the selection.
+- While navigating, Home fits the data. A network or diagram also pans on a drag and zooms on the
+  wheel, a pinch, or + and −. `input: { wheel: 'modifier' }` zooms only with Ctrl or ⌘.
+
+A click, double click, or menu answers with what the presented frame draws there. A later gesture
+supersedes one still finding its hits. Each view adds its own gestures, such as dragging a block.
 
 ## Update
 
@@ -42,16 +44,11 @@ gestures, such as dragging.
 
 - Keyed records (`vertices`, `edges`, `paths`, `traces`, `groups`) merge per entry, then per option.
 - `camera`, `input`, `limits`, and `layout` merge per option.
-- `null` removes an entry or resets an option. Any other value replaces, unless it equals what is
-  there: plain objects and arrays compare by what they hold, data by identity, and a patch that
-  changes nothing does nothing, `animate` included.
-- `{ replace: true }` takes the patch as the whole config: what it leaves out resets, except the
-  canvas, `at`, `paused`, and camera. An application that builds its config from its state can
-  pass all of it on every change, and the view rebuilds only what differs.
-- A channel such as `color`, `x`, or `widthPx` takes one value, a field name, or a scale; see
+- `null` removes an entry or resets an option to its default.
+- Any other value replaces. Plain objects and arrays compare by what they hold, and a patch that
+  changes nothing does nothing.
+- A channel such as `color` or `widthPx` takes one value, a field, or a scale; see
   [data bindings](topology-and-channels.md#channels).
-- `{ animate: true }` eases what the patch changes over `animationMs`: the camera, a diagram's
-  positions, and a network's positions, colors, sizes, widths, flow, and marker inputs.
 
 ```ts
 network.set({
@@ -61,60 +58,55 @@ network.set({
 });
 ```
 
-Data updates are explicit: `view.set({ source: nextData })`. Views never subscribe to a model
-or request historical data. Share unchanged column pages when constructing the next value.
+`{ animate: true }` eases the change over `animationMs`. `{ replace: true }` takes the patch as the
+whole config: what it leaves out resets, except the canvas, `at`, `paused`, and camera. An
+application can pass its whole config on every change; the view rebuilds only what differs. An
+invalid patch throws `invalid-input` and changes nothing.
 
-An invalid patch throws `invalid-input` and changes nothing: an unknown option, limit, camera
-option, or input option, or an input mode the view does not have. `view.config` holds the current
-config; the camera lives on `view.camera`.
+To show new data, pass a new [`Data`](document-sessions.md) value: `set({ source: next })`.
 
 ## Layout
 
-A network or diagram places each vertex its data gives no position: every row of a type without
-`x` and `y`, and each row whose position reads no number. Positioned vertices stay where they
-are. Vertices that edges join form a part, arranged alone by `layout.algorithm`, and the parts
-nothing positions pack into rows of about `aspect` (16 / 9) below the rest, `rankGap` apart.
-Placed vertices stay where they are as the data changes; new `layout` options place them anew.
+A network or diagram places each vertex its data gives no position: every row of a type without `x`
+and `y`, and each row whose `x` or `y` reads no number. Vertices that edges join form a part, and
+`layout.algorithm` arranges each part alone: `'stress'` by default in a network, `'layered'` in a
+diagram, or a `LayoutStrategy` of your own. Parts with nothing positioned pack into rows below the
+rest. Placed vertices keep their place as the data changes; new `layout` options place them anew.
 
-- `'layered'`, the diagram's default, puts vertices in ranks along `direction`, `rankGap` apart,
-  in the order `sweeps` passes find to cross less.
-- `'stress'`, the network's default, keeps each part's graph distances, an edge `vertexGap` long.
-- A `LayoutStrategy` of your own arranges a `LayoutPart`: its vertices and edges by index into a
-  graph, with columns of pins, sizes, end directions, ports, and label room. It returns each
-  vertex's top-left corner, two numbers a vertex.
-
-`arrange(gpu, config)` in `@latkit/network` and `@latkit/diagram` places a view's vertices without
-drawing and returns `Positions` by type: an `x` and a `y` field to spread into the type's options.
+`arrange(gpu, config)` in `@latkit/network` and `@latkit/diagram` places the vertices without
+drawing. It returns `Positions` by type: an `x` and a `y` field to spread into the type's options.
 
 ## Style
 
-Every item view takes the same style options, with one set of defaults in `viewStyle`:
+Every item view takes the same style options, with defaults in `viewStyle`:
 
-| Option                            | Default                  |                                                                                   |
-| --------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
-| `background`                      | dark blue-gray           |                                                                                   |
-| `msaa`                            | `4`                      | monitor `1`: its history images would cost 4×; diagram `1`: its shaders antialias |
-| `hover`, `hoverBudgetMs`          | `'auto'`, `2`            | `auto` searches within the budget once motion stops                               |
-| `pickRadiusPx`                    | `8`                      |                                                                                   |
-| `fitPaddingPx`, `revealPaddingPx` | `32`, `48`               |                                                                                   |
-| `animationMs`, `motion`           | `300`, `'auto'`          | monitor `0`; `auto` follows reduced motion                                        |
-| `hoverColor`, `selectedColor`     | amber, orange            | the glow's color, alpha its strength; `'none'` glows in each item's own color     |
-| `hoverWidthPx`, `selectedWidthPx` | `6`, `8`                 | how far the glow reaches past an item; the monitor draws no hover                 |
-| `unselectedAlpha`                 | `1`                      | every other item's opacity while something is selected; monitor `0.25`            |
-| `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor uses a monospace font                                                     |
+| Option                            | Default                  | Per view                              |
+| --------------------------------- | ------------------------ | ------------------------------------- |
+| `background`                      | dark blue-gray           |                                       |
+| `msaa`                            | `4`                      | monitor and diagram `1`               |
+| `hover`, `hoverBudgetMs`          | `'auto'`, `2`            |                                       |
+| `pickRadiusPx`                    | `8`                      |                                       |
+| `fitPaddingPx`, `revealPaddingPx` | `32`, `48`               |                                       |
+| `animationMs`, `motion`           | `300`, `'auto'`          | monitor `0`                           |
+| `hoverColor`                      | amber                    | network alpha `0.65`                  |
+| `selectedColor`                   | orange                   | network alpha `0.9`; monitor `'none'` |
+| `hoverWidthPx`, `selectedWidthPx` | `6`, `8`                 | monitor draws no hover glow           |
+| `unselectedAlpha`                 | `1`                      | monitor `0.25`                        |
+| `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor monospace                     |
 
-`shade` recolors every fragment by WGSL of your own, or `spotlight()` around the pointer, or
-`pulse()` for rows whose `shade` channel is positive. Each view adds its own options, such as a
-network's `edgeWidthPx` or a monitor's `yAxis`. Padding
-takes one number or `[top, right, bottom, left]`. `null` in a config or a patch always means unset,
-which restores the default.
+Hover and selection draw a glow. `hoverColor` and `selectedColor` color it, and their alpha sets
+its strength. `hoverWidthPx` and `selectedWidthPx` set how far it reaches. `selectedColor: 'none'`
+glows in each item's own color. While something is selected, `unselectedAlpha` fades everything
+else.
+
+`shade` recolors every fragment with WGSL of your own, `spotlight()` around the pointer, or
+`pulse()` on rows whose `shade` channel is positive.
 
 ## Camera
 
-`view.camera` is where the camera is going. `set({ camera })` moves it, and `{ animate: true }`
-eases the move. While `fit` is true the view keeps the data in view as it changes; moving a framed
-part of the camera by hand turns it off. `set({ camera: null })` and `fit()` follow all the data
-again; `fit(items)` frames those items once.
+`view.camera` is where the camera is going, and `set({ camera })` moves it. While `fit` is true, the
+view keeps the data in view; moving a framed part of the camera by hand turns it off.
+`set({ camera: null })` and `fit()` follow all the data again.
 
 ```ts
 network.set({ camera: { projection: 'globe' } }, { animate: true });
@@ -132,17 +124,14 @@ network.on('hover', (item) => tooltip(item));
 network.on('contextmenu', ({ point, items }) => openMenu(point, items));
 ```
 
-`pick` returns what the presented frame draws near a point: one hit per item, nearest first, the
-item drawn on top winning ties, at most `limit` (16 by default). `select` replaces the selection
-without reporting it, and does nothing when the items are the same; `select`, `hover`, and
-`contextmenu` events report what the user did, and `select` also reports items a new source no
-longer has. `hover` reports again when the same item is found with other detail, such as a monitor
-reading another sample. Items keep their source, `Index`, and row; the `Index` names the rows, so an
-item outlives the appends that replace its `Data`, as `sameItem` and `itemKey` in `@latkit/model`
-compare it. `locate(item)` returns an item's canvas point, and `reveal(item)` pans until it shows.
+`pick` finds what the presented frame draws near a point. `select` replaces the selection without
+reporting it; the `select` event reports what the user chose, and selected items a new source
+drops. `hover` also reports the same item found with other detail, such as a monitor reading
+another sample. `frame`, `camera`, and `hover` arrive in that order after a drawn frame.
 
-`frame`, `camera`, and `hover` arrive together after each drawn frame, in that order. `select`
-arrives as the user selects, and after the frame that drops items a new source no longer has.
+An item is a row: `{ source, index, row }`. Its `Index` names the row space, so an item outlives
+appends that replace its `Data`, but not a new index version. `sameItem` and `itemKey` in
+`@latkit/model` compare items.
 
 ## Images
 
@@ -150,11 +139,8 @@ arrives as the user selects, and after the frame that drops items a new source n
 const png = await network.image({ width: 2048, height: 1024, at: 12 });
 ```
 
-An image renders at any size and coordinate, as a `png`, `jpeg`, or `webp` `format`, with `quality`
-from 0 to 1 for the last two. A view on a canvas or in a composition stays as it is:
-its camera, hover, selection, and what `pick` finds stay as presented. A view with neither presents
-in its images, so `pick` and `locate` follow the latest one. [Video](video.md) always draws the view
-as it is and changes nothing.
+A view on a canvas or in a composition keeps what it presents. A view with neither presents in its
+images, so `pick` and `locate` follow the latest one.
 
 ## Compose
 
@@ -170,9 +156,9 @@ const dashboard = createComposition(gpu, {
 });
 ```
 
-Regions are `[x, y, width, height]` fractions from the top left. A composition borrows views that have
-no canvas of their own. Pointer, wheel, menu, and key input reach the view under the pointer, in its
-own canvas points, so each view hovers, picks, and navigates as it would on a canvas of its own.
+Regions are `[x, y, width, height]` fractions from the top left. A composition borrows views
+without a canvas of their own. Input reaches the view under the pointer, which hovers, picks, and
+navigates as it would on its own canvas.
 
 ## Clean up
 
@@ -181,10 +167,8 @@ network.destroy();
 gpu.destroy();
 ```
 
-`destroy` releases the view's canvas, input, and GPU resources, never its sources or GPU. Destroy the
-GPU after its views.
+`destroy` never closes a view's source or GPU. Destroy the GPU after its views.
 
-Failures inside a frame emit `error`, or reach the console when nothing listens. Limits fail with
-`resource-limit`. When the device is lost, `gpu.signal` aborts with a `device-lost` error, and each
-view emits it once and stops drawing; recreate the GPU and its views. Destroying the GPU stops its
-views without an error.
+A failure inside a frame emits `error`, or reaches the console when nothing listens. Exceeded limits
+fail with `resource-limit`. When the device is lost, `gpu.signal` aborts with `device-lost`, and
+each view emits it once and stops drawing; recreate the GPU and its views.

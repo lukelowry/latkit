@@ -20,30 +20,29 @@ const network = createNetwork(gpu, {
 });
 ```
 
-Each `Bus` is drawn at its `longitude` and `latitude` fields, which the schema marks `geographic`; each `Line` row
-references the two buses it joins through `from` and `to`. [Data bindings](topology-and-channels.md) covers nets, paths, and styling
-by field.
+Each `Bus` draws at its `longitude` and `latitude`, which the schema marks `geographic`. Each
+`Line` joins the two buses its `from` and `to` fields reference. Nets and channels are under
+[data bindings](topology-and-channels.md), and what every view shares is under [views](views.md).
 
 ## Camera
 
 ```ts
-network.set({ camera: { projection: 'globe', orbit: true } }, { animate: true });
+network.set({ camera: { projection: 'globe', orbit: true } });
 ```
 
-The camera is `{ projection, center, scale, pitch, bearing, fit, orbit }`. The globe needs
-geographic positions; `network.projections` says which projections the data supports.
+The globe needs geographic positions; `network.projections` says which projections the data
+supports.
 
-Drag to pan, right- or Shift-drag to turn, and scroll to zoom. Shift-, Ctrl-, or ⌘-click toggles an item
-in the selection. Home fits; arrows pan, or step between neighbors with `input: 'inspect'`.
+Drag pans, and right- or Shift-drag turns, tilting a flat camera. Arrows pan and Shift-arrows turn.
+Under `input: 'inspect'`, arrows step the selection to its neighbor in that direction.
 
 ## Layout
 
-A vertex without a position is placed by `'stress'` among the vertices it joins, each edge as long
-as the positioned ones' median; see [layout](views.md#layout).
+A vertex without a position is placed by `'stress'`, each edge as long as the median of the
+positioned ones. See [layout](views.md#layout).
 
 ```ts
 network.set({ layout: { vertexGap: 0.5 } }); // places them anew
-const positions = await arrange(gpu, config); // { x, y } by type, without drawing
 ```
 
 ## Markers
@@ -51,7 +50,7 @@ const positions = await arrange(gpu, config); // { x, y } by type, without drawi
 A vertex type's `marker` decides what draws in each row's radius: a disc by default.
 
 ```ts
-import { gauge, icon, pie, shape } from '@latkit/gpu';
+import { gauge, icon, pie, shape, type Marker } from '@latkit/gpu';
 
 vertices: {
   Plant: { marker: gauge({ fill: 'output' }) }, // a ring, and a wedge of output inside
@@ -62,13 +61,12 @@ vertices: {
 }
 ```
 
-A marker of your own is WGSL defining `fn marker(f: MarkerFragment) -> MarkerColor`: `f.p` is the
-pixel in CSS pixels from the vertex, y up, `f.radiusPx` its radius, `f.color` its color, and each of
-up to eight `inputs` a channel read as `f.<name>`. It returns its color, each layer covered as
-`filled(color, distance)` covers it, and the signed distance to its outline, which glows and shadows
-follow; a hole, such as a gauge's gap or a pie's middle, is in the alpha alone and shows what lies
-below. The shared shapes and markers, `shapeDistance`, `filled`, `over`, `gaugeMarker`,
-`pieMarker`, and `markerImage`, compose:
+A marker of your own is WGSL defining `fn marker(f: MarkerFragment) -> MarkerColor`. `f.p` is the
+pixel's offset from the vertex in CSS pixels, y up. `f.radiusPx` and `f.color` are the row's, and
+each of up to eight `inputs` is a channel read as `f.<name>`. The function returns a color whose
+alpha is its coverage, as `filled(color, distance)` gives, and the signed distance to its outline,
+which glows and shadows follow. Holes go in the alpha alone. The shared `shapeDistance`, `filled`,
+`over`, `gaugeMarker`, `pieMarker`, and `markerImage` compose:
 
 ```ts
 const station: Marker = {
@@ -82,44 +80,33 @@ const station: Marker = {
 
 ## Motion
 
-`set(patch, { animate: true })` eases what the patch changes over `animationMs`: positions, colors,
-sizes, widths, flow, and marker inputs, all on the GPU, so a wedge sweeps and a color crosses over;
-a row new to the drawing eases in from nothing, and a transition the GPU budget cannot hold steps.
-An edge's or path's `flowPx` moves comets along it, `flowSpacingPx` apart, and a new speed carries on
-from where they are. Hover grows a vertex by `hoverScale`. Under reduced motion, changes step and
-comets hold still.
-
 ```ts
 setInterval(() => network.set({ source: next() }, { animate: true }), 500);
-network.set({ shade: pulse({ color: [1, 0.1, 0.1] }) }); // rows whose `shade` is positive pulse
 ```
 
-## Style
+An animated patch eases on the GPU, so a wedge sweeps and a color crosses over. New rows ease in
+from nothing, and a transition the GPU budget cannot hold steps instead. `flowPx` moves comets
+along an edge or path, and a new speed carries on from where they are. Hover grows a vertex by
+`hoverScale`. Reduced motion also holds comets still and stops orbiting.
 
-Style options sit on the config beside the data:
+## Style
 
 ```ts
 network.set({ edgeWidthPx: 2, grid: true, daylight: true, sunTime: 'now' });
 ```
 
-`markers`, `lines`, `poles`, `grid`, and `earthAxis` show or hide each layer. A kind's defaults are
-named after the channels they stand in for: `vertexColor`, `vertexRadiusPx`, `edgeColor` (`'ends'`
-colors an edge by the vertices it joins), `edgeWidthPx`, `pathColor`, and `pathWidthPx`; `zScale`
-sets how high a `z` of 1 draws. `edgeSpacingPx` draws edges joining the same two vertices apart,
-straight or geodesic, while a type with `bends` follows its own routes; `shadows` lifts markers off
-the lines, and `labelHaloPx` sets the halo around labels, in the color of the ground they lie on.
+Style options sit on the config beside the data; [views](views.md#style) lists the shared ones. By
+default an edge takes the colors of the vertices it joins (`edgeColor: 'ends'`).
+
 Selected and hovered rows draw again over everything but labels, lit by their glow, so a crowded
-part of the drawing never covers them; `selectedEnds` and `hoverEnds` draw the vertices a focused
-edge joins over the rest too. The options every view shares, such as `background`, `selectedColor`,
-and `unselectedAlpha`, are listed under [views](views.md#style).
-Omitted domains fit the displayed values; give a `domain` for stable colors during playback.
+region never covers them. `selectedEnds` and `hoverEnds` also draw the vertices a focused edge joins
+over the rest.
 
 ## Limits
 
-`limits: { vertices, segments, geometryBytes, pickingBytes, layoutMs }` bound what a network reads,
-keeps, and spends placing vertices.
-On a flat camera, `pick` and hover query hit-test indexes, about 21 bytes per vertex or edge, built
-in the background once positions hold still; the default 64 MiB `pickingBytes` fits a million
-vertices and two million edges. Past it, they scan every item.
+On a flat camera, `pick` and hover query hit-test indexes, built in the background once positions
+hold still. They take about 21 bytes per vertex or edge, so the default 64 MiB
+`limits.pickingBytes` fits a million vertices and two million edges. Past that, or on a tilted or
+globe camera, they scan every item.
 
 [API](https://latkit.readthedocs.io/en/latest/api/reference/network/index.html)

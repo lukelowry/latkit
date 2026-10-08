@@ -7,12 +7,5 @@ pnpm install
 pnpm --filter @latkit/monitor-example dev
 ```
 
-Open http://127.0.0.1:5190. The dev command builds dependencies first.
-
-```sh
-pnpm --filter @latkit/monitor-example build
-```
-
-Open `/check.html` for browser checks.
-
-[Package usage](../../packages/monitor/README.md)
+Open http://127.0.0.1:5190. The dev command builds the packages first. `/check.html` times history
+rendering on the GPU.

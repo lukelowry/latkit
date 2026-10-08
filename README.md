@@ -14,11 +14,10 @@ TypeScript tools for WebGPU network views, time-series plots, block diagrams, an
 ## Install
 
 ```sh
-npm install @latkit/gpu @latkit/network
+npm install @latkit/model @latkit/gpu @latkit/network
 ```
 
-Use an ESM bundler and a WebGPU-capable browser. Supply your data through a
-`Data` from [`@latkit/model`](packages/model).
+Use an ESM bundler and a WebGPU-capable browser.
 
 ## Draw a network
 
@@ -39,20 +38,21 @@ network.set({ at: 12 });
 network.destroy(); // never closes the source or the GPU
 ```
 
-`canvas` is yours, with a CSS size; the network draws on it and handles its input. Monitors and
-diagrams work the same way: see [views](https://latkit.readthedocs.io/en/latest/views.html).
+`source` is a `Data` from [`@latkit/model`](packages/model). `canvas` needs a CSS size; the network
+draws on it and handles its input. Monitors and diagrams work the same way; see
+[views](https://latkit.readthedocs.io/en/latest/views.html).
 
 ## Packages
 
-| Package                     | Use                                              |
-| --------------------------- | ------------------------------------------------ |
-| [model](packages/model)     | Columnar values, passive monitoring, local reads |
-| [connect](packages/connect) | Demand-driven model connections                  |
-| [gpu](packages/gpu)         | Shared rendering, fields, text, colors           |
-| [network](packages/network) | Network topology and geographic views            |
-| [monitor](packages/monitor) | Time-series plots and live telemetry             |
-| [video](packages/video)     | MP4 and WebM export                              |
-| [diagram](packages/diagram) | Native diagrams, layout, routing, and editing    |
+| Package                     | Use                                                |
+| --------------------------- | -------------------------------------------------- |
+| [model](packages/model)     | Columnar data, bounded reads, the `Model` contract |
+| [connect](packages/connect) | Carry a model across a WebSocket                   |
+| [gpu](packages/gpu)         | The shared GPU, compositions, and colors           |
+| [network](packages/network) | Vertices, edges, and paths, flat or on a globe     |
+| [monitor](packages/monitor) | Time-series plots and live telemetry               |
+| [diagram](packages/diagram) | Block diagrams with layout, routing, and editing   |
+| [video](packages/video)     | MP4 and WebM export                                |
 
 ## Develop
 
