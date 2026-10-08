@@ -1,4 +1,4 @@
-import type { Data, Item, RowSelection } from '@latkit/model';
+import { itemKey as rowKey, type Data, type Item, type RowSelection } from '@latkit/model';
 import type { Channel, ColorChannel, Labels, Point, Positions, Shape } from '@latkit/gpu';
 export type { Point, Positions, Shape };
 /** Labels on a type's items, sized in diagram units so they zoom with the diagram. */
@@ -106,20 +106,11 @@ export interface RouteStrategy {
 export function rowOf(hit: SceneItem): DiagramRow {
   return { kind: hit.kind, source: hit.source, index: hit.index, row: hit.row };
 }
-/** One string per item: its kind, row space, row, and port, or its group. */
+/** One string per item: its row space and row, then its kind and port; or its group. */
 export function itemKey(item: DiagramItem): string {
-  return JSON.stringify(
-    item.kind === 'group'
-      ? ['group', item.id]
-      : [
-          item.kind,
-          item.index.source,
-          item.index.type,
-          item.index.version,
-          item.row,
-          item.kind === 'port' ? item.port : '',
-        ],
-  );
+  return item.kind === 'group'
+    ? JSON.stringify(['group', item.id])
+    : rowKey(item, item.kind, item.kind === 'port' ? item.port : '');
 }
 
 /** What the renderer draws. */

@@ -1,8 +1,9 @@
 import { kit, type Viewport } from '@latkit/gpu';
 import { Work, rowAt, sameIndex, type FieldsBlock } from '@latkit/model';
-import type { NetworkData, NetworkItem } from './data.js';
+import { networkKey, type NetworkData, type NetworkItem } from './data.js';
 import {
   edgeOptions,
+  ownerSegments,
   type Geometry,
   type VertexBank,
   type EdgeBank,
@@ -229,11 +230,14 @@ export class Picking {
 interface Hit {
   readonly item: NetworkItem;
   readonly distance: number;
+  /** 0 for vertices, which draw over edges, 1 for edges. */
   readonly kind: number;
+  /** Where it draws among its kind: a later bank, then a later instance, draws on top. */
+  readonly order: number;
 }
-/** Nearest first; vertices draw over edges, so they win ties. */
+/** Nearest first; what draws on top wins ties. */
 function compare(a: Hit, b: Hit): number {
-  return a.distance - b.distance || a.kind - b.kind || a.item.row - b.item.row;
+  return a.distance - b.distance || a.kind - b.kind || b.order - a.order;
 }
 const unchecked = () => {};
 function* offsets(count: number, check: () => void): Iterable<number> {
@@ -715,17 +719,27 @@ export class PickGeometry {
     height: number,
     options: Style,
     radius: number,
+    limit: number,
   ): readonly NetworkItem[] {
-    const hits = [...this.hits(point, data, camera, viewport, height, options, radius, unchecked)];
-    hits.sort(compare);
-    const seen = new Set<string>();
-    return hits
-      .filter(({ item }) => {
-        const key = item.kind + ':' + item.index.type + ':' + item.row;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
+    // Each item's nearest piece, then the nearest items.
+    const best = new Map<string, Hit>();
+    for (const hit of this.hits(
+      point,
+      data,
+      camera,
+      viewport,
+      height,
+      options,
+      radius,
+      unchecked,
+    )) {
+      const key = networkKey(hit.item),
+        kept = best.get(key);
+      if (!kept || compare(hit, kept) < 0) best.set(key, hit);
+    }
+    return [...best.values()]
+      .sort(compare)
+      .slice(0, limit)
       .map((hit) => hit.item);
   }
   /** The nearest hit, scanning without building indexes; `check` bounds the scan. */
@@ -770,14 +784,16 @@ export class PickGeometry {
           widest,
           largest(edge.read.channel('widthPx', lineWidthPx(edgeOptions(data, edge.bank), options))),
         );
-      const reach =
-        (radius + widest + options.selectedWidthPx + this.widestShift(data, options)) /
-        camera.scale;
+      const reach = (radius + widest + this.widestShift(data, options)) / camera.scale;
       bounds = [x - reach, y - reach, x + reach, y + reach];
     }
+    // Banks draw in order, each its rows in order.
+    let drawn = 0;
     if (options.markers || options.poles)
       for (const [bank, cpu] of this.vertices)
-        if (!bank.synthetic)
+        if (!bank.synthetic) {
+          const first = drawn;
+          drawn += bank.count;
           for (const offset of near(cpu.spatial.index, bounds, bank.count, check)) {
             check();
             const p = this.projected(
@@ -811,10 +827,15 @@ export class PickGeometry {
                 },
                 distance,
                 kind: 0,
+                order: first + offset,
               };
           }
+        }
+    drawn = 0;
     if (options.lines)
-      for (const batch of this.edges)
+      for (const batch of this.edges) {
+        const first = drawn;
+        drawn += batch.batch.records.length / 4;
         if (pickable(batch, data))
           for (const offset of near(
             edgeOptions(data, batch.edge.bank).route !== 'geodesic' && batch.spatial.index,
@@ -910,9 +931,11 @@ export class PickGeometry {
                 },
                 distance: Math.max(0, hit.distance - width / 2),
                 kind: 1,
+                order: first + offset,
               };
             }
           }
+      }
   }
   locate(
     item: NetworkItem,
@@ -954,17 +977,8 @@ export class PickGeometry {
           ? item.row - bank.rows.offset
           : bank.rows.values.indexOf(item.row);
       if (owner < 0 || owner >= bank.count) continue;
-      const records = batch.batch.records;
-      // Owner rows stay ordered inside every dense path batch; no per-frame spatial rebuild.
-      let lo = 0,
-        hi = records.length / 4;
-      while (lo < hi) {
-        const m = (lo + hi) >>> 1;
-        if (records[m * 4 + 2] < owner) lo = m + 1;
-        else hi = m;
-      }
-      for (let i = lo * 4; i < records.length && records[i + 2] === owner; i += 4)
-        segments.push({ batch, offset: i });
+      const [first, end] = ownerSegments(batch.batch.records, owner);
+      for (let s = first; s < end; s++) segments.push({ batch, offset: s * 4 });
     }
     if (!segments.length) return null;
     if (segments[0].batch.batch.order)

@@ -5,6 +5,7 @@
 @group(0) @binding(4) var<storage,read_write> instances:array<vec4u>;
 struct Indirect { vertices:u32,count:atomic<u32>,firstVertex:u32,firstInstance:u32 }
 @group(0) @binding(5) var<storage,read_write> indirect:Indirect;
+/** Segments to tessellate, whether they read dash phases, and the first. */
 @group(0) @binding(6) var<uniform> params:vec4u;
 var<workgroup> starts:array<u32,64>;
 var<workgroup> groupBase:u32;
@@ -16,9 +17,9 @@ fn curve_pixels(pair:mat2x3f)->f32 {
 }
 @compute @workgroup_size(64)
 fn tessellate(@builtin(global_invocation_id) id:vec3u,@builtin(local_invocation_index) lane:u32) {
-  let i=id.x;var x=vec4f(0.0);var y=vec4f(0.0);var steps=0u;var split=0xffffffffu;
-  if(i<params.x){
-    if(i==0u){indirect.vertices=6u;}
+  let i=id.x+params.z;var x=vec4f(0.0);var y=vec4f(0.0);var steps=0u;var split=0xffffffffu;
+  if(id.x<params.x){
+    if(id.x==0u){indirect.vertices=6u;}
     let segment=segments[i];x=a[segment.x*5u+4u];y=b[segment.y*5u+4u];
     if(x.w>0.5&&y.w>0.5){
       steps=clamp(u32(ceil(curve_angle(x.xyz,y.xyz,u)*57.295779513)),1u,180u);

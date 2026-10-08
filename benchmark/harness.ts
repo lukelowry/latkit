@@ -44,7 +44,7 @@ export const busIndex = (buses: number): Index => ({
   type: 'Bus',
   version: String(buses),
 });
-const branchIndex = (buses: number): Index => ({
+export const branchIndex = (buses: number): Index => ({
   source: 'grid',
   type: 'Branch',
   version: String(buses),

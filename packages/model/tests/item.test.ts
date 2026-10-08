@@ -4,6 +4,7 @@ import {
   failure,
   isFailure,
   itemId,
+  itemKey,
   sameItem,
   textAt,
   textColumn,
@@ -31,6 +32,12 @@ it('names a row by its row space and number, and reads its id back', () => {
     true,
   );
   expect(sameItem(item, { ...item, row: 9 })).toBe(false);
+  // Its key follows the same identity, then what a view adds.
+  const later = { source: createData(schema, []), index: { ...index }, row: 5 };
+  expect(itemKey(later)).toBe(itemKey(item));
+  expect(itemKey(later, 'edge')).not.toBe(itemKey(item));
+  expect(itemKey({ ...item, row: 9 })).not.toBe(itemKey(item));
+  expect(itemKey({ ...item, index: { ...index, version: '2' } })).not.toBe(itemKey(item));
   expect(() => itemId({ ...item, row: 3 })).toThrow('has no id');
   expect(() => itemId({ ...item, index: { ...index, version: '2' } })).toThrow(
     'identities do not match',

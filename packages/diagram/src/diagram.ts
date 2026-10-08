@@ -1,4 +1,4 @@
-import { Work, failure } from '@latkit/model';
+import { Work, failure, sameIndex } from '@latkit/model';
 import {
   kit,
   type Gpu,
@@ -410,22 +410,34 @@ class DiagramView
           (item.kind === 'port' && typeof item.port !== 'string'))
     )
       fail('Invalid diagram item');
+    // A row names its row space, which the source must hold, as another view's does.
+    if (item.kind !== 'group') {
+      const table = this.data.source.tables[item.index.type];
+      if (!table || !sameIndex(table.index, item.index))
+        throw failure('conflict', 'Selection belongs to another source');
+    }
   }
   protected contains(item: DiagramItem): boolean {
     return this.shown?.picking.has(item) ?? false;
   }
-  protected hits(p: Point, radiusPx: number): readonly DiagramItem[] {
+  protected hits(
+    p: Point,
+    radiusPx: number,
+    options: { readonly limit?: number } = {},
+  ): readonly DiagramItem[] {
     const shown = this.shown;
     if (!shown || !inside(p, shown.viewport)) return [];
-    return shown.picking.hit(
-      p,
-      shown.camera,
-      shown.viewport,
-      radiusPx,
-      shown.ports,
-      undefined,
-      shown.widthPx,
-    );
+    const hits = shown.picking.hit(
+        p,
+        shown.camera,
+        shown.viewport,
+        radiusPx,
+        shown.ports,
+        undefined,
+        shown.widthPx,
+      ),
+      limit = options.limit ?? Infinity;
+    return hits.length > limit ? hits.slice(0, limit) : hits;
   }
   protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
     return pipelines(this.gpu, format, msaa, shade.wgsl);

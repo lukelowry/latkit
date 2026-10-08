@@ -26,7 +26,9 @@ export interface Pipelines {
   /** Vertices with their marker's inputs. */
   readonly marked: GPUComputePipeline;
   readonly edge: GPUComputePipeline;
-  /** Vertices drawn as discs, the default marker. */
+  /** The draw group's module for discs, the default marker, which lines and poles draw with too. */
+  readonly geometry: GPUShaderModule;
+  /** Vertices drawn as discs. */
   readonly vertices: GPURenderPipeline;
   readonly edges: GPURenderPipeline;
   readonly curves: GPURenderPipeline;
@@ -35,6 +37,11 @@ export interface Pipelines {
   readonly text: GPURenderPipeline;
   readonly axis: GPURenderPipeline;
 }
+/**
+ * What a draw of rows paints: the scene, its markers' shadows beneath every marker, or the focused
+ * rows over the rest.
+ */
+export type Layer = 'scene' | 'shadows' | 'focus';
 /** What a vertex draws without a marker of its own: a disc. */
 export const DISC: Marker = shape('ellipse');
 /** Where a marker's atlas and sampler bind, after the draw group's buffers. */
@@ -62,6 +69,61 @@ function geometryModule(
     label,
   );
 }
+/**
+ * The entry points a draw of rows takes, and whether its lines follow great circles; focused rows
+ * take their own where the glow needs more than the rest.
+ */
+interface Draws {
+  readonly vertex: string;
+  readonly fragment: string;
+  readonly curved?: boolean;
+  readonly focus?: { readonly vertex: string; readonly fragment: string };
+}
+/** A pipeline of the draw group: rows of a geometry module, drawn in a layer. */
+function geometryPipeline(
+  { gpu, draw, format, msaa }: Pick<Pipelines, 'gpu' | 'draw' | 'format' | 'msaa'>,
+  module: GPUShaderModule,
+  draws: Draws,
+  layer: Layer,
+): Promise<GPURenderPipeline> {
+  const focus = layer === 'focus' ? 1 : 0,
+    entries = (focus && draws.focus) || draws;
+  return gpu.renderPipeline({
+    layout: gpu.device.createPipelineLayout({ bindGroupLayouts: [draw] }),
+    vertex: {
+      module,
+      entryPoint: entries.vertex,
+      constants: {
+        NETWORK_CURVES: draws.curved ? 1 : 0,
+        MARKER_SHADOWS: layer === 'shadows' ? 1 : 0,
+        FOCUS: focus,
+      },
+    },
+    fragment: {
+      module,
+      entryPoint: entries.fragment,
+      constants: { FOCUS: focus },
+      targets: [{ format, blend: kit.premultipliedBlend }],
+    },
+    primitive: { topology: 'triangle-list' },
+    // Shadows hold no depth, so they darken lines and ground but never another marker.
+    depthStencil: {
+      format: 'depth32float',
+      depthWriteEnabled: layer !== 'shadows',
+      depthCompare: 'less-equal',
+    },
+    multisample: { count: msaa },
+  });
+}
+const MARKERS: Draws = { vertex: 'marker_vertex', fragment: 'marker_fragment' },
+  SHADOWS: Draws = { vertex: 'marker_vertex', fragment: 'marker_shadow' },
+  LINES: Draws = {
+    vertex: 'edge_main',
+    fragment: 'fragment_main',
+    focus: { vertex: 'edge_focus', fragment: 'fragment_focus' },
+  },
+  CURVES: Draws = { ...LINES, curved: true },
+  POLES: Draws = { vertex: 'pole_main', fragment: 'fragment_main' };
 /** Build the network's pipelines; its view caches each variant. */
 export async function pipelines(
   gpu: Gpu,
@@ -118,7 +180,7 @@ export async function pipelines(
   // Labels read the background in their fragments, for the halo over lines.
   const label = d.createBindGroupLayout({ entries: [uniform(0, V | F), storage(1, V)] });
   const bg = d.createBindGroupLayout({ entries: [uniform(0, V | F)] });
-  const [tessModule, prep, shape, bgModule, axisModule, text] = await Promise.all([
+  const [tessModule, prep, geometry, bgModule, axisModule, text] = await Promise.all([
     gpu.shaderModule(
       common + curve + kit.strokeShader() + tessellate,
       'network adaptive geodesics',
@@ -138,27 +200,27 @@ export async function pipelines(
     markedLayout = d.createPipelineLayout({
       bindGroupLayouts: [gpu.fieldLayout, markedCompute, gpu.colormapLayout],
     });
-  const target = { format, blend: kit.premultipliedBlend };
   const render = (
     module: GPUShaderModule,
     vertex: string,
     fragment: string,
     layouts: GPUBindGroupLayout[],
     depthWriteEnabled = true,
-    curved = false,
   ) =>
     gpu.renderPipeline({
       layout: d.createPipelineLayout({ bindGroupLayouts: layouts }),
-      vertex: {
+      vertex: { module, entryPoint: vertex },
+      fragment: {
         module,
-        entryPoint: vertex,
-        ...(module === shape ? { constants: { NETWORK_CURVES: curved ? 1 : 0 } } : {}),
+        entryPoint: fragment,
+        targets: [{ format, blend: kit.premultipliedBlend }],
       },
-      fragment: { module, entryPoint: fragment, targets: [target] },
       primitive: { topology: 'triangle-list' },
       depthStencil: { format: 'depth32float', depthWriteEnabled, depthCompare: 'less-equal' },
       multisample: { count: msaa },
     });
+  const scene = (draws: Draws) =>
+    geometryPipeline({ gpu, draw: drawLayout, format, msaa }, geometry, draws, 'scene');
   const [
     vertex,
     edge,
@@ -183,19 +245,19 @@ export async function pipelines(
       layout: markedLayout,
       compute: { module: prep, entryPoint: 'marked_vertices' },
     }),
-    render(shape, 'marker_vertex', 'marker_fragment', [drawLayout]),
-    render(shape, 'edge_main', 'fragment_main', [drawLayout]),
-    render(shape, 'pole_main', 'fragment_main', [drawLayout]),
+    scene(MARKERS),
+    scene(LINES),
+    scene(POLES),
     render(bgModule, 'background_vertex', 'background_fragment', [bg]),
     render(text, 'label_vertex', 'label_fragment', [label, gpu.textLayout], false),
     render(axisModule, 'axis_vertex', 'axis_fragment', [bg]),
-    render(shape, 'edge_main', 'fragment_main', [drawLayout], true, true),
+    scene(CURVES),
   ]);
   const tessPipeline = await gpu.computePipeline({
     layout: d.createPipelineLayout({ bindGroupLayouts: [tessellation] }),
     compute: { module: tessModule, entryPoint: 'tessellate' },
   });
-  return {
+  const built: Pipelines = {
     gpu,
     format,
     msaa,
@@ -210,6 +272,7 @@ export async function pipelines(
     vertex,
     marked,
     edge,
+    geometry,
     vertices,
     edges,
     curves,
@@ -218,57 +281,68 @@ export async function pipelines(
     text: textPipeline,
     axis: axisPipeline,
   };
+  // The focused rows' pipelines build now, after the scene's, so a selection rarely waits on them.
+  void markerPipeline(built, DISC, 'focus');
+  void linePipeline(built, false, 'focus');
+  void linePipeline(built, true, 'focus');
+  return built;
 }
 
-const markerPipelines = new WeakMap<Pipelines, Map<string, Promise<GPURenderPipeline>>>();
-/**
- * The pipeline a marker draws vertices with, or their shadows beneath every marker, built once for
- * each set of network pipelines: one per distinct marker, sharing the draw group's layout so a bank
- * switches only its pipeline.
- */
-export function markerPipeline(
+const variants = new WeakMap<Pipelines, Map<string, Promise<GPURenderPipeline>>>();
+/** A pipeline variant built once for each set of network pipelines; a failed build tries again. */
+function variant(
   pipelines: Pipelines,
-  marker: Marker,
-  shadows = false,
+  key: string,
+  build: () => Promise<GPURenderPipeline>,
 ): Promise<GPURenderPipeline> {
-  if (marker === DISC && !shadows) return Promise.resolve(pipelines.vertices);
-  let byKey = markerPipelines.get(pipelines);
-  if (!byKey)
-    markerPipelines.set(pipelines, (byKey = new Map<string, Promise<GPURenderPipeline>>()));
-  const key = JSON.stringify([
-    marker.wgsl,
-    Object.keys(marker.inputs ?? {}),
-    marker.images?.length ?? 0,
-    shadows,
-  ]);
+  let byKey = variants.get(pipelines);
+  if (!byKey) variants.set(pipelines, (byKey = new Map<string, Promise<GPURenderPipeline>>()));
   let found = byKey.get(key);
   if (!found) {
-    const { gpu, format, msaa, shade } = pipelines;
-    found = geometryModule(gpu, marker, shade, 'network marker').then((module) =>
-      gpu.renderPipeline({
-        layout: gpu.device.createPipelineLayout({ bindGroupLayouts: [pipelines.draw] }),
-        vertex: {
-          module,
-          entryPoint: 'marker_vertex',
-          constants: { NETWORK_CURVES: 0, MARKER_SHADOWS: shadows ? 1 : 0 },
-        },
-        fragment: {
-          module,
-          entryPoint: shadows ? 'marker_shadow' : 'marker_fragment',
-          targets: [{ format, blend: kit.premultipliedBlend }],
-        },
-        primitive: { topology: 'triangle-list' },
-        depthStencil: {
-          format: 'depth32float',
-          depthWriteEnabled: !shadows,
-          depthCompare: 'less-equal',
-        },
-        multisample: { count: msaa },
-      }),
-    );
-    // A failed build is tried again with the next frame.
+    found = build();
     found.catch(() => byKey.delete(key));
     byKey.set(key, found);
   }
   return found;
+}
+/**
+ * The pipeline a marker draws vertices with in a layer: one per distinct marker, sharing the draw
+ * group's layout so a bank switches only its pipeline. A marker's focus pipeline builds once its
+ * scene pipeline has, so a selection rarely waits on it.
+ */
+export function markerPipeline(
+  pipelines: Pipelines,
+  marker: Marker,
+  layer: Layer = 'scene',
+): Promise<GPURenderPipeline> {
+  if (marker === DISC && layer === 'scene') return Promise.resolve(pipelines.vertices);
+  const key = JSON.stringify([
+    marker.wgsl,
+    Object.keys(marker.inputs ?? {}),
+    marker.images?.length ?? 0,
+    layer,
+  ]);
+  return variant(pipelines, key, () => {
+    const module =
+      marker === DISC
+        ? Promise.resolve(pipelines.geometry)
+        : geometryModule(pipelines.gpu, marker, pipelines.shade, 'network marker');
+    const built = module.then((module) =>
+      geometryPipeline(pipelines, module, layer === 'shadows' ? SHADOWS : MARKERS, layer),
+    );
+    if (layer === 'scene')
+      void built.then(() => markerPipeline(pipelines, marker, 'focus')).catch(() => undefined);
+    return built;
+  });
+}
+/** The pipeline straight or curved lines draw with in a layer. */
+export function linePipeline(
+  pipelines: Pipelines,
+  curved: boolean,
+  layer: Exclude<Layer, 'shadows'>,
+): Promise<GPURenderPipeline> {
+  if (layer === 'scene') return Promise.resolve(curved ? pipelines.curves : pipelines.edges);
+  return variant(pipelines, JSON.stringify(['lines', curved, layer]), () =>
+    geometryPipeline(pipelines, pipelines.geometry, curved ? CURVES : LINES, layer),
+  );
 }

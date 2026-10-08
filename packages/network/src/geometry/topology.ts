@@ -94,6 +94,23 @@ export function vertexOptions(data: NetworkData, bank: VertexBank): VertexOption
 export function edgeOptions(data: NetworkData, bank: EdgeBank): EdgeOptions | PathOptions {
   return bank.kind === 'path' ? data.paths![bank.type] : data.edges![bank.type];
 }
+/**
+ * The segments of a batch an owner row draws, `[first, end)`: a batch keeps its records in owner
+ * order, so no per-frame index is needed.
+ */
+export function ownerSegments(records: Uint32Array, owner: number): readonly [number, number] {
+  const count = records.length / 4;
+  let lo = 0,
+    hi = count;
+  while (lo < hi) {
+    const m = (lo + hi) >>> 1;
+    if (records[m * 4 + 2] < owner) lo = m + 1;
+    else hi = m;
+  }
+  let end = lo;
+  while (end < count && records[end * 4 + 2] === owner) end++;
+  return [lo, end];
+}
 export function segmentBatch(a: VertexBank, b: VertexBank, records: Uint32Array): SegmentBatch {
   const data = new kit.BufferData({ size: records.byteLength, label: 'network path segments' });
   data.write({ data: records });

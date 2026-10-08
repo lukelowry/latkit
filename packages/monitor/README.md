@@ -2,8 +2,13 @@
 
 Plot sampled fields over a coordinate such as time with WebGPU, live as frames append.
 
+```sh
+npm install @latkit/model @latkit/gpu @latkit/monitor
+```
+
 ```ts
 import { createGpu } from '@latkit/gpu';
+import { appendData } from '@latkit/model';
 import { createMonitor } from '@latkit/monitor';
 
 const gpu = await createGpu();
@@ -14,10 +19,8 @@ const monitor = createMonitor(gpu, {
   camera: { x: [0, 30] },
   yAxis: 'Temperature',
 });
+monitor.set({ source: appendData(observations, samples) });
 ```
-
-Supply each application update with `monitor.set({ source: nextData })`. Each frame draws only the
-observations that arrived; the application decides how much history to keep.
 
 [Guide](https://latkit.readthedocs.io/en/latest/monitor-quickstart.html) ·
 [Views](https://latkit.readthedocs.io/en/latest/views.html) ·

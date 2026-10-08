@@ -20,6 +20,7 @@ import type { Camera, Projection } from './camera.js';
 import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camera.js';
 import {
   networkData,
+  networkKey,
   type EdgeOptions,
   type LineOptions,
   type NetworkData,
@@ -407,7 +408,7 @@ class NetworkView
     return p ? p.picking.locate(item, p.data, p.camera, p.viewport, p.height, p.options) : null;
   }
   protected identify(item: NetworkItem): string {
-    return item.kind + ':' + indexKey(item.index) + ':' + item.row;
+    return networkKey(item);
   }
   protected accept(item: NetworkItem): void {
     const source =
@@ -435,7 +436,7 @@ class NetworkView
   protected async hits(
     point: Point,
     radiusPx: number,
-    options: { readonly signal?: AbortSignal } = {},
+    options: { readonly limit: number; readonly signal?: AbortSignal },
   ): Promise<readonly NetworkItem[]> {
     const shown = this.shown;
     if (!shown) return [];
@@ -453,6 +454,7 @@ class NetworkView
       shown.height,
       shown.options,
       Math.min(radiusPx, Math.hypot(shown.viewport.width, shown.viewport.height)),
+      options.limit,
     );
   }
   protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {

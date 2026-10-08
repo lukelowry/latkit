@@ -2,6 +2,10 @@
 
 Draw a model's vertices, edges, and paths with WebGPU: flat, tilted, or on a globe.
 
+```sh
+npm install @latkit/gpu @latkit/network
+```
+
 ```ts
 import { createGpu } from '@latkit/gpu';
 import { createNetwork } from '@latkit/network';

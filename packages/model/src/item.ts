@@ -16,3 +16,11 @@ export interface Item {
 export function sameItem(a: Item, b: Item): boolean {
   return a === b || (a.row === b.row && sameIndex(a.index, b.index));
 }
+/**
+ * An item's identity as a string: its row space and row, then what a view adds, such as a kind.
+ * Items equal under `sameItem` with the same qualifiers share it.
+ */
+export function itemKey(item: Item, ...qualifiers: readonly (string | number)[]): string {
+  const { source, type, version } = item.index;
+  return JSON.stringify([source, type, version, item.row, ...qualifiers]);
+}

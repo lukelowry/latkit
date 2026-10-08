@@ -17,11 +17,15 @@ export interface ViewStyle {
   readonly animationMs?: number;
   /** `auto` follows the reduced-motion preference. */
   readonly motion?: 'auto' | 'reduce' | 'full';
+  /** The glow around a hovered item; its alpha is the glow's strength. */
   readonly hoverColor?: RGBA;
-  /** `none` keeps each selected item's own color. */
+  /** The glow around selected items; `none` glows in each item's own color. */
   readonly selectedColor?: RGBA | 'none';
+  /** How far the glow around a hovered or selected item reaches past it. */
   readonly hoverWidthPx?: number;
   readonly selectedWidthPx?: number;
+  /** The opacity of every other item while something is selected. */
+  readonly unselectedAlpha?: number;
   readonly font?: TextFont;
   readonly fontSizePx?: number;
   readonly textColor?: RGBA;
@@ -40,8 +44,9 @@ export const viewStyle: ResolvedViewStyle = Object.freeze({
   motion: 'auto',
   hoverColor: [1, 0.72, 0.28, 1] as RGBA,
   selectedColor: [1, 0.4, 0.24, 1] as RGBA,
-  hoverWidthPx: 3,
-  selectedWidthPx: 3,
+  hoverWidthPx: 6,
+  selectedWidthPx: 8,
+  unselectedAlpha: 1,
   font: Object.freeze({ family: 'system-ui, sans-serif' }),
   fontSizePx: 12,
   textColor: [0.92, 0.94, 0.98, 1] as RGBA,
@@ -69,7 +74,10 @@ export function resolveViewStyle(
     } else if (key === 'font') {
       if (typeof (value as TextFont).family !== 'string') fail('Invalid font');
     } else if (key === 'fitPaddingPx' || key === 'revealPaddingPx') insetSides(value as Insets);
-    else if (key === 'hoverBudgetMs' || key === 'fontSizePx') {
+    else if (key === 'unselectedAlpha') {
+      if (!Number.isFinite(value) || (value as number) < 0 || (value as number) > 1)
+        fail('Invalid unselectedAlpha');
+    } else if (key === 'hoverBudgetMs' || key === 'fontSizePx') {
       if (!Number.isFinite(value) || (value as number) <= 0) fail('Invalid ' + key);
     } else if (!Number.isFinite(value) || (value as number) < 0) fail('Invalid ' + key);
     style[key] = value;

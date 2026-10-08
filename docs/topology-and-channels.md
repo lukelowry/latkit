@@ -1,11 +1,10 @@
 # Data bindings
 
-Renderers read immutable application-owned `Data` fields. Mapping keys name model types.
+A view draws the rows of a `Data` value. Keys of `vertices`, `edges`, and `paths` name its types.
 
 ## Positions and wiring
 
-A model's topology is its reference fields. A reference holds rows of another
-type, read as a `ReferenceColumn` of row numbers under that type's `Index`.
+A model's topology is its reference fields. Each reference names a row of another type.
 
 ```ts
 const bus = { type: { kind: 'reference', to: 'Bus' } } as const;
@@ -28,24 +27,20 @@ const data = {
 };
 ```
 
-Vertex and edge are what a view draws, not what a type is. An edge with `ends`
-joins the two vertices its reference fields name. Without `ends` the type is a
-net: each row joins the vertices whose references name it, so
-`{ vertices: { Load: {} }, edges: { Bus: {} } }` draws every bus as a star of its
-loads. A diagram draws those references as ports; `direction: 'in' | 'out'` on a
-reference field orients them.
+Vertex and edge are what a view draws, not what a type is. An edge with `ends` joins the two
+vertices its reference fields name. Without `ends`, the type is a net: each row joins the vertices
+whose references name it. So `{ vertices: { Load: {} }, edges: { Bus: {} } }` draws every bus as a
+star of its loads. A [diagram](diagram-quickstart.md) draws those references as ports.
 
-`x` and `y` are where each row draws, bound like any other channel. A field
-marked `geographic` holds longitude or latitude in degrees, which the globe and
-geodesic routes need; otherwise its coordinates are plane units. A vector field
-binds one lane per axis: `x: 'position', y: { field: 'position', component: 1 }`.
-A row without a position is placed by [layout](views.md#layout).
-Paths and bends use lists of two-component vectors.
+`x` and `y` are channels like any other. A `geographic` field holds longitude or latitude in
+degrees, which the globe and geodesic routes need; other fields are plane units. A vector field
+binds one lane per axis: `x: 'position', y: { field: 'position', component: 1 }`. A path's `points`
+and an edge's `bends` read lists of two-component vectors. [Layout](views.md#layout) places rows
+without a position.
 
 ## Channels
 
-Every per-row option is a channel: one value for every row, a field, or a field
-through a scale.
+Every per-row option is a channel: one value for every row, a field, or a field through a scale.
 
 ```ts
 network.set({
@@ -67,14 +62,14 @@ network.set({
 });
 ```
 
-A string names a field of the mapping's own source and type. A binding object reads another
-source, whose indices and sampled coordinates must align. A field reads through its channel's
-scale: positions as they are, colors through a colormap, and radii, widths, `z`, and `flowPx` from
-their field's extent onto the channel's range. `domain` and `range` replace those; omitted domains
-fit the displayed values, and explicit ones keep colors stable during playback. Rows a field leaves
-empty take the scale's `missing` value, or else the view's default for that channel, named after
-it: `vertexColor`, `vertexRadiusPx`, `edgeWidthPx`, `traceColor`. A boolean channel such as
-`visible` or `dash` is on where it reads true or positive.
+A string names a field of the entry's own source and type. A `{ source, from, field }` binding
+reads another source by physical row, so its indices and sampled coordinates must align.
 
-Selections and hits keep source, index, and physical row. Do not reuse rows after their source's
-index version changes.
+A field reads through its channel's scale. Positions read as they are, and colors through a
+colormap. Sizes, widths, `z`, and `flowPx` map the field's extent onto the channel's range.
+`domain` and `range` replace those defaults. An omitted domain fits the displayed values; give one
+to keep colors stable during playback.
+
+Rows a field leaves empty take the scale's `missing` value, or else the view's default for the
+channel, such as `vertexColor` or `edgeWidthPx`. A boolean channel such as `visible` or `dash` is
+on where it reads true or positive.

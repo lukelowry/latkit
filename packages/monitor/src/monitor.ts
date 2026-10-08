@@ -15,6 +15,7 @@ import {
 import {
   Work,
   failure,
+  itemKey,
   rowCount,
   sameIndex,
   sampleDomain,
@@ -55,7 +56,7 @@ import {
 } from './bindings.js';
 import { axes, onPlot, plot, plotCoordinate, plotX, plotY, type Axes, type Plot } from './axes.js';
 import { Fit, mergeDomain, tracePages } from './extents.js';
-import { pipelines, type Pipelines } from './rendering/pipelines.js';
+import { pipelines, type Lines, type Pipelines } from './rendering/pipelines.js';
 import {
   bindDraws,
   composite,
@@ -80,7 +81,7 @@ import {
   type Progress,
   type Transform,
 } from './rendering/history.js';
-import { pick } from './picking.js';
+import { pick, type Shown } from './picking.js';
 
 export interface MonitorConfig extends ItemViewConfig, MonitorStyle {
   /** Lines by name; several may read one type. */
@@ -192,7 +193,10 @@ function focused(selection: readonly MonitorItem[], trace: Binding): RowSelectio
   // The index names the rows, so a selection survives appends that replace the Data value.
   const rows = index
     ? selection.filter(
-        (item) => sameIndex(item.index, index) && (!item.trace || item.trace === trace.name),
+        (item) =>
+          sameIndex(item.index, index) &&
+          (!item.trace || item.trace === trace.name) &&
+          (!trace.rows || includes(trace.rows, item.row)),
       )
     : [];
   if (!index || !rows.length) return undefined;
@@ -280,6 +284,8 @@ function destroySurface(value: Surface): void {
 interface Prepared {
   readonly surface: Surface;
   readonly pipeline: Pipelines;
+  /** Selected lines' pipelines, while there is a selection. */
+  readonly focus?: Lines;
   readonly screen: Screen;
   /** Each image's groups, and their layers. */
   readonly plans: ReadonlyMap<Image, Planned>;
@@ -295,11 +301,16 @@ interface Prepared {
   readonly segments: number;
   readonly shown: Shown;
 }
-/** The camera and plot of the latest submitted frame: what pick and locate read. */
-interface Shown {
-  readonly window: Domain;
-  readonly values: Domain;
-  readonly plot: Plot;
+/** Whether two frames drew the same lines, so one's readings stand for the other's. */
+function sameShown(a: Shown, b: Shown): boolean {
+  return (
+    a.source === b.source &&
+    a.traces === b.traces &&
+    a.plot === b.plot &&
+    a.widthPx === b.widthPx &&
+    sameDomain(a.window, b.window) &&
+    sameDomain(a.values, b.values)
+  );
 }
 
 class MonitorView
@@ -347,11 +358,11 @@ class MonitorView
   /** Axis labels by text: a tick that stays as the window moves keeps its glyphs. */
   private readonly labels = new kit.TextBank({ label: 'monitor axes' });
   private shown?: Shown;
+  /** The latest readings found, which stand while the frame they read does. */
   private inspection?: {
     readonly point: Point;
     readonly radius: number;
     readonly limit: number;
-    readonly source: Data;
     readonly shown: Shown;
     readonly result: readonly Reading[];
   };
@@ -458,30 +469,29 @@ class MonitorView
     if (!shown || coordinate === undefined || value === undefined) return null;
     return [plotX(shown.plot, shown.window, coordinate), plotY(shown.plot, shown.values, value)];
   }
+  /** A row, or a row of one trace: the line a reading lies on, wherever along it. */
   protected identify(item: MonitorItem): string {
-    return JSON.stringify([
-      item.index.source,
-      item.index.type,
-      item.index.version,
-      item.row,
-      item.trace ?? null,
-      (item as Partial<Reading>).frame ?? null,
-    ]);
+    return itemKey(item, item.trace ?? '');
+  }
+  protected detail(hit: Reading): string {
+    return String(hit.frame);
   }
   protected accept(item: MonitorItem): void {
     if (!Number.isSafeInteger(item.row) || item.row < 0) fail('Invalid selected row');
     if (!this.table(item)) throw failure('conflict', 'Selection belongs to another source');
   }
-  /** Rows stay selected while a trace draws them and their row space stands, as through appends. */
+  /** Rows stay selected while the presented frame draws them, as through appends. */
   protected contains(item: MonitorItem): boolean {
-    const rows = this.table(item)?.rows;
-    if (!rows || !includes(rows, item.row)) return false;
-    return (this.traces ?? []).some(
-      (trace) =>
-        (item.trace === undefined || trace.name === item.trace) &&
-        trace.trace.from === item.index.type &&
-        (!trace.rows || includes(trace.rows, item.row)),
-    );
+    return !!this.shown?.traces.some((trace) => {
+      if (item.trace !== undefined && trace.name !== item.trace) return false;
+      const table = trace.source.tables[trace.trace.from];
+      return (
+        !!table &&
+        sameIndex(table.index, item.index) &&
+        includes(table.rows, item.row) &&
+        (!trace.rows || includes(trace.rows, item.row))
+      );
+    });
   }
   /** The nearest `limit` readings. */
   protected hits(
@@ -596,7 +606,7 @@ class MonitorView
     this.planned.set(focus, { key, groups });
     return groups;
   }
-  /** What every layer of an image draws lines with: their width, and a selection's. */
+  /** What every layer of an image draws lines with: their width, and a selection's glow. */
   private drawnWith(focus: boolean): unknown {
     return focus ? [this.style.traceWidthPx, this.style.selectedWidthPx] : this.style.traceWidthPx;
   }
@@ -790,16 +800,27 @@ class MonitorView
     );
     frame.signal.throwIfAborted();
     this.hoverFrame(frame, this.nearest);
+    // One object while the same lines stand, as through playback, so readings of it stand too.
+    const drawn: Shown = {
+        source: this.data.source,
+        traces,
+        window: camera.x,
+        values: camera.y,
+        plot: this.layout.plot,
+        widthPx: this.style.traceWidthPx,
+      },
+      last = this.shown;
     return {
       surface: history,
       pipeline,
+      focus: history.focus ? await pipeline.focus : undefined,
       screen,
       plans,
       paint: draws,
       composed,
       advanced,
       segments,
-      shown: { window: camera.x, values: camera.y, plot: this.layout.plot },
+      shown: last && sameShown(last, drawn) ? last : drawn,
     };
   }
   /**
@@ -842,13 +863,16 @@ class MonitorView
     while (!budget.spent && (chunk || through === undefined || through < end - 1)) {
       const start =
           chunk?.start ?? (through === undefined ? first : joined ? through : through + 1),
-        count = chunk?.frames ?? end - start;
+        count = chunk?.frames ?? end - start,
+        // A selection's lines glow where they meet the lines drawn before, so they read the frame
+        // those came from.
+        context = focus && start === through && start > first ? 1 : 0;
       let length = 0,
         drawn = chunk?.rows ?? 0,
         whole = true;
-      for await (const block of read(start, count)) {
-        if (block.samples!.firstFrame !== start) break;
-        length = block.samples!.coordinates.length;
+      for await (const block of read(start - context, count + context)) {
+        if (block.samples!.firstFrame !== start - context) break;
+        length = block.samples!.coordinates.length - context;
         const after = block.rowOffset + rowCount(block.rows);
         if (after <= drawn) continue;
         if (budget.spent) {
@@ -868,6 +892,7 @@ class MonitorView
             focus,
             effect,
             start !== through,
+            context > 0,
           );
           out.push(...result.draws);
           budget.spend(block, result.segments);
@@ -897,7 +922,8 @@ class MonitorView
     if (!prepared) return;
     let calls = 0;
     for (const [layer, draws] of prepared.paint)
-      if (draws.length || layer.fresh) calls += paint(frame, prepared.pipeline, layer, draws);
+      if (draws.length || layer.fresh)
+        calls += paint(frame, prepared.pipeline, layer, draws, prepared.focus);
     // A fresh layer on screen with nothing drawn yet still clears.
     for (const layer of prepared.composed)
       if (layer.fresh && !prepared.paint.has(layer)) paint(frame, prepared.pipeline, layer, []);
@@ -1055,23 +1081,17 @@ class MonitorView
     signal?: AbortSignal,
   ): Promise<readonly Reading[]> {
     this.live();
-    const shown = this.shown,
-      traces = this.traces;
-    if (!shown || !traces) return [];
-    const p = shown.plot;
-    if (!onPlot(p, point)) return [];
+    const shown = this.shown;
+    if (!shown || !onPlot(shown.plot, point)) return [];
     signal?.throwIfAborted();
-    // The latest answer at this point stands while the data and what is shown stand.
-    const cached = this.inspection,
-      source = this.data.source;
+    // The latest answer at this point stands while the frame it read does, as through playback.
+    const cached = this.inspection;
     if (
-      cached &&
+      cached?.shown === shown &&
       cached.point[0] === point[0] &&
       cached.point[1] === point[1] &&
       cached.radius === radius &&
-      cached.limit >= limit &&
-      cached.source === source &&
-      cached.shown === shown
+      cached.limit >= limit
     )
       return cached.result.length > limit ? cached.result.slice(0, limit) : cached.result;
     const reads = this.gpu.reader.open({
@@ -1079,21 +1099,11 @@ class MonitorView
     });
     let result: Reading[];
     try {
-      result = await pick({
-        reads,
-        data: this.data,
-        bindings: traces,
-        plot: p,
-        x: shown.window,
-        y: shown.values,
-        point,
-        radius,
-        limit,
-      });
+      result = await pick(reads, shown, point, radius, limit);
     } finally {
       reads.close();
     }
-    this.inspection = { point: [point[0], point[1]], radius, limit, source, shown, result };
+    this.inspection = { point: [point[0], point[1]], radius, limit, shown, result };
     return result;
   }
   /** The table of an item's rows among the sources the traces read. */

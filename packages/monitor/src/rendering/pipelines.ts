@@ -5,11 +5,18 @@ import axesCode from './axes.wgsl';
 import { LAYER_FORMATS, type LayerKind } from './history.js';
 
 const KINDS = ['color', 'coverage', 'value'] as const satisfies readonly LayerKind[];
-export interface Pipelines {
-  /** Lines into a layer of each kind. */
+/** Lines into a layer of each kind, and into a color layer in a look baked in. */
+export interface Lines {
   readonly draw: Readonly<Record<LayerKind, GPURenderPipeline>>;
-  /** Lines into a color layer in a look baked in, which reads a colormap in group 3. */
+  /** Reads a colormap in group 3. */
   readonly bake: GPURenderPipeline;
+}
+export interface Pipelines extends Lines {
+  /**
+   * Selected lines, lit by their glow: built after the rest, so the first frame never waits on
+   * them.
+   */
+  readonly focus: Promise<Lines>;
   /** A layer of each kind onto the screen. */
   readonly compose: Readonly<Record<LayerKind, GPURenderPipeline>>;
   readonly lines: GPURenderPipeline;
@@ -79,27 +86,31 @@ export async function pipelines(
       value: looked,
     },
     target = { format, blend: kit.premultipliedBlend };
-  const lineInto = (kind: LayerKind, entryPoint: string, layout: GPUPipelineLayout) =>
+  const baked = d.createPipelineLayout({
+    bindGroupLayouts: [gpu.fieldLayout, view, effects, gpu.colormapLayout],
+  });
+  /** Lines into a layer of a kind, or selected lines with their glow. */
+  const lineInto = (kind: LayerKind, fragment: string, layout: GPUPipelineLayout, focus: boolean) =>
     gpu.renderPipeline({
       layout,
-      vertex: { module, entryPoint: 'trace_main' },
+      vertex: { module, entryPoint: focus ? 'trace_focus' : 'trace_main' },
       fragment: {
         module,
-        entryPoint,
+        entryPoint: fragment + (focus ? '_focus' : '_main'),
         targets: [{ format: LAYER_FORMATS[kind], blend: kit.premultipliedBlend }],
       },
       primitive: { topology: 'triangle-list' },
       multisample: { count: msaa },
     });
-  const [draw, bake, compose, lines, text] = await Promise.all([
-    Promise.all(KINDS.map((kind) => lineInto(kind, kind + '_main', drawn))),
-    lineInto(
-      'color',
-      'bake_main',
-      d.createPipelineLayout({
-        bindGroupLayouts: [gpu.fieldLayout, view, effects, gpu.colormapLayout],
-      }),
-    ),
+  const linesOf = async (focus: boolean): Promise<Lines> => {
+    const [color, coverage, value, bake] = await Promise.all([
+      ...KINDS.map((kind) => lineInto(kind, kind, drawn, focus)),
+      lineInto('color', 'bake', baked, focus),
+    ]);
+    return { draw: { color, coverage, value }, bake };
+  };
+  const [{ draw, bake }, compose, lines, text] = await Promise.all([
+    linesOf(false),
     Promise.all(
       KINDS.map((kind) =>
         gpu.renderPipeline({
@@ -120,9 +131,13 @@ export async function pipelines(
       fragment: { module: axes, entryPoint: 'text_color', targets: [target] },
     }),
   ]);
+  // Selected lines' pipelines build now, after the rest, so a selection rarely waits on them.
+  const focus = linesOf(true);
+  focus.catch(() => undefined);
   return {
-    draw: { color: draw[0], coverage: draw[1], value: draw[2] },
+    draw,
     bake,
+    focus,
     compose: { color: compose[0], coverage: compose[1], value: compose[2] },
     lines,
     text,

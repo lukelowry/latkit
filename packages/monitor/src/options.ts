@@ -23,8 +23,6 @@ export interface MonitorStyle {
   readonly gridColor?: RGBA;
   /** The playhead at `at`. */
   readonly cursorColor?: RGBA;
-  /** Opacity of unselected traces while something is selected. */
-  readonly unselectedAlpha?: number;
   readonly paddingPx?: Insets;
 }
 export interface Limits {

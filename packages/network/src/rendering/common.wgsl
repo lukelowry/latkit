@@ -5,8 +5,10 @@ struct Uniforms {
   geo: vec4f,
   center: vec4f,
   hoverColor: vec4f,
+  /** Alpha -1 glows in each item's own color. */
   selectedColor: vec4f,
-  halo: vec4f,
+  /** How far hover's and the selection's glow reach, and the rest's opacity while something is selected. */
+  glow: vec4f,
   pointer: vec4f,
   sun: vec4f,
   surface: vec4f,
@@ -29,6 +31,10 @@ struct Uniforms {
   grown: vec2u,
   growth: vec2f,
 }
+/** How far toward the camera a focused row draws: over its neighbors, never past the globe. */
+const FOCUS_LIFT: f32 = 0.00002;
+/** How far labels draw toward the camera, over focused rows and their glow. */
+const LABEL_LIFT: f32 = 0.00004;
 fn project_world(p: vec3f, u: Uniforms) -> vec4f {
   let rx = p.x * u.rotation.x + p.y * u.rotation.y;
   let ry = -p.x * u.rotation.y + p.y * u.rotation.x;

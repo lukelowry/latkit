@@ -46,6 +46,11 @@ describe.each([100, 1_000, 10_000, 40_000])('diagram %i blocks', async (blocks) 
     controls.preview([], null);
     return draw(device, view);
   });
+  // A block selected draws over the rest; clearing it draws as before.
+  measure('select', (i) => {
+    view.select(i % 2 ? [] : dragged);
+    return draw(device, view);
+  });
   measure('restyle', (i) => {
     view.set({ edgeWidthPx: 1 + (i % 2) });
     return draw(device, view);

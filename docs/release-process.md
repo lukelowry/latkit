@@ -1,6 +1,6 @@
 # Release checks
 
-Use Node.js 24 and pnpm 10.30. Build declarations before linting.
+Use Node.js 24 and pnpm 10.30.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -17,20 +17,16 @@ pnpm -r --filter "./packages/**" exec npm pack --dry-run
 pnpm changeset status
 ```
 
-Browser checks require Chromium with WebGPU; set `LATKIT_BROWSER` if needed.
-The network command opens an interactive fixture. For headless verification,
-bundle its fixtures first, then run `node packages/network/tests/browser/run.mjs`.
-
-Run the video example's `/check.html` for real codec checks.
-Run `pnpm bench:gate` to check recorded work; see `benchmark/`.
-Reports go to `output/`.
+Browser checks run headless Chromium with WebGPU and write reports to `output/`. Set
+`LATKIT_BROWSER` to a Chromium executable if they find none. Run the video example's `/check.html`
+for real codec checks. Run `pnpm bench:gate` to check recorded work; see
+[benchmarks](https://github.com/lukelowry/latkit/blob/main/benchmark/README.md).
 
 ## Publish
 
-Add a changeset with `pnpm changeset`. Merge only after CI passes, then review
-and merge the generated version PR. The release workflow builds and publishes
-with npm Trusted Publishing. Configure each new package's trusted publisher
-before its first automated release.
+1. Add a changeset with `pnpm changeset`.
+2. Merge only after CI passes. The release workflow then opens a `chore: version packages` PR.
+3. Review the version PR, including breaking changes and dependent package versions, then merge it.
+   The release workflow builds and publishes with npm Trusted Publishing.
 
-The diagram package now includes a runtime. Include its browser checks before publication.
-Keep API-breaking changes and dependent package versions in the release plan.
+Configure each new package's trusted publisher before its first automated release.

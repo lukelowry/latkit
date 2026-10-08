@@ -89,7 +89,7 @@ export type {
   SampleBatch,
 } from './materialized.js';
 export type { Item } from './item.js';
-export { sameItem } from './item.js';
+export { itemKey, sameItem } from './item.js';
 export { read, selectRows, locateSample, itemId } from './read.js';
 export type { ReadResult, SampleLocation } from './read.js';
 export { createData, appendData } from './assemble.js';

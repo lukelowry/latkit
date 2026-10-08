@@ -1,6 +1,6 @@
 # Export video
 
-Record any view to MP4 (H.264) or WebM (VP9). Requires WebGPU and a browser WebCodecs encoder for
+Record any view to MP4 (H.264) or WebM (VP9). It needs WebGPU and a browser WebCodecs encoder for
 the format.
 
 ```ts
@@ -27,13 +27,12 @@ try {
 }
 ```
 
-`duration` is in output seconds; `at` maps them to model coordinates and otherwise the view's `at`
-holds. `pixelRatio` scales lines and text as it does for images. Choose `format`, `frameRate` (60
-by default), and `quality` from 0 to 1, as for images, or an explicit `bitrate`.
+`duration` is in output seconds, and `at` maps them to model coordinates; without it, the view's
+`at` holds. `pixelRatio` scales lines and text as it does for images.
 
-The view's canvas pauses while it records. Keep its sources fixed for the export. Writes are
-positional; honor `position` and await storage for backpressure. The exporter releases its writer
-lock but never closes your destination.
+The view's canvas pauses while it records; keep its sources fixed until the export ends. Writes are
+positional, and the export awaits each one, so storage sets the pace. The export borrows the
+stream's writer and never closes it.
 
 Record a [composition](views.md#compose) to combine views. The
 [worker example](https://github.com/lukelowry/latkit/blob/main/examples/video/src/worker.ts) exports

@@ -18,18 +18,20 @@ diagram.on('delete', (rows) => remove(rows));
 ```
 
 The diagram proposes edits; your application changes the model, and the diagram redraws from it.
-Proposals name rows as items, `{ source, index, row }`; `itemId(row)` gives a row's id.
+Proposals name rows as items, and `itemId(row)` from `@latkit/model` gives a row's id. Sizes ending
+in `Px` are CSS pixels; the rest are diagram units, which zoom with the blocks. [Views](views.md)
+covers what every view shares.
 
 ## Ports and wires
 
-A vertex's reference fields that name a drawn net are its ports, oriented by the field's
-`direction`. An edge with `ends` joins two vertices; a net fans out to every port that names it.
-`ports` options set a port's side, order, label, color, status, and marker.
+Each reference field of a vertex that names a drawn net is a port, oriented by the field's
+`direction`. A net wires every port that names it; an edge with `ends` wires two vertices. A type's
+`ports` options style each port.
 
 ## Layout
 
-A vertex with `x` and `y` stays where they put it; [layout](views.md#layout) places the rest,
-`'layered'` by default. A group is arranged inside first, then moves as one vertex of its part.
+A vertex with `x` and `y` stays at them; [layout](views.md#layout) places the rest, `'layered'` by
+default. A group is arranged inside first, then moves as one vertex of its parent.
 
 ```ts
 diagram.set({ layout: { direction: 'down' } }, { animate: true });
@@ -37,21 +39,14 @@ const positions = await arrange(gpu, config); // { x, y } by type, without drawi
 diagram.set({ vertices: { Task: positions.Task } }); // pinned where arranged
 ```
 
-A move proposes the drawing as it stands: each dragged vertex and each the layout placed, so
-writing `positions` keeps every block where it is drawn. Collapsing a group routes its wires to its
-boundary, and moving it moves its vertices.
+Writing a move's `positions` keeps every block where it is drawn, the ones the layout placed
+included. Collapsing a group routes its wires to its boundary.
 
 ## Input
 
-`input: 'edit'` adds dragging, marquee selection, wiring, and Delete to navigation; `'inspect'`
-keeps page scrolling. Pass `{ mode, backgroundDrag, connectRadiusPx, autoPan, canConnect }` to tune
-it. Tab visits vertices, Enter opens, Home fits, and arrows pan or nudge the selection. Space-drag
-pans, two pointers pinch, a long press opens the context menu, and Escape ends a drag before it
-clears the selection.
-
-The camera, selection, hover, `pick`, and `fit` work as in every [view](views.md): `fit(items)`
-frames them once, and `fit()` follows the whole diagram.
-
-Geometry, text, and gaps use diagram units; widths, radii, and padding use CSS pixels.
+`input: 'edit'` adds editing to navigation. Drag a block to move it, drag from a port or Alt-drag
+from a block to wire, drag the background to select, and press Delete to propose removal. Arrows
+nudge selected blocks by `gridPitch`, and otherwise pan. Space-drag pans, Shift-drag selects while
+navigating too, and Tab visits vertices.
 
 [API](https://latkit.readthedocs.io/en/latest/api/reference/diagram/index.html)

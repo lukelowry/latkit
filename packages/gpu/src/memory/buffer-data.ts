@@ -94,11 +94,18 @@ export class BufferData {
     if (this.history.length > 64) this.history.shift();
   }
 
-  /** Call after editing bytes directly. Empty touches still advance the revision. */
-  touch(range: ByteRange = { offset: 0, size: this.used }): void {
-    integer(range.offset, 'dirty offset', 0, this.used);
-    integer(range.size, 'dirty size', 0, this.used - range.offset);
-    this.history.push({ revision: ++this.serial, ranges: range.size ? [{ ...range }] : [] });
+  /**
+   * Call after editing bytes directly, with the range or ranges edited; several record one
+   * revision. Empty touches still advance the revision.
+   */
+  touch(edited: ByteRange | readonly ByteRange[] = { offset: 0, size: this.used }): void {
+    const ranges: ByteRange[] = [];
+    for (const range of 'offset' in edited ? [edited] : edited) {
+      integer(range.offset, 'dirty offset', 0, this.used);
+      integer(range.size, 'dirty size', 0, this.used - range.offset);
+      if (range.size) ranges.push({ offset: range.offset, size: range.size });
+    }
+    this.history.push({ revision: ++this.serial, ranges });
     if (this.history.length > 64) this.history.shift();
   }
 

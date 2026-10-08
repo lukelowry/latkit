@@ -22,6 +22,7 @@ it('exports values, local computation and explicit boundary validation', () => {
     'failure',
     'isFailure',
     'sameItem',
+    'itemKey',
     'itemId',
     'sliceSamples',
   ])

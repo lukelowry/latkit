@@ -148,8 +148,9 @@ export class Adjacency {
     const b = banks[lo - 1];
     return b && row < b.base + b.count ? b : undefined;
   }
+  /** An item and what it joins; the index names its rows, so an item outlives appends. */
   neighborhood(item: NetworkItem, data: NetworkData): readonly NetworkItem[] {
-    if (item.source !== data.source || item.kind === 'path') return [];
+    if (item.kind === 'path') return [];
     const found = (item.kind === 'vertex' ? this.vertexRows : this.edgeRows)
       .get(indexKey(item.index))
       ?.get(item.row);

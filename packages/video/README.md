@@ -2,6 +2,10 @@
 
 Record any Latkit view to MP4 (H.264) or WebM (VP9) with WebCodecs.
 
+```sh
+npm install @latkit/video
+```
+
 ```ts
 import { exportVideo } from '@latkit/video';
 

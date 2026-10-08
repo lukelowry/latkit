@@ -16,13 +16,12 @@ export const DEFAULTS: Own = Object.freeze({
   axisColor: [0.48, 0.58, 0.67, 0.8] as RGBA,
   gridColor: [0.4, 0.5, 0.6, 0.13] as RGBA,
   cursorColor: [1, 0.71, 0.25, 0.9] as RGBA,
-  unselectedAlpha: 0.25,
   paddingPx: 12,
 });
 /**
  * Shared style a monitor draws differently: one sample, since history images would cost four times
- * the memory; no easing, since each eased step would redraw history; monospace axes; and selected
- * traces in their own colors.
+ * the memory; no easing, since each eased step would redraw history; monospace axes; selected
+ * traces in their own colors; and the rest faded.
  */
 export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
   msaa: 1,
@@ -30,6 +29,7 @@ export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
   font: Object.freeze({ family: 'ui-monospace, monospace' }),
   textColor: [0.78, 0.84, 0.91, 1] as RGBA,
   selectedColor: 'none',
+  unselectedAlpha: 0.25,
 });
 export const LIMITS: Required<Limits> = Object.freeze({
   rows: 100000,
@@ -95,7 +95,6 @@ export function resolveStyle(config: MonitorStyle, view: kit.ResolvedViewStyle):
     xAxis: axis(config.xAxis, DEFAULTS.xAxis),
     yAxis: axis(config.yAxis, DEFAULTS.yAxis),
   };
-  finite(out.unselectedAlpha, 'unselectedAlpha', 0, 1);
   finite(out.traceWidthPx, 'traceWidthPx', 0.1, 64);
   for (const color of [out.traceColor, out.axisColor, out.gridColor, out.cursorColor])
     kit.validateRgba(color);

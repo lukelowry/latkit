@@ -45,9 +45,9 @@ export interface NetworkStyle {
   readonly nightFloor?: number;
   readonly surfaceNightFloor?: number;
   readonly terminatorWidth?: number;
-  /** Also halo the vertices a selected edge joins. */
+  /** Also draw the vertices a selected edge joins over the rest. */
   readonly selectedEnds?: boolean;
-  /** Also halo the vertices a hovered edge joins. */
+  /** Also draw the vertices a hovered edge joins over the rest. */
   readonly hoverEnds?: boolean;
   readonly fitPitch?: number;
   readonly fitBearing?: number;
@@ -87,7 +87,7 @@ export const DEFAULTS: Required<NetworkStyle> = Object.freeze({
   fitBearing: 0,
   orbitRate: 1,
 });
-/** Shared style a network draws differently: halos translucent over what they surround. */
+/** Shared style a network draws differently: glows translucent over what they surround. */
 export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
   hoverColor: [1, 0.72, 0.28, 0.65] as RGBA,
   selectedColor: [1, 0.4, 0.24, 0.9] as RGBA,
