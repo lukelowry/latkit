@@ -1160,3 +1160,98 @@ it('keeps placed vertices as the drawing changes, and places them anew for new l
     gpu.destroy();
   }
 });
+it('draws a new style over placed vertices and edges in lanes', async () => {
+  const index = (type: string) => ({ source: 'pair', type, version: '1' }),
+    rows = (count: number) => ({ kind: 'range' as const, offset: 0, count }),
+    reference = (type: string, values: number[]) => ({
+      kind: 'reference' as const,
+      index: index(type),
+      offset: 0,
+      length: values.length,
+      values: Uint32Array.from(values),
+    }),
+    to = (type: string) => ({ type: { kind: 'reference' as const, to: type } });
+  // Two buses ten apart joined by two lines, which draw in lanes, and a plant layout places.
+  const source = createData(
+    {
+      types: {
+        bus: { fields: { location: { type: { kind: 'vector', items: 'float64', size: 2 } } } },
+        plant: { fields: { output: { type: 'float32' } } },
+        line: { fields: { from: to('bus'), to: to('bus') } },
+        feed: { fields: { plant: to('plant'), bus: to('bus') } },
+      },
+    },
+    [
+      {
+        kind: 'rows',
+        index: index('bus'),
+        rows: rows(2),
+        columns: {
+          location: {
+            kind: 'vector',
+            size: 2,
+            offset: 0,
+            length: 2,
+            values: { kind: 'numeric', offset: 0, length: 4, values: Float64Array.of(0, 0, 10, 0) },
+          },
+        },
+      },
+      {
+        kind: 'rows',
+        index: index('plant'),
+        rows: rows(1),
+        columns: { output: { kind: 'numeric', offset: 0, length: 1, values: Float32Array.of(1) } },
+      },
+      {
+        kind: 'rows',
+        index: index('line'),
+        rows: rows(2),
+        columns: { from: reference('bus', [0, 0]), to: reference('bus', [1, 1]) },
+      },
+      {
+        kind: 'rows',
+        index: index('feed'),
+        rows: rows(1),
+        columns: { plant: reference('plant', [0]), bus: reference('bus', [0]) },
+      },
+    ],
+  );
+  const style = (radiusPx: number, widthPx: number): Pick<NetworkConfig, 'vertices' | 'edges'> => ({
+    vertices: { bus: lanes('location'), plant: { radiusPx } },
+    edges: { line: { ends: ['from', 'to'], widthPx }, feed: { ends: ['plant', 'bus'] } },
+  });
+  const gpu = await createGpu({ device: device().device }),
+    surface = target(gpu),
+    network = createNetwork(gpu, {
+      source,
+      ...style(3, 2),
+      edgeSpacingPx: 8,
+      camera: { center: [5, 0], scale: 20, fit: false },
+    }),
+    draw = (timeMs: number) =>
+      gpu.render({ timeMs, views: [{ renderer: kit.rendererOf(network), target: surface }] }),
+    vertex = (type: string, row: number) =>
+      network.locate({ kind: 'vertex', source, index: index(type), row })!,
+    /** Whether a point hits a row of `type`. */
+    hits = async (point: readonly [number, number], type: string) =>
+      (await network.pick(point, { radiusPx: 0 })).some((item) => item.index.type === type);
+  try {
+    await draw(0);
+    const plant = vertex('plant', 0),
+      [a, b] = [vertex('bus', 0), vertex('bus', 1)],
+      // Between the lanes, which run 4 pixels either side of the buses' line.
+      between = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] as const,
+      beside = [plant[0], plant[1] + 6] as const;
+    expect(await hits(between, 'line')).toBe(false);
+    expect(await hits(beside, 'plant')).toBe(false);
+    // The layout and the lanes stay; the new style draws over both.
+    network.set(style(9, 12));
+    await draw(1);
+    expect(vertex('plant', 0)).toEqual(plant);
+    expect(await hits(between, 'line')).toBe(true);
+    expect(await hits(beside, 'plant')).toBe(true);
+  } finally {
+    network.destroy();
+    gpu.destroy();
+  }
+});

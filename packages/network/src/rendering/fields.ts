@@ -63,35 +63,55 @@ const bindings = new Map<Kinds, WeakMap<object, kit.BoundChannels<ChannelName>>>
   [VERTEX, new WeakMap()],
   [LINE, new WeakMap()],
 ]);
+/** Banks' channels by their type's, then by what the view found for each bank. */
+const banks = new WeakMap<
+  kit.BoundChannels<ChannelName>,
+  WeakMap<FieldValues, kit.BoundChannels<ChannelName>>
+>();
+/** A type's channels, bound once per options object: what checks, placement, and reads share. */
+export function channels(options: Options, kinds: Kinds): kit.BoundChannels<ChannelName> {
+  const cache = bindings.get(kinds)!;
+  let found = cache.get(options);
+  if (!found) cache.set(options, (found = bind(options, kinds)));
+  return found;
+}
 /**
- * A type's channels, bound once per options object. `local` holds what the view finds for one
- * bank itself: every vertex's position where layout placed any, or every edge's lane.
+ * A bank's channels: its type's, with what the view finds for the bank itself in place of its own,
+ * every vertex's position where layout placed any or every edge's lane. A restyle keeps the layout
+ * and lanes, and a new layout keeps the style, so both key the binding.
  */
-export function channels(
+export function bankChannels(
   options: Options,
   kinds: Kinds,
   local?: FieldValues,
 ): kit.BoundChannels<ChannelName> {
-  const cache = bindings.get(kinds)!,
-    key = local ?? options;
-  let found = cache.get(key);
+  const shared = channels(options, kinds);
+  if (!local) return shared;
+  let laid = banks.get(shared);
+  if (!laid) banks.set(shared, (laid = new WeakMap()));
+  let found = laid.get(local);
   if (!found) {
-    // A kind names only its own channels; the others stay unbound. A marker's inputs read as
-    // `input0` and on, in the order it names them.
-    const marker = 'marker' in options ? options.marker : undefined,
-      inputs = Object.fromEntries(
-        Object.values(marker?.inputs ?? {}).map((channel, i) => ['input' + i, channel]),
-      ),
-      own = !local
-        ? {}
-        : kinds === VERTEX
-          ? { x: { field: local }, y: { field: local, component: 1 } }
-          : { lane: { field: local } },
-      bound = { ...options, ...inputs, ...own };
-    found = kit.bindChannels(bound, kinds as Readonly<Record<ChannelName, kit.ChannelKind>>);
-    cache.set(key, found);
+    const own =
+      kinds === VERTEX
+        ? { x: { field: local }, y: { field: local, component: 1 } }
+        : { lane: { field: local } };
+    laid.set(local, (found = bind(options, kinds, own)));
   }
   return found;
+}
+/**
+ * A kind names only its own channels; the others stay unbound. A marker's inputs read as `input0`
+ * and on, in the order it names them.
+ */
+function bind(options: Options, kinds: Kinds, own: object = {}): kit.BoundChannels<ChannelName> {
+  const marker = 'marker' in options ? options.marker : undefined,
+    inputs = Object.fromEntries(
+      Object.values(marker?.inputs ?? {}).map((channel, i) => ['input' + i, channel]),
+    );
+  return kit.bindChannels(
+    { ...options, ...inputs, ...own },
+    kinds as Readonly<Record<ChannelName, kit.ChannelKind>>,
+  );
 }
 
 export interface ReadPage {
@@ -154,7 +174,7 @@ export async function readFields(
   options: Options,
   local?: FieldValues,
 ): Promise<FieldRead> {
-  const bound = channels(options, 'batches' in bank ? LINE : VERTEX, local),
+  const bound = bankChannels(options, 'batches' in bank ? LINE : VERTEX, local),
     select = Object.keys(bound.fields);
   const pages: ReadPage[] = [],
     native: FieldsBlock[] = [];

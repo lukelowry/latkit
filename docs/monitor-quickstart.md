@@ -39,6 +39,20 @@ A trace colored by a field recolors without drawing history again: a new `domain
 animated shade changes only how history composes. Gaps stay gaps, and a lone sample between them
 draws as a dot.
 
+## Axes
+
+`xAxis` and `yAxis` each take a label, axis options, or `false`. The plot leaves room only for what
+its axes write, so it keeps its size, and its history, as the window moves. Ticks far from zero
+share a rounded offset, written where their labels end, which stands as the window moves.
+
+```ts
+// One of several plots stacked over a shared time axis: its grid lines up with the last's labels.
+monitor.set({ outline: true, xAxis: { tickLabels: false } });
+```
+
+`tickLabels: false` keeps an axis's line and grid without labels or their room; `outline` closes the
+plot on the sides its axes leave open.
+
 ## Inspect
 
 Hover, click, and `pick` report exact observations as `Reading`s, one for each row whose line draws

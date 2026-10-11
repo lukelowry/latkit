@@ -16,8 +16,18 @@ export function ticks(range: Domain, pixels: number, axis: AxisOptions): Ticks {
   const power = 10 ** Math.floor(Math.log10(span / count)),
     normal = span / count / power;
   const step = ([1, 2, 2.5, 5, 10].find((n) => n >= normal) ?? 10) * power;
-  const offset =
-    (!axis.format || axis.format === 'auto') && Math.abs(range[0]) > span * 1e5 ? range[0] : 0;
+  // Ticks far from zero label their distance from an offset: the window's start, rounded down to a
+  // power of ten no smaller than its span. It stays short, and stands as the window moves, so the
+  // ticks keep their labels and move with the values.
+  const exponent = Math.ceil(Math.log10(span)),
+    offset =
+      (!axis.format || axis.format === 'auto') && Math.abs(range[0]) > span * 1e5
+        ? Number(
+            (Math.floor(range[0] / 10 ** exponent) * 10 ** exponent).toFixed(
+              Math.min(100, Math.max(0, -exponent)),
+            ),
+          )
+        : 0;
   const items: Tick[] = [];
   const first = Math.ceil((range[0] - offset) / step) * step;
   for (let i = 0; i < 128; i++) {

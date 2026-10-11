@@ -1167,7 +1167,7 @@
     "queries": 1.083,
     "queryHits": 0,
     "uploads": 5.5,
-    "uploadedBytes": 3951,
+    "uploadedBytes": 3931,
     "uploadHits": 2.75,
     "gpuCopiedBytes": 0,
     "allocations": 0.083,
@@ -1175,7 +1175,7 @@
     "evictions": 0,
     "stagedBytes": 23.333,
     "rasterized": 0,
-    "vertices": 3583
+    "vertices": 3581
   },
   "monitor 1000 rows > cached frame": {
     "queries": 0,
@@ -5715,10 +5715,10 @@
   },
   "network 10000 buses unpositioned > restyle": {
     "queries": 0,
-    "queryHits": 2,
-    "uploads": 1,
-    "uploadedBytes": 624,
-    "uploadHits": 14,
+    "queryHits": 1,
+    "uploads": 2,
+    "uploadedBytes": 880,
+    "uploadHits": 13,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
@@ -5869,10 +5869,10 @@
   },
   "network 100000 buses unpositioned > restyle": {
     "queries": 0,
-    "queryHits": 14,
-    "uploads": 1,
-    "uploadedBytes": 1088,
-    "uploadHits": 88,
+    "queryHits": 7,
+    "uploads": 2,
+    "uploadedBytes": 2880,
+    "uploadHits": 87,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
@@ -6005,7 +6005,7 @@
     "evictions": 0,
     "stagedBytes": 8,
     "rasterized": 0,
-    "vertices": 179766
+    "vertices": 179856
   },
   "pipeline 100000 buses > publication to frame": {
     "queries": 8,
@@ -6019,7 +6019,7 @@
     "evictions": 0,
     "stagedBytes": 8,
     "rasterized": 0,
-    "vertices": 1797168
+    "vertices": 1797258
   },
   "pipeline 1000000 buses > publication to frame": {
     "queries": 63,
@@ -6033,6 +6033,6 @@
     "evictions": 0,
     "stagedBytes": 8,
     "rasterized": 0,
-    "vertices": 17988966
+    "vertices": 17989056
   }
 }

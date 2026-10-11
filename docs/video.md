@@ -30,7 +30,19 @@ try {
 `duration` is in output seconds, and `at` maps them to model coordinates; without it, the view's
 `at` holds. `pixelRatio` scales lines and text as it does for images.
 
-The view's canvas pauses while it records; keep its sources fixed until the export ends. Writes are
+`at` may return a promise, which its frame waits for: it can first give the views what that
+coordinate draws, such as samples loaded a part at a time. It is asked while the frame before
+encodes, so loading overlaps encoding.
+
+```ts
+at: async (seconds, signal) => {
+  const at = 20 + seconds;
+  network.set({ source: await samplesAround(at, signal) });
+  return at;
+},
+```
+
+The view's canvas pauses while it records; change its sources only from `at`. Writes are
 positional, and the export awaits each one, so storage sets the pace. The export borrows the
 stream's writer and never closes it.
 

@@ -24,8 +24,12 @@ export interface VideoOptions extends RequestOptions {
   readonly frameRate?: number;
   /** Pixels per layout pixel, as for images. Defaults to 1. */
   readonly pixelRatio?: number;
-  /** Maps output seconds to a model coordinate. Omit to keep the view's; effects still receive output time. */
-  readonly at?: (seconds: number) => number;
+  /**
+   * The model coordinate a frame at output `seconds` draws; omit to keep the view's. It may resolve
+   * later, once the views are ready to draw it, such as with data loaded a part at a time; it is
+   * asked while the frame before encodes. Effects still receive output time.
+   */
+  readonly at?: (seconds: number, signal: AbortSignal) => number | PromiseLike<number>;
   /** `mp4` by default. */
   readonly format?: 'mp4' | 'webm';
   /** From 0 to 1, as for images; 0.75 by default. */
@@ -46,7 +50,7 @@ const active = new WeakSet<object>();
 /**
  * Record a view: one bounded pipeline of frame preparation, capture, encoding and destination
  * backpressure. The view's canvas pauses until the export settles; the export draws the view as it
- * is and changes none of it.
+ * is and changes none of it, while `at` may set the views each frame draws before it resolves.
  */
 export async function exportVideo(view: View, options: VideoOptions): Promise<VideoResult> {
   const gpu = kit.gpuOf(view),
@@ -89,11 +93,25 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
     };
     presentation = kit.createPresentation(gpu, { canvas, alphaMode: 'opaque' });
     await work.wait(media.start());
-    let reported = -Infinity;
+    /**
+     * The coordinate frame `i` draws, once the views are ready to draw it. Asked ahead of its
+     * frame, a failure surfaces where the frame awaits it, or goes unread when the export stops
+     * first.
+     */
+    const coordinate = (i: number): Promise<number | undefined> => {
+      const asked = (async () =>
+        options.at
+          ? await work.wait(Promise.resolve(options.at(timeline(config, i).seconds, signal)))
+          : (view.config.at ?? undefined))();
+      asked.catch(() => {});
+      return asked;
+    };
+    let reported = -Infinity,
+      next = coordinate(0);
     for (let i = 0; i < config.frames; i++) {
       signal.throwIfAborted();
-      const frame = timeline(config, i);
-      const at = options.at ? options.at(frame.seconds) : (view.config.at ?? undefined);
+      const frame = timeline(config, i),
+        at = await next;
       if (at !== undefined && !Number.isFinite(at))
         throw failure('invalid-input', 'Video coordinate must be finite');
       await gpu.render({
@@ -107,6 +125,9 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
         timestamp: frame.timestamp / 1e6,
         duration: frame.duration / 1e6,
       });
+      // The sample holds this frame's pixels, so the next coordinate readies the views as it
+      // encodes.
+      if (i + 1 < config.frames) next = coordinate(i + 1);
       try {
         await work.wait(media.add(sample, i % config.keyFrames === 0));
       } finally {

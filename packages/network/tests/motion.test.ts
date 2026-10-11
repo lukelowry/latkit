@@ -10,7 +10,7 @@ import {
 } from '@latkit/model';
 import { createNetwork, type Network, type NetworkConfig } from '../src/index.js';
 import { readGeometry, DEFAULT_LIMITS, type EdgeBank } from '../src/geometry/topology.js';
-import { LINE, channels } from '../src/rendering/fields.js';
+import { LINE, bankChannels, channels } from '../src/rendering/fields.js';
 import { project } from '../src/camera.js';
 import type { PickGeometry } from '../src/picking.js';
 import { GraphSource } from './fixture.js';
@@ -391,9 +391,13 @@ it('reads each edge’s lane among parallel ones as a channel, once edges draw a
   expect([...values.values].map((v) => v + 0)).toEqual([-1, 0, 1, 0]);
   expect(lanes).toMatchObject({ index: bank.index, rows: bank.rows });
   expect(bent).toBe(0);
-  const bound = channels(config.edges.Line, LINE, lanes);
+  const bound = bankChannels(config.edges.Line, LINE, lanes);
   expect(Object.values(bound.fields)).toContain(lanes);
   expect(channels(config.edges.Line, LINE).channels.lane?.field).toBeUndefined();
+  // Bound once for these options and lanes; new options bind again over the same lanes.
+  expect(bankChannels(config.edges.Line, LINE, lanes)).toBe(bound);
+  const wider = { ...config.edges.Line, widthPx: 4 };
+  expect(bankChannels(wider, LINE, lanes).channels.widthPx?.constant).toBe(4);
   // The line page's lane reads a field only once edges draw apart: its slot names one.
   const laneSlot = async (edgeSpacingPx: number) => {
     const network = createNetwork(gpu, { ...config, edgeSpacingPx, canvas: undefined });

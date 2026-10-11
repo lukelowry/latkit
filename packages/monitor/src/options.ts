@@ -10,6 +10,11 @@ export interface AxisOptions {
   readonly format?: 'auto' | 'fixed' | 'scientific' | 'engineering';
   readonly precision?: number;
   readonly grid?: boolean;
+  /**
+   * Whether ticks are labelled, with the offset they share at the labels' end; without, the axis
+   * keeps its line and grid and takes no room for them. True by default.
+   */
+  readonly tickLabels?: boolean;
 }
 /** How a monitor draws, beyond the shared view style; every option has a default. */
 export interface MonitorStyle {
@@ -24,6 +29,8 @@ export interface MonitorStyle {
   /** The playhead at `at`. */
   readonly cursorColor?: RGBA;
   readonly paddingPx?: Insets;
+  /** Lines along the plot's sides its axes leave open, in the axis color. */
+  readonly outline?: boolean;
 }
 export interface Limits {
   /** Rows the traces draw together. */

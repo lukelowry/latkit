@@ -17,6 +17,7 @@ export const DEFAULTS: Own = Object.freeze({
   gridColor: [0.4, 0.5, 0.6, 0.13] as RGBA,
   cursorColor: [1, 0.71, 0.25, 0.9] as RGBA,
   paddingPx: 12,
+  outline: false,
 });
 /**
  * Shared style a monitor draws differently: one sample, since history images would cost four times
@@ -98,6 +99,7 @@ export function resolveStyle(config: MonitorStyle, view: kit.ResolvedViewStyle):
   finite(out.traceWidthPx, 'traceWidthPx', 0.1, 64);
   for (const color of [out.traceColor, out.axisColor, out.gridColor, out.cursorColor])
     kit.validateRgba(color);
+  if (typeof out.outline !== 'boolean') fail('Invalid outline');
   for (const axis of [out.xAxis, out.yAxis]) checkAxis(axis);
   insets(out.paddingPx);
   return Object.freeze(out);
@@ -113,6 +115,8 @@ function checkAxis(axis: AxisOptions | null): void {
   if (axis.format && !['auto', 'fixed', 'scientific', 'engineering'].includes(axis.format))
     fail('Invalid axis format');
   if (axis.label && axis.label.length > 256) fail('Axis label is too long');
+  for (const part of ['grid', 'tickLabels'] as const)
+    if (axis[part] !== undefined && typeof axis[part] !== 'boolean') fail('Invalid axis ' + part);
   if (axis.ticks) {
     if (axis.ticks.length > 128) fail('Too many ticks');
     let last = -Infinity;

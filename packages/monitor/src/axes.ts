@@ -11,7 +11,7 @@ import { buffer } from './rendering/painter.js';
 import type { Domain } from '@latkit/model';
 import type { Style } from './config.js';
 import { insets } from './config.js';
-import { ticks } from './ticks.js';
+import { ticks, type Ticks } from './ticks.js';
 export interface Plot {
   x: number;
   y: number;
@@ -26,16 +26,24 @@ export interface Axes {
   lineCount: number;
   gridCount: number;
 }
+/**
+ * The plot inside a view, less the room its axes write in: their tick labels where shown, and a
+ * row for each label. The room follows from the options alone, never the window, so the plot and
+ * its history keep their size as the window moves.
+ */
 export function plot(view: Viewport, options: Style): Plot {
   const [top, right, bottom, left] = insets(options.paddingPx),
-    size = options.fontSizePx;
-  const x = left + (options.yAxis === null ? 0 : Math.max(64, size * 7)),
-    y = top + (options.yAxis?.label ? size * 1.8 : 0);
+    size = options.fontSizePx,
+    { xAxis, yAxis } = options;
+  const x = left + (yAxis && yAxis.tickLabels !== false ? Math.max(64, size * 7) : 0),
+    y = top + (yAxis?.label ? size * 1.8 : 0),
+    below =
+      (xAxis && xAxis.tickLabels !== false ? size * 1.8 : 0) + (xAxis?.label ? size * 1.2 : 0);
   return {
     x,
     y,
     width: Math.max(1, view.width - x - right),
-    height: Math.max(1, view.height - y - bottom - (options.xAxis === null ? 0 : size * 3)),
+    height: Math.max(1, view.height - y - bottom - below),
   };
 }
 /** Whether a canvas point lies on a plot. */
@@ -68,75 +76,108 @@ export async function axes(
   text.hide();
   const area = plot(view, options),
     lines: number[] = [],
-    grid: number[] = [],
-    // Tick labels skip where one already placed would overlap them.
-    occupied = new kit.Occupancy();
+    grid: number[] = [];
   const sx = kit.resolveScale({ range: [area.x, area.x + area.width] }, x),
     sy = kit.resolveScale({ range: [area.y + area.height, area.y] }, y),
-    size = options.fontSizePx;
+    size = options.fontSizePx,
+    right = area.x + area.width,
+    bottom = area.y + area.height;
   const line = (a: number, b: number, c: number, d: number, color: RGBA) =>
     (color === options.gridColor ? grid : lines).push(a, b, c, d, ...color);
-  /** `value` with its `align` side and `baseline` at `at`; with `spacing`, only where it is free. */
+  /** `value` with its `align` side and `baseline` at `at`; with `room`, only where it is free. */
   const label = async (
     key: string,
     value: string,
     at: Point,
     align: TextAlign,
     baseline: TextBaseline,
-    spacing?: number,
+    room?: kit.Occupancy,
   ) => {
     const layout = await gpu.layoutText(
       { text: value, font: options.font, size, color: options.textColor },
       { signal },
     );
-    if (spacing === undefined) text.add(key, layout, kit.textOrigin(layout, at, align, baseline));
-    else text.place(key, layout, [[at[0], at[1], align, baseline]], occupied, { margin: spacing });
+    if (!room) text.add(key, layout, kit.textOrigin(layout, at, align, baseline));
+    else text.place(key, layout, [[at[0], at[1], align, baseline]], room, { margin: 3 });
+  };
+  /**
+   * An axis's tick labels at `places`, each where no other of its own lies. The offset they share
+   * comes first, at `offset` on its `side`, so a tick it would cover goes unlabelled.
+   */
+  const tickLabels = async (
+    name: string,
+    t: Ticks,
+    places: readonly Point[],
+    align: TextAlign,
+    baseline: TextBaseline,
+    offset: Point,
+    side: TextAlign,
+  ) => {
+    const room = new kit.Occupancy();
+    if (t.offset) {
+      const value = (t.offset > 0 ? '+' : '') + String(t.offset);
+      await label(name + ' offset', value, offset, side, 'top', room);
+    }
+    for (let i = 0; i < t.items.length; i++) {
+      const value = t.items[i].label ?? String(t.items[i].value);
+      await label(name + value, value, places[i], align, baseline, room);
+    }
   };
   if (options.xAxis !== null) {
     const axis = options.xAxis,
-      t = ticks(x, area.width, axis);
-    line(
-      area.x,
-      area.y + area.height,
-      area.x + area.width,
-      area.y + area.height,
-      options.axisColor,
-    );
-    for (const tick of t.items) {
-      const px = kit.scaleValue(tick.value, sx)!;
-      if (axis.grid !== false) line(px, area.y, px, area.y + area.height, options.gridColor);
-      const value = tick.label ?? String(tick.value);
-      await label('x' + value, value, [px, area.y + area.height + size * 0.5], 'center', 'top', 3);
-    }
-    const caption = [axis.label, t.offset ? '+' + String(t.offset) : ''].filter(Boolean).join('  ');
-    if (caption)
-      await label(
-        'x caption',
-        caption,
-        [area.x + area.width, view.height - 4],
+      t = ticks(x, area.width, axis),
+      at = t.items.map((tick) => kit.scaleValue(tick.value, sx)!),
+      row = bottom + size * 0.5;
+    line(area.x, bottom, right, bottom, options.axisColor);
+    if (axis.grid !== false) for (const px of at) line(px, area.y, px, bottom, options.gridColor);
+    if (axis.tickLabels !== false)
+      // The offset ends the row at the plot's right.
+      await tickLabels(
+        'x',
+        t,
+        at.map((px): Point => [px, row]),
+        'center',
+        'top',
+        [right, row],
         'end',
-        'alphabetic',
       );
+    if (axis.label)
+      await label('x caption', axis.label, [right, view.height - 4], 'end', 'alphabetic');
   }
   if (options.yAxis !== null) {
     const axis = options.yAxis,
-      t = ticks(y, area.height, { minSpacingPx: 40, ...axis });
-    line(area.x, area.y, area.x, area.y + area.height, options.axisColor);
-    for (const tick of t.items) {
-      const py = kit.scaleValue(tick.value, sy)!;
-      if (axis.grid !== false) line(area.x, py, area.x + area.width, py, options.gridColor);
-      const value = tick.label ?? String(tick.value);
-      await label('y' + value, value, [area.x - 8, py], 'end', 'middle');
-    }
-    const caption = [axis.label, t.offset ? '+' + String(t.offset) : ''].filter(Boolean).join('  ');
-    if (caption)
+      t = ticks(y, area.height, { minSpacingPx: 40, ...axis }),
+      at = t.items.map((tick) => kit.scaleValue(tick.value, sy)!),
+      column = area.x - 8;
+    line(area.x, area.y, area.x, bottom, options.axisColor);
+    if (axis.grid !== false) for (const py of at) line(area.x, py, right, py, options.gridColor);
+    if (axis.tickLabels !== false)
+      // The offset tops the column from its left edge, so a long one runs toward the plot, never
+      // off the view.
+      await tickLabels(
+        'y',
+        t,
+        at.map((py): Point => [column, py]),
+        'end',
+        'middle',
+        [insets(options.paddingPx)[3], area.y],
+        'start',
+      );
+    if (axis.label)
       await label(
         'y caption',
-        caption,
+        axis.label,
         [area.x, Math.max(size, area.y - 8)],
         'start',
         'alphabetic',
       );
+  }
+  // An outline closes the plot on the sides its axes leave open.
+  if (options.outline) {
+    line(area.x, area.y, right, area.y, options.axisColor);
+    line(right, area.y, right, bottom, options.axisColor);
+    if (options.xAxis === null) line(area.x, bottom, right, bottom, options.axisColor);
+    if (options.yAxis === null) line(area.x, area.y, area.x, bottom, options.axisColor);
   }
   return {
     plot: area,
