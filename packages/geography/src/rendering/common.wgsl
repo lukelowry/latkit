@@ -13,6 +13,8 @@ struct Style {
   glow: vec4f,
   /** The label halo's color, and its reach in CSS pixels. */
   halo: vec4f,
+  /** The globe's axis's color. */
+  axis: vec4f,
 }
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(2) var<uniform> u: Style;

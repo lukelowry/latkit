@@ -115,9 +115,12 @@ class Binary {
 function columnRef(binary: Binary, column: Column, name: string): ColumnRef {
   const validity = column.validity && binary.add(column.validity),
     base = { length: column.length, ...(validity ? { validity } : {}) };
-  if (column.offset !== 0) throw failure('internal', `A packed column starts at its slice: ${name}`);
-  if (column.kind === 'numeric') return { kind: 'numeric', ...base, values: binary.add(column.values) };
-  if (column.kind === 'boolean') return { kind: 'boolean', ...base, values: binary.add(column.values) };
+  if (column.offset !== 0)
+    throw failure('internal', `A packed column starts at its slice: ${name}`);
+  if (column.kind === 'numeric')
+    return { kind: 'numeric', ...base, values: binary.add(column.values) };
+  if (column.kind === 'boolean')
+    return { kind: 'boolean', ...base, values: binary.add(column.values) };
   if (column.kind === 'text')
     return {
       kind: 'text',
@@ -136,7 +139,8 @@ function columnRef(binary: Binary, column: Column, name: string): ColumnRef {
 }
 /** A copy of a column that starts at its slice, so its arrays write whole. */
 function compact(column: Column): Column {
-  if (column.offset === 0 && (column.kind !== 'vector' || column.values.offset === 0)) return column;
+  if (column.offset === 0 && (column.kind !== 'vector' || column.values.offset === 0))
+    return column;
   const { offset, length } = column,
     bits = (bitmap: Uint8Array | undefined) => {
       if (!bitmap) return undefined;
@@ -152,7 +156,10 @@ function compact(column: Column): Column {
   if (column.kind === 'boolean') return { kind: 'boolean', ...base, values: bits(column.values)! };
   if (column.kind === 'text') {
     const start = column.offsets[offset],
-      offsets = Int32Array.from(column.offsets.subarray(offset, offset + length + 1), (v) => v - start);
+      offsets = Int32Array.from(
+        column.offsets.subarray(offset, offset + length + 1),
+        (v) => v - start,
+      );
     return {
       kind: 'text',
       ...base,
@@ -213,10 +220,7 @@ export function shapeField(kind: 'area' | 'line', options: AreaOptions | LineOpt
     : ((options as LineOptions).points ?? 'points');
 }
 /** Whether a line record strokes rings, which close: an area type's own `rings`. */
-export function strokesRings(
-  options: LineOptions,
-  area: AreaOptions | undefined,
-): boolean {
+export function strokesRings(options: LineOptions, area: AreaOptions | undefined): boolean {
   const field = options.points ?? 'points';
   return field === 'rings' || (area !== undefined && field === (area.rings ?? 'rings'));
 }
@@ -308,7 +312,12 @@ export async function pack(
         inputs[name] = name;
       }
       const blocks: Manifest['types'][string]['blocks'][number][] = [];
-      for await (const block of reader.fields({ source: data, from: type, fields: inputs, ids: true })) {
+      for await (const block of reader.fields({
+        source: data,
+        from: type,
+        fields: inputs,
+        ids: true,
+      })) {
         if (!block.ids) throw failure('invalid-input', `Rows of ${type} need ids to pack`);
         const columns: Record<string, ColumnRef> = {};
         for (const name of Object.keys(inputs)) {
@@ -371,7 +380,11 @@ export function readPack(bytes: Uint8Array, source: string): Pack {
     throw failure('unsupported', 'This pack was written by another version of latkit');
   const buffer = bytes.buffer as ArrayBuffer,
     array = <T extends ArrayBufferView>(ref: ArrayRef): T =>
-      new ARRAYS[ref.type](buffer, bytes.byteOffset + head + ref.offset, ref.length) as unknown as T;
+      new ARRAYS[ref.type](
+        buffer,
+        bytes.byteOffset + head + ref.offset,
+        ref.length,
+      ) as unknown as T;
   const column = (ref: ColumnRef): Column => {
     const base = {
       offset: 0,

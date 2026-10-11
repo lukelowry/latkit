@@ -96,11 +96,12 @@ function observe(describe) {
     el('status').textContent = describe(items[0]);
   });
 }
-/** The earth beneath a geographic graph: graticule, daylight, and the borders when shown. */
+/** The earth beneath a geographic graph: graticule, axis, daylight, and the borders when shown. */
 function ground(lines = el('borders').checked) {
   earth?.destroy();
   earth = createGeography(gpu, {
     graticule: true,
+    earthAxis: true,
     daylight: Date.UTC(2026, 8, 30, 17),
     ...(lines && borders
       ? {
@@ -618,7 +619,8 @@ async function showFeatures(reset = true) {
   observe((item) =>
     item ? item.kind + ' / ' + item.index.type + ' / row ' + item.row : 'Geometry features',
   );
-  el('status').textContent = 'Bends, four-way junction, geodesic, borders beneath, and shared labels';
+  el('status').textContent =
+    'Bends, four-way junction, geodesic, borders beneath, and shared labels';
 }
 /**
  * Geodesics, and detailed borders beneath: the borders a geography draws in the network's pass,
@@ -674,7 +676,11 @@ async function benchmarkBorders(count = 100000, moving = false) {
         try {
           // The first frame waits for what loads beneath: the borders, prepared in a worker.
           const started = performance.now();
-          await gpu.render({ timeMs: 0, completion: 'complete', views: [{ renderer, target, at: 0 }] });
+          await gpu.render({
+            timeMs: 0,
+            completion: 'complete',
+            views: [{ renderer, target, at: 0 }],
+          });
           await gpu.idle();
           const cold = [0, performance.now() - started];
           for (let i = 0; i < (moving ? 32 : 24); i++) await draw(i);

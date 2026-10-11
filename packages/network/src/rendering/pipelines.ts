@@ -19,8 +19,12 @@ export interface Pipelines {
   readonly compute: GPUBindGroupLayout;
   /** A marked vertex page's: those, its inputs' page, and its bank's rows and stepped inputs. */
   readonly markedCompute: GPUBindGroupLayout;
+  /** What a curved draw's tessellation binds: the uniforms, its ends and segments, its pieces, and its pool. */
   readonly tessellation: GPUBindGroupLayout;
   readonly tessellate: GPUComputePipeline;
+  /** What counting every curved draw's pieces binds: their pools, rooms, and indirect draws. */
+  readonly finishing: GPUBindGroupLayout;
+  readonly finish: GPUComputePipeline;
   readonly draw: GPUBindGroupLayout;
   readonly label: GPUBindGroupLayout;
   /** What the globe's depth alone binds: the uniforms. */
@@ -180,14 +184,14 @@ export async function pipelines(
       uniform(6, C),
     ],
   });
+  const finishing = d.createBindGroupLayout({
+    entries: [storage(5, C, 'storage'), storage(7, C), storage(8, C, 'storage')],
+  });
   // Labels read the background in their fragments, for the halo over lines.
   const label = d.createBindGroupLayout({ entries: [uniform(0, V | F), storage(1, V)] });
   const occlusion = d.createBindGroupLayout({ entries: [uniform(0, V | F)] });
   const [tessModule, prep, geometry, occludeModule, text] = await Promise.all([
-    gpu.shaderModule(
-      common + curve + kit.strokeShader() + tessellate,
-      'network adaptive geodesics',
-    ),
+    gpu.shaderModule(common + curve + kit.strokeShader() + tessellate, 'network curves'),
     gpu.shaderModule(
       common + kit.fieldShader({ group: 0, colormap: 2 }) + prepare,
       'network field preparation',
@@ -223,52 +227,53 @@ export async function pipelines(
     });
   const scene = (draws: Draws) =>
     geometryPipeline({ gpu, draw: drawLayout, format, msaa }, geometry, draws, 'scene');
-  const [
-    vertex,
-    edge,
-    marked,
-    vertices,
-    edges,
-    poles,
-    occluder,
-    textPipeline,
-    curves,
-  ] = await Promise.all([
+  const [vertex, edge, marked, vertices, edges, poles, occluder, textPipeline, curves] =
+    await Promise.all([
+      gpu.computePipeline({
+        layout: computeLayout,
+        compute: { module: prep, entryPoint: 'vertices' },
+      }),
+      gpu.computePipeline({
+        layout: computeLayout,
+        compute: { module: prep, entryPoint: 'edges' },
+      }),
+      gpu.computePipeline({
+        layout: markedLayout,
+        compute: { module: prep, entryPoint: 'marked_vertices' },
+      }),
+      scene(MARKERS),
+      scene(LINES),
+      scene(POLES),
+      gpu.renderPipeline({
+        layout: d.createPipelineLayout({ bindGroupLayouts: [occlusion] }),
+        vertex: { module: occludeModule, entryPoint: 'occlude_vertex' },
+        // Depth alone: the color stays the background's.
+        fragment: {
+          module: occludeModule,
+          entryPoint: 'occlude_fragment',
+          targets: [{ format, writeMask: 0 }],
+        },
+        primitive: { topology: 'triangle-list' },
+        depthStencil: {
+          format: 'depth32float',
+          depthWriteEnabled: true,
+          depthCompare: 'less-equal',
+        },
+        multisample: { count: msaa },
+      }),
+      render(text, 'label_vertex', 'label_fragment', [label, gpu.textLayout], false),
+      scene(CURVES),
+    ]);
+  const [tessPipeline, finish] = await Promise.all([
     gpu.computePipeline({
-      layout: computeLayout,
-      compute: { module: prep, entryPoint: 'vertices' },
+      layout: d.createPipelineLayout({ bindGroupLayouts: [tessellation] }),
+      compute: { module: tessModule, entryPoint: 'tessellate' },
     }),
     gpu.computePipeline({
-      layout: computeLayout,
-      compute: { module: prep, entryPoint: 'edges' },
+      layout: d.createPipelineLayout({ bindGroupLayouts: [finishing] }),
+      compute: { module: tessModule, entryPoint: 'finish' },
     }),
-    gpu.computePipeline({
-      layout: markedLayout,
-      compute: { module: prep, entryPoint: 'marked_vertices' },
-    }),
-    scene(MARKERS),
-    scene(LINES),
-    scene(POLES),
-    gpu.renderPipeline({
-      layout: d.createPipelineLayout({ bindGroupLayouts: [occlusion] }),
-      vertex: { module: occludeModule, entryPoint: 'occlude_vertex' },
-      // Depth alone: the color stays the background's.
-      fragment: {
-        module: occludeModule,
-        entryPoint: 'occlude_fragment',
-        targets: [{ format, writeMask: 0 }],
-      },
-      primitive: { topology: 'triangle-list' },
-      depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
-      multisample: { count: msaa },
-    }),
-    render(text, 'label_vertex', 'label_fragment', [label, gpu.textLayout], false),
-    scene(CURVES),
   ]);
-  const tessPipeline = await gpu.computePipeline({
-    layout: d.createPipelineLayout({ bindGroupLayouts: [tessellation] }),
-    compute: { module: tessModule, entryPoint: 'tessellate' },
-  });
   const built: Pipelines = {
     gpu,
     format,
@@ -277,6 +282,8 @@ export async function pipelines(
     markedCompute,
     tessellation,
     tessellate: tessPipeline,
+    finishing,
+    finish,
     compute,
     draw: drawLayout,
     label,

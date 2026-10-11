@@ -59,7 +59,8 @@ export class Sources {
   /** Settles once what is loading now lands. */
   get pending(): Promise<void> | undefined {
     const waits: Promise<unknown>[] = [...this.loading];
-    for (const { pyramid } of this.vectors.values()) if (pyramid.pending) waits.push(pyramid.pending);
+    for (const { pyramid } of this.vectors.values())
+      if (pyramid.pending) waits.push(pyramid.pending);
     return waits.length ? Promise.all(waits).then(() => undefined) : undefined;
   }
   /** GPU bytes held: shapes, and loaded tiles. */
@@ -102,7 +103,7 @@ export class Sources {
     geodesic: boolean,
   ): Prepared | undefined {
     let byKey = prepared.get(data);
-    if (!byKey) prepared.set(data, (byKey = new Map()));
+    if (!byKey) prepared.set(data, (byKey = new Map<string, Promise<Shapes>>()));
     const key = `${type}\u0000${fieldKey(field)}\u0000${closed}\u0000${geodesic}`;
     let promise = byKey.get(key);
     if (!promise) {
@@ -210,7 +211,11 @@ export class Sources {
     if (!fetched) return null;
     // A copy goes to the worker, so a source held whole keeps its bytes.
     const bytes = fetched.slice(),
-      { layers: decoded, schema, batches } = await run(
+      {
+        layers: decoded,
+        schema,
+        batches,
+      } = await run(
         {
           kind: 'vector',
           request: { bytes, ...key, layers, source: `${tiles.name}/${key.z}/${key.x}/${key.y}` },
@@ -228,7 +233,8 @@ export class Sources {
       total += buffers.bytes;
       return { shapes, buffers };
     };
-    for (const layer of decoded) out.set(layer.name, { rings: up(layer.rings), lines: up(layer.lines) });
+    for (const layer of decoded)
+      out.set(layer.name, { rings: up(layer.rings), lines: up(layer.lines) });
     return { key, data, layers: out, bytes: total };
   }
   /** Where each shape row's values lie among `values`' rows of the type; undefined until matched. */
@@ -236,7 +242,7 @@ export class Sources {
     let byValues = this.joins.get(shapes);
     if (!byValues) this.joins.set(shapes, (byValues = new WeakMap()));
     let byType = byValues.get(values);
-    if (!byType) byValues.set(values, (byType = new Map()));
+    if (!byType) byValues.set(values, (byType = new Map<string, Join>()));
     let join = byType.get(type);
     if (!join) {
       const reader = this.gpu.reader.open(),

@@ -47,7 +47,11 @@ export interface EdgeOptions {
   /** Where a net's star meets, drawing every net as a star; otherwise the centroid of its ends. */
   readonly x?: Channel;
   readonly y?: Channel;
-  /** `straight` in the data's coordinates, or `geodesic` along great circles. */
+  /**
+   * How an edge between geographic points runs over the earth: `straight` in longitude and
+   * latitude, or `geodesic` along the great circle. Unset, it takes the shortest way: `geodesic`
+   * on the globe, `straight` on a flat map.
+   */
   readonly route?: 'straight' | 'geodesic';
   /** Line width in CSS pixels; a field spans 1 to 4. `edgeWidthPx` by default. */
   readonly widthPx?: Channel;

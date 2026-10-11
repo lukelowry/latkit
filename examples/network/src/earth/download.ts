@@ -6,7 +6,9 @@ export async function download(
   signal: AbortSignal,
   progress: Progress,
 ): Promise<{ readonly buffer: ArrayBuffer; readonly received: number }> {
-  const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]) });
+  const response = await fetch(url, {
+    signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]),
+  });
   if (!response.ok || !response.body) throw new Error(`${url} answered ${response.status}`);
   const total = Number(response.headers.get('content-length')) || 0,
     reader = response.body.getReader(),

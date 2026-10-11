@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { kit } from '@latkit/gpu';
 import { BREAK, prepareShapes, type Shapes, type ShapesInput } from '../src/prepare/shapes.js';
@@ -34,10 +35,17 @@ const square = (x: number, y: number, size: number) => [
 ];
 /** A vertex's longitude and latitude. */
 function at(shapes: Shapes, v: number): [number, number] {
-  const rows = new Uint32Array(shapes.vertices.buffer, shapes.vertices.byteOffset, shapes.vertices.length),
+  const rows = new Uint32Array(
+      shapes.vertices.buffer,
+      shapes.vertices.byteOffset,
+      shapes.vertices.length,
+    ),
     row = rows[v * 3 + 2],
     o = shapes.origins;
-  return [o[row * 4] + o[row * 4 + 2] + shapes.vertices[v * 3], o[row * 4 + 1] + o[row * 4 + 3] + shapes.vertices[v * 3 + 1]];
+  return [
+    o[row * 4] + o[row * 4 + 2] + shapes.vertices[v * 3],
+    o[row * 4 + 1] + o[row * 4 + 3] + shapes.vertices[v * 3 + 1],
+  ];
 }
 const viewport = { width: 800, height: 600, pixelRatio: 1 };
 
@@ -56,7 +64,11 @@ describe('prepareShapes', () => {
       expect(level.along.length).toBe(level.strips.length);
     }
     // Every triangle lies inside the squares, its vertices on the same row.
-    const rows = new Uint32Array(shapes.vertices.buffer, shapes.vertices.byteOffset, shapes.vertices.length);
+    const rows = new Uint32Array(
+      shapes.vertices.buffer,
+      shapes.vertices.byteOffset,
+      shapes.vertices.length,
+    );
     for (let t = 0; t < last.triangles.length; t += 3) {
       const r = [0, 1, 2].map((k) => rows[last.triangles[t + k] * 3 + 2]);
       expect(new Set(r).size).toBe(1);
@@ -78,7 +90,19 @@ describe('prepareShapes', () => {
 
   it('cuts areas at the antimeridian into pieces of one row, and never strokes the cut', () => {
     const shapes = prepareShapes(
-      input([[[[170, -5], [-170, -5], [-170, 5], [170, 5]]]], true),
+      input(
+        [
+          [
+            [
+              [170, -5],
+              [-170, -5],
+              [-170, 5],
+              [170, 5],
+            ],
+          ],
+        ],
+        true,
+      ),
     );
     expect(shapes.pieces.length / 3).toBe(2);
     expect(shapes.pieces[0]).toBe(0);
@@ -133,9 +157,52 @@ describe('prepareShapes', () => {
     expect(levelFor(shapes, 1e6)).toBe(shapes.levels.length - 1);
   });
 
+  it('simplifies the borders of the world, every line kept to its ends', () => {
+    const read = (name: string) =>
+        new Uint8Array(readFileSync(new URL(`./assets/borders.${name}.bin`, import.meta.url)))
+          .buffer,
+      offsets = new Int32Array(read('offsets')),
+      lines = offsets.length - 1,
+      shapes = prepareShapes({
+        closed: false,
+        rowParts: Uint32Array.from({ length: lines + 1 }, (_, i) => i),
+        parts: Uint32Array.from(offsets),
+        coordinates: Float64Array.from(new Float32Array(read('points'))),
+      }),
+      { parts, levels } = shapes,
+      ends = new Set<number>();
+    for (let p = 0; p + 1 < parts.length; p++) ends.add(parts[p]).add(parts[p + 1] - 1);
+    expect(levels.length).toBeGreaterThan(1);
+    expect(levels[0].strips.length).toBeLessThan(levels.at(-1)!.strips.length / 3);
+    for (const { strips } of levels) {
+      let first = 0;
+      for (let k = 0; k < strips.length; k++) {
+        if (strips[k] !== BREAK) continue;
+        expect(ends.has(strips[first]) && ends.has(strips[k - 1])).toBe(true);
+        first = k + 1;
+      }
+    }
+    // The finest level draws every point that bends a line: those it leaves out lie in line.
+    const drawn = new Set(levels.at(-1)!.strips),
+      x = (i: number) => at(shapes, i)[0],
+      y = (i: number) => at(shapes, i)[1];
+    for (let p = 0; p + 1 < parts.length; p++) {
+      let a = parts[p];
+      for (let b = a + 1; b < parts[p + 1]; b++) {
+        if (!drawn.has(b)) continue;
+        for (let i = a + 1; i < b; i++) {
+          const cross = (x(b) - x(a)) * (y(i) - y(a)) - (y(b) - y(a)) * (x(i) - x(a));
+          expect(Math.abs(cross)).toBeLessThan(1e-6);
+        }
+        a = b;
+      }
+    }
+  });
+
   it('draws what is in view as few ranges, and none of what lies outside', () => {
     const rows: number[][][][] = [];
-    for (let i = 0; i < 64; i++) rows.push([square(-160 + (i % 8) * 40, -80 + Math.floor(i / 8) * 20, 2)]);
+    for (let i = 0; i < 64; i++)
+      rows.push([square(-160 + (i % 8) * 40, -80 + Math.floor(i / 8) * 20, 2)]);
     const shapes = prepareShapes(input(rows, true)),
       level = shapes.levels.length - 1,
       all = visibleRanges(shapes, level, [[-180, -90, 180, 90]], 'triangles');
@@ -148,14 +215,24 @@ describe('prepareShapes', () => {
 
   it('frames the region a camera shows, wrapping the antimeridian on a globe', () => {
     const flat = new kit.Projector(
-      kit.Projector.check({ ...kit.Projector.camera, projection: 'mercator', center: [10, 20], scale: 20 }),
+      kit.Projector.check({
+        ...kit.Projector.camera,
+        projection: 'mercator',
+        center: [10, 20],
+        scale: 20,
+      }),
       viewport,
     );
     const [box] = visibleRegion(flat);
     expect(box[0]).toBeLessThan(10 - 19);
     expect(box[2]).toBeGreaterThan(10 + 19);
     const globe = new kit.Projector(
-      kit.Projector.check({ ...kit.Projector.camera, projection: 'globe', center: [178, 0], scale: 40 }),
+      kit.Projector.check({
+        ...kit.Projector.camera,
+        projection: 'globe',
+        center: [178, 0],
+        scale: 40,
+      }),
       viewport,
     );
     const region = visibleRegion(globe);
@@ -164,13 +241,33 @@ describe('prepareShapes', () => {
 
   it('picks the area under a point and a line near it', () => {
     const areas = prepareShapes(input([[square(0, 0, 10)], [square(10, 0, 10)]], true)),
-      lines = prepareShapes(input([[[[0, 5], [20, 5]]]], false)),
+      lines = prepareShapes(
+        input(
+          [
+            [
+              [
+                [0, 5],
+                [20, 5],
+              ],
+            ],
+          ],
+          false,
+        ),
+      ),
       data = { tables: {}, schema: { types: {} } } as unknown as Drawn['source'],
       projector = new kit.Projector(
-        kit.Projector.check({ ...kit.Projector.camera, projection: 'flat', center: [10, 5], scale: 20 }),
+        kit.Projector.check({
+          ...kit.Projector.camera,
+          projection: 'flat',
+          center: [10, 5],
+          scale: 20,
+        }),
         viewport,
       );
-    const table = { index: { source: 's', type: 'T', version: '1' }, rows: { kind: 'range', offset: 0, count: 2 } };
+    const table = {
+      index: { source: 's', type: 'T', version: '1' },
+      rows: { kind: 'range', offset: 0, count: 2 },
+    };
     (data as unknown as { tables: Record<string, unknown> }).tables.T = table;
     const drawn: Drawn[] = [
       { kind: 'area', source: data, type: 'T', shapes: areas, halfWidth: 0 },
@@ -187,13 +284,26 @@ describe('prepareShapes', () => {
 
 describe('pack', () => {
   it('writes shapes and fields into one PMTiles archive that reads back as it was', async () => {
-    const data = await geojson({
-      type: 'FeatureCollection',
-      features: [
-        { type: 'Feature', id: 'a', properties: { name: 'A', load: 0.25 }, geometry: { type: 'Polygon', coordinates: [square(0, 0, 10).concat([[0, 0]])] } },
-        { type: 'Feature', id: 'b', properties: { name: 'B', load: 0.75 }, geometry: { type: 'Polygon', coordinates: [square(10, 0, 10).concat([[10, 0]])] } },
-      ],
-    }, { type: 'State' });
+    const data = await geojson(
+      {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            id: 'a',
+            properties: { name: 'A', load: 0.25 },
+            geometry: { type: 'Polygon', coordinates: [square(0, 0, 10).concat([[0, 0]])] },
+          },
+          {
+            type: 'Feature',
+            id: 'b',
+            properties: { name: 'B', load: 0.75 },
+            geometry: { type: 'Polygon', coordinates: [square(10, 0, 10).concat([[10, 0]])] },
+          },
+        ],
+      },
+      { type: 'State' },
+    );
     const bytes = await pack(data, {
       areas: { State: { color: { field: 'load' }, labels: 'name' } },
       lines: { State: { points: 'rings' } },

@@ -363,13 +363,22 @@ describe('archives', () => {
 
   it('lets options override the zooms and attribution an archive declares', async () => {
     const tiles = sampleTiles();
-    const source = await openTiles(archiveOf(tiles), { minZoom: 1, maxZoom: 2, attribution: 'Mine' });
+    const source = await openTiles(archiveOf(tiles), {
+      minZoom: 1,
+      maxZoom: 2,
+      attribution: 'Mine',
+    });
     expect(source).toMatchObject({ kind: 'vector', minZoom: 1, maxZoom: 2, attribution: 'Mine' });
     await expectTiles(source, tiles);
   });
 
   it('refuses tiles of images, and type 0 that is not a pack', async () => {
-    const archive = writeArchive(sampleTiles(), { kind: 'pack', minZoom: 0, maxZoom: 3, bounds: BOUNDS });
+    const archive = writeArchive(sampleTiles(), {
+      kind: 'pack',
+      minZoom: 0,
+      maxZoom: 3,
+      bounds: BOUNDS,
+    });
     archive.set(
       encoder.encode('{"other":1}'.padEnd(section(archive, 24).length)),
       u64(archive, 24),
@@ -677,7 +686,9 @@ describe('TileJSON', () => {
   it('refuses TileJSON of images, by its tiles or its format', async () => {
     serve({ [url]: { body: JSON.stringify({ tiles: ['https://img.test/{z}/{x}/{y}.jpg'] }) } });
     await expect(openTiles(url)).rejects.toMatchObject({ code: 'unsupported' });
-    serve({ [url]: { body: JSON.stringify({ tiles: ['https://img.test/{z}/{x}/{y}'], format: 'png' }) } });
+    serve({
+      [url]: { body: JSON.stringify({ tiles: ['https://img.test/{z}/{x}/{y}'], format: 'png' }) },
+    });
     await expect(openTiles(url)).rejects.toMatchObject({ code: 'unsupported' });
     serve({
       [url]: {

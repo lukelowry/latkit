@@ -1,8 +1,8 @@
 import { createComposition, type Gpu } from '@latkit/gpu';
 import { createMonitor } from '@latkit/monitor';
 import { createNetwork } from '@latkit/network';
-import { makeFakeNetwork } from '../../network/src/fake-network.js';
 import { Telemetry } from '../../monitor/src/source.js';
+import { grid } from './grid.js';
 export type ExampleView = 'network' | 'monitor' | 'combined';
 /** App-owned construction runs identically in a worker or the window. */
 export function scene(gpu: Gpu, kind: ExampleView) {
@@ -15,7 +15,6 @@ export function scene(gpu: Gpu, kind: ExampleView) {
       ),
     );
   const samples = live.data;
-  const geometry = makeFakeNetwork();
   const monitor = createMonitor(gpu, {
     source: samples,
     traces: {
@@ -30,7 +29,7 @@ export function scene(gpu: Gpu, kind: ExampleView) {
     yAxis: 'Response',
   });
   const network = createNetwork(gpu, {
-    source: geometry.data,
+    source: grid(),
     vertices: {
       Bus: {
         x: 'position',

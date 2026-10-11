@@ -3,7 +3,14 @@
  * and lattices past any of them in size. Each draws its buses, lines, and machines as the panel
  * says.
  */
-import { colormaps, createColormap, parseColor, shape, type Colormap, type RGBA } from '@latkit/gpu';
+import {
+  colormaps,
+  createColormap,
+  parseColor,
+  shape,
+  type Colormap,
+  type RGBA,
+} from '@latkit/gpu';
 import { createData, type Data } from '@latkit/model';
 import type { EdgeOptions, VertexOptions } from '@latkit/network';
 import { LEVELS, loadCase, type GridCase } from './cases.js';
@@ -43,7 +50,9 @@ export const VOLTAGE = createColormap({
 });
 export const VOLTAGE_LEGEND = LEVELS.map((label, i) => ({ label, color: LEVEL_COLORS[i]! }));
 /** How each colored field reads. */
-export const BUS_COLORS: Readonly<Record<BusColor, { readonly label: string; readonly colormap: Colormap }>> = {
+export const BUS_COLORS: Readonly<
+  Record<BusColor, { readonly label: string; readonly colormap: Colormap }>
+> = {
   level: { label: 'voltage', colormap: VOLTAGE },
   load: { label: 'load', colormap: colormaps.mako },
   generation: { label: 'generation', colormap: colormaps.amber },
@@ -80,14 +89,14 @@ function stress(id: string, label: string): GridChoice {
     id,
     label,
     group: 'Stress tests',
-    async load() {
+    load() {
       const started = performance.now(),
         built = lattice(id);
-      return {
+      return Promise.resolve({
         ...built,
         peaks: { load: 1, generation: 0, power: 0 },
         summary: `built in ${(performance.now() - started).toFixed(0)} ms`,
-      };
+      });
     },
   };
 }
@@ -103,14 +112,14 @@ export const GRIDS: readonly GridChoice[] = [
     id: 'none',
     label: 'None: the map alone',
     group: 'Stress tests',
-    async load() {
-      return {
+    load() {
+      return Promise.resolve({
         data: createData({ types: { Bus: { fields: {} } } }, []),
         buses: 0,
         lines: 0,
         peaks: { load: 0, generation: 0, power: 0 },
         summary: 'nothing to draw',
-      };
+      });
     },
   },
 ];
@@ -120,15 +129,23 @@ const POSITION = { x: 'position', y: { field: 'position', component: 1 } } as co
 export function gridOptions(
   grid: Grid,
   look: Look,
-): { vertices: Record<string, VertexOptions>; edges: Record<string, EdgeOptions>; edgeWidthPx: number } {
+): {
+  vertices: Record<string, VertexOptions>;
+  edges: Record<string, EdgeOptions>;
+  edgeWidthPx: number;
+} {
   const big = grid.buses > 20000;
   if (!grid.case) {
     if (!grid.buses) return { vertices: {}, edges: {}, edgeWidthPx: 1 };
     return {
       vertices: {
-        Bus: { ...POSITION, color: { field: 'load', domain: [0, 1], colormap: colormaps.viridis }, radiusPx: 1.2 },
+        Bus: {
+          ...POSITION,
+          color: { field: 'load', domain: [0, 1], colormap: colormaps.viridis },
+          radiusPx: 1.2,
+        },
       },
-      edges: { Line: { ends: ['from', 'to'], route: 'geodesic' } },
+      edges: { Line: { ends: ['from', 'to'] } },
       edgeWidthPx: 0.6,
     };
   }
@@ -156,9 +173,14 @@ export function gridOptions(
       color: simulation
         ? { field: 'speed', domain: [-simulation.largest, simulation.largest], colormap: SPEED }
         : [0.92, 0.94, 0.97, 1],
-      radiusPx: { field: 'power', domain: [0, Math.max(1, grid.peaks.power)], range: big ? [2, 5] : [3, 8] },
+      radiusPx: {
+        field: 'power',
+        domain: [0, Math.max(1, grid.peaks.power)],
+        range: big ? [2, 5] : [3, 8],
+      },
     };
-  if (simulation?.fault) vertices.Fault = { ...POSITION, color: FAULT, radiusPx: 9, marker: shape('rounded') };
+  if (simulation?.fault)
+    vertices.Fault = { ...POSITION, color: FAULT, radiusPx: 9, marker: shape('rounded') };
   return {
     vertices,
     edges: {

@@ -12,7 +12,7 @@ import {
   type FieldInput,
   type ReadScope,
 } from '@latkit/model';
-import { kit } from '@latkit/gpu';
+import { kit, type Projection } from '@latkit/gpu';
 import type { NetworkData, VertexOptions, EdgeOptions } from '../data.js';
 import { channels, VERTEX } from '../rendering/fields.js';
 import { Adjacency } from './adjacency.js';
@@ -34,9 +34,15 @@ export interface VertexBank {
 export interface SegmentBatch {
   readonly a: VertexBank;
   readonly b: VertexBank;
+  /** Each segment's `[end a, end b, owner row, branch]`, in owner order; a routed owner's branches count from 1. */
   readonly records: Uint32Array;
   readonly data: kit.BufferData;
   readonly order?: Uint32Array;
+  /**
+   * A routed edge's segments' distances along it before each, where its dashes carry on from: in
+   * degrees of arc for geographic data, the data's units otherwise.
+   */
+  readonly prefixes?: Float32Array;
 }
 export interface EdgeBank {
   readonly base: number;
@@ -49,7 +55,6 @@ export interface EdgeBank {
   readonly incidence: { readonly offsets: Uint32Array; readonly vertices: Uint32Array };
   /** Some row joins more than two vertices: a net drawn as stars. */
   readonly stars?: boolean;
-  readonly order?: Uint32Array;
 }
 export interface Geometry {
   readonly vertices: readonly VertexBank[];
@@ -89,6 +94,23 @@ export function vertexOptions(data: NetworkData, bank: VertexBank): VertexOption
 }
 export function edgeOptions(data: NetworkData, bank: EdgeBank): EdgeOptions {
   return data.edges![bank.type];
+}
+/** The route a bank's edges take at a projection: their own, or the shortest way. */
+export function routeOf(
+  data: NetworkData,
+  bank: EdgeBank,
+  projection: Projection,
+): 'straight' | 'geodesic' {
+  return edgeOptions(data, bank).route ?? (projection === 'globe' ? 'geodesic' : 'straight');
+}
+/** Whether a bank's edges draw as curves: every geographic edge on the globe, a geodesic anywhere. */
+export function curvedAt(
+  data: NetworkData,
+  bank: EdgeBank,
+  projection: Projection,
+  geographic: boolean,
+): boolean {
+  return geographic && (projection === 'globe' || routeOf(data, bank, projection) === 'geodesic');
 }
 /**
  * The segments of a batch an owner row draws, `[first, end)`: a batch keeps its records in owner

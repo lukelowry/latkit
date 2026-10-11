@@ -1,6 +1,5 @@
 import { expect, it } from 'vitest';
 import { Work, type FieldsBlock, type RowAxis } from '@latkit/model';
-import type { NetworkData } from '../src/data.js';
 import type { VertexBank } from '../src/geometry/topology.js';
 import type { Style } from '../src/options.js';
 import { FieldRead, VERTEX, channels } from '../src/rendering/fields.js';
@@ -42,7 +41,7 @@ it.each<RowAxis>([
   };
   const read = new FieldRead([], [native], position);
   const result = new Picking().prepare(
-    { vertices: [bank], edges: [], adjacency },
+    { vertices: [bank], edges: [], adjacency, geographic: false },
     { vertices: new Map([[bank, read]]), edges: new Map() },
     0,
   );
@@ -74,17 +73,16 @@ it('builds an index in cooperative slices and frees one aborted part way', async
     },
   };
   const read = new FieldRead([], [native], position);
-  const data = {} as NetworkData,
-    style = { markers: true, lines: false } as Style;
+  const style = { markers: true, lines: false } as Style;
   // Each build pauses after every step.
   const start = () => {
     const picking = new Picking().prepare(
-        { vertices: [bank], edges: [], adjacency },
+        { vertices: [bank], edges: [], adjacency, geographic: false },
         { vertices: new Map([[bank, read]]), edges: new Map() },
         64 * 1024 ** 2,
       ),
       stop = new AbortController();
-    const later = picking.indexLater(data, style, new Work(stop.signal, Infinity, 0));
+    const later = picking.indexLater(style, new Work(stop.signal, Infinity, 0));
     return { picking, stop, later };
   };
   const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -101,7 +99,7 @@ it('builds an index in cooperative slices and frees one aborted part way', async
   await pause();
   expect(stage(finished.picking)).toBe('building');
   expect(finished.picking.bytes).toBe(kit.BoxIndex.bytes(count));
-  expect(finished.picking.indexable(data, style)).toBe(false);
+  expect(finished.picking.indexable(style)).toBe(false);
   await finished.later;
   expect(stage(finished.picking)).toBe('built');
   expect(finished.picking.bytes).toBe(kit.BoxIndex.bytes(count));
@@ -112,5 +110,5 @@ it('builds an index in cooperative slices and frees one aborted part way', async
   expect(stage(aborted.picking)).toBe('missing');
   expect(aborted.picking.bytes).toBe(0);
   await expect(aborted.later).rejects.toThrow();
-  expect(aborted.picking.indexable(data, style)).toBe(true);
+  expect(aborted.picking.indexable(style)).toBe(true);
 });

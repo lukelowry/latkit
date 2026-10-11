@@ -25,27 +25,33 @@ function cell(column: Column | undefined, i: number): string {
       v.toFixed(4),
     ).join(', ');
   }
-  if (column.kind === 'reference') return `row ${column.values[at]}`;
   return '…';
 }
-/** An item's id and fields, read through a scope, sampled fields at its coordinate. */
+/**
+ * An item's id and fields, read through a scope, sampled fields at its coordinate: its scalars and
+ * vectors, and its id where its type keeps ids.
+ */
 async function describe(reader: ReadScope, item: Item): Promise<Described> {
-  const definition = item.source.schema.types[item.index.type];
+  const type = item.index.type,
+    definition = item.source.schema.types[type];
   const names = Object.entries(definition?.fields ?? {})
-    .filter(([, d]) => typeof d.type === 'string' || d.type.kind === 'vector' || d.type.kind === 'reference')
+    .filter(([, d]) => typeof d.type === 'string' || d.type.kind === 'vector')
     .slice(0, MAX_FIELDS)
     .map(([name]) => name);
   for await (const block of reader.fields({
     source: item.source,
-    from: item.index.type,
+    from: type,
     rows: { kind: 'indices', index: item.index, values: Uint32Array.of(item.row) },
     fields: Object.fromEntries(names.map((name) => [name, name])),
-    ids: true,
+    ids: (item.source.tables[type]?.ids.length ?? 0) > 0,
   })) {
     if (!rowCount(block.rows)) continue;
     return {
       id: block.ids ? (textAt(block.ids, 0) ?? '') : '',
-      fields: names.map((name) => [name, bitAt(block.presence[name], 0) ? cell(block.columns[name], 0) : '–']),
+      fields: names.map((name) => [
+        name,
+        bitAt(block.presence[name], 0) ? cell(block.columns[name], 0) : '–',
+      ]),
     };
   }
   return { id: '', fields: [] };

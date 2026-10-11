@@ -20,12 +20,14 @@ export interface GeographyStyle {
   readonly atmosphereColor?: RGBA;
   /** The axis the globe turns on, through its poles. */
   readonly earthAxis?: boolean;
+  readonly earthAxisColor?: RGBA;
   /** The color of areas their `color` leaves unset. */
   readonly areaColor?: RGBA;
   /** The color of lines their `color` leaves unset. */
   readonly lineColor?: RGBA;
   /** The width of lines their `widthPx` leaves unset. */
   readonly lineWidthPx?: number;
+  /** How far a dash and the gap after it run, in CSS pixels. */
   readonly dashPeriodPx?: number;
 }
 export type Style = Required<GeographyStyle> & kit.ResolvedViewStyle;
@@ -39,6 +41,7 @@ export const DEFAULTS: Required<GeographyStyle> = Object.freeze({
   atmosphere: true,
   atmosphereColor: [0.36, 0.62, 0.95, 0.55] as RGBA,
   earthAxis: false,
+  earthAxisColor: [0.6, 0.75, 0.86, 0.65] as RGBA,
   areaColor: [0.16, 0.21, 0.27, 1] as RGBA,
   lineColor: [0.52, 0.6, 0.68, 0.6] as RGBA,
   lineWidthPx: 1,
@@ -76,7 +79,11 @@ export interface AreaOptions extends ShapeOptions {
 export interface LineOptions extends ShapeOptions {
   /** Points, or lists of them; an area type's `rings` draw its outline. `points` by default. */
   readonly points?: FieldInput;
-  /** Straight between points, or along great circles. */
+  /**
+   * How a line between geographic points runs over the earth: `straight` in longitude and
+   * latitude, or `geodesic` along the great circle. `straight` by default, as maps record their
+   * features: a border along a parallel stays on it.
+   */
   readonly route?: 'straight' | 'geodesic';
   /** `lineWidthPx` by default. */
   readonly widthPx?: Channel;

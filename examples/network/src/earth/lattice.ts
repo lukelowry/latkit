@@ -105,7 +105,10 @@ export function lattice(id: string): Lattice {
   return {
     data: createData(schema, [
       rows(index('Bus'), count, { position: vector(position), load: numeric(load) }),
-      rows(index('Line'), lines, { from: references(index('Bus'), from), to: references(index('Bus'), to) }),
+      rows(index('Line'), lines, {
+        from: references(index('Bus'), from),
+        to: references(index('Bus'), to),
+      }),
     ]),
     buses: count,
     lines,

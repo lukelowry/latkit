@@ -2,6 +2,7 @@ import { isFailure } from '@latkit/model';
 import type { kit } from '@latkit/gpu';
 import type { TileSource } from '../sources/archive.js';
 import type { TileSet } from '../tiles.js';
+import { meets, type Region } from './visible.js';
 
 const DEGREE = Math.PI / 180;
 /** CSS pixels a vector tile spans drawn at its own zoom. */
@@ -41,9 +42,62 @@ function latitudeAt(t: number): number {
 /** A tile's west, south, east, and north. */
 export function tileBounds(z: number, x: number, y: number): [number, number, number, number] {
   const n = 2 ** z;
-  return [(x / n) * 360 - 180, latitudeAt((y + 1) / n), ((x + 1) / n) * 360 - 180, latitudeAt(y / n)];
+  return [
+    (x / n) * 360 - 180,
+    latitudeAt((y + 1) / n),
+    ((x + 1) / n) * 360 - 180,
+    latitudeAt(y / n),
+  ];
 }
 
+/** A tile's four children, as their offsets in the next zoom. */
+const CHILDREN = [
+  [0, 0],
+  [1, 0],
+  [0, 1],
+  [1, 1],
+] as const;
+/** Where tiles draw largest: where the camera looks, and tilted, the nearest ground it shows. */
+function focusOf(projector: kit.Projector): (readonly [number, number])[] {
+  const { camera, viewport } = projector,
+    near = projector.unproject([viewport.width / 2, viewport.height]);
+  return near ? [camera.center, near] : [camera.center];
+}
+/**
+ * How large a tile draws where it lies nearest each focus, and how far from the canvas's center
+ * that lands: a point that shows whenever the tile meets the view, however near the camera is.
+ */
+function measure(
+  projector: kit.Projector,
+  focus: readonly (readonly [number, number])[],
+  w: number,
+  s: number,
+  e: number,
+  n: number,
+): { size: number; distance: number } {
+  const dx = (e - w) / 64,
+    dy = (n - s) / 64,
+    { width, height } = projector.viewport;
+  let size = 0,
+    distance = Infinity;
+  for (const [fx, fy] of focus) {
+    // The focus on the tile's side of the antimeridian.
+    const near = fx + 360 * Math.round(((w + e) / 2 - fx) / 360),
+      x = Math.min(e - dx, Math.max(w, near)),
+      y = Math.min(n - dy, Math.max(s, fy)),
+      p = projector.project(x, y);
+    if (!p.visible) continue;
+    const east = projector.project(x + dx, y),
+      north = projector.project(x, y + dy);
+    size = Math.max(
+      size,
+      64 * Math.hypot(east.x - p.x, east.y - p.y),
+      64 * Math.hypot(north.x - p.x, north.y - p.y),
+    );
+    distance = Math.min(distance, Math.hypot(p.x - width / 2, p.y - height / 2));
+  }
+  return { size, distance };
+}
 interface Held<T> {
   readonly data: T | null;
   readonly bytes: number;
@@ -56,7 +110,10 @@ interface Held<T> {
 export class Pyramid<T> {
   private source?: TileSource;
   private readonly held = new Map<string, Held<T>>();
-  private readonly loading = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  private readonly loading = new Map<
+    string,
+    { controller: AbortController; done: Promise<void> }
+  >();
   private bytes = 0;
   private closed = false;
   private failed = false;
@@ -90,11 +147,14 @@ export class Pyramid<T> {
   get opened(): TileSource | undefined {
     return this.source;
   }
-  /** The tiles a camera draws, loading those it lacks: each loaded, or drawn from an ancestor. */
-  frame(projector: kit.Projector): readonly Placed<T>[] {
+  /**
+   * The tiles a camera draws over `region`, the ground it shows, loading those it lacks: each loaded,
+   * or drawn from an ancestor.
+   */
+  frame(projector: kit.Projector, region: Region): readonly Placed<T>[] {
     const source = this.source;
     if (!source || this.closed) return [];
-    const wanted = this.wanted(projector, source),
+    const wanted = this.wanted(projector, source, region),
       placed: Placed<T>[] = [],
       missing: TileKey[] = [],
       used = new Set<string>();
@@ -135,74 +195,42 @@ export class Pyramid<T> {
     this.held.clear();
     this.bytes = 0;
   }
-  /** The tiles to draw: split while a tile draws larger than its size, nearest the center first. */
-  private wanted(projector: kit.Projector, source: TileSource): TileKey[] {
-    const { viewport } = projector,
-      limit = TILE_PX * 1.25,
+  /**
+   * The tiles to draw: those meeting the region, each split while it draws larger than its size
+   * where it lies nearest the camera's focus, nearest the center first.
+   */
+  private wanted(projector: kit.Projector, source: TileSource, region: Region): TileKey[] {
+    const limit = TILE_PX * 1.25,
       [bw, bs, be, bn] = source.bounds,
-      cx = viewport.width / 2,
-      cy = viewport.height / 2,
+      focus = focusOf(projector),
       out: { key: TileKey; distance: number }[] = [];
     let queue: TileKey[] = [{ z: 0, x: 0, y: 0 }];
     while (queue.length) {
       const next: TileKey[] = [];
       for (const key of queue) {
         const [w, s, e, n] = tileBounds(key.z, key.x, key.y);
-        if (w > be || e < bw || s > bn || n < bs) continue;
-        const shown = this.measure(projector, key.z, w, s, e, n);
-        if (!shown && key.z >= 2) continue;
-        const splits =
-          key.z < source.maxZoom &&
-          (key.z < source.minZoom || !shown || shown.size > limit) &&
-          out.length + next.length + queue.length < MAX_TILES;
-        if (splits) {
-          for (const [dx, dy] of [
-            [0, 0],
-            [1, 0],
-            [0, 1],
-            [1, 1],
-          ])
+        if (w > be || e < bw || s > bn || n < bs || !meets(region, w, s, e, n)) continue;
+        const shown = measure(projector, focus, w, s, e, n),
+          splits =
+            key.z < source.maxZoom &&
+            (key.z < source.minZoom || shown.size > limit) &&
+            out.length + next.length + queue.length < MAX_TILES;
+        if (splits)
+          for (const [dx, dy] of CHILDREN)
             next.push({ z: key.z + 1, x: key.x * 2 + dx, y: key.y * 2 + dy });
-        } else if (shown && key.z >= source.minZoom)
-          out.push({ key, distance: Math.hypot(shown.x - cx, shown.y - cy) });
+        else if (key.z >= source.minZoom) out.push({ key, distance: shown.distance });
       }
       queue = next;
     }
     out.sort((a, b) => a.distance - b.distance);
     return out.map((o) => o.key);
   }
-  /** How large a tile draws, and where its middle lands; null when none of it shows. */
-  private measure(
-    projector: kit.Projector,
-    z: number,
-    w: number,
-    s: number,
-    e: number,
-    n: number,
-  ): { size: number; x: number; y: number } | null {
-    const { viewport } = projector,
-      steps = z < 3 ? 4 : 2;
-    let minX = Infinity,
-      minY = Infinity,
-      maxX = -Infinity,
-      maxY = -Infinity;
-    for (let i = 0; i <= steps; i++)
-      for (let j = 0; j <= steps; j++) {
-        const p = projector.project(w + ((e - w) * i) / steps, s + ((n - s) * j) / steps);
-        if (!p.visible) continue;
-        minX = Math.min(minX, p.x);
-        maxX = Math.max(maxX, p.x);
-        minY = Math.min(minY, p.y);
-        maxY = Math.max(maxY, p.y);
-      }
-    if (!(minX <= maxX)) return null;
-    const margin = 32;
-    if (maxX < -margin || maxY < -margin || minX > viewport.width + margin || minY > viewport.height + margin)
-      return null;
-    return { size: Math.max(maxX - minX, maxY - minY), x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
-  }
   /** Start loading missing tiles, nearest first, and stop loading tiles no longer wanted. */
-  private request(missing: readonly TileKey[], source: TileSource, wanted: ReadonlySet<string>): void {
+  private request(
+    missing: readonly TileKey[],
+    source: TileSource,
+    wanted: ReadonlySet<string>,
+  ): void {
     for (const [k, { controller }] of this.loading)
       if (!wanted.has(k)) {
         controller.abort();

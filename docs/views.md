@@ -42,7 +42,8 @@ supersedes one still finding its hits. Each view adds its own gestures, such as 
 
 `set` applies a patch to the config:
 
-- Keyed records (`vertices`, `edges`, `paths`, `traces`, `groups`) merge per entry, then per option.
+- Keyed records (`vertices`, `edges`, `areas`, `lines`, `traces`, `groups`) merge per entry, then
+  per option.
 - `camera`, `input`, `limits`, and `layout` merge per option.
 - `null` removes an entry or resets an option to its default.
 - Any other value replaces. Plain objects and arrays compare by what they hold, and a patch that
@@ -53,7 +54,7 @@ supersedes one still finding its hits. Each view adds its own gestures, such as 
 ```ts
 network.set({
   vertices: { Bus: { radiusPx: { field: 'capacity', range: [3, 12] } } },
-  paths: { Border: null },
+  edges: { Line: null },
   edgeWidthPx: 2,
 });
 ```

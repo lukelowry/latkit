@@ -1,12 +1,6 @@
 /** What renderer packages build on: the view base, frames, field uploads, shaders, text, and input. */
 export { BaseView, rendererOf, gpuOf, hold, layerOf } from './view/view.js';
-export type {
-  Layer,
-  LayerLook,
-  LayerScene,
-  CapturedLayer,
-  PreparedLayer,
-} from './view/layer.js';
+export type { Layer, LayerLook, LayerScene, CapturedLayer, PreparedLayer } from './view/layer.js';
 export { Projector, PROJECTIONS, projectionShader } from './view/projection.js';
 export type { Light, Projected } from './view/projection.js';
 export type { ConfigShape } from './view/view.js';

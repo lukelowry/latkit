@@ -576,7 +576,8 @@ export abstract class BaseItemView<
   /** The view as a layer a host draws beneath itself; it presents nowhere else until released. */
   #layer(): Layer {
     const release = compose(this),
-      view = this;
+      animating = () => this.animating,
+      pending = () => this.pending;
     let released = false;
     return {
       capture: () => {
@@ -594,10 +595,10 @@ export abstract class BaseItemView<
         return { ...captured, ...(this.layerLook?.() ?? { light: null, fill: null }) };
       },
       get animating() {
-        return view.animating;
+        return animating();
       },
       get pending() {
-        return view.pending;
+        return pending();
       },
       invalidated: (listener) => this.onInvalidate(listener),
       click: (point, modifiers, touch) => this.click(point, modifiers, { touch }),
@@ -750,8 +751,7 @@ export abstract class BaseItemView<
       await this.ground.click(point, modifiers, options.touch === true);
       return;
     }
-    const
-      found = hits.map((hit) => this.identify(hit)).join('\n'),
+    const found = hits.map((hit) => this.identify(hit)).join('\n'),
       last = this.#clicked,
       turn =
         !additive &&

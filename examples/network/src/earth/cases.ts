@@ -14,7 +14,14 @@
  * and point counts, then every layer's line starts as u32, then every layer's points as float32
  * longitude and latitude: coasts, countries, and provinces.
  */
-import { appendData, createData, textColumn, type Data, type Index, type Schema } from '@latkit/model';
+import {
+  appendData,
+  createData,
+  textColumn,
+  type Data,
+  type Index,
+  type Schema,
+} from '@latkit/model';
 import { flags, lists, numeric, references, rows, text, vector } from '../shared/columns.js';
 import { download, type Progress } from './download.js';
 
@@ -27,7 +34,9 @@ interface Header {
   readonly dt?: number;
   readonly speedScale?: number;
   readonly fault?: { readonly bus: number; readonly on: number; readonly off: number };
-  readonly arrays: Readonly<Record<string, readonly [type: string, offset: number, length: number]>>;
+  readonly arrays: Readonly<
+    Record<string, readonly [type: string, offset: number, length: number]>
+  >;
 }
 /** A case's simulation: each machine's speed deviation over the seconds simulated. */
 export interface Simulation {
@@ -69,9 +78,14 @@ const POSITION = { type: { kind: 'vector', size: 2, items: 'float32' }, geograph
 const NUMBER = { type: 'float32' } as const;
 
 /** A case's file, read into one Data value: buses, lines, machines, and the fault, if simulated. */
-export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.byteLength): GridCase {
+export function readCase(
+  id: string,
+  buffer: ArrayBuffer,
+  downloaded = buffer.byteLength,
+): GridCase {
   const view = new DataView(buffer);
-  if (buffer.byteLength < 8 || view.getUint32(0, true) !== MAGIC) throw new Error(`${id} is not a grid case`);
+  if (buffer.byteLength < 8 || view.getUint32(0, true) !== MAGIC)
+    throw new Error(`${id} is not a grid case`);
   const length = view.getUint32(4, true),
     header = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 8, length))) as Header,
     body = Math.ceil((8 + length) / 8) * 8;
@@ -226,7 +240,10 @@ export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.by
         ? {
             fault: {
               bus: new TextDecoder().decode(
-                busNames.bytes.subarray(busNames.offsets[fault.bus], busNames.offsets[fault.bus + 1]),
+                busNames.bytes.subarray(
+                  busNames.offsets[fault.bus],
+                  busNames.offsets[fault.bus + 1],
+                ),
               ),
               on: fault.on,
               off: fault.off,
@@ -251,18 +268,34 @@ export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.by
   };
 }
 
-export async function loadCase(id: string, signal: AbortSignal, progress: Progress): Promise<GridCase> {
-  const { buffer, received } = await download(`${import.meta.env.BASE_URL}grids/${id}.bin`, signal, progress);
+export async function loadCase(
+  id: string,
+  signal: AbortSignal,
+  progress: Progress,
+): Promise<GridCase> {
+  const { buffer, received } = await download(
+    `${import.meta.env.BASE_URL}grids/${id}.bin`,
+    signal,
+    progress,
+  );
   return readCase(id, buffer, received);
 }
 
 /** Natural Earth's coasts, countries, and provinces, as lines: a type each, a line per row. */
 export const BORDERS = ['Coast', 'Country', 'Province'] as const;
 export async function loadBorders(signal: AbortSignal, progress: Progress): Promise<Data> {
-  const { buffer } = await download(`${import.meta.env.BASE_URL}grids/borders.bin`, signal, progress),
+  const { buffer } = await download(
+      `${import.meta.env.BASE_URL}grids/borders.bin`,
+      signal,
+      progress,
+    ),
     length = new DataView(buffer).getUint32(0, true),
     { layers } = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, length))) as {
-      readonly layers: readonly { readonly type: string; readonly lines: number; readonly points: number }[];
+      readonly layers: readonly {
+        readonly type: string;
+        readonly lines: number;
+        readonly points: number;
+      }[];
     };
   let at = 4 + length;
   const starts = layers.map(({ lines }) => {
@@ -282,9 +315,13 @@ export async function loadBorders(signal: AbortSignal, progress: Progress): Prom
     BORDERS.map((type) => {
       const k = layers.findIndex((layer) => layer.type === type);
       if (k < 0) throw new Error(`The borders file has no ${type} lines`);
-      return rows({ source: 'natural-earth-borders', type, version: '5.1.2' }, starts[k]!.length - 1, {
-        points: lists(starts[k]!, vector(points[k]!)),
-      });
+      return rows(
+        { source: 'natural-earth-borders', type, version: '5.1.2' },
+        starts[k]!.length - 1,
+        {
+          points: lists(starts[k]!, vector(points[k]!)),
+        },
+      );
     }),
   );
 }

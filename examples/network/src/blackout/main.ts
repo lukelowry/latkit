@@ -117,8 +117,14 @@ const location = Float64Array.from(subs.flatMap((s) => [s.lon, s.lat])),
     load: numeric(isLoad),
   },
   wires = {
-    from: references(index('Substation'), Uint32Array.from(branches, (b) => b.from)),
-    to: references(index('Substation'), Uint32Array.from(branches, (b) => b.to)),
+    from: references(
+      index('Substation'),
+      Uint32Array.from(branches, (b) => b.from),
+    ),
+    to: references(
+      index('Substation'),
+      Uint32Array.from(branches, (b) => b.to),
+    ),
   },
   // The border closes on its first point.
   border = lists(

@@ -15,7 +15,12 @@ function boxes(west: number, east: number, south: number, north: number): Region
   if (east - west >= 360) return [[-180, s, 180, n]];
   const w = ((((west + 180) % 360) + 360) % 360) - 180,
     e = w + (east - west);
-  return e <= 180 ? [[w, s, e, n]] : [[w, s, 180, n], [-180, s, e - 360, n]];
+  return e <= 180
+    ? [[w, s, e, n]]
+    : [
+        [w, s, 180, n],
+        [-180, s, e - 360, n],
+      ];
 }
 /** Samples across the canvas, `n` to a side, edges included. */
 function samples(viewport: { width: number; height: number }, n: number): [number, number][] {
@@ -65,7 +70,8 @@ export function visibleRegion(projector: kit.Projector): Region {
       const north = lat + reach,
         south = lat - reach;
       if (north >= 90 || south <= -90) return boxes(-180, 180, south, north);
-      const half = Math.asin(Math.min(1, Math.sin(reach * DEGREE) / Math.cos(lat * DEGREE))) / DEGREE;
+      const half =
+        Math.asin(Math.min(1, Math.sin(reach * DEGREE) / Math.cos(lat * DEGREE))) / DEGREE;
       return boxes(camera.center[0] - half, camera.center[0] + half, south, north);
     }
     if (pole(90)) return boxes(-180, 180, s, 90);
@@ -80,23 +86,33 @@ export function visibleRegion(projector: kit.Projector): Region {
   const padX = (e - w) * 0.02,
     padY = (n - s) * 0.02;
   if (globe) return boxes(w - padX, e + padX, s - padY, n + padY);
-  return [[Math.max(-180, w - padX), Math.max(-90, s - padY), Math.min(180, e + padX), Math.min(90, n + padY)]];
+  return [
+    [
+      Math.max(-180, w - padX),
+      Math.max(-90, s - padY),
+      Math.min(180, e + padX),
+      Math.min(90, n + padY),
+    ],
+  ];
 }
 /** Whether a box meets the region. */
 export function meets(region: Region, w: number, s: number, e: number, n: number): boolean {
-  for (const box of region) if (w <= box[2] && e >= box[0] && s <= box[3] && n >= box[1]) return true;
+  for (const box of region)
+    if (w <= box[2] && e >= box[0] && s <= box[3] && n >= box[1]) return true;
   return false;
 }
 /** Whether a box lies wholly inside one of the region's boxes. */
 function within(region: Region, w: number, s: number, e: number, n: number): boolean {
-  for (const box of region) if (w >= box[0] && e <= box[2] && s >= box[1] && n <= box[3]) return true;
+  for (const box of region)
+    if (w >= box[0] && e <= box[2] && s >= box[1] && n <= box[3]) return true;
   return false;
 }
 /** CSS pixels per degree where the camera looks, as the finest detail it shows. */
 export function pixelsPerDegree(projector: kit.Projector): number {
   const { camera } = projector;
   let scale = camera.scale;
-  if (camera.projection === 'mercator') scale /= Math.max(0.05, Math.cos(camera.center[1] * DEGREE));
+  if (camera.projection === 'mercator')
+    scale /= Math.max(0.05, Math.cos(camera.center[1] * DEGREE));
   // A tilted view shows its near ground larger than its center.
   if (kit.PROJECTIONS[camera.projection].pitched) scale *= 1 + camera.pitch / 45;
   return scale;
@@ -168,7 +184,8 @@ export function piecesNear(shapes: Shapes, w: number, s: number, e: number, n: n
     for (let p = pieces[node]; p < pieces[node + 1]; p++) {
       const b = p * 4,
         bounds = shapes.pieceBounds;
-      if (w <= bounds[b + 2] && e >= bounds[b] && s <= bounds[b + 3] && n >= bounds[b + 1]) out.push(p);
+      if (w <= bounds[b + 2] && e >= bounds[b] && s <= bounds[b + 3] && n >= bounds[b + 1])
+        out.push(p);
     }
     node++;
   }

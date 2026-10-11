@@ -157,23 +157,40 @@ interface Resolved {
 }
 /** Style a transition eases, as rows read it where they have no value of their own. */
 const EASED = ['vertexColor', 'vertexRadiusPx', 'edgeColor', 'edgeWidthPx'] as const;
-/** Hit-test indexes build once the shown positions have held this long, as hover settles. */
+/**
+ * Hit-test indexes build once the shown positions and the camera have held this long, as hover
+ * settles: never while the camera moves, when frames are being drawn and hover waits anyway.
+ */
 const INDEX_SETTLE_MS = 150;
-/** Settles after `ms`, when `now` is called, or as soon as the signal aborts. */
+/** Settles `ms` after its latest `touch`, when `now` is called, or as soon as the signal aborts. */
 function settle(
   ms: number,
   signal: AbortSignal,
-): { readonly settled: Promise<void>; readonly now: () => void } {
-  let now!: () => void;
-  const settled = new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    now = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    signal.addEventListener('abort', now, { once: true });
-  });
-  return { settled, now };
+): { readonly settled: Promise<void>; readonly now: () => void; readonly touch: () => void } {
+  let resolve!: () => void, timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = new Promise<void>((done) => (resolve = done));
+  const touch = () => {
+    clearTimeout(timer);
+    timer = setTimeout(resolve, ms);
+  };
+  const now = () => {
+    clearTimeout(timer);
+    resolve();
+  };
+  touch();
+  signal.addEventListener('abort', now, { once: true });
+  return { settled, now, touch };
+}
+/** Whether two cameras show the same view. */
+function sameView(a: ProjectedCamera, b: ProjectedCamera): boolean {
+  return (
+    a.projection === b.projection &&
+    a.center[0] === b.center[0] &&
+    a.center[1] === b.center[1] &&
+    a.scale === b.scale &&
+    a.pitch === b.pitch &&
+    a.bearing === b.bearing
+  );
 }
 /** The drawn data, checked; the base checks every option name and the source. */
 function checkData(config: NetworkConfig): NetworkData {
@@ -270,6 +287,10 @@ class NetworkView
     readonly stop: AbortController;
     /** Start building now instead of waiting for the positions to settle. */
     readonly now: () => void;
+    /** Wait a settle again before building: the camera moved. */
+    readonly touch: () => void;
+    /** The camera the latest presented frame showed. */
+    camera: ProjectedCamera;
     /** Settles when the build ends: built, out of budget, superseded, or failed. */
     readonly built: Promise<void>;
     done: boolean;
@@ -517,7 +538,7 @@ class NetworkView
   private layerOf(view: View | null | undefined): kit.Layer | undefined {
     if (!view) return undefined;
     let layers = grounds.get(this);
-    if (!layers) grounds.set(this, (layers = new Map()));
+    if (!layers) grounds.set(this, (layers = new Map<View, kit.Layer>()));
     let layer = layers.get(view);
     if (!layer) layers.set(view, (layer = kit.layerOf(view)));
     return layer;
@@ -695,7 +716,6 @@ class NetworkView
           ) * 0.15);
     this.live();
     frame.signal.throwIfAborted();
-    const phases = picking.dashPhases(data, camera.projection === 'globe', height);
     // The first presented frame after an animated change eases from what was shown, as long as the
     // style's animation lasts; an export draws every value where it is going.
     const motion = !this.reducedMotion,
@@ -761,7 +781,6 @@ class NetworkView
       hover,
       height,
       labels,
-      phases,
       records,
       motion,
       transition: rest > 0 ? { rest, start: !transition!.begun } : null,
@@ -802,7 +821,6 @@ class NetworkView
   protected submitted(frame: FrameInfo, pending: Pending): void {
     pending.paint.ground?.submitted();
     this.geometry = pending.geometry;
-    this.painter.prune(pending.geometry);
     if (pending.begins && this.transition) this.transition.begun = true;
     // An exported frame leaves what pick, locate, selection, and the orbit see.
     if (!frame.presented) return;
@@ -818,24 +836,31 @@ class NetworkView
     };
   }
   /**
-   * Build the shown frame's missing hit-test indexes in cooperative slices once its positions hold
-   * still, or at once when a query needs them; new positions or destroy abort the build.
+   * Build the shown frame's missing hit-test indexes in cooperative slices, behind the frames, once
+   * its positions and camera hold still, or at once when a query needs them; new positions or
+   * destroy abort the build.
    */
-  private indexLater({ picking, projector, data, options }: Presented): void {
-    const running = this.indexing;
-    if (running && !running.done && running.picking.sameIndexes(picking)) return;
+  private indexLater({ picking, projector, height, options }: Presented): void {
+    const running = this.indexing,
+      { camera } = projector;
+    if (running && !running.done && running.picking.sameIndexes(picking)) {
+      // A camera still moving holds the build off until it settles.
+      if (!sameView(running.camera, camera)) running.touch();
+      running.camera = camera;
+      return;
+    }
     running?.stop.abort();
     this.indexing = undefined;
-    // Indexes live in model space, which only an unpitched camera searches.
-    if (PROJECTIONS[projector.camera.projection].pitched || !picking.indexable(data, options))
-      return;
+    // Raised rows on a tilted camera or a globe are found by scanning, so no index would be asked.
+    if (!picking.indexed(camera.projection, height) || !picking.indexable(options)) return;
     const stop = new AbortController(),
       { signal } = stop,
-      { settled, now } = settle(INDEX_SETTLE_MS, signal);
+      { settled, now, touch } = settle(INDEX_SETTLE_MS, signal);
     const built = settled
       .then(() => {
         signal.throwIfAborted();
-        return picking.indexLater(data, options, new Work(signal));
+        // Behind the frames: no frame waits on an index building.
+        return picking.indexLater(options, new Work(signal, Infinity, 8, 'background'));
       })
       .then(
         () => {
@@ -848,8 +873,13 @@ class NetworkView
           if (!signal.aborted) this.fail(error);
         },
       );
-    const task = { picking, stop, now, built, done: false };
+    const task = { picking, stop, now, touch, camera, built, done: false };
     this.indexing = task;
+  }
+  /** A paused network stops building its indexes; its next presented frame starts again. */
+  protected paused(): void {
+    this.indexing?.stop.abort();
+    this.indexing = undefined;
   }
   protected release(): void {
     this.indexing?.stop.abort();
@@ -869,4 +899,3 @@ function wiring(_: string, definition: TypeDefinition): readonly string[] {
     return typeof type === 'object' && (type.kind === 'reference' || type.kind === 'list');
   });
 }
-

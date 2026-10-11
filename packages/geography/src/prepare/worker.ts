@@ -12,7 +12,10 @@ scope.onmessage = (event) => {
     scope.postMessage({ id, result }, transfer);
   } catch (error) {
     const { code, message } = error as { code?: string; message?: string };
-    scope.postMessage({ id, error: { code: code ?? 'internal', message: message ?? String(error) } });
+    scope.postMessage({
+      id,
+      error: { code: code ?? 'internal', message: message ?? String(error) },
+    });
   }
 };
 scope.postMessage({ ready: true });

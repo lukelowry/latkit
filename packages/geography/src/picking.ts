@@ -30,7 +30,11 @@ function pointOf(shapes: Shapes, v: number): [number, number] {
   if (!view)
     words.set(
       shapes,
-      (view = new Uint32Array(shapes.vertices.buffer, shapes.vertices.byteOffset, shapes.vertices.length)),
+      (view = new Uint32Array(
+        shapes.vertices.buffer,
+        shapes.vertices.byteOffset,
+        shapes.vertices.length,
+      )),
     );
   const row = view[v * 3 + 2],
     o = shapes.origins;
@@ -71,7 +75,12 @@ function segmentDistance(p: Point, a: kit.Projected, b: kit.Projected): number {
   return Math.hypot(p[0] - (a.x + dx * t), p[1] - (a.y + dy * t));
 }
 /** A row's item. */
-export function itemOf(kind: 'area' | 'line', source: Data, type: string, position: number): GeographyItem {
+export function itemOf(
+  kind: 'area' | 'line',
+  source: Data,
+  type: string,
+  position: number,
+): GeographyItem {
   const table = source.tables[type];
   return { kind, source, index: table.index, row: rowAt(table.rows, position) };
 }

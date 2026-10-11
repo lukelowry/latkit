@@ -6,7 +6,8 @@ Use a WebGPU-capable browser and an ESM bundler such as Vite.
 npm install @latkit/model @latkit/gpu @latkit/network
 ```
 
-Add `@latkit/monitor`, `@latkit/diagram`, `@latkit/video`, or `@latkit/connect` as needed.
+Add `@latkit/geography`, `@latkit/monitor`, `@latkit/diagram`, `@latkit/video`, or
+`@latkit/connect` as needed.
 
 ```ts
 import { createGpu } from '@latkit/gpu';
@@ -36,9 +37,11 @@ pnpm --filter @latkit/network-example dev
 
 Each dev command builds its dependencies first.
 
-| Example | Filter                    | URL                   |
-| ------- | ------------------------- | --------------------- |
-| Network | `@latkit/network-example` | http://127.0.0.1:5188 |
-| Monitor | `@latkit/monitor-example` | http://127.0.0.1:5190 |
-| Diagram | `@latkit/diagram-example` | http://127.0.0.1:5192 |
-| Video   | `@latkit/video-example`   | http://127.0.0.1:5194 |
+| Example      | Filter                    | URL                   |
+| ------------ | ------------------------- | --------------------- |
+| Network      | `@latkit/network-example` | http://127.0.0.1:5188 |
+| Monitor      | `@latkit/monitor-example` | http://127.0.0.1:5190 |
+| Diagram      | `@latkit/diagram-example` | http://127.0.0.1:5192 |
+| Video        | `@latkit/video-example`   | http://127.0.0.1:5194 |
+| Colors       | `@latkit/colors-example`  | http://127.0.0.1:5196 |
+| Linked views | `@latkit/linked-example`  | http://127.0.0.1:5198 |

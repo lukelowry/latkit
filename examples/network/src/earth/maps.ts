@@ -48,7 +48,10 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
         ),
         fetched = performance.now();
       progress('parsing in a worker…');
-      const data = await geojson(new TextDecoder().decode(buffer), { type: 'State', id: 'adm1_code' });
+      const data = await geojson(new TextDecoder().decode(buffer), {
+        type: 'State',
+        id: 'adm1_code',
+      });
       return {
         states: { data, type: 'State' },
         summary: `${(received / 1e6).toFixed(1)} MB in ${seconds(started)} · parsed in ${seconds(fetched)}`,

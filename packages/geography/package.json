@@ -1,7 +1,7 @@
 {
   "name": "@latkit/geography",
   "version": "0.0.0",
-  "description": "The earth and what lies on it, over the shared Latkit GPU pipeline: ground, areas, lines, and imagery from Data, packs, or tiles.",
+  "description": "The earth and what lies on it, over the shared Latkit GPU pipeline: ground, areas, lines, and labels from Data, packs, or vector tiles.",
   "type": "module",
   "repository": {
     "type": "git",

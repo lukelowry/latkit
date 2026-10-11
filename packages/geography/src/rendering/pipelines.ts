@@ -8,7 +8,7 @@ import labelsSource from './labels.wgsl';
 /** The kit's projection, then the geography's bindings over it, which every drawing module includes. */
 const common = kit.projectionShader() + commonSource;
 /** Floats of the geography's style block. */
-export const STYLE_FLOATS = 28;
+export const STYLE_FLOATS = 32;
 /** Floats of the style block's members. */
 export const S = {
   surface: 0,
@@ -18,6 +18,7 @@ export const S = {
   selected: 16,
   glow: 20,
   halo: 24,
+  axis: 28,
 } as const;
 
 /**
@@ -110,7 +111,8 @@ export async function pipelines(
       depthStencil: {
         format: 'depth32float',
         depthWriteEnabled: options.depth === 'write',
-        depthCompare: options.depth === 'write' || options.depth === 'test' ? 'less-equal' : 'always',
+        depthCompare:
+          options.depth === 'write' || options.depth === 'test' ? 'less-equal' : 'always',
       },
       multisample: { count: msaa },
     });
@@ -165,7 +167,10 @@ export async function pipelines(
     ),
     text: later(async () =>
       render(
-        await gpu.shaderModule(common + kit.textShader({ group: 1 }) + labelsSource, 'geography labels'),
+        await gpu.shaderModule(
+          common + kit.textShader({ group: 1 }) + labelsSource,
+          'geography labels',
+        ),
         'label_vertex',
         'label_fragment',
         [label, gpu.textLayout],

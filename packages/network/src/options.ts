@@ -19,6 +19,7 @@ export interface NetworkStyle {
   readonly edgeWidthPx?: number;
   /** How high a `z` of 1 draws: 15% of the data's extent on a plane, and 8% of the globe's radius, times this. */
   readonly zScale?: number;
+  /** How far a dash and the gap after it run, in CSS pixels. */
   readonly dashPeriodPx?: number;
   /** Edges joining the same two vertices draw this many CSS pixels apart; 0 draws them over each other. */
   readonly edgeSpacingPx?: number;

@@ -8,6 +8,7 @@
     "packages/diagram",
     "packages/monitor",
     "packages/network",
+    "packages/geography",
     "packages/connect",
     "packages/video"
   ],

@@ -1,14 +1,15 @@
 # Package responsibilities
 
-| Package   | Owns                                                      |
-| --------- | --------------------------------------------------------- |
-| `model`   | Data contracts, native columns, bounded reads, validation |
-| `connect` | Transport, remote acquisitions, cancellation              |
-| `gpu`     | Views, layout, field uploads, text, colors, submission    |
-| `network` | Network geometry, cameras, picking                        |
-| `monitor` | Trace geometry, axes, progressive history                 |
-| `diagram` | Diagram geometry, routing, ports, editing proposals       |
-| `video`   | Encoding and container output                             |
+| Package     | Owns                                                       |
+| ----------- | ---------------------------------------------------------- |
+| `model`     | Data contracts, native columns, bounded reads, validation  |
+| `connect`   | Transport, remote acquisitions, cancellation               |
+| `gpu`       | Views, layout, projections, field uploads, text, colors    |
+| `network`   | Network geometry, routes, picking                          |
+| `geography` | Shape preparation, levels of detail, tiles, packs, picking |
+| `monitor`   | Trace geometry, axes, progressive history                  |
+| `diagram`   | Diagram geometry, routing, ports, editing proposals        |
+| `video`     | Encoding and container output                              |
 
 Applications own data and its history, canvases, storage, and the GPU's lifetime. Views borrow
 sources and the GPU; several views share one GPU.
@@ -33,8 +34,8 @@ neither, its images. Video, and images of a view that presents elsewhere, are ex
 the view's current state and advance none of it.
 
 `kit.BaseView` carries this lifecycle for every built-in view. `kit.BaseItemView` adds the camera,
-selection, picking, hover, and shades that network, monitor, and diagram share, so each supplies
-only its geometry and gestures. A custom `kit.Renderer` keeps captured inputs stable until
+selection, picking, hover, and shades that network, geography, monitor, and diagram share, so each
+supplies only its geometry and gestures. A custom `kit.Renderer` keeps captured inputs stable until
 `release`, and settles each prepared frame once, with `submitted` or `discard`.
 
 ## Work per frame
@@ -54,3 +55,5 @@ the columns of one read. The CPU reads a row's channel as WGSL does, so picking 
 the GPU draws.
 
 Network and diagram share one graph, `kit.Graph`, and one [layout](views.md#layout), `kit.place`.
+Network and geography share one projection, `kit.Projector`, in TypeScript and WGSL, so a geography
+draws beneath a network in its pass, and a gesture the graph leaves reaches it.

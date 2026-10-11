@@ -15,15 +15,17 @@ override FOCUS:bool=false;
 /** A vertex bank's draw: the dense address of its first row, and its rows. */
 struct VertexDraw { base: u32, rows: u32 }
 /**
- * An edge batch's draw: the dense address of its bank's first row, whether it reads dash phases,
- * and the dense addresses of its end banks' first rows.
+ * An edge batch's draw: the dense address of its bank's first row; whether its segments read dash
+ * prefixes (1) and run straight (2); the dense addresses of its end banks' first rows; and, curved,
+ * its first piece.
  */
-struct EdgeDraw { base: u32, dashed: u32, aBase: u32, bBase: u32 }
+struct EdgeDraw { base: u32, flags: u32, aBase: u32, bBase: u32, pieces: u32 }
 @group(0) @binding(5) var<uniform> vertexDraw: VertexDraw;
 @group(0) @binding(5) var<uniform> edgeDraw: EdgeDraw;
 @group(0) @binding(7) var<storage,read> focused:array<u32>;
-@group(0) @binding(8) var<storage,read> curveInstances:array<vec4u>;
-@group(0) @binding(9) var<storage,read> dashPhases:array<f32>;
+@group(0) @binding(8) var<storage,read> curvePieces:array<vec4u>;
+/** A routed edge's segments' distances along it before each, where its dashes carry on from. */
+@group(0) @binding(9) var<storage,read> prefixes:array<f32>;
 struct Varying {
   @builtin(position) position:vec4f,
   @location(0) @interpolate(linear) uv:vec2f,
@@ -135,25 +137,33 @@ struct MarkerVarying {
   var result:PaintOut;result.color=vec4f(0.0,0.0,0.0,alpha);result.depth=billboardDepth(v.position,u);
   return result;
 }
+/** Whether a curved draw's segments run straight in longitude and latitude, rather than along great circles. */
+fn straight_route()->bool {return (edgeDraw.flags&2u)!=0u;}
+/** A segment's ends, as its end banks' records hold them; only a curve reads their longitudes and latitudes. */
+fn ends_of(segment:vec4u)->Ends {
+  let ab=segment.x*5u;let bb=segment.y*5u;
+  if(!NETWORK_CURVES){return Ends(a[ab+4u].xyz,b[bb+4u].xyz,vec2f(0.0),vec2f(0.0));}
+  return Ends(a[ab+4u].xyz,b[bb+4u].xyz,a[ab+1u].xy,b[bb+1u].xy);
+}
 /**
  * The screen normal of an edge's curve at `t`, which its lane follows so its pieces meet. A flat
  * map's longitudes jump a turn at the seam, where the curve itself does not.
  */
-fn curve_normal(start:vec3f,end:vec3f,t:f32)->vec2f {
-  let before=curve_world(start,end,max(t-0.001,0.0),u);
-  let after=curve_world(start,end,min(t+0.001,1.0),u);
+fn curve_normal(e:Ends,t:f32)->vec2f {
+  let before=curve_world(e,max(t-0.001,0.0),straight_route(),u);
+  let after=curve_world(e,min(t+0.001,1.0),straight_route(),u);
   var d=after-before;
   if(u.view.w<1.5){d.x-=360.0*round(d.x/360.0);}
-  let at=curve_world(start,end,t,u);
+  let at=curve_world(e,t,straight_route(),u);
   let s=screen(project_world(at+d*0.5,u))-screen(project_world(at-d*0.5,u));
   let l=length(s);
   if(l<0.000001){return vec2f(0.0);}
   return vec2f(-s.y,s.x)/l;
 }
 /** A segment's direction on screen: a curve's at `t`, a straight one's from end to end. */
-fn heading(start:vec3f,end:vec3f,t:f32)->vec2f {
-  if(NETWORK_CURVES){let n=curve_normal(start,end,t);return vec2f(n.y,-n.x);}
-  let d=screen(project_world(end,u))-screen(project_world(start,u));let l=length(d);
+fn heading(e:Ends,t:f32)->vec2f {
+  if(NETWORK_CURVES){let n=curve_normal(e,t);return vec2f(n.y,-n.x);}
+  let d=screen(project_world(e.b,u))-screen(project_world(e.a,u));let l=length(d);
   return select(vec2f(0.0),d/l,l>0.000001);
 }
 /**
@@ -164,33 +174,39 @@ fn arriving(primitive:u32,segment:vec4u)->vec2f {
   if(primitive==0u||edgeDraw.aBase!=edgeDraw.bBase){return vec2f(0.0);}
   let before=segments[primitive-1u];
   if(before.z!=segment.z||before.y!=segment.x){return vec2f(0.0);}
-  return heading(a[before.x*5u+4u].xyz,b[before.y*5u+4u].xyz,1.0);
+  return heading(ends_of(before),1.0);
 }
 /** Where a row's line leaves a segment's end, on the segment after it, or zero at a true end. */
 fn leaving(primitive:u32,segment:vec4u)->vec2f {
   if(primitive+1u>=arrayLength(&segments)||edgeDraw.aBase!=edgeDraw.bBase){return vec2f(0.0);}
   let after=segments[primitive+1u];
   if(after.z!=segment.z||after.x!=segment.y){return vec2f(0.0);}
-  return heading(a[after.x*5u+4u].xyz,b[after.y*5u+4u].xyz,0.0);
+  return heading(ends_of(after),0.0);
 }
 /** How far a neighbor along a focused line reaches: as a line of its direction where it meets this one. */
 const ONWARD:f32=10000.0;
 /** A line's piece: its vertex, whether it draws, and where its line runs, for a focused piece's neighbors. */
-struct EdgePiece {out:Varying,drawn:bool,primitive:u32,segment:vec4u,ends:mat2x3f,interval:vec2f,split:u32,clipping:vec2f,dir:vec2f}
+struct EdgePiece {out:Varying,drawn:bool,primitive:u32,segment:vec4u,ends:Ends,interval:vec2f,split:u32,clipping:vec2f,dir:vec2f}
 fn edge(v:u32,drawn:u32)->EdgePiece {
   var piece:EdgePiece;piece.out=hidden();
   var interval=vec2f(0.0,1.0);var split=0u;var phase=0.0;var primitive=drawn;
-  if(NETWORK_CURVES){let instance=curveInstances[drawn];primitive=instance.x;interval=vec2f(bitcast<f32>(instance.y),bitcast<f32>(instance.z));split=instance.w&3u;phase=bitcast<f32>(instance.w&0xfffffffcu);}
+  if(NETWORK_CURVES){
+    let instance=curvePieces[edgeDraw.pieces+drawn];
+    if(instance.x==0xffffffffu){return piece;}
+    primitive=instance.x;interval=vec2f(bitcast<f32>(instance.y),bitcast<f32>(instance.z));split=instance.w&3u;phase=bitcast<f32>(instance.w&0xfffffffcu);
+  }
   let segment=segments[primitive];
-  var prefix=0.0;if(edgeDraw.dashed>0u){prefix=dashPhases[primitive];}
+  var prefix=0.0;if((edgeDraw.flags&1u)!=0u){prefix=prefixes[primitive];}
   let ab=segment.x*5u;let bb=segment.y*5u;let es=segment.z*3u;
   var p=a[ab];var q=b[bb];let ai=a[ab+3u];let bi=b[bb+3u];
   let info=styles[es+1u];let motion=styles[es+2u];
   if(a[ab+4u].w<0.5||b[bb+4u].w<0.5||motion.w<=0.001){return piece;}
-  var wa=a[ab+4u].xyz;var wb=b[bb+4u].xyz;
-  let ends=mat2x3f(wa,wb);
-  if(NETWORK_CURVES){
-    wa=curve_world(ends[0],ends[1],interval.x,u);wb=curve_world(ends[0],ends[1],interval.y,u);
+  let ends=ends_of(segment);
+  var wa=ends.a;var wb=ends.b;
+  // A curve drawn as one piece runs between its ends, already placed; only a curve's pieces are
+  // found along it.
+  if(NETWORK_CURVES&&(interval.x>0.0||interval.y<1.0||split!=0u)){
+    wa=curve_world(ends,interval.x,straight_route(),u);wb=curve_world(ends,interval.y,straight_route(),u);
     let pair=curve_segment(wa,wb,split,u);wa=pair[0];wb=pair[1];
     p=project_world(wa,u);q=project_world(wb,u);
   }
@@ -213,7 +229,7 @@ fn edge(v:u32,drawn:u32)->EdgePiece {
     let along=normalize(eb-ea+vec2f(0.000001,0.0));
     var na=vec2f(-along.y,along.x);var nb=na;
     if(NETWORK_CURVES){
-      na=curve_normal(ends[0],ends[1],interval.x);nb=curve_normal(ends[0],ends[1],interval.y);
+      na=curve_normal(ends,interval.x);nb=curve_normal(ends,interval.y);
       if(split==1u){nb=na;}
       if(split==2u){na=nb;}
     }
@@ -222,8 +238,13 @@ fn edge(v:u32,drawn:u32)->EdgePiece {
     q.x+=nb.x*lane*2.0/u.view.x*q.w;q.y-=nb.y*lane*2.0/u.view.y*q.w;
   }
   let sa=screen(p);let sb=screen(q);let delta=sb-sa;let lengthPx=max(0.001,length(delta));
-  // Earlier segments of a dashed edge, in world units, at this piece's own screen scale.
-  phase+=prefix*lengthPx/max(length(wb-wa)*(clipping.y-clipping.x),0.000001);
+  // Earlier segments of a dashed edge, at this piece's own screen scale: on the globe in degrees of
+  // arc, on a plane in its own units. Only a routed edge has any.
+  if(prefix>0.0){
+    var units=length(wb-wa);
+    if(u.view.w>1.5){units=curve_angle(wa,wb,u)*57.295779513;}
+    phase+=prefix*lengthPx/max(units*(clipping.y-clipping.x),0.000001);
+  }
   let dir=delta/lengthPx;let perpendicular=vec2f(-dir.y,dir.x);let c=corner(v);
   let t=(c.x+1.0)*0.5;let offset=(dir*c.x+perpendicular*c.y)*reach;
   var pos=mix(p,q,t);
@@ -233,7 +254,7 @@ fn edge(v:u32,drawn:u32)->EdgePiece {
   var out:Varying;out.position=pos;out.uv=vec2f(mix(-reach,lengthPx+reach,t),c.y*reach);
   out.dimensions=vec4f(lengthPx,width,glow,info.w);out.color=color;
   out.identity=vec4u(1u,row,f,0u);out.world=mix(wa,wb,mix(clipping.x,clipping.y,t));
-  out.extra=vec4f(info.y,select(0.0,1.0,segment.w>0u||NETWORK_CURVES),phase,motion.w);
+  out.extra=vec4f(info.y,select(0.0,1.0,NETWORK_CURVES),phase,motion.w);
   // A marker at a true end, as hover has grown it, hides the line under it, and comets fade before
   // reaching it.
   let markerA=select(0.0,grown(ai.x,edgeDraw.aBase+segment.x),u.markers!=0u);
@@ -259,12 +280,12 @@ fn edge(v:u32,drawn:u32)->EdgePiece {
   var before=vec2f(STROKE_NONE,0.0);var after=vec2f(STROKE_NONE,0.0);
   if(piece.split!=2u&&piece.clipping.x==0.0){
     var arrives=arriving(piece.primitive,piece.segment);
-    if(interval.x>0.0){arrives=heading(ends[0],ends[1],interval.x);}
+    if(interval.x>0.0){arrives=heading(ends,interval.x);}
     if(any(arrives!=vec2f(0.0))){before=-vec2f(dot(arrives,dir),dot(arrives,across))*ONWARD;}
   }
   if(piece.split!=1u&&piece.clipping.y==1.0){
     var leaves=leaving(piece.primitive,piece.segment);
-    if(interval.y<1.0){leaves=heading(ends[0],ends[1],interval.y);}
+    if(interval.y<1.0){leaves=heading(ends,interval.y);}
     if(any(leaves!=vec2f(0.0))){after=vec2f(lengthPx,0.0)+vec2f(dot(leaves,dir),dot(leaves,across))*ONWARD;}
   }
   piece.out.beside=vec4f(before,after);

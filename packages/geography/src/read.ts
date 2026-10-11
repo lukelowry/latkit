@@ -20,7 +20,9 @@ export function rowsOf(source: Data, type: string): number {
 /** A vector lane at a position of a vector column, as a list addresses it. */
 function lane(column: Column, position: number, component: number): number {
   if (column.kind !== 'vector') return NaN;
-  return column.values.values[column.values.offset + (column.offset + position) * column.size + component];
+  return column.values.values[
+    column.values.offset + (column.offset + position) * column.size + component
+  ];
 }
 /** Shapes as they gather, row by row: parts of points. */
 class Gathered {
@@ -83,7 +85,9 @@ export async function readShapes(
     throw failure('invalid-input', `No ${field} field on ${type}`);
   if (pages) {
     // Each row's cell, by its place among the table's rows.
-    const cells: ({ readonly column: Column; readonly at: number } | undefined)[] = new Array(rows),
+    const cells: ({ readonly column: Column; readonly at: number } | undefined)[] = new Array<
+        { readonly column: Column; readonly at: number } | undefined
+      >(rows),
       first = table.rows.kind === 'range' ? table.rows.offset : -1,
       places =
         table.rows.kind === 'indices'

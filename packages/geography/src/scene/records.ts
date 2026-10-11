@@ -72,7 +72,10 @@ export class RecordStyles {
     if (!found)
       this.bindings.set(
         options,
-        (found = kit.bindChannels(options, kinds as Readonly<Record<ChannelName, kit.ChannelKind>>)),
+        (found = kit.bindChannels(
+          options,
+          kinds as Readonly<Record<ChannelName, kit.ChannelKind>>,
+        )),
       );
     return found;
   }
@@ -99,7 +102,11 @@ export class RecordStyles {
     color: RGBA,
     width: number,
   ): Styled {
-    return { constant: this.constant(this.bind(options, kinds), color, width), dispatches: [], commit() {} };
+    return {
+      constant: this.constant(this.bind(options, kinds), color, width),
+      dispatches: [],
+      commit() {},
+    };
   }
   async prepare(
     frame: kit.Preparation,
@@ -125,7 +132,11 @@ export class RecordStyles {
     const read = await frame.memo<Read>(entry, deps, async (f) => {
       const select = Object.keys(bound.fields),
         pages: kit.GpuPage[] = [];
-      for await (const tile of f.reader.fields({ source: values, from: type, fields: bound.fields }))
+      for await (const tile of f.reader.fields({
+        source: values,
+        from: type,
+        fields: bound.fields,
+      }))
         for (const page of f.upload(tile, { select, float64: 'relative' })) pages.push(page);
       const channels = {} as Record<ChannelName, kit.ResolvedChannel>;
       for (const name of Object.keys(FALLBACK) as ChannelName[]) {
@@ -198,7 +209,11 @@ export class RecordStyles {
     };
   }
   /** Encode a frame's dispatches, in one compute pass. */
-  encode(encoder: GPUCommandEncoder, pipeline: GPUComputePipeline, styled: readonly Styled[]): void {
+  encode(
+    encoder: GPUCommandEncoder,
+    pipeline: GPUComputePipeline,
+    styled: readonly Styled[],
+  ): void {
     if (!styled.some((s) => s.dispatches.length)) return;
     const pass = encoder.beginComputePass({ label: 'geography records' });
     pass.setPipeline(pipeline);
@@ -230,7 +245,7 @@ export class RecordStyles {
     let byOptions = this.entries.get(values);
     if (!byOptions) this.entries.set(values, (byOptions = new WeakMap()));
     let byType = byOptions.get(options);
-    if (!byType) byOptions.set(options, (byType = new Map()));
+    if (!byType) byOptions.set(options, (byType = new Map<string, Entry>()));
     let entry = byType.get(type);
     if (!entry) byType.set(type, (entry = { used: this.frames }));
     return entry;

@@ -49,7 +49,10 @@ export interface Paint {
     readonly index?: GPUBuffer;
     readonly ranges: readonly number[];
   }[];
-  readonly labels: readonly { readonly group: GPUBindGroup; readonly pages: readonly kit.TextPage[] }[];
+  readonly labels: readonly {
+    readonly group: GPUBindGroup;
+    readonly pages: readonly kit.TextPage[];
+  }[];
   readonly styled: readonly Styled[];
   readonly color?: GPUTextureView;
   readonly depth?: GPUTextureView;
@@ -129,6 +132,7 @@ export class Painter {
       S.glow,
     );
     s.set([...style.surfaceColor.slice(0, 3), 2], S.halo);
+    s.set(style.earthAxisColor, S.axis);
     this.style.update(s);
     const styleBinding = frame.buffer(this.style),
       empty = frame.buffer(this.empty),
@@ -155,10 +159,14 @@ export class Painter {
         floats = new Float32Array(words.buffer);
       floats.set(c.color, 0);
       floats.set([c.width, c.shade, c.visible ? 1 : 0, c.dash ? 1 : 0], 4);
-      words.set([styled.records ? 1 : 0, draw.map ? 1 : 0, draw.hovered, draw.selection ? 1 : 0], 8);
+      words.set(
+        [styled.records ? 1 : 0, draw.map ? 1 : 0, draw.hovered, draw.selection ? 1 : 0],
+        8,
+      );
       words[12] = prepared.shapes.levels[draw.level].strips.length;
       let byRecord = this.draws.get(prepared.buffers);
-      if (!byRecord) this.draws.set(prepared.buffers, (byRecord = new Map()));
+      if (!byRecord)
+        this.draws.set(prepared.buffers, (byRecord = new Map<string, kit.BufferData>()));
       const name = `${kind}\u0000${draw.type}`;
       let uniform = byRecord.get(name);
       if (!uniform)

@@ -63,7 +63,9 @@ class TileFrame {
     return ((this.x + px / this.extent) / this.n) * 360 - 180;
   }
   lat(py: number): number {
-    return Math.atan(Math.sinh(Math.PI * (1 - (2 * (this.y + py / this.extent)) / this.n))) / DEGREE;
+    return (
+      Math.atan(Math.sinh(Math.PI * (1 - (2 * (this.y + py / this.extent)) / this.n))) / DEGREE
+    );
   }
 }
 
@@ -175,7 +177,10 @@ class Gather {
 }
 
 /** Decode a vector tile's requested layers: clipped to the tile, prepared, with their rows. */
-export function decodeVector(request: VectorRequest): { tile: VectorTile; transfer: ArrayBuffer[] } {
+export function decodeVector(request: VectorRequest): {
+  tile: VectorTile;
+  transfer: ArrayBuffer[];
+} {
   const decoded = new Map(decodeTile(request.bytes).map((layer) => [layer.name, layer])),
     layers: VectorLayer[] = [],
     types: [string, TypeDefinition][] = [],
@@ -263,7 +268,8 @@ function layerRows(
   const kinds = new Map<string, 'number' | 'boolean' | 'text'>();
   for (const row of all)
     for (const [name, value] of Object.entries(row)) {
-      const kind = typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'boolean' : 'text',
+      const kind =
+          typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'boolean' : 'text',
         before = kinds.get(name);
       kinds.set(name, before === undefined || before === kind ? kind : 'text');
     }
@@ -278,7 +284,9 @@ function layerRows(
     });
     if (kind === 'number') {
       const values = new Float64Array(all.length);
-      all.forEach((row, i) => (values[i] = typeof row[name] === 'number' ? (row[name] as number) : 0));
+      all.forEach(
+        (row, i) => (values[i] = typeof row[name] === 'number' ? (row[name] as number) : 0),
+      );
       columns[name] = {
         kind: 'numeric',
         offset: 0,
@@ -301,7 +309,9 @@ function layerRows(
       };
       fields[name] = { type: 'boolean', ...(missing ? { nullable: true } : {}) };
     } else {
-      columns[name] = textColumn(all.map((row) => (row[name] === undefined ? null : String(row[name]))));
+      columns[name] = textColumn(
+        all.map((row) => (row[name] === undefined ? null : String(row[name]))),
+      );
       fields[name] = { type: 'text', ...(missing ? { nullable: true } : {}) };
     }
   }

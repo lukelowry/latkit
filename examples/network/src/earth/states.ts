@@ -47,7 +47,12 @@ const peak = (values: Float32Array) => values.reduce((top, value) => Math.max(to
 /** Each state's id, bounds, and rings, where they meet `within`: west, south, east, north. */
 async function statesOf(data: Data, type: string, within: readonly number[]): Promise<State[]> {
   const found: State[] = [];
-  for await (const block of read(data, { kind: 'rows', from: type, select: ['rings'], ids: true })) {
+  for await (const block of read(data, {
+    kind: 'rows',
+    from: type,
+    select: ['rings'],
+    ids: true,
+  })) {
     if (block.kind !== 'rows') continue;
     const column = block.columns.rings as ListColumn | undefined;
     if (!column) continue;
@@ -57,7 +62,11 @@ async function statesOf(data: Data, type: string, within: readonly number[]): Pr
       if (!bitAt(column.validity, column.offset + i)) continue;
       const rings: Float64Array[] = [],
         bounds: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
-      for (let r = column.offsets[column.offset + i]!; r < column.offsets[column.offset + i + 1]!; r++) {
+      for (
+        let r = column.offsets[column.offset + i]!;
+        r < column.offsets[column.offset + i + 1]!;
+        r++
+      ) {
         const start = ringList.offsets[r]!,
           end = ringList.offsets[r + 1]!,
           ring = Float64Array.from(points.values.subarray(start * 2, end * 2));
@@ -69,7 +78,12 @@ async function statesOf(data: Data, type: string, within: readonly number[]): Pr
         }
         rings.push(ring);
       }
-      if (bounds[0] > within[2]! || bounds[2] < within[0]! || bounds[1] > within[3]! || bounds[3] < within[1]!)
+      if (
+        bounds[0] > within[2]! ||
+        bounds[2] < within[0]! ||
+        bounds[1] > within[3]! ||
+        bounds[3] < within[1]!
+      )
         continue;
       found.push({ id: block.ids ? (textAt(block.ids, i) ?? '') : '', bounds, rings });
     }
@@ -93,7 +107,11 @@ function inside(state: State, x: number, y: number): boolean {
 }
 
 /** The grid's figures per state, as rows of the areas' type with the states' ids. */
-export async function stateValues(states: Data, type: string, grid: GridCase): Promise<StateValues> {
+export async function stateValues(
+  states: Data,
+  type: string,
+  grid: GridCase,
+): Promise<StateValues> {
   const { positions, simulation } = grid,
     extent = [Infinity, Infinity, -Infinity, -Infinity];
   for (let b = 0; b < grid.buses; b++) {

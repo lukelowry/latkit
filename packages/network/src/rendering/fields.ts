@@ -183,7 +183,10 @@ export async function readFields(
   })) {
     native.push(tile);
     const bends = tile.columns.bends;
-    if (bends && (bends.kind !== 'list' || bends.values.kind !== 'vector' || bends.values.size !== 2))
+    if (
+      bends &&
+      (bends.kind !== 'list' || bends.values.kind !== 'vector' || bends.values.size !== 2)
+    )
       throw failure('invalid-input', 'Bends require lists of two-component numeric vectors');
     for (const page of frame.upload(tile, { select, float64: 'relative' }))
       pages.push({ page, offset: page.rowOffset });

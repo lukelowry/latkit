@@ -7,7 +7,8 @@
 [![CI](https://github.com/lukelowry/latkit/actions/workflows/ci.yml/badge.svg)](https://github.com/lukelowry/latkit/actions/workflows/ci.yml)
 [![Documentation Status](https://readthedocs.org/projects/latkit/badge/?version=latest)](https://latkit.readthedocs.io/en/latest/)
 
-TypeScript tools for WebGPU network views, time-series plots, block diagrams, and video export.
+TypeScript tools for WebGPU network views, maps, time-series plots, block diagrams, and video
+export.
 
 [Documentation](https://latkit.readthedocs.io/en/latest/) · [API reference](https://latkit.readthedocs.io/en/latest/api/index.html) · [Examples](examples)
 
@@ -39,20 +40,21 @@ network.destroy(); // never closes the source or the GPU
 ```
 
 `source` is a `Data` from [`@latkit/model`](packages/model). `canvas` needs a CSS size; the network
-draws on it and handles its input. Monitors and diagrams work the same way; see
+draws on it and handles its input. Geographies, monitors, and diagrams work the same way; see
 [views](https://latkit.readthedocs.io/en/latest/views.html).
 
 ## Packages
 
-| Package                     | Use                                                |
-| --------------------------- | -------------------------------------------------- |
-| [model](packages/model)     | Columnar data, bounded reads, the `Model` contract |
-| [connect](packages/connect) | Carry a model across a WebSocket                   |
-| [gpu](packages/gpu)         | The shared GPU, compositions, and colors           |
-| [network](packages/network) | Vertices, edges, and paths, flat or on a globe     |
-| [monitor](packages/monitor) | Time-series plots and live telemetry               |
-| [diagram](packages/diagram) | Block diagrams with layout, routing, and editing   |
-| [video](packages/video)     | MP4 and WebM export                                |
+| Package                         | Use                                                |
+| ------------------------------- | -------------------------------------------------- |
+| [model](packages/model)         | Columnar data, bounded reads, the `Model` contract |
+| [connect](packages/connect)     | Carry a model across a WebSocket                   |
+| [gpu](packages/gpu)             | The shared GPU, compositions, and colors           |
+| [network](packages/network)     | Vertices and edges, flat or on a globe             |
+| [geography](packages/geography) | The earth beneath: areas, lines, and vector tiles  |
+| [monitor](packages/monitor)     | Time-series plots and live telemetry               |
+| [diagram](packages/diagram)     | Block diagrams with layout, routing, and editing   |
+| [video](packages/video)         | MP4 and WebM export                                |
 
 ## Develop
 

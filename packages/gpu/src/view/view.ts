@@ -329,8 +329,10 @@ export abstract class BaseView<
       }
     }
     if (previous.paused !== next.paused) {
-      if (next.paused) this.#stopFrame(new DOMException('View paused', 'AbortError'));
-      else this.invalidate();
+      if (next.paused) {
+        this.#stopFrame(new DOMException('View paused', 'AbortError'));
+        this.paused();
+      } else this.invalidate();
     }
     if (previous.at !== next.at) this.invalidate();
   }
@@ -663,6 +665,8 @@ export abstract class BaseView<
     return {};
   }
   /** Base-class step before configure; views implement configure instead. */
+  /** The view paused: let go of background work that serves only presented frames. */
+  protected paused(): void {}
   protected changed(previous: Config, next: Config, options: SetOptions): void {
     void previous;
     void next;

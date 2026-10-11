@@ -1,6 +1,6 @@
 # @latkit/network
 
-Draw a model's vertices, edges, and paths with WebGPU: flat, tilted, or on a globe.
+Draw a model's vertices and edges with WebGPU: flat, tilted, or on a globe, over a map.
 
 ```sh
 npm install @latkit/gpu @latkit/network

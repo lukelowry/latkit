@@ -57,7 +57,10 @@ it.each(['wecc240', 'activsg2000', 'activsg10k', 'activsg25k', 'activsg70k'])(
     expect(simulation.largest).toBeGreaterThan(0);
     expect(
       after.some(
-        (b) => b.kind === 'rows' && b.columns.speed?.kind === 'numeric' && b.columns.speed.values.some((v) => v !== 0),
+        (b) =>
+          b.kind === 'rows' &&
+          b.columns.speed?.kind === 'numeric' &&
+          b.columns.speed.values.some((v) => v !== 0),
       ),
     ).toBe(true);
   },
@@ -71,7 +74,9 @@ it('reads the borders as coasts, countries, and provinces', async () => {
   try {
     const data = await loadBorders(new AbortController().signal, () => {});
     for (const type of ['Coast', 'Country', 'Province'])
-      expect(counted(await blocks(data, { kind: 'rows', from: type, select: ['points'] }))).toBeGreaterThan(100);
+      expect(
+        counted(await blocks(data, { kind: 'rows', from: type, select: ['points'] })),
+      ).toBeGreaterThan(100);
   } finally {
     globalThis.fetch = fetched;
   }
@@ -79,12 +84,12 @@ it('reads the borders as coasts, countries, and provinces', async () => {
 
 it('builds the stress lattice in valid rows', async () => {
   const built = lattice('lattice-100k');
-  expect(counted(await blocks(built.data, { kind: 'rows', from: 'Bus', select: ['position', 'load'] }))).toBe(
-    100_000,
-  );
-  expect(counted(await blocks(built.data, { kind: 'rows', from: 'Line', select: ['from', 'to'] }))).toBe(
-    built.lines,
-  );
+  expect(
+    counted(await blocks(built.data, { kind: 'rows', from: 'Bus', select: ['position', 'load'] })),
+  ).toBe(100_000);
+  expect(
+    counted(await blocks(built.data, { kind: 'rows', from: 'Line', select: ['from', 'to'] })),
+  ).toBe(built.lines);
 });
 
 it('counts each state the grid reaches, and the swing of its machines', async () => {
@@ -99,20 +104,35 @@ it('counts each state the grid reaches, and the swing of its machines', async ()
         State: {
           fields: {
             rings: {
-              type: { kind: 'list', items: { kind: 'list', items: { kind: 'vector', size: 2, items: 'float64' } } },
+              type: {
+                kind: 'list',
+                items: { kind: 'list', items: { kind: 'vector', size: 2, items: 'float64' } },
+              },
               geographic: true,
             },
           },
         },
       },
     },
-    [rows({ source: 'squares', type: 'State', version: '1' }, 2, { rings }, textColumn(['west', 'east']))],
+    [
+      rows(
+        { source: 'squares', type: 'State', version: '1' },
+        2,
+        { rings },
+        textColumn(['west', 'east']),
+      ),
+    ],
   );
   const values = await stateValues(states, 'State', grid);
   expect(values.states).toBe(2);
   expect(values.peaks.buses).toBeGreaterThan(0);
   expect(values.peaks.swing).toBeGreaterThan(0);
-  const found = await blocks(values.data, { kind: 'rows', from: 'State', select: ['buses'], ids: true });
+  const found = await blocks(values.data, {
+    kind: 'rows',
+    from: 'State',
+    select: ['buses'],
+    ids: true,
+  });
   let total = 0;
   for (const block of found)
     if (block.kind === 'rows' && block.columns.buses?.kind === 'numeric')

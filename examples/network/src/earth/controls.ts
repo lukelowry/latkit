@@ -67,13 +67,21 @@ export function choose(
   return select;
 }
 /** Replace a select's choices, keeping its value where it still is one. */
-export function rechoose(select: HTMLSelectElement, choices: readonly Choice[], value: string): void {
+export function rechoose(
+  select: HTMLSelectElement,
+  choices: readonly Choice[],
+  value: string,
+): void {
   select.replaceChildren(...choices.map((c) => new Option(c.label, c.value)));
   select.value = choices.some((c) => c.value === value) ? value : (choices[0]?.value ?? '');
 }
 
 /** A button that toggles. */
-export function toggle(label: string, on: boolean, change: (on: boolean) => void): HTMLButtonElement {
+export function toggle(
+  label: string,
+  on: boolean,
+  change: (on: boolean) => void,
+): HTMLButtonElement {
   const button = element('button', { type: 'button', className: 'toggle' }, label);
   let state = on;
   const show = () => {
@@ -111,16 +119,22 @@ export interface LegendEntry {
   readonly label: string;
   readonly color: string;
 }
+/** A colormap from one end's label to the other's. */
+export interface LegendRamp {
+  readonly colormap: Colormap;
+  readonly from: string;
+  readonly to: string;
+}
 /** A key to what colors mean: a colormap from one end to the other, or one swatch per category. */
 export function legend(
   parent: HTMLElement,
-): (key: { colormap: Colormap; from: string; to: string } | readonly LegendEntry[] | null) => void {
+): (key: LegendRamp | readonly LegendEntry[] | null) => void {
   const root = element('div', { className: 'legend' });
   parent.append(root);
   return (key) => {
     root.hidden = !key;
     if (!key) return root.replaceChildren();
-    if (Array.isArray(key)) {
+    if (!('colormap' in key)) {
       root.replaceChildren(
         ...key.map((entry) =>
           element(
@@ -133,7 +147,7 @@ export function legend(
       );
       return;
     }
-    const { colormap, from, to } = key as { colormap: Colormap; from: string; to: string },
+    const { colormap, from, to } = key,
       ramp = element('span', { className: 'ramp' });
     ramp.style.background = colormapCss(colormap, { direction: 'to right' });
     root.replaceChildren(element('span', {}, from), ramp, element('span', {}, to));
@@ -186,7 +200,10 @@ export function button(label: string, click: () => void): HTMLButtonElement {
   return b;
 }
 /** A grid of named numbers, updated in place. */
-export function stats(parent: HTMLElement, names: readonly string[]): (values: Record<string, string>) => void {
+export function stats(
+  parent: HTMLElement,
+  names: readonly string[],
+): (values: Record<string, string>) => void {
   const cells = new Map<string, HTMLElement>(),
     grid = element('dl', { className: 'stats' });
   for (const name of names) {

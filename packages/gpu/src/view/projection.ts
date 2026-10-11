@@ -533,8 +533,5 @@ function writeLight(into: Float32Array, at: number, light: Light | null): void {
     into.fill(0, at, at + 8);
     return;
   }
-  into.set(
-    [...light.sun, 1, light.nightFloor, Math.max(0.0001, light.terminatorWidth), 0, 0],
-    at,
-  );
+  into.set([...light.sun, 1, light.nightFloor, Math.max(0.0001, light.terminatorWidth), 0, 0], at);
 }

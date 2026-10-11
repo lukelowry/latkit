@@ -63,6 +63,7 @@ export type {
 } from './types.js';
 export { failure, isFailure } from './error.js';
 export { Work, interruptible } from './work.js';
+export type { WorkPriority } from './work.js';
 export { blockBuffers, blockByteLength } from './buffers.js';
 export { validateSchema } from './validation/schema.js';
 export { validateQuery } from './validation/query.js';

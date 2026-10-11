@@ -7,7 +7,15 @@
 import { colormaps, createGpu, type Colormap, type Projection, type RGBA } from '@latkit/gpu';
 import { createNetwork, type NetworkConfig } from '@latkit/network';
 import { createGeography, type GeographyConfig } from '@latkit/geography';
-import { BUS_COLORS, GRIDS, SPEED, VOLTAGE_LEGEND, gridOptions, type BusColor, type Grid } from './grids.js';
+import {
+  BUS_COLORS,
+  GRIDS,
+  SPEED,
+  VOLTAGE_LEGEND,
+  gridOptions,
+  type BusColor,
+  type Grid,
+} from './grids.js';
 import { MAPS, type MapLoaded } from './maps.js';
 import { STATE_FIELDS, stateValues, type StateField, type StateValues } from './states.js';
 import { Inspector } from './inspector.js';
@@ -61,7 +69,8 @@ function fail(error: unknown): void {
 }
 
 async function main(): Promise<void> {
-  const gpu = await createGpu();
+  // The million-bus lattice holds about 400 MB on the GPU, past the default budget.
+  const gpu = await createGpu({ budget: { gpuBytes: 1024 ** 3 } });
   const state = {
     grid: GRIDS[0]!,
     loaded: undefined as Grid | undefined,
@@ -131,7 +140,9 @@ async function main(): Promise<void> {
   }
   const controller = new AbortController();
   status(`${state.grid.label}: loading…`);
-  state.loaded = await state.grid.load(controller.signal, (m) => status(`${state.grid.label}: ${m}`));
+  state.loaded = await state.grid.load(controller.signal, (m) =>
+    status(`${state.grid.label}: ${m}`),
+  );
   const network = createNetwork(gpu, {
     ...gridConfig(state.loaded),
     camera: { projection: 'globe', fit: true },
@@ -178,7 +189,10 @@ async function main(): Promise<void> {
     ),
   );
   const colorSelect = choose(
-    (Object.keys(BUS_COLORS) as BusColor[]).map((value) => ({ value, label: BUS_COLORS[value].label })),
+    (Object.keys(BUS_COLORS) as BusColor[]).map((value) => ({
+      value,
+      label: BUS_COLORS[value].label,
+    })),
     state.color,
     (value) => {
       state.color = value as BusColor;
@@ -501,7 +515,9 @@ async function main(): Promise<void> {
   refreshProjections();
   await loadMap(state.map.id).catch(fail);
   status(`${state.grid.label} · ${state.loaded.summary}`);
-  Object.assign(window, { example: { gpu, network, earth, state, loadMap, loadGrid, seek, setPlaying } });
+  Object.assign(window, {
+    example: { gpu, network, earth, state, loadMap, loadGrid, seek, setPlaying },
+  });
   const dispose = () => {
     controller.abort();
     gridLoad?.abort();

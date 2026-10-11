@@ -414,7 +414,8 @@ export function prepareShapes(input: ShapesInput): Shapes {
     rows = rowParts.length - 1,
     source = wrapped(input),
     partRows = new Uint32Array(source.parts.length - 1);
-  for (let r = 0; r < rows; r++) for (let p = rowParts[r]; p < rowParts[r + 1]; p++) partRows[p] = r;
+  for (let r = 0; r < rows; r++)
+    for (let p = rowParts[r]; p < rowParts[r + 1]; p++) partRows[p] = r;
   const cut = closed ? cutRings(source) : cutLines(source),
     { coordinates: xy, parts } = cut,
     points = parts[parts.length - 1],
@@ -464,7 +465,8 @@ export function prepareShapes(input: ShapesInput): Shapes {
   // Every cut point is a vertex, in order; levels add the points they densify and fill with.
   const vertices = new Vertices(points * 1.25 + 64, origin);
   for (let p = 0; p < cutRows.length; p++)
-    for (let i = parts[p]; i < parts[p + 1]; i++) vertices.add(xy[2 * i], xy[2 * i + 1], cutRows[p]);
+    for (let i = parts[p]; i < parts[p + 1]; i++)
+      vertices.add(xy[2 * i], xy[2 * i + 1], cutRows[p]);
   const pieces: Piece[] = closed
     ? polygons(cut, cutRows, firstSign)
     : Array.from(cutRows, (row, p) => ({ row, rings: [p], bounds: boundsOf(cut, [p]) }));
@@ -473,7 +475,7 @@ export function prepareShapes(input: ShapesInput): Shapes {
     areas = full ? new Float64Array(points).fill(Infinity) : simplificationAreas(cut, closed);
   // Candidate levels keep points down to a sixteenth of the area of the one before. A level stays
   // only where the next it keeps holds several times its points, so levels cost little beside the
-  // finest, which keeps every point.
+  // finest, which leaves out only points in line with their neighbors.
   const kept: number[] = [];
   for (let k = 0; k < (full ? 0 : MAX_LEVELS); k++) {
     const tolerance = COARSEST / STEP ** k;
@@ -588,7 +590,9 @@ function anchorsOf(
   pieces.forEach((piece, i) => {
     const [w, s, e, n] = piece.bounds,
       size = closed
-        ? Math.abs(shoelace(cut.coordinates, cut.parts[piece.rings[0]], cut.parts[piece.rings[0] + 1]))
+        ? Math.abs(
+            shoelace(cut.coordinates, cut.parts[piece.rings[0]], cut.parts[piece.rings[0] + 1]),
+          )
         : Math.hypot(e - w, n - s);
     if (size > best[piece.row]) {
       best[piece.row] = size;
@@ -697,7 +701,11 @@ class Level {
       for (const t of triangles) out.push(ids[t]);
       return;
     }
-    for (const id of this.refine(Array.from(triangles, (t) => ids[t]), piece.row)) out.push(id);
+    for (const id of this.refine(
+      Array.from(triangles, (t) => ids[t]),
+      piece.row,
+    ))
+      out.push(id);
   }
   /**
    * Triangles whose edges all span at most `SPLIT` degrees, so none cuts beneath the globe: each

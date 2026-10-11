@@ -52,6 +52,18 @@ export function geodesic(a: Point, b: Point, t: number): Point {
     a[2] + (b[2] - a[2]) * t,
   ];
 }
+/**
+ * The point `t` of the way along a route between two geographic points: the great circle, or
+ * straight in longitude and latitude the short way round, as the GPU draws them.
+ */
+export function routePoint(route: 'straight' | 'geodesic', a: Point, b: Point, t: number): Point {
+  if (route === 'geodesic') return geodesic(a, b, t);
+  return [a[0] + longitude(b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+/** The degrees of arc between two geographic points. */
+export function arc(a: Point, b: Point): number {
+  return Math.acos(Math.max(-1, Math.min(1, dot(unit(a), unit(b))))) / DEG;
+}
 function lookup(read: FieldRead): RowLookup<FieldsBlock> {
   const result = new RowLookup<FieldsBlock>();
   for (const tile of read.native) result.add(tile.rows, tile);
@@ -135,7 +147,7 @@ export class Routes {
     let bytes = native.bytes,
       segments = 0,
       points = 0,
-      branch = 0;
+      branches = 0;
     const charge = (n: number) => {
       bytes += n;
       if (bytes > limits.geometryBytes)
@@ -169,13 +181,11 @@ export class Routes {
         segments += original.batches.reduce((n, b) => n + b.records.length / 4, 0);
         continue;
       }
-      if (options.route === 'geodesic' && !native.geographic)
-        throw failure('invalid-input', 'Geodesics require geographic coordinates');
       const read = reads.edges.get(original)!,
         fields = lookup(read);
       const groups = new Map<
         string,
-        { a: VertexBank; b: VertexBank; values: number[]; order: number[] }
+        { a: VertexBank; b: VertexBank; values: number[]; prefixes: number[]; order: number[] }
       >();
       let sequence = 0;
       let coordinates: number[] = [],
@@ -239,73 +249,60 @@ export class Routes {
         charge(40);
         return { bank: active, offset, point: p };
       };
-      const segment = (a: Address, b: Address, owner: number, branch: number) => {
+      /** A segment of an owner's branch, `along` it from where its dashes start. */
+      const segment = (a: Address, b: Address, owner: number, branch: number, along: number) => {
         if (++segments > limits.segments)
           throw failure('resource-limit', 'Network segment limit exceeded');
-        charge(48);
+        charge(52);
         const key = a.bank.id + ':' + b.bank.id;
         let group = groups.get(key);
         if (!group) {
-          group = { a: a.bank, b: b.bank, values: [], order: [] };
+          group = { a: a.bank, b: b.bank, values: [], prefixes: [], order: [] };
           groups.set(key, group);
         }
         group.values.push(a.offset, b.offset, owner, branch);
+        group.prefixes.push(along);
         group.order.push(sequence++);
       };
+      /** How far apart two points lie: degrees of arc on the earth, the data's units on a plane. */
+      const span = (a: Point, b: Point) =>
+        native.geographic ? arc(a, b) : Math.hypot(b[0] - a[0], b[1] - a[1]);
+      /** A branch of segments through an owner's points, in order, its dashes carrying on along it. */
       const trace = (controls: (Address | Point)[], owner: number) => {
-        let previous: Address | undefined;
-        const currentBranch = ++branch;
-        for (let c = 0; c < controls.length; c++) {
-          const control = controls[c],
-            target = 'bank' in control ? control : addPoint(control);
+        const branch = ++branches;
+        let previous: Address | undefined,
+          along = 0;
+        for (const control of controls) {
+          const target = 'bank' in control ? control : addPoint(control);
           if (!target.point.every(Number.isFinite)) {
             previous = undefined;
             continue;
           }
-          if (!previous) {
-            previous = target;
-            continue;
-          }
-          const start = previous,
-            a = start.point,
-            b = target.point;
-          let steps = 1;
-          if (native.geographic && options.route !== 'geodesic') {
-            const angle = Math.acos(Math.max(-1, Math.min(1, dot(unit(a), unit(b))))) / DEG;
-            steps = Math.max(1, Math.ceil(angle));
-          }
-          for (let s = 1; s <= steps; s++) {
-            const t = s / steps;
-            const p: Point =
-              options.route === 'geodesic'
-                ? b
-                : [
-                    a[0] + (native.geographic ? longitude(b[0] - a[0]) : b[0] - a[0]) * t,
-                    a[1] + (b[1] - a[1]) * t,
-                    a[2] + (b[2] - a[2]) * t,
-                  ];
-            let next = s === steps ? target : addPoint(p);
+          if (previous) {
+            const a = previous.point,
+              b = target.point;
+            // A straight line on a flat map crosses the antimeridian at the map's edge, as two
+            // segments; the curves the GPU draws split there themselves.
             if (
               native.geographic &&
               options.route !== 'geodesic' &&
-              Math.abs(longitude(previous!.point[0]) - longitude(p[0])) > 180
+              Math.abs(longitude(a[0]) - longitude(b[0])) > 180
             ) {
-              const pa = previous!.point,
-                x = longitude(pa[0]),
-                y = longitude(p[0]);
-              const seam = x > 0 ? 180 : -180,
-                adjusted = y + (x > 0 ? 360 : -360),
-                k = (seam - x) / (adjusted - x);
-              const lat = pa[1] + (p[1] - pa[1]) * k,
-                h = pa[2] + (p[2] - pa[2]) * k;
-              const end = addPoint([seam, lat, h]);
-              segment(previous!, end, owner, currentBranch);
+              const x = longitude(a[0]),
+                y = longitude(b[0]),
+                seam = x > 0 ? 180 : -180,
+                k = (seam - x) / (y + (x > 0 ? 360 : -360) - x),
+                lat = a[1] + (b[1] - a[1]) * k,
+                h = a[2] + (b[2] - a[2]) * k,
+                end = addPoint([seam, lat, h]);
+              segment(previous, end, owner, branch, along);
+              along += span(a, end.point);
               previous = addPoint([-seam, lat, h]);
-              next = addPoint([y, p[1], p[2]]);
             }
-            segment(previous!, next, owner, currentBranch);
-            previous = next;
+            segment(previous, target, owner, branch, along);
+            along += span(previous.point, b);
           }
+          previous = target;
         }
       };
       const list = (tile: FieldsBlock, name: string, row: number): Point[] => {
@@ -368,21 +365,13 @@ export class Routes {
         }
       }
       flush();
-      const ordered = [...groups.values()],
-        order = new Uint32Array(sequence * 2);
-      ordered.forEach((group, batch) =>
-        group.order.forEach((sequence, offset) => {
-          order[sequence * 2] = batch;
-          order[sequence * 2 + 1] = offset;
-        }),
-      );
-      charge(order.byteLength + sequence * 4);
+      charge(sequence * 4);
       const bank = {
         ...original,
-        order,
-        batches: ordered.map((g) => ({
+        batches: [...groups.values()].map((g) => ({
           ...segmentBatch(g.a, g.b, Uint32Array.from(g.values)),
           order: Uint32Array.from(g.order),
+          prefixes: Float32Array.from(g.prefixes),
         })),
       };
       origins.set(bank, original);

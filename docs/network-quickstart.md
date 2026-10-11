@@ -1,6 +1,6 @@
 # Network
 
-Draw a model's vertices, edges, and paths: flat, tilted, or on a globe.
+Draw a model's vertices and edges: flat, tilted, or on a globe, over a map.
 
 ```ts
 import { createNetwork } from '@latkit/network';
@@ -35,6 +35,20 @@ supports.
 
 Drag pans, and right- or Shift-drag turns, tilting a flat camera. Arrows pan and Shift-arrows turn.
 Under `input: 'inspect'`, arrows step the selection to its neighbor in that direction.
+
+An edge between geographic points takes the shortest way over the earth: along the great circle on
+the globe, and straight in longitude and latitude on a flat map. `route: 'straight'` or
+`'geodesic'` holds one on every projection.
+
+## Map beneath
+
+```ts
+const ground = createGeography(gpu, { source: borders, lines: { Border: {} } });
+network.set({ geography: ground });
+```
+
+A [geography](geography-quickstart.md) draws the earth beneath the graph, in the same pass, and its
+sun lights the graph too.
 
 ## Layout
 
@@ -86,13 +100,13 @@ setInterval(() => network.set({ source: next() }, { animate: true }), 500);
 
 An animated patch eases on the GPU, so a wedge sweeps and a color crosses over. New rows ease in
 from nothing, and a transition the GPU budget cannot hold steps instead. `flowPx` moves comets
-along an edge or path, and a new speed carries on from where they are. Hover grows a vertex by
+along an edge, and a new speed carries on from where they are. Hover grows a vertex by
 `hoverScale`. Reduced motion also holds comets still and stops orbiting.
 
 ## Style
 
 ```ts
-network.set({ edgeWidthPx: 2, grid: true, daylight: true, sunTime: 'now' });
+network.set({ edgeWidthPx: 2, shadows: true });
 ```
 
 Style options sit on the config beside the data; [views](views.md#style) lists the shared ones. By
@@ -104,9 +118,9 @@ over the rest.
 
 ## Limits
 
-On a flat camera, `pick` and hover query hit-test indexes, built in the background once positions
-hold still. They take about 21 bytes per vertex or edge, so the default 64 MiB
-`limits.pickingBytes` fits a million vertices and two million edges. Past that, or on a tilted or
-globe camera, they scan every item.
+`pick` and hover query hit-test indexes on every projection, built in the background once the
+positions and the camera hold still. They take about 21 bytes per vertex or edge, so the default
+64 MiB `limits.pickingBytes` fits a million vertices and two million edges. Past that, or while `z`
+raises rows, they scan every item.
 
 [API](https://latkit.readthedocs.io/en/latest/api/reference/network/index.html)

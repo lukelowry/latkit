@@ -15,7 +15,12 @@ interface Thread {
   readonly waiting: number[];
   ready: boolean;
 }
-type Reply = { ready?: true; id?: number; result?: unknown; error?: { code: string; message: string } };
+type Reply = {
+  ready?: true;
+  id?: number;
+  result?: unknown;
+  error?: { code: string; message: string };
+};
 /** At most this many workers: preparing and decoding run in parallel, up to the cores spared. */
 const MAX_THREADS = 4;
 let threads: Thread[] | null | undefined;
@@ -29,7 +34,7 @@ function inline(job: Job): Promise<unknown> {
       try {
         resolve(runJob(job).result);
       } catch (error) {
-        reject(error);
+        reject(error as Error);
       }
     }, 0),
   );
@@ -83,9 +88,14 @@ function start(): Thread {
   };
   return thread;
 }
+/** Start the workers ahead of their first job, so they boot while the view sets up. */
+export function warm(): void {
+  pool();
+}
 function post(thread: Thread, id: number): void {
   const pending = thread.pending.get(id);
-  if (pending) thread.worker.postMessage({ id, job: pending.job }, pending.transfer as Transferable[]);
+  if (pending)
+    thread.worker.postMessage({ id, job: pending.job }, pending.transfer as Transferable[]);
 }
 
 /**
@@ -104,14 +114,19 @@ export function run<K extends Job['kind']>(
         let thread = workers[0];
         for (const t of workers) if (t.pending.size < thread.pending.size) thread = t;
         const id = ++serial;
-        thread.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, job, transfer });
+        thread.pending.set(id, {
+          resolve: resolve as (value: unknown) => void,
+          reject,
+          job,
+          transfer,
+        });
         if (thread.ready) post(thread, id);
         else thread.waiting.push(id);
       })
     : (inline(job) as Promise<JobResults[K]>);
   if (!signal) return done;
   return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
+    const abort = () => reject(signal.reason as Error);
     signal.addEventListener('abort', abort, { once: true });
     done.then(
       (value) => {
@@ -120,7 +135,7 @@ export function run<K extends Job['kind']>(
       },
       (error: unknown) => {
         signal.removeEventListener('abort', abort);
-        reject(error);
+        reject(error as Error);
       },
     );
   });

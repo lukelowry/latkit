@@ -36,10 +36,17 @@ import { Labels, type LabelSource } from './scene/labels.js';
 import { RecordStyles } from './scene/records.js';
 import { Sources, type Prepared, type VectorTileData } from './scene/sources.js';
 import type { Placed } from './scene/pyramid.js';
-import { levelFor, pixelsPerDegree, visibleRanges, visibleRegion } from './scene/visible.js';
+import {
+  levelFor,
+  pixelsPerDegree,
+  visibleRanges,
+  visibleRegion,
+  type Region,
+} from './scene/visible.js';
 import type { VectorLayerRequest } from './sources/vector.js';
 import { Painter, type Paint, type ShapeDraw } from './rendering/painter.js';
 import { pipelines, type Pipelines } from './rendering/pipelines.js';
+import { warm } from './prepare/client.js';
 
 const { Projector } = kit;
 const NONE = 0xffffffff;
@@ -78,8 +85,13 @@ export interface GeographyStats extends ViewStats {
 }
 type Records = 'areas' | 'lines';
 type Merged = 'camera' | 'input' | 'limits';
-export interface Geography
-  extends ItemView<GeographyConfig, GeographyItem, GeographyItem, ProjectedCamera, GeographyEvents> {
+export interface Geography extends ItemView<
+  GeographyConfig,
+  GeographyItem,
+  GeographyItem,
+  ProjectedCamera,
+  GeographyEvents
+> {
   set(patch: Patch<GeographyConfig, Records, Merged>, options?: SetOptions): void;
   stats(): GeographyStats;
 }
@@ -110,9 +122,17 @@ interface Frame {
   readonly drawn: readonly Drawn[];
   readonly commits: readonly (() => void)[];
   readonly live: Parameters<Sources['keep']>[0];
-  readonly counts: { readonly vertices: number; readonly triangles: number; readonly drawCalls: number };
+  readonly counts: {
+    readonly vertices: number;
+    readonly triangles: number;
+    readonly drawCalls: number;
+  };
 }
 
+/** Shapes prepare in workers: they start as a config names any, so its first frame finds them running. */
+function warmFor(config: GeographyConfig): void {
+  if (Object.keys(config.areas ?? {}).length || Object.keys(config.lines ?? {}).length) warm();
+}
 class GeographyView
   extends kit.BaseItemView<
     GeographyConfig,
@@ -165,6 +185,7 @@ class GeographyView
       limits: () => this.resolved.limits,
     });
     this.start();
+    warmFor(config);
   }
   private get style(): Style {
     return this.resolved.style;
@@ -294,6 +315,7 @@ class GeographyView
       next.config.lines !== previous.config.lines
     )
       this.pruneSelection();
+    warmFor(next.config);
     this.invalidate();
   }
   protected get pending(): Promise<void> | undefined {
@@ -334,10 +356,16 @@ class GeographyView
       }
     }
     if (!(w <= e)) return undefined;
-    const { center, scale } = Projector.fit(camera, [w, s, e, n], viewport, this.style.fitPaddingPx, {
-      pitch: 0,
-      bearing: 0,
-    });
+    const { center, scale } = Projector.fit(
+      camera,
+      [w, s, e, n],
+      viewport,
+      this.style.fitPaddingPx,
+      {
+        pitch: 0,
+        bearing: 0,
+      },
+    );
     return { center, scale };
   }
   private tileSets(config: GeographyConfig): TileSet[] {
@@ -346,7 +374,10 @@ class GeographyView
       if (isTiles(source)) out.add(source);
     };
     add(config.source);
-    for (const options of [...Object.values(config.areas ?? {}), ...Object.values(config.lines ?? {})])
+    for (const options of [
+      ...Object.values(config.areas ?? {}),
+      ...Object.values(config.lines ?? {}),
+    ])
       add(options.source);
     return [...out];
   }
@@ -388,9 +419,10 @@ class GeographyView
     this.records.destroy();
   }
 
-  /** Each record's shapes this frame, from Data, a pack, or the vector tiles in view. */
+  /** Each record's shapes this frame, from Data, a pack, or the vector tiles over the region in view. */
   private plan(
     projector: kit.Projector,
+    region: Region,
     config: GeographyConfig,
     live: Frame['live'],
   ): Planned[] {
@@ -408,7 +440,8 @@ class GeographyView
       const source = entry[2].source ?? config.source;
       if (!isTiles(source) || this.sources.opened(source)?.kind !== 'vector') continue;
       let layers = requests.get(source);
-      if (!layers) requests.set(source, (layers = new Map()));
+      if (!layers)
+        requests.set(source, (layers = new Map<string, { rings: boolean; lines: boolean }>()));
       const layer = layers.get(entry[1]) ?? { rings: false, lines: false };
       if (closedOf(entry)) layer.rings = true;
       else layer.lines = true;
@@ -423,7 +456,7 @@ class GeographyView
         seen = new Set<string>(),
         tilesDrawn: Placed<VectorTileData>[] = [];
       // An ancestor standing in for several tiles draws once.
-      for (const tile of pyramid.frame(projector)) {
+      for (const tile of pyramid.frame(projector, region)) {
         const key = `${tile.from.z}/${tile.from.x}/${tile.from.y}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -466,11 +499,15 @@ class GeographyView
         for (const tile of placed.get(source) ?? []) {
           const layer = tile.data.layers.get(type),
             prepared = closed ? layer?.rings : layer?.lines;
-          if (prepared) planned.push({ kind, type, options, data: tile.data.data, prepared, whole: true });
+          if (prepared)
+            planned.push({ kind, type, options, data: tile.data.data, prepared, whole: true });
         }
     }
     // Areas draw beneath lines, each kind in its records' order.
-    return [...planned.filter((p) => p.kind === 'area'), ...planned.filter((p) => p.kind === 'line')];
+    return [
+      ...planned.filter((p) => p.kind === 'area'),
+      ...planned.filter((p) => p.kind === 'line'),
+    ];
   }
   /** Each row space's selection bits, built once per selection. */
   private selected(data: Data, type: string): kit.BufferData | undefined {
@@ -485,7 +522,7 @@ class GeographyView
         const rows = table.rows,
           at = rows.kind === 'range' ? item.row - rows.offset : rows.values.indexOf(item.row);
         let byType = positions.get(item.source);
-        if (!byType) positions.set(item.source, (byType = new Map()));
+        if (!byType) positions.set(item.source, (byType = new Map<string, number[]>()));
         const list = byType.get(item.index.type) ?? [];
         list.push(at);
         byType.set(item.index.type, list);
@@ -494,10 +531,13 @@ class GeographyView
         for (const [name, list] of byType) {
           const words = new Uint32Array(Math.max(4, Math.ceil((Math.max(...list) + 1) / 32)));
           for (const at of list) if (at >= 0) words[at >>> 5] |= 1 << (at & 31);
-          const buffer = new kit.BufferData({ size: words.byteLength, label: 'geography selection' });
+          const buffer = new kit.BufferData({
+            size: words.byteLength,
+            label: 'geography selection',
+          });
           buffer.write({ data: words });
           let byName = bits.get(source);
-          if (!byName) bits.set(source, (byName = new Map()));
+          if (!byName) bits.set(source, (byName = new Map<string, kit.BufferData>()));
           byName.set(name, buffer);
         }
       this.selectionBits = { selection, bits };
@@ -518,7 +558,7 @@ class GeographyView
       region = visibleRegion(projector),
       pixels = pixelsPerDegree(projector),
       live: Frame['live'] = { shapes: new Set(), vectors: new Set(), packs: new Set() };
-    const planned = this.plan(projector, config, live),
+    const planned = this.plan(projector, region, config, live),
       drawn: Drawn[] = planned.map((p) => ({
         kind: p.kind,
         source: p.data,
@@ -526,12 +566,16 @@ class GeographyView
         shapes: p.prepared.shapes,
         halfWidth:
           p.kind === 'line'
-            ? this.records.constant(this.records.bind(p.options, LINE), style.lineColor, style.lineWidthPx)
-                .width / 2
+            ? this.records.constant(
+                this.records.bind(p.options, LINE),
+                style.lineColor,
+                style.lineWidthPx,
+              ).width / 2
             : 0,
       }));
-    const hover = this.hoverFrame(frame, (point, radius, { check }) =>
-      pick(drawn, projector, point, radius, 1, check)[0] ?? null,
+    const hover = this.hoverFrame(
+      frame,
+      (point, radius, { check }) => pick(drawn, projector, point, radius, 1, check)[0] ?? null,
     );
     const shapes: ShapeDraw[] = [],
       commits: (() => void)[] = [],
@@ -567,7 +611,9 @@ class GeographyView
           hover && hover.kind === kind && hover.source === data && hover.index.type === type
             ? (() => {
                 const rows = data.tables[type].rows;
-                return rows.kind === 'range' ? hover.row - rows.offset : rows.values.indexOf(hover.row);
+                return rows.kind === 'range'
+                  ? hover.row - rows.offset
+                  : rows.values.indexOf(hover.row);
               })()
             : NONE;
       shapes.push({
@@ -581,7 +627,8 @@ class GeographyView
         selection: bits && frame.buffer(bits),
         hovered,
       });
-      if (options.labels) labels.push({ data, type, shapes: prepared.shapes, labels: options.labels });
+      if (options.labels)
+        labels.push({ data, type, shapes: prepared.shapes, labels: options.labels });
     }
     const batches = labels.length
       ? await this.labels.prepare(frame, this.gpu, labels, projector, region, pixels, style)

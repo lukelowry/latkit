@@ -108,6 +108,5 @@ struct Axis { @builtin(position) position: vec4f, @location(0) side: f32 }
   return out;
 }
 @fragment fn axis_fragment(v: Axis) -> @location(0) vec4f {
-  let alpha = (1.0 - smoothstep(0.4, 1.0, abs(v.side))) * 0.65;
-  return vec4f(vec3f(0.6, 0.75, 0.86) * alpha, alpha);
+  return premultiplied(u.axis * vec4f(1.0, 1.0, 1.0, 1.0 - smoothstep(0.4, 1.0, abs(v.side))));
 }

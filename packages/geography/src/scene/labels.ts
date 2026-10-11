@@ -92,12 +92,12 @@ export class Labels {
         })) {
           assertIndex(table.index, block.index);
           const column = block.columns.label;
-          if (column && column.kind !== 'text') throw failure('invalid-input', 'Labels require text fields');
+          if (column && column.kind !== 'text')
+            throw failure('invalid-input', 'Labels require text fields');
           for (let i = 0; i < rowCount(block.rows); i++) {
             const position = wanted.get(rowAt(block.rows, i));
             if (position === undefined) continue;
-            const text =
-              column && bitAt(block.presence.label, i) ? (textAt(column, i) ?? '') : '';
+            const text = column && bitAt(block.presence.label, i) ? (textAt(column, i) ?? '') : '';
             entry.layouts.set(
               position,
               await gpu.layoutText(
@@ -160,7 +160,10 @@ export class Labels {
         continue;
       }
       for (let k = pieces[node]; k < pieces[node + 1]; k++) {
-        const size = Math.max(bounds[k * 4 + 2] - bounds[k * 4], bounds[k * 4 + 3] - bounds[k * 4 + 1]),
+        const size = Math.max(
+            bounds[k * 4 + 2] - bounds[k * 4],
+            bounds[k * 4 + 3] - bounds[k * 4 + 1],
+          ),
           position = shapes.pieces[k * 3];
         if (size < smallest || seen.has(position)) continue;
         if (!meets(region, bounds[k * 4], bounds[k * 4 + 1], bounds[k * 4 + 2], bounds[k * 4 + 3]))
