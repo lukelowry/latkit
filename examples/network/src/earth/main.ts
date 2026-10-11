@@ -97,6 +97,9 @@ async function main(): Promise<void> {
       surfaceColor: THEME.ground,
       areaColor: THEME.fill,
       lineColor: THEME.line,
+      // Rivers' comets glint in the water's own color, far apart, beneath the grid's.
+      flowColor: [0.5, 0.72, 1, 0.5],
+      flowSpacingPx: 96,
       graticule: state.graticule,
       atmosphere: state.atmosphere,
       daylight: state.daylight === 'off' ? false : state.daylight === 'now' ? 'now' : NOON,

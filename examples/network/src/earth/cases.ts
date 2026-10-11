@@ -1,6 +1,5 @@
 /**
- * Synthetic grid cases and Natural Earth borders, as the page loads them from `public/grids`, each
- * file gzip-compressed.
+ * Synthetic grid cases, as the page loads them from `public/grids`, each file gzip-compressed.
  *
  * A case file holds a "LKG1" magic and a u32 header length, then a JSON header naming the case and
  * its counts, then typed arrays on eight-byte boundaries past the header, where its `arrays` place
@@ -10,9 +9,6 @@
  * by frame as int16 of `speedScale` per unit, `dt` seconds apart, and the fault the simulation
  * applied.
  *
- * The borders file holds a u32 header length and a JSON header of layers, each a type and its line
- * and point counts, then every layer's line starts as u32, then every layer's points as float32
- * longitude and latitude: coasts, countries, and provinces.
  */
 import {
   appendData,
@@ -22,7 +18,7 @@ import {
   type Index,
   type Schema,
 } from '@latkit/model';
-import { flags, lists, numeric, references, rows, text, vector } from '../shared/columns.js';
+import { flags, numeric, references, rows, text, vector } from '../shared/columns.js';
 import { download, type Progress } from './download.js';
 
 interface Header {
@@ -279,49 +275,4 @@ export async function loadCase(
     progress,
   );
   return readCase(id, buffer, received);
-}
-
-/** Natural Earth's coasts, countries, and provinces, as lines: a type each, a line per row. */
-export const BORDERS = ['Coast', 'Country', 'Province'] as const;
-export async function loadBorders(signal: AbortSignal, progress: Progress): Promise<Data> {
-  const { buffer } = await download(
-      `${import.meta.env.BASE_URL}grids/borders.bin`,
-      signal,
-      progress,
-    ),
-    length = new DataView(buffer).getUint32(0, true),
-    { layers } = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, length))) as {
-      readonly layers: readonly {
-        readonly type: string;
-        readonly lines: number;
-        readonly points: number;
-      }[];
-    };
-  let at = 4 + length;
-  const starts = layers.map(({ lines }) => {
-    const view = new Int32Array(buffer, at, lines + 1);
-    at += view.byteLength;
-    return view;
-  });
-  const points = layers.map((layer) => {
-    const view = new Float32Array(buffer, at, layer.points * 2);
-    at += view.byteLength;
-    return view;
-  });
-  if (at !== buffer.byteLength) throw new Error('The borders file is not whole');
-  const field = { type: { kind: 'list', items: POSITION.type }, geographic: true } as const;
-  return createData(
-    { types: Object.fromEntries(BORDERS.map((type) => [type, { fields: { points: field } }])) },
-    BORDERS.map((type) => {
-      const k = layers.findIndex((layer) => layer.type === type);
-      if (k < 0) throw new Error(`The borders file has no ${type} lines`);
-      return rows(
-        { source: 'natural-earth-borders', type, version: '5.1.2' },
-        starts[k]!.length - 1,
-        {
-          points: lists(starts[k]!, vector(points[k]!)),
-        },
-      );
-    }),
-  );
 }

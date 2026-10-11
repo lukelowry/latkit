@@ -16,7 +16,6 @@ export type { FrameInfo, Viewport } from './frame/render.js';
 export type {
   ItemView,
   ItemViewConfig,
-  ItemViewOptions,
   ItemEvents,
   ViewCamera,
   ViewInput,

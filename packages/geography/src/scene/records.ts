@@ -3,9 +3,9 @@ import { kit, type Gpu, type RGBA } from '@latkit/gpu';
 import { rowsOf } from '../read.js';
 import type { ChannelName } from '../options.js';
 
-/** Bytes of a page's uniform slot: its header and five channels. */
+/** Bytes of a page's uniform slot: its header and six channels. */
 const SLOT_WORDS = 64;
-/** Bytes a values row's record holds: its color, then its width, shade, shown, and dashed. */
+/** Bytes a values row's record holds: its color, then its width, shade, shown and dashed, and flow. */
 const RECORD_BYTES = 32;
 /** A record unused for this many presented frames lets go of its buffer. */
 const IDLE_FRAMES = 240;
@@ -17,6 +17,8 @@ export interface Constant {
   readonly shade: number;
   readonly visible: boolean;
   readonly dash: boolean;
+  /** How fast comets move along a line, in CSS pixels a second; 0 draws none. */
+  readonly flow: number;
 }
 interface Dispatch {
   readonly fields: GPUBindGroup;
@@ -49,6 +51,7 @@ const FALLBACK: Readonly<Record<ChannelName, number>> = {
   visible: 1,
   shade: 0,
   dash: 0,
+  flowPx: 0,
 };
 
 /**
@@ -93,6 +96,7 @@ export class RecordStyles {
       shade: number('shade', 0),
       visible: number('visible', 1) > 0,
       dash: number('dash', 0) > 0,
+      flow: number('flowPx', 0),
     };
   }
   /** A record drawn by its constants alone, as it waits on the rows its values join. */
@@ -186,6 +190,7 @@ export class RecordStyles {
       kit.writeChannel(words, 24, read.channels.visible, page);
       kit.writeChannel(words, 32, read.channels.shade, page);
       kit.writeChannel(words, 40, read.channels.dash, page);
+      kit.writeChannel(words, 48, read.channels.flowPx, page);
       dispatches.push({
         fields: page.bindGroup,
         colors,

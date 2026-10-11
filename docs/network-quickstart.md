@@ -30,8 +30,9 @@ Each `Bus` draws at its `longitude` and `latitude`, which the schema marks `geog
 network.set({ camera: { projection: 'globe', orbit: true } });
 ```
 
-The globe needs geographic positions; `network.projections` says which projections the data
-supports.
+Geographic positions start on the mercator plane, as a [geography](geography-quickstart.md) does,
+and others on the flat plane. The globe needs geographic positions; `network.projections` says
+which projections the data supports.
 
 Drag pans, and right- or Shift-drag turns, tilting a flat camera. Arrows pan and Shift-arrows turn.
 Under `input: 'inspect'`, arrows step the selection to its neighbor in that direction.

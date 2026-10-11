@@ -18,7 +18,14 @@ import {
   type Positions,
   type Viewport,
 } from '@latkit/gpu';
-import { Work, failure, sameIndex, type RequestOptions, type TypeDefinition } from '@latkit/model';
+import {
+  Work,
+  failure,
+  sameIndex,
+  type Data,
+  type RequestOptions,
+  type TypeDefinition,
+} from '@latkit/model';
 import {
   networkData,
   networkKey,
@@ -64,6 +71,8 @@ const { Projector, PROJECTIONS } = kit;
 const grounds = new WeakMap<object, Map<View, kit.Layer>>();
 
 export interface NetworkConfig extends ItemViewConfig, NetworkStyle {
+  /** Borrowed: destroy never closes it. */
+  readonly source: Data;
   /** Drawn types by model type name. */
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
@@ -199,7 +208,7 @@ function checkData(config: NetworkConfig): NetworkData {
   for (const vertex of Object.values(data.vertices)) {
     if (vertex.marker !== undefined) kit.checkMarker(vertex.marker);
     channels(vertex, VERTEX);
-    checkLabels(vertex.labels);
+    kit.resolveLabels(vertex.labels);
   }
   for (const [type, edge] of Object.entries(data.edges ?? {})) {
     if (
@@ -215,7 +224,7 @@ function checkData(config: NetworkConfig): NetworkData {
     if (edge.route && !['straight', 'geodesic'].includes(edge.route))
       throw failure('invalid-input', 'Invalid route: ' + type);
     channels(edge, LINE);
-    checkLabels(edge.labels);
+    kit.resolveLabels(edge.labels);
   }
   return data;
 }
@@ -224,16 +233,6 @@ const NO_LAYOUT: LayoutOptions = Object.freeze({});
 function checkLayout(layout: LayoutOptions | undefined): LayoutOptions {
   kit.layoutOptions(layout, { algorithm: 'stress', vertexGap: 1, rankGap: 3 });
   return layout ?? NO_LAYOUT;
-}
-/** A type's labels: the shared options, and the network's own sizes. */
-function checkLabels(value: VertexOptions['labels']): void {
-  const labels = kit.resolveLabels(value);
-  if (!labels) return;
-  const { fontSizePx, repeatSpacingPx } = labels;
-  if (fontSizePx !== undefined && !(Number.isFinite(fontSizePx) && fontSizePx > 0))
-    throw failure('invalid-input', 'Invalid label fontSizePx');
-  if (repeatSpacingPx !== undefined && !(Number.isFinite(repeatSpacingPx) && repeatSpacingPx >= 0))
-    throw failure('invalid-input', 'Invalid label repeatSpacingPx');
 }
 /** Whether a net centers its stars on its own x and y. */
 function centered(edge: EdgeOptions | undefined): boolean {
@@ -375,8 +374,14 @@ class NetworkView
     };
   }
 
+  /** Geographic positions start on the mercator plane, as a geography does; others on the plane. */
   protected defaultCamera(): ProjectedCamera {
-    return Projector.camera;
+    const { data } = this.resolved;
+    return Object.entries(data.vertices).some(
+      ([type, options]) => placement(data.source, type, options) === 'geographic',
+    )
+      ? { ...Projector.camera, projection: 'mercator' }
+      : Projector.camera;
   }
   /** Orbiting needs motion and a tilt: turning it on tilts a flat camera. */
   protected resolveCamera(

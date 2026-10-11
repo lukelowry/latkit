@@ -8,7 +8,7 @@ Import from package roots.
 | [connect](reference/connect/index.md)     | connectModel, acceptModel, protocol           |
 | [gpu](reference/gpu/index.md)             | Rendering, fields, resources, colors, text    |
 | [network](reference/network/index.md)     | Topology views, cameras, picking              |
-| [geography](reference/geography/index.md) | Ground, areas, lines, packs, and tiles        |
+| [geography](reference/geography/index.md) | Ground, areas, lines, GeoJSON, and tiles      |
 | [monitor](reference/monitor/index.md)     | Traces, windows, inspection                   |
 | [video](reference/video/index.md)         | MP4 and WebM export                           |
 | [diagram](reference/diagram/index.md)     | Native diagrams, layout, routing, and editing |

@@ -2,7 +2,7 @@ import { itemKey as rowKey, type Data, type Item, type RowSelection } from '@lat
 import type { Channel, ColorChannel, Labels, Point, Positions, Shape } from '@latkit/gpu';
 export type { Point, Positions, Shape };
 /** Labels on a type's items, sized in diagram units so they zoom with the diagram. */
-export interface DiagramLabels extends Labels {
+export interface DiagramLabels extends Omit<Labels, 'fontSizePx' | 'repeatSpacingPx'> {
   /** In diagram units; the shared `fontSizePx` by default. */
   readonly fontSize?: number;
   readonly maxWidth?: number;

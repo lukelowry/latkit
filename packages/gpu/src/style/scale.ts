@@ -37,14 +37,22 @@ export interface ColorScale {
   /** The color of rows the field leaves empty; the view's default otherwise. */
   readonly missing?: RGBA;
 }
-/** Text from a field beside each drawn item; views add how it is sized. */
+/** Text from a field beside each drawn item. */
 export interface Labels {
   readonly field: FieldInput;
   readonly font?: TextFont;
+  /** The shared `fontSizePx` by default. */
+  readonly fontSizePx?: number;
   /** `textColor` by default. */
   readonly color?: RGBA;
   /** At most this many labels of the type draw at once. */
   readonly maxCount?: number;
+  /**
+   * Leave out a label whose text repeats one placed within this many CSS pixels, as when buses of
+   * one substation, or the pieces of one road, share a name; 0 labels every row. Unset, a network
+   * labels every row, and a geography names each text once in view.
+   */
+  readonly repeatSpacingPx?: number;
 }
 /**
  * A type's labels as a view reads them, checked: a field name labels by that field with defaults.
@@ -63,6 +71,11 @@ export function resolveLabels<L extends Labels>(
     (!Number.isSafeInteger(labels.maxCount) || labels.maxCount < 0)
   )
     throw failure('invalid-input', 'Invalid label count');
+  const { fontSizePx, repeatSpacingPx } = labels;
+  if (fontSizePx !== undefined && !(Number.isFinite(fontSizePx) && fontSizePx > 0))
+    throw failure('invalid-input', 'Invalid label fontSizePx');
+  if (repeatSpacingPx !== undefined && !(Number.isFinite(repeatSpacingPx) && repeatSpacingPx >= 0))
+    throw failure('invalid-input', 'Invalid label repeatSpacingPx');
   return labels;
 }
 export interface ScaleRequest {

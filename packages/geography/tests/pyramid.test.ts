@@ -6,7 +6,6 @@ import type { TileSource } from '../src/sources/archive.js';
 import type { TileSet } from '../src/tiles.js';
 
 const source: TileSource = {
-  kind: 'vector',
   minZoom: 0,
   maxZoom: 14,
   bounds: [-180, -85.0511287798, 180, 85.0511287798],

@@ -84,6 +84,8 @@ import {
 import { pick, type Shown } from './picking.js';
 
 export interface MonitorConfig extends ItemViewConfig, MonitorStyle {
+  /** Borrowed: destroy never closes it. */
+  readonly source: Data;
   /** Lines by name; several may read one type. */
   readonly traces: Readonly<Record<string, Trace>>;
   /** Where the camera starts; `monitor.camera` is where it is. y fits the data by default. */

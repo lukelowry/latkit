@@ -15,6 +15,10 @@ struct Style {
   halo: vec4f,
   /** The globe's axis's color. */
   axis: vec4f,
+  /** The comets' color. */
+  flow: vec4f,
+  /** How far apart comets run in CSS pixels, and the seconds they have moved for. */
+  motion: vec4f,
 }
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(2) var<uniform> u: Style;

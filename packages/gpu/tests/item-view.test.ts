@@ -32,6 +32,7 @@ interface DotHit extends Dot {
   readonly distance: number;
 }
 interface DotConfig extends ItemViewConfig {
+  readonly source: Data;
   readonly dots: Readonly<Record<string, readonly [number, number]>>;
   readonly marks?: Readonly<Record<string, { readonly color?: ColorChannel }>>;
   readonly camera?: Partial<Plane>;

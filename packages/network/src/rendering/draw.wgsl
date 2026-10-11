@@ -307,17 +307,6 @@ fn edge(v:u32,drawn:u32)->EdgePiece {
   return out;
 }
 struct PaintOut { @location(0) color:vec4f, @builtin(frag_depth) depth:f32 }
-/** How much of a comet covers a pixel `along` its line and `across` it, faded toward its tail. */
-fn comet(along:f32,across:f32,row:u32,flow:vec3f,aa:f32)->f32 {
-  let spacing=max(u.flowSpacingPx,1.0);
-  // Each row's comets start at a place of its own, so lines never march in step.
-  let m=along-flow.y+fract(f32(row)*0.618034)*spacing;
-  let k=(m-spacing*floor(m/spacing)-spacing*0.5)*sign(flow.x);
-  let tail=min(spacing*0.4,flow.z*8.0);let t=clamp(-k/tail,0.0,1.0);
-  let d=length(vec2f(k-clamp(k,-tail,0.0),across))-flow.z*(1.0-0.5*t);
-  let fade=1.0-t*t;
-  return (1.0-smoothstep(-aa,aa,d))*fade;
-}
 /** Comets fade in from a true end, clear of its marker. */
 fn clearOf(px:vec2f,end:vec3f)->f32 {
   if(end.z<0.0){return 1.0;}
@@ -342,7 +331,7 @@ fn lit(v:Varying)->Lit {
   let line=1.0-smoothstep(outer-aa,outer+aa,distanceTo);
   var comets=0.0;
   if(v.identity.x==1u&&v.flow.x!=0.0){
-    comets=comet(v.uv.x+v.extra.z,v.uv.y,v.identity.y,v.flow,aa)*clearOf(px,v.discA)*clearOf(px,v.discB)*u.flowColor.a;
+    comets=stroke_comet(v.uv.x+v.extra.z,v.uv.y,v.identity.y,v.flow.x,v.flow.y,v.flow.z,u.flowSpacingPx,aa)*clearOf(px,v.discA)*clearOf(px,v.discB)*u.flowColor.a;
   }
   // The line and its comets in its shade; the rest fade while something is selected, and a focused
   // line draws whole.

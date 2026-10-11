@@ -1,16 +1,6 @@
 import { itemKey, type Data, type FieldInput, type Item, type RowSelection } from '@latkit/model';
 import type { Channel, ColorChannel, Labels, Marker } from '@latkit/gpu';
 
-/** Labels beside a type's items. */
-export interface NetworkLabels extends Labels {
-  /** The shared `fontSizePx` by default. */
-  readonly fontSizePx?: number;
-  /**
-   * Leave out a label whose text repeats one placed within this many CSS pixels, as when buses
-   * of one substation share its name; 0, the default, labels every row it has room for.
-   */
-  readonly repeatSpacingPx?: number;
-}
 /**
  * How a type's vertices draw. Each channel takes one value for every row, a field, or a scale:
  * `color: 'load'`, `radiusPx: { field: 'load', range: [2, 12] }`. A field name labels by that field.
@@ -31,7 +21,7 @@ export interface VertexOptions {
   /** Shown where true or positive; every row by default. */
   readonly visible?: Channel<boolean>;
   readonly shade?: Channel;
-  readonly labels?: string | NetworkLabels | null;
+  readonly labels?: string | Labels | null;
 }
 /** How a type's edges draw. */
 export interface EdgeOptions {
@@ -67,7 +57,7 @@ export interface EdgeOptions {
   /** Shown where true or positive; every row by default. */
   readonly visible?: Channel<boolean>;
   readonly shade?: Channel;
-  readonly labels?: string | NetworkLabels | null;
+  readonly labels?: string | Labels | null;
 }
 /** A drawn row: a vertex or an edge. */
 export interface NetworkItem extends Item {

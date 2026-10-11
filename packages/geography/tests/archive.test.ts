@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { openTiles, tileId, tileOf, writeArchive } from '../src/sources/archive.js';
+import { openTiles, tileId } from '../src/sources/archive.js';
 import type { TileSource } from '../src/sources/archive.js';
+import { tileOf, writeArchive } from './archive-writer.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -70,10 +71,9 @@ function inIdOrder(tiles: readonly Tile[]): Tile[] {
     .map(({ tile }) => tile);
 }
 
-function archiveOf(tiles: readonly Tile[], kind: TileSource['kind'] = 'vector'): Uint8Array {
+function archiveOf(tiles: readonly Tile[]): Uint8Array {
   const zooms = tiles.map((tile) => tile.z);
   return writeArchive(tiles, {
-    kind,
     minZoom: Math.min(...zooms),
     maxZoom: Math.max(...zooms),
     bounds: BOUNDS,
@@ -242,7 +242,6 @@ describe('archives', () => {
     ];
     for (const source of sources) {
       expect(source).toMatchObject({
-        kind: 'vector',
         minZoom: 0,
         maxZoom: 3,
         attribution: '© Sample',
@@ -271,46 +270,6 @@ describe('archives', () => {
     const split = archiveOf(apart);
     expect([u64(split, 72), u64(split, 80), u64(split, 88)]).toEqual([3, 3, 2]);
     await expectTiles(await openTiles(split), apart);
-  });
-
-  it('writes the header the spec lays out', () => {
-    const archive = writeArchive(sampleTiles(), {
-      kind: 'vector',
-      minZoom: 0,
-      maxZoom: 3,
-      bounds: BOUNDS,
-    });
-    const view = new DataView(archive.buffer);
-    expect(new TextDecoder().decode(archive.subarray(0, 7))).toBe('PMTiles');
-    expect([archive[7], archive[96], archive[97], archive[98], archive[99]]).toEqual([
-      3, 1, 1, 1, 1,
-    ]);
-    expect([view.getInt32(102, true), view.getInt32(114, true)]).toEqual([-10e7, 40e7]);
-    expect([archive[118], view.getInt32(119, true), view.getInt32(123, true)]).toEqual([
-      0, 10e7, 10e7,
-    ]);
-    expect(u64(archive, 8)).toBe(127);
-    expect(new TextDecoder().decode(section(archive, 24))).toBe('{}');
-  });
-
-  it('writes packs as tile type 0, marked in metadata', async () => {
-    const tiles = sampleTiles();
-    const archive = writeArchive(tiles, {
-      kind: 'pack',
-      minZoom: 0,
-      maxZoom: 3,
-      bounds: BOUNDS,
-      center: [1, 2, 3],
-      metadata: { fields: ['load'] },
-    });
-    expect(archive[99]).toBe(0);
-    expect(archive[118]).toBe(3);
-    const source = await openTiles(archive);
-    expect(source).toMatchObject({
-      kind: 'pack',
-      metadata: { fields: ['load'], latkit: 'pack' },
-    });
-    await expectTiles(source, tiles);
   });
 
   it('splits large directories into leaves', async () => {
@@ -368,26 +327,28 @@ describe('archives', () => {
       maxZoom: 2,
       attribution: 'Mine',
     });
-    expect(source).toMatchObject({ kind: 'vector', minZoom: 1, maxZoom: 2, attribution: 'Mine' });
+    expect(source).toMatchObject({ minZoom: 1, maxZoom: 2, attribution: 'Mine' });
     await expectTiles(source, tiles);
   });
 
-  it('refuses tiles of images, and type 0 that is not a pack', async () => {
-    const archive = writeArchive(sampleTiles(), {
-      kind: 'pack',
-      minZoom: 0,
-      maxZoom: 3,
-      bounds: BOUNDS,
+  it('reads tiles of the unknown type as vector tiles when its metadata lists vector layers', async () => {
+    const tiles = sampleTiles(),
+      header = { tileType: 0, minZoom: 0, maxZoom: 3, bounds: BOUNDS } as const;
+    const layered = writeArchive(tiles, {
+      ...header,
+      metadata: { vector_layers: [{ id: 'water' }] },
     });
-    archive.set(
-      encoder.encode('{"other":1}'.padEnd(section(archive, 24).length)),
-      u64(archive, 24),
-    );
-    await expect(openTiles(archive)).rejects.toMatchObject({ code: 'unsupported' });
-    for (const type of [2, 3, 4, 5]) {
-      const images = archiveOf(sampleTiles());
-      images[99] = type;
-      await expect(openTiles(images)).rejects.toMatchObject({ code: 'unsupported' });
+    await expectTiles(await openTiles(layered), tiles);
+    await expect(openTiles(writeArchive(tiles, header))).rejects.toMatchObject({
+      code: 'unsupported',
+    });
+  });
+
+  it('refuses tiles of images, and of types it does not know', async () => {
+    for (const type of [2, 3, 4, 5, 9]) {
+      const archive = archiveOf(sampleTiles());
+      archive[99] = type;
+      await expect(openTiles(archive)).rejects.toMatchObject({ code: 'unsupported' });
     }
   });
 
@@ -425,27 +386,8 @@ describe('archives', () => {
     await expect(source.tile(1, 2, 0)).rejects.toMatchObject({ code: 'invalid-input' });
   });
 
-  it('refuses to write archives that would be wrong', () => {
-    const header = { kind: 'vector', minZoom: 0, maxZoom: 2, bounds: BOUNDS } as const;
-    const bytes = new Uint8Array([1]);
-    const twice = [
-      { z: 1, x: 0, y: 0, bytes },
-      { z: 1, x: 0, y: 0, bytes },
-    ];
-    const invalid = expect.objectContaining({ code: 'invalid-input' }) as Error;
-    expect(() => writeArchive(twice, header)).toThrow(invalid);
-    expect(() => writeArchive([{ z: 3, x: 0, y: 0, bytes }], header)).toThrow(invalid);
-    expect(() => writeArchive([{ z: 1, x: 2, y: 0, bytes }], header)).toThrow(invalid);
-    expect(() => writeArchive([], { ...header, kind: 'images' as 'vector' })).toThrow(invalid);
-    expect(() => writeArchive([], { ...header, minZoom: 3 })).toThrow(invalid);
-    expect(() => writeArchive([], { ...header, bounds: [0, 0, NaN, 0] })).toThrow(invalid);
-  });
-
-  it('writes and reads an empty archive', async () => {
-    const source = await openTiles(
-      writeArchive([], { kind: 'vector', minZoom: 0, maxZoom: 0, bounds: BOUNDS }),
-    );
-    expect(source).toMatchObject({ kind: 'vector' });
+  it('reads an empty archive', async () => {
+    const source = await openTiles(writeArchive([], { minZoom: 0, maxZoom: 0, bounds: BOUNDS }));
     expect(await source.tile(0, 0, 0)).toBeNull();
   });
 });
@@ -599,7 +541,7 @@ describe('templates', () => {
       'https://t.test/1/1/0.pbf?key=k': { status: 500 },
     });
     const source = await openTiles('https://t.test/{z}/{x}/{y}.pbf?key=k');
-    expect(source).toMatchObject({ kind: 'vector', minZoom: 0, maxZoom: 14, bounds: WORLD });
+    expect(source).toMatchObject({ minZoom: 0, maxZoom: 14, bounds: WORLD });
     expect(source.metadata).toEqual({});
     expect(await source.tile(1, 0, 1)).toEqual(mvt);
     expect(await source.tile(1, 0, 0)).toBeNull();
@@ -620,14 +562,14 @@ describe('templates', () => {
     const source = await openTiles(new URL('https://t.test/v/{z}/{x}/{y}.pbf'), {
       attribution: '© T',
     });
-    expect(source).toMatchObject({ kind: 'vector', maxZoom: 14, attribution: '© T' });
+    expect(source).toMatchObject({ maxZoom: 14, attribution: '© T' });
     expect(await source.tile(2, 1, 1)).toEqual(mvt);
     expect(await source.tile(2, 1, 2)).toEqual(mvt);
   });
 
   it('reads a template without an extension as vector tiles, and refuses images', async () => {
     const source = await openTiles('https://t.test/{z}/{x}/{y}', { maxZoom: 10 });
-    expect(source).toMatchObject({ kind: 'vector', maxZoom: 10 });
+    expect(source).toMatchObject({ maxZoom: 10 });
     for (const extension of ['png', 'jpg', 'webp', 'avif'])
       await expect(openTiles(`https://t.test/{z}/{x}/{y}.${extension}`)).rejects.toMatchObject({
         code: 'unsupported',
@@ -669,7 +611,6 @@ describe('TileJSON', () => {
     });
     const source = await openTiles(url);
     expect(source).toMatchObject({
-      kind: 'vector',
       minZoom: 2,
       maxZoom: 12,
       bounds: [-100, 30, -90, 40],
@@ -695,7 +636,7 @@ describe('TileJSON', () => {
         body: ` ${JSON.stringify({ tiles: ['https://v.test/{z}/{x}/{y}'], vector_layers: [] })}`,
       },
     });
-    expect(await openTiles(url)).toMatchObject({ kind: 'vector', maxZoom: 14 });
+    expect(await openTiles(url)).toMatchObject({ maxZoom: 14 });
   });
 
   it('fetches the whole TileJSON when the first range holds only part', async () => {

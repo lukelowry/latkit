@@ -3,7 +3,7 @@ import {
   type Gpu,
   type ItemEvents,
   type ItemView,
-  type ItemViewOptions,
+  type ItemViewConfig,
   type Patch,
   type Point,
   type ProjectedCamera,
@@ -24,13 +24,14 @@ import {
   isData,
   lightOf,
   resolveStyle,
+  shapeField,
+  strokesRings,
   type AreaOptions,
   type GeographyStyle,
   type LineOptions,
   type Style,
 } from './options.js';
-import { shapeField, strokesRings } from './pack.js';
-import { pick, type Drawn, type GeographyItem } from './picking.js';
+import { pick, positionIn, type Drawn, type GeographyItem } from './picking.js';
 import { isTiles, type TileSet, type Tiles } from './tiles.js';
 import { Labels, type LabelSource } from './scene/labels.js';
 import { RecordStyles } from './scene/records.js';
@@ -55,14 +56,17 @@ export interface GeographyLimits {
   /** GPU bytes loaded tiles may hold, each source, before the least recently drawn go. */
   readonly tileBytes?: number;
   /** Tile requests in flight at once, each source. */
-  readonly requests?: number;
+  readonly tileRequests?: number;
 }
 const DEFAULT_LIMITS: Required<GeographyLimits> = Object.freeze({
   tileBytes: 64 * 1024 ** 2,
-  requests: 8,
+  tileRequests: 8,
 });
-export interface GeographyConfig extends ItemViewOptions, GeographyStyle {
-  /** Where areas and lines read their shapes and fields: Data, or tiles. A record may name its own. */
+export interface GeographyConfig extends ItemViewConfig, GeographyStyle {
+  /**
+   * Where areas and lines read their shapes and fields: Data, or tiles. A record may name its own.
+   * Borrowed: destroy never closes it.
+   */
   readonly source?: Data | Tiles;
   /** Filled regions by type, drawn in order over the ground. */
   readonly areas?: Readonly<Record<string, AreaOptions>>;
@@ -105,6 +109,8 @@ interface Resolved {
   readonly config: GeographyConfig;
   readonly style: Style;
   readonly limits: Required<GeographyLimits>;
+  /** Whether any line type moves comets along itself. */
+  readonly flowing: boolean;
 }
 /** A record this frame resolved: what it draws from, before its look. */
 interface Planned {
@@ -113,7 +119,7 @@ interface Planned {
   readonly options: AreaOptions | LineOptions;
   readonly data: Data;
   readonly prepared: Prepared;
-  /** A tile's shapes draw whole; Data's and packs' by what is in view. */
+  /** A tile's shapes draw whole; Data's by what is in view. */
   readonly whole: boolean;
 }
 interface Frame {
@@ -154,12 +160,14 @@ class GeographyView
   private readonly labels = new Labels();
   /** The latest drawn frame: what pick, locate, and selection see. */
   private shown?: Frame;
-  /** Each row space's selection, a bit per row, made again when the selection changes. */
+  /** The selection's rows in each drawn Data, a bit per row, made as frames first draw them. */
   private selectionBits?: {
     readonly selection: readonly GeographyItem[];
-    readonly bits: Map<Data, Map<string, kit.BufferData>>;
+    readonly bits: WeakMap<Data, Map<string, kit.BufferData | null>>;
   };
   private counts = { vertices: 0, triangles: 0, drawCalls: 0 };
+  /** When comets began to move, in the frames' clock. */
+  private clock?: number;
   constructor(gpu: Gpu, config: GeographyConfig) {
     super(gpu, config, {
       name: 'geography',
@@ -229,35 +237,32 @@ class GeographyView
   ): ProjectedCamera {
     return Projector.zoom(camera, factor, anchor, viewport);
   }
-  /** The drawn record an item belongs to. */
-  private recordOf(item: GeographyItem): Drawn | undefined {
-    return this.shown?.drawn.find(
-      (d) => d.kind === item.kind && d.source === item.source && d.type === item.index.type,
-    );
-  }
-  private positionOf(record: Drawn, item: GeographyItem): number {
-    const rows = record.source.tables[record.type].rows;
-    return rows.kind === 'range' ? item.row - rows.offset : rows.values.indexOf(item.row);
+  /** Where the drawn records hold an item: each record, and the item's place in its rows. */
+  private placements(item: GeographyItem): { readonly record: Drawn; readonly at: number }[] {
+    const out: { record: Drawn; at: number }[] = [];
+    for (const record of this.shown?.drawn ?? [])
+      if (record.kind === item.kind && record.type === item.index.type) {
+        const at = positionIn(record.source, record.type, item);
+        if (at >= 0 && at < record.shapes.rows) out.push({ record, at });
+      }
+    return out;
   }
   protected position(item: GeographyItem): Point | null {
-    const record = this.recordOf(item),
-      shown = this.shown;
-    if (!record || !shown) return null;
-    const at = this.positionOf(record, item),
-      x = record.shapes.anchors[at * 2],
-      y = record.shapes.anchors[at * 2 + 1];
-    if (!Number.isFinite(x)) return null;
-    const p = shown.projector.project(x, y);
-    return p.visible ? [p.x, p.y] : null;
+    const shown = this.shown;
+    for (const { record, at } of this.placements(item)) {
+      const x = record.shapes.anchors[at * 2],
+        y = record.shapes.anchors[at * 2 + 1];
+      if (!Number.isFinite(x) || !shown) continue;
+      const p = shown.projector.project(x, y);
+      if (p.visible) return [p.x, p.y];
+    }
+    return null;
   }
   protected identify(item: GeographyItem): string {
     return itemKey(item, item.kind);
   }
   protected contains(item: GeographyItem): boolean {
-    const record = this.recordOf(item);
-    if (!record) return false;
-    const at = this.positionOf(record, item);
-    return at >= 0 && at < record.shapes.rows;
+    return this.placements(item).length > 0;
   }
   protected hits(
     point: Point,
@@ -306,6 +311,9 @@ class GeographyView
       config,
       style: resolveStyle(config, this.sharedStyle(config)),
       limits: kit.resolveLimits(config.limits, DEFAULT_LIMITS, 'geography'),
+      flowing: Object.values(config.lines ?? {}).some(
+        (line) => line.flowPx != null && line.flowPx !== 0,
+      ),
     };
   }
   protected configure(next: Resolved, previous: Resolved): void {
@@ -320,6 +328,13 @@ class GeographyView
   }
   protected get pending(): Promise<void> | undefined {
     return this.sources.pending;
+  }
+  /** Comets move, unless motion is reduced. */
+  protected get animating(): boolean {
+    return super.animating || (this.moving && this.style.flowSpacingPx > 0);
+  }
+  private get moving(): boolean {
+    return this.resolved.flowing && !this.reducedMotion;
   }
   protected layerLook(): kit.LayerLook {
     return { light: lightOf(this.style), fill: this.style.surfaceColor };
@@ -343,16 +358,15 @@ class GeographyView
       n = Math.max(n, box[at + 3]);
     };
     if (items) {
-      for (const item of items) {
-        const record = this.recordOf(item);
-        if (record) add(record.shapes.bounds, this.positionOf(record, item) * 4);
-      }
+      // A feature split across tiles frames whole.
+      for (const item of items)
+        for (const { record, at } of this.placements(item)) add(record.shapes.bounds, at * 4);
     } else {
       for (const record of this.shown?.drawn ?? []) add(record.shapes.extent);
       const { config } = this.resolved;
       for (const tiles of this.tileSets(config)) {
         const source = this.sources.opened(tiles);
-        if (source && source.kind !== 'pack') add(source.bounds);
+        if (source) add(source.bounds);
       }
     }
     if (!(w <= e)) return undefined;
@@ -419,7 +433,7 @@ class GeographyView
     this.records.destroy();
   }
 
-  /** Each record's shapes this frame, from Data, a pack, or the vector tiles over the region in view. */
+  /** Each record's shapes this frame, from Data, or the vector tiles over the region in view. */
   private plan(
     projector: kit.Projector,
     region: Region,
@@ -438,7 +452,7 @@ class GeographyView
     // Vector tiles decode the layers every record of theirs names, once.
     for (const entry of entries) {
       const source = entry[2].source ?? config.source;
-      if (!isTiles(source) || this.sources.opened(source)?.kind !== 'vector') continue;
+      if (!isTiles(source) || !this.sources.opened(source)) continue;
       let layers = requests.get(source);
       if (!layers)
         requests.set(source, (layers = new Map<string, { rings: boolean; lines: boolean }>()));
@@ -486,22 +500,12 @@ class GeographyView
         continue;
       }
       if (!isTiles(source)) continue;
-      const opened = this.sources.opened(source);
-      if (opened?.kind === 'pack') {
-        (live.packs as Set<TileSet>).add(source);
-        const pack = this.sources.pack(source),
-          prepared = pack && this.sources.packShapes(pack, type, field, closed);
-        if (pack && prepared) {
-          (live.shapes as Set<unknown>).add(prepared.shapes);
-          planned.push({ kind, type, options, data: pack.data, prepared, whole: false });
-        }
-      } else if (opened?.kind === 'vector')
-        for (const tile of placed.get(source) ?? []) {
-          const layer = tile.data.layers.get(type),
-            prepared = closed ? layer?.rings : layer?.lines;
-          if (prepared)
-            planned.push({ kind, type, options, data: tile.data.data, prepared, whole: true });
-        }
+      for (const tile of placed.get(source) ?? []) {
+        const layer = tile.data.layers.get(type),
+          prepared = closed ? layer?.rings : layer?.lines;
+        if (prepared)
+          planned.push({ kind, type, options, data: tile.data.data, prepared, whole: true });
+      }
     }
     // Areas draw beneath lines, each kind in its records' order.
     return [
@@ -509,40 +513,27 @@ class GeographyView
       ...planned.filter((p) => p.kind === 'line'),
     ];
   }
-  /** Each row space's selection bits, built once per selection. */
+  /** The selection's rows among a Data's rows of a type, as bits; made once per selection. */
   private selected(data: Data, type: string): kit.BufferData | undefined {
     const selection = this.selection;
     if (!selection.length) return undefined;
-    if (this.selectionBits?.selection !== selection) {
-      const bits = new Map<Data, Map<string, kit.BufferData>>(),
-        positions = new Map<Data, Map<string, number[]>>();
-      for (const item of selection) {
-        const table = item.source.tables[item.index.type];
-        if (!table) continue;
-        const rows = table.rows,
-          at = rows.kind === 'range' ? item.row - rows.offset : rows.values.indexOf(item.row);
-        let byType = positions.get(item.source);
-        if (!byType) positions.set(item.source, (byType = new Map<string, number[]>()));
-        const list = byType.get(item.index.type) ?? [];
-        list.push(at);
-        byType.set(item.index.type, list);
+    if (this.selectionBits?.selection !== selection)
+      this.selectionBits = { selection, bits: new WeakMap() };
+    const { bits } = this.selectionBits;
+    let byType = bits.get(data);
+    if (!byType) bits.set(data, (byType = new Map<string, kit.BufferData | null>()));
+    if (!byType.has(type)) {
+      const places = selection.map((item) => positionIn(data, type, item)).filter((at) => at >= 0);
+      if (!places.length) byType.set(type, null);
+      else {
+        const words = new Uint32Array(Math.max(4, Math.ceil((Math.max(...places) + 1) / 32)));
+        for (const at of places) words[at >>> 5] |= 1 << (at & 31);
+        const buffer = new kit.BufferData({ size: words.byteLength, label: 'geography selection' });
+        buffer.write({ data: words });
+        byType.set(type, buffer);
       }
-      for (const [source, byType] of positions)
-        for (const [name, list] of byType) {
-          const words = new Uint32Array(Math.max(4, Math.ceil((Math.max(...list) + 1) / 32)));
-          for (const at of list) if (at >= 0) words[at >>> 5] |= 1 << (at & 31);
-          const buffer = new kit.BufferData({
-            size: words.byteLength,
-            label: 'geography selection',
-          });
-          buffer.write({ data: words });
-          let byName = bits.get(source);
-          if (!byName) bits.set(source, (byName = new Map<string, kit.BufferData>()));
-          byName.set(name, buffer);
-        }
-      this.selectionBits = { selection, bits };
     }
-    return this.selectionBits.bits.get(data)?.get(type);
+    return byType.get(type) ?? undefined;
   }
 
   /** Prepare a frame at a camera: what each record draws, its look, the hover, and the labels. */
@@ -557,7 +548,7 @@ class GeographyView
       projector = new Projector(camera, frame.viewport),
       region = visibleRegion(projector),
       pixels = pixelsPerDegree(projector),
-      live: Frame['live'] = { shapes: new Set(), vectors: new Set(), packs: new Set() };
+      live: Frame['live'] = { shapes: new Set(), vectors: new Set() };
     const planned = this.plan(projector, region, config, live),
       drawn: Drawn[] = planned.map((p) => ({
         kind: p.kind,
@@ -607,15 +598,8 @@ class GeographyView
               });
       commits.push(styled.commit);
       const bits = this.selected(data, type),
-        hovered =
-          hover && hover.kind === kind && hover.source === data && hover.index.type === type
-            ? (() => {
-                const rows = data.tables[type].rows;
-                return rows.kind === 'range'
-                  ? hover.row - rows.offset
-                  : rows.values.indexOf(hover.row);
-              })()
-            : NONE;
+        at = hover && hover.kind === kind ? positionIn(data, type, hover) : -1,
+        hovered = at >= 0 ? at : NONE;
       shapes.push({
         kind,
         type,
@@ -643,6 +627,7 @@ class GeographyView
       pipelines: pipeline,
       shade: this.shadeFrame(frame),
       hosted,
+      seconds: this.moving ? (frame.timeMs - (this.clock ??= frame.timeMs)) / 1000 : 0,
     });
     this.live();
     frame.signal.throwIfAborted();

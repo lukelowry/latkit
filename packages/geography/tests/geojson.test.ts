@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   bitAt,
   createReader,
@@ -451,6 +451,42 @@ describe('geojson geometry', () => {
       { type: 'Place' },
     );
     expect((await rowsOf(text, 'Place')).fields.position).toEqual([[3, 4]]);
+  });
+
+  it('reads bytes, a view of them, a Blob, and a URL alike, and stops when aborted', async () => {
+    const json = JSON.stringify(collection(feature({ type: 'Point', coordinates: [5, 6] }))),
+      bytes = new TextEncoder().encode(json),
+      padded = new Uint8Array(bytes.length + 8);
+    padded.set(bytes, 4);
+    vi.stubGlobal('fetch', (url: URL) =>
+      Promise.resolve(
+        url.href === 'https://maps.test/places.geojson'
+          ? new Response(json)
+          : new Response('', { status: 404 }),
+      ),
+    );
+    try {
+      for (const from of [
+        bytes.buffer,
+        padded.subarray(4, 4 + bytes.length),
+        new Blob([json]),
+        new URL('https://maps.test/places.geojson'),
+      ]) {
+        const data = await geojson(from, { type: 'Place' });
+        expect((await rowsOf(data, 'Place')).fields.position).toEqual([[5, 6]]);
+      }
+      // Bytes the caller holds stay theirs.
+      expect(bytes.byteLength).toBe(json.length);
+      // A type named by a function parses bytes on the page.
+      const named = await geojson(bytes, { type: () => 'Named' });
+      expect(Object.keys(named.schema.types)).toEqual(['Named']);
+      await expect(geojson(new URL('https://maps.test/missing.geojson'))).rejects.toMatchObject({
+        code: 'io',
+      });
+      await expect(geojson(bytes, { signal: AbortSignal.abort() })).rejects.toThrow();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('builds plain typed columns that validate against the schema', () => {

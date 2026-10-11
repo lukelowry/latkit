@@ -1,6 +1,8 @@
 import { isFailure } from '@latkit/model';
 import { describe, expect, it } from 'vitest';
 import { decodeTile, properties, type FeatureSet, type TileLayer } from '../src/sources/mvt.js';
+import { decodeVector } from '../src/sources/vector.js';
+import { TileSet } from '../src/tiles.js';
 
 type Bytes = number[];
 type Point = [number, number];
@@ -624,5 +626,41 @@ describe('decodeTile', () => {
     expect(areas.coordinates).toHaveLength(2 * 4 * 10_000);
     expect(area(areas, 9_999)).toBe(-100);
     expect(elapsed).toBeLessThan(200);
+  });
+});
+
+describe('decodeVector', () => {
+  it('gives the ids of features that each carry a distinct one, for the tiles to number', () => {
+    const square = geometry('polygon', [outer]);
+    const decode = (x: number, ids: readonly (number | bigint | undefined)[]) =>
+      decodeVector({
+        bytes: tile(
+          layer({
+            name: 'state',
+            features: ids.map((id) => feature({ id, type: POLYGON, geometry: square })),
+          }),
+        ),
+        z: 1,
+        x,
+        y: 0,
+        layers: [{ name: 'state', rings: true, lines: false }],
+        source: `tiles/1/${x}/0`,
+      }).tile;
+    const west = decode(0, [7, 2n ** 40n]),
+      east = decode(1, [2n ** 40n]);
+    expect(west.layers[0].ids).toEqual(Float64Array.of(7, 2 ** 40));
+    expect(east.layers[0].ids).toEqual(Float64Array.of(2 ** 40));
+    expect(west.batches[0].index).toEqual({ source: 'tiles/1/0/0', type: 'state', version: '1' });
+    // Tiles number each id once, whichever tile holds it first.
+    const tiles = new TileSet(new Uint8Array(0), {});
+    tiles.info.catch(() => {});
+    expect(tiles.rowsOf(west.layers[0].ids!)).toEqual(Uint32Array.of(0, 1));
+    expect(tiles.rowsOf(east.layers[0].ids!)).toEqual(Uint32Array.of(1));
+    // Without ids, or with one repeated, a tile's features are its own.
+    for (const ids of [
+      [undefined, 3],
+      [4, 4],
+    ])
+      expect(decode(1, ids).layers[0].ids).toBeUndefined();
   });
 });

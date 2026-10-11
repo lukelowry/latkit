@@ -4,9 +4,6 @@ import { kit } from '@latkit/gpu';
 import { BREAK, prepareShapes, type Shapes, type ShapesInput } from '../src/prepare/shapes.js';
 import { levelFor, visibleRanges, visibleRegion } from '../src/scene/visible.js';
 import { pick, type Drawn } from '../src/picking.js';
-import { geojson } from '../src/geojson.js';
-import { pack, readPack, packKey } from '../src/pack.js';
-import { openTiles } from '../src/sources/archive.js';
 
 /** Rows of rings or polylines, each a list of parts of [lon, lat] points. */
 function input(rows: number[][][][], closed: boolean): ShapesInput {
@@ -279,44 +276,5 @@ describe('prepareShapes', () => {
     ]);
     const on = projector.project(5, 5.01);
     expect(pick(drawn, projector, [on.x, on.y], 4, 4)[0]).toMatchObject({ kind: 'line', row: 0 });
-  });
-});
-
-describe('pack', () => {
-  it('writes shapes and fields into one PMTiles archive that reads back as it was', async () => {
-    const data = await geojson(
-      {
-        type: 'FeatureCollection',
-        features: [
-          {
-            type: 'Feature',
-            id: 'a',
-            properties: { name: 'A', load: 0.25 },
-            geometry: { type: 'Polygon', coordinates: [square(0, 0, 10).concat([[0, 0]])] },
-          },
-          {
-            type: 'Feature',
-            id: 'b',
-            properties: { name: 'B', load: 0.75 },
-            geometry: { type: 'Polygon', coordinates: [square(10, 0, 10).concat([[10, 0]])] },
-          },
-        ],
-      },
-      { type: 'State' },
-    );
-    const bytes = await pack(data, {
-      areas: { State: { color: { field: 'load' }, labels: 'name' } },
-      lines: { State: { points: 'rings' } },
-    });
-    const source = await openTiles(bytes);
-    expect(source.kind).toBe('pack');
-    const read = readPack((await source.tile(0, 0, 0))!, 'pack-test'),
-      shapes = read.shapes.get(packKey('State', 'rings', true))!;
-    expect(shapes.rows).toBe(2);
-    expect(shapes.levels.length).toBeGreaterThan(0);
-    expect(read.data.schema.types.State.fields).toHaveProperty('load');
-    expect(read.data.schema.types.State.fields).toHaveProperty('name');
-    // Lines stroking the areas' rings share their shapes, kept once.
-    expect(read.shapes.size).toBe(1);
   });
 });

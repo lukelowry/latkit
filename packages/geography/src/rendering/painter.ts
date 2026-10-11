@@ -36,6 +36,8 @@ export interface Scene {
   readonly shade: GPUBufferBinding;
   /** A host's scene block, bound in place of the view's own; a view on its own writes its own. */
   readonly hosted?: GPUBufferBinding;
+  /** How long comets have moved for, in seconds; 0 holds them still. */
+  readonly seconds: number;
 }
 export interface Paint {
   readonly pipelines: Pipelines;
@@ -133,6 +135,8 @@ export class Painter {
     );
     s.set([...style.surfaceColor.slice(0, 3), 2], S.halo);
     s.set(style.earthAxisColor, S.axis);
+    s.set(style.flowColor, S.flow);
+    s.set([style.flowSpacingPx, scene.seconds, 0, 0], S.motion);
     this.style.update(s);
     const styleBinding = frame.buffer(this.style),
       empty = frame.buffer(this.empty),
@@ -158,7 +162,7 @@ export class Painter {
         words = new Uint32Array(DRAW_WORDS),
         floats = new Float32Array(words.buffer);
       floats.set(c.color, 0);
-      floats.set([c.width, c.shade, c.visible ? 1 : 0, c.dash ? 1 : 0], 4);
+      floats.set([c.width, c.shade, (c.visible ? 1 : 0) + (c.dash ? 2 : 0), c.flow], 4);
       words.set(
         [styled.records ? 1 : 0, draw.map ? 1 : 0, draw.hovered, draw.selection ? 1 : 0],
         8,

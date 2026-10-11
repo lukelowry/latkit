@@ -43,15 +43,11 @@ export interface ViewCamera {
   /** Keep the data in view as it changes. Moving a framed key turns it off. */
   readonly fit: boolean;
 }
-/** What every item view's config holds beside its source. */
-export interface ItemViewOptions extends ViewConfig, ViewStyle {
+/** What every item view's config holds; each view names its own `source`. */
+export interface ItemViewConfig extends ViewConfig, ViewStyle {
   readonly input?: ViewInput | NonNullable<ViewInput['mode']>;
   /** WGSL that recolors every fragment. */
   readonly shade?: Shade | null;
-}
-export interface ItemViewConfig extends ItemViewOptions {
-  /** Borrowed: destroy never closes it. */
-  readonly source: Data;
 }
 export interface ItemEvents<Item, Hit, Camera> extends ViewEvents {
   /** The drawn camera changed. */
@@ -72,7 +68,7 @@ export interface PickOptions {
 }
 /** A view of model rows. `Item` is what you select; `Hit` is what a pointer finds: an Item with detail. */
 export interface ItemView<
-  Config extends ItemViewOptions,
+  Config extends ItemViewConfig,
   Item,
   Hit extends Item,
   Camera extends ViewCamera,
@@ -202,7 +198,7 @@ const stillShades = new WeakMap<Gpu, { buffer?: BufferResource; views: number }>
  * its config resolves to, and the frames it prepares.
  */
 export abstract class BaseItemView<
-  Config extends ItemViewOptions,
+  Config extends ItemViewConfig,
   Item,
   Hit extends Item,
   Camera extends ViewCamera,
@@ -1286,7 +1282,7 @@ export abstract class BaseItemView<
 }
 
 /** A config's input options, which views keep expanded from a mode shorthand. */
-function inputOf(config: ItemViewOptions): ViewInput {
+function inputOf(config: ItemViewConfig): ViewInput {
   const input = config.input ?? {};
   if (typeof input !== 'object' || Array.isArray(input))
     throw failure('invalid-input', 'Invalid input');

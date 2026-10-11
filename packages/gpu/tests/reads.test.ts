@@ -108,4 +108,10 @@ it('takes labels as a field name or checked options', () => {
   expect(() => resolveLabels({} as never)).toThrow('Invalid labels');
   expect(() => resolveLabels({ field: 'name', maxCount: -1 })).toThrow('Invalid label count');
   expect(() => resolveLabels({ field: 'name', color: [2, 0, 0, 1] })).toThrow();
+  const sized = { field: 'name', fontSizePx: 11, repeatSpacingPx: 0 };
+  expect(resolveLabels(sized)).toBe(sized);
+  expect(() => resolveLabels({ field: 'name', fontSizePx: 0 })).toThrow('Invalid label fontSizePx');
+  expect(() => resolveLabels({ field: 'name', repeatSpacingPx: -1 })).toThrow(
+    'Invalid label repeatSpacingPx',
+  );
 });

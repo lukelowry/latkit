@@ -20,6 +20,8 @@ export interface GeoJsonOptions {
   readonly id?: string;
   /** The Index source name rows are numbered under; a fresh one by default. */
   readonly source?: string;
+  /** Stops reading and parsing; the promise rejects. */
+  readonly signal?: AbortSignal;
 }
 
 type Properties = Readonly<Record<string, unknown>>;

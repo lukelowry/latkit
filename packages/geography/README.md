@@ -1,7 +1,7 @@
 # @latkit/geography
 
-Draw the earth and what lies on it with WebGPU: ground, areas, lines, and labels from Data, packs,
-or vector tiles, flat or on a globe, alone or beneath a network.
+Draw the earth and what lies on it with WebGPU: ground, areas, lines, and labels from Data,
+GeoJSON, or vector tiles, flat or on a globe, alone or beneath a network.
 
 ```sh
 npm install @latkit/gpu @latkit/geography

@@ -1,6 +1,6 @@
 import { failure, textAt, bitAt, assertIndex, rowAt, rowCount, type Data } from '@latkit/model';
-import { type Gpu, kit, type TextLayout } from '@latkit/gpu';
-import type { NetworkData, NetworkLabels } from '../data.js';
+import { type Gpu, kit, type Labels as LabelOptions, type TextLayout } from '@latkit/gpu';
+import type { NetworkData } from '../data.js';
 import {
   edgeOptions,
   vertexOptions,
@@ -19,7 +19,7 @@ export interface LabelBatch {
 }
 interface Entry {
   /** The labels option as configured: a field name, or labels. */
-  options: string | NetworkLabels;
+  options: string | LabelOptions;
   /** The style's text defaults the layouts were built with. */
   defaults: readonly unknown[];
   revision: number;
@@ -133,7 +133,7 @@ export class Labels {
       const configured = (edge ? edgeOptions(data, bank) : vertexOptions(data, bank)).labels,
         options = kit.resolveLabels(configured);
       if (!configured || !options || (!edge && !style.markers) || (edge && !style.lines)) continue;
-      // Checked when set: see `checkLabels`.
+      // Checked when set, by `kit.resolveLabels`.
       const max = options.maxCount ?? 200,
         size = options.fontSizePx ?? style.fontSizePx,
         repeat = options.repeatSpacingPx ?? 0;

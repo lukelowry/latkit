@@ -16,5 +16,5 @@ Open http://127.0.0.1:5188. The dev command builds the packages first.
 - `/blackout.html`: the BlackoutUSA map panel. Texas substations draw as gauges of their output,
   and branches color by loading and carry comets along their flow.
 
-`public/grids` holds the grids and borders; `src/earth/cases.ts` describes their format. The
-borders are Natural Earth, public domain.
+`public/grids` holds the synthetic grids, and `src/earth/cases.ts` describes their format.
+`public/maps` holds Natural Earth's 1:50M coasts and borders as GeoJSON, public domain.

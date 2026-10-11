@@ -1,4 +1,4 @@
-import { rowAt, type Data, type Item } from '@latkit/model';
+import { rowAt, sameIndex, type Data, type Item } from '@latkit/model';
 import type { kit, Point } from '@latkit/gpu';
 import { cutEdge, type Shapes } from './prepare/shapes.js';
 import { piecesNear } from './scene/visible.js';
@@ -73,6 +73,28 @@ function segmentDistance(p: Point, a: kit.Projected, b: kit.Projected): number {
     length = dx * dx + dy * dy,
     t = length > 0 ? Math.max(0, Math.min(1, ((p[0] - a.x) * dx + (p[1] - a.y) * dy) / length)) : 0;
   return Math.hypot(p[0] - (a.x + dx * t), p[1] - (a.y + dy * t));
+}
+/** Each axis of rows by number, to find a row's place at once. */
+const places = new WeakMap<Uint32Array, Map<number, number>>();
+/**
+ * Where an item's row lies among a Data's rows of a type, or -1 where they number another row
+ * space or hold none of it: tiles holding one feature each find it at their own place.
+ */
+export function positionIn(data: Data, type: string, item: Item): number {
+  const table = data.tables[type];
+  if (!table || !sameIndex(table.index, item.index)) return -1;
+  const rows = table.rows;
+  if (rows.kind === 'range') {
+    const at = item.row - rows.offset;
+    return at >= 0 && at < rows.count ? at : -1;
+  }
+  let place = places.get(rows.values);
+  if (!place) {
+    place = new Map<number, number>();
+    rows.values.forEach((row, i) => place!.set(row, i));
+    places.set(rows.values, place);
+  }
+  return place.get(item.row) ?? -1;
 }
 /** A row's item. */
 export function itemOf(

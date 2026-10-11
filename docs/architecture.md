@@ -6,7 +6,7 @@
 | `connect`   | Transport, remote acquisitions, cancellation               |
 | `gpu`       | Views, layout, projections, field uploads, text, colors    |
 | `network`   | Network geometry, routes, picking                          |
-| `geography` | Shape preparation, levels of detail, tiles, packs, picking |
+| `geography` | Shape preparation, levels of detail, vector tiles, picking |
 | `monitor`   | Trace geometry, axes, progressive history                  |
 | `diagram`   | Diagram geometry, routing, ports, editing proposals        |
 | `video`     | Encoding and container output                              |

@@ -1,6 +1,5 @@
 import { failure } from '@latkit/model';
 import {
-  HEAD_BYTES,
   SharedRequests,
   UrlRanges,
   abortedBy,
@@ -12,10 +11,8 @@ import {
 } from './ranges.js';
 import type { ByteRanges } from './ranges.js';
 
-/** Where tiles come from: their kind, zoom range, and bounds, and each tile's bytes. */
+/** Where vector tiles come from: their zoom range and bounds, and each tile's bytes. */
 export interface TileSource {
-  /** 'pack' for latkit's own prepared meshes, 'vector' for Mapbox Vector Tiles. */
-  readonly kind: 'pack' | 'vector';
   readonly minZoom: number;
   readonly maxZoom: number;
   /** West, south, east, north in degrees. */
@@ -36,22 +33,20 @@ export interface TileSourceOptions {
   readonly signal?: AbortSignal;
 }
 
-type Kind = TileSource['kind'];
 type Bounds = TileSource['bounds'];
 
 const MAX_ZOOM = 26;
 const HEADER_BYTES = 127;
 const LEAF_CACHE = 64;
-const LEAF_ENTRIES = 4096;
 const MAX_DEPTH = 4;
 const MAGIC = [0x50, 0x4d, 0x54, 0x69, 0x6c, 0x65, 0x73]; // "PMTiles"
 const UNKNOWN = 0;
-const NONE = 1;
 const GZIP = 2;
 const WORLD: Bounds = [-180, -85.0511287798, 180, 85.0511287798];
 
-/** PMTiles tile types: latkit's packs claim the unknown type, 0, and say so in their metadata. */
-const TILE_TYPES: Readonly<Record<Kind, number>> = { pack: 0, vector: 1 };
+/** PMTiles' tile types: unknown, which vector tiles may declare in their metadata, and theirs. */
+const UNKNOWN_TILES = 0;
+const VECTOR_TILES = 1;
 /** URL extensions of vector tiles, and of images, which a geography never draws. */
 const VECTOR_EXTENSIONS = new Set(['pbf', 'mvt']);
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'avif']);
@@ -93,34 +88,6 @@ export function tileId(z: number, x: number, y: number): number {
     }
   }
   return TILES_BELOW[z] + index;
-}
-
-export function tileOf(id: number): readonly [z: number, x: number, y: number] {
-  if (!Number.isInteger(id) || id < 0 || id >= TILES_BELOW[MAX_ZOOM + 1])
-    throw failure('invalid-input', `${id} is not a tile id`);
-  let z = 0;
-  while (TILES_BELOW[z + 1] <= id) z++;
-  let rest = id - TILES_BELOW[z];
-  let x = 0;
-  let y = 0;
-  for (let s = 1; s < 2 ** z; s *= 2) {
-    const quadrant = rest % 4;
-    const rx = quadrant >> 1;
-    const ry = (quadrant ^ rx) & 1;
-    if (ry === 0) {
-      if (rx === 1) {
-        x = s - 1 - x;
-        y = s - 1 - y;
-      }
-      const swap = x;
-      x = y;
-      y = swap;
-    }
-    x += s * rx;
-    y += s * ry;
-    rest = (rest - quadrant) / 4;
-  }
-  return [z, x, y];
 }
 
 // Header
@@ -191,38 +158,6 @@ function checkCompression(code: number, what: string): void {
       'unsupported',
       `The archive's ${what} use compression ${code}; only gzip is read`,
     );
-}
-
-function writeHeader(view: DataView, header: Header): void {
-  MAGIC.forEach((byte, i) => view.setUint8(i, byte));
-  view.setUint8(7, 3);
-  const u64 = (at: number, value: number): void => {
-    view.setUint32(at, value % 2 ** 32, true);
-    view.setUint32(at + 4, Math.floor(value / 2 ** 32), true);
-  };
-  const degrees = (at: number, value: number): void =>
-    view.setInt32(at, Math.round(value * 1e7), true);
-  u64(8, header.rootOffset);
-  u64(16, header.rootLength);
-  u64(24, header.metadataOffset);
-  u64(32, header.metadataLength);
-  u64(40, header.leafOffset);
-  u64(48, header.leafLength);
-  u64(56, header.dataOffset);
-  u64(64, header.dataLength);
-  u64(72, header.addressed);
-  u64(80, header.entries);
-  u64(88, header.contents);
-  view.setUint8(96, 1);
-  view.setUint8(97, header.internalCompression);
-  view.setUint8(98, header.tileCompression);
-  view.setUint8(99, header.tileType);
-  view.setUint8(100, header.minZoom);
-  view.setUint8(101, header.maxZoom);
-  header.bounds.forEach((value, i) => degrees(102 + 4 * i, value));
-  view.setUint8(118, header.center[2]);
-  degrees(119, header.center[0]);
-  degrees(123, header.center[1]);
 }
 
 // Directories
@@ -305,63 +240,6 @@ function findEntry(directory: Directory, id: number): number {
   return runs[high] === 0 || id - ids[high] < runs[high] ? high : -1;
 }
 
-/** Unsigned LEB128 varints written into a growing buffer. */
-class VarintWriter {
-  private buffer: Uint8Array;
-  private length = 0;
-
-  constructor(capacity: number) {
-    this.buffer = new Uint8Array(Math.max(16, capacity));
-  }
-
-  push(value: number): void {
-    if (this.length + 10 > this.buffer.length) {
-      const grown = new Uint8Array(this.buffer.length * 2);
-      grown.set(this.buffer);
-      this.buffer = grown;
-    }
-    const buffer = this.buffer;
-    let position = this.length;
-    let rest = value;
-    while (rest >= 0x80) {
-      buffer[position++] = (rest % 0x80) | 0x80;
-      rest = Math.floor(rest / 0x80);
-    }
-    buffer[position++] = rest;
-    this.length = position;
-  }
-
-  get bytes(): Uint8Array {
-    return this.buffer.subarray(0, this.length);
-  }
-}
-
-/** The entries from `start` to `end`, encoded as one directory. */
-function encodeDirectory(directory: Directory, start: number, end: number): Uint8Array {
-  const { ids, runs, lengths, offsets } = directory;
-  const out = new VarintWriter((end - start) * 6 + 8);
-  out.push(end - start);
-  let last = 0;
-  for (let i = start; i < end; i++) {
-    out.push(ids[i] - last);
-    last = ids[i];
-  }
-  for (let i = start; i < end; i++) out.push(runs[i]);
-  for (let i = start; i < end; i++) out.push(lengths[i]);
-  for (let i = start; i < end; i++)
-    out.push(i > start && offsets[i] === offsets[i - 1] + lengths[i - 1] ? 0 : offsets[i] + 1);
-  return out.bytes;
-}
-
-function directoryOf(count: number): Directory {
-  return {
-    ids: new Float64Array(count),
-    runs: new Uint32Array(count),
-    lengths: new Uint32Array(count),
-    offsets: new Float64Array(count),
-  };
-}
-
 // Compression
 
 function isGzip(bytes: Uint8Array): boolean {
@@ -417,12 +295,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** The failure for tiles of images, which a geography never draws. */
 function images(where: string): Error {
-  return failure('unsupported', `${where} holds images; a geography draws packs and vector tiles`);
+  return failure('unsupported', `${where} holds images; a geography draws vector tiles`);
 }
-/** The kind an archive's tile type declares; type 0 is a pack when its metadata says so. */
-function declaredKind(tileType: number, metadata: Record<string, unknown>): Kind {
-  if (tileType === TILE_TYPES.vector) return 'vector';
-  if (tileType === TILE_TYPES.pack && metadata.latkit === 'pack') return 'pack';
+/** Throw unless an archive holds vector tiles: by its tile type, or by its metadata's layers. */
+function checkTileType(tileType: number, metadata: Record<string, unknown>): void {
+  if (tileType === VECTOR_TILES) return;
+  if (tileType === UNKNOWN_TILES && Array.isArray(metadata.vector_layers)) return;
   if (tileType >= 2 && tileType <= 5) throw images('This archive');
   throw failure('unsupported', `This archive holds tiles of an unknown type, ${tileType}`);
 }
@@ -441,7 +319,6 @@ function zoomsOf(
 
 /** A PMTiles archive's tiles, found through its directories. */
 class Archive implements TileSource {
-  readonly kind: Kind;
   readonly minZoom: number;
   readonly maxZoom: number;
   readonly bounds: Bounds;
@@ -463,7 +340,7 @@ class Archive implements TileSource {
     this.header = header;
     this.root = root;
     this.metadata = metadata;
-    this.kind = declaredKind(header.tileType, metadata);
+    checkTileType(header.tileType, metadata);
     [this.minZoom, this.maxZoom] = zoomsOf(options, header.minZoom, header.maxZoom);
     this.bounds = header.bounds;
     const attribution = options.attribution ?? metadata.attribution;
@@ -551,7 +428,6 @@ function extensionOf(url: string): string {
 
 /** Vector tiles fetched from a `{z}/{x}/{y}` URL template. */
 class Template implements TileSource {
-  readonly kind = 'vector' as const;
   readonly minZoom: number;
   readonly maxZoom: number;
   readonly bounds: Bounds;
@@ -680,7 +556,7 @@ function checkOptions(options: TileSourceOptions): void {
 
 /** Open a source: a PMTiles archive (a URL read by HTTP range requests, a Blob, or bytes), a `{z}/{x}/{y}` URL template, or a TileJSON URL. */
 export async function openTiles(
-  from: string | URL | Blob | ArrayBuffer | Uint8Array,
+  from: string | URL | Blob | ArrayBuffer | ArrayBufferView,
   options: TileSourceOptions = {},
 ): Promise<TileSource> {
   checkOptions(options);
@@ -693,217 +569,4 @@ export async function openTiles(
     ? new Uint8Array(from.buffer, from.byteOffset, from.byteLength)
     : new Uint8Array(from);
   return openArchive(memoryRanges(bytes), options);
-}
-
-// Writing archives
-
-function hashOf(bytes: Uint8Array): number {
-  let hash = 0x811c9dc5 ^ bytes.length;
-  for (let i = 0; i < bytes.length; i++) hash = Math.imul(hash ^ bytes[i], 0x01000193);
-  return hash >>> 0;
-}
-
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
-
-/** Distinct tile contents, each kept once in the order first seen, found again by hash. */
-class Contents {
-  readonly parts: Uint8Array[] = [];
-  readonly offsets: number[] = [];
-  size = 0;
-  private readonly latest = new Map<number, number>();
-  /** The previous content with the same hash, or -1. */
-  private readonly previous: number[] = [];
-
-  add(bytes: Uint8Array): number {
-    const hash = hashOf(bytes);
-    const latest = this.latest.get(hash) ?? -1;
-    for (let c = latest; c >= 0; c = this.previous[c])
-      if (sameBytes(this.parts[c], bytes)) return c;
-    const content = this.parts.length;
-    this.parts.push(bytes);
-    this.offsets.push(this.size);
-    this.previous.push(latest);
-    this.latest.set(hash, content);
-    this.size += bytes.length;
-    return content;
-  }
-}
-
-/** Tile indices in tile id order. */
-function sortedBy(ids: Float64Array): Uint32Array {
-  const order = new Uint32Array(ids.length);
-  let sorted = true;
-  for (let i = 0; i < ids.length; i++) {
-    order[i] = i;
-    if (i > 0 && ids[i] < ids[i - 1]) sorted = false;
-  }
-  return sorted ? order : order.sort((a, b) => ids[a] - ids[b]);
-}
-
-/** Directory entries for tiles in id order, with identical contents stored once and runs merged. */
-function layoutTiles(
-  tiles: readonly { readonly bytes: Uint8Array }[],
-  ids: Float64Array,
-  order: Uint32Array,
-): { readonly entries: Directory; readonly contents: Contents } {
-  const all = directoryOf(order.length);
-  const contents = new Contents();
-  let count = 0;
-  let last = -1;
-  for (let k = 0; k < order.length; k++) {
-    const id = ids[order[k]];
-    if (k > 0 && id === ids[order[k - 1]])
-      throw failure('invalid-input', `Tile ${tileOf(id).join('/')} appears twice`);
-    const bytes = tiles[order[k]].bytes;
-    const content = contents.add(bytes);
-    const previous = count - 1;
-    if (content === last && id === all.ids[previous] + all.runs[previous]) all.runs[previous]++;
-    else {
-      all.ids[count] = id;
-      all.runs[count] = 1;
-      all.lengths[count] = bytes.length;
-      all.offsets[count] = contents.offsets[content];
-      count++;
-    }
-    last = content;
-  }
-  const entries = {
-    ids: all.ids.subarray(0, count),
-    runs: all.runs.subarray(0, count),
-    lengths: all.lengths.subarray(0, count),
-    offsets: all.offsets.subarray(0, count),
-  };
-  return { entries, contents };
-}
-
-/** A root directory that fits the first read beside the header, and leaf directories when needed. */
-function layoutDirectories(entries: Directory): {
-  readonly root: Uint8Array;
-  readonly leaves: readonly Uint8Array[];
-} {
-  const count = entries.ids.length;
-  const room = HEAD_BYTES - HEADER_BYTES;
-  if (count * 4 <= room) {
-    const root = encodeDirectory(entries, 0, count);
-    if (root.length <= room) return { root, leaves: [] };
-  }
-  for (let size = LEAF_ENTRIES; ; size *= 2) {
-    const leafCount = Math.ceil(count / size);
-    const top = directoryOf(leafCount);
-    const leaves: Uint8Array[] = [];
-    let offset = 0;
-    for (let l = 0; l < leafCount; l++) {
-      const start = l * size;
-      const leaf = encodeDirectory(entries, start, Math.min(count, start + size));
-      top.ids[l] = entries.ids[start];
-      top.lengths[l] = leaf.length;
-      top.offsets[l] = offset;
-      leaves.push(leaf);
-      offset += leaf.length;
-    }
-    const root = encodeDirectory(top, 0, leafCount);
-    if (root.length <= room) return { root, leaves };
-  }
-}
-
-function checkArchiveHeader(header: Parameters<typeof writeArchive>[1]): number {
-  const type = Object.hasOwn(TILE_TYPES, header.kind) ? TILE_TYPES[header.kind] : undefined;
-  if (type === undefined)
-    throw failure('invalid-input', `Tiles of kind ${String(header.kind)} are not known`);
-  const { minZoom, maxZoom } = header;
-  if (
-    !Number.isInteger(minZoom) ||
-    !Number.isInteger(maxZoom) ||
-    minZoom < 0 ||
-    maxZoom > MAX_ZOOM ||
-    minZoom > maxZoom
-  )
-    throw failure(
-      'invalid-input',
-      `Zooms ${minZoom} to ${maxZoom} are not a range within 0 to ${MAX_ZOOM}`,
-    );
-  const numbers = [...header.bounds, ...(header.center ?? [])];
-  if (header.bounds.length !== 4 || !numbers.every(Number.isFinite))
-    throw failure('invalid-input', 'Archive bounds and center must be finite numbers');
-  return type;
-}
-
-/** Write a PMTiles v3 archive of already-encoded tiles. */
-export function writeArchive(
-  tiles: Iterable<{
-    readonly z: number;
-    readonly x: number;
-    readonly y: number;
-    readonly bytes: Uint8Array;
-  }>,
-  header: {
-    readonly kind: TileSource['kind'];
-    readonly minZoom: number;
-    readonly maxZoom: number;
-    readonly bounds: readonly [number, number, number, number];
-    readonly center?: readonly [lon: number, lat: number, zoom: number];
-    readonly metadata?: Readonly<Record<string, unknown>>;
-  },
-): Uint8Array {
-  const tileType = checkArchiveHeader(header);
-  const list = Array.from(tiles);
-  const ids = new Float64Array(list.length);
-  for (let i = 0; i < list.length; i++) {
-    const { z, x, y, bytes } = list[i];
-    if (!(bytes instanceof Uint8Array))
-      throw failure('invalid-input', `Tile ${z}/${x}/${y} has no bytes`);
-    if (z < header.minZoom || z > header.maxZoom)
-      throw failure('invalid-input', `Tile ${z}/${x}/${y} lies outside the archive's zooms`);
-    ids[i] = tileId(z, x, y);
-  }
-  const { entries, contents } = layoutTiles(list, ids, sortedBy(ids));
-  const { root, leaves } = layoutDirectories(entries);
-  const metadata = new TextEncoder().encode(
-    JSON.stringify(
-      header.kind === 'pack' ? { ...header.metadata, latkit: 'pack' } : (header.metadata ?? {}),
-    ),
-  );
-  const leafLength = leaves.reduce((sum, leaf) => sum + leaf.length, 0);
-  const metadataOffset = HEADER_BYTES + root.length;
-  const leafOffset = metadataOffset + metadata.length;
-  const dataOffset = leafOffset + leafLength;
-  const [west, south, east, north] = header.bounds;
-  const out = new Uint8Array(dataOffset + contents.size);
-  writeHeader(new DataView(out.buffer), {
-    rootOffset: HEADER_BYTES,
-    rootLength: root.length,
-    metadataOffset,
-    metadataLength: metadata.length,
-    leafOffset,
-    leafLength,
-    dataOffset,
-    dataLength: contents.size,
-    addressed: list.length,
-    entries: entries.ids.length,
-    contents: contents.parts.length,
-    internalCompression: NONE,
-    tileCompression: NONE,
-    tileType,
-    minZoom: header.minZoom,
-    maxZoom: header.maxZoom,
-    bounds: header.bounds,
-    center: header.center ?? [(west + east) / 2, (south + north) / 2, header.minZoom],
-  });
-  out.set(root, HEADER_BYTES);
-  out.set(metadata, metadataOffset);
-  let at = leafOffset;
-  for (const leaf of leaves) {
-    out.set(leaf, at);
-    at += leaf.length;
-  }
-  at = dataOffset;
-  for (const part of contents.parts) {
-    out.set(part, at);
-    at += part.length;
-  }
-  return out;
 }

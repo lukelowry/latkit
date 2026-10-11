@@ -3,14 +3,15 @@ import { geojsonBatches, type GeoJsonOptions } from '../sources/geojson.js';
 import { decodeVector, type VectorRequest, type VectorTile } from '../sources/vector.js';
 import { prepareShapes, shapesBuffers, type Shapes, type ShapesInput } from './shapes.js';
 
-/** Work the geography hands to a worker: shapes to prepare, a vector tile, or GeoJSON text. */
+/** Work the geography hands to a worker: shapes to prepare, a vector tile, or GeoJSON as text or bytes. */
 export type Job =
   | { readonly kind: 'shapes'; readonly input: ShapesInput }
   | { readonly kind: 'vector'; readonly request: VectorRequest }
   | {
       readonly kind: 'geojson';
-      readonly text: string;
-      readonly options: Omit<GeoJsonOptions, 'type'> & { readonly type?: string };
+      readonly text?: string;
+      readonly bytes?: Uint8Array;
+      readonly options: Pick<GeoJsonOptions, 'id' | 'source'> & { readonly type?: string };
     };
 /** What each job returns. */
 export interface JobResults {
@@ -60,7 +61,8 @@ export function runJob(job: Job): { readonly result: unknown; readonly transfer:
     batchBuffers(tile.batches, buffers);
     return { result: tile, transfer: [...buffers] };
   }
-  const result = geojsonBatches(parseJson(job.text), job.options),
+  const text = job.text ?? new TextDecoder().decode(job.bytes),
+    result = geojsonBatches(parseJson(text), job.options),
     buffers = new Set<ArrayBuffer>();
   batchBuffers(result.batches, buffers);
   return { result, transfer: [...buffers] };

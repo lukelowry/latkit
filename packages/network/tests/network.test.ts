@@ -1237,13 +1237,14 @@ it('places vertices without a position by their edges, among geographic ones tha
     const lowest = Math.min(...[0, 1].map((row) => placedAt(placed, 'plant', row)[1]), 30);
     expect(placedAt(placed, 'plant', 2)[1]).toBeLessThan(lowest);
     expect(await arrange(gpu, config)).toEqual(placed);
-    // Drawn, the positions stay geographic.
+    // Drawn, the positions stay geographic, and start on the mercator plane as a geography does.
     const network = createNetwork(gpu, config);
     await gpu.render({
       timeMs: 0,
       views: [{ renderer: kit.rendererOf(network), target: target(gpu), at: 0 }],
     });
     expect(network.projections.globe).toBe(true);
+    expect(network.camera.projection).toBe('mercator');
     expect(network.stats().vertices).toBe(7);
     network.destroy();
   } finally {

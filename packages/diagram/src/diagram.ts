@@ -1,4 +1,4 @@
-import { Work, failure, sameIndex } from '@latkit/model';
+import { Work, failure, sameIndex, type Data } from '@latkit/model';
 import {
   kit,
   type Gpu,
@@ -81,6 +81,8 @@ export interface Camera extends ViewCamera {
   readonly scale: number;
 }
 export interface DiagramConfig extends ItemViewConfig, DiagramStyle {
+  /** Borrowed: destroy never closes it. */
+  readonly source: Data;
   /** Drawn types by model type name. */
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;

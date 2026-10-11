@@ -21,13 +21,18 @@ export interface VectorRequest {
   readonly x: number;
   readonly y: number;
   readonly layers: readonly VectorLayerRequest[];
-  /** The Index source the tile's rows are numbered under. */
+  /** The Index source the tile's rows are numbered under, by place. */
   readonly source: string;
 }
 /** A decoded layer: its rows, which are its features, and its shapes. */
 export interface VectorLayer {
   readonly name: string;
   readonly rows: number;
+  /**
+   * Each row's feature id, where every feature has a distinct whole-number one: the tiles number
+   * each id once, so a feature is one item in every tile and zoom that holds it.
+   */
+  readonly ids?: Float64Array;
   readonly rings?: Shapes;
   readonly lines?: Shapes;
 }
@@ -225,10 +230,11 @@ export function decodeVector(request: VectorRequest): {
       transfer.push(...shapesBuffers(lines));
     }
     if (!rings && !lines) continue;
-    const { definition, batch } = layerRows(layer, sets, request.source, frame);
+    const { definition, batch, ids } = layerRows(layer, sets, request.source, frame);
     types.push([layer.name, definition]);
     batches.push(batch);
-    layers.push({ name: layer.name, rows, rings, lines });
+    if (ids) transfer.push(ids.buffer as ArrayBuffer);
+    layers.push({ name: layer.name, rows, rings, lines, ...(ids ? { ids } : {}) });
   }
   return { tile: { layers, schema: { types: Object.fromEntries(types) }, batches }, transfer };
 }
@@ -244,27 +250,29 @@ function prepare(gather: Gather, closed: boolean, clip: readonly number[]): Shap
 }
 
 type Value = string | number | boolean;
-/** A layer's features as model rows: an id each, and a field per property. */
+/**
+ * A layer's features as model rows, by place: a field per property, and an id each. Where every
+ * feature's id is a distinct whole number, those ids too, for the tiles to number.
+ */
 function layerRows(
   layer: TileLayer,
   sets: readonly FeatureSet[],
   source: string,
   frame: TileFrame,
-): { definition: TypeDefinition; batch: RowBatch } {
+): { definition: TypeDefinition; batch: RowBatch; ids?: Float64Array } {
   const all: Record<string, Value>[] = [],
-    ids: string[] = [],
-    taken = new Set<string>();
+    numbers: number[] = [];
   for (const set of sets)
     for (let f = 0; f + 1 < set.features.length; f++) {
       all.push(properties(layer, set, f));
-      const id = set.ids[f];
-      let key = Number.isFinite(id)
-        ? String(id)
-        : `${layer.name}:${frame.z}/${frame.x}/${frame.y}:${all.length - 1}`;
-      for (let n = 2; taken.has(key); n++) key = `${Number.isFinite(id) ? id : key}#${n}`;
-      taken.add(key);
-      ids.push(key);
+      numbers.push(set.ids[f]);
     }
+  const stable =
+    numbers.every((id) => Number.isSafeInteger(id) && id >= 0) &&
+    new Set(numbers).size === numbers.length;
+  const ids = stable
+    ? numbers.map(String)
+    : all.map((_, i) => `${layer.name}:${frame.z}/${frame.x}/${frame.y}:${i}`);
   const kinds = new Map<string, 'number' | 'boolean' | 'text'>();
   for (const row of all)
     for (const [name, value] of Object.entries(row)) {
@@ -324,5 +332,6 @@ function layerRows(
       ids: textColumn(ids),
       columns,
     },
+    ...(stable ? { ids: Float64Array.from(numbers) } : {}),
   };
 }

@@ -12,6 +12,7 @@ import {
   type Query,
   type QueryBlock,
 } from '@latkit/model';
+import { geojson } from '@latkit/geography';
 import { readCase } from '../src/earth/cases.js';
 import { lattice } from '../src/earth/lattice.js';
 import { stateValues } from '../src/earth/states.js';
@@ -66,19 +67,19 @@ it.each(['wecc240', 'activsg2000', 'activsg10k', 'activsg25k', 'activsg70k'])(
   },
 );
 
-it('reads the borders as coasts, countries, and provinces', async () => {
-  const { loadBorders } = await import('../src/earth/cases.js'),
-    bytes = new Uint8Array(readFileSync(new URL('../public/grids/borders.bin', import.meta.url)));
-  const fetched = globalThis.fetch;
-  globalThis.fetch = async () => new Response(bytes);
-  try {
-    const data = await loadBorders(new AbortController().signal, () => {});
-    for (const type of ['Coast', 'Country', 'Province'])
-      expect(
-        counted(await blocks(data, { kind: 'rows', from: type, select: ['points'] })),
-      ).toBeGreaterThan(100);
-  } finally {
-    globalThis.fetch = fetched;
+it('ships the borders as Natural Earth GeoJSON: coasts, countries, and provinces', async () => {
+  for (const [file, type] of [
+    ['coastline', 'Coast'],
+    ['countries', 'Country'],
+    ['provinces', 'Province'],
+  ] as const) {
+    const bytes = gunzipSync(
+        readFileSync(new URL(`../public/maps/${file}.geojson.gz`, import.meta.url)),
+      ),
+      data = await geojson(bytes, { type });
+    expect(
+      counted(await blocks(data, { kind: 'rows', from: type, select: ['points'] })),
+    ).toBeGreaterThan(100);
   }
 });
 

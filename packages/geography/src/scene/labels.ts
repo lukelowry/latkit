@@ -44,8 +44,8 @@ export class Labels {
     const occupied = new kit.Occupancy(),
       batches: LabelBatch[] = [],
       { viewport } = projector,
-      // Each record's texts placed this frame: a feature split across tiles is named once.
-      named = new Map<string, Set<string>>();
+      // Each type's texts placed this frame, and where: a feature split across tiles is named once.
+      named = new Map<string, Map<string, kit.Projected[]>>();
     for (const source of sources) {
       const options = kit.resolveLabels(source.labels);
       if (!options) continue;
@@ -65,7 +65,9 @@ export class Labels {
         this.cache.set(source.shapes, entry);
       }
       entry.bank.hide();
-      const max = options.maxCount ?? 200,
+      // Unset, a text is named once in view.
+      const repeat = options.repeatSpacingPx ?? Infinity,
+        max = options.maxCount ?? 200,
         candidates = this.candidates(source.shapes, region, pixels, max * 4)
           .map((position) => {
             const x = source.shapes.anchors[position * 2],
@@ -104,7 +106,7 @@ export class Labels {
                 {
                   text,
                   font: options.font ?? style.font,
-                  size: style.fontSizePx,
+                  size: options.fontSizePx ?? style.fontSizePx,
                   color: options.color ?? style.textColor,
                 },
                 { signal: frame.signal },
@@ -114,21 +116,22 @@ export class Labels {
         }
       }
       let texts = named.get(source.type);
-      if (!texts) named.set(source.type, (texts = new Set()));
+      if (!texts) named.set(source.type, (texts = new Map<string, kit.Projected[]>()));
       let placed = 0;
       for (const { position, p } of candidates) {
         if (placed >= max) break;
         const layout = entry.layouts.get(position);
         if (!layout?.runs.length || !p) continue;
-        const text = layout.runs.map((run) => run.text).join('\n');
-        if (texts.has(text)) continue;
+        const text = layout.runs.map((run) => run.text).join('\n'),
+          twins = texts.get(text) ?? [];
+        if (twins.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < repeat)) continue;
         if (
           entry.bank.place(position, layout, [[p.x, p.y, 'center', 'middle']], occupied, {
             margin: 3,
           })
         ) {
           placed++;
-          texts.add(text);
+          texts.set(text, [...twins, p]);
         }
       }
       for (const page of entry.bank.flush())

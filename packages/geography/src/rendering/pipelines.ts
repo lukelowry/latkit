@@ -8,7 +8,7 @@ import labelsSource from './labels.wgsl';
 /** The kit's projection, then the geography's bindings over it, which every drawing module includes. */
 const common = kit.projectionShader() + commonSource;
 /** Floats of the geography's style block. */
-export const STYLE_FLOATS = 32;
+export const STYLE_FLOATS = 40;
 /** Floats of the style block's members. */
 export const S = {
   surface: 0,
@@ -19,6 +19,8 @@ export const S = {
   glow: 20,
   halo: 24,
   axis: 28,
+  flow: 32,
+  motion: 36,
 } as const;
 
 /**
@@ -118,7 +120,7 @@ export async function pipelines(
     });
   const [groundModule, shapesModule] = await Promise.all([
     gpu.shaderModule(common + groundSource, 'geography ground'),
-    gpu.shaderModule(common + shading + shapesSource, 'geography shapes'),
+    gpu.shaderModule(common + kit.strokeShader() + shading + shapesSource, 'geography shapes'),
   ]);
   const [ground, areas, lines] = await Promise.all([
     render(groundModule, 'ground_vertex', 'ground_fragment', [frame], { depth: 'write' }),

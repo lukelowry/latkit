@@ -1,6 +1,6 @@
 import { createData, type Data, type FieldInput } from '@latkit/model';
 import type { Gpu, kit } from '@latkit/gpu';
-import { fieldKey, packKey, type Pack } from '../pack.js';
+import { fieldKey } from '../options.js';
 import { run } from '../prepare/client.js';
 import type { Shapes } from '../prepare/shapes.js';
 import { matchRows, readShapes } from '../read.js';
@@ -33,12 +33,11 @@ interface Join {
 }
 /**
  * Everything a geography's records draw from: shapes prepared from Data in a worker and shared by
- * every view, packs read whole, vector tiles by pyramid, and the joins `values` reads
- * through. Loads start when a frame first asks and invalidate the view as they land.
+ * every view, vector tiles by pyramid, and the joins `values` reads through. Loads start when a
+ * frame first asks and invalidate the view as they land.
  */
 export class Sources {
   private readonly buffers = new Map<Shapes, ShapesBuffers>();
-  private readonly packs = new Map<TileSet, { pack?: Pack; done: Promise<void> }>();
   private readonly vectors = new Map<TileSet, { key: string; pyramid: Pyramid<VectorTileData> }>();
   private readonly joins = new WeakMap<Data, WeakMap<Data, Map<string, Join>>>();
   private readonly loading = new Set<Promise<unknown>>();
@@ -53,7 +52,7 @@ export class Sources {
       readonly invalidate: () => void;
       readonly fail: (error: unknown) => void;
       readonly signal: AbortSignal;
-      readonly limits: () => { readonly tileBytes: number; readonly requests: number };
+      readonly limits: () => { readonly tileBytes: number; readonly tileRequests: number };
     },
   ) {}
   /** Settles once what is loading now lands. */
@@ -135,7 +134,7 @@ export class Sources {
     }
     return state.shapes && this.upload(state.shapes);
   }
-  /** Tiles' source once open: what kind of tiles they are, their zooms and bounds. */
+  /** Tiles' source once open: their zooms and bounds. */
   opened(tiles: TileSet): TileSource | undefined {
     let entry = this.sources.get(tiles);
     if (!entry) {
@@ -147,28 +146,6 @@ export class Sources {
       );
     }
     return entry.source;
-  }
-  /** A pack's contents; undefined until read. */
-  pack(tiles: TileSet): Pack | undefined {
-    let entry = this.packs.get(tiles);
-    if (!entry) {
-      const made: { pack?: Pack; done: Promise<void> } = {
-        done: this.track(tiles.pack()).then(
-          (pack) => {
-            made.pack = pack;
-          },
-          () => undefined,
-        ),
-      };
-      this.packs.set(tiles, (entry = made));
-    }
-    return entry.pack;
-  }
-  /** A pack's shapes of a type and field, on the GPU. */
-  packShapes(pack: Pack, type: string, field: FieldInput, closed: boolean): Prepared | undefined {
-    if (typeof field !== 'string') return undefined;
-    const shapes = pack.shapes.get(packKey(type, field, closed));
-    return shapes && this.upload(shapes);
   }
   private upload(shapes: Shapes): Prepared {
     let buffers = this.buffers.get(shapes);
@@ -185,7 +162,7 @@ export class Sources {
       pyramid = new Pyramid<VectorTileData>({
         tiles,
         bytes: limits.tileBytes,
-        requests: limits.requests,
+        requests: limits.tileRequests,
         load: (source, tile, signal) => this.loadVector(tiles, source, tile, layers, signal),
         size: (data) => data.bytes,
         release: (data) => {
@@ -223,7 +200,21 @@ export class Sources {
         [bytes.buffer as ArrayBuffer],
         signal,
       );
-    const data = createData(schema, batches),
+    // A layer whose features all carry distinct ids numbers them as the tiles do, under their source.
+    const numbered = new Map(decoded.filter((layer) => layer.ids).map((l) => [l.name, l.ids!])),
+      data = createData(
+        schema,
+        batches.map((batch) => {
+          const ids = numbered.get(batch.index.type);
+          return ids
+            ? {
+                ...batch,
+                index: { ...batch.index, source: tiles.name },
+                rows: { kind: 'indices' as const, values: tiles.rowsOf(ids) },
+              }
+            : batch;
+        }),
+      ),
       out = new Map<string, { rings?: Prepared; lines?: Prepared }>();
     let total = 0;
     const up = (shapes: Shapes | undefined): Prepared | undefined => {
@@ -270,11 +261,10 @@ export class Sources {
     }
     return join.buffer;
   }
-  /** Let go of what no record names any more: packs, pyramids, and shapes' buffers. */
+  /** Let go of what no record names any more: pyramids, and shapes' buffers. */
   keep(live: {
     readonly shapes: ReadonlySet<Shapes>;
     readonly vectors: ReadonlySet<TileSet>;
-    readonly packs: ReadonlySet<TileSet>;
   }): void {
     for (const [shapes, buffers] of this.buffers)
       if (!live.shapes.has(shapes)) {
@@ -286,7 +276,6 @@ export class Sources {
         pyramid.destroy();
         this.vectors.delete(tiles);
       }
-    for (const tiles of this.packs.keys()) if (!live.packs.has(tiles)) this.packs.delete(tiles);
   }
   destroy(): void {
     for (const buffers of this.buffers.values()) buffers.destroy();
@@ -295,6 +284,5 @@ export class Sources {
     this.joined.clear();
     for (const { pyramid } of this.vectors.values()) pyramid.destroy();
     this.vectors.clear();
-    this.packs.clear();
   }
 }

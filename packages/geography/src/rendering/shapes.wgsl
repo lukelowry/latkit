@@ -2,7 +2,7 @@
 struct Draw {
   /** The type's color and style, for rows its records leave unset. */
   color: vec4f,
-  /** Width, shade, whether shown, and whether dashed. */
+  /** Width, shade, whether shown (1) and dashed (2), and how fast its comets move. */
   style: vec4f,
   /** Whether rows read records, whether through a map to their values' rows, the hovered row, and whether any row is selected. */
   flags: vec4u,
@@ -13,7 +13,7 @@ struct Draw {
 @group(1) @binding(0) var<storage, read> vertices: array<u32>;
 /** Per row its origin, split: high longitude and latitude, then the low parts. */
 @group(1) @binding(1) var<storage, read> origins: array<vec4f>;
-/** Per values row its color, then its width, shade, whether shown, and whether dashed. */
+/** Per values row its color, then its width, shade, whether shown (1) and dashed (2), and flow. */
 @group(1) @binding(2) var<storage, read> records: array<vec4f>;
 /** Per row its values row, or NONE. */
 @group(1) @binding(3) var<storage, read> rowMap: array<u32>;
@@ -29,6 +29,8 @@ struct Look {
   shade: f32,
   visible: bool,
   dash: bool,
+  /** How far comets move along the line each second, in CSS pixels; 0 draws none. */
+  flow: f32,
   /** 0, hovered 1, or selected 2. */
   focus: u32,
 }
@@ -44,8 +46,8 @@ fn lookOf(row: u32) -> Look {
   look.color = draw.color;
   look.width = draw.style.x;
   look.shade = draw.style.y;
-  look.visible = draw.style.z > 0.5;
-  look.dash = draw.style.w > 0.5;
+  var flags = u32(draw.style.z);
+  look.flow = draw.style.w;
   if (draw.flags.x == 1u) {
     var r = row;
     if (draw.flags.y == 1u) { r = rowMap[row]; }
@@ -55,10 +57,12 @@ fn lookOf(row: u32) -> Look {
       look.color = a;
       look.width = b.x;
       look.shade = b.y;
-      look.visible = b.z > 0.5;
-      look.dash = b.w > 0.5;
+      flags = u32(b.z);
+      look.flow = b.w;
     }
   }
+  look.visible = (flags & 1u) != 0u;
+  look.dash = (flags & 2u) != 0u;
   look.focus = 0u;
   if (draw.flags.w == 1u && (selection[row >> 5u] & (1u << (row & 31u))) != 0u) { look.focus = 2u; }
   else if (row == draw.flags.z) { look.focus = 1u; }
@@ -114,6 +118,9 @@ struct Stroke {
   @location(3) facing: f32,
   @location(4) shade: f32,
   @location(5) @interpolate(flat) dash: u32,
+  /** Its comets: their speed, how far they have moved, and their heads' radius, in CSS pixels. */
+  @location(6) @interpolate(flat) flow: vec3f,
+  @location(7) @interpolate(flat) row: u32,
 }
 /** A vertex's clip position. */
 fn clipOf(v: u32) -> vec4f {
@@ -179,8 +186,11 @@ fn pixels(c: vec4f) -> vec2f { return c.xy / max(c.w, 0.000001) * 0.5 * scene.pr
   var width = look.width;
   if (look.focus != 0u) { width += 2.0; }
   let half = max(width * 0.5, 0.5);
-  // A pixel beyond the stroke on each side, which the fragment fades for antialiasing.
-  let reach = half + 1.0;
+  // A pixel beyond the stroke on each side, which the fragment fades for antialiasing, and as far
+  // as a flowing line's comets' heads.
+  let head = max(half * 1.6, 2.0);
+  let flowing = look.flow != 0.0 && u.motion.x > 0.0;
+  let reach = select(half, max(half, head), flowing) + 1.0;
   let offset = normal * side * reach * stretch;
   out.position = vec4f(c.xy + offset * 2.0 / scene.projection.view.xy * c.w, c.z, c.w);
   out.across = vec2f(side * reach, half);
@@ -194,12 +204,24 @@ fn pixels(c: vec4f) -> vec2f { return c.xy / max(c.w, 0.000001) * 0.5 * scene.pr
   out.facing = facingOf(world);
   out.shade = look.shade;
   out.dash = select(0u, 1u, look.dash);
+  let spacing = max(u.motion.x, 1.0);
+  let moved = look.flow * u.motion.y;
+  out.flow = vec3f(select(0.0, look.flow, flowing), moved - spacing * floor(moved / spacing), head);
+  out.row = row;
   return out;
 }
 @fragment fn line_fragment(v: Stroke) -> @location(0) vec4f {
   if (v.facing < 0.0) { discard; }
-  if (v.dash == 1u && fract(v.along / max(u.glow.w, 1.0)) > 0.5) { discard; }
-  let coverage = clamp(v.across.y + 0.5 - abs(v.across.x), 0.0, 1.0);
+  if (v.dash == 1u && !stroke_dash(v.along, u.glow.w)) { discard; }
+  let line = clamp(v.across.y + 0.5 - abs(v.across.x), 0.0, 1.0);
+  // Derivatives read in uniform control flow, before any branch on the row.
+  let aa = max(fwidth(v.across.x), 0.01);
+  var comets = 0.0;
+  if (v.flow.x != 0.0) {
+    comets = stroke_comet(v.along, v.across.x, v.row, v.flow.x, v.flow.y, v.flow.z, u.motion.x, aa) * u.flow.a;
+  }
+  // The line and its comets, in its shade.
+  let color = vec4f(mix(v.color.rgb, u.flow.rgb, comets), mix(v.color.a, 1.0, comets));
   let px = v.position.xy / scene.projection.view.z;
-  return outputColor(shade(ShadeFragment(v.color, px, v.shade)), coverage);
+  return outputColor(shade(ShadeFragment(color, px, v.shade)), max(line, comets));
 }
