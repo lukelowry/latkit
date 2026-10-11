@@ -12,7 +12,14 @@ import {
   type RGBA,
   type Labels,
 } from '@latkit/gpu';
-import { failure, itemKey, type Data, type FieldInput, type Item } from '@latkit/model';
+import {
+  failure,
+  itemKey,
+  type Data,
+  type FieldInput,
+  type Item,
+  type Schema,
+} from '@latkit/model';
 import {
   AREA,
   DEFAULTS,
@@ -27,7 +34,7 @@ import {
   type Style,
 } from './options.js';
 import { pick, positionIn, type Drawn } from './picking.js';
-import { isTiles, type TileSet, type Tiles } from './tiles.js';
+import { declaredSchema, isTiles, type TileSet, type Tiles } from './tiles.js';
 import { Labels as SceneLabels, type LabelSource } from './scene/labels.js';
 import { RecordStyles } from './scene/records.js';
 import { Sources, type Prepared, type VectorTileData } from './scene/sources.js';
@@ -39,7 +46,7 @@ import {
   visibleRegion,
   type Region,
 } from './scene/visible.js';
-import type { VectorLayerRequest } from './sources/vector.js';
+import type { VectorFieldType, VectorLayerRequest } from './sources/vector.js';
 import { Painter, type Paint, type ShapeDraw } from './rendering/painter.js';
 import { pipelines, type Pipelines } from './rendering/pipelines.js';
 import { warm } from './prepare/client.js';
@@ -101,15 +108,13 @@ export declare namespace Geography {
   interface Item extends ModelItem {
     readonly kind: 'area' | 'line';
   }
-  /** How the earth draws, beyond the shared view style; every option has a default. */
-  interface Style extends kit.LineStyle, kit.ProjectedStyle {
+  /**
+   * How the earth draws, beyond the shared view style; every option has a default. Its grid is lines
+   * of longitude and latitude.
+   */
+  interface Style extends kit.LineStyle, kit.ProjectedStyle, kit.GridStyle {
     /** The ground beneath everything. */
     readonly surfaceColor?: RGBA;
-    /** Lines of longitude and latitude, spaced for the zoom. */
-    readonly graticule?: boolean;
-    readonly graticuleColor?: RGBA;
-    /** How close the graticule's lines may draw, in CSS pixels; it picks the nicest spacing at least this. */
-    readonly graticuleSpacingPx?: number;
     /** Light by the sun at a time in milliseconds, at the current time, or not at all; a hosting network is lit too. */
     readonly daylight?: number | 'now' | false;
     /** How bright night stays, from 0 to 1, for the ground and everything on it. */
@@ -215,6 +220,35 @@ interface Frame {
   };
 }
 
+/** What a frame's records want of a tile layer: its rings, its lines, and the fields they read. */
+interface LayerWants {
+  rings: boolean;
+  lines: boolean;
+  readonly fields: Map<string, VectorFieldType>;
+}
+const byName = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+/**
+ * The fields of a tile layer a record reads: its channels', unless its `values` hold them, typed as
+ * the tiles declare them or else as numbers; and its labels', as text, which a number or a boolean
+ * reads as too.
+ */
+function wantFields(
+  into: Map<string, VectorFieldType>,
+  declared: Schema.Type | undefined,
+  options: Geography.AreaOptions | Geography.LineOptions,
+  bound: kit.BoundChannels<string>,
+): void {
+  const typeOf = (name: string, fallback: VectorFieldType): VectorFieldType => {
+    const type =
+      declared && Object.hasOwn(declared.fields, name) ? declared.fields[name].type : null;
+    return type === 'float64' || type === 'boolean' || type === 'text' ? type : fallback;
+  };
+  if (!options.values)
+    for (const field of Object.values(bound.fields))
+      if (typeof field === 'string') into.set(field, typeOf(field, 'float64'));
+  const label = kit.resolveLabels(options.labels)?.field;
+  if (typeof label === 'string' && !into.has(label)) into.set(label, 'text');
+}
 /** Shapes prepare in workers: they start as a config names any, so its first frame finds them running. */
 function warmFor(config: Geography.Config): void {
   if (Object.keys(config.areas ?? {}).length || Object.keys(config.lines ?? {}).length) warm();
@@ -461,7 +495,7 @@ class GeographyView
     live: Frame['live'],
   ): Planned[] {
     const planned: Planned[] = [],
-      requests = new Map<TileSet, Map<string, { rings: boolean; lines: boolean }>>();
+      requests = new Map<TileSet, Map<string, LayerWants>>();
     type Entry = readonly [
       kind: 'area' | 'line',
       type: string,
@@ -473,23 +507,36 @@ class GeographyView
     ];
     const closedOf = ([kind, type, options]: Entry) =>
       kind === 'area' || strokesRings(options as Geography.LineOptions, config.areas?.[type]);
-    // Vector tiles decode the layers every record of theirs names, once.
+    // Vector tiles decode the layers every record of theirs names, and the fields they read, once.
     for (const entry of entries) {
-      const source = entry[2].source ?? config.source;
-      if (!isTiles(source) || !this.sources.opened(source)) continue;
-      let layers = requests.get(source);
-      if (!layers)
-        requests.set(source, (layers = new Map<string, { rings: boolean; lines: boolean }>()));
-      const layer = layers.get(entry[1]) ?? { rings: false, lines: false };
+      const [kind, type, options] = entry,
+        source = options.source ?? config.source,
+        opened = isTiles(source) ? this.sources.opened(source) : undefined;
+      if (!opened) continue;
+      let layers = requests.get(source as TileSet);
+      if (!layers) requests.set(source as TileSet, (layers = new Map<string, LayerWants>()));
+      let layer = layers.get(type);
+      if (!layer) layers.set(type, (layer = { rings: false, lines: false, fields: new Map() }));
       if (closedOf(entry)) layer.rings = true;
       else layer.lines = true;
-      layers.set(entry[1], layer);
+      const declared = declaredSchema(opened).types;
+      wantFields(
+        layer.fields,
+        Object.hasOwn(declared, type) ? declared[type] : undefined,
+        options,
+        this.records.bind(options, kind === 'area' ? AREA : LINE),
+      );
     }
     const placed = new Map<TileSet, Placed<VectorTileData>[]>();
     for (const [tiles, layers] of requests) {
       const request: VectorLayerRequest[] = [...layers]
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([name, kinds]) => ({ name, ...kinds }));
+        .sort(([a], [b]) => byName(a, b))
+        .map(([name, { rings, lines, fields }]) => ({
+          name,
+          rings,
+          lines,
+          fields: Object.fromEntries([...fields].sort(([a], [b]) => byName(a, b))),
+        }));
       const pyramid = this.sources.vector(tiles, request),
         seen = new Set<string>(),
         tilesDrawn: Placed<VectorTileData>[] = [];
@@ -574,20 +621,25 @@ class GeographyView
       pixels = pixelsPerDegree(projector),
       live: Frame['live'] = { shapes: new Set(), vectors: new Set() };
     const planned = this.plan(projector, region, config, live),
-      drawn: Drawn[] = planned.map((p) => ({
-        kind: p.kind,
-        source: p.data,
-        type: p.type,
-        shapes: p.prepared.shapes,
-        halfWidth:
-          p.kind === 'line'
-            ? this.records.constant(
-                this.records.bind(p.options, LINE),
-                style.lineColor,
-                style.lineWidthPx,
-              ).width / 2
-            : 0,
-      }));
+      // A record hidden whole draws its labels alone: nothing of it hovers or picks.
+      drawn: Drawn[] = planned.flatMap((p) => {
+        const constant = this.records.constant(
+          this.records.bind(p.options, p.kind === 'area' ? AREA : LINE),
+          style.lineColor,
+          style.lineWidthPx,
+        );
+        return constant.visible
+          ? [
+              {
+                kind: p.kind,
+                source: p.data,
+                type: p.type,
+                shapes: p.prepared.shapes,
+                halfWidth: p.kind === 'line' ? constant.width / 2 : 0,
+              },
+            ]
+          : [];
+      });
     const hover = this.hoverFrame(
       frame,
       (point, radius, { check }) => pick(drawn, projector, point, radius, 1, check)[0] ?? null,

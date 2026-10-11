@@ -12,7 +12,7 @@ export const STYLE_FLOATS = 44;
 /** Floats of the style block's members. */
 export const S = {
   surface: 0,
-  graticule: 4,
+  gridColor: 4,
   atmosphere: 8,
   hover: 12,
   selected: 16,
@@ -120,7 +120,7 @@ export async function pipelines(
       multisample: { count: msaa },
     });
   const [groundModule, shapesModule] = await Promise.all([
-    gpu.shaderModule(common + groundSource, 'geography ground'),
+    gpu.shaderModule(common + kit.gridShader() + groundSource, 'geography ground'),
     gpu.shaderModule(common + kit.strokeShader() + shading + shapesSource, 'geography shapes'),
   ]);
   const [ground, areas, lines] = await Promise.all([

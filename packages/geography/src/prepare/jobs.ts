@@ -3,15 +3,15 @@ import { geojsonBatches } from '../sources/geojson.js';
 import type { Geography } from '../geography.js';
 import { decodeVector, type VectorRequest, type VectorTile } from '../sources/vector.js';
 import { prepareShapes, shapesBuffers, type Shapes, type ShapesInput } from './shapes.js';
+import { ungzipped } from '../sources/bytes.js';
 
-/** Work the geography hands to a worker: shapes to prepare, a vector tile, or GeoJSON as text or bytes. */
+/** Work the geography hands to a worker: shapes to prepare, a vector tile, or GeoJSON's bytes, gzipped or not. */
 export type Job =
   | { readonly kind: 'shapes'; readonly input: ShapesInput }
   | { readonly kind: 'vector'; readonly request: VectorRequest }
   | {
       readonly kind: 'geojson';
-      readonly text?: string;
-      readonly bytes?: Uint8Array;
+      readonly bytes: Uint8Array;
       readonly options: Pick<Geography.GeoJsonOptions, 'id' | 'source'> & {
         readonly type?: string;
       };
@@ -23,8 +23,9 @@ export interface JobResults {
   readonly geojson: { readonly schema: Schema; readonly batches: readonly Data.RowBatch[] };
 }
 
-/** GeoJSON text, parsed. */
-export function parseJson(text: string): unknown {
+/** GeoJSON's bytes, gzipped or not, parsed. */
+export async function parseJson(bytes: Uint8Array): Promise<unknown> {
+  const text = new TextDecoder().decode(await ungzipped(bytes));
   try {
     return JSON.parse(text);
   } catch (error) {
@@ -53,7 +54,9 @@ function batchBuffers(batches: readonly Data.RowBatch[], out: Set<ArrayBuffer>):
 }
 
 /** Run a job, returning its result and the buffers to transfer with it. */
-export function runJob(job: Job): { readonly result: unknown; readonly transfer: ArrayBuffer[] } {
+export async function runJob(
+  job: Job,
+): Promise<{ readonly result: unknown; readonly transfer: ArrayBuffer[] }> {
   if (job.kind === 'shapes') {
     const shapes = prepareShapes(job.input);
     return { result: shapes, transfer: shapesBuffers(shapes) };
@@ -64,8 +67,7 @@ export function runJob(job: Job): { readonly result: unknown; readonly transfer:
     batchBuffers(tile.batches, buffers);
     return { result: tile, transfer: [...buffers] };
   }
-  const text = job.text ?? new TextDecoder().decode(job.bytes),
-    result = geojsonBatches(parseJson(text), job.options),
+  const result = geojsonBatches(await parseJson(job.bytes), job.options),
     buffers = new Set<ArrayBuffer>();
   batchBuffers(result.batches, buffers);
   return { result, transfer: [...buffers] };

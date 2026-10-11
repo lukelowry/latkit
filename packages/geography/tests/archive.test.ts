@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openTiles, tileId } from '../src/sources/archive.js';
+import { tiles as openSet } from '../src/tiles.js';
 import type { TileSource } from '../src/sources/archive.js';
 import { tileOf, writeArchive } from './archive-writer.js';
 
@@ -341,6 +342,40 @@ describe('archives', () => {
     await expectTiles(await openTiles(layered), tiles);
     await expect(openTiles(writeArchive(tiles, header))).rejects.toMatchObject({
       code: 'unsupported',
+    });
+  });
+
+  it('declares each layer and its fields as the metadata lists them, every field nullable', async () => {
+    const archive = writeArchive(sampleTiles(), {
+      tileType: 1,
+      minZoom: 0,
+      maxZoom: 3,
+      bounds: BOUNDS,
+      metadata: {
+        vector_layers: [
+          {
+            id: 'park',
+            fields: { name: 'String', area: 'Number', open: 'Boolean', kind: 'Other' },
+          },
+          { id: 'water' },
+          { id: 'park', fields: { ignored: 'Number' } },
+          null,
+          { fields: { unnamed: 'String' } },
+        ],
+      },
+    });
+    expect((await openSet(archive).info).schema).toEqual({
+      types: {
+        park: {
+          fields: {
+            name: { type: 'text', nullable: true },
+            area: { type: 'float64', nullable: true },
+            open: { type: 'boolean', nullable: true },
+            kind: { type: 'text', nullable: true },
+          },
+        },
+        water: { fields: {} },
+      },
     });
   });
 

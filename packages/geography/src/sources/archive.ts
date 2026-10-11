@@ -10,6 +10,7 @@ import {
   raced,
 } from './ranges.js';
 import type { ByteRanges } from './ranges.js';
+import { gunzip, isGzip, ungzipped } from './bytes.js';
 
 /** Where vector tiles come from: their zoom range and bounds, and each tile's bytes. */
 export interface TileSource {
@@ -242,23 +243,6 @@ function findEntry(directory: Directory, id: number): number {
 
 // Compression
 
-function isGzip(bytes: Uint8Array): boolean {
-  return bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
-}
-
-async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
-  if (typeof DecompressionStream === 'undefined')
-    throw failure('unsupported', 'This runtime cannot decompress gzip');
-  try {
-    const stream = new Blob([bytes as Uint8Array<ArrayBuffer>])
-      .stream()
-      .pipeThrough(new DecompressionStream('gzip'));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
-  } catch (error) {
-    throw failure('protocol', 'Tile bytes are not valid gzip', { cause: error });
-  }
-}
-
 function decompress(bytes: Uint8Array, compression: number): Promise<Uint8Array> | Uint8Array {
   return compression === GZIP || (compression === UNKNOWN && isGzip(bytes)) ? gunzip(bytes) : bytes;
 }
@@ -465,7 +449,7 @@ class Template implements TileSource {
       .replaceAll('{x}', String(x))
       .replaceAll('{y}', String(row));
     const bytes = await this.requests.request(url, (shared) => this.fetchTile(url, shared), signal);
-    return bytes && isGzip(bytes) ? gunzip(bytes) : bytes;
+    return bytes && ungzipped(bytes);
   }
 
   private async fetchTile(url: string, signal: AbortSignal): Promise<Uint8Array | null> {

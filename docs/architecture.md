@@ -59,5 +59,7 @@ the GPU draws.
 
 Network and diagram share one graph, `kit.Graph`, and one [layout](views.md#layout), `kit.place`.
 Network and geography share one projection, `kit.Projector`, in TypeScript and WGSL, so a geography
-draws beneath a network in its pass, and a gesture the graph leaves reaches it. Every view resolves
-its style through `kit.resolveStyle`, so options of one kind check alike everywhere.
+draws beneath a network in its pass, and a gesture the graph leaves reaches it unless the
+geography takes no input. Both find the ground under a pixel with `projection_ground_point`, and
+draw their grids with `kit.gridLines`. Every view resolves its style through `kit.resolveStyle`,
+so options of one kind check alike everywhere.

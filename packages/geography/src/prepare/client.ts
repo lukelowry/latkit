@@ -31,11 +31,7 @@ let url: string | undefined;
 function inline(job: Job): Promise<unknown> {
   return new Promise((resolve, reject) =>
     setTimeout(() => {
-      try {
-        resolve(runJob(job).result);
-      } catch (error) {
-        reject(error as Error);
-      }
+      runJob(job).then(({ result }) => resolve(result), reject);
     }, 0),
   );
 }

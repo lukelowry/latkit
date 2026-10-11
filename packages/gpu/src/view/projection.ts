@@ -432,8 +432,8 @@ export class Projector {
 
 /**
  * WGSL every projected pipeline includes: the `Projection` block `Projector.write` fills, the sun's
- * `Light`, and where points land, the globe's surface under a pixel, billboard depth, daylight, and
- * the mercator plane.
+ * `Light`, and where points land, the ground and the globe's surface under a pixel, billboard depth,
+ * daylight, and the mercator plane.
  */
 export function projectionShader(): string {
   return `
@@ -511,6 +511,50 @@ fn projection_sphere_hit(ndc: vec2f, q: Projection, radius: f32) -> vec4f {
   let t = (-b - sqrt(disc)) / a;
   if (t < 0.0) { return vec4f(0.0); }
   return vec4f(eye + direction * t, 1.0);
+}
+/** Where the ray through a pixel meets the ground, and the ray itself. */
+struct GroundPoint {
+  /** From the camera's center: degrees on the globe and the mercator plane, the data's units on the planes. */
+  relative: vec2f,
+  /** The point in the world, on the globe and the tilted plane. */
+  world: vec3f,
+  /** The ray, from the eye toward the pixel. */
+  eye: vec3f,
+  direction: vec3f,
+  hit: bool,
+}
+/** Where the ray through a pixel meets the ground: the plane, the mercator plane, the tilted plane, or the globe. */
+fn projection_ground_point(ndc: vec2f, q: Projection) -> GroundPoint {
+  let right = vec3f(q.rotation.x, q.rotation.y, 0.0);
+  let up = vec3f(-q.rotation.y * q.rotation.z, q.rotation.x * q.rotation.z, q.rotation.w);
+  let front = vec3f(q.rotation.y * q.rotation.w, -q.rotation.x * q.rotation.w, q.rotation.z);
+  let sx = ndc.x * q.view.x / (2.0 * q.pose.x);
+  let sy = ndc.y * q.view.y / (2.0 * q.pose.x);
+  var g: GroundPoint;
+  g.eye = front * q.pose.y;
+  g.direction = right * sx + up * sy - front * q.pose.y;
+  g.hit = true;
+  if (q.view.w > 1.5) {
+    let oc = g.eye + vec3f(0.0, 0.0, 1.0);
+    let a = dot(g.direction, g.direction);
+    let b = dot(oc, g.direction);
+    let disc = b * b - a * (dot(oc, oc) - 1.0);
+    if (disc < 0.0) { g.hit = false; return g; }
+    g.world = g.eye + g.direction * ((-b - sqrt(disc)) / a);
+    let n = g.world + vec3f(0.0, 0.0, 1.0);
+    let sinLat = n.y * q.geo.y + n.z * q.geo.x;
+    let toward = n.z * q.geo.y - n.y * q.geo.x;
+    g.relative = vec2f(atan2(n.x, toward), asin(clamp(sinLat, -1.0, 1.0))) / PROJECTION_DEGREE - vec2f(0.0, q.center.y);
+  } else if (q.view.w > 0.5) {
+    if (abs(g.direction.z) < 0.000001 || -g.eye.z / g.direction.z < 0.0) { g.hit = false; return g; }
+    g.world = g.eye + g.direction * (-g.eye.z / g.direction.z);
+    g.relative = g.world.xy;
+  } else {
+    g.relative = (right * sx + vec3f(-q.rotation.y, q.rotation.x, 0.0) * sy).xy;
+    // On the mercator plane, back from where mercator stretches a latitude.
+    if (q.geo.w > 1.5) { g.relative.y = projection_latitude(g.relative.y + q.pose.z) - q.center.y; }
+  }
+  return g;
 }
 /**
  * A fragment's depth on a globe: its own, but never behind the surface under its pixel, less

@@ -56,6 +56,18 @@ export const projectedStyle: Required<ProjectedStyle> = Object.freeze({
   orbitRate: 1,
   labelHaloPx: 2,
 });
+/** A grid beneath what a view draws, spaced for the zoom. */
+export interface GridStyle {
+  readonly grid?: boolean;
+  readonly gridColor?: RGBA;
+  /** How close the grid's lines may draw, in CSS pixels; it picks the nicest step at least this. */
+  readonly gridMinSpacingPx?: number;
+}
+export const gridStyle: Required<GridStyle> = Object.freeze({
+  grid: false,
+  gridColor: [0.3, 0.38, 0.46, 0.4] as RGBA,
+  gridMinSpacingPx: 64,
+});
 /** The steepest a camera tilts, in degrees. */
 export const MAX_PITCH = 80;
 
@@ -81,10 +93,11 @@ const VIEW_RULES: StyleRules<ResolvedViewStyle> = {
   unselectedAlpha: 'unit',
 };
 /** Rules for the shared pieces of a view's own style. */
-const SHARED_RULES: StyleRules<Required<ProjectedStyle>> = {
+const SHARED_RULES: StyleRules<Required<ProjectedStyle & GridStyle>> = {
   fitPitch: (value) => typeof value === 'number' && value >= 0 && value <= MAX_PITCH,
   fitBearing: 'signed',
   orbitRate: 'signed',
+  gridMinSpacingPx: 'positive',
 };
 
 /**
@@ -102,7 +115,7 @@ export function resolveStyle<T extends object, Base extends object = object>(
   for (const key of Object.keys(defaults) as (keyof T & string)[]) {
     const value = config[key];
     if (value === undefined) continue;
-    const rule = rules[key] ?? SHARED_RULES[key as keyof ProjectedStyle];
+    const rule = rules[key] ?? SHARED_RULES[key as keyof (ProjectedStyle & GridStyle)];
     if (!accepts(key, value, defaults[key], rule)) fail('Invalid ' + key);
     style[key] = value;
   }

@@ -1,5 +1,6 @@
-import { failure } from '@latkit/model';
+import { failure, type Schema } from '@latkit/model';
 import { openTiles, type TileSource } from './sources/archive.js';
+import type { VectorFieldType } from './sources/vector.js';
 
 /** Vector tiles a geography reads, by URL ranges or held locally. */
 export interface Tiles {
@@ -13,8 +14,12 @@ export declare namespace Tiles {
     /** West, south, east, and north, in degrees. */
     readonly bounds: readonly [number, number, number, number];
     readonly attribution?: string;
-    /** The layers, which a geography's records name as types. */
-    readonly layers: readonly string[];
+    /**
+     * A type per layer, which a geography's records name, with the fields the tiles' metadata
+     * declares for it: `float64`, `boolean`, or `text`, each nullable. A record's channels and
+     * labels read them; tiles decode only what records read.
+     */
+    readonly schema: Schema;
   }
   interface Options {
     /** Keep fetched bytes in Cache Storage, so the tiles a view has seen draw offline. */
@@ -58,18 +63,51 @@ export class TileSet implements Tiles {
   }
 }
 function infoOf(source: TileSource): Tiles.Info {
-  const { vector_layers: layers } = source.metadata as {
-    readonly vector_layers?: readonly { readonly id?: unknown }[];
-  };
   return {
     minZoom: source.minZoom,
     maxZoom: source.maxZoom,
     bounds: source.bounds,
     ...(source.attribution !== undefined ? { attribution: source.attribution } : {}),
-    layers: (layers ?? [])
-      .map((layer) => layer.id)
-      .filter((id): id is string => typeof id === 'string'),
+    schema: declaredSchema(source),
   };
+}
+/** How TileJSON's `vector_layers` names a field's type; any other reads as text. */
+const DECLARED: Readonly<Record<string, VectorFieldType>> = {
+  Number: 'float64',
+  Boolean: 'boolean',
+  String: 'text',
+};
+/** A layer as TileJSON's `vector_layers` lists it. */
+interface ListedLayer {
+  readonly id?: unknown;
+  readonly fields?: unknown;
+}
+const declared = new WeakMap<TileSource, Schema>();
+/** The layers and fields a source's metadata declares, as a schema; read once per source. */
+export function declaredSchema(source: TileSource): Schema {
+  let schema = declared.get(source);
+  if (schema) return schema;
+  const { vector_layers: listed } = source.metadata as { readonly vector_layers?: unknown },
+    types = new Map<string, Schema.Type>();
+  for (const layer of (Array.isArray(listed) ? listed : []) as readonly (ListedLayer | null)[]) {
+    const { id, fields } = layer ?? {};
+    if (typeof id !== 'string' || types.has(id)) continue;
+    const kinds = fields && typeof fields === 'object' ? Object.entries(fields) : [];
+    types.set(id, {
+      fields: Object.fromEntries(
+        kinds.map(([name, kind]) => [
+          name,
+          {
+            type:
+              typeof kind === 'string' && Object.hasOwn(DECLARED, kind) ? DECLARED[kind] : 'text',
+            nullable: true,
+          },
+        ]),
+      ),
+    });
+  }
+  declared.set(source, (schema = { types: Object.fromEntries(types) }));
+  return schema;
 }
 /** Whether a value is tiles `tiles()` made. */
 export function isTiles(value: unknown): value is TileSet {

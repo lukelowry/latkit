@@ -100,7 +100,7 @@ async function main(): Promise<void> {
       // Rivers' comets glint in the water's own color, far apart, beneath the grid's.
       flowColor: [0.5, 0.72, 1, 0.5],
       flowSpacingPx: 96,
-      graticule: state.graticule,
+      grid: state.graticule,
       atmosphere: state.atmosphere,
       daylight: state.daylight === 'off' ? false : state.daylight === 'now' ? 'now' : NOON,
     };
@@ -135,7 +135,7 @@ async function main(): Promise<void> {
     return {
       canvas: stage,
       source: grid.data,
-      geography: earth,
+      ground: earth,
       ...gridOptions(grid, { color: state.color, machines: state.machines, labels: state.labels }),
       fitPaddingPx: [48, 48, 48, window.innerWidth > 720 ? 340 : 48],
       background: THEME.background,

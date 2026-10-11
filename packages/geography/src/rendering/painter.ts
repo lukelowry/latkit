@@ -120,7 +120,7 @@ export class Painter {
     }
     const s = this.styleWords;
     s.set(style.surfaceColor, S.surface);
-    s.set(style.graticule ? style.graticuleColor : [0, 0, 0, 0], S.graticule);
+    s.set(style.grid ? style.gridColor : [0, 0, 0, 0], S.gridColor);
     s.set(style.atmosphere ? style.atmosphereColor : [0, 0, 0, 0], S.atmosphere);
     s.set(style.hoverColor, S.hover);
     s.set(style.selectedColor === 'none' ? [0, 0, 0, -1] : style.selectedColor, S.selected);
@@ -137,7 +137,7 @@ export class Painter {
     s.set(style.earthAxisColor, S.axis);
     s.set(style.flowColor, S.flow);
     s.set([style.flowSpacingPx, scene.seconds, 0, 0], S.motion);
-    s.set([style.graticuleSpacingPx, 0, 0, 0], S.grid);
+    s.set(kit.gridLines(camera, style.gridMinSpacingPx, true), S.grid);
     this.style.update(s);
     const styleBinding = frame.buffer(this.style),
       empty = frame.buffer(this.empty),

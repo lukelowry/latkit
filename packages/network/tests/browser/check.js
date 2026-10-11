@@ -96,11 +96,11 @@ function observe(describe) {
     el('status').textContent = describe(items[0]);
   });
 }
-/** The earth beneath a geographic graph: graticule, axis, daylight, and the borders when shown. */
+/** The earth beneath a geographic graph: grid, axis, daylight, and the borders when shown. */
 function ground(lines = el('borders').checked) {
   earth?.destroy();
   earth = createGeography(gpu, {
-    graticule: true,
+    grid: true,
     earthAxis: true,
     daylight: Date.UTC(2026, 8, 30, 17),
     ...(lines && borders
@@ -124,7 +124,7 @@ function show(count = Number(el('size').value), geo = geographic) {
     camera: { projection: geo ? 'globe' : 'flat', pitch: geo ? 15 : 0 },
     vertexRadiusPx: count > 10000 ? 1.4 : count > 1000 ? 2 : 4,
     edgeWidthPx: count > 10000 ? 0.5 : 1.1,
-    geography: geo ? ground() : null,
+    ground: geo ? ground() : null,
     msaa: 4,
     poles: el('poles').checked,
     hover: el('hover-mode').value,
@@ -500,7 +500,7 @@ async function checks() {
     vertices: { node: { x: 'position', y: { field: 'position', component: 1 } } },
     edges: { route: { ends: ['from', 'to'], route: 'geodesic' } },
     camera: { center: [0, 0], scale: 2.4, projection: 'globe', fit: false },
-    geography: meridianGround,
+    ground: meridianGround,
     markers: false,
     edgeColor: [1, 1, 1, 1],
     background: [0, 0, 0, 1],
@@ -532,6 +532,71 @@ async function checks() {
   } finally {
     meridianView.destroy();
     meridianGround.destroy();
+  }
+  // A grid of the data's x and y draws beneath the graph in every projection; a ground draws its own.
+  const gridGround = createGeography(gpu, {
+    surfaceColor: [0.1, 0.1, 0.1, 1],
+    atmosphere: false,
+    gridColor: [1, 1, 1, 1],
+    gridMinSpacingPx: 32,
+  });
+  const gridView = createNetwork(gpu, {
+    source: meridianSource.data,
+    vertices: { node: { x: 'position', y: { field: 'position', component: 1 } } },
+    // Lines fall on pixel centers: the left edge lies 1/16 degree past one.
+    camera: { projection: 'flat', center: [0.0625, 0.0625], scale: 8, fit: false },
+    markers: false,
+    lines: false,
+    grid: true,
+    gridColor: [1, 1, 1, 1],
+    gridMinSpacingPx: 32,
+    background: [0, 0, 0, 1],
+    msaa: 1,
+  });
+  try {
+    device.pushErrorScope('validation');
+    const lit = (bytes, i) => bytes[i] > 150 && bytes[i + 1] > 150 && bytes[i + 2] > 150;
+    // Flat, at 8 pixels a degree, lines want 4 degrees apart: every 5, 40 pixels.
+    let bytes = await pixels(gridView, { width: 512, height: 512 });
+    const columns = [];
+    for (let x = 0; x < 512; x++) {
+      let count = 0;
+      for (let y = 0; y < 512; y++) if (lit(bytes, (y * 512 + x) * 4)) count++;
+      if (count > 400) columns.push(x);
+    }
+    const starts = columns.filter((x, k) => k === 0 || x - columns[k - 1] > 1),
+      gaps = starts.slice(1).map((x, k) => x - starts[k]);
+    assert(
+      starts.length >= 11 && starts.length <= 14 && gaps.every((gap) => Math.abs(gap - 40) <= 1),
+      `The flat grid's lines did not fall every 40 pixels: ${starts.join(', ')}`,
+    );
+    const count = (bytes) => {
+      let n = 0;
+      for (let i = 0; i < bytes.length; i += 4) if (lit(bytes, i)) n++;
+      return n;
+    };
+    gridView.set({ camera: { projection: 'tilt', pitch: 60 } });
+    assert(count(await pixels(gridView, { width: 512, height: 512 })) > 2000, 'No tilted grid');
+    gridView.set({ camera: { projection: 'globe', pitch: 0, center: [0, 0], scale: 2.4 } });
+    bytes = await pixels(gridView, { width: 512, height: 512 });
+    let outside = 0;
+    for (let i = 0; i < bytes.length; i += 4) {
+      const x = (i / 4) % 512,
+        y = Math.floor(i / 4 / 512);
+      if (Math.hypot(x - 256, y - 256) > (2.4 * 180) / Math.PI + 3 && lit(bytes, i)) outside++;
+    }
+    assert(count(bytes) > 1000 && outside === 0, 'The globe grid drew off the globe: ' + outside);
+    // Over a ground, the ground's grid alone draws: none until it asks for one.
+    gridView.set({ ground: gridGround });
+    assert(count(await pixels(gridView, { width: 512, height: 512 })) === 0, 'Grid over a ground');
+    gridGround.set({ grid: true });
+    assert(count(await pixels(gridView, { width: 512, height: 512 })) > 1000, 'No ground grid');
+    const error = await device.popErrorScope();
+    assert(!error, error?.message);
+    checks.push('Grid beneath the graph in every projection, and the ground grid over it');
+  } finally {
+    gridView.destroy();
+    gridGround.destroy();
   }
   const result = {
     adapter: adapter.info
@@ -655,7 +720,7 @@ async function showFeatures(reset = true) {
         labels: { field: 'name' },
       },
     },
-    geography: ground(),
+    ground: ground(),
     camera: { center: [-35, 5], scale: 4, projection: 'globe', pitch: 0 },
     poles: el('poles').checked,
     hover: el('hover-mode').value,
@@ -700,7 +765,7 @@ async function benchmarkBorders(count = 100000, moving = false) {
           : null;
         const view = createNetwork(gpu, {
           ...input,
-          geography: beneath,
+          ground: beneath,
           camera: { center: [-65, 5], scale: 4, projection: 'globe', pitch: 15 },
           hover: 'auto',
           poles: false,

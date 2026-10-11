@@ -45,11 +45,12 @@ the globe, and straight in longitude and latitude on a flat map. `route: 'straig
 
 ```ts
 const ground = createGeography(gpu, { source: borders, lines: { Border: {} } });
-network.set({ geography: ground });
+network.set({ ground });
 ```
 
 A [geography](geography-quickstart.md) draws the earth beneath the graph, in the same pass, and its
-sun lights the graph too.
+sun lights the graph too. Without a ground, `grid: true` draws lines of the data's x and y beneath
+the graph; over one, the ground's own `grid` draws instead.
 
 ## Layout
 

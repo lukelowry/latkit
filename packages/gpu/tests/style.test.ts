@@ -1,6 +1,14 @@
 import { expect, it } from 'vitest';
-import { createGpu } from '../src/index.js';
-import { Feedback, lineStyle, projectedStyle, resolveStyle, resolveViewStyle } from '../src/kit.js';
+import { createGpu, type ProjectedCamera } from '../src/index.js';
+import {
+  Feedback,
+  Projector,
+  gridLines,
+  lineStyle,
+  projectedStyle,
+  resolveStyle,
+  resolveViewStyle,
+} from '../src/kit.js';
 import { fakeDevice, type FakeBuffer } from './fixtures/device.js';
 
 /** The failure code a call throws, or undefined when it returns. */
@@ -104,4 +112,21 @@ it('reads words the GPU wrote back once a frame completes, never more than its r
   expect(reads).toHaveLength(4);
   feedback.destroy();
   gpu.destroy();
+});
+
+it('spaces a grid at the nicest step past its least spacing, and places it under the center', () => {
+  const camera = (scale: number, center: readonly [number, number] = [0, 0]) =>
+    ({ ...Projector.camera, scale, center }) as ProjectedCamera;
+  // 64 CSS pixels at 1 pixel a unit wants 64 units: 100, of 1, 2, or 5 times a power of ten.
+  expect(gridLines(camera(1), 64, false)[0]).toBe(100);
+  expect(gridLines(camera(32), 64, false)[0]).toBe(2);
+  expect(gridLines(camera(100), 64, false)[0]).toBe(1);
+  expect(gridLines(camera(1000), 64, false)[0]).toBeCloseTo(0.1);
+  // Degrees past 10 step 15, then 30 at most.
+  expect(gridLines(camera(5), 64, true)[0]).toBe(15);
+  expect(gridLines(camera(0.1), 64, true)[0]).toBe(30);
+  // How far past a line the center lies, in steps, precisely at any distance from the origin.
+  const [step, x, y] = gridLines(camera(1, [1e9 + 250, -30]), 64, false);
+  expect([step, x]).toEqual([100, 0.5]);
+  expect(y).toBeCloseTo(0.7);
 });

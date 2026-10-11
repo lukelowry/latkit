@@ -176,6 +176,10 @@ function area(set: FeatureSet, part: number): number {
   return sum / 2;
 }
 
+/** A layer's values table, every value read. */
+const valuesOf = (layer: TileLayer) =>
+  Array.from({ length: layer.valueCount }, (_, i) => layer.value(i));
+
 const only = (bytes: Uint8Array): TileLayer => {
   const layers = decodeTile(bytes);
   expect(layers).toHaveLength(1);
@@ -249,7 +253,7 @@ describe('decodeTile', () => {
       ['water', 512],
     ]);
     expect(layers[0].keys).toEqual(['class', 'name']);
-    expect(layers[0].values).toEqual([
+    expect(valuesOf(layers[0])).toEqual([
       'road',
       'Zürich',
       long,
@@ -544,6 +548,29 @@ describe('decodeTile', () => {
     expect(next.points.features).toHaveLength(1);
   });
 
+  it('decodes only the layers wanted, skipping the rest whole', () => {
+    const bytes = tile(
+      layer({
+        name: 'roads',
+        features: [feature({ type: LINESTRING, geometry: geometry('line', [outer]) })],
+      }),
+      // A layer no one wants is never decoded, so even malformed features in it cost nothing.
+      layer({
+        name: 'water',
+        features: [feature({ type: LINESTRING, geometry: [command(1, 2), zz(1), zz(1)] })],
+      }),
+      layer({
+        name: 'parks',
+        features: [feature({ type: POLYGON, geometry: geometry('polygon', [outer]) })],
+      }),
+    );
+    expect(decodeTile(bytes, new Set(['roads', 'parks'])).map((l) => l.name)).toEqual([
+      'roads',
+      'parks',
+    ]);
+    expect(decodeTile(bytes, new Set(['nothing']))).toEqual([]);
+  });
+
   it('decodes a tile inside a larger buffer', () => {
     const bytes = tile(
       layer({
@@ -555,7 +582,7 @@ describe('decodeTile', () => {
     const buffer = new Uint8Array(bytes.length + 5);
     buffer.set(bytes, 3);
     const decoded = only(buffer.subarray(3, 3 + bytes.length));
-    expect(decoded.values).toEqual([0.25, -2.5]);
+    expect(valuesOf(decoded)).toEqual([0.25, -2.5]);
     expect(Array.from(decoded.points.coordinates)).toEqual([3, 4]);
   });
 
@@ -576,9 +603,18 @@ describe('decodeTile', () => {
     expectMalformed(new Uint8Array([0x08, ...new Array<number>(11).fill(0xff)]));
     expectMalformed(new Uint8Array([0x0b]));
     expectMalformed(new Uint8Array(delimited(3, [...key(4, 1), 0, 0, 0])));
-    expectMalformed(
+    // A value fails as it is read: a tile whose bad values no one reads still draws.
+    const empty = only(
       new Uint8Array(layer({ name: 'bad', values: [delimited(4, [])], features: [] })),
     );
+    expect(empty.valueCount).toBe(1);
+    let error: unknown;
+    try {
+      empty.value(0);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(isFailure(error, 'invalid-input')).toBe(true);
     expectMalformed(lineTile([command(1, 2), zz(1), zz(1)]));
     expectMalformed(lineTile([command(1, 1), zz(1)]));
     expectMalformed(lineTile([command(3, 1), 0, 0]));
@@ -643,7 +679,7 @@ describe('decodeVector', () => {
         z: 1,
         x,
         y: 0,
-        layers: [{ name: 'state', rings: true, lines: false }],
+        layers: [{ name: 'state', rings: true, lines: false, fields: {} }],
         source: `tiles/1/${x}/0`,
       }).tile;
     const west = decode(0, [7, 2n ** 40n]),
@@ -662,5 +698,57 @@ describe('decodeVector', () => {
       [4, 4],
     ])
       expect(decode(1, ids).layers[0].ids).toBeUndefined();
+  });
+
+  it('carries the fields asked for in every tile, typed as asked, and reads no other', () => {
+    const square = geometry('polygon', [outer]);
+    const decode = (keys: string[], values: Bytes[], tags: number[][]) =>
+      decodeVector({
+        bytes: tile(
+          layer({
+            name: 'park',
+            keys,
+            values,
+            features: tags.map((t) => feature({ type: POLYGON, geometry: square, tags: t })),
+          }),
+        ),
+        z: 0,
+        x: 0,
+        y: 0,
+        layers: [
+          {
+            name: 'park',
+            rings: true,
+            lines: false,
+            fields: { name: 'text', area: 'float64', open: 'boolean' },
+          },
+        ],
+        source: 'tiles/0/0/0',
+      }).tile.batches[0].columns;
+    // No feature here holds a name: the column is there, every row null.
+    const nameless = decode(['area'], [value.uint(4)], [[0, 0], []]);
+    expect(Object.keys(nameless).sort()).toEqual(['area', 'name', 'open']);
+    expect(nameless.name.validity![0] & 0b11).toBe(0);
+    const area = nameless.area as { values: Float64Array; validity?: Uint8Array };
+    expect(Array.from(area.values)).toEqual([4, 0]);
+    expect(area.validity).toEqual(Uint8Array.of(1));
+    // A value converts to the field's type where it can; a property not asked for is never read,
+    // nor its value decoded, so a malformed one costs nothing.
+    const mixed = decode(
+      ['name', 'area', 'open', 'other'],
+      [value.uint(7), value.string('wide'), value.bool(true), delimited(4, [])],
+      [
+        [0, 0, 1, 1, 2, 2, 3, 3],
+        [0, 2, 1, 2, 2, 0],
+      ],
+    );
+    const text = mixed.name as { kind: string };
+    expect(text.kind).toBe('text');
+    const numbers = mixed.area as { values: Float64Array; validity?: Uint8Array };
+    expect(numbers.validity).toEqual(Uint8Array.of(0b10));
+    expect(numbers.values[1]).toBe(1);
+    const open = mixed.open as { values: Uint8Array; validity?: Uint8Array };
+    expect(open.validity).toBeUndefined();
+    expect(open.values).toEqual(Uint8Array.of(0b11));
   });
 });

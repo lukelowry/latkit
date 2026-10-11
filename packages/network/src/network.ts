@@ -57,8 +57,8 @@ import { pipelines, type Pipelines } from './rendering/pipelines.js';
 type ModelItem = Item;
 const { Projector, PROJECTIONS } = kit;
 /**
- * Each network's geographies as layers. Resolving a config makes them, and resolving runs while the
- * base view constructs, before a network's own fields exist.
+ * Each network's grounds as layers. Resolving a config makes them, and resolving runs while the base
+ * view constructs, before a network's own fields exist.
  */
 const grounds = new WeakMap<object, Map<View, kit.Layer>>();
 
@@ -86,10 +86,11 @@ export declare namespace Network {
     readonly vertices: Readonly<Record<string, VertexOptions>>;
     readonly edges?: Readonly<Record<string, EdgeOptions>>;
     /**
-     * A geography drawn beneath the graph, in its pass, with its camera, `at`, and depth: the earth
-     * and what lies on it. Its sun lights the graph, and input the graph leaves reaches it.
+     * A view drawn beneath the graph, such as a geography: in the graph's pass, with its camera, `at`,
+     * and depth. Its sun lights the graph, and input the graph leaves reaches it, unless its own
+     * `input` is `none`.
      */
-    readonly geography?: View | null;
+    readonly ground?: View | null;
     /**
      * How vertices without a position are placed: by `stress` by default, each edge as long as the
      * positioned ones' median, or 1 without any.
@@ -184,8 +185,9 @@ export declare namespace Network {
   /**
    * How a network draws, beyond the shared view style; every option has a default. A kind's
    * defaults are named after the channels they stand in for: `vertexColor` is the vertices' `color`.
+   * Its grid is lines of the data's x and y; over a ground, the ground draws its own instead.
    */
-  interface Style extends kit.LineStyle, kit.ProjectedStyle {
+  interface Style extends kit.LineStyle, kit.ProjectedStyle, kit.GridStyle {
     /** Draw vertex markers. */
     readonly markers?: boolean;
     /** Draw edges. */
@@ -263,7 +265,7 @@ interface Resolved {
   readonly style: Style;
   /** Whether any edge type moves dots along itself. */
   readonly flowing: boolean;
-  /** The geography drawn beneath, as a layer. */
+  /** The view drawn beneath, as a layer. */
   readonly ground?: kit.Layer;
 }
 /** Style a transition eases, as rows read it where they have no value of their own. */
@@ -422,7 +424,7 @@ class NetworkView
       name: 'network',
       records: ['vertices', 'edges'],
       merged: ['camera', 'input', 'limits', 'layout'],
-      options: [...Object.keys(DEFAULTS), 'geography'],
+      options: [...Object.keys(DEFAULTS), 'ground'],
       style: VIEW_DEFAULTS,
     });
     // A curve that asked for more pieces than its pool held draws again, sized to what it asked.
@@ -571,12 +573,12 @@ class NetworkView
         (line) => line.flowPx != null && line.flowPx !== 0,
       ),
       style: resolveStyle(config, this.sharedStyle(config)),
-      ground: this.layerOf(config.geography),
+      ground: this.layerOf(config.ground),
     };
   }
   /**
-   * A geography as a layer, made once for each: a view that cannot be drawn beneath another, or
-   * that presents elsewhere, rejects the config here, before any of it applies.
+   * A view as a layer, made once for each: a view that cannot be drawn beneath another, or that
+   * presents elsewhere, rejects the config here, before any of it applies.
    */
   private layerOf(view: View | null | undefined): kit.Layer | undefined {
     if (!view) return undefined;
@@ -586,7 +588,7 @@ class NetworkView
     if (!layer) layers.set(view, (layer = kit.layerOf(view)));
     return layer;
   }
-  /** Follow the ground's invalidations, and let go of any geography no longer drawn. */
+  /** Follow the ground's invalidations, and let go of any ground no longer drawn. */
   private follow(ground: kit.Layer | undefined): void {
     this.following?.();
     this.following = ground?.invalidated(() => this.invalidate());

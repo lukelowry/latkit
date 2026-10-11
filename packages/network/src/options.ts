@@ -4,6 +4,7 @@ export type Style = Required<Network.Style> & kit.ResolvedViewStyle;
 export const DEFAULTS: Required<Network.Style> = Object.freeze({
   ...kit.lineStyle,
   ...kit.projectedStyle,
+  ...kit.gridStyle,
   markers: true,
   lines: true,
   poles: false,

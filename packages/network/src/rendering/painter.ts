@@ -15,7 +15,7 @@ import {
 import { lineColor, type Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
-import { DISC, linePipeline, markerPipeline, type Pipelines } from './pipelines.js';
+import { DISC, gridPipeline, linePipeline, markerPipeline, type Pipelines } from './pipelines.js';
 import type { Network } from '../network.js';
 /** Bytes of a page's uniform slot: its header and seven channels, or a marker's eight inputs. */
 const SLOT = 256;
@@ -109,11 +109,11 @@ export interface DrawFrame {
   readonly camera: ProjectedCamera;
   /** The frame's camera on its viewport, which writes the projection block. */
   readonly projector: kit.Projector;
-  /** The sun of the geography beneath, which dims the network at night; none without one. */
+  /** The sun of the ground beneath, which dims the network at night; none without one. */
   readonly light: kit.Light | null;
   /** What label halos match: the ground beneath, or the background. */
   readonly halo: RGBA;
-  /** Whether a geography draws beneath, in this pass, which hides the globe's far side itself. */
+  /** Whether a ground draws beneath, in this pass, which hides the globe's far side itself. */
   readonly grounded: boolean;
   readonly options: Style;
   readonly data: NetworkData;
@@ -216,11 +216,13 @@ export interface Paint {
   readonly vertices: readonly Command[];
   readonly edges: readonly Command[];
   readonly labels: readonly { group: GPUBindGroup; pages: readonly kit.TextPage[] }[];
-  /** The geography beneath, drawn first in the pass. */
+  /** The ground beneath, drawn first in the pass. */
   readonly ground?: kit.PreparedLayer;
-  /** The scene block this frame's uniforms begin with, which the geography beneath binds. */
+  /** The scene block this frame's uniforms begin with, which the ground beneath binds. */
   readonly scene: GPUBufferBinding;
-  /** The globe's depth alone, when nothing beneath draws the ground: the uniforms, bound. */
+  /** The grid, when nothing beneath draws the ground; on the globe it writes the globe's depth too. */
+  readonly grid?: { readonly pipeline: GPURenderPipeline; readonly group: GPUBindGroup };
+  /** The globe's depth alone, when nothing beneath draws the ground or a grid: the uniforms, bound. */
   readonly occlusion?: GPUBindGroup;
   readonly depth: GPUTextureView;
   readonly color?: GPUTextureView;
@@ -975,10 +977,11 @@ export class Painter {
           pages,
         });
       }
-    // Without a ground drawn beneath, the globe still hides what lies behind it.
+    // Without a ground drawn beneath, the grid draws, and the globe still hides what lies behind it.
     const globe = camera.projection === 'globe',
+      grid = options.grid && !state.grounded ? await this.grid(frame, state, uniform) : undefined,
       occlusion =
-        globe && !state.grounded
+        globe && !state.grounded && !grid
           ? gpu.device.createBindGroup({
               layout: pipeline.occlusion,
               entries: [{ binding: 0, resource: uniform }],
@@ -1007,6 +1010,7 @@ export class Painter {
       edges,
       labels,
       scene: { buffer: uniform.buffer, offset: uniform.offset ?? 0, size: kit.Projector.scene * 4 },
+      grid,
       occlusion,
       depth: depth!,
       color,
@@ -1014,7 +1018,7 @@ export class Painter {
       globe,
       center: camera.center,
       drawCalls:
-        (occlusion ? 1 : 0) +
+        (grid || occlusion ? 1 : 0) +
         (options.markers
           ? vertices.reduce((n, item) => n + drawsOf(item), 0) +
             (options.shadows ? vertices.length : 0)
@@ -1022,6 +1026,28 @@ export class Painter {
         (options.poles ? vertices.length : 0) +
         (options.lines ? edges.reduce((n, item) => n + drawsOf(item), 0) : 0) +
         labels.reduce((n, v) => n + v.pages.length, 0),
+    };
+  }
+  /** The grid's draw: its pipeline, and the uniforms and where this frame's lines fall, bound. */
+  private async grid(
+    frame: kit.Preparation,
+    state: DrawFrame,
+    uniform: GPUBufferBinding,
+  ): Promise<NonNullable<Paint['grid']>> {
+    const pipeline = await gridPipeline(state.pipelines),
+      { options } = state,
+      words = new Float32Array(8);
+    words.set(options.gridColor, 0);
+    words.set(kit.gridLines(state.camera, options.gridMinSpacingPx, state.geometry.geographic), 4);
+    return {
+      pipeline,
+      group: this.gpu.device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: uniform },
+          { binding: 1, resource: frame.uniforms(words) },
+        ],
+      }),
     };
   }
   /**
@@ -1169,9 +1195,13 @@ export class Painter {
       if (focus.runs === 'all') pass.draw(6, item.count);
       else for (const [first, count] of focus.runs) pass.draw(6, count, 0, first);
     };
-    // What lies beneath draws first; without it, a globe writes its depth alone.
+    // What lies beneath draws first; without it, the grid, or a globe writes its depth alone.
     if (paint.ground) paint.ground.draw(pass);
-    else if (paint.occlusion) {
+    else if (paint.grid) {
+      pass.setPipeline(paint.grid.pipeline);
+      pass.setBindGroup(0, paint.grid.group);
+      pass.draw(3);
+    } else if (paint.occlusion) {
       pass.setPipeline(paint.pipelines.occlude);
       pass.setBindGroup(0, paint.occlusion);
       pass.draw(3);

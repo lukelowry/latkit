@@ -1,12 +1,12 @@
 struct Uniforms {
-  /** The scene block, as `kit.Projector` writes it: the projection, then the light, which the geography beneath binds too. */
+  /** The scene block, as `kit.Projector` writes it: the projection, then the light, which the ground beneath binds too. */
   view: vec4f,
   pose: vec4f,
   rotation: vec4f,
   geo: vec4f,
   center: vec4f,
   split: vec4f,
-  /** The sun of the geography beneath, which dims what faces away from it. */
+  /** The sun of the ground beneath, which dims what faces away from it. */
   light: Light,
   hoverColor: vec4f,
   /** Alpha -1 glows in each item's own color. */

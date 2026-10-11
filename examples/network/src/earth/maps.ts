@@ -110,12 +110,13 @@ export const MAPS: readonly MapChoice[] = [
       const planet = tiles('https://tiles.openfreemap.org/planet', { persist: true }),
         info = await planet.info;
       return {
-        summary: `${info.layers.length} layers, zooms ${info.minZoom}–${info.maxZoom}`,
+        summary: `${Object.keys(info.schema.types).length} layers, zooms ${info.minZoom}–${info.maxZoom}`,
         config: {
           source: planet,
           areas: {
             landcover: { color: [0.11, 0.16, 0.14, 1] },
-            park: { color: [0.1, 0.19, 0.13, 1] },
+            // Parks are named where their tiles name them; a tile naming none still draws.
+            park: { color: [0.1, 0.19, 0.13, 1], labels: 'name' },
             water: { color: [0.05, 0.1, 0.17, 1] },
           },
           lines: {

@@ -445,22 +445,29 @@ describe('geojson geometry', () => {
     expect(single).toEqual({ ids: ['one'], fields: { position: [[1, 2]], a: [1] } });
 
     const text = await geojson(
-      JSON.stringify(collection(feature({ type: 'Point', coordinates: [3, 4] }))),
+      new Blob([JSON.stringify(collection(feature({ type: 'Point', coordinates: [3, 4] })))]),
       { type: 'Place' },
     );
     expect((await rowsOf(text, 'Place')).fields.position).toEqual([[3, 4]]);
   });
 
-  it('reads bytes, a view of them, a Blob, and a URL alike, and stops when aborted', async () => {
+  it('reads bytes, a view of them, a Blob, and a URL alike, gzipped or not, and stops when aborted', async () => {
     const json = JSON.stringify(collection(feature({ type: 'Point', coordinates: [5, 6] }))),
       bytes = new TextEncoder().encode(json),
+      gzipped = new Uint8Array(
+        await new Response(
+          new Blob([json]).stream().pipeThrough(new CompressionStream('gzip')),
+        ).arrayBuffer(),
+      ),
       padded = new Uint8Array(bytes.length + 8);
     padded.set(bytes, 4);
-    vi.stubGlobal('fetch', (url: URL) =>
+    vi.stubGlobal('fetch', (url: string | URL) =>
       Promise.resolve(
-        url.href === 'https://maps.test/places.geojson'
+        String(url) === 'https://maps.test/places.geojson'
           ? new Response(json)
-          : new Response('', { status: 404 }),
+          : String(url) === 'https://maps.test/places.geojson.gz'
+            ? new Response(gzipped.slice())
+            : new Response('', { status: 404 }),
       ),
     );
     try {
@@ -469,6 +476,10 @@ describe('geojson geometry', () => {
         padded.subarray(4, 4 + bytes.length),
         new Blob([json]),
         new URL('https://maps.test/places.geojson'),
+        'https://maps.test/places.geojson',
+        'https://maps.test/places.geojson.gz',
+        gzipped.slice(),
+        new Blob([gzipped]),
       ]) {
         const data = await geojson(from, { type: 'Place' });
         expect((await rowsOf(data, 'Place')).fields.position).toEqual([[5, 6]]);
@@ -478,6 +489,8 @@ describe('geojson geometry', () => {
       // A type named by a function parses bytes on the page.
       const named = await geojson(bytes, { type: () => 'Named' });
       expect(Object.keys(named.schema.types)).toEqual(['Named']);
+      const unzipped = await geojson(gzipped.slice(), { type: () => 'Named' });
+      expect((await rowsOf(unzipped, 'Named')).fields.position).toEqual([[5, 6]]);
       await expect(geojson(new URL('https://maps.test/missing.geojson'))).rejects.toMatchObject({
         code: 'io',
       });
@@ -667,7 +680,7 @@ describe('geojson errors', () => {
     await expectNotGeoJson(feature({ type: 'Circle', coordinates: [0, 0] }));
     await expectNotGeoJson(feature({ type: 'Point', coordinates: [0, 0] }, [] as never));
     await expectNotGeoJson(feature('Point'));
-    await expect(geojson('{"type": ')).rejects.toThrow(/^Not GeoJSON: /);
+    await expect(geojson(new Blob(['{"type": ']))).rejects.toThrow(/^Not GeoJSON: /);
   });
 
   it('rejects positions that are not finite', async () => {

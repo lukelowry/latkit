@@ -602,6 +602,10 @@ export abstract class BaseItemView<
       viewport: frame.viewport,
     });
   }
+  /** Whether the view takes pointer and keyboard input: its mode is not `none`. */
+  #takesInput(): boolean {
+    return (inputOf(this.config as Config).mode ?? this.#modes[0]) !== 'none';
+  }
   /** The view as a layer a host draws beneath itself; it presents nowhere else until released. */
   #layer(): Layer {
     const release = compose(this),
@@ -612,8 +616,9 @@ export abstract class BaseItemView<
       capture: () => {
         const captured = this.captureHosted<LayerScene>(
           (frame, scene) => {
-            // The host hands over the pointer only where its own items left it unclaimed.
-            const point = scene.pointer,
+            // The host hands over the pointer only where its own items left it unclaimed, and a view
+            // that takes no input hovers nothing, so it searches for nothing.
+            const point = this.#takesInput() ? scene.pointer : null,
               current = this.#pointer;
             if (point?.[0] !== current?.[0] || point?.[1] !== current?.[1]) this.pointer(point);
             return this.prepareLayer!(frame, scene);
@@ -630,8 +635,14 @@ export abstract class BaseItemView<
         return pending();
       },
       invalidated: (listener) => this.onInvalidate(listener),
-      click: (point, modifiers, touch) => this.click(point, modifiers, { touch }),
-      menu: (point, trigger, modifiers) => this.menu(point, trigger, modifiers),
+      click: async (point, modifiers, touch) => {
+        if (this.#takesInput()) await this.click(point, modifiers, { touch });
+      },
+      menu: async (point, trigger, modifiers) =>
+        this.#takesInput() && (await this.menu(point, trigger, modifiers, false)),
+      deselect: () => {
+        if (this.#takesInput() && this.#selection.length) this.choose([]);
+      },
       release: () => {
         if (released) return;
         released = true;
@@ -796,26 +807,37 @@ export abstract class BaseItemView<
     // A toggle ends the cycle, so the next plain click starts from the topmost hit.
     this.#clicked = additive ? undefined : { point, found, turn };
     const hit = hits.length ? hits[turn % hits.length] : undefined;
-    if (!additive) this.choose(hit ? [hit] : []);
-    else if (hit) {
+    if (!additive) {
+      // One click selects one thing: what the view draws beneath lets go of its own.
+      this.ground?.deselect();
+      this.choose(hit ? [hit] : []);
+    } else if (hit) {
       const key = this.identify(hit),
         rest = this.#selection.filter((item) => this.identify(item) !== key);
       this.choose(rest.length === this.#selection.length ? [...rest, hit] : rest);
     }
   }
-  /** Report a context menu at a canvas point with the hits there, unless a later gesture came first. */
+  /**
+   * Report a context menu at a canvas point with the hits there, unless a later gesture came first;
+   * over none of its own, with what it draws beneath's. Resolves whether it reported one: `empty`
+   * false reports none over nothing, as a hosted view leaves that menu to its host.
+   */
   protected async menu(
     point: Point,
     trigger: 'pointer' | 'keyboard',
     modifiers: ItemView.Modifiers,
-  ): Promise<void> {
+    empty = true,
+  ): Promise<boolean> {
     try {
       const items = await this.#ask(point, this.#style.pickRadiusPx, 16);
-      if (items && !items.length && this.ground) await this.ground.menu(point, trigger, modifiers);
-      else if (items)
-        this.emit('contextmenu', { point, items, trigger, modifiers } as Events['contextmenu']);
+      if (!items) return true;
+      if (!items.length && (await this.ground?.menu(point, trigger, modifiers))) return true;
+      if (!items.length && !empty) return false;
+      this.emit('contextmenu', { point, items, trigger, modifiers } as Events['contextmenu']);
+      return true;
     } catch (error) {
       this.fail(error);
+      return true;
     }
   }
   /** Zoom about a canvas point, or the center. */

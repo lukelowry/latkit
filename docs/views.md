@@ -114,6 +114,16 @@ camera is projected, share how they fit, orbit, and halo labels on the ground:
 | `orbitRate`                  | `1`, twelve degrees a second |                             |
 | `labelHaloPx`                | `2`                          |                             |
 
+Network, geography, and diagram draw a grid beneath everything else, spaced for the zoom: the
+nicest step at least `gridMinSpacingPx` apart. A network's grid is lines of its data's x and y, a
+geography's lines of longitude and latitude, and a diagram's dots at its `gridPitch`.
+
+| Option             | Default | Per view        |
+| ------------------ | ------- | --------------- |
+| `grid`             | `false` | diagram `true`  |
+| `gridColor`        | slate   | diagram fainter |
+| `gridMinSpacingPx` | `64`    | diagram `12`    |
+
 `shade` recolors every fragment with WGSL of your own, `spotlight()` around the pointer, or
 `pulse()` on rows whose `shade` channel is positive; the alpha of their `color` sets how far.
 

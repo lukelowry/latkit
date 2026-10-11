@@ -7,15 +7,15 @@ const scope = globalThis as unknown as {
 };
 scope.onmessage = (event) => {
   const { id, job } = event.data;
-  try {
-    const { result, transfer } = runJob(job);
-    scope.postMessage({ id, result }, transfer);
-  } catch (error) {
-    const { code, message } = error as { code?: string; message?: string };
-    scope.postMessage({
-      id,
-      error: { code: code ?? 'internal', message: message ?? String(error) },
-    });
-  }
+  runJob(job).then(
+    ({ result, transfer }) => scope.postMessage({ id, result }, transfer),
+    (error: unknown) => {
+      const { code, message } = error as { code?: string; message?: string };
+      scope.postMessage({
+        id,
+        error: { code: code ?? 'internal', message: message ?? String(error) },
+      });
+    },
+  );
 };
 scope.postMessage({ ready: true });

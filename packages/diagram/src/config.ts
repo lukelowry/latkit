@@ -53,6 +53,7 @@ export const STYLE_EFFECTS = {
 /** A wire being drawn dashes finer than a network's edges. */
 export const DEFAULTS: Required<Diagram.Style> = Object.freeze({
   ...kit.lineStyle,
+  ...kit.gridStyle,
   dashPeriodPx: 10,
   gridPitch: 8,
   grid: true,
@@ -104,7 +105,6 @@ const RULES: kit.StyleRules<Required<Diagram.Style>> = {
   portSize: 'positive',
   portFontSize: 'positive',
   edgeWidthPx: 'positive',
-  gridMinSpacingPx: 'positive',
   portSpacing: 'positive',
   routeClearance: 'positive',
   dashPeriodPx: 'positive',

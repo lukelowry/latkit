@@ -9,7 +9,7 @@ export interface LayerScene {
   readonly camera: ProjectedCamera;
   /** The host's samples per pixel, which the layer's pipelines match. */
   readonly msaa: 1 | 4;
-  /** The pointer, where the host found nothing under it: the layer's to hover. */
+  /** The pointer, where the host found nothing under it: the layer's to hover, unless it takes no input. */
   readonly pointer: Point | null;
   /**
    * The host's scene block this frame, the projection and the light its uniforms begin with, as
@@ -41,7 +41,8 @@ export interface CapturedLayer extends LayerLook {
 }
 /**
  * A view another view draws beneath itself, in its own pass, with its camera, `at`, and depth: one
- * pass, one camera, nothing composited. While hosted, the view presents nowhere else.
+ * pass, one camera, nothing composited. While hosted, the view presents nowhere else. Input the host
+ * leaves reaches it, unless its own `input` is `none`.
  */
 export interface Layer {
   capture(): CapturedLayer;
@@ -53,8 +54,17 @@ export interface Layer {
   invalidated(listener: () => void): () => void;
   /** A click the host's own items left unclaimed: the layer selects what it hits there. */
   click(point: Point, modifiers: ItemView.Modifiers, touch: boolean): Promise<void>;
-  /** A menu the host's own items left unclaimed, which the layer reports with its hits. */
-  menu(point: Point, trigger: 'pointer' | 'keyboard', modifiers: ItemView.Modifiers): Promise<void>;
+  /**
+   * A menu the host's own items left unclaimed: the layer reports it with its hits there, and
+   * resolves whether it did; over none, the host reports the menu itself.
+   */
+  menu(
+    point: Point,
+    trigger: 'pointer' | 'keyboard',
+    modifiers: ItemView.Modifiers,
+  ): Promise<boolean>;
+  /** Clear the layer's selection, as a click selects the host's own items. */
+  deselect(): void;
   /** End hosting; the view may present again. */
   release(): void;
 }

@@ -215,7 +215,7 @@ function config(source: Data, geography: Geography): Network.Config {
     canvas,
     source,
     camera,
-    geography,
+    ground: geography,
     background: rgba(THEME.background),
     textColor: rgba(THEME.foreground),
     hoverColor: rgba(THEME.hover),

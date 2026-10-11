@@ -13,11 +13,13 @@ export {
   viewStyle,
   lineStyle,
   projectedStyle,
+  gridStyle,
 } from './view/style.js';
 export type {
   ResolvedViewStyle,
   LineStyle,
   ProjectedStyle,
+  GridStyle,
   StyleRule,
   StyleRules,
 } from './view/style.js';
@@ -75,6 +77,7 @@ export { place, layoutOptions } from './layout/place.js';
 export { sameReads, sameRecords, sameValues } from './view/changes.js';
 export type { Wiring, End, Port } from './view/wiring.js';
 export { clipStroke, strokeShader } from './style/stroke.js';
+export { gridLines, gridShader } from './style/grid.js';
 export type { ClipPoint } from './style/stroke.js';
 export { clearColor, validateRgba } from './colors/color.js';
 export { sampleColormap } from './colors/sampling.js';

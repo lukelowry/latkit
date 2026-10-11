@@ -4,9 +4,12 @@ import { failure } from '@latkit/model';
 export interface TileLayer {
   readonly name: string;
   readonly extent: number;
-  /** Property names and values, shared by its features (MVT keys and values tables). */
+  /** Property names, shared by its features (the MVT keys table). */
   readonly keys: readonly string[];
-  readonly values: readonly (string | number | boolean)[];
+  /** How many property values the layer shares (the MVT values table). */
+  readonly valueCount: number;
+  /** A property value of the table, decoded the first time it is read: values no one reads cost nothing. */
+  value(index: number): string | number | boolean;
   readonly areas: FeatureSet;
   readonly lines: FeatureSet;
   readonly points: FeatureSet;
@@ -54,8 +57,11 @@ const POLYGON = 3;
 
 const decoder = new TextDecoder();
 
-/** Decodes a Mapbox Vector Tile (MVT 2.1) into its layers. */
-export function decodeTile(bytes: Uint8Array): readonly TileLayer[] {
+/**
+ * Decodes a Mapbox Vector Tile (MVT 2.1) into its layers: every layer, or only those `wanted` names,
+ * which skips the rest without decoding their features.
+ */
+export function decodeTile(bytes: Uint8Array, wanted?: ReadonlySet<string>): readonly TileLayer[] {
   const r = new Reader(bytes);
   const layers: TileLayer[] = [];
   while (r.pos < r.end) {
@@ -67,7 +73,8 @@ export function decodeTile(bytes: Uint8Array): readonly TileLayer[] {
     const end = span(r);
     const tileEnd = r.end;
     r.end = end;
-    layers.push(readLayer(r));
+    const layer = readLayer(r, wanted);
+    if (layer) layers.push(layer);
     r.pos = end;
     r.end = tileEnd;
   }
@@ -82,7 +89,7 @@ export function properties(
 ): Record<string, Value> {
   const entries: [string, Value][] = [];
   for (let pair = set.tagStarts[feature]; pair < set.tagStarts[feature + 1]; pair++)
-    entries.push([layer.keys[set.tags[2 * pair]], layer.values[set.tags[2 * pair + 1]]]);
+    entries.push([layer.keys[set.tags[2 * pair]], layer.value(set.tags[2 * pair + 1])]);
   return Object.fromEntries(entries);
 }
 
@@ -217,32 +224,36 @@ function utf8(bytes: Uint8Array, start: number, end: number): string {
   return text;
 }
 
-/** Reads a layer: its tables first, then its features. */
-function readLayer(r: Reader): TileLayer {
-  const keys: string[] = [];
-  const values: Value[] = [];
+/**
+ * Reads a layer, or skips it unless `wanted` names it: where its tables and features lie first,
+ * then its keys and features. Values decode as they are read.
+ */
+function readLayer(r: Reader, wanted: ReadonlySet<string> | undefined): TileLayer | undefined {
   let name = '';
   let extent = 4096;
   ranges.length = 0;
+  keyRanges.length = 0;
+  valueRanges.length = 0;
   while (r.pos < r.end) {
     const key = varint(r);
     if (key === ((1 << 3) | BYTES)) name = string(r);
-    else if (key === ((2 << 3) | BYTES)) {
-      const end = span(r);
-      ranges.push(r.pos);
-      ranges.push(end);
-      r.pos = end;
-    } else if (key === ((3 << 3) | BYTES)) keys.push(string(r));
-    else if (key === ((4 << 3) | BYTES)) values.push(readValue(r));
+    else if (key === ((2 << 3) | BYTES)) mark(r, ranges);
+    else if (key === ((3 << 3) | BYTES)) mark(r, keyRanges);
+    else if (key === ((4 << 3) | BYTES)) mark(r, valueRanges);
     else if (key === ((5 << 3) | VARINT)) extent = varint(r);
     else skip(r, key & 7);
   }
+  if (wanted && !wanted.has(name)) return undefined;
+  const keys: string[] = [];
+  for (let i = 0; i < keyRanges.length; i += 2)
+    keys.push(utf8(r.bytes, keyRanges.array[i], keyRanges.array[i + 1]));
+  const valueCount = valueRanges.length / 2;
   const layerEnd = r.end;
   builders.reset();
   for (let i = 0; i < ranges.length; i += 2) {
     r.pos = ranges.array[i];
     r.end = ranges.array[i + 1];
-    readFeature(r, builders, keys.length, values.length);
+    readFeature(r, builders, keys.length, valueCount);
   }
   r.pos = r.end = layerEnd;
   const { areas, lines, points } = builders;
@@ -250,20 +261,43 @@ function readLayer(r: Reader): TileLayer {
     name,
     extent,
     keys,
-    values,
+    valueCount,
+    value: values(r.bytes, valueRanges.array.slice(0, valueRanges.length)),
     areas: areas.finish(),
     lines: lines.finish(),
     points: points.finish(),
   };
 }
 
-/** Reads a Value message: whichever of its typed fields is present. */
-function readValue(r: Reader): Value {
+/** Notes where a length-delimited field's bytes lie, and moves past them. */
+function mark(r: Reader, into: Uints): void {
   const end = span(r);
-  const outer = r.end;
-  r.end = end;
+  into.push(r.pos);
+  into.push(end);
+  r.pos = end;
+}
+
+/** A layer's values table, each value decoded the first time it is read, from where it lies. */
+function values(bytes: Uint8Array, at: Uint32Array): (index: number) => Value {
+  const decoded: (Value | undefined)[] = [];
+  let reader: Reader | undefined;
+  return (index) => {
+    let value = decoded[index];
+    if (value === undefined) {
+      if (!(index >= 0 && index < at.length / 2)) throw malformed();
+      const r = (reader ??= new Reader(bytes));
+      r.pos = at[2 * index];
+      r.end = at[2 * index + 1];
+      decoded[index] = value = readValue(r);
+    }
+    return value;
+  };
+}
+
+/** Reads a Value message's body: whichever of its typed fields is present. */
+function readValue(r: Reader): Value {
   let value: Value | undefined;
-  while (r.pos < end) {
+  while (r.pos < r.end) {
     const key = varint(r);
     if (key === ((1 << 3) | BYTES)) value = string(r);
     else if (key === ((2 << 3) | FIXED32)) value = r.view.getFloat32(fixed(r, 4), true);
@@ -274,7 +308,6 @@ function readValue(r: Reader): Value {
     else if (key === ((7 << 3) | VARINT)) value = varint(r) !== 0;
     else skip(r, key & 7);
   }
-  r.end = outer;
   if (value === undefined) throw malformed();
   return value;
 }
@@ -605,5 +638,7 @@ class Builders {
 
 /** Scratch shared by every decode, which runs to completion, so buffers grow once per worker. */
 const builders = new Builders();
-/** A layer's feature byte ranges, as start and end pairs. */
+/** A layer's feature, key, and value byte ranges, as start and end pairs. */
 const ranges = new Uints();
+const keyRanges = new Uints();
+const valueRanges = new Uints();

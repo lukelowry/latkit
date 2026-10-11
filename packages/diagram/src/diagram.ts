@@ -214,9 +214,9 @@ export declare namespace Diagram {
    * How a diagram draws, beyond the shared view style; every option has a default. Sizes without a
    * `Px` suffix are diagram units and zoom with the blocks; `Px` sizes stay constant on screen.
    */
-  interface Style extends kit.LineStyle {
+  interface Style extends kit.LineStyle, kit.GridStyle {
+    /** The grid's finest step, in diagram units, which blocks snap to; its dots draw at this times a power of 4. */
     readonly gridPitch?: number;
-    readonly grid?: boolean;
     readonly snap?: boolean;
     readonly labels?: boolean;
     readonly junctions?: boolean;
@@ -230,7 +230,6 @@ export declare namespace Diagram {
     readonly portLabels?: boolean;
     readonly portFontSize?: number;
     readonly edgeWidthPx?: number;
-    readonly gridMinSpacingPx?: number;
     readonly detail?: 'auto' | 'full';
     readonly portSpacing?: number;
     /** Space wires keep from blocks, and the length of the stub out of each port. */
@@ -238,7 +237,6 @@ export declare namespace Diagram {
     readonly vertexColor?: RGBA;
     readonly edgeColor?: RGBA;
     readonly outlineColor?: RGBA;
-    readonly gridColor?: RGBA;
     readonly groupColor?: RGBA;
   }
   interface Limits {

@@ -1,4 +1,4 @@
-import { createData, type Data, type FieldInput } from '@latkit/model';
+import { createData, type Data, type FieldInput, type Schema } from '@latkit/model';
 import type { Gpu, kit } from '@latkit/gpu';
 import { fieldKey } from '../options.js';
 import { run } from '../prepare/client.js';
@@ -152,18 +152,37 @@ export class Sources {
     if (!buffers) this.buffers.set(shapes, (buffers = new ShapesBuffers(this.gpu, shapes)));
     return { shapes, buffers };
   }
-  /** Vector tiles of a source, decoding the layers asked for; asking for others starts over. */
+  /**
+   * Vector tiles of a source, decoding the layers and fields asked for; asking for others starts
+   * over. Every tile's rows share one schema, the request's, so what reads them plans once.
+   */
   vector(tiles: TileSet, layers: readonly VectorLayerRequest[]): Pyramid<VectorTileData> {
     const key = JSON.stringify(layers),
       found = this.vectors.get(tiles);
     if (found?.key === key) return found.pyramid;
     found?.pyramid.destroy();
-    const limits = this.hooks.limits(),
+    const schema: Schema = {
+        types: Object.fromEntries(
+          layers.map((layer) => [
+            layer.name,
+            {
+              fields: Object.fromEntries(
+                Object.entries(layer.fields).map(([name, type]) => [
+                  name,
+                  { type, nullable: true },
+                ]),
+              ),
+            },
+          ]),
+        ),
+      },
+      limits = this.hooks.limits(),
       pyramid = new Pyramid<VectorTileData>({
         tiles,
         bytes: limits.tileBytes,
         requests: limits.tileRequests,
-        load: (source, tile, signal) => this.loadVector(tiles, source, tile, layers, signal),
+        load: (source, tile, signal) =>
+          this.loadVector(tiles, source, tile, layers, schema, signal),
         size: (data) => data.bytes,
         release: (data) => {
           for (const layer of data.layers.values()) {
@@ -182,17 +201,14 @@ export class Sources {
     source: TileSource,
     key: TileKey,
     layers: readonly VectorLayerRequest[],
+    schema: Schema,
     signal: AbortSignal,
   ): Promise<VectorTileData | null> {
     const fetched = await source.tile(key.z, key.x, key.y, signal);
     if (!fetched) return null;
     // A copy goes to the worker, so a source held whole keeps its bytes.
     const bytes = fetched.slice(),
-      {
-        layers: decoded,
-        schema,
-        batches,
-      } = await run(
+      { layers: decoded, batches } = await run(
         {
           kind: 'vector',
           request: { bytes, ...key, layers, source: `${tiles.name}/${key.z}/${key.x}/${key.y}` },

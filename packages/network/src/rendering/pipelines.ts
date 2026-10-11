@@ -6,6 +6,7 @@ import labels from './labels.wgsl';
 import curve from './curve.wgsl';
 import tessellate from './tessellate.wgsl';
 import occlude from './occlude.wgsl';
+import gridSource from './grid.wgsl';
 
 /** The kit's projection, then the network's uniforms over it, which every module includes. */
 const common = kit.projectionShader() + commonSource;
@@ -352,6 +353,36 @@ export function markerPipeline(
     if (layer === 'scene')
       void built.then(() => markerPipeline(pipelines, marker, 'focus')).catch(() => undefined);
     return built;
+  });
+}
+/**
+ * The grid beneath the graph, which writes the globe's depth as the occluder does: built the first
+ * time a frame draws a grid, so a network without one compiles none.
+ */
+export function gridPipeline(pipelines: Pipelines): Promise<GPURenderPipeline> {
+  return variant(pipelines, 'grid', async () => {
+    const { gpu, format, msaa } = pipelines,
+      d = gpu.device,
+      module = await gpu.shaderModule(common + kit.gridShader() + gridSource, 'network grid'),
+      layout = d.createBindGroupLayout({
+        entries: [0, 1].map((binding) => ({
+          binding,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform' as const },
+        })),
+      });
+    return gpu.renderPipeline({
+      layout: d.createPipelineLayout({ bindGroupLayouts: [layout] }),
+      vertex: { module, entryPoint: 'grid_vertex' },
+      fragment: {
+        module,
+        entryPoint: 'grid_fragment',
+        targets: [{ format, blend: kit.premultipliedBlend }],
+      },
+      primitive: { topology: 'triangle-list' },
+      depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
+      multisample: { count: msaa },
+    });
   });
 }
 /** The pipeline straight or curved lines draw with in a layer. */

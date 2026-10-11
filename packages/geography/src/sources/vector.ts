@@ -1,12 +1,19 @@
-import { textColumn, type Column, type Schema, type Data } from '@latkit/model';
-import { decodeTile, properties, type FeatureSet, type TileLayer } from './mvt.js';
+import { textColumn, type Column, type Data } from '@latkit/model';
+import { decodeTile, type FeatureSet, type TileLayer } from './mvt.js';
 import { prepareShapes, shapesBuffers, type Shapes } from '../prepare/shapes.js';
 
-/** What a vector tile's layers draw: their rings, as areas and outlines, and their lines. */
+/** The types a tile's property becomes as a field. */
+export type VectorFieldType = 'float64' | 'boolean' | 'text';
+/**
+ * What a vector tile's layers draw: their rings, as areas and outlines, and their lines; and the
+ * fields their rows carry, the properties records read, each in every tile whether or not its
+ * features hold it.
+ */
 export interface VectorLayerRequest {
   readonly name: string;
   readonly rings: boolean;
   readonly lines: boolean;
+  readonly fields: Readonly<Record<string, VectorFieldType>>;
 }
 export interface VectorRequest {
   readonly bytes: Uint8Array;
@@ -29,10 +36,9 @@ export interface VectorLayer {
   readonly rings?: Shapes;
   readonly lines?: Shapes;
 }
-/** A decoded tile: its layers, and their rows as model rows. */
+/** A decoded tile: its layers, and their rows as model rows, in the schema its request describes. */
 export interface VectorTile {
   readonly layers: readonly VectorLayer[];
-  readonly schema: Schema;
   readonly batches: readonly Data.RowBatch[];
 }
 
@@ -179,9 +185,9 @@ export function decodeVector(request: VectorRequest): {
   tile: VectorTile;
   transfer: ArrayBuffer[];
 } {
-  const decoded = new Map(decodeTile(request.bytes).map((layer) => [layer.name, layer])),
+  const wanted = new Set(request.layers.map((layer) => layer.name)),
+    decoded = new Map(decodeTile(request.bytes, wanted).map((layer) => [layer.name, layer])),
     layers: VectorLayer[] = [],
-    types: [string, Schema.Type][] = [],
     batches: Data.RowBatch[] = [],
     transfer: ArrayBuffer[] = [];
   for (const want of request.layers) {
@@ -223,13 +229,12 @@ export function decodeVector(request: VectorRequest): {
       transfer.push(...shapesBuffers(lines));
     }
     if (!rings && !lines) continue;
-    const { definition, batch, ids } = layerRows(layer, sets, request.source, frame);
-    types.push([layer.name, definition]);
+    const { batch, ids } = layerRows(layer, sets, want.fields, request.source, frame);
     batches.push(batch);
     if (ids) transfer.push(ids.buffer as ArrayBuffer);
     layers.push({ name: layer.name, rows, rings, lines, ...(ids ? { ids } : {}) });
   }
-  return { tile: { layers, schema: { types: Object.fromEntries(types) }, batches }, transfer };
+  return { tile: { layers, batches }, transfer };
 }
 function prepare(gather: Gather, closed: boolean, clip: readonly number[]): Shapes {
   return prepareShapes({
@@ -242,89 +247,97 @@ function prepare(gather: Gather, closed: boolean, clip: readonly number[]): Shap
   });
 }
 
-type Value = string | number | boolean;
 /**
- * A layer's features as model rows, by place: a field per property, and an id each. Where every
- * feature's id is a distinct whole number, those ids too, for the tiles to number.
+ * A layer's features as model rows, by place: a column per field asked for, and an id each. Where
+ * every feature's id is a distinct whole number, those ids too, for the tiles to number. Only the
+ * properties asked for are read, and only their values decode.
  */
 function layerRows(
   layer: TileLayer,
   sets: readonly FeatureSet[],
+  fields: Readonly<Record<string, VectorFieldType>>,
   source: string,
   frame: TileFrame,
-): { definition: Schema.Type; batch: Data.RowBatch; ids?: Float64Array } {
-  const all: Record<string, Value>[] = [],
-    numbers: number[] = [];
+): { batch: Data.RowBatch; ids?: Float64Array } {
+  let count = 0;
+  for (const set of sets) count += set.features.length - 1;
+  const numbers = new Float64Array(count);
+  let row = 0;
   for (const set of sets)
-    for (let f = 0; f + 1 < set.features.length; f++) {
-      all.push(properties(layer, set, f));
-      numbers.push(set.ids[f]);
-    }
+    for (let f = 0; f + 1 < set.features.length; f++) numbers[row++] = set.ids[f];
   const stable =
     numbers.every((id) => Number.isSafeInteger(id) && id >= 0) &&
     new Set(numbers).size === numbers.length;
   const ids = stable
-    ? numbers.map(String)
-    : all.map((_, i) => `${layer.name}:${frame.z}/${frame.x}/${frame.y}:${i}`);
-  const kinds = new Map<string, 'number' | 'boolean' | 'text'>();
-  for (const row of all)
-    for (const [name, value] of Object.entries(row)) {
-      const kind =
-          typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'boolean' : 'text',
-        before = kinds.get(name);
-      kinds.set(name, before === undefined || before === kind ? kind : 'text');
-    }
-  const fields: Record<string, Schema.Field> = {},
-    columns: Record<string, Column> = {};
-  for (const [name, kind] of kinds) {
-    const validity = new Uint8Array(Math.ceil(all.length / 8));
-    let missing = false;
-    all.forEach((row, i) => {
-      if (row[name] === undefined) missing = true;
-      else validity[i >>> 3] |= 1 << (i & 7);
-    });
-    if (kind === 'number') {
-      const values = new Float64Array(all.length);
-      all.forEach(
-        (row, i) => (values[i] = typeof row[name] === 'number' ? (row[name] as number) : 0),
-      );
-      columns[name] = {
-        kind: 'numeric',
-        offset: 0,
-        length: all.length,
-        values,
-        ...(missing ? { validity } : {}),
-      };
-      fields[name] = { type: 'float64', ...(missing ? { nullable: true } : {}) };
-    } else if (kind === 'boolean') {
-      const values = new Uint8Array(Math.ceil(all.length / 8));
-      all.forEach((row, i) => {
-        if (row[name] === true) values[i >>> 3] |= 1 << (i & 7);
-      });
-      columns[name] = {
-        kind: 'boolean',
-        offset: 0,
-        length: all.length,
-        values,
-        ...(missing ? { validity } : {}),
-      };
-      fields[name] = { type: 'boolean', ...(missing ? { nullable: true } : {}) };
-    } else {
-      columns[name] = textColumn(
-        all.map((row) => (row[name] === undefined ? null : String(row[name]))),
-      );
-      fields[name] = { type: 'text', ...(missing ? { nullable: true } : {}) };
-    }
+    ? Array.from(numbers, String)
+    : Array.from(numbers, (_, i) => `${layer.name}:${frame.z}/${frame.x}/${frame.y}:${i}`);
+  // Each key's column, or -1 for keys no field reads.
+  const names = Object.keys(fields),
+    columns = names.map((name) => new FieldColumn(fields[name], count)),
+    slots = new Map(names.map((name, i) => [name, i])),
+    slot = Int32Array.from(layer.keys, (key) => slots.get(key) ?? -1);
+  if (names.length) {
+    row = 0;
+    for (const set of sets)
+      for (let f = 0; f + 1 < set.features.length; f++, row++)
+        for (let pair = set.tagStarts[f]; pair < set.tagStarts[f + 1]; pair++) {
+          const at = slot[set.tags[2 * pair]];
+          if (at >= 0) columns[at].set(row, layer.value(set.tags[2 * pair + 1]));
+        }
   }
   return {
-    definition: { fields },
     batch: {
       kind: 'rows',
       index: { source, type: layer.name, version: '1' },
-      rows: { kind: 'range', offset: 0, count: all.length },
+      rows: { kind: 'range', offset: 0, count },
       ids: textColumn(ids),
-      columns,
+      columns: Object.fromEntries(names.map((name, i) => [name, columns[i].column()])),
     },
-    ...(stable ? { ids: Float64Array.from(numbers) } : {}),
+    ...(stable ? { ids: numbers } : {}),
   };
+}
+
+/**
+ * A field's column as features fill it, null where none holds a value it takes: a number for
+ * `float64`, a boolean as 0 or 1; a boolean for `boolean`, a number as whether it is not 0; and
+ * any value as its text for `text`.
+ */
+class FieldColumn {
+  private readonly validity: Uint8Array;
+  private readonly numbers?: Float64Array;
+  private readonly bits?: Uint8Array;
+  private readonly texts?: (string | null)[];
+  private held = 0;
+  constructor(
+    private readonly type: VectorFieldType,
+    private readonly count: number,
+  ) {
+    this.validity = new Uint8Array(Math.ceil(count / 8));
+    if (type === 'float64') this.numbers = new Float64Array(count);
+    else if (type === 'boolean') this.bits = new Uint8Array(Math.ceil(count / 8));
+    else this.texts = new Array<string | null>(count).fill(null);
+  }
+  set(row: number, value: string | number | boolean): void {
+    const bit = 1 << (row & 7);
+    if (this.validity[row >>> 3] & bit) return;
+    if (this.numbers) {
+      const number = typeof value === 'boolean' ? +value : value;
+      if (typeof number !== 'number' || Number.isNaN(number)) return;
+      this.numbers[row] = number;
+    } else if (this.bits) {
+      if (typeof value === 'string') return;
+      if (value) this.bits[row >>> 3] |= bit;
+    } else this.texts![row] = String(value);
+    this.validity[row >>> 3] |= bit;
+    this.held++;
+  }
+  column(): Column {
+    const { count } = this,
+      validity = this.held < count ? { validity: this.validity } : {};
+    if (this.numbers)
+      return { kind: 'numeric', offset: 0, length: count, values: this.numbers, ...validity };
+    if (this.bits)
+      return { kind: 'boolean', offset: 0, length: count, values: this.bits, ...validity };
+    return textColumn(this.texts!);
+  }
 }

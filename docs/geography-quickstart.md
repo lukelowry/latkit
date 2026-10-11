@@ -26,22 +26,25 @@ ground, and lines over areas. Channels and labels work as in every view; see
 
 ```ts
 const ground = createGeography(gpu, { source: borders, lines: { Border: { widthPx: 0.8 } } });
-const network = createNetwork(gpu, { canvas, source, vertices, edges, geography: ground });
+const network = createNetwork(gpu, { canvas, source, vertices, edges, ground });
 ```
 
 A geography without a canvas draws beneath the network in its pass, with its camera, `at`, and
-depth. Its sun lights the graph, and a gesture on no vertex or edge reaches it. The network never
-destroys it.
+depth. Its sun lights the graph, and a gesture on no vertex or edge reaches it, unless its `input`
+is `'none'`; a menu over neither reaches the network. The network never destroys it.
 
 ## Sources
 
 - **Data**: rows whose `rings` or `points` are lists of `[longitude, latitude]` vectors.
-- **`geojson(from)`**: Data from GeoJSON: JSON text, a URL, a Blob such as a local file, or bytes,
-  decoded and parsed in a worker. Polygons give `rings`, lines give `points`, and properties become
-  fields.
+- **`geojson(from)`**: Data from GeoJSON: a URL, as a string or a `URL`; a Blob such as a local
+  file; or bytes, gzipped or not; decoded and parsed in a worker. Polygons give `rings`, lines give
+  `points`, and properties become fields. JSON text in hand reads as `new Blob([text])`.
 - **`tiles(from)`**: vector tiles, from a PMTiles archive by URL, as a local file, or as bytes; a
   `{z}/{x}/{y}` template; or TileJSON. Each layer is a type, and a feature with an id is one item in
   every tile and zoom that holds it. `persist: true` keeps fetched tiles for offline use.
+  `(await tiles.info).schema` holds each layer's fields, as the tiles' metadata declares them.
+  Tiles decode only the layers and properties records read, and every tile carries each field
+  read, so a name no feature of a tile holds reads as empty there.
 
 Data prepares in workers: cut at the antimeridian, simplified alike along shared borders, and filed
 by place, so a frame draws only what is in view at the detail it shows. A million points take about
@@ -77,13 +80,14 @@ mercator plane and fits looking straight down.
 ## Style
 
 ```ts
-geography.set({ daylight: 'now', graticule: true, earthAxis: true });
+geography.set({ daylight: 'now', grid: true, earthAxis: true });
 ```
 
-`surfaceColor`, `graticuleColor`, `atmosphereColor`, and `earthAxisColor` color the ground and what
-draws on it. `areaColor`, `lineColor`, and `lineWidthPx` stand in for rows without their own;
-`graticuleSpacingPx` sets how close the graticule's lines draw. `daylight` lights the scene by the
-sun at a time; `nightFloor` and `terminatorWidth` shape the night. Dashes, comets, fitting,
+`surfaceColor`, `gridColor`, `atmosphereColor`, and `earthAxisColor` color the ground and what
+draws on it; the grid is lines of longitude and latitude. `areaColor`, `lineColor`, and
+`lineWidthPx` stand in for rows without their own. `visible: false` hides a record's shapes but
+not its labels, and nothing of it hovers or picks. `daylight` lights the scene by the sun at a
+time; `nightFloor` and `terminatorWidth` shape the night. The grid, dashes, comets, fitting,
 orbiting, and label halos take the options every [view](views.md#style) shares.
 
 ## Limits

@@ -2,8 +2,8 @@
 // geography's look, written only as it changes.
 struct Style {
   surface: vec4f,
-  /** The graticule's color; no alpha draws none. */
-  graticule: vec4f,
+  /** The grid's color; no alpha draws none. */
+  gridColor: vec4f,
   /** The atmosphere's color; no alpha draws none. */
   atmosphere: vec4f,
   hover: vec4f,
@@ -19,7 +19,7 @@ struct Style {
   flow: vec4f,
   /** How far apart comets run in CSS pixels, and the seconds they have moved for. */
   motion: vec4f,
-  /** How close the graticule's lines may draw, in CSS pixels. */
+  /** Where the grid's lines fall, as `gridLines` writes it. */
   grid: vec4f,
 }
 @group(0) @binding(0) var<uniform> scene: Scene;

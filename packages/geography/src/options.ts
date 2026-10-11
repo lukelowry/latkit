@@ -6,12 +6,10 @@ export type Style = Required<Geography.Style> & kit.ResolvedViewStyle;
 export const DEFAULTS: Required<Geography.Style> = Object.freeze({
   ...kit.lineStyle,
   ...kit.projectedStyle,
+  ...kit.gridStyle,
   dashPeriodPx: 8,
   fitPitch: 0,
   surfaceColor: [0.07, 0.1, 0.15, 1] as RGBA,
-  graticule: false,
-  graticuleColor: [0.3, 0.38, 0.46, 0.4] as RGBA,
-  graticuleSpacingPx: 64,
   daylight: false,
   nightFloor: 0.3,
   terminatorWidth: 0.12,
@@ -117,7 +115,6 @@ const RULES: kit.StyleRules<Required<Geography.Style>> = {
   daylight: (value) => value === false || value === 'now' || Number.isFinite(value),
   nightFloor: 'unit',
   terminatorWidth: 'unit',
-  graticuleSpacingPx: 'positive',
 };
 /** The style a config describes: its own options over the defaults, on the shared view style. */
 export function resolveStyle(config: Geography.Style, view: kit.ResolvedViewStyle): Style {
