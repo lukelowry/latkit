@@ -1,33 +1,30 @@
 import {
   kit,
   type Gpu,
-  type ItemEvents,
   type ItemView,
-  type ItemViewConfig,
   type Point,
-  type SetOptions,
+  type ProjectedCamera,
   type Shade,
-  type ViewInput,
-  type ViewStats,
+  type View,
   type FrameInfo,
-  type LayoutOptions,
-  type Patch,
-  type Positions,
   type Viewport,
+  type Layout,
+  type Channel,
+  type Marker,
+  type RGBA,
+  type Labels,
 } from '@latkit/gpu';
-import { Work, failure, sameIndex, type RequestOptions, type TypeDefinition } from '@latkit/model';
-import type { Camera, Projection } from './camera.js';
-import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camera.js';
 import {
-  networkData,
-  networkKey,
-  type EdgeOptions,
-  type LineOptions,
-  type NetworkData,
-  type NetworkItem,
-  type PathOptions,
-  type VertexOptions,
-} from './data.js';
+  Work,
+  failure,
+  sameIndex,
+  type Data,
+  type Schema,
+  type FieldInput,
+  type Index,
+  type Item,
+} from '@latkit/model';
+import { networkData, networkKey, type NetworkData } from './data.js';
 import {
   DEFAULT_LIMITS,
   placement,
@@ -36,13 +33,12 @@ import {
   edgeOptions,
   type EdgeBank,
   type Geometry,
-  type Limits,
   type VertexBank,
 } from './geometry/topology.js';
 import { indexKey } from './geometry/rows.js';
 import { Placement, arrangeVertices, positions } from './geometry/layout.js';
-import { arrow, type Gestures } from './input.js';
-import { DEFAULTS, VIEW_DEFAULTS, resolveStyle, type NetworkStyle, type Style } from './options.js';
+import { step, type Gestures } from './input.js';
+import { DEFAULTS, VIEW_DEFAULTS, resolveStyle, type Style } from './options.js';
 import { Picking, type PickGeometry } from './picking.js';
 import {
   LINE,
@@ -52,60 +48,187 @@ import {
   resolveDomains,
   type FieldRead,
 } from './rendering/fields.js';
-import { Labels } from './rendering/labels.js';
-import { Paths } from './geometry/paths.js';
+import { Labels as LabelLayer } from './rendering/labels.js';
+import { Routes } from './geometry/routes.js';
 import { Painter, type Paint, type Reads } from './rendering/painter.js';
 import { pipelines, type Pipelines } from './rendering/pipelines.js';
 
-export interface NetworkConfig extends ItemViewConfig, NetworkStyle {
-  /** Drawn types by model type name. */
-  readonly vertices: Readonly<Record<string, VertexOptions>>;
-  readonly edges?: Readonly<Record<string, EdgeOptions>>;
-  readonly paths?: Readonly<Record<string, PathOptions>>;
-  /**
-   * How vertices without a position are placed: by `stress` by default, each edge as long as the
-   * positioned ones' median, or 1 without any.
-   */
-  readonly layout?: LayoutOptions;
-  /** Where the camera starts; `network.camera` is where it is. Fits the data by default. */
-  readonly camera?: Partial<Camera>;
-  readonly limits?: Limits;
-}
-export type NetworkEvents = ItemEvents<NetworkItem, NetworkItem, Camera>;
-export interface NetworkStats extends ViewStats {
-  readonly vertices: number;
-  readonly edges: number;
-  /** Logical stroke segments before adaptive GPU tessellation. */
-  readonly segments: number;
-  readonly geometryBytes: number;
-}
-type Records = 'vertices' | 'edges' | 'paths';
+/** A row of the model, which each of the view's items is; named apart from the view's own Item. */
+type ModelItem = Item;
+const { Projector, PROJECTIONS } = kit;
+/**
+ * Each network's grounds as layers. Resolving a config makes them, and resolving runs while the base
+ * view constructs, before a network's own fields exist.
+ */
+const grounds = new WeakMap<object, Map<View, kit.Layer>>();
+
+type Records = 'vertices' | 'edges';
 type Merged = 'camera' | 'input' | 'limits' | 'layout';
 export interface Network extends ItemView<
-  NetworkConfig,
-  NetworkItem,
-  NetworkItem,
-  Camera,
-  NetworkEvents
+  Network.Config,
+  Network.Item,
+  Network.Item,
+  ProjectedCamera,
+  Network.Events
 > {
-  set(patch: Patch<NetworkConfig, Records, Merged>, options?: SetOptions): void;
-  /** Projections the data supports: the globe needs geographic positions. */
-  readonly projections: Readonly<Record<Projection, boolean>>;
+  set(patch: View.Patch<Network.Config, Records, Merged>, options?: View.SetOptions): void;
+  /** Projections the data supports: the globe and the mercator plane need geographic positions. */
+  readonly projections: Readonly<Record<ProjectedCamera.Projection, boolean>>;
   /** The item, the edges at a vertex or the vertices of an edge, and itself. */
-  neighborhood(item: NetworkItem): readonly NetworkItem[];
-  stats(): NetworkStats;
+  neighborhood(item: Network.Item): readonly Network.Item[];
+  stats(): Network.Stats;
+}
+export declare namespace Network {
+  interface Config extends ItemView.Config, Style {
+    /** Borrowed: destroy never closes it. */
+    readonly source: Data;
+    /** Drawn types by model type name. */
+    readonly vertices: Readonly<Record<string, VertexOptions>>;
+    readonly edges?: Readonly<Record<string, EdgeOptions>>;
+    /**
+     * A view drawn beneath the graph, such as a geography: in the graph's pass, with its camera, `at`,
+     * and depth. Its sun lights the graph, and input the graph leaves reaches it, unless its own
+     * `input` is `none`.
+     */
+    readonly ground?: View | null;
+    /**
+     * How vertices without a position are placed: by `stress` by default, each edge as long as the
+     * positioned ones' median, or 1 without any.
+     */
+    readonly layout?: Layout;
+    /** Where the camera starts; `network.camera` is where it is. Fits the data by default. */
+    readonly camera?: Partial<ProjectedCamera>;
+    readonly limits?: Limits;
+  }
+  type Events = ItemView.Events<Item, Item, ProjectedCamera>;
+  interface Stats extends View.Stats {
+    readonly vertices: number;
+    readonly edges: number;
+    /** Logical stroke segments before adaptive GPU tessellation. */
+    readonly segments: number;
+    readonly geometryBytes: number;
+  }
+  /** A drawn row: a vertex or an edge. */
+  interface Item extends ModelItem {
+    readonly kind: 'vertex' | 'edge';
+  }
+  /**
+   * How a type's vertices draw. Each channel takes one value for every row, a field, or a scale:
+   * `color: 'load'`, `radiusPx: { field: 'load', range: [2, 12] }`. A field name labels by that field.
+   */
+  interface VertexOptions {
+    readonly rows?: Index.Selection;
+    /** Where each row draws, in the data's coordinates; layout places rows without, as `layout` says. */
+    readonly x?: Channel;
+    readonly y?: Channel;
+    /** Height above the drawing, from 0 to 1 of `zScale`; a field spans 0 to 1. */
+    readonly z?: Channel;
+    /** `vertexColor` by default. */
+    readonly color?: Channel.Color;
+    /** Marker radius in CSS pixels; a field spans 2 to 8. `vertexRadiusPx` by default. */
+    readonly radiusPx?: Channel;
+    /** How each row draws in its radius: a disc, `shape('ellipse')`, by default. */
+    readonly marker?: Marker;
+    /** Shown where true or positive; every row by default. */
+    readonly visible?: Channel<boolean>;
+    readonly shade?: Channel;
+    readonly labels?: string | Labels | null;
+  }
+  /** How a type's edges draw. */
+  interface EdgeOptions {
+    readonly rows?: Index.Selection;
+    /**
+     * Two reference fields naming the vertices each row joins, such as a branch's two buses.
+     * Omitted, the type is a net: each row joins the vertices whose references name it, drawn as a
+     * segment between two or a star of more.
+     */
+    readonly ends?: readonly [source: string, target: string];
+    /** Intermediate bends, a native list of two-component floating-point vectors; requires ends. */
+    readonly bends?: FieldInput;
+    /** Where a net's star meets, drawing every net as a star; otherwise the centroid of its ends. */
+    readonly x?: Channel;
+    readonly y?: Channel;
+    /**
+     * How an edge between geographic points runs over the earth: `straight` in longitude and
+     * latitude, or `geodesic` along the great circle. Unset, it takes the shortest way: `geodesic`
+     * on the globe, `straight` on a flat map.
+     */
+    readonly route?: 'straight' | 'geodesic';
+    /** Line width in CSS pixels; a field spans 1 to 4. `edgeWidthPx` by default. */
+    readonly widthPx?: Channel;
+    /** `edgeColor` by default. */
+    readonly color?: Channel.Color;
+    /** Dashed where true or positive. */
+    readonly dash?: Channel<boolean>;
+    /**
+     * How far comets move along the line each second, in CSS pixels, from its first end toward its
+     * second; negative runs the other way, and 0 draws none. A field spans 0 to 40.
+     */
+    readonly flowPx?: Channel;
+    /** Shown where true or positive; every row by default. */
+    readonly visible?: Channel<boolean>;
+    readonly shade?: Channel;
+    readonly labels?: string | Labels | null;
+  }
+  interface Limits {
+    /** Drawn vertices, including edges' bends and junctions. */
+    readonly vertices?: number;
+    /** Logical stroke segments before adaptive GPU tessellation. */
+    readonly segments?: number;
+    /** CPU memory for topology and routes. */
+    readonly geometryBytes?: number;
+    /** CPU memory for hit-test indexes; hover and pick fall back to scans past it. */
+    readonly pickingBytes?: number;
+    /** Time to place vertices without a position, in milliseconds. */
+    readonly layoutMs?: number;
+  }
+  /**
+   * How a network draws, beyond the shared view style; every option has a default. A kind's
+   * defaults are named after the channels they stand in for: `vertexColor` is the vertices' `color`.
+   * Its grid is lines of the data's x and y; over a ground, the ground draws its own instead.
+   */
+  interface Style extends kit.LineStyle, kit.ProjectedStyle, kit.GridStyle {
+    /** Draw vertex markers. */
+    readonly markers?: boolean;
+    /** Draw edges. */
+    readonly lines?: boolean;
+    /** Stems from the ground to raised vertices. */
+    readonly poles?: boolean;
+    readonly vertexColor?: RGBA;
+    readonly vertexRadiusPx?: number;
+    /**
+     * Zoomed out, markers shrink to stay a quarter of an edge apart on screen, down to this radius in
+     * CSS pixels; `vertexRadiusPx` or more keeps them one size. Hover grows a marker back.
+     */
+    readonly vertexMinRadiusPx?: number;
+    /** `ends` colors each edge by the vertices it joins. */
+    readonly edgeColor?: RGBA | 'ends';
+    readonly edgeWidthPx?: number;
+    /** How high a `z` of 1 draws: 15% of the data's extent on a plane, and 8% of the globe's radius, times this. */
+    readonly zScale?: number;
+    /** Edges joining the same two vertices draw this many CSS pixels apart; 0 draws them over each other. */
+    readonly edgeSpacingPx?: number;
+    /** Soft shadows below markers, lifting them off the lines. */
+    readonly shadows?: boolean;
+    /** How much hover grows a vertex's marker, eased; 1 keeps its size. */
+    readonly hoverScale?: number;
+    /** Also draw the vertices a selected edge joins over the rest. */
+    readonly selectedEnds?: boolean;
+    /** Also draw the vertices a hovered edge joins over the rest. */
+    readonly hoverEnds?: boolean;
+  }
 }
 
-/** Draw a model's vertices, edges, and paths, on a canvas or offscreen. */
-export function createNetwork(gpu: Gpu, config: NetworkConfig): Network {
+/** Draw a model's vertices and edges, on a canvas or offscreen. */
+export function createNetwork(gpu: Gpu, config: Network.Config): Network {
   return new NetworkView(gpu, config);
 }
 /** Place a network's vertices as it would, without drawing: positions by vertex type. */
 export async function arrange(
   gpu: Gpu,
-  config: NetworkConfig,
-  options: RequestOptions = {},
-): Promise<Readonly<Record<string, Positions>>> {
+  config: Network.Config,
+  options: { readonly signal?: AbortSignal } = {},
+): Promise<Readonly<Record<string, Layout.Positions>>> {
   const data = checkData(config),
     limits = kit.resolveLimits(config.limits, DEFAULT_LIMITS, 'network'),
     layout = checkLayout(config.layout),
@@ -122,8 +245,8 @@ export async function arrange(
 interface Presented {
   readonly geometry: Geometry;
   readonly picking: PickGeometry;
-  readonly camera: Camera;
-  readonly viewport: Viewport;
+  /** The frame's camera on its viewport. */
+  readonly projector: kit.Projector;
   readonly height: number;
   readonly data: NetworkData;
   readonly options: Style;
@@ -133,51 +256,63 @@ interface Pending extends Presented {
   /** Whether the frame begins the transition in progress. */
   readonly begins: boolean;
 }
-/** What a config means to the network: its drawn data, limits, layout, and style. */
+/** What a config means to the network: its drawn data, limits, layout, style, and ground. */
 interface Resolved {
-  readonly config: NetworkConfig;
+  readonly config: Network.Config;
   readonly data: NetworkData;
-  readonly limits: Required<Limits>;
-  readonly layout: LayoutOptions;
+  readonly limits: Required<Network.Limits>;
+  readonly layout: Layout;
   readonly style: Style;
-  /** Whether any line type moves dots along itself. */
+  /** Whether any edge type moves dots along itself. */
   readonly flowing: boolean;
+  /** The view drawn beneath, as a layer. */
+  readonly ground?: kit.Layer;
 }
 /** Style a transition eases, as rows read it where they have no value of their own. */
-const EASED = [
-  'vertexColor',
-  'vertexRadiusPx',
-  'edgeColor',
-  'edgeWidthPx',
-  'pathColor',
-  'pathWidthPx',
-] as const;
-/** Hit-test indexes build once the shown positions have held this long, as hover settles. */
+const EASED = ['vertexColor', 'vertexRadiusPx', 'edgeColor', 'edgeWidthPx'] as const;
+/**
+ * Hit-test indexes build once the shown positions and the camera have held this long, as hover
+ * settles: never while the camera moves, when frames are being drawn and hover waits anyway.
+ */
 const INDEX_SETTLE_MS = 150;
-/** Settles after `ms`, when `now` is called, or as soon as the signal aborts. */
+/** Settles `ms` after its latest `touch`, when `now` is called, or as soon as the signal aborts. */
 function settle(
   ms: number,
   signal: AbortSignal,
-): { readonly settled: Promise<void>; readonly now: () => void } {
-  let now!: () => void;
-  const settled = new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    now = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    signal.addEventListener('abort', now, { once: true });
-  });
-  return { settled, now };
+): { readonly settled: Promise<void>; readonly now: () => void; readonly touch: () => void } {
+  let resolve!: () => void, timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = new Promise<void>((done) => (resolve = done));
+  const touch = () => {
+    clearTimeout(timer);
+    timer = setTimeout(resolve, ms);
+  };
+  const now = () => {
+    clearTimeout(timer);
+    resolve();
+  };
+  touch();
+  signal.addEventListener('abort', now, { once: true });
+  return { settled, now, touch };
+}
+/** Whether two cameras show the same view. */
+function sameView(a: ProjectedCamera, b: ProjectedCamera): boolean {
+  return (
+    a.projection === b.projection &&
+    a.center[0] === b.center[0] &&
+    a.center[1] === b.center[1] &&
+    a.scale === b.scale &&
+    a.pitch === b.pitch &&
+    a.bearing === b.bearing
+  );
 }
 /** The drawn data, checked; the base checks every option name and the source. */
-function checkData(config: NetworkConfig): NetworkData {
+function checkData(config: Network.Config): NetworkData {
   if (!config.vertices) throw failure('invalid-input', 'Invalid network data');
   const data = networkData(config);
   for (const vertex of Object.values(data.vertices)) {
     if (vertex.marker !== undefined) kit.checkMarker(vertex.marker);
     channels(vertex, VERTEX);
-    checkLabels(vertex.labels);
+    kit.resolveLabels(vertex.labels);
   }
   for (const [type, edge] of Object.entries(data.edges ?? {})) {
     if (
@@ -190,39 +325,21 @@ function checkData(config: NetworkConfig): NetworkData {
     if (edge.ends && (edge.x != null || edge.y != null))
       throw failure('invalid-input', 'A star center belongs to a net, which has no ends: ' + type);
     if (!edge.ends && edge.bends) throw failure('invalid-input', 'Bends require ends: ' + type);
-    checkLine(type, edge);
-  }
-  for (const [type, path] of Object.entries(data.paths ?? {})) {
-    if (!path.points) throw failure('invalid-input', 'A path needs points: ' + type);
-    checkLine(type, path);
+    if (edge.route && !['straight', 'geodesic'].includes(edge.route))
+      throw failure('invalid-input', 'Invalid route: ' + type);
+    channels(edge, LINE);
+    kit.resolveLabels(edge.labels);
   }
   return data;
 }
-const NO_LAYOUT: LayoutOptions = Object.freeze({});
+const NO_LAYOUT: Layout = Object.freeze({});
 /** The layout options, checked. */
-function checkLayout(layout: LayoutOptions | undefined): LayoutOptions {
+function checkLayout(layout: Layout | undefined): Layout {
   kit.layoutOptions(layout, { algorithm: 'stress', vertexGap: 1, rankGap: 3 });
   return layout ?? NO_LAYOUT;
 }
-/** An edge's or path's own line options. */
-function checkLine(type: string, entry: LineOptions): void {
-  if (entry.route && !['straight', 'geodesic'].includes(entry.route))
-    throw failure('invalid-input', 'Invalid route: ' + type);
-  channels(entry, LINE);
-  checkLabels(entry.labels);
-}
-/** A type's labels: the shared options, and the network's own sizes. */
-function checkLabels(value: VertexOptions['labels']): void {
-  const labels = kit.resolveLabels(value);
-  if (!labels) return;
-  const { fontSizePx, repeatSpacingPx } = labels;
-  if (fontSizePx !== undefined && !(Number.isFinite(fontSizePx) && fontSizePx > 0))
-    throw failure('invalid-input', 'Invalid label fontSizePx');
-  if (repeatSpacingPx !== undefined && !(Number.isFinite(repeatSpacingPx) && repeatSpacingPx >= 0))
-    throw failure('invalid-input', 'Invalid label repeatSpacingPx');
-}
 /** Whether a net centers its stars on its own x and y. */
-function centered(edge: EdgeOptions | undefined): boolean {
+function centered(edge: Network.EdgeOptions | undefined): boolean {
   return edge?.x != null || edge?.y != null;
 }
 /**
@@ -234,7 +351,6 @@ function rewired(a: NetworkData, b: NetworkData): boolean {
     kit.sameValues(a.source, b.source, wiring) &&
     kit.sameRecords(a.vertices, b.vertices, ['rows']) &&
     kit.sameRecords(a.edges, b.edges, ['rows', 'ends']) &&
-    kit.sameRecords(a.paths, b.paths, ['rows', 'source']) &&
     Object.keys(b.vertices).every(
       (type) =>
         placement(a.source, type, a.vertices[type]) === placement(b.source, type, b.vertices[type]),
@@ -246,12 +362,11 @@ function rewired(a: NetworkData, b: NetworkData): boolean {
 }
 
 class NetworkView
-  extends kit.BaseItemView<
-    NetworkConfig,
-    NetworkItem,
-    NetworkItem,
-    Camera,
-    NetworkEvents,
+  extends kit.ProjectedView<
+    Network.Config,
+    Network.Item,
+    Network.Item,
+    Network.Events,
     Resolved,
     Pending,
     Pipelines,
@@ -274,13 +389,21 @@ class NetworkView
     readonly stop: AbortController;
     /** Start building now instead of waiting for the positions to settle. */
     readonly now: () => void;
+    /** Wait a settle again before building: the camera moved. */
+    readonly touch: () => void;
+    /** The camera the latest presented frame showed. */
+    camera: ProjectedCamera;
     /** Settles when the build ends: built, out of budget, superseded, or failed. */
     readonly built: Promise<void>;
     done: boolean;
   };
-  private readonly paths = new Paths();
+  private readonly routes = new Routes();
   private readonly placement = new Placement();
-  private readonly labels = new Labels();
+  private readonly labels = new LabelLayer();
+  /** The ground's invalidations, which this view follows. */
+  private following?: () => void;
+  /** The ground captured with this view's frame. */
+  private captured?: kit.CapturedLayer;
   /** An animated `set` eases its drawn values from what the next presented frame replaces. */
   private transitionRequested = false;
   /**
@@ -288,61 +411,52 @@ class NetworkView
    * frame has drawn its start.
    */
   private transition?: { readonly start: number; readonly from: PickGeometry; begun: boolean };
-  private orbitTime?: number;
   private counts = { vertices: 0, edges: 0, segments: 0, geometryBytes: 0, drawCalls: 0 };
   private readonly gestures: Gestures = {
-    pan: (dx, dy) => this.pan(dx, dy),
-    rotate: (dx, dy) => {
-      const camera = this.camera;
-      this.moveCamera(
-        {
-          projection: camera.projection === 'flat' ? 'tilt' : camera.projection,
-          bearing: camera.bearing + dx * 0.4,
-          pitch: Math.max(0, Math.min(80, camera.pitch - dy * 0.25)),
-          orbit: false,
-        },
-        {},
-      );
-    },
     locate: (item) => this.locate(item),
     neighborhood: (item) => this.neighborhood(item),
     reveal: (item) => this.reveal(item),
     selection: () => this.selection,
     choose: (items) => this.choose(items),
   };
-  constructor(gpu: Gpu, config: NetworkConfig) {
+  constructor(gpu: Gpu, config: Network.Config) {
     super(gpu, config, {
       name: 'network',
-      records: ['vertices', 'edges', 'paths'],
+      records: ['vertices', 'edges'],
       merged: ['camera', 'input', 'limits', 'layout'],
-      options: Object.keys(DEFAULTS),
-      framed: ['projection', 'center', 'scale', 'pitch', 'bearing'],
+      options: [...Object.keys(DEFAULTS), 'ground'],
       style: VIEW_DEFAULTS,
     });
-    this.painter = new Painter(gpu);
+    // A curve that asked for more pieces than its pool held draws again, sized to what it asked.
+    this.painter = new Painter(gpu, () => {
+      if (!this.closed) this.invalidate();
+    });
+    this.ground = this.resolved.ground;
+    this.follow(this.ground);
     this.start();
   }
   private get data(): NetworkData {
     return this.resolved.data;
   }
-  private get style(): Style {
+  protected get style(): Style {
     return this.resolved.style;
   }
-  private get limits(): Required<Limits> {
+  private get limits(): Required<Network.Limits> {
     return this.resolved.limits;
   }
-  private get layout(): LayoutOptions {
+  private get layout(): Layout {
     return this.resolved.layout;
   }
 
-  /** Globe needs geographic positions, which their fields declare once read. */
-  get projections(): Readonly<Record<Projection, boolean>> {
-    return { flat: true, tilt: true, globe: this.shown?.geometry.geographic ?? false };
+  /** The globe and the mercator plane need geographic positions, which their fields declare once read. */
+  get projections(): Readonly<Record<ProjectedCamera.Projection, boolean>> {
+    const geographic = this.shown?.geometry.geographic ?? false;
+    return { flat: true, tilt: true, mercator: geographic, globe: geographic };
   }
-  neighborhood(item: NetworkItem): readonly NetworkItem[] {
+  neighborhood(item: Network.Item): readonly Network.Item[] {
     return this.shown?.geometry.adjacency.neighborhood(item, this.shown.data) ?? [];
   }
-  stats(): NetworkStats {
+  stats(): Network.Stats {
     return {
       ...super.stats(),
       ...this.counts,
@@ -350,24 +464,23 @@ class NetworkView
     };
   }
 
-  protected defaultCamera(): Camera {
-    return DEFAULT_CAMERA;
-  }
-  /** Orbiting needs motion and a tilt: turning it on tilts a flat camera. */
-  protected resolveCamera(camera: Camera, current: Camera | undefined): Camera {
-    let next: Camera = { ...camera, orbit: camera.orbit && !this.reducedMotion };
-    if (next.orbit && !current?.orbit && next.projection === 'flat')
-      next = { ...next, projection: 'tilt', pitch: 45 };
-    return checkCamera(next);
+  /** Geographic positions start on the mercator plane, as a geography does; others on the plane. */
+  protected defaultCamera(): ProjectedCamera {
+    const { data } = this.resolved;
+    return Object.entries(data.vertices).some(
+      ([type, options]) => placement(data.source, type, options) === 'geographic',
+    )
+      ? { ...Projector.camera, projection: 'mercator' }
+      : Projector.camera;
   }
   /** How a frame's geometry frames items, or all of it. */
   private framing(
     geometry: Geometry,
     picking: PickGeometry,
-    items: readonly NetworkItem[] | undefined,
-    camera: Camera,
+    items: readonly Network.Item[] | undefined,
+    camera: ProjectedCamera,
     viewport: Viewport,
-  ): Partial<Camera> {
+  ): Partial<ProjectedCamera> {
     let bounds = picking.bounds;
     if (items) {
       let minX = Infinity,
@@ -391,41 +504,26 @@ class NetworkView
       }
       if (minX <= maxX) bounds = [minX, minY, maxX, maxY];
     }
-    const { center, scale, pitch, bearing } = fit(bounds, viewport, camera, this.style);
-    return { center, scale, pitch, bearing };
+    return this.fitted(camera, bounds, viewport);
   }
-  protected interpolate(from: Camera, to: Camera, t: number): Camera | undefined {
-    return from.projection === to.projection ? mixCamera(from, to, t) : undefined;
-  }
-  protected panned(camera: Camera, dx: number, dy: number): Camera {
-    return { ...move(camera, dx, dy), orbit: false };
-  }
-  protected zoomed(camera: Camera, factor: number, anchor: Point, viewport: Viewport): Camera {
-    return { ...zoom(camera, factor, anchor, viewport), orbit: false };
-  }
-  protected position(item: NetworkItem): Point | null {
+  protected position(item: Network.Item): Point | null {
     const p = this.shown;
-    return p ? p.picking.locate(item, p.data, p.camera, p.viewport, p.height, p.options) : null;
+    return p ? p.picking.locate(item, p.data, p.projector, p.height, p.options) : null;
   }
-  protected identify(item: NetworkItem): string {
+  protected identify(item: Network.Item): string {
     return networkKey(item);
   }
-  protected accept(item: NetworkItem): void {
-    const source =
-      item.kind === 'path'
-        ? (this.data.paths?.[item.index.type]?.source ?? this.data.source)
-        : this.data.source;
-    const table = source.tables[item.index.type];
+  protected accept(item: Network.Item): void {
+    const table = this.data.source.tables[item.index.type];
     if (!table || !sameIndex(table.index, item.index))
       throw failure('conflict', 'Selection belongs to another source');
   }
-  protected contains(item: NetworkItem): boolean {
+  protected contains(item: Network.Item): boolean {
     const geometry = this.shown?.geometry;
     if (!geometry) return false;
     if (item.kind === 'vertex') return !!geometry.lookup.get(indexKey(item.index))?.get(item.row);
     return geometry.edges.some(
       (bank) =>
-        (bank.kind ?? 'edge') === item.kind &&
         sameIndex(bank.index, item.index) &&
         (bank.rows.kind === 'range'
           ? item.row >= bank.rows.offset && item.row < bank.rows.offset + bank.rows.count
@@ -437,7 +535,7 @@ class NetworkView
     point: Point,
     radiusPx: number,
     options: { readonly limit: number; readonly signal?: AbortSignal },
-  ): Promise<readonly NetworkItem[]> {
+  ): Promise<readonly Network.Item[]> {
     const shown = this.shown;
     if (!shown) return [];
     const task = this.indexing;
@@ -446,61 +544,73 @@ class NetworkView
       if (options.signal) await new Work(options.signal).wait(task.built);
       else await task.built;
     }
+    const { viewport } = shown.projector;
     return shown.picking.hit(
       point,
       shown.data,
-      shown.camera,
-      shown.viewport,
+      shown.projector,
       shown.height,
       shown.options,
-      Math.min(radiusPx, Math.hypot(shown.viewport.width, shown.viewport.height)),
+      Math.min(radiusPx, Math.hypot(viewport.width, viewport.height)),
       options.limit,
     );
   }
   protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
     return pipelines(this.gpu, format, msaa, shade.wgsl);
   }
-  /** The right button, or Shift, turns the camera; any other press pans as every view does. */
-  protected grab(
-    event: PointerEvent,
-    point: Point,
-    mode: NonNullable<ViewInput['mode']>,
-  ): kit.Grab | undefined {
-    if (mode === 'inspect' || (event.button !== 2 && !event.shiftKey)) return undefined;
-    let last = point;
-    return {
-      move: (next) => {
-        this.gestures.rotate(next[0] - last[0], next[1] - last[1]);
-        last = next;
-      },
-      end() {},
-    };
-  }
-  protected key(event: KeyboardEvent, mode: NonNullable<ViewInput['mode']>): boolean {
-    return arrow(event, mode, this.gestures);
+  /** Inspecting, arrows step to the neighbor in their direction; otherwise they move the camera. */
+  protected key(event: KeyboardEvent, mode: NonNullable<ItemView.Input['mode']>): boolean {
+    return mode === 'inspect' ? step(event, this.gestures) : super.key(event, mode);
   }
 
-  protected resolve(config: NetworkConfig): Resolved {
+  protected resolve(config: Network.Config): Resolved {
     return {
       config,
       data: checkData(config),
       limits: kit.resolveLimits(config.limits, DEFAULT_LIMITS, 'network'),
       layout: checkLayout(config.layout),
-      flowing: [...Object.values(config.edges ?? {}), ...Object.values(config.paths ?? {})].some(
+      flowing: Object.values(config.edges ?? {}).some(
         (line) => line.flowPx != null && line.flowPx !== 0,
       ),
       style: resolveStyle(config, this.sharedStyle(config)),
+      ground: this.layerOf(config.ground),
     };
   }
-  protected configure(next: Resolved, previous: Resolved, options: SetOptions): void {
+  /**
+   * A view as a layer, made once for each: a view that cannot be drawn beneath another, or that
+   * presents elsewhere, rejects the config here, before any of it applies.
+   */
+  private layerOf(view: View | null | undefined): kit.Layer | undefined {
+    if (!view) return undefined;
+    let layers = grounds.get(this);
+    if (!layers) grounds.set(this, (layers = new Map<View, kit.Layer>()));
+    let layer = layers.get(view);
+    if (!layer) layers.set(view, (layer = kit.layerOf(view)));
+    return layer;
+  }
+  /** Follow the ground's invalidations, and let go of any ground no longer drawn. */
+  private follow(ground: kit.Layer | undefined): void {
+    this.following?.();
+    this.following = ground?.invalidated(() => this.invalidate());
+    const layers = grounds.get(this);
+    for (const [view, layer] of layers ?? [])
+      if (layer !== ground) {
+        layer.release();
+        layers!.delete(view);
+      }
+  }
+  protected configure(next: Resolved, previous: Resolved, options: View.SetOptions): void {
     const a = previous.data,
       b = next.data;
+    if (next.ground !== previous.ground) {
+      this.follow(next.ground);
+      this.ground = next.ground;
+    }
     if (
       options.animate &&
       (a.source !== b.source ||
         a.vertices !== b.vertices ||
         a.edges !== b.edges ||
-        a.paths !== b.paths ||
         previous.layout !== next.layout ||
         EASED.some((key) => String(previous.style[key]) !== String(next.style[key])))
     )
@@ -508,7 +618,7 @@ class NetworkView
     if (
       rewired(previous.data, next.data) ||
       Object.entries(next.limits).some(
-        ([key, value]) => previous.limits[key as keyof Limits] !== value,
+        ([key, value]) => previous.limits[key as keyof Network.Limits] !== value,
       )
     ) {
       this.geometry = undefined;
@@ -516,20 +626,31 @@ class NetworkView
     }
     this.invalidate();
   }
-  /** Orbiting turns the camera, flow moves, and transitions and hover ease, each frame. */
+  /** Orbiting turns the camera, flow moves, transitions and hover ease, and the ground loads. */
   protected get animating(): boolean {
     return (
       super.animating ||
-      this.camera.orbit ||
       !!this.transition ||
       this.painter.growing ||
-      (this.resolved.flowing && this.style.lines && !this.reducedMotion)
+      (this.resolved.flowing && this.style.lines && !this.reducedMotion) ||
+      !!this.resolved.ground?.animating
     );
+  }
+  protected get pending(): Promise<void> | undefined {
+    return this.resolved.ground?.pending;
+  }
+  /** The ground is captured with the network's own frame, and released with it. */
+  protected captureChildren(): readonly { release(): void }[] {
+    const ground = this.resolved.ground;
+    this.ground = ground;
+    this.captured = ground?.capture();
+    return this.captured ? [this.captured] : [];
   }
 
   protected async prepare(frame: kit.Preparation): Promise<Pending> {
     this.live();
-    const { data, style, layout, limits } = this;
+    const { data, style, layout, limits } = this,
+      captured = this.captured;
     // Edges joining the same two vertices read their lanes once they draw apart.
     const spaced = style.edgeSpacingPx > 0;
     const topology =
@@ -543,7 +664,6 @@ class NetworkView
         data.source,
         data.vertices,
         data.edges,
-        data.paths,
         layout,
         this.resolved.config.limits,
         spaced,
@@ -566,7 +686,7 @@ class NetworkView
             bank,
             await readFields(
               f,
-              bank.source ?? data.source,
+              data.source,
               bank,
               edgeOptions(data, bank),
               spaced ? topology.adjacency.laneValues(bank, data) : undefined,
@@ -596,10 +716,10 @@ class NetworkView
           vertexOptions(data, bank as VertexBank),
         );
         for (const [bank, read] of laid) vertices.set(bank, read);
-        const compiled = this.paths.prepare(topology, { vertices, edges }, data, this.limits);
+        const compiled = this.routes.prepare(topology, { vertices, edges }, data, this.limits);
         geometry = compiled.geometry;
         for (const [bank, original] of compiled.origins) edges.set(bank, edges.get(original)!);
-        // A path's private points carry their own positions and heights, scaled from 0 to 1.
+        // An edge's private bends and junctions carry their own positions and heights.
         const points = new Map<VertexBank, FieldRead>();
         for (const bank of geometry.vertices)
           if (bank.synthetic)
@@ -616,17 +736,12 @@ class NetworkView
       this.framing(geometry, picking, items, current, viewport),
     );
     const framed = camera;
-    if (camera.projection === 'globe' && !geometry.geographic)
+    // The globe and the mercator plane need geographic positions; a plane draws flat.
+    if (PROJECTIONS[camera.projection].geographic && !geometry.geographic)
       camera = { ...camera, projection: 'flat', pitch: 0 };
-    // Only presented frames turn the camera; an export draws it where it is.
-    if (camera.orbit && frame.presented) {
-      const dt =
-        this.orbitTime === undefined
-          ? 0
-          : Math.max(0, Math.min(100, frame.timeMs - this.orbitTime));
-      camera = { ...camera, fit: false, bearing: camera.bearing + dt * 0.012 * style.orbitRate };
-    }
+    camera = this.orbited(frame, camera);
     if (camera !== framed) this.drawCamera(frame, camera);
+    const projector = new Projector(camera, frame.viewport);
     const height =
       style.zScale *
       (camera.projection === 'globe'
@@ -636,10 +751,8 @@ class NetworkView
             picking.bounds[3] - picking.bounds[1],
             1e-6,
           ) * 0.15);
-    const pointer = this.pointerPoint;
     this.live();
     frame.signal.throwIfAborted();
-    const phases = picking.dashPhases(data, camera.projection === 'globe', height);
     // The first presented frame after an animated change eases from what was shown, as long as the
     // style's animation lasts; an export draws every value where it is going.
     const motion = !this.reducedMotion,
@@ -671,7 +784,7 @@ class NetworkView
       geometry,
       rest > 0 ? picking.easedFrom(transition!.from, rest, camera.projection === 'globe') : picking,
       data,
-      camera,
+      projector,
       height,
       style,
     );
@@ -683,57 +796,75 @@ class NetworkView
         Object.keys(data.vertices).some(
           (key) => data.vertices[key].z !== previous.data.vertices[key]?.z,
         ));
-    const drawnCamera = camera;
     const hover = this.hoverFrame(
       frame,
       (point, radius, { check }) =>
-        picking.nearest(point, data, drawnCamera, frame.viewport, height, style, radius, check),
+        picking.nearest(point, data, projector, height, style, radius, check),
       moving || rest > 0,
     );
-    const paint = await this.painter.prepare(frame, {
+    const painted = await this.painter.prepare(frame, {
       pipelines: await this.framePipelines(frame),
       shade: this.shadeFrame(frame),
       camera,
+      projector,
+      light: captured?.light ?? null,
+      halo: captured?.fill ?? style.background,
+      grounded: !!captured,
       options: style,
       data,
       geometry,
       reads,
       selection: this.selection,
       hover,
-      pointer,
       height,
       labels,
-      phases,
       records,
       motion,
+      markerFit: picking.markerFit(camera, style),
       transition: rest > 0 ? { rest, start: !transition!.begun } : null,
     });
-    this.live();
-    frame.signal.throwIfAborted();
-    return {
-      geometry,
-      picking,
+    // The ground beneath: this frame's camera and scene block, and the pointer where the graph
+    // found nothing.
+    const ground = await captured?.prepare(frame, {
       camera,
-      viewport: frame.viewport,
-      height,
-      data,
-      options: style,
-      paint,
-      begins: rest > 0 && !transition!.begun,
-    };
+      msaa: style.msaa,
+      pointer: hover ? null : this.pointerPoint,
+      scene: painted.scene,
+    });
+    try {
+      this.live();
+      frame.signal.throwIfAborted();
+      return {
+        geometry,
+        picking,
+        projector,
+        height,
+        data,
+        options: style,
+        paint: ground ? { ...painted, ground } : painted,
+        begins: rest > 0 && !transition!.begun,
+      };
+    } catch (error) {
+      ground?.discard();
+      throw error;
+    }
   }
   protected encode(frame: kit.Encoding, pending: Pending): void {
     this.live();
     this.painter.encode(frame, pending.paint);
   }
+  protected discard(pending: Pending): void {
+    pending.paint.ground?.discard();
+    this.painter.discard();
+  }
   protected submitted(frame: FrameInfo, pending: Pending): void {
+    pending.paint.ground?.submitted();
+    this.painter.submitted();
     this.geometry = pending.geometry;
-    this.painter.prune(pending.geometry);
     if (pending.begins && this.transition) this.transition.begun = true;
-    // An exported frame leaves what pick, locate, selection, and the orbit see.
+    // An exported frame leaves what pick, locate, and selection see.
     if (!frame.presented) return;
     this.shown = pending;
-    this.orbitTime = pending.camera.orbit ? frame.timeMs : undefined;
     this.indexLater(pending);
     this.counts = {
       vertices: pending.geometry.vertexCount,
@@ -744,22 +875,31 @@ class NetworkView
     };
   }
   /**
-   * Build the shown frame's missing hit-test indexes in cooperative slices once its positions hold
-   * still, or at once when a query needs them; new positions or destroy abort the build.
+   * Build the shown frame's missing hit-test indexes in cooperative slices, behind the frames, once
+   * its positions and camera hold still, or at once when a query needs them; new positions or
+   * destroy abort the build.
    */
-  private indexLater({ picking, camera, data, options }: Presented): void {
-    const running = this.indexing;
-    if (running && !running.done && running.picking.sameIndexes(picking)) return;
+  private indexLater({ picking, projector, height, options }: Presented): void {
+    const running = this.indexing,
+      { camera } = projector;
+    if (running && !running.done && running.picking.sameIndexes(picking)) {
+      // A camera still moving holds the build off until it settles.
+      if (!sameView(running.camera, camera)) running.touch();
+      running.camera = camera;
+      return;
+    }
     running?.stop.abort();
     this.indexing = undefined;
-    if (camera.projection !== 'flat' || !picking.indexable(data, options)) return;
+    // Raised rows on a tilted camera or a globe are found by scanning, so no index would be asked.
+    if (!picking.indexed(camera.projection, height) || !picking.indexable(options)) return;
     const stop = new AbortController(),
       { signal } = stop,
-      { settled, now } = settle(INDEX_SETTLE_MS, signal);
+      { settled, now, touch } = settle(INDEX_SETTLE_MS, signal);
     const built = settled
       .then(() => {
         signal.throwIfAborted();
-        return picking.indexLater(data, options, new Work(signal));
+        // Behind the frames: no frame waits on an index building.
+        return picking.indexLater(options, new Work(signal, Infinity, 8, 'background'));
       })
       .then(
         () => {
@@ -772,20 +912,27 @@ class NetworkView
           if (!signal.aborted) this.fail(error);
         },
       );
-    const task = { picking, stop, now, built, done: false };
+    const task = { picking, stop, now, touch, camera, built, done: false };
     this.indexing = task;
+  }
+  /** A paused network stops building its indexes; its next presented frame starts again. */
+  protected paused(): void {
+    this.indexing?.stop.abort();
+    this.indexing = undefined;
   }
   protected release(): void {
     this.indexing?.stop.abort();
     this.indexing = undefined;
     this.shown = undefined;
     this.geometry = undefined;
+    this.follow(undefined);
+    this.ground = undefined;
     this.painter.destroy();
   }
 }
 
 /** A type's wiring: its reference and list fields. */
-function wiring(_: string, definition: TypeDefinition): readonly string[] {
+function wiring(_: string, definition: Schema.Type): readonly string[] {
   return Object.keys(definition.fields).filter((field) => {
     const type = definition.fields[field].type;
     return typeof type === 'object' && (type.kind === 'reference' || type.kind === 'list');

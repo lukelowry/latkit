@@ -1,11 +1,11 @@
 import { describe } from 'vitest';
-import { createNetwork, type NetworkConfig } from '@latkit/network';
+import { createNetwork, type Network } from '@latkit/network';
 import { branchIndex, busIndex, counters, draw, gpu, grid, sizes, suite } from './harness.ts';
 
 describe.each(sizes)('network %i buses', async (buses) => {
   const device = await gpu(),
     data = grid(buses);
-  const config: NetworkConfig = {
+  const config: Network.Config = {
     source: data,
     vertices: {
       Bus: {
@@ -65,7 +65,7 @@ describe.each(sizes.filter((buses) => buses <= 100_000))(
   'network %i buses unpositioned',
   async (buses) => {
     const device = await gpu(),
-      config: NetworkConfig = {
+      config: Network.Config = {
         source: grid(buses),
         vertices: { Bus: { radiusPx: 'load' } },
         edges: { Branch: { ends: ['from', 'to'] } },

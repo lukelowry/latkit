@@ -3,10 +3,9 @@ import {
   rowAt,
   rowCount,
   sampleAt,
-  type ColumnPage,
-  type ColumnPages,
+  type Data,
   type Domain,
-  type SampleColumn,
+  type Column,
 } from '@latkit/model';
 import type { Binding, Rows } from './bindings.js';
 
@@ -14,7 +13,7 @@ export function mergeDomain(a: Domain | null, b: Domain | null): Domain | null {
   return !a ? b : !b ? a : [Math.min(a[0], b[0]), Math.max(a[1], b[1])];
 }
 /** The value pages a trace draws. */
-export function tracePages(trace: Binding): ColumnPages | undefined {
+export function tracePages(trace: Binding): Data.Pages | undefined {
   return trace.source.tables[trace.trace.from]?.fields[trace.field];
 }
 /** The rows of a trace, as a cache key and a membership test. */
@@ -36,9 +35,9 @@ function selection(rows: Rows | undefined): Selection {
 }
 
 /** Whole-page extents never change, so each is measured once per row selection. */
-const measured = new WeakMap<ColumnPage, Map<string, Domain | null>>();
+const measured = new WeakMap<Data.Page, Map<string, Domain | null>>();
 /** The extent of a page's selected rows over the frames inside `window`. */
-function extent(page: ColumnPage, rows: Selection, window: Domain): Domain | null {
+function extent(page: Data.Page, rows: Selection, window: Domain): Domain | null {
   const coordinates = page.samples!.coordinates;
   let first = 0,
     end = coordinates.length;
@@ -48,7 +47,7 @@ function extent(page: ColumnPage, rows: Selection, window: Domain): Domain | nul
   const whole = first === 0 && end === coordinates.length;
   let cache = measured.get(page);
   if (whole && cache?.has(rows.key)) return cache.get(rows.key)!;
-  const column = page.column as SampleColumn;
+  const column = page.column as Column.Sample;
   let lo = Infinity,
     hi = -Infinity;
   for (let r = 0; r < rowCount(page.rows); r++) {
@@ -74,7 +73,7 @@ export class Fit {
   #window?: Domain;
   #extent: Domain | null = null;
   /** What each trace folded in, by name; a trace gone, or described again, measures the window again. */
-  readonly #folded = new Map<string, { version: number; pages: ColumnPages; rows: Selection }>();
+  readonly #folded = new Map<string, { version: number; pages: Data.Pages; rows: Selection }>();
   values(traces: readonly Binding[], window: Domain): Domain | null {
     const stale = [...this.#folded].some(
       ([name, folded]) =>

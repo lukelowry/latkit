@@ -1,6 +1,5 @@
 import { expect, it } from 'vitest';
-import { Work, type FieldsBlock, type RowAxis } from '@latkit/model';
-import type { NetworkData } from '../src/data.js';
+import { Work, type Block, type Index } from '@latkit/model';
 import type { VertexBank } from '../src/geometry/topology.js';
 import type { Style } from '../src/options.js';
 import { FieldRead, VERTEX, channels } from '../src/rendering/fields.js';
@@ -9,17 +8,17 @@ import { Picking, type PickGeometry } from '../src/picking.js';
 import { Adjacency } from '../src/geometry/adjacency.js';
 
 /** No edges: nothing to draw apart. */
-const adjacency = new Adjacency([], [], [], 0, 0);
+const adjacency = new Adjacency([], [], 0, 0);
 
 /** A two-lane position field, read as the column of its x. */
 const position = channels({ x: 'p', y: { field: 'p', component: 1 } }, VERTEX);
-it.each<RowAxis>([
+it.each<Index.Rows>([
   { kind: 'range', offset: 1, count: 2 },
   { kind: 'indices', values: Uint32Array.of(2, 1) },
 ])('fits only displayed rows when native tiles span a larger range: $kind', (rows) => {
   const index = { source: 'fixture', type: 'node', version: '1' };
   const bank: VertexBank = { id: 0, type: 'node', index, rows, count: 2, base: 0 };
-  const native: FieldsBlock = {
+  const native: Block.Fields = {
     kind: 'fields',
     index,
     rows: { kind: 'range', offset: 0, count: 4 },
@@ -42,7 +41,7 @@ it.each<RowAxis>([
   };
   const read = new FieldRead([], [native], position);
   const result = new Picking().prepare(
-    { vertices: [bank], edges: [], adjacency },
+    { vertices: [bank], edges: [], adjacency, geographic: false },
     { vertices: new Map([[bank, read]]), edges: new Map() },
     0,
   );
@@ -57,7 +56,7 @@ it('builds an index in cooperative slices and frees one aborted part way', async
     rows = { kind: 'range', offset: 0, count } as const;
   const bank: VertexBank = { id: 0, type: 'node', index, rows, count, base: 0 };
   const values = Float64Array.from({ length: count * 2 }, (_, i) => i);
-  const native: FieldsBlock = {
+  const native: Block.Fields = {
     kind: 'fields',
     index,
     rows,
@@ -74,17 +73,16 @@ it('builds an index in cooperative slices and frees one aborted part way', async
     },
   };
   const read = new FieldRead([], [native], position);
-  const data = {} as NetworkData,
-    style = { markers: true, lines: false } as Style;
+  const style = { markers: true, lines: false } as Style;
   // Each build pauses after every step.
   const start = () => {
     const picking = new Picking().prepare(
-        { vertices: [bank], edges: [], adjacency },
+        { vertices: [bank], edges: [], adjacency, geographic: false },
         { vertices: new Map([[bank, read]]), edges: new Map() },
         64 * 1024 ** 2,
       ),
       stop = new AbortController();
-    const later = picking.indexLater(data, style, new Work(stop.signal, Infinity, 0));
+    const later = picking.indexLater(style, new Work(stop.signal, Infinity, 0));
     return { picking, stop, later };
   };
   const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -101,7 +99,7 @@ it('builds an index in cooperative slices and frees one aborted part way', async
   await pause();
   expect(stage(finished.picking)).toBe('building');
   expect(finished.picking.bytes).toBe(kit.BoxIndex.bytes(count));
-  expect(finished.picking.indexable(data, style)).toBe(false);
+  expect(finished.picking.indexable(style)).toBe(false);
   await finished.later;
   expect(stage(finished.picking)).toBe('built');
   expect(finished.picking.bytes).toBe(kit.BoxIndex.bytes(count));
@@ -112,5 +110,5 @@ it('builds an index in cooperative slices and frees one aborted part way', async
   expect(stage(aborted.picking)).toBe('missing');
   expect(aborted.picking.bytes).toBe(0);
   await expect(aborted.later).rejects.toThrow();
-  expect(aborted.picking.indexable(data, style)).toBe(true);
+  expect(aborted.picking.indexable(style)).toBe(true);
 });

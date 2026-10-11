@@ -29,6 +29,20 @@ fn stroke_clip(a:vec4f,b:vec4f)->vec2f {
 }
 fn stroke_distance(uv:vec2f,lengthPx:f32)->f32 { return length(vec2f(uv.x-clamp(uv.x,0.0,lengthPx),uv.y)); }
 fn stroke_dash(distancePx:f32,periodPx:f32)->bool {return fract(max(distancePx,0.0)/max(1.0,periodPx))<=0.55;}
+/**
+ * How much of a comet covers a pixel \`along\` a line and \`across\` it, in CSS pixels: heads of radius
+ * \`head\`, \`spacingPx\` apart, \`moved\` on from where they began and heading the way \`speed\` points,
+ * faded toward their tails. Each \`seed\`, such as a row, starts its comets at a place of its own, so
+ * lines never march in step.
+ */
+fn stroke_comet(along:f32,across:f32,seed:u32,speed:f32,moved:f32,head:f32,spacingPx:f32,aa:f32)->f32 {
+  let spacing=max(spacingPx,1.0);
+  let m=along-moved+fract(f32(seed)*0.618034)*spacing;
+  let k=(m-spacing*floor(m/spacing)-spacing*0.5)*sign(speed);
+  let tail=min(spacing*0.4,head*8.0);let t=clamp(-k/tail,0.0,1.0);
+  let d=length(vec2f(k-clamp(k,-tail,0.0),across))-head*(1.0-0.5*t);
+  return (1.0-smoothstep(-aa,aa,d))*(1.0-t*t);
+}
 /** No piece beside a piece of a line, as \`stroke_nearest\` reads its neighbors. */
 const STROKE_NONE:f32=1e8;
 /** A piece beside it drawn apart, the line cut square across it there, its direction at angle y. */

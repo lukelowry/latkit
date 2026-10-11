@@ -13,6 +13,6 @@ struct LabelOut { @location(0) color:vec4f, @builtin(frag_depth) depth:f32 }
 // A halo of the ground the label lies on keeps lines from cutting through it, and the globe's
 // surface never cuts the label. Labels draw over focused rows and their glow.
 @fragment fn label_fragment(v:Label)->LabelOut {
-  var out:LabelOut;out.color=textColor(v.uv,v.color,vec4f(u.surface.rgb,1.0),u.labelHaloPx);
+  var out:LabelOut;out.color=textColor(v.uv,v.color,vec4f(u.halo.rgb,1.0),u.labelHaloPx);
   out.depth=max(billboardDepth(v.position,u)-LABEL_LIFT,0.0);return out;
 }

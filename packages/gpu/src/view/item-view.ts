@@ -1,75 +1,29 @@
 import { failure, type Data } from '@latkit/model';
 import type { Gpu } from '../gpu.js';
-import type { FrameInfo, Preparation, Viewport } from '../frame/render.js';
+import type { Encoding, FrameInfo, Preparation, Viewport } from '../frame/render.js';
 import { defaultShade, type Shade } from '../style/shade.js';
+import type { BufferResource } from '../memory/buffers.js';
 import {
   createCanvasInput,
   inputModifiers,
   wheelDelta,
   withinBudget,
   type CanvasInput,
-  type ContextMenu,
-  type HoverState,
-  type Modifiers,
 } from './input.js';
-import { resolveViewStyle, viewStyle, type ResolvedViewStyle, type ViewStyle } from './style.js';
-import { insetSides } from './camera.js';
-import {
-  BaseView,
-  type ConfigShape,
-  type Point,
-  type SetOptions,
-  type View,
-  type ViewConfig,
-  type ViewEvents,
-  type ViewStats,
-} from './view.js';
+import { resolveViewStyle, viewStyle, type ResolvedViewStyle } from './style.js';
+import { insetSides, type Insets } from './camera.js';
+import type { RGBA } from '../colors/color.js';
+import type { TextRasterizer } from '../text/text.js';
+import type { Layer, LayerLook, LayerScene } from './layer.js';
+import { BaseView, compose, offerLayer, type ConfigShape, type Point, type View } from './view.js';
 
-export interface ViewInput {
-  /**
-   * `navigate` moves the camera; `inspect` only hovers, selects, and opens menus; `edit`, where a
-   * view supports it, also changes the data.
-   */
-  readonly mode?: 'navigate' | 'inspect' | 'edit' | 'none';
-  /** Zoom on every wheel, or only with Ctrl or ⌘. */
-  readonly wheel?: 'zoom' | 'modifier';
-  readonly keyboard?: boolean;
-}
-export interface ViewCamera {
-  /** Keep the data in view as it changes. Moving a framed key turns it off. */
-  readonly fit: boolean;
-}
-export interface ItemViewConfig extends ViewConfig, ViewStyle {
-  /** Borrowed: destroy never closes it. */
-  readonly source: Data;
-  readonly input?: ViewInput | NonNullable<ViewInput['mode']>;
-  /** WGSL that recolors every fragment. */
-  readonly shade?: Shade | null;
-}
-export interface ItemEvents<Item, Hit, Camera> extends ViewEvents {
-  /** The drawn camera changed. */
-  readonly camera: Camera;
-  /** The item under the pointer. */
-  readonly hover: Hit | null;
-  /** The user changed the selection, or a source change removed selected items. */
-  readonly select: readonly Item[];
-  /** Double click on an item, or Enter on the selection. */
-  readonly open: Item;
-  readonly contextmenu: ContextMenu<Hit>;
-}
-export interface PickOptions {
-  readonly radiusPx?: number;
-  /** At most this many hits; 16 by default. */
-  readonly limit?: number;
-  readonly signal?: AbortSignal;
-}
 /** A view of model rows. `Item` is what you select; `Hit` is what a pointer finds: an Item with detail. */
 export interface ItemView<
-  Config extends ItemViewConfig,
+  Config extends ItemView.Config,
   Item,
   Hit extends Item,
-  Camera extends ViewCamera,
-  Events extends ItemEvents<Item, Hit, Camera> = ItemEvents<Item, Hit, Camera>,
+  Camera extends ItemView.Camera,
+  Events extends ItemView.Events<Item, Hit, Camera> = ItemView.Events<Item, Hit, Camera>,
 > extends View<Config, Events> {
   /** Where the camera is going. `set({ camera })` moves it. */
   readonly camera: Camera;
@@ -77,16 +31,98 @@ export interface ItemView<
   /** Replace the selection without reporting it. */
   select(items: readonly Item[]): void;
   /** Hits near a canvas point: nearest first, topmost breaking ties. */
-  pick(point: Point, options?: PickOptions): Promise<readonly Hit[]>;
+  pick(point: Point, options?: ItemView.PickOptions): Promise<readonly Hit[]>;
   /** An item's canvas point in the latest frame, or null when it is not drawn. */
   locate(item: Item): Point | null;
   /** Frame the items once, or follow all the data. */
-  fit(items?: readonly Item[], options?: SetOptions): void;
+  fit(items?: readonly Item[], options?: View.SetOptions): void;
   /** Center an item that lies outside the padded view. */
-  reveal(item: Item, options?: SetOptions): void;
+  reveal(item: Item, options?: View.SetOptions): void;
+}
+export declare namespace ItemView {
+  /** What every item view's config holds; each view names its own `source`. */
+  interface Config extends View.Config, Style {
+    readonly input?: Input | NonNullable<Input['mode']>;
+    /** WGSL that recolors every fragment. */
+    readonly shade?: Shade | null;
+  }
+  interface Events<Item, Hit, Camera> extends View.Events {
+    /** The drawn camera changed. */
+    readonly camera: Camera;
+    /** The item under the pointer. */
+    readonly hover: Hit | null;
+    /** The user changed the selection, or a source change removed selected items. */
+    readonly select: readonly Item[];
+    /** Double click on an item, or Enter on the selection. */
+    readonly open: Item;
+    readonly contextmenu: ContextMenu<Hit>;
+  }
+  interface Camera {
+    /** Keep the data in view as it changes. Moving a framed key turns it off. */
+    readonly fit: boolean;
+  }
+  interface Input {
+    /**
+     * `navigate` moves the camera; `inspect` only hovers, selects, and opens menus; `edit`, where a
+     * view supports it, also changes the data.
+     */
+    readonly mode?: 'navigate' | 'inspect' | 'edit' | 'none';
+    /** Zoom on every wheel, or only with Ctrl or âŒ˜. */
+    readonly wheel?: 'zoom' | 'modifier';
+    readonly keyboard?: boolean;
+  }
+  interface PickOptions {
+    readonly radiusPx?: number;
+    /** At most this many hits; 16 by default. */
+    readonly limit?: number;
+    readonly signal?: AbortSignal;
+  }
+  /** Style every item view understands, with one set of defaults. */
+  interface Style {
+    readonly background?: RGBA;
+    readonly msaa?: 1 | 4;
+    /** `auto` searches within `hoverBudgetMs` once the camera settles; `on` always searches. */
+    readonly hover?: 'auto' | 'on' | 'off';
+    readonly hoverBudgetMs?: number;
+    readonly pickRadiusPx?: number;
+    readonly fitPaddingPx?: Insets;
+    /** Reveal centers an item closer than this to the canvas edge. */
+    readonly revealPaddingPx?: Insets;
+    readonly animationMs?: number;
+    /** `auto` follows the reduced-motion preference. */
+    readonly motion?: 'auto' | 'reduce' | 'full';
+    /** The glow around a hovered item; its alpha is the glow's strength. */
+    readonly hoverColor?: RGBA;
+    /** The glow around selected items; `none` glows in each item's own color. */
+    readonly selectedColor?: RGBA | 'none';
+    /** How far the glow around a hovered or selected item reaches past it. */
+    readonly hoverWidthPx?: number;
+    readonly selectedWidthPx?: number;
+    /** The opacity of every other item while something is selected. */
+    readonly unselectedAlpha?: number;
+    readonly font?: TextRasterizer.Font;
+    readonly fontSizePx?: number;
+    readonly textColor?: RGBA;
+  }
+  /** The modifier keys a gesture held. */
+  interface Modifiers {
+    readonly alt: boolean;
+    readonly control: boolean;
+    readonly meta: boolean;
+    readonly shift: boolean;
+  }
+  /** A menu asked for: where, the items there, what opened it, and the keys held. */
+  interface ContextMenu<T> {
+    readonly point: Point;
+    readonly items: readonly T[];
+    readonly trigger: 'pointer' | 'keyboard';
+    readonly modifiers: Modifiers;
+  }
+  /** What hover does: nothing, waits for a pointer, searches, waits for the scene to settle, or rests after a search over budget. */
+  type HoverState = 'off' | 'idle' | 'active' | 'moving' | 'budget';
 }
 
-type Mode = NonNullable<ViewInput['mode']>;
+type Mode = NonNullable<ItemView.Input['mode']>;
 /** What an item view is, fixed when it is created. */
 export interface ItemShape<Camera> extends ConfigShape {
   /** The view's name in messages, such as `network`. */
@@ -146,7 +182,7 @@ export function resolveLimits<K extends string>(
 
 interface Hovered<Hit> {
   readonly item: Hit | null;
-  readonly state: HoverState;
+  readonly state: ItemView.HoverState;
   readonly pointer: number;
   readonly ms: number;
   /** False while an asynchronous search is still running; its result publishes itself. */
@@ -181,6 +217,13 @@ const TOUCH_PX = 22;
 const VARIANTS = 8;
 /** Pipelines by Gpu and view kind, so views of one kind share each variant. */
 const variants = new WeakMap<Gpu, WeakMap<object, Map<string, Promise<unknown>>>>();
+/** Bytes of a shade's uniforms, as `shadeShader` lays them out. */
+const SHADE_BYTES = 288;
+/**
+ * Each Gpu's uniforms for the default shade, which reads none of them: zeros, written never, and
+ * let go when the last item view on the Gpu is.
+ */
+const stillShades = new WeakMap<Gpu, { buffer?: BufferResource; views: number }>();
 
 /**
  * The base of every item view. The camera, selection, picking, hover, clicks, events, input,
@@ -188,11 +231,11 @@ const variants = new WeakMap<Gpu, WeakMap<object, Map<string, Promise<unknown>>>
  * its config resolves to, and the frames it prepares.
  */
 export abstract class BaseItemView<
-  Config extends ItemViewConfig,
+  Config extends ItemView.Config,
   Item,
   Hit extends Item,
-  Camera extends ViewCamera,
-  Events extends ItemEvents<Item, Hit, Camera>,
+  Camera extends ItemView.Camera,
+  Events extends ItemView.Events<Item, Hit, Camera>,
   Resolved,
   Prepared,
   Pipelines,
@@ -213,14 +256,14 @@ export abstract class BaseItemView<
   #viewport?: Viewport;
   #reported?: Camera;
   #animation?: Animation<Camera>;
-  #fitting?: { readonly items?: readonly Item[]; readonly options: SetOptions };
+  #fitting?: { readonly items?: readonly Item[]; readonly options: View.SetOptions };
   readonly #frames = new WeakMap<FrameInfo, Drawn<Camera, Hit>>();
   #selection: readonly Item[] = Object.freeze([]);
   #prune = false;
   #pointer: Point | null = null;
   #pointerVersion = 0;
   #hover: Hit | null = null;
-  #hoverState: HoverState = 'idle';
+  #hoverState: ItemView.HoverState = 'idle';
   #hoverMs = 0;
   /** A budget miss suspends automatic hover until the scene next moves, or its options change. */
   #suspended = false;
@@ -243,10 +286,16 @@ export abstract class BaseItemView<
   #asking?: AbortController;
   /** Frames presented so far: hits found while another presents may name items it no longer draws. */
   #presented = 0;
+  /**
+   * The layer this view draws beneath itself, which a click or a menu over none of the view's own
+   * items reaches instead.
+   */
+  protected ground?: Layer;
 
   /** Checks every option, the input, and the starting camera before a view allocates anything. */
   constructor(gpu: Gpu, config: Config, shape: ItemShape<Camera>) {
     super(gpu, config, shape);
+    if (this.prepareLayer && this.drawLayer) offerLayer(this, () => this.#layer());
     this.#name = shape.name;
     this.#framed = shape.framed;
     this.#modes = shape.modes ?? MODES;
@@ -266,9 +315,21 @@ export abstract class BaseItemView<
       (config as { readonly camera?: Readonly<Record<string, unknown>> }).camera ?? {},
       undefined,
     );
+    let still = stillShades.get(gpu);
+    if (!still) stillShades.set(gpu, (still = { views: 0 }));
+    still.views++;
+  }
+  destroy(): void {
+    const closing = !this.closed;
+    super.destroy();
+    const still = closing ? stillShades.get(this.gpu) : undefined;
+    if (still && --still.views === 0) {
+      still.buffer?.destroy();
+      still.buffer = undefined;
+    }
   }
 
-  // ── What a view supplies ──
+  // â”€â”€ What a view supplies â”€â”€
   /** The camera of a view with no camera options. */
   protected abstract defaultCamera(): Camera;
   /** A valid, normalized camera replacing `current`, or the first one; throws on an invalid one. */
@@ -319,10 +380,26 @@ export abstract class BaseItemView<
   /** End a gesture in progress on Escape; return true when one ended. */
   protected cancel?(): boolean;
   /**
+   * Ready a frame a host draws in its own pass, with the host's camera: views a host can draw
+   * beneath itself implement it, with `drawLayer`.
+   */
+  protected prepareLayer?(frame: Preparation, scene: LayerScene): Promise<Prepared>;
+  /** Record what a hosted frame's draw reads, before the host's pass begins. */
+  protected encodeLayer?(frame: Encoding, prepared: Prepared): void;
+  /** Draw a hosted frame into the host's pass. */
+  protected drawLayer?(pass: GPURenderPassEncoder, prepared: Prepared): void;
+  /** How a hosted view looks to its host, as its captured config says: its sun and ground color. */
+  protected layerLook?(): LayerLook;
+  /** Throw when the config's source is not one the view draws; a Data by default. */
+  protected checkSource(source: unknown): void {
+    const data = source as Data | undefined;
+    if (!data?.schema || !data.tables) throw failure('invalid-input', 'A Data source is required');
+  }
+  /**
    * Throw on input options the view cannot use. A view with options of its own checks them and
    * passes the rest here, which rejects any it does not know.
    */
-  protected checkInput(input: ViewInput): void {
+  protected checkInput(input: ItemView.Input): void {
     for (const key of Object.keys(input))
       if (!INPUT.has(key)) throw failure('invalid-input', 'Unknown input option: ' + key);
     if (input.mode !== undefined && !this.#modes.includes(input.mode))
@@ -333,7 +410,7 @@ export abstract class BaseItemView<
       throw failure('invalid-input', 'Invalid keyboard');
   }
 
-  // ── The contract ──
+  // â”€â”€ The contract â”€â”€
   get camera(): Camera {
     return this.#target;
   }
@@ -345,7 +422,7 @@ export abstract class BaseItemView<
     for (const item of items) this.accept?.(item);
     this.#replace(items);
   }
-  async pick(point: Point, options: PickOptions = {}): Promise<readonly Hit[]> {
+  async pick(point: Point, options: ItemView.PickOptions = {}): Promise<readonly Hit[]> {
     this.live();
     const radius = options.radiusPx ?? this.#style.pickRadiusPx,
       limit = options.limit ?? 16;
@@ -366,14 +443,14 @@ export abstract class BaseItemView<
   locate(item: Item): Point | null {
     return this.position(item);
   }
-  fit(items?: readonly Item[], options: SetOptions = {}): void {
+  fit(items?: readonly Item[], options: View.SetOptions = {}): void {
     this.live();
     const framed = items?.length ? items : undefined;
     this.#fitting = { items: framed, options };
     if (!framed) this.#move({ ...this.camera, fit: true }, {});
     else this.invalidate();
   }
-  reveal(item: Item, options: SetOptions = {}): void {
+  reveal(item: Item, options: View.SetOptions = {}): void {
     this.live();
     const point = this.position(item),
       viewport = this.#viewport,
@@ -395,7 +472,7 @@ export abstract class BaseItemView<
     this.#move(this.resolveCamera({ ...moved, fit: false }, this.camera), options);
   }
 
-  // ── For views ──
+  // â”€â”€ For views â”€â”€
   /** The shared style, resolved over the view's defaults. */
   protected get viewStyle(): ResolvedViewStyle {
     return this.#style;
@@ -431,16 +508,26 @@ export abstract class BaseItemView<
   protected get hovered(): Hit | null {
     return this.#hover;
   }
-  /** This frame's pipelines: its format, the style's MSAA, and the compiled shade. */
-  protected framePipelines(frame: FrameInfo): Promise<Pipelines> {
+  /** This frame's pipelines: its format, the style's MSAA or a host's, and the compiled shade. */
+  protected framePipelines(frame: FrameInfo, msaa: 1 | 4 = this.#style.msaa): Promise<Pipelines> {
     this.#formats.add(frame.format);
-    return this.#variant(frame.format, this.#style.msaa, this.#shade);
+    return this.#variant(frame.format, msaa, this.#shade);
   }
   /**
    * Tick the shade for this frame and bind its uniforms; an animated shade keeps frames coming. An
    * exported frame ticks a copy, leaving the shade's parameters as presented frames left them.
    */
   protected shadeFrame(frame: Preparation): GPUBufferBinding {
+    // The default shade reads none of its uniforms: one still buffer stands in for each frame's.
+    if (this.#shade === defaultShade) {
+      const still = stillShades.get(this.gpu)!;
+      still.buffer ??= this.gpu.buffer({
+        size: SHADE_BYTES,
+        usage: GPUBufferUsage.UNIFORM,
+        label: 'still shade',
+      });
+      return frame.buffer(still.buffer);
+    }
     const parameters = frame.presented ? this.#parameters : this.#parameters.slice(),
       pointerPx = this.#pointer,
       animating =
@@ -503,6 +590,68 @@ export abstract class BaseItemView<
     if (drawn) drawn.camera = camera;
   }
   /**
+   * Draw a host's camera this frame, as a view drawn beneath another does in place of
+   * `frameCamera`: the view then reports that camera as its own.
+   */
+  protected followCamera(frame: FrameInfo, camera: Camera): void {
+    if (!frame.presented) return;
+    this.#frames.set(frame, {
+      camera,
+      version: this.#version,
+      finished: true,
+      viewport: frame.viewport,
+    });
+  }
+  /** Whether the view takes pointer and keyboard input: its mode is not `none`. */
+  #takesInput(): boolean {
+    return (inputOf(this.config as Config).mode ?? this.#modes[0]) !== 'none';
+  }
+  /** The view as a layer a host draws beneath itself; it presents nowhere else until released. */
+  #layer(): Layer {
+    const release = compose(this),
+      animating = () => this.animating,
+      pending = () => this.pending;
+    let released = false;
+    return {
+      capture: () => {
+        const captured = this.captureHosted<LayerScene>(
+          (frame, scene) => {
+            // The host hands over the pointer only where its own items left it unclaimed, and a view
+            // that takes no input hovers nothing, so it searches for nothing.
+            const point = this.#takesInput() ? scene.pointer : null,
+              current = this.#pointer;
+            if (point?.[0] !== current?.[0] || point?.[1] !== current?.[1]) this.pointer(point);
+            return this.prepareLayer!(frame, scene);
+          },
+          (encoding, prepared) => this.encodeLayer?.(encoding, prepared),
+          (pass, prepared) => this.drawLayer!(pass, prepared),
+        );
+        return { ...captured, ...(this.layerLook?.() ?? { light: null, fill: null }) };
+      },
+      get animating() {
+        return animating();
+      },
+      get pending() {
+        return pending();
+      },
+      invalidated: (listener) => this.onInvalidate(listener),
+      click: async (point, modifiers, touch) => {
+        if (this.#takesInput()) await this.click(point, modifiers, { touch });
+      },
+      menu: async (point, trigger, modifiers) =>
+        this.#takesInput() && (await this.menu(point, trigger, modifiers, false)),
+      deselect: () => {
+        if (this.#takesInput() && this.#selection.length) this.choose([]);
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        release();
+        this.pointer(null);
+      },
+    };
+  }
+  /**
    * The item to draw as hovered this frame. A synchronous search lands in this frame; an
    * asynchronous one in the next. `moving` adds the view's own motion, such as a drag. Call once
    * per prepare, after frameCamera. An exported frame draws the published hover and searches none.
@@ -512,7 +661,12 @@ export abstract class BaseItemView<
     const drawn = this.#frames.get(frame),
       policy = this.#style.hover,
       now = performance.now();
-    const record = (item: Hit | null, state: HoverState, ms = 0, final = true): Hit | null => {
+    const record = (
+      item: Hit | null,
+      state: ItemView.HoverState,
+      ms = 0,
+      final = true,
+    ): Hit | null => {
       if (drawn) drawn.hover = { item, state, pointer: this.#pointerVersion, ms, final };
       return item;
     };
@@ -627,7 +781,7 @@ export abstract class BaseItemView<
    */
   protected async click(
     point: Point,
-    modifiers: Modifiers,
+    modifiers: ItemView.Modifiers,
     options: { readonly touch?: boolean } = {},
   ): Promise<void> {
     const radius = options.touch
@@ -635,8 +789,14 @@ export abstract class BaseItemView<
         : this.#style.pickRadiusPx,
       hits = await this.#ask(point, radius, 16);
     if (!hits) return;
-    const additive = modifiers.shift || modifiers.control || modifiers.meta,
-      found = hits.map((hit) => this.identify(hit)).join('\n'),
+    const additive = modifiers.shift || modifiers.control || modifiers.meta;
+    // Over none of its own items, the click reaches what the view draws beneath itself.
+    if (!hits.length && this.ground) {
+      if (!additive) this.choose([]);
+      await this.ground.click(point, modifiers, options.touch === true);
+      return;
+    }
+    const found = hits.map((hit) => this.identify(hit)).join('\n'),
       last = this.#clicked,
       turn =
         !additive &&
@@ -647,25 +807,37 @@ export abstract class BaseItemView<
     // A toggle ends the cycle, so the next plain click starts from the topmost hit.
     this.#clicked = additive ? undefined : { point, found, turn };
     const hit = hits.length ? hits[turn % hits.length] : undefined;
-    if (!additive) this.choose(hit ? [hit] : []);
-    else if (hit) {
+    if (!additive) {
+      // One click selects one thing: what the view draws beneath lets go of its own.
+      this.ground?.deselect();
+      this.choose(hit ? [hit] : []);
+    } else if (hit) {
       const key = this.identify(hit),
         rest = this.#selection.filter((item) => this.identify(item) !== key);
       this.choose(rest.length === this.#selection.length ? [...rest, hit] : rest);
     }
   }
-  /** Report a context menu at a canvas point with the hits there, unless a later gesture came first. */
+  /**
+   * Report a context menu at a canvas point with the hits there, unless a later gesture came first;
+   * over none of its own, with what it draws beneath's. Resolves whether it reported one: `empty`
+   * false reports none over nothing, as a hosted view leaves that menu to its host.
+   */
   protected async menu(
     point: Point,
     trigger: 'pointer' | 'keyboard',
-    modifiers: Modifiers,
-  ): Promise<void> {
+    modifiers: ItemView.Modifiers,
+    empty = true,
+  ): Promise<boolean> {
     try {
       const items = await this.#ask(point, this.#style.pickRadiusPx, 16);
-      if (items)
-        this.emit('contextmenu', { point, items, trigger, modifiers } as Events['contextmenu']);
+      if (!items) return true;
+      if (!items.length && (await this.ground?.menu(point, trigger, modifiers))) return true;
+      if (!items.length && !empty) return false;
+      this.emit('contextmenu', { point, items, trigger, modifiers } as Events['contextmenu']);
+      return true;
     } catch (error) {
       this.fail(error);
+      return true;
     }
   }
   /** Zoom about a canvas point, or the center. */
@@ -693,14 +865,17 @@ export abstract class BaseItemView<
     );
   }
   /** Move the camera by a partial camera, as `set({ camera })` does, or follow the data with null. */
-  protected moveCamera(patch: Readonly<Record<string, unknown>> | null, options: SetOptions): void {
+  protected moveCamera(
+    patch: Readonly<Record<string, unknown>> | null,
+    options: View.SetOptions,
+  ): void {
     this.cameraMove(patch)(options);
   }
 
-  // ── Base steps ──
+  // â”€â”€ Base steps â”€â”€
   protected cameraMove(
     patch: Readonly<Record<string, unknown>> | null,
-  ): (options: SetOptions) => void {
+  ): (options: View.SetOptions) => void {
     if (patch === null) return (options) => this.fit(undefined, options);
     const current = this.camera,
       next = this.#resolvePatch(patch, current);
@@ -713,21 +888,21 @@ export abstract class BaseItemView<
     for (const key of Object.keys(config))
       if (!this.#known.has(key))
         throw failure('invalid-input', `Unknown ${this.#name} option: ${key}`);
-    if (!config.source?.schema || !config.source.tables)
-      throw failure('invalid-input', 'A Data source is required');
+    this.checkSource((config as { readonly source?: unknown }).source);
     const style = resolveViewStyle(config, this.#styleDefaults);
     this.checkInput(inputOf(config));
     // Keyed by config: a patch rejected after this check never applies its style.
     this.#checked = { config, style };
   }
-  protected changed(previous: Config, next: Config, options: SetOptions): void {
+  protected changed(previous: Config, next: Config, options: View.SetOptions): void {
     void options;
     const style = this.#style;
     this.#style = this.sharedStyle(next);
     this.#checked = undefined;
-    if (previous.source !== next.source) this.#prune = true;
+    const sourced = (config: Config) => (config as { readonly source?: unknown }).source;
+    if (sourced(previous) !== sourced(next)) this.#prune = true;
     if (
-      previous.source !== next.source ||
+      sourced(previous) !== sourced(next) ||
       style.hover !== this.#style.hover ||
       style.hoverBudgetMs !== this.#style.hoverBudgetMs
     ) {
@@ -760,7 +935,7 @@ export abstract class BaseItemView<
       }
     }
   }
-  protected measure(): Partial<ViewStats> {
+  protected measure(): Partial<View.Stats> {
     return {
       hover: this.#style.hover === 'off' ? 'off' : this.#suspended ? 'budget' : this.#hoverState,
       hoverMs: this.#hoverMs,
@@ -789,7 +964,7 @@ export abstract class BaseItemView<
             readonly button: number;
             readonly point: Point;
             readonly touch: boolean;
-            asked?: Modifiers;
+            asked?: ItemView.Modifiers;
             /** A press the view took runs its own click. */
             grabbed?: boolean;
           }
@@ -1068,13 +1243,13 @@ export abstract class BaseItemView<
       current,
     );
   }
-  #move(next: Camera, options: SetOptions): void {
+  #move(next: Camera, options: View.SetOptions): void {
     this.#animation = this.#ease(options);
     this.#target = next;
     this.#version++;
     this.invalidate();
   }
-  #ease(options: SetOptions): Animation<Camera> | undefined {
+  #ease(options: View.SetOptions): Animation<Camera> | undefined {
     const from = this.#drawn,
       duration = this.#style.animationMs;
     return options.animate && from && duration > 0 && !this.reducedMotion
@@ -1170,7 +1345,7 @@ export abstract class BaseItemView<
 }
 
 /** A config's input options, which views keep expanded from a mode shorthand. */
-function inputOf(config: ItemViewConfig): ViewInput {
+function inputOf(config: ItemView.Config): ItemView.Input {
   const input = config.input ?? {};
   if (typeof input !== 'object' || Array.isArray(input))
     throw failure('invalid-input', 'Invalid input');

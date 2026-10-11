@@ -1,6 +1,6 @@
 # Data bindings
 
-A view draws the rows of a `Data` value. Keys of `vertices`, `edges`, and `paths` name its types.
+A view draws the rows of a `Data` value. Keys of `vertices` and `edges`, or `areas` and `lines`, name its types.
 
 ## Positions and wiring
 
@@ -34,8 +34,8 @@ star of its loads. A [diagram](diagram-quickstart.md) draws those references as 
 
 `x` and `y` are channels like any other. A `geographic` field holds longitude or latitude in
 degrees, which the globe and geodesic routes need; other fields are plane units. A vector field
-binds one lane per axis: `x: 'position', y: { field: 'position', component: 1 }`. A path's `points`
-and an edge's `bends` read lists of two-component vectors. [Layout](views.md#layout) places rows
+binds one lane per axis: `x: 'position', y: { field: 'position', component: 1 }`. An edge's `bends`
+and a geography's `points` and `rings` read lists of two-component vectors. [Layout](views.md#layout) places rows
 without a position.
 
 ## Channels

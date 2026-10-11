@@ -1,16 +1,16 @@
-import { blockBuffers } from '../buffers.js';
-import type { Column, RowSelection } from '../data.js';
-import { failure } from '../error.js';
-import type { Data } from '../materialized.js';
-import type { FieldDefinition, Schema } from '../schema.js';
+import { blockBuffers } from '../data/buffers.js';
+import type { Column, Index } from '../data/column.js';
+import { failure } from '../failure.js';
+import type { Data } from '../data/data.js';
+import type { Schema } from '../schema/schema.js';
 import type { Keys } from './keys.js';
-import type { Entry, Memory } from '../memory.js';
-import type { FieldBinding, FieldValues, FieldsRequest } from './types.js';
-
+import type { Memory } from './memory.js';
+import type { FieldInput } from './types.js';
+import type { Reader } from './reader.js';
 export interface PlannedGroup {
   readonly slot: number;
   readonly from: string;
-  readonly rows?: RowSelection;
+  readonly rows?: Index.Selection;
   readonly sampled: boolean;
   readonly fields: Map<string, string[]>;
 }
@@ -27,7 +27,7 @@ export interface FieldPlan {
 }
 interface Cached {
   readonly plan: FieldPlan;
-  readonly entry: Entry;
+  readonly entry: Memory.Entry;
 }
 /** Compile immutable binding structure; plans never retain a Data snapshot. */
 export class FieldPlans {
@@ -38,7 +38,7 @@ export class FieldPlans {
     private readonly keys: Keys,
   ) {}
   acquire(
-    fields: FieldsRequest['fields'],
+    fields: Reader.FieldsRequest['fields'],
     source: Data,
     from: string,
   ): Cached & { sources: Data[] } {
@@ -58,7 +58,7 @@ export class FieldPlans {
       // A binding to the request's own source is that source's plain field: one read serves both.
       slots = new Map<Data, number>([[source, 0]]);
     const descriptors: unknown[] = [];
-    const inputs: { alias: string; slot: number; binding: FieldBinding }[] = [];
+    const inputs: { alias: string; slot: number; binding: FieldInput.Binding }[] = [];
     const locals: string[] = [];
     for (const [alias, input] of Object.entries(fields)) {
       if (typeof input !== 'string' && 'values' in input) {
@@ -66,7 +66,7 @@ export class FieldPlans {
         descriptors.push([alias, 'local', this.keys.id(input)]);
         continue;
       }
-      const binding: FieldBinding =
+      const binding: FieldInput.Binding =
         typeof input === 'string' ? { source, from, field: input } : input;
       if (binding.from !== from) throw failure('conflict', 'Fields must belong to one model type');
       let slot = 0;
@@ -101,7 +101,7 @@ export class FieldPlans {
       const pointGroups = new Map<string, PlannedGroup>(),
         sampleGroups = new Map<string, PlannedGroup>();
       let width = 4;
-      for (const alias of locals) width += bytesPerRow((fields[alias] as FieldValues).values);
+      for (const alias of locals) width += bytesPerRow((fields[alias] as FieldInput.Values).values);
       for (const { alias, slot, binding } of inputs) {
         const definition = binding.source.schema.types[from]?.fields[binding.field];
         if (!definition)
@@ -150,17 +150,17 @@ export class FieldPlans {
     return { ...cached, sources };
   }
   /** Whether a plan hinted for these fields still assigns each binding's source to the same slot. */
-  private fits(plan: FieldPlan, fields: FieldsRequest['fields'], source: Data): boolean {
+  private fits(plan: FieldPlan, fields: Reader.FieldsRequest['fields'], source: Data): boolean {
     return (
-      plan.aliased.every((alias) => (fields[alias] as FieldBinding).source === source) &&
-      plan.external.every((alias) => (fields[alias] as FieldBinding).source !== source)
+      plan.aliased.every((alias) => (fields[alias] as FieldInput.Binding).source === source) &&
+      plan.external.every((alias) => (fields[alias] as FieldInput.Binding).source !== source)
     );
   }
-  private sources(plan: FieldPlan, fields: FieldsRequest['fields'], source: Data): Data[] {
-    return [source, ...plan.external.map((alias) => (fields[alias] as FieldBinding).source)];
+  private sources(plan: FieldPlan, fields: Reader.FieldsRequest['fields'], source: Data): Data[] {
+    return [source, ...plan.external.map((alias) => (fields[alias] as FieldInput.Binding).source)];
   }
 }
-function definitionBytes(field: FieldDefinition): number {
+function definitionBytes(field: Schema.Field): number {
   const type = field.type;
   if (typeof type === 'object' && type.kind === 'list') return 17;
   if (typeof type === 'object' && type.kind === 'vector') return type.size * 8 + 1;

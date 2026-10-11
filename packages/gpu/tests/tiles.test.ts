@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { FieldsBlock, SampleColumn } from '@latkit/model';
+import type { Block, Column } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { type GpuPage } from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
@@ -9,7 +9,7 @@ import { draw } from './fixtures/render.js';
 it('shares frame coordinates across row tiles and physical row maps across frame tiles', async () => {
   const fake = fakeDevice(),
     gpu = await createGpu({ device: fake.device, pageBytes: 16 });
-  const value: SampleColumn = {
+  const value: Column.Sample = {
     kind: 'numeric',
     values: Float32Array.from({ length: 24 }, (_, i) => i),
     offset: 0,
@@ -17,7 +17,7 @@ it('shares frame coordinates across row tiles and physical row maps across frame
     frameStride: 8,
     rowStride: 1,
   };
-  const block: FieldsBlock = {
+  const block: Block.Fields = {
     kind: 'fields',
     index: { source: 'd', type: 'node', version: 'i' },
     rows: { kind: 'indices', values: Uint32Array.of(9, 8, 7, 6, 5, 4, 3, 2) },

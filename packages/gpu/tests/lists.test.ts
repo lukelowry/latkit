@@ -1,6 +1,6 @@
 import { FieldSource } from './fixtures/field-source.js';
 import { expect, it } from 'vitest';
-import type { FieldValues } from '@latkit/model';
+import type { FieldInput } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { type GpuPage, type Preparation, type UploadOptions } from '../src/kit.js';
 import { fakeDevice, bytes } from './fixtures/device.js';
@@ -9,7 +9,7 @@ import { field } from './fixtures/fields.js';
 const index = { source: 'd', type: 'path', version: '1' };
 function upload(
   frame: Preparation,
-  input: FieldValues,
+  input: FieldInput.Values,
   options: Omit<UploadOptions, 'select'> = {},
 ): readonly GpuPage[] {
   return frame.upload(
@@ -24,7 +24,7 @@ function upload(
     { ...options, select: ['value'] },
   );
 }
-function lists(): FieldValues {
+function lists(): FieldInput.Values {
   return {
     index,
     rows: { kind: 'range', offset: 10, count: 3 },

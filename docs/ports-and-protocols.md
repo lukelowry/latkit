@@ -41,7 +41,7 @@ await connection.closed;
 ```
 
 Registration sends only the schema and command descriptions; values move when the accepting side
-asks for them. A monitor yields `DataBatch` values or bounded arrays of them, once or live; a model
+asks for them. A monitor yields `Data.Batch` values or bounded arrays of them, once or live; a model
 without one offers no reading. `selectBatches` reads one captured `Data` value and does not follow
 later changes, so a live monitor yields new batches itself.
 
@@ -72,7 +72,7 @@ async function use(socket: import('ws').WebSocket) {
   try {
     const fields = [{ from: 'Bus', select: ['load'] }];
     for await (const publication of model.monitor?.(fields) ?? []) {
-      console.log(publication); // readonly DataBatch[]
+      console.log(publication); // Model.Publication: readonly Data.Batch[]
     }
 
     const result = await model.commands.scale.run(

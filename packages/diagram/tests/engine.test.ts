@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { Work, createReader } from '@latkit/model';
-import type { Gpu, LayoutPart } from '@latkit/gpu';
+import type { Gpu, Layout } from '@latkit/gpu';
 import { arrange, layoutOptions, place, rootEnd } from '../src/layout.js';
 import { readScene } from '../src/read.js';
 import { geometry, contains, boundary, labelBox } from '../src/geometry.js';
@@ -345,9 +345,9 @@ it('passes ports, hyperedges, labels, and groups as vertices to a custom layout'
       { vertex: 2, port: 'input' },
     ],
   ];
-  const parts: LayoutPart[] = [];
+  const parts: Layout.Part[] = [];
   const algorithm = {
-    arrange: vi.fn((part: LayoutPart) => {
+    arrange: vi.fn((part: Layout.Part) => {
       parts.push(part);
       return Array.from(part.vertices).flatMap((_, i) => [i * 240, 0]);
     }),
@@ -358,7 +358,7 @@ it('passes ports, hyperedges, labels, and groups as vertices to a custom layout'
     layout: { algorithm },
   });
   /** An edge's ends: each one's vertex, direction, and where it meets its vertex. */
-  const ends = (part: LayoutPart, e: number) => {
+  const ends = (part: Layout.Part, e: number) => {
     const { offsets, items } = part.graph.ends,
       { directions, ports } = part.input;
     return Array.from({ length: offsets[e + 1] - offsets[e] }, (_, k) => {

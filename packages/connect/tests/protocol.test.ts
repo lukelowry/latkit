@@ -3,10 +3,9 @@ import {
   appendData,
   createData,
   textColumn,
-  type DataBatch,
-  type SampleBatch,
-  type SampleColumn,
   type Schema,
+  type Data,
+  type Column,
 } from '@latkit/model';
 import { preparePublication, preparePublications, decodePublication } from '../src/columns.js';
 import { decode, prepare, Op } from '../src/frame.js';
@@ -15,7 +14,7 @@ import { batch, schema } from './fixture.js';
 
 it('round trips native arrays, sparse rows and strided sample tiles without JSON numeric arrays', () => {
   const values = Float64Array.of(99, 1, 2, 88, 3, 4);
-  const sample: DataBatch = {
+  const sample: Data.Batch = {
     kind: 'samples',
     index: batch().index,
     rows: { kind: 'indices', values: Uint32Array.of(1, 5) },
@@ -50,7 +49,7 @@ it('supports every nested static column form and non-ASCII IDs', () => {
       },
     },
   };
-  const value: DataBatch = {
+  const value: Data.Batch = {
     kind: 'rows',
     index: batch().index,
     rows: { kind: 'range', offset: 0, count: 2 },
@@ -160,7 +159,7 @@ it('rejects sparse-array allocation bombs and nonenumerable JSON hooks before in
 });
 
 const small = { ...defaults, messageBytes: 8192, metadataBytes: 2048 };
-function samples(frames: number, rows = 4, firstFrame = 0): SampleBatch {
+function samples(frames: number, rows = 4, firstFrame = 0): Data.SampleBatch {
   const values = Float64Array.from({ length: frames * rows }, (_, i) => firstFrame * rows + i);
   return {
     kind: 'samples',
@@ -181,7 +180,7 @@ function samples(frames: number, rows = 4, firstFrame = 0): SampleBatch {
   };
 }
 /** Each message `preparePublications` makes, as a host decodes it. */
-function received(input: DataBatch | readonly DataBatch[], bounds = small) {
+function received(input: Data.Batch | readonly Data.Batch[], bounds = small) {
   return Array.from(preparePublications(input, 1, schema, bounds), (plan) => {
     const bytes = plan.encode(1);
     expect(bytes.length).toBeLessThanOrEqual(bounds.messageBytes);
@@ -193,9 +192,9 @@ it('cuts a sample batch beyond one message between whole frames, each piece appe
   const messages = received(original);
   expect(messages.length).toBeGreaterThan(1);
   let data = createData(schema, []);
-  for (const publication of messages) data = appendData(data, publication as SampleBatch[]);
-  const pieces = messages.flat() as SampleBatch[];
-  const values = (piece: SampleBatch) => [...(piece.columns.output as SampleColumn).values];
+  for (const publication of messages) data = appendData(data, publication as Data.SampleBatch[]);
+  const pieces = messages.flat() as Data.SampleBatch[];
+  const values = (piece: Data.SampleBatch) => [...(piece.columns.output as Column.Sample).values];
   expect(pieces.flatMap((piece) => [...piece.coordinates])).toEqual([...original.coordinates]);
   expect(pieces.flatMap(values)).toEqual(values(original));
   expect(() => preparePublication(original, 1, schema, small)).toThrow(/message bounds/);

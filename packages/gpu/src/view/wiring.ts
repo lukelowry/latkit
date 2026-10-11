@@ -4,9 +4,8 @@ import {
   rowCount,
   type Data,
   type Index,
-  type ReadScope,
-  type RowSelection,
   type Schema,
+  type Reader,
 } from '@latkit/model';
 
 /**
@@ -14,10 +13,10 @@ import {
  * every rows of the type without one. Views resolve a selection once, here, and test rows against it.
  */
 export async function readRows(
-  reader: ReadScope,
+  reader: Reader.Scope,
   source: Data,
   from: string,
-  rows?: RowSelection,
+  rows?: Index.Selection,
 ): Promise<{ readonly index?: Index; readonly rows: Uint32Array }> {
   let index: Index | undefined,
     out = new Uint32Array(64),

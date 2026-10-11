@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { FieldsBlock } from '@latkit/model';
+import type { Block } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { fakeDevice } from './fixtures/device.js';
 import { FieldSource } from './fixtures/field-source.js';
@@ -8,7 +8,7 @@ import { draw } from './fixtures/render.js';
 it('exposes immutable columns that need no acquisition or release', async () => {
   const source = new FieldSource(),
     gpu = await createGpu({ device: fakeDevice().device });
-  let native!: FieldsBlock;
+  let native!: Block.Fields;
   await draw(gpu, async (frame) => {
     for await (const page of frame.reader.fields({
       source: source.data,

@@ -1,12 +1,13 @@
 /* global document, OffscreenCanvas, createImageBitmap */
 import { createGpu, colormaps, kit } from '@latkit/gpu';
 import { createNetwork } from '@latkit/network';
+import { createGeography } from '@latkit/geography';
 import {
-  PathSource,
+  TableSource,
   featureSource,
   references,
   vectors,
-} from '/output/network-fixture/paths-fixture.js';
+} from '/output/network-fixture/table-fixture.js';
 import { GraphSource } from '/output/network-fixture/fixture.js';
 
 const el = (id) => document.getElementById(id);
@@ -17,7 +18,8 @@ let gpu,
   at = 0,
   geographic = false,
   labelled = true,
-  borders;
+  borders,
+  earth;
 function fail(error) {
   errors.push(error.message ?? String(error));
   el('error').textContent = errors.join('\n');
@@ -34,17 +36,6 @@ function data(source, labels = true) {
         labels: labels ? { field: 'name', fontSizePx: 11, maxCount: 45 } : null,
       },
     },
-    paths:
-      source.geographic && borders && el('borders').checked
-        ? {
-            border: {
-              source: borders.data,
-              points: 'points',
-              widthPx: 0.8,
-              color: [0.45, 0.62, 0.68, 0.72],
-            },
-          }
-        : undefined,
     edges: {
       line: {
         route: source.geographic && el('geodesic').checked ? 'geodesic' : 'straight',
@@ -105,6 +96,22 @@ function observe(describe) {
     el('status').textContent = describe(items[0]);
   });
 }
+/** The earth beneath a geographic graph: grid, axis, daylight, and the borders when shown. */
+function ground(lines = el('borders').checked) {
+  earth?.destroy();
+  earth = createGeography(gpu, {
+    grid: true,
+    earthAxis: true,
+    daylight: Date.UTC(2026, 8, 30, 17),
+    ...(lines && borders
+      ? {
+          source: borders.data,
+          lines: { border: { points: 'points', widthPx: 0.8, color: [0.45, 0.62, 0.68, 0.72] } },
+        }
+      : {}),
+  });
+  return earth;
+}
 function show(count = Number(el('size').value), geo = geographic) {
   network?.destroy();
   source = new GraphSource(count, 4096, geo);
@@ -117,9 +124,7 @@ function show(count = Number(el('size').value), geo = geographic) {
     camera: { projection: geo ? 'globe' : 'flat', pitch: geo ? 15 : 0 },
     vertexRadiusPx: count > 10000 ? 1.4 : count > 1000 ? 2 : 4,
     edgeWidthPx: count > 10000 ? 0.5 : 1.1,
-    grid: geo,
-    daylight: geo,
-    sunTime: Date.UTC(2026, 8, 30, 17),
+    ground: geo ? ground() : null,
     msaa: 4,
     poles: el('poles').checked,
     hover: el('hover-mode').value,
@@ -337,7 +342,6 @@ async function checks() {
       ...data(fixture, false),
       msaa: 1,
       vertexRadiusPx: 8,
-      daylight: false,
     });
   const size = { width: 256, height: 256 };
   try {
@@ -398,7 +402,6 @@ async function checks() {
       star: {},
       bend: { ends: ['from', 'to'], bends: 'points' },
     },
-    paths: { seam: { points: 'points', pickable: true } },
     camera: { center: [-30, 5], scale: 3 },
     edgeWidthPx: 3,
   });
@@ -431,7 +434,7 @@ async function checks() {
   } finally {
     featureView.destroy();
   }
-  const seamSource = new PathSource({
+  const seamSource = new TableSource({
     node: { position: vectors([170, 20, -170, 20]) },
     route: {
       dashed: { kind: 'boolean', offset: 0, length: 1, values: Uint8Array.of(1) },
@@ -445,10 +448,8 @@ async function checks() {
     edges: { route: { ends: ['from', 'to'], route: 'geodesic' } },
     camera: { center: [0, 20], scale: 1.2 },
     markers: false,
-    earthAxis: false,
     edgeColor: [1, 1, 1, 1],
     background: [0, 0, 0, 1],
-    surfaceColor: [0, 0, 0, 1],
     edgeWidthPx: 2,
     dashPeriodPx: 8,
     msaa: 1,
@@ -485,6 +486,118 @@ async function checks() {
   } finally {
     seamView.destroy();
   }
+  // A long geodesic over the earth stays on its surface at any pitch: no row of it sinks beneath.
+  const meridianSource = new TableSource({
+    node: { position: vectors([0, -55, 0, 55]) },
+    route: { from: references('node', [0]), to: references('node', [1]) },
+  });
+  const meridianGround = createGeography(gpu, {
+    surfaceColor: [0.1, 0.1, 0.1, 1],
+    atmosphere: false,
+  });
+  const meridianView = createNetwork(gpu, {
+    source: meridianSource.data,
+    vertices: { node: { x: 'position', y: { field: 'position', component: 1 } } },
+    edges: { route: { ends: ['from', 'to'], route: 'geodesic' } },
+    camera: { center: [0, 0], scale: 2.4, projection: 'globe', fit: false },
+    ground: meridianGround,
+    markers: false,
+    edgeColor: [1, 1, 1, 1],
+    background: [0, 0, 0, 1],
+    edgeWidthPx: 3,
+    msaa: 1,
+  });
+  try {
+    device.pushErrorScope('validation');
+    for (const pitch of [0, 30, 70]) {
+      meridianView.set({ camera: { pitch } });
+      const bytes = await pixels(meridianView, { width: 512, height: 512 });
+      const lit = Array.from({ length: 512 }, (_, y) => {
+        let count = 0;
+        for (let x = 0; x < 512; x++) {
+          const i = (y * 512 + x) * 4;
+          if (bytes[i] > 200 && bytes[i + 1] > 200 && bytes[i + 2] > 200) count++;
+        }
+        return count;
+      });
+      const first = lit.findIndex((count) => count > 0),
+        last = lit.findLastIndex((count) => count > 0);
+      assert(first >= 0 && last - first > 40, 'The meridian did not draw at pitch ' + pitch);
+      const empty = lit.slice(first, last + 1).filter((count) => count === 0).length;
+      assert(empty === 0, `The meridian sank into the earth at pitch ${pitch}: ${empty} rows`);
+    }
+    const error = await device.popErrorScope();
+    assert(!error, error?.message);
+    checks.push('Geodesics on the globe stay on its surface at every pitch');
+  } finally {
+    meridianView.destroy();
+    meridianGround.destroy();
+  }
+  // A grid of the data's x and y draws beneath the graph in every projection; a ground draws its own.
+  const gridGround = createGeography(gpu, {
+    surfaceColor: [0.1, 0.1, 0.1, 1],
+    atmosphere: false,
+    gridColor: [1, 1, 1, 1],
+    gridMinSpacingPx: 32,
+  });
+  const gridView = createNetwork(gpu, {
+    source: meridianSource.data,
+    vertices: { node: { x: 'position', y: { field: 'position', component: 1 } } },
+    // Lines fall on pixel centers: the left edge lies 1/16 degree past one.
+    camera: { projection: 'flat', center: [0.0625, 0.0625], scale: 8, fit: false },
+    markers: false,
+    lines: false,
+    grid: true,
+    gridColor: [1, 1, 1, 1],
+    gridMinSpacingPx: 32,
+    background: [0, 0, 0, 1],
+    msaa: 1,
+  });
+  try {
+    device.pushErrorScope('validation');
+    const lit = (bytes, i) => bytes[i] > 150 && bytes[i + 1] > 150 && bytes[i + 2] > 150;
+    // Flat, at 8 pixels a degree, lines want 4 degrees apart: every 5, 40 pixels.
+    let bytes = await pixels(gridView, { width: 512, height: 512 });
+    const columns = [];
+    for (let x = 0; x < 512; x++) {
+      let count = 0;
+      for (let y = 0; y < 512; y++) if (lit(bytes, (y * 512 + x) * 4)) count++;
+      if (count > 400) columns.push(x);
+    }
+    const starts = columns.filter((x, k) => k === 0 || x - columns[k - 1] > 1),
+      gaps = starts.slice(1).map((x, k) => x - starts[k]);
+    assert(
+      starts.length >= 11 && starts.length <= 14 && gaps.every((gap) => Math.abs(gap - 40) <= 1),
+      `The flat grid's lines did not fall every 40 pixels: ${starts.join(', ')}`,
+    );
+    const count = (bytes) => {
+      let n = 0;
+      for (let i = 0; i < bytes.length; i += 4) if (lit(bytes, i)) n++;
+      return n;
+    };
+    gridView.set({ camera: { projection: 'tilt', pitch: 60 } });
+    assert(count(await pixels(gridView, { width: 512, height: 512 })) > 2000, 'No tilted grid');
+    gridView.set({ camera: { projection: 'globe', pitch: 0, center: [0, 0], scale: 2.4 } });
+    bytes = await pixels(gridView, { width: 512, height: 512 });
+    let outside = 0;
+    for (let i = 0; i < bytes.length; i += 4) {
+      const x = (i / 4) % 512,
+        y = Math.floor(i / 4 / 512);
+      if (Math.hypot(x - 256, y - 256) > (2.4 * 180) / Math.PI + 3 && lit(bytes, i)) outside++;
+    }
+    assert(count(bytes) > 1000 && outside === 0, 'The globe grid drew off the globe: ' + outside);
+    // Over a ground, the ground's grid alone draws: none until it asks for one.
+    gridView.set({ ground: gridGround });
+    assert(count(await pixels(gridView, { width: 512, height: 512 })) === 0, 'Grid over a ground');
+    gridGround.set({ grid: true });
+    assert(count(await pixels(gridView, { width: 512, height: 512 })) > 1000, 'No ground grid');
+    const error = await device.popErrorScope();
+    assert(!error, error?.message);
+    checks.push('Grid beneath the graph in every projection, and the ground grid over it');
+  } finally {
+    gridView.destroy();
+    gridGround.destroy();
+  }
   const result = {
     adapter: adapter.info
       ? {
@@ -497,8 +610,8 @@ async function checks() {
     checks,
     benchmarks: [await benchmark(10000), await benchmark(100000)],
     interaction: await benchmarkHover(100000),
-    paths: await benchmarkPaths(100000),
-    movingPaths: await benchmarkPaths(100000, true),
+    borders: await benchmarkBorders(100000),
+    movingBorders: await benchmarkBorders(100000, true),
   };
   assert(!errors.length, errors.join('\n'));
   el('report').textContent = JSON.stringify(result, null, 2);
@@ -555,14 +668,14 @@ async function loadBorders() {
   if (borders) return borders;
   const [points, offsets] = await Promise.all(
     ['points', 'offsets'].map(async (name) => {
-      const response = await fetch('../assets/borders.' + name + '.bin');
+      const response = await fetch('../../../geography/tests/assets/borders.' + name + '.bin');
       if (!response.ok) throw new Error('Could not load native border fixture');
       return response.arrayBuffer();
     }),
   );
   const values = new Float32Array(points),
     lists = new Int32Array(offsets);
-  borders = new PathSource({
+  borders = new TableSource({
     border: {
       points: {
         kind: 'list',
@@ -607,33 +720,25 @@ async function showFeatures(reset = true) {
         labels: { field: 'name' },
       },
     },
-    paths: {
-      ...(el('borders').checked
-        ? {
-            border: {
-              source: borders.data,
-              points: 'points',
-              widthPx: 0.8,
-              color: [0.3, 0.48, 0.58, 0.75],
-            },
-          }
-        : {}),
-      seam: { points: 'points', pickable: true, widthPx: 2, color: [1, 0.6, 0.25, 1] },
-    },
+    ground: ground(),
     camera: { center: [-35, 5], scale: 4, projection: 'globe', pitch: 0 },
     poles: el('poles').checked,
     hover: el('hover-mode').value,
     hoverBudgetMs: Number(el('hover-budget').value),
     edgeColor: [0.95, 0.67, 0.25, 1],
     edgeWidthPx: 2,
-    grid: true,
   });
   observe((item) =>
     item ? item.kind + ' / ' + item.index.type + ' / row ' + item.row : 'Geometry features',
   );
-  el('status').textContent = 'Bends, four-way junction, geodesic, borders and shared labels';
+  el('status').textContent =
+    'Bends, four-way junction, geodesic, borders beneath, and shared labels';
 }
-async function benchmarkPaths(count = 100000, moving = false) {
+/**
+ * Geodesics, and detailed borders beneath: the borders a geography draws in the network's pass,
+ * as `main` drew them as network paths, measured the same way.
+ */
+async function benchmarkBorders(count = 100000, moving = false) {
   network?.set({ paused: true });
   const borders = await loadBorders(),
     fixture = new GraphSource(count, 4096, true),
@@ -652,11 +757,15 @@ async function benchmarkPaths(count = 100000, moving = false) {
             z: { field: 'z', domain: [0, 1] },
           };
         }
-        input.paths = detailed
-          ? { border: { source: borders.data, points: 'points', widthPx: 0.8 } }
-          : undefined;
+        const beneath = detailed
+          ? createGeography(gpu, {
+              source: borders.data,
+              lines: { border: { points: 'points', widthPx: 0.8 } },
+            })
+          : null;
         const view = createNetwork(gpu, {
           ...input,
+          ground: beneath,
           camera: { center: [-65, 5], scale: 4, projection: 'globe', pitch: 15 },
           hover: 'auto',
           poles: false,
@@ -677,7 +786,15 @@ async function benchmarkPaths(count = 100000, moving = false) {
           return [submit, performance.now() - start];
         };
         try {
-          const cold = await draw(0);
+          // The first frame waits for what loads beneath: the borders, prepared in a worker.
+          const started = performance.now();
+          await gpu.render({
+            timeMs: 0,
+            completion: 'complete',
+            views: [{ renderer, target, at: 0 }],
+          });
+          await gpu.idle();
+          const cold = [0, performance.now() - started];
           for (let i = 0; i < (moving ? 32 : 24); i++) await draw(i);
           const before = gpu.stats(),
             queries = fixture.queries + borders.queries,
@@ -697,9 +814,11 @@ async function benchmarkPaths(count = 100000, moving = false) {
             cameraQueries: fixture.queries + borders.queries - queries,
             cameraUploadedBytes: gpu.stats().uploadedBytes - before.uploadedBytes,
             stats: view.stats(),
+            ...(beneath ? { borders: beneath.stats() } : {}),
           });
         } finally {
           view.destroy();
+          beneath?.destroy();
           await gpu.idle();
           gpu.trim();
         }
@@ -726,11 +845,11 @@ el('borders').onchange = () => {
 el('features').onclick = () => {
   void showFeatures().catch(fail);
 };
-el('paths-benchmark').onclick = () => {
+el('borders-benchmark').onclick = () => {
   el('status').textContent = 'Measuring geodesics and detailed borders...';
-  void benchmarkPaths(Number(el('size').value)).then((result) => {
+  void benchmarkBorders(Number(el('size').value)).then((result) => {
     el('report').textContent = JSON.stringify(result, null, 2);
-    el('status').textContent = 'Path benchmark complete';
+    el('status').textContent = 'Border benchmark complete';
   }, fail);
 };
 
@@ -748,7 +867,7 @@ globalThis.networkFixture = {
   show,
   benchmark,
   benchmarkHover,
-  benchmarkPaths,
+  benchmarkBorders,
   showFeatures,
   get source() {
     return source;

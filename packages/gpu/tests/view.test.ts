@@ -1,13 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import {
-  createComposition,
-  createGpu,
-  type FrameInfo,
-  type Gpu,
-  type SetOptions,
-  type ViewConfig,
-  type ViewEvents,
-} from '../src/index.js';
+import { createComposition, createGpu, type FrameInfo, type Gpu, type View } from '../src/index.js';
 import {
   BaseView,
   createPresentation,
@@ -85,7 +77,7 @@ function canvasFixture(device: GPUDevice) {
 }
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-interface TestConfig extends ViewConfig {
+interface TestConfig extends View.Config {
   readonly items?: Readonly<Record<string, { readonly color?: string; readonly size?: number }>>;
   readonly limits?: { readonly bytes?: number; readonly rows?: number };
   readonly shade?: { readonly wgsl: string; readonly tick?: () => boolean };
@@ -95,14 +87,14 @@ interface TestConfig extends ViewConfig {
 }
 class TestView extends BaseView<
   TestConfig,
-  ViewEvents,
+  View.Events,
   TestConfig,
   void,
   'items',
   'limits' | 'input' | 'camera'
 > {
   frames: FrameInfo[] = [];
-  configured: { previous: TestConfig; next: TestConfig; options: SetOptions }[] = [];
+  configured: { previous: TestConfig; next: TestConfig; options: View.SetOptions }[] = [];
   camera = { x: 0, y: 0 };
   attached = 0;
   detached = 0;
@@ -119,7 +111,7 @@ class TestView extends BaseView<
   refresh(): void {
     this.invalidate();
   }
-  protected configure(next: TestConfig, previous: TestConfig, options: SetOptions): void {
+  protected configure(next: TestConfig, previous: TestConfig, options: View.SetOptions): void {
     this.configured.push({ previous, next, options });
     this.invalidate();
   }

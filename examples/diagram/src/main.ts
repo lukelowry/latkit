@@ -1,7 +1,7 @@
-import { createGpu, type LayoutOptions, type Point, type Shape } from '@latkit/gpu';
+import { createGpu, type Point, type Shape, type Layout } from '@latkit/gpu';
 import { itemId } from '@latkit/model';
 import { createDiagram, arrange } from '@latkit/diagram';
-import type { DiagramConfig, DiagramInput, DiagramItem } from '@latkit/diagram';
+import type { Diagram } from '@latkit/diagram';
 import { GraphSource } from './source.js';
 import {
   plugged,
@@ -22,7 +22,7 @@ const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
   document.querySelector<T>(selector)!;
 const select = (id: string) => $<HTMLSelectElement>('#' + id);
 /** The graph id of a diagram item: a block's or wire's row id, or a group's name. */
-const idOf = (item: DiagramItem) => (item.kind === 'group' ? item.id : itemId(item));
+const idOf = (item: Diagram.Item) => (item.kind === 'group' ? item.id : itemId(item));
 const check = (id: string) => $<HTMLInputElement>('#' + id);
 const canvas = $<HTMLCanvasElement>('#canvas');
 const errors: string[] = [];
@@ -116,7 +116,7 @@ async function boot() {
   let active: Preset = 'loop',
     history = new History(preset(active, compact.matches));
   const source = new GraphSource(history.current);
-  let selected: readonly DiagramItem[] = [];
+  let selected: readonly Diagram.Item[] = [];
   let lastFrames = -1,
     busy = false,
     pointerDown = false;
@@ -139,23 +139,23 @@ async function boot() {
       select('density').value === 'compact' ? 8 : select('density').value === 'spacious' ? 16 : 12,
     portSpacing:
       select('density').value === 'compact' ? 20 : select('density').value === 'spacious' ? 30 : 24,
-    portMarker: select('port-marker').value as DiagramConfig['portMarker'],
+    portMarker: select('port-marker').value as Diagram.Config['portMarker'],
     portLabels: check('port-labels').checked,
     cornerRadius: Number(select('radius').value),
-    detail: select('detail').value as DiagramConfig['detail'],
+    detail: select('detail').value as Diagram.Config['detail'],
     grid: check('grid').checked,
     snap: check('snap').checked,
     labels: check('labels').checked,
     junctions: check('junctions').checked,
-    motion: select('motion').value as DiagramConfig['motion'],
+    motion: select('motion').value as Diagram.Config['motion'],
     msaa: Number(select('msaa').value) as 1 | 4,
-    hover: select('hover').value as DiagramConfig['hover'],
+    hover: select('hover').value as Diagram.Config['hover'],
     fitPaddingPx: innerWidth <= 650 ? [24, 28, 60, 28] : 44,
   });
   const binding = (automatic = false) => data(source, settings(), automatic);
-  const input = (): DiagramInput => ({
-    mode: select('mode').value as DiagramInput['mode'],
-    backgroundDrag: select('background-drag').value as DiagramInput['backgroundDrag'],
+  const input = (): Diagram.Input => ({
+    mode: select('mode').value as Diagram.Input['mode'],
+    backgroundDrag: select('background-drag').value as Diagram.Input['backgroundDrag'],
     autoPan: check('auto-pan').checked,
   });
   const shades = new Map<string, ReturnType<typeof effect>>();
@@ -438,7 +438,7 @@ async function boot() {
     button.textContent = 'Arranging…';
     try {
       const choice = select('algorithm').value,
-        algorithm: LayoutOptions['algorithm'] =
+        algorithm: Layout['algorithm'] =
           choice === 'grid'
             ? {
                 // Each part's blocks in rows, a cell as large as its largest block.
@@ -464,7 +464,7 @@ async function boot() {
         ...options(),
         layout: {
           algorithm,
-          direction: select('direction').value as LayoutOptions['direction'],
+          direction: select('direction').value as Layout['direction'],
           rankGap: 72,
           vertexGap: 48,
         },

@@ -1,4 +1,4 @@
-import { failure, rowCount, type Index, type RowAxis } from '@latkit/model';
+import { failure, rowCount, type Index } from '@latkit/model';
 import type { GpuField, GpuValueField, GpuPage } from './types.js';
 import type { Allocation, Allocator } from '../memory/allocation.js';
 
@@ -62,7 +62,7 @@ export class FieldPages {
   build(
     input: {
       readonly index: Index;
-      readonly rows: RowAxis;
+      readonly rows: Index.Rows;
       readonly rowOffset: number;
       readonly rowMap?: GPUBufferBinding;
       readonly columns: Readonly<Record<string, Column>>;

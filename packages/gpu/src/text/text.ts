@@ -1,30 +1,9 @@
 import type { RGBA } from '../colors/color.js';
-/** Font identity includes a revision for an application replacing a loaded font face. */
-export interface TextFont {
-  readonly family: string;
-  readonly weight?: number;
-  readonly style?: 'normal' | 'italic' | 'oblique';
-  readonly revision?: string;
-}
-export interface TextInput {
-  readonly text: string;
-  readonly font?: TextFont;
-  readonly direction?: 'ltr' | 'rtl';
-}
-/**
- * Metrics in em units. Positions use a left-origin, alphabetic baseline, y down. `ascent` and
- * `descent` are the font's line metrics, the same for every glyph of a font, never one glyph's ink.
- */
-export interface TextMetrics {
-  readonly advance: number;
-  readonly ascent: number;
-  readonly descent: number;
-}
 /** Which side of text a point names: where lines start, their center, or where they end. */
 export type TextAlign = 'start' | 'center' | 'end';
 /** Which height of text a point names; `middle` is halfway up the capitals, as text looks centered. */
 export type TextBaseline = 'top' | 'middle' | 'alphabetic' | 'bottom';
-export interface TextRun extends TextInput {
+export interface TextRun extends TextRasterizer.Input {
   readonly position: readonly [number, number];
   readonly size: number;
   /** sRGB-encoded straight RGBA. The shader returns premultiplied color. */
@@ -33,7 +12,7 @@ export interface TextRun extends TextInput {
   readonly anchor?: number;
 }
 /** Text to lay out in the units of `size`, as a view sizes its labels. */
-export interface TextLayoutInput extends TextInput {
+export interface TextLayoutInput extends TextRasterizer.Input {
   readonly size: number;
   readonly color?: RGBA;
   /** Lines longer than this wrap or end in an ellipsis. */
@@ -69,25 +48,43 @@ export interface TextPage {
 /** Rasterizes one grapheme at a time; the atlas keeps each once per font. Coverage is monochrome. */
 export interface TextRasterizer {
   rasterize(
-    input: TextInput,
+    input: TextRasterizer.Input,
     options: {
       readonly pixelsPerEm: number;
       readonly maxWidth: number;
       readonly maxHeight: number;
       readonly signal: AbortSignal;
     },
-  ): Promise<TextBitmap>;
+  ): Promise<TextRasterizer.Bitmap>;
 }
-export interface TextBitmap extends TextMetrics {
-  readonly width: number;
-  readonly height: number;
-  readonly coverage: Uint8Array;
-  /** Upper-left ink position, in em units, relative to the run baseline. */
-  readonly left: number;
-  readonly top: number;
-}
-
-export interface TextOptions {
-  readonly rasterizer?: TextRasterizer;
-  readonly atlasSize?: number;
+export declare namespace TextRasterizer {
+  interface Input {
+    readonly text: string;
+    readonly font?: Font;
+    readonly direction?: 'ltr' | 'rtl';
+  }
+  interface Bitmap extends Metrics {
+    readonly width: number;
+    readonly height: number;
+    readonly coverage: Uint8Array;
+    /** Upper-left ink position, in em units, relative to the run baseline. */
+    readonly left: number;
+    readonly top: number;
+  }
+  /**
+   * Metrics in em units. Positions use a left-origin, alphabetic baseline, y down. `ascent` and
+   * `descent` are the font's line metrics, the same for every glyph of a font, never one glyph's ink.
+   */
+  interface Metrics {
+    readonly advance: number;
+    readonly ascent: number;
+    readonly descent: number;
+  }
+  /** Font identity includes a revision for an application replacing a loaded font face. */
+  interface Font {
+    readonly family: string;
+    readonly weight?: number;
+    readonly style?: 'normal' | 'italic' | 'oblique';
+    readonly revision?: string;
+  }
 }

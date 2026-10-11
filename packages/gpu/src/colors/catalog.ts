@@ -1,10 +1,9 @@
 import { failure } from '@latkit/model';
 import type { Colormap } from './colormap.js';
 import type { RGBA } from './color.js';
-import { presets, type ColormapName } from './presets/data.js';
+import { presets } from './presets/data.js';
 
-export type { ColormapName } from './presets/data.js';
-function preset(value: (typeof presets)[ColormapName]): Colormap {
+function preset(value: (typeof presets)[Colormap.Name]): Colormap {
   let colors: readonly RGBA[] | undefined;
   return Object.freeze({
     kind: value.kind,
@@ -23,15 +22,15 @@ function preset(value: (typeof presets)[ColormapName]): Colormap {
     },
   });
 }
-function buildCatalog(): Readonly<Record<ColormapName, Colormap>> {
+function buildCatalog(): Readonly<Record<Colormap.Name, Colormap>> {
   return Object.freeze(
     Object.fromEntries(Object.entries(presets).map(([name, data]) => [name, preset(data)])),
-  ) as Readonly<Record<ColormapName, Colormap>>;
+  ) as Readonly<Record<Colormap.Name, Colormap>>;
 }
 /** Named immutable values; accessing metadata never decodes their sample tables. */
 export const colormaps = /* @__PURE__ */ buildCatalog();
 /** A colormap, or the catalog's by name. */
-export function namedColormap(value: Colormap | ColormapName): Colormap {
+export function namedColormap(value: Colormap | Colormap.Name): Colormap {
   const map = typeof value === 'string' ? colormaps[value] : value;
   if (!map) throw failure('invalid-input', 'Unknown colormap: ' + (value as string));
   return map;

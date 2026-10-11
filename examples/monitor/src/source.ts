@@ -1,4 +1,4 @@
-import { appendData, createData, type Data, type SampleBatch, type Schema } from '@latkit/model';
+import { appendData, createData, type Data, type Schema } from '@latkit/model';
 
 /** Application storage. Keeping history is an explicit choice made by this example. */
 export class Telemetry {
@@ -29,7 +29,7 @@ export class Telemetry {
   append(values: Float64Array): void {
     if (values.length !== this.fields.length * this.count) throw new RangeError('Wrong frame size');
     const frame = this.frame++;
-    const batch: SampleBatch = {
+    const batch: Data.SampleBatch = {
       kind: 'samples',
       index: this.index,
       rows: { kind: 'range', offset: 0, count: this.count },

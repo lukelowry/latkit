@@ -2,16 +2,7 @@ import { renderer as snapshotRenderer } from '../../gpu/tests/fixtures/public-re
 import { createData } from '@latkit/model';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createGpu, type Gpu } from '@latkit/gpu';
-import type {
-  Column,
-  Index,
-  Query,
-  QueryBlock,
-  QueryOptions,
-  Data,
-  DataBatch,
-  Schema,
-} from '@latkit/model';
+import type { Column, Index, Query, Data, Schema, Block } from '@latkit/model';
 import { createNetwork } from '../src/index.js';
 import type { NetworkData } from '../src/data.js';
 import { readGeometry, DEFAULT_LIMITS, type Geometry } from '../src/geometry/topology.js';
@@ -50,7 +41,7 @@ class GridSource {
   private cached?: Data;
   get data(): Data {
     if (this.cached) return this.cached;
-    const batches: DataBatch[] = [];
+    const batches: Data.Batch[] = [];
     for (const [from, type] of Object.entries(this.schema.types))
       for (const block of this.blocks({ kind: 'rows', from, select: Object.keys(type.fields) }))
         if (block.kind === 'rows')
@@ -62,7 +53,7 @@ class GridSource {
           });
     return (this.cached = createData(this.schema, batches));
   }
-  private *blocks(query: Query, options?: QueryOptions): Generator<QueryBlock> {
+  private *blocks(query: Query, options?: Query.Options): Generator<Block> {
     options?.signal?.throwIfAborted();
     if (query.kind !== 'rows') throw new Error('Fixture query not implemented: ' + query.kind);
     const count =

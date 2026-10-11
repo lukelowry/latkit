@@ -1,27 +1,27 @@
-import { rowAt, type FieldValues } from '@latkit/model';
+import { rowAt, type FieldInput } from '@latkit/model';
 import { kit } from '@latkit/gpu';
 
-import type { NetworkData, NetworkItem } from '../data.js';
+import type { NetworkData } from '../data.js';
 import type { VertexBank, EdgeBank } from './topology.js';
 import { RowLookup, indexKey } from './rows.js';
 
+import type { Network } from '../network.js';
 /**
- * The drawn graph over renderer-local dense addresses: vertices, then edges, then paths. Public
- * results always use native identities.
+ * The drawn graph over renderer-local dense addresses: vertices, then edges. Public results always
+ * use native identities.
  */
 export class Adjacency {
   readonly bytes: number;
-  /** Vertices, and edges by the vertices each joins once; paths join none. */
+  /** Vertices, and edges by the vertices each joins once. */
   readonly graph: kit.Graph;
   /** Lanes by which banks follow their own routes, as `lanes` finds them. */
   #lanes = new Map<string, ReadonlyMap<EdgeBank, Float32Array>>();
-  #laneValues = new WeakMap<Float32Array, FieldValues>();
+  #laneValues = new WeakMap<Float32Array, FieldInput.Values>();
   private readonly vertexRows = new Map<string, RowLookup<VertexBank>>();
   private readonly edgeRows = new Map<string, RowLookup<EdgeBank>>();
   constructor(
     private readonly vertices: readonly VertexBank[],
     private readonly edges: readonly EdgeBank[],
-    paths: readonly EdgeBank[],
     private readonly vertexCount: number,
     edgeCount: number,
   ) {
@@ -44,7 +44,6 @@ export class Adjacency {
         offsets[bank.base + i + 1] = written;
       }
     }
-    for (const bank of paths) this.rows(this.edgeRows, bank.index).add(bank.rows, bank);
     for (const rows of this.edgeRows.values()) rows.seal();
     this.graph = new kit.Graph(vertexCount, {
       offsets,
@@ -104,7 +103,7 @@ export class Adjacency {
     return out;
   }
   /** A bank's lanes as values its edges read, when any of them has one. */
-  laneValues(bank: EdgeBank, data: NetworkData): FieldValues | undefined {
+  laneValues(bank: EdgeBank, data: NetworkData): FieldInput.Values | undefined {
     const lanes = this.lanes(data).get(bank);
     if (!lanes) return undefined;
     let found = this.#laneValues.get(lanes);
@@ -126,7 +125,7 @@ export class Adjacency {
     return rows;
   }
   /** An item's dense address, or undefined when it is not drawn. */
-  address(item: NetworkItem): number | undefined {
+  address(item: Network.Item): number | undefined {
     if (item.kind === 'vertex') {
       const found = this.vertexRows.get(indexKey(item.index))?.get(item.row);
       return found && found.value.base + found.offset;
@@ -149,13 +148,12 @@ export class Adjacency {
     return b && row < b.base + b.count ? b : undefined;
   }
   /** An item and what it joins; the index names its rows, so an item outlives appends. */
-  neighborhood(item: NetworkItem, data: NetworkData): readonly NetworkItem[] {
-    if (item.kind === 'path') return [];
+  neighborhood(item: Network.Item, data: NetworkData): readonly Network.Item[] {
     const found = (item.kind === 'vertex' ? this.vertexRows : this.edgeRows)
       .get(indexKey(item.index))
       ?.get(item.row);
     if (!found) return [];
-    const result: NetworkItem[] = [item],
+    const result: Network.Item[] = [item],
       seen = new Set<string>([item.kind + ':' + item.index.type + ':' + item.row]);
     const addVertex = (dense: number) => {
       if (dense === 0xffffffff) return;

@@ -1,11 +1,5 @@
-import { createGpu, colormaps, colormapCss, type ColormapName, type Shade } from '@latkit/gpu';
-import {
-  createMonitor,
-  type Monitor,
-  type MonitorItem,
-  type Reading,
-  type Trace,
-} from '@latkit/monitor';
+import { createGpu, colormaps, colormapCss, type Shade, type Colormap } from '@latkit/gpu';
+import { createMonitor, type Monitor } from '@latkit/monitor';
 import { Telemetry } from './source.js';
 import './style.css';
 
@@ -33,7 +27,7 @@ const EXAMPLE_COLORMAPS = [
   'turbo',
   'magma',
   'icefire',
-] as const satisfies readonly ColormapName[];
+] as const satisfies readonly Colormap.Name[];
 
 type SignalIndex = 0 | 1 | 2 | 3;
 
@@ -63,7 +57,7 @@ let seed = 0x5eed1234;
 const SIGNAL_IDS = SIGNALS.map((signal) => signal.id);
 
 let source = new Telemetry(SIGNAL_IDS, ELEMENT_COUNT, DT_SECONDS);
-let palette: ColormapName = EXAMPLE_COLORMAPS[0];
+let palette: Colormap.Name = EXAMPLE_COLORMAPS[0];
 let monitor: Monitor;
 let frameCursor = 0;
 let latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
@@ -89,7 +83,7 @@ const highlight: Shade = {
   },
 };
 
-function trace(): Trace {
+function trace(): Monitor.TraceOptions {
   const signal = SIGNALS[currentSignal];
   return {
     from: 'sensor',
@@ -419,7 +413,7 @@ function describeElement(element: number): string {
 }
 
 /** A clicked reading, or a row selected from the list. */
-function describeReading(reading: Reading | MonitorItem | null): string {
+function describeReading(reading: Monitor.Reading | Monitor.Item | null): string {
   if (!reading) return '-';
   if (!('value' in reading)) return describeElement(reading.row);
   return `element ${reading.row} / ${formatValue(reading.value, SIGNALS.findIndex((signal) => signal.id === reading.field) as SignalIndex)} / ${reading.coordinate.toFixed(1)}s`;

@@ -1,15 +1,9 @@
-import type { FieldValues, Index } from '@latkit/model';
-import { kit, type Point, type Positions, type TextLayout } from '@latkit/gpu';
-import type {
-  DiagramData,
-  DiagramItem,
-  SceneItem,
-  Shape,
-  VertexOptions,
-  EdgeOptions,
-} from './data.js';
+import type { Index, FieldInput } from '@latkit/model';
+import { kit, type Point, type Layout } from '@latkit/gpu';
+import type { DiagramData, SceneItem, Shape } from './data.js';
 import { itemKey } from './data.js';
 import type { Obstacles, Route } from './route.js';
+import type { Diagram } from './diagram.js';
 export type Rect = readonly [number, number, number, number];
 /** A reference field wiring its vertex to a drawn net. */
 export interface Port {
@@ -17,7 +11,7 @@ export interface Port {
   /** The net type it references. */
   to: string;
   direction?: 'in' | 'out';
-  label: TextLayout;
+  label: kit.TextLayout;
   side: 'left' | 'right' | 'top' | 'bottom';
   order: number;
   marker: 'directional' | 'circle' | 'diamond';
@@ -44,11 +38,11 @@ export interface Vertex {
   radius: number;
   visible: boolean;
   sourceVisible: boolean;
-  label: TextLayout;
+  label: kit.TextLayout;
   ports: Port[];
   /** The slot of the first port; the others follow in order. */
   portSlot: number;
-  options: VertexOptions;
+  options: Diagram.VertexOptions;
   group?: string;
 }
 /** One vertex an edge joins: through a port for a net, or directly for a row's own end. */
@@ -73,8 +67,8 @@ export interface Edge extends Wire {
   hit: SceneItem;
   ends: End[];
   visible: boolean;
-  label: TextLayout;
-  options: EdgeOptions;
+  label: kit.TextLayout;
+  options: Diagram.EdgeOptions;
   paths: readonly (readonly Point[])[];
   offsets: readonly number[];
   junctions: readonly Point[];
@@ -87,7 +81,7 @@ export interface Edge extends Wire {
 }
 export interface GroupBox {
   id: string;
-  label: TextLayout;
+  label: kit.TextLayout;
   bounds: Rect;
   /** The title band's height. */
   header: number;
@@ -138,7 +132,7 @@ export interface SceneRows {
   readonly edges: ReadonlyMap<string, number>;
   readonly parts: ReadonlyMap<string, number>;
 }
-export const emptyLabel: TextLayout = Object.freeze({
+export const emptyLabel: kit.TextLayout = Object.freeze({
   runs: [],
   width: 0,
   height: 0,
@@ -221,7 +215,7 @@ export function groupFrame(inside: Rect, group: GroupBox, padding: number): Rect
     : [box[0], top, box[2], box[3]];
 }
 /** The item a slot draws. */
-export function itemAt(scene: Scene, slot: number): DiagramItem | null {
+export function itemAt(scene: Scene, slot: number): Diagram.Item | null {
   const { slots, vertices } = scene;
   if (slot < slots.ports) return vertices[slot]?.hit ?? null;
   if (slot < slots.edges) {
@@ -263,7 +257,7 @@ export function itemSlots(scene: Scene): ReadonlyMap<string, number> {
 export function positions(
   vertices: readonly Vertex[],
   only: (vertex: Vertex, i: number) => boolean = () => true,
-): Readonly<Record<string, Positions>> {
+): Readonly<Record<string, Layout.Positions>> {
   const grouped = new Map<string, Vertex[]>();
   vertices.forEach((vertex, i) => {
     if (only(vertex, i)) {
@@ -276,7 +270,7 @@ export function positions(
   return Object.fromEntries(
     [...grouped].map(([type, entries]) => {
       const rows = { kind: 'indices', values: Uint32Array.from(entries, (v) => v.row) } as const;
-      const axis = (values: Float64Array): FieldValues => ({
+      const axis = (values: Float64Array): FieldInput.Values => ({
         index: entries[0].index,
         rows,
         values: { kind: 'numeric', offset: 0, length: values.length, values },

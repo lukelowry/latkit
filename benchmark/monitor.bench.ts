@@ -1,11 +1,11 @@
 import { describe } from 'vitest';
-import { appendData, type Data, type Domain, type SampleBatch } from '@latkit/model';
-import { pulse, type ColormapName, type RGBA } from '@latkit/gpu';
-import { createMonitor, type Monitor, type MonitorConfig } from '@latkit/monitor';
+import { appendData, type Data, type Domain } from '@latkit/model';
+import { pulse, type RGBA, type Colormap } from '@latkit/gpu';
+import { createMonitor, type Monitor } from '@latkit/monitor';
 import { busIndex, counters, draw, frames, gpu, grid, suite, voltages } from './harness.ts';
 
 /** A frame of voltages swinging wider than any before, as a disturbance grows: every frame is a new extreme. */
-function swelling(buses: number, frame: number): SampleBatch {
+function swelling(buses: number, frame: number): Data.SampleBatch {
   const batch = voltages(buses, frame),
     swing = 0.05 + frame * 0.01,
     values = Float32Array.from(
@@ -23,7 +23,7 @@ describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
   const device = await gpu();
   let data = grid(rows);
   // A fixed window with room for the stream, as a run that declares its domain uses.
-  const config: MonitorConfig = {
+  const config: Monitor.Config = {
     source: data,
     traces: { voltage: { from: 'Bus', y: 'voltage' } },
     camera: { x: [0, frames * 4] },
@@ -66,7 +66,7 @@ describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
 /** How a scenario's traces look this iteration: mapped traces' domain and colormap, fixed traces' color. */
 interface Look {
   readonly domain: Domain;
-  readonly colormap: ColormapName;
+  readonly colormap: Colormap.Name;
   readonly color: RGBA;
 }
 const lookAt = (i: number): Look => ({
@@ -101,7 +101,7 @@ const mapped = (look: Look, rows?: ReturnType<typeof part>, shift = 0) => ({
  */
 const SCENARIOS: Record<
   string,
-  { traces(rows: number, look: Look): MonitorConfig['traces']; style?: Partial<MonitorConfig> }
+  { traces(rows: number, look: Look): Monitor.Config['traces']; style?: Partial<Monitor.Config> }
 > = {
   'one fixed trace': { traces: (_, look) => ({ a: fixed(look.color) }) },
   'one mapped trace': { traces: (_, look) => ({ a: mapped(look) }) },
@@ -182,7 +182,7 @@ describe.each(
 )('monitor %s %i rows', async (scenario, rows) => {
   const device = await gpu(),
     { traces, style } = SCENARIOS[scenario],
-    configOf = (source: Data, i = 0): MonitorConfig => ({
+    configOf = (source: Data, i = 0): Monitor.Config => ({
       source,
       traces: traces(rows, lookAt(i)),
       camera: { x: [0, frames * 4] },
@@ -191,7 +191,7 @@ describe.each(
       ...style,
     });
   /** A monitor drawn whole, before anything is measured. */
-  const ready = async (extra: Partial<MonitorConfig> = {}) => {
+  const ready = async (extra: Partial<Monitor.Config> = {}) => {
     const view = createMonitor(device, { ...configOf(grid(rows)), ...extra });
     await draw(device, view, 0, 'complete');
     return view;

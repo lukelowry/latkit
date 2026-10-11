@@ -33,7 +33,7 @@ for await (const block of read(source, { kind: 'rows', from: 'Bus', select: ['lo
 | `appendData(previous, batches)`        | A new value with sampled observations appended              |
 | `read(data, query, options)`           | Bounded local rows, samples, aggregates, and envelopes      |
 | `createReader(options)`                | Memoized reads, joined fields, and extents in a memory pool |
-| `createMemory(budget)`                 | One budget for the reads, uploads, and GPU resources        |
+| `createMemory(budget)`                 | One budget for what reads, uploads, and GPU resources keep  |
 | `locateSample(pages, at)`              | The last observation at or before a coordinate              |
 | `appendedPages(before, after)`         | The pages an append added, or `undefined` for a replacement |
 | `selectBatches(data, fields, options)` | Selected fields of a value as batches, for a model          |
@@ -45,7 +45,7 @@ Check untrusted input with `validateSchema`, `validateSelection`, `validateBatch
 
 A `Model` has a `name`, a `schema`, an optional `monitor` that yields batches, and `commands`. Each
 command is a `CommandDescription` of `Parameter`s with a `run(values, context)`; `Arguments` infers
-its values. A handler gets the same `CommandContext` in process and across `@latkit/connect`, and
+its values. A handler gets the same `Command.Context` in process and across `@latkit/connect`, and
 throws a `failure` to report a code, such as `invalid-input`, to its caller.
 
 [Data](https://latkit.readthedocs.io/en/latest/document-sessions.html) ·

@@ -1,4 +1,4 @@
-import type { Problem } from '../types.js';
+import type { Failure } from '../failure.js';
 
 export type Path = readonly (string | number)[];
 export const numeric = ['float32', 'float64', 'int32', 'uint32'];
@@ -11,7 +11,7 @@ export const record = (value: unknown): value is Record<string, unknown> =>
   !ArrayBuffer.isView(value);
 
 export class Check {
-  readonly issues: Problem[] = [];
+  readonly issues: Failure.Problem[] = [];
   issue(path: Path, message: string, code = 'invalid-input'): void {
     this.issues.push({ code, message, target: { kind: 'path', path } });
   }

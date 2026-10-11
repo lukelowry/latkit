@@ -1,11 +1,10 @@
 import type { Colormap } from '../colors/colormap.js';
-import type { ColormapName } from '../colors/catalog.js';
-import type { EnvelopeBlock, FieldsBlock, ReadScope } from '@latkit/model';
+import type { Block, Reader } from '@latkit/model';
 import type { TextRequest, TextPage } from '../text/text.js';
 import type { BufferResource } from '../memory/buffers.js';
 import type { BufferData } from '../memory/buffer-data.js';
 import type { GpuPage, UploadOptions } from '../fields/types.js';
-import type { ShadeRequest } from '../style/shade.js';
+import type { Shade } from '../style/shade.js';
 import type { TextureData } from '../memory/texture-data.js';
 import type { TextureResource } from '../memory/textures.js';
 
@@ -35,13 +34,13 @@ export interface FrameInfo {
 export interface Preparation extends FrameInfo {
   readonly signal: AbortSignal;
   /** The GPU's reader, held for this frame: results stay cached until its work completes. */
-  readonly reader: ReadScope;
+  readonly reader: Reader.Scope;
   /** Shared effect uniforms consumed by shadeShader. */
-  shade(request?: ShadeRequest): GPUBufferBinding;
+  shade(request?: Shade.Request): GPUBufferBinding;
   /** Frame-scoped shared binding; defaults to grayscale. Use Gpu.colormapLayout. */
-  colormap(value?: Colormap | ColormapName): GPUBindGroup;
+  colormap(value?: Colormap | Colormap.Name): GPUBindGroup;
   text(request: TextRequest): Promise<readonly TextPage[]>;
-  upload(block: FieldsBlock | EnvelopeBlock, options: UploadOptions): readonly GpuPage[];
+  upload(block: Block.Fields | Block.Envelope, options: UploadOptions): readonly GpuPage[];
   buffer(data: BufferData | BufferResource): GPUBufferBinding;
   /** Dedicated immutable uniform contents for this frame; safe across concurrent views. */
   uniforms(data: ArrayBufferView): GPUBufferBinding;

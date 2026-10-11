@@ -1,15 +1,15 @@
 import { failure, type Work } from '@latkit/model';
-import type { LayoutOptions, LayoutPart, LayoutStrategy } from './place.js';
+import type { Layout } from './place.js';
 
 /** Ranks along the flow, ordered to cross less, each vertex in line with its sources' ports. */
-export function layered(layout: Required<LayoutOptions>, work: Work): LayoutStrategy {
+export function layered(layout: Required<Layout>, work: Work): Layout.Strategy {
   return { arrange: (part) => ranked(part, layout, work) };
 }
 type Box = readonly [number, number, number, number];
 const intersects = (a: Box, b: Box) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 async function ranked(
-  part: LayoutPart,
-  layout: Required<LayoutOptions>,
+  part: Layout.Part,
+  layout: Required<Layout>,
   work: Work,
 ): Promise<Float64Array> {
   const { graph, input, vertices, edges } = part,

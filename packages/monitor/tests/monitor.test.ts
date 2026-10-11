@@ -1,15 +1,16 @@
 import {
+  createData,
   type Data,
-  type Domain,
   type FieldInput,
-  type ReadScope,
-  type RowSelection,
-  type SampleWindow,
+  type Domain,
+  type Reader,
+  type Index,
+  type Query,
 } from '@latkit/model';
 import { renderer as testRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { describe, it, expect, vi } from 'vitest';
 import { createGpu, kit, pulse, type Gpu } from '@latkit/gpu';
-import { createMonitor, type Monitor, type MonitorConfig } from '../src/index.js';
+import { createMonitor, type Monitor } from '../src/index.js';
 import { SignalSource } from './fixture.js';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
 import { ticks } from '../src/ticks.js';
@@ -45,10 +46,10 @@ const through = (
 interface Request {
   readonly kind: string;
   readonly source: Data;
-  readonly rows?: RowSelection;
+  readonly rows?: Index.Selection;
   readonly select?: readonly string[];
   readonly fields?: Readonly<Record<string, FieldInput>>;
-  readonly window?: SampleWindow;
+  readonly window?: Query.Window;
 }
 const fieldNames = (fields: Readonly<Record<string, FieldInput>>) =>
   Object.values(fields).flatMap((input) =>
@@ -59,7 +60,7 @@ function record(gpu: Gpu, requests: Request[]) {
   const open = gpu.reader.open.bind(gpu.reader);
   vi.spyOn(gpu.reader, 'open').mockImplementation((options) => {
     const scope = open(options);
-    const recorded: ReadScope = {
+    const recorded: Reader.Scope = {
       get signal() {
         return scope.signal;
       },
@@ -93,7 +94,7 @@ const drawn = (requests: readonly Request[]) =>
       ? [[q.window.offset, q.window.offset + q.window.count] as const]
       : [],
   );
-async function harness(source = new SignalSource(4, 128), options: Partial<MonitorConfig> = {}) {
+async function harness(source = new SignalSource(4, 128), options: Partial<Monitor.Config> = {}) {
   const fake = fakeDevice();
   const encoder = fake.native.createCommandEncoder.getMockImplementation()!;
   fake.native.createCommandEncoder.mockImplementation(() =>
@@ -151,6 +152,62 @@ async function harness(source = new SignalSource(4, 128), options: Partial<Monit
 }
 
 describe('history', () => {
+  it('draws history across frames never recorded, each run apart', async () => {
+    const h = await harness();
+    const signal = h.source,
+      rows = { kind: 'range' as const, offset: 0, count: signal.count };
+    const run = (first: number, count: number): Data.SampleBatch => ({
+      kind: 'samples',
+      index: signal.index,
+      rows,
+      firstFrame: first,
+      coordinates: Float64Array.from({ length: count }, (_, i) => signal.coordinate(first + i)),
+      columns: Object.fromEntries(
+        ['value', 'other', 'visible'].map((name) => [
+          name,
+          {
+            kind: 'numeric' as const,
+            offset: 0,
+            length: count * signal.count,
+            rowStride: 1,
+            frameStride: signal.count,
+            values: Float64Array.from({ length: count * signal.count }, (_, k) =>
+              name === 'visible'
+                ? 1
+                : signal.value(k % signal.count, first + Math.floor(k / signal.count), name),
+            ),
+          },
+        ]),
+      ),
+    });
+    // Frames 64 to 299 were never recorded.
+    const gapped = createData(signal.schema, [
+      {
+        kind: 'rows',
+        index: signal.index,
+        rows,
+        columns: {
+          weight: {
+            kind: 'numeric',
+            offset: 0,
+            length: signal.count,
+            values: new Float64Array(signal.count),
+          },
+        },
+      },
+      run(0, 64),
+      run(300, 64),
+    ]);
+    const errors: unknown[] = [];
+    h.monitor.on('error', (error) => errors.push(error));
+    h.monitor.set({ source: gapped, camera: { x: [0, signal.coordinate(363)] } });
+    await h.render();
+    expect(errors).toEqual([]);
+    expect(through(h.monitor)).toBe(363);
+    // No read spans the frames never recorded.
+    for (const [first, end] of drawn(h.requests)) expect(end <= 64 || first >= 300).toBe(true);
+    h.close();
+  });
   it('draws history once and never reads it again for a playhead', async () => {
     const h = await harness();
     await h.render();

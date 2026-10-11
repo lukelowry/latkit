@@ -1,15 +1,8 @@
-import {
-  failure,
-  type Data,
-  type FieldInput,
-  type FieldValues,
-  type FieldsBlock,
-} from '@latkit/model';
+import { failure, type Data, type FieldInput, type Block } from '@latkit/model';
 import { kit } from '@latkit/gpu';
-import type { EdgeOptions, PathOptions, VertexOptions } from '../data.js';
 import type { VertexBank, EdgeBank } from '../geometry/topology.js';
 import { FLOW_RANGE, RADIUS_RANGE, WIDTH_RANGE } from '../options.js';
-
+import type { Network } from '../network.js';
 /** What a vertex reads, and how: a field spans the range, or reads as it is when raw. */
 export const VERTEX = {
   x: 'raw',
@@ -30,7 +23,7 @@ export const VERTEX = {
   input7: 'raw',
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
 /**
- * What an edge or a path reads; an edge's x and y center a net's star, and its lane is its place
+ * What an edge reads; its x and y center a net's star, and its lane is its place
  * among the edges joining the same two vertices, which the view finds.
  */
 export const LINE = {
@@ -46,7 +39,7 @@ export const LINE = {
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
 export type ChannelName = keyof typeof VERTEX | keyof typeof LINE;
 const NAMES = [...new Set([...Object.keys(VERTEX), ...Object.keys(LINE)])] as ChannelName[];
-export type Options = VertexOptions | EdgeOptions | PathOptions;
+export type Options = Network.VertexOptions | Network.EdgeOptions;
 /** What a row reads without a value: no position, no height, and shown. */
 const FALLBACK: Readonly<Partial<Record<ChannelName, number>>> = {
   x: NaN,
@@ -63,35 +56,55 @@ const bindings = new Map<Kinds, WeakMap<object, kit.BoundChannels<ChannelName>>>
   [VERTEX, new WeakMap()],
   [LINE, new WeakMap()],
 ]);
+/** Banks' channels by their type's, then by what the view found for each bank. */
+const banks = new WeakMap<
+  kit.BoundChannels<ChannelName>,
+  WeakMap<FieldInput.Values, kit.BoundChannels<ChannelName>>
+>();
+/** A type's channels, bound once per options object: what checks, placement, and reads share. */
+export function channels(options: Options, kinds: Kinds): kit.BoundChannels<ChannelName> {
+  const cache = bindings.get(kinds)!;
+  let found = cache.get(options);
+  if (!found) cache.set(options, (found = bind(options, kinds)));
+  return found;
+}
 /**
- * A type's channels, bound once per options object. `local` holds what the view finds for one
- * bank itself: every vertex's position where layout placed any, or every edge's lane.
+ * A bank's channels: its type's, with what the view finds for the bank itself in place of its own,
+ * every vertex's position where layout placed any or every edge's lane. A restyle keeps the layout
+ * and lanes, and a new layout keeps the style, so both key the binding.
  */
-export function channels(
+export function bankChannels(
   options: Options,
   kinds: Kinds,
-  local?: FieldValues,
+  local?: FieldInput.Values,
 ): kit.BoundChannels<ChannelName> {
-  const cache = bindings.get(kinds)!,
-    key = local ?? options;
-  let found = cache.get(key);
+  const shared = channels(options, kinds);
+  if (!local) return shared;
+  let laid = banks.get(shared);
+  if (!laid) banks.set(shared, (laid = new WeakMap()));
+  let found = laid.get(local);
   if (!found) {
-    // A kind names only its own channels; the others stay unbound. A marker's inputs read as
-    // `input0` and on, in the order it names them.
-    const marker = 'marker' in options ? options.marker : undefined,
-      inputs = Object.fromEntries(
-        Object.values(marker?.inputs ?? {}).map((channel, i) => ['input' + i, channel]),
-      ),
-      own = !local
-        ? {}
-        : kinds === VERTEX
-          ? { x: { field: local }, y: { field: local, component: 1 } }
-          : { lane: { field: local } },
-      bound = { ...options, ...inputs, ...own };
-    found = kit.bindChannels(bound, kinds as Readonly<Record<ChannelName, kit.ChannelKind>>);
-    cache.set(key, found);
+    const own =
+      kinds === VERTEX
+        ? { x: { field: local }, y: { field: local, component: 1 } }
+        : { lane: { field: local } };
+    laid.set(local, (found = bind(options, kinds, own)));
   }
   return found;
+}
+/**
+ * A kind names only its own channels; the others stay unbound. A marker's inputs read as `input0`
+ * and on, in the order it names them.
+ */
+function bind(options: Options, kinds: Kinds, own: object = {}): kit.BoundChannels<ChannelName> {
+  const marker = 'marker' in options ? options.marker : undefined,
+    inputs = Object.fromEntries(
+      Object.values(marker?.inputs ?? {}).map((channel, i) => ['input' + i, channel]),
+    );
+  return kit.bindChannels(
+    { ...options, ...inputs, ...own },
+    kinds as Readonly<Record<ChannelName, kit.ChannelKind>>,
+  );
 }
 
 export interface ReadPage {
@@ -106,7 +119,7 @@ export class FieldRead {
   private readonly custom = new Map<ChannelName, Map<number, kit.ResolvedChannel>>();
   constructor(
     readonly pages: readonly ReadPage[],
-    readonly native: readonly FieldsBlock[],
+    readonly native: readonly Block.Fields[],
     readonly bound: kit.BoundChannels<ChannelName>,
     /** Each scaled channel's domain, resolved across its type's banks. */
     readonly scales: Readonly<Partial<Record<ChannelName, kit.ResolvedScale>>> = {},
@@ -140,24 +153,21 @@ export class FieldRead {
   }
 }
 
-/** The polylines a type draws through: an edge's bends or a path's points. */
+/** The polylines a type draws through: an edge's bends. */
 function lists(options: Options): Record<string, FieldInput> {
-  const out: Record<string, FieldInput> = {};
-  if ('bends' in options && options.bends) out.bends = options.bends;
-  if ('points' in options && options.points) out.points = options.points;
-  return out;
+  return 'bends' in options && options.bends ? { bends: options.bends } : {};
 }
 export async function readFields(
   frame: kit.Preparation,
   source: Data,
   bank: VertexBank | EdgeBank,
   options: Options,
-  local?: FieldValues,
+  local?: FieldInput.Values,
 ): Promise<FieldRead> {
-  const bound = channels(options, 'batches' in bank ? LINE : VERTEX, local),
+  const bound = bankChannels(options, 'batches' in bank ? LINE : VERTEX, local),
     select = Object.keys(bound.fields);
   const pages: ReadPage[] = [],
-    native: FieldsBlock[] = [];
+    native: Block.Fields[] = [];
   for await (const tile of frame.reader.fields({
     source,
     from: bank.index.type,
@@ -165,14 +175,12 @@ export async function readFields(
     fields: { ...bound.fields, ...lists(options) },
   })) {
     native.push(tile);
-    for (const name of ['bends', 'points']) {
-      const column = tile.columns[name];
-      if (
-        column &&
-        (column.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
-      )
-        throw failure('invalid-input', 'Paths require lists of two-component numeric vectors');
-    }
+    const bends = tile.columns.bends;
+    if (
+      bends &&
+      (bends.kind !== 'list' || bends.values.kind !== 'vector' || bends.values.size !== 2)
+    )
+      throw failure('invalid-input', 'Bends require lists of two-component numeric vectors');
     for (const page of frame.upload(tile, { select, float64: 'relative' }))
       pages.push({ page, offset: page.rowOffset });
   }
@@ -204,7 +212,7 @@ export async function resolveDomains(
       for (const bank of banks) {
         const scale = await kit.fieldScale(frame.reader, {
           ...channel.scale,
-          source: 'source' in bank ? (bank.source ?? source) : source,
+          source,
           from: bank.index.type,
           rows: { ...bank.rows, index: bank.index },
           field: channel.field,

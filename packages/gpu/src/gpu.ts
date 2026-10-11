@@ -4,9 +4,6 @@ import {
   createMemory,
   createReader,
   type Memory,
-  type MemoryBudget,
-  type MemoryEntry,
-  type MemoryStats,
   type Reader,
 } from '@latkit/model';
 import { renderers as rendererTree } from './frame/tree.js';
@@ -16,28 +13,12 @@ import { Buffers, type BufferResource } from './memory/buffers.js';
 import { Colormaps } from './colors/preparation.js';
 import { Images } from './memory/images.js';
 import { TextAtlas } from './text/atlas.js';
-import type { TextLayout, TextLayoutInput, TextOptions } from './text/text.js';
+import type { TextLayout, TextLayoutInput, TextRasterizer } from './text/text.js';
 import { Allocator } from './memory/allocation.js';
 import { integer } from './error.js';
 import { Uniforms } from './frame/uniforms.js';
 import { Textures, type TextureResource } from './memory/textures.js';
 import { Uploader } from './fields/upload.js';
-
-export interface GpuOptions {
-  /** Borrowed when supplied. Otherwise this owner requests and owns a device. */
-  readonly device?: GPUDevice;
-  readonly powerPreference?: GPUPowerPreference;
-  readonly requiredFeatures?: readonly GPUFeatureName[];
-  readonly requiredLimits?: Readonly<Record<string, number>>;
-  /** One pool bounds the reader's cache, uploads, and GPU resources together. */
-  readonly budget?: Partial<MemoryBudget>;
-  readonly pageBytes?: number;
-  readonly maxBlockBytes?: number;
-  readonly maxFramesInFlight?: number;
-  /** Full model boundary validation of every read. Upload bounds are always checked. */
-  readonly validate?: boolean;
-  readonly text?: TextOptions;
-}
 
 export interface Gpu {
   readonly device: GPUDevice;
@@ -46,7 +27,7 @@ export interface Gpu {
    * after `destroy`. Views stop drawing then; after device loss, recreate the Gpu and its views.
    */
   readonly signal: AbortSignal;
-  readonly budget: MemoryBudget;
+  readonly budget: Memory.Budget;
   /** One bounded, memoized reader for every view, job, and layout on this Gpu. */
   readonly reader: Reader;
   readonly fieldLayout: GPUBindGroupLayout;
@@ -57,7 +38,7 @@ export interface Gpu {
     input: TextLayoutInput,
     options?: { readonly signal?: AbortSignal },
   ): Promise<TextLayout>;
-  stats(): MemoryStats;
+  stats(): Memory.Stats;
   render(options: RenderOptions): Promise<void>;
   buffer(descriptor: GPUBufferDescriptor): BufferResource;
   texture(descriptor: GPUTextureDescriptor): TextureResource;
@@ -72,8 +53,33 @@ export interface Gpu {
   trim(): void;
   destroy(): void;
 }
+export declare namespace Gpu {
+  interface Options {
+    /** Borrowed when supplied. Otherwise this owner requests and owns a device. */
+    readonly device?: GPUDevice;
+    readonly powerPreference?: GPUPowerPreference;
+    readonly requiredFeatures?: readonly GPUFeatureName[];
+    readonly requiredLimits?: Readonly<Record<string, number>>;
+    /**
+     * One pool's budget for what the reader's cache, uploads, and GPU resources keep. What frames draw
+     * is never refused: past the budget the pool runs over until views let it go.
+     */
+    readonly budget?: Partial<Memory.Budget>;
+    readonly pageBytes?: number;
+    readonly maxBlockBytes?: number;
+    readonly maxFramesInFlight?: number;
+    /** Full model boundary validation of every read. Upload bounds are always checked. */
+    readonly validate?: boolean;
+    readonly text?: TextOptions;
+  }
+  /** How a Gpu draws text: the rasterizer of its glyphs, and the size of its atlas. */
+  interface TextOptions {
+    readonly rasterizer?: TextRasterizer;
+    readonly atlasSize?: number;
+  }
+}
 
-export async function createGpu(options: GpuOptions = {}): Promise<Gpu> {
+export async function createGpu(options: Gpu.Options = {}): Promise<Gpu> {
   let device = options.device;
   if (!device) {
     const api = globalThis.navigator?.gpu;
@@ -110,7 +116,7 @@ export async function createGpu(options: GpuOptions = {}): Promise<Gpu> {
 }
 
 class Owner implements Gpu {
-  readonly budget: MemoryBudget;
+  readonly budget: Memory.Budget;
   readonly reader: Reader;
   readonly fieldLayout: GPUBindGroupLayout;
   readonly textLayout: GPUBindGroupLayout;
@@ -126,13 +132,13 @@ class Owner implements Gpu {
   private readonly pending = new Set<Promise<void>>();
   private readonly modules = new Map<
     string,
-    { entry: MemoryEntry; promise: Promise<GPUShaderModule> }
+    { entry: Memory.Entry; promise: Promise<GPUShaderModule> }
   >();
 
   constructor(
     readonly device: GPUDevice,
     private readonly ownsDevice: boolean,
-    options: GpuOptions,
+    options: Gpu.Options,
   ) {
     this.memory = createMemory(options.budget);
     this.budget = this.memory.budget;
@@ -205,7 +211,7 @@ class Owner implements Gpu {
     );
   }
 
-  stats(): MemoryStats {
+  stats(): Memory.Stats {
     return this.memory.stats();
   }
   private assertLive(): void {

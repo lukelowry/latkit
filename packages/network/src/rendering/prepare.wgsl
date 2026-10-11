@@ -103,6 +103,8 @@ fn vertex(row: u32) {
     let lon = (local.x + origin.x + u.center.x) * 0.017453292519943295;
     let lat = (local.y + origin.y + u.center.y) * 0.017453292519943295;
     normal = vec3f(cos(lat) * cos(lon), sin(lat), -cos(lat) * sin(lon));
+    // On the mercator plane, a latitude lies where mercator stretches it, from the center's place.
+    if (u.geo.w > 1.5) { world.y = projection_mercator(local.y + origin.y + u.center.y) - u.pose.z; }
   }
   var c = channelColor(vertexPage.tint, row, 0u, vertexPage.color);
   c = vec4f(c.rgb * daylight(normal, u), c.a);

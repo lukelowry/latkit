@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { appendData, createData, type Publication, type SampleBatch } from '@latkit/model';
+import { appendData, createData, type Model, type Data } from '@latkit/model';
 import { pair, fields, batch, pause, collect, schema } from './fixture.js';
 import { deferred } from '../src/core.js';
 import { Op } from '../src/frame.js';
@@ -39,7 +39,7 @@ it('delivers an oversized sample publish and monitor yield as whole-frame messag
   const frames = 2000,
     rows = 4,
     values = Float64Array.from({ length: frames * rows }, (_, i) => i);
-  const samples: SampleBatch = {
+  const samples: Data.SampleBatch = {
     kind: 'samples',
     index: batch().index,
     rows: { kind: 'range', offset: 0, count: rows },
@@ -63,16 +63,17 @@ it('delivers an oversized sample publish and monitor yield as whole-frame messag
   });
   const output = [{ from: 'Node', select: ['output'] }];
   try {
-    const published: Publication[] = [];
+    const published: Model.Publication[] = [];
     await p.model.commands.stream.run(
       {},
-      { outputs: output, publish: async (data) => void published.push(data as Publication) },
+      { outputs: output, publish: async (data) => void published.push(data as Model.Publication) },
     );
     for (const publications of [published, await collect(p.model.monitor!(output))]) {
       expect(publications.length).toBeGreaterThan(1);
       let data = createData(schema, []);
-      for (const publication of publications) data = appendData(data, publication as SampleBatch[]);
-      const received = publications.flat() as SampleBatch[];
+      for (const publication of publications)
+        data = appendData(data, publication as Data.SampleBatch[]);
+      const received = publications.flat() as Data.SampleBatch[];
       expect(received.reduce((n, piece) => n + piece.coordinates.length, 0)).toBe(frames);
     }
   } finally {

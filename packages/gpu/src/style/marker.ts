@@ -7,9 +7,6 @@ import type { Channel } from './channel.js';
 export type Shape = 'rounded' | 'rectangle' | 'ellipse' | 'diamond';
 /** Each shape's code in WGSL, as `shapeDistance` reads it. */
 export const SHAPES: readonly Shape[] = ['rounded', 'rectangle', 'ellipse', 'diamond'];
-/** An image a marker samples: decoded pixels, or anything a 2D canvas draws. */
-export type MarkerImage =
-  ImageData | ImageBitmap | HTMLCanvasElement | OffscreenCanvas | HTMLImageElement;
 /**
  * How each row of a type draws: WGSL defining `fn marker(f: MarkerFragment) -> MarkerColor` in CSS
  * pixels, from the shapes and markers of the shared library, the channels it reads by name, and
@@ -26,7 +23,11 @@ export interface Marker {
   /** Inputs that change at once rather than ease, as an image's index does. */
   readonly steps?: readonly string[];
   /** Images `markerImage(index, uv)` samples, each fitted into one square cell of an atlas. */
-  readonly images?: readonly MarkerImage[];
+  readonly images?: readonly Marker.Image[];
+}
+export declare namespace Marker {
+  /** An image a marker samples: decoded pixels, or anything a 2D canvas draws. */
+  type Image = ImageData | ImageBitmap | HTMLCanvasElement | OffscreenCanvas | HTMLImageElement;
 }
 /** Inputs a marker reads; one uniform slot holds their channels. */
 export const MARKER_INPUTS = 8;
@@ -58,7 +59,7 @@ export function checkMarker(marker: Marker): void {
   if (marker.images !== undefined) {
     if (!Array.isArray(marker.images) || marker.images.length > MARKER_IMAGES)
       throw failure('invalid-input', `A marker samples at most ${MARKER_IMAGES} images`);
-    for (const image of marker.images as readonly Partial<MarkerImage>[])
+    for (const image of marker.images as readonly Partial<Marker.Image>[])
       if (!(Number(image?.width) > 0) || !(Number(image?.height) > 0))
         throw failure('invalid-input', 'Invalid marker image');
   }
@@ -144,7 +145,7 @@ export function pie(options: {
 }
 /** The image `image` picks from `images`, over the row's color in `shape`. */
 export function icon(options: {
-  readonly images: readonly MarkerImage[];
+  readonly images: readonly Marker.Image[];
   readonly image: Channel;
   readonly shape?: Shape;
 }): Marker {
@@ -335,7 +336,7 @@ ${marker.wgsl}
 }
 
 /** Pixels a marker image holds: decoded already, or drawn once into a canvas. */
-function pixelsOf(image: MarkerImage): {
+function pixelsOf(image: Marker.Image): {
   readonly width: number;
   readonly height: number;
   readonly data: Uint8ClampedArray;
@@ -352,7 +353,7 @@ function pixelsOf(image: MarkerImage): {
  * averaged over the source pixels each cell pixel covers, with its color premultiplied.
  */
 export function markerAtlas(
-  images: readonly MarkerImage[],
+  images: readonly Marker.Image[],
   cell = 64,
 ): {
   readonly data: Uint8Array;

@@ -1,19 +1,20 @@
 struct Uniforms {
+  /** The scene block, as `kit.Projector` writes it: the projection, then the light, which the ground beneath binds too. */
   view: vec4f,
   pose: vec4f,
   rotation: vec4f,
   geo: vec4f,
   center: vec4f,
+  split: vec4f,
+  /** The sun of the ground beneath, which dims what faces away from it. */
+  light: Light,
   hoverColor: vec4f,
   /** Alpha -1 glows in each item's own color. */
   selectedColor: vec4f,
   /** How far hover's and the selection's glow reach, and the rest's opacity while something is selected. */
   glow: vec4f,
-  pointer: vec4f,
-  sun: vec4f,
-  surface: vec4f,
-  grid: vec4f,
-  flags: vec4u,
+  /** What label halos match: the ground beneath, or the background. */
+  halo: vec4f,
   flowColor: vec4f,
   /** How far the camera center moved, in the data's units, since `previous` was drawn. */
   easeShift: vec2f,
@@ -30,52 +31,20 @@ struct Uniforms {
   /** The vertex hover grows, and the one it left, by dense address; how far each has grown. */
   grown: vec2u,
   growth: vec2f,
+  /** How much markers shrink at this zoom, and the least radius they shrink to, in CSS pixels. */
+  markerFit: f32,
+  vertexMinRadiusPx: f32,
 }
 /** How far toward the camera a focused row draws: over its neighbors, never past the globe. */
 const FOCUS_LIFT: f32 = 0.00002;
 /** How far labels draw toward the camera, over focused rows and their glow. */
 const LABEL_LIFT: f32 = 0.00004;
-fn project_world(p: vec3f, u: Uniforms) -> vec4f {
-  let rx = p.x * u.rotation.x + p.y * u.rotation.y;
-  let ry = -p.x * u.rotation.y + p.y * u.rotation.x;
-  let distance = u.pose.y;
-  if (u.view.w < 0.5) {
-    return vec4f(rx * u.pose.x * 2.0 / u.view.x, ry * u.pose.x * 2.0 / u.view.y, 0.5 - p.z / (distance * 4.0), 1.0);
-  }
-  let w = distance + ry * u.rotation.w - p.z * u.rotation.z;
-  let y = ry * u.rotation.z + p.z * u.rotation.w;
-  let depth = (w - distance * 0.001) / (1.0 - 0.001 / 1000.0);
-  return vec4f(rx * u.pose.x * distance * 2.0 / u.view.x, y * u.pose.x * distance * 2.0 / u.view.y, depth, w);
-}
+fn projectionOf(u: Uniforms) -> Projection { return Projection(u.view, u.pose, u.rotation, u.geo, u.center, u.split); }
+fn project_world(p: vec3f, u: Uniforms) -> vec4f { return projection_clip(p, projectionOf(u)); }
 /** Where the view's ray through `ndc` meets the globe, in the world; a w of 0 where it misses. */
-fn globePoint(ndc: vec2f, u: Uniforms) -> vec4f {
-  let right = vec3f(u.rotation.x, u.rotation.y, 0.0);
-  let up = vec3f(-u.rotation.y * u.rotation.z, u.rotation.x * u.rotation.z, u.rotation.w);
-  let front = vec3f(u.rotation.y * u.rotation.w, -u.rotation.x * u.rotation.w, u.rotation.z);
-  let eye = front * u.pose.y;
-  let direction = right * ndc.x * u.view.x / (2.0 * u.pose.x) + up * ndc.y * u.view.y / (2.0 * u.pose.x) - front * u.pose.y;
-  let oc = eye - vec3f(0.0, 0.0, -1.0);
-  let a = dot(direction, direction);
-  let b = dot(oc, direction);
-  let disc = b * b - a * (dot(oc, oc) - 1.0);
-  if (disc < 0.0) { return vec4f(0.0); }
-  let t = (-b - sqrt(disc)) / a;
-  if (t < 0.0) { return vec4f(0.0); }
-  return vec4f(eye + direction * t, 1.0);
-}
-/**
- * A billboard's depth at a fragment: its own, but on a globe never behind the surface under it,
- * which bulges toward the camera across a marker or a label and would cut it.
- */
+fn globePoint(ndc: vec2f, u: Uniforms) -> vec4f { return projection_globe_hit(ndc, projectionOf(u)); }
+/** A billboard's depth at a fragment, never behind the globe's surface under it. */
 fn billboardDepth(position: vec4f, u: Uniforms) -> f32 {
-  if (u.view.w < 1.5) { return position.z; }
-  let size = u.view.xy * u.view.z;
-  let hit = globePoint(vec2f(position.x / size.x * 2.0 - 1.0, 1.0 - position.y / size.y * 2.0), u);
-  if (hit.w == 0.0) { return position.z; }
-  let clip = project_world(hit.xyz, u);
-  return min(position.z, max(clip.z / clip.w - 0.000001, 0.0));
+  return projection_billboard_depth(position, projectionOf(u), 0.0);
 }
-fn daylight(normal: vec3f, u: Uniforms) -> f32 {
-  if (u.sun.w < 0.5) { return 1.0; }
-  return mix(u.pointer.z, 1.0, smoothstep(-u.pointer.w, u.pointer.w, dot(normal, u.sun.xyz)));
-}
+fn daylight(normal: vec3f, u: Uniforms) -> f32 { return projection_daylight(normal, u.light); }

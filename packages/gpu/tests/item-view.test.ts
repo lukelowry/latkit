@@ -4,17 +4,18 @@ import {
   createComposition,
   createGpu,
   type Gpu,
-  type ItemEvents,
-  type ItemViewConfig,
-  type ColorChannel,
   type Point,
   type Viewport,
+  type ItemView,
+  type Channel,
 } from '../src/index.js';
 import {
   BaseItemView,
+  layerOf,
   rendererOf,
   type Encoding,
   type Grab,
+  type Layer,
   type Preparation,
 } from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
@@ -31,9 +32,10 @@ interface Dot {
 interface DotHit extends Dot {
   readonly distance: number;
 }
-interface DotConfig extends ItemViewConfig {
+interface DotConfig extends ItemView.Config {
+  readonly source: Data;
   readonly dots: Readonly<Record<string, readonly [number, number]>>;
-  readonly marks?: Readonly<Record<string, { readonly color?: ColorChannel }>>;
+  readonly marks?: Readonly<Record<string, { readonly color?: Channel.Color }>>;
   readonly camera?: Partial<Plane>;
 }
 const source = { schema: { tables: {} }, tables: {} } as unknown as Data;
@@ -44,7 +46,7 @@ class Dots extends BaseItemView<
   Dot,
   DotHit,
   Plane,
-  ItemEvents<Dot, DotHit, Plane>,
+  ItemView.Events<Dot, DotHit, Plane>,
   DotConfig,
   void,
   null,
@@ -787,5 +789,68 @@ it('leaves the page its scrolling in a view whose camera does not zoom', async (
   expect(view.camera.scale).toBe(scale);
   view.destroy();
   vi.unstubAllGlobals();
+  gpu.destroy();
+});
+
+/** Dots another view draws beneath itself. */
+class GroundDots extends Dots {
+  protected async prepareLayer(frame: Preparation): Promise<void> {
+    await this.prepare(frame);
+  }
+  protected drawLayer(): void {}
+}
+/** Dots drawn over a ground, clicked and asked for menus directly. */
+class HostDots extends Dots {
+  host(layer: Layer): void {
+    this.ground = layer;
+  }
+  tap(point: Point): Promise<void> {
+    return this.click(point, { alt: false, control: false, meta: false, shift: false });
+  }
+  ask(point: Point): Promise<boolean> {
+    return this.menu(point, 'pointer', { alt: false, control: false, meta: false, shift: false });
+  }
+}
+
+it('hands what it draws beneath only the input it takes, and reports menus over nothing itself', async () => {
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const render = (view: Dots) =>
+    gpu.render({
+      timeMs: 0,
+      views: [{ renderer: rendererOf(view), target: target(gpu.device), viewport }],
+    });
+  // The ground's one dot draws at the middle; the host's at a quarter and three quarters across.
+  const ground = new GroundDots(gpu, { source, dots: { g: [0, 0] } }),
+    host = new HostDots(gpu, { source, dots: { h: [0, 0], far: [100, 0] } });
+  await render(ground);
+  await render(host);
+  host.host(layerOf(ground));
+  const selected: string[][] = [],
+    menus: [string, readonly Dot[]][] = [];
+  ground.on('select', (items) => selected.push(items.map((item) => item.id)));
+  host.on('contextmenu', (menu) => menus.push(['host', menu.items]));
+  ground.on('contextmenu', (menu) => menus.push(['ground', menu.items]));
+  // A click the host's dots leave reaches the ground; one on the host's lets the ground's go.
+  await host.tap([50, 50]);
+  expect(ground.selection).toMatchObject([{ id: 'g' }]);
+  await host.tap([25, 50]);
+  expect(host.selection).toMatchObject([{ id: 'h' }]);
+  expect(selected).toEqual([['g'], []]);
+  // The ground reports a menu over its own dots; over nothing at all, the host does.
+  expect(await host.ask([50, 50])).toBe(true);
+  expect(await host.ask([90, 50])).toBe(true);
+  expect(menus).toEqual([
+    ['ground', [{ id: 'g', distance: 0 }]],
+    ['host', []],
+  ]);
+  // A ground that takes no input selects nothing and reports nothing.
+  ground.set({ input: 'none' });
+  menus.length = 0;
+  await host.tap([50, 50]);
+  await host.ask([50, 50]);
+  expect(ground.selection).toEqual([]);
+  expect(menus).toEqual([['host', []]]);
+  host.destroy();
+  ground.destroy();
   gpu.destroy();
 });

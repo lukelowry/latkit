@@ -1,6 +1,6 @@
-import { itemId, numberAt, rowAt, rowCount, type Schema, type TypeDefinition } from '@latkit/model';
-import type { Point, Positions, Shape } from '@latkit/gpu';
-import type { Group, ConnectProposal } from '@latkit/diagram';
+import { itemId, numberAt, rowAt, rowCount, type Schema } from '@latkit/model';
+import type { Point, Shape, Layout } from '@latkit/gpu';
+import type { Diagram } from '@latkit/diagram';
 
 export const types = ['Input', 'Process', 'Control', 'Output'] as const;
 export type BlockType = (typeof types)[number];
@@ -11,7 +11,7 @@ export const ports: Record<BlockType, Readonly<Record<string, 'in' | 'out'>>> = 
   Control: { in: 'in', feedback: 'in', out: 'out' },
   Output: { in: 'in' },
 };
-const fields: TypeDefinition['fields'] = {
+const fields: Schema.Type['fields'] = {
   name: { type: 'text' },
   position: { type: { kind: 'vector', items: 'float64', size: 2 } },
   signal: { type: 'float32' },
@@ -59,7 +59,7 @@ export interface Wire {
 export interface Graph {
   blocks: Block[];
   wires: Wire[];
-  groups: Record<string, Group>;
+  groups: Record<string, Diagram.GroupOptions>;
 }
 /** A block's port. */
 export interface Plug {
@@ -85,7 +85,7 @@ function unplugged(type: BlockType): Record<string, null> {
 export function preset(which: Preset, compact = false): Graph {
   const blocks: Block[] = [],
     wires: Wire[] = [],
-    groups: Record<string, Group> = {},
+    groups: Record<string, Diagram.GroupOptions> = {},
     byId = new Map<string, Block>();
   const block = (id: string, type: BlockType, name: string, x: number, y: number) => {
     const value: Block = {
@@ -233,7 +233,10 @@ function prune(graph: Graph): Graph {
   };
 }
 /** The graph with each block where positions put it, as a move proposes or a layout arranges. */
-export function placeGraph(graph: Graph, positions: Readonly<Record<string, Positions>>): Graph {
+export function placeGraph(
+  graph: Graph,
+  positions: Readonly<Record<string, Layout.Positions>>,
+): Graph {
   const placed = new Map<string, Point>();
   for (const [type, { x, y }] of Object.entries(positions)) {
     if (x.values.kind !== 'numeric' || y.values.kind !== 'numeric') continue;
@@ -298,7 +301,11 @@ function portOf(block: Block, direction: 'in' | 'out'): string {
   return port;
 }
 /** Plug the proposal's ports into one wire: the driving output's, or a new one. */
-export function connectGraph(graph: Graph, proposal: ConnectProposal, createOnDrop = false): Graph {
+export function connectGraph(
+  graph: Graph,
+  proposal: Diagram.ConnectProposal,
+  createOnDrop = false,
+): Graph {
   // The proposal names rows; this graph names blocks and wires by id.
   const fromPort = proposal.from.kind === 'port' ? proposal.from.port : undefined;
   const source = graph.blocks.find((block) => block.id === itemId(proposal.from));

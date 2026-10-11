@@ -1,27 +1,27 @@
-import type { ConnectProposal } from './diagram.js';
-import type { DiagramItem, DiagramPort, DiagramRow, Point, SceneItem } from './data.js';
+import type { Diagram } from './diagram.js';
+import type { Point, SceneItem } from './data.js';
 import { itemKey, rowOf } from './data.js';
 import type { Port, Scene } from './scene.js';
 import type { Style } from './config.js';
 import { Routing } from './route.js';
 import { rootEnd } from './layout.js';
 
-export type ConnectStart = Pick<ConnectProposal, 'from' | 'replaces'>;
+export type ConnectStart = Pick<Diagram.ConnectProposal, 'from' | 'replaces'>;
 /** A vertex or edge row, whichever kind names it. */
-const identity = (item: Exclude<DiagramItem, { kind: 'group' }>) =>
+const identity = (item: Exclude<Diagram.Item, { kind: 'group' }>) =>
   itemKey({ ...item, kind: 'vertex' });
 
 /** One immutable topology lookup per gesture; pointer moves only query nearby candidates. */
 export class ConnectSession {
   readonly start: ConnectStart;
-  readonly compatible: readonly DiagramItem[];
+  readonly compatible: readonly Diagram.Item[];
   private vertices = new Map<string, number>();
   private edges = new Map<string, Scene['edges'][number]>();
   private source: number;
   private port?: Port;
   constructor(
     private readonly scene: Scene,
-    hit: Exclude<DiagramItem, { kind: 'group' }>,
+    hit: Exclude<Diagram.Item, { kind: 'group' }>,
     private readonly options: Style,
   ) {
     scene.vertices.forEach((vertex, i) => this.vertices.set(identity(vertex.hit), i));
@@ -34,7 +34,7 @@ export class ConnectSession {
     this.start = { from: endOf(scene.vertices[source].hit, port?.name) };
     // Dragging a wired input moves it: the new wiring starts from its net's source.
     if (port?.direction === 'in') {
-      const moved = endOf(scene.vertices[source].hit, port.name) as DiagramPort;
+      const moved = endOf(scene.vertices[source].hit, port.name) as Diagram.Port;
       for (const edge of scene.edges) {
         const end = edge.ends.find((e) => e.vertex === source && e.port === moved.port);
         const root = edge.ends[rootEnd(edge)];
@@ -50,7 +50,7 @@ export class ConnectSession {
     }
     this.source = source;
     this.port = port;
-    const compatible: DiagramItem[] = [];
+    const compatible: Diagram.Item[] = [];
     for (const vertex of scene.vertices)
       if (vertex.visible)
         for (const candidate of vertex.ports) {
@@ -61,7 +61,7 @@ export class ConnectSession {
       if (edge.visible && this.accepts(edge.hit)) compatible.push(edge.hit);
     this.compatible = compatible;
   }
-  accepts(item: DiagramItem): boolean {
+  accepts(item: Diagram.Item): boolean {
     if (item.kind === 'group') return false;
     if (item.kind === 'edge') {
       // Moving an end between nets requires an explicit application merge command.
@@ -92,7 +92,7 @@ export class ConnectSession {
     }
     return true;
   }
-  proposal(item: DiagramItem | null, position: Point, point: Point): ConnectProposal {
+  proposal(item: Diagram.Item | null, position: Point, point: Point): Diagram.ConnectProposal {
     return {
       ...this.start,
       position,
@@ -101,7 +101,7 @@ export class ConnectSession {
     };
   }
   /** The wire as it would route: out of its start, around the blocks, into the target. */
-  preview(point: Point, target: DiagramItem | null, signal: AbortSignal): readonly Point[] {
+  preview(point: Point, target: Diagram.Item | null, signal: AbortSignal): readonly Point[] {
     const route = new Routing(this.scene, this.options, signal),
       clearance = this.options.routeClearance,
       index =
@@ -128,7 +128,7 @@ export class ConnectSession {
   }
 }
 /** Where wiring starts or ends: a vertex, or one of its ports. */
-function endOf(vertex: SceneItem, port: string | undefined): DiagramRow | DiagramPort {
+function endOf(vertex: SceneItem, port: string | undefined): Diagram.Row | Diagram.Port {
   return port === undefined
     ? { kind: 'vertex', source: vertex.source, index: vertex.index, row: vertex.row }
     : { kind: 'port', source: vertex.source, index: vertex.index, row: vertex.row, port };

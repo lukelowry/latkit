@@ -1,9 +1,8 @@
 import { renderer as snapshotRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { afterEach, expect, it, vi } from 'vitest';
-import { createData, numberAt, rowAt, rowCount, type NumericColumn } from '@latkit/model';
-import { createGpu, createComposition, kit } from '@latkit/gpu';
+import { createData, numberAt, rowAt, rowCount, type Column } from '@latkit/model';
+import { createGpu, createComposition, kit, type Layout } from '@latkit/gpu';
 import { createDiagram, type Diagram } from '../src/diagram.js';
-import type { Positions } from '../src/data.js';
 import type { Controls } from '../src/input.js';
 import type { DragDraw } from '../src/drag.js';
 import { Source, data, vertex as vertexOf } from './fixture.js';
@@ -57,11 +56,11 @@ const dragOf = (diagram: Diagram) =>
   (diagram as unknown as { shown?: { drag?: DragDraw } }).shown?.drag;
 const animating = (diagram: Diagram) => kit.rendererOf(diagram).animating;
 /** Each row of a type's positions with its x and y. */
-function lanes({ x, y }: Positions): number[][] {
+function lanes({ x, y }: Layout.Positions): number[][] {
   return Array.from({ length: rowCount(x.rows) }, (_, i) => [
     rowAt(x.rows, i),
-    numberAt(x.values as NumericColumn, i)!,
-    numberAt(y.values as NumericColumn, i)!,
+    numberAt(x.values as Column.Numeric, i)!,
+    numberAt(y.values as Column.Numeric, i)!,
   ]);
 }
 const presentedOf = (diagram: Diagram) =>

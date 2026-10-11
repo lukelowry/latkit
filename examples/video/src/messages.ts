@@ -1,4 +1,4 @@
-import type { MemoryStats } from '@latkit/model';
+import type { Memory } from '@latkit/model';
 import type { VideoProgress, VideoResult } from '@latkit/video';
 import type { ExampleView } from './scene.js';
 export interface ExportRequest {
@@ -13,7 +13,7 @@ export interface ExportResult {
   readonly result: VideoResult;
   readonly filename: string;
   readonly elapsedMs: number;
-  readonly gpu: MemoryStats;
+  readonly gpu: Memory.Stats;
 }
 export type WorkerRequest = ExportRequest | { readonly kind: 'cancel' };
 export type WorkerResult = ExportResult | { readonly kind: 'error'; readonly message: string };

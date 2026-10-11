@@ -1,49 +1,53 @@
 import { expect, expectTypeOf, it } from 'vitest';
 import * as api from '../src/index.js';
-import type { RowBatch, SampleBatch, Data, RowsBlock, SamplesBlock } from '../src/index.js';
-it('exports values, local computation and explicit boundary validation', () => {
-  for (const name of [
-    'read',
-    'locateSample',
-    'appendedPages',
-    'sampleFrames',
-    'createData',
+import type { Data, Block } from '../src/index.js';
+it('exports its values, and scopes its types under a few roots', () => {
+  expect(Object.keys(api).sort()).toEqual([
+    'Work',
     'appendData',
-    'selectBatches',
-    'staticFields',
-    'sampledFields',
-    'validateBatch',
-    'validateSelection',
-    'validateSchema',
-    'validateQuery',
-    'validateBlock',
+    'appendedPages',
+    'assertIndex',
+    'bitAt',
+    'blockBuffers',
+    'blockByteLength',
+    'createData',
+    'createMemory',
     'createReader',
-    'sampleDomain',
     'failure',
+    'fieldDefinition',
+    'interruptible',
     'isFailure',
-    'sameItem',
-    'itemKey',
     'itemId',
+    'itemKey',
+    'locateSample',
+    'numberAt',
+    'read',
+    'rowAt',
+    'rowCount',
+    'sameIndex',
+    'samePages',
+    'sampleAt',
+    'sampleDomain',
+    'sampleFrames',
+    'sampleRuns',
+    'sampledFields',
+    'selectBatches',
+    'selectRows',
+    'sliceRows',
     'sliceSamples',
-  ])
-    expect(api).toHaveProperty(name);
-  for (const name of [
-    'retain',
-    'record',
-    'createRecording',
-    'transactions',
-    'validateDataEvent',
-    'resolveRows',
-    'samplePages',
-    'copyBuffers',
-    'sliceColumn',
-    'DEFAULT_BLOCK_BYTES',
-  ])
-    expect(api).not.toHaveProperty(name);
+    'staticFields',
+    'textAt',
+    'textColumn',
+    'validateBatch',
+    'validateBlock',
+    'validateQuery',
+    'validateSchema',
+    'validateSelection',
+  ]);
 });
 function usage(data: Data) {
   expectTypeOf(api.read(data, { kind: 'rows', from: 'Node', select: ['value'] })).toEqualTypeOf<
-    AsyncIterable<RowsBlock>
+    AsyncIterable<Block.Rows>
   >();
   expectTypeOf(
     api.read(data, {
@@ -52,11 +56,11 @@ function usage(data: Data) {
       select: ['output'],
       window: { kind: 'at', value: 0 },
     }),
-  ).toEqualTypeOf<AsyncIterable<SamplesBlock>>();
+  ).toEqualTypeOf<AsyncIterable<Block.Samples>>();
   // @ts-expect-error Data has no read capability or provider lifetime.
   void data.query;
   const pages = data.tables.Node.fields.output;
-  expectTypeOf(pages.at(0)).toEqualTypeOf<api.ColumnPage | undefined>();
+  expectTypeOf(pages.at(0)).toEqualTypeOf<Data.Page | undefined>();
   // @ts-expect-error Indexed columns are not mutable flat arrays.
   void pages.push;
   // @ts-expect-error Indexed page access uses at(), not an array subscript.
@@ -64,7 +68,7 @@ function usage(data: Data) {
   // @ts-expect-error Data needs no close.
   void data.close;
 }
-function appendUsage(data: Data, rows: RowBatch, samples: SampleBatch) {
+function appendUsage(data: Data, rows: Data.RowBatch, samples: Data.SampleBatch) {
   api.createData(data.schema, [rows, samples]);
   api.appendData(data, [samples]);
   // @ts-expect-error Static rows require complete construction, never append.

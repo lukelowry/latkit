@@ -1,8 +1,8 @@
 # Views
 
-A network, monitor, diagram, or composition is a view. Create it from a GPU and a config, change it
-with `set`, and destroy it when done. Network, monitor, and diagram are item views: they also share
-a camera, selection, picking, hover, and style, the `ItemView` contract in `@latkit/gpu`.
+A network, geography, monitor, diagram, or composition is a view. Create it from a GPU and a config,
+change it with `set`, and destroy it when done. All but a composition are item views: they also
+share a camera, selection, picking, hover, and style, the `ItemView` contract in `@latkit/gpu`.
 
 ```ts
 import { createGpu } from '@latkit/gpu';
@@ -32,8 +32,10 @@ Every item view handles the same input:
 - A right click opens a menu where the button comes up, unless it dragged. A held touch opens one
   too, and the menu key or Shift+F10 opens one at the selection.
 - Escape ends a gesture or clears the selection.
-- While navigating, Home fits the data. A network or diagram also pans on a drag and zooms on the
-  wheel, a pinch, or + and −. `input: { wheel: 'modifier' }` zooms only with Ctrl or ⌘.
+- While navigating, Home fits the data. A network, geography, or diagram also pans on a drag or the
+  arrows and zooms on the wheel, a pinch, or + and −. `input: { wheel: 'modifier' }` zooms only
+  with Ctrl or ⌘. A network or geography turns on a right drag, a Shift drag, or Shift and the
+  arrows.
 
 A click, double click, or menu answers with what the presented frame draws there. A later gesture
 supersedes one still finding its hits. Each view adds its own gestures, such as dragging a block.
@@ -42,7 +44,8 @@ supersedes one still finding its hits. Each view adds its own gestures, such as 
 
 `set` applies a patch to the config:
 
-- Keyed records (`vertices`, `edges`, `paths`, `traces`, `groups`) merge per entry, then per option.
+- Keyed records (`vertices`, `edges`, `areas`, `lines`, `traces`, `groups`) merge per entry, then
+  per option.
 - `camera`, `input`, `limits`, and `layout` merge per option.
 - `null` removes an entry or resets an option to its default.
 - Any other value replaces. Plain objects and arrays compare by what they hold, and a patch that
@@ -53,7 +56,7 @@ supersedes one still finding its hits. Each view adds its own gestures, such as 
 ```ts
 network.set({
   vertices: { Bus: { radiusPx: { field: 'capacity', range: [3, 12] } } },
-  paths: { Border: null },
+  edges: { Line: null },
   edgeWidthPx: 2,
 });
 ```
@@ -70,15 +73,16 @@ To show new data, pass a new [`Data`](document-sessions.md) value: `set({ source
 A network or diagram places each vertex its data gives no position: every row of a type without `x`
 and `y`, and each row whose `x` or `y` reads no number. Vertices that edges join form a part, and
 `layout.algorithm` arranges each part alone: `'stress'` by default in a network, `'layered'` in a
-diagram, or a `LayoutStrategy` of your own. Parts with nothing positioned pack into rows below the
+diagram, or a `Layout.Strategy` of your own. Parts with nothing positioned pack into rows below the
 rest. Placed vertices keep their place as the data changes; new `layout` options place them anew.
 
 `arrange(gpu, config)` in `@latkit/network` and `@latkit/diagram` places the vertices without
-drawing. It returns `Positions` by type: an `x` and a `y` field to spread into the type's options.
+drawing. It returns `Layout.Positions` by type: an `x` and a `y` field to spread into the type's
+options.
 
 ## Style
 
-Every item view takes the same style options, with defaults in `viewStyle`:
+Every item view takes the same style options, with defaults in `kit.viewStyle`:
 
 | Option                            | Default                  | Per view                              |
 | --------------------------------- | ------------------------ | ------------------------------------- |
@@ -90,7 +94,7 @@ Every item view takes the same style options, with defaults in `viewStyle`:
 | `animationMs`, `motion`           | `300`, `'auto'`          | monitor `0`                           |
 | `hoverColor`                      | amber                    | network alpha `0.65`                  |
 | `selectedColor`                   | orange                   | network alpha `0.9`; monitor `'none'` |
-| `hoverWidthPx`, `selectedWidthPx` | `6`, `8`                 | monitor draws no hover glow           |
+| `hoverWidthPx`, `selectedWidthPx` | `6`, `8`                 |                                       |
 | `unselectedAlpha`                 | `1`                      | monitor `0.25`                        |
 | `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor monospace                     |
 
@@ -99,8 +103,29 @@ its strength. `hoverWidthPx` and `selectedWidthPx` set how far it reaches. `sele
 glows in each item's own color. While something is selected, `unselectedAlpha` fades everything
 else.
 
+Views that draw lines share how they dash and carry comets, and network and geography, whose
+camera is projected, share how they fit, orbit, and halo labels on the ground:
+
+| Option                       | Default                      | Per view                    |
+| ---------------------------- | ---------------------------- | --------------------------- |
+| `dashPeriodPx`               | `12`                         | geography `8`, diagram `10` |
+| `flowColor`, `flowSpacingPx` | white, `32`                  |                             |
+| `fitPitch`, `fitBearing`     | `45`, `0`                    | geography pitch `0`         |
+| `orbitRate`                  | `1`, twelve degrees a second |                             |
+| `labelHaloPx`                | `2`                          |                             |
+
+Network, geography, and diagram draw a grid beneath everything else, spaced for the zoom: the
+nicest step at least `gridMinSpacingPx` apart. A network's grid is lines of its data's x and y, a
+geography's lines of longitude and latitude, and a diagram's dots at its `gridPitch`.
+
+| Option             | Default | Per view        |
+| ------------------ | ------- | --------------- |
+| `grid`             | `false` | diagram `true`  |
+| `gridColor`        | slate   | diagram fainter |
+| `gridMinSpacingPx` | `64`    | diagram `12`    |
+
 `shade` recolors every fragment with WGSL of your own, `spotlight()` around the pointer, or
-`pulse()` on rows whose `shade` channel is positive.
+`pulse()` on rows whose `shade` channel is positive; the alpha of their `color` sets how far.
 
 ## Camera
 
@@ -130,8 +155,21 @@ drops. `hover` also reports the same item found with other detail, such as a mon
 another sample. `frame`, `camera`, and `hover` arrive in that order after a drawn frame.
 
 An item is a row: `{ source, index, row }`. Its `Index` names the row space, so an item outlives
-appends that replace its `Data`, but not a new index version. `sameItem` and `itemKey` in
-`@latkit/model` compare items.
+appends that replace its `Data`, but not a new index version. `itemKey` in `@latkit/model` names an
+item: two items with one key are the same row.
+
+## Types
+
+Each package names its types under the thing they belong to, so one import brings all of them:
+`Network.Config`, `Network.VertexOptions`, `Geography.LineOptions`, `Monitor.TraceOptions`,
+`Diagram.Camera`, `ItemView.Style`. `@latkit/model` does the same for its concepts:
+`Column.Numeric`, `Query.Samples`, `Block.Rows`, `Data.Batch`, `Index.Rows`.
+
+```ts
+import { createNetwork, type Network } from '@latkit/network';
+
+const buses: Network.VertexOptions = { color: 'load', labels: 'name' };
+```
 
 ## Images
 

@@ -1,80 +1,64 @@
-import { assertIndex, bitAt, rowAt, rowCount, setBit, sliceRows } from '../access.js';
-import { blockBuffers } from '../buffers.js';
-import { gather, position, type Cell } from '../columns.js';
-import type {
-  Column,
-  Index,
-  NumericArray,
-  RowAxis,
-  RowSelection,
-  SampleColumn,
-  TextColumn,
-} from '../data.js';
-import { failure } from '../error.js';
-import type { Data } from '../materialized.js';
-import type { Query, RowsBlock, SamplesBlock, SampleWindow } from '../query.js';
-import { emptyColumn, intersect, resolveRows, type ReadResult } from '../read.js';
-import type { Schema } from '../schema.js';
-import type { Domain } from '../types.js';
+import { assertIndex, bitAt, rowAt, rowCount, setBit, sliceRows } from '../data/access.js';
+import { blockBuffers } from '../data/buffers.js';
+import { gather, position, type Cell } from '../data/columns.js';
+import type { Column, Index, Domain } from '../data/column.js';
+import { failure } from '../failure.js';
+import type { Data } from '../data/data.js';
+import type { Query, Block } from '../query/query.js';
+import { emptyColumn, intersect, resolveRows } from '../query/read.js';
+import type { Schema } from '../schema/schema.js';
 import type { Keys } from './keys.js';
-import type { Entry, Memory } from '../memory.js';
+import type { Memory } from './memory.js';
 import { FieldPlans } from './plans.js';
-import type {
-  ExtentRequest,
-  FieldBinding,
-  FieldInput,
-  FieldsBlock,
-  FieldsRequest,
-  FieldValues,
-} from './types.js';
-
+import type { FieldInput } from './types.js';
+import type { Reader } from './reader.js';
 /** What a field read needs from its scope: cached reads, a coordinate, and result holding. */
 export interface FieldScope {
   readonly signal: AbortSignal;
   readonly at?: number;
-  read<Q extends Query>(data: Data, query: Q): AsyncIterable<ReadResult<Q>>;
-  use(entry: Entry): void;
+  read<Q extends Query>(data: Data, query: Q): AsyncIterable<Block.Of<Q>>;
+  use(entry: Memory.Entry): void;
 }
 
 type Numeric = Exclude<Column, { kind: 'list' | 'text' | 'reference' }>;
 interface IndexedFields {
   readonly source: Data;
   readonly index: Index;
-  readonly rows: RowAxis;
-  readonly fields: FieldsRequest['fields'];
+  readonly rows: Index.Rows;
+  readonly fields: Reader.FieldsRequest['fields'];
 }
 interface IndexedExtent {
   readonly source?: Data;
   readonly index: Index;
-  readonly rows: RowAxis;
+  readonly rows: Index.Rows;
   readonly field: FieldInput;
-  readonly window?: SampleWindow;
+  readonly window?: Query.Window;
 }
 interface Resolved {
   columns: Record<string, Column>;
   presence: Record<string, Uint8Array>;
-  entry: Entry;
+  entry: Memory.Entry;
 }
 interface Cached {
   index: Index;
-  chunks: RowsBlock[];
+  chunks: Block.Rows[];
   expected: Record<string, Column>;
-  selection: RowSelection;
-  entry: Entry;
+  selection: Index.Selection;
+  entry: Memory.Entry;
   from: string;
   sampled: boolean;
   table: string;
   dependencies: Readonly<Record<string, string>>;
 }
 interface Extent {
-  entry: Entry;
+  entry: Memory.Entry;
   from: string;
   sampled: boolean;
   value: Domain | null;
 }
 interface SchemaState {
   schema: Schema;
-  entry: Entry;
+  entry: Memory.Entry;
   cache: Map<string, Cached>;
   byField: Map<string, Set<Cached>>;
   extents: Map<string, Extent>;
@@ -83,15 +67,15 @@ interface Group {
   source: Data;
   state: SchemaState;
   from: string;
-  rows?: RowSelection;
+  rows?: Index.Selection;
   sampled: boolean;
   fields: Map<string, string[]>;
 }
 interface ColumnRead {
   group: Group;
   index: Index;
-  rows: RowAxis;
-  selected: RowSelection;
+  rows: Index.Rows;
+  selected: Index.Selection;
   fields: string[];
   table: string;
   dependencies: Record<string, string>;
@@ -99,16 +83,16 @@ interface ColumnRead {
 }
 interface Tile {
   index: Index;
-  rows: RowAxis;
+  rows: Index.Rows;
   columns: Record<string, Column>;
   presence: Record<string, Uint8Array>;
 }
-type Block = Omit<FieldsBlock, 'kind'>;
+type FieldsPart = Omit<Block.Fields, 'kind'>;
 
 /** Resolves fields of one or more sources into one physical row order, in bounded tiles. */
 export class Fields {
   private schemas = new WeakMap<Schema, SchemaState>();
-  private tiles = new Map<string, { entry: Entry; tile: Tile }>();
+  private tiles = new Map<string, { entry: Memory.Entry; tile: Tile }>();
   private readonly plans: FieldPlans;
   constructor(
     private readonly memory: Memory,
@@ -118,12 +102,15 @@ export class Fields {
     this.plans = new FieldPlans(memory, keys);
   }
 
-  async *read(request: FieldsRequest, scope: FieldScope): AsyncGenerator<FieldsBlock> {
+  async *read(request: Reader.FieldsRequest, scope: FieldScope): AsyncGenerator<Block.Fields> {
     if (!request.from) throw failure('invalid-input', 'Fields require a model type');
     for await (const block of this.blocks(request, scope)) yield { kind: 'fields', ...block };
   }
 
-  private async *blocks(request: FieldsRequest, scope: FieldScope): AsyncGenerator<Block> {
+  private async *blocks(
+    request: Reader.FieldsRequest,
+    scope: FieldScope,
+  ): AsyncGenerator<FieldsPart> {
     if (request.window) {
       yield* this.sampled(request, scope);
       return;
@@ -185,7 +172,10 @@ export class Fields {
     }
   }
 
-  private async *sampled(request: FieldsRequest, scope: FieldScope): AsyncGenerator<Block> {
+  private async *sampled(
+    request: Reader.FieldsRequest,
+    scope: FieldScope,
+  ): AsyncGenerator<FieldsPart> {
     const compiled = this.plans.acquire(request.fields, request.source, request.from);
     try {
       const groups = compiled.plan.samples.map((group) => ({
@@ -207,16 +197,16 @@ export class Fields {
         window: request.window!,
       })) {
         const held = this.memory.add(blockBuffers(block), 128, () => {}),
-          joined: Entry[] = [];
+          joined: Memory.Entry[] = [];
         try {
-          const sampledColumns: Record<string, SampleColumn> = {};
+          const sampledColumns: Record<string, Column.Sample> = {};
           const sampledPresence: Record<string, Uint8Array> = {};
           for (const [field, aliases] of anchor.fields)
             for (const alias of aliases) sampledColumns[alias] = block.columns[field];
           for (const group of groups) {
             if (group === anchor) continue;
-            const chunks: SamplesBlock[] = [],
-              entries: Entry[] = [];
+            const chunks: Block.Samples[] = [],
+              entries: Memory.Entry[] = [];
             const selected = intersectSelection(block.rows, group.rows, block.index);
             try {
               for await (const part of scope.read(group.source, {
@@ -272,11 +262,11 @@ export class Fields {
               presence[name] = this.memory.stage(Math.ceil(rowCount(tile.rows) / 8), () =>
                 sliceBits(mask, tile.rowOffset, rowCount(tile.rows)),
               );
-            let ids: TextColumn | undefined;
-            let identityEntry: Entry | undefined;
+            let ids: Column.Text | undefined;
+            let identityEntry: Memory.Entry | undefined;
             if (request.ids) {
-              const chunks: RowsBlock[] = [],
-                heldIds: Entry[] = [];
+              const chunks: Block.Rows[] = [],
+                heldIds: Memory.Entry[] = [];
               try {
                 for await (const part of scope.read(request.source, {
                   kind: 'rows',
@@ -291,14 +281,14 @@ export class Fields {
                   chunks.push({ ...part, columns: { ids: part.ids } });
                 }
                 ids = assemble(tile.rows, ['ids'], chunks, false, this.memory).columns
-                  .ids as TextColumn;
+                  .ids as Column.Text;
                 identityEntry = this.memory.add(blockBuffers(ids), 128, () => {});
               } finally {
                 for (const entry of heldIds) this.memory.remove(entry);
               }
             }
             try {
-              const data: Block = {
+              const data: FieldsPart = {
                 ...tile,
                 rowOffset: block.rowOffset + tile.rowOffset,
                 columns,
@@ -327,7 +317,7 @@ export class Fields {
     }
   }
 
-  private async *indexed(request: IndexedFields, scope: FieldScope): AsyncGenerator<Block> {
+  private async *indexed(request: IndexedFields, scope: FieldScope): AsyncGenerator<FieldsPart> {
     const count = rowCount(request.rows);
     if (!count) return;
     const compiled = this.plans.acquire(request.fields, request.source, request.index.type);
@@ -335,7 +325,9 @@ export class Fields {
     const { names, width } = plan;
     const states = new Map<Data, SchemaState>();
     const groups: Group[] = [];
-    const values = plan.locals.map((name) => [name, request.fields[name] as FieldValues] as const);
+    const values = plan.locals.map(
+      (name) => [name, request.fields[name] as FieldInput.Values] as const,
+    );
     try {
       for (const [, input] of values) assertIndex(request.index, input.index);
       for (const planned of plan.points) {
@@ -367,7 +359,7 @@ export class Fields {
             const selected = sliceRows(rows, sorted[part - 1], sorted[part] - sorted[part - 1]);
             const columns = Object.create(null) as Record<string, Column>,
               presence = Object.create(null) as Record<string, Uint8Array>;
-            const assembled: Entry[] = [];
+            const assembled: Memory.Entry[] = [];
             try {
               for (const [group, read] of reads) {
                 const resolved = this.assemble(read, selected, group);
@@ -433,7 +425,7 @@ export class Fields {
   }
 
   /** The finite extent of one field over the requested rows, cached by the values it reads. */
-  async extent(request: ExtentRequest, scope: FieldScope): Promise<Domain | null> {
+  async extent(request: Reader.ExtentRequest, scope: FieldScope): Promise<Domain | null> {
     const { source, from, rows, field, window } = request;
     if (rows && rows.kind !== 'ids' && rows.index)
       return this.extentOf({ source, index: rows.index, rows, field, window }, scope);
@@ -510,7 +502,7 @@ export class Fields {
     }
     if (typeof input === 'string' && !request.source)
       throw failure('invalid-input', 'String fields require a source');
-    const binding: FieldBinding =
+    const binding: FieldInput.Binding =
       typeof input === 'string'
         ? { source: request.source!, from: request.index.type, field: input }
         : input;
@@ -685,7 +677,7 @@ export class Fields {
     return state;
   }
 
-  private lookup(group: Group, index: Index, rows: RowAxis, at?: number): Cached | ColumnRead {
+  private lookup(group: Group, index: Index, rows: Index.Rows, at?: number): Cached | ColumnRead {
     const selected = intersectSelection(rows, group.rows, index),
       fields = [...group.fields.keys()].sort();
     const table = this.keys.table(group.source, group.from);
@@ -734,7 +726,7 @@ export class Fields {
   private async resolve(
     group: Group,
     index: Index,
-    rows: RowAxis,
+    rows: Index.Rows,
     scope: FieldScope,
   ): Promise<Cached> {
     return (await this.resolveAll([group], index, rows, scope)).get(group)!;
@@ -742,7 +734,7 @@ export class Fields {
   private async resolveAll(
     groups: readonly Group[],
     index: Index,
-    rows: RowAxis,
+    rows: Index.Rows,
     scope: FieldScope,
   ): Promise<Map<Group, Cached>> {
     const resolved = new Map<Group, Cached>();
@@ -769,8 +761,8 @@ export class Fields {
       for (const batch of batches.values()) {
         const { group, selected } = batch[0];
         const fields = [...new Set(batch.flatMap((read) => read.fields))];
-        const chunks: RowsBlock[] = [],
-          held: Entry[] = [];
+        const chunks: Block.Rows[] = [],
+          held: Memory.Entry[] = [];
         try {
           if (selected.kind === 'ids' || rowCount(selected)) {
             for await (const block of scope.read(group.source, {
@@ -812,7 +804,7 @@ export class Fields {
       throw error;
     }
   }
-  private storeRead(read: ColumnRead, chunks: RowsBlock[]): Cached {
+  private storeRead(read: ColumnRead, chunks: Block.Rows[]): Cached {
     const { group, index, rows, selected, fields, table, dependencies, key } = read;
     const definition = group.state.schema.types[group.from];
     const expected = Object.fromEntries(
@@ -829,7 +821,7 @@ export class Fields {
     const state = group.state;
     const related = fields.map((field) => readKey(table, field, dependencies[field]));
     state.entry.pin();
-    let entry: Entry;
+    let entry: Memory.Entry;
     try {
       entry = this.memory.add(
         blockBuffers({ rows, chunks, selection: selected }),
@@ -868,7 +860,7 @@ export class Fields {
     return result;
   }
 
-  private assemble(read: Cached, rows: RowAxis, group: Group): Resolved {
+  private assemble(read: Cached, rows: Index.Rows, group: Group): Resolved {
     const key =
       'read:' +
       this.keys.id(read) +
@@ -879,14 +871,16 @@ export class Fields {
       hit.entry.pin();
       return { ...hit.tile, entry: hit.entry };
     }
+    // A sampled field has no value for a row not yet observed at the coordinate, as before its first
+    // frame: such a row reads as absent, as rows an overlay leaves out do.
     const result = assemble(
       rows,
       [...group.fields.keys()],
       read.chunks,
-      !!group.rows,
+      !!group.rows || group.sampled,
       this.memory,
       read.expected,
-      read.selection.kind === 'ids' ? undefined : read.selection,
+      read.selection.kind === 'ids' || group.sampled ? undefined : read.selection,
     );
     const tile = { index: read.index, rows, ...result };
     const entry = this.memory.add(blockBuffers(tile), 256 + key.length * 2, () =>
@@ -896,7 +890,7 @@ export class Fields {
     return { ...result, entry };
   }
 
-  private local(input: FieldValues, rows: RowAxis): Resolved {
+  private local(input: FieldInput.Values, rows: Index.Rows): Resolved {
     validateNative(input.values, rowCount(input.rows));
     const key =
       'local:' +
@@ -924,9 +918,9 @@ export class Fields {
 
 async function aggregateExtent(
   scope: FieldScope,
-  binding: FieldBinding,
-  rows: RowSelection | undefined,
-  window: SampleWindow | undefined,
+  binding: FieldInput.Binding,
+  rows: Index.Selection | undefined,
+  window: Query.Window | undefined,
 ): Promise<Domain | null> {
   let extent: Domain | null | undefined;
   for await (const block of scope.read(binding.source, {
@@ -958,10 +952,10 @@ function readKey(table: string, field: string, dependency: string): string {
   return JSON.stringify([table, field, dependency]);
 }
 function intersectSelection(
-  rows: RowAxis,
-  selected: RowSelection | undefined,
+  rows: Index.Rows,
+  selected: Index.Selection | undefined,
   index: Index,
-): RowSelection {
+): Index.Selection {
   if (!selected) return { ...rows, index };
   if (selected.kind === 'ids') return selected;
   if (selected.index) assertIndex(index, selected.index);
@@ -971,9 +965,9 @@ function intersectSelection(
 /** Whether every row is present. A missing row the draw requires is an error. */
 function covered(
   present: Uint8Array,
-  rows: RowAxis,
+  rows: Index.Rows,
   partial: boolean,
-  required?: RowAxis,
+  required?: Index.Rows,
 ): boolean {
   let complete = true;
   for (let i = 0, n = rowCount(rows); i < n; i++)
@@ -986,13 +980,13 @@ function covered(
 }
 
 function assemble(
-  rows: RowAxis,
+  rows: Index.Rows,
   fields: string[],
-  chunks: readonly Pick<RowsBlock, 'rows' | 'columns'>[],
+  chunks: readonly Pick<Block.Rows, 'rows' | 'columns'>[],
   partial: boolean,
   memory: Memory,
   expected: Record<string, Column> = {},
-  required?: RowAxis,
+  required?: Index.Rows,
 ): Pick<Resolved, 'columns' | 'presence'> {
   const count = rowCount(rows),
     columns: Record<string, Column> = Object.create(null) as Record<string, Column>,
@@ -1061,7 +1055,7 @@ function assemble(
     const scalar = numeric?.kind === 'vector' ? numeric.values : numeric;
     const size = count * components;
     const Constructor = (scalar?.values.constructor ?? Float32Array) as {
-      new (length: number): NumericArray;
+      new (length: number): Column.NumericArray;
       readonly BYTES_PER_ELEMENT: number;
     };
     const bytes =
@@ -1115,10 +1109,10 @@ function assemble(
                   kind: 'numeric',
                   offset: 0,
                   length: size,
-                  values: values as NumericArray,
+                  values: values as Column.NumericArray,
                 },
               }
-            : { ...base, kind: 'numeric', values: values as NumericArray };
+            : { ...base, kind: 'numeric', values: values as Column.NumericArray };
       return { column, present: complete ? undefined : present };
     });
     columns[name] = result.column;
@@ -1127,7 +1121,7 @@ function assemble(
   return { columns, presence };
 }
 
-function contiguous(source: RowAxis, target: RowAxis): number | undefined {
+function contiguous(source: Index.Rows, target: Index.Rows): number | undefined {
   if (source.kind === 'range' && target.kind === 'range') {
     const offset = target.offset - source.offset;
     if (offset >= 0 && offset + target.count <= source.count) return offset;
@@ -1148,7 +1142,7 @@ function contiguous(source: RowAxis, target: RowAxis): number | undefined {
     if (rowAt(source, offset + i) !== rowAt(target, i)) return;
   return offset;
 }
-function boundaries(chunks: readonly RowsBlock[], rows: RowAxis): number[] {
+function boundaries(chunks: readonly Block.Rows[], rows: Index.Rows): number[] {
   const result: number[] = [];
   let offset = 0;
   for (const chunk of chunks) {
@@ -1176,13 +1170,13 @@ function sliceBits(mask: Uint8Array, offset: number, count: number): Uint8Array 
   return result;
 }
 function joinSamples(
-  anchor: SamplesBlock,
-  chunks: readonly SamplesBlock[],
+  anchor: Block.Samples,
+  chunks: readonly Block.Samples[],
   names: readonly string[],
   partial: boolean,
   memory: Memory,
-  required?: RowAxis,
-): { columns: Record<string, SampleColumn>; presence: Record<string, Uint8Array> } {
+  required?: Index.Rows,
+): { columns: Record<string, Column.Sample>; presence: Record<string, Uint8Array> } {
   const rows = rowCount(anchor.rows),
     frames = anchor.coordinates.length;
   if (
@@ -1200,12 +1194,12 @@ function joinSamples(
   return memory.stage(rows * frames * names.length * 10 + rows * 16, () => {
     const positions = new Map<number, number>();
     for (let i = 0; i < rows; i++) positions.set(rowAt(anchor.rows, i), i);
-    const columns: Record<string, SampleColumn> = {},
+    const columns: Record<string, Column.Sample> = {},
       presence: Record<string, Uint8Array> = {};
     for (const name of names) {
       const prototype = chunks[0]?.columns[name];
       const Constructor = (prototype?.values.constructor ?? Float64Array) as {
-        new (length: number): NumericArray;
+        new (length: number): Column.NumericArray;
       };
       const values = new Constructor(rows * frames),
         validity = new Uint8Array(Math.ceil((rows * frames) / 8)),
@@ -1265,11 +1259,11 @@ function joinSamples(
 }
 
 const tileExtents = new WeakMap<object, { key: string; value: Domain | null }>();
-function tileExtent(tile: FieldsBlock, name: string): Domain | null {
+function tileExtent(tile: Block.Fields, name: string): Domain | null {
   const column = tile.columns[name];
   if (column.kind !== 'numeric')
     throw failure('invalid-input', 'Scales require scalar numeric fields');
-  const sampled = column as SampleColumn,
+  const sampled = column as Column.Sample,
     rows = rowCount(tile.rows),
     frames = tile.samples?.coordinates.length ?? 1;
   const mask = tile.presence[name];

@@ -1,6 +1,6 @@
 # Network example
 
-Pages that draw networks with `@latkit/network`.
+Pages that draw networks with `@latkit/network` over a `@latkit/geography` map.
 
 ```sh
 pnpm install
@@ -9,11 +9,12 @@ pnpm --filter @latkit/network-example dev
 
 Open http://127.0.0.1:5188. The dev command builds the packages first.
 
-- `/`: topologies, geographic projections, and picking.
-- `/colors.html`: the palette catalog in a CPU image, a CSS legend, and a WebGPU shader.
-- `/coupled.html`: a monitor and a network that share one `Data` and one playhead.
-- `/bunny.html`: a soft-body Stanford bunny simulated in the page, drawn by a network and traced
-  by a monitor. Drag to pull it, click to poke it, or scrub to replay. The mesh is from the
-  [Stanford 3D Scanning Repository](https://graphics.stanford.edu/data/3Dscanrep/).
+- `/`: a grid over the earth. Choose a synthetic grid, from WECC 240-bus to ACTIVSg70k, or a
+  lattice of up to a million buses, and the map beneath it: coasts and borders, Natural Earth's
+  states, or OpenStreetMap's vector tiles. Color the states by the grid's figures, play a
+  simulated fault, and hover or click anything to inspect it.
 - `/blackout.html`: the BlackoutUSA map panel. Texas substations draw as gauges of their output,
   and branches color by loading and carry comets along their flow.
+
+`public/grids` holds the synthetic grids, and `src/earth/cases.ts` describes their format.
+`public/maps` holds Natural Earth's 1:50M coasts and borders as GeoJSON, public domain.

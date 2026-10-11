@@ -15,7 +15,7 @@ const reversed = reverseColormap(colormaps.thermal);
 The catalog holds 46 maps, such as `viridis`, `cividis`, `thermal`, `balance`, `phase`, and
 `okabeito`. Use sequential maps for magnitude, diverging maps around a center, cyclic maps for
 phase, and categorical maps for labels. A `colormapCss` legend shows the same colors the GPU draws.
-The network example's `/colors.html` previews the whole catalog.
+The colors example previews the whole catalog.
 
 ## Create a palette
 

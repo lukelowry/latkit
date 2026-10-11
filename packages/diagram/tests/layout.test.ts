@@ -1,18 +1,19 @@
 import { expect, it, vi } from 'vitest';
 import { Work, createReader } from '@latkit/model';
-import { kit, type Gpu, type LayoutOptions, type LayoutPart } from '@latkit/gpu';
+import { kit, type Gpu, type Layout } from '@latkit/gpu';
 import { arrange, layoutOptions, place } from '../src/layout.js';
 import { readScene } from '../src/read.js';
 import { geometry, labelBox } from '../src/geometry.js';
 import { resolveStyle, resolveLimits } from '../src/config.js';
 import { rect, union, type Rect, type Scene } from '../src/scene.js';
-import type { DiagramData, Group } from '../src/data.js';
+import type { DiagramData } from '../src/data.js';
 import { clusters, data, layoutText, unplace, Source } from './fixture.js';
+import type { Diagram } from '../src/diagram.js';
 /** Arrangement only reads and measures text. */
 const gpu = { reader: createReader(), layoutText } as unknown as Gpu;
 const style = resolveStyle();
 /** A diagram and the layout that places it. */
-type Built = DiagramData & { readonly layout?: LayoutOptions };
+type Built = DiagramData & { readonly layout?: Layout };
 /** Read, place, and route a diagram as a view would, after `previous` when given. */
 async function build(d: Built, previous?: Scene): Promise<Scene> {
   const reader = gpu.reader.open();
@@ -26,7 +27,7 @@ async function build(d: Built, previous?: Scene): Promise<Scene> {
     reader.close();
   }
 }
-const grouped = (groups: Record<string, Group>, d: DiagramData = data()): Built => ({
+const grouped = (groups: Record<string, Diagram.GroupOptions>, d: DiagramData = data()): Built => ({
   ...d,
   groups,
 });
@@ -428,10 +429,10 @@ it('stacks groups a net from outside reaches alike in one rank', async () => {
 
 it('calls a custom strategy once per part, with pinned vertices where they are', async () => {
   const source = unplace(clusters(3), [4, 5, 6, 7, 8, 9, 10, 11]),
-    parts: LayoutPart[] = [];
-  const pinned = (part: LayoutPart, v: number) => Number.isFinite(part.input.pinned[v * 2]);
+    parts: Layout.Part[] = [];
+  const pinned = (part: Layout.Part, v: number) => Number.isFinite(part.input.pinned[v * 2]);
   const algorithm = {
-    arrange: vi.fn((part: LayoutPart) => {
+    arrange: vi.fn((part: Layout.Part) => {
       parts.push(part);
       return Array.from(part.vertices).flatMap((v, i) =>
         pinned(part, v) ? [part.input.pinned[v * 2], part.input.pinned[v * 2 + 1]] : [i * 200, 0],
@@ -463,7 +464,7 @@ it('rejects invalid layout options', async () => {
     { algorithm: 'manual' },
     { rankGap: -1 },
   ])
-    expect(() => layoutOptions(layout as LayoutOptions)).toThrow();
+    expect(() => layoutOptions(layout as Layout)).toThrow();
 });
 
 it('routes again only the parts that changed, matching rows by identity', async () => {

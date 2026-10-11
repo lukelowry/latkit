@@ -7,8 +7,8 @@ import {
   blockBuffers,
   validateBlock,
   validateSchema,
-  type ReferenceColumn,
   type Schema,
+  type Column,
 } from '../src/index.js';
 import { collect } from './fixture.js';
 class Wiring {
@@ -31,7 +31,7 @@ class Wiring {
     readonly bus2 = Uint32Array.of(1, 2, 0),
     readonly wired = Uint8Array.of(3),
   ) {
-    const column = (values: Uint32Array): ReferenceColumn => ({
+    const column = (values: Uint32Array): Column.Reference => ({
       kind: 'reference',
       index: this.buses,
       offset: 0,
@@ -55,8 +55,8 @@ it('reads wiring as native row numbers of the referenced type, without copying',
   expect(validateSchema(source.schema)).toEqual([]);
   const [block] = await collect(read(source.data, query));
   expect(validateBlock(source.schema, query, block)).toEqual([]);
-  const bus1 = block.columns.bus1 as ReferenceColumn,
-    bus2 = block.columns.bus2 as ReferenceColumn;
+  const bus1 = block.columns.bus1 as Column.Reference,
+    bus2 = block.columns.bus2 as Column.Reference;
   expect(bus1.index).toEqual(source.buses);
   expect([0, 1, 2].map((i) => numberAt(bus1, i))).toEqual([0, 1, 2]);
   expect([0, 1, 2].map((i) => numberAt(bus2, i))).toEqual([1, 2, null]);

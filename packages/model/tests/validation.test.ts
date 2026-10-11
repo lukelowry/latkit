@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MessageChannel } from 'node:worker_threads';
-import type { Query, RowsBlock, SamplesBlock, Schema } from '../src/index.js';
+import type { Query, Schema, Block } from '../src/index.js';
 import {
   blockBuffers,
   blockByteLength,
@@ -18,7 +18,7 @@ const samplesQuery = {
   window: { kind: 'frames', offset: 10, count: 2 },
 } as const;
 const wiringQuery = { kind: 'rows', from: 'Node', select: ['parent', 'hub'] } as const;
-function wiring(): RowsBlock {
+function wiring(): Block.Rows {
   return {
     ...rows(),
     columns: { parent: references([1, null]), hub: references([7, 9], hubs) },
@@ -42,6 +42,22 @@ describe('schema and query boundaries', () => {
       },
     ];
     for (const q of queries) expect(validateQuery(schema, q)).toEqual([]);
+  });
+  it('takes positions, polylines of them, and rings of those as geographic', () => {
+    const point = { kind: 'vector', items: 'float64', size: 2 } as const,
+      line = { kind: 'list', items: point } as const;
+    const shapes: Schema = {
+      types: {
+        Area: {
+          fields: {
+            position: { type: point, geographic: true },
+            points: { type: line, geographic: true },
+            rings: { type: { kind: 'list', items: line }, geographic: true },
+          },
+        },
+      },
+    };
+    expect(validateSchema(shapes)).toEqual([]);
   });
   it.each([null, [], {}, { types: null }, { queries: ['wrong'] }])(
     'reports malformed schema without throwing: %j',
@@ -121,7 +137,7 @@ describe('schema and query boundaries', () => {
 describe('columnar layout', () => {
   it('reads numeric slices and bit offsets without repacking', () => {
     const values = new Float64Array([99, 99, 10, 20]);
-    const block: RowsBlock = {
+    const block: Block.Rows = {
       ...rows(),
       columns: {
         value: {
@@ -144,7 +160,7 @@ describe('columnar layout', () => {
     ).not.toEqual([]);
   });
   it('accepts UTF-8, packed booleans, vectors, and lists of vectors using the same row boundary', () => {
-    const block: RowsBlock = {
+    const block: Block.Rows = {
       ...rows(),
       ids: text(['Node/1', 'Node/2']),
       columns: {
@@ -192,7 +208,7 @@ describe('columnar layout', () => {
     ).not.toEqual([]);
   });
   it('validates rectangular sample tiles in either native orientation', () => {
-    const block: SamplesBlock = {
+    const block: Block.Samples = {
       kind: 'samples',
       index,
       rows: { kind: 'indices', values: new Uint32Array([7, 8, 9]) },
@@ -275,7 +291,7 @@ describe('columnar layout', () => {
 
 describe('padding and input invariants', () => {
   it('ignores nested null payloads and unselected child prefixes without copying', () => {
-    const block: RowsBlock = {
+    const block: Block.Rows = {
       ...rows(),
       columns: {
         position: {
@@ -314,7 +330,7 @@ describe('padding and input invariants', () => {
     expect(validateBlock(schema, query, bad)).not.toEqual([]);
   });
   it('ignores unused sample padding bits but checks addressed cells', () => {
-    const block: SamplesBlock = {
+    const block: Block.Samples = {
       kind: 'samples',
       index,
       rows: { kind: 'indices', values: new Uint32Array([0, 1]) },
@@ -389,7 +405,7 @@ describe('allocation and transport boundary', () => {
       expect(buffers.every((buffer) => buffer.byteLength === 0)).toBe(true);
       const result = await received;
       expect(validateBlock(schema, wiringQuery, result, { buffers: 'owned' })).toEqual([]);
-      expect((result as RowsBlock).columns.hub).toMatchObject({ values: new Uint32Array([7, 9]) });
+      expect((result as Block.Rows).columns.hub).toMatchObject({ values: new Uint32Array([7, 9]) });
     } finally {
       port1.close();
       port2.close();
@@ -416,7 +432,7 @@ describe('independent sample storage and bounded validation', () => {
       },
     };
     const query = { ...samplesQuery, select: ['output', 'other'] };
-    const block: SamplesBlock = {
+    const block: Block.Samples = {
       kind: 'samples',
       index,
       rows: { kind: 'range', offset: 0, count: 3 },

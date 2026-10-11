@@ -1,12 +1,4 @@
-import {
-  createData,
-  read,
-  type Data,
-  type DataBatch,
-  type Schema,
-  type Query,
-  type QueryOptions,
-} from '@latkit/model';
+import { createData, read, type Data, type Schema, type Query } from '@latkit/model';
 /** Application-owned fixture; data values are independent of the mutable test harness. */
 export class Source {
   values: Float32Array | Float64Array;
@@ -42,7 +34,7 @@ export class Source {
   }
   get data(): Data {
     if (this.cached) return this.cached;
-    const batches: DataBatch[] = [];
+    const batches: Data.Batch[] = [];
     for (let f = 0; f < (this.options.sampled ? (this.options.frames ?? 4) : 1); f++)
       for (let offset = 0; offset < this.count; offset += this.options.blockRows ?? 4096) {
         const count = Math.min(this.options.blockRows ?? 4096, this.count - offset);
@@ -71,7 +63,7 @@ export class Source {
   publish(): void {
     this.cached = undefined;
   }
-  query<Q extends Query>(query: Q, options?: QueryOptions) {
+  query<Q extends Query>(query: Q, options?: Query.Options) {
     return read(this.data, query, options);
   }
 }

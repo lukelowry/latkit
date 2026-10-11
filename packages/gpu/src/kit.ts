@@ -1,10 +1,28 @@
 /** What renderer packages build on: the view base, frames, field uploads, shaders, text, and input. */
-export { BaseView, rendererOf, gpuOf, hold } from './view/view.js';
+export { BaseView, rendererOf, gpuOf, hold, layerOf } from './view/view.js';
+export type { Layer, LayerLook, LayerScene, CapturedLayer, PreparedLayer } from './view/layer.js';
+export { Projector, PROJECTIONS, projectionShader } from './view/projection.js';
+export type { Light, Projected } from './view/projection.js';
 export type { ConfigShape } from './view/view.js';
 export { BaseItemView, resolveLimits } from './view/item-view.js';
 export type { Framing, HoverSearch, ItemShape } from './view/item-view.js';
-export { resolveViewStyle } from './view/style.js';
-export type { ResolvedViewStyle } from './view/style.js';
+export { ProjectedView } from './view/projected-view.js';
+export {
+  resolveStyle,
+  resolveViewStyle,
+  viewStyle,
+  lineStyle,
+  projectedStyle,
+  gridStyle,
+} from './view/style.js';
+export type {
+  ResolvedViewStyle,
+  LineStyle,
+  ProjectedStyle,
+  GridStyle,
+  StyleRule,
+  StyleRules,
+} from './view/style.js';
 export { Attachments } from './view/attachments.js';
 export type {
   Renderer,
@@ -30,12 +48,21 @@ export type { PixelRegion } from './memory/texture-data.js';
 export { BufferData } from './memory/buffer-data.js';
 export type { ByteRange } from './memory/buffer-data.js';
 export type { BufferResource } from './memory/buffers.js';
+export { Feedback } from './memory/feedback.js';
 export type { TextureResource } from './memory/textures.js';
 export { createTextureTarget } from './view/target.js';
 export type { TextureTarget, TargetSize } from './view/target.js';
 export { createPresentation } from './view/presentation.js';
 export type { Canvas, Presentation } from './view/presentation.js';
-export type { TextRun, TextRequest, TextPage } from './text/text.js';
+export type {
+  TextRun,
+  TextRequest,
+  TextPage,
+  TextLayout,
+  TextLayoutInput,
+  TextAlign,
+  TextBaseline,
+} from './text/text.js';
 export { textShader } from './text/shader.js';
 export { TextBank, textOrigin, textBox } from './text/bank.js';
 export type { TextBankPage, TextCandidate, TextPlacement } from './text/bank.js';
@@ -47,10 +74,10 @@ export { wiring, readRows } from './view/wiring.js';
 export { Graph } from './layout/graph.js';
 export type { Runs, Parts } from './layout/graph.js';
 export { place, layoutOptions } from './layout/place.js';
-export type { LayoutInput } from './layout/place.js';
 export { sameReads, sameRecords, sameValues } from './view/changes.js';
 export type { Wiring, End, Port } from './view/wiring.js';
 export { clipStroke, strokeShader } from './style/stroke.js';
+export { gridLines, gridShader } from './style/grid.js';
 export type { ClipPoint } from './style/stroke.js';
 export { clearColor, validateRgba } from './colors/color.js';
 export { sampleColormap } from './colors/sampling.js';
@@ -81,7 +108,6 @@ export {
   SHAPES,
   MARKER_INPUTS,
 } from './style/marker.js';
-export type { ShadeRequest } from './style/shade.js';
 export { shadeShader } from './style/shade.js';
 export { premultipliedBlend, outputShader } from './style/output.js';
 export type { CanvasInput } from './view/input.js';

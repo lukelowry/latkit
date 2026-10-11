@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
 import type { WebSocket } from 'ws';
-import type { LogEntry, Model, Publication } from '@latkit/model';
+import type { Command, Model } from '@latkit/model';
 import { acceptModel, connectModel } from '../src/index.js';
 import type { ConnectedModel } from '../src/index.js';
 import { deferred } from '../src/core.js';
@@ -60,13 +60,13 @@ it('accepts a model by dialing it, offered on the socket a server accepted', asy
   cleanup.push(() => model.close());
   expect(model.name).toBe('grid');
   expect(await collect(model.monitor!(fields))).toEqual([[batch(4, 2)]]);
-  const received: Publication[] = [];
+  const received: Model.Publication[] = [];
   await expect(
     model.commands.solve.run(
       {},
       {
         outputs: fields,
-        publish: async (publication) => void received.push(publication as Publication),
+        publish: async (publication) => void received.push(publication as Model.Publication),
       },
     ),
   ).resolves.toBe('solved');
@@ -85,15 +85,15 @@ it('serves an accepted model onward as it is, sending publications on as the byt
   const page = await acceptModel({ url });
   cleanup.push(() => page.close());
   const onward = sentPayloads(sockets[0]);
-  const logs: LogEntry[] = [];
-  const received: Publication[] = [];
+  const logs: Command.LogEntry[] = [];
+  const received: Model.Publication[] = [];
   expect(await collect(page.monitor!(fields))).toEqual([[batch(4, 2)]]);
   await expect(
     page.commands.solve.run(
       {},
       {
         outputs: fields,
-        publish: async (publication) => void received.push(publication as Publication),
+        publish: async (publication) => void received.push(publication as Model.Publication),
         log: (entry) => logs.push(entry),
       },
     ),

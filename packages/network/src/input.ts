@@ -1,35 +1,26 @@
-import type { Point, ViewInput } from '@latkit/gpu';
-import type { NetworkItem } from './data.js';
-
-type Mode = NonNullable<ViewInput['mode']>;
+import type { Point } from '@latkit/gpu';
+import type { Network } from './network.js';
 /** What a network's own gestures drive; the view implements it. */
 export interface Gestures {
-  pan(dx: number, dy: number): void;
-  rotate(dx: number, dy: number): void;
-  locate(item: NetworkItem): Point | null;
-  neighborhood(item: NetworkItem): readonly NetworkItem[];
-  reveal(item: NetworkItem): void;
-  selection(): readonly NetworkItem[];
+  locate(item: Network.Item): Point | null;
+  neighborhood(item: Network.Item): readonly Network.Item[];
+  reveal(item: Network.Item): void;
+  selection(): readonly Network.Item[];
   /** Select as the user did, reporting it. */
-  choose(items: readonly NetworkItem[]): void;
+  choose(items: readonly Network.Item[]): void;
 }
 
-/** Arrows pan, or turn with Shift; inspecting, they step to the neighbor in that direction. */
-export function arrow(event: KeyboardEvent, mode: Mode, view: Gestures): boolean {
+/** An arrow steps from the selection to its neighbor in that direction, and reveals it. */
+export function step(event: KeyboardEvent, view: Gestures): boolean {
   const key = event.key;
   if (key !== 'ArrowLeft' && key !== 'ArrowRight' && key !== 'ArrowUp' && key !== 'ArrowDown')
     return false;
-  const dx = key === 'ArrowLeft' ? 24 : key === 'ArrowRight' ? -24 : 0,
-    dy = key === 'ArrowUp' ? 24 : key === 'ArrowDown' ? -24 : 0;
-  if (mode !== 'inspect') {
-    if (event.shiftKey) view.rotate(dx, dy);
-    else view.pan(dx, dy);
-    return true;
-  }
+  const dx = key === 'ArrowLeft' ? 1 : key === 'ArrowRight' ? -1 : 0,
+    dy = key === 'ArrowUp' ? 1 : key === 'ArrowDown' ? -1 : 0;
   const selected = view.selection().at(-1),
     origin = selected && view.locate(selected);
   if (!selected || !origin) return true;
-  let best: NetworkItem | undefined,
+  let best: Network.Item | undefined,
     score = Infinity;
   for (const item of view.neighborhood(selected)) {
     const p = view.locate(item);

@@ -1,12 +1,4 @@
-import {
-  interruptible,
-  failure,
-  type Reader,
-  type ReadScope,
-  type ReadRecord,
-  type MemoryEntry,
-  type Memory,
-} from '@latkit/model';
+import { interruptible, failure, type Reader, type Memory } from '@latkit/model';
 import { integer } from '../error.js';
 import type { CopyJob } from '../fields/pages.js';
 import type { Uploader, UploadScope } from '../fields/upload.js';
@@ -31,9 +23,9 @@ import {
 
 /** What memoized work held and bound, and what it depended on, as it was built. */
 interface Recording {
-  readonly held: Set<MemoryEntry>;
+  readonly held: Set<Memory.Entry>;
   readonly buffers: Map<BufferData, number>;
-  readonly reads: ReadRecord;
+  readonly reads: Reader.Dependencies;
 }
 export interface Memo extends Recording {
   readonly deps: readonly unknown[];
@@ -109,13 +101,13 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
     };
   });
   for (const renderer of renderers) owner.busy.add(renderer);
-  const held = new Set<MemoryEntry>();
+  const held = new Set<Memory.Entry>();
   const uniforms = owner.uniforms.begin();
   const checks: (() => void)[] = [];
   const copies = new Set<CopyJob>();
   const snapshots: CapturedFrame[] = [];
   const prepared: (PreparedFrame | undefined)[] = [];
-  const scopes: ReadScope[] = [];
+  const scopes: Reader.Scope[] = [];
   const tasks = new Set<Promise<unknown>>();
   let phase: 'prepare' | 'encode' | 'closed' = 'prepare';
   let submitted = false;
@@ -159,7 +151,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
    */
   const makeFrame = (
     info: FrameInfo,
-    reader: ReadScope,
+    reader: Reader.Scope,
     renderer: Renderer,
     touched: Set<unknown>,
     records: readonly Recording[] = [],

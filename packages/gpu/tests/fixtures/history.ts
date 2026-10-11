@@ -1,13 +1,4 @@
-import {
-  createData,
-  read,
-  sliceSamples,
-  type Data,
-  type DataBatch,
-  type Schema,
-  type Query,
-  type QueryOptions,
-} from '@latkit/model';
+import { createData, read, sliceSamples, type Data, type Schema, type Query } from '@latkit/model';
 export class HistorySource {
   readonly index = { source: 'history', type: 'node', version: 'i0' };
   readonly firstFrame = 2 ** 40;
@@ -53,7 +44,7 @@ export class HistorySource {
   get data(): Data {
     if (this.cached) return this.cached;
     const rows = { kind: 'range' as const, offset: 0, count: this.count };
-    const batches: DataBatch[] = [
+    const batches: Data.Batch[] = [
       {
         kind: 'rows',
         index: this.index,
@@ -103,7 +94,7 @@ export class HistorySource {
   publish(): void {
     this.cached = undefined;
   }
-  query<Q extends Query>(query: Q, options?: QueryOptions) {
+  query<Q extends Query>(query: Q, options?: Query.Options) {
     return read(this.data, query, options);
   }
 }

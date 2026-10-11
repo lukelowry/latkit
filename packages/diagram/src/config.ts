@@ -1,11 +1,10 @@
 import { failure } from '@latkit/model';
-import { kit, viewStyle, type RGBA, type ViewInput } from '@latkit/gpu';
-import type { DiagramStyle, Limits } from './options.js';
-import type { DiagramData, VertexOptions, EdgeOptions } from './data.js';
-import type { DiagramInput } from './input.js';
+import { kit, type RGBA, type ItemView } from '@latkit/gpu';
+import type { DiagramData } from './data.js';
 import { structure } from './read.js';
 import { checkStyle } from './styles.js';
-export type Style = Required<DiagramStyle> & kit.ResolvedViewStyle;
+import type { Diagram } from './diagram.js';
+export type Style = Required<Diagram.Style> & kit.ResolvedViewStyle;
 /** Every new option must declare the work it invalidates. */
 export const STYLE_EFFECTS = {
   gridPitch: 'scene',
@@ -47,8 +46,15 @@ export const STYLE_EFFECTS = {
   font: 'scene',
   fontSizePx: 'scene',
   textColor: 'scene',
+  dashPeriodPx: 'frame',
+  flowColor: 'frame',
+  flowSpacingPx: 'frame',
 } as const satisfies Record<keyof Style, 'frame' | 'route' | 'scene'>;
-export const DEFAULTS: Required<DiagramStyle> = Object.freeze({
+/** A wire being drawn dashes finer than a network's edges. */
+export const DEFAULTS: Required<Diagram.Style> = Object.freeze({
+  ...kit.lineStyle,
+  ...kit.gridStyle,
+  dashPeriodPx: 10,
   gridPitch: 8,
   grid: true,
   snap: true,
@@ -74,7 +80,7 @@ export const DEFAULTS: Required<DiagramStyle> = Object.freeze({
 });
 /** Every geometry is antialiased in its shader, so multisampling adds nothing but bandwidth. */
 export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({ msaa: 1 });
-export const LIMITS: Required<Limits> = Object.freeze({
+export const LIMITS: Required<Diagram.Limits> = Object.freeze({
   vertices: 100000,
   edges: 200000,
   ends: 1000000,
@@ -90,37 +96,32 @@ export function positive(value: number, name: string, zero = false): number {
   if (!Number.isFinite(value) || (zero ? value < 0 : value <= 0)) fail('Invalid ' + name);
   return value;
 }
-const ZERO = new Set(['cornerRadius', 'outlineWidthPx']);
-const CHOICES: Partial<Record<keyof DiagramStyle, readonly string[]>> = {
+/** Sizes take more than zero, but corners may be square, outlines absent, and wires still. */
+const RULES: kit.StyleRules<Required<Diagram.Style>> = {
   detail: ['auto', 'full'],
   portMarker: ['directional', 'circle', 'diamond'],
+  gridPitch: 'positive',
+  vertexPadding: 'positive',
+  portSize: 'positive',
+  portFontSize: 'positive',
+  edgeWidthPx: 'positive',
+  portSpacing: 'positive',
+  routeClearance: 'positive',
+  dashPeriodPx: 'positive',
 };
 /** The style a config describes: its own options over the defaults, on the shared view style. */
 export function resolveStyle(
-  config: DiagramStyle = {},
-  view: kit.ResolvedViewStyle = viewStyle,
+  config: Diagram.Style = {},
+  view: kit.ResolvedViewStyle = kit.viewStyle,
 ): Style {
-  const style: Record<string, unknown> = { ...view, ...DEFAULTS };
-  for (const key of Object.keys(DEFAULTS) as (keyof DiagramStyle)[]) {
-    const value = config[key];
-    if (value === undefined) continue;
-    const choices = CHOICES[key];
-    if (key.endsWith('Color')) kit.validateRgba(value as RGBA);
-    else if (choices) {
-      if (!choices.includes(value as string)) fail('Invalid ' + key);
-    } else if (typeof DEFAULTS[key] === 'boolean') {
-      if (typeof value !== 'boolean') fail('Invalid ' + key);
-    } else positive(value as number, key, ZERO.has(key));
-    style[key] = value;
-  }
-  return Object.freeze(style) as Style;
+  return kit.resolveStyle(config, DEFAULTS, RULES, view);
 }
-/** Limits over their defaults; `layoutMs` may be fractional. */
-export function resolveLimits(value?: Limits): Required<Limits> {
+/** Diagram.Limits over their defaults; `layoutMs` may be fractional. */
+export function resolveLimits(value?: Diagram.Limits): Required<Diagram.Limits> {
   return kit.resolveLimits(value, LIMITS, 'diagram');
 }
 /** Throw on the diagram's own input options the gestures cannot use; return the shared rest. */
-export function checkInput(input: DiagramInput): ViewInput {
+export function checkInput(input: Diagram.Input): ItemView.Input {
   const {
     backgroundDrag,
     dragThresholdPx,
@@ -147,7 +148,7 @@ export function checkInput(input: DiagramInput): ViewInput {
   return shared;
 }
 /** A type's labels and channels: what it reads, and how it draws. */
-function binding(value: VertexOptions | EdgeOptions, edge: boolean) {
+function binding(value: Diagram.VertexOptions | Diagram.EdgeOptions, edge: boolean) {
   const labels = kit.resolveLabels(value.labels);
   if (labels) {
     if (labels.fontSize !== undefined) positive(labels.fontSize, 'label font size');

@@ -1,7 +1,7 @@
-import { Work, type RequestOptions } from '@latkit/model';
-import { kit, type Gpu, type LayoutItem, type LayoutOptions, type Positions } from '@latkit/gpu';
+import { Work } from '@latkit/model';
+import { kit, type Gpu, type Layout } from '@latkit/gpu';
 import { diagramData, rowOf } from './data.js';
-import type { DiagramConfig } from './diagram.js';
+import type { Diagram } from './diagram.js';
 import {
   data as checkedData,
   resolveLimits,
@@ -24,15 +24,15 @@ import {
 import { labelRoom, portPositions } from './geometry.js';
 
 /** Layout options over the diagram's defaults: ranks along the flow, with room for blocks. */
-export function layoutOptions(layout?: LayoutOptions): Required<LayoutOptions> {
+export function layoutOptions(layout?: Layout): Required<Layout> {
   return kit.layoutOptions(layout, { algorithm: 'layered', vertexGap: 24, rankGap: 64 });
 }
 /** Place a diagram's vertices as its layout would, without drawing: positions by vertex type. */
 export async function arrange(
   gpu: Gpu,
-  config: DiagramConfig,
-  options: RequestOptions = {},
-): Promise<Readonly<Record<string, Positions>>> {
+  config: Diagram.Config,
+  options: { readonly signal?: AbortSignal } = {},
+): Promise<Readonly<Record<string, Layout.Positions>>> {
   const data = checkedData(diagramData(config)),
     limits = resolveLimits(config.limits),
     style = resolveStyle(config, kit.resolveViewStyle(config, VIEW_DEFAULTS));
@@ -69,7 +69,7 @@ export function rootEnd(edge: {
  */
 export async function place(
   scene: Scene,
-  layout: Required<LayoutOptions>,
+  layout: Required<Layout>,
   style: Style,
   work: Work,
   previous?: Scene,
@@ -115,7 +115,7 @@ function levels(scene: Scene): Level {
 type Box = [number, number, number, number];
 /** What layout moves as one: a vertex, or a group with everything inside it. */
 interface Piece {
-  readonly item: LayoutItem;
+  readonly item: Layout.Vertex;
   /** The scene vertex it is; a group is none. */
   readonly vertex?: Vertex;
   /** Its first scene vertex in read order, which orders its level. */
@@ -137,7 +137,7 @@ class Placement {
   private readonly snap: (value: number) => number;
   constructor(
     private readonly scene: Scene,
-    private readonly layout: Required<LayoutOptions>,
+    private readonly layout: Required<Layout>,
     private readonly style: Style,
     private readonly work: Work,
   ) {
@@ -232,7 +232,7 @@ class Placement {
    * A level's pieces as layout reads them: the edges joining two or more, each end at the piece
    * holding its vertex, meeting a vertex at its port and a group at its center.
    */
-  private lift(pieces: readonly Piece[]): { graph: kit.Graph; input: kit.LayoutInput } {
+  private lift(pieces: readonly Piece[]): { graph: kit.Graph; input: Layout.Input } {
     const { owner, taken, scene, style, graph } = this,
       level = ++this.level,
       found: number[] = [];

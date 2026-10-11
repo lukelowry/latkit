@@ -1,12 +1,12 @@
 import { renderer as testRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createGpu, kit } from '@latkit/gpu';
-import { createData, type FieldInput, type FieldValues, type NumericColumn } from '@latkit/model';
-import { arrange, createNetwork, type Network, type NetworkConfig } from '../src/index.js';
+import { createData, type FieldInput, type Column } from '@latkit/model';
+import { arrange, createNetwork, type Network } from '../src/index.js';
 import type { NetworkData } from '../src/data.js';
 import { readGeometry, DEFAULT_LIMITS } from '../src/geometry/topology.js';
 import { PickGeometry } from '../src/picking.js';
-import { featureSource } from './paths-fixture.js';
+import { featureSource } from './table-fixture.js';
 import { GraphSource } from './fixture.js';
 import { deferred, fakeDevice } from '../../gpu/tests/fixtures/device.js';
 
@@ -237,7 +237,7 @@ it('rebinds immutable live positions without rereading topology and picks immedi
   const values = source.positions.slice();
   values[24] += 3;
   values[25] += 2;
-  const position: FieldValues = {
+  const position: FieldInput.Values = {
     index: source.index('node'),
     rows: { kind: 'range', offset: 0, count: 25 },
     values: {
@@ -504,7 +504,7 @@ it('aborts automatic searches without a partial hit and suspends them until posi
   await render(1);
   expect(nearest).toHaveBeenCalledTimes(2);
   expect(nearest.mock.results[1].type).toBe('return');
-  // Tilted views search without indexes.
+  // Raised rows on a tilted view are found by scanning, so no index builds for them.
   expect(network.stats()).toMatchObject({ hover: 'active', pickingBytes: 0 });
   network.destroy();
   gpu.destroy();
@@ -622,7 +622,7 @@ it('builds hit-test indexes in the background once positions hold, within pickin
   const build = vi.spyOn(kit.BoxIndex, 'build'),
     query = vi.spyOn(kit.BoxIndex.prototype, 'some'),
     hover = vi.fn();
-  const show = async (config: Partial<NetworkConfig> = {}) => {
+  const show = async (config: Partial<Network.Config> = {}) => {
     const network = createNetwork(gpu, { ...data, hover: 'on', ...config });
     const render = (at = 0) =>
       gpu.render({
@@ -712,7 +712,7 @@ it('keeps hover active across color-only samples and reuses a valid spatial inde
   gpu.destroy();
 });
 
-it('renders bends, nets as stars, geodesics, and native paths with original identities', async () => {
+it('renders bends, nets as stars, and geodesics with original identities', async () => {
   const source = featureSource(),
     gpu = await createGpu({ device: device().device });
   const data: NetworkData = {
@@ -723,7 +723,6 @@ it('renders bends, nets as stars, geodesics, and native paths with original iden
       star: {},
       route: { ends: ['from', 'to'], route: 'geodesic' },
     },
-    paths: { seam: { points: 'points', pickable: true } },
   };
   const network = createNetwork(gpu, { ...data, camera: { center: [-40, 0], scale: 5 } });
   const surface = target(gpu),
@@ -759,7 +758,7 @@ it('renders bends, nets as stars, geodesics, and native paths with original iden
 it('keeps edges pickable when only their vertex markers are hidden', async () => {
   const { source, data } = fixture(4),
     gpu = await createGpu({ device: device().device });
-  const hidden: FieldValues = {
+  const hidden: FieldInput.Values = {
     index: source.index('node'),
     rows: { kind: 'range', offset: 0, count: 4 },
     values: { kind: 'boolean', offset: 0, length: 4, values: Uint8Array.of(0) },
@@ -837,6 +836,193 @@ it('picks a geodesic arc at its visible arc-length midpoint in every projection'
     expect(point).not.toBeNull();
     expect((await network.pick(point)).some((hit) => hit.index.type === 'route')).toBe(true);
   }
+  network.destroy();
+  gpu.destroy();
+});
+
+it('builds its hit-test indexes only once the camera rests', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+  const { data } = fixture(400, 64),
+    gpu = await createGpu({ device: device().device }),
+    network = createNetwork(gpu, { ...data, hover: 'off' }),
+    surface = target(gpu),
+    render = () =>
+      gpu.render({
+        timeMs: 0,
+        views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
+      });
+  await render();
+  // A frame every 50 ms, each moving the camera: the settle never ends while it moves.
+  for (let i = 0; i < 10; i++) {
+    pan(network, 3, 0);
+    await render();
+    await vi.advanceTimersByTimeAsync(50);
+  }
+  expect(network.stats().pickingBytes).toBe(0);
+  await vi.advanceTimersByTimeAsync(400);
+  expect(network.stats().pickingBytes).toBeGreaterThan(0);
+  network.destroy();
+  gpu.destroy();
+});
+
+it('draws a network larger than the GPU budget, then gives the room back for a smaller one', async () => {
+  const small = fixture(4),
+    large = fixture(50000, 4096);
+  // What the small network needs, with a megabyte to spare and the large one's 4 MB of vertices too much.
+  const probe = await createGpu({ device: device().device }),
+    measured = createNetwork(probe, small.data);
+  await probe.render({
+    timeMs: 0,
+    views: [{ renderer: kit.rendererOf(measured), target: target(probe), at: 0 }],
+  });
+  const needed = probe.stats().gpuBytes;
+  measured.destroy();
+  probe.destroy();
+  const gpu = await createGpu({
+      device: device().device,
+      budget: { gpuBytes: needed + 1024 ** 2 },
+    }),
+    network = createNetwork(gpu, large.data),
+    surface = target(gpu),
+    render = () =>
+      gpu.render({
+        timeMs: 0,
+        views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
+      });
+  // What a frame draws is never refused: the pool runs over the budget while the network holds it.
+  await expect(render()).resolves.toBeUndefined();
+  expect(network.stats().vertices).toBe(50000);
+  expect(gpu.stats().peakGpuBytes).toBeGreaterThan(gpu.budget.gpuBytes);
+  network.set(small.data, { replace: true });
+  await expect(render()).resolves.toBeUndefined();
+  expect(network.stats().vertices).toBe(4);
+  gpu.trim();
+  expect(gpu.stats().gpuBytes).toBeLessThanOrEqual(gpu.budget.gpuBytes);
+  network.destroy();
+  gpu.destroy();
+});
+
+it('curves every edge over the globe in one render pass, and only geodesics on a flat map', async () => {
+  const source = featureSource(),
+    fake = device(),
+    gpu = await createGpu({ device: fake.device });
+  const network = createNetwork(gpu, {
+    source: source.data,
+    vertices: { node: lanes('position') },
+    edges: { bend: { ends: ['from', 'to'], bends: 'points' }, route: { ends: ['from', 'to'] } },
+    camera: { projection: 'globe', center: [-40, 10], scale: 3 },
+  });
+  const surface = target(gpu),
+    encoders = fake.device.createCommandEncoder as unknown as ReturnType<typeof vi.fn>;
+  /** What a frame records: its render passes, and its curved and straight draws. */
+  const frame = async () => {
+    const before = encoders.mock.results.length;
+    await gpu.render({
+      timeMs: 0,
+      views: [{ renderer: kit.rendererOf(network), target: surface }],
+    });
+    const made = encoders.mock.results
+      .slice(before)
+      .map((result) => result.value as GPUCommandEncoder);
+    const passes = made.flatMap((encoder) =>
+      (encoder.beginRenderPass as unknown as ReturnType<typeof vi.fn>).mock.results.map(
+        (result) => result.value as { drawIndirect: ReturnType<typeof vi.fn> },
+      ),
+    );
+    return {
+      passes: passes.length,
+      curves: new Set(passes).values().next().value!.drawIndirect.mock.calls.length,
+    };
+  };
+  // The bend's three batches, node to bend, bend to bend, and bend to node, and the route.
+  expect(await frame()).toEqual({ passes: 1, curves: 4 });
+  network.set({ camera: { projection: 'flat' } });
+  expect((await frame()).curves).toBe(0);
+  network.set({ edges: { route: { route: 'geodesic' } } });
+  expect((await frame()).curves).toBe(1);
+  network.destroy();
+  gpu.destroy();
+});
+
+it('answers along a dashed line, its gaps included', async () => {
+  const { source, data } = fixture(2),
+    gpu = await createGpu({ device: device().device });
+  const network = createNetwork(gpu, {
+    ...data,
+    vertices: { node: { x: 'location', y: 0 } },
+    edges: { line: { ends: ['from', 'to'], dash: true } },
+    dashPeriodPx: 40,
+    markers: false,
+  });
+  await gpu.render({
+    timeMs: 0,
+    views: [{ renderer: kit.rendererOf(network), target: target(gpu), at: 0 }],
+  });
+  const vertex = (row: number) =>
+      ({ kind: 'vertex', source: source.data, index: source.index('node'), row }) as const,
+    [a, b] = [network.locate(vertex(0))!, network.locate(vertex(1))!];
+  for (let t = 0.2; t <= 0.8; t += 0.01) {
+    const point = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t] as const;
+    expect((await network.pick(point, { radiusPx: 0 })).map((item) => item.kind)).toEqual(['edge']);
+  }
+  network.destroy();
+  gpu.destroy();
+});
+
+it('picks on the globe through its hit-test indexes', async () => {
+  const source = featureSource(),
+    gpu = await createGpu({ device: device().device });
+  const network = createNetwork(gpu, {
+    source: source.data,
+    vertices: { node: lanes('position') },
+    edges: { route: { ends: ['from', 'to'] } },
+    camera: { projection: 'globe', center: [-30, 10], scale: 3 },
+    markers: false,
+    edgeWidthPx: 3,
+  });
+  await gpu.render({
+    timeMs: 0,
+    views: [{ renderer: kit.rendererOf(network), target: target(gpu) }],
+  });
+  const item = { kind: 'edge' as const, source: source.data, index: source.index('route'), row: 0 },
+    point = network.locate(item)!;
+  expect((await network.pick(point)).some((hit) => hit.index.type === 'route')).toBe(true);
+  expect(network.stats().pickingBytes).toBeGreaterThan(0);
+  network.destroy();
+  gpu.destroy();
+});
+
+it('routes an edge through its bends in a segment each, its dashes carrying on by degrees of arc', async () => {
+  const source = featureSource(),
+    gpu = await createGpu({ device: device().device });
+  const network = createNetwork(gpu, {
+    source: source.data,
+    vertices: { node: lanes('position') },
+    edges: { bend: { ends: ['from', 'to'], bends: 'points', dash: true } },
+    camera: { projection: 'globe', center: [-50, 0], scale: 3 },
+  });
+  await gpu.render({
+    timeMs: 0,
+    views: [{ renderer: kit.rendererOf(network), target: target(gpu) }],
+  });
+  const geometry = (
+      network as unknown as { geometry: import('../src/geometry/topology.js').Geometry }
+    ).geometry,
+    batches = geometry.edges.find((bank) => bank.type === 'bend')!.batches,
+    prefixes = batches.flatMap((batch) => [...batch.prefixes!]).sort((x, y) => x - y);
+  // West (-70, -20), its bends (-60, 0) and (-40, 0), then East (-30, -10): three segments.
+  const arc = (a: readonly number[], b: readonly number[]) => {
+    const r = Math.PI / 180,
+      cosine =
+        Math.sin(a[1] * r) * Math.sin(b[1] * r) +
+        Math.cos(a[1] * r) * Math.cos(b[1] * r) * Math.cos((b[0] - a[0]) * r);
+    return Math.acos(Math.min(1, cosine)) / r;
+  };
+  const first = arc([-70, -20], [-60, 0]);
+  expect(prefixes).toHaveLength(3);
+  expect(prefixes[0]).toBe(0);
+  expect(prefixes[1]).toBeCloseTo(first, 4);
+  expect(prefixes[2]).toBeCloseTo(first + arc([-60, 0], [-40, 0]), 4);
   network.destroy();
   gpu.destroy();
 });
@@ -1015,7 +1201,7 @@ function stations() {
       },
     ],
   );
-  const config: NetworkConfig = {
+  const config: Network.Config = {
     source,
     vertices: { bus: lanes('location'), plant: {} },
     edges: { branch: { ends: ['from', 'to'] }, feed: { ends: ['plant', 'bus'] } },
@@ -1029,7 +1215,7 @@ function placedAt(
   row: number,
 ): [number, number] {
   const { x, y } = positions[type];
-  return [(x.values as NumericColumn).values[row], (y.values as NumericColumn).values[row]];
+  return [(x.values as Column.Numeric).values[row], (y.values as Column.Numeric).values[row]];
 }
 it('places vertices without a position by their edges, among geographic ones that stay', async () => {
   const gpu = await createGpu({ device: device().device }),
@@ -1056,13 +1242,14 @@ it('places vertices without a position by their edges, among geographic ones tha
     const lowest = Math.min(...[0, 1].map((row) => placedAt(placed, 'plant', row)[1]), 30);
     expect(placedAt(placed, 'plant', 2)[1]).toBeLessThan(lowest);
     expect(await arrange(gpu, config)).toEqual(placed);
-    // Drawn, the positions stay geographic.
+    // Drawn, the positions stay geographic, and start on the mercator plane as a geography does.
     const network = createNetwork(gpu, config);
     await gpu.render({
       timeMs: 0,
       views: [{ renderer: kit.rendererOf(network), target: target(gpu), at: 0 }],
     });
     expect(network.projections.globe).toBe(true);
+    expect(network.camera.projection).toBe('mercator');
     expect(network.stats().vertices).toBe(7);
     network.destroy();
   } finally {
@@ -1155,6 +1342,180 @@ it('keeps placed vertices as the drawing changes, and places them anew for new l
       bus = vertex('bus', 0);
     expect(fed).not.toEqual(loose);
     expect(Math.hypot(fed[0] - bus[0], fed[1] - bus[1])).toBeLessThan(30);
+  } finally {
+    network.destroy();
+    gpu.destroy();
+  }
+});
+it('draws a new style over placed vertices and edges in lanes', async () => {
+  const index = (type: string) => ({ source: 'pair', type, version: '1' }),
+    rows = (count: number) => ({ kind: 'range' as const, offset: 0, count }),
+    reference = (type: string, values: number[]) => ({
+      kind: 'reference' as const,
+      index: index(type),
+      offset: 0,
+      length: values.length,
+      values: Uint32Array.from(values),
+    }),
+    to = (type: string) => ({ type: { kind: 'reference' as const, to: type } });
+  // Two buses ten apart joined by two lines, which draw in lanes, and a plant layout places.
+  const source = createData(
+    {
+      types: {
+        bus: { fields: { location: { type: { kind: 'vector', items: 'float64', size: 2 } } } },
+        plant: { fields: { output: { type: 'float32' } } },
+        line: { fields: { from: to('bus'), to: to('bus') } },
+        feed: { fields: { plant: to('plant'), bus: to('bus') } },
+      },
+    },
+    [
+      {
+        kind: 'rows',
+        index: index('bus'),
+        rows: rows(2),
+        columns: {
+          location: {
+            kind: 'vector',
+            size: 2,
+            offset: 0,
+            length: 2,
+            values: { kind: 'numeric', offset: 0, length: 4, values: Float64Array.of(0, 0, 10, 0) },
+          },
+        },
+      },
+      {
+        kind: 'rows',
+        index: index('plant'),
+        rows: rows(1),
+        columns: { output: { kind: 'numeric', offset: 0, length: 1, values: Float32Array.of(1) } },
+      },
+      {
+        kind: 'rows',
+        index: index('line'),
+        rows: rows(2),
+        columns: { from: reference('bus', [0, 0]), to: reference('bus', [1, 1]) },
+      },
+      {
+        kind: 'rows',
+        index: index('feed'),
+        rows: rows(1),
+        columns: { plant: reference('plant', [0]), bus: reference('bus', [0]) },
+      },
+    ],
+  );
+  const style = (
+    radiusPx: number,
+    widthPx: number,
+  ): Pick<Network.Config, 'vertices' | 'edges'> => ({
+    vertices: { bus: lanes('location'), plant: { radiusPx } },
+    edges: { line: { ends: ['from', 'to'], widthPx }, feed: { ends: ['plant', 'bus'] } },
+  });
+  const gpu = await createGpu({ device: device().device }),
+    surface = target(gpu),
+    network = createNetwork(gpu, {
+      source,
+      ...style(3, 2),
+      edgeSpacingPx: 8,
+      camera: { center: [5, 0], scale: 20, fit: false },
+    }),
+    draw = (timeMs: number) =>
+      gpu.render({ timeMs, views: [{ renderer: kit.rendererOf(network), target: surface }] }),
+    vertex = (type: string, row: number) =>
+      network.locate({ kind: 'vertex', source, index: index(type), row })!,
+    /** Whether a point hits a row of `type`. */
+    hits = async (point: readonly [number, number], type: string) =>
+      (await network.pick(point, { radiusPx: 0 })).some((item) => item.index.type === type);
+  try {
+    await draw(0);
+    const plant = vertex('plant', 0),
+      [a, b] = [vertex('bus', 0), vertex('bus', 1)],
+      // Between the lanes, which run 4 pixels either side of the buses' line.
+      between = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] as const,
+      beside = [plant[0], plant[1] + 6] as const;
+    expect(await hits(between, 'line')).toBe(false);
+    expect(await hits(beside, 'plant')).toBe(false);
+    // The layout and the lanes stay; the new style draws over both.
+    network.set(style(9, 12));
+    await draw(1);
+    expect(vertex('plant', 0)).toEqual(plant);
+    expect(await hits(between, 'line')).toBe(true);
+    expect(await hits(beside, 'plant')).toBe(true);
+  } finally {
+    network.destroy();
+    gpu.destroy();
+  }
+});
+it('shrinks markers zoomed out to keep them apart, down to vertexMinRadiusPx', async () => {
+  const index = (type: string) => ({ source: 'fit', type, version: '1' }),
+    rows = (count: number) => ({ kind: 'range' as const, offset: 0, count }),
+    reference = (values: number[]) => ({
+      kind: 'reference' as const,
+      index: index('bus'),
+      offset: 0,
+      length: values.length,
+      values: Uint32Array.from(values),
+    }),
+    to = { type: { kind: 'reference' as const, to: 'bus' } };
+  // Two buses one apart, joined by a line.
+  const source = createData(
+    {
+      types: {
+        bus: { fields: { location: { type: { kind: 'vector', items: 'float64', size: 2 } } } },
+        line: { fields: { from: to, to } },
+      },
+    },
+    [
+      {
+        kind: 'rows',
+        index: index('bus'),
+        rows: rows(2),
+        columns: {
+          location: {
+            kind: 'vector',
+            size: 2,
+            offset: 0,
+            length: 2,
+            values: { kind: 'numeric', offset: 0, length: 4, values: Float64Array.of(0, 0, 1, 0) },
+          },
+        },
+      },
+      {
+        kind: 'rows',
+        index: index('line'),
+        rows: rows(1),
+        columns: { from: reference([0]), to: reference([1]) },
+      },
+    ],
+  );
+  const gpu = await createGpu({ device: device().device }),
+    surface = target(gpu),
+    network = createNetwork(gpu, {
+      source,
+      vertices: { bus: lanes('location') },
+      edges: { line: { ends: ['from', 'to'] } },
+      vertexRadiusPx: 8,
+      camera: { center: [0.5, 0], scale: 20, fit: false },
+    }),
+    draw = (timeMs: number) =>
+      gpu.render({ timeMs, views: [{ renderer: kit.rendererOf(network), target: surface }] }),
+    /** Whether a point six pixels below the first bus hits it. */
+    hits = async () => {
+      const [x, y] = network.locate({ kind: 'vertex', source, index: index('bus'), row: 0 })!;
+      return (await network.pick([x, y + 6], { radiusPx: 0 })).some(
+        (item) => item.kind === 'vertex',
+      );
+    };
+  try {
+    // The line runs 20 pixels, so markers shrink to a quarter of it: a radius of 5.
+    await draw(0);
+    expect(await hits()).toBe(false);
+    network.set({ vertexMinRadiusPx: 8 });
+    await draw(1);
+    expect(await hits()).toBe(true);
+    // Zoomed in, the line holds them apart at their own size.
+    network.set({ vertexMinRadiusPx: 1, camera: { scale: 100 } });
+    await draw(2);
+    expect(await hits()).toBe(true);
   } finally {
     network.destroy();
     gpu.destroy();

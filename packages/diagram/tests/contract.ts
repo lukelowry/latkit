@@ -1,12 +1,12 @@
 import { createDiagram, arrange, type Diagram } from '../src/index.js';
-import type { Gpu, ColorScale, Positions } from '@latkit/gpu';
+import type { Gpu, Scale, Layout } from '@latkit/gpu';
 import { itemId, type Data } from '@latkit/model';
 export async function usage(
   gpu: Gpu,
   model: Data,
   remove: (ids: readonly string[]) => Promise<void>,
   canvas: HTMLCanvasElement,
-  color: ColorScale,
+  color: Scale.Color,
 ): Promise<Diagram> {
   const config = {
     source: model,
@@ -25,7 +25,7 @@ export async function usage(
     void remove(rows.map(itemId));
   });
   diagram.on('move', ({ positions }) => {
-    const fields: Readonly<Record<string, Positions>> = positions;
+    const fields: Readonly<Record<string, Layout.Positions>> = positions;
     void fields;
   });
   diagram.set({ layout: { direction: 'down' }, camera: { scale: 2 } }, { animate: true });

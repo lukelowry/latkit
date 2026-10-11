@@ -1,4 +1,4 @@
-import { interruptible, failure, type MemoryEntry, type Memory } from '@latkit/model';
+import { interruptible, failure, type Memory } from '@latkit/model';
 import { BufferData } from '../memory/buffer-data.js';
 import { distanceField } from './distance-field.js';
 import { integer } from '../error.js';
@@ -6,21 +6,18 @@ import type { Images } from '../memory/images.js';
 import type { Textures, TextureResource } from '../memory/textures.js';
 import { createTextRasterizer } from './rasterizer.js';
 import type {
-  TextFont,
-  TextInput,
   TextLayout,
   TextLayoutInput,
-  TextOptions,
   TextPage,
   TextRasterizer,
   TextRequest,
   TextRun,
 } from './text.js';
 import type { Uploader, UploadScope } from '../fields/upload.js';
-
+import type { Gpu } from '../gpu.js';
 interface Atlas {
   resource: TextureResource;
-  entry: MemoryEntry;
+  entry: Memory.Entry;
   x: number;
   y: number;
   height: number;
@@ -54,7 +51,7 @@ interface Geometry {
   group?: GPUBindGroup;
 }
 interface Resident {
-  entry: MemoryEntry;
+  entry: Memory.Entry;
   geometry: Geometry[];
 }
 const em = 48,
@@ -67,8 +64,8 @@ function clusters(text: string): string[] {
   return simple.test(text) ? [...text] : Array.from(segmenter.segment(text), (s) => s.segment);
 }
 /** Font keys by font object: a view's runs share their style's font. */
-const fontKeys = new WeakMap<TextFont, string>();
-function fontKey(font: TextFont | undefined): string {
+const fontKeys = new WeakMap<TextRasterizer.Font, string>();
+function fontKey(font: TextRasterizer.Font | undefined): string {
   if (!font) return 'sans-serif\u0000400\u0000normal\u0000';
   let key = fontKeys.get(font);
   if (key === undefined) {
@@ -89,6 +86,11 @@ export class TextAtlas {
   private readonly rasterizer: TextRasterizer;
   private readonly size: number;
   private atlases = new Set<Atlas>();
+  /**
+   * The pages each text preparation holds while it shapes: every page, and each one made meanwhile,
+   * so no page its glyphs land on goes before they draw.
+   */
+  private readonly shaping = new Set<Set<Memory.Entry>>();
   /** Glyphs by font, then grapheme. */
   private fonts = new Map<string, Map<string, Glyph>>();
   private pending = new Map<string, Promise<Glyph>>();
@@ -102,7 +104,7 @@ export class TextAtlas {
     private readonly images: Images,
     private readonly uploader: Uploader,
     private readonly signal: AbortSignal,
-    options: TextOptions = {},
+    options: Gpu.TextOptions = {},
   ) {
     this.rasterizer = options.rasterizer ?? createTextRasterizer();
     this.size = integer(
@@ -144,7 +146,7 @@ export class TextAtlas {
     return layout;
   }
   /** A font's line metrics and cap height, measured once from its capital H, for every caller. */
-  private font(font: TextFont | undefined): Promise<FontMetrics> {
+  private font(font: TextRasterizer.Font | undefined): Promise<FontMetrics> {
     const key = fontKey(font);
     let metrics = this.metrics.get(key);
     if (!metrics) {
@@ -217,8 +219,14 @@ export class TextAtlas {
     signal.throwIfAborted();
     let resident = this.geometry.get(request.runs);
     if (!resident?.entry.live) {
-      const held = new Set<MemoryEntry>(),
+      const held = new Set<Memory.Entry>(),
         shaped: { run: TextRun; glyphs: readonly Glyph[] }[] = [];
+      for (const atlas of this.atlases)
+        if (atlas.entry.live) {
+          atlas.entry.pin();
+          held.add(atlas.entry);
+        }
+      this.shaping.add(held);
       try {
         for (const run of request.runs) {
           if (
@@ -234,17 +242,16 @@ export class TextAtlas {
           integer(run.anchor ?? 0, 'text anchor', 0, 0xffffffff);
           shaped.push({ run, glyphs: await this.resolve(clusters(run.text), run.font, signal) });
         }
-        // The promise continuations can interleave with an allocation that evicts a page.
+        this.shaping.delete(held);
+        // The geometry keeps only the pages its glyphs lie on.
+        const used = new Set<Memory.Entry>();
         for (const { glyphs } of shaped)
-          for (const glyph of glyphs)
-            if (glyph.atlas && !glyph.atlas.entry.live)
-              throw failure('resource-limit', 'Atlas was evicted during text preparation');
-        for (const { glyphs } of shaped)
-          for (const glyph of glyphs)
-            if (glyph.atlas && !held.has(glyph.atlas.entry)) {
-              glyph.atlas.entry.pin();
-              held.add(glyph.atlas.entry);
-            }
+          for (const glyph of glyphs) if (glyph.atlas) used.add(glyph.atlas.entry);
+        for (const entry of held)
+          if (!used.has(entry)) {
+            entry.unpin();
+            held.delete(entry);
+          }
         // Another view may have completed this same immutable run list while shaping was pending.
         if (this.geometry.get(request.runs)?.entry.live) {
           for (const entry of held) entry.unpin();
@@ -265,6 +272,7 @@ export class TextAtlas {
         this.geometry.set(request.runs, resident);
         entry.unpin();
       } catch (error) {
+        this.shaping.delete(held);
         for (const entry of held) entry.unpin();
         throw error;
       }
@@ -353,7 +361,7 @@ export class TextAtlas {
   /** The glyphs of these graphemes in one font, rasterizing only those never drawn. */
   private resolve(
     parts: readonly string[],
-    font: TextFont | undefined,
+    font: TextRasterizer.Font | undefined,
     signal: AbortSignal,
   ): Promise<readonly Glyph[]> | readonly Glyph[] {
     this.signal.throwIfAborted();
@@ -387,7 +395,7 @@ export class TextAtlas {
   }
 
   private async rasterize(
-    input: TextInput,
+    input: TextRasterizer.Input,
     font: Map<string, Glyph>,
     part: string,
   ): Promise<Glyph> {
@@ -490,6 +498,10 @@ export class TextAtlas {
       );
       atlas = { resource, entry, x: 0, y: 0, height: 0, glyphs: new Set() };
       this.atlases.add(atlas);
+      for (const held of this.shaping) {
+        entry.pin();
+        held.add(entry);
+      }
       entry.unpin();
       return atlas;
     } catch (error) {

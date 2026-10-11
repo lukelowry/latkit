@@ -1,4 +1,4 @@
-import { createData, textColumn, type Data, type DataBatch, type Schema } from '../src/index.js';
+import { createData, textColumn, type Data, type Schema } from '../src/index.js';
 export const fixtureSchema: Schema = {
   axis: { name: 'time' },
   types: {
@@ -12,7 +12,7 @@ export const fixtureSchema: Schema = {
   },
 };
 export function staticData(count = 4, pageRows = 4096): Data {
-  const batches: DataBatch[] = [];
+  const batches: Data.Batch[] = [];
   for (let offset = 0; offset < count; offset += pageRows) {
     const n = Math.min(pageRows, count - offset);
     batches.push({

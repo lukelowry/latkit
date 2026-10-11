@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/prefer-promise-reject-errors -- Preserve native AbortSignal reasons. */
-import { failure } from './error.js';
+import { failure } from './failure.js';
 
 /** Stop waiting on cancellation while still observing the work's outcome. */
 export function interruptible<T>(promise: PromiseLike<T>, signal: AbortSignal): Promise<T> {
@@ -28,14 +28,21 @@ export function interruptible<T>(promise: PromiseLike<T>, signal: AbortSignal): 
 
 interface Scheduler {
   readonly yield?: () => Promise<void>;
+  readonly postTask?: (
+    task: () => void,
+    options: { readonly priority: 'background' },
+  ) => Promise<void>;
 }
 /**
- * Let other tasks run, then continue. `scheduler.yield()` resumes ahead of other queued tasks and
- * without the timer clamp nested timeouts get; elsewhere this waits for a timeout.
+ * Let other tasks run, then continue. In the foreground, `scheduler.yield()` resumes ahead of other
+ * queued tasks and without the timer clamp nested timeouts get; in the background,
+ * `scheduler.postTask` resumes behind them. Elsewhere this waits for a timeout.
  */
-export function yieldTask(): Promise<void> {
+export function yieldTask(priority: Work.Priority = 'foreground'): Promise<void> {
   const scheduler = (globalThis as { readonly scheduler?: Scheduler }).scheduler;
-  if (scheduler?.yield) return scheduler.yield();
+  if (priority === 'background' && scheduler?.postTask)
+    return scheduler.postTask(() => {}, { priority: 'background' });
+  if (priority === 'foreground' && scheduler?.yield) return scheduler.yield();
   return new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
@@ -47,6 +54,7 @@ export class Work {
     readonly signal: AbortSignal,
     private readonly limitMs = Infinity,
     private readonly sliceMs = 8,
+    private readonly priority: Work.Priority = 'foreground',
   ) {
     this.#nextYield = this.#started + sliceMs;
   }
@@ -60,7 +68,7 @@ export class Work {
   async step(): Promise<void> {
     this.check();
     if (performance.now() < this.#nextYield) return;
-    await yieldTask();
+    await yieldTask(this.priority);
     this.#nextYield = performance.now() + this.sliceMs;
     this.check();
   }
@@ -68,4 +76,11 @@ export class Work {
   wait<T>(task: PromiseLike<T>): Promise<T> {
     return interruptible(task, this.signal);
   }
+}
+export declare namespace Work {
+  /**
+   * How work shares the page: `foreground` work someone waits on resumes ahead of other queued
+   * tasks; `background` work resumes after them, so a frame waiting on the GPU never waits on it.
+   */
+  type Priority = 'foreground' | 'background';
 }

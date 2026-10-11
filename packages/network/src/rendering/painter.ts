@@ -1,22 +1,22 @@
-import { kit, type Gpu, type Marker, type MarkerImage, type RGBA } from '@latkit/gpu';
+import { kit, type Gpu, type Marker, type ProjectedCamera, type RGBA } from '@latkit/gpu';
 import { failure, rowCount } from '@latkit/model';
-import type { Camera } from '../camera.js';
-import { DEG } from '../camera.js';
-import { networkKey, type NetworkData, type NetworkItem } from '../data.js';
+import { networkKey, type NetworkData } from '../data.js';
 import {
+  curvedAt,
   edgeOptions,
   ownerSegments,
+  routeOf,
   vertexOptions,
   type Geometry,
   type VertexBank,
   type EdgeBank,
   type SegmentBatch,
 } from '../geometry/topology.js';
-import { lineColor, lineWidthPx, type Style } from '../options.js';
+import { lineColor, type Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
-import { DISC, linePipeline, markerPipeline, type Pipelines } from './pipelines.js';
-
+import { DISC, gridPipeline, linePipeline, markerPipeline, type Pipelines } from './pipelines.js';
+import type { Network } from '../network.js';
 /** Bytes of a page's uniform slot: its header and seven channels, or a marker's eight inputs. */
 const SLOT = 256;
 const SLOT_WORDS = SLOT / 4;
@@ -49,24 +49,32 @@ function focusRuns(instances: readonly number[]): Focused | undefined {
   }
   return out.length > RANGES ? 'all' : out;
 }
-const sameHover = (a: NetworkItem | null, b: NetworkItem | null) =>
+const sameHover = (a: Network.Item | null, b: Network.Item | null) =>
   a === b || (!!a && !!b && networkKey(a) === networkKey(b));
-/** Words of the uniforms' named members after their fourteen vec4, as `Uniforms` lays them out. */
+/** Words of the uniforms' members, as `Uniforms` lays them out: the scene block first. */
 const U = {
-  easeShift: 56,
-  ease: 58,
-  dt: 59,
-  dashPeriodPx: 60,
-  edgeSpacingPx: 61,
-  flowSpacingPx: 62,
-  markers: 63,
-  hoverScale: 64,
-  labelHaloPx: 65,
-  grown: 66,
-  growth: 68,
-  words: 72,
+  light: kit.Projector.floats,
+  hoverColor: 32,
+  selectedColor: 36,
+  glow: 40,
+  halo: 44,
+  flowColor: 48,
+  easeShift: 52,
+  ease: 54,
+  dt: 55,
+  dashPeriodPx: 56,
+  edgeSpacingPx: 57,
+  flowSpacingPx: 58,
+  markers: 59,
+  hoverScale: 60,
+  labelHaloPx: 61,
+  grown: 62,
+  growth: 64,
+  markerFit: 66,
+  vertexMinRadiusPx: 67,
+  words: 68,
 } as const;
-/** A path's private points draw no markers. */
+/** An edge's private bends and junctions draw no markers. */
 const HIDDEN: kit.ResolvedChannel = { component: 0, fallback: 0 };
 /** The upload origin a raw axis reads relative to; a scaled or constant axis is absolute. */
 function rebase(channel: kit.ResolvedChannel, page: kit.GpuPage): number {
@@ -86,7 +94,7 @@ function stepsOf(marker: Marker): number {
   return (marker.steps ?? []).reduce((bits, name) => bits | (1 << names.indexOf(name)), 0);
 }
 const easeOut = (t: number) => 1 - (1 - t) ** 3;
-/** How a bank's rows draw: their type's marker, or a disc; a path's private points as discs. */
+/** How a bank's rows draw: their type's marker, or a disc; an edge's private points as discs. */
 function markerOf(data: NetworkData, bank: VertexBank): Marker {
   return bank.synthetic ? DISC : (vertexOptions(data, bank).marker ?? DISC);
 }
@@ -98,25 +106,33 @@ export interface Reads {
   readonly edges: ReadonlyMap<EdgeBank, FieldRead>;
 }
 export interface DrawFrame {
-  readonly camera: Camera;
+  readonly camera: ProjectedCamera;
+  /** The frame's camera on its viewport, which writes the projection block. */
+  readonly projector: kit.Projector;
+  /** The sun of the ground beneath, which dims the network at night; none without one. */
+  readonly light: kit.Light | null;
+  /** What label halos match: the ground beneath, or the background. */
+  readonly halo: RGBA;
+  /** Whether a ground draws beneath, in this pass, which hides the globe's far side itself. */
+  readonly grounded: boolean;
   readonly options: Style;
   readonly data: NetworkData;
   readonly geometry: Geometry;
   readonly reads: Reads;
   /** Replaced whenever it changes. */
-  readonly selection: readonly NetworkItem[];
-  readonly hover: NetworkItem | null;
-  readonly pointer: readonly [number, number] | null;
+  readonly selection: readonly Network.Item[];
+  readonly hover: Network.Item | null;
   readonly height: number;
   readonly pipelines: Pipelines;
   /** This frame's shade uniforms. */
   readonly shade: GPUBufferBinding;
   readonly labels: readonly LabelBatch[];
-  readonly phases: ReadonlyMap<SegmentBatch, Float32Array>;
   /** Each bank's records, and what a transition eases them from, as `Painter.records` made them. */
   readonly records: Records;
   /** Whether flow moves and hover grows over time; false under reduced motion. */
   readonly motion: boolean;
+  /** How much markers shrink at this frame's zoom, as picking sizes them. */
+  readonly markerFit: number;
   /**
    * A transition in progress: how much of what was drawn as it began still shows, from 1 to 0, and
    * whether it begins with this frame.
@@ -126,7 +142,8 @@ export interface DrawFrame {
 interface Command {
   readonly group: GPUBindGroup;
   readonly count: number;
-  readonly tessellation?: GPUBindGroup;
+  /** A curved batch's indirect draw, which its tessellation counts. */
+  readonly record?: number;
   /** A vertex bank's marker; discs draw with the shared vertex pipeline. */
   readonly pipeline?: GPURenderPipeline;
   /** Its markers' shadows, drawn beneath every marker when the style casts them. */
@@ -135,21 +152,40 @@ interface Command {
 }
 /**
  * A command's focused instances, which draw again over the rest with their pipeline: runs of its
- * instances, or a curved batch's span of focused segments, tessellated alone.
+ * instances, or a curved batch's span of focused segments, tessellated alone into its own draw.
  */
 type Focus =
   | { readonly pipeline: GPURenderPipeline; readonly runs: Focused }
-  | {
-      readonly pipeline: GPURenderPipeline;
-      readonly tessellation: GPUBindGroup;
-      readonly count: number;
-    };
+  | { readonly pipeline: GPURenderPipeline; readonly group: GPUBindGroup; readonly record: number };
 /** The draws a command takes: the scene's, then its focused instances'. */
 function drawsOf(item: Command): number {
   const focus = item.focus;
   if (!focus) return 1;
-  return 1 + ('tessellation' in focus || focus.runs === 'all' ? 1 : focus.runs.length);
+  return 1 + ('record' in focus || focus.runs === 'all' ? 1 : focus.runs.length);
 }
+/** A curved draw's tessellation: its bound segments, and how many. */
+interface Tessellation {
+  readonly group: GPUBindGroup;
+  readonly count: number;
+}
+/**
+ * Pieces every curved draw has room for past one per segment, beside what its curves asked for last:
+ * enough for a few curves split as finely as they go.
+ */
+const POOL_PIECES = 256;
+/** How far past what a curved draw asked for its next pool reaches, so a zoom grows it seldom. */
+const POOL_HEADROOM = 1.25;
+/** A curved draw's batch and role, which its pieces' feedback reports for, and the pool it had. */
+interface CurveDraw {
+  readonly batch: SegmentBatch;
+  readonly role: 'scene' | 'focus';
+  readonly pool: number;
+}
+/** Curve pieces a buffer grows by, so a focused span coming and going makes nothing again. */
+const PIECE_STEP = 16384;
+/** What a curved draw's segments read, as `Curves.flags` and `EdgeDraw.flags` hold it. */
+const DASHED = 1,
+  STRAIGHT = 2;
 interface Compute {
   readonly pipeline: GPUComputePipeline;
   readonly colors: GPUBindGroup;
@@ -180,21 +216,30 @@ export interface Paint {
   readonly vertices: readonly Command[];
   readonly edges: readonly Command[];
   readonly labels: readonly { group: GPUBindGroup; pages: readonly kit.TextPage[] }[];
-  readonly background: GPUBindGroup;
+  /** The ground beneath, drawn first in the pass. */
+  readonly ground?: kit.PreparedLayer;
+  /** The scene block this frame's uniforms begin with, which the ground beneath binds. */
+  readonly scene: GPUBufferBinding;
+  /** The grid, when nothing beneath draws the ground; on the globe it writes the globe's depth too. */
+  readonly grid?: { readonly pipeline: GPURenderPipeline; readonly group: GPUBindGroup };
+  /** The globe's depth alone, when nothing beneath draws the ground or a grid: the uniforms, bound. */
+  readonly occlusion?: GPUBindGroup;
   readonly depth: GPUTextureView;
   readonly color?: GPUTextureView;
   readonly options: Style;
   readonly globe: boolean;
   readonly center: readonly [number, number];
-  readonly indirect?: GPUBuffer;
+  /** Every curved draw's tessellation, which the compute pass runs, then counts into `indirect`. */
+  readonly curves?: {
+    readonly tessellations: readonly Tessellation[];
+    readonly finish: GPUBindGroup;
+    readonly records: number;
+    readonly indirect: GPUBuffer;
+    /** What each curved draw asked for, read back to size its next pool, in record order. */
+    readonly wanted: GPUBuffer;
+    readonly draws: readonly CurveDraw[];
+  };
   readonly drawCalls: number;
-}
-function sun(time: number): readonly [number, number, number] {
-  const date = new Date(time),
-    day = (time - Date.UTC(date.getUTCFullYear(), 0, 1)) / 86400000;
-  const decl = -23.44 * Math.cos((2 * Math.PI * (day + 10)) / 365.25) * DEG,
-    lon = (0.5 - (time % 86400000) / 86400000) * Math.PI * 2;
-  return [Math.cos(decl) * Math.cos(lon), Math.sin(decl), -Math.cos(decl) * Math.sin(lon)];
 }
 /** A vertex hover grows or lets go: its dense address, when it started, and from how far. */
 interface Growth {
@@ -210,7 +255,7 @@ export class Painter {
   /** The banks whose snapshots hold what the transition in progress eases from. */
   private eased: ReadonlySet<object> = new Set();
   /** Each marker's images, laid into an atlas once. */
-  private readonly atlases = new WeakMap<readonly MarkerImage[], kit.TextureData>();
+  private readonly atlases = new WeakMap<readonly Marker.Image[], kit.TextureData>();
   private readonly noImages = new kit.TextureData({ width: 1, height: 1, format: 'rgba8unorm' });
   private readonly sampler: GPUSampler;
   private readonly attachments: kit.Attachments;
@@ -222,20 +267,29 @@ export class Painter {
   private focusedRows: readonly number[] = [];
   private focused?: {
     readonly geometry: Geometry;
-    readonly selection: readonly NetworkItem[];
-    readonly hover: NetworkItem | null;
+    readonly selection: readonly Network.Item[];
+    readonly hover: Network.Item | null;
     readonly options: Style;
   };
-  /** Each batch's dash prefixes, uploaded when they change. */
-  private phases = new WeakMap<
-    SegmentBatch,
-    { readonly buffer: kit.BufferData; readonly values: Float32Array }
-  >();
+  /** Each routed batch's dash prefixes, uploaded once. */
+  private readonly prefixes = new WeakMap<SegmentBatch, kit.BufferData>();
+  /** Each bank's and batch's draw words, by role. */
+  private readonly words = new WeakMap<object, Map<string, kit.BufferData>>();
+  /**
+   * Every curved draw's pieces, the pieces each took from its pool, and their indirect draws: grown
+   * as the curves need, and held while they fit.
+   */
   private curves?: {
-    capacity: number;
-    instances: kit.BufferResource;
-    indirect: kit.BufferResource;
+    readonly pieces: kit.BufferResource;
+    readonly taken: kit.BufferResource;
+    readonly wanted: kit.BufferResource;
+    readonly indirect: kit.BufferResource;
+    readonly rooms: kit.BufferData;
   };
+  /** Pieces past one per segment each batch's curved draws asked for, as the GPU last counted them. */
+  private readonly demand = new WeakMap<SegmentBatch, { scene?: number; focus?: number }>();
+  /** What the GPU counted reaches the painter a frame or two late, without stalling one. */
+  private readonly feedback: kit.Feedback<readonly CurveDraw[]>;
   /**
    * Every page's uniform slot, written here each frame and held in chunks of one binding's size,
    * so a frame uploads only the words that changed.
@@ -251,7 +305,26 @@ export class Painter {
   private shrink: Growth = { dense: NONE, since: 0, from: 0 };
   /** Whether hover is still growing or letting go of a vertex, as of the latest presented frame. */
   growing = false;
-  constructor(private readonly gpu: Gpu) {
+  /** `overflowed` asks for another frame, once a curved draw asked for more than its pool held. */
+  constructor(
+    private readonly gpu: Gpu,
+    private readonly overflowed: () => void,
+  ) {
+    this.feedback = new kit.Feedback(
+      gpu,
+      (words, draws) => {
+        let short = false;
+        draws.forEach(({ batch, role, pool }, i) => {
+          const asked = words[i] ?? 0,
+            known = this.demand.get(batch) ?? {};
+          known[role] = asked;
+          this.demand.set(batch, known);
+          if (asked > pool) short = true;
+        });
+        if (short) this.overflowed();
+      },
+      'network curve demand',
+    );
     this.attachments = new kit.Attachments(gpu);
     this.dummy = gpu.buffer({
       size: 80,
@@ -276,6 +349,99 @@ export class Painter {
       this.atlases.set(images, found);
     }
     return found;
+  }
+  /**
+   * A bank's or batch's words in a role, as a uniform: two vec4 held on the GPU, which upload only
+   * the words that changed, so a frame that only moves the camera uploads none.
+   */
+  private wordsOf(key: object, role: string, words: readonly number[]): kit.BufferData {
+    let byRole = this.words.get(key);
+    if (!byRole) this.words.set(key, (byRole = new Map<string, kit.BufferData>()));
+    let found = byRole.get(role);
+    if (!found)
+      byRole.set(
+        role,
+        (found = new kit.BufferData({
+          size: 32,
+          usage: GPUBufferUsage.UNIFORM,
+          label: 'network draw',
+        })),
+      );
+    found.update(Uint32Array.from({ length: 8 }, (_, i) => words[i] ?? 0));
+    return found;
+  }
+  /** A routed batch's dash prefixes, uploaded once. */
+  private prefixesOf(batch: SegmentBatch): kit.BufferData {
+    let found = this.prefixes.get(batch);
+    if (!found) {
+      found = new kit.BufferData({
+        size: batch.prefixes!.byteLength,
+        label: 'network dash prefixes',
+      });
+      found.write({ data: batch.prefixes! });
+      this.prefixes.set(batch, found);
+    }
+    return found;
+  }
+  /**
+   * Room for a frame's curved draws: `pieces` in all, and each draw's segments and room as `rooms`
+   * pairs them. Buffers are made a step larger than they need, and made again once the curves no
+   * longer fit, or fit in a quarter of them.
+   */
+  private curveBuffers(pieces: number, rooms: readonly number[]): NonNullable<Painter['curves']> {
+    const records = rooms.length / 2,
+      held = this.curves,
+      size = held?.pieces.buffer.size ?? 0;
+    if (
+      !held ||
+      size < pieces * 16 ||
+      size > pieces * 64 + PIECE_STEP * 16 ||
+      held.taken.buffer.size < records * 4
+    ) {
+      const grown = (n: number, step: number) => Math.ceil(Math.max(1, n) / step) * step;
+      this.destroyCurves();
+      const made: kit.BufferResource[] = [];
+      try {
+        const buffer = (size: number, usage: number, label: string) => {
+          const resource = this.gpu.buffer({ size, usage, label });
+          made.push(resource);
+          return resource;
+        };
+        this.curves = {
+          pieces: buffer(
+            grown(pieces, PIECE_STEP) * 16,
+            GPUBufferUsage.STORAGE,
+            'network curve pieces',
+          ),
+          // Zeroed as made, and emptied by each frame's count after.
+          taken: buffer(grown(records, 64) * 4, GPUBufferUsage.STORAGE, 'network curve pools'),
+          // Read back after each frame's tessellation, then cleared.
+          wanted: buffer(
+            grown(records, 64) * 4,
+            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+            'network curve demand',
+          ),
+          indirect: buffer(
+            grown(records, 64) * 16,
+            GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT,
+            'network curve draws',
+          ),
+          rooms: new kit.BufferData({ size: 8, label: 'network curve rooms' }),
+        };
+      } catch (error) {
+        for (const resource of made) resource.destroy();
+        throw error;
+      }
+    }
+    this.curves!.rooms.update(Uint32Array.from(rooms));
+    return this.curves!;
+  }
+  private destroyCurves(): void {
+    this.curves?.pieces.destroy();
+    this.curves?.taken.destroy();
+    this.curves?.wanted.destroy();
+    this.curves?.indirect.destroy();
+    this.curves = undefined;
   }
   /** A bank's drawn records, made again when their size changes. */
   private output(key: object, bytes: number): kit.BufferResource {
@@ -307,25 +473,27 @@ export class Painter {
     const copies: { from: GPUBuffer; to: GPUBuffer }[] = [],
       clears: GPUBuffer[] = [],
       eased = new Set<object>();
-    try {
-      for (const [bank, output] of outputs) {
-        let into = this.previous.get(bank);
-        if (!into) {
-          into = this.gpu.buffer({
-            size: output.buffer.size,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-            label: 'network transition start',
-          });
-          this.previous.set(bank, into);
-        }
-        if (start && !made.has(bank)) copies.push({ from: output.buffer, to: into.buffer });
-        else if (start || made.has(bank) || !this.eased.has(bank)) clears.push(into.buffer);
-        eased.add(bank);
-      }
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'resource-limit') throw error;
+    // The snapshots are work the change can do without: it eases only while they fit the budget.
+    let needed = 0;
+    for (const [bank, output] of outputs)
+      if (!this.previous.has(bank)) needed += output.buffer.size;
+    if (needed && this.gpu.stats().gpuBytes + needed > this.gpu.budget.gpuBytes) {
       this.release();
       return undefined;
+    }
+    for (const [bank, output] of outputs) {
+      let into = this.previous.get(bank);
+      if (!into) {
+        into = this.gpu.buffer({
+          size: output.buffer.size,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          label: 'network transition start',
+        });
+        this.previous.set(bank, into);
+      }
+      if (start && !made.has(bank)) copies.push({ from: output.buffer, to: into.buffer });
+      else if (start || made.has(bank) || !this.eased.has(bank)) clears.push(into.buffer);
+      eased.add(bank);
     }
     return { copies, clears, eased };
   }
@@ -373,6 +541,9 @@ export class Painter {
     transition: { readonly start: boolean } | null,
     presented: boolean,
   ): Records {
+    // What the geometry no longer draws lets go first, so its room serves the banks made now, even
+    // when no frame has been submitted since it changed.
+    this.prune(geometry);
     const outputs = new Map<object, kit.BufferResource>(),
       made = new Set<object>();
     const prepare = (bank: VertexBank | EdgeBank, bytes: number) => {
@@ -401,48 +572,13 @@ export class Painter {
     });
     const f = new Float32Array(U.words),
       u = new Uint32Array(f.buffer);
-    const scale = camera.scale / (camera.projection === 'globe' ? DEG : 1),
-      distance = Math.max(1e-9, (frame.viewport.height * 1.5) / scale);
-    f.set(
-      [
-        frame.viewport.width,
-        frame.viewport.height,
-        frame.viewport.pixelRatio,
-        ['flat', 'tilt', 'globe'].indexOf(camera.projection),
-      ],
-      0,
-    );
-    f.set([scale, distance, 0, 0], 4);
-    f.set(
-      [
-        Math.cos(camera.bearing * DEG),
-        Math.sin(camera.bearing * DEG),
-        Math.cos(camera.pitch * DEG),
-        Math.sin(camera.pitch * DEG),
-      ],
-      8,
-    );
-    f.set(
-      [
-        Math.sin(camera.center[1] * DEG),
-        Math.cos(camera.center[1] * DEG),
-        state.height,
-        geometry.geographic ? 1 : 0,
-      ],
-      12,
-    );
-    f.set(
-      [
-        camera.center[0],
-        camera.center[1],
-        Math.sin(camera.center[0] * DEG),
-        Math.cos(camera.center[0] * DEG),
-      ],
-      16,
-    );
-    f.set(options.hoverColor, 20);
+    state.projector.write(f, 0, geometry.geographic, state.height);
+    f.set(options.hoverColor, U.hoverColor);
     // `none` glows in each item's own color.
-    f.set(options.selectedColor === 'none' ? [0, 0, 0, -1] : options.selectedColor, 24);
+    f.set(
+      options.selectedColor === 'none' ? [0, 0, 0, -1] : options.selectedColor,
+      U.selectedColor,
+    );
     f.set(
       [
         options.hoverWidthPx,
@@ -450,30 +586,12 @@ export class Painter {
         state.selection.length ? options.unselectedAlpha : 1,
         0,
       ],
-      28,
+      U.glow,
     );
-    f.set(
-      [
-        ...(state.pointer ?? [-1e6, -1e6]),
-        options.nightFloor,
-        Math.max(0.0001, options.terminatorWidth),
-      ],
-      32,
-    );
-    f.set(
-      [
-        ...sun(options.sunTime === 'now' ? Date.now() : options.sunTime),
-        options.daylight && geometry.geographic ? 1 : 0,
-      ],
-      36,
-    );
-    f.set(
-      [...options.surfaceColor.slice(0, 3), options.daylight ? options.surfaceNightFloor : 1],
-      40,
-    );
-    f.set(options.gridColor, 44);
-    u.set([0, options.grid ? 1 : 0, 0, 0], 48);
-    f.set(options.flowColor, 52);
+    // Only geographic positions face the sun.
+    kit.Projector.light(f, U.light, geometry.geographic ? state.light : null);
+    f.set(state.halo, U.halo);
+    f.set(options.flowColor, U.flowColor);
     const { outputs, easing } = state.records;
     if (transition?.start) this.easedCenter = this.drawnCenter ?? camera.center;
     if (transition && easing) {
@@ -498,6 +616,8 @@ export class Painter {
     const [grown, left, growth, shrink] = this.growth(state, timeMs, presented);
     u.set([grown, left], U.grown);
     f.set([growth, shrink], U.growth);
+    f[U.markerFit] = state.markerFit;
+    f[U.vertexMinRadiusPx] = options.vertexMinRadiusPx;
     this.updateFocus(state);
     const focusedBinding = frame.buffer(this.focus);
     const uniform = frame.uniforms(f),
@@ -529,10 +649,10 @@ export class Painter {
     const words = this.slots.subarray(0, slots * SLOT_WORDS).fill(0),
       floats = new Float32Array(words.buffer, words.byteOffset, words.length);
     let used = 0;
-    /** One compute dispatch per page: a vertex bank's, or the bank of a `line` type's options. */
-    const write = (bank: VertexBank | EdgeBank, read: FieldRead, line?: object) => {
+    /** One compute dispatch per page: a vertex bank's, or an edge bank's. */
+    const write = (bank: VertexBank | EdgeBank, read: FieldRead, line = false) => {
       const color = line
-          ? typeColor(read, lineColor(line, options))
+          ? typeColor(read, lineColor(options))
           : typeColor(read, options.vertexColor),
         colors = frame.colormap(read.bound.channels.color?.colormap),
         hidden = 'synthetic' in bank && !!bank.synthetic,
@@ -545,12 +665,7 @@ export class Painter {
         if (line) {
           pages.push({ page, colors, bank, edge: true });
           kit.writeChannel(words, at + 8, read.channel('color'), page);
-          kit.writeChannel(
-            words,
-            at + 16,
-            read.channel('widthPx', lineWidthPx(line, options)),
-            page,
-          );
+          kit.writeChannel(words, at + 16, read.channel('widthPx', options.edgeWidthPx), page);
           kit.writeChannel(words, at + 24, read.channel('visible'), page);
           kit.writeChannel(words, at + 32, read.channel('shade'), page);
           kit.writeChannel(words, at + 40, read.channel('dash'), page);
@@ -587,7 +702,7 @@ export class Painter {
       }
     };
     for (const bank of geometry.vertices) write(bank, reads.vertices.get(bank)!);
-    for (const bank of geometry.edges) write(bank, reads.edges.get(bank)!, edgeOptions(data, bank));
+    for (const bank of geometry.edges) write(bank, reads.edges.get(bank)!, true);
     const perChunk = Math.floor(gpu.device.limits.maxUniformBufferBindingSize / SLOT),
       held = Math.ceil(slots / perChunk);
     this.chunks.length = Math.min(this.chunks.length, held);
@@ -651,73 +766,6 @@ export class Painter {
         count: rowCount(page.rows),
       };
     });
-    const curveCount = Math.max(
-      0,
-      ...geometry.edges
-        .filter((bank) => edgeOptions(data, bank).route === 'geodesic')
-        .flatMap((bank) => bank.batches.map((batch) => batch.records.length / 4)),
-    );
-    if (curveCount) {
-      if (!geometry.geographic)
-        throw failure('invalid-input', 'Geodesics require geographic coordinates');
-      const capacity = curveCount * 181;
-      if (!this.curves || capacity > this.curves.capacity) {
-        const instances = gpu.buffer({
-          size: capacity * 16,
-          usage: GPUBufferUsage.STORAGE,
-          label: 'network reusable curve scratch',
-        });
-        let indirect: kit.BufferResource;
-        try {
-          indirect = gpu.buffer({
-            size: 16,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
-            label: 'network curve count',
-          });
-        } catch (error) {
-          instances.destroy();
-          throw error;
-        }
-        this.curves?.instances.destroy();
-        this.curves?.indirect.destroy();
-        this.curves = { capacity, instances, indirect };
-      }
-    }
-    const curveInstances = curveCount ? frame.buffer(this.curves!.instances) : empty;
-    const curveIndirect = curveCount ? frame.buffer(this.curves!.indirect) : undefined;
-    const noImages = frame.texture(this.noImages).createView();
-    /** `draw` is what the shader's `VertexDraw` or `EdgeDraw` reads. */
-    const group = (
-      a: GPUBufferBinding,
-      b: GPUBufferBinding,
-      segments: GPUBufferBinding,
-      styles: GPUBufferBinding,
-      draw: readonly [number, number, number, number],
-      phase?: GPUBufferBinding,
-      images: GPUTextureView = noImages,
-    ) =>
-      gpu.device.createBindGroup({
-        layout: pipeline.draw,
-        entries: [
-          { binding: 0, resource: uniform },
-          { binding: 1, resource: a },
-          { binding: 2, resource: b },
-          { binding: 3, resource: segments },
-          { binding: 4, resource: styles },
-          {
-            binding: 5,
-            resource: frame.uniforms(Uint32Array.from(draw)),
-          },
-          { binding: 6, resource: host },
-          { binding: 7, resource: focusedBinding },
-          { binding: 8, resource: curveInstances },
-          { binding: 9, resource: phase ?? empty },
-          { binding: 11, resource: images },
-          { binding: 12, resource: this.sampler },
-        ],
-      });
-    const vertices: Command[] = [],
-      edges: Command[] = [];
     /** The focused rows among `count` dense addresses from `base`, as ascending offsets from it. */
     const focusedIn = (base: number, count: number): readonly number[] => {
       const rows = this.focusedRows;
@@ -733,6 +781,90 @@ export class Painter {
       for (let i = lo; i < rows.length && rows[i] < base + count; i++) out.push(rows[i] - base);
       return out;
     };
+    // Each edge batch's draw, and a curved one's region of the pieces: one per segment, then a pool
+    // as large as its curves asked for last, or a quarter more until they have.
+    const rooms: number[] = [],
+      draws: CurveDraw[] = [];
+    let pieces = 0;
+    const region = (batch: SegmentBatch, role: CurveDraw['role'], count: number) => {
+      const asked = this.demand.get(batch)?.[role] ?? count / 4,
+        pool = Math.ceil(asked * POOL_HEADROOM) + POOL_PIECES,
+        room = count + pool,
+        found = { record: rooms.length / 2, base: pieces, room };
+      rooms.push(count, room);
+      draws.push({ batch, role, pool });
+      pieces += room;
+      return found;
+    };
+    const plans = geometry.edges.flatMap((bank) => {
+      if (edgeOptions(data, bank).route === 'geodesic' && !geometry.geographic)
+        throw failure('invalid-input', 'Geodesics require geographic coordinates');
+      const curved = curvedAt(data, bank, camera.projection, geometry.geographic),
+        dashed = reads.edges.get(bank)!.has('dash'),
+        straight = routeOf(data, bank, camera.projection) === 'straight',
+        owners = focusedIn(geometry.vertexCount + bank.base, bank.count);
+      return bank.batches.map((batch) => {
+        // The segments of focused rows, ascending as their owners are, which draw again over the rest.
+        const focused: number[] = [];
+        for (const owner of owners) {
+          const [first, end] = ownerSegments(batch.records, owner);
+          for (let s = first; s < end; s++) focused.push(s);
+        }
+        const count = batch.records.length / 4,
+          span = focused.length ? focused.at(-1)! - focused[0] + 1 : 0;
+        return {
+          bank,
+          batch,
+          count,
+          focused,
+          dashed,
+          straight,
+          // A curve's pieces come from its tessellation, so its focused span tessellates alone.
+          curve: curved
+            ? {
+                scene: region(batch, 'scene', count),
+                focus: span ? region(batch, 'focus', span) : undefined,
+              }
+            : undefined,
+        };
+      });
+    });
+    const curves = rooms.length ? this.curveBuffers(pieces, rooms) : undefined,
+      piecesBinding = curves ? frame.buffer(curves.pieces) : empty;
+    const noImages = frame.texture(this.noImages).createView();
+    /** A bank's or batch's words in a role, held on the GPU and uploaded only as they change. */
+    const kept = (key: object, role: string, words: readonly number[]) =>
+      frame.buffer(this.wordsOf(key, role, words));
+    /** `draw` is what the shader's `VertexDraw` or `EdgeDraw` reads. */
+    const group = (
+      a: GPUBufferBinding,
+      b: GPUBufferBinding,
+      segments: GPUBufferBinding,
+      styles: GPUBufferBinding,
+      draw: GPUBufferBinding,
+      prefixes?: GPUBufferBinding,
+      images: GPUTextureView = noImages,
+    ) =>
+      gpu.device.createBindGroup({
+        layout: pipeline.draw,
+        entries: [
+          { binding: 0, resource: uniform },
+          { binding: 1, resource: a },
+          { binding: 2, resource: b },
+          { binding: 3, resource: segments },
+          { binding: 4, resource: styles },
+          { binding: 5, resource: draw },
+          { binding: 6, resource: host },
+          { binding: 7, resource: focusedBinding },
+          { binding: 8, resource: piecesBinding },
+          { binding: 9, resource: prefixes ?? empty },
+          { binding: 11, resource: images },
+          { binding: 12, resource: this.sampler },
+        ],
+      });
+    const vertices: Command[] = [],
+      edges: Command[] = [],
+      tessellations: Tessellation[] = [];
     for (const bank of geometry.vertices) {
       if (bank.synthetic) continue;
       const marker = markerOf(data, bank),
@@ -744,7 +876,7 @@ export class Painter {
           empty,
           empty,
           empty,
-          [bank.base, bank.count, 0, 0],
+          kept(bank, 'draw', [bank.base, bank.count]),
           undefined,
           images,
         ),
@@ -754,80 +886,81 @@ export class Painter {
         focus: runs && { pipeline: await markerPipeline(pipeline, marker, 'focus'), runs },
       });
     }
-    for (const bank of geometry.edges) {
-      const curved = edgeOptions(data, bank).route === 'geodesic',
-        dashed = reads.edges.get(bank)!.has('dash'),
-        owners = focusedIn(geometry.vertexCount + bank.base, bank.count);
-      for (const batch of bank.batches) {
-        const count = batch.records.length / 4;
-        const a = bound.get(batch.a)!.output,
-          b = bound.get(batch.b)!.output,
-          segments = frame.buffer(batch.data);
-        /** Tessellate `count` segments from `first`. */
-        const tessellate = (count: number, first: number) =>
-          gpu.device.createBindGroup({
+    const takenBinding = curves && frame.buffer(curves.taken),
+      wantedBinding = curves && frame.buffer(curves.wanted);
+    for (const { bank, batch, count, focused, dashed, straight, curve } of plans) {
+      const a = bound.get(batch.a)!.output,
+        b = bound.get(batch.b)!.output,
+        segments = frame.buffer(batch.data),
+        prefixes = dashed && batch.prefixes ? frame.buffer(this.prefixesOf(batch)) : undefined,
+        draw = [
+          geometry.vertexCount + bank.base,
+          (prefixes ? DASHED : 0) | (straight ? STRAIGHT : 0),
+          batch.a.base,
+          batch.b.base,
+        ];
+      /** Tessellate `count` segments from `first` into a curved draw's region. */
+      const tessellate = (
+        role: string,
+        count: number,
+        first: number,
+        { record, base, room }: { record: number; base: number; room: number },
+      ) => {
+        tessellations.push({
+          count,
+          group: gpu.device.createBindGroup({
             layout: pipeline.tessellation,
             entries: [
               { binding: 0, resource: uniform },
               { binding: 1, resource: a },
               { binding: 2, resource: b },
               { binding: 3, resource: segments },
-              { binding: 4, resource: curveInstances },
-              { binding: 5, resource: curveIndirect! },
+              { binding: 4, resource: piecesBinding },
+              { binding: 5, resource: takenBinding! },
+              { binding: 9, resource: wantedBinding! },
               {
                 binding: 6,
-                resource: frame.uniforms(Uint32Array.of(count, dashed ? 1 : 0, first, 0)),
+                resource: kept(batch, role + ' curves', [
+                  count,
+                  first,
+                  (dashed ? DASHED : 0) | (straight ? STRAIGHT : 0),
+                  base,
+                  room,
+                  record,
+                ]),
               },
             ],
-          });
-        const tessellation = curved ? tessellate(count, 0) : undefined;
-        let focus: Focus | undefined;
-        if (owners.length) {
-          // The segments of focused rows, ascending as their owners are, which draw again over
-          // the rest.
-          const focusedSegments: number[] = [];
-          for (const owner of owners) {
-            const [first, end] = ownerSegments(batch.records, owner);
-            for (let s = first; s < end; s++) focusedSegments.push(s);
-          }
-          const runs = focusRuns(focusedSegments);
-          if (runs) {
-            const lines = await linePipeline(pipeline, curved, 'focus'),
-              first = focusedSegments[0],
-              span = focusedSegments.at(-1)! - first + 1;
-            // A curve's pieces come from the tessellation, so its focused span tessellates alone.
-            focus = curved
-              ? { pipeline: lines, tessellation: tessellate(span, first), count: span }
-              : { pipeline: lines, runs };
-          }
-        }
-        let phase: GPUBufferBinding | undefined;
-        const values = state.phases.get(batch);
-        if (values) {
-          let phases = this.phases.get(batch);
-          if (phases?.values !== values) {
-            const buffer =
-              phases?.buffer ??
-              new kit.BufferData({ size: values.byteLength, label: 'network dash phases' });
-            buffer.write({ data: values });
-            this.phases.set(batch, (phases = { buffer, values }));
-          }
-          phase = frame.buffer(phases.buffer);
-        }
-        edges.push({
-          group: group(
-            a,
-            b,
-            segments,
-            bound.get(bank)!.output,
-            [geometry.vertexCount + bank.base, phase ? 1 : 0, batch.a.base, batch.b.base],
-            phase,
-          ),
-          count,
-          tessellation,
-          focus,
+          }),
         });
+        return group(
+          a,
+          b,
+          segments,
+          bound.get(bank)!.output,
+          kept(batch, role, [...draw, base]),
+          prefixes,
+        );
+      };
+      let focus: Focus | undefined;
+      const runs = focusRuns(focused);
+      if (runs) {
+        const lines = await linePipeline(pipeline, !!curve, 'focus');
+        focus = curve?.focus
+          ? {
+              pipeline: lines,
+              group: tessellate('focus', focused.at(-1)! - focused[0] + 1, focused[0], curve.focus),
+              record: curve.focus.record,
+            }
+          : { pipeline: lines, runs };
       }
+      edges.push({
+        group: curve
+          ? tessellate('scene', count, 0, curve.scene)
+          : group(a, b, segments, bound.get(bank)!.output, kept(batch, 'scene', draw), prefixes),
+        count,
+        record: curve?.scene.record,
+        focus,
+      });
     }
     const labels: { group: GPUBindGroup; pages: readonly kit.TextPage[] }[] = [];
     for (const { runs, anchors } of state.labels)
@@ -844,27 +977,48 @@ export class Painter {
           pages,
         });
       }
-    const background = gpu.device.createBindGroup({
-      layout: pipeline.background,
-      entries: [{ binding: 0, resource: uniform }],
-    });
+    // Without a ground drawn beneath, the grid draws, and the globe still hides what lies behind it.
+    const globe = camera.projection === 'globe',
+      grid = options.grid && !state.grounded ? await this.grid(frame, state, uniform) : undefined,
+      occlusion =
+        globe && !state.grounded && !grid
+          ? gpu.device.createBindGroup({
+              layout: pipeline.occlusion,
+              entries: [{ binding: 0, resource: uniform }],
+            })
+          : undefined;
     return {
       pipelines: pipeline,
       easing,
-      indirect: curveIndirect?.buffer,
+      curves: curves && {
+        tessellations,
+        records: rooms.length / 2,
+        indirect: curves.indirect.buffer,
+        wanted: curves.wanted.buffer,
+        draws,
+        finish: gpu.device.createBindGroup({
+          layout: pipeline.finishing,
+          entries: [
+            { binding: 5, resource: takenBinding! },
+            { binding: 7, resource: frame.buffer(curves.rooms) },
+            { binding: 8, resource: frame.buffer(curves.indirect) },
+          ],
+        }),
+      },
       compute,
       vertices,
       edges,
       labels,
-      background,
+      scene: { buffer: uniform.buffer, offset: uniform.offset ?? 0, size: kit.Projector.scene * 4 },
+      grid,
+      occlusion,
       depth: depth!,
       color,
       options,
-      globe: camera.projection === 'globe',
+      globe,
       center: camera.center,
       drawCalls:
-        1 +
-        (camera.projection === 'globe' && options.earthAxis ? 1 : 0) +
+        (grid || occlusion ? 1 : 0) +
         (options.markers
           ? vertices.reduce((n, item) => n + drawsOf(item), 0) +
             (options.shadows ? vertices.length : 0)
@@ -872,6 +1026,28 @@ export class Painter {
         (options.poles ? vertices.length : 0) +
         (options.lines ? edges.reduce((n, item) => n + drawsOf(item), 0) : 0) +
         labels.reduce((n, v) => n + v.pages.length, 0),
+    };
+  }
+  /** The grid's draw: its pipeline, and the uniforms and where this frame's lines fall, bound. */
+  private async grid(
+    frame: kit.Preparation,
+    state: DrawFrame,
+    uniform: GPUBufferBinding,
+  ): Promise<NonNullable<Paint['grid']>> {
+    const pipeline = await gridPipeline(state.pipelines),
+      { options } = state,
+      words = new Float32Array(8);
+    words.set(options.gridColor, 0);
+    words.set(kit.gridLines(state.camera, options.gridMinSpacingPx, state.geometry.geographic), 4);
+    return {
+      pipeline,
+      group: this.gpu.device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: uniform },
+          { binding: 1, resource: frame.uniforms(words) },
+        ],
+      }),
     };
   }
   /**
@@ -892,7 +1068,7 @@ export class Painter {
       return;
     const next = new Map<number, number>(),
       adjacency = native.adjacency;
-    const mark = (item: NetworkItem, level: number) => {
+    const mark = (item: Network.Item, level: number) => {
       const dense = adjacency.address(item);
       if (dense === undefined) return;
       const word = dense >>> 4,
@@ -901,7 +1077,7 @@ export class Painter {
       if (((bits >>> shift) & 3) < level)
         next.set(word, ((bits & ~(3 << shift)) | (level << shift)) >>> 0);
     };
-    const focus = (item: NetworkItem, level: number) => {
+    const focus = (item: Network.Item, level: number) => {
       mark(item, level);
       if (item.kind === 'edge' && (level === SELECTED ? options.selectedEnds : options.hoverEnds))
         for (const vertex of adjacency.neighborhood(item, data))
@@ -910,7 +1086,7 @@ export class Painter {
     for (const item of state.selection) focus(item, SELECTED);
     if (state.hover) focus(state.hover, HOVERED);
     // Sixteen rows per word, padded to whole 16-byte rows.
-    const rows = native.vertexCount + native.edgeCount + native.pathCount,
+    const rows = native.vertexCount + native.edgeCount,
       size = Math.max(16, Math.ceil(rows / 64) * 16);
     if (this.focus.size !== size) this.focus.resize(size);
     const bytes = this.focus.bytes,
@@ -957,7 +1133,9 @@ export class Painter {
       this.eased = easing.eased;
     }
     this.drawnCenter = paint.center;
-    const compute = frame.encoder.beginComputePass({ label: 'network native fields to geometry' });
+    // What the ground's draw reads, recorded before any pass of the network's.
+    paint.ground?.encode(frame);
+    const compute = frame.encoder.beginComputePass({ label: 'network fields, then curves' });
     for (const command of paint.compute) {
       compute.setPipeline(command.pipeline);
       compute.setBindGroup(0, command.fields);
@@ -965,81 +1143,79 @@ export class Painter {
       compute.setBindGroup(2, command.colors);
       compute.dispatchWorkgroups(Math.ceil(command.count / 64));
     }
+    // Curves tessellate from the geometry just made, each into its region, then count their pieces.
+    const curves = paint.curves;
+    if (curves) {
+      compute.setPipeline(paint.pipelines.tessellate);
+      for (const { group, count } of curves.tessellations) {
+        compute.setBindGroup(0, group);
+        compute.dispatchWorkgroups(Math.ceil(count / 64));
+      }
+      compute.setPipeline(paint.pipelines.finish);
+      compute.setBindGroup(0, curves.finish);
+      compute.dispatchWorkgroups(Math.ceil(curves.records / 64));
+    }
     compute.end();
-    const begin = (load: boolean) =>
-      frame.encoder.beginRenderPass({
-        label: 'network',
-        colorAttachments: [
-          {
-            view: paint.color ?? frame.target,
-            resolveTarget: paint.color ? frame.target : undefined,
-            loadOp: load ? 'load' : 'clear',
-            storeOp: 'store',
-            clearValue: kit.clearColor(paint.options.background),
-          },
-        ],
-        depthStencilAttachment: {
-          view: paint.depth,
-          depthClearValue: 1,
-          depthLoadOp: load ? 'load' : 'clear',
-          depthStoreOp: 'store',
+    // What the curves asked for, read back to size their next pools, then cleared for the next frame.
+    if (curves) {
+      this.feedback.encode(frame.encoder, curves.wanted, curves.records * 4, curves.draws);
+      frame.encoder.clearBuffer(curves.wanted, 0, curves.records * 4);
+    }
+    const pass = frame.encoder.beginRenderPass({
+      label: 'network',
+      colorAttachments: [
+        {
+          view: paint.color ?? frame.target,
+          resolveTarget: paint.color ? frame.target : undefined,
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: kit.clearColor(paint.options.background),
         },
-      });
-    let pass = begin(false);
-    /** Tessellate a curved batch's segments into the shared indirect draw, then draw them. */
-    const curve = (
-      item: Command,
-      pipeline: GPURenderPipeline,
-      tessellation: GPUBindGroup,
-      count: number,
-    ) => {
-      pass.end();
-      frame.encoder.clearBuffer(paint.indirect!);
-      const prepare = frame.encoder.beginComputePass({
-        label: 'network adaptive curve tessellation',
-      });
-      prepare.setPipeline(paint.pipelines.tessellate);
-      prepare.setBindGroup(0, tessellation);
-      prepare.dispatchWorkgroups(Math.ceil(count / 64));
-      prepare.end();
-      pass = begin(true);
+      ],
+      depthStencilAttachment: {
+        view: paint.depth,
+        depthClearValue: 1,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+      },
+    });
+    /** A curved draw's pieces, as its tessellation counted them. */
+    const curve = (pipeline: GPURenderPipeline, group: GPUBindGroup, record: number) => {
       pass.setPipeline(pipeline);
-      pass.setBindGroup(0, item.group);
-      pass.drawIndirect(paint.indirect!, 0);
+      pass.setBindGroup(0, group);
+      pass.drawIndirect(curves!.indirect, record * 16);
     };
     /** A command's focused instances, over the rest. */
     const over = (item: Command) => {
       const focus = item.focus;
       if (!focus) return;
-      if ('tessellation' in focus) {
-        curve(item, focus.pipeline, focus.tessellation, focus.count);
-        return;
-      }
+      if ('record' in focus) return curve(focus.pipeline, focus.group, focus.record);
       pass.setPipeline(focus.pipeline);
       pass.setBindGroup(0, item.group);
       if (focus.runs === 'all') pass.draw(6, item.count);
       else for (const [first, count] of focus.runs) pass.draw(6, count, 0, first);
     };
-    pass.setPipeline(paint.pipelines.surface);
-    pass.setBindGroup(0, paint.background);
-    pass.draw(3);
-    if (paint.globe && paint.options.earthAxis) {
-      pass.setPipeline(paint.pipelines.axis);
-      pass.setBindGroup(0, paint.background);
-      pass.draw(6);
+    // What lies beneath draws first; without it, the grid, or a globe writes its depth alone.
+    if (paint.ground) paint.ground.draw(pass);
+    else if (paint.grid) {
+      pass.setPipeline(paint.grid.pipeline);
+      pass.setBindGroup(0, paint.grid.group);
+      pass.draw(3);
+    } else if (paint.occlusion) {
+      pass.setPipeline(paint.pipelines.occlude);
+      pass.setBindGroup(0, paint.occlusion);
+      pass.draw(3);
     }
-    if (paint.options.lines) {
-      pass.setPipeline(paint.pipelines.edges);
+    if (paint.options.lines)
       for (const item of paint.edges) {
-        if (item.tessellation) {
-          curve(item, paint.pipelines.curves, item.tessellation, item.count);
+        if (item.record !== undefined) {
+          curve(paint.pipelines.curves, item.group, item.record);
           continue;
         }
         pass.setPipeline(paint.pipelines.edges);
         pass.setBindGroup(0, item.group);
         pass.draw(6, item.count);
       }
-    }
     if (paint.options.poles) {
       pass.setPipeline(paint.pipelines.poles);
       for (const item of paint.vertices) {
@@ -1075,7 +1251,8 @@ export class Painter {
     }
     pass.end();
   }
-  prune(geometry: Geometry): void {
+  /** Let go of the records of banks a geometry no longer draws. */
+  private prune(geometry: Geometry): void {
     const live = new Set<object>([...geometry.vertices, ...geometry.edges]);
     for (const map of [this.buffers, this.previous])
       for (const [key, buffer] of map)
@@ -1084,7 +1261,15 @@ export class Painter {
           map.delete(key);
         }
   }
+  /** The frame was submitted: what its curves asked for reads back. */
+  submitted(): void {
+    this.feedback.submitted();
+  }
+  discard(): void {
+    this.feedback.discard();
+  }
   destroy(): void {
+    this.feedback.destroy();
     this.chunks.length = 0;
     for (const map of [this.buffers, this.previous]) {
       for (const buffer of map.values()) buffer.destroy();
@@ -1092,7 +1277,6 @@ export class Painter {
     }
     this.attachments.destroy();
     this.dummy.destroy();
-    this.curves?.instances.destroy();
-    this.curves?.indirect.destroy();
+    this.destroyCurves();
   }
 }

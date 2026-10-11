@@ -1,47 +1,35 @@
-import { kit, type Modifiers, type ViewInput } from '@latkit/gpu';
-import type { ConnectProposal, DiagramEvents, MoveProposal } from './diagram.js';
-import type { DiagramItem, DiagramRow, Point } from './data.js';
+import { kit, type ItemView } from '@latkit/gpu';
+import type { Diagram } from './diagram.js';
+import type { Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Style } from './config.js';
 import { ConnectSession } from './connect.js';
 import type { Scene } from './scene.js';
 import type { Overlay } from './painter.js';
 
-export interface DiagramInput extends ViewInput {
-  /** Primary mouse drag on empty canvas. Touch continues to pan. Default: select in edit mode. */
-  readonly backgroundDrag?: 'pan' | 'select';
-  readonly dragThresholdPx?: number;
-  readonly touchDragThresholdPx?: number;
-  readonly connectRadiusPx?: number;
-  readonly autoPan?: boolean;
-  readonly autoPanMarginPx?: number;
-  readonly autoPanSpeedPx?: number;
-  /** Additional application policy, after native port type/direction checks. Must be synchronous. */
-  readonly canConnect?: (proposal: ConnectProposal) => boolean;
-}
-type Mode = NonNullable<ViewInput['mode']>;
+type Mode = NonNullable<ItemView.Input['mode']>;
 /** What a diagram's own gestures drive; the view implements it. */
 export interface Controls {
-  emit<K extends 'connect' | 'move' | 'delete'>(event: K, value: DiagramEvents[K]): void;
-  selection(): readonly DiagramItem[];
+  emit<K extends 'connect' | 'move' | 'delete'>(event: K, value: Diagram.Events[K]): void;
+  selection(): readonly Diagram.Item[];
   /** Select as the user did, reporting a change. */
-  choose(items: readonly DiagramItem[]): void;
+  choose(items: readonly Diagram.Item[]): void;
   /** Select what a click hits, as every item view does. */
-  click(point: Point, modifiers: Modifiers, touch: boolean): void;
+  click(point: Point, modifiers: ItemView.Modifiers, touch: boolean): void;
   revision(): number;
   scene(): Scene | undefined;
   options(): Style;
   world(point: Point): Point | null;
-  marquee(a: Point, b: Point): readonly DiagramItem[];
-  preview(items: readonly DiagramItem[], delta: Point | null): void;
-  move(items: readonly DiagramItem[], delta: Point): MoveProposal | undefined;
+  marquee(a: Point, b: Point): readonly Diagram.Item[];
+  preview(items: readonly Diagram.Item[], delta: Point | null): void;
+  move(items: readonly Diagram.Item[], delta: Point): Diagram.MoveProposal | undefined;
   overlay(value: Overlay | null): void;
   /** Hits near a canvas point, nearest first. */
-  hits(point: Point, radiusPx?: number): readonly DiagramItem[];
+  hits(point: Point, radiusPx?: number): readonly Diagram.Item[];
   pan(dx: number, dy: number): void;
   /** Stop fitting: the camera stays where it is shown. */
   stay(): void;
-  reveal(item: DiagramItem): void;
+  reveal(item: Diagram.Item): void;
   invalidated(listener: () => void): () => void;
 }
 /** A diagram's gestures on one canvas: the view forwards presses, keys, and Escape to them. */
@@ -64,13 +52,13 @@ interface Drag {
   threshold: number;
   additive: boolean;
   /** How the press began, for the click it makes if it never moves. */
-  modifiers: Modifiers;
+  modifiers: ItemView.Modifiers;
   touch: boolean;
-  hit?: DiagramItem;
-  selection: readonly DiagramItem[];
+  hit?: Diagram.Item;
+  selection: readonly Diagram.Item[];
   revision: number;
   session?: ConnectSession;
-  target: DiagramItem | null;
+  target: Diagram.Item | null;
   blocked: boolean;
 }
 /**
@@ -81,7 +69,7 @@ export function listen(
   canvas: HTMLCanvasElement,
   input: kit.CanvasInput,
   mode: Mode,
-  options: DiagramInput,
+  options: Diagram.Input,
   api: Controls,
 ): Gestures {
   const threshold = options.dragThresholdPx ?? 4,
@@ -97,7 +85,7 @@ export function listen(
     closed = false;
   let raf = 0,
     lastPan = 0;
-  const merge = (a: readonly DiagramItem[], b: readonly DiagramItem[]) => [
+  const merge = (a: readonly Diagram.Item[], b: readonly Diagram.Item[]) => [
     ...new Map([...a, ...b].map((item) => [itemKey(item), item])).values(),
   ];
   /** End any gesture; true when one was in progress. */
@@ -319,7 +307,7 @@ export function listen(
     else if ((key === 'Delete' || key === 'Backspace') && mode === 'edit')
       api.emit(
         'delete',
-        items.filter((item): item is DiagramRow => item.kind === 'vertex' || item.kind === 'edge'),
+        items.filter((item): item is Diagram.Row => item.kind === 'vertex' || item.kind === 'edge'),
       );
     else if (key === 'Tab') {
       const vertices = api.scene()?.vertices.filter((n) => n.visible) ?? [],

@@ -1,6 +1,6 @@
 import { failure } from '@latkit/model';
 import { integer, record } from './core.js';
-import type { ConnectLimits } from './types.js';
+import type { Connection } from './types.js';
 
 /** The WebSocket subprotocol a dialing side offers, named for what it does: `connect` when it
  *  connects a model, `accept` when it accepts one. The answering side selects it. */
@@ -36,7 +36,7 @@ export interface Plan {
   readonly bytes: number;
   encode(sequence?: number): Uint8Array;
 }
-export type FrameLimits = Pick<ConnectLimits, 'metadataBytes' | 'messageBytes'>;
+export type FrameLimits = Pick<Connection.Limits, 'metadataBytes' | 'messageBytes'>;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const MAGIC = 0x4b54414c; // LATK

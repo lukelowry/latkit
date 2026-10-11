@@ -1,7 +1,6 @@
-import type { DataType } from '../data.js';
 import { Check, index, own } from './check.js';
 import type { Path } from './check.js';
-
+import type { Schema } from '../schema/schema.js';
 const arrays = {
   float32: Float32Array,
   float64: Float64Array,
@@ -13,7 +12,7 @@ const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 export function column(
   c: Check,
   value: unknown,
-  type: DataType,
+  type: Schema.FieldType,
   nullable: boolean,
   path: Path,
   length?: number,

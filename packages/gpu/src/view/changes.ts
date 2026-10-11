@@ -1,4 +1,4 @@
-import { samePages, sameIndex, type Data, type TypeDefinition } from '@latkit/model';
+import { samePages, sameIndex, type Data, type Schema } from '@latkit/model';
 import { bindChannels, type ChannelKind } from '../style/channel.js';
 
 /** A plain object: one a literal or JSON makes. */
@@ -79,7 +79,7 @@ export function sameRecords<T extends object>(
 export function sameValues(
   a: Data,
   b: Data,
-  fields: (type: string, definition: TypeDefinition) => readonly string[],
+  fields: (type: string, definition: Schema.Type) => readonly string[],
 ): boolean {
   if (a === b) return true;
   const types = Object.keys(a.tables);

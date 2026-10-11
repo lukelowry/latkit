@@ -80,16 +80,113 @@ async function rejects(promise: Promise<unknown>, word: string) {
     clearTimeout(timer!);
   }
 }
+/**
+ * An async `at` readies each frame's views before the frame draws, and is asked while the frame
+ * before encodes; a coordinate that fails ends the export, leaking nothing.
+ */
+async function readied(
+  gpu: Gpu,
+  open: () => number,
+  onEncode: (hook: () => void) => void,
+): Promise<unknown> {
+  let color = [1, 0, 0, 1];
+  const shown = view(gpu, {
+    encode(frame) {
+      frame.encoder
+        .beginRenderPass({
+          colorAttachments: [
+            { view: frame.target, loadOp: 'clear', storeOp: 'store', clearValue: color },
+          ],
+        })
+        .end();
+    },
+  });
+  try {
+    let asked = 0,
+      askedBeforeEncode = 0;
+    onEncode(() => {
+      askedBeforeEncode ||= asked;
+    });
+    const output = memory();
+    const result = await exportVideo(shown, {
+      output: output.stream,
+      width: 320,
+      height: 180,
+      duration: 1,
+      frameRate: 30,
+      at: async (seconds, signal) => {
+        asked++;
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        signal.throwIfAborted();
+        color = seconds < 0.5 ? [1, 0, 0, 1] : [0, 0, 1, 1];
+        return seconds;
+      },
+    });
+    const input = new Input({
+      source: new BlobSource(output.blob(result.mediaType)),
+      formats: ALL_FORMATS,
+    });
+    try {
+      const sink = new VideoSampleSink((await input.getPrimaryVideoTrack())!),
+        canvas = new OffscreenCanvas(320, 180),
+        context = canvas.getContext('2d', { willReadFrequently: true })!;
+      for (const [at, red] of [
+        [0.2, true],
+        [0.8, false],
+      ] as const) {
+        const sample = await sink.getSample(at);
+        assert(sample, 'Missing decoded sample');
+        try {
+          sample!.draw(context, 0, 0);
+          const [r, , b] = context.getImageData(160, 90, 1, 1).data;
+          assert(
+            red ? r! > 180 && b! < 70 : b! > 180 && r! < 70,
+            'A frame drew before its coordinate was ready',
+          );
+        } finally {
+          sample?.close();
+        }
+      }
+    } finally {
+      input.dispose();
+    }
+    assert(askedBeforeEncode >= 2, 'The next coordinate waited for the frame before to encode');
+    // A coordinate failing at the first frame, or at a later one while the one before encodes.
+    for (const failsAt of [0, 0.5]) {
+      const broken = new WritableStream<VideoWrite>();
+      await rejects(
+        exportVideo(shown, {
+          output: broken,
+          width: 320,
+          height: 180,
+          duration: 1,
+          frameRate: 30,
+          at: async (seconds) => {
+            if (seconds >= failsAt) throw new Error('samples missing');
+            return seconds;
+          },
+        }),
+        'samples missing',
+      );
+      assert(!broken.locked && open() === 0, 'A failed coordinate leaked writer or encoder');
+    }
+    return { readied: 'passed', frames: result.frames, askedBeforeEncode };
+  } finally {
+    shown.destroy();
+  }
+}
 export async function check() {
   const NativeEncoder = globalThis.VideoEncoder;
   const encoders = new Set<VideoEncoder>();
-  let peakQueue = 0;
+  let peakQueue = 0,
+    encoded: (() => void) | undefined;
   globalThis.VideoEncoder = class extends NativeEncoder {
     constructor(config: VideoEncoderInit) {
       super(config);
       encoders.add(this);
     }
     override encode(frame: VideoFrame, options?: VideoEncoderEncodeOptions) {
+      encoded?.();
       super.encode(frame, options);
       peakQueue = Math.max(peakQueue, this.encodeQueueSize);
     }
@@ -174,6 +271,14 @@ export async function check() {
         assert(seen[0] === 0 && seen[30] === 1, 'Coordinate scheduling drift');
         assert(encoders.size === 0, 'Encoder leaked after success');
       }
+      report.push(
+        await readied(
+          gpu,
+          () => encoders.size,
+          (hook) => (encoded = hook),
+        ),
+      );
+      encoded = undefined;
       for (const duration of [1, 10]) {
         let peakWrite = 0,
           writes = 0,

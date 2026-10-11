@@ -1,5 +1,5 @@
 import { kit, type Gpu, type RGBA } from '@latkit/gpu';
-import type { DiagramData, DiagramItem, Point } from './data.js';
+import type { DiagramData, Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Scene, Rect, Vertex, Wire } from './scene.js';
 import { intersects, itemSlots, sceneKey, sceneRows } from './scene.js';
@@ -9,7 +9,7 @@ import { labelBox } from './geometry.js';
 import { Styles, type StyleFrame } from './styles.js';
 import shader from './painter.wgsl';
 import styleShader from './styles.wgsl';
-
+import type { Diagram } from './diagram.js';
 /** What each instance draws; the shader branches on it. */
 const KIND = {
   block: 0,
@@ -54,8 +54,8 @@ export interface Pipelines {
 export interface Overlay {
   readonly box?: readonly [number, number, number, number];
   readonly wire?: readonly Point[];
-  readonly compatible?: readonly DiagramItem[];
-  readonly target?: DiagramItem | null;
+  readonly compatible?: readonly Diagram.Item[];
+  readonly target?: Diagram.Item | null;
   readonly muted?: string;
   readonly invalid?: boolean;
 }
@@ -66,8 +66,8 @@ export interface DrawState {
   readonly style: Style;
   readonly camera: kit.Camera2D;
   /** Replaced whenever it changes. */
-  readonly selection: readonly DiagramItem[];
-  readonly hover: DiagramItem | null;
+  readonly selection: readonly Diagram.Item[];
+  readonly hover: Diagram.Item | null;
   readonly pipelines: Pipelines;
   /** The shade's uniforms for this frame. */
   readonly shade: GPUBufferBinding;
@@ -281,6 +281,7 @@ export async function pipelines(
         kit.textShader({ group: 1 }) +
         kit.outputShader() +
         kit.shapeShader() +
+        kit.strokeShader() +
         kinds +
         '\n' +
         shader +
@@ -319,8 +320,8 @@ export async function pipelines(
 export class Painter {
   private focused?: {
     readonly geometry: Geometry;
-    readonly selection: readonly DiagramItem[];
-    readonly hover: DiagramItem | null;
+    readonly selection: readonly Diagram.Item[];
+    readonly hover: Diagram.Item | null;
     readonly overlay: Overlay | null;
     readonly drag: DragDraw['marks'] | null;
   };
@@ -515,6 +516,11 @@ export class Painter {
                 ...style.edgeColor,
                 ...style.outlineColor,
                 ...style.groupColor,
+                ...style.flowColor,
+                style.flowSpacingPx,
+                style.dashPeriodPx,
+                0,
+                0,
               ),
             ),
           },

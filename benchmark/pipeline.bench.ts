@@ -1,6 +1,6 @@
 import { afterAll, describe } from 'vitest';
 import { createComposition } from '@latkit/gpu';
-import { appendData, type SampleBatch } from '@latkit/model';
+import { appendData, type Data } from '@latkit/model';
 import { createMonitor } from '@latkit/monitor';
 import { createNetwork } from '@latkit/network';
 import {
@@ -66,8 +66,8 @@ describe.each(sizes)('pipeline %i buses', async (buses) => {
   });
   const measure = suite(`pipeline ${buses} buses`, buses, () => counters(device));
   measure('publication to frame', async () => {
-    const batches: SampleBatch[] = [];
-    do batches.push(...((await stream.next()).value as SampleBatch[]));
+    const batches: Data.SampleBatch[] = [];
+    do batches.push(...((await stream.next()).value as Data.SampleBatch[]));
     while (batches.length < blocks);
     data = appendData(data, batches);
     network.set({ source: data });

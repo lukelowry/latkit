@@ -1,16 +1,9 @@
 import { failure, rowCount, sliceSamples, validateBatch } from '@latkit/model';
-import type {
-  Column,
-  DataBatch,
-  Publication,
-  SampleBatch,
-  SampleColumn,
-  Schema,
-} from '@latkit/model';
+import type { Column, Schema, Data, Model } from '@latkit/model';
 import { integer, record, text } from './core.js';
 import { align8, checkTree, forward, HEADER, Op, prepare } from './frame.js';
 import type { FrameLimits, Plan } from './frame.js';
-import type { ConnectLimits, EncodedPublication } from './types.js';
+import type { EncodedPublication, Connection } from './types.js';
 
 const arrays = {
   uint8: Uint8Array,
@@ -30,27 +23,27 @@ function swapped(input: Uint8Array, width: number): Uint8Array {
   return output;
 }
 /** The limits a publication is encoded and decoded under. */
-export type PublicationLimits = FrameLimits & Pick<ConnectLimits, 'publicationBatches'>;
+export type PublicationLimits = FrameLimits & Pick<Connection.Limits, 'publicationBatches'>;
 
 /** The payload each publication decodePublication made arrived as. Its batches view the same
  *  storage, so remembering it costs nothing. */
-const arrived = new WeakMap<Publication, Uint8Array>();
+const arrived = new WeakMap<Model.Publication, Uint8Array>();
 
 /** The messages that carry `input` on stream `id`: a publication connect received goes on as it
  *  arrived when it fits `bounds`, validated once already; anything else in the fewest new messages. */
 export function publicationPlans(
-  input: DataBatch | Publication,
+  input: Data.Batch | Model.Publication,
   id: number,
   schema: Schema,
   bounds: PublicationLimits,
 ): Iterable<Plan> {
-  const payload = Array.isArray(input) ? arrived.get(input as Publication) : undefined;
+  const payload = Array.isArray(input) ? arrived.get(input as Model.Publication) : undefined;
   if (
     payload &&
     16 + payload.byteLength <= bounds.messageBytes &&
     new DataView(payload.buffer, payload.byteOffset, 4).getUint32(0, true) <=
       bounds.metadataBytes &&
-    (input as Publication).length <= bounds.publicationBatches
+    (input as Model.Publication).length <= bounds.publicationBatches
   )
     return [forward(id, payload)];
   return preparePublications(input, id, schema, bounds);
@@ -59,7 +52,7 @@ export function publicationPlans(
 /** One atomic publication message; throws when `input` does not fit the bounds. Prepares bounded
  *  metadata without copying numeric values: encode() owns the outgoing copy. */
 export function preparePublication(
-  input: DataBatch | Publication,
+  input: Data.Batch | Model.Publication,
   id: number,
   schema: Schema,
   bounds: PublicationLimits,
@@ -76,7 +69,7 @@ export function preparePublication(
 /** The fewest publication messages for `input`, in order. A group that fits is one atomic message;
  *  a sample batch beyond one message is cut between whole frames, so each piece appends in turn. */
 export function* preparePublications(
-  input: DataBatch | Publication,
+  input: Data.Batch | Model.Publication,
   id: number,
   schema: Schema,
   bounds: PublicationLimits,
@@ -118,7 +111,7 @@ class PublicationFrame {
   }
 
   /** Adds a validated batch, or returns false and leaves the frame unchanged when a bound would be exceeded. */
-  add(batch: DataBatch): boolean {
+  add(batch: Data.Batch): boolean {
     if (this.batches.length === this.bounds.publicationBatches) return false;
     const chunks = this.chunks.length,
       body = this.body;
@@ -164,7 +157,7 @@ class PublicationFrame {
 
 /** A batch's publication metadata, each binary leaf placed by `place`. */
 function describe(
-  value: DataBatch,
+  value: Data.Batch,
   place: (view: ArrayBufferView) => unknown,
 ): Record<string, unknown> {
   function column(value: Column): Record<string, unknown> {
@@ -180,7 +173,7 @@ function describe(
           ...common,
           values: place(value.values),
           ...('frameStride' in value
-            ? { frameStride: value.frameStride, rowStride: (value as SampleColumn).rowStride }
+            ? { frameStride: value.frameStride, rowStride: (value as Column.Sample).rowStride }
             : {}),
         };
       case 'boolean':
@@ -212,7 +205,7 @@ function describe(
 }
 
 /** Plain metadata and a layout valid for `schema`. A frame bounds the message size. */
-function validate(batch: DataBatch, schema: Schema, bounds: PublicationLimits): void {
+function validate(batch: Data.Batch, schema: Schema, bounds: PublicationLimits): void {
   checkTree(batch, bounds.metadataBytes, true);
   const issues = validateBatch(schema, batch);
   if (issues.length) throw failure('invalid-input', issues[0].message, { issues });
@@ -220,7 +213,10 @@ function validate(batch: DataBatch, schema: Schema, bounds: PublicationLimits): 
 
 /** Whole-frame pieces of `batch`, each within an empty message's binary budget. Frame-major
  *  columns split as views; other layouts must fit one message whole. */
-function* framesOf(batch: SampleBatch, bounds: PublicationLimits): Generator<SampleBatch> {
+function* framesOf(
+  batch: Data.SampleBatch,
+  bounds: PublicationLimits,
+): Generator<Data.SampleBatch> {
   const budget = bounds.messageBytes - align8(HEADER + bounds.metadataBytes);
   if (bodyOf(batch).bytes <= budget) {
     yield batch;
@@ -228,7 +224,7 @@ function* framesOf(batch: SampleBatch, bounds: PublicationLimits): Generator<Sam
   }
   const rows = rowCount(batch.rows),
     frames = batch.coordinates.length;
-  const piece = (from: number, count: number): SampleBatch => ({
+  const piece = (from: number, count: number): Data.SampleBatch => ({
     ...batch,
     firstFrame: batch.firstFrame + from,
     coordinates: batch.coordinates.subarray(from, from + count),
@@ -250,7 +246,7 @@ function* framesOf(batch: SampleBatch, bounds: PublicationLimits): Generator<Sam
 }
 
 /** Binary bytes and views of a batch exactly as a frame places them. */
-function bodyOf(batch: DataBatch): { readonly bytes: number; readonly views: number } {
+function bodyOf(batch: Data.Batch): { readonly bytes: number; readonly views: number } {
   let bytes = 0,
     views = 0;
   describe(batch, (view) => {
@@ -261,11 +257,11 @@ function bodyOf(batch: DataBatch): { readonly bytes: number; readonly views: num
   return { bytes, views };
 }
 
-function batchesOf(input: DataBatch | Publication): readonly DataBatch[] {
+function batchesOf(input: Data.Batch | Model.Publication): readonly Data.Batch[] {
   const batches = Array.isArray(input) ? input : [input];
   if (!batches.length)
     throw failure('resource-limit', 'Publication batch count exceeds its bound.');
-  return batches as readonly DataBatch[];
+  return batches as readonly Data.Batch[];
 }
 
 /** A connection-independent payload. Received storage is immutable and survives disconnect. */
@@ -273,7 +269,7 @@ export function decodePublication(
   publication: EncodedPublication,
   schema: Schema,
   bounds: PublicationLimits,
-): Publication {
+): Model.Publication {
   let payload = publication.bytes;
   if (
     !(payload.buffer instanceof ArrayBuffer) ||
@@ -359,7 +355,7 @@ export function decodePublication(
         throw failure('protocol', 'Unknown column kind.');
     }
   }
-  const decoded: Publication = metadata.batches.map((value: unknown) => {
+  const decoded: Model.Publication = metadata.batches.map((value: unknown) => {
     const m = record(value),
       rows = record(m.rows);
     if (
@@ -383,7 +379,7 @@ export function decodePublication(
     };
     const issues = validateBatch(schema, batch, { maxBlockBytes: bounds.messageBytes });
     if (issues.length) throw failure('protocol', issues[0].message);
-    return batch as unknown as DataBatch;
+    return batch as unknown as Data.Batch;
   });
   arrived.set(decoded, payload);
   return decoded;

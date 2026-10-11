@@ -5,7 +5,8 @@
 :width: 100%
 ```
 
-Build WebGPU network views, time-series plots, block diagrams, and video exports with TypeScript.
+Build WebGPU network views, maps, time-series plots, block diagrams, and video exports with
+TypeScript.
 
 Start with [installation](getting-started.md), then read what every [view](views.md) shares. The
 [API reference](api/index.md) lists every type and option.
@@ -17,6 +18,7 @@ Start with [installation](getting-started.md), then read what every [view](views
 getting-started
 views
 network-quickstart
+geography-quickstart
 monitor-quickstart
 diagram-quickstart
 topology-and-channels

@@ -1,18 +1,18 @@
-import type { MemoryEntry, Memory } from '@latkit/model';
+import type { Memory } from '@latkit/model';
 import { BufferData } from '../memory/buffer-data.js';
 import type { Images } from '../memory/images.js';
 import type { UploadScope, Uploader } from '../fields/upload.js';
 import type { RGBA } from './color.js';
 import type { Colormap } from './colormap.js';
 import { colormapPixels } from './sampling.js';
-import { namedColormap, type ColormapName } from './catalog.js';
+import { namedColormap } from './catalog.js';
 
 const grayscale: Colormap = Object.freeze({
   kind: 'sequential',
   colors: Object.freeze([Object.freeze([0, 0, 0, 1]) as RGBA, Object.freeze([1, 1, 1, 1]) as RGBA]),
 });
 interface Prepared {
-  readonly entry: MemoryEntry;
+  readonly entry: Memory.Entry;
   readonly parameters: BufferData;
   binding?: { texture: GPUTexture; buffer: GPUBuffer; offset: number; group: GPUBindGroup };
 }
@@ -42,7 +42,7 @@ export class Colormaps {
       addressModeU: 'clamp-to-edge',
     });
   }
-  prepare(value: Colormap | ColormapName = grayscale, scope: UploadScope): GPUBindGroup {
+  prepare(value: Colormap | Colormap.Name = grayscale, scope: UploadScope): GPUBindGroup {
     const map = namedColormap(value);
     const pixels = colormapPixels(map);
     let cached = this.cached.get(map);

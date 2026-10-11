@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { FieldsRequest } from '@latkit/model';
+import type { Reader } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { type GpuPage } from '../src/kit.js';
 import { bytes, fakeDevice } from './fixtures/device.js';
@@ -7,7 +7,7 @@ import { field, values } from './fixtures/fields.js';
 import { FieldSource } from './fixtures/field-source.js';
 import { draw } from './fixtures/render.js';
 
-function request(source: FieldSource): FieldsRequest {
+function request(source: FieldSource): Reader.FieldsRequest {
   return {
     source: source.data,
     from: source.index.type,
@@ -184,7 +184,7 @@ it('bounds the binding count when fifteen fields occupy more than four slabs', a
     }),
     gpu = await createGpu({ device: fake.device, pageBytes: 1024 });
   const source = new FieldSource(40),
-    fields: FieldsRequest['fields'] = Object.fromEntries(
+    fields: Reader.FieldsRequest['fields'] = Object.fromEntries(
       Array.from({ length: 15 }, (_, i) => [
         'v' + i,
         {

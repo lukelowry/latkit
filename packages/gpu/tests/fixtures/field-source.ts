@@ -3,10 +3,8 @@ import {
   read,
   textColumn,
   type Data,
-  type DataBatch,
   type Schema,
   type Query,
-  type QueryOptions,
   type Column,
 } from '@latkit/model';
 export class FieldSource {
@@ -32,7 +30,7 @@ export class FieldSource {
   constructor(readonly count = 8) {}
   get data(): Data {
     if (this.cached) return this.cached;
-    const batches: DataBatch[] = [];
+    const batches: Data.Batch[] = [];
     for (let offset = 0; offset < this.count; offset += this.blockRows) {
       const count = Math.min(this.blockRows, this.count - offset),
         rows = Array.from({ length: count }, (_, i) => offset + i);
@@ -96,7 +94,7 @@ export class FieldSource {
   publish(): void {
     if (this.cached) this.cached = { ...this.cached };
   }
-  query<Q extends Query>(query: Q, options?: QueryOptions) {
+  query<Q extends Query>(query: Q, options?: Query.Options) {
     return read(this.data, query, options);
   }
 }

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { createData, type FieldsBlock } from '@latkit/model';
+import { createData, type Block } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import {
   bindChannels,
@@ -79,7 +79,7 @@ it('reads a channel at every row in one pass, as it reads each row', async () =>
       },
       { size: [0, 1], x: 'raw', y: 'raw' } as const,
     );
-    let block!: FieldsBlock;
+    let block!: Block.Fields;
     for await (const tile of reader.fields({ source: data, from: 'node', fields })) block = tile;
     const size = resolveChannel(channels.size, resolveScale(channels.size.scale!, [0, 4]), -1),
       y = resolveChannel(channels.y, null, -1);
@@ -108,4 +108,10 @@ it('takes labels as a field name or checked options', () => {
   expect(() => resolveLabels({} as never)).toThrow('Invalid labels');
   expect(() => resolveLabels({ field: 'name', maxCount: -1 })).toThrow('Invalid label count');
   expect(() => resolveLabels({ field: 'name', color: [2, 0, 0, 1] })).toThrow();
+  const sized = { field: 'name', fontSizePx: 11, repeatSpacingPx: 0 };
+  expect(resolveLabels(sized)).toBe(sized);
+  expect(() => resolveLabels({ field: 'name', fontSizePx: 0 })).toThrow('Invalid label fontSizePx');
+  expect(() => resolveLabels({ field: 'name', repeatSpacingPx: -1 })).toThrow(
+    'Invalid label repeatSpacingPx',
+  );
 });

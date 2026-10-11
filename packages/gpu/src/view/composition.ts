@@ -16,35 +16,29 @@ import { premultipliedBlend } from '../style/output.js';
 import { shadeUniforms } from '../style/shade.js';
 import { localPoint } from './input.js';
 import { viewStyle } from './style.js';
-import {
-  BaseView,
-  compose,
-  rendererOf,
-  route,
-  type View,
-  type ViewConfig,
-  type ViewEvents,
-} from './view.js';
+import { BaseView, compose, rendererOf, route, type View } from './view.js';
 
-export interface CompositionConfig extends ViewConfig {
-  /**
-   * Each view in a normalized region, top-left origin; later views draw over earlier ones. Pointer,
-   * wheel, and keys reach the view under the pointer, in its own canvas points.
-   */
-  readonly views: readonly {
-    readonly view: View<ViewConfig, ViewEvents>;
-    readonly region: readonly [x: number, y: number, width: number, height: number];
-  }[];
-  /** Behind every region; `viewStyle.background` by default. */
-  readonly background?: RGBA;
-}
-type Region = CompositionConfig['views'][number]['region'];
+type Region = Composition.Config['views'][number]['region'];
 
 /** Several views presented as one. */
-export type Composition = View<CompositionConfig>;
+export type Composition = View<Composition.Config>;
+export declare namespace Composition {
+  interface Config extends View.Config {
+    /**
+     * Each view in a normalized region, top-left origin; later views draw over earlier ones. Pointer,
+     * wheel, and keys reach the view under the pointer, in its own canvas points.
+     */
+    readonly views: readonly {
+      readonly view: View<View.Config, View.Events>;
+      readonly region: readonly [x: number, y: number, width: number, height: number];
+    }[];
+    /** Behind every region; `viewStyle.background` by default. */
+    readonly background?: RGBA;
+  }
+}
 
 /** Present several views as one: on a canvas, in images, or in video. Borrows its views. */
-export function createComposition(gpu: Gpu, config: CompositionConfig): Composition {
+export function createComposition(gpu: Gpu, config: Composition.Config): Composition {
   return new CompositionView(gpu, config);
 }
 
@@ -182,7 +176,7 @@ class PanelSurface extends EventTarget {
 }
 
 interface Panel {
-  readonly view: View<ViewConfig, ViewEvents>;
+  readonly view: View<View.Config, View.Events>;
   readonly renderer: Renderer;
   readonly region: Region;
   readonly release: () => void;
@@ -201,9 +195,9 @@ interface PanelFrame {
 }
 
 class CompositionView extends BaseView<
-  CompositionConfig,
-  ViewEvents,
-  CompositionConfig,
+  Composition.Config,
+  View.Events,
+  Composition.Config,
   readonly PanelFrame[]
 > {
   private panels: Panel[] = [];
@@ -220,7 +214,7 @@ class CompositionView extends BaseView<
   private readonly slots = new WeakMap<Renderer, Map<unknown, object>>();
   /** The canvas whose input the panels receive, while one is attached. */
   private canvas?: HTMLCanvasElement;
-  constructor(gpu: Gpu, config: CompositionConfig) {
+  constructor(gpu: Gpu, config: Composition.Config) {
     super(gpu, config);
     this.own = rendererOf(this);
     this.sampler = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
@@ -228,7 +222,7 @@ class CompositionView extends BaseView<
     this.panels = this.compose(config);
     this.start();
   }
-  protected check(config: CompositionConfig): void {
+  protected check(config: Composition.Config): void {
     if (!config.views?.length) throw failure('invalid-input', 'A composition needs views');
     if (new Set(config.views.map((v) => v.view)).size !== config.views.length)
       throw failure('invalid-input', 'Composition requires distinct views');
@@ -246,7 +240,7 @@ class CompositionView extends BaseView<
         throw failure('invalid-input', 'Composition regions must fit the unit rectangle');
     if (config.background) validateRgba(config.background);
   }
-  private compose(config: CompositionConfig): Panel[] {
+  private compose(config: Composition.Config): Panel[] {
     const panels: Panel[] = [];
     try {
       for (const { view, region } of config.views) {
@@ -281,7 +275,7 @@ class CompositionView extends BaseView<
     panel.off();
     panel.release();
   }
-  protected configure(next: CompositionConfig, previous: CompositionConfig): void {
+  protected configure(next: Composition.Config, previous: Composition.Config): void {
     if (previous.views !== next.views) {
       const panels = this.compose(next);
       for (const panel of this.panels) this.unpanel(panel);

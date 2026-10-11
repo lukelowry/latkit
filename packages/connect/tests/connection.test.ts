@@ -1,7 +1,7 @@
 import { afterEach, expect, expectTypeOf, it } from 'vitest';
 import { defaults, deferred } from '../src/core.js';
 import { pair, batch, fields, schema, pause, collect, PATH } from './fixture.js';
-import type { LogEntry, Progress, Publication } from '@latkit/model';
+import type { Command, Model } from '@latkit/model';
 import { connectModel } from '../src/index.js';
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -42,8 +42,8 @@ it('keeps received values after disconnect, viewing the storage they arrived in'
   expect(received[0][0]).toEqual(batch(32, 9));
 });
 it('runs typed commands with selected data, coalesced progress, bounded logs and terminal results', async () => {
-  const progress: Progress[] = [],
-    logs: LogEntry[] = [];
+  const progress: Command.Progress[] = [],
+    logs: Command.LogEntry[] = [];
   const p = await pair({
     commands: {
       solve: {
@@ -63,12 +63,12 @@ it('runs typed commands with selected data, coalesced progress, bounded logs and
     },
   });
   cleanup.push(p.close);
-  const received: Publication[] = [];
+  const received: Model.Publication[] = [];
   const result = await p.model.commands.solve.run(
     {},
     {
       outputs: fields,
-      publish: async (data) => void received.push(data as Publication),
+      publish: async (data) => void received.push(data as Model.Publication),
       progress: (p) => progress.push(p),
       log: (log) => logs.push(log),
     },

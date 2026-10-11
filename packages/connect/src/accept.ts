@@ -1,18 +1,5 @@
 import { failure, validateSchema } from '@latkit/model';
-import type {
-  Arguments,
-  CommandContext,
-  CommandDescription,
-  CommandResult,
-  FieldSelection,
-  InputValue,
-  LogEntry,
-  MonitorContext,
-  Parameters,
-  Progress,
-  Publication,
-  Schema,
-} from '@latkit/model';
+import type { Schema, Command, Query, Model } from '@latkit/model';
 import { decodePublication } from './columns.js';
 import {
   deferred,
@@ -32,11 +19,11 @@ import { definitions, encodeArguments, selections, demanded } from './parameters
 import { Session } from './session.js';
 import { dial } from './socket.js';
 import type { Receiver } from './session.js';
-import type { AcceptOptions, ConnectedModel } from './types.js';
+import type { ConnectedModel, Connection } from './types.js';
 
 /** Accept the model served at exactly `url`, or on a `socket` a server accepted. Resolves after
  *  metadata validation and registration, without requesting data. */
-export async function acceptModel(options: AcceptOptions): Promise<ConnectedModel> {
+export async function acceptModel(options: Connection.AcceptOptions): Promise<ConnectedModel> {
   options.signal?.throwIfAborted();
   const socket = options.socket ?? dial(options.url, subprotocols.accept);
   const session = new Session(socket, {
@@ -92,7 +79,7 @@ class RemoteModel implements ConnectedModel {
     private readonly session: Session,
     readonly name: string,
     readonly schema: Schema,
-    descriptions: Readonly<Record<string, CommandDescription>>,
+    descriptions: Readonly<Record<string, Command.Description>>,
     monitoring: boolean,
   ) {
     this.closed = session.closed;
@@ -104,8 +91,9 @@ class RemoteModel implements ConnectedModel {
           Object.freeze({
             ...description,
             run: (
-              values: Arguments<Parameters> | Readonly<Record<string, InputValue>>,
-              context?: Partial<CommandContext>,
+              values:
+                Command.Arguments<Command.Parameters> | Readonly<Record<string, Command.Input>>,
+              context?: Partial<Command.Context>,
             ) => this.execute(name, description, values, context),
           }),
         ]),
@@ -119,9 +107,9 @@ class RemoteModel implements ConnectedModel {
     return (this.#request = integer(this.#request + 1, 1, 0xffffffff));
   }
   private observe(
-    fields: readonly FieldSelection[],
-    context: Partial<MonitorContext> = {},
-  ): AsyncIterableIterator<Publication> {
+    fields: readonly Query.Selection[],
+    context: Partial<Model.MonitorContext> = {},
+  ): AsyncIterableIterator<Model.Publication> {
     context.signal?.throwIfAborted();
     checkTree(fields, this.session.bounds.metadataBytes);
     selections(fields, this.schema);
@@ -183,10 +171,10 @@ class RemoteModel implements ConnectedModel {
   }
   private async execute(
     command: string,
-    description: CommandDescription,
-    values: Arguments<Parameters> | Readonly<Record<string, InputValue>>,
-    context: Partial<CommandContext> = {},
-  ): Promise<CommandResult> {
+    description: Command.Description,
+    values: Command.Arguments<Command.Parameters> | Readonly<Record<string, Command.Input>>,
+    context: Partial<Command.Context> = {},
+  ): Promise<Command.Result> {
     context.signal?.throwIfAborted();
     this.session.lifetime.signal.throwIfAborted();
     if (this.#running || this.#preparing)
@@ -264,7 +252,7 @@ class RemoteModel implements ConnectedModel {
           if (next.value.op === Op.error) throw peerFailure(next.value.metadata);
           if (next.value.op !== Op.result) throw failure('protocol', 'Invalid command terminal.');
           checkTree(next.value.metadata.value, this.session.bounds.metadataBytes);
-          return next.value.metadata.value as CommandResult;
+          return next.value.metadata.value as Command.Result;
         }
         if (!outputs.length || !publish) throw failure('protocol', 'Unrequested execution data.');
         await interrupt(publish(this.publication(next.value.frame, checkDemand)), signal);
@@ -277,7 +265,7 @@ class RemoteModel implements ConnectedModel {
       this.#running = false;
     }
   }
-  private publication(frame: Frame, checkDemand: ReturnType<typeof demanded>): Publication {
+  private publication(frame: Frame, checkDemand: ReturnType<typeof demanded>): Model.Publication {
     // Validated once at the trust boundary; served onward, it goes as it arrived.
     const batches = fromPeer(() =>
       decodePublication({ bytes: frame.payload }, this.schema, this.session.bounds),
@@ -286,9 +274,9 @@ class RemoteModel implements ConnectedModel {
     return batches;
   }
 }
-function progressOf(m: Record<string, unknown>): Progress {
+function progressOf(m: Record<string, unknown>): Command.Progress {
   if (!validProgress(m)) throw failure('protocol', 'Invalid progress.');
-  const domain = m.domain as Progress['domain'];
+  const domain = m.domain as Command.Progress['domain'];
   return {
     completed: m.completed as number,
     ...(m.total === undefined ? {} : { total: m.total as number }),
@@ -296,12 +284,12 @@ function progressOf(m: Record<string, unknown>): Progress {
     ...(domain === undefined ? {} : { domain: [domain[0], domain[1]] }),
   };
 }
-function logOf(value: unknown): LogEntry {
+function logOf(value: unknown): Command.LogEntry {
   const m = record(value);
   if (!['info', 'warning', 'error'].includes(String(m.severity)))
     throw failure('protocol', 'Invalid diagnostic severity.');
   return {
-    severity: m.severity as LogEntry['severity'],
+    severity: m.severity as Command.LogEntry['severity'],
     message: boundedText(m.message, 1024),
     ...(m.code === undefined ? {} : { code: boundedText(m.code, 128) }),
   };

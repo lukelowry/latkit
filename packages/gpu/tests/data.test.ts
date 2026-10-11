@@ -3,10 +3,10 @@ import { createGpu } from '../src/index.js';
 import { Source } from './fixtures/source.js';
 import { fakeDevice } from './fixtures/device.js';
 import { draw } from './fixtures/render.js';
-import { type Data, type NumericColumn, type RowsBlock } from '@latkit/model';
+import { type Data, type Column, type Block } from '@latkit/model';
 const query = { kind: 'rows', from: 'node', select: ['value'] } as const;
-async function collect(source: AsyncIterable<RowsBlock>) {
-  const values: RowsBlock[] = [];
+async function collect(source: AsyncIterable<Block.Rows>) {
+  const values: Block.Rows[] = [];
   for await (const block of source) values.push(block);
   return values;
 }
@@ -55,8 +55,8 @@ it('does not share cached reads between distinct data of the same shape', async 
   await draw(gpu, async (frame) => {
     const first = await collect(frame.reader.read(a.data, query)),
       second = await collect(frame.reader.read(b.data, query));
-    expect((first[0].columns.value as NumericColumn).values[0]).toBe(0);
-    expect((second[0].columns.value as NumericColumn).values[0]).toBe(40);
+    expect((first[0].columns.value as Column.Numeric).values[0]).toBe(0);
+    expect((second[0].columns.value as Column.Numeric).values[0]).toBe(40);
   });
   gpu.destroy();
 });
@@ -72,7 +72,7 @@ it('an application replacement does not change an in-progress data value', async
     expect(app.data).not.toBe(original);
     let sum = 0;
     for (let next = first; !next.done; next = await iterator.next())
-      for (const value of (next.value.columns.value as NumericColumn).values) sum += value;
+      for (const value of (next.value.columns.value as Column.Numeric).values) sum += value;
     expect(sum).toBe(28);
   });
   gpu.destroy();
@@ -88,7 +88,7 @@ it('ordinary data values remain usable after GPU teardown', async () => {
   }
   gpu.destroy();
   expect(Object.keys(data).sort()).toEqual(['schema', 'tables']);
-  expect((data.tables.node.fields.value.at(0)!.column as NumericColumn).values[0]).toBe(0);
+  expect((data.tables.node.fields.value.at(0)!.column as Column.Numeric).values[0]).toBe(0);
 });
 it('cancels a local reader without affecting another reader of the same data', async () => {
   const data = new Source(1000, { blockRows: 100 }).data,

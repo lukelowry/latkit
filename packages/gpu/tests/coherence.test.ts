@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { NumericColumn } from '@latkit/model';
+import type { Column } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { Source } from './fixtures/source.js';
 import { fakeDevice } from './fixtures/device.js';
@@ -16,7 +16,7 @@ it('prepares independent application data without requiring a common provider', 
         from: 'node',
         select: ['value'],
       }))
-        expect((block.columns.value as NumericColumn).values.buffer).toBe(source.values.buffer);
+        expect((block.columns.value as Column.Numeric).values.buffer).toBe(source.values.buffer);
   });
   gpu.destroy();
 });

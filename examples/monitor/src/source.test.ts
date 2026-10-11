@@ -5,10 +5,10 @@ import {
   validateSchema,
   read as readData,
   type Data,
-  type SamplesQuery,
+  type Query,
 } from '@latkit/model';
 import { Telemetry } from './source.js';
-const query: SamplesQuery = {
+const query: Query.Samples = {
   kind: 'samples',
   from: 'sensor',
   select: ['x', 'y'],
