@@ -1,6 +1,6 @@
 ---
 '@latkit/monitor': minor
-'@latkit/network': patch
+'@latkit/network': minor
 '@latkit/video': minor
 ---
 
