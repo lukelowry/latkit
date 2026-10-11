@@ -12,6 +12,7 @@ import type {
   RenderTarget,
 } from '../frame/render.js';
 import type { HoverState } from './input.js';
+import type { Layer, PreparedLayer } from './layer.js';
 
 /** A canvas point in CSS pixels. */
 export type Point = readonly [x: number, y: number];
@@ -33,7 +34,7 @@ export interface ViewEvents {
 }
 const IMAGE_FORMATS: readonly string[] = ['png', 'jpeg', 'webp'];
 export interface ImageOptions {
-  /** Output size in pixels. Defaults to the canvas's, else 1280 Ã— 720. */
+  /** Output size in pixels. Defaults to the canvas's, else 1280 × 720. */
   readonly width?: number;
   readonly height?: number;
   /** Pixels per CSS pixel. Defaults to the canvas's, else 1. */
@@ -414,13 +415,61 @@ export abstract class BaseView<
     this.configure(after, before, options);
   }
   #capture(): CapturedFrame {
+    const snapshot = this.#snapshot();
+    return {
+      prepare: async (frame) => {
+        const started = performance.now(),
+          prepared = await this.prepare(frame);
+        return {
+          encode: (encoding) => this.encode(encoding, prepared),
+          ...snapshot.settle(frame, prepared, started),
+        };
+      },
+      release: snapshot.release,
+    };
+  }
+  /**
+   * Capture for a host that draws this view in its own pass, as a frame of the view's own is
+   * captured: the config holds still until release, and only a submitted frame advances state.
+   */
+  protected captureHosted<Scene>(
+    run: (frame: Preparation, scene: Scene) => Promise<Prepared>,
+    encode: (frame: Encoding, prepared: Prepared) => void,
+    draw: (pass: GPURenderPassEncoder, prepared: Prepared) => void,
+  ): {
+    prepare(frame: Preparation, scene: Scene): Promise<PreparedLayer>;
+    release(): void;
+  } {
+    const snapshot = this.#snapshot();
+    return {
+      prepare: async (frame, scene) => {
+        const started = performance.now(),
+          prepared = await run(frame, scene);
+        return {
+          encode: (encoding) => encode(encoding, prepared),
+          draw: (pass) => draw(pass, prepared),
+          ...snapshot.settle(frame, prepared, started),
+        };
+      },
+      release: snapshot.release,
+    };
+  }
+  /** Hold the config still for one frame, and settle that frame once: submitted or discarded. */
+  #snapshot(): {
+    settle(
+      frame: Preparation,
+      prepared: Prepared,
+      started: number,
+    ): { submitted(): void; discard(): void };
+    release(): void;
+  } {
     this.live();
     if (this.#captured) throw failure('busy', 'View already has a captured frame');
     this.#captured = true;
     this.#frameConfig = this.#config;
     let free!: () => void;
     this.#released = new Promise<void>((resolve) => (free = resolve));
-    let children: readonly CapturedFrame[];
+    let children: readonly { release(): void }[];
     try {
       children = this.captureChildren();
     } catch (error) {
@@ -431,13 +480,10 @@ export abstract class BaseView<
     }
     let released = false;
     return {
-      prepare: async (frame) => {
-        const started = performance.now(),
-          prepared = await this.prepare(frame),
-          prepareMs = performance.now() - started;
+      settle: (frame, prepared, started) => {
+        const prepareMs = performance.now() - started;
         let settled = false;
         return {
-          encode: (encoding) => this.encode(encoding, prepared),
           submitted: () => {
             if (settled) return;
             settled = true;
@@ -647,7 +693,8 @@ export abstract class BaseView<
   protected abstract prepare(frame: Preparation): Promise<Prepared>;
   /** Record a prepared frame's commands; synchronous. */
   protected abstract encode(frame: Encoding, prepared: Prepared): void;
-  protected captureChildren(): readonly CapturedFrame[] {
+  /** Capture what the view draws with its own frame, released when that frame's capture is. */
+  protected captureChildren(): readonly { release(): void }[] {
     return [];
   }
   /** A prepared frame was dropped before submission. */
@@ -855,8 +902,24 @@ interface Internals {
   /** Attach the view's input to a surface a composition routes events to; returns the detach. */
   route(surface: HTMLCanvasElement): () => void;
   compose(): () => void;
+  /** What a host draws beneath itself, for views that can be drawn so. */
+  layer?: () => Layer;
 }
 const internals = new WeakMap<object, Internals>();
+/** Offer the view as a layer a host draws beneath itself; item views that can be call this once. */
+export function offerLayer(view: object, layer: () => Layer): void {
+  const found = internals.get(view);
+  if (found) found.layer = layer;
+}
+/**
+ * The view as a layer a host draws beneath itself, in the host's pass with its camera, until the
+ * layer's release. It presents nowhere else meanwhile.
+ */
+export function layerOf(view: object): Layer {
+  const found = of(view);
+  if (!found.layer) throw failure('invalid-input', 'This view cannot be drawn beneath another');
+  return found.layer();
+}
 function of(view: object): Internals {
   const found = internals.get(view);
   if (!found) throw failure('invalid-input', 'Expected a latkit view');

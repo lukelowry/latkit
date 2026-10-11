@@ -16,11 +16,13 @@ export type { FrameInfo, Viewport } from './frame/render.js';
 export type {
   ItemView,
   ItemViewConfig,
+  ItemViewOptions,
   ItemEvents,
   ViewCamera,
   ViewInput,
   PickOptions,
 } from './view/item-view.js';
+export type { ProjectedCamera, Projection } from './view/projection.js';
 export { viewStyle } from './view/style.js';
 export type { ViewStyle } from './view/style.js';
 export type { Insets } from './view/camera.js';

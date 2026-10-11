@@ -6,7 +6,7 @@ import { arrange, createNetwork, type Network, type NetworkConfig } from '../src
 import type { NetworkData } from '../src/data.js';
 import { readGeometry, DEFAULT_LIMITS } from '../src/geometry/topology.js';
 import { PickGeometry } from '../src/picking.js';
-import { featureSource } from './paths-fixture.js';
+import { featureSource } from './table-fixture.js';
 import { GraphSource } from './fixture.js';
 import { deferred, fakeDevice } from '../../gpu/tests/fixtures/device.js';
 
@@ -712,7 +712,7 @@ it('keeps hover active across color-only samples and reuses a valid spatial inde
   gpu.destroy();
 });
 
-it('renders bends, nets as stars, geodesics, and native paths with original identities', async () => {
+it('renders bends, nets as stars, and geodesics with original identities', async () => {
   const source = featureSource(),
     gpu = await createGpu({ device: device().device });
   const data: NetworkData = {
@@ -723,7 +723,6 @@ it('renders bends, nets as stars, geodesics, and native paths with original iden
       star: {},
       route: { ends: ['from', 'to'], route: 'geodesic' },
     },
-    paths: { seam: { points: 'points', pickable: true } },
   };
   const network = createNetwork(gpu, { ...data, camera: { center: [-40, 0], scale: 5 } });
   const surface = target(gpu),

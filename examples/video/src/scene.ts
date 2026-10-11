@@ -46,7 +46,6 @@ export function scene(gpu: Gpu, kind: ExampleView) {
       },
     },
     poles: false,
-    daylight: false,
     shade: {
       wgsl: `fn shade(f: ShadeFragment) -> vec4f {
       let wave = 0.65 + 0.35 * sin(shadeContext.pointer.w * 0.003 + f.px.x * 0.015);

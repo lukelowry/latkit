@@ -1,0 +1,252 @@
+import { isFailure } from '@latkit/model';
+import type { kit } from '@latkit/gpu';
+import type { TileSource } from '../sources/archive.js';
+import type { TileSet } from '../tiles.js';
+
+const DEGREE = Math.PI / 180;
+/** CSS pixels a vector tile spans drawn at its own zoom. */
+const TILE_PX = 512;
+/** At most this many tiles draw at once: past it, tiles stop splitting. */
+const MAX_TILES = 256;
+
+export interface TileKey {
+  readonly z: number;
+  readonly x: number;
+  readonly y: number;
+}
+/** A tile the frame draws, and the loaded tile it draws from: itself, or an ancestor until it loads. */
+export interface Placed<T> {
+  readonly key: TileKey;
+  readonly from: TileKey;
+  readonly data: T;
+}
+export interface PyramidOptions<T> {
+  readonly tiles: TileSet;
+  /** Bytes the loaded tiles may hold before the least recently drawn go. */
+  readonly bytes: number;
+  /** Requests in flight at once. */
+  readonly requests: number;
+  load(source: TileSource, key: TileKey, signal: AbortSignal): Promise<T | null>;
+  size(data: T): number;
+  release(data: T): void;
+  /** A tile landed: draw again. */
+  loaded(): void;
+  fail(error: unknown): void;
+}
+const keyOf = (z: number, x: number, y: number) => `${z}/${x}/${y}`;
+/** A tile's latitude at a fraction of the way down the mercator square. */
+function latitudeAt(t: number): number {
+  return Math.atan(Math.sinh(Math.PI * (1 - 2 * t))) / DEGREE;
+}
+/** A tile's west, south, east, and north. */
+export function tileBounds(z: number, x: number, y: number): [number, number, number, number] {
+  const n = 2 ** z;
+  return [(x / n) * 360 - 180, latitudeAt((y + 1) / n), ((x + 1) / n) * 360 - 180, latitudeAt(y / n)];
+}
+
+interface Held<T> {
+  readonly data: T | null;
+  readonly bytes: number;
+}
+/**
+ * Tiles that replace their parents as the camera nears: chosen by how large they draw in any
+ * projection, loaded nearest the center first, drawn from an ancestor until they land, and let go
+ * of, least recently drawn first, past a byte budget.
+ */
+export class Pyramid<T> {
+  private source?: TileSource;
+  private readonly held = new Map<string, Held<T>>();
+  private readonly loading = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  private bytes = 0;
+  private closed = false;
+  private failed = false;
+  /** Settles once the source opens or fails to; undefined after. */
+  private opening?: Promise<void>;
+  constructor(private readonly options: PyramidOptions<T>) {
+    this.opening = options.tiles.source().then(
+      (source) => {
+        this.opening = undefined;
+        if (this.closed) return;
+        this.source = source;
+        options.loaded();
+      },
+      (error: unknown) => {
+        this.opening = undefined;
+        if (!this.closed) options.fail(error);
+      },
+    );
+  }
+  /** Settles once the tiles loading now land. */
+  get pending(): Promise<void> | undefined {
+    if (this.opening) return this.opening;
+    if (!this.loading.size) return undefined;
+    return Promise.all([...this.loading.values()].map((l) => l.done)).then(() => undefined);
+  }
+  /** Tiles loaded, in flight, and the bytes held. */
+  get stats(): { readonly held: number; readonly loading: number; readonly bytes: number } {
+    return { held: this.held.size, loading: this.loading.size, bytes: this.bytes };
+  }
+  /** What the source declares, once open. */
+  get opened(): TileSource | undefined {
+    return this.source;
+  }
+  /** The tiles a camera draws, loading those it lacks: each loaded, or drawn from an ancestor. */
+  frame(projector: kit.Projector): readonly Placed<T>[] {
+    const source = this.source;
+    if (!source || this.closed) return [];
+    const wanted = this.wanted(projector, source),
+      placed: Placed<T>[] = [],
+      missing: TileKey[] = [],
+      used = new Set<string>();
+    for (const key of wanted) {
+      const own = this.held.get(keyOf(key.z, key.x, key.y));
+      if (own) {
+        used.add(keyOf(key.z, key.x, key.y));
+        if (own.data) placed.push({ key, from: key, data: own.data });
+        continue;
+      }
+      missing.push(key);
+      for (let z = key.z - 1; z >= 0; z--) {
+        const shift = key.z - z,
+          k = keyOf(z, key.x >> shift, key.y >> shift),
+          found = this.held.get(k);
+        if (!found) continue;
+        used.add(k);
+        if (found.data)
+          placed.push({ key, from: { z, x: key.x >> shift, y: key.y >> shift }, data: found.data });
+        break;
+      }
+    }
+    // Drawn tiles are the most recently used.
+    for (const k of used) {
+      const entry = this.held.get(k)!;
+      this.held.delete(k);
+      this.held.set(k, entry);
+    }
+    this.request(missing, source, new Set(wanted.map((key) => keyOf(key.z, key.x, key.y))));
+    this.evict(used);
+    return placed;
+  }
+  destroy(): void {
+    this.closed = true;
+    for (const { controller } of this.loading.values()) controller.abort();
+    this.loading.clear();
+    for (const entry of this.held.values()) if (entry.data) this.options.release(entry.data);
+    this.held.clear();
+    this.bytes = 0;
+  }
+  /** The tiles to draw: split while a tile draws larger than its size, nearest the center first. */
+  private wanted(projector: kit.Projector, source: TileSource): TileKey[] {
+    const { viewport } = projector,
+      limit = TILE_PX * 1.25,
+      [bw, bs, be, bn] = source.bounds,
+      cx = viewport.width / 2,
+      cy = viewport.height / 2,
+      out: { key: TileKey; distance: number }[] = [];
+    let queue: TileKey[] = [{ z: 0, x: 0, y: 0 }];
+    while (queue.length) {
+      const next: TileKey[] = [];
+      for (const key of queue) {
+        const [w, s, e, n] = tileBounds(key.z, key.x, key.y);
+        if (w > be || e < bw || s > bn || n < bs) continue;
+        const shown = this.measure(projector, key.z, w, s, e, n);
+        if (!shown && key.z >= 2) continue;
+        const splits =
+          key.z < source.maxZoom &&
+          (key.z < source.minZoom || !shown || shown.size > limit) &&
+          out.length + next.length + queue.length < MAX_TILES;
+        if (splits) {
+          for (const [dx, dy] of [
+            [0, 0],
+            [1, 0],
+            [0, 1],
+            [1, 1],
+          ])
+            next.push({ z: key.z + 1, x: key.x * 2 + dx, y: key.y * 2 + dy });
+        } else if (shown && key.z >= source.minZoom)
+          out.push({ key, distance: Math.hypot(shown.x - cx, shown.y - cy) });
+      }
+      queue = next;
+    }
+    out.sort((a, b) => a.distance - b.distance);
+    return out.map((o) => o.key);
+  }
+  /** How large a tile draws, and where its middle lands; null when none of it shows. */
+  private measure(
+    projector: kit.Projector,
+    z: number,
+    w: number,
+    s: number,
+    e: number,
+    n: number,
+  ): { size: number; x: number; y: number } | null {
+    const { viewport } = projector,
+      steps = z < 3 ? 4 : 2;
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (let i = 0; i <= steps; i++)
+      for (let j = 0; j <= steps; j++) {
+        const p = projector.project(w + ((e - w) * i) / steps, s + ((n - s) * j) / steps);
+        if (!p.visible) continue;
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+    if (!(minX <= maxX)) return null;
+    const margin = 32;
+    if (maxX < -margin || maxY < -margin || minX > viewport.width + margin || minY > viewport.height + margin)
+      return null;
+    return { size: Math.max(maxX - minX, maxY - minY), x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+  }
+  /** Start loading missing tiles, nearest first, and stop loading tiles no longer wanted. */
+  private request(missing: readonly TileKey[], source: TileSource, wanted: ReadonlySet<string>): void {
+    for (const [k, { controller }] of this.loading)
+      if (!wanted.has(k)) {
+        controller.abort();
+        this.loading.delete(k);
+      }
+    for (const key of missing) {
+      if (this.loading.size >= this.options.requests) break;
+      const k = keyOf(key.z, key.x, key.y);
+      if (this.loading.has(k)) continue;
+      const controller = new AbortController(),
+        done = this.options.load(source, key, controller.signal).then(
+          (data) => {
+            if (this.loading.get(k)?.controller !== controller || this.closed) {
+              if (data) this.options.release(data);
+              return;
+            }
+            this.loading.delete(k);
+            const bytes = data ? this.options.size(data) : 0;
+            this.held.set(k, { data, bytes });
+            this.bytes += bytes;
+            this.options.loaded();
+          },
+          (error: unknown) => {
+            if (this.loading.get(k)?.controller === controller) this.loading.delete(k);
+            if (controller.signal.aborted || isFailure(error, 'aborted') || this.closed) return;
+            // A tile that cannot load draws its ancestor, and is not asked for again; the first
+            // such failure reports, not every tile of a source that went away.
+            this.held.set(k, { data: null, bytes: 0 });
+            if (!this.failed) this.options.fail(error);
+            this.failed = true;
+            this.options.loaded();
+          },
+        );
+      this.loading.set(k, { controller, done });
+    }
+  }
+  /** Let go of the least recently drawn tiles past the byte budget, never one this frame draws. */
+  private evict(used: ReadonlySet<string>): void {
+    for (const [k, entry] of this.held) {
+      if (this.bytes <= this.options.bytes) break;
+      if (used.has(k)) continue;
+      this.held.delete(k);
+      this.bytes -= entry.bytes;
+      if (entry.data) this.options.release(entry.data);
+    }
+  }
+}

@@ -9,7 +9,7 @@ import { Picking, type PickGeometry } from '../src/picking.js';
 import { Adjacency } from '../src/geometry/adjacency.js';
 
 /** No edges: nothing to draw apart. */
-const adjacency = new Adjacency([], [], [], 0, 0);
+const adjacency = new Adjacency([], [], 0, 0);
 
 /** A two-lane position field, read as the column of its x. */
 const position = channels({ x: 'p', y: { field: 'p', component: 1 } }, VERTEX);

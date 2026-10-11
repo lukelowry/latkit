@@ -1,12 +1,14 @@
 import { kit, shape, type Gpu, type Marker } from '@latkit/gpu';
-import common from './common.wgsl';
+import commonSource from './common.wgsl';
 import prepare from './prepare.wgsl';
 import draw from './draw.wgsl';
-import background from './background.wgsl';
 import labels from './labels.wgsl';
-import axis from './axis.wgsl';
 import curve from './curve.wgsl';
 import tessellate from './tessellate.wgsl';
+import occlude from './occlude.wgsl';
+
+/** The kit's projection, then the network's uniforms over it, which every module includes. */
+const common = kit.projectionShader() + commonSource;
 export interface Pipelines {
   readonly gpu: Gpu;
   readonly format: GPUTextureFormat;
@@ -21,7 +23,8 @@ export interface Pipelines {
   readonly tessellate: GPUComputePipeline;
   readonly draw: GPUBindGroupLayout;
   readonly label: GPUBindGroupLayout;
-  readonly background: GPUBindGroupLayout;
+  /** What the globe's depth alone binds: the uniforms. */
+  readonly occlusion: GPUBindGroupLayout;
   readonly vertex: GPUComputePipeline;
   /** Vertices with their marker's inputs. */
   readonly marked: GPUComputePipeline;
@@ -33,9 +36,9 @@ export interface Pipelines {
   readonly edges: GPURenderPipeline;
   readonly curves: GPURenderPipeline;
   readonly poles: GPURenderPipeline;
-  readonly surface: GPURenderPipeline;
+  /** The globe's depth alone, where nothing beneath draws the ground. */
+  readonly occlude: GPURenderPipeline;
   readonly text: GPURenderPipeline;
-  readonly axis: GPURenderPipeline;
 }
 /**
  * What a draw of rows paints: the scene, its markers' shadows beneath every marker, or the focused
@@ -179,8 +182,8 @@ export async function pipelines(
   });
   // Labels read the background in their fragments, for the halo over lines.
   const label = d.createBindGroupLayout({ entries: [uniform(0, V | F), storage(1, V)] });
-  const bg = d.createBindGroupLayout({ entries: [uniform(0, V | F)] });
-  const [tessModule, prep, geometry, bgModule, axisModule, text] = await Promise.all([
+  const occlusion = d.createBindGroupLayout({ entries: [uniform(0, V | F)] });
+  const [tessModule, prep, geometry, occludeModule, text] = await Promise.all([
     gpu.shaderModule(
       common + curve + kit.strokeShader() + tessellate,
       'network adaptive geodesics',
@@ -190,8 +193,7 @@ export async function pipelines(
       'network field preparation',
     ),
     geometryModule(gpu, DISC, shade, 'network geometry'),
-    gpu.shaderModule(common + background, 'network surface'),
-    gpu.shaderModule(common + axis, 'network earth axis'),
+    gpu.shaderModule(common + occlude, 'network globe depth'),
     gpu.shaderModule(common + kit.textShader({ group: 1 }) + labels, 'network shared text'),
   ]);
   const computeLayout = d.createPipelineLayout({
@@ -228,9 +230,8 @@ export async function pipelines(
     vertices,
     edges,
     poles,
-    surface,
+    occluder,
     textPipeline,
-    axisPipeline,
     curves,
   ] = await Promise.all([
     gpu.computePipeline({
@@ -248,9 +249,20 @@ export async function pipelines(
     scene(MARKERS),
     scene(LINES),
     scene(POLES),
-    render(bgModule, 'background_vertex', 'background_fragment', [bg]),
+    gpu.renderPipeline({
+      layout: d.createPipelineLayout({ bindGroupLayouts: [occlusion] }),
+      vertex: { module: occludeModule, entryPoint: 'occlude_vertex' },
+      // Depth alone: the color stays the background's.
+      fragment: {
+        module: occludeModule,
+        entryPoint: 'occlude_fragment',
+        targets: [{ format, writeMask: 0 }],
+      },
+      primitive: { topology: 'triangle-list' },
+      depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
+      multisample: { count: msaa },
+    }),
     render(text, 'label_vertex', 'label_fragment', [label, gpu.textLayout], false),
-    render(axisModule, 'axis_vertex', 'axis_fragment', [bg]),
     scene(CURVES),
   ]);
   const tessPipeline = await gpu.computePipeline({
@@ -268,7 +280,7 @@ export async function pipelines(
     compute,
     draw: drawLayout,
     label,
-    background: bg,
+    occlusion,
     vertex,
     marked,
     edge,
@@ -277,9 +289,8 @@ export async function pipelines(
     edges,
     curves,
     poles,
-    surface,
+    occlude: occluder,
     text: textPipeline,
-    axis: axisPipeline,
   };
   // The focused rows' pipelines build now, after the scene's, so a selection rarely waits on them.
   void markerPipeline(built, DISC, 'focus');

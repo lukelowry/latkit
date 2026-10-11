@@ -1,4 +1,4 @@
-import { kit, type Viewport } from '@latkit/gpu';
+import { kit } from '@latkit/gpu';
 import { Work, rowAt, sameIndex, type FieldsBlock } from '@latkit/model';
 import { networkKey, type NetworkData, type NetworkItem } from './data.js';
 import {
@@ -11,18 +11,13 @@ import {
 } from './geometry/topology.js';
 import { RowLookup } from './geometry/rows.js';
 import type { Adjacency } from './geometry/adjacency.js';
-import {
-  DEG,
-  project,
-  projectedStroke,
-  worldVisible,
-  type Camera,
-  type Projected,
-} from './camera.js';
-import { geodesic } from './geometry/paths.js';
+import { geodesic } from './geometry/routes.js';
 import { readIdentity, sameIdentity, type FieldRead } from './rendering/fields.js';
 import type { Reads } from './rendering/painter.js';
-import { lineWidthPx, type Style } from './options.js';
+import type { Style } from './options.js';
+
+type Projected = kit.Projected;
+const DEG = Math.PI / 180;
 
 /** Where a hit-test index lives: built, or part way with the bytes it already holds. */
 interface Indexed {
@@ -115,10 +110,6 @@ function place(bank: CpuBank, offset: number, out: Float64Array, at: number): vo
 /** The largest a channel reads: its range's top, or its fallback. */
 function largest(channel: kit.ResolvedChannel): number {
   return channel.scale ? Math.max(...channel.scale.range) : channel.fallback;
-}
-/** Paths are hit only when they ask to be. */
-function pickable(batch: CpuSegment, data: NetworkData): boolean {
-  return batch.edge.bank.kind !== 'path' || !!data.paths![batch.edge.bank.type].pickable;
 }
 function segmentDistance(
   px: number,
@@ -259,7 +250,7 @@ function near(
   return out;
 }
 /** Where drawing shows vertices, and the anchors of edges' labels. */
-export type Projector = Pick<PickGeometry, 'projected' | 'edgeAnchor'>;
+export type Drawn = Pick<PickGeometry, 'projected' | 'edgeAnchor'>;
 /**
  * A transition drawing rows `rest` of the way back to where `from` placed them, mixed as the GPU
  * mixes them: positions, heights, and radii, the short way round on a globe.
@@ -340,7 +331,7 @@ export class PickGeometry {
    * Where drawing shows rows while a transition eases them from `from`: `rest` of the way back to
    * where it placed them, mixed as the GPU mixes them, so labels follow what they name.
    */
-  easedFrom(from: PickGeometry, rest: number, globe: boolean): Projector {
+  easedFrom(from: PickGeometry, rest: number, globe: boolean): Drawn {
     return new PickGeometry(
       this.vertices,
       this.edges,
@@ -384,7 +375,7 @@ export class PickGeometry {
           };
     if (options.lines)
       for (const cpu of this.edges)
-        if (pickable(cpu, data) && edgeOptions(data, cpu.edge.bank).route !== 'geodesic') {
+        if (edgeOptions(data, cpu.edge.bank).route !== 'geodesic') {
           const records = cpu.batch.records,
             a = cpu.a.spatial.bounds,
             b = cpu.b.spatial.bounds;
@@ -460,8 +451,7 @@ export class PickGeometry {
   projected(
     bank: VertexBank,
     offset: number,
-    camera: Camera,
-    viewport: Viewport,
+    projector: kit.Projector,
     height: number,
     radiusPx?: number,
     marker = true,
@@ -469,7 +459,7 @@ export class PickGeometry {
     const cpu = this.vertices.get(bank)!,
       found = cpu.lookup.get(rowAt(bank.rows, offset))!,
       [x, y, z] = this.coordinates(cpu, offset);
-    const projected = project(camera, viewport, x, y, z * height);
+    const projected = projector.project(x, y, z * height);
     const visible = kit.channelOn(cpu.read.channels.visible, found.value, found.offset);
     return {
       ...projected,
@@ -594,18 +584,18 @@ export class PickGeometry {
     bo: number,
     eo: number,
     data: NetworkData,
-    camera: Camera,
-    viewport: Viewport,
+    projector: kit.Projector,
     height: number,
     options: Style,
     check: () => void,
   ): Iterable<{ a: Projected; b: Projected; first: boolean; last: boolean }> {
-    const shift = this.shift(batch, eo, data, options);
+    const shift = this.shift(batch, eo, data, options),
+      globe = projector.camera.projection === 'globe';
     // Strokes need positions only; their markers' radii stay unread.
-    const a = this.projected(batch.a.bank, ao, camera, viewport, height, undefined, false),
-      b = this.projected(batch.b.bank, bo, camera, viewport, height, undefined, false);
+    const a = this.projected(batch.a.bank, ao, projector, height, undefined, false),
+      b = this.projected(batch.b.bank, bo, projector, height, undefined, false);
     if (edgeOptions(data, batch.edge.bank).route !== 'geodesic') {
-      const clip = projectedStroke(a, b, camera, viewport);
+      const clip = projector.stroke(a, b);
       if (!clip) return;
       // A parallel edge draws in its lane, across the line on screen.
       const length = Math.hypot(clip[1].x - clip[0].x, clip[1].y - clip[0].y) || 1,
@@ -621,14 +611,8 @@ export class PickGeometry {
     }
     const start = this.coordinates(batch.a, ao),
       end = this.coordinates(batch.b, bo);
-    const ah =
-      camera.projection === 'globe'
-        ? Math.hypot(a.world[0], a.world[1], a.world[2] + 1) - 1
-        : a.world[2];
-    const bh =
-      camera.projection === 'globe'
-        ? Math.hypot(b.world[0], b.world[1], b.world[2] + 1) - 1
-        : b.world[2];
+    const ah = globe ? Math.hypot(a.world[0], a.world[1], a.world[2] + 1) - 1 : a.world[2];
+    const bh = globe ? Math.hypot(b.world[0], b.world[1], b.world[2] + 1) - 1 : b.world[2];
     if (![...start, ...end, ah, bh].every(Number.isFinite)) return;
     const rad = Math.PI / 180,
       cosine =
@@ -647,8 +631,8 @@ export class PickGeometry {
       dx -= 360 * Math.round(dx / 360);
       const dy = after[1] - before[1],
         dz = after[2] - before[2],
-        p = project(camera, viewport, at[0] - dx / 2, at[1] - dy / 2, at[2] - dz / 2),
-        q = project(camera, viewport, at[0] + dx / 2, at[1] + dy / 2, at[2] + dz / 2),
+        p = projector.project(at[0] - dx / 2, at[1] - dy / 2, at[2] - dz / 2),
+        q = projector.project(at[0] + dx / 2, at[1] + dy / 2, at[2] + dz / 2),
         sx = q.x - p.x,
         sy = q.y - p.y,
         l = Math.hypot(sx, sy);
@@ -663,25 +647,15 @@ export class PickGeometry {
       check();
       const p = geodesic(from, to, i / steps),
         nextNormal = normal(i / steps);
-      const next = project(camera, viewport, p[0], p[1], p[2]);
-      if (camera.projection !== 'globe' && Math.abs(p[0] - previousXY[0]) > 180) {
+      const next = projector.project(p[0], p[1], p[2]);
+      if (!globe && Math.abs(p[0] - previousXY[0]) > 180) {
         const seam = previousXY[0] > 0 ? 180 : -180,
           adjusted = p[0] + (seam > 0 ? 360 : -360),
           t = (seam - previousXY[0]) / (adjusted - previousXY[0]);
         const lat = previousXY[1] + (p[1] - previousXY[1]) * t,
           h = previous.world[2] + (p[2] - previous.world[2]) * t;
-        const left = projectedStroke(
-          previous,
-          project(camera, viewport, seam, lat, h),
-          camera,
-          viewport,
-        );
-        const right = projectedStroke(
-          project(camera, viewport, -seam, lat, h),
-          next,
-          camera,
-          viewport,
-        );
+        const left = projector.stroke(previous, projector.project(seam, lat, h));
+        const right = projector.stroke(projector.project(-seam, lat, h), next);
         if (left)
           yield {
             a: moved(left[0], previousNormal),
@@ -697,7 +671,7 @@ export class PickGeometry {
             last: i === steps,
           };
       } else {
-        const clip = projectedStroke(previous, next, camera, viewport);
+        const clip = projector.stroke(previous, next);
         if (clip)
           yield {
             a: moved(clip[0], previousNormal),
@@ -714,8 +688,7 @@ export class PickGeometry {
   hit(
     point: readonly [number, number],
     data: NetworkData,
-    camera: Camera,
-    viewport: Viewport,
+    projector: kit.Projector,
     height: number,
     options: Style,
     radius: number,
@@ -723,16 +696,7 @@ export class PickGeometry {
   ): readonly NetworkItem[] {
     // Each item's nearest piece, then the nearest items.
     const best = new Map<string, Hit>();
-    for (const hit of this.hits(
-      point,
-      data,
-      camera,
-      viewport,
-      height,
-      options,
-      radius,
-      unchecked,
-    )) {
+    for (const hit of this.hits(point, data, projector, height, options, radius, unchecked)) {
       const key = networkKey(hit.item),
         kept = best.get(key);
       if (!kept || compare(hit, kept) < 0) best.set(key, hit);
@@ -746,46 +710,42 @@ export class PickGeometry {
   nearest(
     point: readonly [number, number],
     data: NetworkData,
-    camera: Camera,
-    viewport: Viewport,
+    projector: kit.Projector,
     height: number,
     options: Style,
     radius: number,
     check: () => void,
   ): NetworkItem | null {
     let best: Hit | undefined;
-    for (const hit of this.hits(point, data, camera, viewport, height, options, radius, check))
+    for (const hit of this.hits(point, data, projector, height, options, radius, check))
       if (!best || compare(hit, best) < 0) best = hit;
     return best?.item ?? null;
   }
   private *hits(
     point: readonly [number, number],
     data: NetworkData,
-    camera: Camera,
-    viewport: Viewport,
+    projector: kit.Projector,
     height: number,
     options: Style,
     radius: number,
     check: () => void,
   ): Iterable<Hit> {
-    // Only a flat camera bounds the search in model space, where the indexes live.
+    // Only an unpitched camera bounds the search in model space, where the indexes live. A pixel
+    // spans at most a scale's worth of model units on the plane or the mercator plane.
     let bounds: kit.Bounds2D | undefined;
-    if (camera.projection === 'flat') {
-      const dx = (point[0] - viewport.width / 2) / camera.scale,
-        dy = -(point[1] - viewport.height / 2) / camera.scale,
-        b = (camera.bearing * Math.PI) / 180;
-      const x = camera.center[0] + dx * Math.cos(b) - dy * Math.sin(b),
-        y = camera.center[1] + dx * Math.sin(b) + dy * Math.cos(b);
-      let widest = 0;
-      for (const cpu of this.vertices.values())
-        widest = Math.max(widest, largest(cpu.read.channel('radiusPx', options.vertexRadiusPx)));
-      for (const { edge } of this.edges)
-        widest = Math.max(
-          widest,
-          largest(edge.read.channel('widthPx', lineWidthPx(edgeOptions(data, edge.bank), options))),
-        );
-      const reach = (radius + widest + this.widestShift(data, options)) / camera.scale;
-      bounds = [x - reach, y - reach, x + reach, y + reach];
+    const { camera } = projector;
+    if (!kit.PROJECTIONS[camera.projection].pitched) {
+      const under = projector.unproject(point);
+      if (under) {
+        const [x, y] = under;
+        let widest = 0;
+        for (const cpu of this.vertices.values())
+          widest = Math.max(widest, largest(cpu.read.channel('radiusPx', options.vertexRadiusPx)));
+        for (const { edge } of this.edges)
+          widest = Math.max(widest, largest(edge.read.channel('widthPx', options.edgeWidthPx)));
+        const reach = (radius + widest + this.widestShift(data, options)) / camera.scale;
+        bounds = [x - reach, y - reach, x + reach, y + reach];
+      }
     }
     // Banks draw in order, each its rows in order.
     let drawn = 0;
@@ -796,21 +756,14 @@ export class PickGeometry {
           drawn += bank.count;
           for (const offset of near(cpu.spatial.index, bounds, bank.count, check)) {
             check();
-            const p = this.projected(
-              bank,
-              offset,
-              camera,
-              viewport,
-              height,
-              options.vertexRadiusPx,
-            );
+            const p = this.projected(bank, offset, projector, height, options.vertexRadiusPx);
             if (!p.visible) continue;
             let distance = options.markers
               ? Math.max(0, Math.hypot(point[0] - p.x, point[1] - p.y) - p.radius)
               : Infinity;
             if (options.poles) {
               const [x, y] = raw(cpu, offset),
-                base = project(camera, viewport, x, y);
+                base = projector.project(x, y);
               if (base.visible)
                 distance = Math.min(
                   distance,
@@ -836,112 +789,104 @@ export class PickGeometry {
       for (const batch of this.edges) {
         const first = drawn;
         drawn += batch.batch.records.length / 4;
-        if (pickable(batch, data))
-          for (const offset of near(
-            edgeOptions(data, batch.edge.bank).route !== 'geodesic' && batch.spatial.index,
-            bounds,
-            batch.batch.records.length / 4,
+        const geodesics = edgeOptions(data, batch.edge.bank).route === 'geodesic';
+        for (const offset of near(
+          !geodesics && batch.spatial.index,
+          bounds,
+          batch.batch.records.length / 4,
+          check,
+        )) {
+          check();
+          const records = batch.batch.records,
+            ao = records[offset * 4],
+            bo = records[offset * 4 + 1],
+            eo = records[offset * 4 + 2];
+          const edgeRow = rowAt(batch.edge.bank.rows, eo),
+            ef = batch.edge.lookup.get(edgeRow)!,
+            line = batch.edge.read;
+          if (!kit.channelOn(line.channels.visible, ef.value, ef.offset)) continue;
+          const width = kit.channelValue(
+            line.channel('widthPx', options.edgeWidthPx),
+            ef.value,
+            ef.offset,
+          );
+          const a = this.projected(
+            batch.a.bank,
+            ao,
+            projector,
+            height,
+            options.vertexRadiusPx,
+            false,
+          );
+          const b = this.projected(
+            batch.b.bank,
+            bo,
+            projector,
+            height,
+            options.vertexRadiusPx,
+            false,
+          );
+          const prefix = this.phases.get(batch.batch)?.[offset] ?? 0;
+          let phase = 0;
+          for (const piece of this.stroke(
+            batch,
+            ao,
+            bo,
+            eo,
+            data,
+            projector,
+            height,
+            options,
             check,
           )) {
-            check();
-            const records = batch.batch.records,
-              ao = records[offset * 4],
-              bo = records[offset * 4 + 1],
-              eo = records[offset * 4 + 2];
-            const edgeRow = rowAt(batch.edge.bank.rows, eo),
-              ef = batch.edge.lookup.get(edgeRow)!,
-              line = batch.edge.read;
-            if (!kit.channelOn(line.channels.visible, ef.value, ef.offset)) continue;
-            const width = kit.channelValue(
-              line.channel('widthPx', lineWidthPx(edgeOptions(data, batch.edge.bank), options)),
-              ef.value,
-              ef.offset,
-            );
-            const a = this.projected(
-              batch.a.bank,
-              ao,
-              camera,
-              viewport,
-              height,
-              options.vertexRadiusPx,
-              false,
-            );
-            const b = this.projected(
-              batch.b.bank,
-              bo,
-              camera,
-              viewport,
-              height,
-              options.vertexRadiusPx,
-              false,
-            );
-            const prefix = this.phases.get(batch.batch)?.[offset] ?? 0;
-            let phase = 0;
-            for (const piece of this.stroke(
-              batch,
-              ao,
-              bo,
-              eo,
-              data,
-              camera,
-              viewport,
-              height,
-              options,
-              check,
-            )) {
-              const start = piece.a,
-                end = piece.b;
-              const hit = segmentDistance(point[0], point[1], start.x, start.y, end.x, end.y);
-              // Earlier segments, in world units, at this piece's screen scale, as drawing does.
-              const dashStart =
-                phase + (prefix * hit.length) / Math.max(1e-6, distance(start.world, end.world));
-              phase += hit.length;
-              if (hit.distance > radius + width / 2) continue;
-              let world = start.world.map(
-                (v, i) => v + (end.world[i] - v) * hit.t,
-              ) as unknown as Projected['world'];
-              if (
-                (records[offset * 4 + 3] ||
-                  edgeOptions(data, batch.edge.bank).route === 'geodesic') &&
-                camera.projection === 'globe'
-              ) {
-                const sphere = [world[0], world[1], world[2] + 1],
-                  r = Math.hypot(...sphere),
-                  k = Math.max(1, r) / r;
-                world = [sphere[0] * k, sphere[1] * k, sphere[2] * k - 1];
-              }
-              if (!worldVisible(world, camera, viewport)) continue;
-              if (
-                kit.channelOn(line.channels.dash, ef.value, ef.offset) &&
-                ((dashStart + hit.t * hit.length) / Math.max(1, options.dashPeriodPx)) % 1 > 0.55
-              )
-                continue;
-              if (
-                options.markers &&
-                ((piece.first && Math.hypot(point[0] - a.x, point[1] - a.y) < a.radius) ||
-                  (piece.last && Math.hypot(point[0] - b.x, point[1] - b.y) < b.radius))
-              )
-                continue;
-              yield {
-                item: {
-                  kind: batch.edge.bank.kind ?? 'edge',
-                  source: batch.edge.bank.source ?? data.source,
-                  index: batch.edge.bank.index,
-                  row: edgeRow,
-                },
-                distance: Math.max(0, hit.distance - width / 2),
-                kind: 1,
-                order: first + offset,
-              };
+            const start = piece.a,
+              end = piece.b;
+            const hit = segmentDistance(point[0], point[1], start.x, start.y, end.x, end.y);
+            // Earlier segments, in world units, at this piece's screen scale, as drawing does.
+            const dashStart =
+              phase + (prefix * hit.length) / Math.max(1e-6, distance(start.world, end.world));
+            phase += hit.length;
+            if (hit.distance > radius + width / 2) continue;
+            let world = start.world.map(
+              (v, i) => v + (end.world[i] - v) * hit.t,
+            ) as unknown as Projected['world'];
+            if ((records[offset * 4 + 3] || geodesics) && camera.projection === 'globe') {
+              const sphere = [world[0], world[1], world[2] + 1],
+                r = Math.hypot(...sphere),
+                k = Math.max(1, r) / r;
+              world = [sphere[0] * k, sphere[1] * k, sphere[2] * k - 1];
             }
+            if (!projector.visible(world)) continue;
+            if (
+              kit.channelOn(line.channels.dash, ef.value, ef.offset) &&
+              ((dashStart + hit.t * hit.length) / Math.max(1, options.dashPeriodPx)) % 1 > 0.55
+            )
+              continue;
+            if (
+              options.markers &&
+              ((piece.first && Math.hypot(point[0] - a.x, point[1] - a.y) < a.radius) ||
+                (piece.last && Math.hypot(point[0] - b.x, point[1] - b.y) < b.radius))
+            )
+              continue;
+            yield {
+              item: {
+                kind: 'edge',
+                source: data.source,
+                index: batch.edge.bank.index,
+                row: edgeRow,
+              },
+              distance: Math.max(0, hit.distance - width / 2),
+              kind: 1,
+              order: first + offset,
+            };
           }
+        }
       }
   }
   locate(
     item: NetworkItem,
     data: NetworkData,
-    camera: Camera,
-    viewport: Viewport,
+    projector: kit.Projector,
     height: number,
     options: Style,
   ): readonly [number, number] | null {
@@ -953,25 +898,25 @@ export class PickGeometry {
         const x = kit.channelValue(cpu.read.channels.x, found.value, found.offset),
           y = kit.channelValue(cpu.read.channels.y, found.value, found.offset),
           h = kit.channelValue(cpu.read.channels.z, found.value, found.offset) * height;
-        const p = project(camera, viewport, x, y, h);
+        const p = projector.project(x, y, h);
         return Number.isFinite(p.x) && Number.isFinite(p.y) ? [p.x, p.y] : null;
       }
-    const anchor = this.edgeAnchor(item, data, camera, viewport, height, options);
+    const anchor = this.edgeAnchor(item, data, projector, height, options);
     return anchor ? [anchor.x, anchor.y] : null;
   }
-  /** Where an edge's or path's label centers: the middle of what it draws on screen, in its lane. */
+  /** Where an edge's label centers: the middle of what it draws on screen, in its lane. */
   edgeAnchor(
     item: NetworkItem,
     data: NetworkData,
-    camera: Camera,
-    viewport: Viewport,
+    projector: kit.Projector,
     height: number,
     options: Style,
   ): Projected | null {
-    const segments: { batch: CpuSegment; offset: number }[] = [];
+    const { viewport } = projector,
+      segments: { batch: CpuSegment; offset: number }[] = [];
     for (const batch of this.edges) {
       const bank = batch.edge.bank;
-      if ((bank.kind ?? 'edge') !== item.kind || !sameIndex(bank.index, item.index)) continue;
+      if (item.kind !== 'edge' || !sameIndex(bank.index, item.index)) continue;
       const owner =
         bank.rows.kind === 'range'
           ? item.row - bank.rows.offset
@@ -999,19 +944,14 @@ export class PickGeometry {
         records[offset + 1],
         records[offset + 2],
         data,
-        camera,
-        viewport,
+        projector,
         height,
         options,
         unchecked,
       )) {
         const start = piece.a,
           end = piece.b;
-        if (
-          !worldVisible(start.world, camera, viewport) &&
-          !worldVisible(end.world, camera, viewport)
-        )
-          continue;
+        if (!projector.visible(start.world) && !projector.visible(end.world)) continue;
         // Clip to the visible viewport before computing the label's arc-length midpoint.
         const dx = end.x - start.x,
           dy = end.y - start.y;

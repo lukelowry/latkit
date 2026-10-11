@@ -8,9 +8,10 @@ import {
   type VertexBank,
   type EdgeBank,
 } from '../geometry/topology.js';
-import type { Projector } from '../picking.js';
-import type { Camera, Projected } from '../camera.js';
+import type { Drawn } from '../picking.js';
 import type { Style } from '../options.js';
+
+type Projected = kit.Projected;
 
 export interface LabelBatch {
   readonly runs: readonly kit.TextRun[];
@@ -83,9 +84,9 @@ export class Labels {
     frame: kit.Preparation,
     gpu: Gpu,
     geometry: Geometry,
-    picking: Projector,
+    picking: Drawn,
     data: NetworkData,
-    camera: Camera,
+    projector: kit.Projector,
     height: number,
     style: Style,
   ): Promise<readonly LabelBatch[]> {
@@ -97,8 +98,7 @@ export class Labels {
       ...geometry.vertices.filter((bank) => !bank.synthetic),
       ...geometry.edges,
     ];
-    const kind = (bank: VertexBank | EdgeBank) =>
-      'batches' in bank ? (bank.kind ?? 'edge') : 'vertex';
+    const kind = (bank: VertexBank | EdgeBank) => ('batches' in bank ? 'edge' : 'vertex');
     const native = geometry.native ?? geometry,
       graph = native.adjacency.graph;
     /** The screen angles of the edges at a vertex, toward their other ends. */
@@ -108,15 +108,7 @@ export class Labels {
         for (const other of graph.endsOf(e)) {
           if (other === dense) continue;
           const bank = bankOf(native.vertices, other),
-            q = picking.projected(
-              bank,
-              other - bank.base,
-              camera,
-              frame.viewport,
-              height,
-              undefined,
-              false,
-            );
+            q = picking.projected(bank, other - bank.base, projector, height, undefined, false);
           if (Number.isFinite(q.x) && Number.isFinite(q.y) && (q.x !== p.x || q.y !== p.y))
             out.push(Math.atan2(q.y - p.y, q.x - p.x));
         }
@@ -150,7 +142,7 @@ export class Labels {
         Math.ceil((Math.min(8192, max * 8) * bank.count) / totals.get(key)!),
       );
       if (!count) continue;
-      const source = edge ? (bank.source ?? data.source) : data.source,
+      const source = data.source,
         revision = this.revisions.get(source) ?? 0;
       let entry = this.cache.get(bank.rows);
       const defaults = [style.font, style.fontSizePx, style.textColor];
@@ -179,14 +171,13 @@ export class Labels {
           row = rowAt(bank.rows, offset);
         const p = edge
           ? picking.edgeAnchor(
-              { kind: type as 'edge' | 'path', source, index: bank.index, row },
+              { kind: 'edge', source, index: bank.index, row },
               data,
-              camera,
-              frame.viewport,
+              projector,
               height,
               style,
             )
-          : picking.projected(bank, offset, camera, frame.viewport, height, style.vertexRadiusPx);
+          : picking.projected(bank, offset, projector, height, style.vertexRadiusPx);
         if (
           !p?.visible ||
           p.x < 0 ||

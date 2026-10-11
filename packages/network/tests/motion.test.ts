@@ -11,7 +11,6 @@ import {
 import { createNetwork, type Network, type NetworkConfig } from '../src/index.js';
 import { readGeometry, DEFAULT_LIMITS, type EdgeBank } from '../src/geometry/topology.js';
 import { LINE, bankChannels, channels } from '../src/rendering/fields.js';
-import { project } from '../src/camera.js';
 import type { PickGeometry } from '../src/picking.js';
 import { GraphSource } from './fixture.js';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
@@ -83,21 +82,21 @@ const groups = (fake: Fake) =>
   fake.native.createBindGroup.mock.calls.map(([descriptor]) => descriptor as unknown as Group);
 /** The network's uniforms as its latest frame wrote them, by word. */
 function uniforms(fake: Fake): { readonly f: Float32Array; readonly u: Uint32Array } {
-  // The surface binds the uniforms alone, to its vertex and fragment stages.
-  const surface = last(groups(fake), (group) => {
-    const entries = [...(group.layout.descriptor?.entries ?? [])];
-    return entries.length === 1 && entries[0].visibility === 3;
+  // Every draw binds the uniforms first, to its vertex and fragment stages.
+  const draw = last(groups(fake), (group) => {
+    const first = group.layout.descriptor?.entries ? [...group.layout.descriptor.entries][0] : null;
+    return first?.binding === 0 && first.visibility === 3 && first.buffer?.type === 'uniform';
   })!;
-  const { buffer, offset = 0 } = surface.entries[0].resource as GPUBufferBinding,
-    bytes = (buffer as unknown as FakeBuffer).bytes.slice(offset, offset + 288);
+  const { buffer, offset = 0 } = draw.entries[0].resource as GPUBufferBinding,
+    bytes = (buffer as unknown as FakeBuffer).bytes.slice(offset, offset + 272);
   return { f: new Float32Array(bytes.buffer), u: new Uint32Array(bytes.buffer) };
 }
 /** Words of `Uniforms`, as the painter writes them. */
-const SHIFT = 56,
-  EASE = 58,
-  DT = 59,
-  GROWN = 66,
-  GROWTH = 68;
+const SHIFT = 52,
+  EASE = 54,
+  DT = 55,
+  GROWN = 62,
+  GROWTH = 64;
 const NONE = 0xffffffff;
 function target(gpu: Awaited<ReturnType<typeof createGpu>>) {
   const texture = gpu.device.createTexture({
@@ -568,8 +567,7 @@ it('places labels as the GPU eases what they name: in the data, the short way ro
   type Shown = {
     readonly picking: PickGeometry;
     readonly geometry: { readonly vertices: readonly Parameters<PickGeometry['projected']>[0][] };
-    readonly camera: Parameters<typeof project>[0];
-    readonly viewport: Parameters<typeof project>[1];
+    readonly projector: kit.Projector;
     readonly height: number;
   };
   const shown = () => (network as unknown as { shown: Shown }).shown;
@@ -582,11 +580,11 @@ it('places labels as the GPU eases what they name: in the data, the short way ro
   const before = shown().picking;
   network.set({ source: station(-179) });
   await draw(10);
-  const { picking, geometry, camera, viewport, height } = shown(),
+  const { picking, geometry, projector, height } = shown(),
     eased = picking
       .easedFrom(before, 0.5, true)
-      .projected(geometry.vertices[0], 0, camera, viewport, height),
-    seam = project(camera, viewport, 180, 0, 0);
+      .projected(geometry.vertices[0], 0, projector, height),
+    seam = projector.project(180, 0, 0);
   expect(eased.x).toBeCloseTo(seam.x, 3);
   expect(eased.y).toBeCloseTo(seam.y, 3);
   network.destroy();

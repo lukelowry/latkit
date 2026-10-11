@@ -6,12 +6,12 @@ import type { VertexBank, EdgeBank } from './topology.js';
 import { RowLookup, indexKey } from './rows.js';
 
 /**
- * The drawn graph over renderer-local dense addresses: vertices, then edges, then paths. Public
- * results always use native identities.
+ * The drawn graph over renderer-local dense addresses: vertices, then edges. Public results always
+ * use native identities.
  */
 export class Adjacency {
   readonly bytes: number;
-  /** Vertices, and edges by the vertices each joins once; paths join none. */
+  /** Vertices, and edges by the vertices each joins once. */
   readonly graph: kit.Graph;
   /** Lanes by which banks follow their own routes, as `lanes` finds them. */
   #lanes = new Map<string, ReadonlyMap<EdgeBank, Float32Array>>();
@@ -21,7 +21,6 @@ export class Adjacency {
   constructor(
     private readonly vertices: readonly VertexBank[],
     private readonly edges: readonly EdgeBank[],
-    paths: readonly EdgeBank[],
     private readonly vertexCount: number,
     edgeCount: number,
   ) {
@@ -44,7 +43,6 @@ export class Adjacency {
         offsets[bank.base + i + 1] = written;
       }
     }
-    for (const bank of paths) this.rows(this.edgeRows, bank.index).add(bank.rows, bank);
     for (const rows of this.edgeRows.values()) rows.seal();
     this.graph = new kit.Graph(vertexCount, {
       offsets,
@@ -150,7 +148,6 @@ export class Adjacency {
   }
   /** An item and what it joins; the index names its rows, so an item outlives appends. */
   neighborhood(item: NetworkItem, data: NetworkData): readonly NetworkItem[] {
-    if (item.kind === 'path') return [];
     const found = (item.kind === 'vertex' ? this.vertexRows : this.edgeRows)
       .get(indexKey(item.index))
       ?.get(item.row);

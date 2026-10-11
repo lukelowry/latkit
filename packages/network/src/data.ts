@@ -33,14 +33,25 @@ export interface VertexOptions {
   readonly shade?: Channel;
   readonly labels?: string | NetworkLabels | null;
 }
-/** How the lines of edges and paths draw. */
-export interface LineOptions {
+/** How a type's edges draw. */
+export interface EdgeOptions {
   readonly rows?: RowSelection;
+  /**
+   * Two reference fields naming the vertices each row joins, such as a branch's two buses.
+   * Omitted, the type is a net: each row joins the vertices whose references name it, drawn as a
+   * segment between two or a star of more.
+   */
+  readonly ends?: readonly [source: string, target: string];
+  /** Intermediate bends, a native list of two-component floating-point vectors; requires ends. */
+  readonly bends?: FieldInput;
+  /** Where a net's star meets, drawing every net as a star; otherwise the centroid of its ends. */
+  readonly x?: Channel;
+  readonly y?: Channel;
   /** `straight` in the data's coordinates, or `geodesic` along great circles. */
   readonly route?: 'straight' | 'geodesic';
-  /** Line width in CSS pixels; a field spans 1 to 4. `edgeWidthPx` or `pathWidthPx` by default. */
+  /** Line width in CSS pixels; a field spans 1 to 4. `edgeWidthPx` by default. */
   readonly widthPx?: Channel;
-  /** `edgeColor` or `pathColor` by default. */
+  /** `edgeColor` by default. */
   readonly color?: ColorChannel;
   /** Dashed where true or positive. */
   readonly dash?: Channel<boolean>;
@@ -54,29 +65,9 @@ export interface LineOptions {
   readonly shade?: Channel;
   readonly labels?: string | NetworkLabels | null;
 }
-export interface EdgeOptions extends LineOptions {
-  /**
-   * Two reference fields naming the vertices each row joins, such as a branch's two buses.
-   * Omitted, the type is a net: each row joins the vertices whose references name it, drawn as a
-   * segment between two or a star of more.
-   */
-  readonly ends?: readonly [source: string, target: string];
-  /** Intermediate bends, a native list of two-component floating-point vectors; requires ends. */
-  readonly bends?: FieldInput;
-  /** Where a net's star meets, drawing every net as a star; otherwise the centroid of its ends. */
-  readonly x?: Channel;
-  readonly y?: Channel;
-}
-export interface PathOptions extends LineOptions {
-  /** Defaults to the network's source. */
-  readonly source?: Data;
-  readonly points: FieldInput;
-  /** Decorative paths do not participate in picking by default. */
-  readonly pickable?: boolean;
-}
-/** A drawn row: a vertex, an edge, or a path. */
+/** A drawn row: a vertex or an edge. */
 export interface NetworkItem extends Item {
-  readonly kind: 'vertex' | 'edge' | 'path';
+  readonly kind: 'vertex' | 'edge';
 }
 /** An item's identity: its kind, row space, and row; appends keep it. */
 export function networkKey(item: NetworkItem): string {
@@ -87,9 +78,8 @@ export interface NetworkData {
   readonly source: Data;
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
-  readonly paths?: Readonly<Record<string, PathOptions>>;
 }
 /** The drawn records of a config. */
-export function networkData({ source, vertices, edges, paths }: NetworkData): NetworkData {
-  return { source, vertices, edges, paths };
+export function networkData({ source, vertices, edges }: NetworkData): NetworkData {
+  return { source, vertices, edges };
 }

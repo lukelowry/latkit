@@ -40,8 +40,10 @@ export function validateSchema(value: unknown): readonly Problem[] {
       }
       if (own(field, 'geographic')) {
         c.bool(field.geographic, [...p, 'geographic']);
-        const type = field.type,
-          vector = record(type) && type.kind === 'list' ? type.items : type;
+        const type = field.type;
+        // Lists of positions, as polylines, and lists of those, as rings, are geographic too.
+        let vector: unknown = type;
+        while (record(vector) && vector.kind === 'list') vector = vector.items;
         const axis = typeof type === 'string' && numeric.includes(type),
           position =
             record(vector) && vector.kind === 'vector' && (vector.size === 2 || vector.size === 3);

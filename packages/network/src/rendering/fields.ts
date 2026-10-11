@@ -6,7 +6,7 @@ import {
   type FieldsBlock,
 } from '@latkit/model';
 import { kit } from '@latkit/gpu';
-import type { EdgeOptions, PathOptions, VertexOptions } from '../data.js';
+import type { EdgeOptions, VertexOptions } from '../data.js';
 import type { VertexBank, EdgeBank } from '../geometry/topology.js';
 import { FLOW_RANGE, RADIUS_RANGE, WIDTH_RANGE } from '../options.js';
 
@@ -30,7 +30,7 @@ export const VERTEX = {
   input7: 'raw',
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
 /**
- * What an edge or a path reads; an edge's x and y center a net's star, and its lane is its place
+ * What an edge reads; its x and y center a net's star, and its lane is its place
  * among the edges joining the same two vertices, which the view finds.
  */
 export const LINE = {
@@ -46,7 +46,7 @@ export const LINE = {
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
 export type ChannelName = keyof typeof VERTEX | keyof typeof LINE;
 const NAMES = [...new Set([...Object.keys(VERTEX), ...Object.keys(LINE)])] as ChannelName[];
-export type Options = VertexOptions | EdgeOptions | PathOptions;
+export type Options = VertexOptions | EdgeOptions;
 /** What a row reads without a value: no position, no height, and shown. */
 const FALLBACK: Readonly<Partial<Record<ChannelName, number>>> = {
   x: NaN,
@@ -160,12 +160,9 @@ export class FieldRead {
   }
 }
 
-/** The polylines a type draws through: an edge's bends or a path's points. */
+/** The polylines a type draws through: an edge's bends. */
 function lists(options: Options): Record<string, FieldInput> {
-  const out: Record<string, FieldInput> = {};
-  if ('bends' in options && options.bends) out.bends = options.bends;
-  if ('points' in options && options.points) out.points = options.points;
-  return out;
+  return 'bends' in options && options.bends ? { bends: options.bends } : {};
 }
 export async function readFields(
   frame: kit.Preparation,
@@ -185,14 +182,9 @@ export async function readFields(
     fields: { ...bound.fields, ...lists(options) },
   })) {
     native.push(tile);
-    for (const name of ['bends', 'points']) {
-      const column = tile.columns[name];
-      if (
-        column &&
-        (column.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
-      )
-        throw failure('invalid-input', 'Paths require lists of two-component numeric vectors');
-    }
+    const bends = tile.columns.bends;
+    if (bends && (bends.kind !== 'list' || bends.values.kind !== 'vector' || bends.values.size !== 2))
+      throw failure('invalid-input', 'Bends require lists of two-component numeric vectors');
     for (const page of frame.upload(tile, { select, float64: 'relative' }))
       pages.push({ page, offset: page.rowOffset });
   }
@@ -224,7 +216,7 @@ export async function resolveDomains(
       for (const bank of banks) {
         const scale = await kit.fieldScale(frame.reader, {
           ...channel.scale,
-          source: 'source' in bank ? (bank.source ?? source) : source,
+          source,
           from: bank.index.type,
           rows: { ...bank.rows, index: bank.index },
           field: channel.field,

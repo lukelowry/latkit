@@ -88,6 +88,22 @@ importers:
         specifier: 8.21.0
         version: 8.21.0
 
+  examples/colors:
+    dependencies:
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../../packages/gpu
+    devDependencies:
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.0.0
+        version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
+
   examples/diagram:
     dependencies:
       '@latkit/diagram':
@@ -99,6 +115,31 @@ importers:
       '@latkit/model':
         specifier: workspace:*
         version: link:../../packages/model
+    devDependencies:
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.0.0
+        version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
+
+  examples/linked:
+    dependencies:
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../../packages/gpu
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../../packages/model
+      '@latkit/monitor':
+        specifier: workspace:*
+        version: link:../../packages/monitor
+      '@latkit/network':
+        specifier: workspace:*
+        version: link:../../packages/network
     devDependencies:
       '@webgpu/types':
         specifier: ^0.1.71
@@ -134,15 +175,15 @@ importers:
 
   examples/network:
     dependencies:
+      '@latkit/geography':
+        specifier: workspace:*
+        version: link:../../packages/geography
       '@latkit/gpu':
         specifier: workspace:*
         version: link:../../packages/gpu
       '@latkit/model':
         specifier: workspace:*
         version: link:../../packages/model
-      '@latkit/monitor':
-        specifier: workspace:*
-        version: link:../../packages/monitor
       '@latkit/network':
         specifier: workspace:*
         version: link:../../packages/network
@@ -212,6 +253,21 @@ importers:
       '@webgpu/types':
         specifier: ^0.1.71
         version: 0.1.71
+
+  packages/geography:
+    dependencies:
+      '@latkit/gpu':
+        specifier: workspace:^
+        version: link:../gpu
+      '@latkit/model':
+        specifier: workspace:^
+        version: link:../model
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
+      earcut:
+        specifier: ^3.2.4
+        version: 3.2.4
 
   packages/gpu:
     dependencies:
@@ -1318,6 +1374,9 @@ packages:
   dir-glob@3.0.1:
     resolution: {integrity: sha512-WkrWp9GR4KXfKGYzOLmTuGVi1UWFfws377n9cc55/tb6DuqyF6pcQ5AbiHEshaDpY9v6oaSr2XCDidGmMwdzIA==}
     engines: {node: '>=8'}
+
+  earcut@3.2.4:
+    resolution: {integrity: sha512-FHc6yNpnTORB0tM5kmZ03iD2mDuNakDE2lvf4Hw1XkfxtEHIGVi01B/GqUSwx+NcC1WGjidAfpTXzeALtPtfpg==}
 
   eastasianwidth@0.2.0:
     resolution: {integrity: sha512-I88TYZWc9XiYHRQ4/3c5rjjfgkjhLyW2luGIheGERbNQ6OY7yTybanSpDXZa8y7VUP9YmDcYa+eyq4ca7iLqWA==}
@@ -3292,6 +3351,8 @@ snapshots:
   dir-glob@3.0.1:
     dependencies:
       path-type: 4.0.0
+
+  earcut@3.2.4: {}
 
   eastasianwidth@0.2.0: {}
 

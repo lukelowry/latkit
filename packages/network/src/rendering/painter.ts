@@ -1,7 +1,12 @@
-import { kit, type Gpu, type Marker, type MarkerImage, type RGBA } from '@latkit/gpu';
+import {
+  kit,
+  type Gpu,
+  type Marker,
+  type MarkerImage,
+  type ProjectedCamera,
+  type RGBA,
+} from '@latkit/gpu';
 import { failure, rowCount } from '@latkit/model';
-import type { Camera } from '../camera.js';
-import { DEG } from '../camera.js';
 import { networkKey, type NetworkData, type NetworkItem } from '../data.js';
 import {
   edgeOptions,
@@ -12,7 +17,7 @@ import {
   type EdgeBank,
   type SegmentBatch,
 } from '../geometry/topology.js';
-import { lineColor, lineWidthPx, type Style } from '../options.js';
+import { lineColor, type Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
 import { DISC, linePipeline, markerPipeline, type Pipelines } from './pipelines.js';
@@ -51,22 +56,28 @@ function focusRuns(instances: readonly number[]): Focused | undefined {
 }
 const sameHover = (a: NetworkItem | null, b: NetworkItem | null) =>
   a === b || (!!a && !!b && networkKey(a) === networkKey(b));
-/** Words of the uniforms' named members after their fourteen vec4, as `Uniforms` lays them out. */
+/** Words of the uniforms' members, as `Uniforms` lays them out: the scene block first. */
 const U = {
-  easeShift: 56,
-  ease: 58,
-  dt: 59,
-  dashPeriodPx: 60,
-  edgeSpacingPx: 61,
-  flowSpacingPx: 62,
-  markers: 63,
-  hoverScale: 64,
-  labelHaloPx: 65,
-  grown: 66,
-  growth: 68,
-  words: 72,
+  light: kit.Projector.floats,
+  hoverColor: 32,
+  selectedColor: 36,
+  glow: 40,
+  halo: 44,
+  flowColor: 48,
+  easeShift: 52,
+  ease: 54,
+  dt: 55,
+  dashPeriodPx: 56,
+  edgeSpacingPx: 57,
+  flowSpacingPx: 58,
+  markers: 59,
+  hoverScale: 60,
+  labelHaloPx: 61,
+  grown: 62,
+  growth: 64,
+  words: 68,
 } as const;
-/** A path's private points draw no markers. */
+/** An edge's private bends and junctions draw no markers. */
 const HIDDEN: kit.ResolvedChannel = { component: 0, fallback: 0 };
 /** The upload origin a raw axis reads relative to; a scaled or constant axis is absolute. */
 function rebase(channel: kit.ResolvedChannel, page: kit.GpuPage): number {
@@ -86,7 +97,7 @@ function stepsOf(marker: Marker): number {
   return (marker.steps ?? []).reduce((bits, name) => bits | (1 << names.indexOf(name)), 0);
 }
 const easeOut = (t: number) => 1 - (1 - t) ** 3;
-/** How a bank's rows draw: their type's marker, or a disc; a path's private points as discs. */
+/** How a bank's rows draw: their type's marker, or a disc; an edge's private points as discs. */
 function markerOf(data: NetworkData, bank: VertexBank): Marker {
   return bank.synthetic ? DISC : (vertexOptions(data, bank).marker ?? DISC);
 }
@@ -98,7 +109,15 @@ export interface Reads {
   readonly edges: ReadonlyMap<EdgeBank, FieldRead>;
 }
 export interface DrawFrame {
-  readonly camera: Camera;
+  readonly camera: ProjectedCamera;
+  /** The frame's camera on its viewport, which writes the projection block. */
+  readonly projector: kit.Projector;
+  /** The sun of the geography beneath, which dims the network at night; none without one. */
+  readonly light: kit.Light | null;
+  /** What label halos match: the ground beneath, or the background. */
+  readonly halo: RGBA;
+  /** Whether a geography draws beneath, in this pass, which hides the globe's far side itself. */
+  readonly grounded: boolean;
   readonly options: Style;
   readonly data: NetworkData;
   readonly geometry: Geometry;
@@ -106,7 +125,6 @@ export interface DrawFrame {
   /** Replaced whenever it changes. */
   readonly selection: readonly NetworkItem[];
   readonly hover: NetworkItem | null;
-  readonly pointer: readonly [number, number] | null;
   readonly height: number;
   readonly pipelines: Pipelines;
   /** This frame's shade uniforms. */
@@ -180,7 +198,12 @@ export interface Paint {
   readonly vertices: readonly Command[];
   readonly edges: readonly Command[];
   readonly labels: readonly { group: GPUBindGroup; pages: readonly kit.TextPage[] }[];
-  readonly background: GPUBindGroup;
+  /** The geography beneath, drawn first in the pass. */
+  readonly ground?: kit.PreparedLayer;
+  /** The scene block this frame's uniforms begin with, which the geography beneath binds. */
+  readonly scene: GPUBufferBinding;
+  /** The globe's depth alone, when nothing beneath draws the ground: the uniforms, bound. */
+  readonly occlusion?: GPUBindGroup;
   readonly depth: GPUTextureView;
   readonly color?: GPUTextureView;
   readonly options: Style;
@@ -188,13 +211,6 @@ export interface Paint {
   readonly center: readonly [number, number];
   readonly indirect?: GPUBuffer;
   readonly drawCalls: number;
-}
-function sun(time: number): readonly [number, number, number] {
-  const date = new Date(time),
-    day = (time - Date.UTC(date.getUTCFullYear(), 0, 1)) / 86400000;
-  const decl = -23.44 * Math.cos((2 * Math.PI * (day + 10)) / 365.25) * DEG,
-    lon = (0.5 - (time % 86400000) / 86400000) * Math.PI * 2;
-  return [Math.cos(decl) * Math.cos(lon), Math.sin(decl), -Math.cos(decl) * Math.sin(lon)];
 }
 /** A vertex hover grows or lets go: its dense address, when it started, and from how far. */
 interface Growth {
@@ -401,48 +417,10 @@ export class Painter {
     });
     const f = new Float32Array(U.words),
       u = new Uint32Array(f.buffer);
-    const scale = camera.scale / (camera.projection === 'globe' ? DEG : 1),
-      distance = Math.max(1e-9, (frame.viewport.height * 1.5) / scale);
-    f.set(
-      [
-        frame.viewport.width,
-        frame.viewport.height,
-        frame.viewport.pixelRatio,
-        ['flat', 'tilt', 'globe'].indexOf(camera.projection),
-      ],
-      0,
-    );
-    f.set([scale, distance, 0, 0], 4);
-    f.set(
-      [
-        Math.cos(camera.bearing * DEG),
-        Math.sin(camera.bearing * DEG),
-        Math.cos(camera.pitch * DEG),
-        Math.sin(camera.pitch * DEG),
-      ],
-      8,
-    );
-    f.set(
-      [
-        Math.sin(camera.center[1] * DEG),
-        Math.cos(camera.center[1] * DEG),
-        state.height,
-        geometry.geographic ? 1 : 0,
-      ],
-      12,
-    );
-    f.set(
-      [
-        camera.center[0],
-        camera.center[1],
-        Math.sin(camera.center[0] * DEG),
-        Math.cos(camera.center[0] * DEG),
-      ],
-      16,
-    );
-    f.set(options.hoverColor, 20);
+    state.projector.write(f, 0, geometry.geographic, state.height);
+    f.set(options.hoverColor, U.hoverColor);
     // `none` glows in each item's own color.
-    f.set(options.selectedColor === 'none' ? [0, 0, 0, -1] : options.selectedColor, 24);
+    f.set(options.selectedColor === 'none' ? [0, 0, 0, -1] : options.selectedColor, U.selectedColor);
     f.set(
       [
         options.hoverWidthPx,
@@ -450,30 +428,12 @@ export class Painter {
         state.selection.length ? options.unselectedAlpha : 1,
         0,
       ],
-      28,
+      U.glow,
     );
-    f.set(
-      [
-        ...(state.pointer ?? [-1e6, -1e6]),
-        options.nightFloor,
-        Math.max(0.0001, options.terminatorWidth),
-      ],
-      32,
-    );
-    f.set(
-      [
-        ...sun(options.sunTime === 'now' ? Date.now() : options.sunTime),
-        options.daylight && geometry.geographic ? 1 : 0,
-      ],
-      36,
-    );
-    f.set(
-      [...options.surfaceColor.slice(0, 3), options.daylight ? options.surfaceNightFloor : 1],
-      40,
-    );
-    f.set(options.gridColor, 44);
-    u.set([0, options.grid ? 1 : 0, 0, 0], 48);
-    f.set(options.flowColor, 52);
+    // Only geographic positions face the sun.
+    kit.Projector.light(f, U.light, geometry.geographic ? state.light : null);
+    f.set(state.halo, U.halo);
+    f.set(options.flowColor, U.flowColor);
     const { outputs, easing } = state.records;
     if (transition?.start) this.easedCenter = this.drawnCenter ?? camera.center;
     if (transition && easing) {
@@ -529,10 +489,10 @@ export class Painter {
     const words = this.slots.subarray(0, slots * SLOT_WORDS).fill(0),
       floats = new Float32Array(words.buffer, words.byteOffset, words.length);
     let used = 0;
-    /** One compute dispatch per page: a vertex bank's, or the bank of a `line` type's options. */
-    const write = (bank: VertexBank | EdgeBank, read: FieldRead, line?: object) => {
+    /** One compute dispatch per page: a vertex bank's, or an edge bank's. */
+    const write = (bank: VertexBank | EdgeBank, read: FieldRead, line = false) => {
       const color = line
-          ? typeColor(read, lineColor(line, options))
+          ? typeColor(read, lineColor(options))
           : typeColor(read, options.vertexColor),
         colors = frame.colormap(read.bound.channels.color?.colormap),
         hidden = 'synthetic' in bank && !!bank.synthetic,
@@ -545,12 +505,7 @@ export class Painter {
         if (line) {
           pages.push({ page, colors, bank, edge: true });
           kit.writeChannel(words, at + 8, read.channel('color'), page);
-          kit.writeChannel(
-            words,
-            at + 16,
-            read.channel('widthPx', lineWidthPx(line, options)),
-            page,
-          );
+          kit.writeChannel(words, at + 16, read.channel('widthPx', options.edgeWidthPx), page);
           kit.writeChannel(words, at + 24, read.channel('visible'), page);
           kit.writeChannel(words, at + 32, read.channel('shade'), page);
           kit.writeChannel(words, at + 40, read.channel('dash'), page);
@@ -587,7 +542,7 @@ export class Painter {
       }
     };
     for (const bank of geometry.vertices) write(bank, reads.vertices.get(bank)!);
-    for (const bank of geometry.edges) write(bank, reads.edges.get(bank)!, edgeOptions(data, bank));
+    for (const bank of geometry.edges) write(bank, reads.edges.get(bank)!, true);
     const perChunk = Math.floor(gpu.device.limits.maxUniformBufferBindingSize / SLOT),
       held = Math.ceil(slots / perChunk);
     this.chunks.length = Math.min(this.chunks.length, held);
@@ -844,10 +799,15 @@ export class Painter {
           pages,
         });
       }
-    const background = gpu.device.createBindGroup({
-      layout: pipeline.background,
-      entries: [{ binding: 0, resource: uniform }],
-    });
+    // Without a ground drawn beneath, the globe still hides what lies behind it.
+    const globe = camera.projection === 'globe',
+      occlusion =
+        globe && !state.grounded
+          ? gpu.device.createBindGroup({
+              layout: pipeline.occlusion,
+              entries: [{ binding: 0, resource: uniform }],
+            })
+          : undefined;
     return {
       pipelines: pipeline,
       easing,
@@ -856,15 +816,15 @@ export class Painter {
       vertices,
       edges,
       labels,
-      background,
+      scene: { buffer: uniform.buffer, offset: uniform.offset ?? 0, size: kit.Projector.scene * 4 },
+      occlusion,
       depth: depth!,
       color,
       options,
-      globe: camera.projection === 'globe',
+      globe,
       center: camera.center,
       drawCalls:
-        1 +
-        (camera.projection === 'globe' && options.earthAxis ? 1 : 0) +
+        (occlusion ? 1 : 0) +
         (options.markers
           ? vertices.reduce((n, item) => n + drawsOf(item), 0) +
             (options.shadows ? vertices.length : 0)
@@ -910,7 +870,7 @@ export class Painter {
     for (const item of state.selection) focus(item, SELECTED);
     if (state.hover) focus(state.hover, HOVERED);
     // Sixteen rows per word, padded to whole 16-byte rows.
-    const rows = native.vertexCount + native.edgeCount + native.pathCount,
+    const rows = native.vertexCount + native.edgeCount,
       size = Math.max(16, Math.ceil(rows / 64) * 16);
     if (this.focus.size !== size) this.focus.resize(size);
     const bytes = this.focus.bytes,
@@ -957,6 +917,8 @@ export class Painter {
       this.eased = easing.eased;
     }
     this.drawnCenter = paint.center;
+    // What the ground's draw reads, recorded before any pass of the network's.
+    paint.ground?.encode(frame);
     const compute = frame.encoder.beginComputePass({ label: 'network native fields to geometry' });
     for (const command of paint.compute) {
       compute.setPipeline(command.pipeline);
@@ -1020,13 +982,12 @@ export class Painter {
       if (focus.runs === 'all') pass.draw(6, item.count);
       else for (const [first, count] of focus.runs) pass.draw(6, count, 0, first);
     };
-    pass.setPipeline(paint.pipelines.surface);
-    pass.setBindGroup(0, paint.background);
-    pass.draw(3);
-    if (paint.globe && paint.options.earthAxis) {
-      pass.setPipeline(paint.pipelines.axis);
-      pass.setBindGroup(0, paint.background);
-      pass.draw(6);
+    // What lies beneath draws first; without it, a globe writes its depth alone.
+    if (paint.ground) paint.ground.draw(pass);
+    else if (paint.occlusion) {
+      pass.setPipeline(paint.pipelines.occlude);
+      pass.setBindGroup(0, paint.occlusion);
+      pass.draw(3);
     }
     if (paint.options.lines) {
       pass.setPipeline(paint.pipelines.edges);

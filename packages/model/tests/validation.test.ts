@@ -43,6 +43,22 @@ describe('schema and query boundaries', () => {
     ];
     for (const q of queries) expect(validateQuery(schema, q)).toEqual([]);
   });
+  it('takes positions, polylines of them, and rings of those as geographic', () => {
+    const point = { kind: 'vector', items: 'float64', size: 2 } as const,
+      line = { kind: 'list', items: point } as const;
+    const shapes: Schema = {
+      types: {
+        Area: {
+          fields: {
+            position: { type: point, geographic: true },
+            points: { type: line, geographic: true },
+            rings: { type: { kind: 'list', items: line }, geographic: true },
+          },
+        },
+      },
+    };
+    expect(validateSchema(shapes)).toEqual([]);
+  });
   it.each([null, [], {}, { types: null }, { queries: ['wrong'] }])(
     'reports malformed schema without throwing: %j',
     (value) => {

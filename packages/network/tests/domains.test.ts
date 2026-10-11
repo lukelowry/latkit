@@ -26,12 +26,12 @@ async function draw(gpu: Gpu, prepare: (frame: kit.Preparation) => Promise<void>
   await gpu.idle();
   texture.destroy();
 }
-import { PathSource, vectors } from './paths-fixture.js';
+import { TableSource, vectors } from './table-fixture.js';
 import { readGeometry, DEFAULT_LIMITS, type VertexBank } from '../src/geometry/topology.js';
 import { readFields, resolveDomains, type FieldRead } from '../src/rendering/fields.js';
 it('uses the whole selected type for automatic domains across native blocks and draw banks', async () => {
   const count = 20000,
-    source = new PathSource(
+    source = new TableSource(
       {
         node: {
           position: vectors(Array.from({ length: count * 2 }, (_, i) => i)),

@@ -1,6 +1,10 @@
+/** A world point as a direction from the globe's center: on a plane, its longitude and latitude's. */
 fn curve_unit(p:vec3f,u:Uniforms)->vec3f {
   if(u.view.w>1.5){return normalize(p+vec3f(0,0,1));}
-  let lon=(p.x+u.center.x)*0.017453292519943295;let lat=(p.y+u.center.y)*0.017453292519943295;
+  var y=p.y+u.center.y;
+  // The mercator plane holds a latitude where mercator stretches it, from the center's place.
+  if(u.geo.w>1.5){y=projection_latitude(p.y+u.pose.z);}
+  let lon=(p.x+u.center.x)*0.017453292519943295;let lat=y*0.017453292519943295;
   return vec3f(cos(lat)*cos(lon),sin(lat),cos(lat)*sin(lon));
 }
 fn curve_angle(a:vec3f,b:vec3f,u:Uniforms)->f32 {return acos(clamp(dot(curve_unit(a,u),curve_unit(b,u)),-1.0,1.0));}
@@ -15,7 +19,10 @@ fn curve_world(a:vec3f,b:vec3f,t:f32,u:Uniforms)->vec3f {
     let angle=acos(cosine)*t;unit=x*cos(angle)+tangent*(sin(angle)/n);
   }
   if(u.view.w>1.5){return unit*mix(length(a+vec3f(0,0,1)),length(b+vec3f(0,0,1)),t)-vec3f(0,0,1);}
-  return vec3f(atan2(unit.z,unit.x)*57.295779513-u.center.x,asin(clamp(unit.y,-1.0,1.0))*57.295779513-u.center.y,mix(a.z,b.z,t));
+  let latitude=asin(clamp(unit.y,-1.0,1.0))*57.295779513;
+  var plane=latitude-u.center.y;
+  if(u.geo.w>1.5){plane=projection_mercator(latitude)-u.pose.z;}
+  return vec3f(atan2(unit.z,unit.x)*57.295779513-u.center.x,plane,mix(a.z,b.z,t));
 }
 
 // Split at the geographic seam before projection; both passes use the same endpoints.
