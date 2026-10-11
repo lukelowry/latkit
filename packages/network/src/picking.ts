@@ -1,6 +1,6 @@
-import { kit, type Projection } from '@latkit/gpu';
-import { Work, rowAt, sameIndex, type FieldsBlock } from '@latkit/model';
-import { networkKey, type NetworkData, type NetworkItem } from './data.js';
+import { kit, type ProjectedCamera } from '@latkit/gpu';
+import { Work, rowAt, sameIndex, type Block } from '@latkit/model';
+import { networkKey, type NetworkData } from './data.js';
 import {
   curvedAt,
   ownerSegments,
@@ -16,7 +16,7 @@ import { arc, geodesic, routePoint } from './geometry/routes.js';
 import { readIdentity, sameIdentity, type FieldRead } from './rendering/fields.js';
 import type { Reads } from './rendering/painter.js';
 import type { Style } from './options.js';
-
+import type { Network } from './network.js';
 type Projected = kit.Projected;
 
 /** Where a hit-test index lives: built, or part way with the bytes it already holds. */
@@ -51,14 +51,14 @@ interface Spatial extends Indexed {
 interface CpuBank {
   readonly bank: VertexBank;
   readonly read: FieldRead;
-  readonly lookup: RowLookup<FieldsBlock>;
+  readonly lookup: RowLookup<Block.Fields>;
   readonly spatial: Spatial;
   readonly heightIdentity: readonly unknown[];
 }
 interface CpuEdge {
   readonly bank: EdgeBank;
   readonly read: FieldRead;
-  readonly lookup: RowLookup<FieldsBlock>;
+  readonly lookup: RowLookup<Block.Fields>;
 }
 interface CpuSegment {
   readonly batch: SegmentBatch;
@@ -67,8 +67,8 @@ interface CpuSegment {
   readonly b: CpuBank;
   readonly spatial: Indexed;
 }
-function readLookup(read: FieldRead): RowLookup<FieldsBlock> {
-  const lookup = new RowLookup<FieldsBlock>();
+function readLookup(read: FieldRead): RowLookup<Block.Fields> {
+  const lookup = new RowLookup<Block.Fields>();
   for (const tile of read.native) lookup.add(tile.rows, tile);
   lookup.seal();
   return lookup;
@@ -119,6 +119,32 @@ function routeBox(box: Float64Array, geographic: boolean): void {
     box[3] = Math.max(box[3], y);
   }
 }
+/** Edges a spacing samples at most: enough for a steady median, few enough for any frame. */
+const SPACING_SAMPLES = 2048;
+/** How much of an edge's length on screen a marker's radius may span before markers shrink. */
+const MARKER_ROOM = 0.25;
+/** What sizes a marker: its type's radius, and the least it shrinks to. */
+export type MarkerStyle = Pick<Style, 'vertexRadiusPx' | 'vertexMinRadiusPx'>;
+/** The median length of up to SPACING_SAMPLES edges, in the data's units: how far apart joined vertices sit; 0 without edges. */
+function spacingOf(edges: readonly CpuSegment[]): number {
+  let count = 0;
+  for (const { batch } of edges) count += batch.records.length / 4;
+  const step = Math.max(1, Math.floor(count / SPACING_SAMPLES)),
+    lengths: number[] = [],
+    box = new Float64Array(4);
+  let k = 0;
+  for (const { batch, a, b } of edges)
+    for (let i = 0; i < batch.records.length / 4; i++) {
+      if (k++ % step) continue;
+      place(a, batch.records[i * 4], box, 0);
+      place(b, batch.records[i * 4 + 1], box, 2);
+      const length = Math.hypot(box[2] - box[0], box[3] - box[1]);
+      if (length > 0) lengths.push(length);
+    }
+  if (!lengths.length) return 0;
+  lengths.sort((x, y) => x - y);
+  return lengths[lengths.length >> 1];
+}
 /** The largest a channel reads: its range's top, or its fallback. */
 function largest(channel: kit.ResolvedChannel): number {
   return channel.scale ? Math.max(...channel.scale.range) : channel.fallback;
@@ -140,14 +166,14 @@ function segmentDistance(
 function readBounds(
   bank: VertexBank,
   read: FieldRead,
-  lookup: RowLookup<FieldsBlock>,
+  lookup: RowLookup<Block.Fields>,
 ): kit.Bounds2D {
   let minX = Infinity,
     minY = Infinity,
     maxX = -Infinity,
     maxY = -Infinity;
   const { x, y } = read.channels;
-  const include = (tile: FieldsBlock, i: number) => {
+  const include = (tile: Block.Fields, i: number) => {
     const px = kit.channelValue(x, tile, i),
       py = kit.channelValue(y, tile, i);
     if (!Number.isFinite(px) || !Number.isFinite(py)) return;
@@ -171,9 +197,24 @@ function readBounds(
   }
   return [minX, minY, maxX, maxY];
 }
+/** What places a bank's vertices: the bank, and the fields and lanes its x and y read. */
+function placing(cpu: CpuBank): unknown[] {
+  const x = cpu.read.channel('x'),
+    y = cpu.read.channel('y');
+  return [cpu.bank, x.column, x.component, y.column, y.component];
+}
 export class Picking {
   private cache = new WeakMap<VertexBank, Spatial>();
   private segments = new WeakMap<SegmentBatch, { a: Spatial; b: Spatial; spatial: Indexed }>();
+  /**
+   * The vertices' spacing, measured again when the edges, the fields placing their ends, or the
+   * layout's extent change; positions that only move, as a recording plays, keep it.
+   */
+  private spacing: {
+    readonly key: readonly unknown[];
+    readonly extent: number;
+    readonly value: number;
+  } = { key: [], extent: NaN, value: 0 };
   prepare(
     geometry: Pick<Geometry, 'vertices' | 'edges' | 'adjacency' | 'geographic'>,
     reads: Reads,
@@ -221,6 +262,15 @@ export class Picking {
         edges.push({ batch, edge, a, b, spatial });
       }
     }
+    const extent = Math.max(maxX - minX, maxY - minY),
+      key = edges.flatMap(({ batch, a, b }) => [batch, ...placing(a), ...placing(b)]),
+      held = this.spacing;
+    if (
+      key.length !== held.key.length ||
+      key.some((k, i) => k !== held.key[i]) ||
+      (Number.isFinite(extent) && !(Math.abs(Math.log2(extent / held.extent)) < 0.25))
+    )
+      this.spacing = { key, extent, value: spacingOf(edges) };
     return new PickGeometry(
       vertices,
       edges,
@@ -228,11 +278,12 @@ export class Picking {
       byteLimit,
       geometry.adjacency,
       geometry.geographic,
+      this.spacing.value,
     );
   }
 }
 interface Hit {
-  readonly item: NetworkItem;
+  readonly item: Network.Item;
   readonly distance: number;
   /** 0 for vertices, which draw over edges, 1 for edges. */
   readonly kind: number;
@@ -287,6 +338,8 @@ export class PickGeometry {
     private readonly adjacency: Adjacency,
     /** Positions are longitude and latitude, whose edges a globe curves. */
     private readonly geographic: boolean,
+    /** How far apart joined vertices sit, in the data's units: the median edge's length. */
+    private readonly spacing: number,
     private readonly blend?: Blend,
   ) {}
   private lanes(data: NetworkData): ReadonlyMap<EdgeBank, Float32Array> {
@@ -354,6 +407,7 @@ export class PickGeometry {
       this.byteLimit,
       this.adjacency,
       this.geographic,
+      this.spacing,
       {
         from,
         rest,
@@ -462,7 +516,7 @@ export class PickGeometry {
     offset: number,
     projector: kit.Projector,
     height: number,
-    radiusPx?: number,
+    style?: MarkerStyle,
     marker = true,
   ): Projected & { radius: number; visible: boolean } {
     const cpu = this.vertices.get(bank)!,
@@ -474,10 +528,26 @@ export class PickGeometry {
       ...projected,
       visible: projected.visible && (!marker || visible),
       radius:
-        radiusPx === undefined || bank.synthetic || !visible
+        style === undefined || bank.synthetic || !visible
           ? 0
-          : this.radius(cpu, offset, radiusPx),
+          : this.markerRadius(
+              this.radius(cpu, offset, style.vertexRadiusPx),
+              projector.camera,
+              style,
+            ),
     };
+  }
+  /** How much markers shrink at a camera: while edges are too short on screen to hold them apart. */
+  markerFit(camera: ProjectedCamera, style: MarkerStyle): number {
+    const room = this.spacing * camera.scale * MARKER_ROOM;
+    return this.spacing > 0 && room < style.vertexRadiusPx ? room / style.vertexRadiusPx : 1;
+  }
+  /** A marker's radius at a camera, as the shader sizes it: fitted, never under the least the style allows unless its own is. */
+  markerRadius(radius: number, camera: ProjectedCamera, style: MarkerStyle): number {
+    return Math.max(
+      radius * this.markerFit(camera, style),
+      Math.min(radius, style.vertexMinRadiusPx),
+    );
   }
   /** A vertex marker's radius, mixed as positions are while a transition eases. */
   private radius(cpu: CpuBank, offset: number, radiusPx: number): number {
@@ -604,7 +674,7 @@ export class PickGeometry {
    * Whether hit tests at a projection query the indexes: always on a flat camera, which draws no
    * height; tilted or on the globe, while every row lies on the ground.
    */
-  indexed(projection: Projection, height: number): boolean {
+  indexed(projection: ProjectedCamera.Projection, height: number): boolean {
     if (!kit.PROJECTIONS[projection].pitched || !(height > 0)) return true;
     for (const cpu of this.vertices.values()) {
       const z = cpu.read.channels.z;
@@ -668,7 +738,7 @@ export class PickGeometry {
     options: Style,
     radius: number,
     limit: number,
-  ): readonly NetworkItem[] {
+  ): readonly Network.Item[] {
     // Each item's nearest piece, then the nearest items.
     const best = new Map<string, Hit>();
     for (const hit of this.hits(point, data, projector, height, options, radius, unchecked)) {
@@ -690,7 +760,7 @@ export class PickGeometry {
     options: Style,
     radius: number,
     check: () => void,
-  ): NetworkItem | null {
+  ): Network.Item | null {
     let best: Hit | undefined;
     for (const hit of this.hits(point, data, projector, height, options, radius, check))
       if (!best || compare(hit, best) < 0) best = hit;
@@ -716,7 +786,7 @@ export class PickGeometry {
           drawn += bank.count;
           for (const offset of near(cpu.spatial.index, bounds, bank.count, check)) {
             check();
-            const p = this.projected(bank, offset, projector, height, options.vertexRadiusPx);
+            const p = this.projected(bank, offset, projector, height, options);
             if (!p.visible) continue;
             let distance = options.markers
               ? Math.max(0, Math.hypot(point[0] - p.x, point[1] - p.y) - p.radius)
@@ -769,22 +839,8 @@ export class PickGeometry {
             ef.value,
             ef.offset,
           );
-          const a = this.projected(
-            batch.a.bank,
-            ao,
-            projector,
-            height,
-            options.vertexRadiusPx,
-            false,
-          );
-          const b = this.projected(
-            batch.b.bank,
-            bo,
-            projector,
-            height,
-            options.vertexRadiusPx,
-            false,
-          );
+          const a = this.projected(batch.a.bank, ao, projector, height, options, false);
+          const b = this.projected(batch.b.bank, bo, projector, height, options, false);
           for (const piece of this.stroke(
             batch,
             ao,
@@ -834,7 +890,7 @@ export class PickGeometry {
       }
   }
   locate(
-    item: NetworkItem,
+    item: Network.Item,
     data: NetworkData,
     projector: kit.Projector,
     height: number,
@@ -856,7 +912,7 @@ export class PickGeometry {
   }
   /** Where an edge's label centers: the middle of what it draws on screen, in its lane. */
   edgeAnchor(
-    item: NetworkItem,
+    item: Network.Item,
     data: NetworkData,
     projector: kit.Projector,
     height: number,

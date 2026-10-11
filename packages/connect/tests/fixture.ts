@@ -1,8 +1,8 @@
 import { WebSocketServer, type WebSocket } from 'ws';
 import { acceptModel, connectModel } from '../src/index.js';
 import { deferred } from '../src/core.js';
-import type { ConnectLimits, ConnectedModel, Connection } from '../src/types.js';
-import type { Model, Parameters, RowBatch, Schema } from '@latkit/model';
+import type { ConnectedModel, Connection } from '../src/types.js';
+import type { Schema, Model, Command, Data } from '@latkit/model';
 
 export const schema: Schema = {
   axis: { name: 'time' },
@@ -16,7 +16,7 @@ export const schema: Schema = {
   },
 };
 export const fields = [{ from: 'Node', select: ['value'] }] as const;
-export function batch(count = 8, value = 1): RowBatch {
+export function batch(count = 8, value = 1): Data.RowBatch {
   return {
     kind: 'rows',
     index: { source: 'test', type: 'Node', version: 'rows' },
@@ -61,9 +61,9 @@ export async function listen(
   };
 }
 /** A model of `schema` named "a model", connected over a real socket and accepted at the server. */
-export async function pair<const C extends Record<string, Parameters>>(
-  model: Omit<Model<C>, 'name' | 'schema'> & { readonly limits?: Partial<ConnectLimits> } = {},
-  host: { readonly limits?: Partial<ConnectLimits> } = {},
+export async function pair<const C extends Record<string, Command.Parameters>>(
+  model: Omit<Model<C>, 'name' | 'schema'> & { readonly limits?: Partial<Connection.Limits> } = {},
+  host: { readonly limits?: Partial<Connection.Limits> } = {},
   modelSchema: Schema = schema,
 ) {
   const accepted = deferred<ConnectedModel>();

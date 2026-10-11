@@ -1,6 +1,5 @@
-import type { ColumnPages } from './pages.js';
-import type { ColumnPage } from './materialized.js';
-import type { TextColumn } from './data.js';
+import type { Data } from './data.js';
+import type { Column } from './column.js';
 import { bitAt, rowCount } from './access.js';
 
 const encoder = new TextEncoder();
@@ -10,14 +9,14 @@ let scratch = new Uint8Array(256);
 /** Each ID's row, keyed by the UTF-8 bytes already in the ID pages: no string per row. As with a
  *  map, a later page wins a repeated ID, and null IDs are absent. */
 export class IdIndex {
-  private readonly pages: readonly ColumnPage[];
+  private readonly pages: readonly Data.Page[];
   /** Each page's first entry; the last is the entry count. */
   private readonly starts: Uint32Array;
   private readonly rows: Uint32Array;
   /** Entry + 1 per slot, 0 when empty; a power of two, at most half full. */
   private readonly slots: Uint32Array;
 
-  constructor(pages: ColumnPages) {
+  constructor(pages: Data.Pages) {
     this.pages = Array.from(pages);
     this.starts = new Uint32Array(this.pages.length + 1);
     this.pages.forEach((page, p) => (this.starts[p + 1] = this.starts[p] + rowCount(page.rows)));
@@ -27,7 +26,7 @@ export class IdIndex {
     this.slots = new Uint32Array(size);
     this.rows = new Uint32Array(count);
     this.pages.forEach((page, p) => {
-      const column = page.column as TextColumn,
+      const column = page.column as Column.Text,
         axis = page.rows;
       for (let i = 0, n = this.starts[p + 1] - this.starts[p]; i < n; i++) {
         const entry = this.starts[p] + i,
@@ -65,7 +64,7 @@ export class IdIndex {
       if (this.starts[middle] <= entry) low = middle;
       else high = middle - 1;
     }
-    const column = this.pages[low].column as TextColumn,
+    const column = this.pages[low].column as Column.Text,
       at = column.offset + entry - this.starts[low],
       from = column.offsets[at];
     if (column.offsets[at + 1] - from !== end - start) return false;

@@ -1,5 +1,5 @@
 import { bitAt, failure } from '@latkit/model';
-import type { Column, Index, RowAxis } from '@latkit/model';
+import type { Column, Index } from '@latkit/model';
 export function value(column: Column | undefined, row: number, component = 0): number {
   if (!column || row < 0 || row >= column.length) return NaN;
   const at = column.offset + row;
@@ -17,7 +17,7 @@ export function indexKey(index: Index): string {
 export class RowLookup<T> {
   private ranges: { offset: number; count: number; value: T }[] = [];
   private sparse = new Map<number, { value: T; offset: number }>();
-  add(rows: RowAxis, data: T): void {
+  add(rows: Index.Rows, data: T): void {
     if (rows.kind === 'range')
       this.ranges.push({ offset: rows.offset, count: rows.count, value: data });
     else

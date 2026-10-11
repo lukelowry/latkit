@@ -1,22 +1,10 @@
 import { failure } from '@latkit/model';
 import type { Viewport } from '../frame/render.js';
 import type { Point } from './view.js';
-export interface Modifiers {
-  readonly alt: boolean;
-  readonly control: boolean;
-  readonly meta: boolean;
-  readonly shift: boolean;
-}
-export interface ContextMenu<T> {
-  readonly point: Point;
-  readonly items: readonly T[];
-  readonly trigger: 'pointer' | 'keyboard';
-  readonly modifiers: Modifiers;
-}
-export type HoverState = 'off' | 'idle' | 'active' | 'moving' | 'budget';
+import type { ItemView } from './item-view.js';
 export function inputModifiers(
   event: Pick<MouseEvent, 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey'>,
-): Modifiers {
+): ItemView.Modifiers {
   return { alt: event.altKey, control: event.ctrlKey, meta: event.metaKey, shift: event.shiftKey };
 }
 /** Local CSS pixels, including axis-aligned CSS scaling and element borders. */

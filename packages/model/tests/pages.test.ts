@@ -7,14 +7,14 @@ import {
   locateSample,
   read,
   sampleFrames,
+  sampleRuns,
   textColumn,
   type Data,
-  type SampleBatch,
   type Schema,
 } from '../src/index.js';
-import { Sequence } from '../src/sequence.js';
-import { copyBuffers } from '../src/columns.js';
-import { resolveRows, samplePages } from '../src/read.js';
+import { Sequence } from '../src/data/sequence.js';
+import { copyBuffers } from '../src/data/columns.js';
+import { resolveRows, samplePages } from '../src/query/read.js';
 const index = { source: 'pages', type: 'node', version: 'rows' };
 const rows = { kind: 'range', offset: 0, count: 2 } as const;
 const schema: Schema = {
@@ -30,7 +30,7 @@ function batch(
   time: number,
   field = 'a',
   axis: { readonly kind: 'range'; readonly offset: number; readonly count: number } = rows,
-): SampleBatch {
+): Data.SampleBatch {
   return {
     kind: 'samples',
     index,
@@ -162,4 +162,21 @@ it('reports the frames a window covers, with context, in one index lookup', () =
     sampleFrames(pages, { kind: 'range', between: [15, 35], context: { before: 1, after: 1 } }),
   ).toEqual([0, 4]);
   expect(sampleFrames(pages, { kind: 'frames', offset: 2, count: 2 })).toEqual([2, 4]);
+});
+
+it('splits a window into runs of frames, apart where frames were never recorded', () => {
+  let data = createData(schema, [batch(0, 0)]);
+  for (const frame of [1, 2, 10, 11]) data = appendData(data, [batch(frame, frame)]);
+  const pages = data.tables.node.fields.a;
+  // Pages that follow one another join one run; a gap starts the next.
+  expect(sampleRuns(pages, { kind: 'range', between: [0, 11] })).toEqual([
+    [0, 3],
+    [10, 12],
+  ]);
+  expect(sampleRuns(pages, { kind: 'range', between: [1, 10] })).toEqual([
+    [1, 3],
+    [10, 11],
+  ]);
+  expect(sampleRuns(pages, { kind: 'range', between: [3, 9] })).toEqual([]);
+  expect(sampleRuns(pages, { kind: 'at', value: 11 })).toEqual([[11, 12]]);
 });

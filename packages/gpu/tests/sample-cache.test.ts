@@ -4,12 +4,11 @@ import {
   createData,
   textColumn,
   type Data,
-  type FieldsRequest,
-  type RowsBlock,
-  type RowsQuery,
-  type NumericColumn,
-  type SampleBatch,
   type Schema,
+  type Reader,
+  type Block,
+  type Query,
+  type Column,
 } from '@latkit/model';
 import { createGpu, type Gpu } from '../src/index.js';
 import { fieldScale, type GpuPage } from '../src/kit.js';
@@ -36,7 +35,7 @@ function samples(
   firstFrame: number,
   coordinates: number[],
   values: number[],
-): SampleBatch {
+): Data.SampleBatch {
   return {
     kind: 'samples',
     index,
@@ -70,9 +69,9 @@ function data() {
     samples('b', 20, [0.5, 2], [10, 20, 30, 40]),
   ]);
 }
-async function collect(gpu: Gpu, source: Data, query: RowsQuery): Promise<RowsBlock[]> {
+async function collect(gpu: Gpu, source: Data, query: Query.Rows): Promise<Block.Rows[]> {
   const reads = gpu.reader.open(),
-    blocks: RowsBlock[] = [];
+    blocks: Block.Rows[] = [];
   try {
     for await (const block of reads.read(source, query)) blocks.push(block);
   } finally {
@@ -80,9 +79,9 @@ async function collect(gpu: Gpu, source: Data, query: RowsQuery): Promise<RowsBl
   }
   return blocks;
 }
-function numbers(blocks: RowsBlock[], name: string) {
+function numbers(blocks: Block.Rows[], name: string) {
   return blocks.flatMap((block) => {
-    const column = block.columns[name] as NumericColumn;
+    const column = block.columns[name] as Column.Numeric;
     return Array.from(column.values.subarray(column.offset, column.offset + column.length));
   });
 }
@@ -120,7 +119,7 @@ it.each(['indexed', 'discovered', 'ids'] as const)(
           : undefined;
     const pages: GpuPage[][] = [];
     const read = async (at: number) => {
-      const request: FieldsRequest = {
+      const request: Reader.FieldsRequest = {
         source,
         from: 'node',
         rows: selected,
@@ -256,7 +255,7 @@ it('does not share field results or domains across distinct data using the same 
               rows: { ...rows, index },
               fields: { value: 'a' },
             })) {
-              const column = native.columns.value as NumericColumn;
+              const column = native.columns.value as Column.Numeric;
               expect(
                 Array.from(column.values.subarray(column.offset, column.offset + column.length)),
               ).toEqual(expected);
@@ -359,7 +358,7 @@ it.each([false, true])(
             rows,
             firstFrame: 0,
             coordinates: Float64Array.of(0),
-            columns: columns as SampleBatch['columns'],
+            columns: columns as Data.SampleBatch['columns'],
           }
         : { kind: 'rows', index, rows, columns },
     ]);

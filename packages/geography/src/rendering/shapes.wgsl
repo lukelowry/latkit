@@ -121,6 +121,9 @@ struct Stroke {
   /** Its comets: their speed, how far they have moved, and their heads' radius, in CSS pixels. */
   @location(6) @interpolate(flat) flow: vec3f,
   @location(7) @interpolate(flat) row: u32,
+  /** A focused line's glow: its tint, and how far it reaches past the stroke, in CSS pixels. */
+  @location(8) @interpolate(flat) glow: vec4f,
+  @location(9) @interpolate(flat) reach: f32,
 }
 /** A vertex's clip position. */
 fn clipOf(v: u32) -> vec4f {
@@ -183,14 +186,15 @@ fn pixels(c: vec4f) -> vec2f { return c.xy / max(c.w, 0.000001) * 0.5 * scene.pr
     }
   } else if (has == 1u) { normal = vec2f(-a.y, a.x); }
   else if (has == 2u) { normal = vec2f(-b.y, b.x); }
-  var width = look.width;
-  if (look.focus != 0u) { width += 2.0; }
+  let width = look.width;
+  // Hover and the selection glow past the stroke, as far as their widths reach, as in every view.
+  let glow = select(0.0, select(u.glow.x, u.glow.y, look.focus == 2u), look.focus != 0u);
   let half = max(width * 0.5, 0.5);
   // A pixel beyond the stroke on each side, which the fragment fades for antialiasing, and as far
   // as a flowing line's comets' heads.
   let head = max(half * 1.6, 2.0);
   let flowing = look.flow != 0.0 && u.motion.x > 0.0;
-  let reach = select(half, max(half, head), flowing) + 1.0;
+  let reach = select(half, max(half, head), flowing) + glow + 1.0;
   let offset = normal * side * reach * stretch;
   out.position = vec4f(c.xy + offset * 2.0 / scene.projection.view.xy * c.w, c.z, c.w);
   out.across = vec2f(side * reach, half);
@@ -208,6 +212,8 @@ fn pixels(c: vec4f) -> vec2f { return c.xy / max(c.w, 0.000001) * 0.5 * scene.pr
   let moved = look.flow * u.motion.y;
   out.flow = vec3f(select(0.0, look.flow, flowing), moved - spacing * floor(moved / spacing), head);
   out.row = row;
+  out.reach = glow;
+  out.glow = select(select(u.selected, look.color, u.selected.a < 0.0), u.hover, look.focus == 1u);
   return out;
 }
 @fragment fn line_fragment(v: Stroke) -> @location(0) vec4f {
@@ -220,8 +226,11 @@ fn pixels(c: vec4f) -> vec2f { return c.xy / max(c.w, 0.000001) * 0.5 * scene.pr
   if (v.flow.x != 0.0) {
     comets = stroke_comet(v.along, v.across.x, v.row, v.flow.x, v.flow.y, v.flow.z, u.motion.x, aa) * u.flow.a;
   }
-  // The line and its comets, in its shade.
+  // The line and its comets, in its shade, over a focused line's glow.
   let color = vec4f(mix(v.color.rgb, u.flow.rgb, comets), mix(v.color.a, 1.0, comets));
   let px = v.position.xy / scene.projection.view.z;
-  return outputColor(shade(ShadeFragment(color, px, v.shade)), max(line, comets));
+  let drawn = outputColor(shade(ShadeFragment(color, px, v.shade)), max(line, comets));
+  if (v.reach <= 0.0) { return drawn; }
+  let glow = outputColor(v.glow, glowAlpha(abs(v.across.x) - v.across.y, v.reach));
+  return drawn + glow * (1.0 - drawn.a);
 }

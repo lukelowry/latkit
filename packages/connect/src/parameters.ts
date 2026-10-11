@@ -1,13 +1,5 @@
 import { failure, validateSelection } from '@latkit/model';
-import type {
-  Arguments,
-  CommandDescription,
-  FieldSelection,
-  Parameter,
-  Parameters,
-  Schema,
-  DataBatch,
-} from '@latkit/model';
+import type { Schema, Command, Query, Data } from '@latkit/model';
 import { checkTree } from './frame.js';
 import { integer, record, text } from './core.js';
 
@@ -15,7 +7,7 @@ export function definitions(
   input: unknown,
   schema: Schema,
   bound: number,
-): Readonly<Record<string, CommandDescription>> {
+): Readonly<Record<string, Command.Description>> {
   checkTree(input, bound);
   const commands = record(input);
   for (const [name, value] of Object.entries(commands)) {
@@ -60,12 +52,17 @@ export function definitions(
         (!Array.isArray(p.accept) || p.accept.some((v) => typeof v !== 'string'))
       )
         throw failure('invalid-input', 'Invalid file accept list.');
-      if (p.default !== undefined) parameter(p as unknown as Parameter, p.default, (file) => file);
+      if (p.default !== undefined)
+        parameter(p as unknown as Command.Parameter, p.default, (file) => file);
     }
   }
-  return commands as unknown as Readonly<Record<string, CommandDescription>>;
+  return commands as unknown as Readonly<Record<string, Command.Description>>;
 }
-function parameter(p: Parameter, input: unknown, file: (value: unknown) => unknown): unknown {
+function parameter(
+  p: Command.Parameter,
+  input: unknown,
+  file: (value: unknown) => unknown,
+): unknown {
   const scalar = (value: unknown): unknown => {
     if (p.type === 'number') {
       if (
@@ -109,10 +106,10 @@ function parameter(p: Parameter, input: unknown, file: (value: unknown) => unkno
   return scalar(input);
 }
 export function argumentsOf(
-  parameters: Parameters,
+  parameters: Command.Parameters,
   input: unknown,
   body?: Uint8Array,
-): Arguments<Parameters> {
+): Command.Arguments<Command.Parameters> {
   const supplied = record(input),
     result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   let fileBytes = 0;
@@ -152,11 +149,11 @@ export function argumentsOf(
       result[name] = undefined;
     } else result[name] = parameter(definition, value, file);
   }
-  return Object.freeze(result) as Arguments<Parameters>;
+  return Object.freeze(result) as Command.Arguments<Command.Parameters>;
 }
 /** Files are bounded command attachments, not arbitrary serializable stream objects. */
 export async function encodeArguments(
-  parameters: Parameters,
+  parameters: Command.Parameters,
   values: Readonly<Record<string, unknown>>,
   maxBytes: number,
   signal: AbortSignal,
@@ -207,7 +204,7 @@ export async function encodeArguments(
     if (value !== undefined) result[key] = await encode(value);
   return { values: result, chunks };
 }
-export function selections(value: unknown, schema: Schema): readonly FieldSelection[] {
+export function selections(value: unknown, schema: Schema): readonly Query.Selection[] {
   if (!Array.isArray(value) || value.length > 256)
     throw failure('invalid-input', 'Expected bounded field selections.');
   for (const item of value) {
@@ -220,13 +217,13 @@ export function selections(value: unknown, schema: Schema): readonly FieldSelect
     const issues = validateSelection(schema, item);
     if (issues.length) throw failure('invalid-input', issues[0].message);
   }
-  return value as FieldSelection[];
+  return value as Query.Selection[];
 }
 
 /** Compile field demand once; each publication checks only its own column names. */
 export function demanded(
-  fields: readonly FieldSelection[],
-): (batches: DataBatch | readonly DataBatch[]) => void {
+  fields: readonly Query.Selection[],
+): (batches: Data.Batch | readonly Data.Batch[]) => void {
   const selected = new Map<string, Set<string>>();
   for (const field of fields) {
     let names = selected.get(field.from);
@@ -234,7 +231,7 @@ export function demanded(
     for (const name of field.select) names.add(name);
   }
   return (input) => {
-    for (const batch of (Array.isArray(input) ? input : [input]) as readonly DataBatch[]) {
+    for (const batch of (Array.isArray(input) ? input : [input]) as readonly Data.Batch[]) {
       const names = selected.get(batch.index.type);
       if (!names || Object.keys(batch.columns).some((name) => !names.has(name)))
         throw failure('invalid-input', 'Publication contains unrequested fields.');

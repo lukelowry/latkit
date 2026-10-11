@@ -1,9 +1,9 @@
 import { failure } from '@latkit/model';
 import { deferred, errorOf, interrupt } from './core.js';
-import type { ConnectLimits, WebSocketLike } from './types.js';
+import type { Connection } from './types.js';
 
 /** A WebSocket to exactly `url`, offering `subprotocol`. The platform turns HTTP(S) into WS(S). */
-export function dial(url: string | URL, subprotocol: string): WebSocketLike {
+export function dial(url: string | URL, subprotocol: string): Connection.Socket {
   try {
     return new WebSocket(url, subprotocol);
   } catch (error) {
@@ -42,9 +42,9 @@ export class Socket {
     if (!this.#stopped) this.ended(error);
   };
   constructor(
-    private readonly peer: WebSocketLike,
+    private readonly peer: Connection.Socket,
     private readonly subprotocol: string,
-    private readonly getBounds: () => ConnectLimits,
+    private readonly getBounds: () => Connection.Limits,
     private readonly receive: (bytes: Uint8Array) => void,
     private readonly ended: (error: Error) => void,
   ) {
@@ -56,7 +56,7 @@ export class Socket {
     if (peer.readyState === 1) queueMicrotask(this.#open);
     else if (peer.readyState > 1) queueMicrotask(this.#end);
   }
-  private get bounds(): ConnectLimits {
+  private get bounds(): Connection.Limits {
     return this.getBounds();
   }
   async waitForCapacity(bytes: number, signal: AbortSignal): Promise<void> {

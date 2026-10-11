@@ -1,24 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  kit,
-  type Gpu,
-  type Point,
-  type TextLayout,
-  type TextLayoutInput,
-  type Viewport,
-} from '@latkit/gpu';
+import { kit, type Gpu, type Point, type Viewport } from '@latkit/gpu';
 import type { Domain } from '@latkit/model';
 import { axes, plot } from '../src/axes.js';
 import { resolveStyle, VIEW_DEFAULTS } from '../src/config.js';
-import type { MonitorStyle } from '../src/options.js';
 import { ticks } from '../src/ticks.js';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
-
+import type { Monitor } from '../src/monitor.js';
 // The WebGPU usage flags text pages are made with.
 beforeEach(() => void fakeDevice());
 
 /** Text 0.6 of its size wide a character, as a monospace face lays it. */
-const layoutText = (input: TextLayoutInput): Promise<TextLayout> => {
+const layoutText = (input: kit.TextLayoutInput): Promise<kit.TextLayout> => {
   const size = input.size ?? 12;
   return Promise.resolve({
     runs: [
@@ -37,14 +29,14 @@ const gpu = { layoutText } as unknown as Gpu,
   // The default font size and padding.
   size = 12,
   pad = 12;
-const style = (config: MonitorStyle) =>
+const style = (config: Monitor.Style) =>
   resolveStyle(config, kit.resolveViewStyle({}, VIEW_DEFAULTS));
 interface Shown {
   readonly text: string;
   readonly box: kit.Bounds2D;
 }
 /** What the axes draw over a window and values: the plot, line counts, and each text by key. */
-async function draw(config: MonitorStyle, x: Domain = [0, 10], y: Domain = [0, 1]) {
+async function draw(config: Monitor.Style, x: Domain = [0, 10], y: Domain = [0, 1]) {
   const bank = new kit.TextBank({ label: 'axes' }),
     add = vi.spyOn(bank, 'add'),
     drawn = await axes(gpu, view, x, y, style(config), new AbortController().signal, bank);
@@ -61,7 +53,7 @@ const overlaps = (a: kit.Bounds2D, b: kit.Bounds2D) =>
 
 describe('axes', () => {
   it('leave room only for what they write, whatever the window', async () => {
-    const area = (config: MonitorStyle) => plot(view, style(config)),
+    const area = (config: Monitor.Style) => plot(view, style(config)),
       column = Math.max(64, size * 7);
     // Tick labels below and beside the plot.
     expect(area({})).toEqual({
@@ -149,7 +141,7 @@ describe('axes', () => {
   });
 
   it('outline the sides of the plot its axes leave open', async () => {
-    const lines = async (config: MonitorStyle) => {
+    const lines = async (config: Monitor.Style) => {
       const drawn = await draw(config),
         values = new Float32Array(
           drawn.lines.bytes.buffer,

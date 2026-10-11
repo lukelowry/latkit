@@ -1,5 +1,5 @@
 import { failure, textAt, bitAt, assertIndex, rowAt, rowCount, type Data } from '@latkit/model';
-import { type Gpu, kit, type Labels as LabelOptions, type TextLayout } from '@latkit/gpu';
+import { type Gpu, kit, type Labels as LabelOptions } from '@latkit/gpu';
 import type { NetworkData } from '../data.js';
 import {
   edgeOptions,
@@ -25,7 +25,7 @@ interface Entry {
   revision: number;
   source: Data;
   /** Each row's text, laid out once. */
-  layouts: Map<number, TextLayout>;
+  layouts: Map<number, kit.TextLayout>;
   /** The rows' runs, laid into pages once; each frame moves and hides only their anchors. */
   bank: kit.TextBank;
 }
@@ -177,7 +177,7 @@ export class Labels {
               height,
               style,
             )
-          : picking.projected(bank, offset, projector, height, style.vertexRadiusPx);
+          : picking.projected(bank, offset, projector, height, style);
         if (
           !p?.visible ||
           p.x < 0 ||

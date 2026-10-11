@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gauge, icon, pie, pulse, shape, type MarkerImage } from '../src/index.js';
+import { gauge, icon, pie, pulse, shape, type Marker } from '../src/index.js';
 import { kit } from '../src/index.js';
 
 /** The failure code a call throws, or undefined when it returns. */
@@ -12,12 +12,12 @@ function codeOf(call: () => unknown): string | undefined {
   return undefined;
 }
 /** Decoded pixels, as an `ImageData` holds them. */
-const pixels = (width: number, height: number, rgba: readonly number[]): MarkerImage =>
+const pixels = (width: number, height: number, rgba: readonly number[]): Marker.Image =>
   ({
     width,
     height,
     data: Uint8ClampedArray.from({ length: width * height * 4 }, (_, i) => rgba[i % 4]!),
-  }) as unknown as MarkerImage;
+  }) as unknown as Marker.Image;
 
 describe('markers', () => {
   it('draws the shared shapes and markers by code, in CSS pixels', () => {
@@ -63,7 +63,7 @@ describe('markers', () => {
       'invalid-input',
     );
     expect(
-      codeOf(() => kit.checkMarker({ wgsl, images: [{ width: 0, height: 1 } as MarkerImage] })),
+      codeOf(() => kit.checkMarker({ wgsl, images: [{ width: 0, height: 1 } as Marker.Image] })),
     ).toBe('invalid-input');
     expect(codeOf(() => gauge({ fill: 'x', ringPx: -1 }))).toBe('invalid-input');
     expect(codeOf(() => shape('star' as 'ellipse'))).toBe('invalid-input');
@@ -113,7 +113,7 @@ describe('markers', () => {
   });
 
   it('pulses rows with a positive shade, every frame', () => {
-    const shade = pulse({ periodMs: 1000, strength: 0.5, color: [1, 0, 0] }),
+    const shade = pulse({ periodMs: 1000, color: [1, 0, 0, 0.5] }),
       parameters = new Float32Array(64);
     expect(shade.wgsl).toContain('fn shade(f: ShadeFragment) -> vec4f');
     expect(
@@ -123,9 +123,9 @@ describe('markers', () => {
         viewport: { width: 1, height: 1, pixelRatio: 1 },
       }),
     ).toBe(true);
-    expect([...parameters.subarray(0, 8)]).toEqual([1000, 0.5, 0, 0, 1, 0, 0, 1]);
+    expect([...parameters.subarray(0, 8)]).toEqual([1000, 0, 0, 0, 1, 0, 0, 0.5]);
     expect(codeOf(() => pulse({ periodMs: 0 }))).toBe('invalid-input');
-    expect(codeOf(() => pulse({ strength: 2 }))).toBe('invalid-input');
-    expect(codeOf(() => pulse({ color: [2, 0, 0] }))).toBe('invalid-input');
+    expect(codeOf(() => pulse({ color: [1, 0, 0, 2] }))).toBe('invalid-input');
+    expect(codeOf(() => pulse({ color: [2, 0, 0, 1] }))).toBe('invalid-input');
   });
 });

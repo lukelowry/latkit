@@ -4,13 +4,12 @@ import {
   validateBlock,
   validateQuery,
   type Domain,
-  type SampleWindow,
-  type SamplesQuery,
-  type SamplesBlock,
+  type Query,
+  type Block,
 } from '../src/index.js';
 import { schema, index } from './data.js';
 import { sampledData, collect } from './fixture.js';
-const samples = (window: SampleWindow): SamplesQuery => ({
+const samples = (window: Query.Window): Query.Samples => ({
   kind: 'samples',
   from: 'Node',
   select: ['output'],
@@ -58,7 +57,7 @@ describe('range context validation', () => {
     ).not.toEqual([]);
   });
   it('bounds context per tile while retaining ordinary range validation', () => {
-    const block = (values: number[]): SamplesBlock => ({
+    const block = (values: number[]): Block.Samples => ({
       kind: 'samples',
       index,
       rows: { kind: 'range', offset: 0, count: 1 },
@@ -110,7 +109,7 @@ describe('local coordinate selection', () => {
   ];
   it.each(cases)('selects context for %j / %j', async (between, context, expected) => {
     const data = sampledData([0, 2, 2, 5, 8]),
-      window: SampleWindow = {
+      window: Query.Window = {
         kind: 'range',
         between,
         ...(context === undefined ? {} : { context }),

@@ -31,6 +31,9 @@ struct Uniforms {
   /** The vertex hover grows, and the one it left, by dense address; how far each has grown. */
   grown: vec2u,
   growth: vec2f,
+  /** How much markers shrink at this zoom, and the least radius they shrink to, in CSS pixels. */
+  markerFit: f32,
+  vertexMinRadiusPx: f32,
 }
 /** How far toward the camera a focused row draws: over its neighbors, never past the globe. */
 const FOCUS_LIFT: f32 = 0.00002;
@@ -42,6 +45,6 @@ fn project_world(p: vec3f, u: Uniforms) -> vec4f { return projection_clip(p, pro
 fn globePoint(ndc: vec2f, u: Uniforms) -> vec4f { return projection_globe_hit(ndc, projectionOf(u)); }
 /** A billboard's depth at a fragment, never behind the globe's surface under it. */
 fn billboardDepth(position: vec4f, u: Uniforms) -> f32 {
-  return projection_billboard_depth(position, projectionOf(u));
+  return projection_billboard_depth(position, projectionOf(u), 0.0);
 }
 fn daylight(normal: vec3f, u: Uniforms) -> f32 { return projection_daylight(normal, u.light); }

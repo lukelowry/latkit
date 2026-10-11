@@ -1,18 +1,17 @@
-import type { Schema, FieldDefinition } from '../schema.js';
-import type { Problem } from '../types.js';
+import type { Schema } from '../schema/schema.js';
 import { Check, index, kinds, numeric, own } from './check.js';
 import type { Path } from './check.js';
 import { domainValue } from './schema.js';
-
+import type { Failure } from '../failure.js';
 export function fieldsOf(
   schema: Schema,
   name: string,
-): Readonly<Record<string, FieldDefinition>> | undefined {
+): Readonly<Record<string, Schema.Field>> | undefined {
   if (own(schema.types, name)) return schema.types[name].fields;
 }
 
 /** Validate request shape and described capabilities. Identity existence/staleness is source-owned. */
-export function validateQuery(schema: Schema, value: unknown): readonly Problem[] {
+export function validateQuery(schema: Schema, value: unknown): readonly Failure.Problem[] {
   const c = new Check();
   const q = c.object(value, []);
   if (!c.enum(q.kind, kinds, ['kind'])) return c.issues;

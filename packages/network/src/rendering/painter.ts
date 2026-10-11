@@ -1,13 +1,6 @@
-import {
-  kit,
-  type Gpu,
-  type Marker,
-  type MarkerImage,
-  type ProjectedCamera,
-  type RGBA,
-} from '@latkit/gpu';
+import { kit, type Gpu, type Marker, type ProjectedCamera, type RGBA } from '@latkit/gpu';
 import { failure, rowCount } from '@latkit/model';
-import { networkKey, type NetworkData, type NetworkItem } from '../data.js';
+import { networkKey, type NetworkData } from '../data.js';
 import {
   curvedAt,
   edgeOptions,
@@ -23,7 +16,7 @@ import { lineColor, type Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
 import { DISC, linePipeline, markerPipeline, type Pipelines } from './pipelines.js';
-
+import type { Network } from '../network.js';
 /** Bytes of a page's uniform slot: its header and seven channels, or a marker's eight inputs. */
 const SLOT = 256;
 const SLOT_WORDS = SLOT / 4;
@@ -56,7 +49,7 @@ function focusRuns(instances: readonly number[]): Focused | undefined {
   }
   return out.length > RANGES ? 'all' : out;
 }
-const sameHover = (a: NetworkItem | null, b: NetworkItem | null) =>
+const sameHover = (a: Network.Item | null, b: Network.Item | null) =>
   a === b || (!!a && !!b && networkKey(a) === networkKey(b));
 /** Words of the uniforms' members, as `Uniforms` lays them out: the scene block first. */
 const U = {
@@ -77,6 +70,8 @@ const U = {
   labelHaloPx: 61,
   grown: 62,
   growth: 64,
+  markerFit: 66,
+  vertexMinRadiusPx: 67,
   words: 68,
 } as const;
 /** An edge's private bends and junctions draw no markers. */
@@ -125,8 +120,8 @@ export interface DrawFrame {
   readonly geometry: Geometry;
   readonly reads: Reads;
   /** Replaced whenever it changes. */
-  readonly selection: readonly NetworkItem[];
-  readonly hover: NetworkItem | null;
+  readonly selection: readonly Network.Item[];
+  readonly hover: Network.Item | null;
   readonly height: number;
   readonly pipelines: Pipelines;
   /** This frame's shade uniforms. */
@@ -136,6 +131,8 @@ export interface DrawFrame {
   readonly records: Records;
   /** Whether flow moves and hover grows over time; false under reduced motion. */
   readonly motion: boolean;
+  /** How much markers shrink at this frame's zoom, as picking sizes them. */
+  readonly markerFit: number;
   /**
    * A transition in progress: how much of what was drawn as it began still shows, from 1 to 0, and
    * whether it begins with this frame.
@@ -172,10 +169,18 @@ interface Tessellation {
   readonly count: number;
 }
 /**
- * Pieces every curved draw has room for past one per segment, beside a quarter more: enough for a
- * few curves split as finely as they go.
+ * Pieces every curved draw has room for past one per segment, beside what its curves asked for last:
+ * enough for a few curves split as finely as they go.
  */
 const POOL_PIECES = 256;
+/** How far past what a curved draw asked for its next pool reaches, so a zoom grows it seldom. */
+const POOL_HEADROOM = 1.25;
+/** A curved draw's batch and role, which its pieces' feedback reports for, and the pool it had. */
+interface CurveDraw {
+  readonly batch: SegmentBatch;
+  readonly role: 'scene' | 'focus';
+  readonly pool: number;
+}
 /** Curve pieces a buffer grows by, so a focused span coming and going makes nothing again. */
 const PIECE_STEP = 16384;
 /** What a curved draw's segments read, as `Curves.flags` and `EdgeDraw.flags` hold it. */
@@ -228,6 +233,9 @@ export interface Paint {
     readonly finish: GPUBindGroup;
     readonly records: number;
     readonly indirect: GPUBuffer;
+    /** What each curved draw asked for, read back to size its next pool, in record order. */
+    readonly wanted: GPUBuffer;
+    readonly draws: readonly CurveDraw[];
   };
   readonly drawCalls: number;
 }
@@ -245,7 +253,7 @@ export class Painter {
   /** The banks whose snapshots hold what the transition in progress eases from. */
   private eased: ReadonlySet<object> = new Set();
   /** Each marker's images, laid into an atlas once. */
-  private readonly atlases = new WeakMap<readonly MarkerImage[], kit.TextureData>();
+  private readonly atlases = new WeakMap<readonly Marker.Image[], kit.TextureData>();
   private readonly noImages = new kit.TextureData({ width: 1, height: 1, format: 'rgba8unorm' });
   private readonly sampler: GPUSampler;
   private readonly attachments: kit.Attachments;
@@ -257,8 +265,8 @@ export class Painter {
   private focusedRows: readonly number[] = [];
   private focused?: {
     readonly geometry: Geometry;
-    readonly selection: readonly NetworkItem[];
-    readonly hover: NetworkItem | null;
+    readonly selection: readonly Network.Item[];
+    readonly hover: Network.Item | null;
     readonly options: Style;
   };
   /** Each routed batch's dash prefixes, uploaded once. */
@@ -272,9 +280,14 @@ export class Painter {
   private curves?: {
     readonly pieces: kit.BufferResource;
     readonly taken: kit.BufferResource;
+    readonly wanted: kit.BufferResource;
     readonly indirect: kit.BufferResource;
     readonly rooms: kit.BufferData;
   };
+  /** Pieces past one per segment each batch's curved draws asked for, as the GPU last counted them. */
+  private readonly demand = new WeakMap<SegmentBatch, { scene?: number; focus?: number }>();
+  /** What the GPU counted reaches the painter a frame or two late, without stalling one. */
+  private readonly feedback: kit.Feedback<readonly CurveDraw[]>;
   /**
    * Every page's uniform slot, written here each frame and held in chunks of one binding's size,
    * so a frame uploads only the words that changed.
@@ -290,7 +303,26 @@ export class Painter {
   private shrink: Growth = { dense: NONE, since: 0, from: 0 };
   /** Whether hover is still growing or letting go of a vertex, as of the latest presented frame. */
   growing = false;
-  constructor(private readonly gpu: Gpu) {
+  /** `overflowed` asks for another frame, once a curved draw asked for more than its pool held. */
+  constructor(
+    private readonly gpu: Gpu,
+    private readonly overflowed: () => void,
+  ) {
+    this.feedback = new kit.Feedback(
+      gpu,
+      (words, draws) => {
+        let short = false;
+        draws.forEach(({ batch, role, pool }, i) => {
+          const asked = words[i] ?? 0,
+            known = this.demand.get(batch) ?? {};
+          known[role] = asked;
+          this.demand.set(batch, known);
+          if (asked > pool) short = true;
+        });
+        if (short) this.overflowed();
+      },
+      'network curve demand',
+    );
     this.attachments = new kit.Attachments(gpu);
     this.dummy = gpu.buffer({
       size: 80,
@@ -381,6 +413,12 @@ export class Painter {
           ),
           // Zeroed as made, and emptied by each frame's count after.
           taken: buffer(grown(records, 64) * 4, GPUBufferUsage.STORAGE, 'network curve pools'),
+          // Read back after each frame's tessellation, then cleared.
+          wanted: buffer(
+            grown(records, 64) * 4,
+            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+            'network curve demand',
+          ),
           indirect: buffer(
             grown(records, 64) * 16,
             GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT,
@@ -399,6 +437,7 @@ export class Painter {
   private destroyCurves(): void {
     this.curves?.pieces.destroy();
     this.curves?.taken.destroy();
+    this.curves?.wanted.destroy();
     this.curves?.indirect.destroy();
     this.curves = undefined;
   }
@@ -432,25 +471,27 @@ export class Painter {
     const copies: { from: GPUBuffer; to: GPUBuffer }[] = [],
       clears: GPUBuffer[] = [],
       eased = new Set<object>();
-    try {
-      for (const [bank, output] of outputs) {
-        let into = this.previous.get(bank);
-        if (!into) {
-          into = this.gpu.buffer({
-            size: output.buffer.size,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-            label: 'network transition start',
-          });
-          this.previous.set(bank, into);
-        }
-        if (start && !made.has(bank)) copies.push({ from: output.buffer, to: into.buffer });
-        else if (start || made.has(bank) || !this.eased.has(bank)) clears.push(into.buffer);
-        eased.add(bank);
-      }
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'resource-limit') throw error;
+    // The snapshots are work the change can do without: it eases only while they fit the budget.
+    let needed = 0;
+    for (const [bank, output] of outputs)
+      if (!this.previous.has(bank)) needed += output.buffer.size;
+    if (needed && this.gpu.stats().gpuBytes + needed > this.gpu.budget.gpuBytes) {
       this.release();
       return undefined;
+    }
+    for (const [bank, output] of outputs) {
+      let into = this.previous.get(bank);
+      if (!into) {
+        into = this.gpu.buffer({
+          size: output.buffer.size,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          label: 'network transition start',
+        });
+        this.previous.set(bank, into);
+      }
+      if (start && !made.has(bank)) copies.push({ from: output.buffer, to: into.buffer });
+      else if (start || made.has(bank) || !this.eased.has(bank)) clears.push(into.buffer);
+      eased.add(bank);
     }
     return { copies, clears, eased };
   }
@@ -573,6 +614,8 @@ export class Painter {
     const [grown, left, growth, shrink] = this.growth(state, timeMs, presented);
     u.set([grown, left], U.grown);
     f.set([growth, shrink], U.growth);
+    f[U.markerFit] = state.markerFit;
+    f[U.vertexMinRadiusPx] = options.vertexMinRadiusPx;
     this.updateFocus(state);
     const focusedBinding = frame.buffer(this.focus);
     const uniform = frame.uniforms(f),
@@ -736,13 +779,18 @@ export class Painter {
       for (let i = lo; i < rows.length && rows[i] < base + count; i++) out.push(rows[i] - base);
       return out;
     };
-    // Each edge batch's draw, and a curved one's region of the pieces: one per segment, then its pool.
-    const rooms: number[] = [];
+    // Each edge batch's draw, and a curved one's region of the pieces: one per segment, then a pool
+    // as large as its curves asked for last, or a quarter more until they have.
+    const rooms: number[] = [],
+      draws: CurveDraw[] = [];
     let pieces = 0;
-    const region = (count: number) => {
-      const room = count + Math.ceil(count / 4) + POOL_PIECES,
+    const region = (batch: SegmentBatch, role: CurveDraw['role'], count: number) => {
+      const asked = this.demand.get(batch)?.[role] ?? count / 4,
+        pool = Math.ceil(asked * POOL_HEADROOM) + POOL_PIECES,
+        room = count + pool,
         found = { record: rooms.length / 2, base: pieces, room };
       rooms.push(count, room);
+      draws.push({ batch, role, pool });
       pieces += room;
       return found;
     };
@@ -771,7 +819,10 @@ export class Painter {
           straight,
           // A curve's pieces come from its tessellation, so its focused span tessellates alone.
           curve: curved
-            ? { scene: region(count), focus: span ? region(span) : undefined }
+            ? {
+                scene: region(batch, 'scene', count),
+                focus: span ? region(batch, 'focus', span) : undefined,
+              }
             : undefined,
         };
       });
@@ -833,7 +884,8 @@ export class Painter {
         focus: runs && { pipeline: await markerPipeline(pipeline, marker, 'focus'), runs },
       });
     }
-    const takenBinding = curves && frame.buffer(curves.taken);
+    const takenBinding = curves && frame.buffer(curves.taken),
+      wantedBinding = curves && frame.buffer(curves.wanted);
     for (const { bank, batch, count, focused, dashed, straight, curve } of plans) {
       const a = bound.get(batch.a)!.output,
         b = bound.get(batch.b)!.output,
@@ -863,6 +915,7 @@ export class Painter {
               { binding: 3, resource: segments },
               { binding: 4, resource: piecesBinding },
               { binding: 5, resource: takenBinding! },
+              { binding: 9, resource: wantedBinding! },
               {
                 binding: 6,
                 resource: kept(batch, role + ' curves', [
@@ -938,6 +991,8 @@ export class Painter {
         tessellations,
         records: rooms.length / 2,
         indirect: curves.indirect.buffer,
+        wanted: curves.wanted.buffer,
+        draws,
         finish: gpu.device.createBindGroup({
           layout: pipeline.finishing,
           entries: [
@@ -987,7 +1042,7 @@ export class Painter {
       return;
     const next = new Map<number, number>(),
       adjacency = native.adjacency;
-    const mark = (item: NetworkItem, level: number) => {
+    const mark = (item: Network.Item, level: number) => {
       const dense = adjacency.address(item);
       if (dense === undefined) return;
       const word = dense >>> 4,
@@ -996,7 +1051,7 @@ export class Painter {
       if (((bits >>> shift) & 3) < level)
         next.set(word, ((bits & ~(3 << shift)) | (level << shift)) >>> 0);
     };
-    const focus = (item: NetworkItem, level: number) => {
+    const focus = (item: Network.Item, level: number) => {
       mark(item, level);
       if (item.kind === 'edge' && (level === SELECTED ? options.selectedEnds : options.hoverEnds))
         for (const vertex of adjacency.neighborhood(item, data))
@@ -1075,6 +1130,11 @@ export class Painter {
       compute.dispatchWorkgroups(Math.ceil(curves.records / 64));
     }
     compute.end();
+    // What the curves asked for, read back to size their next pools, then cleared for the next frame.
+    if (curves) {
+      this.feedback.encode(frame.encoder, curves.wanted, curves.records * 4, curves.draws);
+      frame.encoder.clearBuffer(curves.wanted, 0, curves.records * 4);
+    }
     const pass = frame.encoder.beginRenderPass({
       label: 'network',
       colorAttachments: [
@@ -1171,7 +1231,15 @@ export class Painter {
           map.delete(key);
         }
   }
+  /** The frame was submitted: what its curves asked for reads back. */
+  submitted(): void {
+    this.feedback.submitted();
+  }
+  discard(): void {
+    this.feedback.discard();
+  }
   destroy(): void {
+    this.feedback.destroy();
     this.chunks.length = 0;
     for (const map of [this.buffers, this.previous]) {
       for (const buffer of map.values()) buffer.destroy();

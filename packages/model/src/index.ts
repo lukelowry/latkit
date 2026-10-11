@@ -1,74 +1,8 @@
 /** Immutable data, bounded local reads, portable command descriptions, and the Model contract. */
-export type {
-  Arguments,
-  CommandDescription,
-  CommandResult,
-  Diagnostic,
-  InputValue,
-  Json,
-  LogEntry,
-  Parameter,
-  Parameters,
-  Progress,
-} from './commands.js';
-export type {
-  DataType,
-  NumericType,
-  NumericArray,
-  Index,
-  RowSelection,
-  RowAxis,
-  Column,
-  NumericColumn,
-  SampleColumn,
-  BooleanColumn,
-  TextColumn,
-  VectorColumn,
-  ListColumn,
-  ReferenceColumn,
-} from './data.js';
-export type { Schema, TypeDefinition, FieldDefinition } from './schema.js';
-export { fieldDefinition } from './definitions.js';
-export type {
-  FieldSelection,
-  QueryOptions,
-  Query,
-  RowsQuery,
-  SamplesQuery,
-  SampleWindow,
-  SampleRange,
-  EnvelopeQuery,
-  EnvelopeBlock,
-  EnvelopeColumn,
-  AggregateQuery,
-  Filter,
-  QueryBlock,
-  RowsBlock,
-  SamplesBlock,
-  AggregateBlock,
-} from './query.js';
-export type {
-  Version,
-  Domain,
-  Axis,
-  Scalar,
-  Value,
-  Bound,
-  Bounds,
-  RequestOptions,
-  ProblemTarget,
-  Problem,
-  Failure,
-  FailureCode,
-} from './types.js';
-export { failure, isFailure } from './error.js';
-export { Work, interruptible } from './work.js';
-export type { WorkPriority } from './work.js';
-export { blockBuffers, blockByteLength } from './buffers.js';
-export { validateSchema } from './validation/schema.js';
-export { validateQuery } from './validation/query.js';
-export { validateBlock } from './validation/block.js';
-
+export type { Column, Domain, Index } from './data/column.js';
+export type { Data } from './data/data.js';
+export { createData, appendData } from './data/assemble.js';
+export { textColumn, sliceSamples } from './data/columns.js';
 export {
   sameIndex,
   assertIndex,
@@ -79,41 +13,33 @@ export {
   numberAt,
   textAt,
   sampleAt,
-} from './access.js';
+} from './data/access.js';
+export { appendedPages, sampleDomain, samePages } from './data/pages.js';
+export { blockBuffers, blockByteLength } from './data/buffers.js';
 
-export type {
-  Data,
-  TableData,
-  ColumnPage,
-  DataBatch,
-  RowBatch,
-  SampleBatch,
-} from './materialized.js';
+export type { Schema } from './schema/schema.js';
+export { fieldDefinition } from './schema/field.js';
+export { validateSchema } from './validation/schema.js';
+
+export type { Query, Block } from './query/query.js';
+export { read, selectRows, itemId, locateSample, sampleFrames, sampleRuns } from './query/read.js';
+export { selectBatches, staticFields, sampledFields } from './query/select.js';
+export { validateQuery } from './validation/query.js';
+export { validateBlock } from './validation/block.js';
+
 export type { Item } from './item.js';
-export { itemKey, sameItem } from './item.js';
-export { read, selectRows, locateSample, itemId } from './read.js';
-export type { ReadResult, SampleLocation } from './read.js';
-export { createData, appendData } from './assemble.js';
-export { textColumn, sliceSamples } from './columns.js';
+export { itemKey } from './item.js';
 
-export type { Model, Command, MonitorContext, CommandContext, Publication } from './model.js';
+export type { Failure } from './failure.js';
+export { failure, isFailure } from './failure.js';
+export { Work, interruptible } from './work.js';
+
+export type { Reader } from './reader/reader.js';
+export { createReader } from './reader/reader.js';
+export type { FieldInput } from './reader/types.js';
+export type { Memory } from './reader/memory.js';
+export { createMemory } from './reader/memory.js';
+
+export type { Model, Command } from './model/model.js';
 export { validateBatch } from './validation/batch.js';
 export { validateSelection } from './validation/selection.js';
-export { selectBatches, staticFields, sampledFields } from './select.js';
-
-export type { ColumnPages } from './pages.js';
-export { appendedPages, sampleDomain, samePages } from './pages.js';
-export { sampleFrames } from './read.js';
-
-export { createReader } from './reader/reader.js';
-export type { Reader, ReadScope, ReadRecord, ReaderOptions } from './reader/reader.js';
-export { createMemory } from './memory.js';
-export type { Memory, Entry as MemoryEntry, MemoryBudget, MemoryStats } from './memory.js';
-export type {
-  FieldInput,
-  FieldBinding,
-  FieldValues,
-  FieldsRequest,
-  FieldsBlock,
-  ExtentRequest,
-} from './reader/types.js';

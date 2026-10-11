@@ -1,11 +1,5 @@
 import assert from 'node:assert/strict';
-import type {
-  Data,
-  RowsQuery,
-  SamplesQuery,
-  QueryOptions,
-  NumericColumn,
-} from '../../src/index.js';
+import type { Data, Query, Column } from '../../src/index.js';
 import {
   read,
   blockByteLength,
@@ -26,8 +20,8 @@ export interface ScanResult {
 export async function verifyRows(
   source: Data,
   count: number,
-  options: QueryOptions = {},
-  query: RowsQuery = { kind: 'rows', from: 'Node', select: ['value'] },
+  options: Query.Options = {},
+  query: Query.Rows = { kind: 'rows', from: 'Node', select: ['value'] },
   rowAt: (position: number) => number = (position) => position,
   expected: (row: number) => number = inputAt,
 ): Promise<ScanResult> {
@@ -49,7 +43,7 @@ export async function verifyRows(
       blockBuffers(block).reduce((n, b) => n + b.byteLength, 0),
     );
     blocks++;
-    const column = block.columns[query.select[0]] as NumericColumn;
+    const column = block.columns[query.select[0]] as Column.Numeric;
     const length = block.rows.kind === 'range' ? block.rows.count : block.rows.values.length;
     for (let i = 0; i < length; i++) {
       const row: number =
@@ -88,7 +82,7 @@ export async function verifySamples(
   factor = 2,
   expected = inputAt,
 ): Promise<ScanResult> {
-  const query: SamplesQuery = {
+  const query: Query.Samples = {
     kind: 'samples',
     from: 'Node',
     select: ['output'],

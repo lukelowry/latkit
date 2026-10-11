@@ -2,13 +2,11 @@ import { failure } from '@latkit/model';
 import type { Viewport } from '../frame/render.js';
 import { clipStroke, type ClipPoint } from '../style/stroke.js';
 import { fitCamera, zoomCamera, type Bounds2D, type Insets } from './camera.js';
-import type { ViewCamera } from './item-view.js';
+import type { ItemView } from './item-view.js';
 
-/** How a view lays its coordinates out: a plane, the mercator plane, a tilted plane, or a globe. */
-export type Projection = 'flat' | 'mercator' | 'tilt' | 'globe';
 /** The camera every projected view shares: where it looks, how close, and from what angle. */
-export interface ProjectedCamera extends ViewCamera {
-  readonly projection: Projection;
+export interface ProjectedCamera extends ItemView.Camera {
+  readonly projection: ProjectedCamera.Projection;
   /** Model coordinates; longitude and latitude in degrees for geographic data. */
   readonly center: readonly [x: number, y: number];
   /** Pixels per model unit. */
@@ -20,9 +18,13 @@ export interface ProjectedCamera extends ViewCamera {
   /** Turn about the center. */
   readonly orbit: boolean;
 }
+export declare namespace ProjectedCamera {
+  /** How a view lays its coordinates out: a plane, the mercator plane, a tilted plane, or a globe. */
+  type Projection = 'flat' | 'mercator' | 'tilt' | 'globe';
+}
 /** Each projection's traits: whether it needs geographic coordinates, and whether it pitches. */
 export const PROJECTIONS: Readonly<
-  Record<Projection, { readonly geographic: boolean; readonly pitched: boolean }>
+  Record<ProjectedCamera.Projection, { readonly geographic: boolean; readonly pitched: boolean }>
 > = Object.freeze({
   flat: Object.freeze({ geographic: false, pitched: false }),
   mercator: Object.freeze({ geographic: true, pitched: false }),
@@ -493,7 +495,9 @@ fn projection_normal(lonlat: vec2f) -> vec3f {
   return vec3f(cos(lat) * cos(lon), sin(lat), -cos(lat) * sin(lon));
 }
 /** Where the ray through a pixel meets the globe, in the world; a w of 0 where it misses. */
-fn projection_globe_hit(ndc: vec2f, q: Projection) -> vec4f {
+fn projection_globe_hit(ndc: vec2f, q: Projection) -> vec4f { return projection_sphere_hit(ndc, q, 1.0); }
+/** Where the ray through a pixel meets a sphere about the globe's center, \`radius\` globes across. */
+fn projection_sphere_hit(ndc: vec2f, q: Projection, radius: f32) -> vec4f {
   let right = vec3f(q.rotation.x, q.rotation.y, 0.0);
   let up = vec3f(-q.rotation.y * q.rotation.z, q.rotation.x * q.rotation.z, q.rotation.w);
   let front = vec3f(q.rotation.y * q.rotation.w, -q.rotation.x * q.rotation.w, q.rotation.z);
@@ -502,23 +506,42 @@ fn projection_globe_hit(ndc: vec2f, q: Projection) -> vec4f {
   let oc = eye - vec3f(0.0, 0.0, -1.0);
   let a = dot(direction, direction);
   let b = dot(oc, direction);
-  let disc = b * b - a * (dot(oc, oc) - 1.0);
+  let disc = b * b - a * (dot(oc, oc) - radius * radius);
   if (disc < 0.0) { return vec4f(0.0); }
   let t = (-b - sqrt(disc)) / a;
   if (t < 0.0) { return vec4f(0.0); }
   return vec4f(eye + direction * t, 1.0);
 }
 /**
- * A billboard's depth at a fragment: its own, but on a globe never behind the surface under it,
- * which bulges toward the camera across a marker or a label and would cut it.
+ * A fragment's depth on a globe: its own, but never behind the surface under its pixel, less
+ * \`lift\`, which bulges toward the camera across a marker or a label and would cut it.
  */
-fn projection_billboard_depth(position: vec4f, q: Projection) -> f32 {
+fn projection_billboard_depth(position: vec4f, q: Projection, lift: f32) -> f32 {
   if (q.view.w < 1.5) { return position.z; }
   let size = q.view.xy * q.view.z;
   let hit = projection_globe_hit(vec2f(position.x / size.x * 2.0 - 1.0, 1.0 - position.y / size.y * 2.0), q);
   if (hit.w == 0.0) { return position.z; }
   let clip = projection_clip(hit.xyz, q);
-  return min(position.z, max(clip.z / clip.w - 0.000001, 0.0));
+  return clamp(min(position.z, clip.z / clip.w - 0.000001 - lift), 0.0, 1.0);
+}
+/**
+ * A fragment's depth where it lies on a globe at \`world\`, while that point faces the eye: as high
+ * over the surface under its pixel as it stands, and never beneath it. A line between two points on
+ * the surface, whose chord dips under it and whose round ends stand out over it, takes the surface's
+ * own depth at every pixel, so it never sinks in, and its pieces never hide one another where they
+ * meet. Behind the horizon, where the globe hides it, its own.
+ */
+fn projection_ground_depth(position: vec4f, world: vec3f, q: Projection, lift: f32) -> f32 {
+  if (q.view.w < 1.5) { return position.z; }
+  let sphere = world + vec3f(0.0, 0.0, 1.0);
+  let front = vec3f(q.rotation.y * q.rotation.w, -q.rotation.x * q.rotation.w, q.rotation.z);
+  if (dot(sphere, front * q.pose.y - world) <= 0.0) { return position.z; }
+  let size = q.view.xy * q.view.z;
+  let ndc = vec2f(position.x / size.x * 2.0 - 1.0, 1.0 - position.y / size.y * 2.0);
+  let hit = projection_sphere_hit(ndc, q, max(length(sphere), 1.0));
+  if (hit.w == 0.0) { return position.z; }
+  let clip = projection_clip(hit.xyz, q);
+  return clamp(clip.z / clip.w - 0.000001 - lift, 0.0, 1.0);
 }
 /** How lit a surface facing \`normal\` is: 1 in day, the night floor at night, eased across the terminator. */
 fn projection_daylight(normal: vec3f, light: Light) -> f32 {

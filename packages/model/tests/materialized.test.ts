@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { sliceColumn } from '../src/columns.js';
+import { sliceColumn } from '../src/data/columns.js';
 import {
   appendData,
   locateSample,
@@ -15,16 +15,11 @@ import {
   blockBuffers,
   blockByteLength,
   type Column,
-  type NumericColumn,
-  type RowSelection,
-  type SampleColumn,
   type Schema,
-  type DataBatch,
-  type RowBatch,
-  type SampleBatch,
-  type RowAxis,
   validateBatch,
-  type SamplesQuery,
+  type Index,
+  type Data,
+  type Query,
 } from '../src/index.js';
 const schema: Schema = {
   axis: { name: 'time' },
@@ -39,7 +34,7 @@ const schema: Schema = {
 };
 const index = { source: 'test', type: 'Node', version: 'rows-1' };
 const values = Float64Array.of(4, 1, 2, 2);
-const batch: DataBatch = {
+const batch: Data.Batch = {
   kind: 'rows',
   index,
   rows: { kind: 'range', offset: 0, count: 4 },
@@ -163,7 +158,7 @@ it('has independent transferred copies and immutable shared pages', async () => 
   )!;
   expect(blockBuffers(block)).not.toContain(values.buffer);
   const cloned = structuredClone(block, { transfer: [...blockBuffers(block)] as ArrayBuffer[] });
-  expect(numberAt(cloned.columns.value as NumericColumn, 0)).toBe(4);
+  expect(numberAt(cloned.columns.value as Column.Numeric, 0)).toBe(4);
   expect(values[0]).toBe(4);
   const next = appendData(data, []);
   expect(next.tables.Node).toBe(data.tables.Node);
@@ -180,7 +175,7 @@ it.each([
   { kind: 'range', between: [1, 1], context: { before: 1, after: 1 } },
 ] as const)('resolves sampled duplicates and context: %j', async (window) => {
   const data = history();
-  const q: SamplesQuery = { kind: 'samples', from: 'Node', select: ['output'], window };
+  const q: Query.Samples = { kind: 'samples', from: 'Node', select: ['output'], window };
   const blocks = (await collect(read(data, q))).filter((b) => b.kind === 'samples');
   const coordinates = blocks.filter((b) => b.rowOffset === 0).flatMap((b) => [...b.coordinates]);
   expect(coordinates).toEqual(window.kind === 'at' ? (window.value < 0 ? [] : [1]) : [0, 1, 1, 2]);
@@ -189,7 +184,7 @@ it.each([
 it('tiles every addressed sample exactly once under a tight payload bound without repacking dense backing', async () => {
   const data = history(113, 79),
     seen = new Uint8Array(113 * 79);
-  const q: SamplesQuery = {
+  const q: Query.Samples = {
     kind: 'samples',
     from: 'Node',
     select: ['output'],
@@ -253,7 +248,7 @@ it('rejects stale identities, absent fields, impossible bounds and cancelled wor
 });
 
 it('resolves coordinate windows and context across gaps in stored frame numbers', async () => {
-  const batches: DataBatch[] = [0, 5].map((frame) => ({
+  const batches: Data.Batch[] = [0, 5].map((frame) => ({
     kind: 'samples',
     index,
     rows: { kind: 'range', offset: 0, count: 1 },
@@ -291,7 +286,7 @@ it('resolves coordinate windows and context across gaps in stored frame numbers'
 });
 it('reads a sampled field at a coordinate as a plain column, sliced or gathered', async () => {
   const rows = (offset: number, count: number) =>
-    ({ kind: 'range', offset, count }) satisfies RowAxis;
+    ({ kind: 'range', offset, count }) satisfies Index.Rows;
   const data = createData(schema, [
     {
       kind: 'samples',
@@ -311,7 +306,7 @@ it('reads a sampled field at a coordinate as a plain column, sliced or gathered'
       },
     },
   ]);
-  const at = async (selection: RowSelection) => {
+  const at = async (selection: Index.Selection) => {
     const [block] = (
       await collect(
         read(data, { kind: 'rows', from: 'Node', select: ['output'], rows: selection, at: 1 }),
@@ -336,7 +331,7 @@ it('reads a sampled field at a coordinate as a plain column, sliced or gathered'
       values: new Float64Array(8),
       rowStride: 1,
       frameStride: 4,
-    } as SampleColumn,
+    } as Column.Sample,
     4,
     2,
   );
@@ -362,11 +357,11 @@ it('constructs replacement static data without mutating earlier application data
   const selected = (
     await collect(read(next, { ...rows, rows: { kind: 'ids', ids: ['replacement'] } }))
   ).find((b) => b.kind === 'rows')!;
-  expect(numberAt(selected.columns.value as NumericColumn, 0)).toBe(99);
+  expect(numberAt(selected.columns.value as Column.Numeric, 0)).toBe(99);
   const original = (
     await collect(read(previous, { ...rows, rows: { kind: 'ids', ids: ['b'] } }))
   ).find((b) => b.kind === 'rows')!;
-  expect(numberAt(original.columns.value as NumericColumn, 0)).toBe(1);
+  expect(numberAt(original.columns.value as Column.Numeric, 0)).toBe(1);
   await expect(
     collect(read(next, { ...rows, rows: { kind: 'ids', ids: ['b'] } })),
   ).rejects.toMatchObject({ code: 'invalid-input' });
@@ -375,8 +370,8 @@ it('constructs replacement static data without mutating earlier application data
 function observations(
   firstFrame: number,
   count = 1,
-  rows: RowAxis = { kind: 'range', offset: 0, count: 2 },
-): SampleBatch {
+  rows: Index.Rows = { kind: 'range', offset: 0, count: 2 },
+): Data.SampleBatch {
   const nr = rowCount(rows);
   return {
     kind: 'samples',
@@ -399,7 +394,7 @@ function observations(
 
 it('rejects row appends even when a JavaScript caller bypasses the type contract', () => {
   const data = createData(schema, [batch]);
-  expect(() => appendData(data, [batch] as unknown as SampleBatch[])).toThrow(
+  expect(() => appendData(data, [batch] as unknown as Data.SampleBatch[])).toThrow(
     /sampled observations only/,
   );
   expect(data.tables.Node.fields.value.at(0)!.column).toBe(batch.columns.value);
@@ -412,7 +407,7 @@ it('rejects old publication payloads rather than treating them as empty batches'
 });
 
 it('rejects overlapping static cells and identities while allowing separate columns', () => {
-  const overlap: RowBatch = {
+  const overlap: Data.RowBatch = {
     ...batch,
     rows: { kind: 'range', offset: 1, count: 1 },
     ids: undefined,
@@ -430,10 +425,10 @@ it('rejects overlapping static cells and identities while allowing separate colu
 });
 
 it('validates sparse row collisions without changing supplied row order', () => {
-  const sparse: RowAxis = { kind: 'indices', values: Uint32Array.of(3, 1) };
+  const sparse: Index.Rows = { kind: 'indices', values: Uint32Array.of(3, 1) };
   const column = { kind: 'numeric' as const, offset: 0, length: 2, values: Float64Array.of(3, 1) };
-  const a: RowBatch = { kind: 'rows', index, rows: sparse, columns: { value: column } };
-  const b: RowBatch = { ...a, rows: { kind: 'range', offset: 1, count: 1 } };
+  const a: Data.RowBatch = { kind: 'rows', index, rows: sparse, columns: { value: column } };
+  const b: Data.RowBatch = { ...a, rows: { kind: 'range', offset: 1, count: 1 } };
   expect(() => createData(schema, [a, b])).toThrow(/overlap/);
   expect(() =>
     createData(schema, [{ ...a, rows: { kind: 'indices', values: Uint32Array.of(1, 1) } }]),
@@ -536,7 +531,7 @@ it('validates each aligned field against its own committed boundary', () => {
     { ...late, columns: { extra: late.columns.output } },
   ]);
   const next = observations(2);
-  const aligned: SampleBatch = {
+  const aligned: Data.SampleBatch = {
     ...next,
     columns: { output: next.columns.output, extra: next.columns.output },
   };
@@ -550,12 +545,12 @@ it('does not reuse layout validation for differently tiled columns', () => {
     ...schema,
     types: { Node: { fields: { ...schema.types.Node.fields, extra: { type: 'float64' } } } },
   };
-  const a: RowBatch = {
+  const a: Data.RowBatch = {
     ...batch,
     ids: undefined,
     columns: { value: batch.columns.value, extra: batch.columns.value },
   };
-  const b: RowBatch = {
+  const b: Data.RowBatch = {
     ...a,
     rows: { kind: 'range', offset: 1, count: 1 },
     columns: { extra: batch.columns.value },

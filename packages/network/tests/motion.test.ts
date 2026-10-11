@@ -1,14 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { createGpu, gauge, icon, kit, shape, type MarkerImage } from '@latkit/gpu';
-import {
-  createData,
-  failure,
-  type Column,
-  type Data,
-  type FieldValues,
-  type Schema,
-} from '@latkit/model';
-import { createNetwork, type Network, type NetworkConfig } from '../src/index.js';
+import { createGpu, gauge, icon, kit, shape, type Marker } from '@latkit/gpu';
+import { createData, type Column, type Data, type Schema, type FieldInput } from '@latkit/model';
+import { createNetwork, type Network } from '../src/index.js';
 import { readGeometry, DEFAULT_LIMITS, type EdgeBank } from '../src/geometry/topology.js';
 import { LINE, bankChannels, channels } from '../src/rendering/fields.js';
 import type { PickGeometry } from '../src/picking.js';
@@ -114,7 +107,7 @@ function target(gpu: Awaited<ReturnType<typeof createGpu>>) {
 }
 async function view(
   fake: Fake,
-  config: (source: GraphSource) => Partial<NetworkConfig> = () => ({}),
+  config: (source: GraphSource) => Partial<Network.Config> = () => ({}),
   geographic = false,
 ) {
   const gpu = await createGpu({ device: fake.device }),
@@ -126,7 +119,7 @@ async function view(
       motion: 'full',
       animationMs: 300,
       ...config(source),
-    } as NetworkConfig),
+    } as Network.Config),
     surface = target(gpu);
   const render = (timeMs: number, presented = true) =>
     gpu.render({
@@ -209,13 +202,12 @@ it('eases rows new to the drawing in from nothing, and steps when the budget can
   expect(fake.clears.map((buffer) => labelOf(fake, buffer))).toEqual(['network transition start']);
   expect(uniforms(fake).f[EASE]).toBe(1);
   await render(500);
-  // A start the GPU budget cannot hold steps: nothing is copied and nothing eases.
-  const buffer = gpu.buffer.bind(gpu);
-  vi.spyOn(gpu, 'buffer').mockImplementation((descriptor) => {
-    if (descriptor.label === 'network transition start')
-      throw failure('resource-limit', 'GPU budget exceeded by live or in-flight resources');
-    return buffer(descriptor);
-  });
+  // A start the GPU budget has no room for steps: nothing is copied and nothing eases.
+  const stats = gpu.stats.bind(gpu);
+  vi.spyOn(gpu, 'stats').mockImplementation(() => ({
+    ...stats(),
+    gpuBytes: gpu.budget.gpuBytes,
+  }));
   fake.copies.length = 0;
   network.set({ vertices: { node: { radiusPx: 9 } } }, { animate: true });
   await render(600);
@@ -364,7 +356,7 @@ it('reads each edge’s lane among parallel ones as a channel, once edges draw a
       vertices: { Station: { x: 'location', y: { field: 'location', component: 1 } } },
       edges: { Line: { ends: ['from', 'to'] as const } },
     };
-  let lanes: FieldValues | undefined,
+  let lanes: FieldInput.Values | undefined,
     bank!: EdgeBank,
     bent = -1;
   await gpu.render({
@@ -421,7 +413,7 @@ it('reads a marked bank’s inputs with its vertices, after their records, stepp
       width: 1,
       height: 1,
       data: Uint8ClampedArray.of(255, 0, 0, 255),
-    } as unknown as MarkerImage,
+    } as unknown as Marker.Image,
     { gpu, network, render } = await view(fake, () => ({
       vertices: {
         node: {

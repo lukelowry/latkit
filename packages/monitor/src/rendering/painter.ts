@@ -1,5 +1,5 @@
-import { type Gpu, kit } from '@latkit/gpu';
-import { failure, rowCount, type Domain, type FieldsBlock } from '@latkit/model';
+import { type Gpu, type Point, kit } from '@latkit/gpu';
+import { failure, rowCount, type Domain, type Block } from '@latkit/model';
 import type { Binding, Look } from '../bindings.js';
 import type { Style } from '../config.js';
 import type { Axes, Plot } from '../axes.js';
@@ -77,7 +77,7 @@ export function bindDraws(
  */
 export function traceDraws(
   frame: kit.Preparation,
-  block: FieldsBlock,
+  block: Block.Fields,
   trace: Binding,
   target: Image,
   layer: Layer,
@@ -229,6 +229,8 @@ export interface Screen {
   readonly shade: GPUBindGroup;
   readonly axis: GPUBindGroup;
   readonly cursor?: GPUBindGroup;
+  /** The dot at the reading under the pointer, and the pipeline that draws it. */
+  readonly hover?: { readonly group: GPUBindGroup; readonly pipeline: GPURenderPipeline };
   /** Each text page's glyphs, with the axis group that holds its anchors. */
   readonly text: readonly {
     readonly axis: GPUBindGroup;
@@ -275,6 +277,8 @@ export async function prepareScreen(
   style: Style,
   at: number | undefined,
   shade: GPUBindGroup,
+  /** Where the reading under the pointer lies, in CSS pixels. */
+  hover: Point | null,
 ): Promise<Screen> {
   const p = layout.plot,
     selected = style.selectedColor === 'none' ? [0, 0, 0, -1] : style.selectedColor;
@@ -340,6 +344,30 @@ export async function prepareScreen(
       pages: await frame.text({ runs: page.runs }),
     });
   const [r, g, b, a] = style.background;
+  // Hover lights the reading it finds as hover lights an item everywhere: in its color, glowing as far as its width.
+  const lit =
+    hover &&
+    hover[0] >= p.x &&
+    hover[0] <= p.x + p.width &&
+    hover[1] >= p.y &&
+    hover[1] <= p.y + p.height
+      ? {
+          group: axis(
+            frame.buffer(
+              buffer(
+                Float32Array.of(
+                  ...hover,
+                  Math.max(2.5, style.traceWidthPx * 1.5),
+                  style.hoverWidthPx,
+                  ...style.hoverColor,
+                ),
+                'monitor hover',
+              ),
+            ),
+          ),
+          pipeline: await pipelines.hover,
+        }
+      : undefined;
   return {
     background: { r: r * a, g: g * a, b: b * a, a },
     layers: shown,
@@ -357,6 +385,7 @@ export async function prepareScreen(
           )
         : undefined,
     text,
+    ...(lit ? { hover: lit } : {}),
     lines: layout.lineCount,
     grid: layout.gridCount,
   };
@@ -395,6 +424,12 @@ export function composite(frame: kit.Encoding, pipelines: Pipelines, screen: Scr
   if (screen.cursor) {
     pass.setPipeline(pipelines.lines);
     pass.setBindGroup(1, screen.cursor);
+    pass.draw(6, 1);
+    calls++;
+  }
+  if (screen.hover) {
+    pass.setPipeline(screen.hover.pipeline);
+    pass.setBindGroup(1, screen.hover.group);
     pass.draw(6, 1);
     calls++;
   }

@@ -6,12 +6,12 @@
  */
 import type { RGBA } from '@latkit/gpu';
 import type { Data } from '@latkit/model';
-import { geojson, tiles, type GeographyConfig } from '@latkit/geography';
+import { geojson, tiles, type Geography } from '@latkit/geography';
 import { download, type Progress } from './download.js';
 
 /** A map, loaded: what the geography draws, and the areas a grid's figures can color. */
 export interface MapLoaded {
-  readonly config: Pick<GeographyConfig, 'source' | 'areas' | 'lines'>;
+  readonly config: Pick<Geography.Config, 'source' | 'areas' | 'lines'>;
   readonly summary: string;
   readonly states?: { readonly data: Data; readonly type: string };
 }

@@ -1,17 +1,20 @@
 import { describe } from 'vitest';
-import { createDiagram, type DiagramConfig, type MoveProposal } from '@latkit/diagram';
+import { createDiagram, type Diagram } from '@latkit/diagram';
 import { busIndex, counters, draw, gpu, grid, suite } from './harness.ts';
 
 interface DragControls {
   preview(items: readonly unknown[], delta: readonly [number, number] | null): void;
-  move(items: readonly unknown[], delta: readonly [number, number]): MoveProposal | undefined;
+  move(
+    items: readonly unknown[],
+    delta: readonly [number, number],
+  ): Diagram.MoveProposal | undefined;
 }
 
 /** Include the large routed scene, with fewer repetitions at forty thousand blocks. */
 describe.each([100, 1_000, 10_000, 40_000])('diagram %i blocks', async (blocks) => {
   const device = await gpu(),
     data = grid(blocks, true);
-  const config: DiagramConfig = {
+  const config: Diagram.Config = {
     source: data,
     vertices: { Bus: {} },
     edges: { Branch: { ends: ['from', 'to'] } },
@@ -63,7 +66,7 @@ describe.each([100, 1_000, 10_000, 40_000])('diagram %i blocks', async (blocks) 
 /** Rings of four blocks, as a grid case's generators: parts that pack, and that route alone. */
 describe.each([1_000, 10_000])('diagram %i blocks in rings', async (blocks) => {
   const device = await gpu(),
-    config: DiagramConfig = {
+    config: Diagram.Config = {
       source: grid(blocks, true, 4),
       vertices: { Bus: {} },
       edges: { Branch: { ends: ['from', 'to'] } },

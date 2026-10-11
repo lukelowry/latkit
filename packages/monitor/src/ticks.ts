@@ -1,10 +1,10 @@
 import type { Domain } from '@latkit/model';
-import type { AxisOptions, Tick } from './options.js';
+import type { Monitor } from './monitor.js';
 export interface Ticks {
-  readonly items: readonly Tick[];
+  readonly items: readonly Monitor.Tick[];
   readonly offset: number;
 }
-export function ticks(range: Domain, pixels: number, axis: AxisOptions): Ticks {
+export function ticks(range: Domain, pixels: number, axis: Monitor.AxisOptions): Ticks {
   if (axis.ticks)
     return {
       items: axis.ticks.filter((t) => t.value >= range[0] && t.value <= range[1]),
@@ -28,7 +28,7 @@ export function ticks(range: Domain, pixels: number, axis: AxisOptions): Ticks {
             ),
           )
         : 0;
-  const items: Tick[] = [];
+  const items: Monitor.Tick[] = [];
   const first = Math.ceil((range[0] - offset) / step) * step;
   for (let i = 0; i < 128; i++) {
     const local = first + i * step,
@@ -39,7 +39,7 @@ export function ticks(range: Domain, pixels: number, axis: AxisOptions): Ticks {
   }
   return { items, offset };
 }
-function format(value: number, step: number, axis: AxisOptions): string {
+function format(value: number, step: number, axis: Monitor.AxisOptions): string {
   if (Object.is(value, -0) || Math.abs(value) < step * 1e-9) value = 0;
   const precision =
     axis.precision ??

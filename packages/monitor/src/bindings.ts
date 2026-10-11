@@ -1,20 +1,19 @@
-import { kit, type Colormap, type ColormapName, type RGBA } from '@latkit/gpu';
+import { kit, type Colormap, type RGBA } from '@latkit/gpu';
 import {
   failure,
   fieldDefinition,
   rowCount,
   type Data,
   type Schema,
-  type Domain,
-  type RowSelection,
-  type FieldBinding,
   type FieldInput,
-  type ReadScope,
+  type Domain,
+  type Index,
+  type Reader,
 } from '@latkit/model';
-import type { MonitorData, Trace } from './data.js';
+import type { MonitorData } from './data.js';
 import { domain, finite, fail } from './config.js';
 import type { LayerKind } from './rendering/history.js';
-
+import type { Monitor } from './monitor.js';
 /** What a trace reads: its values, and its channels; colors and widths map over their extents. */
 const TRACE = {
   y: 'raw',
@@ -25,12 +24,12 @@ const TRACE = {
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
 export type TraceChannel = keyof typeof TRACE;
 /** A row selection with its ids resolved. */
-export type Rows = Exclude<RowSelection, { readonly kind: 'ids' }>;
+export type Rows = Exclude<Index.Selection, { readonly kind: 'ids' }>;
 /** How a trace's lines look over what they read: none of it is a reason to read again. */
 export interface Look {
   /** The colormap's domain: the values axis for a trace colored by what it plots; null draws `base` alone. */
   readonly domain: Domain | 'values' | null;
-  readonly colormap?: Colormap | ColormapName;
+  readonly colormap?: Colormap | Colormap.Name;
   /** The color of rows without a color value: the trace's own, or the style's `traceColor` when null. */
   readonly base: RGBA | null;
   readonly clamp: boolean;
@@ -42,7 +41,7 @@ export interface Look {
 }
 export interface Binding {
   readonly name: string;
-  readonly trace: Trace;
+  readonly trace: Monitor.TraceOptions;
   readonly source: Data;
   /** The field the trace plots. */
   readonly field: string;
@@ -84,7 +83,11 @@ export function validateData(data: MonitorData): void {
       finite(channels.widthPx.constant, 'trace width', 0.1, 64);
   }
 }
-export function binding(input: FieldInput, source: Data, from: string): FieldBinding | undefined {
+export function binding(
+  input: FieldInput,
+  source: Data,
+  from: string,
+): FieldInput.Binding | undefined {
   return typeof input === 'string'
     ? { source, from, field: input }
     : 'field' in input
@@ -92,11 +95,14 @@ export function binding(input: FieldInput, source: Data, from: string): FieldBin
       : undefined;
 }
 /** Whether two configs of a trace read the same, differing at most in how its color looks. */
-export function sameReads(a: Trace, b: Trace): boolean {
+export function sameReads(a: Monitor.TraceOptions, b: Monitor.TraceOptions): boolean {
   return kit.sameReads(a, b, TRACE);
 }
 /** A trace's channels; a field name reads the request's source, so a trace named by field follows appends. */
-function bindTrace(trace: Trace, main: FieldBinding): kit.BoundChannels<TraceChannel> {
+function bindTrace(
+  trace: Monitor.TraceOptions,
+  main: FieldInput.Binding,
+): kit.BoundChannels<TraceChannel> {
   return kit.bindChannels(
     { ...trace, y: typeof trace.y === 'string' ? trace.y : { ...main, rows: undefined } },
     TRACE,
@@ -114,7 +120,7 @@ function visuals(
   bound: kit.BoundChannels<TraceChannel>,
   data: MonitorData,
   from: string,
-  main: FieldBinding,
+  main: FieldInput.Binding,
 ): Colored {
   let own = false;
   for (const alias of ['color', 'widthPx', 'visible', 'shade'] as const) {
@@ -142,7 +148,7 @@ function visuals(
 }
 /** The traces `names` names as the monitor reads them; sampled domains fit `window`. */
 export async function describeBindings(
-  reads: ReadScope,
+  reads: Reader.Scope,
   data: MonitorData,
   window: Domain,
   names: readonly string[] = Object.keys(data.traces),
@@ -208,10 +214,10 @@ export async function describeBindings(
 }
 /** A trace whose look alone changed: what it reads, and its version, stand. */
 export async function relook(
-  reads: ReadScope,
+  reads: Reader.Scope,
   data: MonitorData,
   previous: Binding,
-  trace: Trace,
+  trace: Monitor.TraceOptions,
   window: Domain,
 ): Promise<Binding> {
   const main = binding(trace.y, data.source, trace.from)!,
@@ -228,7 +234,7 @@ export async function relook(
   };
 }
 async function lookOf(
-  reads: ReadScope,
+  reads: Reader.Scope,
   source: Data,
   from: string,
   rows: Rows | undefined,

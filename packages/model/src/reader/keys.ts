@@ -1,14 +1,14 @@
-import { locateSample, samplePages } from '../read.js';
-import type { ColumnPage, Data, TableData } from '../materialized.js';
-import type { RowAxis, RowSelection } from '../data.js';
-import type { Query, SampleWindow } from '../query.js';
-import type { Schema } from '../schema.js';
+import { locateSample, samplePages } from '../query/read.js';
+import type { Data } from '../data/data.js';
+import type { Index } from '../data/column.js';
+import type { Query } from '../query/query.js';
+import type { Schema } from '../schema/schema.js';
 
 /** One identity space for every cache key: the immutable values a computation actually reads. */
 export class Keys {
   private readonly objects = new WeakMap<object, number>();
-  private readonly pageKeys = new WeakMap<readonly ColumnPage[], string>();
-  private readonly tableKeys = new WeakMap<TableData, WeakMap<Schema, string>>();
+  private readonly pageKeys = new WeakMap<readonly Data.Page[], string>();
+  private readonly tableKeys = new WeakMap<Data.Table, WeakMap<Schema, string>>();
   private serial = 0;
 
   id(value: object | undefined): number {
@@ -20,12 +20,12 @@ export class Keys {
     }
     return id;
   }
-  axis(rows: RowAxis): unknown {
+  axis(rows: Index.Rows): unknown {
     return rows.kind === 'range'
       ? ['range', rows.offset, rows.count]
       : ['indices', this.id(rows.values.buffer), rows.values.byteOffset, rows.values.length];
   }
-  selection(rows?: RowSelection): string {
+  selection(rows?: Index.Selection): string {
     return JSON.stringify(
       !rows
         ? null
@@ -48,7 +48,7 @@ export class Keys {
     return key;
   }
 
-  field(data: Data, from: string, name: string, window?: SampleWindow): string {
+  field(data: Data, from: string, name: string, window?: Query.Window): string {
     const pages = data.tables[from]?.fields[name];
     const definition = data.schema.types[from]?.fields[name];
     let selected: unknown = this.id(pages);
@@ -92,7 +92,7 @@ export class Keys {
     ]);
   }
 
-  private pages(pages: readonly ColumnPage[]): string {
+  private pages(pages: readonly Data.Page[]): string {
     let key = this.pageKeys.get(pages);
     if (key === undefined) {
       key = pages.map((page) => this.id(page)).join(',');

@@ -1,12 +1,4 @@
-import {
-  type Gpu,
-  type Point,
-  type RGBA,
-  type TextAlign,
-  type TextBaseline,
-  kit,
-  type Viewport,
-} from '@latkit/gpu';
+import { type Gpu, type Point, type RGBA, kit, type Viewport } from '@latkit/gpu';
 import { buffer } from './rendering/painter.js';
 import type { Domain } from '@latkit/model';
 import type { Style } from './config.js';
@@ -89,8 +81,8 @@ export async function axes(
     key: string,
     value: string,
     at: Point,
-    align: TextAlign,
-    baseline: TextBaseline,
+    align: kit.TextAlign,
+    baseline: kit.TextBaseline,
     room?: kit.Occupancy,
   ) => {
     const layout = await gpu.layoutText(
@@ -108,10 +100,10 @@ export async function axes(
     name: string,
     t: Ticks,
     places: readonly Point[],
-    align: TextAlign,
-    baseline: TextBaseline,
+    align: kit.TextAlign,
+    baseline: kit.TextBaseline,
     offset: Point,
-    side: TextAlign,
+    side: kit.TextAlign,
   ) => {
     const room = new kit.Occupancy();
     if (t.offset) {

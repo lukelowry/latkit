@@ -18,8 +18,8 @@ Added
 - network: the `mercator` projection, for geographic data.
 - network: edges curve over the globe on the GPU, in as many pieces as the screen needs; geodesics also draw on flat and mercator maps.
 - gpu: `Labels` takes `fontSizePx` and `repeatSpacingPx`, for every view that labels in CSS pixels.
-- gpu: `Projection` and `ProjectedCamera`; `kit.Projector` and `kit.projectionShader`, one projection in TypeScript and WGSL; `kit.layerOf` and the `Layer` types, which draw one view beneath another; `stroke_comet` in `kit.strokeShader`; and `BaseView.paused`, called as a view pauses.
-- model: `Work` takes a `WorkPriority`; `'background'` work yields to everything else.
+- gpu: `ProjectedCamera`; `kit.Projector` and `kit.projectionShader`, one projection in TypeScript and WGSL; `kit.layerOf` and the `Layer` types, which draw one view beneath another; `stroke_comet` in `kit.strokeShader`; and `BaseView.paused`, called as a view pauses.
+- model: `Work` takes a `Work.Priority`; `'background'` work yields to everything else.
 - model: a `geographic` field may hold lists of positions, as polylines, and lists of those, as rings.
 
 Changed
@@ -29,11 +29,11 @@ Changed
 - network: picking and hover query hit-test indexes on every projection, built in the background once the positions and the camera hold still. Only rows raised by `z` scan.
 - network: a dashed edge picks along its whole length, gaps included.
 - network: a camera move uploads no draw parameters, and a frame draws edges in one render pass.
-- gpu: `ItemViewConfig` holds no `source`; each view's config declares its own.
+- gpu: `ItemView.Config` holds no `source`; each view's config declares its own.
 
 Removed
 
 - network: `paths`, `PathOptions`, and `LineOptions`. Draw lines that join no vertices as a geography's `lines`.
 - network: `grid`, `gridColor`, `earthAxis`, `surfaceColor`, `daylight`, `sunTime`, `nightFloor`, `surfaceNightFloor`, `terminatorWidth`, `pathColor`, and `pathWidthPx`. Set `graticule`, `graticuleColor`, `earthAxis`, `surfaceColor`, `daylight` (a time, `'now'`, or `false`), `nightFloor`, and `terminatorWidth` on a geography.
-- network: `Camera` and `Projection`. Import `ProjectedCamera` and `Projection` from `@latkit/gpu`.
+- network: `Camera` and `Projection`. Import `ProjectedCamera` from `@latkit/gpu`.
 - network: `NetworkLabels`. Its `fontSizePx` and `repeatSpacingPx` are `Labels` options now.

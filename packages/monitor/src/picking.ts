@@ -7,13 +7,12 @@ import {
   sampleAt,
   type Data,
   type Domain,
-  type ReadScope,
-  type SampleColumn,
+  type Reader,
+  type Column,
 } from '@latkit/model';
 import type { Binding } from './bindings.js';
-import type { Reading, Trace } from './data.js';
 import { plotCoordinate, plotX, plotY, type Plot } from './axes.js';
-
+import type { Monitor } from './monitor.js';
 /** What a presented frame drew: what pick, locate, and coordinateAt read. */
 export interface Shown {
   readonly source: Data;
@@ -40,11 +39,11 @@ interface Found {
   /** Draw order: a later trace, then a later row, draws on top. */
   readonly order: number;
   readonly row: number;
-  readonly reading: Reading;
+  readonly reading: Monitor.Reading;
 }
 /** The widest a width field draws without a scale, as `traceWidthPx` allows. */
 const WIDEST_PX = 64;
-type Interpolation = NonNullable<Trace['interpolation']>;
+type Interpolation = NonNullable<Monitor.TraceOptions['interpolation']>;
 
 /**
  * The traces drawn near a point, nearest first: each row's line is hit as `traces.wgsl` strokes it,
@@ -52,12 +51,12 @@ type Interpolation = NonNullable<Trace['interpolation']>;
  * value the part it hits shows. One reading for each trace row.
  */
 export async function pick(
-  reads: ReadScope,
+  reads: Reader.Scope,
   shown: Shown,
   point: Point,
   radius: number,
   limit: number,
-): Promise<Reading[]> {
+): Promise<Monitor.Reading[]> {
   const { plot, window: x, values: y } = shown;
   if (!(plot.width > 0) || !(plot.height > 0) || limit < 1) return [];
   const widths = shown.traces.map((trace) =>
@@ -87,7 +86,7 @@ export async function pick(
       window: { kind: 'range', between, context: { before: 1, after: 1 } },
     })) {
       const samples = tile.samples!,
-        column = tile.columns[plotted.column!] as SampleColumn,
+        column = tile.columns[plotted.column!] as Column.Sample,
         present = tile.presence[plotted.column!];
       for (let r = 0; r < rowCount(tile.rows); r++) {
         const row = rowAt(tile.rows, r),

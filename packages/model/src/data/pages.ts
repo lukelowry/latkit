@@ -1,14 +1,13 @@
-import type { ColumnPage } from './materialized.js';
-import type { Domain } from './types.js';
+import type { Data } from './data.js';
 import { rowAt, rowCount, sameIndex } from './access.js';
-import type { Column } from './data.js';
+import type { Column, Domain } from './column.js';
 import { Sequence } from './sequence.js';
 
 export interface FrameGroup {
   readonly ordinal: number;
   readonly first: number;
   readonly coordinates: Float64Array;
-  readonly pages: readonly ColumnPage[];
+  readonly pages: readonly Data.Page[];
   readonly ranges: boolean;
 }
 export interface Frames {
@@ -19,48 +18,40 @@ export interface Frames {
 }
 const emptyFrames: Frames = { count: 0, groups: Sequence.empty(), first: 0, end: 0 };
 
-/** Immutable pages in publication order. Obtained through createData and appendData.
- * Iteration and at() expose existing pages without copying their payloads. */
-export interface ColumnPages extends Iterable<ColumnPage> {
-  readonly kind: 'column-pages';
-  readonly length: number;
-  at(index: number): ColumnPage | undefined;
-}
-
 // Keep storage out of the public type. Collections from another copy of this package
 // carry the same representation; neither reads nor copies depend on class identity.
-class PageCollection implements ColumnPages {
+class PageCollection implements Data.Pages {
   readonly kind = 'column-pages';
   constructor(
-    readonly pages: Sequence<ColumnPage>,
+    readonly pages: Sequence<Data.Page>,
     readonly frames: Frames,
   ) {}
   get length(): number {
     return this.pages.length;
   }
-  at(index: number): ColumnPage | undefined {
+  at(index: number): Data.Page | undefined {
     return this.pages.at(index);
   }
-  [Symbol.iterator](): Iterator<ColumnPage> {
+  [Symbol.iterator](): Iterator<Data.Page> {
     return this.pages[Symbol.iterator]();
   }
 }
-function storage(pages: ColumnPages): PageCollection {
+function storage(pages: Data.Pages): PageCollection {
   return pages as PageCollection;
 }
-export function isColumnPages(value: unknown): value is ColumnPages {
+export function isColumnPages(value: unknown): value is Data.Pages {
   return (
     typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'column-pages'
   );
 }
 
-export const emptyPages: ColumnPages = new PageCollection(Sequence.empty(), emptyFrames);
+export const emptyPages: Data.Pages = new PageCollection(Sequence.empty(), emptyFrames);
 
 /** Append already validated pages; only the newly added groups are indexed. */
-export function appendPages(before: ColumnPages, added: readonly ColumnPage[]): ColumnPages {
+export function appendPages(before: Data.Pages, added: readonly Data.Page[]): Data.Pages {
   const previous = storage(before);
   if (!added.length) return before;
-  const grouped = new Map<number, ColumnPage[]>();
+  const grouped = new Map<number, Data.Page[]>();
   for (const page of added)
     if (page.samples) {
       let parts = grouped.get(page.samples.firstFrame);
@@ -92,20 +83,17 @@ export function appendPages(before: ColumnPages, added: readonly ColumnPage[]): 
     : previous.frames;
   return new PageCollection(previous.pages.append(added), frames);
 }
-export function copyPages(
-  pages: ColumnPages,
-  clone: (page: ColumnPage) => ColumnPage,
-): ColumnPages {
+export function copyPages(pages: Data.Pages, clone: (page: Data.Page) => Data.Page): Data.Pages {
   return appendPages(emptyPages, Array.from(pages, clone));
 }
-function firstRow(page: ColumnPage): number {
+function firstRow(page: Data.Page): number {
   return rowCount(page.rows) ? rowAt(page.rows, 0) : 0;
 }
-export function framesOf(pages: ColumnPages): Frames {
+export function framesOf(pages: Data.Pages): Frames {
   return storage(pages).frames;
 }
 /** First and last recorded sample coordinates, or null without samples. Constant time. */
-export function sampleDomain(pages: ColumnPages | undefined): Domain | null {
+export function sampleDomain(pages: Data.Pages | undefined): Domain | null {
   const groups = pages && framesOf(pages).groups;
   const first = groups?.at(0)?.coordinates[0],
     last = groups?.at(-1)?.coordinates.at(-1);
@@ -127,9 +115,9 @@ export function frameGroups(index: Frames, first: number, end: number): Iterable
 
 /** Pages appended after an unchanged prefix, or undefined for a replacement. No payloads are copied. */
 export function appendedPages(
-  before: ColumnPages,
-  after: ColumnPages,
-): Iterable<ColumnPage> | undefined {
+  before: Data.Pages,
+  after: Data.Pages,
+): Iterable<Data.Page> | undefined {
   const previous = storage(before),
     next = storage(after);
   return next.pages.startsWith(previous.pages) ? next.pages.range(before.length) : undefined;
@@ -138,7 +126,7 @@ export function appendedPages(
  * Whether two collections hold the same rows and values, whatever their identity: a value
  * republished unchanged reads as unchanged. Linear in their bytes; conservative across layouts.
  */
-export function samePages(a: ColumnPages, b: ColumnPages): boolean {
+export function samePages(a: Data.Pages, b: Data.Pages): boolean {
   if (a === b) return true;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -157,7 +145,7 @@ export function samePages(a: ColumnPages, b: ColumnPages): boolean {
   }
   return true;
 }
-function sameRows(a: ColumnPage['rows'], b: ColumnPage['rows']): boolean {
+function sameRows(a: Data.Page['rows'], b: Data.Page['rows']): boolean {
   if (a.kind === 'range') return b.kind === 'range' && a.offset === b.offset && a.count === b.count;
   return b.kind === 'indices' && sameArray(a.values, b.values);
 }

@@ -9,7 +9,7 @@ struct Style {
   hover: vec4f,
   /** The selection's tint; a negative alpha keeps each item's own color. */
   selected: vec4f,
-  /** How far hover and selection widen a line, the opacity of the unselected, and the dash period. */
+  /** How far hover's and the selection's glow reach past a line, the opacity of the unselected, and the dash period. */
   glow: vec4f,
   /** The label halo's color, and its reach in CSS pixels. */
   halo: vec4f,
@@ -19,6 +19,8 @@ struct Style {
   flow: vec4f,
   /** How far apart comets run in CSS pixels, and the seconds they have moved for. */
   motion: vec4f,
+  /** How close the graticule's lines may draw, in CSS pixels. */
+  grid: vec4f,
 }
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(2) var<uniform> u: Style;

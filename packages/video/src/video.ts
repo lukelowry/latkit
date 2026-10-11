@@ -1,4 +1,4 @@
-import { Work, failure, type RequestOptions } from '@latkit/model';
+import { Work, failure } from '@latkit/model';
 import { kit, type View } from '@latkit/gpu';
 import { VideoSample } from 'mediabunny';
 import { settings, timeline } from './timing.js';
@@ -15,7 +15,9 @@ export interface VideoProgress {
   readonly completedFrames: number;
   readonly totalFrames: number;
 }
-export interface VideoOptions extends RequestOptions {
+export interface VideoOptions {
+  /** Stops the export; it rejects with the signal's reason. */
+  readonly signal?: AbortSignal;
   readonly width: number;
   readonly height: number;
   /** Output duration in seconds, including a possibly shorter final frame. */

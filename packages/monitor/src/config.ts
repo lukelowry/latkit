@@ -1,10 +1,9 @@
 import { failure, type Domain } from '@latkit/model';
 import { kit, type RGBA, type Insets } from '@latkit/gpu';
-import type { MonitorStyle, Limits, AxisOptions } from './options.js';
-
-type Own = Required<Omit<MonitorStyle, 'xAxis' | 'yAxis'>> & {
-  readonly xAxis: AxisOptions | null;
-  readonly yAxis: AxisOptions | null;
+import type { Monitor } from './monitor.js';
+type Own = Required<Omit<Monitor.Style, 'xAxis' | 'yAxis'>> & {
+  readonly xAxis: Monitor.AxisOptions | null;
+  readonly yAxis: Monitor.AxisOptions | null;
 };
 /** The monitor's own style over the shared view style, every option resolved. */
 export type Style = Own & kit.ResolvedViewStyle;
@@ -32,7 +31,7 @@ export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
   selectedColor: 'none',
   unselectedAlpha: 0.25,
 });
-export const LIMITS: Required<Limits> = Object.freeze({
+export const LIMITS: Required<Monitor.Limits> = Object.freeze({
   rows: 100000,
   segmentsPerFrame: 1_000_000,
   historyBytes: 64 * 1024 ** 2,
@@ -73,38 +72,25 @@ export function expanded(value: Domain, beforePx = 0, afterPx = 0, sizePx = 1): 
     fail('Domain cannot be represented');
   return [lo, hi];
 }
-const axis = (value: string | AxisOptions | false | undefined, fallback: AxisOptions | null) =>
-  value === undefined
-    ? fallback
-    : value === false
-      ? null
-      : typeof value === 'string'
-        ? { label: value }
-        : value;
+/** An axis option as its axis: a label alone, none for `false`, or the options as given. */
+const axis = (value: unknown): Monitor.AxisOptions | null =>
+  value === false
+    ? null
+    : typeof value === 'string'
+      ? { label: value }
+      : (value as Monitor.AxisOptions);
+const RULES: kit.StyleRules<Own> = {
+  traceWidthPx: (value) => typeof value === 'number' && value >= 0.1 && value <= 64,
+  paddingPx: (value) => insets(value as Insets).length === 4,
+  xAxis: (value) => (checkAxis(axis(value)), true),
+  yAxis: (value) => (checkAxis(axis(value)), true),
+};
 /** The style a config describes: its own options over the defaults, on the shared view style. */
-export function resolveStyle(config: MonitorStyle, view: kit.ResolvedViewStyle): Style {
-  const own = Object.fromEntries(
-    Object.keys(DEFAULTS).flatMap((key) => {
-      const value = config[key as keyof MonitorStyle];
-      return value === undefined ? [] : [[key, value]];
-    }),
-  );
-  const out: Style = {
-    ...view,
-    ...DEFAULTS,
-    ...own,
-    xAxis: axis(config.xAxis, DEFAULTS.xAxis),
-    yAxis: axis(config.yAxis, DEFAULTS.yAxis),
-  };
-  finite(out.traceWidthPx, 'traceWidthPx', 0.1, 64);
-  for (const color of [out.traceColor, out.axisColor, out.gridColor, out.cursorColor])
-    kit.validateRgba(color);
-  if (typeof out.outline !== 'boolean') fail('Invalid outline');
-  for (const axis of [out.xAxis, out.yAxis]) checkAxis(axis);
-  insets(out.paddingPx);
-  return Object.freeze(out);
+export function resolveStyle(config: Monitor.Style, view: kit.ResolvedViewStyle): Style {
+  const style = kit.resolveStyle(config, DEFAULTS, RULES, view);
+  return Object.freeze({ ...style, xAxis: axis(style.xAxis), yAxis: axis(style.yAxis) });
 }
-function checkAxis(axis: AxisOptions | null): void {
+function checkAxis(axis: Monitor.AxisOptions | null): void {
   if (axis === null) return;
   if (axis.minSpacingPx !== undefined) finite(axis.minSpacingPx, 'tick spacing', 8, 10000);
   if (

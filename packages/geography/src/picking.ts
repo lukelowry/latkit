@@ -2,11 +2,7 @@ import { rowAt, sameIndex, type Data, type Item } from '@latkit/model';
 import type { kit, Point } from '@latkit/gpu';
 import { cutEdge, type Shapes } from './prepare/shapes.js';
 import { piecesNear } from './scene/visible.js';
-
-/** An item a geography draws: a row of an area or line type. */
-export interface GeographyItem extends Item {
-  readonly kind: 'area' | 'line';
-}
+import type { Geography } from './geography.js';
 /** A record as a frame drew it, which picking searches: topmost last. */
 export interface Drawn {
   readonly kind: 'area' | 'line';
@@ -17,7 +13,7 @@ export interface Drawn {
   readonly halfWidth: number;
 }
 interface Hit {
-  readonly item: GeographyItem;
+  readonly item: Geography.Item;
   readonly distance: number;
   readonly order: number;
 }
@@ -102,7 +98,7 @@ export function itemOf(
   source: Data,
   type: string,
   position: number,
-): GeographyItem {
+): Geography.Item {
   const table = source.tables[type];
   return { kind, source, index: table.index, row: rowAt(table.rows, position) };
 }
@@ -131,13 +127,13 @@ export function pick(
   radiusPx: number,
   limit: number,
   check?: () => void,
-): GeographyItem[] {
+): Geography.Item[] {
   const at = projector.unproject(point);
   if (!at) return [];
   const [x, y] = at,
     [px, py] = pixelsAt(projector, x, y),
     hits = new Map<string, Hit>();
-  const keep = (item: GeographyItem, distance: number, order: number) => {
+  const keep = (item: Geography.Item, distance: number, order: number) => {
     const key = `${order}:${item.row}`,
       before = hits.get(key);
     if (!before || distance < before.distance) hits.set(key, { item, distance, order });

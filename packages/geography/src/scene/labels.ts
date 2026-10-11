@@ -1,5 +1,5 @@
 import { assertIndex, bitAt, failure, rowAt, rowCount, textAt, type Data } from '@latkit/model';
-import { kit, type Gpu, type Labels as LabelOptions, type TextLayout } from '@latkit/gpu';
+import { kit, type Gpu, type Labels as LabelOptions } from '@latkit/gpu';
 import type { Shapes } from '../prepare/shapes.js';
 import type { Style } from '../options.js';
 import { meets, type Region } from './visible.js';
@@ -19,7 +19,7 @@ interface Entry {
   readonly labels: string | LabelOptions;
   readonly defaults: readonly unknown[];
   /** Each row's text, laid out once. */
-  readonly layouts: Map<number, TextLayout>;
+  readonly layouts: Map<number, kit.TextLayout>;
   readonly bank: kit.TextBank;
 }
 /** A piece this narrow on screen, in CSS pixels, is too small to name. */

@@ -41,6 +41,7 @@ export function fakeDevice(
     RENDER_ATTACHMENT: 16,
   });
   vi.stubGlobal('GPUShaderStage', { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 });
+  vi.stubGlobal('GPUMapMode', { READ: 1, WRITE: 2 });
   const loss = deferred<GPUDeviceLostInfo>();
   const buffers: FakeBuffer[] = [];
   const textures: FakeTexture[] = [];
@@ -110,6 +111,10 @@ export function fakeDevice(
         destroy: vi.fn(() => {
           destroyed = true;
         }),
+        mapAsync: vi.fn(() => Promise.resolve()),
+        getMappedRange: (offset = 0, size = descriptor.size - offset) =>
+          bytes.buffer.slice(offset, offset + size),
+        unmap: vi.fn(),
       } as unknown as FakeBuffer;
       buffers.push(buffer);
       return buffer;

@@ -1,9 +1,8 @@
 import { createData, failure, type Data } from '@latkit/model';
-import { geojsonBatches, type GeoJsonOptions } from './sources/geojson.js';
+import { geojsonBatches } from './sources/geojson.js';
+import type { Geography } from './geography.js';
 import { run } from './prepare/client.js';
 import { parseJson } from './prepare/jobs.js';
-
-export type { GeoJsonOptions } from './sources/geojson.js';
 
 /**
  * Rows from GeoJSON: a FeatureCollection, a Feature, or a bare geometry. Polygons give `rings`,
@@ -13,7 +12,7 @@ export type { GeoJsonOptions } from './sources/geojson.js';
  */
 export async function geojson(
   from: string | URL | Blob | ArrayBuffer | ArrayBufferView | object,
-  options: GeoJsonOptions = {},
+  options: Geography.GeoJsonOptions = {},
 ): Promise<Data> {
   const { signal, type, id, source } = options;
   signal?.throwIfAborted();

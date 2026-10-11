@@ -8,7 +8,7 @@ import labelsSource from './labels.wgsl';
 /** The kit's projection, then the geography's bindings over it, which every drawing module includes. */
 const common = kit.projectionShader() + commonSource;
 /** Floats of the geography's style block. */
-export const STYLE_FLOATS = 40;
+export const STYLE_FLOATS = 44;
 /** Floats of the style block's members. */
 export const S = {
   surface: 0,
@@ -21,6 +21,7 @@ export const S = {
   axis: 28,
   flow: 32,
   motion: 36,
+  grid: 40,
 } as const;
 
 /**

@@ -33,7 +33,7 @@ struct Varying {
   @location(2) color:vec4f,
   @location(3) @interpolate(flat) identity:vec4u,
   @location(4) world:vec3f,
-  /** Its shade, whether it lifts off the globe, how far along its edge it starts, and its opacity. */
+  /** Its shade, whether it lies on the globe's surface, how far along its edge it starts, and its opacity. */
   @location(5) @interpolate(flat) extra:vec4f,
   /** Each true end's place on screen and the marker radius it clears; a negative radius at a bend. */
   @location(6) @interpolate(flat) discA:vec3f,
@@ -63,12 +63,16 @@ fn glowTint(f:u32,own:vec4f)->vec4f {
   if(f==2u){return u.hoverColor;}
   return select(u.selectedColor,own,u.selectedColor.a<0.0);
 }
-/** A vertex marker's radius, as hover has grown it. */
+/**
+ * A vertex marker's radius: fitted to the zoom, never under the least the style allows unless its
+ * own is, and eased back to its own size and past it as hover grows it.
+ */
 fn grown(radius:f32,dense:u32)->f32 {
   var growth=0.0;
   if(dense==u.grown.x){growth=u.growth.x;}
   if(dense==u.grown.y){growth=u.growth.y;}
-  return radius*(1.0+(u.hoverScale-1.0)*growth);
+  let fitted=max(radius*u.markerFit,min(radius,u.vertexMinRadiusPx));
+  return mix(fitted,radius*u.hoverScale,growth);
 }
 fn screen(p:vec4f)->vec2f{return vec2f((p.x/p.w+1.0)*u.view.x*0.5,(1.0-p.y/p.w)*u.view.y*0.5);}
 fn hidden()->Varying { var out:Varying;out.position=vec4f(2.0,2.0,2.0,1.0);return out; }
@@ -339,18 +343,12 @@ fn lit(v:Varying)->Lit {
   color=shade(ShadeFragment(color,px,v.extra.x));
   return Lit(outputColor(color,max(line,comets)*v.extra.w*select(u.glow.z,1.0,FOCUS)),distanceTo-outer);
 }
-/** A line's pixel at its depth, lifted where it would sink into the globe. */
+/** A line's pixel at its depth: a curve's on the globe's surface under the pixel, which it never sinks beneath. */
 fn painted(v:Varying,color:vec4f)->PaintOut {
   if(color.a<=0.001){discard;}
   var result:PaintOut;result.color=color;
   result.depth=v.position.z;
-  if(u.view.w>1.5&&v.extra.y>0.5){
-    let sphere=v.world+vec3f(0,0,1);let radius=length(sphere);
-    let world=sphere*max(1.0,radius)/max(radius,0.000001)-vec3f(0,0,1);
-    let clip=project_world(world,u);
-    let lift=select(0.0,FOCUS_LIFT,FOCUS);
-    result.depth=clamp(clip.z/clip.w-0.0000001-lift,0.0,1.0);
-  }
+  if(v.extra.y>0.5){result.depth=projection_ground_depth(v.position,v.world,projectionOf(u),select(0.0,FOCUS_LIFT,FOCUS));}
   return result;
 }
 @fragment fn fragment_main(v:Varying)->PaintOut {return painted(v,lit(v).color);}

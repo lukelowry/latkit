@@ -1,33 +1,9 @@
-import { type ColumnPages, framesOf, frameGroup, frameGroups, type Frames } from './pages.js';
-import type {
-  Column,
-  DataType,
-  NumericArray,
-  NumericColumn,
-  RowAxis,
-  RowSelection,
-  SampleColumn,
-  TextColumn,
-} from './data.js';
-import type { ColumnPage, Data, TableData } from './materialized.js';
-import type { Item } from './item.js';
-import type {
-  AggregateBlock,
-  AggregateQuery,
-  EnvelopeBlock,
-  EnvelopeColumn,
-  EnvelopeQuery,
-  Filter,
-  Query,
-  QueryBlock,
-  QueryOptions,
-  RowsBlock,
-  RowsQuery,
-  SamplesBlock,
-  SamplesQuery,
-  SampleWindow,
-} from './query.js';
-import { assertIndex, bitAt, rowAt, rowCount, sliceRows, textAt } from './access.js';
+import { framesOf, frameGroup, frameGroups, type Frames } from '../data/pages.js';
+import type { Column, Index } from '../data/column.js';
+import type { Data } from '../data/data.js';
+import type { Item } from '../item.js';
+import type { Query, Block } from './query.js';
+import { assertIndex, bitAt, rowAt, rowCount, sliceRows, textAt } from '../data/access.js';
 import {
   compactRows,
   containsRows,
@@ -36,39 +12,25 @@ import {
   position,
   sliceColumn,
   sliceSamples,
-} from './columns.js';
-import { blockBuffers, blockByteLength } from './buffers.js';
-import { failure } from './error.js';
-import { yieldTask } from './work.js';
-import { IdIndex } from './ids.js';
-import { validateQuery, checkSampleWindow } from './validation/query.js';
+} from '../data/columns.js';
+import { blockBuffers, blockByteLength } from '../data/buffers.js';
+import { failure } from '../failure.js';
+import { yieldTask } from '../work.js';
+import { IdIndex } from '../data/ids.js';
+import { validateQuery, checkSampleWindow } from '../validation/query.js';
 import { BLOCK_BYTES } from './query.js';
-import { Check } from './validation/check.js';
-
-export type ReadResult<Q extends Query> = Q extends RowsQuery
-  ? RowsBlock
-  : Q extends SamplesQuery
-    ? SamplesBlock
-    : Q extends EnvelopeQuery
-      ? EnvelopeBlock
-      : Q extends AggregateQuery
-        ? AggregateBlock
-        : QueryBlock;
-
+import { Check } from '../validation/check.js';
+import type { Schema } from '../schema/schema.js';
 /** Bounded local computation over application-owned values. Never performs I/O. */
 export function read<Q extends Query>(
   data: Data,
   query: Q,
-  options: QueryOptions = {},
-): AsyncIterable<ReadResult<Q>> {
-  return execute(data, query, options) as AsyncIterable<ReadResult<Q>>;
+  options: Query.Options = {},
+): AsyncIterable<Block.Of<Q>> {
+  return execute(data, query, options) as AsyncIterable<Block.Of<Q>>;
 }
 
-async function* execute(
-  data: Data,
-  query: Query,
-  options: QueryOptions,
-): AsyncGenerator<QueryBlock> {
+async function* execute(data: Data, query: Query, options: Query.Options): AsyncGenerator<Block> {
   options.signal?.throwIfAborted();
   const issues = validateQuery(data.schema, query);
   if (issues.length) throw failure('invalid-input', issues[0].message, { issues });
@@ -112,15 +74,15 @@ async function* execute(
   }
 }
 
-const idIndexes = new WeakMap<TableData['ids'], IdIndex>();
-const idSelections = new WeakMap<TableData['ids'], WeakMap<readonly string[], RowAxis>>();
+const idIndexes = new WeakMap<Data.Table['ids'], IdIndex>();
+const idSelections = new WeakMap<Data.Table['ids'], WeakMap<readonly string[], Index.Rows>>();
 export function selectRows(
-  table: TableData,
-  selection?: RowSelection,
+  table: Data.Table,
+  selection?: Index.Selection,
   available = table.rows,
-): RowAxis {
+): Index.Rows {
   if (!selection) return available;
-  let selected: RowAxis;
+  let selected: Index.Rows;
   if (selection.kind === 'ids') {
     let index = idIndexes.get(table.ids);
     if (!index) idIndexes.set(table.ids, (index = new IdIndex(table.ids)));
@@ -148,14 +110,14 @@ export function selectRows(
 }
 
 interface PageIndex {
-  readonly sorted: readonly ColumnPage[];
+  readonly sorted: readonly Data.Page[];
   readonly ranges: boolean;
 }
-const pageIndexes = new WeakMap<ColumnPages, PageIndex>();
-function pageIndex(pages: ColumnPages): PageIndex {
+const pageIndexes = new WeakMap<Data.Pages, PageIndex>();
+function pageIndex(pages: Data.Pages): PageIndex {
   let index = pageIndexes.get(pages);
   if (!index) {
-    const sorted = Array.from<ColumnPage>(pages).sort(
+    const sorted = Array.from<Data.Page>(pages).sort(
       (a, b) =>
         (a.samples?.firstFrame ?? 0) - (b.samples?.firstFrame ?? 0) ||
         rowAtOrZero(a.rows) - rowAtOrZero(b.rows),
@@ -165,7 +127,7 @@ function pageIndex(pages: ColumnPages): PageIndex {
   }
   return index;
 }
-function rowAtOrZero(rows: RowAxis): number {
+function rowAtOrZero(rows: Index.Rows): number {
   return rows.kind === 'range' ? rows.offset : (rows.values[0] ?? 0);
 }
 
@@ -176,13 +138,13 @@ export function itemId(item: Item): string {
   assertIndex(table.index, item.index);
   const page = findPage(table.ids, item.row),
     at = page ? position(page.rows, item.row) : -1,
-    id = page && at >= 0 ? textAt(page.column as TextColumn, at) : null;
+    id = page && at >= 0 ? textAt(page.column as Column.Text, at) : null;
   if (id === null)
     throw failure('invalid-input', `Row ${item.row} of ${item.index.type} has no id`);
   return id;
 }
 
-function findPage(pages: ColumnPages, row: number, frame?: number): ColumnPage | undefined {
+function findPage(pages: Data.Pages, row: number, frame?: number): Data.Page | undefined {
   // Frame groups have their own row index, keeping page lookup logarithmic for dense tiles.
   if (frame !== undefined) {
     const index = framesOf(pages),
@@ -234,7 +196,7 @@ function coordinateBound(index: Frames, value: number, upper: boolean): number {
   }
   return group.ordinal + a;
 }
-function frameRange(index: Frames, window: SampleWindow): [number, number] {
+function frameRange(index: Frames, window: Query.Window): [number, number] {
   if (!index.groups.length) {
     if (window.kind === 'frames' && window.count)
       throw failure('invalid-input', 'Requested observations are unavailable.');
@@ -271,17 +233,10 @@ function frameRange(index: Frames, window: SampleWindow): [number, number] {
   return [startFrame, end > first ? ordinalFrame(index, end - 1) + 1 : startFrame];
 }
 /** The last observation at or before a coordinate, shared across all row tiles. */
-export interface SampleLocation {
-  readonly frame: number;
-  readonly coordinate: number;
-  /** Frame offset into each page's sample coordinates and column strides. */
-  readonly offset: number;
-  readonly pages: readonly ColumnPage[];
-}
 
 /** Locate an observation without reading or copying its values. Equal coordinates select the
  * last observation; before the first observation, or with no samples, returns undefined. */
-export function locateSample(pages: ColumnPages, at: number): SampleLocation | undefined {
+export function locateSample(pages: Data.Pages, at: number): Data.Location | undefined {
   if (!Number.isFinite(at)) throw failure('invalid-input', 'Sample coordinate must be finite.');
   const index = framesOf(pages);
   const [first, end] = frameRange(index, { kind: 'at', value: at });
@@ -292,14 +247,34 @@ export function locateSample(pages: ColumnPages, at: number): SampleLocation | u
 }
 
 /** The absolute frames a sample window covers, `[first, end)`, from the shared sample index. */
-export function sampleFrames(pages: ColumnPages, window: SampleWindow): readonly [number, number] {
+export function sampleFrames(pages: Data.Pages, window: Query.Window): readonly [number, number] {
   const check = new Check();
   checkSampleWindow(check, window, []);
   if (check.issues.length) throw failure('invalid-input', check.issues[0].message);
   return frameRange(framesOf(pages), window);
 }
+/**
+ * The runs of frames held back to back within a sample window, `[first, end)` each, in order: a hole
+ * between appended samples parts them, and a `frames` read stays within one.
+ */
+export function sampleRuns(
+  pages: Data.Pages,
+  window: Query.Window,
+): readonly (readonly [number, number])[] {
+  const [first, end] = sampleFrames(pages, window),
+    runs: [number, number][] = [];
+  for (const group of frameGroups(framesOf(pages), first, end)) {
+    const from = Math.max(first, group.first),
+      to = Math.min(end, group.first + group.coordinates.length);
+    if (from >= to) continue;
+    const last = runs.at(-1);
+    if (last?.[1] === from) last[1] = to;
+    else runs.push([from, to]);
+  }
+  return runs;
+}
 /** Iterate only the pages covering a sample window, using the shared immutable sample index. */
-export function samplePages(pages: ColumnPages, window: SampleWindow): Iterable<ColumnPage> {
+export function samplePages(pages: Data.Pages, window: Query.Window): Iterable<Data.Page> {
   const [first, end] = sampleFrames(pages, window),
     index = framesOf(pages);
   return (function* () {
@@ -314,12 +289,12 @@ function ordinalFrame(index: Frames, ordinal: number): number {
   return group.first + ordinal - group.ordinal;
 }
 
-function pagesFor(table: TableData, field: string): ColumnPages {
+function pagesFor(table: Data.Table, field: string): Data.Pages {
   const pages = table.fields[field];
   if (!pages) throw failure('invalid-input', 'Field has not been supplied: ' + field);
   return pages;
 }
-function availableRows(pages: ColumnPages, frame: number): RowAxis {
+function availableRows(pages: Data.Pages, frame: number): Index.Rows {
   const group = frameGroup(framesOf(pages), frame);
   if (!group) return { kind: 'range', offset: 0, count: 0 };
   if (group.pages.length === 1) return group.pages[0].rows;
@@ -328,7 +303,7 @@ function availableRows(pages: ColumnPages, frame: number): RowAxis {
   if (
     group.ranges &&
     group.pages.every((p) => {
-      const r = p.rows as Extract<RowAxis, { kind: 'range' }>;
+      const r = p.rows as Extract<Index.Rows, { kind: 'range' }>;
       if (r.offset !== end) return false;
       end += r.count;
       return true;
@@ -342,7 +317,7 @@ function availableRows(pages: ColumnPages, frame: number): RowAxis {
   );
 }
 
-export function intersect(a: RowAxis, b: RowAxis): RowAxis {
+export function intersect(a: Index.Rows, b: Index.Rows): Index.Rows {
   if (containsRows(b, a)) return a;
   if (containsRows(a, b)) return b;
   if (a.kind === 'range' && b.kind === 'range') {
@@ -361,12 +336,12 @@ export function intersect(a: RowAxis, b: RowAxis): RowAxis {
   return compactRows(values);
 }
 function sampleRows(
-  table: TableData,
+  table: Data.Table,
   fields: readonly string[],
-  selection: RowSelection | undefined,
+  selection: Index.Selection | undefined,
   first: number,
   end: number,
-): RowAxis {
+): Index.Rows {
   let available = table.rows;
   for (const field of fields)
     for (const group of frameGroups(framesOf(pagesFor(table, field)), first, end)) {
@@ -377,7 +352,12 @@ function sampleRows(
   return selectRows(table, selection, available);
 }
 
-function columnFor(pages: ColumnPages, selected: RowAxis, type: DataType, frame?: number): Column {
+function columnFor(
+  pages: Data.Pages,
+  selected: Index.Rows,
+  type: Schema.FieldType,
+  frame?: number,
+): Column {
   const count = rowCount(selected);
   if (!count) return pages.length ? sliceColumn(pages.at(0)!.column, 0, 0) : emptyColumn(type);
   const first = findPage(pages, rowAt(selected, 0), frame);
@@ -389,7 +369,7 @@ function columnFor(pages: ColumnPages, selected: RowAxis, type: DataType, frame?
   ) {
     const row = selected.offset - first.rows.offset;
     if (frame === undefined) return sliceColumn(first.column, row, count);
-    const column = first.column as SampleColumn;
+    const column = first.column as Column.Sample;
     if (column.rowStride === 1)
       return sliceColumn(
         column,
@@ -402,7 +382,7 @@ function columnFor(pages: ColumnPages, selected: RowAxis, type: DataType, frame?
       page = findPage(pages, row, frame);
     if (!page)
       throw failure('invalid-input', 'Field does not cover the requested rows and observations.');
-    const c = page.column as SampleColumn,
+    const c = page.column as Column.Sample,
       at = position(page.rows, row);
     return {
       column: page.column,
@@ -415,7 +395,7 @@ function columnFor(pages: ColumnPages, selected: RowAxis, type: DataType, frame?
   return gather(cells, pages.at(0)?.column ?? emptyColumn(type));
 }
 
-export function emptyColumn(type: DataType): Column {
+export function emptyColumn(type: Schema.FieldType): Column {
   const base = { offset: 0, length: 0 };
   if (typeof type === 'string') {
     if (type === 'text')
@@ -436,7 +416,7 @@ export function emptyColumn(type: DataType): Column {
       kind: 'vector',
       ...base,
       size: type.size,
-      values: emptyColumn(type.items) as NumericColumn,
+      values: emptyColumn(type.items) as Column.Numeric,
     };
   if (type.kind === 'list')
     return { kind: 'list', ...base, offsets: new Int32Array(1), values: emptyColumn(type.items) };
@@ -460,14 +440,14 @@ function scalar(column: Column, row: number, data?: Data): string | number | boo
       target.ids,
       { kind: 'range', offset: column.values[at], count: 1 },
       'text',
-    ) as TextColumn;
+    ) as Column.Text;
     return textAt(id, 0);
   }
   if (column.kind === 'boolean') return bitAt(column.values, at);
   if (column.kind === 'text') return textAt(column, row);
   throw failure('unsupported', 'This operation requires scalar values.');
 }
-function matches(value: string | number | boolean | null, filter: Filter): boolean {
+function matches(value: string | number | boolean | null, filter: Query.Filter): boolean {
   switch (filter.operator) {
     case 'equal':
       return value === filter.value;
@@ -491,10 +471,10 @@ function matches(value: string | number | boolean | null, filter: Filter): boole
 }
 
 /** Fields constrain available rows without reading or gathering their values. */
-export type RowMappingRequest = Pick<RowsQuery, 'from' | 'select' | 'rows' | 'at'>;
+export type RowMappingRequest = Pick<Query.Rows, 'from' | 'select' | 'rows' | 'at'>;
 export interface RowMapping {
-  readonly index: TableData['index'];
-  readonly rows: RowAxis;
+  readonly index: Data.Table['index'];
+  readonly rows: Index.Rows;
 }
 /** Resolve physical rows, including sampled coverage and ID order. Never copies field values. */
 export function resolveRows(data: Data, request: RowMappingRequest): RowMapping | undefined {
@@ -513,11 +493,11 @@ export function resolveRows(data: Data, request: RowMappingRequest): RowMapping 
 }
 function fieldRows(
   data: Data,
-  table: TableData,
+  table: Data.Table,
   fields: readonly string[],
-  selection?: RowSelection,
+  selection?: Index.Selection,
   at?: number,
-): { rows: RowAxis; frames: Map<string, number> } | undefined {
+): { rows: Index.Rows; frames: Map<string, number> } | undefined {
   const definitions = data.schema.types[table.index.type].fields;
   const frames = new Map<string, number>();
   let available = table.rows;
@@ -534,10 +514,10 @@ function fieldRows(
 
 function* rows(
   data: Data,
-  table: TableData,
-  query: RowsQuery,
+  table: Data.Table,
+  query: Query.Rows,
   bound: number,
-): Generator<RowsBlock> {
+): Generator<Block.Rows> {
   const definitions = data.schema.types[query.from].fields;
   const used = [
     ...new Set([
@@ -594,7 +574,7 @@ function* rows(
         if (page?.rows.kind === 'range')
           n = Math.min(n, page.rows.offset + page.rows.count - selected.offset - offset);
       }
-    let block: RowsBlock;
+    let block: Block.Rows;
     for (;;) {
       const part = sliceRows(selected, offset, n);
       const columns = Object.fromEntries(
@@ -610,7 +590,7 @@ function* rows(
         rowOffset: offset,
         columns,
         ...(query.count ? { total } : {}),
-        ...(query.ids ? { ids: columnFor(table.ids, part, 'text') as TextColumn } : {}),
+        ...(query.ids ? { ids: columnFor(table.ids, part, 'text') as Column.Text } : {}),
       };
       if (blockByteLength(block) <= bound || n <= 1) break;
       n = Math.ceil(n / 2);
@@ -620,7 +600,7 @@ function* rows(
     offset += n;
   }
 }
-function widthOf(type: DataType): number {
+function widthOf(type: Schema.FieldType): number {
   if (typeof type === 'string') return type === 'float64' ? 9 : type === 'text' ? 32 : 5;
   return type.kind === 'vector'
     ? type.size * widthOf(type.items) + 1
@@ -630,12 +610,12 @@ function widthOf(type: DataType): number {
 }
 
 function sampleColumn(
-  pages: ColumnPages,
-  selected: RowAxis,
+  pages: Data.Pages,
+  selected: Index.Rows,
   first: number,
   nf: number,
-  type: DataType,
-): SampleColumn {
+  type: Schema.FieldType,
+): Column.Sample {
   const nr = rowCount(selected),
     page = nr ? findPage(pages, rowAt(selected, 0), first) : undefined;
   if (
@@ -646,14 +626,14 @@ function sampleColumn(
     first + nf <= page.samples.firstFrame + page.samples.coordinates.length
   )
     return sliceSamples(
-      page.column as SampleColumn,
+      page.column as Column.Sample,
       selected.offset - page.rows.offset,
       nr,
       first - page.samples.firstFrame,
       nf,
     );
-  const template = emptyColumn(type) as NumericColumn;
-  const Constructor = template.values.constructor as { new (length: number): NumericArray };
+  const template = emptyColumn(type) as Column.Numeric;
+  const Constructor = template.values.constructor as { new (length: number): Column.NumericArray };
   const values = new Constructor(nr * nf),
     validity = new Uint8Array(Math.ceil(values.length / 8));
   let nullable = false;
@@ -666,7 +646,7 @@ function sampleColumn(
       contiguous.rows.kind === 'range' &&
       containsRows(contiguous.rows, selected)
     ) {
-      const c = contiguous.column as SampleColumn,
+      const c = contiguous.column as Column.Sample,
         at =
           c.offset +
           (selected.offset - contiguous.rows.offset) * c.rowStride +
@@ -686,7 +666,7 @@ function sampleColumn(
         p = findPage(pages, row, first + f);
       if (!p?.samples)
         throw failure('invalid-input', 'Samples do not cover the requested rectangle.');
-      const c = p.column as SampleColumn,
+      const c = p.column as Column.Sample,
         at =
           c.offset +
           position(p.rows, row) * c.rowStride +
@@ -734,10 +714,10 @@ function coordinatesFor(index: Frames, first: number, count: number): Float64Arr
 }
 function* samples(
   data: Data,
-  table: TableData,
-  query: SamplesQuery,
+  table: Data.Table,
+  query: Query.Samples,
   bound: number,
-): Generator<SamplesBlock> {
+): Generator<Block.Samples> {
   const definitions = data.schema.types[query.from].fields;
   const indexes = query.select.map((name) => framesOf(pagesFor(table, name))),
     index = indexes[0];
@@ -774,7 +754,7 @@ function* samples(
         const current = frameGroup(indexes[i], frame)!;
         if (frame + nf <= current.first + current.coordinates.length)
           strideBytes += current.pages.reduce((max, page) => {
-            const c = page.column as SampleColumn;
+            const c = page.column as Column.Sample;
             return Math.max(max, c.frameStride * (c.values.BYTES_PER_ELEMENT + 1 / 8));
           }, 1);
       }
@@ -797,7 +777,7 @@ function* samples(
             if (page?.rows.kind === 'range')
               n = Math.min(n, page.rows.offset + page.rows.count - selected.offset - offset);
           }
-        let block: SamplesBlock;
+        let block: Block.Samples;
         for (;;) {
           const part = sliceRows(selected, offset, n);
           block = {
@@ -829,11 +809,11 @@ function* samples(
 
 async function* aggregate(
   data: Data,
-  table: TableData,
-  query: AggregateQuery,
+  table: Data.Table,
+  query: Query.Aggregate,
   bound: number,
   signal?: AbortSignal,
-): AsyncGenerator<AggregateBlock> {
+): AsyncGenerator<Block.Aggregate> {
   let yieldedAt = performance.now();
   const values: Record<string, { count: number; min: number | null; max: number | null }> =
     Object.fromEntries(query.select.map((name) => [name, { count: 0, min: null, max: null }]));
@@ -852,7 +832,7 @@ async function* aggregate(
     }
     signal?.throwIfAborted();
     for (const name of query.select) {
-      const column = block.columns[name] as SampleColumn,
+      const column = block.columns[name] as Column.Sample,
         target = values[name];
       const nr = rowCount(block.rows),
         nf = block.kind === 'samples' ? block.coordinates.length : 1;
@@ -886,11 +866,11 @@ async function* aggregate(
 
 async function* envelope(
   data: Data,
-  table: TableData,
-  query: EnvelopeQuery,
+  table: Data.Table,
+  query: Query.Envelope,
   bound: number,
   signal?: AbortSignal,
-): AsyncGenerator<EnvelopeBlock> {
+): AsyncGenerator<Block.Envelope> {
   let yieldedAt = performance.now();
   const anchor = pagesFor(table, query.select[0]),
     index = framesOf(anchor),
@@ -910,13 +890,15 @@ async function* envelope(
   for (let offset = 0; offset < nr; offset += capacity) {
     const part = sliceRows(selected, offset, Math.min(capacity, nr - offset)),
       count = rowCount(part),
-      columns: Record<string, EnvelopeColumn> = {};
+      columns: Record<string, Block.EnvelopeColumn> = {};
     const invalid = new Map<string, Uint8Array>();
     for (const name of query.select) {
       const template = emptyColumn(
         data.schema.types[query.from].fields[name].type,
-      ) as NumericColumn;
-      const Constructor = template.values.constructor as { new (length: number): NumericArray };
+      ) as Column.Numeric;
+      const Constructor = template.values.constructor as {
+        new (length: number): Column.NumericArray;
+      };
       const length = count * query.buckets * 4;
       columns[name] = {
         values: {

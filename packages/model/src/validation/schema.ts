@@ -1,10 +1,9 @@
-import type { DataType } from '../data.js';
-import type { Problem } from '../types.js';
 import { bounds, Check, numeric, own, record } from './check.js';
 import type { Path } from './check.js';
-
+import type { Schema } from '../schema/schema.js';
+import type { Failure } from '../failure.js';
 /** Structural/domain-description validation. Does not inspect implementation state or mutate input. */
-export function validateSchema(value: unknown): readonly Problem[] {
+export function validateSchema(value: unknown): readonly Failure.Problem[] {
   const c = new Check();
   const schema = c.object(value, []);
   const types = c.object(schema.types, ['types']);
@@ -94,7 +93,7 @@ function dataType(c: Check, value: unknown, path: Path, names: Set<string>, dept
 export function domainValue(
   c: Check,
   value: unknown,
-  type: DataType,
+  type: Schema.FieldType,
   nullable: boolean,
   path: Path,
 ): void {

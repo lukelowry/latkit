@@ -8,12 +8,10 @@ import {
   validateBatch,
   type Column,
   type Data,
-  type ListColumn,
-  type VectorColumn,
 } from '@latkit/model';
-import { geojsonBatches, type GeoJsonOptions } from '../src/sources/geojson.js';
+import { geojsonBatches } from '../src/sources/geojson.js';
 import { geojson } from '../src/geojson.js';
-
+import type { Geography } from '../src/geography.js';
 type Ring = number[][];
 
 /** A cell as plain values: numbers, booleans, text, and nested arrays; null when absent. */
@@ -112,7 +110,7 @@ function thrown(run: () => unknown): unknown {
   throw new Error('Expected a failure.');
 }
 
-async function expectNotGeoJson(value: unknown, options?: GeoJsonOptions): Promise<void> {
+async function expectNotGeoJson(value: unknown, options?: Geography.GeoJsonOptions): Promise<void> {
   const error = thrown(() => geojsonBatches(value, options));
   expect(isFailure(error, 'invalid-input')).toBe(true);
   expect((error as Error).message).toMatch(/^Not GeoJSON: /);
@@ -509,9 +507,9 @@ describe('geojson geometry', () => {
     );
     expect(batches).toHaveLength(1);
     for (const batch of batches) expect(validateBatch(schema, batch)).toEqual([]);
-    const rings = batches[0].columns.rings as ListColumn;
-    const paths = rings.values as ListColumn;
-    const positions = paths.values as VectorColumn;
+    const rings = batches[0].columns.rings as Column.List;
+    const paths = rings.values as Column.List;
+    const positions = paths.values as Column.Vector;
     expect(rings.offsets).toBeInstanceOf(Int32Array);
     expect(paths.offsets).toBeInstanceOf(Int32Array);
     expect(positions.values.values).toBeInstanceOf(Float64Array);
@@ -727,8 +725,8 @@ describe('geojson scale', () => {
     const elapsed = performance.now() - start;
     expect(elapsed).toBeLessThan(1500);
     expect(rowCount(batches[0].rows)).toBe(101_000);
-    const rings = batches[0].columns.rings as ListColumn;
-    expect(((rings.values as ListColumn).values as VectorColumn).length).toBe(100_000);
+    const rings = batches[0].columns.rings as Column.List;
+    expect(((rings.values as Column.List).values as Column.Vector).length).toBe(100_000);
     expect(schema.types.Feature.fields.zone).toEqual({ type: 'boolean', nullable: true });
     const data = await geojson(value);
     expect(Object.keys(data.tables)).toEqual(['Feature']);

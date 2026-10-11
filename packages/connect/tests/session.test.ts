@@ -2,11 +2,11 @@ import { expect, it, vi } from 'vitest';
 import { Session } from '../src/session.js';
 import { defaults } from '../src/core.js';
 import { Op, decode, prepare } from '../src/frame.js';
-import type { ConnectLimits, WebSocketLike } from '../src/types.js';
+import type { Connection } from '../src/types.js';
 import { batch, schema, pause } from './fixture.js';
 import { preparePublication } from '../src/columns.js';
 
-class Socket implements WebSocketLike {
+class Socket implements Connection.Socket {
   readyState = 1;
   protocol = 'latkit.connect';
   binaryType = 'arraybuffer';
@@ -36,7 +36,7 @@ class Socket implements WebSocketLike {
     queueMicrotask(() => this.emit('close'));
   }
 }
-function sessions(overrides: Partial<ConnectLimits> = {}) {
+function sessions(overrides: Partial<Connection.Limits> = {}) {
   const a = new Socket(),
     b = new Socket();
   a.peer = b;

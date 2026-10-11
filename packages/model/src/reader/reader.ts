@@ -1,64 +1,84 @@
-import { failure } from '../error.js';
-import type { Data } from '../materialized.js';
-import { BLOCK_BYTES, type Query } from '../query.js';
-import type { ReadResult } from '../read.js';
-import type { Domain } from '../types.js';
+import { failure } from '../failure.js';
+import type { Data } from '../data/data.js';
+import type { Index, Domain } from '../data/column.js';
+import { BLOCK_BYTES, type Block, type Query } from '../query/query.js';
 import { Blocks } from './blocks.js';
 import { Fields, type FieldScope } from './fields.js';
 import { Keys } from './keys.js';
-import { Memory, type Entry, type MemoryStats } from '../memory.js';
+import { Memory } from './memory.js';
 import { interruptible } from '../work.js';
-import type { ExtentRequest, FieldsBlock, FieldsRequest } from './types.js';
-
-export interface ReaderOptions {
-  /**
-   * The pool that holds memoized blocks, field tiles, and extents, and bounds transient copies.
-   * Borrowed: destroy never destroys it. Defaults to a pool of the reader's own.
-   */
-  readonly memory?: Memory;
-  /** Bound of one read block. Defaults to 1 MiB. */
-  readonly maxBlockBytes?: number;
-  /** Validate schemas, queries, and blocks at this boundary. Defaults to false. */
-  readonly validate?: boolean;
-}
+import type { FieldInput } from './types.js';
 
 /** Bounded, memoized local reads over immutable Data, shared by everything that reads through it. */
 export interface Reader {
   /** Reads whose results stay cached and held until the scope closes. */
-  open(options?: { readonly signal?: AbortSignal; readonly at?: number }): ReadScope;
+  open(options?: { readonly signal?: AbortSignal; readonly at?: number }): Reader.Scope;
   /** The stats of the reader's memory pool. */
-  stats(): MemoryStats;
+  stats(): Memory.Stats;
   /** Evict every result no one holds from the reader's memory pool. */
   trim(): void;
   destroy(): void;
 }
-
-export interface ReadScope {
-  readonly signal: AbortSignal;
-  /** Coordinate sampled fields read at when a request has no window. */
-  readonly at?: number;
-  read<Q extends Query>(data: Data, query: Q): AsyncIterable<ReadResult<Q>>;
-  fields(request: FieldsRequest): AsyncIterable<FieldsBlock>;
-  extent(request: ExtentRequest): Promise<Domain | null>;
-  /**
-   * The same scope, noting in `record` what its reads hold and whether any read sampled fields at
-   * the scope's coordinate: what work derived from the reads depends on.
-   */
-  recording(record: ReadRecord): ReadScope;
-  /** Hold results again, as reused work derived from them does; false if any was evicted. */
-  hold(entries: Iterable<Entry>): boolean;
-  /** Iterators not yet finished, or extents still pending. */
-  readonly busy: boolean;
-  /** Stop reads and release every result this scope held. Idempotent. */
-  close(): void;
+export declare namespace Reader {
+  interface Options {
+    /**
+     * The pool that holds memoized blocks, field tiles, and extents, and bounds transient copies.
+     * Borrowed: destroy never destroys it. Defaults to a pool of the reader's own.
+     */
+    readonly memory?: Memory;
+    /** Bound of one read block. Defaults to 1 MiB. */
+    readonly maxBlockBytes?: number;
+    /** Validate schemas, queries, and blocks at this boundary. Defaults to false. */
+    readonly validate?: boolean;
+  }
+  /** Reads that stay cached and held until it closes. */
+  interface Scope {
+    readonly signal: AbortSignal;
+    /** Coordinate sampled fields read at when a request has no window. */
+    readonly at?: number;
+    read<Q extends Query>(data: Data, query: Q): AsyncIterable<Block.Of<Q>>;
+    fields(request: FieldsRequest): AsyncIterable<Block.Fields>;
+    extent(request: ExtentRequest): Promise<Domain | null>;
+    /**
+     * The same scope, noting in `dependencies` what its reads hold and whether any read sampled
+     * fields at the scope's coordinate: what work derived from the reads depends on.
+     */
+    recording(dependencies: Dependencies): Scope;
+    /** Hold results again, as reused work derived from them does; false if any was evicted. */
+    hold(entries: Iterable<Memory.Entry>): boolean;
+    /** Iterators not yet finished, or extents still pending. */
+    readonly busy: boolean;
+    /** Stop reads and release every result this scope held. Idempotent. */
+    close(): void;
+  }
+  /** What reads through a recording scope held, and whether they read at its coordinate. */
+  interface Dependencies {
+    readonly entries: Set<Memory.Entry>;
+    sampled: boolean;
+  }
+  /** Fields joined to the rows of one type of a source. */
+  interface FieldsRequest {
+    readonly source: Data;
+    readonly from: string;
+    readonly rows?: Index.Selection;
+    /** Output names to inputs. */
+    readonly fields: Readonly<Record<string, FieldInput>>;
+    /** Omitted reads static fields, and sampled fields at the scope's coordinate. */
+    readonly window?: Query.Window;
+    readonly ids?: boolean;
+  }
+  /** The finite extent of one scalar numeric field over the requested rows. */
+  interface ExtentRequest {
+    readonly source: Data;
+    readonly from: string;
+    readonly rows?: Index.Selection;
+    readonly field: FieldInput;
+    /** Omitted reads static fields, and sampled fields at the scope's coordinate. */
+    readonly window?: Query.Window;
+  }
 }
-/** What reads through a recording scope held, and whether they read at its coordinate. */
-export interface ReadRecord {
-  readonly entries: Set<Entry>;
-  sampled: boolean;
-}
 
-export function createReader(options: ReaderOptions = {}): Reader {
+export function createReader(options: Reader.Options = {}): Reader {
   return new Cache(options);
 }
 
@@ -71,7 +91,7 @@ class Cache implements Reader {
   readonly #fields: Fields;
   readonly #stopped = new AbortController();
 
-  constructor(options: ReaderOptions) {
+  constructor(options: Reader.Options) {
     this.#owned = !options.memory;
     this.#memory = options.memory ?? new Memory();
     const blockBytes = options.maxBlockBytes ?? BLOCK_BYTES;
@@ -87,7 +107,7 @@ class Cache implements Reader {
     this.#fields = new Fields(this.#memory, this.#keys, bound);
   }
 
-  open(options: { readonly signal?: AbortSignal; readonly at?: number } = {}): ReadScope {
+  open(options: { readonly signal?: AbortSignal; readonly at?: number } = {}): Reader.Scope {
     this.#stopped.signal.throwIfAborted();
     if (options.at !== undefined && !Number.isFinite(options.at))
       throw failure('invalid-input', 'Read coordinate must be finite');
@@ -97,11 +117,11 @@ class Cache implements Reader {
       stop.signal,
       ...(options.signal ? [options.signal] : []),
     ]);
-    const held = new Set<Entry>(),
+    const held = new Set<Memory.Entry>(),
       iterators = new Set<AsyncIterator<unknown>>();
     let pending = 0,
       closed = false;
-    const use = (entry: Entry) => {
+    const use = (entry: Memory.Entry) => {
       if (closed) throw failure('closed', 'Read scope is closed');
       if (!held.has(entry)) {
         entry.pin();
@@ -127,7 +147,7 @@ class Cache implements Reader {
     });
     const fields = this.#fields;
     /** The scope, noting into each record what its reads hold and whether they read at `at`. */
-    const scope = (records: readonly ReadRecord[]): ReadScope => {
+    const scope = (records: readonly Reader.Dependencies[]): Reader.Scope => {
       const fieldScope: FieldScope = {
         signal,
         get at() {
@@ -135,7 +155,7 @@ class Cache implements Reader {
           return options.at;
         },
         read: <Q extends Query>(data: Data, query: Q) =>
-          this.#blocks.read(data, query, signal) as AsyncIterable<ReadResult<Q>>,
+          this.#blocks.read(data, query, signal) as AsyncIterable<Block.Of<Q>>,
         use: (entry) => {
           use(entry);
           for (const record of records) record.entries.add(entry);
@@ -177,7 +197,7 @@ class Cache implements Reader {
     return scope([]);
   }
 
-  stats(): MemoryStats {
+  stats(): Memory.Stats {
     return this.#memory.stats();
   }
   trim(): void {

@@ -1,13 +1,12 @@
 import { Work, failure } from '@latkit/model';
-import { kit, type Point, type TextAlign, type TextBaseline } from '@latkit/gpu';
+import { kit, type Point } from '@latkit/gpu';
 import type { Scene, Vertex, Rect, Edge, End, Wire, Part } from './scene.js';
 import type { DragWire } from './drag.js';
-import type { Limits } from './options.js';
 import type { Style } from './config.js';
 import { rect, union, expand, groupFrame, intersects, sceneRows } from './scene.js';
 import { rootEnd } from './layout.js';
 import { Routing, obstacles, routeEdge, separate, draw, type Moved, type Route } from './route.js';
-
+import type { Diagram } from './diagram.js';
 export function boundary(
   vertex: Pick<Vertex, 'x' | 'y' | 'width' | 'height' | 'shape' | 'radius'>,
   toward: Point,
@@ -109,7 +108,7 @@ function routing(options: Style): string {
 export async function geometry(
   scene: Scene,
   options: Style,
-  limits: Required<Limits>,
+  limits: Required<Diagram.Limits>,
   signal: AbortSignal,
   previous?: Scene,
   work: Work = new Work(signal, limits.layoutMs),
@@ -416,7 +415,7 @@ const SLIDES = 16;
  */
 function* spots(edge: Edge, paths: readonly (readonly Point[])[]): Generator<Point[], void> {
   const text = edge.label,
-    at = (x: number, y: number, align: TextAlign, baseline: TextBaseline) =>
+    at = (x: number, y: number, align: kit.TextAlign, baseline: kit.TextBaseline) =>
       kit.textOrigin(text, [x, y], align, baseline);
   if (edge.options.appearance === 'tag') {
     yield paths.map(([a, b]) =>

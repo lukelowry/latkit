@@ -11,7 +11,7 @@ import type { Query, Data } from '@latkit/model';
 import type { Gpu } from '@latkit/gpu';
 import { arrange } from '@latkit/diagram';
 import { GraphSource } from '../src/source.js';
-import type { DiagramPort, DiagramRow } from '@latkit/diagram';
+import type { Diagram } from '@latkit/diagram';
 import {
   plugged,
   ports,
@@ -91,8 +91,8 @@ it('supports filtering, ordering, sparse IDs, counts and cancellation', async ()
   ).rejects.toMatchObject({ name: 'AbortError' });
 });
 /** A block or wire as the diagram names it, or one of a block's ports. */
-function item(graph: Parameters<typeof connectGraph>[0], id: string): DiagramRow;
-function item(graph: Parameters<typeof connectGraph>[0], id: string, port: string): DiagramPort;
+function item(graph: Parameters<typeof connectGraph>[0], id: string): Diagram.Row;
+function item(graph: Parameters<typeof connectGraph>[0], id: string, port: string): Diagram.Port;
 function item(graph: Parameters<typeof connectGraph>[0], id: string, port?: string) {
   const row = new GraphSource(graph).item(id)!;
   return port === undefined ? row : { ...row, kind: 'port', port };

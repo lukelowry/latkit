@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { pair, batch, fields, collect } from '../../connect/tests/fixture.js';
-import { createData, type NumericColumn } from '@latkit/model';
+import { createData, type Column } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { type GpuPage } from '../src/kit.js';
 import { bytes, fakeDevice } from './fixtures/device.js';
@@ -9,7 +9,7 @@ import { draw } from './fixtures/render.js';
 
 it('reads and uploads the same native contract through connect without a renderer transport adapter', async () => {
   const patch = batch(100000);
-  (patch.columns.value as NumericColumn).values.set(
+  (patch.columns.value as Column.Numeric).values.set(
     Float64Array.from({ length: 100000 }, (_, i) => i),
   );
   const h = await pair({
@@ -24,7 +24,7 @@ it('reads and uploads the same native contract through connect without a rendere
   } finally {
     await h.close();
   }
-  const source = { index: patch.index, values: (patch.columns.value as NumericColumn).values };
+  const source = { index: patch.index, values: (patch.columns.value as Column.Numeric).values };
   const fake = fakeDevice(),
     gpu = await createGpu({ device: fake.device, validate: true });
   try {

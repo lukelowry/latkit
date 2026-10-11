@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { FieldsBlock, FieldValues } from '@latkit/model';
+import type { Block, FieldInput } from '@latkit/model';
 import {
   bindChannels,
   channelOn,
@@ -13,7 +13,7 @@ import {
 const KINDS = { x: 'raw', y: 'raw', size: [2, 8], color: 'color', visible: 'raw' } as const;
 
 it('binds constants, fields, lanes, and scales, sharing one column per field', () => {
-  const position: FieldValues = {
+  const position: FieldInput.Values = {
     index: { source: 's', type: 'T', version: '1' },
     rows: { kind: 'range', offset: 0, count: 0 },
     values: { kind: 'numeric', offset: 0, length: 0, values: new Float64Array() },
@@ -81,7 +81,7 @@ it('reads a row as the shader does: lanes, booleans, presence, scales, and the f
         values: Float32Array.of(0, 5, 10),
       },
     },
-  } as unknown as FieldsBlock;
+  } as unknown as Block.Fields;
   const y = resolveChannel({ column: 'x', component: 1 }, undefined, Infinity);
   expect([0, 1, 2].map((row) => channelValue(y, block, row))).toEqual([2, 4, Infinity]);
   const on = resolveChannel({ column: 'on', component: 0 }, undefined, 1);

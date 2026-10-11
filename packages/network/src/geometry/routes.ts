@@ -1,6 +1,6 @@
-import { bitAt, failure, rowAt, type FieldsBlock, type FieldValues } from '@latkit/model';
+import { bitAt, failure, rowAt, type Block, type FieldInput } from '@latkit/model';
 import { kit } from '@latkit/gpu';
-import type { NetworkData, EdgeOptions } from '../data.js';
+import type { NetworkData } from '../data.js';
 import {
   BANK_ROWS,
   edgeOptions,
@@ -8,12 +8,11 @@ import {
   type Geometry,
   type VertexBank,
   type EdgeBank,
-  type Limits,
 } from './topology.js';
 import { value, RowLookup } from './rows.js';
 import type { ChannelName, FieldRead } from '../rendering/fields.js';
 import type { Reads } from '../rendering/painter.js';
-
+import type { Network } from '../network.js';
 type Point = readonly [number, number, number];
 type Address = { bank: VertexBank; offset: number; point: Point };
 const DEG = Math.PI / 180;
@@ -64,14 +63,14 @@ export function routePoint(route: 'straight' | 'geodesic', a: Point, b: Point, t
 export function arc(a: Point, b: Point): number {
   return Math.acos(Math.max(-1, Math.min(1, dot(unit(a), unit(b))))) / DEG;
 }
-function lookup(read: FieldRead): RowLookup<FieldsBlock> {
-  const result = new RowLookup<FieldsBlock>();
+function lookup(read: FieldRead): RowLookup<Block.Fields> {
+  const result = new RowLookup<Block.Fields>();
   for (const tile of read.native) result.add(tile.rows, tile);
   result.seal();
   return result;
 }
 /** Whether a net type centers its stars on its own x and y. */
-function centered(options: EdgeOptions): boolean {
+function centered(options: Network.EdgeOptions): boolean {
   return options.x != null || options.y != null;
 }
 function signature(reads: Reads, data: NetworkData): unknown[] {
@@ -123,7 +122,7 @@ export class Routes {
     native: Geometry,
     reads: Reads,
     data: NetworkData,
-    limits: Required<Limits>,
+    limits: Required<Network.Limits>,
   ): { geometry: Geometry; origins: ReadonlyMap<EdgeBank, EdgeBank> } {
     const needed = native.edges.some((bank) => bank.stars || edgeOptions(data, bank).bends);
     if (!needed) {
@@ -209,7 +208,7 @@ export class Routes {
           rows = { kind: 'range' as const, offset: 0, count };
         const values = new Float64Array(coordinates),
           h = new Float32Array(heights);
-        const position: FieldValues = {
+        const position: FieldInput.Values = {
           index: active.index,
           rows,
           values: {
@@ -220,7 +219,7 @@ export class Routes {
             values: { kind: 'numeric', offset: 0, length: values.length, values },
           },
         };
-        const height: FieldValues = {
+        const height: FieldInput.Values = {
           index: active.index,
           rows,
           values: { kind: 'numeric', offset: 0, length: count, values: h },
@@ -305,7 +304,7 @@ export class Routes {
           previous = target;
         }
       };
-      const list = (tile: FieldsBlock, name: string, row: number): Point[] => {
+      const list = (tile: Block.Fields, name: string, row: number): Point[] => {
         const column = tile.columns[name];
         if (column?.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
           throw failure('invalid-input', 'Bends require lists of two-component vectors');

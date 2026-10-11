@@ -6,22 +6,22 @@ import {
   blockBuffers,
   blockByteLength,
   type Schema,
-  type EnvelopeQuery,
-  type EnvelopeBlock,
+  type Query,
+  type Block,
 } from '../src/index.js';
 const schema: Schema = {
   axis: { name: 'coordinate' },
 
   types: { node: { fields: { value: { type: 'float64', sampled: true, nullable: true } } } },
 };
-const query: EnvelopeQuery = {
+const query: Query.Envelope = {
   kind: 'envelope',
   from: 'node',
   select: ['value'],
   window: { kind: 'range', between: [0, 4] },
   buckets: 2,
 };
-function block(): EnvelopeBlock {
+function block(): Block.Envelope {
   return {
     kind: 'envelope',
     index: { source: 'd', type: 'node', version: 'i' },
@@ -56,22 +56,22 @@ it('validates optional native summaries and accounts every exposed backing', () 
 });
 it('rejects invented times, partial slots, nonfinite summaries, invalid extrema and truncated bitmaps', () => {
   for (const change of [
-    (b: EnvelopeBlock) => {
+    (b: Block.Envelope) => {
       b.columns.value.coordinates[1] = 3;
     },
-    (b: EnvelopeBlock) => {
+    (b: Block.Envelope) => {
       b.columns.value.frames[1] = 0.5;
     },
-    (b: EnvelopeBlock) => {
+    (b: Block.Envelope) => {
       b.columns.value.values.validity![0] = 7;
     },
-    (b: EnvelopeBlock) => {
+    (b: Block.Envelope) => {
       b.columns.value.values.values[2] = Infinity;
     },
-    (b: EnvelopeBlock) => {
+    (b: Block.Envelope) => {
       b.columns.value.values.values[1] = 99;
     },
-    (b: EnvelopeBlock) => {
+    (b: Block.Envelope) => {
       b.columns.value.continuous[0] = 3;
     },
   ]) {

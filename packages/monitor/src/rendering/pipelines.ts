@@ -21,6 +21,8 @@ export interface Pipelines extends Lines {
   readonly compose: Readonly<Record<LayerKind, GPURenderPipeline>>;
   readonly lines: GPURenderPipeline;
   readonly text: GPURenderPipeline;
+  /** The dot at the reading under the pointer: built after the rest, as hover comes later. */
+  readonly hover: Promise<GPURenderPipeline>;
   readonly view: GPUBindGroupLayout;
   readonly shade: GPUBindGroupLayout;
   readonly image: GPUBindGroupLayout;
@@ -75,7 +77,7 @@ export async function pipelines(
       kit.colormapShader({ group: 1 }) + kit.shadeShader({ group: 2 }) + shade + compositeCode,
       'monitor composite',
     ),
-    gpu.shaderModule(kit.textShader({ group: 0 }) + axesCode, 'monitor axes'),
+    gpu.shaderModule(kit.textShader({ group: 0 }) + kit.outputShader() + axesCode, 'monitor axes'),
   ]);
   // A color layer composes as it is; the others read a colormap and the shade.
   const drawn = d.createPipelineLayout({ bindGroupLayouts: [gpu.fieldLayout, view, effects] }),
@@ -131,9 +133,16 @@ export async function pipelines(
       fragment: { module: axes, entryPoint: 'text_color', targets: [target] },
     }),
   ]);
-  // Selected lines' pipelines build now, after the rest, so a selection rarely waits on them.
+  // Selected lines' pipelines, and hover's dot, build now, after the rest, so a selection or a
+  // hover rarely waits on them.
   const focus = linesOf(true);
   focus.catch(() => undefined);
+  const hover = gpu.renderPipeline({
+    layout: d.createPipelineLayout({ bindGroupLayouts: [empty, axis] }),
+    vertex: { module: axes, entryPoint: 'dot_main' },
+    fragment: { module: axes, entryPoint: 'dot_color', targets: [target] },
+  });
+  hover.catch(() => undefined);
   return {
     draw,
     bake,
@@ -141,6 +150,7 @@ export async function pipelines(
     compose: { color: compose[0], coverage: compose[1], value: compose[2] },
     lines,
     text,
+    hover,
     view,
     shade: effects,
     image,

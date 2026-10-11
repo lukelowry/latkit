@@ -1,5 +1,5 @@
 import type { Work } from '@latkit/model';
-import type { LayoutOptions, LayoutPart, LayoutStrategy } from './place.js';
+import type { Layout } from './place.js';
 
 /** Pivots a part keeps its distances to: enough for its shape, few enough to stay linear. */
 const PIVOTS = 16;
@@ -14,12 +14,12 @@ const FAR = 0xffff;
  * toward edges `vertexGap` long with pinned vertices fixed. Deterministic, and linear in the part:
  * about pivots × (vertices + edges) for the distances, and pivots² × vertices for the shape.
  */
-export function stress(layout: Required<LayoutOptions>, work: Work): LayoutStrategy {
+export function stress(layout: Required<Layout>, work: Work): Layout.Strategy {
   return { arrange: (part) => relaxed(part, layout, work) };
 }
 async function relaxed(
-  part: LayoutPart,
-  layout: Required<LayoutOptions>,
+  part: Layout.Part,
+  layout: Required<Layout>,
   work: Work,
 ): Promise<Float64Array> {
   const { graph, input, vertices } = part,

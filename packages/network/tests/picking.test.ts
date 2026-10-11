@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { Work, type FieldsBlock, type RowAxis } from '@latkit/model';
+import { Work, type Block, type Index } from '@latkit/model';
 import type { VertexBank } from '../src/geometry/topology.js';
 import type { Style } from '../src/options.js';
 import { FieldRead, VERTEX, channels } from '../src/rendering/fields.js';
@@ -12,13 +12,13 @@ const adjacency = new Adjacency([], [], 0, 0);
 
 /** A two-lane position field, read as the column of its x. */
 const position = channels({ x: 'p', y: { field: 'p', component: 1 } }, VERTEX);
-it.each<RowAxis>([
+it.each<Index.Rows>([
   { kind: 'range', offset: 1, count: 2 },
   { kind: 'indices', values: Uint32Array.of(2, 1) },
 ])('fits only displayed rows when native tiles span a larger range: $kind', (rows) => {
   const index = { source: 'fixture', type: 'node', version: '1' };
   const bank: VertexBank = { id: 0, type: 'node', index, rows, count: 2, base: 0 };
-  const native: FieldsBlock = {
+  const native: Block.Fields = {
     kind: 'fields',
     index,
     rows: { kind: 'range', offset: 0, count: 4 },
@@ -56,7 +56,7 @@ it('builds an index in cooperative slices and frees one aborted part way', async
     rows = { kind: 'range', offset: 0, count } as const;
   const bank: VertexBank = { id: 0, type: 'node', index, rows, count, base: 0 };
   const values = Float64Array.from({ length: count * 2 }, (_, i) => i);
-  const native: FieldsBlock = {
+  const native: Block.Fields = {
     kind: 'fields',
     index,
     rows,

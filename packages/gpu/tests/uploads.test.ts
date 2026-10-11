@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { FieldsBlock, SampleColumn } from '@latkit/model';
+import type { Block, Column } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { BufferData, type GpuPage } from '../src/kit.js';
 import { bytes, fakeDevice, record } from './fixtures/device.js';
 import { field } from './fixtures/fields.js';
 import { draw, renderer, target } from './fixtures/render.js';
 
-function block(values: Float32Array | Float64Array | Int32Array | Uint32Array): FieldsBlock {
+function block(values: Float32Array | Float64Array | Int32Array | Uint32Array): Block.Fields {
   return {
     kind: 'fields',
     index: { source: 'd', type: 'node', version: 'i0' },
@@ -82,7 +82,7 @@ describe('native numeric uploads', () => {
   it('preserves sparse physical rows, sample strides, offsets, and nulls', async () => {
     const fake = fakeDevice(),
       gpu = await createGpu({ device: fake.device });
-    const column: SampleColumn = {
+    const column: Column.Sample = {
       kind: 'numeric',
       values: Float32Array.of(999, 10, 20, 99, 99, 30, 40),
       offset: 1,
@@ -91,7 +91,7 @@ describe('native numeric uploads', () => {
       rowStride: 1,
       validity: Uint8Array.of(0b00100110),
     };
-    const value: FieldsBlock = {
+    const value: Block.Fields = {
       kind: 'fields',
       index: { source: 'd', type: 'node', version: 'i' },
       rows: { kind: 'indices', values: Uint32Array.of(1000000000, 7) },
@@ -162,7 +162,7 @@ describe('native numeric uploads', () => {
   it('handles sliced vector parents and child offsets', async () => {
     const fake = fakeDevice(),
       gpu = await createGpu({ device: fake.device });
-    const value: FieldsBlock = {
+    const value: Block.Fields = {
       ...block(Float32Array.of(0, 0)),
       columns: {
         value: {
@@ -205,16 +205,20 @@ describe('native numeric uploads', () => {
     gpu.destroy();
   });
 
-  it('bounds GPU and CPU residency without silently dropping pages', async () => {
+  it('uploads what a frame draws past the budget, dropping no page, and gives it back after', async () => {
     const fake = fakeDevice(),
       gpu = await createGpu({ device: fake.device, budget: { gpuBytes: 1024 }, pageBytes: 512 });
-    await expect(
-      draw(gpu, (frame) => {
-        frame.upload(block(new Float32Array(1024)), { select: ['value'] });
-      }),
-    ).rejects.toMatchObject({ code: 'resource-limit' });
-    expect(gpu.stats().peakGpuBytes).toBeLessThanOrEqual(1024);
-    expect(gpu.stats().gpuBytes).toBe(0);
+    let pages: readonly unknown[] = [];
+    await draw(gpu, (frame) => {
+      pages = frame.upload(block(new Float32Array(1024)), { select: ['value'] });
+    });
+    // All four kilobytes, in pages of half a kilobyte, past a one-kilobyte budget.
+    expect(pages.length).toBeGreaterThanOrEqual(8);
+    expect(gpu.stats().uploadedBytes).toBeGreaterThanOrEqual(4096);
+    expect(gpu.stats().peakGpuBytes).toBeGreaterThan(1024);
+    // Nothing holds the pages once the frame is done, so the pool lets them go when asked.
+    gpu.trim();
+    expect(gpu.stats().gpuBytes).toBeLessThanOrEqual(1024);
     gpu.destroy();
   });
 });

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { FieldsBlock } from '@latkit/model';
+import type { Block } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { type GpuPage } from '../src/kit.js';
 import { bytes, fakeDevice } from './fixtures/device.js';
@@ -9,7 +9,7 @@ import { draw } from './fixtures/render.js';
 it('keeps boolean values and null validity as separate packed bitmaps', async () => {
   const fake = fakeDevice(),
     gpu = await createGpu({ device: fake.device });
-  const block: FieldsBlock = {
+  const block: Block.Fields = {
     kind: 'fields',
     index: { source: 'd', type: 'node', version: 'i' },
     rows: { kind: 'range', offset: 1000000, count: 3 },

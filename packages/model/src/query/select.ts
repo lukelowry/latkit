@@ -1,13 +1,13 @@
-import type { Data, DataBatch } from './materialized.js';
-import type { FieldSelection, QueryOptions } from './query.js';
-import type { FieldDefinition, Schema } from './schema.js';
-import { sampleDomain } from './pages.js';
+import type { Data } from '../data/data.js';
+import type { Query } from './query.js';
+import type { Schema } from '../schema/schema.js';
+import { sampleDomain } from '../data/pages.js';
 import { read } from './read.js';
-import { validateSelection } from './validation/selection.js';
-import { failure } from './error.js';
+import { validateSelection } from '../validation/selection.js';
+import { failure } from '../failure.js';
 
 /** Every field that is not sampled, of every type: what a model holds outside its runs. */
-export function staticFields(schema: Schema): FieldSelection[] {
+export function staticFields(schema: Schema): Query.Selection[] {
   return fieldsWhere(schema, Object.keys(schema.types), (field) => field.sampled !== true);
 }
 
@@ -15,15 +15,15 @@ export function staticFields(schema: Schema): FieldSelection[] {
 export function sampledFields(
   schema: Schema,
   types: readonly string[] = Object.keys(schema.types),
-): FieldSelection[] {
+): Query.Selection[] {
   return fieldsWhere(schema, types, (field) => field.sampled === true);
 }
 
 function fieldsWhere(
   schema: Schema,
   types: readonly string[],
-  keep: (field: FieldDefinition) => boolean,
-): FieldSelection[] {
+  keep: (field: Schema.Field) => boolean,
+): Query.Selection[] {
   return types.flatMap((from) => {
     if (!Object.hasOwn(schema.types, from)) throw failure('invalid-input', 'Unknown type: ' + from);
     const select = Object.entries(schema.types[from].fields).flatMap(([name, field]) =>
@@ -36,9 +36,9 @@ function fieldsWhere(
 /** Select supplied values locally. Captures one immutable Data value; never subscribes or fetches. */
 export async function* selectBatches(
   data: Data,
-  selections: readonly FieldSelection[],
-  options: QueryOptions = {},
-): AsyncGenerator<DataBatch> {
+  selections: readonly Query.Selection[],
+  options: Query.Options = {},
+): AsyncGenerator<Data.Batch> {
   for (const selection of selections) {
     options.signal?.throwIfAborted();
     const issues = validateSelection(data.schema, selection);

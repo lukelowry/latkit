@@ -1,4 +1,4 @@
-import { copyBuffers } from '../src/columns.js';
+import { copyBuffers } from '../src/data/columns.js';
 import { queryConformance } from './conformance.js';
 import { staticData } from './fixture.js';
 const query = { kind: 'rows', from: 'Node', select: ['value'] } as const;

@@ -1,8 +1,8 @@
 import { rowCount } from '@latkit/model';
 import { kit, type Gpu, type RGBA } from '@latkit/gpu';
-import type { DiagramData, EdgeOptions, VertexOptions } from './data.js';
+import type { DiagramData } from './data.js';
 import type { Scene } from './scene.js';
-
+import type { Diagram } from './diagram.js';
 // Each slot's style is four words: its color and status, packed; its width and flow as two halves;
 // and its shade. A zero color draws the view's base color for the item's kind, and a negative width
 // its default. A scene writes every constant into the base words once; styles.wgsl writes the
@@ -15,7 +15,7 @@ const WIDTH_RANGE = [1, 4] as const,
 const styles = new WeakMap<object, Map<string, kit.BoundChannels<string>>>();
 /** A type's style channels: its own, and each port's color and status as `color:name`. */
 function typeStyle(
-  options: VertexOptions | EdgeOptions,
+  options: Diagram.VertexOptions | Diagram.EdgeOptions,
   edge: boolean,
   ports: readonly string[] = [],
 ): kit.BoundChannels<string> {
@@ -27,11 +27,11 @@ function typeStyle(
   const values: Record<string, unknown> = { color: options.color, shade: options.shade },
     kinds: Record<string, kit.ChannelKind> = { color: 'color', shade: 'raw' };
   if (edge) {
-    const { widthPx, flowPx } = options as EdgeOptions;
+    const { widthPx, flowPx } = options as Diagram.EdgeOptions;
     Object.assign(values, { widthPx, flowPx });
     Object.assign(kinds, { widthPx: WIDTH_RANGE, flowPx: FLOW_RANGE });
   } else {
-    const vertex = options as VertexOptions;
+    const vertex = options as Diagram.VertexOptions;
     values.status = vertex.status;
     kinds.status = 'color';
     for (const name of ports) {
@@ -45,16 +45,23 @@ function typeStyle(
   return bound;
 }
 /** Check a type's style channels, so a config with an invalid one is rejected when set. */
-export function checkStyle(options: VertexOptions | EdgeOptions, edge: boolean): void {
-  typeStyle(options, edge, edge ? [] : Object.keys((options as VertexOptions).ports ?? {}).sort());
+export function checkStyle(
+  options: Diagram.VertexOptions | Diagram.EdgeOptions,
+  edge: boolean,
+): void {
+  typeStyle(
+    options,
+    edge,
+    edge ? [] : Object.keys((options as Diagram.VertexOptions).ports ?? {}).sort(),
+  );
 }
 /** Whether a type's wires flow: a flow field, or a nonzero speed. */
-export function flowing(options: EdgeOptions): boolean {
+export function flowing(options: Diagram.EdgeOptions): boolean {
   const flow = typeStyle(options, true).channels.flowPx;
   return flow.field !== undefined || (typeof flow.constant === 'number' && flow.constant !== 0);
 }
 /** The widest a type's wires draw, in CSS pixels. */
-export function widestPx(options: EdgeOptions, fallback: number): number {
+export function widestPx(options: Diagram.EdgeOptions, fallback: number): number {
   const width = kit.resolveChannel(typeStyle(options, true).channels.widthPx, null, fallback);
   return width.scale ? Math.max(...width.scale.range) : width.fallback;
 }
@@ -246,14 +253,14 @@ export class Styles {
     const types = [
       ...[...scene.types.vertices].map(([type, at]) => ({
         type,
-        options: data.vertices[type] as VertexOptions | EdgeOptions,
+        options: data.vertices[type] as Diagram.VertexOptions | Diagram.EdgeOptions,
         bound: typeStyle(data.vertices[type], false, at.names),
         first: at.first,
         ports: { first: at.ports, names: at.names },
       })),
       ...[...scene.types.edges].map(([type, at]) => ({
         type,
-        options: data.edges![type] as VertexOptions | EdgeOptions,
+        options: data.edges![type] as Diagram.VertexOptions | Diagram.EdgeOptions,
         bound: typeStyle(data.edges![type], true),
         first: scene.slots.edges + at.first,
         ports: undefined,

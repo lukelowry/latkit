@@ -10,24 +10,17 @@ import {
   type Column,
   type FieldInput,
   type Index,
-  type ReadScope,
-  type TypeDefinition,
+  type Reader,
+  type Schema,
 } from '@latkit/model';
-import { kit, type TextLayout, type TextLayoutInput } from '@latkit/gpu';
-import type {
-  DiagramData,
-  VertexOptions,
-  EdgeOptions,
-  DiagramLabels,
-  PortOptions,
-} from './data.js';
+import { kit } from '@latkit/gpu';
+import type { DiagramData } from './data.js';
 import type { Scene, Vertex, Edge, Port } from './scene.js';
 import { emptyLabel } from './scene.js';
-import type { Limits } from './options.js';
 import type { Style } from './config.js';
 import { fail } from './config.js';
-
-export type Layout = (input: TextLayoutInput) => Promise<TextLayout>;
+import type { Diagram } from './diagram.js';
+export type Layout = (input: kit.TextLayoutInput) => Promise<kit.TextLayout>;
 function text(column: Column | undefined, row: number): string {
   if (!column) return '';
   if (column.kind !== 'text') fail('Expected a text label field');
@@ -56,7 +49,10 @@ interface Bindings<K extends string> {
 const structures = new WeakMap<object, Bindings<ShapeName>>(),
   placements = new WeakMap<object, Bindings<PlaceName>>();
 /** What a type's structure reads, bound once per options object. */
-export function structure(option: VertexOptions | EdgeOptions, edge: boolean): Bindings<ShapeName> {
+export function structure(
+  option: Diagram.VertexOptions | Diagram.EdgeOptions,
+  edge: boolean,
+): Bindings<ShapeName> {
   let found = structures.get(option);
   if (!found) {
     const channels = kit.bindChannels(
@@ -73,7 +69,7 @@ export function structure(option: VertexOptions | EdgeOptions, edge: boolean): B
   return found;
 }
 /** Where a vertex type's rows sit, bound once per options object. */
-function placement(option: VertexOptions): Bindings<PlaceName> {
+function placement(option: Diagram.VertexOptions): Bindings<PlaceName> {
   let found = placements.get(option);
   if (!found) {
     const channels = kit.bindChannels(option, VERTEX_PLACE);
@@ -83,11 +79,13 @@ function placement(option: VertexOptions): Bindings<PlaceName> {
   return found;
 }
 /** Every drawn type's options, and whether it is an edge type. */
-function types(data: DiagramData): [string, VertexOptions | EdgeOptions, boolean][] {
+function types(
+  data: DiagramData,
+): [string, Diagram.VertexOptions | Diagram.EdgeOptions, boolean][] {
   return [
     ...Object.entries(data.vertices).map(([type, option]) => [type, option, false] as const),
     ...Object.entries(data.edges ?? {}).map(([type, option]) => [type, option, true] as const),
-  ] as [string, VertexOptions | EdgeOptions, boolean][];
+  ] as [string, Diagram.VertexOptions | Diagram.EdgeOptions, boolean][];
 }
 /** Whether a binding reads a sampled field, so it depends on the read coordinate. */
 function sampled(data: DiagramData, type: string, input: FieldInput): boolean {
@@ -112,8 +110,13 @@ const VERTEX = [
   'labelPosition',
   'visible',
   'labels',
-] as const satisfies readonly (keyof VertexOptions)[];
-const PORT = ['side', 'order', 'marker', 'label'] as const satisfies readonly (keyof PortOptions)[];
+] as const satisfies readonly (keyof Diagram.VertexOptions)[];
+const PORT = [
+  'side',
+  'order',
+  'marker',
+  'label',
+] as const satisfies readonly (keyof Diagram.PortOptions)[];
 const EDGE = [
   'rows',
   'ends',
@@ -122,8 +125,8 @@ const EDGE = [
   'appearance',
   'visible',
   'labels',
-] as const satisfies readonly (keyof EdgeOptions)[];
-const PLACE = ['x', 'y'] as const satisfies readonly (keyof VertexOptions)[];
+] as const satisfies readonly (keyof Diagram.EdgeOptions)[];
+const PLACE = ['x', 'y'] as const satisfies readonly (keyof Diagram.VertexOptions)[];
 /** Whether two diagrams have one structure, so only positions and styles changed between them. */
 export function sameStructure(a: DiagramData, b: DiagramData): boolean {
   return (
@@ -152,9 +155,7 @@ export function samePlacement(a: DiagramData, b: DiagramData): boolean {
   return kit.sameValues(a.source, b.source, (type) => named.get(type) ?? []);
 }
 /** The fields of each type a scene reads, by name in the drawn source, for change detection. */
-export function structural(
-  data: DiagramData,
-): (type: string, definition: TypeDefinition) => string[] {
+export function structural(data: DiagramData): (type: string, definition: Schema.Type) => string[] {
   const named = new Map<string, Set<string>>();
   const add = (type: string, input: FieldInput) => {
     if (typeof input !== 'string') return;
@@ -179,7 +180,7 @@ export function structural(
 export async function readPlacement(
   scene: Scene,
   data: DiagramData,
-  reader: ReadScope,
+  reader: Reader.Scope,
   work: Work,
 ): Promise<void> {
   for (const [type, option] of Object.entries(data.vertices)) {
@@ -224,11 +225,11 @@ export function local(data: DiagramData): boolean {
 }
 function label(
   value: string,
-  config: DiagramLabels | null | undefined,
+  config: Diagram.Labels | null | undefined,
   options: Style,
   layout: Layout,
-  defaults: Partial<TextLayoutInput> = {},
-): Promise<TextLayout> | TextLayout {
+  defaults: Partial<kit.TextLayoutInput> = {},
+): Promise<kit.TextLayout> | kit.TextLayout {
   if (!value) return emptyLabel;
   return layout({
     text: value,
@@ -242,9 +243,9 @@ function label(
 /** Read a diagram's structure: its vertices, their ports and text, edges, ends, and groups. */
 export async function readScene(
   data: DiagramData,
-  reader: ReadScope,
+  reader: Reader.Scope,
   options: Style,
-  limits: Required<Limits>,
+  limits: Required<Diagram.Limits>,
   layout: Layout,
   work: Work = new Work(reader.signal, limits.layoutMs),
 ): Promise<Scene> {
@@ -414,7 +415,7 @@ export async function readScene(
           }
         }
       }
-    const portLabels = new Map<string, TextLayout>();
+    const portLabels = new Map<string, kit.TextLayout>();
     for (const port of options.portLabels ? ports : []) {
       const text = option.ports?.[port.field]?.label ?? definition.fields[port.field].label;
       portLabels.set(port.field, await label(text ?? port.field, null, options, layout, quiet));

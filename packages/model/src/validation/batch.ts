@@ -1,16 +1,15 @@
-import type { Schema } from '../schema.js';
-import type { Problem } from '../types.js';
-import type { QueryOptions, Query } from '../query.js';
+import type { Schema } from '../schema/schema.js';
+import type { Query } from '../query/query.js';
 import { Check, record } from './check.js';
 import { validateBlock } from './block.js';
 import { validateQuery } from './query.js';
-
+import type { Failure } from '../failure.js';
 /** Validate a columnar batch directly. Delivery size is an operation option, not schema meaning. */
 export function validateBatch(
   schema: Schema,
   value: unknown,
-  options: QueryOptions = {},
-): readonly Problem[] {
+  options: Query.Options = {},
+): readonly Failure.Problem[] {
   const c = new Check();
   const batch = c.object(value, []);
   c.enum(batch.kind, ['rows', 'samples'], ['kind']);

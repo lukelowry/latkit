@@ -1,20 +1,20 @@
-import { blockBuffers, blockByteLength, exposedBytes } from '../buffers.js';
-import { copyBuffers } from '../columns.js';
-import { failure } from '../error.js';
-import type { Data } from '../materialized.js';
-import type { Query, QueryBlock } from '../query.js';
-import { read as readData } from '../read.js';
-import type { Schema } from '../schema.js';
+import { blockBuffers, blockByteLength, exposedBytes } from '../data/buffers.js';
+import { copyBuffers } from '../data/columns.js';
+import { failure } from '../failure.js';
+import type { Data } from '../data/data.js';
+import type { Query, Block } from '../query/query.js';
+import { read as readData } from '../query/read.js';
+import type { Schema } from '../schema/schema.js';
 import { validateBlock } from '../validation/block.js';
 import { validateQuery } from '../validation/query.js';
 import { validateSchema } from '../validation/schema.js';
 import type { Keys } from './keys.js';
-import type { Entry, Memory } from '../memory.js';
+import type { Memory } from './memory.js';
 import { interruptible } from '../work.js';
 
 interface Chunk {
-  value: QueryBlock;
-  memory: Entry;
+  value: Block;
+  memory: Memory.Entry;
 }
 interface Reader {
   next: number;
@@ -24,9 +24,9 @@ interface Read {
   key: string;
   schema: Schema;
   query: Query;
-  meta: Entry;
+  meta: Memory.Entry;
   controller: AbortController;
-  iterator: AsyncIterator<QueryBlock>;
+  iterator: AsyncIterator<Block>;
   chunks: Map<number, Chunk>;
   readers: Set<Reader>;
   produced: number;
@@ -52,7 +52,7 @@ export class Blocks {
     private readonly validate: boolean,
   ) {}
 
-  async *read(source: Data, query: Query, signal: AbortSignal): AsyncGenerator<QueryBlock> {
+  async *read(source: Data, query: Query, signal: AbortSignal): AsyncGenerator<Block> {
     // Optional fields commonly arrive as explicit undefined from typed requests.
     if (Object.values(query).some((value) => value === undefined))
       query = Object.fromEntries(

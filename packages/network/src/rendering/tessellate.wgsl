@@ -15,6 +15,8 @@ struct Curves { count:u32, first:u32, flags:u32, base:u32, capacity:u32, record:
 @group(0) @binding(7) var<storage,read> draws:array<vec2u>;
 struct Indirect { vertices:u32, instances:u32, firstVertex:u32, firstInstance:u32 }
 @group(0) @binding(8) var<storage,read_write> indirect:array<Indirect>;
+/** The pieces past each curve's first that each curved draw asked for, granted or not, which size its next pool. */
+@group(0) @binding(9) var<storage,read_write> wanted:array<atomic<u32>>;
 
 /** A piece that draws nothing: its curve's, where none of the curve shows. */
 const HIDDEN_PIECE=vec4u(0xffffffffu,0u,0u,0u);
@@ -88,6 +90,7 @@ fn tessellate(@builtin(global_invocation_id) id:vec3u,@builtin(local_invocation_
   workgroupBarrier();
   if(lane==0u){
     var total=0u;for(var j=0u;j<64u;j++){let n=starts[j];starts[j]=total;total+=n;}
+    if(total>0u){atomicAdd(&wanted[params.record],total);}
     pool=atomicAdd(&taken[params.record],total);
     // Once the pool is full, this workgroup's curves draw a piece each, still lifted onto the globe.
     if(pool+total>params.capacity-params.count){atomicSub(&taken[params.record],total);pool=NONE;}

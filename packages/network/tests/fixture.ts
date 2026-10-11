@@ -1,5 +1,13 @@
-import { createData, read, type Data, type DataBatch, validateQuery } from '@latkit/model';
-import type { Query, QueryOptions, QueryBlock, Schema, Column, RowAxis } from '@latkit/model';
+import {
+  createData,
+  read,
+  type Data,
+  validateQuery,
+  type Query,
+  type Block,
+  type Index,
+} from '@latkit/model';
+import type { Schema, Column } from '@latkit/model';
 export class GraphSource {
   readonly document: string;
   queries = 0;
@@ -106,7 +114,7 @@ export class GraphSource {
   private cached?: Data;
   get data(): Data {
     if (this.cached) return this.cached;
-    const batches: DataBatch[] = [];
+    const batches: Data.Batch[] = [];
     for (const [from, type] of Object.entries(this.schema.types)) {
       const staticFields = Object.keys(type.fields).filter((name) => !type.fields[name].sampled);
       const sampled = Object.keys(type.fields).filter((name) => type.fields[name].sampled);
@@ -132,15 +140,15 @@ export class GraphSource {
                   name,
                   { ...column, rowStride: 1, frameStride: column.length },
                 ]),
-              ) as import('@latkit/model').SampleBatch['columns'],
+              ) as import('@latkit/model').Data.SampleBatch['columns'],
             });
     }
     return (this.cached = createData(this.schema, batches));
   }
-  query<Q extends Query>(query: Q, options?: QueryOptions) {
+  query<Q extends Query>(query: Q, options?: Query.Options) {
     return read(this.data, query, options);
   }
-  private *blocks(query: Query, options?: QueryOptions): Generator<QueryBlock> {
+  private *blocks(query: Query, options?: Query.Options): Generator<Block> {
     const issues = validateQuery(this.schema, query);
     if (issues.length) throw new Error(JSON.stringify(issues));
     this.queries++;
@@ -157,7 +165,7 @@ export class GraphSource {
       frame = Math.max(0, Math.min(15, Math.floor(sampled)));
     for (let first = 0; first < count; first += this.blockRows) {
       const length = Math.min(this.blockRows, count - first);
-      const rows: RowAxis = selected
+      const rows: Index.Rows = selected
         ? { kind: 'indices', values: selected.subarray(first, first + length) }
         : { kind: 'range', offset: offset + first, count: length };
       const row = (i: number) => (rows.kind === 'range' ? rows.offset + i : rows.values[i]);

@@ -1,13 +1,5 @@
 import { failure, validateSchema } from '@latkit/model';
-import type {
-  Command,
-  CommandContext,
-  CommandDescription,
-  LogEntry,
-  Model,
-  Parameters,
-  Progress,
-} from '@latkit/model';
+import type { Command, Model } from '@latkit/model';
 import { publicationPlans } from './columns.js';
 import {
   deferred,
@@ -27,7 +19,7 @@ import { argumentsOf, definitions, selections, demanded } from './parameters.js'
 import { Session } from './session.js';
 import { dial } from './socket.js';
 import type { Sender } from './session.js';
-import type { ConnectOptions, Connection } from './types.js';
+import type { Connection } from './types.js';
 
 /**
  * Serve `model` to whoever accepts it: dial exactly `url`, or answer on a `socket` a server accepted.
@@ -35,9 +27,9 @@ import type { ConnectOptions, Connection } from './types.js';
  * itself a connection, such as one `acceptModel` returned, is served until it closes, and its
  * reason closes this connection too.
  */
-export async function connectModel<const C extends Record<string, Parameters>>(
+export async function connectModel<const C extends Record<string, Command.Parameters>>(
   model: Model<C>,
-  options: ConnectOptions,
+  options: Connection.Options,
 ): Promise<Connection> {
   options.signal?.throwIfAborted();
   // Everything the model describes is checked before any socket opens.
@@ -162,7 +154,7 @@ export async function connectModel<const C extends Record<string, Parameters>>(
       let accepting = true,
         pending: Promise<void> | undefined,
         publishFailure: Error | undefined;
-      const publish: CommandContext['publish'] = (input) => {
+      const publish: Command.Context['publish'] = (input) => {
         let task: Promise<void>;
         try {
           sender.signal.throwIfAborted();
@@ -192,7 +184,7 @@ export async function connectModel<const C extends Record<string, Parameters>>(
         const name = text(frame.metadata.command);
         if (!commands || !Object.hasOwn(commands, name))
           throw failure('invalid-input', 'Unknown command.');
-        const description = catalog[name] as CommandDescription;
+        const description = catalog[name] as Command.Description;
         const values = argumentsOf(description.parameters, frame.metadata.values ?? {}, frame.body);
         const outputs = selections(frame.metadata.outputs ?? [], model.schema);
         checkDemand = demanded(outputs);
@@ -264,8 +256,8 @@ export async function connectModel<const C extends Record<string, Parameters>>(
 
 /** At most one latest progress update and a fixed diagnostic ring per execution. */
 class Telemetry {
-  #progress?: Progress;
-  #logs: LogEntry[] = [];
+  #progress?: Command.Progress;
+  #logs: Command.LogEntry[] = [];
   #dropped = 0;
   #timer?: ReturnType<typeof setTimeout>;
   #sending?: Promise<void>;
@@ -274,7 +266,7 @@ class Telemetry {
     private readonly session: Session,
     private readonly sender: Sender,
   ) {}
-  progress(value: Progress): void {
+  progress(value: Command.Progress): void {
     if (this.#closed || this.sender.signal.aborted) return;
     if (!validProgress(value as unknown as Record<string, unknown>))
       throw failure('invalid-input', 'Invalid progress.');
@@ -293,7 +285,7 @@ class Telemetry {
     };
     this.schedule();
   }
-  log(value: LogEntry): void {
+  log(value: Command.LogEntry): void {
     if (this.#closed || this.sender.signal.aborted) return;
     if (!['info', 'warning', 'error'].includes(value.severity) || typeof value.message !== 'string')
       throw failure('invalid-input', 'Invalid diagnostic.');
@@ -337,7 +329,7 @@ class Telemetry {
         this.#progress = undefined;
         if (progress) await this.session.control(Op.progress, this.sender.id, { ...progress });
         // Split diagnostics by encoded metadata size, retaining at most one ring plus one message.
-        const entries: LogEntry[] = [];
+        const entries: Command.LogEntry[] = [];
         let cost = 64;
         while (this.#logs.length) {
           const entry = this.#logs[0];

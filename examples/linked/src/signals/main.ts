@@ -1,5 +1,5 @@
 import { colormapCss, colormaps, createGpu, type FrameInfo } from '@latkit/gpu';
-import { createMonitor, type Trace } from '@latkit/monitor';
+import { createMonitor, type Monitor } from '@latkit/monitor';
 import { createNetwork } from '@latkit/network';
 import { signalHistory } from './data.js';
 import '../shared/layout.css';
@@ -53,7 +53,7 @@ async function main() {
     index: history.index,
     values: Uint32Array.from({ length: 16 }, (_, i) => i * 25 + 10),
   } as const;
-  const trace = (all: boolean): Trace => ({
+  const trace = (all: boolean): Monitor.TraceOptions => ({
     from: 'Node',
     y: 'signal',
     color,

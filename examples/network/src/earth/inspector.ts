@@ -1,6 +1,6 @@
 /** The inspector: what the hovered or selected row holds, read at the playhead. */
 import type { Gpu } from '@latkit/gpu';
-import { bitAt, rowCount, textAt, type Column, type Item, type ReadScope } from '@latkit/model';
+import { bitAt, rowCount, textAt, type Column, type Item, type Reader } from '@latkit/model';
 import { element } from './controls.js';
 
 export interface Described {
@@ -31,7 +31,7 @@ function cell(column: Column | undefined, i: number): string {
  * An item's id and fields, read through a scope, sampled fields at its coordinate: its scalars and
  * vectors, and its id where its type keeps ids.
  */
-async function describe(reader: ReadScope, item: Item): Promise<Described> {
+async function describe(reader: Reader.Scope, item: Item): Promise<Described> {
   const type = item.index.type,
     definition = item.source.schema.types[type];
   const names = Object.entries(definition?.fields ?? {})

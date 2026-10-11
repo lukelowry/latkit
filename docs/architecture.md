@@ -14,9 +14,10 @@
 Applications own data and its history, canvases, storage, and the GPU's lifetime. Views borrow
 sources and the GPU; several views share one GPU.
 
-Each package has one entry point, its root. A view is its own API: one config, one `set`, and the
-methods every [view](views.md) shares. Renderer authors build on the `kit` namespace of
-`@latkit/gpu`, which keeps that plumbing out of application code.
+Each package has one entry point, its root, and names its types under what they belong to:
+`Network.Config`, `Column.Numeric`. A view is its own API: one config, one `set`, and the methods
+every [view](views.md) shares. Renderer authors build on the `kit` namespace of `@latkit/gpu`,
+which keeps that plumbing out of application code.
 
 ## Frames
 
@@ -35,8 +36,10 @@ the view's current state and advance none of it.
 
 `kit.BaseView` carries this lifecycle for every built-in view. `kit.BaseItemView` adds the camera,
 selection, picking, hover, and shades that network, geography, monitor, and diagram share, so each
-supplies only its geometry and gestures. A custom `kit.Renderer` keeps captured inputs stable until
-`release`, and settles each prepared frame once, with `submitted` or `discard`.
+supplies only its geometry and gestures. `kit.ProjectedView` adds the projected camera network and
+geography share: fitting from `fitPitch` and `fitBearing`, turning, and orbiting. A custom
+`kit.Renderer` keeps captured inputs stable until `release`, and settles each prepared frame once,
+with `submitted` or `discard`.
 
 ## Work per frame
 
@@ -56,4 +59,5 @@ the GPU draws.
 
 Network and diagram share one graph, `kit.Graph`, and one [layout](views.md#layout), `kit.place`.
 Network and geography share one projection, `kit.Projector`, in TypeScript and WGSL, so a geography
-draws beneath a network in its pass, and a gesture the graph leaves reaches it.
+draws beneath a network in its pass, and a gesture the graph leaves reaches it. Every view resolves
+its style through `kit.resolveStyle`, so options of one kind check alike everywhere.

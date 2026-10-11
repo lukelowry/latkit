@@ -1,11 +1,4 @@
-import type {
-  Index,
-  NumericColumn,
-  ReferenceColumn,
-  RowsBlock,
-  Schema,
-  TextColumn,
-} from '../src/index.js';
+import type { Index, Schema, Column, Block } from '../src/index.js';
 
 export const index: Index = { source: 'model', type: 'Node', version: 'rows:1' };
 export const hubs: Index = { source: 'model', type: 'Hub', version: 'rows:1' };
@@ -35,13 +28,13 @@ export const schema: Schema = {
   axis: { name: 'time', unit: 's' },
 };
 
-export function numbers(values: readonly number[]): NumericColumn {
+export function numbers(values: readonly number[]): Column.Numeric {
   return { kind: 'numeric', values: Float64Array.from(values), offset: 0, length: values.length };
 }
 export function references(
   values: readonly (number | null)[],
   target: Index = index,
-): ReferenceColumn {
+): Column.Reference {
   const validity = new Uint8Array(Math.ceil(values.length / 8));
   values.forEach((value, i) => {
     if (value !== null) validity[i >>> 3] |= 1 << (i & 7);
@@ -55,7 +48,7 @@ export function references(
     ...(values.includes(null) ? { validity } : {}),
   };
 }
-export function text(values: readonly string[]): TextColumn {
+export function text(values: readonly string[]): Column.Text {
   const encoder = new TextEncoder();
   const encoded = values.map((v) => encoder.encode(v));
   const offsets = new Int32Array(values.length + 1);
@@ -64,7 +57,7 @@ export function text(values: readonly string[]): TextColumn {
   for (let i = 0; i < values.length; i++) bytes.set(encoded[i], offsets[i]);
   return { kind: 'text', bytes, offsets, offset: 0, length: values.length };
 }
-export function rows(): RowsBlock {
+export function rows(): Block.Rows {
   return {
     kind: 'rows',
     index,

@@ -1,6 +1,6 @@
 /** Reusable read-contract checks. Supply another implementation/transport without changing tests. */
 import { describe, expect, it } from 'vitest';
-import type { Data, RowsQuery } from '../src/index.js';
+import type { Data, Query } from '../src/index.js';
 import {
   read,
   rowCount as axisLength,
@@ -9,14 +9,14 @@ import {
   validateSchema,
 } from '../src/index.js';
 
-const axisValues = (rows: import('../src/index.js').RowAxis) =>
+const axisValues = (rows: import('../src/index.js').Index.Rows) =>
   Array.from({ length: axisLength(rows) }, (_, i) => rowAt(rows, i));
 
 export function queryConformance(
   name: string,
   open: () => Promise<{
     source: Data;
-    query: RowsQuery;
+    query: Query.Rows;
     expectedRows: readonly number[];
     close: () => Promise<void>;
   }>,

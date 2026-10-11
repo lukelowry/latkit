@@ -1,16 +1,15 @@
 import {
   kit,
   type Gpu,
-  type ItemEvents,
   type ItemView,
-  type ItemViewConfig,
   type Point,
-  type SetOptions,
   type Shade,
-  type ViewStats,
   type FrameInfo,
-  type Patch,
   type Viewport,
+  type View,
+  type Channel,
+  type RGBA,
+  type Insets,
 } from '@latkit/gpu';
 import {
   Work,
@@ -20,21 +19,16 @@ import {
   sameIndex,
   sampleDomain,
   sampleFrames,
+  sampleRuns,
   type Data,
   type Domain,
-  type FieldsBlock,
-  type RowAxis,
-  type RowSelection,
+  type Block,
+  type Index,
+  type FieldInput,
+  type Item,
+  type Query,
 } from '@latkit/model';
-import {
-  continues,
-  monitorData,
-  type MonitorData,
-  type MonitorItem,
-  type Reading,
-  type Trace,
-} from './data.js';
-import type { Limits, MonitorStyle } from './options.js';
+import { continues, monitorData, type MonitorData } from './data.js';
 import {
   DEFAULTS,
   VIEW_DEFAULTS,
@@ -45,7 +39,7 @@ import {
   insets,
   type Style,
 } from './config.js';
-import { DEFAULT_CAMERA, checkCamera, mixCamera, move, type Camera } from './camera.js';
+import { DEFAULT_CAMERA, checkCamera, mixCamera, move } from './camera.js';
 import {
   binding,
   describeBindings,
@@ -83,27 +77,8 @@ import {
 } from './rendering/history.js';
 import { pick, type Shown } from './picking.js';
 
-export interface MonitorConfig extends ItemViewConfig, MonitorStyle {
-  /** Borrowed: destroy never closes it. */
-  readonly source: Data;
-  /** Lines by name; several may read one type. */
-  readonly traces: Readonly<Record<string, Trace>>;
-  /** Where the camera starts; `monitor.camera` is where it is. y fits the data by default. */
-  readonly camera: Partial<Camera> & { readonly x: Domain };
-  readonly limits?: Limits;
-}
-export type MonitorEvents = ItemEvents<MonitorItem, Reading, Camera>;
-export interface MonitorStats extends ViewStats {
-  /** Rows the traces draw. */
-  readonly rows: number;
-  readonly historyBytes: number;
-  /** Whether history is drawn. */
-  readonly visible: boolean;
-  /** Whether some frame in the window is not drawn yet. */
-  readonly refining: boolean;
-  /** Line segments drawn into history so far; a new domain or colormap draws none. */
-  readonly segments: number;
-}
+/** A row of the model, which each of the view's items is; named apart from the view's own Item. */
+type ModelItem = Item;
 type Records = 'traces';
 type Merged = 'camera' | 'input' | 'limits';
 /**
@@ -111,44 +86,153 @@ type Merged = 'camera' | 'input' | 'limits';
  * `at` draws the playhead.
  */
 export interface Monitor extends ItemView<
-  MonitorConfig,
-  MonitorItem,
-  Reading,
-  Camera,
-  MonitorEvents
+  Monitor.Config,
+  Monitor.Item,
+  Monitor.Reading,
+  Monitor.Camera,
+  Monitor.Events
 > {
-  set(patch: Patch<MonitorConfig, Records, Merged>, options?: SetOptions): void;
+  set(patch: View.Patch<Monitor.Config, Records, Merged>, options?: View.SetOptions): void;
   /** The coordinate under a canvas point of the latest drawn plot; null off the plot or before a frame. */
   coordinateAt(point: Point): number | null;
-  stats(): MonitorStats;
+  stats(): Monitor.Stats;
+}
+export declare namespace Monitor {
+  interface Config extends ItemView.Config, Style {
+    /** Borrowed: destroy never closes it. */
+    readonly source: Data;
+    /** Lines by name; several may read one type. */
+    readonly traces: Readonly<Record<string, TraceOptions>>;
+    /** Where the camera starts; `monitor.camera` is where it is. y fits the data by default. */
+    readonly camera: Partial<Camera> & { readonly x: Domain };
+    readonly limits?: Limits;
+  }
+  type Events = ItemView.Events<Item, Reading, Camera>;
+  interface Stats extends View.Stats {
+    /** Rows the traces draw. */
+    readonly rows: number;
+    readonly historyBytes: number;
+    /** Whether history is drawn. */
+    readonly visible: boolean;
+    /** Whether some frame in the window is not drawn yet. */
+    readonly refining: boolean;
+    /** Line segments drawn into history so far; a new domain or colormap draws none. */
+    readonly segments: number;
+  }
+  /** What the monitor shows: the coordinates along x, such as seconds, and the values along y. */
+  interface Camera extends ItemView.Camera {
+    readonly x: Domain;
+    readonly y: Domain;
+    /**
+     * Fit y to the data in x: tightly for each window, then with headroom as data arrives in it, so
+     * new extremes draw history again a few times rather than at each. Setting y turns it off.
+     */
+    readonly fit: boolean;
+  }
+  /**
+   * A sampled field of one type's rows, drawn as a line per row over the coordinate. Each channel
+   * takes one value for every row, a field, or a scale: `color: 'voltage'`, `widthPx: 2`.
+   */
+  interface TraceOptions {
+    readonly from: string;
+    readonly rows?: Index.Selection;
+    /** The sampled field each row draws, against the values axis. */
+    readonly y: string | FieldInput.Binding;
+    readonly interpolation?: 'linear' | 'step-before' | 'step-after';
+    /** A field colors over its extent in the window; the plotted field, over the values axis. */
+    readonly color?: Channel.Color;
+    /** Line width in CSS pixels; a field spans 1 to 4. 1.25 by default. */
+    readonly widthPx?: Channel;
+    readonly visible?: Channel<boolean>;
+    readonly shade?: Channel;
+  }
+  /** A row a monitor draws: selected in every trace of its type, or in one when it names `trace`. */
+  interface Item extends ModelItem {
+    readonly trace?: string;
+  }
+  /** An exact observation. */
+  interface Reading extends Item {
+    readonly trace: string;
+    readonly field: string;
+    readonly frame: number;
+    readonly coordinate: number;
+    readonly value: number;
+    readonly point: Point;
+  }
+  interface AxisOptions {
+    readonly label?: string;
+    readonly ticks?: readonly Tick[];
+    readonly minSpacingPx?: number;
+    readonly format?: 'auto' | 'fixed' | 'scientific' | 'engineering';
+    readonly precision?: number;
+    readonly grid?: boolean;
+    /**
+     * Whether ticks are labelled, with the offset they share at the labels' end; without, the axis
+     * keeps its line and grid and takes no room for them. True by default.
+     */
+    readonly tickLabels?: boolean;
+  }
+  interface Tick {
+    readonly value: number;
+    readonly label?: string;
+  }
+  /** How a monitor draws, beyond the shared view style; every option has a default. */
+  interface Style {
+    /** A trace's `color` and `widthPx` where it leaves them unset. */
+    readonly traceColor?: RGBA;
+    readonly traceWidthPx?: number;
+    /** A label, axis options, or false to hide the axis. */
+    readonly xAxis?: string | AxisOptions | false;
+    readonly yAxis?: string | AxisOptions | false;
+    readonly axisColor?: RGBA;
+    readonly gridColor?: RGBA;
+    /** The playhead at `at`. */
+    readonly cursorColor?: RGBA;
+    readonly paddingPx?: Insets;
+    /** Lines along the plot's sides its axes leave open, in the axis color. */
+    readonly outline?: boolean;
+  }
+  interface Limits {
+    /** Rows the traces draw together. */
+    readonly rows?: number;
+    /** Line segments drawn per frame; what is drawn is never drawn again. */
+    readonly segmentsPerFrame?: number;
+    /**
+     * GPU memory for history: 4 bytes a pixel for traces of fixed colors, 1 for each look of traces
+     * colored by what they plot, and 8 for each look of traces colored by another field; five times
+     * each under MSAA. An image keeps up to four looks apart within a quarter of it, and bakes the
+     * rest with the fixed colors.
+     */
+    readonly historyBytes?: number;
+  }
 }
 
 /** Draw sampled fields over a coordinate such as time, on a canvas or offscreen. */
-export function createMonitor(gpu: Gpu, config: MonitorConfig): Monitor {
+export function createMonitor(gpu: Gpu, config: Monitor.Config): Monitor {
   return new MonitorView(gpu, config);
 }
 /** A replacement for a new size waits until resizing pauses. */
 const RESIZE_MS = 120;
 /** What a config means to the monitor: its traces, limits, and style. */
 interface Resolved {
-  readonly config: MonitorConfig;
+  readonly config: Monitor.Config;
   readonly data: MonitorData;
-  readonly limits: Required<Limits>;
+  readonly limits: Required<Monitor.Limits>;
   readonly style: Style;
 }
 /** The camera that shows readings: their coordinates and values, padded. */
 function frameReadings(
-  items: readonly MonitorItem[],
-  camera: Camera,
+  items: readonly Monitor.Item[],
+  camera: Monitor.Camera,
   area: Plot,
   [top, right, bottom, left]: readonly number[],
-): Partial<Camera> {
+): Partial<Monitor.Camera> {
   let lo = Infinity,
     hi = -Infinity,
     low = Infinity,
     high = -Infinity;
   for (const item of items) {
-    const { coordinate, value } = item as Partial<Reading>;
+    const { coordinate, value } = item as Partial<Monitor.Reading>;
     if (coordinate !== undefined && Number.isFinite(coordinate)) {
       lo = Math.min(lo, coordinate);
       hi = Math.max(hi, coordinate);
@@ -184,13 +268,13 @@ function grown(wanted: Domain, shown: Domain): Domain {
     wanted[1] > shown[1] ? wanted[1] + half : shown[1],
   ];
 }
-function includes(rows: RowAxis, row: number): boolean {
+function includes(rows: Index.Rows, row: number): boolean {
   return rows.kind === 'range'
     ? row >= rows.offset && row < rows.offset + rows.count
     : rows.values.includes(row);
 }
 /** The selected rows a trace draws, ascending; undefined when it draws none. */
-function focused(selection: readonly MonitorItem[], trace: Binding): RowSelection | undefined {
+function focused(selection: readonly Monitor.Item[], trace: Binding): Index.Selection | undefined {
   const index = trace.source.tables[trace.trace.from]?.index;
   // The index names the rows, so a selection survives appends that replace the Data value.
   const rows = index
@@ -207,16 +291,24 @@ function focused(selection: readonly MonitorItem[], trace: Binding): RowSelectio
     ? { kind: 'range', index, offset: values[0], count: 1 }
     : { kind: 'indices', index, values };
 }
-/** Frames a trace draws for an image: the window plus one frame on each side, `[first, end)`. */
-function span(trace: Binding, target: Image): readonly [number, number] | undefined {
+/**
+ * The runs of frames a trace draws for an image, each `[first, end)`: the window plus one frame on
+ * each side, parted where the frames held have a hole, which the line does not cross.
+ */
+function spans(trace: Binding, target: Image): readonly (readonly [number, number])[] {
+  const pages = tracePages(trace);
+  return pages ? sampleRuns(pages, shown(target)) : [];
+}
+/** The frame after the last a trace draws for an image, in one index lookup; undefined with none. */
+function shownEnd(trace: Binding, target: Image): number | undefined {
   const pages = tracePages(trace);
   if (!pages) return undefined;
-  const [first, end] = sampleFrames(pages, {
-    kind: 'range',
-    between: target.window,
-    context: { before: 1, after: 1 },
-  });
-  return first < end ? [first, end] : undefined;
+  const [first, end] = sampleFrames(pages, shown(target));
+  return first < end ? end : undefined;
+}
+/** The frames an image shows: its window, and a frame either side. */
+function shown(target: Image): Query.Range {
+  return { kind: 'range', between: target.window, context: { before: 1, after: 1 } };
 }
 /** An image's groups, and the layer each has in it. */
 interface Planned {
@@ -230,12 +322,12 @@ function complete(target: Image, planned: Planned, advanced: Prepared['advanced'
     return (
       !!layer &&
       group.traces.every((trace) => {
-        const frames = span(trace, target);
-        if (!frames) return true;
+        const end = shownEnd(trace, target);
+        if (end === undefined) return true;
         let progress = layer.progress.get(trace.name);
         for (const item of advanced)
           if (item.layer === layer && item.trace === trace.name) progress = item.progress;
-        return !progress?.chunk && (progress?.through ?? -Infinity) >= frames[1] - 1;
+        return !progress?.chunk && (progress?.through ?? -Infinity) >= end - 1;
       })
     );
   });
@@ -250,7 +342,7 @@ class Budget {
     private bytes: number,
     private blocks: number,
   ) {}
-  spend(block: FieldsBlock, segments: number): void {
+  spend(block: Block.Fields, segments: number): void {
     this.segments -= segments;
     this.blocks--;
     this.bytes -=
@@ -269,7 +361,7 @@ interface Surface {
   back?: Image;
   focus?: Image;
   /** The selection the focus image draws. */
-  focusFor: readonly MonitorItem[];
+  focusFor: readonly Monitor.Item[];
   /** The plot size and when it last changed, to wait out a resize. */
   sized: { width: number; height: number; at: number };
   /** Whether its images hold every frame their windows show. */
@@ -317,11 +409,11 @@ function sameShown(a: Shown, b: Shown): boolean {
 
 class MonitorView
   extends kit.BaseItemView<
-    MonitorConfig,
-    MonitorItem,
-    Reading,
-    Camera,
-    MonitorEvents,
+    Monitor.Config,
+    Monitor.Item,
+    Monitor.Reading,
+    Monitor.Camera,
+    Monitor.Events,
     Resolved,
     Prepared | undefined,
     Pipelines,
@@ -366,13 +458,13 @@ class MonitorView
     readonly radius: number;
     readonly limit: number;
     readonly shown: Shown;
-    readonly result: readonly Reading[];
+    readonly result: readonly Monitor.Reading[];
   };
   private drawCalls = 0;
   /** The hover search: exact readings, a frame later. */
-  private readonly nearest: kit.HoverSearch<Reading> = (point, radius, { signal }) =>
+  private readonly nearest: kit.HoverSearch<Monitor.Reading> = (point, radius, { signal }) =>
     this.shown ? this.read(point, radius, 1, signal).then((hits) => hits[0] ?? null) : null;
-  constructor(gpu: Gpu, config: MonitorConfig) {
+  constructor(gpu: Gpu, config: Monitor.Config) {
     super(gpu, config, {
       name: 'monitor',
       records: ['traces'],
@@ -391,7 +483,7 @@ class MonitorView
   private get style(): Style {
     return this.resolved.style;
   }
-  private get limits(): Required<Limits> {
+  private get limits(): Required<Monitor.Limits> {
     return this.resolved.limits;
   }
 
@@ -401,7 +493,7 @@ class MonitorView
       ? plotCoordinate(shown.plot, shown.window, point[0])
       : null;
   }
-  stats(): MonitorStats {
+  stats(): Monitor.Stats {
     return {
       ...super.stats(),
       rows: this.traces?.reduce((n, trace) => n + trace.count, 0) ?? 0,
@@ -413,7 +505,7 @@ class MonitorView
     };
   }
   /** Readings frame once; no readings fit the values and show every recorded coordinate. */
-  fit(items?: readonly MonitorItem[], options: SetOptions = {}): void {
+  fit(items?: readonly Monitor.Item[], options: View.SetOptions = {}): void {
     this.live();
     // Asked for, a fit is tight.
     this.fitted = undefined;
@@ -424,11 +516,11 @@ class MonitorView
     super.fit(items, options);
   }
 
-  // ── Camera ──
-  protected defaultCamera(): Camera {
+  // ── Monitor.Camera ──
+  protected defaultCamera(): Monitor.Camera {
     return DEFAULT_CAMERA;
   }
-  protected resolveCamera(camera: Camera): Camera {
+  protected resolveCamera(camera: Monitor.Camera): Monitor.Camera {
     return checkCamera(camera);
   }
   /**
@@ -436,10 +528,10 @@ class MonitorView
    * leaves `fitPaddingPx` clear around what it frames, as every view's fit does.
    */
   private framing(
-    items: readonly MonitorItem[] | undefined,
-    camera: Camera,
+    items: readonly Monitor.Item[] | undefined,
+    camera: Monitor.Camera,
     viewport: Viewport,
-  ): Partial<Camera> | undefined {
+  ): Partial<Monitor.Camera> | undefined {
     const area = plot(viewport, this.style),
       padding = insets(this.style.fitPaddingPx);
     if (items) return frameReadings(items, camera, area, padding);
@@ -456,34 +548,39 @@ class MonitorView
     this.fitted = { x: camera.x, y };
     return { y };
   }
-  protected interpolate(from: Camera, to: Camera, t: number): Camera {
+  protected interpolate(from: Monitor.Camera, to: Monitor.Camera, t: number): Monitor.Camera {
     return mixCamera(from, to, t);
   }
-  protected panned(camera: Camera, dx: number, dy: number, viewport: Viewport): Camera {
+  protected panned(
+    camera: Monitor.Camera,
+    dx: number,
+    dy: number,
+    viewport: Viewport,
+  ): Monitor.Camera {
     return move(camera, dx, dy, plot(viewport, this.style));
   }
 
   // ── Items ──
   /** A reading's point in the latest drawn frame; it lies off the plot outside the window. */
-  protected position(item: MonitorItem): Point | null {
+  protected position(item: Monitor.Item): Point | null {
     const shown = this.shown,
-      { coordinate, value } = item as Partial<Reading>;
+      { coordinate, value } = item as Partial<Monitor.Reading>;
     if (!shown || coordinate === undefined || value === undefined) return null;
     return [plotX(shown.plot, shown.window, coordinate), plotY(shown.plot, shown.values, value)];
   }
   /** A row, or a row of one trace: the line a reading lies on, wherever along it. */
-  protected identify(item: MonitorItem): string {
+  protected identify(item: Monitor.Item): string {
     return itemKey(item, item.trace ?? '');
   }
-  protected detail(hit: Reading): string {
+  protected detail(hit: Monitor.Reading): string {
     return String(hit.frame);
   }
-  protected accept(item: MonitorItem): void {
+  protected accept(item: Monitor.Item): void {
     if (!Number.isSafeInteger(item.row) || item.row < 0) fail('Invalid selected row');
     if (!this.table(item)) throw failure('conflict', 'Selection belongs to another source');
   }
   /** Rows stay selected while the presented frame draws them, as through appends. */
-  protected contains(item: MonitorItem): boolean {
+  protected contains(item: Monitor.Item): boolean {
     return !!this.shown?.traces.some((trace) => {
       if (item.trace !== undefined && trace.name !== item.trace) return false;
       const table = trace.source.tables[trace.trace.from];
@@ -500,7 +597,7 @@ class MonitorView
     point: Point,
     radiusPx: number,
     options: { readonly limit: number; readonly signal?: AbortSignal },
-  ): Promise<readonly Reading[]> {
+  ): Promise<readonly Monitor.Reading[]> {
     return this.read(point, radiusPx, options.limit, options.signal);
   }
   protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
@@ -512,7 +609,7 @@ class MonitorView
   }
 
   // ── Config ──
-  protected resolve(config: MonitorConfig): Resolved {
+  protected resolve(config: Monitor.Config): Resolved {
     const data = monitorData(config);
     validateData(data);
     return {
@@ -584,8 +681,8 @@ class MonitorView
   private planOf(
     traces: readonly Binding[],
     focus: boolean,
-    selection: readonly MonitorItem[],
-    selected: ReadonlyMap<string, RowSelection | undefined>,
+    selection: readonly Monitor.Item[],
+    selected: ReadonlyMap<string, Index.Selection | undefined>,
     target: Transform,
   ): readonly Group[] {
     const drawn = this.drawnWith(focus),
@@ -788,6 +885,7 @@ class MonitorView
         });
     const composed = layers.map((entry) => entry.layer);
     for (const layer of new Set([...composed, ...draws.keys()])) enroll(frame, layer);
+    const hover = this.hoverFrame(frame, this.nearest);
     const screen = await prepareScreen(
       this.gpu,
       frame,
@@ -799,9 +897,9 @@ class MonitorView
       this.style,
       frame.at,
       effect,
+      hover?.point ?? null,
     );
     frame.signal.throwIfAborted();
-    this.hoverFrame(frame, this.nearest);
     // One object while the same lines stand, as through playback, so readings of it stand too.
     const drawn: Shown = {
         source: this.data.source,
@@ -828,25 +926,27 @@ class MonitorView
   /**
    * Draw the frames of a trace its layer is missing; returns the segments drawn. Each read starts at
    * the last frame drawn, so its first line joins the one before, and draws only its first chunk; a
-   * chunk may stop between row blocks and finish next frame.
+   * chunk may stop between row blocks and finish next frame. A hole in the frames held ends a line,
+   * and the next run of frames starts another.
    */
   private async fill(
     frame: kit.Preparation,
     target: Image,
     layer: Layer,
     trace: Binding,
-    rows: RowSelection | undefined,
+    rows: Index.Selection | undefined,
     effect: GPUBindGroup,
     budget: Budget,
     draws: Map<Layer, Draw[]>,
     advanced: Prepared['advanced'],
   ): Promise<number> {
-    const frames = span(trace, target);
-    if (!frames) return 0;
-    const [first, end] = frames,
-      before = layer.progress.get(trace.name) ?? {};
+    // Only a trace with frames left to draw finds the runs they lie in.
+    const end = shownEnd(trace, target);
+    if (end === undefined) return 0;
+    const before = layer.progress.get(trace.name) ?? {};
     let { through, chunk } = before;
     if (!chunk && through !== undefined && through >= end - 1) return 0;
+    const runs = spans(trace, target);
     const area = plot(frame.viewport, this.style),
       out = draws.get(layer) ?? [],
       // Only a focus layer draws a selection of rows.
@@ -860,61 +960,68 @@ class MonitorView
         fields: trace.fields,
         window: { kind: 'frames', offset, count },
       });
-    let joined = through !== undefined,
-      segments = 0;
-    while (!budget.spent && (chunk || through === undefined || through < end - 1)) {
-      const start =
-          chunk?.start ?? (through === undefined ? first : joined ? through : through + 1),
-        count = chunk?.frames ?? end - start,
-        // A selection's lines glow where they meet the lines drawn before, so they read the frame
-        // those came from.
-        context = focus && start === through && start > first ? 1 : 0;
-      let length = 0,
-        drawn = chunk?.rows ?? 0,
-        whole = true;
-      for await (const block of read(start - context, count + context)) {
-        if (block.samples!.firstFrame !== start - context) break;
-        length = block.samples!.coordinates.length - context;
-        const after = block.rowOffset + rowCount(block.rows);
-        if (after <= drawn) continue;
-        if (budget.spent) {
-          whole = false;
-          break;
+    let segments = 0;
+    runs: for (const [first, last] of runs) {
+      // A run the layer holds already, or one before the chunk it was drawing, adds nothing.
+      if (chunk ? chunk.start >= last : through !== undefined && through >= last - 1) continue;
+      // A line carries on within its run; past a hole, the run's first frame starts another.
+      let joined = through !== undefined && through >= first;
+      while (!budget.spent && (chunk || through === undefined || through < last - 1)) {
+        const start =
+            chunk?.start ??
+            (through === undefined || through < first ? first : joined ? through : through + 1),
+          count = chunk?.frames ?? last - start,
+          // A selection's lines glow where they meet the lines drawn before, so they read the frame
+          // those came from.
+          context = focus && start === through && start > first ? 1 : 0;
+        let length = 0,
+          drawn = chunk?.rows ?? 0,
+          whole = true;
+        for await (const block of read(start - context, count + context)) {
+          if (block.samples!.firstFrame !== start - context) break;
+          length = block.samples!.coordinates.length - context;
+          const after = block.rowOffset + rowCount(block.rows);
+          if (after <= drawn) continue;
+          if (budget.spent) {
+            whole = false;
+            break;
+          }
+          // A lone frame already drawn adds nothing; a frame after a gap draws as a dot.
+          if (length > 1 || start !== through) {
+            const result = traceDraws(
+              frame,
+              block,
+              trace,
+              target,
+              layer,
+              area,
+              this.style,
+              focus,
+              effect,
+              start !== through,
+              context > 0,
+            );
+            out.push(...result.draws);
+            budget.spend(block, result.segments);
+            segments += result.segments;
+          }
+          drawn = after;
         }
-        // A lone frame already drawn adds nothing; a frame after a gap draws as a dot.
-        if (length > 1 || start !== through) {
-          const result = traceDraws(
-            frame,
-            block,
-            trace,
-            target,
-            layer,
-            area,
-            this.style,
-            focus,
-            effect,
-            start !== through,
-            context > 0,
-          );
-          out.push(...result.draws);
-          budget.spend(block, result.segments);
-          segments += result.segments;
+        if (!length) break runs;
+        if (!whole) {
+          chunk = { start, frames: length, rows: drawn };
+          break runs;
         }
-        drawn = after;
+        chunk = undefined;
+        if (length === 1 && start === through) {
+          // A gap follows the last frame drawn: continue past it, unjoined.
+          joined = false;
+          continue;
+        }
+        through = start + length - 1;
+        joined = true;
       }
-      if (!length) break;
-      if (!whole) {
-        chunk = { start, frames: length, rows: drawn };
-        break;
-      }
-      chunk = undefined;
-      if (length === 1 && start === through) {
-        // A gap follows the last frame drawn: continue past it, unjoined.
-        joined = false;
-        continue;
-      }
-      through = start + length - 1;
-      joined = true;
+      if (budget.spent) break;
     }
     if (through !== before.through || chunk !== before.chunk)
       advanced.push({ layer, trace: trace.name, progress: { through, chunk } });
@@ -1081,7 +1188,7 @@ class MonitorView
     radius: number,
     limit: number,
     signal?: AbortSignal,
-  ): Promise<readonly Reading[]> {
+  ): Promise<readonly Monitor.Reading[]> {
     this.live();
     const shown = this.shown;
     if (!shown || !onPlot(shown.plot, point)) return [];
@@ -1099,7 +1206,7 @@ class MonitorView
     const reads = this.gpu.reader.open({
       signal: signal ? AbortSignal.any([signal, this.signal]) : this.signal,
     });
-    let result: Reading[];
+    let result: Monitor.Reading[];
     try {
       result = await pick(reads, shown, point, radius, limit);
     } finally {
@@ -1109,7 +1216,7 @@ class MonitorView
     return result;
   }
   /** The table of an item's rows among the sources the traces read. */
-  private table(item: MonitorItem): Data['tables'][string] | undefined {
+  private table(item: Monitor.Item): Data['tables'][string] | undefined {
     const config = this.config,
       sources = new Set([config.source]);
     for (const trace of Object.values(config.traces))

@@ -1,20 +1,18 @@
 import {
   kit,
   type Gpu,
-  type ItemEvents,
   type ItemView,
-  type ItemViewConfig,
-  type Patch,
   type Point,
   type ProjectedCamera,
-  type SetOptions,
   type Shade,
-  type ViewInput,
-  type ViewStats,
   type FrameInfo,
   type Viewport,
+  type View,
+  type Channel,
+  type RGBA,
+  type Labels,
 } from '@latkit/gpu';
-import { failure, itemKey, type Data } from '@latkit/model';
+import { failure, itemKey, type Data, type FieldInput, type Item } from '@latkit/model';
 import {
   AREA,
   DEFAULTS,
@@ -26,14 +24,11 @@ import {
   resolveStyle,
   shapeField,
   strokesRings,
-  type AreaOptions,
-  type GeographyStyle,
-  type LineOptions,
   type Style,
 } from './options.js';
-import { pick, positionIn, type Drawn, type GeographyItem } from './picking.js';
+import { pick, positionIn, type Drawn } from './picking.js';
 import { isTiles, type TileSet, type Tiles } from './tiles.js';
-import { Labels, type LabelSource } from './scene/labels.js';
+import { Labels as SceneLabels, type LabelSource } from './scene/labels.js';
 import { RecordStyles } from './scene/records.js';
 import { Sources, type Prepared, type VectorTileData } from './scene/sources.js';
 import type { Placed } from './scene/pyramid.js';
@@ -49,66 +44,151 @@ import { Painter, type Paint, type ShapeDraw } from './rendering/painter.js';
 import { pipelines, type Pipelines } from './rendering/pipelines.js';
 import { warm } from './prepare/client.js';
 
+/** A row of the model, which each of the view's items is; named apart from the view's own Item. */
+type ModelItem = Item;
 const { Projector } = kit;
 const NONE = 0xffffffff;
 
-export interface GeographyLimits {
-  /** GPU bytes loaded tiles may hold, each source, before the least recently drawn go. */
-  readonly tileBytes?: number;
-  /** Tile requests in flight at once, each source. */
-  readonly tileRequests?: number;
-}
-const DEFAULT_LIMITS: Required<GeographyLimits> = Object.freeze({
+const DEFAULT_LIMITS: Required<Geography.Limits> = Object.freeze({
   tileBytes: 64 * 1024 ** 2,
   tileRequests: 8,
 });
-export interface GeographyConfig extends ItemViewConfig, GeographyStyle {
-  /**
-   * Where areas and lines read their shapes and fields: Data, or tiles. A record may name its own.
-   * Borrowed: destroy never closes it.
-   */
-  readonly source?: Data | Tiles;
-  /** Filled regions by type, drawn in order over the ground. */
-  readonly areas?: Readonly<Record<string, AreaOptions>>;
-  /** Polylines by type, drawn in order over areas: coasts, borders, rivers, an area type's outline. */
-  readonly lines?: Readonly<Record<string, LineOptions>>;
-  /** Where the camera starts; `geography.camera` is where it is. Fits the shapes by default. */
-  readonly camera?: Partial<ProjectedCamera>;
-  readonly limits?: GeographyLimits;
-}
-export type GeographyEvents = ItemEvents<GeographyItem, GeographyItem, ProjectedCamera>;
-export interface GeographyStats extends ViewStats {
-  /** Tiles loaded, and still loading. */
-  readonly tiles: number;
-  readonly loading: number;
-  /** Vertices the latest frame drew, three a triangle and two a line point, and its triangles. */
-  readonly vertices: number;
-  readonly triangles: number;
-  /** GPU bytes the shapes and tiles hold. */
-  readonly geometryBytes: number;
-}
 type Records = 'areas' | 'lines';
 type Merged = 'camera' | 'input' | 'limits';
 export interface Geography extends ItemView<
-  GeographyConfig,
-  GeographyItem,
-  GeographyItem,
+  Geography.Config,
+  Geography.Item,
+  Geography.Item,
   ProjectedCamera,
-  GeographyEvents
+  Geography.Events
 > {
-  set(patch: Patch<GeographyConfig, Records, Merged>, options?: SetOptions): void;
-  stats(): GeographyStats;
+  set(patch: View.Patch<Geography.Config, Records, Merged>, options?: View.SetOptions): void;
+  stats(): Geography.Stats;
+}
+export declare namespace Geography {
+  interface Config extends ItemView.Config, Style {
+    /**
+     * Where areas and lines read their shapes and fields: Data, or tiles. A record may name its own.
+     * Borrowed: destroy never closes it.
+     */
+    readonly source?: Data | Tiles;
+    /** Filled regions by type, drawn in order over the ground. */
+    readonly areas?: Readonly<Record<string, AreaOptions>>;
+    /** Polylines by type, drawn in order over areas: coasts, borders, rivers, an area type's outline. */
+    readonly lines?: Readonly<Record<string, LineOptions>>;
+    /** Where the camera starts; `geography.camera` is where it is. Fits the shapes by default. */
+    readonly camera?: Partial<ProjectedCamera>;
+    readonly limits?: Limits;
+  }
+  type Events = ItemView.Events<Item, Item, ProjectedCamera>;
+  interface Stats extends View.Stats {
+    /** Tiles loaded, and still loading. */
+    readonly tiles: number;
+    readonly loading: number;
+    /** Vertices the latest frame drew, three a triangle and two a line point, and its triangles. */
+    readonly vertices: number;
+    readonly triangles: number;
+    /** GPU bytes the shapes and tiles hold. */
+    readonly geometryBytes: number;
+  }
+  interface Limits {
+    /** GPU bytes loaded tiles may hold, each source, before the least recently drawn go. */
+    readonly tileBytes?: number;
+    /** Tile requests in flight at once, each source. */
+    readonly tileRequests?: number;
+  }
+  /** An item a geography draws: a row of an area or line type. */
+  interface Item extends ModelItem {
+    readonly kind: 'area' | 'line';
+  }
+  /** How the earth draws, beyond the shared view style; every option has a default. */
+  interface Style extends kit.LineStyle, kit.ProjectedStyle {
+    /** The ground beneath everything. */
+    readonly surfaceColor?: RGBA;
+    /** Lines of longitude and latitude, spaced for the zoom. */
+    readonly graticule?: boolean;
+    readonly graticuleColor?: RGBA;
+    /** How close the graticule's lines may draw, in CSS pixels; it picks the nicest spacing at least this. */
+    readonly graticuleSpacingPx?: number;
+    /** Light by the sun at a time in milliseconds, at the current time, or not at all; a hosting network is lit too. */
+    readonly daylight?: number | 'now' | false;
+    /** How bright night stays, from 0 to 1, for the ground and everything on it. */
+    readonly nightFloor?: number;
+    /** How wide the band from day to night is. */
+    readonly terminatorWidth?: number;
+    /** A glow around the globe's rim. */
+    readonly atmosphere?: boolean;
+    readonly atmosphereColor?: RGBA;
+    /** The axis the globe turns on, through its poles. */
+    readonly earthAxis?: boolean;
+    readonly earthAxisColor?: RGBA;
+    /** The color of areas their `color` leaves unset. */
+    readonly areaColor?: RGBA;
+    /** The color of lines their `color` leaves unset. */
+    readonly lineColor?: RGBA;
+    /** The width of lines their `widthPx` leaves unset. */
+    readonly lineWidthPx?: number;
+  }
+  /** What areas and lines share: where their shapes and values come from, and their channels. */
+  interface ShapeOptions {
+    /** Where the shapes come from: Data, or tiles; the config's `source` by default. */
+    readonly source?: Data | Tiles;
+    /**
+     * Rows of the same type, matched to the shapes' rows by id, that the channels read: a run's
+     * results coloring a static map. The shapes' own rows by default.
+     */
+    readonly values?: Data;
+    /** `areaColor` or `lineColor` by default. */
+    readonly color?: Channel.Color;
+    readonly visible?: Channel<boolean>;
+    /** The value the view's `shade` reads. */
+    readonly shade?: Channel;
+    /** Text at each row's anchor: an area's widest point, a line's middle. */
+    readonly labels?: string | Labels | null;
+  }
+  interface AreaOptions extends ShapeOptions {
+    /** Rings of longitude and latitude; a hole winds opposite its outline. `rings` by default. */
+    readonly rings?: FieldInput;
+  }
+  interface LineOptions extends ShapeOptions {
+    /** Points, or lists of them; an area type's `rings` draw its outline. `points` by default. */
+    readonly points?: FieldInput;
+    /**
+     * How a line between geographic points runs over the earth: `straight` in longitude and
+     * latitude, or `geodesic` along the great circle. `straight` by default, as maps record their
+     * features: a border along a parallel stays on it.
+     */
+    readonly route?: 'straight' | 'geodesic';
+    /** `lineWidthPx` by default. */
+    readonly widthPx?: Channel;
+    readonly dash?: Channel<boolean>;
+    /**
+     * How far comets move along the line each second, in CSS pixels, from its first point toward its
+     * last; negative runs the other way, and 0 draws none. A field spans 0 to 40.
+     */
+    readonly flowPx?: Channel;
+  }
+  interface GeoJsonOptions {
+    /** The type features become: one name for all, or a name per feature from its properties. 'Feature' by default. */
+    readonly type?: string | ((properties: Readonly<Record<string, unknown>>) => string);
+    /** A property holding each feature's id; the feature's own `id`, else its type and place, by default. */
+    readonly id?: string;
+    /** The Index source name rows are numbered under; a fresh one by default. */
+    readonly source?: string;
+    /** Stops reading and parsing; the promise rejects. */
+    readonly signal?: AbortSignal;
+  }
 }
 
 /** Draw the earth and what lies on it: on a canvas, offscreen, or beneath a network. */
-export function createGeography(gpu: Gpu, config: GeographyConfig = {}): Geography {
+export function createGeography(gpu: Gpu, config: Geography.Config = {}): Geography {
   return new GeographyView(gpu, config);
 }
 
 interface Resolved {
-  readonly config: GeographyConfig;
+  readonly config: Geography.Config;
   readonly style: Style;
-  readonly limits: Required<GeographyLimits>;
+  readonly limits: Required<Geography.Limits>;
   /** Whether any line type moves comets along itself. */
   readonly flowing: boolean;
 }
@@ -116,7 +196,7 @@ interface Resolved {
 interface Planned {
   readonly kind: 'area' | 'line';
   readonly type: string;
-  readonly options: AreaOptions | LineOptions;
+  readonly options: Geography.AreaOptions | Geography.LineOptions;
   readonly data: Data;
   readonly prepared: Prepared;
   /** A tile's shapes draw whole; Data's by what is in view. */
@@ -136,16 +216,15 @@ interface Frame {
 }
 
 /** Shapes prepare in workers: they start as a config names any, so its first frame finds them running. */
-function warmFor(config: GeographyConfig): void {
+function warmFor(config: Geography.Config): void {
   if (Object.keys(config.areas ?? {}).length || Object.keys(config.lines ?? {}).length) warm();
 }
 class GeographyView
-  extends kit.BaseItemView<
-    GeographyConfig,
-    GeographyItem,
-    GeographyItem,
-    ProjectedCamera,
-    GeographyEvents,
+  extends kit.ProjectedView<
+    Geography.Config,
+    Geography.Item,
+    Geography.Item,
+    Geography.Events,
     Resolved,
     Frame,
     Pipelines,
@@ -157,24 +236,23 @@ class GeographyView
   private readonly records: RecordStyles;
   private readonly painter: Painter;
   private readonly sources: Sources;
-  private readonly labels = new Labels();
+  private readonly labels = new SceneLabels();
   /** The latest drawn frame: what pick, locate, and selection see. */
   private shown?: Frame;
   /** The selection's rows in each drawn Data, a bit per row, made as frames first draw them. */
   private selectionBits?: {
-    readonly selection: readonly GeographyItem[];
+    readonly selection: readonly Geography.Item[];
     readonly bits: WeakMap<Data, Map<string, kit.BufferData | null>>;
   };
   private counts = { vertices: 0, triangles: 0, drawCalls: 0 };
   /** When comets began to move, in the frames' clock. */
   private clock?: number;
-  constructor(gpu: Gpu, config: GeographyConfig) {
+  constructor(gpu: Gpu, config: Geography.Config) {
     super(gpu, config, {
       name: 'geography',
       records: ['areas', 'lines'],
       merged: ['camera', 'input', 'limits'],
       options: [...Object.keys(DEFAULTS), 'limits'],
-      framed: ['projection', 'center', 'scale', 'pitch', 'bearing'],
       style: VIEW_DEFAULTS,
     });
     this.records = new RecordStyles(gpu);
@@ -195,10 +273,10 @@ class GeographyView
     this.start();
     warmFor(config);
   }
-  private get style(): Style {
+  protected get style(): Style {
     return this.resolved.style;
   }
-  stats(): GeographyStats {
+  stats(): Geography.Stats {
     const tiles = this.sources.tiles;
     return {
       ...super.stats(),
@@ -216,29 +294,8 @@ class GeographyView
   protected defaultCamera(): ProjectedCamera {
     return { ...Projector.camera, projection: 'mercator' };
   }
-  protected resolveCamera(camera: ProjectedCamera): ProjectedCamera {
-    return Projector.check({ ...camera, orbit: false });
-  }
-  protected interpolate(
-    from: ProjectedCamera,
-    to: ProjectedCamera,
-    t: number,
-  ): ProjectedCamera | undefined {
-    return from.projection === to.projection ? Projector.mix(from, to, t) : undefined;
-  }
-  protected panned(camera: ProjectedCamera, dx: number, dy: number): ProjectedCamera {
-    return Projector.move(camera, dx, dy);
-  }
-  protected zoomed(
-    camera: ProjectedCamera,
-    factor: number,
-    anchor: Point,
-    viewport: Viewport,
-  ): ProjectedCamera {
-    return Projector.zoom(camera, factor, anchor, viewport);
-  }
   /** Where the drawn records hold an item: each record, and the item's place in its rows. */
-  private placements(item: GeographyItem): { readonly record: Drawn; readonly at: number }[] {
+  private placements(item: Geography.Item): { readonly record: Drawn; readonly at: number }[] {
     const out: { record: Drawn; at: number }[] = [];
     for (const record of this.shown?.drawn ?? [])
       if (record.kind === item.kind && record.type === item.index.type) {
@@ -247,7 +304,7 @@ class GeographyView
       }
     return out;
   }
-  protected position(item: GeographyItem): Point | null {
+  protected position(item: Geography.Item): Point | null {
     const shown = this.shown;
     for (const { record, at } of this.placements(item)) {
       const x = record.shapes.anchors[at * 2],
@@ -258,51 +315,25 @@ class GeographyView
     }
     return null;
   }
-  protected identify(item: GeographyItem): string {
+  protected identify(item: Geography.Item): string {
     return itemKey(item, item.kind);
   }
-  protected contains(item: GeographyItem): boolean {
+  protected contains(item: Geography.Item): boolean {
     return this.placements(item).length > 0;
   }
   protected hits(
     point: Point,
     radiusPx: number,
     options: { readonly limit: number },
-  ): readonly GeographyItem[] {
+  ): readonly Geography.Item[] {
     const shown = this.shown;
     return shown ? pick(shown.drawn, shown.projector, point, radiusPx, options.limit) : [];
   }
   protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
     return pipelines(this.gpu, format, msaa, shade.wgsl);
   }
-  /** The right button, or Shift, turns the camera: a plane tilts, the mercator plane only turns. */
-  protected grab(
-    event: PointerEvent,
-    point: Point,
-    mode: NonNullable<ViewInput['mode']>,
-  ): kit.Grab | undefined {
-    if (mode === 'inspect' || (event.button !== 2 && !event.shiftKey)) return undefined;
-    let last = point;
-    return {
-      move: (next) => {
-        const camera = this.camera,
-          dx = next[0] - last[0],
-          dy = next[1] - last[1];
-        last = next;
-        this.moveCamera(
-          {
-            projection: camera.projection === 'flat' ? 'tilt' : camera.projection,
-            bearing: camera.bearing + dx * 0.4,
-            pitch: Math.max(0, Math.min(80, camera.pitch - dy * 0.25)),
-          },
-          {},
-        );
-      },
-      end() {},
-    };
-  }
 
-  protected resolve(config: GeographyConfig): Resolved {
+  protected resolve(config: Geography.Config): Resolved {
     for (const [type, options] of Object.entries(config.areas ?? {}))
       checkRecord('area', type, options, isTiles);
     for (const [type, options] of Object.entries(config.lines ?? {}))
@@ -342,7 +373,7 @@ class GeographyView
 
   /** How the shapes, or some items, frame: all of what has loaded, or the items' rows. */
   private framing(
-    items: readonly GeographyItem[] | undefined,
+    items: readonly Geography.Item[] | undefined,
     camera: ProjectedCamera,
     viewport: Viewport,
   ): Partial<ProjectedCamera> | undefined {
@@ -369,20 +400,9 @@ class GeographyView
         if (source) add(source.bounds);
       }
     }
-    if (!(w <= e)) return undefined;
-    const { center, scale } = Projector.fit(
-      camera,
-      [w, s, e, n],
-      viewport,
-      this.style.fitPaddingPx,
-      {
-        pitch: 0,
-        bearing: 0,
-      },
-    );
-    return { center, scale };
+    return w <= e ? this.fitted(camera, [w, s, e, n], viewport) : undefined;
   }
-  private tileSets(config: GeographyConfig): TileSet[] {
+  private tileSets(config: Geography.Config): TileSet[] {
     const out = new Set<TileSet>();
     const add = (source: unknown) => {
       if (isTiles(source)) out.add(source);
@@ -401,7 +421,7 @@ class GeographyView
     const camera = await this.frameCamera(frame, (items, current, viewport) =>
       this.framing(items, current, viewport),
     );
-    return this.render(frame, camera, this.style.msaa);
+    return this.render(frame, this.orbited(frame, camera), this.style.msaa);
   }
   /** A frame drawn beneath a host: its camera, its samples, and its scene block, bound as this frame's own. */
   protected async prepareLayer(frame: kit.Preparation, scene: kit.LayerScene): Promise<Frame> {
@@ -437,18 +457,22 @@ class GeographyView
   private plan(
     projector: kit.Projector,
     region: Region,
-    config: GeographyConfig,
+    config: Geography.Config,
     live: Frame['live'],
   ): Planned[] {
     const planned: Planned[] = [],
       requests = new Map<TileSet, Map<string, { rings: boolean; lines: boolean }>>();
-    type Entry = readonly [kind: 'area' | 'line', type: string, options: AreaOptions | LineOptions];
+    type Entry = readonly [
+      kind: 'area' | 'line',
+      type: string,
+      options: Geography.AreaOptions | Geography.LineOptions,
+    ];
     const entries: Entry[] = [
       ...Object.entries(config.areas ?? {}).map(([type, o]) => ['area', type, o] as Entry),
       ...Object.entries(config.lines ?? {}).map(([type, o]) => ['line', type, o] as Entry),
     ];
     const closedOf = ([kind, type, options]: Entry) =>
-      kind === 'area' || strokesRings(options as LineOptions, config.areas?.[type]);
+      kind === 'area' || strokesRings(options as Geography.LineOptions, config.areas?.[type]);
     // Vector tiles decode the layers every record of theirs names, once.
     for (const entry of entries) {
       const source = entry[2].source ?? config.source;
@@ -491,7 +515,7 @@ class GeographyView
           type,
           field,
           closed,
-          kind === 'line' && (options as LineOptions).route === 'geodesic',
+          kind === 'line' && (options as Geography.LineOptions).route === 'geodesic',
         );
         if (prepared) {
           (live.shapes as Set<unknown>).add(prepared.shapes);

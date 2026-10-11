@@ -4,27 +4,29 @@ import { openTiles, type TileSource } from './sources/archive.js';
 /** Vector tiles a geography reads, by URL ranges or held locally. */
 export interface Tiles {
   /** What the tiles hold, once their source is open; rejects when it cannot be read. */
-  readonly info: Promise<TilesInfo>;
+  readonly info: Promise<Tiles.Info>;
 }
-export interface TilesInfo {
-  readonly minZoom: number;
-  readonly maxZoom: number;
-  /** West, south, east, and north, in degrees. */
-  readonly bounds: readonly [number, number, number, number];
-  readonly attribution?: string;
-  /** The layers, which a geography's records name as types. */
-  readonly layers: readonly string[];
-}
-export interface TilesOptions {
-  /** Keep fetched bytes in Cache Storage, so the tiles a view has seen draw offline. */
-  readonly persist?: boolean;
-  readonly attribution?: string;
+export declare namespace Tiles {
+  interface Info {
+    readonly minZoom: number;
+    readonly maxZoom: number;
+    /** West, south, east, and north, in degrees. */
+    readonly bounds: readonly [number, number, number, number];
+    readonly attribution?: string;
+    /** The layers, which a geography's records name as types. */
+    readonly layers: readonly string[];
+  }
+  interface Options {
+    /** Keep fetched bytes in Cache Storage, so the tiles a view has seen draw offline. */
+    readonly persist?: boolean;
+    readonly attribution?: string;
+  }
 }
 
 let sources = 0;
 /** Tiles, opened lazily and shared by every view that reads them. */
 export class TileSet implements Tiles {
-  readonly info: Promise<TilesInfo>;
+  readonly info: Promise<Tiles.Info>;
   /** The Index source the tiles' features are numbered under, unique to these tiles. */
   readonly name = `latkit-tiles-${++sources}`;
   private opened?: Promise<TileSource>;
@@ -32,7 +34,7 @@ export class TileSet implements Tiles {
   private readonly rows = new Map<number, number>();
   constructor(
     private readonly from: string | URL | Blob | ArrayBuffer | ArrayBufferView,
-    private readonly options: TilesOptions,
+    private readonly options: Tiles.Options,
   ) {
     this.info = this.source().then(infoOf);
     this.info.catch(() => undefined);
@@ -55,7 +57,7 @@ export class TileSet implements Tiles {
     return rows;
   }
 }
-function infoOf(source: TileSource): TilesInfo {
+function infoOf(source: TileSource): Tiles.Info {
   const { vector_layers: layers } = source.metadata as {
     readonly vector_layers?: readonly { readonly id?: unknown }[];
   };
@@ -80,7 +82,7 @@ export function isTiles(value: unknown): value is TileSet {
  */
 export function tiles(
   from: string | URL | Blob | ArrayBuffer | ArrayBufferView,
-  options: TilesOptions = {},
+  options: Tiles.Options = {},
 ): Tiles {
   if (
     typeof from !== 'string' &&

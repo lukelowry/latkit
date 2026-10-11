@@ -1,16 +1,4 @@
-import {
-  failure,
-  rowCount,
-  sliceRows,
-  type EnvelopeBlock,
-  type EnvelopeColumn,
-  type Column,
-  type FieldsBlock,
-  type NumericArray,
-  type SampleColumn,
-  type MemoryEntry,
-  type Memory,
-} from '@latkit/model';
+import { failure, rowCount, sliceRows, type Column, type Memory, type Block } from '@latkit/model';
 import type { GpuPage, GpuValueField, UploadOptions } from './types.js';
 import { FieldPages, type Bitmap, type Column as EncodedColumn, type CopyJob } from './pages.js';
 import { Allocator, type Allocation } from '../memory/allocation.js';
@@ -18,14 +6,14 @@ import { BufferData } from '../memory/buffer-data.js';
 import { align, integer } from '../error.js';
 
 export interface UploadScope {
-  use(entry: MemoryEntry): void;
+  use(entry: Memory.Entry): void;
   check(check: () => void): void;
   copy(job: CopyJob): void;
 }
 interface NumericView {
   float64?: UploadOptions['float64'];
   items?: NumericView;
-  values: NumericArray | Uint8Array;
+  values: Column.NumericArray | Uint8Array;
   boolean?: true;
   offset: number;
   components: number;
@@ -35,15 +23,15 @@ interface NumericView {
   presence?: Uint8Array;
 }
 interface UploadData {
-  readonly index: FieldsBlock['index'];
-  readonly rows: FieldsBlock['rows'];
+  readonly index: Block.Fields['index'];
+  readonly rows: Block.Fields['rows'];
   readonly columns: Readonly<Record<string, Column | NumericView>>;
   readonly presence?: Readonly<Record<string, Uint8Array>>;
-  readonly samples?: FieldsBlock['samples'];
+  readonly samples?: Block.Fields['samples'];
   readonly envelope?: { firstBucket: number; count: number };
 }
 interface Resident {
-  entry: MemoryEntry;
+  entry: Memory.Entry;
   pages: readonly GpuPage[];
   copies: CopyJob[];
 }
@@ -53,7 +41,7 @@ interface Shaped {
   readonly pages: readonly GpuPage[];
 }
 interface MutableResident {
-  entry: MemoryEntry;
+  entry: Memory.Entry;
   allocation: Allocation;
   revision: number;
   size: number;
@@ -66,12 +54,12 @@ export class Uploader {
   readonly fieldPages: FieldPages;
   private numericCache = new WeakMap<
     ArrayBufferLike,
-    Map<string, { entry: MemoryEntry; column: EncodedColumn }>
+    Map<string, { entry: Memory.Entry; column: EncodedColumn }>
   >();
   private identities = new WeakMap<object, number>();
   private serial = 0;
   /** A block's pages as views receive them, so a cache hit allocates nothing. */
-  private shaped = new WeakMap<FieldsBlock, Map<string, Shaped>>();
+  private shaped = new WeakMap<Block.Fields, Map<string, Shaped>>();
 
   constructor(
     private readonly allocator: Allocator,
@@ -92,7 +80,7 @@ export class Uploader {
   }
 
   upload(
-    block: FieldsBlock | EnvelopeBlock,
+    block: Block.Fields | Block.Envelope,
     options: UploadOptions,
     scope: UploadScope,
   ): readonly GpuPage[] {
@@ -132,11 +120,11 @@ export class Uploader {
   }
 
   private envelopes = new WeakMap<
-    EnvelopeBlock,
+    Block.Envelope,
     { input: UploadData; names: Map<string, readonly string[]> }
   >();
   private envelope(
-    block: EnvelopeBlock,
+    block: Block.Envelope,
     options: UploadOptions,
     scope: UploadScope,
   ): readonly GpuPage[] {
@@ -169,7 +157,10 @@ export class Uploader {
         return name;
       };
       for (const [name, field] of Object.entries(block.columns)) {
-        const view = (values: EnvelopeColumn['values']['values'], offset = 0): NumericView => ({
+        const view = (
+          values: Block.EnvelopeColumn['values']['values'],
+          offset = 0,
+        ): NumericView => ({
           values,
           offset,
           components: 4,
@@ -332,7 +323,7 @@ export class Uploader {
       row += nr;
     }
     const pageCount = rowRanges.length * Math.ceil(frames / tileFrames);
-    const dependencies = new Set<MemoryEntry>();
+    const dependencies = new Set<Memory.Entry>();
     const copies: CopyJob[] = [];
     const allocations: Allocation[] = [];
     cache ??= new Map();
@@ -528,7 +519,7 @@ export class Uploader {
     frames: number,
     limit: number,
     policy: UploadOptions['float64'],
-  ): { entry: MemoryEntry; column: EncodedColumn } {
+  ): { entry: Memory.Entry; column: EncodedColumn } {
     const mask = view.validity;
     const key = JSON.stringify([
       view.values.constructor.name,
@@ -668,10 +659,10 @@ export class Uploader {
     const parentOffset = integer(column.offset, 'column offset');
     integer(column.length, 'column length');
     const rowStride = sampled
-      ? integer((column as SampleColumn).rowStride, 'row stride', 1)
+      ? integer((column as Column.Sample).rowStride, 'row stride', 1)
       : components;
     const frameStride = sampled
-      ? integer((column as SampleColumn).frameStride, 'frame stride', 1)
+      ? integer((column as Column.Sample).frameStride, 'frame stride', 1)
       : 0;
     if (sampled) {
       let a = rowStride,

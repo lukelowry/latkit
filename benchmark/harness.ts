@@ -3,15 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { bench } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { acceptModel, connectModel, type ConnectedModel } from '@latkit/connect';
-import {
-  createData,
-  textColumn,
-  type Data,
-  type DataBatch,
-  type Index,
-  type Model,
-  type SampleBatch,
-} from '@latkit/model';
+import { createData, textColumn, type Data, type Index, type Model } from '@latkit/model';
 import type { Schema } from '@latkit/model';
 import { createGpu, kit, type Gpu, type TextRasterizer, type View } from '@latkit/gpu';
 import { drawnVertices, nullDevice } from './device.ts';
@@ -60,14 +52,14 @@ export function grid(buses: number, ids = false, ring = 0): Data {
   return createData(schema, batches(buses, ids, ring));
 }
 /** Every batch of a grid: its rows, then each frame. */
-export function batches(buses: number, ids = false, ring = 0): DataBatch[] {
+export function batches(buses: number, ids = false, ring = 0): Data.Batch[] {
   return [
     ...topology(buses, ids, ring),
     ...Array.from({ length: frames }, (_, f) => voltages(buses, f)),
   ];
 }
 /** The static rows of a grid. */
-export function topology(buses: number, ids = false, ring = 0): DataBatch[] {
+export function topology(buses: number, ids = false, ring = 0): Data.Batch[] {
   const width = Math.ceil(Math.sqrt(buses)),
     from: number[] = [],
     to: number[] = [];
@@ -138,7 +130,7 @@ export function topology(buses: number, ids = false, ring = 0): DataBatch[] {
   ];
 }
 /** One frame of bus voltages at coordinate `frame`. */
-export function voltages(buses: number, frame: number): SampleBatch {
+export function voltages(buses: number, frame: number): Data.SampleBatch {
   const values = Float32Array.from(
     { length: buses },
     (_, i) => 1 + Math.sin(i * 0.01 + frame * 0.2) / 20,
@@ -153,7 +145,7 @@ export function voltages(buses: number, frame: number): SampleBatch {
   };
 }
 /** A frame cut into row ranges of at most `rows`, as a producer publishes one that is too big. */
-export function split(frame: SampleBatch, rows: number): SampleBatch[] {
+export function split(frame: Data.SampleBatch, rows: number): Data.SampleBatch[] {
   const column = frame.columns.voltage;
   return Array.from({ length: Math.ceil(column.length / rows) }, (_, b) => {
     const offset = b * rows,

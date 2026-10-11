@@ -1,14 +1,14 @@
-import { type ColumnPages, emptyPages } from './pages.js';
-import type { Data, DataBatch, SampleBatch, TableData, ColumnPage } from './materialized.js';
-import type { Index, RowAxis } from './data.js';
-import type { Schema } from './schema.js';
+import { emptyPages } from './pages.js';
+import type { Data } from './data.js';
+import type { Index } from './column.js';
+import type { Schema } from '../schema/schema.js';
 import { assertIndex, rowAt, rowCount } from './access.js';
 import { compactRows, containsRows } from './columns.js';
-import { failure } from './error.js';
-import { PageAssembly } from './assembly-pages.js';
+import { failure } from '../failure.js';
+import { PageAssembly } from './page-assembly.js';
 
 /** Construct a complete value from disjoint batches. Never overwrites existing cells. */
-export function createData<S extends Schema>(schema: S, batches: readonly DataBatch[]): Data<S> {
+export function createData<S extends Schema>(schema: S, batches: readonly Data.Batch[]): Data<S> {
   return assemble(schema, batches);
 }
 
@@ -16,22 +16,22 @@ export function createData<S extends Schema>(schema: S, batches: readonly DataBa
  * Existing buffers are shared; earlier Data values remain valid. No model is contacted. */
 export function appendData<S extends Schema>(
   previous: Data<S>,
-  batches: readonly SampleBatch[],
+  batches: readonly Data.SampleBatch[],
 ): Data<S> {
   return assemble(previous.schema, batches, previous);
 }
 
 interface Draft {
-  readonly prior?: TableData;
+  readonly prior?: Data.Table;
   readonly index: Index;
-  rows: RowAxis;
-  readonly fields: Map<string, ColumnPage[]>;
-  readonly ids: ColumnPage[];
+  rows: Index.Rows;
+  readonly fields: Map<string, Data.Page[]>;
+  readonly ids: Data.Page[];
 }
 
 function assemble<S extends Schema>(
   schema: S,
-  batches: readonly DataBatch[],
+  batches: readonly Data.Batch[],
   previous?: Data<S>,
 ): Data<S> {
   const drafts = new Map<string, Draft>();
@@ -76,7 +76,7 @@ function assemble<S extends Schema>(
       }
       if (samples && (!samples.coordinates.length || !rowCount(batch.rows))) continue;
       const column = batch.columns[field];
-      const page: ColumnPage = samples
+      const page: Data.Page = samples
         ? { rows: batch.rows, column, samples }
         : { rows: batch.rows, column };
       if (!added) draft.fields.set(field, (added = []));
@@ -87,7 +87,7 @@ function assemble<S extends Schema>(
   const tables = Object.fromEntries(
     [...drafts].map(([name, draft]) => {
       const pages = new PageAssembly();
-      const fields: Record<string, ColumnPages> = {
+      const fields: Record<string, Data.Pages> = {
         ...(draft.prior?.fields ??
           Object.fromEntries(
             Object.entries(schema.types[name].fields)
@@ -117,7 +117,7 @@ function assemble<S extends Schema>(
   return { schema, tables: { ...previous?.tables, ...tables } };
 }
 
-function unionRows(a: TableData['rows'], b: TableData['rows']): TableData['rows'] {
+function unionRows(a: Data.Table['rows'], b: Data.Table['rows']): Data.Table['rows'] {
   if (containsRows(a, b)) return a;
   if (containsRows(b, a)) return b;
   if (

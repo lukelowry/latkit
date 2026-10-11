@@ -1,5 +1,5 @@
 import { createColormap, colormaps, spotlight } from '@latkit/gpu';
-import type { DiagramConfig, RouteStrategy } from '@latkit/diagram';
+import type { Diagram } from '@latkit/diagram';
 import type { Shade, Shape } from '@latkit/gpu';
 import { types, shapes } from './graph.js';
 import type { GraphSource } from './source.js';
@@ -17,9 +17,9 @@ export interface Settings {
   overflow: 'wrap' | 'ellipsis';
 }
 /** The config's style options. */
-export type Style = Omit<DiagramConfig, 'source' | 'vertices' | 'edges' | 'groups'>;
+export type Style = Omit<Diagram.Config, 'source' | 'vertices' | 'edges' | 'groups'>;
 /** What the diagram draws. */
-export type Drawn = Required<Pick<DiagramConfig, 'source' | 'vertices' | 'edges' | 'groups'>>;
+export type Drawn = Required<Pick<Diagram.Config, 'source' | 'vertices' | 'edges' | 'groups'>>;
 const signalMap = createColormap({
   colors: [
     [0.12, 0.23, 0.27, 1],
@@ -50,7 +50,7 @@ const statusMap = createColormap({
     [0.94, 0.64, 0.32, 1],
   ],
 });
-const elbow: RouteStrategy = {
+const elbow: Diagram.RouteStrategy = {
   route: ({ ends }) =>
     ends
       .slice(1)
@@ -142,8 +142,7 @@ export function data(source: GraphSource, settings: Settings, automatic = false)
   };
 }
 export function effect(name: string): Shade | null {
-  if (name === 'spotlight')
-    return spotlight({ radiusPx: 180, strength: 0.3, color: [1, 0.52, 0.36] });
+  if (name === 'spotlight') return spotlight({ radiusPx: 180, color: [1, 0.52, 0.36, 0.3] });
   if (name === 'signal')
     return {
       wgsl: 'fn shade(f: ShadeFragment) -> vec4f { let c=mix(f.color.rgb,vec3f(0.18,0.58,0.52),f.value*0.5); return vec4f(c,f.color.a); }',

@@ -19,7 +19,7 @@ export interface Pipelines {
   readonly compute: GPUBindGroupLayout;
   /** A marked vertex page's: those, its inputs' page, and its bank's rows and stepped inputs. */
   readonly markedCompute: GPUBindGroupLayout;
-  /** What a curved draw's tessellation binds: the uniforms, its ends and segments, its pieces, and its pool. */
+  /** What a curved draw's tessellation binds: the uniforms, its ends and segments, its pieces, its pool, and what it asked for. */
   readonly tessellation: GPUBindGroupLayout;
   readonly tessellate: GPUComputePipeline;
   /** What counting every curved draw's pieces binds: their pools, rooms, and indirect draws. */
@@ -182,6 +182,7 @@ export async function pipelines(
       storage(4, C, 'storage'),
       storage(5, C, 'storage'),
       uniform(6, C),
+      storage(9, C, 'storage'),
     ],
   });
   const finishing = d.createBindGroupLayout({

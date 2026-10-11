@@ -1,11 +1,10 @@
 import { failure } from '@latkit/model';
 import { kit, type Point } from '@latkit/gpu';
-import type { RouteEnd } from './data.js';
 import type { Arrow, Edge, End, GroupBox, Rect, Scene, Vertex, Wire } from './scene.js';
 import { union } from './scene.js';
 import { boundary } from './geometry.js';
 import type { Style } from './config.js';
-
+import type { Diagram } from './diagram.js';
 /** A scene's obstacles: its drawn vertices and collapsed groups, kept so a drag reroutes. */
 export interface Obstacles {
   readonly index: kit.BoxIndex;
@@ -26,7 +25,7 @@ export interface Moved {
   readonly delta: Point;
 }
 /** An end as routing reads it: where its wire meets it, the way out, and what it belongs to. */
-interface Terminal extends RouteEnd {
+interface Terminal extends Diagram.RouteEnd {
   readonly owner: number;
   /** The port itself, or the boundary point, which the wire reaches through `position`. */
   readonly anchor: Point;

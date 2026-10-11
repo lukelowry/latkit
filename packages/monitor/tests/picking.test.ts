@@ -1,7 +1,7 @@
 import { appendData, createData, textColumn, type Data, type Schema } from '@latkit/model';
 import { describe, expect, it, vi } from 'vitest';
 import { createGpu, kit, type Point } from '@latkit/gpu';
-import { createMonitor, type Monitor, type MonitorConfig } from '../src/index.js';
+import { createMonitor, type Monitor } from '../src/index.js';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
 
 const index = { source: 'picking', type: 'Bus', version: '1' };
@@ -45,7 +45,7 @@ function signals(coordinates: readonly number[], rows: readonly (readonly number
   ]);
 }
 /** A monitor 100 by 100 pixels whose plot spans it all: coordinates 0 to 10 across, values 0 to 2 up. */
-async function plotted(source: Data, trace: Partial<MonitorConfig['traces'][string]> = {}) {
+async function plotted(source: Data, trace: Partial<Monitor.Config['traces'][string]> = {}) {
   const fake = fakeDevice();
   const encoder = fake.native.createCommandEncoder.getMockImplementation()!;
   fake.native.createCommandEncoder.mockImplementation(() =>

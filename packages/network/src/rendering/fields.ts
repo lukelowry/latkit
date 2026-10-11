@@ -1,15 +1,8 @@
-import {
-  failure,
-  type Data,
-  type FieldInput,
-  type FieldValues,
-  type FieldsBlock,
-} from '@latkit/model';
+import { failure, type Data, type FieldInput, type Block } from '@latkit/model';
 import { kit } from '@latkit/gpu';
-import type { EdgeOptions, VertexOptions } from '../data.js';
 import type { VertexBank, EdgeBank } from '../geometry/topology.js';
 import { FLOW_RANGE, RADIUS_RANGE, WIDTH_RANGE } from '../options.js';
-
+import type { Network } from '../network.js';
 /** What a vertex reads, and how: a field spans the range, or reads as it is when raw. */
 export const VERTEX = {
   x: 'raw',
@@ -46,7 +39,7 @@ export const LINE = {
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
 export type ChannelName = keyof typeof VERTEX | keyof typeof LINE;
 const NAMES = [...new Set([...Object.keys(VERTEX), ...Object.keys(LINE)])] as ChannelName[];
-export type Options = VertexOptions | EdgeOptions;
+export type Options = Network.VertexOptions | Network.EdgeOptions;
 /** What a row reads without a value: no position, no height, and shown. */
 const FALLBACK: Readonly<Partial<Record<ChannelName, number>>> = {
   x: NaN,
@@ -66,7 +59,7 @@ const bindings = new Map<Kinds, WeakMap<object, kit.BoundChannels<ChannelName>>>
 /** Banks' channels by their type's, then by what the view found for each bank. */
 const banks = new WeakMap<
   kit.BoundChannels<ChannelName>,
-  WeakMap<FieldValues, kit.BoundChannels<ChannelName>>
+  WeakMap<FieldInput.Values, kit.BoundChannels<ChannelName>>
 >();
 /** A type's channels, bound once per options object: what checks, placement, and reads share. */
 export function channels(options: Options, kinds: Kinds): kit.BoundChannels<ChannelName> {
@@ -83,7 +76,7 @@ export function channels(options: Options, kinds: Kinds): kit.BoundChannels<Chan
 export function bankChannels(
   options: Options,
   kinds: Kinds,
-  local?: FieldValues,
+  local?: FieldInput.Values,
 ): kit.BoundChannels<ChannelName> {
   const shared = channels(options, kinds);
   if (!local) return shared;
@@ -126,7 +119,7 @@ export class FieldRead {
   private readonly custom = new Map<ChannelName, Map<number, kit.ResolvedChannel>>();
   constructor(
     readonly pages: readonly ReadPage[],
-    readonly native: readonly FieldsBlock[],
+    readonly native: readonly Block.Fields[],
     readonly bound: kit.BoundChannels<ChannelName>,
     /** Each scaled channel's domain, resolved across its type's banks. */
     readonly scales: Readonly<Partial<Record<ChannelName, kit.ResolvedScale>>> = {},
@@ -169,12 +162,12 @@ export async function readFields(
   source: Data,
   bank: VertexBank | EdgeBank,
   options: Options,
-  local?: FieldValues,
+  local?: FieldInput.Values,
 ): Promise<FieldRead> {
   const bound = bankChannels(options, 'batches' in bank ? LINE : VERTEX, local),
     select = Object.keys(bound.fields);
   const pages: ReadPage[] = [],
-    native: FieldsBlock[] = [];
+    native: Block.Fields[] = [];
   for await (const tile of frame.reader.fields({
     source,
     from: bank.index.type,

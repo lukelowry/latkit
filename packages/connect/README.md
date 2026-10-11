@@ -41,7 +41,7 @@ import { acceptModel } from '@latkit/connect';
 
 const model = await acceptModel({ socket });
 for await (const publication of model.monitor?.([{ from: 'Bus', select: ['load'] }]) ?? [])
-  console.log(publication); // readonly DataBatch[]
+  console.log(publication); // Model.Publication: readonly Data.Batch[]
 await model.commands.scale.run({ multiplier: 2 });
 await model.close();
 ```

@@ -5,12 +5,11 @@ import {
   isFailure,
   itemId,
   itemKey,
-  sameItem,
   textAt,
   textColumn,
   type Schema,
 } from '../src/index.js';
-import { position } from '../src/columns.js';
+import { position } from '../src/data/columns.js';
 
 const schema: Schema = { types: { Node: { fields: {} } } };
 const index = { source: 'items', type: 'Node', version: '1' };
@@ -27,12 +26,7 @@ const data = createData(schema, [
 it('names a row by its row space and number, and reads its id back', () => {
   const item = { source: data, index, row: 5 };
   expect(itemId(item)).toBe('b');
-  // The row space names the row, so a later Data value names the same item.
-  expect(sameItem(item, { source: createData(schema, []), index: { ...index }, row: 5 })).toBe(
-    true,
-  );
-  expect(sameItem(item, { ...item, row: 9 })).toBe(false);
-  // Its key follows the same identity, then what a view adds.
+  // The row space names the row, so a later Data value names the same item, then what a view adds.
   const later = { source: createData(schema, []), index: { ...index }, row: 5 };
   expect(itemKey(later)).toBe(itemKey(item));
   expect(itemKey(later, 'edge')).not.toBe(itemKey(item));

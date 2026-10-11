@@ -1,4 +1,4 @@
-import { failure, type FailureCode } from '@latkit/model';
+import { failure, type Failure } from '@latkit/model';
 import source from './worker.ts?worker';
 import { runJob, type Job, type JobResults } from './jobs.js';
 
@@ -70,7 +70,7 @@ function start(): Thread {
     const pending = thread.pending.get(id!);
     if (!pending) return;
     thread.pending.delete(id!);
-    if (error) pending.reject(failure(error.code as FailureCode, error.message));
+    if (error) pending.reject(failure(error.code as Failure.Code, error.message));
     else pending.resolve(result);
   };
   worker.onerror = (event) => {

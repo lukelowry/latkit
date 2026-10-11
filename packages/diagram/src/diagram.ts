@@ -1,33 +1,20 @@
-import { Work, failure, sameIndex, type Data } from '@latkit/model';
+import { Work, failure, sameIndex, type Data, type Index, type Item } from '@latkit/model';
 import {
   kit,
   type Gpu,
-  type ItemEvents,
   type ItemView,
-  type ItemViewConfig,
-  type SetOptions,
   type Shade,
-  type ViewCamera,
-  type ViewInput,
-  type ViewStats,
   type FrameInfo,
-  type LayoutOptions,
-  type Patch,
   type Viewport,
+  type View,
+  type Layout,
+  type Channel,
+  type Labels,
+  type RGBA,
+  type Shape,
 } from '@latkit/gpu';
-import type {
-  VertexOptions,
-  EdgeOptions,
-  DiagramData,
-  DiagramItem,
-  DiagramPort,
-  DiagramRow,
-  Point,
-  Positions,
-  Group,
-} from './data.js';
+import type { DiagramData, Point } from './data.js';
 import { diagramData, itemKey, rowOf } from './data.js';
-import type { DiagramStyle, Limits } from './options.js';
 import {
   DEFAULTS,
   VIEW_DEFAULTS,
@@ -54,76 +41,231 @@ import { itemSlots, positions, sceneGraph, sceneRows, union, type Scene } from '
 import { flowing, widestPx } from './styles.js';
 import { Picking } from './picking.js';
 import { Painter, pipelines, type Paint, type Overlay, type Pipelines } from './painter.js';
-import { listen, type Controls, type DiagramInput, type Gestures } from './input.js';
-/** A wiring the user drew; the application decides which references change. */
-export interface ConnectProposal {
-  /** Where the wiring starts: a vertex, or one of its ports. */
-  readonly from: DiagramRow | DiagramPort;
-  /** What it was dropped on: a vertex or its port, a net to join, or empty canvas. */
-  readonly to: DiagramRow | DiagramPort | null;
-  /** Dragging a wired input moves it: the net it leaves, and the port leaving it. */
-  readonly replaces?: { readonly edge: DiagramRow; readonly end: DiagramPort };
-  readonly position: Point;
-  readonly point: Point;
-}
-/** Where the drawing stands after a drag; write the positions to the model to accept it. */
-export interface MoveProposal {
-  /**
-   * By vertex type, to spread into its options: each dragged vertex, and each the layout placed,
-   * so the drawing stays as shown once they are written.
-   */
-  readonly positions: Readonly<Record<string, Positions>>;
-}
-export interface Camera extends ViewCamera {
-  /** Diagram units at the canvas center. */
-  readonly center: Point;
-  /** Pixels per diagram unit. */
-  readonly scale: number;
-}
-export interface DiagramConfig extends ItemViewConfig, DiagramStyle {
-  /** Borrowed: destroy never closes it. */
-  readonly source: Data;
-  /** Drawn types by model type name. */
-  readonly vertices: Readonly<Record<string, VertexOptions>>;
-  readonly edges?: Readonly<Record<string, EdgeOptions>>;
-  readonly groups?: Readonly<Record<string, Group>>;
-  /** How vertices without a position are placed. */
-  readonly layout?: LayoutOptions;
-  /** Where the camera starts; `diagram.camera` is where it is. Fits the diagram by default. */
-  readonly camera?: Partial<Camera>;
-  /** Pointer and keyboard control of the canvas; `navigate` by default. */
-  readonly input?: DiagramInput | NonNullable<DiagramInput['mode']>;
-  readonly limits?: Limits;
-}
-export interface DiagramEvents extends ItemEvents<DiagramItem, DiagramItem, Camera> {
-  readonly connect: ConnectProposal;
-  readonly move: MoveProposal;
-  /** Delete or Backspace in edit mode: the selected vertex and edge rows. */
-  readonly delete: readonly DiagramRow[];
-}
-export interface DiagramStats extends ViewStats {
-  readonly vertices: number;
-  readonly edges: number;
-  readonly ends: number;
-  readonly geometryBytes: number;
-}
+import { listen, type Controls, type Gestures } from './input.js';
+/** A row of the model, which each of the view's items is; named apart from the view's own Item. */
+type ModelItem = Item;
+/** The labels every view takes, named apart from the diagram's own Labels. */
+type ViewLabels = Labels;
 type Records = 'vertices' | 'edges' | 'groups';
 type Merged = 'camera' | 'input' | 'limits' | 'layout';
 export interface Diagram extends ItemView<
-  DiagramConfig,
-  DiagramItem,
-  DiagramItem,
-  Camera,
-  DiagramEvents
+  Diagram.Config,
+  Diagram.Item,
+  Diagram.Item,
+  Diagram.Camera,
+  Diagram.Events
 > {
   /** `animate` eases vertices to new positions and the camera to a new place. */
-  set(patch: Patch<DiagramConfig, Records, Merged>, options?: SetOptions): void;
+  set(patch: View.Patch<Diagram.Config, Records, Merged>, options?: View.SetOptions): void;
   /** The item, its wires, and what they join. */
-  neighborhood(item: DiagramItem): readonly DiagramItem[];
-  stats(): DiagramStats;
+  neighborhood(item: Diagram.Item): readonly Diagram.Item[];
+  stats(): Diagram.Stats;
+}
+export declare namespace Diagram {
+  interface Config extends ItemView.Config, Style {
+    /** Borrowed: destroy never closes it. */
+    readonly source: Data;
+    /** Drawn types by model type name. */
+    readonly vertices: Readonly<Record<string, VertexOptions>>;
+    readonly edges?: Readonly<Record<string, EdgeOptions>>;
+    readonly groups?: Readonly<Record<string, GroupOptions>>;
+    /** How vertices without a position are placed. */
+    readonly layout?: Layout;
+    /** Where the camera starts; `diagram.camera` is where it is. Fits the diagram by default. */
+    readonly camera?: Partial<Camera>;
+    /** Pointer and keyboard control of the canvas; `navigate` by default. */
+    readonly input?: Input | NonNullable<Input['mode']>;
+    readonly limits?: Limits;
+  }
+  interface Events extends ItemView.Events<Item, Item, Camera> {
+    readonly connect: ConnectProposal;
+    readonly move: MoveProposal;
+    /** Delete or Backspace in edit mode: the selected vertex and edge rows. */
+    readonly delete: readonly Row[];
+  }
+  interface Stats extends View.Stats {
+    readonly vertices: number;
+    readonly edges: number;
+    readonly ends: number;
+    readonly geometryBytes: number;
+  }
+  interface Camera extends ItemView.Camera {
+    /** Diagram units at the canvas center. */
+    readonly center: Point;
+    /** Pixels per diagram unit. */
+    readonly scale: number;
+  }
+  /** A wiring the user drew; the application decides which references change. */
+  interface ConnectProposal {
+    /** Where the wiring starts: a vertex, or one of its ports. */
+    readonly from: Row | Port;
+    /** What it was dropped on: a vertex or its port, a net to join, or empty canvas. */
+    readonly to: Row | Port | null;
+    /** Dragging a wired input moves it: the net it leaves, and the port leaving it. */
+    readonly replaces?: { readonly edge: Row; readonly end: Port };
+    readonly position: Point;
+    readonly point: Point;
+  }
+  /** Where the drawing stands after a drag; write the positions to the model to accept it. */
+  interface MoveProposal {
+    /**
+     * By vertex type, to spread into its options: each dragged vertex, and each the layout placed,
+     * so the drawing stays as shown once they are written.
+     */
+    readonly positions: Readonly<Record<string, Layout.Positions>>;
+  }
+  /** What a diagram selects, hovers, and picks: a row, a port, or a group of the config. */
+  type Item = Row | Port | { readonly kind: 'group'; readonly id: string };
+  /** A drawn row, as a vertex or an edge. */
+  interface Row extends ModelItem {
+    readonly kind: 'vertex' | 'edge';
+  }
+  /** A vertex's port: the vertex row and the reference field the port draws. */
+  interface Port extends ModelItem {
+    readonly kind: 'port';
+    readonly port: string;
+  }
+  /**
+   * How a type's vertices draw. Each channel takes one value for every row, a field, or a scale:
+   * `color: 'load'`, `width: 120`. A field name labels by that field.
+   */
+  interface VertexOptions {
+    readonly rows?: Index.Selection;
+    /** Where each block's top-left corner sits, in diagram units; the layout places rows without. */
+    readonly x?: Channel;
+    readonly y?: Channel;
+    /** A block's size in diagram units; it fits its title and ports without one. */
+    readonly width?: Channel;
+    readonly height?: Channel;
+    readonly shape?: Shape;
+    readonly cornerRadius?: number;
+    /** Automatic sizing reserves room around the title. Default: center. */
+    readonly labelPosition?: 'header' | 'center';
+    /** `vertexColor` by default. */
+    readonly color?: Channel.Color;
+    /** A ring around the block. */
+    readonly status?: Channel.Color;
+    /** Shown where true or positive; every row by default. */
+    readonly visible?: Channel<boolean>;
+    readonly shade?: Channel;
+    readonly labels?: string | Labels | null;
+    /** Keyed by reference field. Each field naming a drawn net is a port. */
+    readonly ports?: Readonly<Record<string, PortOptions>>;
+  }
+  interface EdgeOptions {
+    readonly rows?: Index.Selection;
+    /**
+     * Two reference fields naming the vertices each row joins, such as a dependency's two tasks.
+     * Omitted, the type is a net: each row joins the ports whose references name it.
+     */
+    readonly ends?: readonly [source: string, target: string];
+    readonly route?: 'orthogonal' | 'straight' | RouteStrategy;
+    readonly appearance?: 'wire' | 'tag';
+    /** `edgeColor` by default. */
+    readonly color?: Channel.Color;
+    /** Line width in CSS pixels; a field spans 1 to 4. `edgeWidthPx` by default. */
+    readonly widthPx?: Channel;
+    /** How far dashes move along the wire each second, in CSS pixels; a field spans 0 to 40. */
+    readonly flowPx?: Channel;
+    /** Shown where true or positive; every row by default. */
+    readonly visible?: Channel<boolean>;
+    readonly shade?: Channel;
+    readonly labels?: string | Labels | null;
+    /** Arrowheads where flow arrives: a row's target end, or a net's input ports. */
+    readonly arrows?: boolean;
+  }
+  interface PortOptions {
+    readonly side?: 'left' | 'right' | 'top' | 'bottom';
+    readonly order?: number;
+    readonly marker?: 'directional' | 'circle' | 'diamond';
+    readonly label?: string;
+    readonly color?: Channel.Color;
+    readonly status?: Channel.Color;
+  }
+  /** Labels on a type's items, sized in diagram units so they zoom with the diagram. */
+  interface Labels extends Omit<ViewLabels, 'fontSizePx' | 'repeatSpacingPx'> {
+    /** In diagram units; the shared `fontSizePx` by default. */
+    readonly fontSize?: number;
+    readonly maxWidth?: number;
+    readonly overflow?: 'wrap' | 'ellipsis';
+  }
+  interface GroupOptions {
+    readonly label?: string;
+    readonly vertices: Readonly<Record<string, Index.Selection>>;
+    readonly collapsed?: boolean;
+    readonly parent?: string;
+  }
+  interface RouteStrategy {
+    /** Return one path per branch. Coordinates are diagram units. */
+    route(request: RouteRequest): readonly (readonly Point[])[];
+  }
+  interface RouteRequest {
+    readonly ends: readonly RouteEnd[];
+    readonly clearance: number;
+    readonly signal: AbortSignal;
+    readonly obstacles: readonly (readonly [number, number, number, number])[];
+  }
+  interface RouteEnd {
+    readonly position: Point;
+    readonly normal: Point;
+    readonly direction?: 'in' | 'out';
+  }
+  /**
+   * How a diagram draws, beyond the shared view style; every option has a default. Sizes without a
+   * `Px` suffix are diagram units and zoom with the blocks; `Px` sizes stay constant on screen.
+   */
+  interface Style extends kit.LineStyle {
+    readonly gridPitch?: number;
+    readonly grid?: boolean;
+    readonly snap?: boolean;
+    readonly labels?: boolean;
+    readonly junctions?: boolean;
+    readonly vertexPadding?: number;
+    /** The radius of every corner: blocks, groups, and wire bends; a vertex type's own overrides it. */
+    readonly cornerRadius?: number;
+    readonly outlineWidthPx?: number;
+    /** Port markers, arrowheads, and junctions. */
+    readonly portSize?: number;
+    readonly portMarker?: 'directional' | 'circle' | 'diamond';
+    readonly portLabels?: boolean;
+    readonly portFontSize?: number;
+    readonly edgeWidthPx?: number;
+    readonly gridMinSpacingPx?: number;
+    readonly detail?: 'auto' | 'full';
+    readonly portSpacing?: number;
+    /** Space wires keep from blocks, and the length of the stub out of each port. */
+    readonly routeClearance?: number;
+    readonly vertexColor?: RGBA;
+    readonly edgeColor?: RGBA;
+    readonly outlineColor?: RGBA;
+    readonly gridColor?: RGBA;
+    readonly groupColor?: RGBA;
+  }
+  interface Limits {
+    readonly vertices?: number;
+    readonly edges?: number;
+    readonly ends?: number;
+    readonly geometryBytes?: number;
+    readonly pickingBytes?: number;
+    readonly routePoints?: number;
+    /** Time for reading, layout, and routing one scene. */
+    readonly layoutMs?: number;
+  }
+  interface Input extends ItemView.Input {
+    /** Primary mouse drag on empty canvas. Touch continues to pan. Default: select in edit mode. */
+    readonly backgroundDrag?: 'pan' | 'select';
+    readonly dragThresholdPx?: number;
+    readonly touchDragThresholdPx?: number;
+    readonly connectRadiusPx?: number;
+    readonly autoPan?: boolean;
+    readonly autoPanMarginPx?: number;
+    readonly autoPanSpeedPx?: number;
+    /** Additional application policy, after native port type/direction checks. Must be synchronous. */
+    readonly canConnect?: (proposal: ConnectProposal) => boolean;
+  }
 }
 /** Draw a model as a block diagram: vertices, ports, wires, and groups, on a canvas or offscreen. */
-export function createDiagram(gpu: Gpu, config: DiagramConfig): Diagram {
+export function createDiagram(gpu: Gpu, config: Diagram.Config): Diagram {
   return new DiagramView(gpu, config);
 }
 interface Presented {
@@ -151,21 +293,21 @@ interface Staged extends Presented {
 }
 /** What a config means to the diagram: its data, limits, layout, and style. */
 interface Resolved {
-  readonly config: DiagramConfig;
+  readonly config: Diagram.Config;
   readonly data: DiagramData;
   /** Whether the scene reads sampled fields; otherwise it is the same at every coordinate. */
   readonly sampled: boolean;
   /** Whether a wire's flow moves, so frames keep coming. */
   readonly flowing: boolean;
-  readonly limits: Required<Limits>;
-  readonly layout: Required<LayoutOptions>;
+  readonly limits: Required<Diagram.Limits>;
+  readonly layout: Required<Layout>;
   readonly style: Style;
 }
 function point(x: number, y: number): Point {
   return Object.freeze([x, y]) as unknown as Point;
 }
-const DEFAULT_CAMERA: Camera = Object.freeze({ center: point(0, 0), scale: 1, fit: true });
-function camera2d(camera: Camera): kit.Camera2D {
+const DEFAULT_CAMERA: Diagram.Camera = Object.freeze({ center: point(0, 0), scale: 1, fit: true });
+function camera2d(camera: Diagram.Camera): kit.Camera2D {
   return { center: camera.center, scale: [camera.scale, camera.scale], yDirection: 'down' };
 }
 function inside(p: Point, viewport: Viewport): boolean {
@@ -189,11 +331,11 @@ function moves(from: Scene, to: Scene): boolean {
 
 class DiagramView
   extends kit.BaseItemView<
-    DiagramConfig,
-    DiagramItem,
-    DiagramItem,
-    Camera,
-    DiagramEvents,
+    Diagram.Config,
+    Diagram.Item,
+    Diagram.Item,
+    Diagram.Camera,
+    Diagram.Events,
     Resolved,
     Staged,
     Pipelines,
@@ -220,7 +362,7 @@ class DiagramView
   };
   /** A drag in progress: the items it started with, what they move, and how far. */
   private drag?: {
-    readonly items: readonly DiagramItem[];
+    readonly items: readonly Diagram.Item[];
     readonly keys: ReadonlySet<string>;
     readonly delta: Point;
   };
@@ -264,7 +406,7 @@ class DiagramView
     reveal: (item) => this.reveal(item),
     invalidated: (listener) => this.onInvalidate(listener),
   };
-  constructor(gpu: Gpu, config: DiagramConfig) {
+  constructor(gpu: Gpu, config: Diagram.Config) {
     super(gpu, config, {
       name: 'diagram',
       style: VIEW_DEFAULTS,
@@ -284,17 +426,17 @@ class DiagramView
   private get style(): Style {
     return this.resolved.style;
   }
-  private get limits(): Required<Limits> {
+  private get limits(): Required<Diagram.Limits> {
     return this.resolved.limits;
   }
 
-  neighborhood(item: DiagramItem): readonly DiagramItem[] {
+  neighborhood(item: Diagram.Item): readonly Diagram.Item[] {
     const scene = this.shown?.scene;
     if (!scene) return [];
-    const result = new Map<string, DiagramItem>([[itemKey(item), item]]),
+    const result = new Map<string, Diagram.Item>([[itemKey(item), item]]),
       graph = sceneGraph(scene),
       slots = itemSlots(scene),
-      add = (row: DiagramRow) => result.set(itemKey(row), row),
+      add = (row: Diagram.Row) => result.set(itemKey(row), row),
       edge = (e: number) => {
         add(rowOf(scene.edges[e].hit));
         for (const v of graph.endsOf(e)) add(rowOf(scene.vertices[v].hit));
@@ -323,7 +465,7 @@ class DiagramView
     }
     return [...result.values()];
   }
-  stats(): DiagramStats {
+  stats(): Diagram.Stats {
     return {
       ...super.stats(),
       ...this.counts,
@@ -331,10 +473,10 @@ class DiagramView
     };
   }
 
-  protected defaultCamera(): Camera {
+  protected defaultCamera(): Diagram.Camera {
     return DEFAULT_CAMERA;
   }
-  protected resolveCamera(camera: Camera): Camera {
+  protected resolveCamera(camera: Diagram.Camera): Diagram.Camera {
     const { center, scale, fit } = camera;
     if (!Array.isArray(center) || center.length !== 2 || !center.every(Number.isFinite))
       fail('Invalid camera center');
@@ -346,9 +488,9 @@ class DiagramView
   private framing(
     scene: Scene,
     picking: Picking,
-    items: readonly DiagramItem[] | undefined,
+    items: readonly Diagram.Item[] | undefined,
     viewport: Viewport,
-  ): Partial<Camera> | undefined {
+  ): Partial<Diagram.Camera> | undefined {
     const boxes = items ? picking.bounds(items) : [];
     if (!boxes.length && !picking.drawn) return undefined;
     const fitted = kit.fitCamera(
@@ -359,7 +501,7 @@ class DiagramView
     );
     return { center: point(fitted.center[0], fitted.center[1]), scale: fitted.scale[0] };
   }
-  protected interpolate(from: Camera, to: Camera, t: number): Camera {
+  protected interpolate(from: Diagram.Camera, to: Diagram.Camera, t: number): Diagram.Camera {
     return Object.freeze({
       center: point(
         from.center[0] + (to.center[0] - from.center[0]) * t,
@@ -369,13 +511,18 @@ class DiagramView
       fit: to.fit,
     });
   }
-  protected panned(camera: Camera, dx: number, dy: number): Camera {
+  protected panned(camera: Diagram.Camera, dx: number, dy: number): Diagram.Camera {
     return {
       ...camera,
       center: point(camera.center[0] - dx / camera.scale, camera.center[1] - dy / camera.scale),
     };
   }
-  protected zoomed(camera: Camera, factor: number, anchor: Point, viewport: Viewport): Camera {
+  protected zoomed(
+    camera: Diagram.Camera,
+    factor: number,
+    anchor: Point,
+    viewport: Viewport,
+  ): Diagram.Camera {
     const zoomed = kit.zoomCamera(camera2d(camera), factor, anchor, viewport);
     return {
       ...camera,
@@ -383,7 +530,7 @@ class DiagramView
       scale: Math.max(1e-12, Math.min(1e12, zoomed.scale[0])),
     };
   }
-  protected position(item: DiagramItem): Point | null {
+  protected position(item: Diagram.Item): Point | null {
     const p = this.shown;
     const at = p?.picking.locate(item);
     if (!p || !at) return null;
@@ -398,10 +545,10 @@ class DiagramView
             ];
     return kit.cameraPoint(p.camera, drawn, p.viewport);
   }
-  protected identify(item: DiagramItem): string {
+  protected identify(item: Diagram.Item): string {
     return itemKey(item);
   }
-  protected accept(item: DiagramItem): void {
+  protected accept(item: Diagram.Item): void {
     if (
       !item ||
       (item.kind === 'group'
@@ -419,14 +566,14 @@ class DiagramView
         throw failure('conflict', 'Selection belongs to another source');
     }
   }
-  protected contains(item: DiagramItem): boolean {
+  protected contains(item: Diagram.Item): boolean {
     return this.shown?.picking.has(item) ?? false;
   }
   protected hits(
     p: Point,
     radiusPx: number,
     options: { readonly limit?: number } = {},
-  ): readonly DiagramItem[] {
+  ): readonly Diagram.Item[] {
     const shown = this.shown;
     if (!shown || !inside(p, shown.viewport)) return [];
     const hits = shown.picking.hit(
@@ -444,19 +591,19 @@ class DiagramView
   protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
     return pipelines(this.gpu, format, msaa, shade.wgsl);
   }
-  protected checkInput(input: DiagramInput): void {
+  protected checkInput(input: Diagram.Input): void {
     super.checkInput(checkInput(input));
   }
   protected listen(
     canvas: HTMLCanvasElement,
     input: kit.CanvasInput,
-    mode: NonNullable<ViewInput['mode']>,
+    mode: NonNullable<ItemView.Input['mode']>,
   ): () => void {
     const gestures = listen(
       canvas,
       input,
       mode,
-      (this.config.input ?? {}) as DiagramInput,
+      (this.config.input ?? {}) as Diagram.Input,
       this.controls,
     );
     this.gestures = gestures;
@@ -475,7 +622,7 @@ class DiagramView
     return this.gestures?.cancel() ?? false;
   }
 
-  protected resolve(config: DiagramConfig): Resolved {
+  protected resolve(config: Diagram.Config): Resolved {
     const data = checkedData(diagramData(config));
     return {
       config,
@@ -487,7 +634,7 @@ class DiagramView
       style: resolveStyle(config, this.sharedStyle(config)),
     };
   }
-  protected configure(resolved: Resolved, before: Resolved, options: SetOptions): void {
+  protected configure(resolved: Resolved, before: Resolved, options: View.SetOptions): void {
     const { config: next } = resolved,
       { config: previous } = before;
     const animate = options.animate === true;
@@ -520,7 +667,10 @@ class DiagramView
       !this.closed &&
       (super.animating ||
         !!this.transition ||
-        (this.resolved.flowing && !!this.shown && !this.reducedMotion))
+        (this.resolved.flowing &&
+          !!this.shown &&
+          !this.reducedMotion &&
+          this.style.flowSpacingPx > 0))
     );
   }
 
@@ -540,7 +690,7 @@ class DiagramView
     this.drag = undefined;
   }
   /** Draw dragged vertices offset from their accepted positions, or stop with null. */
-  private preview(items: readonly DiagramItem[], delta: Point | null): void {
+  private preview(items: readonly Diagram.Item[], delta: Point | null): void {
     if (this.defer('preview', () => this.preview(items, delta))) return;
     // A drag starts from accepted positions, so a transition under way ends where it was going.
     this.transition = undefined;
@@ -551,7 +701,7 @@ class DiagramView
       : undefined;
     this.invalidate();
   }
-  private movingKeys(items: readonly DiagramItem[]): Set<string> {
+  private movingKeys(items: readonly Diagram.Item[]): Set<string> {
     const keys = new Set(items.map(itemKey));
     const scene = this.shown?.scene;
     if (!scene) return keys;
@@ -565,7 +715,7 @@ class DiagramView
         }
     return keys;
   }
-  private move(items: readonly DiagramItem[], delta: Point): MoveProposal | undefined {
+  private move(items: readonly Diagram.Item[], delta: Point): Diagram.MoveProposal | undefined {
     const scene = this.shown?.scene;
     if (!scene) return;
     const keys = this.movingKeys(items),

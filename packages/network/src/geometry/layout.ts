@@ -1,14 +1,13 @@
 import {
   rowAt,
   type FieldInput,
-  type FieldValues,
-  type FieldsBlock,
-  type ReadScope,
-  type RowAxis,
   type Work,
+  type Block,
+  type Reader,
+  type Index,
 } from '@latkit/model';
-import { kit, type LayoutOptions, type Positions } from '@latkit/gpu';
-import type { NetworkData, NetworkItem } from '../data.js';
+import { kit, type Layout } from '@latkit/gpu';
+import type { NetworkData } from '../data.js';
 import {
   channels,
   readIdentity,
@@ -18,12 +17,12 @@ import {
 } from '../rendering/fields.js';
 import { placement, type Geometry, type VertexBank } from './topology.js';
 import { indexKey } from './rows.js';
-
+import type { Network } from '../network.js';
 /** What layout placed: each bank holding a placed vertex reads every row's position from here. */
 interface Placed {
-  readonly banks: ReadonlyMap<VertexBank, FieldValues>;
+  readonly banks: ReadonlyMap<VertexBank, FieldInput.Values>;
   readonly topology: Geometry;
-  readonly layout: LayoutOptions;
+  readonly layout: Layout;
   /** The placed vertices by dense address, and where, two numbers each, for the next to keep. */
   readonly vertices: Uint32Array;
   readonly at: Float64Array;
@@ -43,9 +42,9 @@ export class Placement {
     topology: Geometry,
     data: NetworkData,
     reads: ReadonlyMap<VertexBank, FieldRead>,
-    layout: LayoutOptions,
+    layout: Layout,
     work: Work,
-  ): Promise<ReadonlyMap<VertexBank, FieldValues>> {
+  ): Promise<ReadonlyMap<VertexBank, FieldInput.Values>> {
     const key: unknown[] = [topology, layout];
     for (const bank of topology.vertices) {
       const read = reads.get(bank);
@@ -68,7 +67,7 @@ async function place(
   topology: Geometry,
   data: NetworkData,
   reads: readonly PositionRead[],
-  layout: LayoutOptions,
+  layout: Layout,
   work: Work,
   previous?: Placed,
 ): Promise<Placed> {
@@ -76,7 +75,7 @@ async function place(
   if (!at) return { banks: new Map(), topology, layout, vertices: free, at: new Float64Array() };
   if (previous && sameLayout(previous.layout, layout)) keep(at, topology, previous);
   await arrangeFree(topology, data, at, layout, work);
-  const banks = new Map<VertexBank, FieldValues>();
+  const banks = new Map<VertexBank, FieldInput.Values>();
   let next = 0;
   for (const bank of topology.vertices) {
     while (next < free.length && free[next] < bank.base) next++;
@@ -100,10 +99,10 @@ async function place(
 }
 /** Each drawn vertex's position, those without one placed: two numbers a vertex. */
 export async function arrangeVertices(
-  reader: ReadScope,
+  reader: Reader.Scope,
   topology: Geometry,
   data: NetworkData,
-  layout: LayoutOptions,
+  layout: Layout,
   work: Work,
 ): Promise<Float64Array> {
   const { at, free } = positionsOf(
@@ -115,13 +114,13 @@ export async function arrangeVertices(
   return at!;
 }
 /** Each type's rows where `at` places them, an axis a field. */
-export function positions(topology: Geometry, at: Float64Array): Record<string, Positions> {
-  const out: Record<string, Positions> = {};
+export function positions(topology: Geometry, at: Float64Array): Record<string, Layout.Positions> {
+  const out: Record<string, Layout.Positions> = {};
   for (const [type, banks] of byType(topology)) {
     const first = banks[0].base,
       count = banks.reduce((n, bank) => n + bank.count, 0),
       rows = joined(banks),
-      axis = (lane: number): FieldValues => {
+      axis = (lane: number): FieldInput.Values => {
         const values = new Float64Array(count);
         for (let i = 0; i < count; i++) values[i] = at[(first + i) * 2 + lane];
         return {
@@ -145,7 +144,7 @@ function byType(topology: Geometry): Map<string, VertexBank[]> {
   return types;
 }
 /** A type's rows across its banks: one range when they run on, else their indices. */
-function joined(banks: readonly VertexBank[]): RowAxis {
+function joined(banks: readonly VertexBank[]): Index.Rows {
   const count = banks.reduce((n, bank) => n + bank.count, 0),
     first = banks[0].rows;
   let next = first.kind === 'range' ? first.offset : -1;
@@ -165,17 +164,17 @@ function joined(banks: readonly VertexBank[]): RowAxis {
 /** Where a bank reads its positions: tiles and the channels placing them; none without x or y. */
 interface PositionRead {
   readonly bank: VertexBank;
-  readonly tiles: readonly FieldsBlock[] | null;
+  readonly tiles: readonly Block.Fields[] | null;
   readonly x?: kit.ResolvedChannel;
   readonly y?: kit.ResolvedChannel;
 }
-const rowsIn = (tile: FieldsBlock) =>
+const rowsIn = (tile: Block.Fields) =>
   tile.rows.kind === 'range' ? tile.rows.count : tile.rows.values.length;
 /**
  * Write a tile's positions into `out` from vertex `first`, both NaN where either reads no number;
  * whether any did.
  */
-function write(read: PositionRead, tile: FieldsBlock, out: Float64Array, first: number): boolean {
+function write(read: PositionRead, tile: Block.Fields, out: Float64Array, first: number): boolean {
   kit.channelValues(read.x!, tile, out, first * 2, 2);
   kit.channelValues(read.y!, tile, out, first * 2 + 1, 2);
   let missing = false;
@@ -188,7 +187,7 @@ function write(read: PositionRead, tile: FieldsBlock, out: Float64Array, first: 
 }
 /** Each bank's positions through the reader, as a frame's field reads would have them. */
 async function readPositions(
-  reader: ReadScope,
+  reader: Reader.Scope,
   topology: Geometry,
   data: NetworkData,
 ): Promise<PositionRead[]> {
@@ -212,7 +211,7 @@ async function readPositions(
       { x: x.field === undefined ? 0 : NaN, y: y.field === undefined ? 0 : NaN },
     );
     for (const bank of banks) {
-      const tiles: FieldsBlock[] = [];
+      const tiles: Block.Fields[] = [];
       if (x.column !== undefined || y.column !== undefined)
         for await (const tile of reader.fields({
           source: data.source,
@@ -295,7 +294,7 @@ async function arrangeFree(
   topology: Geometry,
   data: NetworkData,
   at: Float64Array,
-  layout: LayoutOptions,
+  layout: Layout,
   work: Work,
 ): Promise<void> {
   const graph = topology.adjacency.graph,
@@ -306,7 +305,7 @@ async function arrangeFree(
       graph,
       {
         pinned: at,
-        item: (v): NetworkItem => {
+        item: (v): Network.Item => {
           const bank = bankAt(topology.vertices, v);
           return {
             kind: 'vertex',
@@ -359,7 +358,7 @@ function bankAt(banks: readonly VertexBank[], dense: number): VertexBank {
   }
   return banks[lo - 1];
 }
-function sameLayout(a: LayoutOptions, b: LayoutOptions): boolean {
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]) as Set<keyof LayoutOptions>;
+function sameLayout(a: Layout, b: Layout): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]) as Set<keyof Layout>;
   return [...keys].every((key) => a[key] === b[key]);
 }

@@ -5,39 +5,32 @@ import {
   type Column,
   type Data,
   type FieldInput,
-  type FieldsBlock,
-  type ReadScope,
-  type RowSelection,
-  type SampleWindow,
+  type Block,
+  type Reader,
+  type Index,
+  type Query,
 } from '@latkit/model';
 import { validateRgba, type RGBA } from '../colors/color.js';
 import type { Colormap } from '../colors/colormap.js';
-import type { ColormapName } from '../colors/catalog.js';
 import type { GpuField, GpuPage } from '../fields/types.js';
-import {
-  fieldScale,
-  scaleValue,
-  type ColorScale,
-  type Range,
-  type ResolvedScale,
-  type Scale,
-  type ScaleDomain,
-} from './scale.js';
+import { fieldScale, scaleValue, type ResolvedScale, type Scale } from './scale.js';
 
 /** A value per drawn row: one for every row, a field's, or a field's through a scale. */
 export type Channel<T extends number | boolean = number> = T | FieldInput | Scale | null;
-/** A color per drawn row: one for every row, or a field's through a colormap. */
-export type ColorChannel = RGBA | FieldInput | ColorScale | null;
+export declare namespace Channel {
+  /** A color per drawn row: one for every row, or a field's through a colormap. */
+  type Color = RGBA | FieldInput | Scale.Color | null;
+}
 
 /**
  * How a channel reads a field: `raw` as it is, `color` through a colormap, or onto a range by a
  * scale over the field's extent.
  */
-export type ChannelKind = 'raw' | 'color' | Range;
+export type ChannelKind = 'raw' | 'color' | Scale.Range;
 /** How a bound channel's field maps, its range resolved. */
 export interface ChannelScale {
-  readonly domain?: ScaleDomain;
-  readonly range: Range;
+  readonly domain?: Scale.Domain;
+  readonly range: Scale.Range;
   readonly clamp?: boolean;
 }
 /** A channel of one type's options, bound to a column of the type's fields read. */
@@ -51,7 +44,7 @@ export interface BoundChannel {
   readonly scale?: ChannelScale;
   /** Whether it reads a color: a position in its colormap, or -1 without a value. */
   readonly color?: boolean;
-  readonly colormap?: Colormap | ColormapName;
+  readonly colormap?: Colormap | Colormap.Name;
   /** The value of rows the field leaves empty: a number, or a color. */
   readonly missing?: number | RGBA;
   /** Every row's value without a field: a number, 0 or 1 for a boolean, or a color. */
@@ -100,7 +93,7 @@ function bind(name: string, value: unknown, kind: ChannelKind): BoundChannel {
   }
   if (typeof value !== 'object') throw invalid();
   if (isField(value)) return bare(value, kind);
-  const scale = value as Scale & ColorScale;
+  const scale = value as Scale & Scale.Color;
   const component = scale.component ?? 0;
   if (!scale.field || !Number.isInteger(component) || component < 0 || component >= COMPONENTS)
     throw invalid();
@@ -180,12 +173,12 @@ export function resolveChannel(
  * over `window` for a sampled field. Rows without a value read their channel's `fallbacks`, or 0.
  */
 export async function resolveChannels<K extends string>(
-  reader: ReadScope,
+  reader: Reader.Scope,
   request: {
     readonly source: Data;
     readonly from: string;
-    readonly rows?: RowSelection;
-    readonly window?: SampleWindow;
+    readonly rows?: Index.Selection;
+    readonly window?: Query.Window;
   },
   bound: BoundChannels<K>,
   fallbacks: Readonly<Partial<Record<K, number>>> = {} as Readonly<Partial<Record<K, number>>>,
@@ -289,7 +282,7 @@ function lane(column: Column | undefined, row: number, frame: number, component:
 /** A channel's value at a row, and frame, of a fields block: as a shader reads it. */
 export function channelValue(
   channel: ResolvedChannel,
-  block: FieldsBlock,
+  block: Block.Fields,
   row: number,
   frame = 0,
 ): number {
@@ -305,7 +298,7 @@ export function channelValue(
  */
 export function channelValues(
   channel: ResolvedChannel,
-  block: FieldsBlock,
+  block: Block.Fields,
   out: Float64Array,
   at = 0,
   stride = 1,
@@ -346,7 +339,7 @@ export function channelValues(
 /** Whether a boolean channel is on at a row, and frame: where it reads true or positive. */
 export function channelOn(
   channel: ResolvedChannel,
-  block: FieldsBlock,
+  block: Block.Fields,
   row: number,
   frame = 0,
 ): boolean {

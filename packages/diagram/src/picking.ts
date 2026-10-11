@@ -1,11 +1,11 @@
 import { kit, type Viewport } from '@latkit/gpu';
 import { failure } from '@latkit/model';
-import type { DiagramItem, Point } from './data.js';
+import type { Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Scene, Rect } from './scene.js';
 import { expand, union, edgeAnchor, itemAt, itemSlots } from './scene.js';
 import { contains, distance, labelBox } from './geometry.js';
-
+import type { Diagram } from './diagram.js';
 /** What a pickable piece is, in draw order: a later piece draws over an earlier one. */
 const GROUP = 0,
   SEGMENT = 1,
@@ -112,10 +112,10 @@ export class Picking {
   get bytes(): number {
     return Picking.bytes(this.kinds.length, this.scene.slots.count);
   }
-  has(item: DiagramItem): boolean {
+  has(item: Diagram.Item): boolean {
     return itemSlots(this.scene).has(itemKey(item));
   }
-  locate(item: DiagramItem): Point | null {
+  locate(item: Diagram.Item): Point | null {
     const slot = itemSlots(this.scene).get(itemKey(item));
     return slot === undefined || Number.isNaN(this.anchors[slot * 2])
       ? null
@@ -130,7 +130,7 @@ export class Picking {
     ports = true,
     check: () => void = unchecked,
     widthPx = 1.5,
-  ): readonly DiagramItem[] {
+  ): readonly Diagram.Item[] {
     const matches = new Map<number, Match>();
     this.scan(point, camera, viewport, radius, ports, check, widthPx, (match) => {
       const old = matches.get(match.slot);
@@ -147,21 +147,21 @@ export class Picking {
     ports: boolean,
     check: () => void,
     widthPx: number,
-  ): DiagramItem | null {
+  ): Diagram.Item | null {
     let best: Match | undefined;
     this.scan(point, camera, viewport, radius, ports, check, widthPx, (match) => {
       if (!best || compare(match, best) < 0) best = match;
     });
     return best ? itemAt(this.scene, best.slot) : null;
   }
-  marquee(box: Rect): readonly DiagramItem[] {
-    const out: DiagramItem[] = [];
+  marquee(box: Rect): readonly Diagram.Item[] {
+    const out: Diagram.Item[] = [];
     this.spatial.some(box, (i) => {
       if (this.kinds[i] === VERTEX) out.push(this.scene.vertices[this.slots[i]].hit);
     });
     return out;
   }
-  bounds(items?: readonly DiagramItem[]): Rect[] {
+  bounds(items?: readonly Diagram.Item[]): Rect[] {
     if (!items) return [this.scene.bounds];
     const slots = itemSlots(this.scene),
       wanted = new Set(items.map((item) => slots.get(itemKey(item)))),

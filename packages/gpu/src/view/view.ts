@@ -11,100 +11,101 @@ import type {
   Renderer,
   RenderTarget,
 } from '../frame/render.js';
-import type { HoverState } from './input.js';
 import type { Layer, PreparedLayer } from './layer.js';
-
+import type { ItemView } from './item-view.js';
 /** A canvas point in CSS pixels. */
 export type Point = readonly [x: number, y: number];
 
-/** Config every view understands. */
-export interface ViewConfig {
-  /** Present on this canvas. Omit to render only images and video. */
-  readonly canvas?: HTMLCanvasElement | null;
-  /** Model coordinate shown, such as a time. */
-  readonly at?: number | null;
-  /** Stop presenting; config and state are kept. */
-  readonly paused?: boolean;
-}
-export interface ViewEvents {
-  /** A frame was drawn: where the view presents, or exported when not `presented`. */
-  readonly frame: FrameInfo;
-  /** A failure no call could report, such as a frame that failed to render. */
-  readonly error: unknown;
-}
 const IMAGE_FORMATS: readonly string[] = ['png', 'jpeg', 'webp'];
-export interface ImageOptions {
-  /** Output size in pixels. Defaults to the canvas's, else 1280 × 720. */
-  readonly width?: number;
-  readonly height?: number;
-  /** Pixels per CSS pixel. Defaults to the canvas's, else 1. */
-  readonly pixelRatio?: number;
-  /** Model coordinate shown; defaults to the view's. */
-  readonly at?: number;
-  /** `png` by default. */
-  readonly format?: 'png' | 'jpeg' | 'webp';
-  /** From 0 to 1, for `jpeg` and `webp`. */
-  readonly quality?: number;
-  readonly signal?: AbortSignal;
-}
-/** What every view measures. */
-export interface ViewStats {
-  readonly frames: number;
-  /** Preparation time of the latest drawn frame. */
-  readonly prepareMs: number;
-  readonly drawCalls: number;
-  readonly pickingBytes: number;
-  readonly hover: HoverState;
-  /** Hover search time in the latest frame; zero when it did not search. */
-  readonly hoverMs: number;
-}
-export interface SetOptions {
-  /**
-   * Ease what the change draws over `animationMs`: the camera, a diagram's positions, and a
-   * network's positions, colors, sizes, widths, flow, and marker inputs.
-   */
-  readonly animate?: boolean;
-  /**
-   * `set` only: the patch is the whole config, so what it leaves out resets. The canvas, `at`,
-   * `paused`, and camera change only when given.
-   */
-  readonly replace?: boolean;
-}
-/**
- * A set() argument. Keyed records, such as `vertices`, merge per entry and each entry per option;
- * camera, input, and limits merge per option. `null` removes an entry or resets an option. Any other
- * value replaces, unless it equals what is there: plain objects, arrays, and typed arrays compare by
- * what they hold, so a view keeps what it built from them.
- */
-export type Patch<C, Records extends keyof C = never, Merged extends keyof C = never> = {
-  readonly [K in keyof C]?:
-    | (K extends Records
-        ? { readonly [E in keyof NonNullable<C[K]>]?: OptionsPatch<NonNullable<C[K]>[E]> | null }
-        : K extends Merged
-          ? OptionsPatch<NonNullable<C[K]>>
-          : C[K])
-    | null;
-};
-/** Some of an object's options, each of which may be null to reset it. */
-export type OptionsPatch<T> = T extends object ? { readonly [K in keyof T]?: T[K] | null } : T;
 
 /** What every latkit view shares. */
 export interface View<
-  Config extends ViewConfig = ViewConfig,
-  Events extends ViewEvents = ViewEvents,
+  Config extends View.Config = View.Config,
+  Events extends View.Events = View.Events,
 > {
   /** The config as given, with every patch applied. Where the camera is lives on `camera`. */
   readonly config: Omit<Config, 'camera'>;
-  set(patch: Patch<Config>, options?: SetOptions): void;
-  stats(): ViewStats;
+  set(patch: View.Patch<Config>, options?: View.SetOptions): void;
+  stats(): View.Stats;
   /**
    * Render at any size and coordinate. A view on a canvas or in a composition stays as it is; a
    * view with neither presents in its images, so pick and locate follow the latest one.
    */
-  image(options?: ImageOptions): Promise<Blob>;
+  image(options?: View.ImageOptions): Promise<Blob>;
   on<K extends keyof Events>(event: K, listener: (value: Events[K]) => void): () => void;
   /** Releases its canvas, input, and GPU resources; never its Gpu or sources. */
   destroy(): void;
+}
+export declare namespace View {
+  /** Config every view understands. */
+  interface Config {
+    /** Present on this canvas. Omit to render only images and video. */
+    readonly canvas?: HTMLCanvasElement | null;
+    /** Model coordinate shown, such as a time. */
+    readonly at?: number | null;
+    /** Stop presenting; config and state are kept. */
+    readonly paused?: boolean;
+  }
+  interface Events {
+    /** A frame was drawn: where the view presents, or exported when not `presented`. */
+    readonly frame: FrameInfo;
+    /** A failure no call could report, such as a frame that failed to render. */
+    readonly error: unknown;
+  }
+  interface ImageOptions {
+    /** Output size in pixels. Defaults to the canvas's, else 1280 × 720. */
+    readonly width?: number;
+    readonly height?: number;
+    /** Pixels per CSS pixel. Defaults to the canvas's, else 1. */
+    readonly pixelRatio?: number;
+    /** Model coordinate shown; defaults to the view's. */
+    readonly at?: number;
+    /** `png` by default. */
+    readonly format?: 'png' | 'jpeg' | 'webp';
+    /** From 0 to 1, for `jpeg` and `webp`. */
+    readonly quality?: number;
+    readonly signal?: AbortSignal;
+  }
+  /** What every view measures. */
+  interface Stats {
+    readonly frames: number;
+    /** Preparation time of the latest drawn frame. */
+    readonly prepareMs: number;
+    readonly drawCalls: number;
+    readonly pickingBytes: number;
+    readonly hover: ItemView.HoverState;
+    /** Hover search time in the latest frame; zero when it did not search. */
+    readonly hoverMs: number;
+  }
+  interface SetOptions {
+    /**
+     * Ease what the change draws over `animationMs`: the camera, a diagram's positions, and a
+     * network's positions, colors, sizes, widths, flow, and marker inputs.
+     */
+    readonly animate?: boolean;
+    /**
+     * `set` only: the patch is the whole config, so what it leaves out resets. The canvas, `at`,
+     * `paused`, and camera change only when given.
+     */
+    readonly replace?: boolean;
+  }
+  /**
+   * A set() argument. Keyed records, such as `vertices`, merge per entry and each entry per option;
+   * camera, input, and limits merge per option. `null` removes an entry or resets an option. Any other
+   * value replaces, unless it equals what is there: plain objects, arrays, and typed arrays compare by
+   * what they hold, so a view keeps what it built from them.
+   */
+  type Patch<C, Records extends keyof C = never, Merged extends keyof C = never> = {
+    readonly [K in keyof C]?:
+      | (K extends Records
+          ? { readonly [E in keyof NonNullable<C[K]>]?: OptionsPatch<NonNullable<C[K]>[E]> | null }
+          : K extends Merged
+            ? OptionsPatch<NonNullable<C[K]>>
+            : C[K])
+      | null;
+  };
+  /** Some of an object's options, each of which may be null to reset it. */
+  type OptionsPatch<T> = T extends object ? { readonly [K in keyof T]?: T[K] | null } : T;
 }
 
 /** How set() merges a view's config keys; every other key replaces. */
@@ -168,8 +169,8 @@ function applyPatch<C>(config: C, patch: Plain, shape: ConfigShape, replace: boo
  * it prepared; the base carries the prepared value from one step to the next.
  */
 export abstract class BaseView<
-  Config extends ViewConfig,
-  Events extends ViewEvents,
+  Config extends View.Config,
+  Events extends View.Events,
   Resolved = Config,
   Prepared = void,
   Records extends keyof Config = never,
@@ -189,7 +190,7 @@ export abstract class BaseView<
   #invalidated = new Set<() => void>();
   #captured = false;
   #frameConfig?: Config;
-  #configuration?: { previous: Config; next: Config; options: SetOptions };
+  #configuration?: { previous: Config; next: Config; options: View.SetOptions };
   #changes = new Map<string, () => void>();
   #frames = 0;
   #prepareMs = 0;
@@ -275,7 +276,7 @@ export abstract class BaseView<
   get config(): Omit<Config, 'camera'> {
     return this.#config;
   }
-  set(patch: Patch<Config, Records, Merged>, options: SetOptions = {}): void {
+  set(patch: View.Patch<Config, Records, Merged>, options: View.SetOptions = {}): void {
     this.live();
     void this.resolved;
     const { camera, ...rest } = patch as Plain;
@@ -354,7 +355,7 @@ export abstract class BaseView<
           for (const listener of [...(this.#listeners.get(name) ?? [])]) listener(payload as never);
       });
   }
-  stats(): ViewStats {
+  stats(): View.Stats {
     return {
       frames: this.#frames,
       prepareMs: this.#prepareMs,
@@ -407,7 +408,7 @@ export abstract class BaseView<
     this.invalidate();
     return true;
   }
-  #configure(previous: Config, next: Config, options: SetOptions): void {
+  #configure(previous: Config, next: Config, options: View.SetOptions): void {
     const before = this.resolved,
       checked = this.#checked;
     this.#checked = undefined;
@@ -547,7 +548,7 @@ export abstract class BaseView<
     if (this.#closed) throw failure('closed', 'View is destroyed');
   }
 
-  async image(options: ImageOptions = {}): Promise<Blob> {
+  async image(options: View.ImageOptions = {}): Promise<Blob> {
     this.live();
     options.signal?.throwIfAborted();
     const format = options.format ?? 'png',
@@ -659,15 +660,15 @@ export abstract class BaseView<
     return config as unknown as Resolved;
   }
   /** React to a resolved config replacing the previous one; `resolved` is already the next. */
-  protected abstract configure(next: Resolved, previous: Resolved, options: SetOptions): void;
+  protected abstract configure(next: Resolved, previous: Resolved, options: View.SetOptions): void;
   /** View-specific measures merged into stats(). */
-  protected measure(): Partial<ViewStats> {
+  protected measure(): Partial<View.Stats> {
     return {};
   }
   /** Base-class step before configure; views implement configure instead. */
   /** The view paused: let go of background work that serves only presented frames. */
   protected paused(): void {}
-  protected changed(previous: Config, next: Config, options: SetOptions): void {
+  protected changed(previous: Config, next: Config, options: View.SetOptions): void {
     void previous;
     void next;
     void options;
@@ -682,7 +683,7 @@ export abstract class BaseView<
    */
   protected cameraMove(
     camera: Readonly<Record<string, unknown>> | null,
-  ): ((options: SetOptions) => void) | undefined {
+  ): ((options: View.SetOptions) => void) | undefined {
     void camera;
     return undefined;
   }
@@ -894,7 +895,7 @@ function frameInfo(frame: FrameInfo): FrameInfo {
   return { width, height, at, timeMs, viewport, format, presented };
 }
 /** Expand the input shorthand: `input: 'edit'` means `{ mode: 'edit' }`. */
-function normalized<C extends ViewConfig>(config: C): C {
+function normalized<C extends View.Config>(config: C): C {
   const input = (config as Plain).input;
   return (typeof input === 'string' ? { ...config, input: { mode: input } } : config) as C;
 }

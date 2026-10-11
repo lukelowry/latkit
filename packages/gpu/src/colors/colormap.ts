@@ -2,33 +2,38 @@ import { failure } from '@latkit/model';
 import { interpolateWithPremultipliedAlpha } from 'culori/fn';
 import { freezeColor, validateRgba, type RGBA } from './color.js';
 import { initializeColors, toRgba } from './conversion.js';
+import type { ColormapName } from './presets/data.js';
 
-export type ColormapKind = 'sequential' | 'diverging' | 'cyclic' | 'categorical' | 'multihue';
 /** Immutable presentation data. Continuous samples are uniformly spaced; cyclic samples omit t=1. */
 export interface Colormap {
-  readonly kind: ColormapKind;
+  readonly kind: Colormap.Kind;
   readonly label?: string;
   readonly colors: readonly RGBA[];
 }
-export interface ColorStop {
-  readonly at: number;
-  readonly color: RGBA;
+export declare namespace Colormap {
+  /** A colormap of the catalog. */
+  type Name = ColormapName;
+  type Kind = 'sequential' | 'diverging' | 'cyclic' | 'categorical' | 'multihue';
+  interface Stop {
+    readonly at: number;
+    readonly color: RGBA;
+  }
+  type Options =
+    | { readonly kind?: Kind; readonly label?: string; readonly colors: readonly RGBA[] }
+    | {
+        readonly kind?: Exclude<Kind, 'categorical'>;
+        readonly label?: string;
+        readonly stops: readonly Stop[];
+        readonly size?: number;
+        readonly interpolation?: 'srgb' | 'srgb-linear' | 'oklab';
+      }
+    | {
+        readonly kind?: Exclude<Kind, 'categorical'>;
+        readonly label?: string;
+        readonly sample: (t: number) => RGBA;
+        readonly size?: number;
+      };
 }
-export type ColormapOptions =
-  | { readonly kind?: ColormapKind; readonly label?: string; readonly colors: readonly RGBA[] }
-  | {
-      readonly kind?: Exclude<ColormapKind, 'categorical'>;
-      readonly label?: string;
-      readonly stops: readonly ColorStop[];
-      readonly size?: number;
-      readonly interpolation?: 'srgb' | 'srgb-linear' | 'oklab';
-    }
-  | {
-      readonly kind?: Exclude<ColormapKind, 'categorical'>;
-      readonly label?: string;
-      readonly sample: (t: number) => RGBA;
-      readonly size?: number;
-    };
 
 const kinds: readonly string[] = ['sequential', 'diverging', 'cyclic', 'categorical', 'multihue'];
 const validated = new WeakSet<Colormap>();
@@ -48,7 +53,7 @@ export function validateColormap(map: Colormap): void {
 }
 
 /** Copies and freezes authoring data once. Callbacks are evaluated only during construction. */
-export function createColormap(options: ColormapOptions): Colormap {
+export function createColormap(options: Colormap.Options): Colormap {
   const kind = options.kind ?? 'sequential';
   if (!kinds.includes(kind)) throw failure('invalid-input', 'Invalid colormap kind');
   if (options.label !== undefined && typeof options.label !== 'string')
@@ -67,7 +72,7 @@ export function createColormap(options: ColormapOptions): Colormap {
     if ('sample' in options) sample = options.sample;
     else {
       if (!Array.isArray(options.stops)) throw failure('invalid-input', 'Expected color stops');
-      const stops = options.stops as readonly ColorStop[];
+      const stops = options.stops as readonly Colormap.Stop[];
       if (
         stops.length < 2 ||
         stops.length > 16384 ||

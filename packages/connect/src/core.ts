@@ -1,7 +1,7 @@
-import { failure, isFailure, type Failure, type FailureCode } from '@latkit/model';
-import type { ConnectLimits } from './types.js';
+import { failure, isFailure, type Failure } from '@latkit/model';
+import type { Connection } from './types.js';
 /** Every Failure code, so a peer's report keeps the codes latkit knows. */
-const CODES: Readonly<Record<FailureCode, true>> = {
+const CODES: Readonly<Record<Failure.Code, true>> = {
   'invalid-input': true,
   'resource-limit': true,
   conflict: true,
@@ -37,7 +37,7 @@ export function peerFailure(metadata: Readonly<Record<string, unknown>>): Failur
     const code = text(metadata.code, 128),
       message = text(metadata.message, 4096);
     return Object.hasOwn(CODES, code)
-      ? failure(code as FailureCode, message)
+      ? failure(code as Failure.Code, message)
       : failure('internal', code + ': ' + message);
   });
 }
@@ -83,7 +83,7 @@ export function validProgress(value: Readonly<Record<string, unknown>>): boolean
         domain[0] <= domain[1]))
   );
 }
-export const defaults: ConnectLimits = Object.freeze({
+export const defaults: Connection.Limits = Object.freeze({
   messageBytes: 1024 * 1024,
   metadataBytes: 64 * 1024,
   bufferedBytes: 16 * 1024 * 1024,
@@ -95,7 +95,7 @@ export const defaults: ConnectLimits = Object.freeze({
   logs: 32,
   timeoutMs: 30000,
 });
-export function limits(input: Partial<ConnectLimits> = {}): ConnectLimits {
+export function limits(input: Partial<Connection.Limits> = {}): Connection.Limits {
   for (const key of Object.keys(input))
     if (!Object.hasOwn(defaults, key)) throw failure('invalid-input', 'Unknown limit: ' + key);
   const result = { ...defaults, ...input };
@@ -114,11 +114,11 @@ export function limits(input: Partial<ConnectLimits> = {}): ConnectLimits {
     );
   return Object.freeze(result);
 }
-export function negotiate(local: ConnectLimits, remote: unknown): ConnectLimits {
+export function negotiate(local: Connection.Limits, remote: unknown): Connection.Limits {
   return fromPeer(() => {
     const offered = record(remote),
       result = { ...local };
-    for (const key of Object.keys(defaults) as (keyof ConnectLimits)[])
+    for (const key of Object.keys(defaults) as (keyof Connection.Limits)[])
       result[key] = Math.min(
         local[key],
         integer(offered[key], 1, key === 'timeoutMs' ? 0x7fffffff : 0xffffffff),

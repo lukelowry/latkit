@@ -1,14 +1,4 @@
-import {
-  appendData,
-  createData,
-  read,
-  type Data,
-  type RowBatch,
-  type SampleBatch,
-  type Schema,
-  type Query,
-  type QueryOptions,
-} from '@latkit/model';
+import { appendData, createData, read, type Data, type Schema, type Query } from '@latkit/model';
 /** Values belong to this test application's store, with small independent backing allocations. */
 export class SignalSource {
   readonly index = { source: 'monitor-fixture', type: 'signal', version: 'rows0' };
@@ -65,8 +55,8 @@ export class SignalSource {
   get data(): Data {
     if (this.cached && this.storedThrough === this.frames) return this.cached;
     const rows = { kind: 'range' as const, offset: 0, count: this.count },
-      batches: SampleBatch[] = [];
-    const staticBatches: RowBatch[] = [];
+      batches: Data.SampleBatch[] = [];
+    const staticBatches: Data.RowBatch[] = [];
     if (!this.cached)
       staticBatches.push({
         kind: 'rows',
@@ -86,7 +76,7 @@ export class SignalSource {
       const coordinates = Float64Array.from({ length: nf }, (_, i) => this.coordinate(f + i));
       for (let r = 0; r < this.count; r += 16) {
         const nr = Math.min(16, this.count - r);
-        const columns: import('@latkit/model').SampleBatch['columns'] = Object.fromEntries(
+        const columns: import('@latkit/model').Data.SampleBatch['columns'] = Object.fromEntries(
           ['value', 'other', 'visible'].map((name) => {
             const values = new Float64Array(nr * nf),
               validity = new Uint8Array(Math.ceil(values.length / 8));
@@ -131,7 +121,7 @@ export class SignalSource {
   append(count: number): void {
     this.frames += count;
   }
-  query<Q extends Query>(query: Q, options?: QueryOptions) {
+  query<Q extends Query>(query: Q, options?: Query.Options) {
     return read(this.data, query, options);
   }
 }

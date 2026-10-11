@@ -1,10 +1,9 @@
-import type { Schema } from '../schema.js';
-import type { Problem } from '../types.js';
+import type { Schema } from '../schema/schema.js';
 import { record } from './check.js';
 import { validateQuery } from './query.js';
-
+import type { Failure } from '../failure.js';
 /** Validate field/row demand without pretending it is a historical query. */
-export function validateSelection(schema: Schema, value: unknown): readonly Problem[] {
+export function validateSelection(schema: Schema, value: unknown): readonly Failure.Problem[] {
   if (!record(value)) return [{ code: 'invalid-input', message: 'Expected a field selection.' }];
   const fields =
     typeof value.from === 'string' && Object.hasOwn(schema.types, value.from)

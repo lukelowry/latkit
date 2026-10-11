@@ -7,7 +7,7 @@ import {
   type Column,
   type Data,
   type FieldInput,
-  type ReadScope,
+  type Reader,
 } from '@latkit/model';
 import type { ShapesInput } from './prepare/shapes.js';
 
@@ -70,7 +70,7 @@ class Gathered {
  * than any block a reader hands out.
  */
 export async function readShapes(
-  reader: ReadScope,
+  reader: Reader.Scope,
   source: Data,
   type: string,
   field: FieldInput,
@@ -129,7 +129,7 @@ export async function readShapes(
   };
 }
 /** Each row's id, in the order shapes number them. */
-export async function readIds(reader: ReadScope, source: Data, type: string): Promise<string[]> {
+export async function readIds(reader: Reader.Scope, source: Data, type: string): Promise<string[]> {
   const ids: string[] = [];
   for await (const block of reader.fields({ source, from: type, fields: {}, ids: true })) {
     const column = block.ids,
@@ -143,7 +143,7 @@ export async function readIds(reader: ReadScope, source: Data, type: string): Pr
  * the value row, or `0xffffffff` where none matches.
  */
 export async function matchRows(
-  reader: ReadScope,
+  reader: Reader.Scope,
   shapes: Data,
   values: Data,
   type: string,

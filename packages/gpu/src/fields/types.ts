@@ -1,4 +1,4 @@
-import type { FieldsBlock, Index, RowAxis } from '@latkit/model';
+import type { Index, Block } from '@latkit/model';
 
 export type GpuField = GpuValueField | GpuListField | GpuEnvelopeField;
 /** Four lanes per bucket: first, minimum, maximum, last. Addresses use row and bucket. */
@@ -26,9 +26,9 @@ export interface GpuValueField {
 /** One shader layout for fields blocks and envelopes. Frame-scoped. */
 export interface GpuPage {
   /** The fields block this page was uploaded from. */
-  readonly block?: FieldsBlock;
+  readonly block?: Block.Fields;
   readonly index: Index;
-  readonly rows: RowAxis;
+  readonly rows: Index.Rows;
   /** Position among the rows of the uploaded block's request; not physical identity. */
   readonly rowOffset: number;
   readonly columns: Readonly<Record<string, GpuField>>;

@@ -486,6 +486,53 @@ async function checks() {
   } finally {
     seamView.destroy();
   }
+  // A long geodesic over the earth stays on its surface at any pitch: no row of it sinks beneath.
+  const meridianSource = new TableSource({
+    node: { position: vectors([0, -55, 0, 55]) },
+    route: { from: references('node', [0]), to: references('node', [1]) },
+  });
+  const meridianGround = createGeography(gpu, {
+    surfaceColor: [0.1, 0.1, 0.1, 1],
+    atmosphere: false,
+  });
+  const meridianView = createNetwork(gpu, {
+    source: meridianSource.data,
+    vertices: { node: { x: 'position', y: { field: 'position', component: 1 } } },
+    edges: { route: { ends: ['from', 'to'], route: 'geodesic' } },
+    camera: { center: [0, 0], scale: 2.4, projection: 'globe', fit: false },
+    geography: meridianGround,
+    markers: false,
+    edgeColor: [1, 1, 1, 1],
+    background: [0, 0, 0, 1],
+    edgeWidthPx: 3,
+    msaa: 1,
+  });
+  try {
+    device.pushErrorScope('validation');
+    for (const pitch of [0, 30, 70]) {
+      meridianView.set({ camera: { pitch } });
+      const bytes = await pixels(meridianView, { width: 512, height: 512 });
+      const lit = Array.from({ length: 512 }, (_, y) => {
+        let count = 0;
+        for (let x = 0; x < 512; x++) {
+          const i = (y * 512 + x) * 4;
+          if (bytes[i] > 200 && bytes[i + 1] > 200 && bytes[i + 2] > 200) count++;
+        }
+        return count;
+      });
+      const first = lit.findIndex((count) => count > 0),
+        last = lit.findLastIndex((count) => count > 0);
+      assert(first >= 0 && last - first > 40, 'The meridian did not draw at pitch ' + pitch);
+      const empty = lit.slice(first, last + 1).filter((count) => count === 0).length;
+      assert(empty === 0, `The meridian sank into the earth at pitch ${pitch}: ${empty} rows`);
+    }
+    const error = await device.popErrorScope();
+    assert(!error, error?.message);
+    checks.push('Geodesics on the globe stay on its surface at every pitch');
+  } finally {
+    meridianView.destroy();
+    meridianGround.destroy();
+  }
   const result = {
     adapter: adapter.info
       ? {

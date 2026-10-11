@@ -1,18 +1,11 @@
 import { copyPages, isColumnPages } from './pages.js';
-import type { ColumnPage } from './materialized.js';
-import type {
-  Column,
-  NumericArray,
-  NumericColumn,
-  RowAxis,
-  SampleColumn,
-  TextColumn,
-} from './data.js';
+import type { Data } from './data.js';
+import type { Column, Index } from './column.js';
 import { assertIndex, bitAt, rowCount, setBit } from './access.js';
-import { failure } from './error.js';
+import { failure } from '../failure.js';
 
 /** A row's position on an axis, or -1. Ascending index axes, the common case, search in place. */
-export function position(rows: RowAxis, row: number): number {
+export function position(rows: Index.Rows, row: number): number {
   if (rows.kind === 'range') {
     const at = row - rows.offset;
     return at >= 0 && at < rows.count ? at : -1;
@@ -45,13 +38,13 @@ function indexOf(values: Uint32Array): Map<number, number> {
   return index;
 }
 
-export function compactRows(values: readonly number[]): RowAxis {
+export function compactRows(values: readonly number[]): Index.Rows {
   if (!values.length || values.every((v, i) => v === values[0] + i))
     return { kind: 'range', offset: values[0] ?? 0, count: values.length };
   return { kind: 'indices', values: Uint32Array.from(values) };
 }
 
-export function containsRows(haystack: RowAxis, needle: RowAxis): boolean {
+export function containsRows(haystack: Index.Rows, needle: Index.Rows): boolean {
   if (haystack === needle) return true;
   if (haystack.kind === 'range' && needle.kind === 'range')
     return (
@@ -139,17 +132,17 @@ export function sliceColumn(column: Column, start: number, count: number): Colum
 
 /** A view of `rows` rows from `row` and `frames` frames from `frame`, keeping the column's strides. */
 export function sliceSamples(
-  column: SampleColumn,
+  column: Column.Sample,
   row: number,
   rows: number,
   frame: number,
   frames: number,
-): SampleColumn {
+): Column.Sample {
   const start = row * column.rowStride + frame * column.frameStride;
   const length =
     rows && frames ? (rows - 1) * column.rowStride + (frames - 1) * column.frameStride + 1 : 0;
   return {
-    ...(sliceColumn(column, start, length) as NumericColumn),
+    ...(sliceColumn(column, start, length) as Column.Numeric),
     rowStride: column.rowStride,
     frameStride: column.frameStride,
   };
@@ -197,7 +190,7 @@ export function gather(cells: readonly (Cell | undefined)[], empty: Column): Col
   }
   const common = { offset: 0, length: count, ...(validity ? { validity } : {}) };
   if (first.kind === 'numeric' || first.kind === 'reference') {
-    const Constructor = first.values.constructor as { new (length: number): NumericArray };
+    const Constructor = first.values.constructor as { new (length: number): Column.NumericArray };
     const values = new Constructor(count);
     for (let i = 0; i < count; i++) {
       const cell = cells[i];
@@ -221,7 +214,9 @@ export function gather(cells: readonly (Cell | undefined)[], empty: Column): Col
   }
   if (first.kind === 'vector') {
     const size = first.size;
-    const Constructor = first.values.values.constructor as { new (length: number): NumericArray };
+    const Constructor = first.values.values.constructor as {
+      new (length: number): Column.NumericArray;
+    };
     const values = new Constructor(count * size);
     for (let i = 0; i < count; i++) {
       const cell = cells[i];
@@ -254,7 +249,7 @@ export function gather(cells: readonly (Cell | undefined)[], empty: Column): Col
     for (let i = 0; i < count; i++) {
       const cell = cells[i];
       if (!cell || offsets[i + 1] === offsets[i]) continue;
-      const c = cell.column as TextColumn,
+      const c = cell.column as Column.Text,
         at = c.offset + cell.at;
       bytes.set(c.bytes.subarray(c.offsets[at], c.offsets[at + 1]), offsets[i]);
     }
@@ -295,7 +290,7 @@ function concatenate(parts: readonly Part[], prototype: Column, length: number):
     if (prototype.kind === 'text') {
       const bytes = new Uint8Array(total);
       for (let i = 0, at = 0; i < parts.length; i++) {
-        const column = parts[i].column as TextColumn,
+        const column = parts[i].column as Column.Text,
           start = column.offset + parts[i].offset,
           run = column.bytes.subarray(
             column.offsets[start],
@@ -336,7 +331,7 @@ function concatenate(parts: readonly Part[], prototype: Column, length: number):
   }
   const size = prototype.kind === 'vector' ? prototype.size : 1,
     scalar = prototype.kind === 'vector' ? prototype.values : prototype;
-  const Constructor = scalar.values.constructor as { new (length: number): NumericArray };
+  const Constructor = scalar.values.constructor as { new (length: number): Column.NumericArray };
   const values = new Constructor(length * size);
   let cursor = 0;
   for (const part of parts) {
@@ -363,7 +358,7 @@ function concatenate(parts: readonly Part[], prototype: Column, length: number):
 }
 
 /** A text column of these values; a null value is absent. */
-export function textColumn(values: readonly (string | null)[]): TextColumn {
+export function textColumn(values: readonly (string | null)[]): Column.Text {
   const encoder = new TextEncoder(),
     encoded = values.map((value) => (value === null ? undefined : encoder.encode(value)));
   const offsets = new Int32Array(values.length + 1);
@@ -407,7 +402,7 @@ export function copyBuffers<T>(value: T): T {
       return result;
     }
     if (isColumnPages(v)) {
-      const result = copyPages(v, (page) => copy(page) as ColumnPage);
+      const result = copyPages(v, (page) => copy(page) as Data.Page);
       seen.set(v, result);
       return result;
     }

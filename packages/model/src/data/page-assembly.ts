@@ -1,7 +1,7 @@
-import { type ColumnPages, appendPages, framesOf } from './pages.js';
-import type { RowAxis } from './data.js';
-import type { ColumnPage } from './materialized.js';
-import { failure } from './error.js';
+import { appendPages, framesOf } from './pages.js';
+import type { Index } from './column.js';
+import type { Data } from './data.js';
+import { failure } from '../failure.js';
 
 interface Tail {
   readonly end: number;
@@ -9,7 +9,7 @@ interface Tail {
 }
 const coordinatesChecked = new WeakSet<Float64Array>();
 type Range = readonly [number, number];
-const rowRanges = new WeakMap<RowAxis, readonly Range[]>();
+const rowRanges = new WeakMap<Index.Rows, readonly Range[]>();
 
 interface Extent extends Tail {
   readonly first: number;
@@ -18,9 +18,9 @@ interface Extent extends Tail {
 
 /** One assembly shares layout validation across aligned columns, never across changed data. */
 export class PageAssembly {
-  private checked?: { pages: readonly ColumnPage[]; extent?: Extent };
+  private checked?: { pages: readonly Data.Page[]; extent?: Extent };
 
-  append(before: ColumnPages, added: readonly ColumnPage[]): ColumnPages {
+  append(before: Data.Pages, added: readonly Data.Page[]): Data.Pages {
     if (!added.length) return before;
     const checked = this.checked;
     const same =
@@ -41,10 +41,10 @@ export class PageAssembly {
   }
 }
 
-function checkPages(added: readonly ColumnPage[]): Extent | undefined {
+function checkPages(added: readonly Data.Page[]): Extent | undefined {
   let extent: Extent | undefined;
   if (added[0].samples) {
-    const groups = new Map<number, { coordinates: Float64Array; rows: RowAxis[] }>();
+    const groups = new Map<number, { coordinates: Float64Array; rows: Index.Rows[] }>();
     for (const page of added) {
       const { firstFrame, coordinates } = page.samples!;
       if (
@@ -88,13 +88,13 @@ function checkPages(added: readonly ColumnPage[]): Extent | undefined {
   return extent;
 }
 
-function sampleTail(pages: ColumnPages): Tail {
+function sampleTail(pages: Data.Pages): Tail {
   const frames = framesOf(pages);
   return { end: frames.end, coordinate: frames.groups.at(-1)?.coordinates.at(-1) ?? -Infinity };
 }
 
 /** Rectangular row tiles and sparse selections must not overwrite the same cells. */
-function checkRows(axes: readonly RowAxis[]): void {
+function checkRows(axes: readonly Index.Rows[]): void {
   // Already ordered dense tiles are the common case. Avoid sorting or allocating
   // a flattened range list unless the incoming physical row order requires it.
   let end = -Infinity;
@@ -119,7 +119,7 @@ function checkRows(axes: readonly RowAxis[]): void {
   }
 }
 
-function rangesOf(axis: RowAxis): readonly Range[] {
+function rangesOf(axis: Index.Rows): readonly Range[] {
   let ranges = rowRanges.get(axis);
   if (ranges) return ranges;
   if (axis.kind === 'range') {

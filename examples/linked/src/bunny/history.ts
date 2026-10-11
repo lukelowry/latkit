@@ -3,9 +3,7 @@ import {
   createData,
   textColumn,
   type Data,
-  type DataBatch,
   type Index,
-  type SampleBatch,
   type Schema,
 } from '@latkit/model';
 import { numeric, samples } from '../shared/columns.js';
@@ -35,7 +33,7 @@ const schema = {
 } as const satisfies Schema;
 
 interface Frame {
-  readonly batches: readonly SampleBatch[];
+  readonly batches: readonly Data.SampleBatch[];
   readonly at: number;
 }
 
@@ -83,7 +81,7 @@ export class History {
         }
       }
     const edges = mesh.edges.length / 2;
-    const batches: DataBatch[] = [
+    const batches: Data.Batch[] = [
       {
         kind: 'rows',
         index: this.index('Vertex'),
@@ -147,7 +145,11 @@ export class History {
       firstFrame = this.frame++,
       coordinates = Float64Array.of(at);
     const field = (i: number) => samples(vertices.subarray(i * n, (i + 1) * n));
-    const sample = (type: string, count: number, columns: SampleBatch['columns']): SampleBatch => ({
+    const sample = (
+      type: string,
+      count: number,
+      columns: Data.SampleBatch['columns'],
+    ): Data.SampleBatch => ({
       kind: 'samples',
       index: this.index(type),
       rows: { kind: 'range', offset: 0, count },

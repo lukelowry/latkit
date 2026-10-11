@@ -7,7 +7,7 @@ import {
   validateBatch,
   validateSelection,
 } from '../src/index.js';
-import type { SampleBatch, Schema } from '../src/index.js';
+import type { Schema, Data } from '../src/index.js';
 const schema: Schema = {
   axis: { name: 'time' },
   types: {
@@ -16,7 +16,7 @@ const schema: Schema = {
     },
   },
 };
-function batch(firstFrame: number, field: string): SampleBatch {
+function batch(firstFrame: number, field: string): Data.SampleBatch {
   return {
     kind: 'samples',
     index: { source: 'test', type: 'Node', version: 'rows' },

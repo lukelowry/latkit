@@ -1,11 +1,4 @@
-import {
-  textColumn,
-  type Column,
-  type FieldDefinition,
-  type RowBatch,
-  type Schema,
-  type TypeDefinition,
-} from '@latkit/model';
+import { textColumn, type Column, type Schema, type Data } from '@latkit/model';
 import { decodeTile, properties, type FeatureSet, type TileLayer } from './mvt.js';
 import { prepareShapes, shapesBuffers, type Shapes } from '../prepare/shapes.js';
 
@@ -40,7 +33,7 @@ export interface VectorLayer {
 export interface VectorTile {
   readonly layers: readonly VectorLayer[];
   readonly schema: Schema;
-  readonly batches: readonly RowBatch[];
+  readonly batches: readonly Data.RowBatch[];
 }
 
 const DEGREE = Math.PI / 180;
@@ -188,8 +181,8 @@ export function decodeVector(request: VectorRequest): {
 } {
   const decoded = new Map(decodeTile(request.bytes).map((layer) => [layer.name, layer])),
     layers: VectorLayer[] = [],
-    types: [string, TypeDefinition][] = [],
-    batches: RowBatch[] = [],
+    types: [string, Schema.Type][] = [],
+    batches: Data.RowBatch[] = [],
     transfer: ArrayBuffer[] = [];
   for (const want of request.layers) {
     const layer = decoded.get(want.name);
@@ -259,7 +252,7 @@ function layerRows(
   sets: readonly FeatureSet[],
   source: string,
   frame: TileFrame,
-): { definition: TypeDefinition; batch: RowBatch; ids?: Float64Array } {
+): { definition: Schema.Type; batch: Data.RowBatch; ids?: Float64Array } {
   const all: Record<string, Value>[] = [],
     numbers: number[] = [];
   for (const set of sets)
@@ -281,7 +274,7 @@ function layerRows(
         before = kinds.get(name);
       kinds.set(name, before === undefined || before === kind ? kind : 'text');
     }
-  const fields: Record<string, FieldDefinition> = {},
+  const fields: Record<string, Schema.Field> = {},
     columns: Record<string, Column> = {};
   for (const [name, kind] of kinds) {
     const validity = new Uint8Array(Math.ceil(all.length / 8));

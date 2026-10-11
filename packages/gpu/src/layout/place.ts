@@ -1,4 +1,4 @@
-import { failure, type FieldValues, type Item, type Work } from '@latkit/model';
+import { failure, type Item, type Work, type FieldInput } from '@latkit/model';
 import type { Graph } from './graph.js';
 import { layered } from './layered.js';
 import { stress } from './stress.js';
@@ -7,12 +7,12 @@ import { stress } from './stress.js';
  * How a view places vertices without a position. Vertices that edges join form a part; each part is
  * arranged alone by `algorithm`, and the parts nothing pins pack into rows below the pinned ones.
  */
-export interface LayoutOptions {
+export interface Layout {
   /**
    * `layered` puts vertices in ranks along the flow; `stress` keeps graph distances, each edge
    * `vertexGap` long. A view defaults to the one that suits it.
    */
-  readonly algorithm?: 'layered' | 'stress' | LayoutStrategy;
+  readonly algorithm?: 'layered' | 'stress' | Layout.Strategy;
   /** `layered`: which way flow runs. Default: `'right'`. */
   readonly direction?: 'right' | 'left' | 'down' | 'up';
   /** Between vertices; `stress`: the length of an edge. */
@@ -24,55 +24,56 @@ export interface LayoutOptions {
   /** Width over height of the rows parts pack into. Default: 16 / 9. */
   readonly aspect?: number;
 }
-/** Where a type's vertices sit, an axis a field: spread into the type's options to keep them. */
-export interface Positions {
-  readonly x: FieldValues;
-  readonly y: FieldValues;
-}
-/** What a vertex stands for: a row, or a diagram group. */
-export type LayoutItem = Item | { readonly kind: 'group'; readonly id: string };
-/** What layout reads beside the graph, each one a column: per vertex, per end, or per edge. */
-export interface LayoutInput {
-  /** Each vertex's top-left corner, two numbers a vertex; NaN where nothing pins it. */
-  readonly pinned: Float64Array;
-  /** Each vertex's width and height; points without. */
-  readonly sizes?: Float32Array;
-  /** Each end: 1 an output, -1 an input, 0 neither, in the order of the graph's ends. */
-  readonly directions?: Int8Array;
-  /** Where each end meets its vertex, from its top-left corner, two numbers an end; NaN its center. */
-  readonly ports?: Float32Array;
-  /** The room each edge's labels take between its ends, two numbers an edge. */
-  readonly labelRooms?: Float32Array;
-  /** Where placed corners and packed parts land: multiples of it; 0 anywhere. */
-  readonly grid?: number;
-  /** What each vertex stands for, for strategies of your own. */
-  readonly item: (vertex: number) => LayoutItem;
-}
-/** One part of a graph, as a strategy arranges it. */
-export interface LayoutPart {
-  readonly graph: Graph;
-  readonly input: LayoutInput;
-  /** Its vertices, by index into the graph, in index order. */
-  readonly vertices: Uint32Array;
-  readonly edges: Uint32Array;
-  /** A vertex's place in `vertices`; -1 outside the part. */
-  indexOf(vertex: number): number;
-  item(vertex: number): LayoutItem;
-}
-export interface LayoutStrategy {
-  /** Each of a part's vertices' top-left corner, two numbers each; pinned ones where they are. */
-  arrange(
-    part: LayoutPart,
-    context: { readonly signal: AbortSignal },
-  ): ArrayLike<number> | Promise<ArrayLike<number>>;
+export declare namespace Layout {
+  interface Strategy {
+    /** Each of a part's vertices' top-left corner, two numbers each; pinned ones where they are. */
+    arrange(
+      part: Part,
+      context: { readonly signal: AbortSignal },
+    ): ArrayLike<number> | Promise<ArrayLike<number>>;
+  }
+  /** One part of a graph, as a strategy arranges it. */
+  interface Part {
+    readonly graph: Graph;
+    readonly input: Input;
+    /** Its vertices, by index into the graph, in index order. */
+    readonly vertices: Uint32Array;
+    readonly edges: Uint32Array;
+    /** A vertex's place in `vertices`; -1 outside the part. */
+    indexOf(vertex: number): number;
+    item(vertex: number): Vertex;
+  }
+  /** What a vertex stands for: a row, or a diagram group. */
+  type Vertex = Item | { readonly kind: 'group'; readonly id: string };
+  /** What layout reads beside the graph, each one a column: per vertex, per end, or per edge. */
+  interface Input {
+    /** Each vertex's top-left corner, two numbers a vertex; NaN where nothing pins it. */
+    readonly pinned: Float64Array;
+    /** Each vertex's width and height; points without. */
+    readonly sizes?: Float32Array;
+    /** Each end: 1 an output, -1 an input, 0 neither, in the order of the graph's ends. */
+    readonly directions?: Int8Array;
+    /** Where each end meets its vertex, from its top-left corner, two numbers an end; NaN its center. */
+    readonly ports?: Float32Array;
+    /** The room each edge's labels take between its ends, two numbers an edge. */
+    readonly labelRooms?: Float32Array;
+    /** Where placed corners and packed parts land: multiples of it; 0 anywhere. */
+    readonly grid?: number;
+    /** What each vertex stands for, for strategies of your own. */
+    readonly item: (vertex: number) => Vertex;
+  }
+  /** Where a type's vertices sit, an axis a field: spread into the type's options to keep them. */
+  interface Positions {
+    readonly x: FieldInput.Values;
+    readonly y: FieldInput.Values;
+  }
 }
 const DIRECTIONS = ['right', 'left', 'down', 'up'];
 /** Layout options over a view's defaults, checked. */
 export function layoutOptions(
-  layout: LayoutOptions = {},
-  defaults: Required<Omit<LayoutOptions, 'direction' | 'sweeps' | 'aspect'>> &
-    Partial<LayoutOptions>,
-): Required<LayoutOptions> {
+  layout: Layout = {},
+  defaults: Required<Omit<Layout, 'direction' | 'sweeps' | 'aspect'>> & Partial<Layout>,
+): Required<Layout> {
   if (typeof layout !== 'object' || layout === null)
     throw failure('invalid-input', 'Invalid layout options');
   const result = {
@@ -107,8 +108,8 @@ export function layoutOptions(
  */
 export async function place(
   graph: Graph,
-  input: LayoutInput,
-  layout: Required<LayoutOptions>,
+  input: Layout.Input,
+  layout: Required<Layout>,
   work: Work,
 ): Promise<Float64Array> {
   work.check();
@@ -193,7 +194,7 @@ function pack(
   sizes: Float32Array | undefined,
   loose: readonly number[],
   anchored: number[] | null,
-  layout: Required<LayoutOptions>,
+  layout: Required<Layout>,
   snap: (value: number) => number,
 ): void {
   if (!loose.length) return;

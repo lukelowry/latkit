@@ -10,7 +10,7 @@ import {
   validateSchema,
   type Data,
   type Query,
-  type QueryBlock,
+  type Block,
 } from '@latkit/model';
 import { geojson } from '@latkit/geography';
 import { readCase } from '../src/earth/cases.js';
@@ -22,16 +22,16 @@ const file = (name: string) => {
   const bytes = gunzipSync(readFileSync(new URL(`../public/grids/${name}`, import.meta.url)));
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 };
-async function blocks(data: Data, query: Query): Promise<QueryBlock[]> {
+async function blocks(data: Data, query: Query): Promise<Block[]> {
   expect(validateSchema(data.schema)).toEqual([]);
-  const found: QueryBlock[] = [];
+  const found: Block[] = [];
   for await (const block of read(data, query)) {
     expect(validateBlock(data.schema, query, block)).toEqual([]);
     found.push(block);
   }
   return found;
 }
-const counted = (found: QueryBlock[]) =>
+const counted = (found: Block[]) =>
   found.reduce((sum, b) => sum + (b.kind === 'rows' ? rowCount(b.rows) : 0), 0);
 
 it.each(['wecc240', 'activsg2000', 'activsg10k', 'activsg25k', 'activsg70k'])(

@@ -12,7 +12,7 @@ import {
   type RGBA,
 } from '@latkit/gpu';
 import { createData, type Data } from '@latkit/model';
-import type { EdgeOptions, VertexOptions } from '@latkit/network';
+import type { Network } from '@latkit/network';
 import { LEVELS, loadCase, type GridCase } from './cases.js';
 import { lattice } from './lattice.js';
 import type { Progress } from './download.js';
@@ -130,8 +130,8 @@ export function gridOptions(
   grid: Grid,
   look: Look,
 ): {
-  vertices: Record<string, VertexOptions>;
-  edges: Record<string, EdgeOptions>;
+  vertices: Record<string, Network.VertexOptions>;
+  edges: Record<string, Network.EdgeOptions>;
   edgeWidthPx: number;
 } {
   const big = grid.buses > 20000;
@@ -158,7 +158,7 @@ export function gridOptions(
             domain: [0, Math.max(1, grid.peaks[look.color])] as const,
             colormap: BUS_COLORS[look.color].colormap,
           };
-  const vertices: Record<string, VertexOptions> = {
+  const vertices: Record<string, Network.VertexOptions> = {
     Bus: {
       ...POSITION,
       color,

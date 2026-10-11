@@ -1,8 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { Work } from '@latkit/model';
-import { Graph, layoutOptions, place, type LayoutInput } from '../src/kit.js';
-import type { LayoutOptions } from '../src/index.js';
-
+import { Graph, layoutOptions, place } from '../src/kit.js';
+import type { Layout } from '../src/index.js';
 /** A graph from edges as vertex lists. */
 function graph(count: number, edges: readonly (readonly number[])[]): Graph {
   const offsets = new Uint32Array(edges.length + 1);
@@ -20,14 +19,14 @@ function lattice(w: number, h: number): Graph {
   return graph(w * h, edges);
 }
 const free = (count: number) => new Float64Array(count * 2).fill(NaN);
-const input = (pinned: Float64Array, extra: Partial<LayoutInput> = {}): LayoutInput => ({
+const input = (pinned: Float64Array, extra: Partial<Layout.Input> = {}): Layout.Input => ({
   pinned,
   item: (vertex) => ({ kind: 'group', id: String(vertex) }),
   ...extra,
 });
-const options = (layout: LayoutOptions = {}) =>
+const options = (layout: Layout = {}) =>
   layoutOptions(layout, { algorithm: 'stress', vertexGap: 1, rankGap: 3 });
-const run = (g: Graph, i: LayoutInput, layout?: LayoutOptions) =>
+const run = (g: Graph, i: Layout.Input, layout?: Layout) =>
   place(g, i, options(layout), new Work(new AbortController().signal));
 /** Each edge's length. */
 function lengths(g: Graph, at: Float64Array): number[] {
@@ -176,5 +175,5 @@ it('rejects invalid layout options', () => {
     { direction: 'sideways' },
     { algorithm: 'manual' },
   ])
-    expect(() => options(layout as LayoutOptions)).toThrow();
+    expect(() => options(layout as Layout)).toThrow();
 });

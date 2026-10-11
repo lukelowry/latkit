@@ -65,7 +65,7 @@ fn spacing(px: f32) -> f32 {
   }
   var color = vec4f(u.surface.rgb * lightAt(relative), u.surface.a);
   if (u.graticule.a > 0.0) {
-    let step = spacing(64.0);
+    let step = spacing(u.grid.x);
     let lines = relative / step;
     let width = max(fwidth(lines), vec2f(0.000001));
     let near = abs(fract((relative + q.center.xy) / step - 0.5) - 0.5) / width;

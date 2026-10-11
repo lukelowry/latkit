@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/prefer-promise-reject-errors -- Preserve native AbortSignal reasons. */
-import { failure } from './error.js';
+import { failure } from './failure.js';
 
 /** Stop waiting on cancellation while still observing the work's outcome. */
 export function interruptible<T>(promise: PromiseLike<T>, signal: AbortSignal): Promise<T> {
@@ -34,16 +34,11 @@ interface Scheduler {
   ) => Promise<void>;
 }
 /**
- * How work shares the page: `foreground` work someone waits on resumes ahead of other queued tasks;
- * `background` work resumes after them, so a frame waiting on the GPU never waits on it.
- */
-export type WorkPriority = 'foreground' | 'background';
-/**
  * Let other tasks run, then continue. In the foreground, `scheduler.yield()` resumes ahead of other
  * queued tasks and without the timer clamp nested timeouts get; in the background,
  * `scheduler.postTask` resumes behind them. Elsewhere this waits for a timeout.
  */
-export function yieldTask(priority: WorkPriority = 'foreground'): Promise<void> {
+export function yieldTask(priority: Work.Priority = 'foreground'): Promise<void> {
   const scheduler = (globalThis as { readonly scheduler?: Scheduler }).scheduler;
   if (priority === 'background' && scheduler?.postTask)
     return scheduler.postTask(() => {}, { priority: 'background' });
@@ -59,7 +54,7 @@ export class Work {
     readonly signal: AbortSignal,
     private readonly limitMs = Infinity,
     private readonly sliceMs = 8,
-    private readonly priority: WorkPriority = 'foreground',
+    private readonly priority: Work.Priority = 'foreground',
   ) {
     this.#nextYield = this.#started + sliceMs;
   }
@@ -81,4 +76,11 @@ export class Work {
   wait<T>(task: PromiseLike<T>): Promise<T> {
     return interruptible(task, this.signal);
   }
+}
+export declare namespace Work {
+  /**
+   * How work shares the page: `foreground` work someone waits on resumes ahead of other queued
+   * tasks; `background` work resumes after them, so a frame waiting on the GPU never waits on it.
+   */
+  type Priority = 'foreground' | 'background';
 }

@@ -10,11 +10,9 @@ import {
   validateBlock,
   rowCount,
   type Data,
-  type EnvelopeBlock,
-  type EnvelopeQuery,
-  type FieldsBlock,
-  type NumericColumn,
-  type SampleColumn,
+  type Block,
+  type Query,
+  type Column,
 } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { resolveScale, scaleValue, type GpuPage } from '../src/kit.js';
@@ -23,7 +21,7 @@ import { fakeDevice } from './fixtures/device.js';
 import { field } from './fixtures/fields.js';
 import { draw } from './fixtures/render.js';
 import { HistorySource } from './fixtures/history.js';
-const query: EnvelopeQuery = {
+const query: Query.Envelope = {
   kind: 'envelope',
   from: 'node',
   select: ['value'],
@@ -57,7 +55,7 @@ it('reads text without GPU allocation and decodes the requested sliced cell only
 it('keeps sampled strides/native backing and broadcasts static columns without expanding them', async () => {
   const source = new HistorySource(),
     gpu = await createGpu({ device: fakeDevice().device });
-  const native: FieldsBlock[] = [],
+  const native: Block.Fields[] = [],
     pages: GpuPage[] = [];
   await draw(gpu, async (frame) => {
     for await (const tile of frame.reader.fields({
@@ -68,15 +66,15 @@ it('keeps sampled strides/native backing and broadcasts static columns without e
     })) {
       native.push(tile);
       pages.push(...frame.upload(tile, { select: ['value', 'weight'], float64: 'relative' }));
-      expect((tile.columns.value as NumericColumn).values.buffer).toBe(source.values.buffer);
-      expect(sampleAt(tile.columns.value as SampleColumn, 1, 1)).toBeNull();
-      expect(numberAt(tile.columns.weight as NumericColumn, 1)).toBe(11);
+      expect((tile.columns.value as Column.Numeric).values.buffer).toBe(source.values.buffer);
+      expect(sampleAt(tile.columns.value as Column.Sample, 1, 1)).toBeNull();
+      expect(numberAt(tile.columns.weight as Column.Numeric, 1)).toBe(11);
     }
   });
   expect(native).toHaveLength(1);
   expect(pages[0].samples?.firstFrame).toBe(source.firstFrame);
   expect(field(pages[0], 'weight').frameStride).toBe(0);
-  expect((native[0].columns.weight as NumericColumn).values.length).toBe(2);
+  expect((native[0].columns.weight as Column.Numeric).values.length).toBe(2);
   gpu.destroy();
 });
 it('rejects incompatible observation coordinates rather than silently resampling bindings', async () => {
@@ -100,7 +98,7 @@ it('reduces unsorted native tiles to exact extrema identities, preserves gaps, a
   const source = new HistorySource();
   source.reverseFrames = true;
   const gpu = await createGpu({ device: fakeDevice().device, validate: true });
-  let result!: EnvelopeBlock, page!: GpuPage;
+  let result!: Block.Envelope, page!: GpuPage;
   await draw(gpu, async (frame) => {
     for await (const block of frame.reader.read(source.data, query)) {
       result = block;

@@ -4,11 +4,10 @@ import {
   createComposition,
   createGpu,
   type Gpu,
-  type ItemEvents,
-  type ItemViewConfig,
-  type ColorChannel,
   type Point,
   type Viewport,
+  type ItemView,
+  type Channel,
 } from '../src/index.js';
 import {
   BaseItemView,
@@ -31,10 +30,10 @@ interface Dot {
 interface DotHit extends Dot {
   readonly distance: number;
 }
-interface DotConfig extends ItemViewConfig {
+interface DotConfig extends ItemView.Config {
   readonly source: Data;
   readonly dots: Readonly<Record<string, readonly [number, number]>>;
-  readonly marks?: Readonly<Record<string, { readonly color?: ColorChannel }>>;
+  readonly marks?: Readonly<Record<string, { readonly color?: Channel.Color }>>;
   readonly camera?: Partial<Plane>;
 }
 const source = { schema: { tables: {} }, tables: {} } as unknown as Data;
@@ -45,7 +44,7 @@ class Dots extends BaseItemView<
   Dot,
   DotHit,
   Plane,
-  ItemEvents<Dot, DotHit, Plane>,
+  ItemView.Events<Dot, DotHit, Plane>,
   DotConfig,
   void,
   null,

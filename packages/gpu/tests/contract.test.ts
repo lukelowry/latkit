@@ -35,7 +35,6 @@ describe('public contract and allocation boundaries', () => {
         'gauge',
         'pie',
         'icon',
-        'viewStyle',
         'kit',
       ].sort(),
     );
@@ -43,8 +42,14 @@ describe('public contract and allocation boundaries', () => {
       [
         'BaseView',
         'BaseItemView',
+        'ProjectedView',
         'resolveLimits',
+        'resolveStyle',
         'resolveViewStyle',
+        'viewStyle',
+        'lineStyle',
+        'projectedStyle',
+        'Feedback',
         'Attachments',
         'rendererOf',
         'gpuOf',
@@ -120,7 +125,7 @@ describe('public contract and allocation boundaries', () => {
     expect(() => model.rowCount({ kind: 'range', offset: 0xffffffff, count: 2 })).toThrow();
   });
 
-  it('keeps working buffers and textures in the same managed budget', async () => {
+  it('counts working buffers and textures in one budget, which runs over rather than refuse', async () => {
     const fake = fakeDevice(),
       gpu = await api.createGpu({ device: fake.device, budget: { gpuBytes: 1024 } });
     const data = gpu.buffer({ size: 512, usage: GPUBufferUsage.STORAGE });
@@ -130,11 +135,12 @@ describe('public contract and allocation boundaries', () => {
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
     expect(gpu.stats().gpuBytes).toBe(768);
-    expect(codeOf(() => gpu.buffer({ size: 512, usage: GPUBufferUsage.STORAGE }))).toBe(
-      'resource-limit',
-    );
+    // What is in use is never refused: past the budget, the pool runs over until it is let go.
+    const more = gpu.buffer({ size: 512, usage: GPUBufferUsage.STORAGE });
+    expect(gpu.stats().gpuBytes).toBe(1280);
     data.destroy();
     texture.destroy();
+    more.destroy();
     expect(gpu.stats().gpuBytes).toBe(0);
     gpu.destroy();
   });

@@ -1,12 +1,11 @@
-import { blockBuffers, blockByteLength } from '../buffers.js';
-import type { Query, QueryBlock, QueryOptions } from '../query.js';
-import type { Schema } from '../schema.js';
-import type { Problem } from '../types.js';
+import { blockBuffers, blockByteLength } from '../data/buffers.js';
+import type { Query, Block } from '../query/query.js';
+import type { Schema } from '../schema/schema.js';
 import { Check, index, own, record } from './check.js';
 import { bytes, column, identities } from './column.js';
 import { fieldsOf } from './query.js';
 import { rowAxis } from './axis.js';
-
+import type { Failure } from '../failure.js';
 /**
  * Validate one block against a previously validated schema/request. Does not prove exclusive
  * ownership, row existence, stream completeness, or cross-block coherence; those need source tests.
@@ -16,8 +15,8 @@ export function validateBlock(
   schema: Schema,
   query: Query,
   value: unknown,
-  options: QueryOptions = {},
-): readonly Problem[] {
+  options: Query.Options = {},
+): readonly Failure.Problem[] {
   const c = new Check();
   const block = c.object(value, []);
   if (block.kind !== query.kind) {
@@ -30,9 +29,9 @@ export function validateBlock(
     c.enum(options.buffers, ['borrowed', 'owned'], ['options', 'buffers']);
   if (c.issues.length) return c.issues;
   const bound = options.maxBlockBytes ?? Infinity;
-  const allocations = blockBuffers(value as QueryBlock);
+  const allocations = blockBuffers(value as Block);
   if (
-    blockByteLength(value as QueryBlock) > bound ||
+    blockByteLength(value as Block) > bound ||
     (options.buffers === 'owned' &&
       allocations.reduce((sum, buffer) => sum + buffer.byteLength, 0) > bound)
   ) {

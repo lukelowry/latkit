@@ -49,7 +49,7 @@ function usage() {
     { url: 'http://localhost' },
   );
 }
-function relay(accepted: ConnectedModel, socket: api.WebSocketLike) {
+function relay(accepted: ConnectedModel, socket: api.Connection.Socket) {
   // An accepted model is a Model, served onward as it is.
   expectTypeOf(accepted).toExtend<Model>();
   return api.connectModel(accepted, { socket });

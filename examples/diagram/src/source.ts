@@ -1,14 +1,7 @@
-import {
-  createData,
-  textColumn,
-  type Data,
-  type DataBatch,
-  type Column,
-  type NumericColumn,
-} from '@latkit/model';
-import type { DiagramRow } from '@latkit/diagram';
+import { createData, textColumn, type Data, type Column } from '@latkit/model';
+import type { Diagram } from '@latkit/diagram';
 import { ports, schema, types, type Graph, type Block, type Wire } from './graph.js';
-const numeric = (values: readonly number[], double = false): NumericColumn => ({
+const numeric = (values: readonly number[], double = false): Column.Numeric => ({
   kind: 'numeric',
   offset: 0,
   length: values.length,
@@ -56,7 +49,7 @@ export class GraphSource {
     this.data = this.materialize();
   }
   /** The diagram item of a block or wire id in the current data. */
-  item(id: string): DiagramRow | undefined {
+  item(id: string): Diagram.Row | undefined {
     const block = this.graph.blocks.find((candidate) => candidate.id === id);
     if (block) {
       const row = this.graph.blocks.filter((b) => b.type === block.type).indexOf(block);
@@ -69,7 +62,7 @@ export class GraphSource {
   }
   private materialize(): Data {
     const wires = new Map(this.graph.wires.map((wire, row) => [wire.id, row]));
-    const batches: DataBatch[] = [];
+    const batches: Data.Batch[] = [];
     for (const [type, definition] of Object.entries(schema.types)) {
       const rows =
         type === 'Signal'

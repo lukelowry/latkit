@@ -65,6 +65,15 @@ A line follows its coordinates in longitude and latitude: a border along a paral
 as a network's edges do. A text is named once in view unless `repeatSpacingPx` says how far apart
 it may repeat.
 
+## Camera
+
+```ts
+geography.set({ camera: { projection: 'globe', orbit: true } });
+```
+
+Drag pans, and right- or Shift-drag turns, as a network's camera does. A geography starts on the
+mercator plane and fits looking straight down.
+
 ## Style
 
 ```ts
@@ -73,8 +82,9 @@ geography.set({ daylight: 'now', graticule: true, earthAxis: true });
 
 `surfaceColor`, `graticuleColor`, `atmosphereColor`, and `earthAxisColor` color the ground and what
 draws on it. `areaColor`, `lineColor`, and `lineWidthPx` stand in for rows without their own;
-`flowColor` and `flowSpacingPx` shape comets. `daylight` lights the scene by the sun at a time;
-`nightFloor` and `terminatorWidth` shape the night.
+`graticuleSpacingPx` sets how close the graticule's lines draw. `daylight` lights the scene by the
+sun at a time; `nightFloor` and `terminatorWidth` shape the night. Dashes, comets, fitting,
+orbiting, and label halos take the options every [view](views.md#style) shares.
 
 ## Limits
 

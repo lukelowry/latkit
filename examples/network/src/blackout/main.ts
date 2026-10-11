@@ -8,7 +8,7 @@
 import './style.css';
 import { createColormap, createGpu, parseColor, pulse, type Marker, type RGBA } from '@latkit/gpu';
 import { createData, textColumn, type Data, type Index, type Schema } from '@latkit/model';
-import { createNetwork, type NetworkConfig } from '@latkit/network';
+import { createNetwork, type Network } from '@latkit/network';
 import { createGeography, type Geography } from '@latkit/geography';
 import { lists, numeric, references, rows, vector } from '../shared/columns.js';
 import texas from './texas.json';
@@ -209,7 +209,7 @@ function framing() {
 }
 const flowPx = (speed: number) =>
   ({ field: 'flow', domain: [-1, 1], range: [-speed, speed] }) as const;
-function config(source: Data, geography: Geography): NetworkConfig {
+function config(source: Data, geography: Geography): Network.Config {
   const { camera, spacing, speed } = framing();
   return {
     canvas,
@@ -222,7 +222,7 @@ function config(source: Data, geography: Geography): NetworkConfig {
     selectedColor: rgba(THEME.hover),
     animationMs: 450,
     // Trips and branches far past their rating pulse red.
-    shade: pulse({ periodMs: 900, strength: 0.6, color: [1, 0.1, 0.08] }),
+    shade: pulse({ periodMs: 900, color: [1, 0.1, 0.08, 0.6] }),
     shadows: true,
     labelHaloPx: 3,
     edgeWidthPx: 2.5,

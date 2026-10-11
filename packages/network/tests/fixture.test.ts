@@ -1,12 +1,12 @@
 import { rowAt, rowCount } from '@latkit/model';
 import { expect, it } from 'vitest';
-import type { NumericColumn, RowsBlock } from '@latkit/model';
+import type { Column, Block } from '@latkit/model';
 import { GraphSource } from './fixture.js';
 
 it('publishes stable native recording axes with double-precision positions', async () => {
   const source = new GraphSource(25, 3);
   const read = async (at: number) => {
-    const blocks: RowsBlock[] = [];
+    const blocks: Block.Rows[] = [];
     for await (const block of source.query({
       kind: 'rows',
       from: 'node',
@@ -20,8 +20,8 @@ it('publishes stable native recording axes with double-precision positions', asy
   const a = await read(0),
     b = await read(5),
     repeated = await read(0);
-  const values = (block: RowsBlock, field: string) =>
-    (block.columns[field] as NumericColumn).values;
+  const values = (block: Block.Rows, field: string) =>
+    (block.columns[field] as Column.Numeric).values;
   expect(
     a.flatMap((block) =>
       Array.from({ length: rowCount(block.rows) }, (_, i) => rowAt(block.rows, i)),

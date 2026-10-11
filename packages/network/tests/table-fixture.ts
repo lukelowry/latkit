@@ -1,5 +1,5 @@
 import { createData, read, type Data } from '@latkit/model';
-import type { Column, Query, QueryOptions, Schema, Index } from '@latkit/model';
+import type { Column, Query, Schema, Index } from '@latkit/model';
 
 /** Immutable application data used by unit tests and the headed browser check. */
 export class TableSource {
@@ -9,7 +9,7 @@ export class TableSource {
     readonly tables: Readonly<Record<string, Readonly<Record<string, Column>>>>,
     readonly blockRows = 256,
   ) {
-    const type = (column: Column): import('@latkit/model').DataType => {
+    const type = (column: Column): import('@latkit/model').Schema.FieldType => {
       if (column.kind === 'list') return { kind: 'list', items: type(column.values) };
       if (column.kind === 'vector')
         return {
@@ -57,12 +57,12 @@ export class TableSource {
       })),
     ));
   }
-  query<Q extends Query>(query: Q, options?: QueryOptions) {
+  query<Q extends Query>(query: Q, options?: Query.Options) {
     return read(this.data, query, options);
   }
 }
 
-export function vectors(values: readonly number[]): import('@latkit/model').VectorColumn {
+export function vectors(values: readonly number[]): import('@latkit/model').Column.Vector {
   const data = Float64Array.from(values);
   return {
     kind: 'vector',
@@ -72,7 +72,7 @@ export function vectors(values: readonly number[]): import('@latkit/model').Vect
     values: { kind: 'numeric', offset: 0, length: data.length, values: data },
   };
 }
-export function lists(paths: readonly (readonly number[])[]): import('@latkit/model').ListColumn {
+export function lists(paths: readonly (readonly number[])[]): import('@latkit/model').Column.List {
   const offsets = new Int32Array(paths.length + 1);
   for (let i = 0; i < paths.length; i++) offsets[i + 1] = offsets[i] + paths[i].length / 2;
   return {
@@ -83,7 +83,7 @@ export function lists(paths: readonly (readonly number[])[]): import('@latkit/mo
     values: vectors(paths.flatMap((p) => [...p])),
   };
 }
-export function strings(values: readonly string[]): import('@latkit/model').TextColumn {
+export function strings(values: readonly string[]): import('@latkit/model').Column.Text {
   const encoded = values.map((v) => new TextEncoder().encode(v)),
     offsets = new Int32Array(values.length + 1);
   for (let i = 0; i < encoded.length; i++) offsets[i + 1] = offsets[i] + encoded[i].length;
@@ -94,7 +94,7 @@ export function strings(values: readonly string[]): import('@latkit/model').Text
 export function references(
   type: string,
   rows: readonly number[],
-): import('@latkit/model').ReferenceColumn {
+): import('@latkit/model').Column.Reference {
   return {
     kind: 'reference',
     index: { source: 'table-fixture', type, version: 'rows-1' },

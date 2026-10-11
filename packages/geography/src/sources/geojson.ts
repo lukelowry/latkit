@@ -1,29 +1,6 @@
 import { failure, textColumn } from '@latkit/model';
-import type {
-  BooleanColumn,
-  Column,
-  DataType,
-  FieldDefinition,
-  ListColumn,
-  NumericColumn,
-  RowBatch,
-  Schema,
-  TextColumn,
-  TypeDefinition,
-  VectorColumn,
-} from '@latkit/model';
-
-export interface GeoJsonOptions {
-  /** The type features become: one name for all, or a name per feature from its properties. 'Feature' by default. */
-  readonly type?: string | ((properties: Readonly<Record<string, unknown>>) => string);
-  /** A property holding each feature's id; the feature's own `id`, else its type and place, by default. */
-  readonly id?: string;
-  /** The Index source name rows are numbered under; a fresh one by default. */
-  readonly source?: string;
-  /** Stops reading and parsing; the promise rejects. */
-  readonly signal?: AbortSignal;
-}
-
+import type { Column, Schema, Data } from '@latkit/model';
+import type { Geography } from '../geography.js';
 type Properties = Readonly<Record<string, unknown>>;
 /** Longitude, latitude, and any altitude, which is ignored. */
 type Position = readonly number[];
@@ -38,13 +15,13 @@ interface Feature {
 /** A field of a type: its definition and its column. */
 interface Field {
   readonly name: string;
-  readonly definition: FieldDefinition;
+  readonly definition: Schema.Field;
   readonly column: Column;
 }
 
-const POSITION: DataType = { kind: 'vector', items: 'float64', size: 2 };
+const POSITION: Schema.FieldType = { kind: 'vector', items: 'float64', size: 2 };
 /** Each row's rings or polylines: lists of positions. */
-const PATHS: DataType = { kind: 'list', items: { kind: 'list', items: POSITION } };
+const PATHS: Schema.FieldType = { kind: 'list', items: { kind: 'list', items: POSITION } };
 /** Names shape fields take; a property of the same name is skipped. */
 const SHAPE_NAMES = new Set(['rings', 'points', 'position']);
 const GEOMETRY_TYPES = new Set([
@@ -62,11 +39,11 @@ const MAX_OFFSET = 0x7fffffff;
 /** The schema and row batches GeoJSON describes, as plain columns any thread can build and transfer. */
 export function geojsonBatches(
   value: unknown,
-  options: GeoJsonOptions = {},
-): { readonly schema: Schema; readonly batches: readonly RowBatch[] } {
+  options: Geography.GeoJsonOptions = {},
+): { readonly schema: Schema; readonly batches: readonly Data.RowBatch[] } {
   const source = options.source ?? crypto.randomUUID();
-  const types: [string, TypeDefinition][] = [];
-  const batches: RowBatch[] = [];
+  const types: [string, Schema.Type][] = [];
+  const batches: Data.RowBatch[] = [];
   for (const [type, features] of byType(featuresOf(value), options.type)) {
     const fields = [...shapeFields(features), ...propertyFields(features)];
     types.push([type, { fields: Object.fromEntries(fields.map((f) => [f.name, f.definition])) }]);
@@ -115,7 +92,7 @@ function featureOf(value: unknown, at: number): Feature {
 /** Features grouped by the type each becomes, in order of first appearance. */
 function byType(
   features: readonly Feature[],
-  type: GeoJsonOptions['type'] = 'Feature',
+  type: Geography.GeoJsonOptions['type'] = 'Feature',
 ): Map<string, Feature[]> {
   const types = new Map<string, Feature[]>();
   for (const feature of features) {
@@ -364,7 +341,7 @@ class ShapeWriter implements Shapes {
   }
 }
 
-function shapeField(name: string, type: DataType, column: Column): Field {
+function shapeField(name: string, type: Schema.FieldType, column: Column): Field {
   return {
     name,
     definition: { type, geographic: true, ...(column.validity ? { nullable: true } : {}) },
@@ -409,9 +386,9 @@ class PathsColumn {
     if (this.#validity && this.#paths > this.#rows[row]) setBit(this.#validity, row);
   }
 
-  column(): ListColumn {
+  column(): Column.List {
     const points = this.#values.length / 2;
-    const paths: ListColumn = {
+    const paths: Column.List = {
       kind: 'list',
       offset: 0,
       length: this.#offsets.length - 1,
@@ -458,7 +435,7 @@ class PositionColumn {
     this.#placed = false;
   }
 
-  column(): VectorColumn {
+  column(): Column.Vector {
     const values = this.#values;
     return {
       kind: 'vector',
@@ -529,7 +506,7 @@ function numberColumn(
   features: readonly Feature[],
   name: string,
   validity: Uint8Array | undefined,
-): NumericColumn {
+): Column.Numeric {
   const values = new Float64Array(features.length);
   for (let i = 0; i < features.length; i++) {
     const value = valueOf(features[i].properties, name);
@@ -550,7 +527,7 @@ function booleanColumn(
   features: readonly Feature[],
   name: string,
   validity: Uint8Array | undefined,
-): BooleanColumn {
+): Column.Boolean {
   const values = new Uint8Array(Math.ceil(features.length / 8));
   for (let i = 0; i < features.length; i++) {
     const value = valueOf(features[i].properties, name);
@@ -591,7 +568,7 @@ function idsOf(
   type: string,
   features: readonly Feature[],
   property: string | undefined,
-): TextColumn {
+): Column.Text {
   const taken = new Set<string>();
   const next = new Map<string, number>();
   return textColumn(

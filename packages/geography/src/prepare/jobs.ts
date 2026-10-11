@@ -1,5 +1,6 @@
-import { failure, type Column, type RowBatch, type Schema } from '@latkit/model';
-import { geojsonBatches, type GeoJsonOptions } from '../sources/geojson.js';
+import { failure, type Column, type Schema, type Data } from '@latkit/model';
+import { geojsonBatches } from '../sources/geojson.js';
+import type { Geography } from '../geography.js';
 import { decodeVector, type VectorRequest, type VectorTile } from '../sources/vector.js';
 import { prepareShapes, shapesBuffers, type Shapes, type ShapesInput } from './shapes.js';
 
@@ -11,13 +12,15 @@ export type Job =
       readonly kind: 'geojson';
       readonly text?: string;
       readonly bytes?: Uint8Array;
-      readonly options: Pick<GeoJsonOptions, 'id' | 'source'> & { readonly type?: string };
+      readonly options: Pick<Geography.GeoJsonOptions, 'id' | 'source'> & {
+        readonly type?: string;
+      };
     };
 /** What each job returns. */
 export interface JobResults {
   readonly shapes: Shapes;
   readonly vector: VectorTile;
-  readonly geojson: { readonly schema: Schema; readonly batches: readonly RowBatch[] };
+  readonly geojson: { readonly schema: Schema; readonly batches: readonly Data.RowBatch[] };
 }
 
 /** GeoJSON text, parsed. */
@@ -41,7 +44,7 @@ function columnBuffers(column: Column | undefined, out: Set<ArrayBuffer>): void 
   } else if (column.kind === 'vector') columnBuffers(column.values, out);
   else out.add(column.values.buffer as ArrayBuffer);
 }
-function batchBuffers(batches: readonly RowBatch[], out: Set<ArrayBuffer>): void {
+function batchBuffers(batches: readonly Data.RowBatch[], out: Set<ArrayBuffer>): void {
   for (const batch of batches) {
     columnBuffers(batch.ids, out);
     for (const column of Object.values(batch.columns ?? {})) columnBuffers(column, out);

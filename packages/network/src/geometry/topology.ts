@@ -5,19 +5,17 @@ import {
   assertIndex,
   type Column,
   type Index,
-  type ReferenceColumn,
-  type RowAxis,
   type Schema,
   type Data,
   type FieldInput,
-  type ReadScope,
+  type Reader,
 } from '@latkit/model';
-import { kit, type Projection } from '@latkit/gpu';
-import type { NetworkData, VertexOptions, EdgeOptions } from '../data.js';
+import { kit, type ProjectedCamera } from '@latkit/gpu';
+import type { NetworkData } from '../data.js';
 import { channels, VERTEX } from '../rendering/fields.js';
 import { Adjacency } from './adjacency.js';
 import { RowLookup, indexKey } from './rows.js';
-
+import type { Network } from '../network.js';
 /** Rows per bank. A power of two, so a type's dense address splits into bank and offset by shifts. */
 export const BANK_ROWS = 16384;
 const BANK_SHIFT = 14;
@@ -25,11 +23,11 @@ export interface VertexBank {
   readonly id: number;
   readonly type: string;
   readonly index: Index;
-  readonly rows: RowAxis;
+  readonly rows: Index.Rows;
   readonly count: number;
   readonly base: number;
   /** An edge's private bends and junctions: they share field upload and projection, but are never model vertices. */
-  readonly synthetic?: VertexOptions;
+  readonly synthetic?: Network.VertexOptions;
 }
 export interface SegmentBatch {
   readonly a: VertexBank;
@@ -48,7 +46,7 @@ export interface EdgeBank {
   readonly base: number;
   readonly type: string;
   readonly index: Index;
-  readonly rows: RowAxis;
+  readonly rows: Index.Rows;
   readonly count: number;
   readonly batches: readonly SegmentBatch[];
   /** Each row's vertices as dense addresses, compressed by row. */
@@ -70,18 +68,6 @@ export interface Geometry {
   readonly adjacency: Adjacency;
   readonly native?: Geometry;
 }
-export interface Limits {
-  /** Drawn vertices, including edges' bends and junctions. */
-  readonly vertices?: number;
-  /** Logical stroke segments before adaptive GPU tessellation. */
-  readonly segments?: number;
-  /** CPU memory for topology and routes. */
-  readonly geometryBytes?: number;
-  /** CPU memory for hit-test indexes; hover and pick fall back to scans past it. */
-  readonly pickingBytes?: number;
-  /** Time to place vertices without a position, in milliseconds. */
-  readonly layoutMs?: number;
-}
 export const DEFAULT_LIMITS = Object.freeze({
   vertices: 2_000_000,
   segments: 8_000_000,
@@ -89,17 +75,17 @@ export const DEFAULT_LIMITS = Object.freeze({
   pickingBytes: 64 * 1024 ** 2,
   layoutMs: 30000,
 });
-export function vertexOptions(data: NetworkData, bank: VertexBank): VertexOptions {
+export function vertexOptions(data: NetworkData, bank: VertexBank): Network.VertexOptions {
   return bank.synthetic ?? data.vertices[bank.type];
 }
-export function edgeOptions(data: NetworkData, bank: EdgeBank): EdgeOptions {
+export function edgeOptions(data: NetworkData, bank: EdgeBank): Network.EdgeOptions {
   return data.edges![bank.type];
 }
 /** The route a bank's edges take at a projection: their own, or the shortest way. */
 export function routeOf(
   data: NetworkData,
   bank: EdgeBank,
-  projection: Projection,
+  projection: ProjectedCamera.Projection,
 ): 'straight' | 'geodesic' {
   return edgeOptions(data, bank).route ?? (projection === 'globe' ? 'geodesic' : 'straight');
 }
@@ -107,7 +93,7 @@ export function routeOf(
 export function curvedAt(
   data: NetworkData,
   bank: EdgeBank,
-  projection: Projection,
+  projection: ProjectedCamera.Projection,
   geographic: boolean,
 ): boolean {
   return geographic && (projection === 'globe' || routeOf(data, bank, projection) === 'geodesic');
@@ -175,7 +161,7 @@ function geographic(
 export function placement(
   source: Data,
   type: string,
-  options: VertexOptions,
+  options: Network.VertexOptions,
 ): 'free' | 'plane' | 'geographic' {
   const { x, y } = channels(options, VERTEX).channels;
   if ([x, y].every((axis) => axis.field === undefined && axis.constant === undefined))
@@ -183,7 +169,7 @@ export function placement(
   return geographic(source, type, [x.field, y.field]) ? 'geographic' : 'plane';
 }
 /** A contiguous run as a range, so ranged reads and lookups never allocate index arrays. */
-function axis(rows: Uint32Array): RowAxis {
+function axis(rows: Uint32Array): Index.Rows {
   const n = rows.length;
   if (!n) return { kind: 'range', offset: 0, count: 0 };
   for (let i = 1; i < n; i++) if (rows[i] !== rows[0] + i) return { kind: 'indices', values: rows };
@@ -229,7 +215,7 @@ interface Drawn {
   readonly addresses: Addresses;
 }
 
-function reference(column: Column | undefined, name: string): ReferenceColumn {
+function reference(column: Column | undefined, name: string): Column.Reference {
   if (column?.kind !== 'reference')
     throw failure('invalid-input', 'Expected a reference column: ' + name);
   return column;
@@ -280,8 +266,8 @@ class Segments {
 
 export async function readGeometry(
   data: NetworkData,
-  reader: ReadScope,
-  limits: Required<Limits>,
+  reader: Reader.Scope,
+  limits: Required<Network.Limits>,
 ): Promise<Geometry> {
   const vertices: VertexBank[] = [],
     edges: EdgeBank[] = [],
@@ -299,7 +285,7 @@ export async function readGeometry(
     if (bytes > limits.geometryBytes)
       throw failure('resource-limit', 'Network geometry exceeds its CPU budget');
   };
-  const rowsOf = (source: Data, type: string, selection: VertexOptions['rows']) =>
+  const rowsOf = (source: Data, type: string, selection: Network.VertexOptions['rows']) =>
     kit.readRows(reader, source, type, selection);
 
   for (const [type, options] of Object.entries(data.vertices)) {
@@ -334,7 +320,7 @@ export async function readGeometry(
   }
 
   /** The drawn rows a reference column names, checked against its declared vertex type. */
-  const target = (column: ReferenceColumn): Drawn | undefined => {
+  const target = (column: Column.Reference): Drawn | undefined => {
     const found = drawn.get(column.index.type);
     if (!found) throw failure('invalid-input', 'References must name a vertex type');
     if (found.index) assertIndex(found.index, column.index);

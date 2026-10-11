@@ -4,9 +4,9 @@
  * the grid's figures; play a simulated fault and watch the machines' speeds swing. Pan, zoom, turn
  * the globe, and hover or click anything to inspect it.
  */
-import { colormaps, createGpu, type Colormap, type Projection, type RGBA } from '@latkit/gpu';
-import { createNetwork, type NetworkConfig } from '@latkit/network';
-import { createGeography, type GeographyConfig } from '@latkit/geography';
+import { colormaps, createGpu, type Colormap, type RGBA, type ProjectedCamera } from '@latkit/gpu';
+import { createNetwork, type Network } from '@latkit/network';
+import { createGeography, type Geography } from '@latkit/geography';
 import {
   BUS_COLORS,
   GRIDS,
@@ -92,8 +92,8 @@ async function main(): Promise<void> {
   };
 
   /** What the map draws: the chosen map, its states colored as chosen. */
-  function mapConfig(): GeographyConfig {
-    const base: GeographyConfig = {
+  function mapConfig(): Geography.Config {
+    const base: Geography.Config = {
       surfaceColor: THEME.ground,
       areaColor: THEME.fill,
       lineColor: THEME.line,
@@ -131,7 +131,7 @@ async function main(): Promise<void> {
   const earth = createGeography(gpu, mapConfig());
 
   /** What the network draws for the loaded grid, as the panel says. */
-  function gridConfig(grid: Grid): NetworkConfig {
+  function gridConfig(grid: Grid): Network.Config {
     return {
       canvas: stage,
       source: grid.data,
@@ -414,11 +414,15 @@ async function main(): Promise<void> {
 
   // ── View ──
   const view = section(panel, 'View');
-  const PROJECTIONS: readonly Projection[] = ['flat', 'mercator', 'tilt', 'globe'];
+  const PROJECTIONS: readonly ProjectedCamera.Projection[] = ['flat', 'mercator', 'tilt', 'globe'];
   const projection = segmented(
     PROJECTIONS.map((value) => ({ value, label: value })),
     network.camera.projection,
-    (value) => network.set({ camera: { projection: value as Projection } }, { animate: true }),
+    (value) =>
+      network.set(
+        { camera: { projection: value as ProjectedCamera.Projection } },
+        { animate: true },
+      ),
     'projection',
   );
   field(view, 'projection', projection.root);

@@ -27,6 +27,10 @@ struct View {
   edgeColor: vec4f,
   outline: vec4f,
   group: vec4f,
+  /** The comets' color. */
+  flow: vec4f,
+  /** How far apart comets run, and how far a dash and its gap run, in CSS pixels. */
+  lines: vec4f,
 }
 struct Item { a: vec4f, b: vec4f, kind: u32, slot: u32, unused: vec2u }
 struct Style { color: vec4f, status: vec4f, width: f32, flow: f32, shade: f32 }
@@ -128,15 +132,15 @@ fn rim(flags: u32) -> f32 {
   let uv = (c * 2. - 1.) * (half + pad + select(0., 10., k == BLOCK));
   return Out(clip(center + uv), uv, i, vec4f(half, 0., 0.), vec4f(0.));
 }
-/** Marching dashes along a flowing wire, or still chevrons under reduced motion. */
-fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
-  if (flow == 0.) { return d; }
-  if (view.grid.z != 0.) {
-    if (fract((along - view.viewport.w * flow / 1000.) / 14.) > 0.62) { return 1e3; }
-    return d;
-  }
-  let q = vec2f(fract(along / 18.) * 18. - 9., abs(across));
-  return min(d, max(abs(q.y + q.x * 0.65) - 0.8, max(-q.x - 3., q.x - 3.)));
+/**
+ * How much of a flowing wire's comets cover a pixel, as in every view: moving with motion, and
+ * holding still, pointing the way they flow, without it.
+ */
+fn comets(along: f32, across: f32, slot: u32, width: f32, flow: f32) -> f32 {
+  if (flow == 0. || view.lines.x <= 0.) { return 0.; }
+  let moved = select(0., view.viewport.w * 0.001 * flow, view.grid.z != 0.);
+  let head = max(width * 0.8, 2.);
+  return stroke_comet(along, across, slot, flow, moved, head, view.lines.x, 0.5 / view.viewport.z) * view.flow.a;
 }
 @fragment fn shape_fragment(v: Out) -> @location(0) vec4f {
   let item = items[v.index];
@@ -154,6 +158,7 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
   var color = style.color;
   var d = 0.;
   var shadow = 0.;
+  var flow = 0.;
   if (k == SEGMENT || k == CORNER || k == PREVIEW) {
     var along = 0.;
     var across = 0.;
@@ -173,12 +178,13 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
     if (k == PREVIEW) {
       color = select(view.selected, vec4f(0.95, 0.3, 0.24, 1.), item.b.y != 0.);
       d = abs(across) - 0.75;
-      if (fract((along) / 10.) > 0.6) { discard; }
+      if (!stroke_dash(along, view.lines.y)) { discard; }
     } else {
       // A drawn wire's target widens and takes the selection's color; what is selected glows.
       let extra = select(0., 1., targeted);
-      d = flowing(abs(across) - style.width * 0.5 - extra, along, across, style.flow);
+      d = abs(across) - style.width * 0.5 - extra;
       if (targeted) { color = chosen(color); }
+      flow = comets(along, across, item.slot, style.width, style.flow);
     }
   } else if (k == ARROW) {
     let slope = v.size.y / v.size.x;
@@ -235,8 +241,10 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
       color = mix(vec4f(view.selected.rgb, 0.12), view.selected, 1. - aa(d + 1.));
     }
   }
+  // A flowing wire's comets, in their color over its own.
+  color = vec4f(mix(color.rgb, view.flow.rgb, flow), mix(color.a, 1., flow));
   let shaded = shade(ShadeFragment(color, v.position.xy / view.viewport.z, style.shade));
-  var result = outputColor(shaded, aa(d));
+  var result = outputColor(shaded, max(aa(d), flow));
   if (shadow > 0.) { result = result + vec4f(0., 0., 0., shadow * (1. - aa(d))) * (1. - result.a); }
   // Beneath it, a glow: soft for the ports a drawn wire can reach, whole for what is selected or
   // targeted, in its own color for `none`, and for what is hovered.

@@ -1,9 +1,8 @@
 import type { RGBA } from '../colors/color.js';
 import type { Encoding, Preparation } from '../frame/render.js';
-import type { Modifiers } from './input.js';
 import type { Light, ProjectedCamera } from './projection.js';
 import type { Point } from './view.js';
-
+import type { ItemView } from './item-view.js';
 /** What a host's frame tells the view it draws beneath itself. */
 export interface LayerScene {
   /** The camera the host draws this frame with. */
@@ -53,9 +52,9 @@ export interface Layer {
   /** Follow the layer's invalidations; returns the unsubscribe. */
   invalidated(listener: () => void): () => void;
   /** A click the host's own items left unclaimed: the layer selects what it hits there. */
-  click(point: Point, modifiers: Modifiers, touch: boolean): Promise<void>;
+  click(point: Point, modifiers: ItemView.Modifiers, touch: boolean): Promise<void>;
   /** A menu the host's own items left unclaimed, which the layer reports with its hits. */
-  menu(point: Point, trigger: 'pointer' | 'keyboard', modifiers: Modifiers): Promise<void>;
+  menu(point: Point, trigger: 'pointer' | 'keyboard', modifiers: ItemView.Modifiers): Promise<void>;
   /** End hosting; the view may present again. */
   release(): void;
 }

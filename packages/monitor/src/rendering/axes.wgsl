@@ -17,3 +17,19 @@ struct T {@builtin(position) position:vec4f,@location(0) uv:vec2f,@location(1) c
  v.uv=text.uv;v.color=text.color;return v;
 }
 @fragment fn text_color(v:T)->@location(0) vec4f{return textColor(v.uv,v.color,vec4f(0),0.0);}
+/**
+ * The reading under the pointer: a dot at its sample in the hover color, `dot.z` CSS pixels across
+ * its middle, and its glow `dot.w` past that.
+ */
+struct Dot {@builtin(position) position:vec4f,@location(0) local:vec2f,@location(1) @interpolate(flat) size:vec2f,@location(2) @interpolate(flat) color:vec4f}
+@vertex fn dot_main(@builtin(vertex_index) vertex:u32)->Dot {
+ let dot=lines[0];let c=array<vec2f,6>(vec2f(-1,-1),vec2f(1,-1),vec2f(-1,1),vec2f(-1,1),vec2f(1,-1),vec2f(1,1))[vertex];
+ let extent=dot.z+dot.w+1.0;var v:Dot;
+ v.position=vec4f((dot.xy+c*extent)/screen.size.xy*vec2f(2,-2)+vec2f(-1,1),0,1);
+ v.local=c*extent;v.size=dot.zw;v.color=lines[1];return v;
+}
+@fragment fn dot_color(v:Dot)->@location(0) vec4f{
+ let outside=length(v.local)-v.size.x;
+ let alpha=max(clamp(0.5-outside,0.0,1.0),glowAlpha(outside,v.size.y)*0.6)*v.color.a;
+ return vec4f(v.color.rgb*alpha,alpha);
+}

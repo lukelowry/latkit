@@ -13,9 +13,6 @@ import {
   textColumn,
   type Column,
   type Data,
-  type ListColumn,
-  type NumericColumn,
-  type VectorColumn,
 } from '@latkit/model';
 import { numeric, rows } from '../shared/columns.js';
 import type { GridCase } from './cases.js';
@@ -54,10 +51,10 @@ async function statesOf(data: Data, type: string, within: readonly number[]): Pr
     ids: true,
   })) {
     if (block.kind !== 'rows') continue;
-    const column = block.columns.rings as ListColumn | undefined;
+    const column = block.columns.rings as Column.List | undefined;
     if (!column) continue;
-    const ringList = column.values as ListColumn,
-      points = (ringList.values as VectorColumn).values as NumericColumn;
+    const ringList = column.values as Column.List,
+      points = (ringList.values as Column.Vector).values as Column.Numeric;
     for (let i = 0; i < rowCount(block.rows); i++) {
       if (!bitAt(column.validity, column.offset + i)) continue;
       const rings: Float64Array[] = [],

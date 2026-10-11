@@ -1,43 +1,17 @@
 import { failure, type Data, type FieldInput } from '@latkit/model';
-import { kit, type Channel, type ColorChannel, type Labels, type RGBA } from '@latkit/gpu';
-import type { Tiles } from './tiles.js';
-
-/** How the earth draws, beyond the shared view style; every option has a default. */
-export interface GeographyStyle {
-  /** The ground beneath everything. */
-  readonly surfaceColor?: RGBA;
-  /** Lines of longitude and latitude, spaced for the zoom. */
-  readonly graticule?: boolean;
-  readonly graticuleColor?: RGBA;
-  /** Light by the sun at a time in milliseconds, at the current time, or not at all; a hosting network is lit too. */
-  readonly daylight?: number | 'now' | false;
-  /** How bright night stays, from 0 to 1, for the ground and everything on it. */
-  readonly nightFloor?: number;
-  /** How wide the band from day to night is. */
-  readonly terminatorWidth?: number;
-  /** A glow around the globe's rim. */
-  readonly atmosphere?: boolean;
-  readonly atmosphereColor?: RGBA;
-  /** The axis the globe turns on, through its poles. */
-  readonly earthAxis?: boolean;
-  readonly earthAxisColor?: RGBA;
-  /** The color of areas their `color` leaves unset. */
-  readonly areaColor?: RGBA;
-  /** The color of lines their `color` leaves unset. */
-  readonly lineColor?: RGBA;
-  /** The width of lines their `widthPx` leaves unset. */
-  readonly lineWidthPx?: number;
-  /** How far a dash and the gap after it run, in CSS pixels. */
-  readonly dashPeriodPx?: number;
-  /** The comets `flowPx` moves along a line, `flowSpacingPx` apart; 0 draws none. */
-  readonly flowColor?: RGBA;
-  readonly flowSpacingPx?: number;
-}
-export type Style = Required<GeographyStyle> & kit.ResolvedViewStyle;
-export const DEFAULTS: Required<GeographyStyle> = Object.freeze({
+import { kit, type RGBA } from '@latkit/gpu';
+import type { Geography } from './geography.js';
+export type Style = Required<Geography.Style> & kit.ResolvedViewStyle;
+/** A map looks straight down when it fits, and dashes finer than a network's edges. */
+export const DEFAULTS: Required<Geography.Style> = Object.freeze({
+  ...kit.lineStyle,
+  ...kit.projectedStyle,
+  dashPeriodPx: 8,
+  fitPitch: 0,
   surfaceColor: [0.07, 0.1, 0.15, 1] as RGBA,
   graticule: false,
   graticuleColor: [0.3, 0.38, 0.46, 0.4] as RGBA,
+  graticuleSpacingPx: 64,
   daylight: false,
   nightFloor: 0.3,
   terminatorWidth: 0.12,
@@ -48,9 +22,6 @@ export const DEFAULTS: Required<GeographyStyle> = Object.freeze({
   areaColor: [0.16, 0.21, 0.27, 1] as RGBA,
   lineColor: [0.52, 0.6, 0.68, 0.6] as RGBA,
   lineWidthPx: 1,
-  dashPeriodPx: 8,
-  flowColor: [0.95, 0.97, 1, 0.9] as RGBA,
-  flowSpacingPx: 32,
 });
 /** Shared style the earth draws differently: hover and selection tint what they cover. */
 export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
@@ -62,45 +33,6 @@ export const WIDTH_RANGE: readonly [number, number] = [0.5, 4];
 /** Speeds in CSS pixels a second that a `flowPx` field spans by default, as in a network. */
 export const FLOW_RANGE: readonly [number, number] = [0, 40];
 
-/** What areas and lines share: where their shapes and values come from, and their channels. */
-export interface ShapeOptions {
-  /** Where the shapes come from: Data, or tiles; the config's `source` by default. */
-  readonly source?: Data | Tiles;
-  /**
-   * Rows of the same type, matched to the shapes' rows by id, that the channels read: a run's
-   * results coloring a static map. The shapes' own rows by default.
-   */
-  readonly values?: Data;
-  /** `areaColor` or `lineColor` by default. */
-  readonly color?: ColorChannel;
-  readonly visible?: Channel<boolean>;
-  /** The value the view's `shade` reads. */
-  readonly shade?: Channel;
-  /** Text at each row's anchor: an area's widest point, a line's middle. */
-  readonly labels?: string | Labels | null;
-}
-export interface AreaOptions extends ShapeOptions {
-  /** Rings of longitude and latitude; a hole winds opposite its outline. `rings` by default. */
-  readonly rings?: FieldInput;
-}
-export interface LineOptions extends ShapeOptions {
-  /** Points, or lists of them; an area type's `rings` draw its outline. `points` by default. */
-  readonly points?: FieldInput;
-  /**
-   * How a line between geographic points runs over the earth: `straight` in longitude and
-   * latitude, or `geodesic` along the great circle. `straight` by default, as maps record their
-   * features: a border along a parallel stays on it.
-   */
-  readonly route?: 'straight' | 'geodesic';
-  /** `lineWidthPx` by default. */
-  readonly widthPx?: Channel;
-  readonly dash?: Channel<boolean>;
-  /**
-   * How far comets move along the line each second, in CSS pixels, from its first point toward its
-   * last; negative runs the other way, and 0 draws none. A field spans 0 to 40.
-   */
-  readonly flowPx?: Channel;
-}
 /** What areas read per row, and how. */
 export const AREA = {
   color: 'color',
@@ -134,13 +66,19 @@ const LINE_KEYS = new Set([
 ]);
 
 /** The field a record draws from: its own, or the kind's default. */
-export function shapeField(kind: 'area' | 'line', options: AreaOptions | LineOptions): FieldInput {
+export function shapeField(
+  kind: 'area' | 'line',
+  options: Geography.AreaOptions | Geography.LineOptions,
+): FieldInput {
   return kind === 'area'
-    ? ((options as AreaOptions).rings ?? 'rings')
-    : ((options as LineOptions).points ?? 'points');
+    ? ((options as Geography.AreaOptions).rings ?? 'rings')
+    : ((options as Geography.LineOptions).points ?? 'points');
 }
 /** Whether a line record strokes rings, which close: an area type's own `rings`. */
-export function strokesRings(options: LineOptions, area: AreaOptions | undefined): boolean {
+export function strokesRings(
+  options: Geography.LineOptions,
+  area: Geography.AreaOptions | undefined,
+): boolean {
   const field = options.points ?? 'points';
   return field === 'rings' || (area !== undefined && field === (area.rings ?? 'rings'));
 }
@@ -157,7 +95,7 @@ export function isData(value: unknown): value is Data {
 export function checkRecord(
   kind: 'area' | 'line',
   type: string,
-  options: AreaOptions | LineOptions,
+  options: Geography.AreaOptions | Geography.LineOptions,
   isTiles: (value: unknown) => boolean,
 ): void {
   if (!options || typeof options !== 'object')
@@ -169,34 +107,21 @@ export function checkRecord(
     throw failure('invalid-input', `A ${kind} source is Data or tiles: ${type}`);
   if (options.values != null && !isData(options.values))
     throw failure('invalid-input', `Values are Data: ${type}`);
-  const line = options as LineOptions;
+  const line = options as Geography.LineOptions;
   if (line.route != null && line.route !== 'straight' && line.route !== 'geodesic')
     throw failure('invalid-input', `Invalid route: ${type}`);
   kit.bindChannels(options, kind === 'area' ? AREA : LINE);
   kit.resolveLabels(options.labels);
 }
-const UNIT = new Set(['nightFloor', 'terminatorWidth']);
+const RULES: kit.StyleRules<Required<Geography.Style>> = {
+  daylight: (value) => value === false || value === 'now' || Number.isFinite(value),
+  nightFloor: 'unit',
+  terminatorWidth: 'unit',
+  graticuleSpacingPx: 'positive',
+};
 /** The style a config describes: its own options over the defaults, on the shared view style. */
-export function resolveStyle(config: GeographyStyle, view: kit.ResolvedViewStyle): Style {
-  const style: Record<string, unknown> = { ...view, ...DEFAULTS };
-  for (const key of Object.keys(DEFAULTS) as (keyof GeographyStyle)[]) {
-    const value = config[key];
-    if (value === undefined) continue;
-    if (key.endsWith('Color')) kit.validateRgba(value as RGBA);
-    else if (key === 'daylight') {
-      if (value !== false && value !== 'now' && !Number.isFinite(value))
-        throw failure('invalid-input', 'Daylight is a time, now, or false');
-    } else if (typeof DEFAULTS[key] === 'boolean') {
-      if (typeof value !== 'boolean') throw failure('invalid-input', 'Expected boolean: ' + key);
-    } else if (
-      !Number.isFinite(value) ||
-      (value as number) < 0 ||
-      (UNIT.has(key) && (value as number) > 1)
-    )
-      throw failure('invalid-input', 'Invalid option: ' + key);
-    style[key] = value;
-  }
-  return Object.freeze(style) as Style;
+export function resolveStyle(config: Geography.Style, view: kit.ResolvedViewStyle): Style {
+  return kit.resolveStyle(config, DEFAULTS, RULES, view);
 }
 /** The sun a style lights the scene with, or none: at its time, or at the moment it draws. */
 export function lightOf(style: Style): kit.Light | null {

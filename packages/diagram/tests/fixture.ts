@@ -1,6 +1,7 @@
-import { createData, read, type Data, type DataBatch } from '@latkit/model';
-import type { Query, QueryOptions, RowsBlock, Schema, Column, RowSelection } from '@latkit/model';
-import type { DiagramData, DiagramPort, DiagramRow } from '../src/data.js';
+import { createData, read, type Data, type Query, type Block, type Index } from '@latkit/model';
+import type { Schema, Column } from '@latkit/model';
+import type { DiagramData } from '../src/data.js';
+import type { Diagram } from '../src/diagram.js';
 /** One task port wired to a dependency net. */
 export interface End {
   vertex: number;
@@ -67,7 +68,7 @@ export class Source {
   private cached?: Data;
   get data(): Data {
     if (this.cached) return this.cached;
-    const batches: DataBatch[] = [];
+    const batches: Data.Batch[] = [];
     for (const [from, type] of Object.entries(this.schema.types))
       for (const block of this.blocks({
         kind: 'rows',
@@ -84,16 +85,16 @@ export class Source {
         });
     return (this.cached = createData(this.schema, batches));
   }
-  selection(type: string, rows?: RowSelection): number[] {
+  selection(type: string, rows?: Index.Selection): number[] {
     const count = type === 'Task' ? this.count : this.ends.length;
     if (rows?.kind === 'ids') return rows.ids.map((id) => Number(id.slice(1)));
     if (rows?.kind === 'indices') return [...rows.values];
     return Array.from({ length: rows?.count ?? count }, (_, i) => i + (rows?.offset ?? 0));
   }
-  query<Q extends Query>(query: Q, options?: QueryOptions) {
+  query<Q extends Query>(query: Q, options?: Query.Options) {
     return read(this.data, query, options);
   }
-  private *blocks(q: Query, o?: QueryOptions): Generator<RowsBlock> {
+  private *blocks(q: Query, o?: Query.Options): Generator<Block.Rows> {
     this.queries++;
     o?.signal?.throwIfAborted();
     const rows = this.selection(q.from, 'rows' in q ? q.rows : undefined);
@@ -192,7 +193,7 @@ export class Source {
     }
   }
 }
-export function texts(values: readonly string[]): import('@latkit/model').TextColumn {
+export function texts(values: readonly string[]): import('@latkit/model').Column.Text {
   const parts = values.map((v) => new TextEncoder().encode(v)),
     offsets = new Int32Array(parts.length + 1);
   parts.forEach((p, i) => (offsets[i + 1] = offsets[i] + p.length));
@@ -201,7 +202,7 @@ export function texts(values: readonly string[]): import('@latkit/model').TextCo
   return { kind: 'text', offset: 0, length: values.length, offsets, bytes };
 }
 /** The item an app finds for an id: fixture ids name their row, as `n2` for a task or `e0` for a dependency. */
-export function vertex(source: Source, id: string): DiagramRow {
+export function vertex(source: Source, id: string): Diagram.Row {
   return {
     kind: 'vertex',
     source: source.data,
@@ -209,7 +210,7 @@ export function vertex(source: Source, id: string): DiagramRow {
     row: Number(id.slice(1)),
   };
 }
-export function edge(source: Source, id: string): DiagramRow {
+export function edge(source: Source, id: string): Diagram.Row {
   return {
     kind: 'edge',
     source: source.data,
@@ -217,7 +218,7 @@ export function edge(source: Source, id: string): DiagramRow {
     row: Number(id.slice(1)),
   };
 }
-export function port(source: Source, id: string, name: string): DiagramPort {
+export function port(source: Source, id: string, name: string): Diagram.Port {
   return { ...vertex(source, id), kind: 'port', port: name };
 }
 /**
@@ -256,8 +257,8 @@ export function data(source = new Source(), position = false): DiagramData {
   };
 }
 export const layoutText = (
-  input: import('@latkit/gpu').TextLayoutInput,
-): Promise<import('@latkit/gpu').TextLayout> => {
+  input: import('@latkit/gpu').kit.TextLayoutInput,
+): Promise<import('@latkit/gpu').kit.TextLayout> => {
   const size = input.size ?? 12;
   return Promise.resolve({
     runs: [
