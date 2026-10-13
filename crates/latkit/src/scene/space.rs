@@ -124,10 +124,31 @@ pub struct Axis {
     pub grid: bool,
     /// Whether the axis is hidden.
     pub hidden: bool,
+    /// Ticks at these values, with these labels or their values written; `None` steps by round values.
+    pub ticks: Option<Vec<(f64, Option<String>)>>,
+    /// How tick values are written.
+    pub format: Format,
+    /// Decimals of fixed values, or of the significand of scientific and engineering ones; `None`
+    /// takes as many as the ticks' step needs.
+    pub precision: Option<u8>,
 }
 
 impl Default for Axis {
     fn default() -> Axis {
-        Axis { label: None, grid: true, hidden: false }
+        Axis { label: None, grid: true, hidden: false, ticks: None, format: Format::Auto, precision: None }
     }
+}
+
+/// How an axis writes its tick values.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Format {
+    /// Fixed decimals, scientific past a million or below a ten-thousandth.
+    #[default]
+    Auto,
+    /// Fixed decimals: `1500.0`.
+    Fixed,
+    /// A significand and a power of ten: `1.5e3`.
+    Scientific,
+    /// A significand and a power of ten that is a multiple of three: `1.5e3`, `150e-6`.
+    Engineering,
 }

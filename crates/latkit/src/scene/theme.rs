@@ -51,8 +51,29 @@ pub struct Theme {
     pub flow: Color,
     /// CSS pixels between flowing comets.
     pub flow_spacing: f32,
-    /// What shadows darken with: marks that cast them, under them or on the ground below.
-    pub shadow: Color,
+    /// CSS pixels between the lanes of edges joining the same two vertices.
+    pub edge_spacing: f32,
+    /// CSS pixels an arrowhead reaches past its edge's width.
+    pub arrow: f32,
+    /// CSS pixels of background around label text.
+    pub halo: f32,
+    /// CSS pixels between a group's members and its outline.
+    pub group_padding: f32,
+    /// How marks that cast shadows cast them.
+    pub shadow: Shadow,
+}
+
+/// How marks that cast shadows cast them onto the ground and onto faces.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Shadow {
+    /// What a shadow darkens toward; its alpha is how dark a shadow at contact gets.
+    pub color: Color,
+    /// The direction toward the light, fixed in the world: shadows fall away from it.
+    pub light: [f32; 3],
+    /// How much a shadow spreads per unit of a caster's height: the light's size.
+    pub softness: f32,
+    /// CSS pixels flat marks cast from, as if raised.
+    pub lift: f32,
 }
 
 impl Theme {
@@ -82,7 +103,11 @@ impl Theme {
             dash: 8.0,
             flow: Color::hex("#ffffff").expect("hex").alpha(0.8),
             flow_spacing: 40.0,
-            shadow: Color::BLACK.alpha(0.32),
+            edge_spacing: 4.0,
+            arrow: 7.0,
+            halo: 2.0,
+            group_padding: 12.0,
+            shadow: Shadow { color: Color::BLACK.alpha(0.45), light: [-0.35, 0.45, 1.0], softness: 0.15, lift: 3.0 },
         }
     }
 
@@ -100,7 +125,7 @@ impl Theme {
             hover: Color::hex("#000000").expect("hex").alpha(0.35),
             selected: Some(Color::hex("#e36209").expect("hex").alpha(0.9)),
             flow: Color::hex("#ffffff").expect("hex").alpha(0.9),
-            shadow: Color::BLACK.alpha(0.18),
+            shadow: Shadow { color: Color::BLACK.alpha(0.22), ..Theme::dark().shadow },
             ..Theme::dark()
         }
     }

@@ -73,6 +73,54 @@ export interface Hit {
   position: [number, number, number];
   /** CSS pixels from the probe to the row. */
   distance: number;
+  /** The port hit, when a vertex's port was. */
+  port?: string;
+  /** The sample hit, when a line tracing a sampled field was. */
+  sample?: Sample;
+}
+
+/** A sample of a traced field: its frame, the axis coordinate it was recorded at, and its value. */
+export interface Sample {
+  frame: number;
+  at: number;
+  value: number;
+}
+
+/** Keys held. */
+export interface Modifiers {
+  shift: boolean;
+  control: boolean;
+  alt: boolean;
+  meta: boolean;
+}
+
+/** A vertex a connection ends at, and its port when it has the one the connection meets. */
+export interface End {
+  row: Row;
+  port?: string;
+}
+
+/** What lies under a secondary click or the menu key's point, for a menu of what to do with it. */
+export interface Menu {
+  /** CSS pixels from the top left: the pointer, or for the key the view's middle. */
+  point: [number, number];
+  /** What lies under it, nearest first. */
+  hits: Hit[];
+  /** Whether the menu key asked. */
+  keyboard: boolean;
+  modifiers: Modifiers;
+}
+
+/** A connection drawn from a port, an Alt-held vertex, or an edge whose end was dragged off it. */
+export interface Connect {
+  /** The end it was drawn from: for an edge, the end that stayed. */
+  from: End;
+  /** The vertex it was released over, if any. */
+  to: End | null;
+  /** The edge whose other end was dragged, which `to` replaces. */
+  edge: Row | null;
+  /** Where it was released, CSS pixels from the top left. */
+  point: [number, number];
 }
 
 /** A row of a draggable mark following the pointer. */
@@ -96,6 +144,12 @@ export interface ViewEvents {
   /** The selection changed. */
   select: Row[];
   drag: Drag;
+  /** The secondary button clicked, or the menu key pressed. */
+  menu: Menu;
+  /** A connection was drawn, with `controls.connect` on. */
+  connect: Connect;
+  /** Delete or Backspace with rows selected, with `controls.delete` on. */
+  delete: Row[];
   /** The camera moved. */
   camera: Camera;
   /** A mark does not fit its data and draws nothing until a scene or data fixes it. */
@@ -352,6 +406,21 @@ export class View {
   /** Eases to `camera`. */
   fly(camera: Camera): void {
     this.inner.fly(JSON.stringify(camera));
+  }
+
+  /** Every row of a mark that picks within `radius` CSS pixels of `point`, nearest first. */
+  pick(point: [number, number], radius: number): Promise<Hit[]> {
+    return this.inner.pick(Float32Array.from(point), radius) as Promise<Hit[]>;
+  }
+
+  /** Where `row` lies on screen, CSS pixels from the top left, or `null` when no mark draws it in view. */
+  locate(row: Row): Promise<[number, number] | null> {
+    return this.inner.locate(row) as Promise<[number, number] | null>;
+  }
+
+  /** The rows joined to `row`: a vertex's neighbors across edges and nets, or an edge's or a net's vertices. */
+  neighbors(row: Row): Row[] {
+    return this.inner.neighbors(row) as Row[];
   }
 
   /** Frames what `fit` names on the next frame, keeping pitch and bearing. */

@@ -63,6 +63,7 @@ pub(crate) enum State {
     Hovered,
     Pointer,
     Elapsed,
+    Zoom,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -137,6 +138,12 @@ pub fn pointer() -> Expr {
 /// Seconds since the view was created; a mark that reads it redraws every frame.
 pub fn elapsed() -> Expr {
     node(Node::State(State::Elapsed))
+}
+
+/// The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. Options
+/// that read it change with the view, as levels of detail do.
+pub fn zoom() -> Expr {
+    node(Node::State(State::Zoom))
 }
 
 /// A size measured in position units, so it scales as the view zooms.

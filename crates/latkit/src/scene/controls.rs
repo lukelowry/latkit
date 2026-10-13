@@ -14,10 +14,27 @@ pub struct Controls {
     pub hover: bool,
     /// CSS pixels around the pointer that picks reach; touch reaches 8 more.
     pub pick_radius: f32,
+    /// Dragging the background with Shift selects the rows in a box, instead of turning.
+    pub select_box: bool,
+    /// Dragging from a port, from a vertex with Alt, or an edge off its end draws a connection,
+    /// told as [`Event::Connect`](crate::Event).
+    pub connect: bool,
+    /// Delete and Backspace tell [`Event::Delete`](crate::Event) with the selection.
+    pub delete: bool,
 }
 
 impl Default for Controls {
     fn default() -> Controls {
-        Controls { pan: true, zoom: true, turn: true, keyboard: true, hover: true, pick_radius: 6.0 }
+        Controls {
+            pan: true,
+            zoom: true,
+            turn: true,
+            keyboard: true,
+            hover: true,
+            pick_radius: 6.0,
+            select_box: false,
+            connect: false,
+            delete: false,
+        }
     }
 }

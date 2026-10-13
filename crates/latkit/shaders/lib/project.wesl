@@ -1,8 +1,9 @@
 // From positions to the screen. Positions are (high, low) pairs: their difference from the camera's
-// center is taken in parts, so f64 data keeps its precision at any zoom.
+// center is taken in parts, so f64 data keeps its precision at any zoom. Every pass projects through
+// its eye: the view, the light that casts shadows, or an exported image.
 
 import package::lib::types::{SPACE_EARTH};
-import package::lib::bind::frame;
+import package::lib::bind::{frame, eye};
 
 const PI: f32 = 3.14159265;
 const TAU: f32 = 6.28318531;
@@ -54,8 +55,12 @@ fn world(hi: vec2f, lo: vec2f, z: f32) -> vec3f {
     return mix(flat, round, frame.globe);
 }
 
+fn clip_of(w: vec3f) -> vec4f {
+    return eye.clip_from_world * vec4f(w, 1.0);
+}
+
 fn project(hi: vec2f, lo: vec2f, z: f32) -> vec4f {
-    return frame.clip_from_world * vec4f(world(hi, lo, z), 1.0);
+    return clip_of(world(hi, lo, z));
 }
 
 // Whether `p` is on the visible side of the globe.
@@ -66,12 +71,12 @@ fn facing(hi: vec2f, lo: vec2f) -> bool {
 // CSS pixels from the top left.
 fn to_screen(clip: vec4f) -> vec2f {
     let ndc = clip.xy / clip.w;
-    return (vec2f(ndc.x, -ndc.y) * 0.5 + 0.5) * frame.size;
+    return (vec2f(ndc.x, -ndc.y) * 0.5 + 0.5) * eye.size;
 }
 
 // Clip coordinates for a screen point at the depth of `at`.
 fn to_clip(screen: vec2f, at: vec4f) -> vec4f {
-    let ndc = screen / frame.size * 2.0 - 1.0;
+    let ndc = screen / eye.size * 2.0 - 1.0;
     return vec4f(vec2f(ndc.x, -ndc.y) * at.w, at.z, at.w);
 }
 

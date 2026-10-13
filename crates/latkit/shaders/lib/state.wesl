@@ -1,11 +1,20 @@
-// Evaluated rows: words of the `state` buffer.
+// Evaluated rows: words of the `state` buffer. A row's kind words sit at `mark.state`, `mark.stride`
+// apart, so vertex slots count every vertex mark's rows; its extra words (labels, marker inputs) sit
+// at `mark.extra`, `mark.extras` apart. Each vertex slot also names the group it is in, if any: one
+// plus the group's slot, with `OPEN_GROUP` unless the group is collapsed.
 
 import package::lib::types::{
-    NONE, VERTEX_WORDS, VERTEX_POSITION, VERTEX_COLOR, VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION,
+    VERTEX_WORDS, VERTEX_POSITION, VERTEX_COLOR, VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION,
     VERTEX_FLAGS, EDGE_FROM, EDGE_TO, EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_FLAGS,
-    FACE_A, FACE_B, FACE_C, FACE_COLOR, FACE_FLAGS, LINE_COLOR, LINE_WIDTH, LINE_FLAGS,
+    FACE_A, FACE_B, FACE_C, FACE_COLOR, FACE_FLAGS, LINE_COLOR, LINE_WIDTH, LINE_FLOW, LINE_FLAGS, OPEN_GROUP,
+    GROUP_DEPTH,
 };
 import package::lib::bind::{state, mark};
+
+@if(groups)
+@group(2) @binding(14) var<storage, read_write> stand_ins: array<u32>;
+@else
+@group(2) @binding(14) var<storage, read> stand_ins: array<u32>;
 
 struct Vertex {
     hi: vec2f,
@@ -35,6 +44,7 @@ struct Face {
 struct Line {
     color: u32,
     width: f32,
+    flow: f32,
     flags: u32,
 }
 
@@ -42,9 +52,14 @@ fn float_at(at: u32) -> f32 {
     return bitcast<f32>(state[at]);
 }
 
-// The first word of `row` of the current mark.
+// The first kind word of `row` of the current mark.
 fn row_at(row: u32) -> u32 {
     return mark.state + row * mark.stride;
+}
+
+// Extra word `word` of `row` of the current mark.
+fn extra_at(row: u32, word: u32) -> u32 {
+    return mark.extra + row * mark.extras + word;
 }
 
 fn vertex_at(at: u32) -> Vertex {
@@ -60,9 +75,26 @@ fn vertex_at(at: u32) -> Vertex {
     );
 }
 
-// The vertex in graph slot `slot`, from any vertex mark.
+// The slot standing in for vertex slot `slot`: the outermost collapsed group it is in, or itself.
+fn resolved(slot: u32) -> u32 {
+    var at = slot;
+    var standing = slot;
+    for (var level = 0u; level < GROUP_DEPTH; level++) {
+        let group = stand_ins[at];
+        if group == 0u {
+            break;
+        }
+        at = (group & ~OPEN_GROUP) - 1u;
+        if (group & OPEN_GROUP) == 0u {
+            standing = at;
+        }
+    }
+    return standing;
+}
+
+// The vertex in graph slot `slot`, from any vertex mark, or the collapsed group standing in for it.
 fn vertex_slot(slot: u32) -> Vertex {
-    return vertex_at(mark.vertices + slot * VERTEX_WORDS);
+    return vertex_at(resolved(slot) * VERTEX_WORDS);
 }
 
 fn edge_at(at: u32) -> Edge {
@@ -82,9 +114,5 @@ fn face_at(at: u32) -> Face {
 }
 
 fn line_at(at: u32) -> Line {
-    return Line(state[at + LINE_COLOR], float_at(at + LINE_WIDTH), state[at + LINE_FLAGS]);
-}
-
-fn has_slot(slot: u32) -> bool {
-    return slot != NONE;
+    return Line(state[at + LINE_COLOR], float_at(at + LINE_WIDTH), float_at(at + LINE_FLOW), state[at + LINE_FLAGS]);
 }

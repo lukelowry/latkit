@@ -1,23 +1,43 @@
-//! A view's buffers, targets, and bind groups. Buffers grow by half again; replacing one bumps the
-//! generation, and bind groups are rebuilt when a generation they were built from changes.
+//! A view's buffers, textures, and bind groups. Grown buffers grow by half again; replacing one bumps
+//! the generation, and bind groups are rebuilt when a generation they were built from changes.
 //!
-//! Every shader's pass group (group 2) binds by one convention: 0 state, 1 previous state, 2 extents,
-//! 3 normals, 4 domains, 5 probe, 6 depth, 7 sprites, 8 the text atlas.
+//! Every shader's pass group (group 2) binds by one convention: 0 state, 1 frozen state, 2 extents,
+//! 3 normals, 4 domains, 5 probe, 6 depth, 7 sprites, 8 the text atlas, 9 lists, 10 the shadow map,
+//! 11 a level of it, 12 remap words, 13 labels, 15 icons, 16 places.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
-use super::marks::Shown;
+use super::rows::Sizes;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::gpu::{Inner, Shared};
-use crate::scene::mark::MarkKind;
 
-/// Bytes between marks' uniforms: the dynamic offset alignment every device supports.
+/// Bytes between marks' uniforms and between eyes: the dynamic offset alignment every device supports.
 pub(crate) const MARK_STRIDE: u64 = 256;
-/// Samples per pixel.
-pub(crate) const SAMPLES: u32 = 4;
 /// The depth format; depth is reversed, nearer is greater.
 pub(crate) const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// The shadow map's format.
+pub(crate) const SHADE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Texels across the shadow map.
+pub(crate) const SHADE_SIZE: u32 = 1024;
+
+/// The eyes a frame draws through, by index.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum EyeSlot {
+    Main = 0,
+    Light = 1,
+}
+
+impl EyeSlot {
+    pub(crate) fn offset(self) -> u32 {
+        (self as u64 * MARK_STRIDE) as u32
+    }
+}
+
+/// Samples per pixel: shader-drawn marks antialias themselves, so dense screens skip multisampling.
+pub(crate) fn samples(pixel_ratio: f32) -> u32 {
+    if pixel_ratio >= 1.75 { 1 } else { 4 }
+}
 
 /// A storage buffer that grows by half again when it runs out of room.
 struct Grown {
@@ -44,11 +64,13 @@ impl Grown {
 fn create(device: &wgpu::Device, label: &str, usage: wgpu::BufferUsages, bytes: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        size: bytes.max(256),
+        size: bytes.max(256).next_multiple_of(4),
         usage: usage | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }
+
+const ROWS: wgpu::BufferUsages = wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::COPY_SRC);
 
 /// The bind groups every pipeline shares.
 #[derive(Clone)]
@@ -57,32 +79,84 @@ pub(crate) struct Groups {
     pub(crate) mark: wgpu::BindGroup,
 }
 
-/// What a frame draws into: multisampled color resolved into the target, and depth.
+/// What a frame draws into: multisampled color resolved into the target when it multisamples, and
+/// depth.
 struct Targets {
-    color: wgpu::TextureView,
+    color: Option<wgpu::TextureView>,
     depth: wgpu::TextureView,
     size: [u32; 2],
     format: wgpu::TextureFormat,
+    samples: u32,
+}
+
+/// The ground's shadow map, its levels, and a view of each level.
+pub(crate) struct ShadowMap {
+    pub(crate) view: wgpu::TextureView,
+    pub(crate) levels: Vec<wgpu::TextureView>,
+}
+
+impl ShadowMap {
+    fn new(device: &wgpu::Device, size: u32) -> ShadowMap {
+        let count = size.max(1).ilog2() + 1;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("latkit shadows"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: count,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SHADE,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let levels = (0..count)
+            .map(|level| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    base_mip_level: level,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        ShadowMap { view: texture.create_view(&wgpu::TextureViewDescriptor::default()), levels }
+    }
+}
+
+/// Buffers a layout of rows replaced, kept until their rows are copied out.
+pub(crate) struct OldRows {
+    pub(crate) state: wgpu::Buffer,
+    pub(crate) places: wgpu::Buffer,
+    pub(crate) frozen: Option<wgpu::Buffer>,
 }
 
 pub(crate) struct Resources {
     pub(crate) frame: wgpu::Buffer,
+    eyes: wgpu::Buffer,
     marks: Grown,
     program: Grown,
-    focus: Grown,
-    state: Grown,
+    focus: wgpu::Buffer,
+    state: wgpu::Buffer,
+    places: wgpu::Buffer,
+    frozen: Option<wgpu::Buffer>,
+    retired: Option<OldRows>,
+    remap: Grown,
     domains: Grown,
     extents: Grown,
     normals: Grown,
+    stand_ins: Grown,
+    layout: Grown,
     probe: wgpu::Buffer,
     sprites: Grown,
-    /// Changes whenever one of the buffers or targets above is replaced.
+    lists: Grown,
+    labels: wgpu::Buffer,
+    empty: wgpu::Buffer,
+    pub(crate) shadows: ShadowMap,
+    /// Changes whenever one of the buffers or textures above is replaced.
     generation: u64,
-    /// Built from (arena, colormaps, own) generations.
-    groups: Option<((u64, u64, u64), Groups)>,
+    /// Built from (arena, colormaps, icons, own) generations.
+    groups: Option<((u64, u64, u64, u64), Groups)>,
     /// Pass groups, built at `passes_generation`.
     passes: HashMap<Shader, wgpu::BindGroup>,
-    passes_generation: u64,
+    passes_generation: (u64, u64),
     targets: Option<Targets>,
 }
 
@@ -90,46 +164,134 @@ impl Resources {
     pub(crate) fn new(device: &wgpu::Device) -> Resources {
         let storage = wgpu::BufferUsages::STORAGE;
         let probe_bytes = u64::from(wgsl::PROBE_WORDS) * 4;
+        let uniform = wgpu::BufferUsages::UNIFORM;
         Resources {
-            frame: create(device, "latkit frame", wgpu::BufferUsages::UNIFORM, size_of::<wgsl::Frame>() as u64),
-            marks: Grown::new(device, "latkit marks", wgpu::BufferUsages::UNIFORM),
+            frame: create(device, "latkit frame", uniform, size_of::<wgsl::Frame>() as u64),
+            eyes: create(device, "latkit eyes", uniform, 2 * MARK_STRIDE),
+            marks: Grown::new(device, "latkit marks", uniform),
             program: Grown::new(device, "latkit program", storage),
-            focus: Grown::new(device, "latkit focus", storage),
-            state: Grown::new(device, "latkit state", storage),
+            focus: create(device, "latkit focus", storage, 256),
+            state: create(device, "latkit state", ROWS, 256),
+            places: create(device, "latkit places", ROWS, 256),
+            frozen: None,
+            retired: None,
+            remap: Grown::new(device, "latkit remap", storage),
             domains: Grown::new(device, "latkit domains", storage),
             extents: Grown::new(device, "latkit extents", storage | wgpu::BufferUsages::COPY_SRC),
             normals: Grown::new(device, "latkit normals", storage),
+            stand_ins: Grown::new(device, "latkit stand-ins", storage),
+            layout: Grown::new(device, "latkit layout", storage),
             probe: create(device, "latkit probe", storage | wgpu::BufferUsages::COPY_SRC, probe_bytes),
             sprites: Grown::new(device, "latkit sprites", storage),
+            lists: Grown::new(
+                device,
+                "latkit lists",
+                storage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
+            ),
+            labels: create(device, "latkit labels", ROWS, 256),
+            empty: create(device, "latkit empty", ROWS, 256),
+            shadows: ShadowMap::new(device, 1),
             generation: 0,
             groups: None,
             passes: HashMap::new(),
-            passes_generation: u64::MAX,
+            passes_generation: (u64::MAX, 0),
             targets: None,
         }
     }
 
-    /// Makes room for every mark's rows, uniforms, focus words, domains, extents, and normals. Returns
-    /// whether the state buffer was replaced, so every row must evaluate again, and whether the focus
-    /// buffer was, so focus must be written again.
-    pub(crate) fn fit(&mut self, device: &wgpu::Device, marks: &[Shown]) -> (bool, bool) {
+    /// Lays rows out into new buffers of `sizes`, returning the buffers they replaced so their rows
+    /// can be copied over; the frozen mirror, while one exists, is replaced alike.
+    pub(crate) fn replace_rows(&mut self, device: &wgpu::Device, sizes: Sizes) -> OldRows {
         let words = |n: u64| (n + 1) * 4;
-        let state: u64 = marks.iter().map(|m| u64::from(m.rows) * u64::from(m.stride())).sum();
-        let focus: u64 = marks.iter().map(|m| u64::from(m.rows)).sum();
-        let domains: u64 = marks.iter().map(|m| 2 * u64::from(m.reductions())).sum();
-        let vertices: u64 = marks.iter().filter(|m| m.kind() == MarkKind::Vertices).map(|m| u64::from(m.rows)).sum();
-        let count = marks.len() as u64 + 1;
-        let focus = self.focus.ensure(device, words(focus));
-        let mut replaced = focus;
-        replaced |= self.domains.ensure(device, words(domains));
+        let state = create(device, "latkit state", ROWS, words(sizes.state));
+        let places = create(device, "latkit places", ROWS, words(sizes.places));
+        self.focus = create(device, "latkit focus", wgpu::BufferUsages::STORAGE, words(sizes.focus));
+        let frozen = self.frozen.as_ref().map(|_| create(device, "latkit frozen", ROWS, words(sizes.state)));
+        let old = OldRows {
+            state: std::mem::replace(&mut self.state, state),
+            places: std::mem::replace(&mut self.places, places),
+            frozen: std::mem::replace(&mut self.frozen, frozen),
+        };
+        self.generation += 1;
+        old
+    }
+
+    /// Keeps the buffers rows moved out of until the frame that reads them is submitted.
+    pub(crate) fn retire(&mut self, old: OldRows) {
+        self.retired = Some(old);
+    }
+
+    /// Drops buffers a previous frame retired.
+    pub(crate) fn forget_retired(&mut self) {
+        self.retired = None;
+    }
+
+    pub(crate) fn retired_state(&self) -> Option<&wgpu::Buffer> {
+        self.retired.as_ref().map(|old| &old.state)
+    }
+
+    /// Makes the frozen mirror of the state buffer exist.
+    pub(crate) fn ensure_frozen(&mut self, device: &wgpu::Device) {
+        if self.frozen.is_none() {
+            self.frozen = Some(create(device, "latkit frozen", ROWS, self.state.size()));
+            self.generation += 1;
+        }
+    }
+
+    pub(crate) fn drop_frozen(&mut self) {
+        if self.frozen.take().is_some() {
+            self.generation += 1;
+        }
+    }
+
+    pub(crate) fn frozen(&self) -> Option<&wgpu::Buffer> {
+        self.frozen.as_ref()
+    }
+
+    /// Copies `rows` rows of a region's kind and extra words from `source` (the state buffer when
+    /// `None`) at `from` into the frozen mirror at `to`.
+    pub(crate) fn copy_frozen(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: Option<&wgpu::Buffer>,
+        from: super::rows::Region,
+        to: super::rows::Region,
+        rows: u32,
+    ) {
+        let Some(frozen) = &self.frozen else { return };
+        let source = source.unwrap_or(&self.state);
+        let mut copy = |a: u32, b: u32, words: u32| {
+            if words > 0 {
+                encoder.copy_buffer_to_buffer(source, u64::from(a) * 4, frozen, u64::from(b) * 4, u64::from(words) * 4);
+            }
+        };
+        if from.stride == to.stride {
+            copy(from.state, to.state, rows * to.stride);
+        }
+        if from.extras == to.extras {
+            copy(from.extra, to.extra, rows * to.extras);
+        }
+    }
+
+    pub(crate) fn write_remap(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, words: &[u32]) {
+        if self.remap.ensure(device, (words.len() as u64 + 1) * 4) {
+            self.generation += 1;
+        }
+        queue.write_buffer(&self.remap.buffer, 0, bytemuck::cast_slice(words));
+    }
+
+    /// Makes room for every mark's uniforms, domains, extents, and normals for `vertices` slots.
+    pub(crate) fn fit(&mut self, device: &wgpu::Device, marks: u64, domains: u64, vertices: u64) {
+        let words = |n: u64| (n + 1) * 4;
+        let count = marks + 1;
+        let mut replaced = self.domains.ensure(device, words(domains));
         replaced |= self.extents.ensure(device, words(u64::from(wgsl::EXTENT_WORDS) * count));
         replaced |= self.marks.ensure(device, MARK_STRIDE * count);
         replaced |= self.normals.ensure(device, words(3 * vertices));
-        let state = self.state.ensure(device, words(state));
-        if replaced || state {
+        replaced |= self.stand_ins.ensure(device, words(vertices));
+        if replaced {
             self.generation += 1;
         }
-        (state, focus)
     }
 
     /// Makes room for `words` of program; true when the buffer was replaced and must be rewritten.
@@ -148,6 +310,37 @@ impl Resources {
         }
     }
 
+    /// Makes the lists buffer hold `words`; true when it was replaced, emptied.
+    pub(crate) fn fit_lists(&mut self, device: &wgpu::Device, words: u64) -> bool {
+        let replaced = self.lists.ensure(device, (words + 1) * 4);
+        if replaced {
+            self.generation += 1;
+        }
+        replaced
+    }
+
+    /// Replaces the labels buffer with `words` of zeros.
+    pub(crate) fn replace_labels(&mut self, device: &wgpu::Device, words: u64) {
+        self.labels = create(device, "latkit labels", ROWS, (words + 1) * 4);
+        self.generation += 1;
+    }
+
+    pub(crate) fn labels(&self) -> &wgpu::Buffer {
+        &self.labels
+    }
+
+    /// Makes the shadow map exist at full size.
+    pub(crate) fn ensure_shadows(&mut self, device: &wgpu::Device) {
+        if self.shadows.levels.len() == 1 {
+            self.shadows = ShadowMap::new(device, SHADE_SIZE);
+            self.generation += 1;
+        }
+    }
+
+    pub(crate) fn eyes(&self) -> &wgpu::Buffer {
+        &self.eyes
+    }
+
     pub(crate) fn program(&self) -> &wgpu::Buffer {
         &self.program.buffer
     }
@@ -161,11 +354,19 @@ impl Resources {
     }
 
     pub(crate) fn focus(&self) -> &wgpu::Buffer {
-        &self.focus.buffer
+        &self.focus
     }
 
     pub(crate) fn focus_words(&self) -> u64 {
-        self.focus.buffer.size() / 4
+        self.focus.size() / 4
+    }
+
+    pub(crate) fn state(&self) -> &wgpu::Buffer {
+        &self.state
+    }
+
+    pub(crate) fn places(&self) -> &wgpu::Buffer {
+        &self.places
     }
 
     pub(crate) fn domains(&self) -> &wgpu::Buffer {
@@ -188,9 +389,33 @@ impl Resources {
         &self.sprites.buffer
     }
 
+    /// Makes room for `words` of a layout's terms and positions.
+    pub(crate) fn fit_layout(&mut self, device: &wgpu::Device, words: u64) {
+        if self.layout.ensure(device, (words + 1) * 4) {
+            self.generation += 1;
+        }
+    }
+
+    pub(crate) fn layout(&self) -> &wgpu::Buffer {
+        &self.layout.buffer
+    }
+
+    pub(crate) fn stand_ins(&self) -> &wgpu::Buffer {
+        &self.stand_ins.buffer
+    }
+
+    /// Changes whenever a buffer or texture is replaced.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn lists(&self) -> &wgpu::Buffer {
+        &self.lists.buffer
+    }
+
     /// The view and mark bind groups, rebuilt when a buffer or texture they bind was replaced.
     pub(crate) fn groups(&mut self, gpu: &Shared, inner: &mut Inner) -> Groups {
-        let key = (inner.arena.generation, inner.colormaps.generation, self.generation);
+        let key = (inner.arena.generation, inner.colormaps.generation, inner.icons.generation, self.generation);
         if let Some((built, groups)) = &self.groups
             && *built == key
         {
@@ -198,6 +423,8 @@ impl Resources {
         }
         let device = &gpu.device;
         let entry = |binding: u32, resource| wgpu::BindGroupEntry { binding, resource };
+        let eye =
+            wgpu::BufferBinding { buffer: &self.eyes, offset: 0, size: NonZeroU64::new(size_of::<wgsl::Eye>() as u64) };
         let view = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("latkit view"),
             layout: &inner.pipelines.view_layout,
@@ -205,9 +432,10 @@ impl Resources {
                 entry(0, self.frame.as_entire_binding()),
                 entry(1, inner.arena.buffer().as_entire_binding()),
                 entry(2, self.program.buffer.as_entire_binding()),
-                entry(3, self.focus.buffer.as_entire_binding()),
+                entry(3, self.focus.as_entire_binding()),
                 entry(4, wgpu::BindingResource::TextureView(&inner.colormaps.view)),
                 entry(5, wgpu::BindingResource::Sampler(&gpu.sampler)),
+                entry(6, wgpu::BindingResource::Buffer(eye)),
             ],
         });
         let binding = wgpu::BufferBinding {
@@ -227,13 +455,41 @@ impl Resources {
 
     /// `shader`'s pass group, binding what its WGSL declares.
     pub(crate) fn pass(&mut self, device: &wgpu::Device, inner: &mut Inner, shader: Shader) -> wgpu::BindGroup {
-        if self.passes_generation != self.generation {
+        let generation = (self.generation, inner.icons.generation);
+        if self.passes_generation != generation {
             self.passes.clear();
-            self.passes_generation = self.generation;
+            self.passes_generation = generation;
         }
         if let Some(group) = self.passes.get(&shader) {
             return group.clone();
         }
+        let group = self.bind(device, inner, shader, &self.state);
+        self.passes.insert(shader, group.clone());
+        group
+    }
+
+    /// The freeze pass's group: state read from the buffer rows moved out of when they moved.
+    pub(crate) fn freeze_group(&mut self, device: &wgpu::Device, inner: &mut Inner, moved: bool) -> wgpu::BindGroup {
+        match self.retired.as_ref().filter(|_| moved) {
+            Some(old) => self.bind(device, inner, Shader::Freeze, &old.state),
+            None => self.pass(device, inner, Shader::Freeze),
+        }
+    }
+
+    /// A shadow map level's group, reading the level below it.
+    pub(crate) fn level_group(&self, device: &wgpu::Device, inner: &mut Inner, below: usize) -> wgpu::BindGroup {
+        let layout = inner.pipelines.pass_layout(device, Shader::Shade);
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("latkit shadow level"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 11,
+                resource: wgpu::BindingResource::TextureView(&self.shadows.levels[below]),
+            }],
+        })
+    }
+
+    fn bind(&self, device: &wgpu::Device, inner: &mut Inner, shader: Shader, state: &wgpu::Buffer) -> wgpu::BindGroup {
         let layout = inner.pipelines.pass_layout(device, shader);
         let entries: Vec<wgpu::BindGroupEntry<'_>> = shader
             .source()
@@ -241,7 +497,8 @@ impl Resources {
             .iter()
             .map(|binding| {
                 let resource = match binding.slot {
-                    0 | 1 => self.state.buffer.as_entire_binding(),
+                    0 => state.as_entire_binding(),
+                    1 => self.frozen.as_ref().unwrap_or(&self.empty).as_entire_binding(),
                     2 => self.extents.buffer.as_entire_binding(),
                     3 => self.normals.buffer.as_entire_binding(),
                     4 => self.domains.buffer.as_entire_binding(),
@@ -251,28 +508,36 @@ impl Resources {
                     ),
                     7 => self.sprites.buffer.as_entire_binding(),
                     8 => wgpu::BindingResource::TextureView(&inner.atlas.view),
+                    9 => self.lists.buffer.as_entire_binding(),
+                    10 => wgpu::BindingResource::TextureView(&self.shadows.view),
+                    12 => self.remap.buffer.as_entire_binding(),
+                    13 => self.labels.as_entire_binding(),
+                    14 => self.stand_ins.buffer.as_entire_binding(),
+                    15 => wgpu::BindingResource::TextureView(&inner.icons.view),
+                    16 => self.places.as_entire_binding(),
+                    17 => self.layout.buffer.as_entire_binding(),
                     other => unreachable!("no resource for pass binding {other}"),
                 };
                 wgpu::BindGroupEntry { binding: binding.slot, resource }
             })
             .collect();
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(shader.source().label),
             layout: &layout,
             entries: &entries,
-        });
-        self.passes.insert(shader, group.clone());
-        group
+        })
     }
 
-    /// The multisampled color and the depth textures a frame of `size` and `format` draws into.
+    /// The color and depth a frame of `size` and `format` draws into with `samples` per pixel: color
+    /// is `None` without multisampling, when marks draw straight into the target.
     pub(crate) fn targets(
         &mut self,
         device: &wgpu::Device,
         size: [u32; 2],
         format: wgpu::TextureFormat,
-    ) -> (&wgpu::TextureView, &wgpu::TextureView) {
-        if self.targets.as_ref().is_none_or(|t| t.size != size || t.format != format) {
+        samples: u32,
+    ) -> (Option<wgpu::TextureView>, wgpu::TextureView) {
+        if self.targets.as_ref().is_none_or(|t| t.size != size || t.format != format || t.samples != samples) {
             let texture = |label, format, usage| {
                 device
                     .create_texture(&wgpu::TextureDescriptor {
@@ -283,7 +548,7 @@ impl Resources {
                             depth_or_array_layers: 1,
                         },
                         mip_level_count: 1,
-                        sample_count: SAMPLES,
+                        sample_count: samples,
                         dimension: wgpu::TextureDimension::D2,
                         format,
                         usage,
@@ -291,16 +556,22 @@ impl Resources {
                     })
                     .create_view(&wgpu::TextureViewDescriptor::default())
             };
-            let color = texture("latkit samples", format, wgpu::TextureUsages::RENDER_ATTACHMENT);
+            let color =
+                (samples > 1).then(|| texture("latkit samples", format, wgpu::TextureUsages::RENDER_ATTACHMENT));
             let depth = texture(
                 "latkit depth",
                 DEPTH,
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             );
-            self.targets = Some(Targets { color, depth, size, format });
+            self.targets = Some(Targets { color, depth, size, format, samples });
             self.generation += 1;
         }
         let targets = self.targets.as_ref().expect("created");
-        (&targets.color, &targets.depth)
+        (targets.color.clone(), targets.depth.clone())
+    }
+
+    /// Samples per pixel of the frame's targets.
+    pub(crate) fn samples(&self) -> u32 {
+        self.targets.as_ref().map_or(1, |t| t.samples)
     }
 }

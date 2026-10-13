@@ -33,7 +33,7 @@ impl Gpu {
     }
 
     /// A view drawing `scene` (JSON) into `canvas`.
-    pub fn view(&self, canvas: web_sys::HtmlCanvasElement, scene: &str) -> Result<View, Error> {
+    pub fn view(&self, canvas: &web_sys::HtmlCanvasElement, scene: &str) -> Result<View, Error> {
         let scene: latkit::Scene = serde_json::from_str(scene).map_err(|e| invalid("scene", &e))?;
         let view = latkit::View::new(&self.0, scene)?;
         Ok(View(latkit::web::Canvas::new(&self.0, canvas, view)?))
@@ -289,6 +289,33 @@ impl View {
     #[wasm_bindgen(getter)]
     pub fn stats(&self) -> JsValue {
         convert::stats(&self.0.read(latkit::View::stats))
+    }
+
+    /// Every row within `radius` CSS pixels of `point`, nearest first, as `{ row, mark, ... }` hits.
+    pub fn pick(&self, point: &[f32], radius: f32) -> Result<js_sys::Promise, Error> {
+        let point: [f32; 2] = point.try_into().map_err(|_| latkit::Error::invalid("a point is [x, y]").at("point"))?;
+        let pending = self.0.with(|v| v.pick(point, radius));
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            let hits = pending.await.map_err(|e| JsValue::from(Error::from(e)))?;
+            Ok(hits.iter().map(convert::hit).collect::<js_sys::Array>().into())
+        }))
+    }
+
+    /// Where `row` (`{ data, table, id }`) lies on screen, `[x, y]`, or `null`.
+    pub fn locate(&self, row: &JsValue) -> Result<js_sys::Promise, Error> {
+        let row = convert::row_of(row)?;
+        let pending = self.0.with(|v| v.locate(&row));
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            let point = pending.await.map_err(|e| JsValue::from(Error::from(e)))?;
+            Ok(point.map_or(JsValue::NULL, |p| js_sys::Array::of2(&p[0].into(), &p[1].into()).into()))
+        }))
+    }
+
+    /// The rows joined to `row` (`{ data, table, id }`): a vertex's neighbors across edges and nets,
+    /// or an edge's or a net's vertices.
+    pub fn neighbors(&self, row: &JsValue) -> Result<js_sys::Array, Error> {
+        let row = convert::row_of(row)?;
+        Ok(self.0.read(|v| v.neighbors(&row)).iter().map(convert::row).collect())
     }
 
     /// Calls `listener` with each event as `{ type, detail }`.

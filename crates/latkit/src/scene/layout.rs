@@ -40,6 +40,29 @@ impl Default for Layered {
     }
 }
 
+/// How an edge runs between its ends.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Route {
+    /// Straight across the screen.
+    Straight,
+    /// Along the great circle, on the earth.
+    Geodesic,
+    /// In horizontal and vertical runs around vertices, leaving and entering at their sides.
+    Orthogonal,
+}
+
+/// How a line runs between its samples.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Interpolation {
+    /// Straight from each sample to the next.
+    #[default]
+    Linear,
+    /// Each value holds from the sample before it: steps rise at their samples' ends.
+    StepBefore,
+    /// Each value holds until the next sample: steps rise at the next sample.
+    StepAfter,
+}
+
 /// A direction on screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Direction {

@@ -56,7 +56,7 @@ impl View {
         let Some(bytes) = readback.take() else { return };
         let fit = self.fitting.reading.take().and_then(|(_, fit)| fit);
         if let Ok(bytes) = bytes {
-            self.measured(bytemuck::cast_slice(&bytes), fit);
+            self.measured(bytemuck::cast_slice(&bytes), fit.as_ref());
         }
         if !self.focus.fitting.is_empty() {
             self.focus.fitting.clear();
@@ -69,7 +69,9 @@ impl View {
         if self.fitting.reading.is_some() || self.size[0] <= 0.0 {
             return None;
         }
-        let ready = self.marks.iter().filter(|m| m.compiled.is_some()).all(|m| m.drawable() && !m.tables.waiting());
+        // A fit frames what shows once data has streamed and any layout has placed it.
+        let ready = self.marks.iter().filter(|m| m.compiled.is_some()).all(|m| m.drawable() && !m.tables.waiting())
+            && !self.laying_out();
         if matches!(self.fitting.wanted, Some(Fit::All | Fit::Rows(_) | Fit::Reveal(_))) {
             let measurable = self.marks.iter().any(|m| m.compiled.is_some() && m.measured());
             if !measurable {
@@ -95,7 +97,7 @@ impl View {
     }
 
     /// Frames the extents measured for `fit`, or fits a plot's value range to its traces.
-    fn measured(&mut self, words: &[u32], fit: Option<Fit>) {
+    fn measured(&mut self, words: &[u32], fit: Option<&Fit>) {
         let stride = wgsl::EXTENT_WORDS as usize;
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
@@ -109,7 +111,7 @@ impl View {
                 hi[k] = hi[k].max(f64::from(unordered(e[3 + k])));
             }
         }
-        if !(lo[0] <= hi[0]) {
+        if lo[0] > hi[0] {
             return;
         }
         match fit {

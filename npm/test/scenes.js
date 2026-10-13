@@ -51,7 +51,7 @@ export default [
         }
       }
     ],
-    "theme": { "base": "dark", "vertexRadius": 5, "edge": null, "selected": "#ff8800", "shadow": "#00000055" }
+    "theme": { "base": "dark", "vertexRadius": 5, "edge": null, "selected": "#ff8800", "shadow": { "color": "#00000055", "lift": 4 } }
   },
   {
     "space": { "plane": { "grid": { "lines": 1 } } },
@@ -66,5 +66,52 @@ export default [
   {
     "space": { "plot": { "x": { "label": "Time (s)" } } },
     "marks": [{ "lines": { "of": ["mesh", "Body"], "samples": "height", "color": "#66c7ff", "width": 2 } }]
+  },
+  {
+    "space": { "plot": { "y": { "format": "engineering", "precision": 1, "ticks": [0, [0.5, "half"], 1] } } },
+    "controls": { "selectBox": true },
+    "marks": [
+      {
+        "lines": {
+          "of": ["mesh", "Body"],
+          "samples": "speed",
+          "interpolation": "stepAfter",
+          "label": { "text": "name", "size": 11, "priority": "rank", "maxWidth": 120 }
+        }
+      },
+      {
+        "vertices": {
+          "of": ["grid", "Bus"],
+          "marker": { "gauge": { "fill": "load", "shape": "rounded" } },
+          "status": { "color": "#ff0000" },
+          "label": "name",
+          "radius": { "op": "mul", "args": [{ "state": "zoom" }, 2] }
+        }
+      },
+      { "vertices": { "of": ["grid", "Plant"], "marker": { "pie": { "slices": ["coal", "gas"], "colors": ["#333333", "#88aaff"], "hole": 0.4 } } } },
+      { "vertices": { "of": ["grid", "Icon"], "marker": { "icon": { "images": [{ "size": [1, 1], "rgba": [255, 0, 0, 255] }], "index": 0 } } } },
+      { "vertices": { "of": ["grid", "Custom"], "marker": { "wgsl": { "source": "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }", "inputs": ["load"] } } } },
+      { "edges": { "of": ["grid", "Branch"], "ends": ["from", "to"], "shadow": true } }
+    ],
+    "theme": { "edgeSpacing": 5, "arrow": 8, "halo": 2, "shadow": { "light": [-1, 1, 2], "softness": 0.2 } }
+  },
+  {
+    "space": "plane",
+    "layout": { "stress": { "gap": 50 } },
+    "controls": { "connect": true, "delete": true },
+    "marks": [
+      { "vertices": { "of": ["diagram", "Area"], "contains": ["Device", "area"], "collapsed": "folded", "marker": "rounded" } },
+      { "edges": { "of": ["diagram", "Wire"], "ends": ["from", "to"], "bends": "path", "route": "orthogonal", "arrows": true } },
+      { "edges": { "of": ["diagram", "Net"] } },
+      {
+        "vertices": {
+          "of": ["diagram", "Device"],
+          "size": [40, 24],
+          "marker": "rectangle",
+          "ports": [["input", "left"], ["output", { "side": "right", "order": 0, "label": "out", "shape": "diamond" }]]
+        }
+      }
+    ],
+    "theme": { "groupPadding": 16 }
   }
 ];

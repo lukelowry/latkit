@@ -1,16 +1,14 @@
-// What marks draw, measured for fitting: the least and greatest x, y, and z of each mark's placed,
-// visible rows in position units, as ordered words. While a fit measures chosen rows, only rows
-// marked FIT count.
+// What marks draw, measured for fitting: the least and greatest x, y, and z of each mark's shown
+// instances in position units, as ordered words, through the same geometry the draws use. While a
+// fit measures chosen rows, only rows marked FIT count.
 
-import package::lib::types::{
-    VISIBLE, PINNED, PLACED, FIT, VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, EXTENT_WORDS,
-};
+import package::lib::types::{NONE, FIT, PATH_ENDS, EXTENT_WORDS, VERTEX_POSITION};
 import package::lib::bind::{frame, mark, state};
 import package::lib::focus::focus_of;
 import package::lib::reduce::ordered;
-import package::lib::read::missing_bits;
-import package::lib::state::{row_at, line_at};
-import package::lib::trace::{trace_first, trace_frames, trace_axis, trace_value};
+import package::lib::state::{row_at, vertex_at};
+import package::lib::points::placed;
+import package::lib::path::{segment, segment_ends, stroke_style, stroke_instances};
 
 @group(2) @binding(2) var<storage, read_write> extents: array<atomic<u32>>;
 
@@ -24,34 +22,35 @@ fn extend(p: vec3f) {
     atomicMax(&extents[e + 5u], ordered(p.z));
 }
 
-@compute @workgroup_size(256)
-fn vertices(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= mark.rows || (frame.fitting != 0u && (focus_of(id.x) & FIT) == 0u) {
-        return;
-    }
-    let at = row_at(id.x);
-    let flags = state[at + VERTEX_FLAGS];
-    if (flags & VISIBLE) == 0u || (flags & (PINNED | PLACED)) == 0u {
-        return;
-    }
-    let p = at + VERTEX_POSITION;
-    let x = bitcast<f32>(state[p]) + bitcast<f32>(state[p + 2u]);
-    let y = bitcast<f32>(state[p + 1u]) + bitcast<f32>(state[p + 3u]);
-    extend(vec3f(x, y, bitcast<f32>(state[at + VERTEX_ELEVATION])));
+fn counted(row: u32) -> bool {
+    return frame.fitting == 0u || (focus_of(row) & FIT) != 0u;
 }
 
 @compute @workgroup_size(256)
-fn traces(@builtin(global_invocation_id) id: vec3u) {
-    let frames = trace_frames();
-    if frames == 0u || id.x >= mark.rows * frames {
+fn points(@builtin(global_invocation_id) id: vec3u) {
+    if id.x >= mark.rows || !counted(id.x) {
         return;
     }
-    let row = id.x / frames;
-    let index = trace_first() + id.x % frames;
-    let value = trace_value(row, index);
-    if (line_at(row_at(row)).flags & VISIBLE) == 0u || missing_bits(value) {
+    let v = vertex_at(row_at(id.x));
+    if (v.flags & 1u) == 0u || !placed(v) {
         return;
     }
-    let x = trace_axis(index);
-    extend(vec3f(x.x + x.y, bitcast<f32>(value), 0.0));
+    extend(vec3f(v.hi + v.lo, v.elevation));
+}
+
+@compute @workgroup_size(256)
+fn strokes(@builtin(global_invocation_id) id: vec3u) {
+    if mark.source == PATH_ENDS || id.x >= stroke_instances() {
+        return;
+    }
+    let s = segment(id.x);
+    if s.row >= mark.rows || !counted(s.row) || !stroke_style(s.row).shown {
+        return;
+    }
+    let ends = segment_ends(s);
+    for (var i = 0u; i < 2u; i++) {
+        if ends[i].shown {
+            extend(ends[i].position);
+        }
+    }
 }

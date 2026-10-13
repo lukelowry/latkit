@@ -16,6 +16,8 @@ mod gpu;
 #[cfg(feature = "gpu")]
 pub mod host;
 #[cfg(feature = "gpu")]
+mod layout;
+#[cfg(feature = "gpu")]
 mod scene;
 #[cfg(feature = "gpu")]
 mod view;
@@ -28,12 +30,16 @@ pub use error::{Error, Path, Result, Step};
 pub use {
     expr::{
         Color, Colormap, ColormapKind, Expr, Mapped, Size, Then, When, elapsed, field, hovered, pointer, selected,
-        units, when,
+        units, when, zoom,
     },
     gpu::{Budget, Gpu},
     scene::{
-        Axis, Controls, Direction, Earth, Edges, Faces, Grid, Layered, Layout, Lines, Mark, Marker, Plane, Plot,
-        Projection, Scene, Shape, Space, Stress, Theme, Vertices,
+        Axis, Controls, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered, Layout,
+        Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space, Stress, Theme,
+        Vertices,
     },
-    view::{Button, Camera, Cursor, Drag, Event, Fit, Hit, Input, Key, Modifiers, Phase, Stats, Target, View},
+    view::{
+        Button, Camera, Cursor, Drag, End, Event, Fit, Hit, Input, Key, Modifiers, Pending, Phase, Sample, Stats,
+        Target, View,
+    },
 };

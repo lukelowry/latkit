@@ -74,7 +74,6 @@ pub enum Button {
 
 /// Keys held during an input.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(clippy::struct_excessive_bools, reason = "one flag per key")]
 pub struct Modifiers {
     /// Shift.
     pub shift: bool,
@@ -115,6 +114,8 @@ pub enum Key {
     Up,
     /// Down arrow.
     Down,
+    /// The context menu key.
+    Menu,
     /// Any other key.
     Other,
 }

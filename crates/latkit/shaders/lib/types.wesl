@@ -51,6 +51,8 @@ const OP_MOD: u32 = 39u;
 const OP_POW: u32 = 40u;
 const OP_LOG: u32 = 41u;
 const OP_EXP: u32 = 42u;
+const OP_ZOOM: u32 = 43u;
+const OP_STORE_CODE: u32 = 44u;
 
 // Values the expression stack holds at once.
 const STACK: u32 = 16u;
@@ -67,10 +69,14 @@ const COLUMN_T: u32 = 5u;
 const SAMPLED: u32 = 1u;
 const STEP: u32 = 2u;
 const BITS: u32 = 4u;
+const GEOMETRY: u32 = 8u;
 
 // Rows per data page, as a shift.
 const PAGE_BITS: u32 = 16u;
 const PAGE_MASK: u32 = 65535u;
+// Points of a geometry page per arena block: four words each, high then low.
+const POINT_BITS: u32 = 14u;
+const POINT_MASK: u32 = 16383u;
 
 // Vertex state words.
 const VERTEX_WORDS: u32 = 10u;
@@ -81,7 +87,7 @@ const VERTEX_HALF: u32 = 6u;
 const VERTEX_ELEVATION: u32 = 8u;
 const VERTEX_FLAGS: u32 = 9u;
 
-// Edge state words.
+// Edge state words. Every kind's flags are its last word.
 const EDGE_WORDS: u32 = 6u;
 const EDGE_FROM: u32 = 0u;
 const EDGE_TO: u32 = 1u;
@@ -89,6 +95,22 @@ const EDGE_COLOR: u32 = 2u;
 const EDGE_WIDTH: u32 = 3u;
 const EDGE_FLOW: u32 = 4u;
 const EDGE_FLAGS: u32 = 5u;
+
+// Graph words, which the view writes beside a mark's program: a port's side, its place among the
+// ports on that side, and how many share the side; a net's terminal: the end table it is in, its row
+// there, and its port.
+const PORT_WORDS: u32 = 2u;
+const PORT_CODE: u32 = 0u;
+const PORT_SHAPE: u32 = 1u;
+const SIDE_LEFT: u32 = 0u;
+const SIDE_RIGHT: u32 = 1u;
+const SIDE_TOP: u32 = 2u;
+const SIDE_BOTTOM: u32 = 3u;
+const TERMINAL_WORDS: u32 = 3u;
+// CSS pixels across a port's marker.
+const PORT_SIZE: f32 = 7.0;
+// Angle a geodesic segment spans at most, in degrees.
+const GEODESIC_STEP: f32 = 2.0;
 
 // Face state words.
 const FACE_WORDS: u32 = 5u;
@@ -105,18 +127,33 @@ const LINE_WIDTH: u32 = 1u;
 const LINE_FLOW: u32 = 2u;
 const LINE_FLAGS: u32 = 3u;
 
-// Area state words.
-const AREA_WORDS: u32 = 4u;
-const AREA_COLOR: u32 = 0u;
-const AREA_OUTLINE: u32 = 1u;
-const AREA_WIDTH: u32 = 2u;
-const AREA_FLAGS: u32 = 3u;
-
-// Label state words, after a labeled mark's own words.
+// Label words, among a labeled mark's extra words: the text's code, its priority as a level from 0
+// to 255, and its color.
 const LABEL_WORDS: u32 = 3u;
-const LABEL_TEXT: u32 = 0u;
+const LABEL_CODE: u32 = 0u;
 const LABEL_PRIORITY: u32 = 1u;
-const LABEL_SIZE: u32 = 2u;
+const LABEL_COLOR: u32 = 2u;
+
+// A label's words in the labels buffer, per labeled row: its box in CSS pixels, its key, its state,
+// its text's rectangle in the atlas (two corners, 16 bits each), its color, and how present it is.
+const CANDIDATE_WORDS: u32 = 10u;
+const CANDIDATE_BOX: u32 = 0u;
+const CANDIDATE_KEY: u32 = 4u;
+const CANDIDATE_STATE: u32 = 5u;
+const CANDIDATE_UV: u32 = 6u;
+const CANDIDATE_COLOR: u32 = 8u;
+const CANDIDATE_ALPHA: u32 = 9u;
+// Candidate states: in view and wanting room, placed, dropped, and placed in the frame before.
+const WANTS: u32 = 1u;
+const PLACED_LABEL: u32 = 2u;
+const DROPPED: u32 = 4u;
+const STICKY: u32 = 8u;
+// A cell a placed label holds.
+const OCCUPIED: u32 = 0u;
+// CSS pixels a cell of the label grid covers.
+const CELL: f32 = 8.0;
+// Codes a mark asks the host to set at most per frame.
+const WANTED: u32 = 64u;
 
 // State flags.
 const VISIBLE: u32 = 1u;
@@ -125,6 +162,21 @@ const PINNED: u32 = 2u;
 const DASH: u32 = 4u;
 // A layout placed the row.
 const PLACED: u32 = 8u;
+// While a mark eases, a row that appears fades in and one that disappears or left fades out.
+const FADE_IN: u32 = 16u;
+const FADE_OUT: u32 = 32u;
+// A row that entered with this change: it has no state to ease from.
+const ENTERING: u32 = 64u;
+// A group whose members are hidden inside it.
+const COLLAPSED: u32 = 128u;
+// A vertex whose size is in position units, and one with its own height: what any reader of its
+// slot needs to know its size in pixels.
+const HALF_UNITS: u32 = 256u;
+const OWN_HEIGHT: u32 = 512u;
+// A stand-in word's bit for a member of a group that is not collapsed.
+const OPEN_GROUP: u32 = 0x80000000u;
+// Levels of groups within groups that are followed.
+const GROUP_DEPTH: u32 = 8u;
 
 // Mark kinds.
 const MARK_VERTICES: u32 = 0u;
@@ -132,10 +184,28 @@ const MARK_EDGES: u32 = 1u;
 const MARK_FACES: u32 = 2u;
 const MARK_LINES: u32 = 3u;
 
+// Primitives.
+const POINTS: u32 = 0u;
+const STROKES: u32 = 1u;
+const TRIANGLES: u32 = 2u;
+const GLYPHS: u32 = 3u;
+
+// What a stroke's segments run between.
+const PATH_ENDS: u32 = 0u;
+const PATH_TRACE: u32 = 1u;
+const PATH_GEOMETRY: u32 = 2u;
+const PATH_NET: u32 = 3u;
+
 // Mark flags.
 const SIZED: u32 = 1u;
 const ARROWS: u32 = 2u;
 const ENDS_COLOR: u32 = 4u;
+const GEODESIC: u32 = 8u;
+const STATUS: u32 = 16u;
+const LABELED: u32 = 32u;
+const STEP_BEFORE: u32 = 64u;
+const STEP_AFTER: u32 = 128u;
+const CASTS: u32 = 256u;
 
 // Focus bits per row; FIT marks the rows a fit measures.
 const SELECTED: u32 = 1u;
@@ -145,19 +215,27 @@ const FIT: u32 = 4u;
 // Ordered words per mark in the extents buffer: least x, y, z as complements, then greatest.
 const EXTENT_WORDS: u32 = 6u;
 
-// Probe words: the least key (distance, then the mark drawn last), the row plus one, where the hit
-// lies (its depth and screen point), and the nearest depth drawn under the probe.
+// Probe words: the least key (distance, then the mark drawn last), the instance plus one, where the
+// hit lies (its depth and screen point), the nearest depth drawn under the probe, and the instance's
+// row and segment.
 const PROBE_KEY: u32 = 0u;
-const PROBE_ROW: u32 = 1u;
+const PROBE_INSTANCE: u32 = 1u;
 const PROBE_DEPTH: u32 = 2u;
 const PROBE_X: u32 = 3u;
 const PROBE_Y: u32 = 4u;
 const PROBE_UNDER: u32 = 5u;
-const PROBE_WORDS: u32 = 8u;
+const PROBE_ROW: u32 = 6u;
+const PROBE_SEGMENT: u32 = 7u;
+// Where a located row lies on screen, and whether it shows.
+const PROBE_LOCATE_X: u32 = 8u;
+const PROBE_LOCATE_Y: u32 = 9u;
+const PROBE_LOCATED: u32 = 10u;
+const PROBE_WORDS: u32 = 12u;
 
 // Overlay sprites.
 const SPRITE_LINE: u32 = 0u;
 const SPRITE_TEXT: u32 = 1u;
+const SPRITE_BOX: u32 = 2u;
 
 // Spaces.
 const SPACE_EARTH: u32 = 0u;
@@ -169,6 +247,8 @@ const MARKER_SHAPE: u32 = 0u;
 const MARKER_GAUGE: u32 = 1u;
 const MARKER_PIE: u32 = 2u;
 const MARKER_BLOCK: u32 = 3u;
+const MARKER_ICON: u32 = 4u;
+const MARKER_CUSTOM: u32 = 5u;
 const SHAPE_ELLIPSE: u32 = 0u;
 const SHAPE_RECTANGLE: u32 = 1u;
 const SHAPE_ROUNDED: u32 = 2u;
@@ -198,21 +278,49 @@ const GRID_OFF: u32 = 0u;
 const GRID_LINES: u32 = 1u;
 const GRID_DOTS: u32 = 2u;
 
+// A list's header: its item count; where its counts (scanned in place to where each item's entries
+// start, then the total), block sums, and entries start; the indirect arguments a draw and a
+// dispatch over its entries read; and how many entries it keeps.
+const LIST_ITEMS: u32 = 0u;
+const LIST_COUNTS: u32 = 1u;
+const LIST_SUMS: u32 = 2u;
+const LIST_ENTRIES: u32 = 3u;
+// Draw arguments: vertices, instances (the total), first vertex, first instance.
+const LIST_DRAW: u32 = 4u;
+// Dispatch arguments: workgroups over the total, 1, 1.
+const LIST_DISPATCH: u32 = 8u;
+// Entries the list keeps: past them, entries are counted but not written.
+const LIST_KEPT: u32 = 11u;
+const LIST_HEADER: u32 = 12u;
+// Counts a workgroup of the scan takes.
+const SCAN_WORKGROUP: u32 = 256u;
+
+
+// How shadows fall: the light, how they darken and soften, and the ground the map covers.
+struct Shade {
+    color: vec4f,
+    // The direction toward the light, in world units, and how much shadows spread per unit of height.
+    light: vec4f,
+    // The ground the map covers: least x and y, greatest x and y, in world units.
+    rect: vec4f,
+    // World units flat marks cast from, world units per texel of the map, its levels, and whether
+    // anything casts.
+    lift: f32,
+    texel: f32,
+    levels: f32,
+    on: u32,
+}
+
 // What every draw and dispatch of a frame reads.
 struct Frame {
-    clip_from_world: mat4x4f,
-    world_from_clip: mat4x4f,
-    // The camera's position, and the direction toward the key light, in world units.
-    eye: vec4f,
-    light: vec4f,
     center_hi: vec2f,
     center_lo: vec2f,
-    size: vec2f,
-    px_per_unit: vec2f,
     pointer: vec2f,
-    // Where a probe looks, CSS pixels.
+    // Where a probe looks, CSS pixels, and the box a query covers.
     probe: vec2f,
-    pixel_ratio: f32,
+    query: vec4f,
+    // The direction toward the key light faces are lit by, which turns with the camera.
+    light: vec4f,
     space: u32,
     globe: f32,
     mercator_y: f32,
@@ -221,6 +329,8 @@ struct Frame {
     selecting: u32,
     // 1 while a fit measures only the rows marked FIT.
     fitting: u32,
+    // 1 when the target stores linear color (an sRGB format): outputs convert from sRGB.
+    linear: u32,
     glow: f32,
     dim: f32,
     dash: f32,
@@ -228,57 +338,116 @@ struct Frame {
     edge_spacing: f32,
     hover_scale: f32,
     shading: f32,
-    // 1 when the target stores linear color (an sRGB format): outputs convert from sRGB.
-    linear: u32,
-    hover: vec4f,
-    selected: vec4f,
-    flow: vec4f,
-    // Backdrop: background, surface (Earth), grid and graticule lines; and the color shadows darken.
-    background: vec4f,
-    surface: vec4f,
-    grid_color: vec4f,
-    shadow: vec4f,
+    arrow: f32,
+    halo: f32,
+    // CSS pixels between a group's members and its outline.
+    group_padding: f32,
+    zoom: f32,
+    // The label grid: where its cells start in the labels buffer, and its columns and rows; and how
+    // far labels fade per frame.
+    cells: u32,
+    cell_columns: u32,
+    cell_rows: u32,
+    label_fade: f32,
     // A plane's grid: its kind, pitch in position units, and the world distance from the center it
     // fades out by, 0 for none; and whether the earth draws its graticule.
     grid_kind: u32,
     grid_pitch: f32,
     grid_fade: f32,
     graticule: u32,
+    hover: vec4f,
+    selected: vec4f,
+    flow: vec4f,
+    background: vec4f,
+    surface: vec4f,
+    grid_color: vec4f,
+    shade: Shade,
     theme: array<vec4u, 4>,
+}
+
+// What one pass draws through: the view, the light casting shadows, or an exported image.
+struct Eye {
+    clip_from_world: mat4x4f,
+    world_from_clip: mat4x4f,
+    // The camera's position in world units.
+    position: vec4f,
+    // The target's size in CSS pixels; the light's map counts CSS pixels of the view it serves.
+    size: vec2f,
+    px_per_unit: vec2f,
+    // Target pixels per CSS pixel.
+    pixel_ratio: f32,
+    // World units casters are raised by: the shadow's lift in the light's eye, 0 elsewhere.
+    lift: f32,
 }
 
 // One mark's parameters, at a 256-byte aligned dynamic offset.
 struct Mark {
     index: u32,
     kind: u32,
+    primitive: u32,
+    source: u32,
+    // Rows drawn and evaluated, and rows past them that left and fade out.
     rows: u32,
+    exits: u32,
+    // Each row's kind words: where row 0's start and how many; then its extra words.
     state: u32,
     stride: u32,
-    previous: u32,
-    remap: u32,
+    extra: u32,
+    extras: u32,
+    // While the mark eases, where row 0's frozen kind and extra words start; NONE otherwise.
+    frozen: u32,
+    frozen_extra: u32,
+    motion: f32,
+    focus: u32,
+    domains: u32,
     columns: u32,
     ranges: u32,
     code: u32,
     constants: u32,
+    ends: u32,
     channels: u32,
     reductions: u32,
     mask: u32,
-    domains: u32,
-    ends: u32,
-    focus: u32,
     units: u32,
     flags: u32,
     marker: u32,
     shape: u32,
+    corner: f32,
+    hole: f32,
+    // Marker inputs: how many, the extra word of the first, and where their colors start in the constants.
     inputs: u32,
-    vertices: u32,
+    input: u32,
+    palette: u32,
     // The program column a line traces, or NONE.
     trace: u32,
-    // Eased progress of the mark's transition: 1 when none runs.
-    motion: f32,
-    hole: f32,
-    corner: f32,
-    pie: array<vec4f, 8>,
+    // Segments of each row when every row has as many; NONE when the mark's list numbers them.
+    per_row: u32,
+    // Where the header of the mark's list of segments starts in the lists buffer, and of the list
+    // a query builds over its instances.
+    list: u32,
+    query: u32,
+    // Where row 0's place starts in the places buffer, or NONE.
+    places: u32,
+    // The first program column a group's members are read through, or NONE.
+    members: u32,
+    // Where the mark's remap words start, while its transition is being frozen.
+    remap: u32,
+    // Graph words in the program: each row's lane, in lanes from the middle among edges joining the
+    // same two vertices; each row's path points (row starts, then x and y); each net row's terminals
+    // (row starts, then terminals); each port of a vertex mark's rows, and how many each row has.
+    lanes: u32,
+    paths: u32,
+    terminals: u32,
+    port_info: u32,
+    ports: u32,
+    // The extra word of the label's code, or NONE; the labels buffer's offsets of its candidates, its
+    // run table (two words per code), and its wanted codes (a count, then codes); the id of its first
+    // candidate, unique across marks.
+    label: u32,
+    candidates: u32,
+    runs: u32,
+    wanted: u32,
+    label_id: u32,
 }
 
 // A line or a run of text drawn over the marks, in CSS pixels.

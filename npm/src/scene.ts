@@ -17,7 +17,7 @@ export type ExprNode =
   | string
   | FieldNode
   | { color: Color }
-  | { state: 'selected' | 'hovered' | 'pointer' | 'elapsed' }
+  | { state: 'selected' | 'hovered' | 'pointer' | 'elapsed' | 'zoom' }
   | { missing: true }
   | { op: Unary; args: [ExprNode] }
   | { op: Binary; args: [ExprNode, ExprNode] }
@@ -209,6 +209,8 @@ export const hovered = (): Expr => new Expr({ state: 'hovered' });
 export const pointer = (): Expr => new Expr({ state: 'pointer' });
 /** Seconds since the view was created. */
 export const elapsed = (): Expr => new Expr({ state: 'elapsed' });
+/** The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. */
+export const zoom = (): Expr => new Expr({ state: 'zoom' });
 /** A missing value: options that read one take the theme's. */
 export const missing = (): Expr => new Expr({ missing: true });
 /** A size in position units, so it scales as the view zooms. */
@@ -316,6 +318,13 @@ export interface Controls {
   hover?: boolean;
   /** CSS pixels around the pointer that picks reach, 6 by default; touch reaches 8 more. */
   pickRadius?: number;
+  /** Dragging the background with Shift selects the rows in a box, instead of turning. Off by default. */
+  selectBox?: boolean;
+  /** Dragging from a port, from a vertex with Alt, or an edge off its end draws a connection, told as
+   * a `connect` event. Off by default. */
+  connect?: boolean;
+  /** Delete and Backspace tell a `delete` event with the selection. Off by default. */
+  delete?: boolean;
 }
 
 export type Space =
@@ -332,6 +341,12 @@ export interface Axis {
   label?: string;
   grid?: boolean;
   hidden?: boolean;
+  /** Ticks at these values, with these labels or their values written; round values unless given. */
+  ticks?: (number | [number, string | null])[];
+  /** How tick values are written: `auto` (fixed, scientific when very large or small). */
+  format?: 'auto' | 'fixed' | 'scientific' | 'engineering';
+  /** Decimals of fixed values, or of the significand otherwise; as many as the ticks need unless set. */
+  precision?: number;
 }
 
 export type Layout =
@@ -370,8 +385,28 @@ export interface Theme {
   dash?: number;
   flow?: Color;
   flowSpacing?: number;
-  /** What shadows darken with. */
-  shadow?: Color;
+  /** CSS pixels between the lanes of edges joining the same two vertices. */
+  edgeSpacing?: number;
+  /** CSS pixels an arrowhead reaches past its edge's width. */
+  arrow?: number;
+  /** CSS pixels of background around label text. */
+  halo?: number;
+  /** CSS pixels between a group's members and its outline. */
+  groupPadding?: number;
+  /** How marks that cast shadows cast them. */
+  shadow?: Shadow;
+}
+
+/** How marks that cast shadows cast them onto the ground and onto faces. */
+export interface Shadow {
+  /** What a shadow darkens toward; its alpha is how dark a shadow at contact gets. */
+  color?: Color;
+  /** The direction toward the light, fixed in the world: shadows fall away from it. */
+  light?: [number, number, number];
+  /** How much a shadow spreads per unit of a caster's height. */
+  softness?: number;
+  /** CSS pixels flat marks cast from, as if raised. */
+  lift?: number;
 }
 
 interface Style {
@@ -387,16 +422,63 @@ interface Style {
   select?: boolean;
   /** Whether pressing a row drags it instead of panning; off by default. */
   drag?: boolean;
+  /** Each row's text: a text field, or a {@link Label}. */
+  label?: ExprInput | Label;
 }
+
+/** A row's text, placed beside, inside, or along what its mark draws; overlapping labels give way by priority. */
+export interface Label {
+  /** A text field. */
+  text: ExprInput;
+  /** CSS pixels; the theme's font size unless set. */
+  size?: number;
+  color?: ExprInput;
+  /** Where labels would overlap, the higher shows. */
+  priority?: ExprInput;
+  /** CSS pixels a line runs to before it wraps. */
+  maxWidth?: number;
+}
+
+export type Shape = 'ellipse' | 'rectangle' | 'rounded' | 'diamond';
+
+/** A side of a marker. */
+export type Side = 'left' | 'right' | 'top' | 'bottom';
+
+/** A vertex's port: where a net its reference field names meets it, on one side of its marker. */
+export type Port =
+  | Side
+  | {
+      side: Side;
+      /** Its place among the ports on that side, from the top or the left; in declaration order unless set. */
+      order?: number;
+      /** Its name drawn beside it. */
+      label?: string;
+      shape?: Shape;
+    };
 
 export type Marker =
   | 'disc'
-  | 'ellipse'
-  | 'rectangle'
-  | 'rounded'
-  | 'diamond'
+  | Shape
   | 'block'
-  | { block: { corner?: number } };
+  | { block: { corner?: number } }
+  /** A shape's outline filled to `fill`, from 0 to 1. */
+  | { gauge: { fill: ExprInput; shape?: Shape } }
+  /** A circle cut into slices as large as their values. */
+  | { pie: { slices: ExprInput[]; colors: Color[]; hole?: number } }
+  /** One of `images` per row, by `index`; {@link icon} writes it from `ImageData`. */
+  | { icon: { images: { size: [number, number]; rgba: number[] }[]; index: ExprInput } }
+  /** WGSL defining `fn marker(f: MarkerFragment) -> MarkerColor`, reading `inputs` as `f.input[i]`. */
+  | { wgsl: { source: string; inputs?: ExprInput[] } };
+
+/** An icon marker showing one of `images` for each row, picked by `index`. */
+export function icon(images: ImageData[], index: ExprInput): Marker {
+  return {
+    icon: {
+      images: images.map((image) => ({ size: [image.width, image.height], rgba: Array.from(image.data) })),
+      index,
+    },
+  };
+}
 
 export type Mark =
   | {
@@ -406,27 +488,53 @@ export type Mark =
         radius?: Size;
         size?: [Size, Size];
         marker?: Marker;
-        /** Whether each row casts a soft shadow. */
+        /** A ring around each row's marker in this color. */
+        status?: ExprInput;
+        /** Whether each row casts a shadow onto the ground, away from the theme's light. */
         shadow?: boolean;
+        /** A port on each row for each reference field naming a net, which an `edges` mark of the
+         * net table without ends draws. */
+        ports?: [reference: string, port: Port][];
+        /** Makes each row a group: it holds the rows of `table` whose reference field names it, and is
+         * drawn around them. */
+        contains?: [table: string, reference: string];
+        /** Whether each group hides its members inside it; edges to them end at the group. */
+        collapsed?: ExprInput;
       };
     }
   | {
+      /** Rows drawn as strokes between the vertices two reference fields name; without ends, each
+       * row is a net joining every vertex port whose reference field names it. */
       edges: Style & {
-        ends: [from: string, to: string];
+        ends?: [from: string, to: string];
         width?: Size;
         dash?: ExprInput;
         flow?: ExprInput;
+        /** Whether each row casts a shadow onto the ground, away from the theme's light. */
+        shadow?: boolean;
+        /** A path field of points each row runs through between its ends. */
+        bends?: string;
+        /** How each row runs between its ends; on the earth geodesic, elsewhere straight, unless set. */
+        route?: 'straight' | 'geodesic' | 'orthogonal';
+        /** Whether each row ends in an arrowhead at its second end. */
+        arrows?: boolean;
       };
     }
   | {
       /** Triangles between three vertices; without a color, each blends its corners' colors. */
       faces: Style & {
         corners: [a: string, b: string, c: string];
-        /** Whether each face casts a shadow straight down onto the ground. */
+        /** Whether each face casts a shadow onto the ground and onto other faces. */
         shadow?: boolean;
       };
     }
   | {
       /** On a plot, each row traces the sampled field `samples` across the axis. */
-      lines: Style & { samples: string; width?: Size; dash?: ExprInput };
+      lines: Style & {
+        samples: string;
+        width?: Size;
+        dash?: ExprInput;
+        /** How each row runs between its samples. */
+        interpolation?: 'linear' | 'stepBefore' | 'stepAfter';
+      };
     };

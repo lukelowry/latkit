@@ -2,9 +2,13 @@
 
 use std::sync::Arc;
 
+use super::rows::Region;
 use super::sync::Tables;
+use super::transition::{Begin, Transition};
+use crate::data::Table;
 use crate::expr::compile::{Compiler, Deps, Fields, Program};
 use crate::gpu::Inner;
+use crate::gpu::shaders as wgsl;
 use crate::scene::mark::{Drawing, Key, MarkKind};
 use crate::{Data, Error, Kind, Mark, Name, Result, Theme};
 
@@ -17,13 +21,38 @@ pub(crate) struct Compiled {
 }
 
 /// Where a mark's parts sit in the program buffer, as absolute word offsets.
-#[derive(Clone, Copy, Default, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Offsets {
     pub(crate) columns: u32,
     pub(crate) ranges: u32,
     pub(crate) code: u32,
     pub(crate) constants: u32,
     pub(crate) ends: u32,
+    pub(crate) palette: u32,
+    pub(crate) lanes: u32,
+    pub(crate) paths: u32,
+    pub(crate) terminals: u32,
+    pub(crate) port_info: u32,
+    pub(crate) members: u32,
+}
+
+impl Default for Offsets {
+    fn default() -> Offsets {
+        let none = wgsl::NONE;
+        Offsets {
+            columns: 0,
+            ranges: 0,
+            code: 0,
+            constants: 0,
+            ends: 0,
+            palette: 0,
+            lanes: none,
+            paths: none,
+            terminals: none,
+            port_info: none,
+            members: none,
+        }
+    }
 }
 
 pub(crate) struct Shown {
@@ -31,11 +60,17 @@ pub(crate) struct Shown {
     pub(crate) key: Key,
     pub(crate) compiled: Option<Compiled>,
     pub(crate) tables: Tables,
-    /// Rows of the mark's table when last synced.
+    /// Rows of the mark's table when last synced, and rows past them that left and fade out.
     pub(crate) rows: u32,
-    /// Word offset of row 0 in the state buffer, word offset in the focus buffer, first domain.
-    pub(crate) offset: u32,
-    pub(crate) focus: u32,
+    pub(crate) exits: u32,
+    /// Rows the region held when the frame began: what moves and freezes.
+    pub(crate) held: u32,
+    /// The table whose rows the mark's state holds, for following rows by id when they move.
+    pub(crate) drawn: Option<Table>,
+    /// Where its rows sit in every per-row buffer, and where they sat before this frame moved them.
+    pub(crate) region: Region,
+    pub(crate) moved: Option<Region>,
+    /// First fitted domain.
     pub(crate) domains: u32,
     /// Channels to evaluate, and whether fitted domains reduce, next frame.
     pub(crate) dirty: u32,
@@ -47,9 +82,32 @@ pub(crate) struct Shown {
     pub(crate) ends: Vec<u32>,
     /// The mark's region of the program buffer, `[start, capacity]` in words, and where its parts
     /// are; `packed` is false until the region holds the current words.
-    pub(crate) region: Option<[u32; 2]>,
+    pub(crate) words: Option<[u32; 2]>,
     pub(crate) offsets: Offsets,
     pub(crate) packed: bool,
+    /// A transition waiting to freeze, the one running, and where its remap words start.
+    pub(crate) begin: Option<Begin>,
+    pub(crate) transition: Option<Transition>,
+    pub(crate) remap: u32,
+    /// Where the header of the list this frame's query builds over its instances starts.
+    pub(crate) query: u32,
+    /// Words derived from the data's topology, written beside the program.
+    pub(crate) graph: super::graph::Graph,
+    /// The list numbering a stroke mark's segments when rows have different numbers of them, whether
+    /// it must be counted again, and what it was last counted from.
+    pub(crate) segments: Option<super::lists::List>,
+    pub(crate) segments_due: bool,
+    pub(crate) segments_counted: u64,
+    /// Segments a geodesic mark's rows were last found to have, which its list makes room for, and
+    /// the readback finding them.
+    pub(crate) segments_found: u32,
+    pub(crate) segments_reading: Option<crate::gpu::readback::Readback>,
+    /// Whether an edge mark follows great circles.
+    pub(crate) geodesic: bool,
+    /// Bumps whenever the mark's state is written, so what derives from it knows to follow; and
+    /// whenever where its rows stand or how large they are is.
+    pub(crate) version: u64,
+    pub(crate) shape_version: u64,
 }
 
 impl Shown {
@@ -60,17 +118,33 @@ impl Shown {
             compiled: None,
             tables: Tables::default(),
             rows: 0,
-            offset: 0,
-            focus: 0,
+            exits: 0,
+            held: 0,
+            drawn: None,
+            region: Region::EMPTY,
+            moved: None,
             domains: 0,
             dirty: 0,
             reduce: false,
             code: Vec::new(),
             constants: Vec::new(),
             ends: Vec::new(),
-            region: None,
+            words: None,
             offsets: Offsets::default(),
             packed: false,
+            begin: None,
+            transition: None,
+            remap: 0,
+            query: wgsl::NONE,
+            graph: super::graph::Graph::default(),
+            segments: None,
+            segments_due: true,
+            segments_counted: 0,
+            segments_found: 0,
+            segments_reading: None,
+            geodesic: false,
+            version: 0,
+            shape_version: 0,
         }
     }
 
@@ -80,12 +154,64 @@ impl Shown {
 
     /// Whether the mark has a program, rows, and columns synced at least once.
     pub(crate) fn drawable(&self) -> bool {
-        self.compiled.is_some() && self.rows > 0 && self.tables.synced()
+        self.compiled.is_some() && self.rows + self.exits > 0 && self.tables.synced()
     }
 
-    /// State words per row.
+    /// Kind words per row.
     pub(crate) fn stride(&self) -> u32 {
-        self.compiled.as_ref().map_or(0, |c| c.drawing.stride)
+        self.compiled.as_ref().map_or_else(|| kind_stride(self.kind()), |c| c.drawing.stride)
+    }
+
+    /// Extra words per row.
+    pub(crate) fn extras(&self) -> u32 {
+        self.compiled.as_ref().map_or(0, |c| c.drawing.extras)
+    }
+
+    /// Whether its strokes number their segments with a list: rows' paths have different numbers of
+    /// segments.
+    pub(crate) fn listed(&self) -> bool {
+        let Some(compiled) = &self.compiled else { return false };
+        let source = compiled.drawing.source;
+        compiled.drawing.primitive == crate::scene::mark::Primitive::Strokes
+            && (source == wgsl::PATH_NET
+                || source == wgsl::PATH_GEOMETRY
+                || (source == wgsl::PATH_ENDS && (self.geodesic || !self.graph.paths.is_empty())))
+    }
+
+    /// Segments its list must have room for: every path's segments, each row's arcs on the earth
+    /// as last found.
+    pub(crate) fn segment_capacity(&self) -> u32 {
+        let rows = (self.rows + self.exits) as usize;
+        let points = self.graph.paths.len().saturating_sub(self.rows as usize + 1) / 2;
+        let terminals =
+            self.graph.terminals.len().saturating_sub(self.rows as usize + 1) / wgsl::TERMINAL_WORDS as usize;
+        let arcs = if self.geodesic { (self.segments_found as usize).max(rows * 4) } else { 0 };
+        (points + rows + terminals + arcs).max(1) as u32
+    }
+
+    /// Its channels that say where its rows stand and how large they are.
+    pub(crate) fn shape_channels(&self) -> u32 {
+        let Some(compiled) = &self.compiled else { return 0 };
+        let shaping = ["position", "radius", "width", "height"];
+        compiled
+            .program
+            .channels
+            .iter()
+            .enumerate()
+            .fold(0, |mask, (k, c)| if shaping.contains(&&*c.name) { mask | 1 << k } else { mask })
+    }
+
+    /// Its position channel stores again: a layout moved its places.
+    pub(crate) fn place_dirty(&mut self) {
+        let Some(compiled) = &self.compiled else { return };
+        if let Some(k) = compiled.program.channels.iter().position(|c| &*c.name == "position") {
+            self.dirty |= 1 << k;
+        }
+    }
+
+    /// Whether layouts place the mark's rows.
+    pub(crate) fn placed(&self) -> bool {
+        self.kind() == MarkKind::Vertices
     }
 
     /// Fitted domains the program reduces.
@@ -116,6 +242,12 @@ impl Shown {
         }
         self.reduce |= reduce;
         self.packed = false;
+    }
+
+    /// Whether any column of `columns` holds static values: changing it eases.
+    pub(crate) fn static_columns(&self, columns: u64) -> bool {
+        let Some(compiled) = &self.compiled else { return false };
+        compiled.program.columns.iter().enumerate().any(|(i, c)| !c.sampled && columns & (1 << i.min(63)) != 0)
     }
 
     pub(crate) fn all_dirty(&mut self) {
@@ -167,14 +299,17 @@ impl Shown {
         }
     }
 
-    /// Words the mark's region needs: descriptors and tables, ranges, code, constants, ends.
+    /// Words the mark's program region needs: descriptors and tables, ranges, code, constants, ends,
+    /// and its markers' palette.
     pub(crate) fn packed_len(&self) -> u32 {
         let Some(compiled) = &self.compiled else { return 0 };
         (self.tables.len()
             + 2 * compiled.program.ranges.len()
             + 4 * self.code.len()
             + self.constants.len()
-            + self.ends.len()) as u32
+            + self.ends.len()
+            + compiled.drawing.markers.palette.len()
+            + self.graph.len()) as u32
     }
 
     /// Appends the mark's words, which start at word `base` of the program buffer, and records where
@@ -193,7 +328,33 @@ impl Shown {
         out.extend(&self.constants);
         let ends = at(out);
         out.extend(&self.ends);
-        self.offsets = Offsets { columns, ranges, code, constants, ends };
+        let palette = at(out);
+        out.extend(&compiled.drawing.markers.palette);
+        let part = |out: &mut Vec<u32>, words: &[u32]| {
+            if words.is_empty() {
+                return wgsl::NONE;
+            }
+            let start = at(out);
+            out.extend(words);
+            start
+        };
+        let lanes = part(out, &self.graph.lanes);
+        let paths = part(out, &self.graph.paths);
+        let terminals = part(out, &self.graph.terminals);
+        let port_info = part(out, &self.graph.ports);
+        let members = part(out, &self.graph.members);
+        self.offsets =
+            Offsets { columns, ranges, code, constants, ends, palette, lanes, paths, terminals, port_info, members };
+    }
+}
+
+/// Kind words per row of a mark of `kind`.
+pub(crate) fn kind_stride(kind: MarkKind) -> u32 {
+    match kind {
+        MarkKind::Vertices => wgsl::VERTEX_WORDS,
+        MarkKind::Edges => wgsl::EDGE_WORDS,
+        MarkKind::Faces => wgsl::FACE_WORDS,
+        MarkKind::Lines => wgsl::LINE_WORDS,
     }
 }
 

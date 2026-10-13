@@ -307,6 +307,8 @@ pub(crate) struct Projected {
     pub(crate) light: DVec3,
     pub(crate) center: [f64; 3],
     pub(crate) px_per_unit: [f64; 2],
+    /// The camera's zoom: the web mercator level on the earth, log₂ pixels per unit elsewhere.
+    pub(crate) zoom: f64,
     pub(crate) mercator_y: f64,
     pub(crate) globe: f64,
     pub(crate) space: u32,
@@ -366,6 +368,8 @@ impl Projected {
             light,
             center,
             px_per_unit,
+            zoom: px_per_unit[0].max(1e-300).log2()
+                - if space_code == wgsl::SPACE_EARTH { (256.0 / TAU).log2() } else { 0.0 },
             mercator_y: mercator,
             globe: if space_code == wgsl::SPACE_EARTH { globe } else { 0.0 },
             space: space_code,

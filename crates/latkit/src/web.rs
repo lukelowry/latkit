@@ -151,14 +151,19 @@ struct State {
     listeners: Vec<(u64, EventListener)>,
     next: u64,
     cursor: Cursor,
-    handlers: Vec<(&'static str, Closure<dyn FnMut(web_sys::Event)>)>,
-    resize: Option<(ResizeObserver, Closure<dyn FnMut(JsValue)>)>,
+    handlers: Vec<Handler>,
+    resize: Option<Resizing>,
 }
+
+/// A listener of one kind of the element's events.
+type Handler = (&'static str, Closure<dyn FnMut(web_sys::Event)>);
+/// What follows the element's size.
+type Resizing = (ResizeObserver, Closure<dyn FnMut(JsValue)>);
 
 impl Canvas {
     /// Draws `view` into `element`. The `Gpu` must come from [`Gpu::new`]; it sets text with the
     /// browser's fonts unless it was given a host.
-    pub fn new(gpu: &Gpu, element: HtmlCanvasElement, view: View) -> Result<Canvas> {
+    pub fn new(gpu: &Gpu, element: &HtmlCanvasElement, view: View) -> Result<Canvas> {
         let (Some(instance), Some(adapter)) = (gpu.instance(), gpu.adapter()) else {
             return Err(Error::Unsupported("a canvas draws with a Gpu made by Gpu::new".into()));
         };
@@ -193,6 +198,8 @@ impl Canvas {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&gpu.0.device, &config);
+        let ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio()) as f32;
+        gpu.prepare(format, crate::view::samples(ratio));
         let _ = element.style().set_property("touch-action", "none");
         let frames = frames_of(gpu);
         let state = Rc::new(RefCell::new(State {
@@ -219,7 +226,7 @@ impl Canvas {
         });
         let observer = ResizeObserver::new(resized.as_ref().unchecked_ref())
             .map_err(|_| Error::Unsupported("no ResizeObserver".into()))?;
-        observer.observe(&element);
+        observer.observe(element);
         state.borrow_mut().resize = Some((observer, resized));
         listen(&state)?;
         schedule(&frames);
@@ -284,13 +291,12 @@ impl State {
             self.config.height = height;
             self.surface.configure(&self.gpu.0.device, &self.config);
         }
-        let texture = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
-            _ => {
-                self.surface.configure(&self.gpu.0.device, &self.config);
-                self.due = true;
-                return None;
-            }
+        let (wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture)) =
+            self.surface.get_current_texture()
+        else {
+            self.surface.configure(&self.gpu.0.device, &self.config);
+            self.due = true;
+            return None;
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let target =
@@ -314,6 +320,7 @@ fn dispatch(state: &Rc<RefCell<State>>) {
                 Cursor::Pointer => "pointer",
                 Cursor::Grab => "grab",
                 Cursor::Grabbing => "grabbing",
+                Cursor::Crosshair => "crosshair",
             };
             let _ = s.element.style().set_property("cursor", css);
         }
@@ -370,30 +377,13 @@ fn listen(state: &Rc<RefCell<State>>) -> Result<()> {
         state.borrow_mut().handlers.push((kind, handler));
         Ok::<(), Error>(())
     };
-    add("pointerdown", |element, event| {
-        let event = event.dyn_ref::<PointerEvent>()?;
-        let button = match event.button() {
-            0 => Button::Primary,
-            1 => Button::Middle,
-            2 => Button::Secondary,
-            _ => return None,
-        };
-        let _ = element.focus();
-        let _ = element.set_pointer_capture(event.pointer_id());
-        Some(Input::Down {
-            pointer: event.pointer_id() as u32,
-            point: point(element, event),
-            button,
-            modifiers: modifiers(event.shift_key(), event.ctrl_key(), event.alt_key(), event.meta_key()),
-            touch: event.pointer_type() == "touch",
-        })
-    })?;
+    add("pointerdown", pressed)?;
     add("pointermove", |element, event| {
         let event = event.dyn_ref::<PointerEvent>()?;
         Some(Input::Move {
             pointer: event.pointer_id() as u32,
             point: point(element, event),
-            modifiers: modifiers(event.shift_key(), event.ctrl_key(), event.alt_key(), event.meta_key()),
+            modifiers: modifiers!(event),
         })
     })?;
     add("pointerup", |element, event| {
@@ -402,7 +392,7 @@ fn listen(state: &Rc<RefCell<State>>) -> Result<()> {
         Some(Input::Up {
             pointer: event.pointer_id() as u32,
             point: point(element, event),
-            modifiers: modifiers(event.shift_key(), event.ctrl_key(), event.alt_key(), event.meta_key()),
+            modifiers: modifiers!(event),
         })
     })?;
     add("pointercancel", |_, event| {
@@ -420,7 +410,7 @@ fn listen(state: &Rc<RefCell<State>>) -> Result<()> {
         Some(Input::Wheel {
             point: point(element, event),
             delta: [(event.delta_x() * scale) as f32, (event.delta_y() * scale) as f32],
-            modifiers: modifiers(event.shift_key(), event.ctrl_key(), event.alt_key(), event.meta_key()),
+            modifiers: modifiers!(event),
         })
     })?;
     add("contextmenu", |_, event| {
@@ -428,30 +418,7 @@ fn listen(state: &Rc<RefCell<State>>) -> Result<()> {
         None
     })?;
     for kind in ["keydown", "keyup"] {
-        add(kind, |_, event| {
-            let event = event.dyn_ref::<KeyboardEvent>()?;
-            let key = match event.key().as_str() {
-                "Escape" => Key::Escape,
-                "Enter" => Key::Enter,
-                "Delete" => Key::Delete,
-                "Backspace" => Key::Backspace,
-                "Home" => Key::Home,
-                "Tab" => Key::Tab,
-                " " => Key::Space,
-                "+" | "=" => Key::Plus,
-                "-" | "_" => Key::Minus,
-                "ArrowLeft" => Key::Left,
-                "ArrowRight" => Key::Right,
-                "ArrowUp" => Key::Up,
-                "ArrowDown" => Key::Down,
-                _ => Key::Other,
-            };
-            Some(Input::Key {
-                key,
-                down: event.type_() == "keydown",
-                modifiers: modifiers(event.shift_key(), event.ctrl_key(), event.alt_key(), event.meta_key()),
-            })
-        })?;
+        add(kind, |_, event| keyed(event))?;
     }
     Ok(())
 }
@@ -465,6 +432,58 @@ fn point(element: &HtmlCanvasElement, event: &web_sys::MouseEvent) -> [f32; 2] {
     ]
 }
 
-fn modifiers(shift: bool, control: bool, alt: bool, meta: bool) -> Modifiers {
-    Modifiers { shift, control, alt, meta }
+/// The keys a key or mouse event says are held.
+macro_rules! modifiers {
+    ($event:expr) => {
+        Modifiers {
+            shift: $event.shift_key(),
+            control: $event.ctrl_key(),
+            alt: $event.alt_key(),
+            meta: $event.meta_key(),
+        }
+    };
+}
+use modifiers;
+
+/// A pointer press, focusing the element and capturing the pointer.
+fn pressed(element: &HtmlCanvasElement, event: &web_sys::Event) -> Option<Input> {
+    let event = event.dyn_ref::<PointerEvent>()?;
+    let button = match event.button() {
+        0 => Button::Primary,
+        1 => Button::Middle,
+        2 => Button::Secondary,
+        _ => return None,
+    };
+    let _ = element.focus();
+    let _ = element.set_pointer_capture(event.pointer_id());
+    Some(Input::Down {
+        pointer: event.pointer_id() as u32,
+        point: point(element, event),
+        button,
+        modifiers: modifiers!(event),
+        touch: event.pointer_type() == "touch",
+    })
+}
+
+/// A key going down or up.
+fn keyed(event: &web_sys::Event) -> Option<Input> {
+    let event = event.dyn_ref::<KeyboardEvent>()?;
+    let key = match event.key().as_str() {
+        "Escape" => Key::Escape,
+        "Enter" => Key::Enter,
+        "Delete" => Key::Delete,
+        "Backspace" => Key::Backspace,
+        "Home" => Key::Home,
+        "Tab" => Key::Tab,
+        " " => Key::Space,
+        "+" | "=" => Key::Plus,
+        "-" | "_" => Key::Minus,
+        "ArrowLeft" => Key::Left,
+        "ArrowRight" => Key::Right,
+        "ArrowUp" => Key::Up,
+        "ArrowDown" => Key::Down,
+        "ContextMenu" => Key::Menu,
+        _ => Key::Other,
+    };
+    Some(Input::Key { key, down: event.type_() == "keydown", modifiers: modifiers!(event) })
 }

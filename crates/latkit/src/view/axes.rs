@@ -9,7 +9,7 @@ use super::camera::Area;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
 use crate::host::TextRun;
-use crate::{Camera, Color, Plot, Space, Theme};
+use crate::{Axis, Camera, Color, Format, Plot, Space, Theme};
 
 /// Room the axes take outside a plot's area: top, right, bottom, left, CSS pixels.
 pub(crate) fn gutters(plot: &Plot, theme: &Theme) -> [f64; 4] {
@@ -27,16 +27,46 @@ fn step(span: f64, count: f64) -> f64 {
     [1.0, 2.0, 2.5, 5.0, 10.0].into_iter().map(|m| m * power).find(|&s| s >= raw).unwrap_or(10.0 * power)
 }
 
-/// `value` written with as many decimals as `step` needs.
-fn label(value: f64, step: f64) -> String {
-    let value = if value.abs() < step * 1e-9 { 0.0 } else { value };
-    if value != 0.0 && (value.abs() >= 1e6 || value.abs() < 1e-4) {
-        return format!("{value:.2e}");
-    }
+/// Decimals a value needs to tell ticks `step` apart.
+fn decimals(step: f64) -> usize {
     let magnitude = step.log10().floor();
     let extra = usize::from(((step / 10_f64.powf(magnitude)) - 2.5).abs() < 1e-9);
-    let decimals = (-magnitude).max(0.0) as usize + extra;
-    format!("{value:.decimals$}")
+    (-magnitude).max(0.0) as usize + extra
+}
+
+/// `value` written as `axis` says, with as many decimals as `step` needs unless it sets them.
+fn label(value: f64, step: f64, axis: &Axis) -> String {
+    let value = if value.abs() < step * 1e-9 { 0.0 } else { value };
+    let precision = axis.precision.map(usize::from);
+    let significand = precision.unwrap_or(2);
+    match axis.format {
+        Format::Auto if value != 0.0 && (value.abs() >= 1e6 || value.abs() < 1e-4) => format!("{value:.significand$e}"),
+        Format::Auto | Format::Fixed => {
+            let decimals = precision.unwrap_or_else(|| decimals(step));
+            format!("{value:.decimals$}")
+        }
+        Format::Scientific => format!("{value:.significand$e}"),
+        Format::Engineering => {
+            if value == 0.0 {
+                return format!("{value:.significand$}");
+            }
+            let power = (value.abs().log10() / 3.0).floor() as i32 * 3;
+            let mantissa = value / 10_f64.powi(power);
+            if power == 0 { format!("{mantissa:.significand$}") } else { format!("{mantissa:.significand$}e{power}") }
+        }
+    }
+}
+
+/// The ticks of `axis` across `range`: the ones it gives, else round values `step` apart.
+fn axis_ticks(axis: &Axis, range: [f64; 2], step: f64) -> Vec<(f64, String)> {
+    match &axis.ticks {
+        Some(given) => given
+            .iter()
+            .filter(|(v, _)| (range[0]..=range[1]).contains(v))
+            .map(|(v, text)| (*v, text.clone().unwrap_or_else(|| label(*v, step, axis))))
+            .collect(),
+        None => ticks(range, step).map(|v| (v, label(v, step, axis))).collect(),
+    }
 }
 
 /// Values `step` apart within `range`.
@@ -80,7 +110,7 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     fn text(&mut self, text: &str, anchor: [f64; 2], align: Align) -> Option<wgsl::Sprite> {
-        let run = TextRun { text: text.into(), font: self.font.clone(), size_px: self.size_px };
+        let run = TextRun { text: text.into(), font: self.font.clone(), size_px: self.size_px, max_width: None };
         let host = self.inner.host.clone();
         let glyphs = self.inner.atlas.text(self.queue, host.as_deref(), &run)?;
         let [l, t, r, b] = glyphs.rect.map(f64::from);
@@ -104,16 +134,35 @@ impl Writer<'_> {
 }
 
 impl View {
-    /// The sprites drawn over the marks this frame.
+    /// The sprites drawn over the marks this frame: a plot's axes, and a box being selected.
     pub(super) fn overlay(&self, inner: &mut Inner, queue: &wgpu::Queue) -> Vec<wgsl::Sprite> {
+        let mut sprites = self.axes_sprites(inner, queue);
+        let theme = &self.scene.theme;
+        let color = theme.selected.unwrap_or(theme.hover);
+        let at = |p: [f32; 2]| [f64::from(p[0]), f64::from(p[1])];
+        match self.gestures.now {
+            super::gestures::Gesture::Box { from, to, .. } => {
+                let mut sprite = line(at(from), at(to), 1.0, color);
+                sprite.kind = wgsl::SPRITE_BOX;
+                sprites.push(sprite);
+            }
+            super::gestures::Gesture::Connect { anchor: Some(from), to, .. } => {
+                sprites.push(line(at(from), at(to), 2.0, color));
+            }
+            _ => {}
+        }
+        sprites
+    }
+
+    fn axes_sprites(&self, inner: &mut Inner, queue: &wgpu::Queue) -> Vec<wgsl::Sprite> {
         let Space::Plot(plot) = &self.scene.space else { return Vec::new() };
         let Camera::Plot { x, y: Some(y) } = self.drawn_camera() else { return Vec::new() };
         let theme = &self.scene.theme;
         let area = self.area();
-        let generation = inner.atlas.generation;
+        let evictions = inner.atlas.evictions;
         let sprites = self.axes(inner, queue, plot, theme, area, x, y);
-        // The atlas started over while setting this frame's text: set it again on the new packing.
-        if inner.atlas.generation == generation { sprites } else { self.axes(inner, queue, plot, theme, area, x, y) }
+        // The atlas made room while setting this frame's text: set it again on the new packing.
+        if inner.atlas.evictions == evictions { sprites } else { self.axes(inner, queue, plot, theme, area, x, y) }
     }
 
     #[allow(clippy::too_many_arguments, reason = "one frame's axes")]
@@ -144,13 +193,13 @@ impl View {
         let mut sprites = Vec::new();
         if !plot.x.hidden {
             let step = step(x[1] - x[0], (right - left) / (font * 8.0));
-            for v in ticks(x, step) {
+            for (v, text) in axis_ticks(&plot.x, x, step) {
                 let at = across(v);
                 if plot.x.grid {
                     sprites.push(line([at, top], [at, bottom], 1.0, theme.grid));
                 }
                 sprites.push(line([at, bottom], [at, bottom + 4.0], 1.0, axis));
-                sprites.extend(writer.text(&label(v, step), [at, bottom + 6.0], Align::Below));
+                sprites.extend(writer.text(&text, [at, bottom + 6.0], Align::Below));
             }
             sprites.push(line([left, bottom], [right, bottom], 1.0, axis));
             if let Some(title) = &plot.x.label {
@@ -159,13 +208,13 @@ impl View {
         }
         if !plot.y.hidden {
             let step = step(y[1] - y[0], (bottom - top) / (font * 3.5));
-            for v in ticks(y, step) {
+            for (v, text) in axis_ticks(&plot.y, y, step) {
                 let at = up(v);
                 if plot.y.grid {
                     sprites.push(line([left, at], [right, at], 1.0, theme.grid));
                 }
                 sprites.push(line([left - 4.0, at], [left, at], 1.0, axis));
-                sprites.extend(writer.text(&label(v, step), [left - 7.0, at], Align::Left));
+                sprites.extend(writer.text(&text, [left - 7.0, at], Align::Left));
             }
             sprites.push(line([left, top], [left, bottom], 1.0, axis));
             if let Some(title) = &plot.y.label {
@@ -188,9 +237,16 @@ mod tests {
     fn steps_are_round_and_labels_fit_them() {
         assert!((step(12.0, 6.0) - 2.0).abs() < 1e-12);
         assert!((step(1.0, 4.0) - 0.25).abs() < 1e-12);
-        assert_eq!(label(0.25, 0.25), "0.25");
-        assert_eq!(label(4.0, 2.0), "4");
-        assert_eq!(label(-1e-17, 0.5), "0.0");
+        let auto = Axis::default();
+        assert_eq!(label(0.25, 0.25, &auto), "0.25");
+        assert_eq!(label(4.0, 2.0, &auto), "4");
+        assert_eq!(label(-1e-17, 0.5, &auto), "0.0");
+        let with = |format, precision| Axis { format, precision, ..Axis::default() };
+        assert_eq!(label(1500.0, 500.0, &with(Format::Scientific, Some(1))), "1.5e3");
+        assert_eq!(label(0.00015, 0.00005, &with(Format::Engineering, Some(0))), "150e-6");
+        assert_eq!(label(2.0, 1.0, &with(Format::Fixed, Some(2))), "2.00");
+        let given = Axis { ticks: Some(vec![(0.0, Some("off".into())), (1.0, None), (5.0, None)]), ..Axis::default() };
+        assert_eq!(axis_ticks(&given, [0.0, 2.0], 1.0), [(0.0, "off".to_owned()), (1.0, "1".to_owned())]);
         assert_eq!(ticks([0.1, 1.0], 0.25).count(), 4);
     }
 }

@@ -7,23 +7,34 @@ mod fit;
 mod focus;
 mod frame;
 mod gestures;
+mod graph;
 mod input;
+mod labels;
+mod lists;
 mod marks;
 mod passes;
+mod places;
 mod probe;
 mod program;
+mod query;
 mod resources;
 mod rig;
+mod rows;
+mod shadows;
 mod sync;
+mod transition;
 mod uniforms;
 
 use std::task::Waker;
 use std::time::Duration;
 
 pub use camera::Camera;
-pub use event::{Cursor, Drag, Event, Fit, Hit, Phase, Stats};
+pub use event::{Cursor, Drag, End, Event, Fit, Hit, Phase, Sample, Stats};
 pub use input::{Button, Input, Key, Modifiers};
-pub(crate) use resources::DEPTH;
+pub use query::Pending;
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub(crate) use resources::samples;
+pub(crate) use resources::{DEPTH, SHADE};
 
 use camera::{Area, Projected};
 use fit::Fitting;
@@ -88,14 +99,29 @@ pub struct View {
     resources: Option<Resources>,
     /// Marks' regions of the program buffer.
     regions: Regions,
-    /// Rows moved: the state, focus, and domain buffers are laid out again.
-    layout_dirty: bool,
+    /// Marks came or went: row regions are laid out again.
+    regions_dirty: bool,
     /// Something visible changed since the last frame.
     changed: bool,
     /// The last upload error reported, so a lasting one is reported once.
     upload_error: Option<Error>,
+    /// Whether the application was told the device was lost.
+    told_lost: bool,
+    /// What the shadow map and the face normals were last drawn from.
+    shadows_drawn: Option<shadows::Drawn>,
+    normals_drawn: Option<Vec<u64>>,
     focus: Focus,
     probing: Probing,
+    queries: query::Queries,
+    placing: places::Placing,
+    routing: places::Routing,
+    /// Words the marks' segment lists take at the front of the lists buffer.
+    segment_words: u32,
+    /// What the groups were last stood around their members from, and CSS pixels per position
+    /// unit this frame.
+    groups_drawn: Option<Vec<u64>>,
+    px_per_unit: f32,
+    labels: labels::Labels,
     gestures: Gestures,
     /// The pointer over the view, CSS pixels.
     pointer: Option<[f32; 2]>,
@@ -127,11 +153,21 @@ impl View {
             waker: None,
             resources: None,
             regions: Regions::default(),
-            layout_dirty: true,
+            regions_dirty: true,
             changed: true,
             upload_error: None,
+            told_lost: false,
+            shadows_drawn: None,
+            normals_drawn: None,
             focus: Focus::default(),
             probing: Probing::default(),
+            queries: query::Queries::default(),
+            placing: places::Placing::default(),
+            routing: places::Routing::default(),
+            segment_words: 0,
+            groups_drawn: None,
+            px_per_unit: 1.0,
+            labels: labels::Labels::default(),
             gestures: Gestures::default(),
             pointer: None,
             size: [0.0; 2],
@@ -148,7 +184,7 @@ impl View {
     }
 
     /// Draws `scene` instead. Marks that match one of the current scene by kind, data, table, and name
-    /// keep their state; an invalid scene changes nothing.
+    /// keep their state, and ease to a changed description; an invalid scene changes nothing.
     pub fn show(&mut self, scene: Scene) -> Result<()> {
         scene.check()?;
         let gpu = self.gpu.clone();
@@ -167,25 +203,37 @@ impl View {
             fresh.push(Some(shown));
         }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
+        let easing = !scene.ease.is_zero();
         self.marks = scene
             .marks
             .iter()
             .zip(fresh)
             .map(|(mark, fresh)| {
-                fresh.unwrap_or_else(|| {
+                let Some(mut shown) = fresh else {
                     let mut kept = old
                         .iter_mut()
                         .find(|s| s.as_ref().is_some_and(|s| s.mark.draws_like(mark)))
                         .and_then(Option::take)
                         .expect("kept");
                     kept.mark = mark.clone();
-                    kept
-                })
+                    return kept;
+                };
+                // A changed mark takes over its predecessor's rows, and eases from them.
+                let before = old.iter_mut().find(|s| s.as_ref().is_some_and(|s| s.key == shown.key));
+                if let Some(mut before) = before.and_then(Option::take) {
+                    before.tables.release(&mut inner);
+                    shown.inherit(&before);
+                    if easing && shown.compiled.as_ref().map(|c| c.drawing.stride) == Some(before.stride()) {
+                        shown.begin(None);
+                    }
+                }
+                shown
             })
             .collect();
         for mut dropped in old.into_iter().flatten() {
             dropped.tables.release(&mut inner);
         }
+        self.regions_dirty = true;
         drop(inner);
         if !self.camera.fits(&scene.space) {
             self.camera = Camera::default_for(&scene.space);
@@ -220,7 +268,7 @@ impl View {
             }
         }
         drop(inner);
-        // Rows may have moved under the focus; a change of row count relays out when synced.
+        // Rows may have moved under the focus.
         self.focus.dirty = true;
         self.fitting.plot_due = true;
         self.wake();
@@ -240,6 +288,9 @@ impl View {
             if shown.compiled.as_ref().is_some_and(|c| c.schemas.iter().any(|(n, _)| n == name)) {
                 shown.tables.release(&mut inner);
                 shown.compiled = None;
+                shown.rows = 0;
+                shown.exits = 0;
+                shown.drawn = None;
             }
         }
         drop(inner);
@@ -379,7 +430,15 @@ impl View {
             || self.fitting.busy()
             || self.rig.moving()
             || self.probing.busy()
-            || self.marks.iter().any(|m| m.dirty != 0 || m.reduce || m.tables.waiting())
+            || self.queries.busy()
+            || self.placing.busy()
+            || self.routing.busy()
+            || self.awaiting()
+            || self.labels.busy()
+            || self.marks.iter().any(|m| {
+                m.dirty != 0 || m.reduce || m.tables.waiting() || m.begin.is_some() || m.segments_reading.is_some()
+            })
+            || self.marks.iter().any(|m| m.transition.is_some())
             || self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME)))
             || self.gpu.0.lock().arena.uploading()
     }
@@ -392,7 +451,7 @@ impl View {
     }
 
     fn invalidate(&mut self) {
-        self.layout_dirty = true;
+        self.regions_dirty = true;
         self.regions.relayout = true;
         self.fitting.plot_due = true;
         self.wake();

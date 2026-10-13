@@ -24,6 +24,8 @@ pub struct TextRun {
     pub font: Arc<str>,
     /// The size in physical pixels.
     pub size_px: u32,
+    /// Physical pixels a line runs to before it wraps at a space; `None` keeps one line.
+    pub max_width: Option<u32>,
 }
 
 /// Text set as coverage: one byte per physical pixel, rows top to bottom.

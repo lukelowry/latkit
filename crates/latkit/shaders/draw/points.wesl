@@ -1,0 +1,130 @@
+// Points: one instanced quad per vertex row, shaded by its marker. The cast variant draws the same
+// quads through the light's eye into the shadow map; the ports variant draws one quad per port of
+// every row, on its side of the row's marker.
+
+import package::lib::types::{STATUS, MARKER_ICON, PORT_SIZE};
+import package::lib::bind::{frame, mark, state, ramp, program};
+import package::lib::state::extra_at;
+import package::lib::project::{to_screen, to_clip, nearer, culled};
+import package::lib::points::{Point, point, reach, port_at};
+import package::lib::marker::{
+    MarkerColor, MarkerFragment, builtin_marker, outline_distance, shape_distance, filled, over, status_ring, glow,
+};
+import package::lib::shade::caster;
+import package::lib::color::output;
+
+@group(2) @binding(15) var icons: texture_2d_array<f32>;
+
+struct Varyings {
+    @builtin(position) clip: vec4f,
+    @location(0) p: vec2f,
+    @location(1) @interpolate(flat) row: u32,
+    @location(2) color: vec4f,
+    @location(3) @interpolate(flat) half: vec2f,
+    @location(4) @interpolate(flat) status: vec4f,
+    @location(5) @interpolate(flat) height: f32,
+    @location(6) @interpolate(flat) shape: u32,
+}
+
+// What an instance draws: a row's marker, or with `ports` one of a row's ports.
+struct Drawn {
+    p: Point,
+    center: vec2f,
+    half: vec2f,
+    reach: vec2f,
+    shape: u32,
+}
+
+@if(!ports)
+fn drawn(instance: u32) -> Drawn {
+    let p = point(instance);
+    return Drawn(p, to_screen(p.clip), p.half, reach(p), mark.shape);
+}
+
+@if(ports)
+fn drawn(instance: u32) -> Drawn {
+    let n = max(mark.ports, 1u);
+    let p = point(instance / n);
+    let port = port_at(p, instance % n);
+    let half = vec2f(0.5 * PORT_SIZE);
+    return Drawn(p, port.center, half, half + frame.glow + 2.0, port.shape);
+}
+
+@vertex
+fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
+    let d = drawn(instance);
+    let quad = vec2f(f32(corner & 1u), f32(corner >> 1u)) * 2.0 - 1.0;
+    var out: Varyings;
+    out.clip = nearer(to_clip(d.center + quad * d.reach, d.p.clip));
+    out.p = quad * d.reach * vec2f(1.0, -1.0);
+    out.row = d.p.row;
+    out.color = d.p.color;
+    out.half = max(d.half, vec2f(0.5));
+    out.status = d.p.status;
+    out.height = d.p.world.z;
+    out.shape = d.shape;
+    if !d.p.shown {
+        out.clip = culled();
+    }
+    return out;
+}
+
+fn inputs(row: u32) -> array<f32, 8> {
+    var input = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for (var i = 0u; i < min(mark.inputs, 8u); i++) {
+        input[i] = bitcast<f32>(state[extra_at(row, mark.input + i)]);
+    }
+    return input;
+}
+
+// An icon: image `index` of the mark's images, fitted in the marker's box, faded with its row. The
+// palette holds how many images there are, then each one's layer of the icon atlas.
+fn icon(f: MarkerFragment) -> MarkerColor {
+    let uv = vec2f(f.p.x, -f.p.y) / (2.0 * f.half) + 0.5;
+    let count = max(program[mark.palette], 1u);
+    let layer = program[mark.palette + 1u + min(u32(max(f.input[0], 0.0)), count - 1u)];
+    let texel = textureSampleLevel(icons, ramp, uv, layer, 0.0);
+    let inside = all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0));
+    let d = outline_distance(f.p, f.half);
+    return MarkerColor(vec4f(texel.rgb, texel.a * f.color.a * f32(inside)), d);
+}
+
+@if(!custom)
+fn marker(f: MarkerFragment) -> MarkerColor {
+    if mark.marker == MARKER_ICON {
+        return icon(f);
+    }
+    return builtin_marker(f);
+}
+
+// A port: its shape in its row's color, ringed by the background so it reads apart from the marker.
+@if(ports)
+fn shaded(v: Varyings) -> MarkerColor {
+    let d = shape_distance(v.shape, v.p, v.half);
+    return over(filled(v.color, d), filled(vec4f(frame.background.rgb, v.color.a), d - 1.5));
+}
+
+@if(!ports)
+fn shaded(v: Varyings) -> MarkerColor {
+    var m = marker(MarkerFragment(v.p, v.half, v.color, inputs(v.row)));
+    if (mark.flags & STATUS) != 0u && v.status.a > 0.0 {
+        m = status_ring(m, v.p, v.half, vec4f(v.status.rgb, v.status.a * v.color.a));
+    }
+    return m;
+}
+
+@if(!casts)
+@fragment
+fn fragment(v: Varyings) -> @location(0) vec4f {
+    return output(glow(shaded(v), v.row));
+}
+
+@if(casts)
+@fragment
+fn fragment(v: Varyings) -> @location(0) vec4f {
+    let m = shaded(v);
+    if m.color.a <= 0.01 {
+        discard;
+    }
+    return caster(m.color.a, v.height);
+}

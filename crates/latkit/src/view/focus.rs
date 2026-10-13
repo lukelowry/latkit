@@ -44,7 +44,7 @@ impl View {
                         continue;
                     }
                     if (index as u32) < shown.rows {
-                        *words.entry(shown.focus + index as u32).or_default() |= bit;
+                        *words.entry(shown.region.focus + index as u32).or_default() |= bit;
                     }
                 }
             }

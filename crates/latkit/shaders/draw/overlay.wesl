@@ -1,7 +1,9 @@
-// The overlay: lines and runs of text in CSS pixels over every mark, such as a plot's axes.
+// The overlay: lines, boxes, and runs of text in CSS pixels over every mark, such as a plot's axes,
+// a selection box, and a connection being drawn.
 
-import package::lib::types::{Sprite, SPRITE_TEXT};
-import package::lib::bind::{frame, ramp};
+import package::lib::types::{Sprite, SPRITE_TEXT, SPRITE_BOX};
+import package::lib::bind::{eye, ramp};
+import package::lib::mark::coverage;
 import package::lib::color::output;
 
 @group(2) @binding(7) var<storage, read> sprites: array<Sprite>;
@@ -18,30 +20,40 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) sprite: u
     let s = sprites[sprite];
     let quad = vec2f(f32(corner & 1u), f32(corner >> 1u));
     var p = mix(s.a, s.b, quad);
-    if s.kind != SPRITE_TEXT {
+    if s.kind == SPRITE_BOX {
+        p = mix(min(s.a, s.b) - 1.0, max(s.a, s.b) + 1.0, quad);
+    } else if s.kind != SPRITE_TEXT {
         let dir = normalize(s.b - s.a + vec2f(1e-6, 0.0));
         let reach = 0.5 * s.width + 1.0;
         let along = mix(s.a - dir * reach, s.b + dir * reach, quad.x);
         p = along + vec2f(-dir.y, dir.x) * (quad.y * 2.0 - 1.0) * reach;
     }
-    let ndc = p / frame.size * 2.0 - 1.0;
+    let ndc = p / eye.size * 2.0 - 1.0;
     return Varyings(vec4f(ndc.x, -ndc.y, 0.0, 1.0), p, sprite);
 }
 
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     let s = sprites[v.sprite];
-    var coverage = 0.0;
+    var c = 0.0;
+    var color = s.color;
     if s.kind == SPRITE_TEXT {
         let t = (v.p - s.a) / max(s.b - s.a, vec2f(1e-6));
         let uv = mix(s.uv.xy, s.uv.zw, t) / vec2f(textureDimensions(atlas));
-        coverage = textureSampleLevel(atlas, ramp, uv, 0.0).r;
+        c = textureSampleLevel(atlas, ramp, uv, 0.0).r;
+    } else if s.kind == SPRITE_BOX {
+        let lo = min(s.a, s.b);
+        let hi = max(s.a, s.b);
+        let inside = all(v.p >= lo) && all(v.p <= hi);
+        let edge = min(min(v.p.x - lo.x, hi.x - v.p.x), min(v.p.y - lo.y, hi.y - v.p.y));
+        let line = coverage(abs(edge) - 0.5 * s.width);
+        c = max(line, f32(inside) * 0.15);
     } else {
         let ab = s.b - s.a;
         let t = clamp(dot(v.p - s.a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
         let d = length(v.p - (s.a + ab * t)) - 0.5 * s.width;
-        coverage = clamp(0.5 - d * frame.pixel_ratio, 0.0, 1.0);
+        c = coverage(d);
     }
-    let a = s.color.a * coverage;
-    return output(vec4f(s.color.rgb * a, a));
+    let a = color.a * c;
+    return output(vec4f(color.rgb * a, a));
 }

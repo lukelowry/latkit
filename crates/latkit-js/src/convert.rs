@@ -195,14 +195,41 @@ pub(crate) fn row_of(value: &JsValue) -> Result<latkit::Row> {
     Ok(latkit::Row::new(data, table, self::id(&id)?))
 }
 
-fn hit(hit: &latkit::Hit) -> JsValue {
-    object(&[
+/// A hit as `{ row, mark, point, position, distance, port?, sample? }`.
+pub(crate) fn hit(hit: &latkit::Hit) -> JsValue {
+    let mut entries = vec![
         ("row", row(&hit.row)),
         ("mark", (hit.mark as f64).into()),
         ("point", numbers(&hit.point.map(f64::from))),
         ("position", numbers(&hit.position)),
         ("distance", f64::from(hit.distance).into()),
-    ])
+    ];
+    if let Some(port) = &hit.port {
+        entries.push(("port", JsValue::from_str(port)));
+    }
+    if let Some(sample) = &hit.sample {
+        let sample = object(&[
+            ("frame", f64::from(sample.frame).into()),
+            ("at", sample.at.into()),
+            ("value", sample.value.into()),
+        ]);
+        entries.push(("sample", sample));
+    }
+    object(&entries)
+}
+
+/// A connection's end as `{ row, port? }`.
+fn end(end: &latkit::End) -> JsValue {
+    let mut entries = vec![("row", row(&end.row))];
+    if let Some(port) = &end.port {
+        entries.push(("port", JsValue::from_str(port)));
+    }
+    object(&entries)
+}
+
+/// Keys held as `{ shift, control, alt, meta }`.
+fn modifiers(m: latkit::Modifiers) -> JsValue {
+    object(&[("shift", m.shift.into()), ("control", m.control.into()), ("alt", m.alt.into()), ("meta", m.meta.into())])
 }
 
 /// An event as `{ type, detail }`.
@@ -226,6 +253,25 @@ pub(crate) fn event(event: &latkit::Event) -> JsValue {
             ]);
             ("drag", detail)
         }
+        latkit::Event::Menu { point, hits, keyboard, modifiers } => {
+            let detail = object(&[
+                ("point", numbers(&point.map(f64::from))),
+                ("hits", hits.iter().map(hit).collect::<Array>().into()),
+                ("keyboard", (*keyboard).into()),
+                ("modifiers", self::modifiers(*modifiers)),
+            ]);
+            ("menu", detail)
+        }
+        latkit::Event::Connect { from, to, edge, point } => {
+            let detail = object(&[
+                ("from", end(from)),
+                ("to", to.as_ref().map_or(JsValue::NULL, end)),
+                ("edge", edge.as_ref().map_or(JsValue::NULL, row)),
+                ("point", numbers(&point.map(f64::from))),
+            ]);
+            ("connect", detail)
+        }
+        latkit::Event::Delete(rows) => ("delete", rows.iter().map(row).collect::<Array>().into()),
         latkit::Event::Camera => ("camera", JsValue::UNDEFINED),
         latkit::Event::Error(e) => ("error", crate::Error::from(e.clone()).into()),
         _ => ("other", JsValue::UNDEFINED),

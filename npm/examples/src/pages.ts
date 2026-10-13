@@ -16,4 +16,11 @@ export const pages: readonly Page[] = [
       'A synthetic grid of 3,600 buses with a minute of voltages, on a map, a globe, or a plane.',
     load: () => import('./grid/page.js'),
   },
+  {
+    id: 'diagram',
+    title: 'Plant diagram',
+    summary:
+      'Units in areas laid out in ranks, pipes routed around them, a drain joining ports: connect, rewire, fold, and delete.',
+    load: () => import('./diagram/page.js'),
+  },
 ];

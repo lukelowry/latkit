@@ -1,3 +1,4 @@
+use super::Interpolation;
 use super::mark::{Drawing, MarkKind, Style, style_methods};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
@@ -16,12 +17,19 @@ pub struct Lines {
     pub(crate) samples: Option<Name>,
     pub(crate) width: Option<Size>,
     pub(crate) dash: Expr,
+    pub(crate) interpolation: Interpolation,
 }
 
 impl Lines {
     /// Draws the rows of `table` in dataset `data`.
     pub fn of(data: impl Into<Name>, table: impl Into<Name>) -> Lines {
-        Lines { style: Style::new(data.into(), table.into()), samples: None, width: None, dash: false.into() }
+        Lines {
+            style: Style::new(data.into(), table.into()),
+            samples: None,
+            width: None,
+            dash: false.into(),
+            interpolation: Interpolation::Linear,
+        }
     }
 
     /// The sampled field each row traces over the axis. Unless named, the mark takes its name.
@@ -45,6 +53,13 @@ impl Lines {
         self
     }
 
+    /// How each row runs between its samples.
+    #[must_use]
+    pub fn interpolation(mut self, interpolation: Interpolation) -> Lines {
+        self.interpolation = interpolation;
+        self
+    }
+
     pub(crate) fn compile(&self, c: &mut Compiler<'_>) -> Result<Drawing> {
         let Some(field) = &self.samples else {
             return Err(Error::invalid("name the sampled field each row traces").at("samples"));
@@ -62,7 +77,14 @@ impl Lines {
             Some(size) => c.channel("width", &size.expr, width(size.units))?,
             None => c.theme("width", wgsl::THEME_LINE_WIDTH, width(false))?,
         }
-        Ok(Drawing { kind: MarkKind::Lines, stride: wgsl::LINE_WORDS, flags: 0, marker: (0, 0, 0.0), trace })
+        let mut drawing = Drawing::new(MarkKind::Lines, wgsl::LINE_WORDS);
+        drawing.trace = trace;
+        drawing.flags = match self.interpolation {
+            Interpolation::Linear => 0,
+            Interpolation::StepBefore => wgsl::STEP_BEFORE,
+            Interpolation::StepAfter => wgsl::STEP_AFTER,
+        };
+        Ok(drawing)
     }
 }
 

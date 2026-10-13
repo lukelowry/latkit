@@ -3,17 +3,18 @@
 //! time; a newer point waits for it.
 
 use super::View;
-use super::event::Hit;
+use super::event::{Hit, Sample};
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
-use crate::scene::mark::MarkKind;
 use crate::{Camera, Row};
 
-/// A hit, with the depth it lies at for dragging.
+/// A hit, with the depth it lies at for dragging, and for an edge which end it is nearer: 0 its
+/// first, 1 its second.
 #[derive(Clone, Debug)]
 pub(crate) struct Probed {
     pub(crate) hit: Hit,
     pub(crate) depth: f32,
+    pub(crate) end: u32,
 }
 
 /// What a probe found under its point.
@@ -86,10 +87,10 @@ impl View {
 
     fn hit(&self, word: &impl Fn(u32) -> u32) -> Option<Probed> {
         let key = word(wgsl::PROBE_KEY);
-        let row = word(wgsl::PROBE_ROW).checked_sub(1)?;
-        if key == wgsl::NONE {
+        if key == wgsl::NONE || word(wgsl::PROBE_INSTANCE) == 0 {
             return None;
         }
+        let row = word(wgsl::PROBE_ROW);
         let mark = 255 - (key & 255) as usize;
         let shown = self.marks.get(mark)?;
         let style = shown.mark.style();
@@ -104,8 +105,47 @@ impl View {
             point,
             position,
             distance: (key >> 8) as f32 / 64.0,
+            port: self.port(mark, word(wgsl::PROBE_SEGMENT)),
+            sample: self.sample(mark, row, word(wgsl::PROBE_SEGMENT)),
         };
-        Some(Probed { hit, depth })
+        Some(Probed { hit, depth, end: word(wgsl::PROBE_SEGMENT) })
+    }
+
+    /// The port a vertex mark's probe reached: its number from 1, or 0 for the marker.
+    pub(super) fn port(&self, mark: usize, number: u32) -> Option<crate::Name> {
+        let shown = self.marks.get(mark)?;
+        if shown.kind() != crate::scene::mark::MarkKind::Vertices || number == 0 {
+            return None;
+        }
+        let compiled = shown.compiled.as_ref()?;
+        compiled.drawing.ports.get(number as usize - 1).map(|(name, _)| name.clone())
+    }
+
+    /// The sample point `point` of a traced row's path stands for, on a mark tracing a field.
+    pub(super) fn sample(&self, mark: usize, row: u32, point: u32) -> Option<Sample> {
+        let shown = self.marks.get(mark)?;
+        let crate::Mark::Lines(lines) = &shown.mark else { return None };
+        let compiled = shown.compiled.as_ref()?;
+        let plan = shown.tables.plan()?;
+        let buckets = 2 * plan.buckets.len() as u32;
+        // A bucket's points stand for its middle frame.
+        let frame = if point < buckets {
+            let span = crate::data::bucket_frames(plan.level);
+            ((plan.buckets.start + point / 2) * span + span / 2).min(plan.frames.end.saturating_sub(1))
+        } else {
+            let steps = compiled.drawing.flags & (wgsl::STEP_BEFORE | wgsl::STEP_AFTER);
+            let up = match steps {
+                wgsl::STEP_AFTER => point / 2,
+                wgsl::STEP_BEFORE => point.div_ceil(2),
+                _ => point - buckets,
+            };
+            plan.frames.start + up
+        };
+        let style = shown.mark.style();
+        let table = self.data(&style.data)?.table(&style.table)?;
+        let crate::data::Field::Sampled(samples, _) = table.field_named(lines.samples.as_ref()?)? else { return None };
+        let value = samples.value(row as usize, frame)?;
+        Some(Sample { frame, at: samples.at(frame), value })
     }
 
     /// The point gestures move about under `point`: what the frame drew there, else the level the
@@ -134,8 +174,6 @@ impl View {
 impl super::marks::Shown {
     /// Whether probes reach this mark's rows.
     pub(crate) fn probed(&self) -> bool {
-        self.drawable()
-            && self.mark.style().interaction.pick
-            && matches!(self.kind(), MarkKind::Vertices | MarkKind::Edges | MarkKind::Faces)
+        self.drawable() && self.mark.style().interaction.pick && self.rows > 0
     }
 }

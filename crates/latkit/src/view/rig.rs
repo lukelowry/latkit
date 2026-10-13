@@ -135,6 +135,10 @@ impl View {
         }
         self.camera = camera;
         self.fitting.plot_due = true;
+        for shown in &mut self.marks {
+            shown.dirty |=
+                shown.channels_reading(crate::expr::compile::Deps::CAMERA | crate::expr::compile::Deps::POINTER);
+        }
         if self.events.last() != Some(&Event::Camera) {
             self.events.push(Event::Camera);
         }

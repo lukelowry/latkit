@@ -32,7 +32,8 @@ impl Faces {
         self
     }
 
-    /// Whether each face casts a shadow straight down onto the ground, in the theme's shadow color.
+    /// Whether each face casts a shadow onto the ground and onto other faces, away from the theme's
+    /// light.
     #[must_use]
     pub fn shadow(mut self, on: bool) -> Faces {
         self.shadow = on;
@@ -54,7 +55,9 @@ impl Faces {
             None => flags |= wgsl::ENDS_COLOR,
         }
         c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::FACE_FLAGS, bit: wgsl::VISIBLE })?;
-        Ok(Drawing { kind: MarkKind::Faces, stride: wgsl::FACE_WORDS, flags, marker: (0, 0, 0.0), trace: wgsl::NONE })
+        let mut drawing = Drawing::new(MarkKind::Faces, wgsl::FACE_WORDS);
+        drawing.flags = flags | if self.shadow { wgsl::CASTS } else { 0 };
+        Ok(drawing)
     }
 }
 

@@ -1,14 +1,19 @@
 // The expression machine: every row of a mark runs the mark's channels, which store into its state.
 // All rows run the same instructions, so control flow stays uniform across a workgroup.
+//
+// While the mark eases (`mark.frozen` set), every store blends from the row's frozen state by the
+// mark's progress: numbers and colors mix, positions move by their offset, references snap, and a
+// row whose visibility flips fades. Rows past `mark.rows` left; they only fade.
 
 import package::lib::types::{
-    NONE, MISSING, MISSING_COLOR, STACK, PINNED, VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS,
-    OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME,
+    NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PINNED, PLACED, FADE_IN, FADE_OUT, ENTERING,
+    VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, HALF_UNITS, OWN_HEIGHT, SIZED, MARK_VERTICES,
+    OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME, OP_ZOOM,
     OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP,
     OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MIN, OP_MAX, OP_MOD, OP_POW,
     OP_LT, OP_LE, OP_GT, OP_GE, OP_EQ, OP_NE, OP_AND, OP_OR,
     OP_SELECT, OP_SCALE, OP_COLORMAP, OP_STORE, OP_STORE_COLOR, OP_STORE_FLAG, OP_STORE_POSITION,
-    OP_POSITION, OP_STORE_END, OP_REDUCE,
+    OP_POSITION, OP_STORE_END, OP_STORE_CODE, OP_REDUCE,
 };
 import package::lib::bind::{frame, program, mark, state};
 import package::lib::read::{column_value, bits_value, missing, missing_bits};
@@ -16,7 +21,10 @@ import package::lib::focus::{is_selected, is_hovered};
 import package::lib::color::{scale, colormap};
 import package::lib::project::{project, to_screen};
 import package::lib::reduce::{ordered, unordered};
+import package::lib::places::{places, is_placed};
 
+// Each row's state as drawn when the mark's transition began.
+@group(2) @binding(1) var<storage, read> frozen: array<u32>;
 // Per fitted domain: the order-preserving bits of its least and greatest value.
 @group(2) @binding(4) var<storage, read_write> domains: array<atomic<u32>>;
 
@@ -45,15 +53,36 @@ fn theme_word(slot: u32) -> u32 {
     return frame.theme[slot / 4u][slot % 4u];
 }
 
-fn row_word(row: u32) -> u32 {
-    return mark.state + row * mark.stride;
+// Where word `word` of `row` lives: a kind word, or past the kind words an extra word.
+fn word_at(row: u32, word: u32) -> u32 {
+    if word < mark.stride {
+        return mark.state + row * mark.stride + word;
+    }
+    return mark.extra + row * mark.extras + (word - mark.stride);
+}
+
+fn easing() -> bool {
+    return mark.frozen != NONE;
+}
+
+// Word `word` of `row` as it was drawn when the transition began.
+fn was(row: u32, word: u32) -> u32 {
+    if word < mark.stride {
+        return frozen[mark.frozen + row * mark.stride + word];
+    }
+    return frozen[mark.frozen_extra + row * mark.extras + (word - mark.stride)];
+}
+
+// Whether `row` has nothing to ease from: it entered with this change.
+fn entering(row: u32, flags: u32) -> bool {
+    return (was(row, flags) & ENTERING) != 0u;
 }
 
 fn pointer_distance(row: u32) -> f32 {
-    let at = row_word(row) + VERTEX_POSITION;
+    let at = word_at(row, VERTEX_POSITION);
     let hi = vec2f(bitcast<f32>(state[at]), bitcast<f32>(state[at + 1u]));
     let lo = vec2f(bitcast<f32>(state[at + 2u]), bitcast<f32>(state[at + 3u]));
-    let z = bitcast<f32>(state[row_word(row) + VERTEX_ELEVATION]);
+    let z = bitcast<f32>(state[word_at(row, VERTEX_ELEVATION)]);
     return distance(to_screen(project(hi, lo, z)), frame.pointer);
 }
 
@@ -111,10 +140,90 @@ fn fallback(x: u32, slot: u32) -> u32 {
     return x;
 }
 
-fn run(row: u32, start: u32, end: u32) {
+// A number eased from what `row` showed; a row that entered grows from nothing when `grows`.
+fn ease_number(row: u32, w: u32, now: u32, flags: u32, grows: bool) -> u32 {
+    if !easing() || missing_bits(now) {
+        return now;
+    }
+    let start = select(was(row, w), word(0.0), entering(row, flags));
+    if missing_bits(start) || (entering(row, flags) && !grows) {
+        return now;
+    }
+    return word(mix(number(start), number(now), mark.motion));
+}
+
+fn ease_color(row: u32, w: u32, now: u32, flags: u32) -> u32 {
+    if !easing() || entering(row, flags) {
+        return now;
+    }
+    return pack4x8unorm(mix(unpack4x8unorm(was(row, w)), unpack4x8unorm(now), mark.motion));
+}
+
+// Stores position `now` (high and low parts of x and y) at word `w`, eased by its offset from what
+// the row showed so the destination keeps its precision.
+fn store_position(row: u32, w: u32, now: vec4f, flags: u32) {
+    var hi = now.xy;
+    if easing() && !entering(row, flags) && (was(row, flags) & (PINNED | PLACED)) != 0u {
+        let from_hi = vec2f(number(was(row, w)), number(was(row, w + 1u)));
+        let from_lo = vec2f(number(was(row, w + 2u)), number(was(row, w + 3u)));
+        hi += ((from_hi - now.xy) + (from_lo - now.zw)) * (1.0 - mark.motion);
+    }
+    state[word_at(row, w)] = word(hi.x);
+    state[word_at(row, w + 1u)] = word(hi.y);
+    state[word_at(row, w + 2u)] = word(now.z);
+    state[word_at(row, w + 3u)] = word(now.w);
+}
+
+// Sets or clears `bit` of the flags at word `w`. While easing, a row whose visibility flips stays
+// drawn and fades.
+fn store_flag(row: u32, w: u32, bit: u32, on: bool) {
+    let at = word_at(row, w);
+    var flags = select(state[at] & ~bit, state[at] | bit, on);
+    if bit == VISIBLE {
+        flags &= ~(FADE_IN | FADE_OUT);
+        if easing() {
+            let before = entering(row, w) || (was(row, w) & VISIBLE) != 0u;
+            let fresh = entering(row, w);
+            if on && (fresh || !before) {
+                flags |= FADE_IN;
+            } else if !on && before {
+                flags |= VISIBLE | FADE_OUT;
+            }
+        }
+    }
+    state[at] = flags & ~ENTERING;
+}
+
+// The place a layout gave `row` as bits, or missing.
+fn place(row: u32) -> vec2u {
+    if mark.places == NONE {
+        return vec2u(MISSING);
+    }
+    let p = vec2u(places[mark.places + 2u * row], places[mark.places + 2u * row + 1u]);
+    return select(vec2u(MISSING), p, is_placed(p.x, p.y));
+}
+
+// A position from data, or where data has none the place a layout gave the row.
+fn position(row: u32, w: u32, x: vec2u, y: vec2u) {
+    let flags = w + VERTEX_FLAGS - VERTEX_POSITION;
+    let at = word_at(row, flags);
+    if !missing_bits(x.x) && !missing_bits(y.x) {
+        store_position(row, w, vec4f(number(x.x), number(y.x), number(x.y), number(y.y)), flags);
+        state[at] = (state[at] | PINNED) & ~PLACED;
+        return;
+    }
+    let p = place(row);
+    if missing_bits(p.x) || missing_bits(p.y) {
+        state[at] &= ~(PINNED | PLACED);
+        return;
+    }
+    store_position(row, w, vec4f(number(p.x), number(p.y), 0.0, 0.0), flags);
+    state[at] = (state[at] & ~PINNED) | PLACED;
+}
+
+fn run(row: u32, start: u32, end: u32, flags: u32) {
     var stack: array<u32, STACK>;
     var sp = 0u;
-    let base = row_word(row);
     for (var pc = start; pc < end; pc++) {
         let at = mark.code + pc * 4u;
         let code = program[at];
@@ -129,6 +238,7 @@ fn run(row: u32, start: u32, end: u32) {
             case OP_HOVERED: { stack[sp] = truth(is_hovered(row)); sp++; }
             case OP_POINTER: { stack[sp] = word(pointer_distance(row)); sp++; }
             case OP_ELAPSED: { stack[sp] = word(frame.elapsed); sp++; }
+            case OP_ZOOM: { stack[sp] = word(frame.zoom); sp++; }
             case OP_THEME: { stack[sp] = theme_word(a); sp++; }
             case OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP: {
                 stack[sp - 1u] = word(unary(code, number(stack[sp - 1u])));
@@ -150,51 +260,35 @@ fn run(row: u32, start: u32, end: u32) {
                 stack[sp - 1u] = colormap(a & 0xffffu, a >> 16u, number(stack[sp - 1u]), domain(b));
             }
             case OP_STORE: {
+                // `c` is 1 for sizes, which grow from nothing as a row enters.
                 sp--;
-                state[base + a] = fallback(stack[sp], b);
+                let now = fallback(stack[sp], b);
+                state[word_at(row, a)] = ease_number(row, a, now, flags, c != 0u);
             }
             case OP_STORE_COLOR: {
                 sp--;
-                state[base + a] = select(stack[sp], theme_word(b), stack[sp] == MISSING_COLOR);
+                let now = select(stack[sp], theme_word(b), stack[sp] == MISSING_COLOR);
+                state[word_at(row, a)] = ease_color(row, a, now, flags);
+            }
+            case OP_STORE_CODE: {
+                sp--;
+                state[word_at(row, a)] = stack[sp];
             }
             case OP_STORE_FLAG: {
                 sp--;
-                let flags = base + a;
-                state[flags] = select(state[flags] & ~b, state[flags] | b, number(stack[sp]) > 0.5);
+                store_flag(row, a, b, number(stack[sp]) > 0.5);
             }
             case OP_STORE_POSITION: {
                 sp -= 2u;
-                let x = number(stack[sp]);
-                let y = number(stack[sp + 1u]);
-                let flags = base + VERTEX_FLAGS;
-                if missing(x) || missing(y) {
-                    state[flags] &= ~PINNED;
-                } else {
-                    state[base + a] = word(x);
-                    state[base + a + 1u] = word(y);
-                    state[base + a + 2u] = 0u;
-                    state[base + a + 3u] = 0u;
-                    state[flags] |= PINNED;
-                }
+                position(row, a, vec2u(stack[sp], 0u), vec2u(stack[sp + 1u], 0u));
             }
             case OP_POSITION: {
-                let x = column_value(b, row);
-                let y = column_value(c, row);
-                let flags = base + VERTEX_FLAGS;
-                if missing_bits(x.x) || missing_bits(y.x) {
-                    state[flags] &= ~PINNED;
-                } else {
-                    state[base + a] = x.x;
-                    state[base + a + 1u] = y.x;
-                    state[base + a + 2u] = x.y;
-                    state[base + a + 3u] = y.y;
-                    state[flags] |= PINNED;
-                }
+                position(row, a, column_value(b, row), column_value(c, row));
             }
             case OP_STORE_END: {
                 let end_row = bits_value(b, row);
                 let first = program[mark.ends + c];
-                state[base + a] = select(first + end_row, NONE, end_row == NONE || first == NONE);
+                state[word_at(row, a)] = select(first + end_row, NONE, end_row == NONE || first == NONE);
             }
             case OP_REDUCE: {
                 sp--;
@@ -210,16 +304,35 @@ fn run(row: u32, start: u32, end: u32) {
     }
 }
 
+// A row that left fades out with its mark's transition; its frozen state is what it showed.
+fn fade_exit(row: u32, flags: u32) {
+    for (var w = 0u; w < mark.stride; w++) {
+        state[word_at(row, w)] = was(row, w);
+    }
+    state[word_at(row, flags)] = (was(row, flags) & ~FADE_IN) | FADE_OUT;
+}
+
 @compute @workgroup_size(256)
 fn evaluate(@builtin(global_invocation_id) id: vec3u) {
+    // The flags word is the last kind word of every mark's rows.
+    let flags = mark.stride - 1u;
     if id.x >= mark.rows {
+        if id.x < mark.rows + mark.exits && easing() {
+            fade_exit(id.x, flags);
+        }
         return;
     }
     for (var k = 0u; k < mark.channels; k++) {
         if (mark.mask & (1u << k)) != 0u {
             let range = mark.ranges + 2u * k;
-            run(id.x, program[range], program[range + 1u]);
+            run(id.x, program[range], program[range + 1u], flags);
         }
+    }
+    if mark.kind == MARK_VERTICES {
+        let at = word_at(id.x, flags);
+        let units = select(0u, HALF_UNITS, (mark.units & (1u << VERTEX_HALF)) != 0u);
+        let own = select(0u, OWN_HEIGHT, (mark.flags & SIZED) != 0u);
+        state[at] = (state[at] & ~(HALF_UNITS | OWN_HEIGHT)) | units | own;
     }
 }
 
@@ -228,8 +341,9 @@ fn reduce(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= mark.rows {
         return;
     }
+    let flags = mark.stride - 1u;
     for (var k = mark.channels; k < mark.channels + mark.reductions; k++) {
         let range = mark.ranges + 2u * k;
-        run(id.x, program[range], program[range + 1u]);
+        run(id.x, program[range], program[range + 1u], flags);
     }
 }

@@ -44,7 +44,7 @@ const THEME = {
   background: '#090c11',
   grid: '#ffffff1c',
   shading: 0.7,
-  shadow: '#00000073',
+  shadow: { color: '#00000073' },
 } as const;
 
 export default async function bunny(stage: Stage): Promise<void> {

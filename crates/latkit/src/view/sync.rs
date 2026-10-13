@@ -1,8 +1,9 @@
 //! A mark's columns on the GPU: for every column its program reads, a descriptor and a page table of
 //! arena offsets, or for sampled columns a cursor per row block at the shown coordinate.
 //!
-//! A column a line traces holds every frame in view instead: its axis pages and, per row block, its
-//! frame pages.
+//! A column a line traces holds what is in view instead: its axis pages and, per row block, its
+//! frame pages; past two frames per pixel column, the buckets of the level of detail that fit and
+//! the frames after the last bucket written.
 //!
 //! Only columns whose inputs changed are rebuilt: moving the shown coordinate rebuilds sampled
 //! columns' cursors and nothing else. A mark keeps drawing its current tables until every page of
@@ -12,7 +13,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::data::{Column, Field, PAGE_ROWS, PageId, Samples, Version};
+use crate::data::{Column, Field, FramePage, LEVELS, PAGE_ROWS, PageId, Samples, Version, bucket_frames};
 use crate::expr::compile::{ColumnUse, Part, Program, Reads};
 use crate::gpu::Inner;
 use crate::gpu::arena::{Content, PageKey};
@@ -22,13 +23,35 @@ use crate::{Data, Name, Table};
 const WORDS: usize = wgsl::COLUMN_WORDS as usize;
 
 /// What one column's table was built from; a change in it means rebuilding the table.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 enum Stamp {
     Missing,
     Field(Version),
     Sampled(Version, Option<u32>, u32),
-    Trace(Version, u32, u32),
+    Trace(Version, Plan),
     Join(Version, Version),
+}
+
+/// What a trace shows: the window across, and the pixel columns it spans.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Window {
+    pub(crate) across: Option<[f64; 2]>,
+    pub(crate) columns: u32,
+}
+
+/// What a traced column draws: buckets of a level of detail, then frames.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Plan {
+    pub(crate) level: u32,
+    pub(crate) buckets: Range<u32>,
+    pub(crate) frames: Range<u32>,
+}
+
+impl Plan {
+    /// Points the trace runs through: a bucket's least and greatest, then each frame.
+    pub(crate) fn points(&self) -> u32 {
+        2 * self.buckets.len() as u32 + self.frames.len() as u32
+    }
 }
 
 /// One column on the GPU: its descriptor, whose table offsets are relative to `words`, its page table
@@ -38,8 +61,8 @@ struct ColumnTable {
     descriptor: [u32; WORDS],
     words: Vec<u32>,
     pins: Vec<PageKey>,
-    /// Frames a traced column draws.
-    frames: u32,
+    /// What a traced column draws.
+    plan: Option<Plan>,
 }
 
 /// Rows of the mark's table joined by id to rows of another table.
@@ -57,6 +80,8 @@ pub(crate) struct Tables {
     pending: Vec<(usize, ColumnTable)>,
     joins: Vec<Join>,
     synced: bool,
+    /// The rows of the table last synced, which a program reading no columns follows alone.
+    structure: Option<crate::data::Version>,
 }
 
 /// What a sync did.
@@ -90,7 +115,7 @@ impl Tables {
         source: &Source<'_>,
         all: &[Data],
         at: f64,
-        window: Option<[f64; 2]>,
+        window: Window,
         gpu: &mut Inner,
     ) -> Synced {
         let joins = joins(program);
@@ -101,7 +126,10 @@ impl Tables {
             Use::Field { column, join }
         });
         let uses: Vec<Use<'_>> = fields.chain(joins.iter().map(|of| Use::Join(of))).collect();
-        let reshape = !self.synced || self.current.len() != uses.len();
+        let reshape = !self.synced
+            || self.current.len() != uses.len()
+            || (uses.is_empty() && self.structure != Some(source.table.structure));
+        self.structure = Some(source.table.structure);
         let mut rebuilt = Vec::new();
         let mut ready = true;
         for (i, use_) in uses.iter().enumerate() {
@@ -115,7 +143,7 @@ impl Tables {
             if !reshape && self.current[i].stamp == stamp {
                 continue;
             }
-            let mut builder = Builder { words: Vec::new(), pins: Vec::new(), ready: true, frames: 0, gpu: &mut *gpu };
+            let mut builder = Builder { words: Vec::new(), pins: Vec::new(), ready: true, plan: None, gpu: &mut *gpu };
             let descriptor = match use_ {
                 Use::Field { column, join } => {
                     let mut descriptor = builder.column(column, source, all, at, window);
@@ -129,17 +157,17 @@ impl Tables {
                     descriptor
                 }
             };
-            let Builder { words, pins, ready: column_ready, frames, gpu: _ } = builder;
+            let Builder { words, pins, ready: column_ready, plan, gpu: _ } = builder;
             for &key in &pins {
                 gpu.arena.pin(key);
             }
             ready &= column_ready;
-            rebuilt.push((i, ColumnTable { stamp, descriptor, words, pins, frames }));
+            rebuilt.push((i, ColumnTable { stamp, descriptor, words, pins, plan }));
         }
         for (_, table) in std::mem::take(&mut self.pending) {
             unpin(&table.pins, gpu);
         }
-        if rebuilt.is_empty() {
+        if rebuilt.is_empty() && !reshape {
             return Synced::Same;
         }
         if !ready {
@@ -173,9 +201,14 @@ impl Tables {
         self.synced
     }
 
-    /// Frames the traced column draws.
+    /// What the traced column draws.
+    pub(crate) fn plan(&self) -> Option<&Plan> {
+        self.current.iter().find_map(|t| t.plan.as_ref())
+    }
+
+    /// Points the traced column draws.
     pub(crate) fn traced(&self) -> u32 {
-        self.current.iter().map(|t| t.frames).max().unwrap_or(0)
+        self.plan().map_or(0, Plan::points)
     }
 
     /// Whether rebuilt tables wait for pages to upload.
@@ -292,14 +325,27 @@ fn traced(samples: &Samples, window: Option<[f64; 2]>) -> Range<u32> {
     first..last.max(first)
 }
 
-fn stamp(column: &ColumnUse, source: &Source<'_>, all: &[Data], at: f64, window: Option<[f64; 2]>) -> Stamp {
+/// What a trace across `window` draws: every frame while there are at most two per pixel column,
+/// else the buckets of the coarsest level needed, written so far, and the frames after them.
+fn plan(samples: &Samples, window: Window) -> Plan {
+    let frames = traced(samples, window.across);
+    let needed = (frames.len() as u32).div_ceil(2 * window.columns.max(1));
+    if needed <= 1 {
+        return Plan { level: 0, buckets: 0..0, frames };
+    }
+    let level = (1..=LEVELS).find(|&k| bucket_frames(k) >= needed).unwrap_or(LEVELS);
+    let span = bucket_frames(level);
+    let first = frames.start / span;
+    let end = samples.sealed(level).min(frames.end.div_ceil(span)).max(first);
+    let tail = (end * span).max(frames.start).min(frames.end);
+    Plan { level, buckets: first..end, frames: tail..frames.end }
+}
+
+fn stamp(column: &ColumnUse, source: &Source<'_>, all: &[Data], at: f64, window: Window) -> Stamp {
     let Some((_, table)) = table_of(column.of.as_ref(), source, all) else { return Stamp::Missing };
     match table.field_named(&column.name) {
         None => Stamp::Missing,
-        Some(Field::Sampled(samples, version)) if column.trace => {
-            let frames = traced(samples, window);
-            Stamp::Trace(*version, frames.start, frames.end)
-        }
+        Some(Field::Sampled(samples, version)) if column.trace => Stamp::Trace(*version, plan(samples, window)),
         Some(Field::Sampled(samples, version)) => {
             let frame = samples.frame_at(at);
             let t = if column.step { 0.0 } else { frame.map_or(0.0, |f| samples.t(f, at)) };
@@ -314,7 +360,7 @@ struct Builder<'g> {
     words: Vec<u32>,
     pins: Vec<PageKey>,
     ready: bool,
-    frames: u32,
+    plan: Option<Plan>,
     gpu: &'g mut Inner,
 }
 
@@ -325,7 +371,7 @@ impl Builder<'_> {
         source: &Source<'_>,
         all: &[Data],
         at: f64,
-        window: Option<[f64; 2]>,
+        window: Window,
     ) -> [u32; WORDS] {
         let mut d = [0; WORDS];
         d[wgsl::COLUMN_LOW as usize] = wgsl::NONE;
@@ -358,7 +404,7 @@ impl Builder<'_> {
             Some(Field::Reference(reference)) => self.pages(&reference.rows, Part::Bits, false),
             Some(Field::Sampled(samples, _)) if column.trace => {
                 d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED;
-                self.trace(samples, traced(samples, window), table.len());
+                self.trace(samples, plan(samples, window), table.len());
             }
             Some(Field::Sampled(samples, _)) => {
                 d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED | if column.step { wgsl::STEP } else { 0 };
@@ -396,15 +442,29 @@ impl Builder<'_> {
         }
     }
 
-    /// The frames a line draws: the first and how many, the axis pages as (offset, first frame), per
-    /// row block its page count and where its pages start, then the frame pages as (offset, first
-    /// frame, rows). Offsets within the table are relative to it.
-    fn trace(&mut self, samples: &Samples, frames: Range<u32>, rows: usize) {
-        self.frames = frames.end - frames.start;
-        self.words.extend([frames.start, self.frames, 0, 0]);
-        let axis = samples.axis_pages(frames.clone());
+    /// What a line draws, laid out as `lib/trace.wesl` reads it: a header (the first frame and how
+    /// many, axis page and row block counts, the level, its first bucket and how many), the axis
+    /// pages as (offset, first frame), per row block where its frame pages and level pages start and
+    /// how many, then those pages as (offset, first frame or bucket, words per entry). Offsets within
+    /// the table are relative to it.
+    fn trace(&mut self, samples: &Samples, plan: Plan, rows: usize) {
+        let span = bucket_frames(plan.level);
+        let axis_frames =
+            (plan.buckets.start * span).min(plan.frames.start)..plan.frames.end.max(plan.buckets.end * span);
+        let axis = samples.axis_pages(axis_frames.clone());
+        let blocks = rows.div_ceil(PAGE_ROWS);
+        self.words.extend([
+            plan.frames.start,
+            plan.frames.len() as u32,
+            axis.len() as u32,
+            blocks as u32,
+            plan.level,
+            plan.buckets.start,
+            plan.buckets.len() as u32,
+            0,
+        ]);
         for (i, page) in axis.iter().enumerate() {
-            let through = axis.get(i + 1).map_or(frames.end, |next| next.first).min(frames.end);
+            let through = axis.get(i + 1).map_or(axis_frames.end, |next| next.first).min(axis_frames.end);
             let key = PageKey { page: page.id, part: Part::Values, low: false };
             let need = through.saturating_sub(page.first) * 2;
             let offset = self.gpu.arena.get(key, need, || Content::Axis(page.clone()));
@@ -412,24 +472,32 @@ impl Builder<'_> {
             self.ready &= offset.is_some();
             self.words.extend([offset.unwrap_or(wgsl::NONE), page.first]);
         }
-        self.words[2] = axis.len() as u32;
-        let blocks = rows.div_ceil(PAGE_ROWS);
-        self.words[3] = blocks as u32;
         let header = self.words.len();
-        self.words.resize(header + 2 * blocks, 0);
+        self.words.resize(header + 4 * blocks, 0);
         for block in 0..blocks {
-            let pages = samples.frame_pages(block, frames.clone());
-            self.words[header + 2 * block] = pages.len() as u32;
-            self.words[header + 2 * block + 1] = self.words.len() as u32;
-            for (i, page) in pages.iter().enumerate() {
-                let through = pages.get(i + 1).map_or(frames.end, |next| next.first).min(frames.end);
-                let key = PageKey { page: page.id, part: Part::Values, low: false };
-                let need = through.saturating_sub(page.first) * page.rows;
-                let offset = self.gpu.arena.get(key, need, || Content::Frames(page.clone()));
-                self.pins.push(key);
-                self.ready &= offset.is_some();
-                self.words.extend([offset.unwrap_or(wgsl::NONE), page.first, page.rows]);
-            }
+            let frames = samples.frame_pages(block, plan.frames.clone());
+            self.words[header + 4 * block] = frames.len() as u32;
+            self.words[header + 4 * block + 1] = self.words.len() as u32;
+            self.sample_pages(&frames, plan.frames.end);
+            let buckets =
+                if plan.level > 0 { samples.level_pages(block, plan.level, plan.buckets.clone()) } else { Vec::new() };
+            self.words[header + 4 * block + 2] = buckets.len() as u32;
+            self.words[header + 4 * block + 3] = self.words.len() as u32;
+            self.sample_pages(&buckets, plan.buckets.end);
+        }
+        self.plan = Some(plan);
+    }
+
+    /// Appends `pages` as (offset, first entry, words per entry), each holding entries up to `end`.
+    fn sample_pages(&mut self, pages: &[FramePage], end: u32) {
+        for (i, page) in pages.iter().enumerate() {
+            let through = pages.get(i + 1).map_or(end, |next| next.first).min(end);
+            let key = PageKey { page: page.id, part: Part::Values, low: false };
+            let need = through.saturating_sub(page.first) * page.rows;
+            let offset = self.gpu.arena.get(key, need, || Content::Frames(page.clone()));
+            self.pins.push(key);
+            self.ready &= offset.is_some();
+            self.words.extend([offset.unwrap_or(wgsl::NONE), page.first, page.rows]);
         }
     }
 

@@ -21,6 +21,7 @@ impl Deps {
     pub(crate) const POINTER: Deps = Deps(8);
     pub(crate) const FOCUS: Deps = Deps(16);
     pub(crate) const DOMAIN: Deps = Deps(32);
+    pub(crate) const CAMERA: Deps = Deps(64);
 
     pub(crate) fn intersects(self, other: Deps) -> bool {
         self.0 & other.0 != 0
@@ -232,6 +233,21 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Compiles channel `name` storing the code of text field `expr` at `word`, and returns the
+    /// program column whose dictionary names the codes.
+    pub(crate) fn text(&mut self, name: &str, expr: &Expr, word: u32) -> Result<u32> {
+        let Node::Field(f) = &*expr.0 else { return Err(invalid("a label's text is a text field").at(name)) };
+        if self.fields.kind(f.of.as_ref(), &f.name) != Some(Kind::Text) {
+            return Err(invalid("not a text field").at(&f.name).at(name));
+        }
+        let start = self.begin();
+        let column = self.field_column(f, Part::Codes, false);
+        self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
+        self.op(wgsl::OP_STORE_CODE, word, 0, 0, 1, 0)?;
+        self.close(name, start);
+        Ok(column)
+    }
+
     /// The column of sampled field `name` that a line traces over the axis.
     pub(crate) fn trace(&mut self, name: &str) -> Result<u32> {
         if self.fields.kind(None, name) != Some(Kind::Sampled) {
@@ -251,6 +267,13 @@ impl<'a> Compiler<'a> {
     }
 
     /// The program: channel ranges, then a range per fitted domain's reduction.
+    /// Marks state words `words` as held in position units, though no channel stores them.
+    pub(crate) fn in_units(&mut self, words: std::ops::Range<u32>) {
+        for word in words {
+            self.program.units |= 1 << word;
+        }
+    }
+
     pub(crate) fn finish(mut self) -> Program {
         for code in std::mem::take(&mut self.reductions) {
             let start = self.program.code.len() as u32;
@@ -298,7 +321,8 @@ impl<'a> Compiler<'a> {
             Store::Number { word, fallback } => self.op(wgsl::OP_STORE, word, slot(fallback), 0, 1, 0),
             Store::Size { word, units, fallback } => {
                 self.program.units |= u32::from(units) << word;
-                self.op(wgsl::OP_STORE, word, slot(fallback), 0, 1, 0)
+                // Sizes grow from nothing as rows enter.
+                self.op(wgsl::OP_STORE, word, slot(fallback), 1, 1, 0)
             }
             Store::Color { word, fallback } => self.op(wgsl::OP_STORE_COLOR, word, fallback, 0, 1, 0),
             Store::Flag { word, bit } => self.op(wgsl::OP_STORE_FLAG, word, bit, 0, 1, 0),
@@ -357,6 +381,7 @@ impl<'a> Compiler<'a> {
             Node::State(State::Hovered) => self.state(wgsl::OP_HOVERED, Deps::FOCUS, Ty::Bool),
             Node::State(State::Pointer) => self.state(wgsl::OP_POINTER, Deps::POINTER, Ty::Number),
             Node::State(State::Elapsed) => self.state(wgsl::OP_ELAPSED, Deps::TIME, Ty::Number),
+            Node::State(State::Zoom) => self.state(wgsl::OP_ZOOM, Deps::CAMERA, Ty::Number),
             Node::Unary(op, a) => {
                 let ty = match (op, self.emit(a)?) {
                     (Unary::Not, Ty::Bool) => Ty::Bool,

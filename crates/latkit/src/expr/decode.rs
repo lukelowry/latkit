@@ -268,7 +268,10 @@ impl Form {
                 "hovered" => State::Hovered,
                 "pointer" => State::Pointer,
                 "elapsed" => State::Elapsed,
-                other => return Err(E::unknown_variant(other, &["selected", "hovered", "pointer", "elapsed"])),
+                "zoom" => State::Zoom,
+                other => {
+                    return Err(E::unknown_variant(other, &["selected", "hovered", "pointer", "elapsed", "zoom"]));
+                }
             }))
         } else if self.missing {
             Expr::missing()

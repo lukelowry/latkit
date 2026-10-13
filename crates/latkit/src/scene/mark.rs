@@ -1,5 +1,6 @@
-use super::{Edges, Faces, Lines, Vertices};
-use crate::expr::compile::Compiler;
+use super::{Edges, Faces, Label, Lines, Vertices};
+use crate::expr::compile::{Compiler, Store};
+use crate::gpu::shaders as wgsl;
 use crate::{Expr, Name, Result};
 
 /// One drawn table of a scene.
@@ -49,6 +50,7 @@ pub(crate) struct Style {
     pub(crate) visible: Expr,
     pub(crate) name: Option<Name>,
     pub(crate) interaction: Interaction,
+    pub(crate) label: Option<Label>,
 }
 
 /// How a mark's rows answer the pointer.
@@ -67,7 +69,15 @@ impl Default for Interaction {
 
 impl Style {
     pub(crate) fn new(data: Name, table: Name) -> Style {
-        Style { data, table, color: None, visible: true.into(), name: None, interaction: Interaction::default() }
+        Style {
+            data,
+            table,
+            color: None,
+            visible: true.into(),
+            name: None,
+            interaction: Interaction::default(),
+            label: None,
+        }
     }
 }
 
@@ -89,16 +99,102 @@ pub(crate) struct Key {
     pub(crate) name: Option<Name>,
 }
 
+/// The four shaders every mark draws with.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum Primitive {
+    Points,
+    Strokes,
+    Triangles,
+}
+
+impl Primitive {
+    pub(crate) fn code(self) -> u32 {
+        match self {
+            Primitive::Points => wgsl::POINTS,
+            Primitive::Strokes => wgsl::STROKES,
+            Primitive::Triangles => wgsl::TRIANGLES,
+        }
+    }
+}
+
+/// How a mark's markers draw: built in or custom, their shape, and the inputs they read.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub(crate) struct Markers {
+    pub(crate) marker: u32,
+    pub(crate) shape: u32,
+    pub(crate) corner: f32,
+    pub(crate) hole: f32,
+    /// Inputs, and the row word of the first.
+    pub(crate) inputs: u32,
+    pub(crate) input: u32,
+    /// A pie's slice colors, packed; an icon marker's layers, filled in when packed.
+    pub(crate) palette: Vec<u32>,
+    /// An icon marker's images.
+    pub(crate) icons: Vec<crate::Image>,
+    /// A custom marker's WGSL.
+    pub(crate) custom: Option<std::sync::Arc<str>>,
+}
+
+/// How a compiled mark's labels draw: the extra word their words start at, the program column of
+/// their text, their size in CSS pixels, and where their lines wrap.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Labeling {
+    pub(crate) extra: u32,
+    pub(crate) column: u32,
+    pub(crate) size: f32,
+    pub(crate) max_width: Option<f32>,
+}
+
 /// What a compiled mark draws with, besides its program.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Drawing {
     pub(crate) kind: MarkKind,
-    /// State words per row.
+    /// The primitive the mark draws its rows with.
+    pub(crate) primitive: Primitive,
+    /// Where a stroke's segments run between: one of the `PATH_*` codes.
+    pub(crate) source: u32,
+    /// Kind words per row, and extra words per row after them.
     pub(crate) stride: u32,
+    pub(crate) extras: u32,
     pub(crate) flags: u32,
-    pub(crate) marker: (u32, u32, f32),
+    pub(crate) markers: Markers,
     /// The program column a line traces, or `NONE`.
     pub(crate) trace: u32,
+    pub(crate) label: Option<Labeling>,
+    /// A vertex mark's ports, by the reference field that names their nets.
+    pub(crate) ports: Vec<(Name, super::Port)>,
+    /// A vertex mark's members: rows of a table whose reference field names the row they are in.
+    pub(crate) members: Option<(Name, Name)>,
+    /// An edge mark's bends: a path field of points between its ends.
+    pub(crate) bends: Option<Name>,
+    /// How an edge mark's rows run; `None` takes the space's way.
+    pub(crate) route: Option<super::Route>,
+}
+
+impl Drawing {
+    pub(crate) fn new(kind: MarkKind, stride: u32) -> Drawing {
+        let (primitive, source) = match kind {
+            MarkKind::Vertices => (Primitive::Points, wgsl::NONE),
+            MarkKind::Edges => (Primitive::Strokes, wgsl::PATH_ENDS),
+            MarkKind::Faces => (Primitive::Triangles, wgsl::NONE),
+            MarkKind::Lines => (Primitive::Strokes, wgsl::PATH_TRACE),
+        };
+        Drawing {
+            kind,
+            primitive,
+            source,
+            stride,
+            extras: 0,
+            flags: 0,
+            markers: Markers::default(),
+            trace: wgsl::NONE,
+            label: None,
+            ports: Vec::new(),
+            members: None,
+            bends: None,
+            route: None,
+        }
+    }
 }
 
 impl Mark {
@@ -129,15 +225,6 @@ impl Mark {
         }
     }
 
-    /// Whether the mark casts shadows.
-    pub(crate) fn shadow(&self) -> bool {
-        match self {
-            Mark::Vertices(m) => m.shadow,
-            Mark::Faces(m) => m.shadow,
-            Mark::Edges(_) | Mark::Lines(_) => false,
-        }
-    }
-
     /// Lines that trace a field are keyed by that field unless named.
     pub(crate) fn key(&self) -> Key {
         let style = self.style();
@@ -156,13 +243,36 @@ impl Mark {
     }
 
     pub(crate) fn compile(&self, compiler: &mut Compiler<'_>, theme: &super::Theme) -> Result<Drawing> {
-        match self {
+        let mut drawing = match self {
             Mark::Vertices(m) => m.compile(compiler),
             Mark::Edges(m) => m.compile(compiler, theme),
             Mark::Faces(m) => m.compile(compiler),
             Mark::Lines(m) => m.compile(compiler),
+        }?;
+        if let Some(label) = &self.style().label {
+            compile_label(label, compiler, theme, &mut drawing).map_err(|e| e.at("label"))?;
         }
+        Ok(drawing)
     }
+}
+
+/// Compiles `label`'s text, priority, and color into extra words after the mark's own.
+fn compile_label(label: &Label, c: &mut Compiler<'_>, theme: &super::Theme, drawing: &mut Drawing) -> Result<()> {
+    let extra = drawing.extras;
+    let word = |k: u32| drawing.stride + extra + k;
+    let column = c.text("text", &label.text, word(wgsl::LABEL_CODE))?;
+    let priority: Expr = label.priority.clone().scale(0.0..=255.0).into();
+    c.channel("priority", &priority, Store::Number { word: word(wgsl::LABEL_PRIORITY), fallback: None })?;
+    let color = Store::Color { word: word(wgsl::LABEL_COLOR), fallback: wgsl::THEME_TEXT };
+    match &label.color {
+        Some(expr) => c.channel("color", expr, color)?,
+        None => c.theme("color", wgsl::THEME_TEXT, color)?,
+    }
+    drawing.extras += wgsl::LABEL_WORDS;
+    drawing.flags |= wgsl::LABELED;
+    drawing.label =
+        Some(Labeling { extra, column, size: label.size.unwrap_or(theme.font_size), max_width: label.max_width });
+    Ok(())
 }
 
 /// The options every mark has, as inherent methods.
@@ -208,6 +318,13 @@ macro_rules! style_methods {
             #[must_use]
             pub fn drag(mut self, on: bool) -> Self {
                 self.style.interaction.drag = on;
+                self
+            }
+
+            /// Labels each row.
+            #[must_use]
+            pub fn label(mut self, label: $crate::Label) -> Self {
+                self.style.label = Some(label);
                 self
             }
         }

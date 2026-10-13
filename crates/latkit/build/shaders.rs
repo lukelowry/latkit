@@ -22,18 +22,39 @@ struct Entry {
 
 const ENTRIES: &[Entry] = &[
     Entry { module: "compute::evaluate", variants: &[("main", &["writes"])] },
+    Entry { module: "compute::freeze", variants: &[("main", &[])] },
     Entry { module: "compute::bounds", variants: &[("main", &[])] },
     Entry { module: "compute::normals", variants: &[("main", &[])] },
-    Entry { module: "compute::probe", variants: &[("main", &[])] },
+    Entry { module: "compute::groups", variants: &[("main", &["writes", "groups"])] },
+    Entry { module: "compute::stress", variants: &[("main", &["stress"])] },
+    Entry { module: "compute::probe", variants: &[("main", &["lists"]), ("multisampled", &["multisampled", "lists"])] },
+    Entry { module: "compute::lists", variants: &[("main", &["lists"]), ("query", &["lists", "query"])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
-    Entry { module: "draw::vertices", variants: &[("main", &[]), ("shadow", &["shadow"])] },
-    Entry { module: "draw::edges", variants: &[("main", &[])] },
-    Entry { module: "draw::faces", variants: &[("main", &[]), ("shadow", &["shadow"])] },
-    Entry { module: "draw::lines", variants: &[("main", &[])] },
+    Entry {
+        module: "draw::points",
+        variants: &[
+            ("main", &[]),
+            ("cast", &["casts"]),
+            ("custom", &["custom"]),
+            ("custom_cast", &["custom", "casts"]),
+            ("ports", &["ports"]),
+        ],
+    },
+    Entry { module: "draw::strokes", variants: &[("main", &[]), ("cast", &["casts"])] },
+    Entry { module: "draw::triangles", variants: &[("main", &[]), ("cast", &["casts"])] },
+    Entry { module: "draw::shade", variants: &[("main", &[])] },
+    Entry { module: "draw::glyphs", variants: &[("main", &[])] },
+    Entry { module: "compute::labels", variants: &[("main", &[])] },
     Entry { module: "draw::overlay", variants: &[("main", &[])] },
 ];
 
-const FEATURES: &[&str] = &["writes", "shadow", "pick", "custom"];
+const FEATURES: &[&str] = &["writes", "casts", "custom", "multisampled", "lists", "query", "ports", "groups", "stress"];
+
+/// What a custom marker supplies, for validating its variant.
+const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";
+
+/// Uniforms bound at a dynamic offset: each mark's, and each pass's eye.
+const DYNAMIC: &[&str] = &["mark", "eye"];
 
 pub(crate) fn generate() {
     let root = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("shaders");
@@ -57,7 +78,10 @@ pub(crate) fn generate() {
     for entry in ENTRIES {
         for &(variant, features) in entry.variants {
             let source = link(&root, entry.module, features, false);
-            let (module, info) = validate(&format!("{}.{variant}", entry.module), &source);
+            // A custom marker's variant lacks the marker an application supplies; a stand-in validates it.
+            let checked =
+                if features.contains(&"custom") { format!("{source}\n{CUSTOM_MARKER}") } else { source.clone() };
+            let (module, info) = validate(&format!("{}.{variant}", entry.module), &checked);
             check_shared(&module, &bind_module, entry.module);
             let file = format!("{}.{variant}.wgsl", entry.module.replace("::", "."));
             fs::write(out.join(&file), &source).unwrap();
@@ -177,6 +201,7 @@ fn rust_type(module: &naga::Module, ty: naga::Handle<naga::Type>) -> (String, u3
             assert_eq!(element_size, *stride, "array elements are not padded");
             (format!("[{element}; {n}]"), stride * n.get())
         }
+        TypeInner::Struct { span, .. } => (module.types[ty].name.clone().expect("a named struct"), *span),
         other => panic!("no mirror for {other:?}"),
     }
 }
@@ -226,8 +251,9 @@ fn bindings(module: &naga::Module, info: Option<&ModuleInfo>, group: u32) -> Vec
         stages.sort_unstable();
         stages.dedup();
         let stages = if stages.is_empty() { "0".to_owned() } else { stages.join(" | ") };
+        let dynamic = global.name.as_deref().is_some_and(|name| DYNAMIC.contains(&name));
         let entry =
-            format!("Binding {{ slot: {}, kind: {kind}, stages: {stages}, dynamic: {} }}", binding.binding, group == 1);
+            format!("Binding {{ slot: {}, kind: {kind}, stages: {stages}, dynamic: {dynamic} }}", binding.binding);
         assert!(found.insert(binding.binding, entry).is_none(), "binding {group}.{} twice", binding.binding);
     }
     found.into_values().collect()

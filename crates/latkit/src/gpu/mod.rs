@@ -5,6 +5,7 @@ pub(crate) mod arena;
 pub(crate) mod atlas;
 pub(crate) mod colormaps;
 pub(crate) mod dictionary;
+pub(crate) mod icons;
 pub(crate) mod pipelines;
 pub(crate) mod readback;
 pub(crate) mod shaders;
@@ -16,7 +17,9 @@ use arena::Arena;
 use atlas::Atlas;
 use colormaps::Colormaps;
 use dictionary::Dictionaries;
+use icons::Icons;
 use pipelines::Pipelines;
+use readback::Readbacks;
 
 use crate::host::Host;
 use crate::{Error, Result};
@@ -33,6 +36,8 @@ pub(crate) struct Shared {
     pub(crate) queue: wgpu::Queue,
     pub(crate) sampler: wgpu::Sampler,
     pub(crate) lost: Arc<AtomicBool>,
+    /// Errors the device reported outside any scope, for views to tell.
+    pub(crate) errors: Arc<Mutex<Vec<Error>>>,
     inner: Mutex<Inner>,
 }
 
@@ -42,6 +47,8 @@ pub(crate) struct Inner {
     pub(crate) colormaps: Colormaps,
     pub(crate) dictionaries: Dictionaries,
     pub(crate) atlas: Atlas,
+    pub(crate) icons: Icons,
+    pub(crate) readbacks: Readbacks,
     pub(crate) host: Option<Arc<dyn Host>>,
     pub(crate) budget: Budget,
 }
@@ -80,6 +87,7 @@ impl Gpu {
         let limits = wgpu::Limits {
             max_storage_buffer_binding_size: supported.max_storage_buffer_binding_size,
             max_buffer_size: supported.max_buffer_size,
+            max_storage_buffers_per_shader_stage: supported.max_storage_buffers_per_shader_stage,
             ..wgpu::Limits::default()
         };
         let (device, queue) = adapter
@@ -109,10 +117,19 @@ impl Gpu {
             let lost = lost.clone();
             move |_, _| lost.store(true, Ordering::Release)
         });
+        let errors: Arc<Mutex<Vec<Error>>> = Arc::default();
+        device.on_uncaptured_error({
+            let errors = errors.clone();
+            Arc::new(move |error: wgpu::Error| {
+                let error = Error::Unsupported(format!("the GPU refused: {error}").into());
+                errors.lock().unwrap_or_else(PoisonError::into_inner).push(error);
+            })
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("latkit ramp"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let inner = Inner {
@@ -121,6 +138,8 @@ impl Gpu {
             colormaps: Colormaps::new(&device),
             dictionaries: Dictionaries::default(),
             atlas: Atlas::new(&device),
+            icons: Icons::new(&device),
+            readbacks: Readbacks::default(),
             host: None,
             budget: Budget::default(),
         };
@@ -128,7 +147,8 @@ impl Gpu {
             target_arch = "wasm32",
             allow(clippy::arc_with_non_send_sync, reason = "WebGPU objects stay on the one thread a page has")
         )]
-        let shared = Arc::new(Shared { instance, adapter, device, queue, sampler, lost, inner: Mutex::new(inner) });
+        let shared =
+            Arc::new(Shared { instance, adapter, device, queue, sampler, lost, errors, inner: Mutex::new(inner) });
         Gpu(shared)
     }
 
@@ -165,6 +185,13 @@ impl Gpu {
     /// Gives views the platform's services, such as setting text.
     pub fn set_host(&self, host: impl Host) {
         self.0.lock().host = Some(Arc::new(host));
+    }
+
+    /// Makes every pipeline a view drawing into `format` with `samples` per pixel uses, so the first
+    /// hover, shadow, or plot does not wait for one to compile.
+    pub fn prepare(&self, format: wgpu::TextureFormat, samples: u32) {
+        let mut inner = self.0.lock();
+        inner.pipelines.prepare(&self.0.device, format, samples);
     }
 
     /// Whether the device was lost; drawing then does nothing, and a new `Gpu` is needed.

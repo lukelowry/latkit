@@ -3,8 +3,9 @@
 import package::lib::types::{
     SELECTED, SHAPE_RECTANGLE, SHAPE_ROUNDED, SHAPE_DIAMOND, MARKER_GAUGE, MARKER_PIE, MARKER_BLOCK,
 };
-import package::lib::bind::{frame, mark};
+import package::lib::bind::{frame, mark, program};
 import package::lib::focus::focus_of;
+import package::lib::mark::coverage;
 import package::lib::project::TAU;
 
 struct MarkerColor {
@@ -35,9 +36,17 @@ fn shape_distance(shape: u32, p: vec2f, half: vec2f) -> f32 {
     }
 }
 
+// The outline a marker's distance is measured from: blocks are rounded boxes, others their shape.
+fn outline_distance(p: vec2f, half: vec2f) -> f32 {
+    if mark.marker == MARKER_BLOCK {
+        return box_distance(p, half, min(mark.corner, min(half.x, half.y)));
+    }
+    return shape_distance(mark.shape, p, half);
+}
+
 // `color` covering where `distance` is negative, antialiased over a pixel.
 fn filled(color: vec4f, distance: f32) -> MarkerColor {
-    return MarkerColor(vec4f(color.rgb, color.a * clamp(0.5 - distance * frame.pixel_ratio, 0.0, 1.0)), distance);
+    return MarkerColor(vec4f(color.rgb, color.a * coverage(distance)), distance);
 }
 
 // `top` over `bottom`.
@@ -56,6 +65,11 @@ fn gauge(p: vec2f, half: vec2f, color: vec4f, shape: u32, fill: f32) -> MarkerCo
     return over(ring, filled(color, max(inner, cut)));
 }
 
+// A pie's slice colors are the mark's palette.
+fn slice_color(i: u32) -> vec4f {
+    return unpack4x8unorm(program[mark.palette + i]);
+}
+
 fn pie(p: vec2f, radius: f32, slices: array<f32, 8>, count: u32, hole: f32) -> MarkerColor {
     var total = 0.0;
     for (var i = 0u; i < count; i++) {
@@ -63,10 +77,10 @@ fn pie(p: vec2f, radius: f32, slices: array<f32, 8>, count: u32, hole: f32) -> M
     }
     let angle = fract(atan2(p.x, p.y) / TAU + 1.0) * total;
     var start = 0.0;
-    var color = mark.pie[0];
+    var color = slice_color(0u);
     for (var i = 0u; i < count; i++) {
         let end = start + max(slices[i], 0.0);
-        color = select(color, mark.pie[i], angle >= start && angle < end);
+        color = select(color, slice_color(i), angle >= start && angle < end);
         start = end;
     }
     let d = length(p);
@@ -77,9 +91,14 @@ fn builtin_marker(f: MarkerFragment) -> MarkerColor {
     switch mark.marker {
         case MARKER_GAUGE: { return gauge(f.p, f.half, f.color, mark.shape, f.input[0]); }
         case MARKER_PIE: { return pie(f.p, min(f.half.x, f.half.y), f.input, mark.inputs, mark.hole); }
-        case MARKER_BLOCK: { return filled(f.color, box_distance(f.p, f.half, mark.corner)); }
-        default: { return filled(f.color, shape_distance(mark.shape, f.p, f.half)); }
+        default: { return filled(f.color, outline_distance(f.p, f.half)); }
     }
+}
+
+// A ring of the status color just outside the marker's outline.
+fn status_ring(m: MarkerColor, p: vec2f, half: vec2f, status: vec4f) -> MarkerColor {
+    let d = outline_distance(p, half);
+    return over(filled(status, abs(d - 1.5) - 1.25), m);
 }
 
 // A premultiplied color with the row's focus glow around its shape.
@@ -94,10 +113,4 @@ fn glow(m: MarkerColor, row: u32) -> vec4f {
     let tint = select(frame.hover, selected, (focus & SELECTED) != 0u);
     let halo = tint.a * (1.0 - smoothstep(0.0, frame.glow, max(m.distance, 0.0)));
     return base + vec4f(tint.rgb * halo, halo) * (1.0 - base.a);
-}
-
-// The soft shadow under a marker, premultiplied.
-fn shadow(m: MarkerColor) -> vec4f {
-    let a = frame.shadow.a * (1.0 - smoothstep(-2.0, 6.0, m.distance));
-    return vec4f(frame.shadow.rgb * a, a);
 }

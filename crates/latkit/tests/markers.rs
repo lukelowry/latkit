@@ -1,0 +1,110 @@
+//! Markers draw what their inputs say: a gauge filled so far, a pie's slices, an icon, a custom WGSL
+//! marker, and a status ring; a custom marker that does not compile is told, not drawn.
+
+#![cfg(feature = "gpu")]
+
+mod common;
+
+use std::sync::Arc;
+
+use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane};
+use latkit::{Color, Data, Event, Image, Marker, Scene, Shape, Table, Vertices, View, field};
+
+fn one(marker: Marker) -> (View, latkit::Gpu) {
+    let gpu = gpu().expect("a GPU");
+    let mut data = Data::new("d");
+    data.apply(Table::new("V", 1).field("x", vec![0.0]).field("y", vec![0.0]).field("v", vec![0.5])).expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("d", "V").position("x", "y").radius(20.0).color(Color::WHITE).marker(marker));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    (view, gpu)
+}
+
+const WHITE: [u8; 4] = [255, 255, 255, 255];
+const BLACK: [u8; 4] = [0, 0, 0, 255];
+
+#[test]
+fn a_gauge_fills_up_to_its_value() {
+    if common::gpu().is_none() {
+        return;
+    }
+    let (mut view, gpu) = one(Marker::Gauge { fill: field("v"), shape: Shape::Rectangle });
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    assert!(close(at(&pixels, c, c + 10), WHITE), "filled below half: {:?}", at(&pixels, c, c + 10));
+    assert!(close(at(&pixels, c, c - 10), BLACK), "empty above: {:?}", at(&pixels, c, c - 10));
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn a_pie_cuts_slices_in_their_colors() {
+    if common::gpu().is_none() {
+        return;
+    }
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    let blue = Color::rgb(0.0, 0.0, 1.0);
+    let (mut view, gpu) = one(Marker::Pie { slices: vec![1.0.into(), 1.0.into()], colors: vec![red, blue], hole: 0.0 });
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    // Slices run clockwise from the top: the first fills the right half.
+    assert!(close(at(&pixels, c + 10, c), [255, 0, 0, 255]), "{:?}", at(&pixels, c + 10, c));
+    assert!(close(at(&pixels, c - 10, c), [0, 0, 255, 255]), "{:?}", at(&pixels, c - 10, c));
+}
+
+#[test]
+fn icons_show_the_image_their_index_picks() {
+    if common::gpu().is_none() {
+        return;
+    }
+    let solid = |rgba: [u8; 4]| Image { size: [2, 2], rgba: Arc::from(rgba.repeat(4)) };
+    let images = vec![solid([255, 0, 0, 255]), solid([0, 255, 0, 255])];
+    let (mut view, gpu) = one(Marker::Icon { images, index: 1.0.into() });
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    assert!(close(at(&pixels, c + 5, c + 5), [0, 255, 0, 255]), "{:?}", at(&pixels, c + 5, c + 5));
+}
+
+#[test]
+fn custom_markers_draw_their_wgsl_and_bad_ones_are_told() {
+    if common::gpu().is_none() {
+        return;
+    }
+    let source = "fn marker(f: MarkerFragment) -> MarkerColor {
+        let d = max(abs(f.p.x), abs(f.p.y)) - f.half.x;
+        return filled(vec4f(f.input[0], 1.0, 0.0, 1.0), d);
+    }";
+    let (mut view, gpu) = one(Marker::Wgsl { source: source.into(), inputs: vec![field("v")] });
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    let pixel = at(&pixels, c + 15, c + 15);
+    assert!(pixel[0].abs_diff(128) <= 4 && pixel[1] == 255, "a square in the input's color: {pixel:?}");
+    assert_eq!(errors(&mut view), Vec::new());
+
+    let (mut view, gpu) =
+        one(Marker::Wgsl { source: "fn marker(f: MarkerFragment) -> MarkerColor { oops }".into(), inputs: vec![] });
+    frame(&gpu, &mut view);
+    frame(&gpu, &mut view);
+    let told = view.events().any(|e| matches!(e, Event::Error(error) if error.to_string().contains("custom marker")));
+    assert!(told, "the broken marker is told");
+}
+
+#[test]
+fn status_rings_surround_their_markers() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("d");
+    data.apply(Table::new("V", 1).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(
+        Vertices::of("d", "V").position("x", "y").radius(10.0).color(Color::WHITE).status(Color::rgb(1.0, 0.0, 0.0)),
+    );
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    let ring = at(&pixels, c + 11, c);
+    assert!(ring[0] > 200 && ring[1] < 80, "a red ring just outside: {ring:?}");
+    assert!(close(at(&pixels, c, c), WHITE));
+}

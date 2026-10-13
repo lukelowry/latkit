@@ -7,6 +7,14 @@ use crate::{Error, Result};
 
 /// Words in a frame page: frames of one row block, frame-major. An axis page holds as many words.
 pub(crate) const FRAME_PAGE_WORDS: usize = 1 << 16;
+/// Levels of detail kept: level `k` holds each row's least and greatest value over buckets of `8^k`
+/// frames.
+pub(crate) const LEVELS: u32 = 6;
+
+/// Frames a bucket of level `level` spans.
+pub(crate) fn bucket_frames(level: u32) -> u32 {
+    1 << (3 * level)
+}
 
 /// An append-only list shared between versions. Indices are absolute: a version reads items
 /// `start..end`, so forgetting the oldest never renumbers the rest.
@@ -155,11 +163,18 @@ fn split(x: f64) -> [u32; 2] {
 
 /// A field's samples over the data's axis: one frame per coordinate, every row in each frame.
 /// Frames are numbered from the first ever appended; a version reads frames `start()..end()`.
+///
+/// Each row block also keeps levels of detail: level `k` holds, per bucket of `8^k` frames, each
+/// row's least and greatest value, as pages of buckets that hold twice as many values per row. A
+/// bucket is written once its last frame is, so level pages grow like frame pages and a long history
+/// draws from as few buckets as there are pixels.
 #[derive(Clone, Default)]
 pub(crate) struct Samples {
     at: Log<f64>,
     axis: Log<AxisPage>,
     blocks: Arc<[Log<FramePage>]>,
+    /// Per row block, per level from 1, its pages of buckets.
+    levels: Arc<[Vec<Log<FramePage>>]>,
 }
 
 impl Samples {
@@ -200,6 +215,8 @@ impl Samples {
         }
         let mut blocks: Vec<Log<FramePage>> = self.blocks.to_vec();
         blocks.resize_with(rows.div_ceil(PAGE_ROWS).max(blocks.len()), Log::default);
+        let mut levels: Vec<Vec<Log<FramePage>>> = self.levels.to_vec();
+        levels.resize_with(blocks.len(), || (0..LEVELS).map(|_| Log::default()).collect());
         let mut frame_values = vec![0.0_f32; rows];
         for (f, &t) in at.iter().enumerate() {
             let frame = self.end();
@@ -212,6 +229,7 @@ impl Samples {
                 if !block.last().is_some_and(|page| page.extend(frame, slice)) {
                     block.push(FramePage::new(frame, slice.to_vec(), slice.len() as u32));
                 }
+                seal(block, &mut levels[b], frame);
             }
             if !self.axis.last().is_some_and(|page| page.extend(frame, t)) {
                 self.axis.push(AxisPage::new(frame, t));
@@ -219,7 +237,26 @@ impl Samples {
             self.at.push(t);
         }
         self.blocks = blocks.into();
+        self.levels = levels.into();
         Ok(())
+    }
+
+    /// The pages of `block`'s level `level` holding buckets `buckets`.
+    pub(crate) fn level_pages(&self, block: usize, level: u32, buckets: std::ops::Range<u32>) -> Vec<FramePage> {
+        let Some(log) = self.levels.get(block).and_then(|l| l.get(level as usize - 1)) else { return Vec::new() };
+        log.read(|pages| {
+            let from = pages.partition_point(|p| p.first <= buckets.start).saturating_sub(1);
+            pages[from..].iter().take_while(|p| p.first < buckets.end).cloned().collect()
+        })
+    }
+
+    /// Buckets of level `level` written in every row block: one past the last.
+    pub(crate) fn sealed(&self, level: u32) -> u32 {
+        self.levels
+            .iter()
+            .filter_map(|l| l.get(level as usize - 1)?.last().map(|p| p.first + p.read(<[f32]>::len) as u32 / p.rows))
+            .min()
+            .unwrap_or(0)
     }
 
     /// Forgets frames before coordinate `before`; pages that hold only forgotten frames drop. True
@@ -239,6 +276,15 @@ impl Samples {
             block.forget(block.start() + dropped);
         }
         self.blocks = blocks.into();
+        let mut levels: Vec<Vec<Log<FramePage>>> = self.levels.to_vec();
+        for block in &mut levels {
+            for (k, log) in block.iter_mut().enumerate() {
+                let bucket = first / bucket_frames(k as u32 + 1);
+                let dropped = log.read(|pages| pages.partition_point(|p| p.first <= bucket).saturating_sub(1));
+                log.forget(log.start() + dropped);
+            }
+        }
+        self.levels = levels.into();
         true
     }
 
@@ -337,9 +383,79 @@ impl Samples {
     }
 }
 
+/// After `frame` is written to `block`, writes every bucket it completes, level by level: level 1
+/// from frames, each level above from the eight buckets below it.
+fn seal(block: &Log<FramePage>, levels: &mut [Log<FramePage>], frame: u32) {
+    let next = frame + 1;
+    for level in 1..=LEVELS {
+        let span = bucket_frames(level);
+        if !next.is_multiple_of(span) {
+            break;
+        }
+        let bucket = next / span - 1;
+        let first = bucket * 8;
+        let parts: Vec<(FramePage, u32)> = if level == 1 {
+            (first..first + 8).filter_map(|f| frame_page(block, f)).collect()
+        } else {
+            let below = &levels[level as usize - 2];
+            (first..first + 8).filter_map(|b| frame_page(below, b)).collect()
+        };
+        let Some((page, _)) = parts.first() else { break };
+        let rows = if level == 1 { page.rows } else { page.rows / 2 } as usize;
+        let mut sealed = vec![f32::NAN; 2 * rows];
+        for (page, base) in &parts {
+            page.read(|values| {
+                for row in 0..rows {
+                    let (lo, hi) = if level == 1 {
+                        let v = values.get(*base as usize + row).copied().unwrap_or(f32::NAN);
+                        (v, v)
+                    } else {
+                        let at = *base as usize + 2 * row;
+                        (values.get(at).copied().unwrap_or(f32::NAN), values.get(at + 1).copied().unwrap_or(f32::NAN))
+                    };
+                    sealed[2 * row] = sealed[2 * row].min(lo);
+                    sealed[2 * row + 1] = sealed[2 * row + 1].max(hi);
+                }
+            });
+        }
+        let log = &mut levels[level as usize - 1];
+        if !log.last().is_some_and(|page| page.extend(bucket, &sealed)) {
+            log.push(FramePage::new(bucket, sealed, 2 * rows as u32));
+        }
+    }
+}
+
+/// The page holding entry `index` of `log` (a frame, or a bucket of a level), and where it starts.
+fn frame_page(log: &Log<FramePage>, index: u32) -> Option<(FramePage, u32)> {
+    log.read(|pages| {
+        let i = pages.partition_point(|page| page.first <= index).checked_sub(1)?;
+        let page = &pages[i];
+        let base = (index - page.first) * page.rows;
+        (page.read(<[f32]>::len) as u32 >= base + page.rows).then(|| (page.clone(), base))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn levels_keep_each_buckets_least_and_greatest() {
+        let mut samples = Samples::default();
+        for t in 0..130 {
+            let v = if t == 70 { -5.0 } else { f64::from(t) };
+            samples.append(&[f64::from(t)], &Values::from(vec![v, 2.0 * v]), 2).expect("frame");
+        }
+        assert_eq!(samples.sealed(1), 16, "130 frames seal 16 buckets of 8");
+        assert_eq!(samples.sealed(2), 2, "and 2 of 64");
+        let page = &samples.level_pages(0, 1, 8..9)[0];
+        let at = (8 - page.first) as usize * 4;
+        // Bucket 8 spans frames 64..72, where frame 70 dips to -5.
+        page.read(|v| assert_eq!(&v[at..at + 4], &[-5.0, 71.0, -10.0, 142.0]));
+        let page = &samples.level_pages(0, 2, 1..2)[0];
+        // Bucket 1 of level 2 spans frames 64..128.
+        page.read(|v| assert_eq!(&v[4..8], &[-5.0, 127.0, -10.0, 254.0]));
+    }
 
     #[test]
     fn appends_read_back_by_coordinate() {

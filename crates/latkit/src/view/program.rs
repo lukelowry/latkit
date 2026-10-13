@@ -22,7 +22,12 @@ impl View {
     pub(super) fn pack(&mut self, inner: &mut Inner) {
         let gpu = self.gpu.clone();
         for shown in self.marks.iter_mut().filter(|m| !m.packed) {
-            let Some(compiled) = &shown.compiled else { continue };
+            let Some(compiled) = &mut shown.compiled else { continue };
+            let markers = &mut compiled.drawing.markers;
+            if !markers.icons.is_empty() {
+                let layers = inner.icons.layers(&gpu.0.device, &gpu.0.queue, &markers.icons);
+                markers.palette = std::iter::once(layers.len() as u32).chain(layers).collect();
+            }
             for (at, colormap) in &compiled.program.colormaps {
                 match inner.colormaps.layer(&gpu.0.device, &gpu.0.queue, colormap) {
                     Ok(layer) => shown.code[*at as usize][1] = layer | (colormap.kind() as u32) << 16,
@@ -35,11 +40,11 @@ impl View {
         if !self.regions.relayout {
             for shown in self.marks.iter_mut().filter(|m| !m.packed && m.compiled.is_some()) {
                 let len = shown.packed_len();
-                let start = match shown.region {
+                let start = match shown.words {
                     Some([start, room]) if len <= room => start,
                     _ if self.regions.end + room(len) <= capacity => {
                         let start = self.regions.end;
-                        shown.region = Some([start, room(len)]);
+                        shown.words = Some([start, room(len)]);
                         self.regions.end += room(len);
                         start
                     }
@@ -63,7 +68,7 @@ impl View {
                 let len = shown.packed_len();
                 shown.pack(start, &mut words);
                 words.resize((start + room(len)) as usize, 0);
-                shown.region = Some([start, room(len)]);
+                shown.words = Some([start, room(len)]);
                 shown.packed = true;
             }
             self.regions.end = words.len() as u32;

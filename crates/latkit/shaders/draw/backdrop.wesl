@@ -1,12 +1,15 @@
-// The backdrop under every mark: a plane's grid, or the earth's surface and graticule. Lines are a
-// pixel wide and antialiased per axis. Their spacing steps by tens, and the next step fades in as the
-// lines crowd, so no seam shows. They fade where the view grazes the ground, and on a plane away from
-// what the camera looks at.
+// The backdrop under every mark: a plane's grid, or the earth's surface and graticule, darkened where
+// casters shadow the ground. Lines are a pixel wide and antialiased per axis. Their spacing steps by
+// tens, and the next step fades in as the lines crowd, so no seam shows. They fade where the view
+// grazes the ground, and on a plane away from what the camera looks at.
 
 import package::lib::types::{SPACE_EARTH, SPACE_PLANE, GRID_OFF, GRID_DOTS};
-import package::lib::bind::frame;
+import package::lib::bind::{frame, eye};
 import package::lib::color::output;
 import package::lib::project::{PI, NEAR_Z, FAR_Z};
+import package::lib::shade::lit;
+
+@group(2) @binding(10) var shadows: texture_2d<f32>;
 
 struct Varyings {
     @builtin(position) clip: vec4f,
@@ -52,18 +55,25 @@ fn blend(color: vec4f, over: vec4f, coverage: f32) -> vec4f {
     return vec4f(mix(color.rgb, over.rgb, coverage * over.a), color.a);
 }
 
+// `color` darkened where casters shadow ground point `g`.
+fn shaded(color: vec4f, g: vec3f, ahead: bool) -> vec4f {
+    let shadow = select(0.0, 1.0 - lit(shadows, g, true), ahead);
+    return vec4f(mix(color.rgb, frame.shade.color.rgb, shadow), color.a);
+}
+
 // The plane: its grid where the ray meets elevation 0 at `g`, faded where the ray grazes and away
 // from the center.
 fn plane(g: vec3f, d: vec3f, ahead: bool) -> vec4f {
     let p = g.xy + frame.center_hi + frame.center_lo;
     let w = fwidth(g.xy);
+    let ground = shaded(frame.background, g, ahead);
     if frame.grid_kind == GRID_OFF {
-        return frame.background;
+        return ground;
     }
     let near = 1.0 - smoothstep(0.6, 1.0, length(g.xy) / max(frame.grid_fade, 1e-30));
     let fade = f32(ahead) * smoothstep(0.02, 0.15, abs(d.z)) * select(1.0, near, frame.grid_fade > 0.0);
     let c = grid(p, w, frame.grid_pitch, 0.0, 30.0, frame.grid_kind == GRID_DOTS) * fade;
-    return blend(frame.background, frame.grid_color, c);
+    return blend(ground, frame.grid_color, c);
 }
 
 // Longitude and latitude in degrees at world point `w` on the flat map.
@@ -95,9 +105,10 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> vec4f {
     let miss = off - radius;
     let round = saturate(-miss / max(fwidth(miss), 1e-9) + 0.5) * f32(along > 0.0);
     let covered = mix(flat, round, frame.globe);
-    let color = blend(frame.background, frame.surface, covered);
     let hit = o + d * (along - sqrt(max(radius * radius - off * off, 0.0)));
     let globe = frame.globe >= 0.5;
+    let surface = select(shaded(frame.surface, g, ahead), frame.surface, globe);
+    let color = blend(frame.background, surface, covered);
     let p = select(map_degrees(g), globe_degrees(hit, radius), globe);
     // Longitude jumps where it wraps; its other wrapping steadies the derivative there.
     let wrapped = fract(p.x / 360.0) * 360.0;
@@ -112,8 +123,8 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> vec4f {
 
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    let near = frame.world_from_clip * vec4f(v.ndc, NEAR_Z, 1.0);
-    let far = frame.world_from_clip * vec4f(v.ndc, FAR_Z, 1.0);
+    let near = eye.world_from_clip * vec4f(v.ndc, NEAR_Z, 1.0);
+    let far = eye.world_from_clip * vec4f(v.ndc, FAR_Z, 1.0);
     let o = near.xyz / near.w;
     let d = normalize(far.xyz / far.w - o);
     // Where the ray meets elevation 0.

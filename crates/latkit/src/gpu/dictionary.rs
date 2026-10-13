@@ -18,6 +18,8 @@ pub(crate) struct Dictionaries {
 #[derive(Default)]
 pub(crate) struct Dictionary {
     codes: HashMap<Arc<str>, u32, FxBuildHasher>,
+    /// Each code's text.
+    texts: Vec<Arc<str>>,
     scanned: HashSet<PageId, FxBuildHasher>,
 }
 
@@ -44,7 +46,9 @@ impl Dictionary {
                     code
                 } else {
                     let code = self.codes.len() as u32;
-                    self.codes.insert(t.into(), code);
+                    let text: Arc<str> = t.into();
+                    self.codes.insert(text.clone(), code);
+                    self.texts.push(text);
                     code
                 };
                 (code as f32).to_bits()
@@ -57,6 +61,16 @@ impl Dictionary {
         if !self.scanned.contains(&page.id) {
             self.codes(page);
         }
+    }
+
+    /// Codes given so far.
+    pub(crate) fn len(&self) -> usize {
+        self.texts.len()
+    }
+
+    /// The text of `code`.
+    pub(crate) fn text(&self, code: u32) -> Option<&Arc<str>> {
+        self.texts.get(code as usize)
     }
 
     /// The code of `text` as an `f32` word; one no text has when it was never seen.

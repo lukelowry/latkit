@@ -2,103 +2,13 @@
 
 #![cfg(feature = "gpu")]
 
+mod common;
+
+use common::{SIZE, at, camera, close, frame, gpu, plain_theme, plane};
 use latkit::{
-    Axis, Button, Camera, Color, Colormap, Data, Edges, Event, Faces, Gpu, Grid, Input, Lines, Modifiers, Patch, Phase,
-    Plane, Plot, Scene, Table, Target, Theme, Vertices, View, field,
+    Axis, Button, Camera, Color, Colormap, Data, Edges, Event, Faces, Input, Lines, Modifiers, Patch, Phase, Plot,
+    Scene, Table, Theme, Vertices, View, field,
 };
-
-const SIZE: u32 = 128;
-const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-
-/// A device, or `None` where the machine has no adapter at all.
-fn gpu() -> Option<Gpu> {
-    match pollster::block_on(Gpu::new()) {
-        Ok(gpu) => Some(gpu),
-        Err(error) => {
-            eprintln!("skipping GPU test: {error}");
-            None
-        }
-    }
-}
-
-/// The longest the GPU may take to finish a frame in these tests.
-const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-
-fn wait(gpu: &Gpu) {
-    let wait = wgpu::PollType::Wait { submission_index: None, timeout: Some(DEADLINE) };
-    gpu.device().poll(wait).expect("the GPU finishes within the deadline");
-}
-
-/// Renders frames until the view is settled, then reads the target's pixels.
-fn frame(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
-    let device = gpu.device();
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("target"),
-        size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let target = Target { view: &target_view, format: FORMAT, size: [SIZE, SIZE], pixel_ratio: 1.0 };
-    for _ in 0..16 {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        view.render(&mut encoder, &target);
-        gpu.queue().submit([encoder.finish()]);
-        wait(gpu);
-        if !view.needs_render() {
-            break;
-        }
-    }
-    assert!(!view.needs_render(), "the view settles within sixteen frames");
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback"),
-        size: u64::from(SIZE * SIZE * 4),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(SIZE * 4),
-                rows_per_image: Some(SIZE),
-            },
-        },
-        wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
-    );
-    gpu.queue().submit([encoder.finish()]);
-    let slice = readback.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| result.expect("mapped"));
-    wait(gpu);
-    bytemuck::cast_slice::<u8, [u8; 4]>(&slice.get_mapped_range().expect("mapped")).to_vec()
-}
-
-fn at(pixels: &[[u8; 4]], x: u32, y: u32) -> [u8; 4] {
-    pixels[(y * SIZE + x) as usize]
-}
-
-fn close(a: [u8; 4], b: [u8; 4]) -> bool {
-    a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 3)
-}
-
-fn plain_theme() -> Theme {
-    Theme { background: Color::BLACK, ..Theme::dark() }
-}
-
-fn plane() -> Plane {
-    Plane { grid: Grid::Off }
-}
-
-fn camera() -> Camera {
-    Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 }
-}
 
 #[test]
 fn vertices_draw_at_their_positions_in_their_colors() {
@@ -315,7 +225,7 @@ fn lines_trace_their_samples_across_a_plot() {
     for t in 0..=10 {
         data.apply(Patch::new().append(f64::from(t), "Signal", [("v", vec![0.5])])).expect("frame");
     }
-    let axis = Axis { label: None, grid: false, hidden: true };
+    let axis = Axis { grid: false, hidden: true, ..Axis::default() };
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
         .theme(plain_theme())
         .draw(Lines::of("signals", "Signal").samples("v").color(Color::rgb(1.0, 0.0, 0.0)).width(4.0));
@@ -411,4 +321,33 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
     let drag = view.events().find_map(|e| if let Event::Drag(drag) = e { Some(drag) } else { None }).expect("a drag");
     assert_eq!(drag.phase, Phase::Start);
     assert!(drag.position[2] > 2.0, "dragged up: {:?}", drag.position);
+}
+
+#[test]
+fn long_histories_draw_from_their_levels_of_detail() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("signals");
+    data.apply(Table::new("Signal", 1)).expect("valid");
+    // Twenty thousand frames on a 128 pixel plot: buckets of 64 frames, with a spike in one.
+    let mut patch = Patch::new();
+    for t in 0..20_000 {
+        let v = if t == 10_000 { 0.9 } else { 0.1 };
+        patch = patch.append(f64::from(t), "Signal", [("v", vec![v])]);
+    }
+    data.apply(patch).expect("frames");
+    let axis = Axis { grid: false, hidden: true, ..Axis::default() };
+    let scene = Scene::new(Plot { x: axis.clone(), y: axis })
+        .theme(plain_theme())
+        .draw(Lines::of("signals", "Signal").samples("v").color(Color::rgb(1.0, 0.0, 0.0)).width(2.0));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Plot { x: [0.0, 20_000.0], y: Some([0.0, 1.0]) });
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let spike = view.point([10_000.0, 0.85, 0.0]).expect("on the plot");
+    let pixel = at(&pixels, spike[0].round() as u32, spike[1].round() as u32);
+    assert!(pixel[0] > 150, "the one-frame spike survives in its bucket: {pixel:?}");
+    let base = view.point([5_000.0, 0.1, 0.0]).expect("on the plot");
+    assert!(at(&pixels, base[0].round() as u32, base[1].round() as u32)[0] > 150, "and the level line draws");
+    let stats = view.stats();
+    assert_eq!(stats.rows, 1);
 }

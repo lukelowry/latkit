@@ -22,8 +22,8 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
 use super::{
-    Axis, Controls, Direction, Earth, Edges, Faces, Grid, Layered, Layout, Lines, Mark, Marker, Plane, Plot,
-    Projection, Scene, Shape, Space, Stress, Theme, Vertices,
+    Axis, Controls, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered, Layout, Lines,
+    Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shape, Side, Space, Stress, Theme, Vertices,
 };
 use crate::{Color, Expr, Name, Size};
 
@@ -168,6 +168,12 @@ impl<'de> Deserialize<'de> for Grid {
 impl<'de> Deserialize<'de> for Axis {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Axis, D::Error> {
         #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Tick {
+            At(f64),
+            Labeled(f64, Option<String>),
+        }
+        #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Form {
             #[serde(default)]
@@ -176,9 +182,40 @@ impl<'de> Deserialize<'de> for Axis {
             grid: Option<bool>,
             #[serde(default)]
             hidden: bool,
+            #[serde(default)]
+            ticks: Option<Vec<Tick>>,
+            #[serde(default)]
+            format: Option<String>,
+            #[serde(default)]
+            precision: Option<u8>,
         }
         let form = Form::deserialize(deserializer)?;
-        Ok(Axis { label: form.label, grid: form.grid.unwrap_or(true), hidden: form.hidden })
+        let format = match form.format.as_deref() {
+            None | Some("auto") => Format::Auto,
+            Some("fixed") => Format::Fixed,
+            Some("scientific") => Format::Scientific,
+            Some("engineering") => Format::Engineering,
+            Some(other) => {
+                return Err(de::Error::unknown_variant(other, &["auto", "fixed", "scientific", "engineering"]));
+            }
+        };
+        let ticks = form.ticks.map(|ticks| {
+            ticks
+                .into_iter()
+                .map(|t| match t {
+                    Tick::At(v) => (v, None),
+                    Tick::Labeled(v, text) => (v, text),
+                })
+                .collect()
+        });
+        Ok(Axis {
+            label: form.label,
+            grid: form.grid.unwrap_or(true),
+            hidden: form.hidden,
+            ticks,
+            format,
+            precision: form.precision,
+        })
     }
 }
 
@@ -204,8 +241,54 @@ macro_rules! style {
         if let Some(on) = $form.drag {
             mark = mark.drag(on);
         }
+        if let Some(label) = $form.label {
+            mark = mark.label(label);
+        }
         mark
     }};
+}
+
+impl<'de> Deserialize<'de> for Label {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Label, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Form {
+            text: Expr,
+            #[serde(default)]
+            size: Option<f32>,
+            #[serde(default)]
+            color: Option<Expr>,
+            #[serde(default)]
+            priority: Option<Expr>,
+            #[serde(default)]
+            max_width: Option<f32>,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Text(Expr),
+            Form(Box<Form>),
+        }
+        Ok(match Either::deserialize(deserializer)? {
+            Either::Text(text) => Label::new(text),
+            Either::Form(form) => {
+                let mut label = Label::new(form.text);
+                if let Some(size) = form.size {
+                    label = label.size(size);
+                }
+                if let Some(color) = form.color {
+                    label = label.color(color);
+                }
+                if let Some(priority) = form.priority {
+                    label = label.priority(priority);
+                }
+                if let Some(width) = form.max_width {
+                    label = label.max_width(width);
+                }
+                label
+            }
+        })
+    }
 }
 
 impl<'de> Deserialize<'de> for Mark {
@@ -242,7 +325,15 @@ struct VerticesForm {
     #[serde(default)]
     marker: Option<Marker>,
     #[serde(default)]
+    status: Option<Expr>,
+    #[serde(default)]
     shadow: Option<bool>,
+    #[serde(default)]
+    ports: Vec<(Name, Port)>,
+    #[serde(default)]
+    contains: Option<(Name, Name)>,
+    #[serde(default)]
+    collapsed: Option<Expr>,
     #[serde(default)]
     color: Option<Expr>,
     #[serde(default)]
@@ -255,6 +346,8 @@ struct VerticesForm {
     select: Option<bool>,
     #[serde(default)]
     drag: Option<bool>,
+    #[serde(default)]
+    label: Option<Label>,
 }
 
 impl VerticesForm {
@@ -275,8 +368,20 @@ impl VerticesForm {
         if let Some(marker) = self.marker {
             v = v.marker(marker);
         }
+        if let Some(status) = self.status {
+            v = v.status(status);
+        }
         if let Some(on) = self.shadow {
             v = v.shadow(on);
+        }
+        for (reference, port) in self.ports {
+            v = v.port(reference, port);
+        }
+        if let Some((table, reference)) = self.contains {
+            v = v.contains(table, reference);
+        }
+        if let Some(collapsed) = self.collapsed {
+            v = v.collapsed(collapsed);
         }
         style!(self, v)
     }
@@ -295,6 +400,14 @@ struct EdgesForm {
     #[serde(default)]
     flow: Option<Expr>,
     #[serde(default)]
+    shadow: Option<bool>,
+    #[serde(default)]
+    bends: Option<Name>,
+    #[serde(default)]
+    route: Option<Route>,
+    #[serde(default)]
+    arrows: Option<bool>,
+    #[serde(default)]
     color: Option<Expr>,
     #[serde(default)]
     visible: Option<Expr>,
@@ -306,6 +419,8 @@ struct EdgesForm {
     select: Option<bool>,
     #[serde(default)]
     drag: Option<bool>,
+    #[serde(default)]
+    label: Option<Label>,
 }
 
 impl EdgesForm {
@@ -322,6 +437,18 @@ impl EdgesForm {
         }
         if let Some(flow) = self.flow {
             e = e.flow(flow);
+        }
+        if let Some(on) = self.shadow {
+            e = e.shadow(on);
+        }
+        if let Some(bends) = self.bends {
+            e = e.bends(bends);
+        }
+        if let Some(route) = self.route {
+            e = e.route(route);
+        }
+        if let Some(on) = self.arrows {
+            e = e.arrows(on);
         }
         style!(self, e)
     }
@@ -347,6 +474,8 @@ struct FacesForm {
     select: Option<bool>,
     #[serde(default)]
     drag: Option<bool>,
+    #[serde(default)]
+    label: Option<Label>,
 }
 
 impl FacesForm {
@@ -373,6 +502,8 @@ struct LinesForm {
     #[serde(default)]
     dash: Option<Expr>,
     #[serde(default)]
+    interpolation: Option<Interpolation>,
+    #[serde(default)]
     color: Option<Expr>,
     #[serde(default)]
     visible: Option<Expr>,
@@ -384,6 +515,8 @@ struct LinesForm {
     select: Option<bool>,
     #[serde(default)]
     drag: Option<bool>,
+    #[serde(default)]
+    label: Option<Label>,
 }
 
 impl LinesForm {
@@ -397,6 +530,9 @@ impl LinesForm {
         }
         if let Some(dash) = self.dash {
             l = l.dash(dash);
+        }
+        if let Some(interpolation) = self.interpolation {
+            l = l.interpolation(interpolation);
         }
         style!(self, l)
     }
@@ -413,6 +549,9 @@ impl<'de> Deserialize<'de> for Controls {
             keyboard: Option<bool>,
             hover: Option<bool>,
             pick_radius: Option<f32>,
+            select_box: Option<bool>,
+            connect: Option<bool>,
+            delete: Option<bool>,
         }
         let form = Form::deserialize(deserializer)?;
         let d = Controls::default();
@@ -423,6 +562,9 @@ impl<'de> Deserialize<'de> for Controls {
             keyboard: form.keyboard.unwrap_or(d.keyboard),
             hover: form.hover.unwrap_or(d.hover),
             pick_radius: form.pick_radius.unwrap_or(d.pick_radius),
+            select_box: form.select_box.unwrap_or(d.select_box),
+            connect: form.connect.unwrap_or(d.connect),
+            delete: form.delete.unwrap_or(d.delete),
         })
     }
 }
@@ -437,8 +579,46 @@ impl<'de> Deserialize<'de> for Marker {
         }
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Gauge {
+            fill: Expr,
+            #[serde(default)]
+            shape: Option<String>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Pie {
+            slices: Vec<Expr>,
+            colors: Vec<Color>,
+            #[serde(default)]
+            hole: f32,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Wgsl {
+            source: String,
+            #[serde(default)]
+            inputs: Vec<Expr>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ImageForm {
+            size: [u32; 2],
+            rgba: Vec<u8>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Icon {
+            images: Vec<ImageForm>,
+            index: Expr,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
         enum Tagged {
             Block(Block),
+            Gauge(Gauge),
+            Pie(Pie),
+            Icon(Icon),
+            Wgsl(Wgsl),
         }
         #[derive(Deserialize)]
         #[serde(untagged)]
@@ -446,6 +626,13 @@ impl<'de> Deserialize<'de> for Marker {
             Name(String),
             Tagged(Tagged),
         }
+        let shape = |name: Option<&str>| match name {
+            None | Some("ellipse" | "disc") => Ok(Shape::Ellipse),
+            Some("rectangle") => Ok(Shape::Rectangle),
+            Some("rounded") => Ok(Shape::Rounded),
+            Some("diamond") => Ok(Shape::Diamond),
+            Some(other) => Err(de::Error::unknown_variant(other, &["ellipse", "rectangle", "rounded", "diamond"])),
+        };
         Ok(match Form::deserialize(deserializer)? {
             Form::Name(name) => match name.as_str() {
                 "disc" | "ellipse" => Marker::Shape(Shape::Ellipse),
@@ -461,6 +648,19 @@ impl<'de> Deserialize<'de> for Marker {
                 }
             },
             Form::Tagged(Tagged::Block(b)) => Marker::Block { corner: b.corner.unwrap_or(4.0) },
+            Form::Tagged(Tagged::Gauge(g)) => Marker::Gauge { fill: g.fill, shape: shape(g.shape.as_deref())? },
+            Form::Tagged(Tagged::Pie(p)) => Marker::Pie { slices: p.slices, colors: p.colors, hole: p.hole },
+            Form::Tagged(Tagged::Wgsl(w)) => Marker::Wgsl { source: w.source.into(), inputs: w.inputs },
+            Form::Tagged(Tagged::Icon(i)) => {
+                let mut images = Vec::with_capacity(i.images.len());
+                for image in i.images {
+                    if image.rgba.len() != (image.size[0] * image.size[1] * 4) as usize {
+                        return Err(de::Error::custom("an image's rgba holds four bytes per texel of its size"));
+                    }
+                    images.push(Image { size: image.size, rgba: image.rgba.into() });
+                }
+                Marker::Icon { images, index: i.index }
+            }
         })
     }
 }
@@ -515,6 +715,76 @@ impl<'de> Deserialize<'de> for Layout {
     }
 }
 
+impl<'de> Deserialize<'de> for Interpolation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Interpolation, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "linear" => Ok(Interpolation::Linear),
+            "stepBefore" => Ok(Interpolation::StepBefore),
+            "stepAfter" => Ok(Interpolation::StepAfter),
+            other => Err(de::Error::unknown_variant(other, &["linear", "stepBefore", "stepAfter"])),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Route {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Route, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "straight" => Ok(Route::Straight),
+            "geodesic" => Ok(Route::Geodesic),
+            "orthogonal" => Ok(Route::Orthogonal),
+            other => Err(de::Error::unknown_variant(other, &["straight", "geodesic", "orthogonal"])),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Side {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Side, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "left" => Ok(Side::Left),
+            "right" => Ok(Side::Right),
+            "top" => Ok(Side::Top),
+            "bottom" => Ok(Side::Bottom),
+            other => Err(de::Error::unknown_variant(other, &["left", "right", "top", "bottom"])),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Port {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Port, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Full {
+            side: Side,
+            order: Option<u32>,
+            label: Option<String>,
+            shape: Option<String>,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Form {
+            Side(Side),
+            Full(Full),
+        }
+        Ok(match Form::deserialize(deserializer)? {
+            Form::Side(side) => Port::new(side),
+            Form::Full(full) => Port {
+                side: full.side,
+                order: full.order,
+                label: full.label,
+                shape: match full.shape.as_deref() {
+                    None | Some("ellipse") => Shape::Ellipse,
+                    Some("rectangle") => Shape::Rectangle,
+                    Some("rounded") => Shape::Rounded,
+                    Some("diamond") => Shape::Diamond,
+                    Some(other) => {
+                        return Err(de::Error::unknown_variant(other, &["ellipse", "rectangle", "rounded", "diamond"]));
+                    }
+                },
+            },
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for Direction {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Direction, D::Error> {
         match String::deserialize(deserializer)?.as_str() {
@@ -560,7 +830,19 @@ impl<'de> Deserialize<'de> for Theme {
             dash: Option<f32>,
             flow: Option<Color>,
             flow_spacing: Option<f32>,
-            shadow: Option<Color>,
+            edge_spacing: Option<f32>,
+            arrow: Option<f32>,
+            halo: Option<f32>,
+            group_padding: Option<f32>,
+            shadow: Option<ShadowForm>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ShadowForm {
+            color: Option<Color>,
+            light: Option<[f32; 3]>,
+            softness: Option<f32>,
+            lift: Option<f32>,
         }
         #[derive(Deserialize)]
         #[serde(untagged)]
@@ -589,9 +871,17 @@ impl<'de> Deserialize<'de> for Theme {
             )*};
         }
         set!(background, surface, grid, vertex, vertex_radius, edge, edge_width, missing, hover, selected, glow, dim);
-        set!(hover_scale, dash, flow, flow_spacing, shadow, line, line_width, shading, text, font_size, playhead);
+        set!(hover_scale, dash, flow, flow_spacing, line, line_width, shading, text, font_size, playhead);
+        set!(edge_spacing, arrow, halo, group_padding);
         if let Some(font) = form.font {
             t.font = font.into();
+        }
+        if let Some(shadow) = form.shadow {
+            let s = &mut t.shadow;
+            s.color = shadow.color.unwrap_or(s.color);
+            s.light = shadow.light.unwrap_or(s.light);
+            s.softness = shadow.softness.unwrap_or(s.softness);
+            s.lift = shadow.lift.unwrap_or(s.lift);
         }
         Ok(t)
     }

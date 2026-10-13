@@ -14,10 +14,12 @@ function grid(): { data: Data; buses: number; lines: number } {
   const lon = new Float64Array(buses);
   const lat = new Float64Array(buses);
   const kv = new Float64Array(buses);
+  const name: string[] = [];
   for (let i = 0; i < buses; i++) {
     lon[i] = -106 + ((i % SIDE) + random() * 0.6) * (12 / SIDE);
     lat[i] = 26 + (Math.floor(i / SIDE) + random() * 0.6) * (10 / SIDE);
     kv[i] = [69, 138, 345][Math.floor(random() * 3)]!;
+    name.push(`Bus ${i + 1}`);
   }
   const from: number[] = [];
   const to: number[] = [];
@@ -28,7 +30,7 @@ function grid(): { data: Data; buses: number; lines: number } {
   const data = new Data('grid').apply(
     new Patch()
       .axis('time', 's')
-      .set('Bus', buses, { lon, lat, kv })
+      .set('Bus', buses, { lon, lat, kv, name })
       .set('Line', from.length, { from: reference('Bus', from), to: reference('Bus', to) }),
   );
   const vm = new Float32Array(buses);
@@ -48,6 +50,7 @@ export default function page(stage: Stage): void {
   const scene = (space: Scene['space']): Scene => ({
     space,
     theme: { base: 'dark', background: '#090c11' },
+    controls: { selectBox: true },
     marks: [
       { edges: { of: ['grid', 'Line'], ends: ['from', 'to'], width: 1, pick: false } },
       {
@@ -56,12 +59,13 @@ export default function page(stage: Stage): void {
           position: ['lon', 'lat'],
           radius: field('kv').div(100).add(1),
           color: field('vm').colormap('balance').domain(0.96, 1.04),
+          label: { text: 'name', priority: 'kv', size: 10 },
         },
       },
     ],
   });
   const view = stage.view(scene('earth'), {
-    label: 'A synthetic grid over Texas: click a bus to select it',
+    label: 'A synthetic grid over Texas: click a bus to select it, or Shift-drag a box',
   });
   view.setData(data);
   view.fit();
