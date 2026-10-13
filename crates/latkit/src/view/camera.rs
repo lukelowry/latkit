@@ -1,6 +1,6 @@
 use std::f64::consts::{PI, TAU};
 
-use glam::{DMat4, DVec2, DVec3, DVec4};
+use glam::{DMat3, DMat4, DVec3, DVec4};
 
 use crate::Space;
 use crate::gpu::shaders as wgsl;
@@ -9,13 +9,16 @@ use crate::gpu::shaders as wgsl;
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(untagged, deny_unknown_fields))]
 pub enum Camera {
-    /// On the earth or a plane: what is at the center, how far in, and how tilted and turned.
+    /// On the earth or a plane: the point looked at and turned about, how far in, and how tilted
+    /// and turned.
     Map {
-        /// Longitude and latitude on the earth, plane units on a plane.
-        center: [f64; 2],
+        /// Longitude, latitude, and elevation on the earth; x, y, and elevation on a plane. In JSON,
+        /// `[x, y]` looks at the ground.
+        #[cfg_attr(feature = "serde", serde(with = "center"))]
+        center: [f64; 3],
         /// On the earth the web mercator level; on a plane, log₂ of pixels per unit.
         zoom: f64,
-        /// Degrees from looking straight down, up to 80.
+        /// Degrees from looking straight down, up to 75.
         pitch: f64,
         /// Degrees clockwise from north, or from up on a plane.
         bearing: f64,
@@ -29,21 +32,46 @@ pub enum Camera {
     },
 }
 
-/// Vertical field of view: the camera stands 1.5 heights from the ground.
+#[cfg(feature = "serde")]
+mod center {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+    pub(super) fn serialize<S: Serializer>(center: &[f64; 3], serializer: S) -> Result<S::Ok, S::Error> {
+        if center[2] == 0.0 { [center[0], center[1]].serialize(serializer) } else { center.serialize(serializer) }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[f64; 3], D::Error> {
+        match Vec::<f64>::deserialize(deserializer)?[..] {
+            [x, y] => Ok([x, y, 0.0]),
+            [x, y, z] => Ok([x, y, z]),
+            _ => Err(de::Error::custom("a center is [x, y] or [x, y, elevation]")),
+        }
+    }
+}
+
+/// Vertical field of view: the camera stands 1.5 heights from what it looks at.
 const FOV: f64 = 0.643_501_108_793_284_4;
 const MAX_LATITUDE: f64 = 85.051_128_779_806_59;
-pub(crate) const MAX_PITCH: f64 = 80.0;
+pub(crate) const MAX_PITCH: f64 = 75.0;
 const MAX_ZOOM: f64 = 24.0;
 
 /// A rectangle of the view, CSS pixels: left, top, right, bottom.
 pub(crate) type Area = [f64; 4];
 
+/// What a fit framed: the camera stays within reach of it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Bounds {
+    pub(crate) min: [f64; 3],
+    pub(crate) max: [f64; 3],
+    pub(crate) zoom: f64,
+}
+
 impl Camera {
     /// The camera a view of `space` starts with.
     pub(crate) fn default_for(space: &Space) -> Camera {
         match space {
-            Space::Earth(_) => Camera::Map { center: [0.0, 20.0], zoom: 1.5, pitch: 0.0, bearing: 0.0 },
-            Space::Plane(_) => Camera::Map { center: [0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 },
+            Space::Earth(_) => Camera::Map { center: [0.0, 20.0, 0.0], zoom: 1.5, pitch: 0.0, bearing: 0.0 },
+            Space::Plane(_) => Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 },
             Space::Plot(_) => Camera::Plot { x: [0.0, 1.0], y: None },
         }
     }
@@ -65,7 +93,11 @@ impl Camera {
                 Camera::Map { center: c0, zoom: z0, pitch: p0, bearing: b0 },
                 Camera::Map { center: c1, zoom: z1, pitch: p1, bearing: b1 },
             ) => Camera::Map {
-                center: [if earth { turn(c0[0], c1[0], 360.0) } else { lerp(c0[0], c1[0]) }, lerp(c0[1], c1[1])],
+                center: [
+                    if earth { turn(c0[0], c1[0], 360.0) } else { lerp(c0[0], c1[0]) },
+                    lerp(c0[1], c1[1]),
+                    lerp(c0[2], c1[2]),
+                ],
                 zoom: lerp(*z0, *z1),
                 pitch: lerp(*p0, *p1),
                 bearing: turn(*b0, *b1, 360.0),
@@ -81,84 +113,108 @@ impl Camera {
         }
     }
 
-    /// Turned by `degrees` of bearing and pitch.
-    pub(crate) fn turned(&self, degrees: [f64; 2]) -> Camera {
-        match *self {
-            Camera::Map { center, zoom, pitch, bearing } => Camera::Map {
-                center,
-                zoom,
-                pitch: (pitch + degrees[1]).clamp(0.0, MAX_PITCH),
-                bearing: (bearing + degrees[0]).rem_euclid(360.0),
-            },
-            plot => plot,
-        }
-    }
-
-    /// Moved so that what lies under screen point `from` comes under `to`.
-    pub(crate) fn panned(&self, view: &Projected, from: [f64; 2], to: [f64; 2]) -> Camera {
+    /// Moved so `anchor` moves `delta` CSS pixels on screen. A map slides along the level through
+    /// the anchor; where that level runs off toward the horizon, it slides as far as the anchor's
+    /// depth across the screen would take it, still level.
+    pub(crate) fn panned(&self, view: &Projected, anchor: [f64; 3], delta: [f64; 2]) -> Camera {
         match *self {
             Camera::Plot { x, y } => {
-                let dx = (to[0] - from[0]) / view.px_per_unit[0];
-                let dy = (to[1] - from[1]) / view.px_per_unit[1];
+                let dx = delta[0] / view.px_per_unit[0];
+                let dy = delta[1] / view.px_per_unit[1];
                 Camera::Plot { x: [x[0] - dx, x[1] - dx], y: y.map(|y| [y[0] + dy, y[1] + dy]) }
             }
             Camera::Map { center, zoom, pitch, bearing } => {
-                let moved = |center| Camera::Map { center, zoom, pitch, bearing };
-                if view.space == wgsl::SPACE_EARTH && view.globe >= 0.5 {
-                    let b = bearing.to_radians();
-                    let d = DVec2::new(to[0] - from[0], to[1] - from[1]);
-                    let d = DVec2::new(d.x * b.cos() + d.y * b.sin(), -d.x * b.sin() + d.y * b.cos());
-                    let lat = center[1].to_radians().cos().max(0.05);
-                    let lon = center[0] - (d.x / view.px_per_unit[0]).to_degrees() / lat;
-                    let lat = (center[1] + (d.y / view.px_per_unit[1]).to_degrees()).clamp(-MAX_LATITUDE, MAX_LATITUDE);
-                    return moved([wrap(lon), lat]);
+                let a = view.world(anchor);
+                let Some(s) = view.screen(a) else { return *self };
+                let to = [s[0] + delta[0], s[1] + delta[1]];
+                if view.globe >= 0.5 {
+                    let Some(p) = view.surface(to) else { return *self };
+                    let p = view.position(p);
+                    let lat = (center[1] + anchor[1] - p[1]).clamp(-MAX_LATITUDE, MAX_LATITUDE);
+                    return Camera::Map {
+                        center: [wrap(center[0] + anchor[0] - p[0]), lat, center[2]],
+                        zoom,
+                        pitch,
+                        bearing,
+                    };
                 }
-                match (view.ground(from), view.ground(to)) {
-                    (Some(a), Some(b)) => moved(view.shifted(center, a - b)),
-                    _ => *self,
-                }
+                let reach = 50.0 * (view.eye - a).length();
+                let level = view.on_plane(to, a.z).filter(|p| (*p - view.eye).length() < reach);
+                let p = match level {
+                    Some(p) if view.grazing(to) > 0.1 => p,
+                    _ => view.unproject(to, s[2]),
+                };
+                Camera::Map { center: view.shifted(center, a - p, 0.0), zoom, pitch, bearing }
             }
         }
     }
 
-    /// Zoomed in by `levels` (out when negative), keeping what lies under screen point `at`.
-    pub(crate) fn zoomed(&self, space: &Space, size: [f64; 2], area: Area, levels: f64, at: [f64; 2]) -> Camera {
+    /// Turned by `degrees` of bearing and pitch about `anchor`, which keeps its place on screen.
+    pub(crate) fn turned(&self, view: &Projected, anchor: [f64; 3], degrees: [f64; 2]) -> Camera {
+        let Camera::Map { center, zoom, pitch, bearing } = *self else { return *self };
+        let to_pitch = (pitch + degrees[1]).clamp(0.0, MAX_PITCH);
+        let to_bearing = (bearing + degrees[0]).rem_euclid(360.0);
+        if view.globe >= 0.5 {
+            return Camera::Map { center, zoom, pitch: to_pitch, bearing: to_bearing };
+        }
+        // The camera turns rigidly about the anchor: its center goes with it.
+        let rig = |p: f64, b: f64| DMat3::from_rotation_z(-b.to_radians()) * DMat3::from_rotation_x(p.to_radians());
+        let r = rig(to_pitch, to_bearing) * rig(pitch, bearing).transpose();
+        let a = view.world(anchor);
+        let c = DVec3::new(0.0, 0.0, center[2]);
+        let moved = a + r * (c - a);
+        let d = moved - c;
+        Camera::Map { center: view.shifted(center, d, d.z), zoom, pitch: to_pitch, bearing: to_bearing }
+    }
+
+    /// Zoomed in by `levels`, out when negative, toward `anchor`, which keeps its place on screen.
+    pub(crate) fn zoomed(&self, view: &Projected, anchor: [f64; 3], levels: f64) -> Camera {
         match *self {
             Camera::Plot { x, y } => {
                 let scale = (-levels).exp2();
-                let about = |range: [f64; 2], t: f64| {
-                    let pivot = range[0] + (range[1] - range[0]) * t;
-                    [pivot - (pivot - range[0]) * scale, pivot + (range[1] - pivot) * scale]
+                let about = |range: [f64; 2], pivot: f64| {
+                    [pivot + (range[0] - pivot) * scale, pivot + (range[1] - pivot) * scale]
                 };
-                let tx = ((at[0] - area[0]) / (area[2] - area[0]).max(1.0)).clamp(0.0, 1.0);
-                let ty = ((area[3] - at[1]) / (area[3] - area[1]).max(1.0)).clamp(0.0, 1.0);
-                Camera::Plot { x: about(x, tx), y: y.map(|y| about(y, ty)) }
+                Camera::Plot { x: about(x, anchor[0]), y: y.map(|y| about(y, anchor[1])) }
             }
             Camera::Map { center, zoom, pitch, bearing } => {
-                let globe = Projected::globe_of(space);
-                let before = Projected::new(space, self, size, area, globe);
-                let zoom = (zoom + levels).clamp(-MAX_ZOOM, MAX_ZOOM);
-                let next = Camera::Map { center, zoom, pitch, bearing };
-                let after = Projected::new(space, &next, size, area, globe);
-                match (before.ground(at), after.ground(at)) {
-                    (Some(a), Some(b)) if globe < 0.5 => {
-                        Camera::Map { center: after.shifted(center, a - b), zoom, pitch, bearing }
-                    }
-                    _ => next,
+                let to = (zoom + levels).clamp(-MAX_ZOOM, MAX_ZOOM);
+                if view.globe >= 0.5 {
+                    return Camera::Map { center, zoom: to, pitch, bearing };
                 }
+                let a = view.world(anchor);
+                let c = DVec3::new(0.0, 0.0, center[2]);
+                let d = (a + (c - a) * (zoom - to).exp2()) - c;
+                Camera::Map { center: view.shifted(center, d, d.z), zoom: to, pitch, bearing }
             }
         }
     }
 
-    /// The camera framing the box `min..max` of positions inside `area` with `padding` CSS pixels to
-    /// spare, keeping pitch and bearing.
+    /// Within reach of what `bounds` framed: zoomed no further out than a few levels past it, no
+    /// further in than eight, looking across no farther than its size from it, and no higher or
+    /// lower than it reaches, so the camera stays above what stands on the ground.
+    pub(crate) fn within(&self, bounds: &Bounds) -> Camera {
+        let Camera::Map { center, zoom, pitch, bearing } = *self else { return *self };
+        let span = (0..2).map(|k| bounds.max[k] - bounds.min[k]).fold(0.0, f64::max).max(1e-9);
+        let across = |k: usize| center[k].clamp(bounds.min[k] - span, bounds.max[k] + span);
+        Camera::Map {
+            center: [across(0), across(1), center[2].clamp(bounds.min[2], bounds.max[2])],
+            zoom: zoom.clamp(bounds.zoom - 3.0, bounds.zoom + 8.0),
+            pitch: pitch.clamp(0.0, MAX_PITCH),
+            bearing,
+        }
+    }
+
+    /// The camera framing the box `min..max` of positions inside `area` with room to spare, looking
+    /// at its middle and keeping pitch and bearing.
     pub(crate) fn framing(&self, space: &Space, min: [f64; 3], max: [f64; 3], size: [f64; 2], area: Area) -> Camera {
         const PADDING: f64 = 24.0;
         let room = [(area[2] - area[0] - 2.0 * PADDING).max(1.0), (area[3] - area[1] - 2.0 * PADDING).max(1.0)];
         let (pitch, bearing) = match *self {
-            Camera::Map { pitch, bearing, .. } => (pitch, bearing),
+            Camera::Map { pitch, bearing, .. } => (pitch.clamp(0.0, MAX_PITCH), bearing),
             Camera::Plot { .. } => (0.0, 0.0),
         };
+        let height = min[2].midpoint(max[2]);
         match space {
             Space::Plot(_) => {
                 let pad = |lo: f64, hi: f64, px: f64| {
@@ -175,61 +231,47 @@ impl Camera {
                 let dy = (y1 - y0).max(1e-9);
                 let px_per_radian = (room[0] / dx).min(room[1] / dy);
                 let zoom = (px_per_radian * TAU / 256.0).log2().clamp(0.0, 22.0);
-                let center = [min[0].midpoint(max[0]), latitude(y0.midpoint(y1))];
+                let center = [min[0].midpoint(max[0]), latitude(y0.midpoint(y1)), height];
                 Camera::Map { center, zoom, pitch, bearing }.framed(space, min, max, size, area, room)
             }
             Space::Plane(_) => {
                 let dx = (max[0] - min[0]).max(1e-9);
                 let dy = (max[1] - min[1]).max(1e-9);
                 let zoom = (room[0] / dx).min(room[1] / dy).log2().clamp(-MAX_ZOOM, MAX_ZOOM);
-                let center = [min[0].midpoint(max[0]), min[1].midpoint(max[1])];
+                let center = [min[0].midpoint(max[0]), min[1].midpoint(max[1]), height];
                 Camera::Map { center, zoom, pitch, bearing }.framed(space, min, max, size, area, room)
             }
         }
     }
 
-    /// Refines a map camera so the box's eight corners fill `room`: the perspective changes with the
-    /// zoom, so a few rounds settle it.
+    /// Refines a map camera, still looking at the box's middle, so the box's eight corners reach no
+    /// farther from the middle of `area` than `room` allows: the perspective changes with the zoom,
+    /// so a few rounds settle it.
     fn framed(self, space: &Space, min: [f64; 3], max: [f64; 3], size: [f64; 2], area: Area, room: [f64; 2]) -> Camera {
         let middle = [area[0].midpoint(area[2]), area[1].midpoint(area[3])];
-        // The screen rectangle the box's corners span.
-        let spans = |camera: &Camera| {
-            let view = Projected::new(space, camera, size, area, 0.0);
-            let mut lo = [f64::INFINITY; 2];
-            let mut hi = [f64::NEG_INFINITY; 2];
-            for i in 0..8 {
-                let corner = [[min, max][i & 1][0], [min, max][(i >> 1) & 1][1], [min, max][i >> 2][2]];
-                let Some(s) = view.screen(view.world(corner)) else { continue };
-                lo = [lo[0].min(s[0]), lo[1].min(s[1])];
-                hi = [hi[0].max(s[0]), hi[1].max(s[1])];
-            }
-            (lo[0] <= hi[0]).then_some((view, lo, hi))
-        };
         let mut camera = self;
         for _ in 0..12 {
             let Camera::Map { center, zoom, pitch, bearing } = camera else { break };
-            let Some((_, lo, hi)) = spans(&camera) else { break };
-            let scale = (room[0] / (hi[0] - lo[0]).max(1e-9)).min(room[1] / (hi[1] - lo[1]).max(1e-9));
-            camera = Camera::Map { center, zoom: (zoom + scale.log2()).clamp(-MAX_ZOOM, MAX_ZOOM), pitch, bearing };
-            let Some((view, lo, hi)) = spans(&camera) else { break };
-            let mid = [lo[0].midpoint(hi[0]), lo[1].midpoint(hi[1])];
-            if let (Some(a), Some(b)) = (view.ground(mid), view.ground(middle)) {
-                let Camera::Map { center, zoom, .. } = camera else { break };
-                camera = Camera::Map { center: view.shifted(center, a - b), zoom, pitch, bearing };
+            let view = Projected::new(space, &camera, size, area, 0.0);
+            let mut reach = [1e-9_f64; 2];
+            for i in 0..8 {
+                let corner = [[min, max][i & 1][0], [min, max][(i >> 1) & 1][1], [min, max][i >> 2][2]];
+                let Some(s) = view.screen(view.world(corner)) else { continue };
+                reach = [reach[0].max((s[0] - middle[0]).abs()), reach[1].max((s[1] - middle[1]).abs())];
             }
-            if (scale - 1.0).abs() < 1e-4 && (mid[0] - middle[0]).hypot(mid[1] - middle[1]) < 0.25 {
+            let scale = (0.5 * room[0] / reach[0]).min(0.5 * room[1] / reach[1]);
+            camera = Camera::Map { center, zoom: (zoom + scale.log2()).clamp(-MAX_ZOOM, MAX_ZOOM), pitch, bearing };
+            if (scale - 1.0).abs() < 1e-4 {
                 break;
             }
         }
         camera
     }
 
-    /// Centered on `position`, keeping everything else.
+    /// Looking at `position`, keeping everything else.
     pub(crate) fn centered(&self, position: [f64; 3]) -> Camera {
         match *self {
-            Camera::Map { zoom, pitch, bearing, .. } => {
-                Camera::Map { center: [position[0], position[1]], zoom, pitch, bearing }
-            }
+            Camera::Map { zoom, pitch, bearing, .. } => Camera::Map { center: position, zoom, pitch, bearing },
             Camera::Plot { x, y } => {
                 let half = (x[1] - x[0]) / 2.0;
                 Camera::Plot { x: [position[0] - half, position[0] + half], y }
@@ -255,7 +297,7 @@ pub(crate) fn latitude(mercator_y: f64) -> f64 {
 /// A camera looking at a space through a view of some size: everything a frame and the gestures
 /// need to go between positions, world coordinates, and the screen.
 ///
-/// World coordinates are what the shaders project: position units from the camera's center on a
+/// World coordinates are what the shaders project: position units from the camera's center across a
 /// plane or plot, mercator radians or the globe on the earth, with elevation up.
 pub(crate) struct Projected {
     pub(crate) clip_from_world: DMat4,
@@ -263,7 +305,7 @@ pub(crate) struct Projected {
     /// The camera's position, and the direction toward the key light.
     pub(crate) eye: DVec3,
     pub(crate) light: DVec3,
-    pub(crate) center: [f64; 2],
+    pub(crate) center: [f64; 3],
     pub(crate) px_per_unit: [f64; 2],
     pub(crate) mercator_y: f64,
     pub(crate) globe: f64,
@@ -298,7 +340,7 @@ impl Projected {
             (_, Camera::Plot { x, y }) => {
                 let y = y.unwrap_or([0.0, 1.0]);
                 let px = [room[0] / (x[1] - x[0]).abs().max(1e-12), room[1] / (y[1] - y[0]).abs().max(1e-12)];
-                ([x[0].midpoint(x[1]), y[0].midpoint(y[1])], px, 0.0, 0.0, wgsl::SPACE_PLOT)
+                ([x[0].midpoint(x[1]), y[0].midpoint(y[1]), 0.0], px, 0.0, 0.0, wgsl::SPACE_PLOT)
             }
             _ => unreachable!("the camera fits the space"),
         };
@@ -308,7 +350,8 @@ impl Projected {
         let view = DMat4::from_translation(DVec3::new(0.0, 0.0, -distance))
             * DMat4::from_rotation_x(-pitch.clamp(0.0, MAX_PITCH).to_radians())
             * DMat4::from_rotation_z(bearing.to_radians())
-            * DMat4::from_scale(DVec3::new(px_per_unit[0], px_per_unit[1], px_per_unit[0]));
+            * DMat4::from_scale(DVec3::new(px_per_unit[0], px_per_unit[1], px_per_unit[0]))
+            * DMat4::from_translation(DVec3::new(0.0, 0.0, -center[2]));
         let middle = [area[0].midpoint(area[2]) / w * 2.0 - 1.0, 1.0 - area[1].midpoint(area[3]) / h * 2.0];
         let offset = DMat4::from_cols(DVec4::X, DVec4::Y, DVec4::Z, DVec4::new(middle[0], middle[1], 0.0, 1.0));
         let clip_from_world = offset * projection * view;
@@ -340,7 +383,8 @@ impl Projected {
         if self.globe <= 0.0 {
             return flat;
         }
-        let (lon, lat, lat0) = ((x - self.center[0]).to_radians(), y.clamp(-90.0, 90.0).to_radians(), self.center[1].to_radians());
+        let lon = (x - self.center[0]).to_radians();
+        let (lat, lat0) = (y.clamp(-90.0, 90.0).to_radians(), self.center[1].to_radians());
         let v = DVec3::new(lat.cos() * lon.sin(), lat.sin(), lat.cos() * lon.cos());
         let s = DVec3::new(v.x, v.y * lat0.cos() - v.z * lat0.sin(), v.y * lat0.sin() + v.z * lat0.cos()) * (1.0 + z);
         let round = DVec3::new(s.x, s.y, s.z - 1.0) / lat0.cos();
@@ -380,20 +424,45 @@ impl Projected {
         w.truncate() / w.w
     }
 
-    /// Where the ray under screen point `p` meets the ground, in world coordinates.
-    pub(crate) fn ground(&self, p: [f64; 2]) -> Option<DVec3> {
+    /// The ray under screen point `p`: where it leaves the near plane, and its direction.
+    fn ray(&self, p: [f64; 2]) -> (DVec3, DVec3) {
         let near = self.unproject(p, 1.0);
-        let far = self.unproject(p, 0.0);
-        let t = near.z / (near.z - far.z);
-        (t.is_finite() && t >= 0.0).then(|| near.lerp(far, t))
+        (near, (self.unproject(p, 0.0) - near).normalize_or_zero())
     }
 
-    /// `center` moved by world offset `d` along the ground.
-    pub(crate) fn shifted(&self, center: [f64; 2], d: DVec3) -> [f64; 2] {
-        if self.space != wgsl::SPACE_EARTH {
-            return [center[0] + d.x, center[1] + d.y];
+    /// How steeply the ray under `p` meets a level: 1 looking straight down, 0 along the horizon.
+    pub(crate) fn grazing(&self, p: [f64; 2]) -> f64 {
+        self.ray(p).1.z.abs()
+    }
+
+    /// Where the ray under `p` meets the level at elevation `z`, in front of the camera.
+    pub(crate) fn on_plane(&self, p: [f64; 2], z: f64) -> Option<DVec3> {
+        let (o, d) = self.ray(p);
+        let t = (z - o.z) / d.z;
+        (t.is_finite() && t >= 0.0).then(|| o + d * t)
+    }
+
+    /// Where the ray under `p` meets the ground: the plane's level, the map, or the globe.
+    pub(crate) fn surface(&self, p: [f64; 2]) -> Option<DVec3> {
+        if self.globe < 0.5 {
+            return self.on_plane(p, 0.0);
         }
-        [wrap(center[0] + d.x.to_degrees()), latitude(self.mercator_y + d.y).clamp(-MAX_LATITUDE, MAX_LATITUDE)]
+        let radius = 1.0 / self.center[1].to_radians().cos();
+        let (o, d) = self.ray(p);
+        let to = DVec3::new(0.0, 0.0, -radius) - o;
+        let along = to.dot(d);
+        let miss = (to - d * along).length_squared();
+        let half = (radius * radius - miss).sqrt();
+        (half.is_finite() && along - half >= 0.0).then(|| o + d * (along - half))
+    }
+
+    /// `center` moved by world offset `d` across the ground, and up by `raise`.
+    pub(crate) fn shifted(&self, center: [f64; 3], d: DVec3, raise: f64) -> [f64; 3] {
+        if self.space != wgsl::SPACE_EARTH {
+            return [center[0] + d.x, center[1] + d.y, center[2] + raise];
+        }
+        let lat = latitude(self.mercator_y + d.y).clamp(-MAX_LATITUDE, MAX_LATITUDE);
+        [wrap(center[0] + d.x.to_degrees()), lat, center[2] + raise]
     }
 }
 
@@ -435,44 +504,54 @@ mod tests {
     const SIZE: [f64; 2] = [800.0, 600.0];
     const AREA: Area = [0.0, 0.0, 800.0, 600.0];
 
+    fn plane() -> Space {
+        Space::Plane(Plane::default())
+    }
+
     fn to_screen(view: &Projected, p: [f64; 3]) -> [f64; 2] {
         let s = view.screen(view.world(p)).expect("in front");
         [s[0], s[1]]
     }
 
+    fn near(a: [f64; 2], b: [f64; 2]) -> bool {
+        (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-6
+    }
+
     #[test]
     fn plane_centers_and_scales() {
-        let space = Space::Plane(Plane::default());
-        let camera = Camera::Map { center: [10.0, 20.0], zoom: 1.0, pitch: 0.0, bearing: 0.0 };
-        let view = Projected::new(&space, &camera, SIZE, AREA, 0.0);
-        let center = to_screen(&view, [10.0, 20.0, 0.0]);
-        assert!((center[0] - 400.0).abs() < 1e-6 && (center[1] - 300.0).abs() < 1e-6);
-        let right = to_screen(&view, [11.0, 21.0, 0.0]);
-        assert!((right[0] - 402.0).abs() < 1e-6, "two pixels per unit at zoom 1");
-        assert!((right[1] - 298.0).abs() < 1e-6, "y up");
+        let camera = Camera::Map { center: [10.0, 20.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 0.0 };
+        let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
+        assert!(near(to_screen(&view, [10.0, 20.0, 0.0]), [400.0, 300.0]));
+        assert!(near(to_screen(&view, [11.0, 21.0, 0.0]), [402.0, 298.0]), "two pixels per unit, y up");
+    }
+
+    #[test]
+    fn the_center_is_a_point_in_space() {
+        let camera = Camera::Map { center: [1.0, 2.0, 5.0], zoom: 3.0, pitch: 60.0, bearing: 40.0 };
+        let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
+        assert!(near(to_screen(&view, [1.0, 2.0, 5.0]), [400.0, 300.0]), "the center is in the middle");
     }
 
     #[test]
     fn depth_is_reversed_and_unprojects() {
-        let space = Space::Plane(Plane::default());
-        let camera = Camera::Map { center: [0.0, 0.0], zoom: 2.0, pitch: 50.0, bearing: 30.0 };
-        let view = Projected::new(&space, &camera, SIZE, AREA, 0.0);
+        let camera = Camera::Map { center: [0.0; 3], zoom: 2.0, pitch: 50.0, bearing: 30.0 };
+        let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
         let low = view.screen(view.world([0.0, 0.0, 0.0])).expect("in front");
         let high = view.screen(view.world([0.0, 0.0, 30.0])).expect("in front");
         assert!(high[2] > low[2], "nearer is greater: {low:?} {high:?}");
         let back = view.position(view.unproject([high[0], high[1]], high[2]));
         assert!((back[2] - 30.0).abs() < 1e-6 && back[0].abs() < 1e-6, "{back:?}");
-        let ground = view.ground([low[0], low[1]]).expect("the ground");
-        assert!(ground.length() < 1e-6);
+        assert!(view.surface([low[0], low[1]]).expect("the ground").length() < 1e-6);
     }
 
     #[test]
-    fn framing_holds_a_tilted_box() {
-        let space = Space::Plane(Plane::default());
-        let camera = Camera::Map { center: [0.0, 0.0], zoom: 0.0, pitch: 58.0, bearing: 30.0 };
+    fn framing_holds_a_tilted_box_and_looks_at_its_middle() {
+        let camera = Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 58.0, bearing: 30.0 };
         let (min, max) = ([-4.0, -4.0, 0.0], [4.0, 4.0, 2.4]);
-        let framed = camera.framing(&space, min, max, SIZE, AREA);
-        let view = Projected::new(&space, &framed, SIZE, AREA, 0.0);
+        let framed = camera.framing(&plane(), min, max, SIZE, AREA);
+        let Camera::Map { center, .. } = framed else { panic!("a map camera") };
+        assert_eq!(center, [0.0, 0.0, 1.2], "turns about the box's middle");
+        let view = Projected::new(&plane(), &framed, SIZE, AREA, 0.0);
         for i in 0..8 {
             let s = to_screen(&view, [[min, max][i & 1][0], [min, max][(i >> 1) & 1][1], [min, max][i >> 2][2]]);
             assert!((23.0..=777.0).contains(&s[0]) && (23.0..=577.0).contains(&s[1]), "corner {i}: {s:?}");
@@ -480,34 +559,51 @@ mod tests {
     }
 
     #[test]
+    fn panning_turning_and_zooming_keep_the_anchor_in_place() {
+        let camera = Camera::Map { center: [0.0, 0.0, 1.0], zoom: 3.0, pitch: 40.0, bearing: 10.0 };
+        let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
+        let anchor = [3.0, -2.0, 1.5];
+        let at = to_screen(&view, anchor);
+        let check = |camera: Camera, want: [f64; 2]| {
+            let after = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
+            let s = to_screen(&after, anchor);
+            assert!((s[0] - want[0]).abs() < 1e-6 && (s[1] - want[1]).abs() < 1e-6, "{s:?} for {want:?}");
+        };
+        check(camera.panned(&view, anchor, [120.0, -50.0]), [at[0] + 120.0, at[1] - 50.0]);
+        check(camera.turned(&view, anchor, [35.0, 12.0]), at);
+        check(camera.zoomed(&view, anchor, 1.5), at);
+        check(camera.zoomed(&view, anchor, -2.0), at);
+    }
+
+    #[test]
+    fn panning_toward_the_horizon_does_not_fling() {
+        let camera = Camera::Map { center: [0.0; 3], zoom: 4.0, pitch: 75.0, bearing: 0.0 };
+        let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
+        let anchor = view.position(view.surface([400.0, 200.0]).expect("ground"));
+        let Camera::Map { center, .. } = camera.panned(&view, anchor, [0.0, -190.0]) else { panic!("a map") };
+        assert!(center[1].abs() < 100.0, "a drag to the horizon stays near: {center:?}");
+    }
+
+    #[test]
     fn earth_positions_round_trip() {
         for globe in [0.0, 1.0] {
             let space = Space::Earth(if globe > 0.0 { Earth::globe() } else { Earth::mercator() });
-            let camera = Camera::Map { center: [-97.0, 31.0], zoom: 4.0, pitch: 0.0, bearing: 0.0 };
+            let camera = Camera::Map { center: [-97.0, 31.0, 0.0], zoom: 4.0, pitch: 0.0, bearing: 0.0 };
             let view = Projected::new(&space, &camera, SIZE, AREA, globe);
             let p = [-95.5, 29.75, 0.0];
             let back = view.position(view.world(p));
             assert!((back[0] - p[0]).abs() < 1e-9 && (back[1] - p[1]).abs() < 1e-9, "globe {globe}: {back:?}");
+            let s = to_screen(&view, p);
+            let ground = view.position(view.surface(s).expect("the surface"));
+            assert!((ground[0] - p[0]).abs() < 1e-6 && (ground[1] - p[1]).abs() < 1e-6, "globe {globe}: {ground:?}");
         }
         assert!((latitude(mercator_y(37.5)) - 37.5).abs() < 1e-9);
     }
 
     #[test]
-    fn panning_keeps_the_grabbed_point_under_the_pointer() {
-        let space = Space::Plane(Plane::default());
-        let camera = Camera::Map { center: [0.0, 0.0], zoom: 3.0, pitch: 40.0, bearing: 10.0 };
-        let view = Projected::new(&space, &camera, SIZE, AREA, 0.0);
-        let grabbed = view.position(view.ground([300.0, 400.0]).expect("ground"));
-        let panned = camera.panned(&view, [300.0, 400.0], [420.0, 350.0]);
-        let after = Projected::new(&space, &panned, SIZE, AREA, 0.0);
-        let s = to_screen(&after, grabbed);
-        assert!((s[0] - 420.0).abs() < 1e-6 && (s[1] - 350.0).abs() < 1e-6, "{s:?}");
-    }
-
-    #[test]
     fn longitude_eases_the_short_way() {
-        let a = Camera::Map { center: [170.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 350.0 };
-        let b = Camera::Map { center: [-170.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 10.0 };
+        let a = Camera::Map { center: [170.0, 0.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 350.0 };
+        let b = Camera::Map { center: [-170.0, 0.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 10.0 };
         let Camera::Map { center, bearing, .. } = a.ease(&b, 0.5, true) else { panic!("a map camera") };
         assert!((center[0] - 180.0).abs() < 1e-9);
         assert!((bearing - 360.0).abs() < 1e-9);

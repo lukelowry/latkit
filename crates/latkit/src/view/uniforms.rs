@@ -28,9 +28,14 @@ pub(crate) fn frame(
         },
         _ => (wgsl::GRID_OFF, 1.0),
     };
-    let surface = match &scene.space {
-        Space::Earth(earth) => earth.surface.unwrap_or(theme.surface),
-        _ => theme.surface,
+    let (surface, graticule) = match &scene.space {
+        Space::Earth(earth) => (earth.surface.unwrap_or(theme.surface), earth.graticule),
+        _ => (theme.surface, false),
+    };
+    // A plane's grid fades out past what the view shows looking straight down.
+    let grid_fade = match &scene.space {
+        Space::Plane(_) => 1.2 * size[0].hypot(size[1]) / projected.px_per_unit[0],
+        _ => 0.0,
     };
     // A negative red asks for each row's own color.
     let selected = theme.selected.map_or([-1.0, 0.0, 0.0, 0.9], Color::to_array);
@@ -64,8 +69,11 @@ pub(crate) fn frame(
     frame.background = theme.background.to_array();
     frame.surface = surface.to_array();
     frame.grid_color = theme.grid.to_array();
+    frame.shadow = theme.shadow.to_array();
     frame.grid_kind = grid_kind;
     frame.grid_pitch = grid_pitch as f32;
+    frame.grid_fade = grid_fade as f32;
+    frame.graticule = u32::from(graticule);
     frame.theme = theme_slots(theme);
     frame
 }

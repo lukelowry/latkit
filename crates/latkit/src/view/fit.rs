@@ -2,8 +2,9 @@
 //! framed a frame or two later. A plot without a value range measures its traces whenever they or
 //! the camera change, and grows its range with headroom so the axes stay still.
 
-use super::event::Fit;
 use super::View;
+use super::camera::Bounds;
+use super::event::Fit;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
@@ -38,11 +39,9 @@ impl View {
             return;
         }
         match &self.fitting.wanted {
-            Some(Fit::Bounds { min, max }) => {
-                let camera = self.camera.framing(&self.scene.space, *min, *max, self.size, self.area());
+            &Some(Fit::Bounds { min, max }) => {
                 self.fitting.wanted = None;
-                self.flight = None;
-                self.move_camera(camera);
+                self.frame_box(min, max);
             }
             Some(Fit::All) if matches!(self.scene.space, Space::Plot(_)) => {
                 if let Some(span) = self.traced_span() {
@@ -119,23 +118,32 @@ impl View {
                 let middle = [lo[0].midpoint(hi[0]), lo[1].midpoint(hi[1]), lo[2].midpoint(hi[2])];
                 let view = self.projected();
                 let area = self.area();
-                let inside = view.screen(view.world(middle)).is_some_and(|s| {
-                    s[0] >= area[0] && s[0] <= area[2] && s[1] >= area[1] && s[1] <= area[3]
-                });
+                let inside = view
+                    .screen(view.world(middle))
+                    .is_some_and(|s| s[0] >= area[0] && s[0] <= area[2] && s[1] >= area[1] && s[1] <= area[3]);
                 if !inside {
                     let camera = self.camera.centered(middle);
                     self.fly(camera);
                 }
             }
             Some(_) => {
-                let camera = self.camera.framing(&self.scene.space, lo, hi, self.size, self.area());
                 if let Camera::Plot { y: None, .. } = self.camera {
                     self.plot_y = None;
                 }
-                self.flight = None;
-                self.move_camera(camera);
+                self.frame_box(lo, hi);
             }
         }
+    }
+
+    /// Frames the box `min..max` at once, and keeps the camera within reach of it.
+    fn frame_box(&mut self, min: [f64; 3], max: [f64; 3]) {
+        let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.area());
+        self.rig.hold();
+        self.rig.bounds = match camera {
+            Camera::Map { zoom, .. } => Some(Bounds { min, max, zoom }),
+            Camera::Plot { .. } => None,
+        };
+        self.move_camera(camera);
     }
 
     /// Grows the value range a plot shows to hold `lo..hi` with headroom, and shrinks it once the
@@ -160,7 +168,9 @@ impl View {
                 _ => None,
             }
         });
-        spans.reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])]).map(|[a, b]| if b > a { [a, b] } else { [a - 0.5, a + 0.5] })
+        spans
+            .reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])])
+            .map(|[a, b]| if b > a { [a, b] } else { [a - 0.5, a + 0.5] })
     }
 }
 

@@ -1,10 +1,11 @@
 // Probes: the nearest visible row to a point. `nearest` keeps the least key, the distance in
 // sixty-fourths of a pixel and then the mark drawn last; `topmost` keeps the last row of that mark at
 // that key; `describe` writes where the hit lies. Rows behind what the frame drew are not reached.
+// `under` writes the nearest depth drawn around the point, which gestures turn and zoom about.
 
 import package::lib::types::{
     NONE, VISIBLE, PINNED, PLACED, SIZED, VERTEX_HALF, EDGE_WIDTH, MARK_VERTICES, MARK_EDGES, MARK_FACES,
-    PROBE_KEY, PROBE_ROW, PROBE_DEPTH, PROBE_X, PROBE_Y,
+    PROBE_KEY, PROBE_ROW, PROBE_DEPTH, PROBE_X, PROBE_Y, PROBE_UNDER,
 };
 import package::lib::bind::{frame, mark};
 import package::lib::state::{row_at, vertex_at, vertex_slot, edge_at, face_at, Vertex};
@@ -156,4 +157,17 @@ fn describe() {
     atomicStore(&probe[PROBE_DEPTH], bitcast<u32>(r.depth));
     atomicStore(&probe[PROBE_X], bitcast<u32>(r.point.x));
     atomicStore(&probe[PROBE_Y], bitcast<u32>(r.point.y));
+}
+
+@compute @workgroup_size(1)
+fn under() {
+    let size = vec2i(textureDimensions(depth));
+    let at = vec2i(frame.probe * frame.pixel_ratio);
+    var nearest = 0.0;
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            nearest = max(nearest, textureLoad(depth, clamp(at + vec2i(dx, dy), vec2i(0), size - 1), 0));
+        }
+    }
+    atomicStore(&probe[PROBE_UNDER], bitcast<u32>(nearest));
 }

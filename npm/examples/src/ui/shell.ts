@@ -26,7 +26,12 @@ export class Shell {
   ) {
     const links = pages.map((page) => h('a', { href: `#${page.id}` }, page.title));
     document.body.append(
-      h('header', {}, h('a', { class: 'brand', href: '#' }, 'latkit'), h('nav', { 'aria-label': 'Examples' }, ...links)),
+      h(
+        'header',
+        {},
+        h('a', { class: 'brand', href: '#' }, 'latkit'),
+        h('nav', { 'aria-label': 'Examples' }, ...links),
+      ),
       h('section', { class: 'intro' }, h('div', {}, this.#title, this.#summary), this.#detail),
       this.#error,
       this.#regions.main,

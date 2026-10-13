@@ -115,8 +115,7 @@ impl Tables {
             if !reshape && self.current[i].stamp == stamp {
                 continue;
             }
-            let mut builder =
-                Builder { words: Vec::new(), pins: Vec::new(), ready: true, frames: 0, gpu: &mut *gpu };
+            let mut builder = Builder { words: Vec::new(), pins: Vec::new(), ready: true, frames: 0, gpu: &mut *gpu };
             let descriptor = match use_ {
                 Use::Field { column, join } => {
                     let mut descriptor = builder.column(column, source, all, at, window);

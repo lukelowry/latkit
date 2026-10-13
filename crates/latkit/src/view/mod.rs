@@ -13,6 +13,7 @@ mod passes;
 mod probe;
 mod program;
 mod resources;
+mod rig;
 mod sync;
 mod uniforms;
 
@@ -32,6 +33,7 @@ use marks::Shown;
 use probe::Probing;
 use program::Regions;
 use resources::Resources;
+use rig::Rig;
 use web_time::Instant;
 
 use crate::expr::compile::Deps;
@@ -73,9 +75,7 @@ pub struct View {
     data: Vec<Data>,
     marks: Vec<Shown>,
     camera: Camera,
-    flight: Option<Flight>,
-    /// Degrees of bearing per second.
-    orbit: f64,
+    rig: Rig,
     /// CSS pixels kept clear at the top, right, bottom, and left.
     insets: [f32; 4],
     fitting: Fitting,
@@ -83,7 +83,6 @@ pub struct View {
     plot_y: Option<[f64; 2]>,
     at: f64,
     start: Instant,
-    last: Option<Instant>,
     events: Vec<Event>,
     waker: Option<Waker>,
     resources: Option<Resources>,
@@ -106,13 +105,6 @@ pub struct View {
     stats: Stats,
 }
 
-struct Flight {
-    from: Camera,
-    to: Camera,
-    start: Instant,
-    duration: Duration,
-}
-
 impl View {
     /// A view drawing `scene` with `gpu`. Its marks draw once [`set_data`](View::set_data) gives them
     /// their data.
@@ -125,14 +117,12 @@ impl View {
             data: Vec::new(),
             marks: Vec::new(),
             camera,
-            flight: None,
-            orbit: 0.0,
+            rig: Rig::default(),
             insets: [0.0; 4],
             fitting: Fitting::default(),
             plot_y: None,
             at: f64::INFINITY,
             start: Instant::now(),
-            last: None,
             events: Vec::new(),
             waker: None,
             resources: None,
@@ -230,8 +220,10 @@ impl View {
             }
         }
         drop(inner);
+        // Rows may have moved under the focus; a change of row count relays out when synced.
         self.focus.dirty = true;
-        self.invalidate();
+        self.fitting.plot_due = true;
+        self.wake();
     }
 
     /// The dataset named `name`.
@@ -274,8 +266,8 @@ impl View {
 
     /// Looks through `camera` at once.
     pub fn set_camera(&mut self, camera: Camera) {
-        if camera.fits(&self.scene.space) && camera != self.camera {
-            self.flight = None;
+        if camera.fits(&self.scene.space) {
+            self.rig.hold();
             self.move_camera(camera);
         }
     }
@@ -284,9 +276,23 @@ impl View {
     pub fn fly(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
             let duration = self.scene.ease.max(Duration::from_millis(1)) * 2;
-            self.flight = Some(Flight { from: self.camera, to: camera, start: Instant::now(), duration });
+            self.rig.fly(self.camera, camera, duration);
             self.wake();
         }
+    }
+
+    /// Where `position` (x, y, and elevation) lands on screen, CSS pixels from the top left; `None`
+    /// behind the camera. Overlays anchor to what the view draws with it.
+    pub fn point(&self, position: [f64; 3]) -> Option<[f32; 2]> {
+        let view = self.projected();
+        view.screen(view.world(position)).map(|s| [s[0] as f32, s[1] as f32])
+    }
+
+    /// The position on the ground under `point`: on a plane at elevation 0, on the earth its surface,
+    /// on a plot the values there; `None` where the pointer looks past it.
+    pub fn ground(&self, point: [f32; 2]) -> Option<[f64; 3]> {
+        let view = self.projected();
+        view.surface(point.map(f64::from)).map(|w| view.position(w))
     }
 
     /// Frames what `fit` names on the next frame, keeping pitch and bearing.
@@ -315,15 +321,14 @@ impl View {
         }
     }
 
-    /// Degrees of bearing a map or plane turns each second.
+    /// Degrees of bearing a map or plane turns each second about its center.
     pub fn orbit(&self) -> f64 {
-        self.orbit
+        self.rig.orbit
     }
 
-    /// Turns the camera `degrees_per_second` around its center; zero stops it.
+    /// Turns the camera `degrees_per_second` about its center; zero stops it.
     pub fn set_orbit(&mut self, degrees_per_second: f64) {
-        self.orbit = if degrees_per_second.is_finite() { degrees_per_second } else { 0.0 };
-        self.last = None;
+        self.rig.orbit = if degrees_per_second.is_finite() { degrees_per_second } else { 0.0 };
         self.wake();
     }
 
@@ -372,8 +377,7 @@ impl View {
     pub fn needs_render(&self) -> bool {
         self.changed
             || self.fitting.busy()
-            || self.flight.is_some()
-            || (self.orbit != 0.0 && matches!(self.camera, Camera::Map { .. }))
+            || self.rig.moving()
             || self.probing.busy()
             || self.marks.iter().any(|m| m.dirty != 0 || m.reduce || m.tables.waiting())
             || self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME)))
@@ -392,37 +396,6 @@ impl View {
         self.regions.relayout = true;
         self.fitting.plot_due = true;
         self.wake();
-    }
-
-    /// Moves the camera, telling the application once per batch of moves.
-    fn move_camera(&mut self, camera: Camera) {
-        self.camera = camera;
-        self.fitting.plot_due = true;
-        if self.events.last() != Some(&Event::Camera) {
-            self.events.push(Event::Camera);
-        }
-        self.wake();
-    }
-
-    /// Advances a flight and the orbit.
-    fn advance(&mut self) {
-        let now = Instant::now();
-        let dt = self.last.map_or(0.0, |last| now.duration_since(last).as_secs_f64()).min(0.1);
-        self.last = Some(now);
-        if let Some(flight) = &self.flight {
-            let t = (flight.start.elapsed().as_secs_f64() / flight.duration.as_secs_f64()).min(1.0);
-            let eased = t * t * (3.0 - 2.0 * t);
-            let earth = matches!(self.scene.space, Space::Earth(_));
-            let camera = flight.from.ease(&flight.to, eased, earth);
-            if t >= 1.0 {
-                self.flight = None;
-            }
-            self.move_camera(camera);
-        }
-        if self.orbit != 0.0 && dt > 0.0 && matches!(self.camera, Camera::Map { .. }) {
-            let camera = self.camera.turned([self.orbit * dt, 0.0]);
-            self.move_camera(camera);
-        }
     }
 
     /// The part of the view the camera frames: inside the insets, and on a plot inside its axes.
@@ -452,8 +425,17 @@ impl View {
     }
 
     fn projected(&self) -> Projected {
+        self.projected_with(&self.drawn_camera())
+    }
+
+    /// What `camera` would show, a plot's missing value range filled as the frame fills it.
+    fn projected_with(&self, camera: &Camera) -> Projected {
+        let camera = match *camera {
+            Camera::Plot { x, y: None } => Camera::Plot { x, y: Some(self.plot_y.unwrap_or([0.0, 1.0])) },
+            camera => camera,
+        };
         let space = &self.scene.space;
-        Projected::new(space, &self.drawn_camera(), self.size, self.area(), Projected::globe_of(space))
+        Projected::new(space, &camera, self.size, self.area(), Projected::globe_of(space))
     }
 }
 

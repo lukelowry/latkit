@@ -19,16 +19,23 @@ fn offset(index: usize) -> u32 {
 impl View {
     /// Evaluates dirty channels and sums face normals; with `measure`, also measures every vertex
     /// mark's and trace's extents and reads them back.
-    pub(super) fn compute(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, measure: bool) -> Option<Readback> {
+    pub(super) fn compute(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        measure: bool,
+    ) -> Option<Readback> {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let work: Vec<usize> = (0..self.marks.len())
             .filter(|&i| self.marks[i].drawable() && (self.marks[i].dirty != 0 || self.marks[i].reduce))
             .collect();
-        let faces: Vec<usize> =
-            (0..self.marks.len()).filter(|&i| self.marks[i].drawable() && self.marks[i].kind() == MarkKind::Faces).collect();
-        let measured: Vec<usize> =
-            (0..self.marks.len()).filter(|&i| measure && self.marks[i].drawable() && self.marks[i].measured()).collect();
+        let faces: Vec<usize> = (0..self.marks.len())
+            .filter(|&i| self.marks[i].drawable() && self.marks[i].kind() == MarkKind::Faces)
+            .collect();
+        let measured: Vec<usize> = (0..self.marks.len())
+            .filter(|&i| measure && self.marks[i].drawable() && self.marks[i].measured())
+            .collect();
         if work.is_empty() && faces.is_empty() && measured.is_empty() {
             return None;
         }
@@ -102,7 +109,13 @@ impl View {
     }
 
     /// Draws the backdrop, every drawable mark in scene order, then `sprites` overlay sprites.
-    pub(super) fn draw(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, target: &Target<'_>, sprites: u32) {
+    pub(super) fn draw(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        target: &Target<'_>,
+        sprites: u32,
+    ) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let background = self.scene.theme.background;
@@ -118,6 +131,7 @@ impl View {
             Shader::VerticesShadow,
             Shader::Edges,
             Shader::Faces,
+            Shader::FacesShadow,
             Shader::Lines,
             Shader::Overlay,
         ] {
@@ -162,13 +176,22 @@ impl View {
             let y1 = (area[3] * r).ceil().clamp(f64::from(y0), f64::from(h)) as u32;
             [x0, y0, x1 - x0, y1 - y0]
         };
+        // Faces' shadows lie on the ground under every mark.
+        for (i, shown) in self.marks.iter().enumerate() {
+            if shown.drawable() && shown.kind() == MarkKind::Faces && shown.mark.shadow() {
+                pass.set_bind_group(1, &groups.mark, &[offset(i)]);
+                pass.set_pipeline(&inner.pipelines.render(device, Shader::FacesShadow, target.format, SAMPLES));
+                pass.set_bind_group(2, group(Shader::FacesShadow), &[]);
+                pass.draw(0..3, 0..shown.rows);
+            }
+        }
         for (i, shown) in self.marks.iter().enumerate() {
             if !shown.drawable() {
                 continue;
             }
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
             let (shaders, corners, instances): (&[Shader], u32, u32) = match shown.kind() {
-                MarkKind::Vertices if self.scene.theme.shadows => {
+                MarkKind::Vertices if shown.mark.shadow() => {
                     (&[Shader::VerticesShadow, Shader::Vertices], 4, shown.rows)
                 }
                 MarkKind::Vertices => (&[Shader::Vertices], 4, shown.rows),
@@ -199,7 +222,8 @@ impl View {
         }
     }
 
-    /// Finds the row nearest `point` among what the frame drew, and reads it back.
+    /// Finds the row nearest the probe among what the frame drew, and the nearest depth drawn there,
+    /// and reads them back.
     pub(super) fn probe(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> Readback {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
@@ -211,8 +235,10 @@ impl View {
         let groups = resources.groups(&gpu.0, inner);
         let group = resources.pass(device, inner, Shader::Probe);
         {
-            let mut pass = encoder
-                .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("latkit probe"), timestamp_writes: None });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("latkit probe"),
+                timestamp_writes: None,
+            });
             pass.set_bind_group(0, &groups.view, &[]);
             pass.set_bind_group(2, &group, &[]);
             for entry in ["nearest", "topmost", "describe"] {
@@ -223,6 +249,9 @@ impl View {
                     pass.dispatch_workgroups(workgroups, 1, 1);
                 }
             }
+            pass.set_pipeline(&inner.pipelines.compute(device, Shader::Probe, "under"));
+            pass.set_bind_group(1, &groups.mark, &[0]);
+            pass.dispatch_workgroups(1, 1, 1);
         }
         let resources = self.resources.as_ref().expect("created before passes");
         Readback::new(device, encoder, resources.probe(), 0, u64::from(wgsl::PROBE_WORDS) * 4)

@@ -37,9 +37,19 @@ export class Section {
   }
 
   /** A button that stays pressed, also flipped by its key. Returns a setter for outside changes. */
-  toggle(label: string, key: string, value: boolean, change: (on: boolean) => void): (on: boolean) => void {
+  toggle(
+    label: string,
+    key: string,
+    value: boolean,
+    change: (on: boolean) => void,
+  ): (on: boolean) => void {
     const pressed = String(value);
-    const button = h('button', { type: 'button', 'aria-pressed': pressed }, label, h('kbd', {}, keyName(key)));
+    const button = h(
+      'button',
+      { type: 'button', 'aria-pressed': pressed },
+      label,
+      h('kbd', {}, keyName(key)),
+    );
     const set = (on: boolean) => {
       button.setAttribute('aria-pressed', String(on));
       change(on);
@@ -58,7 +68,13 @@ export class Section {
     o: { min: number; max: number; step: number; value: number; format: (value: number) => string },
     change: (value: number) => void,
   ): void {
-    const input = h('input', { type: 'range', min: o.min, max: o.max, step: o.step, value: o.value });
+    const input = h('input', {
+      type: 'range',
+      min: o.min,
+      max: o.max,
+      step: o.step,
+      value: o.value,
+    });
     const output = h('output');
     const update = () => {
       output.value = o.format(input.valueAsNumber);
@@ -70,15 +86,28 @@ export class Section {
   }
 
   /** One of several options. */
-  choice<T>(label: string, options: readonly (readonly [string, T])[], value: T, change: (value: T) => void): void {
-    const select = h('select', {}, ...options.map(([name, v], i) => h('option', { value: i, selected: v === value }, name)));
-    select.addEventListener('change', () => change(options[select.selectedIndex]![1]), { signal: this.stage.signal });
+  choice<T>(
+    label: string,
+    options: readonly (readonly [string, T])[],
+    value: T,
+    change: (value: T) => void,
+  ): void {
+    const select = h(
+      'select',
+      {},
+      ...options.map(([name, v], i) => h('option', { value: i, selected: v === value }, name)),
+    );
+    select.addEventListener('change', () => change(options[select.selectedIndex]![1]), {
+      signal: this.stage.signal,
+    });
     this.element.append(h('label', { class: 'field' }, h('span', {}, label), select));
   }
 
   /** Swatches naming the series a view draws. */
   series(items: readonly { label: string; color: string }[]): void {
-    const swatches = items.map(({ label, color }) => h('span', { style: `--swatch: ${color}` }, label));
+    const swatches = items.map(({ label, color }) =>
+      h('span', { style: `--swatch: ${color}` }, label),
+    );
     this.element.append(h('p', { class: 'series' }, ...swatches));
   }
 

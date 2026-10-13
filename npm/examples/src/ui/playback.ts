@@ -23,7 +23,14 @@ export class Playback {
   #rate: number;
   readonly #live: boolean;
   readonly #toggle = h('button', { type: 'button', class: 'primary' });
-  readonly #slider = h('input', { type: 'range', step: 'any', min: 0, max: 1, value: 0, 'aria-label': 'Time' });
+  readonly #slider = h('input', {
+    type: 'range',
+    step: 'any',
+    min: 0,
+    max: 1,
+    value: 0,
+    'aria-label': 'Time',
+  });
   readonly #time = h('output', {}, '0.00 s');
 
   constructor(
@@ -61,7 +68,9 @@ export class Playback {
       else if (this.#live) this.play();
       else this.#show(this.start + ((next - this.start) % Math.max(this.end - this.start, 1e-9)));
     });
-    document.addEventListener('visibilitychange', () => document.hidden && this.pause(), { signal });
+    document.addEventListener('visibilitychange', () => document.hidden && this.pause(), {
+      signal,
+    });
     this.#label();
   }
 

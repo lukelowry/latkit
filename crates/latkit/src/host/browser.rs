@@ -22,7 +22,11 @@ impl Host for Browser {
             let mut cell = cell.borrow_mut();
             if cell.is_none() {
                 let canvas = OffscreenCanvas::new(256, 64).ok()?;
-                let context = canvas.get_context("2d").ok()??.dyn_into::<OffscreenCanvasRenderingContext2d>().ok()?;
+                // Each run is read back once it is set.
+                let options = js_sys::Object::new();
+                js_sys::Reflect::set(&options, &"willReadFrequently".into(), &true.into()).ok()?;
+                let context = canvas.get_context_with_context_options("2d", &options).ok()??;
+                let context = context.dyn_into::<OffscreenCanvasRenderingContext2d>().ok()?;
                 *cell = Some((canvas, context));
             }
             let (canvas, context) = cell.as_ref()?;

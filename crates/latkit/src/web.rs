@@ -97,7 +97,8 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
         (f.gpu.clone(), f.canvases.iter().filter_map(Weak::upgrade).collect::<Vec<_>>())
     };
     let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit") });
-    let shown: Vec<wgpu::SurfaceTexture> = canvases.iter().filter_map(|c| c.borrow_mut().record(&mut encoder)).collect();
+    let shown: Vec<wgpu::SurfaceTexture> =
+        canvases.iter().filter_map(|c| c.borrow_mut().record(&mut encoder)).collect();
     gpu.queue().submit([encoder.finish()]);
     for texture in shown {
         gpu.queue().present(texture);
@@ -292,7 +293,8 @@ impl State {
             }
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let target = Target { view: &view, format: self.config.format, size: [width, height], pixel_ratio: ratio as f32 };
+        let target =
+            Target { view: &view, format: self.config.format, size: [width, height], pixel_ratio: ratio as f32 };
         self.due = false;
         self.view.render(encoder, &target);
         Some(texture)
@@ -346,7 +348,11 @@ fn listen(state: &Rc<RefCell<State>>) -> Result<()> {
         let handler = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
             let Some(state) = weak.upgrade() else { return };
             let Some(input) = handle(&target, &event) else { return };
-            state.borrow_mut().view.input(&input);
+            let used = state.borrow_mut().view.input(&input);
+            // A wheel the view zooms with does not scroll the page; a key it uses does not either.
+            if used && matches!(kind, "wheel" | "keydown") {
+                event.prevent_default();
+            }
             state.borrow_mut().due = true;
             let frames = state.borrow().frames.clone();
             schedule(&frames);
@@ -406,7 +412,6 @@ fn listen(state: &Rc<RefCell<State>>) -> Result<()> {
     add("pointerleave", |_, _| Some(Input::Leave))?;
     add("wheel", |element, event| {
         let event = event.dyn_ref::<WheelEvent>()?;
-        event.prevent_default();
         let scale = match event.delta_mode() {
             1 => 16.0,
             2 => 400.0,
@@ -441,9 +446,6 @@ fn listen(state: &Rc<RefCell<State>>) -> Result<()> {
                 "ArrowDown" => Key::Down,
                 _ => Key::Other,
             };
-            if matches!(key, Key::Left | Key::Right | Key::Up | Key::Down | Key::Plus | Key::Minus | Key::Home) {
-                event.prevent_default();
-            }
             Some(Input::Key {
                 key,
                 down: event.type_() == "keydown",

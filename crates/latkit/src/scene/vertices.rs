@@ -21,6 +21,7 @@ pub struct Vertices {
     pub(crate) radius: Option<Size>,
     pub(crate) size: Option<[Size; 2]>,
     pub(crate) marker: Marker,
+    pub(crate) shadow: bool,
 }
 
 impl Vertices {
@@ -33,6 +34,7 @@ impl Vertices {
             radius: None,
             size: None,
             marker: Marker::default(),
+            shadow: false,
         }
     }
 
@@ -69,6 +71,13 @@ impl Vertices {
     #[must_use]
     pub fn marker(mut self, marker: impl Into<Marker>) -> Vertices {
         self.marker = marker.into();
+        self
+    }
+
+    /// Whether each row casts a soft shadow, in the theme's shadow color.
+    #[must_use]
+    pub fn shadow(mut self, on: bool) -> Vertices {
+        self.shadow = on;
         self
     }
 

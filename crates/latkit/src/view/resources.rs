@@ -292,8 +292,11 @@ impl Resources {
                     .create_view(&wgpu::TextureViewDescriptor::default())
             };
             let color = texture("latkit samples", format, wgpu::TextureUsages::RENDER_ATTACHMENT);
-            let depth =
-                texture("latkit depth", DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
+            let depth = texture(
+                "latkit depth",
+                DEPTH,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            );
             self.targets = Some(Targets { color, depth, size, format });
             self.generation += 1;
         }

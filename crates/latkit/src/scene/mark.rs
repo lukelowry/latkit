@@ -129,6 +129,15 @@ impl Mark {
         }
     }
 
+    /// Whether the mark casts shadows.
+    pub(crate) fn shadow(&self) -> bool {
+        match self {
+            Mark::Vertices(m) => m.shadow,
+            Mark::Faces(m) => m.shadow,
+            Mark::Edges(_) | Mark::Lines(_) => false,
+        }
+    }
+
     /// Lines that trace a field are keyed by that field unless named.
     pub(crate) fn key(&self) -> Key {
         let style = self.style();

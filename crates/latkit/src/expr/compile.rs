@@ -237,8 +237,15 @@ impl<'a> Compiler<'a> {
         if self.fields.kind(None, name) != Some(Kind::Sampled) {
             return Err(invalid("not a sampled field").at(name));
         }
-        let use_ =
-            ColumnUse { of: None, name: name.into(), part: Part::Values, sampled: true, step: false, low: false, trace: true };
+        let use_ = ColumnUse {
+            of: None,
+            name: name.into(),
+            part: Part::Values,
+            sampled: true,
+            step: false,
+            low: false,
+            trace: true,
+        };
         self.deps |= Deps::SAMPLES;
         Ok(self.column(use_))
     }
@@ -310,7 +317,8 @@ impl<'a> Compiler<'a> {
             (Kind::Geometry(0), Some(1)) => Part::Y,
             _ => return None,
         };
-        let use_ = ColumnUse { of: None, name: f.name.clone(), part, sampled: false, step: false, low: true, trace: false };
+        let use_ =
+            ColumnUse { of: None, name: f.name.clone(), part, sampled: false, step: false, low: true, trace: false };
         Some(self.column(use_))
     }
 

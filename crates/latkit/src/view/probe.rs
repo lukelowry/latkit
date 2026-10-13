@@ -1,18 +1,27 @@
-//! Probes: which row lies under a point, answered by a compute pass over what the frame drew and read
-//! back a frame or two later. One probe is in flight at a time; a newer point waits for it.
+//! Probes: what lies under a point, answered by a compute pass over what the frame drew and read back
+//! a frame or two later: the nearest row, and the nearest depth drawn. One probe is in flight at a
+//! time; a newer point waits for it.
 
 use super::View;
 use super::event::Hit;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
-use crate::Row;
+use crate::{Camera, Row};
 
 /// A hit, with the depth it lies at for dragging.
 #[derive(Clone, Debug)]
 pub(crate) struct Probed {
     pub(crate) hit: Hit,
     pub(crate) depth: f32,
+}
+
+/// What a probe found under its point.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Answer {
+    pub(crate) hit: Option<Probed>,
+    /// The nearest depth drawn around the point; 0 where nothing was drawn.
+    pub(crate) under: f32,
 }
 
 #[derive(Default)]
@@ -23,7 +32,7 @@ pub(crate) struct Probing {
     pub(crate) touch: bool,
     reading: Option<([f32; 2], Readback)>,
     /// The latest answer and the point it was asked for.
-    pub(crate) latest: Option<([f32; 2], Option<Probed>)>,
+    pub(crate) latest: Option<([f32; 2], Answer)>,
 }
 
 impl Probing {
@@ -32,13 +41,13 @@ impl Probing {
     }
 
     pub(crate) fn hovered(&self) -> Option<&Probed> {
-        self.latest.as_ref().and_then(|(_, probed)| probed.as_ref())
+        self.latest.as_ref().and_then(|(_, answer)| answer.hit.as_ref())
     }
 
-    /// The latest answer when it was asked within a pixel or two of `point`.
-    pub(crate) fn at(&self, point: [f32; 2]) -> Option<Option<Probed>> {
-        let (asked, probed) = self.latest.as_ref()?;
-        (self.wanted.is_none() && self.reading.is_none() && near(*asked, point, 2.0)).then(|| probed.clone())
+    /// The latest answer when it was asked within a pixel or two of `point` and nothing newer waits.
+    pub(crate) fn at(&self, point: [f32; 2]) -> Option<Answer> {
+        let (asked, answer) = self.latest.as_ref()?;
+        (self.wanted.is_none() && self.reading.is_none() && near(*asked, point, 2.0)).then(|| answer.clone())
     }
 }
 
@@ -47,14 +56,9 @@ pub(crate) fn near(a: [f32; 2], b: [f32; 2], within: f32) -> bool {
 }
 
 impl View {
-    /// Whether any drawn mark answers probes.
-    pub(super) fn pickable(&self) -> bool {
-        self.marks.iter().any(|m| m.probed())
-    }
-
     /// The point this frame probes: one waits and none is in flight.
     pub(super) fn probe_point(&mut self) -> Option<[f32; 2]> {
-        if self.probing.reading.is_some() || !self.pickable() {
+        if self.probing.reading.is_some() || self.marks.iter().all(|m| !m.drawable()) {
             return None;
         }
         self.probing.wanted.take()
@@ -70,14 +74,19 @@ impl View {
         let Some(bytes) = readback.take() else { return };
         let point = *point;
         self.probing.reading = None;
-        let probed = bytes.ok().and_then(|bytes| self.probed(bytemuck::cast_slice(&bytes)));
-        self.landed(point, probed);
+        let answer = bytes.map_or_else(|_| Answer::default(), |bytes| self.answer(bytemuck::cast_slice(&bytes)));
+        self.landed(point, answer);
     }
 
-    /// The hit the probe's words describe.
-    fn probed(&self, words: &[u32]) -> Option<Probed> {
-        let key = *words.get(wgsl::PROBE_KEY as usize)?;
-        let row = words.get(wgsl::PROBE_ROW as usize)?.checked_sub(1)?;
+    /// What the probe's words say.
+    fn answer(&self, words: &[u32]) -> Answer {
+        let word = |i: u32| words.get(i as usize).copied().unwrap_or(0);
+        Answer { hit: self.hit(&word), under: f32::from_bits(word(wgsl::PROBE_UNDER)) }
+    }
+
+    fn hit(&self, word: &impl Fn(u32) -> u32) -> Option<Probed> {
+        let key = word(wgsl::PROBE_KEY);
+        let row = word(wgsl::PROBE_ROW).checked_sub(1)?;
         if key == wgsl::NONE {
             return None;
         }
@@ -85,11 +94,10 @@ impl View {
         let shown = self.marks.get(mark)?;
         let style = shown.mark.style();
         let id = self.data(&style.data)?.table(&style.table)?.ids.id(row as usize)?;
-        let depth = f32::from_bits(words[wgsl::PROBE_DEPTH as usize]);
-        let point = [f32::from_bits(words[wgsl::PROBE_X as usize]), f32::from_bits(words[wgsl::PROBE_Y as usize])];
-        let projected = self.projected();
-        let position =
-            projected.position(projected.unproject([f64::from(point[0]), f64::from(point[1])], f64::from(depth)));
+        let depth = f32::from_bits(word(wgsl::PROBE_DEPTH));
+        let point = [f32::from_bits(word(wgsl::PROBE_X)), f32::from_bits(word(wgsl::PROBE_Y))];
+        let view = self.projected();
+        let position = view.position(view.unproject(point.map(f64::from), f64::from(depth)));
         let hit = Hit {
             row: Row { data: style.data.clone(), table: style.table.clone(), id },
             mark,
@@ -98,6 +106,28 @@ impl View {
             distance: (key >> 8) as f32 / 64.0,
         };
         Some(Probed { hit, depth })
+    }
+
+    /// The point gestures move about under `point`: what the frame drew there, else the level the
+    /// camera looks at, else a point as far away as the camera's center.
+    pub(super) fn anchor(&self, point: [f32; 2], answer: Option<&Answer>) -> [f64; 3] {
+        let view = self.projected();
+        let p = point.map(f64::from);
+        let drawn = answer.and_then(|a| if a.under > 0.0 { Some(a.under) } else { a.hit.as_ref().map(|h| h.depth) });
+        if let Some(depth) = drawn {
+            return view.position(view.unproject(p, f64::from(depth)));
+        }
+        let Camera::Map { center, .. } = self.camera else {
+            return view.on_plane(p, 0.0).map_or([0.0; 3], |w| view.position(w));
+        };
+        let reach = 50.0 * (view.eye - view.world(center)).length();
+        let level = if view.globe >= 0.5 { view.surface(p) } else { view.on_plane(p, center[2]) };
+        if let Some(w) = level.filter(|w| view.grazing(p) > 0.1 && (*w - view.eye).length() < reach) {
+            view.position(w)
+        } else {
+            let depth = view.screen(view.world(center)).map_or(0.5, |s| s[2]);
+            view.position(view.unproject(p, depth))
+        }
     }
 }
 

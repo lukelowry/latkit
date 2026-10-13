@@ -29,7 +29,11 @@ export const ROOM = 3.6;
 const CEILING = 6.5;
 
 type Vec3 = [number, number, number];
-const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const cross = (a: Vec3, b: Vec3): Vec3 => [
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0],
+];
 const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 /** Column-major rotation of a unit quaternion [x, y, z, w]. */
 function rotation([x, y, z, w]: number[]): [Vec3, Vec3, Vec3] {
@@ -115,7 +119,11 @@ export class Body {
       frame.y[i] = y;
       frame.z[i] = z;
       frame.speed[i] =
-        Math.hypot(x - this.previous[i * 3]!, y - this.previous[i * 3 + 1]!, z - this.previous[i * 3 + 2]!) / STEP;
+        Math.hypot(
+          x - this.previous[i * 3]!,
+          y - this.previous[i * 3 + 1]!,
+          z - this.previous[i * 3 + 2]!,
+        ) / STEP;
       const rx = this.rest[i * 3]!;
       const ry = this.rest[i * 3 + 1]!;
       const rz = this.rest[i * 3 + 2]!;
@@ -131,13 +139,22 @@ export class Body {
   metrics(): [number, number, number] {
     let speed = 0;
     for (let i = 0; i < this.count * 3; i += 3)
-      speed += Math.hypot(this.x[i]! - this.previous[i]!, this.x[i + 1]! - this.previous[i + 1]!, this.x[i + 2]! - this.previous[i + 2]!);
-    return [this.center(this.x)[2], speed / this.count / STEP, Math.min(2, Math.max(0, this.volume / this.restVolume))];
+      speed += Math.hypot(
+        this.x[i]! - this.previous[i]!,
+        this.x[i + 1]! - this.previous[i + 1]!,
+        this.x[i + 2]! - this.previous[i + 2]!,
+      );
+    return [
+      this.center(this.x)[2],
+      speed / this.count / STEP,
+      Math.min(2, Math.max(0, this.volume / this.restVolume)),
+    ];
   }
 
   // Impulses change velocity, which Verlet keeps as the step from previous to now.
   private push(row: number, v: Vec3): void {
-    for (let a = 0; a < 3; a++) this.previous[row * 3 + a] = this.previous[row * 3 + a]! - v[a]! * STEP;
+    for (let a = 0; a < 3; a++)
+      this.previous[row * 3 + a] = this.previous[row * 3 + a]! - v[a]! * STEP;
   }
 
   /** Leap with a flip about the way it faces. */
@@ -148,7 +165,11 @@ export class Body {
     const spin = (Math.random() < 0.5 ? -7.5 : 7.5) / (Math.hypot(...axis) || 1);
     const omega: Vec3 = [axis[0] * spin, axis[1] * spin, axis[2] * spin];
     for (let i = 0; i < this.count; i++) {
-      const v = cross(omega, [this.x[i * 3]! - c[0], this.x[i * 3 + 1]! - c[1], this.x[i * 3 + 2]! - c[2]]);
+      const v = cross(omega, [
+        this.x[i * 3]! - c[0],
+        this.x[i * 3 + 1]! - c[1],
+        this.x[i * 3 + 2]! - c[2],
+      ]);
       this.push(i, [v[0] + facing[0] * 1.5, v[1] + facing[1] * 1.5, v[2] + 7]);
     }
   }
@@ -161,7 +182,8 @@ export class Body {
       lo = Math.min(lo, this.x[i]!);
       hi = Math.max(hi, this.x[i]!);
     }
-    for (let i = 0; i < this.count; i++) this.push(i, [0, 0, (-11 * (this.x[i * 3 + 2]! - lo)) / Math.max(hi - lo, 1e-6)]);
+    for (let i = 0; i < this.count; i++)
+      this.push(i, [0, 0, (-11 * (this.x[i * 3 + 2]! - lo)) / Math.max(hi - lo, 1e-6)]);
   }
 
   /** Fly apart for a moment, then pull back together. */
@@ -183,7 +205,11 @@ export class Body {
     for (let j = 0; j < near.rows.length; j++) {
       const i = near.rows[j]!;
       const w = near.weights[j]! * speed;
-      this.push(i, [-this.normals[i * 3]! * w, -this.normals[i * 3 + 1]! * w, -this.normals[i * 3 + 2]! * w]);
+      this.push(i, [
+        -this.normals[i * 3]! * w,
+        -this.normals[i * 3 + 1]! * w,
+        -this.normals[i * 3 + 2]! * w,
+      ]);
     }
   }
 
@@ -241,7 +267,10 @@ export class Body {
       let az = -controls.gravity;
       if (gust) {
         const facing = Math.max(0, -(normals[i * 3]! * wx + normals[i * 3 + 1]! * wy));
-        const g = gust * (0.25 + facing) * (0.6 + 0.4 * Math.sin(t * 2.3 + x[i * 3]! * 1.7 + x[i * 3 + 2]! * 1.1));
+        const g =
+          gust *
+          (0.25 + facing) *
+          (0.6 + 0.4 * Math.sin(t * 2.3 + x[i * 3]! * 1.7 + x[i * 3 + 2]! * 1.1));
         ax += wx * g;
         ay += wy * g;
         az += g * 0.15;
@@ -259,7 +288,10 @@ export class Body {
       this.springs((0.2 + 0.7 * firm) * together ** 3);
       this.pressure(0.6 * together ** 4, controls.inflate);
     } else this.measure();
-    this.match((0.0015 + 0.05 * firm * firm) * together + (together < 1 ? 0.025 * together : 0), together);
+    this.match(
+      (0.0015 + 0.05 * firm * firm) * together + (together < 1 ? 0.025 * together : 0),
+      together,
+    );
     if (this.grabbed) this.hold(this.grabbed);
     this.collide();
   }
@@ -446,7 +478,11 @@ export class Body {
   }
 
   private distance(x: Float64Array, a: number, b: number): number {
-    return Math.hypot(x[a * 3]! - x[b * 3]!, x[a * 3 + 1]! - x[b * 3 + 1]!, x[a * 3 + 2]! - x[b * 3 + 2]!);
+    return Math.hypot(
+      x[a * 3]! - x[b * 3]!,
+      x[a * 3 + 1]! - x[b * 3 + 1]!,
+      x[a * 3 + 2]! - x[b * 3 + 2]!,
+    );
   }
 
   private center(x: Float64Array): Vec3 {

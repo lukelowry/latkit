@@ -12,7 +12,8 @@ export const pages: readonly Page[] = [
   {
     id: 'grid',
     title: 'Grid playback',
-    summary: 'A synthetic grid of 3,600 buses with a minute of voltages, on a map, a globe, or a plane.',
+    summary:
+      'A synthetic grid of 3,600 buses with a minute of voltages, on a map, a globe, or a plane.',
     load: () => import('./grid/page.js'),
   },
 ];

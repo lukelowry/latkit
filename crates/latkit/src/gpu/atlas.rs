@@ -61,15 +61,12 @@ impl Atlas {
             if width == 0 || height == 0 || width > SIZE || height > SIZE {
                 return None;
             }
-            let [left, top] = match self.place(width, height) {
-                Some(at) => at,
-                None => {
-                    self.runs.clear();
-                    self.shelves.clear();
-                    self.generation += 1;
-                    self.place(width, height)?
-                }
-            };
+            let [left, top] = self.place(width, height).or_else(|| {
+                self.runs.clear();
+                self.shelves.clear();
+                self.generation += 1;
+                self.place(width, height)
+            })?;
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.texture,

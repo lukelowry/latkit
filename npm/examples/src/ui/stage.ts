@@ -40,7 +40,14 @@ export class Stage {
   }
 
   /** A view in a canvas of its own, in `into`, the main region unless given. */
-  view(scene: Scene, { label, into = this.regions.main, height }: { label: string; into?: HTMLElement; height?: number }): View {
+  view(
+    scene: Scene,
+    {
+      label,
+      into = this.regions.main,
+      height,
+    }: { label: string; into?: HTMLElement; height?: number },
+  ): View {
     const canvas = h('canvas', { tabindex: 0, 'aria-label': label });
     if (height) canvas.style.height = `${height}px`;
     into.append(canvas);

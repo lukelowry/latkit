@@ -70,8 +70,10 @@ impl View {
             }
         }
         self.focus.written = words;
-        for shown in &mut self.marks {
-            shown.dirty |= shown.channels_reading(Deps::FOCUS);
+        if changed > 0 {
+            for shown in &mut self.marks {
+                shown.dirty |= shown.channels_reading(Deps::FOCUS);
+            }
         }
     }
 }

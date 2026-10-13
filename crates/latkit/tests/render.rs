@@ -89,7 +89,7 @@ fn close(a: [u8; 4], b: [u8; 4]) -> bool {
 }
 
 fn plain_theme() -> Theme {
-    Theme { background: Color::BLACK, shadows: false, ..Theme::dark() }
+    Theme { background: Color::BLACK, ..Theme::dark() }
 }
 
 fn plane() -> Plane {
@@ -97,7 +97,7 @@ fn plane() -> Plane {
 }
 
 fn camera() -> Camera {
-    Camera::Map { center: [0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 }
+    Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 }
 }
 
 #[test]
@@ -252,16 +252,13 @@ fn faces_blend_their_corners_and_hide_what_lies_behind() {
     .expect("valid");
     let red = Color::rgb(1.0, 0.0, 0.0);
     let blue = Color::rgb(0.0, 0.0, 1.0);
-    let scene = Scene::new(plane())
-        .theme(plain_theme())
-        .draw(Faces::of("mesh", "Face").corners("a", "b", "c"))
-        .draw(
-            Vertices::of("mesh", "Vertex")
-                .position("x", "y")
-                .elevation("z")
-                .radius(4.0)
-                .color(latkit::when(field("hue").gt(0.5)).then(blue).otherwise(red)),
-        );
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(Faces::of("mesh", "Face").corners("a", "b", "c")).draw(
+        Vertices::of("mesh", "Vertex")
+            .position("x", "y")
+            .elevation("z")
+            .radius(4.0)
+            .color(latkit::when(field("hue").gt(0.5)).then(blue).otherwise(red)),
+    );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_data(data);
@@ -302,7 +299,8 @@ fn presses_click_and_drag_the_rows_they_hit() {
     frame(&gpu, &mut view);
     view.input(&Input::Move { pointer: 1, point: [center + 10.0, center - 20.0], modifiers });
     view.input(&Input::Up { pointer: 1, point: [center + 10.0, center - 20.0], modifiers });
-    let drags: Vec<_> = view.events().filter_map(|e| if let Event::Drag(drag) = e { Some(drag) } else { None }).collect();
+    let drags: Vec<_> =
+        view.events().filter_map(|e| if let Event::Drag(drag) = e { Some(drag) } else { None }).collect();
     assert_eq!(drags.iter().map(|d| d.phase).collect::<Vec<_>>(), [Phase::Start, Phase::End]);
     let end = drags.last().expect("an end").position;
     assert!((end[0] - 10.0).abs() < 0.5 && (end[1] - 20.0).abs() < 0.5, "the pointer's position: {end:?}");
@@ -368,4 +366,49 @@ fn hover_reaches_what_faces_leave_in_view() {
     assert_eq!(above.map(|hit| hit.row.id), Some(4_u64.into()), "the vertex above the face");
     let below = hover(&mut view, [center, center]).expect("a hover event");
     assert_eq!(below, None, "the vertex below the face is hidden");
+}
+
+#[test]
+fn a_streamed_tilted_mesh_answers_hover_and_drags() {
+    let Some(gpu) = gpu() else { return };
+    // An octahedron standing on the ground, its corners streamed as sampled fields.
+    let corners: [[f64; 3]; 6] =
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [-1.0, 0.0, 1.0], [0.0, -1.0, 1.0], [0.0, 0.0, 2.0]];
+    let faces = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1], [5, 2, 1], [5, 3, 2], [5, 4, 3], [5, 1, 4]];
+    let column = |k: usize| corners.iter().map(|c| c[k]).collect::<Vec<_>>();
+    let corner = |k: usize| faces.iter().map(|f| f[k] as u64).collect::<Vec<_>>();
+    let mut data = Data::new("mesh");
+    data.apply(
+        Patch::new()
+            .set(Table::new("Vertex", 6))
+            .set(
+                Table::new("Face", 8)
+                    .reference("a", "Vertex", corner(0))
+                    .reference("b", "Vertex", corner(1))
+                    .reference("c", "Vertex", corner(2)),
+            )
+            .append(0.0, "Vertex", [("x", column(0)), ("y", column(1)), ("z", column(2))]),
+    )
+    .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false).shadow(true))
+        .draw(Vertices::of("mesh", "Vertex").position("x", "y").elevation("z").radius(2.0).select(false).drag(true));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 58.0, bearing: 30.0 });
+    view.fit(latkit::Fit::Bounds { min: [-2.0, -2.0, 0.0], max: [2.0, 2.0, 2.0] });
+    view.set_data(data);
+    frame(&gpu, &mut view);
+    let top = view.point([0.0, 0.0, 2.0]).expect("the top is in view");
+    view.input(&Input::Move { pointer: 1, point: top, modifiers: Modifiers::default() });
+    frame(&gpu, &mut view);
+    let hovered = view.events().find_map(|e| if let Event::Hover(hit) = e { hit } else { None });
+    assert_eq!(hovered.map(|hit| hit.row.id), Some(5_u64.into()), "the top vertex is hovered");
+    assert_eq!(view.cursor(), latkit::Cursor::Grab);
+    let modifiers = Modifiers::default();
+    view.input(&Input::Down { pointer: 1, point: top, button: Button::Primary, modifiers, touch: false });
+    view.input(&Input::Move { pointer: 1, point: [top[0], top[1] - 30.0], modifiers });
+    let drag = view.events().find_map(|e| if let Event::Drag(drag) = e { Some(drag) } else { None }).expect("a drag");
+    assert_eq!(drag.phase, Phase::Start);
+    assert!(drag.position[2] > 2.0, "dragged up: {:?}", drag.position);
 }

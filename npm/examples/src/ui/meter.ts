@@ -16,7 +16,10 @@ export class Meter {
       this.#frames++;
       const now = performance.now();
       if (now - this.#since < 500) return;
-      const parts = [`${((this.#frames * 1000) / (now - this.#since)).toFixed(0)} fps`, `frame ${view.stats.cpuMs.toFixed(1)} ms`];
+      const parts = [
+        `${((this.#frames * 1000) / (now - this.#since)).toFixed(0)} fps`,
+        `frame ${view.stats.cpuMs.toFixed(1)} ms`,
+      ];
       for (const [label, ms] of this.#times) parts.push(`${label} ${ms.toFixed(1)} ms`);
       this.#line.textContent = [...parts, ...this.#notes.map((note) => note())].join('  ·  ');
       this.#frames = 0;

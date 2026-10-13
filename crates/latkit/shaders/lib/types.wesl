@@ -145,13 +145,14 @@ const FIT: u32 = 4u;
 // Ordered words per mark in the extents buffer: least x, y, z as complements, then greatest.
 const EXTENT_WORDS: u32 = 6u;
 
-// Probe words: the least key (distance, then the mark drawn last), the row plus one, and where the
-// hit lies: its depth and screen point.
+// Probe words: the least key (distance, then the mark drawn last), the row plus one, where the hit
+// lies (its depth and screen point), and the nearest depth drawn under the probe.
 const PROBE_KEY: u32 = 0u;
 const PROBE_ROW: u32 = 1u;
 const PROBE_DEPTH: u32 = 2u;
 const PROBE_X: u32 = 3u;
 const PROBE_Y: u32 = 4u;
+const PROBE_UNDER: u32 = 5u;
 const PROBE_WORDS: u32 = 8u;
 
 // Overlay sprites.
@@ -232,15 +233,17 @@ struct Frame {
     hover: vec4f,
     selected: vec4f,
     flow: vec4f,
-    // Backdrop: background, surface (Earth), grid line color.
+    // Backdrop: background, surface (Earth), grid and graticule lines; and the color shadows darken.
     background: vec4f,
     surface: vec4f,
     grid_color: vec4f,
-    // Grid kind, pitch in position units, and whether it is shown.
+    shadow: vec4f,
+    // A plane's grid: its kind, pitch in position units, and the world distance from the center it
+    // fades out by, 0 for none; and whether the earth draws its graticule.
     grid_kind: u32,
     grid_pitch: f32,
-    grid_pad0: f32,
-    grid_pad1: f32,
+    grid_fade: f32,
+    graticule: u32,
     theme: array<vec4u, 4>,
 }
 

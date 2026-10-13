@@ -1,4 +1,4 @@
-import { Data, Patch, field, reference, units, type ColormapName, type Scene } from 'latkit';
+import { Data, Patch, field, reference, type ColormapName, type Scene } from 'latkit';
 import type { Stage } from '../ui/stage.js';
 import { Body, ROOM, STEP, type Controls } from './body.js';
 import { loadMesh } from './mesh.js';
@@ -8,17 +8,44 @@ const HISTORY = 20;
 /** Seconds the plot shows. */
 const WINDOW = 12;
 /** What the bunny can be painted by. Each domain starts below rest, so a bunny at rest draws bright. */
-const PAINTS: Record<string, { label: string; field: string; colormap: ColormapName; domain: [number, number]; legend: string }> = {
-  strain: { label: 'Strain', field: 'strain', colormap: 'turbo', domain: [-0.05, 0.35], legend: 'Strain 0 – 0.35 m' },
-  speed: { label: 'Speed', field: 'speed', colormap: 'plasma', domain: [-1, 9], legend: 'Speed 0 – 9 m/s' },
-  height: { label: 'Height', field: 'z', colormap: 'viridis', domain: [-0.5, 4], legend: 'Height 0 – 4 m' },
+const PAINTS: Record<
+  string,
+  { label: string; field: string; colormap: ColormapName; domain: [number, number]; legend: string }
+> = {
+  strain: {
+    label: 'Strain',
+    field: 'strain',
+    colormap: 'turbo',
+    domain: [-0.05, 0.35],
+    legend: 'Strain 0 – 0.35 m',
+  },
+  speed: {
+    label: 'Speed',
+    field: 'speed',
+    colormap: 'plasma',
+    domain: [-1, 9],
+    legend: 'Speed 0 – 9 m/s',
+  },
+  height: {
+    label: 'Height',
+    field: 'z',
+    colormap: 'viridis',
+    domain: [-0.5, 4],
+    legend: 'Height 0 – 4 m',
+  },
 };
 const SERIES = [
   { field: 'height', label: 'Center height', color: '#66c7ff' },
   { field: 'speed', label: 'Mean speed', color: '#ff8f52' },
   { field: 'volume', label: 'Volume', color: '#cc9eff' },
 ];
-const THEME = { base: 'dark', background: '#090c11', grid: '#ffffff12', shading: 0.7 } as const;
+const THEME = {
+  base: 'dark',
+  background: '#090c11',
+  grid: '#ffffff1c',
+  shading: 0.7,
+  shadow: '#00000073',
+} as const;
 
 export default async function bunny(stage: Stage): Promise<void> {
   const mesh = await loadMesh(new URL('./stanford-bunny.bin', import.meta.url));
@@ -43,12 +70,15 @@ export default async function bunny(stage: Stage): Promise<void> {
         c: reference('Vertex', mesh.faces.c),
       })
       .set('Corner', 4, { x: [-ROOM, ROOM, ROOM, -ROOM], y: [-ROOM, -ROOM, ROOM, ROOM] })
-      .set('Wall', 4, { from: reference('Corner', [0, 1, 2, 3]), to: reference('Corner', [1, 2, 3, 0]) })
+      .set('Wall', 4, {
+        from: reference('Corner', [0, 1, 2, 3]),
+        to: reference('Corner', [1, 2, 3, 0]),
+      })
       .set('Body', 1, {}),
   );
 
-  // One table, many marks: the vertices draw as a shadow on the floor, as the corners of the lit
-  // faces, and as dots you can grab.
+  // The faces are lit and cast their shadow on the floor; the vertices they join are the dots you
+  // grab.
   const room = (live: boolean): Scene => {
     const p = PAINTS[paint]!;
     return {
@@ -56,27 +86,43 @@ export default async function bunny(stage: Stage): Promise<void> {
       theme: THEME,
       controls: { pickRadius: 14 },
       marks: [
-        { vertices: { of: ['bunny', 'Corner'], position: ['x', 'y'], radius: 3, color: '#f09478aa', pick: false } },
-        { edges: { of: ['bunny', 'Wall'], ends: ['from', 'to'], color: '#f0947866', width: 1.5, pick: false } },
         {
           vertices: {
-            of: ['bunny', 'Vertex'],
-            name: 'shadow',
+            of: ['bunny', 'Corner'],
             position: ['x', 'y'],
-            radius: units(0.07),
-            color: '#0000000e',
+            radius: 3,
+            color: '#f09478aa',
             pick: false,
           },
         },
-        { faces: { of: ['bunny', 'Face'], corners: ['a', 'b', 'c'], pick: false } },
-        { edges: { of: ['bunny', 'Spring'], ends: ['a', 'b'], color: '#ffffff14', width: 1, pick: false } },
+        {
+          edges: {
+            of: ['bunny', 'Wall'],
+            ends: ['from', 'to'],
+            color: '#f0947866',
+            width: 1.5,
+            pick: false,
+          },
+        },
+        { faces: { of: ['bunny', 'Face'], corners: ['a', 'b', 'c'], pick: false, shadow: true } },
+        {
+          edges: {
+            of: ['bunny', 'Spring'],
+            ends: ['a', 'b'],
+            color: '#ffffff14',
+            width: 1,
+            pick: false,
+          },
+        },
         {
           vertices: {
             of: ['bunny', 'Vertex'],
             position: ['x', 'y'],
             elevation: 'z',
             radius: 1.6,
-            color: field(p.field).colormap(p.colormap).domain(...p.domain),
+            color: field(p.field)
+              .colormap(p.colormap)
+              .domain(...p.domain),
             select: false,
             drag: live,
           },
@@ -85,7 +131,9 @@ export default async function bunny(stage: Stage): Promise<void> {
     };
   };
 
-  const space = stage.view(room(true), { label: 'The bunny: drag it to pull and fling it, click it to poke it' });
+  const space = stage.view(room(true), {
+    label: 'The bunny: drag it to pull and fling it, click it to poke it',
+  });
   space.camera = { center: [0, 0], zoom: 6, pitch: 58, bearing: 30 };
   space.fit({ bounds: { min: [-ROOM, -ROOM, 0], max: [ROOM, ROOM, 2.4] } });
 
@@ -98,29 +146,71 @@ export default async function bunny(stage: Stage): Promise<void> {
     { label: 'Squash', key: 's', run: act(() => body.squash()) },
     { label: 'Explode', key: 'e', run: act(() => body.explode()) },
     { label: 'Drop', key: 'd', run: act(() => body.drop()) },
-    { label: 'Poke', key: 'p', run: act(() => body.poke(Math.floor(Math.random() * mesh.count), 9)) },
+    {
+      label: 'Poke',
+      key: 'p',
+      run: act(() => body.poke(Math.floor(Math.random() * mesh.count), 9)),
+    },
   ]);
   const world = stage.section('World');
   world.toggle('Wind', 'w', false, (on) => (controls.wind = on));
   world.toggle('Orbit', 'o', false, (on) => (space.orbit = on ? 12 : 0));
-  world.choice('Gravity', [['Space 0', 0], ['Moon 1.6', 1.62], ['Earth 9.8', 9.81], ['Jupiter 24.8', 24.8]], 9.81, (g) => {
-    controls.gravity = g;
-  });
-  world.choice('Time', [['1×', 1], ['0.5×', 0.5], ['0.2×', 0.2]], 1, (s) => (timeScale = s));
+  world.choice(
+    'Gravity',
+    [
+      ['Space 0', 0],
+      ['Moon 1.6', 1.62],
+      ['Earth 9.8', 9.81],
+      ['Jupiter 24.8', 24.8],
+    ],
+    9.81,
+    (g) => {
+      controls.gravity = g;
+    },
+  );
+  world.choice(
+    'Time',
+    [
+      ['1×', 1],
+      ['0.5×', 0.5],
+      ['0.2×', 0.2],
+    ],
+    1,
+    (s) => (timeScale = s),
+  );
   const material = stage.section('Material');
-  material.range('Firmness', { min: 0, max: 1, step: 0.01, value: 0.45, format: (v) => (v < 0.2 ? 'Jelly' : v < 0.6 ? 'Gummy' : 'Rubber') }, (v) => {
-    controls.firmness = v;
-  });
-  material.range('Inflate', { min: 0.5, max: 1.8, step: 0.01, value: 1, format: (v) => `${Math.round(v * 100)}%` }, (v) => {
-    controls.inflate = v;
-  });
+  material.range(
+    'Firmness',
+    {
+      min: 0,
+      max: 1,
+      step: 0.01,
+      value: 0.45,
+      format: (v) => (v < 0.2 ? 'Jelly' : v < 0.6 ? 'Gummy' : 'Rubber'),
+    },
+    (v) => {
+      controls.firmness = v;
+    },
+  );
+  material.range(
+    'Inflate',
+    { min: 0.5, max: 1.8, step: 0.01, value: 1, format: (v) => `${Math.round(v * 100)}%` },
+    (v) => {
+      controls.inflate = v;
+    },
+  );
   const legend = stage.legend();
   const repaint = (p: string) => {
     paint = p;
     space.show(room(playback.mode === 'live'));
     legend.ramp(PAINTS[p]!.colormap, PAINTS[p]!.legend);
   };
-  material.choice('Color', Object.entries(PAINTS).map(([key, p]) => [p.label, key] as const), paint, repaint);
+  material.choice(
+    'Color',
+    Object.entries(PAINTS).map(([key, p]) => [p.label, key] as const),
+    paint,
+    repaint,
+  );
 
   const monitor = stage.section('Monitor');
   monitor.series(SERIES);
@@ -129,7 +219,9 @@ export default async function bunny(stage: Stage): Promise<void> {
       space: { plot: { x: { label: 'Time (s)' }, y: { label: 'm · m/s · volume' } } },
       theme: THEME,
       controls: { pan: false, zoom: false, turn: false },
-      marks: SERIES.map((s) => ({ lines: { of: ['bunny', 'Body'], samples: s.field, color: s.color, width: 2 } })),
+      marks: SERIES.map((s) => ({
+        lines: { of: ['bunny', 'Body'], samples: s.field, color: s.color, width: 2 },
+      })),
     },
     { label: 'Center height, speed, and volume', height: 220 },
   );
@@ -192,5 +284,4 @@ export default async function bunny(stage: Stage): Promise<void> {
   legend.ramp(PAINTS[paint]!.colormap, PAINTS[paint]!.legend);
   body.drop(true);
   publish();
-  Object.assign(globalThis, { bunny: { space, plot, data, body } });
 }

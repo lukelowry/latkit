@@ -1,38 +1,45 @@
-//! Gestures: pointer and key input turned into camera moves, hover, clicks, selection, and drags.
+//! Gestures: what the pointer and keys mean. A press decides once the pointer moves a few pixels: on
+//! a row of a draggable mark it drags the row, elsewhere it pans. Secondary or Shift drags turn, the
+//! wheel and pinches zoom, and keys step. Every camera move is about the point under the pointer and
+//! goes through the rig, which carries a released drag on and keeps the camera within reach.
 //!
-//! A press decides what it is once the pointer moves a few pixels: on a row of a draggable mark it
-//! drags the row, elsewhere it pans. The row under a press comes from the latest hover probe when it
-//! was taken where the press is, otherwise from a probe of its own, a frame or two later; the
-//! gesture waits for it and catches up.
+//! The point under a press comes from the latest probe when it was taken where the press is,
+//! otherwise from a probe of its own a frame or two later; the press waits for it and catches up.
 
 use std::time::Duration;
 
 use web_time::Instant;
 
+use super::View;
 use super::event::{Cursor, Drag, Event, Fit, Phase};
 use super::input::{Button, Input, Key, Modifiers};
-use super::probe::{Probed, near};
-use super::View;
+use super::probe::{Answer, Probed, near};
 use crate::expr::compile::Deps;
 use crate::{Camera, Row, Scene};
 
 /// CSS pixels a press moves before it drags or pans.
 const SLOP: f32 = 4.0;
-/// Clicks this close in time and space make a double click.
+/// Clicks this close in time make a double click.
 const DOUBLE: Duration = Duration::from_millis(400);
+/// A drag released this long after its last move does not coast.
+const HELD: Duration = Duration::from_millis(60);
 /// Degrees a pixel of turning drag turns.
 const TURN: f64 = 0.3;
-/// Pixels an arrow key pans.
-const STEP: f64 = 80.0;
+/// What a step of the keys moves: CSS pixels, degrees, levels.
+const STEP: f64 = 100.0;
+const STEP_TURN: f64 = 15.0;
+const STEP_ZOOM: f64 = 0.5;
 
+#[derive(Default)]
 pub(crate) enum Gesture {
+    #[default]
     Idle,
-    /// A pointer pressed; `hit` is `None` while its probe is in flight.
+    /// A pointer pressed; `answer` is `None` while its probe is in flight.
     Press {
         pointer: u32,
         from: [f32; 2],
         to: [f32; 2],
-        hit: Option<Option<Probed>>,
+        answer: Option<Answer>,
         released: bool,
         modifiers: Modifiers,
     },
@@ -42,10 +49,12 @@ pub(crate) enum Gesture {
     },
     Pan {
         pointer: u32,
+        anchor: [f64; 3],
         last: [f32; 2],
     },
     Turn {
         pointer: u32,
+        anchor: [f64; 3],
         last: [f32; 2],
     },
     Pinch {
@@ -58,12 +67,9 @@ pub(crate) struct Gestures {
     pub(crate) now: Gesture,
     /// The last click: when, where, and on which row.
     clicked: Option<(Instant, [f32; 2], Option<Row>)>,
-}
-
-impl Default for Gesture {
-    fn default() -> Gesture {
-        Gesture::Idle
-    }
+    /// How fast the pan or turn under way moves, per second, and when it last moved.
+    velocity: [f64; 2],
+    moved: Option<Instant>,
 }
 
 impl Gestures {
@@ -79,27 +85,48 @@ impl Gestures {
             },
         }
     }
+
+    /// Follows the velocity of a move of `delta` per second-scaled step.
+    fn track(&mut self, delta: [f64; 2]) {
+        let now = Instant::now();
+        let dt = self.moved.map_or(0.0, |at| now.duration_since(at).as_secs_f64());
+        self.moved = Some(now);
+        if dt > 0.0 {
+            let k = (dt / 0.05).min(1.0);
+            self.velocity = [0, 1].map(|i| self.velocity[i] + (delta[i] / dt - self.velocity[i]) * k);
+        }
+    }
+
+    /// The velocity a release coasts with: none when the pointer stopped before letting go.
+    fn release(&mut self) -> [f64; 2] {
+        let held = self.moved.is_none_or(|at| at.elapsed() > HELD);
+        let velocity = std::mem::take(&mut self.velocity);
+        self.moved = None;
+        if held { [0.0; 2] } else { velocity }
+    }
 }
 
 impl View {
-    /// Takes one pointer, wheel, or key input. Events it causes queue for [`events`](View::events).
-    pub fn input(&mut self, input: &Input) {
+    /// Takes one pointer, wheel, or key input; events it causes queue for [`events`](View::events).
+    /// Returns whether the view used it, so a platform stops its default handling: scrolling the
+    /// page, its context menu.
+    pub fn input(&mut self, input: &Input) -> bool {
         if self.size[0] <= 0.0 {
-            return;
+            return false;
         }
-        match *input {
-            Input::Down { pointer, point, button, modifiers, touch } => self.down(pointer, point, button, modifiers, touch),
-            Input::Move { pointer, point, .. } => self.moved(pointer, point),
+        let used = match *input {
+            Input::Down { pointer, point, button, modifiers, touch } => {
+                self.down(pointer, point, button, modifiers, touch)
+            }
+            Input::Move { pointer, point, .. } => {
+                self.moved(pointer, point);
+                true
+            }
             Input::Up { pointer, point, .. } => self.up(pointer, Some(point)),
             Input::Cancel { pointer } => self.up(pointer, None),
-            Input::Wheel { point, delta, .. } => {
-                if self.scene.controls.zoom {
-                    let levels = f64::from(-delta[1] / 400.0).clamp(-1.0, 1.0);
-                    self.zoom(levels, point);
-                }
-            }
+            Input::Wheel { point, delta, .. } => self.wheel(point, delta),
             Input::Key { key, down: true, modifiers } => self.key(key, modifiers),
-            Input::Key { .. } => {}
+            Input::Key { .. } => false,
             Input::Leave => {
                 self.pointer = None;
                 if matches!(self.gestures.now, Gesture::Idle) {
@@ -107,43 +134,46 @@ impl View {
                     self.probing.latest = None;
                     self.hover(None);
                 }
+                false
             }
-        }
+        };
         self.wake();
+        used
     }
 
-    fn down(&mut self, pointer: u32, point: [f32; 2], button: Button, modifiers: Modifiers, touch: bool) {
+    fn down(&mut self, pointer: u32, point: [f32; 2], button: Button, modifiers: Modifiers, touch: bool) -> bool {
         self.probing.touch = touch;
         let controls = self.scene.controls;
         match self.gestures.now {
-            Gesture::Press { pointer: first, from, .. } | Gesture::Pan { pointer: first, last: from }
+            Gesture::Press { pointer: first, to: at, .. } | Gesture::Pan { pointer: first, last: at, .. }
                 if first != pointer && controls.zoom =>
             {
-                self.gestures.now = Gesture::Pinch { pointers: [(first, from), (pointer, point)] };
-                return;
+                self.rig.hold();
+                self.gestures.now = Gesture::Pinch { pointers: [(first, at), (pointer, point)] };
+                return true;
             }
             Gesture::Idle => {}
-            _ => return,
+            _ => return true,
         }
+        self.rig.hold();
         let map = matches!(self.camera, Camera::Map { .. });
-        self.gestures.now = match button {
-            Button::Secondary if controls.turn && map => Gesture::Turn { pointer, last: point },
-            Button::Primary if modifiers.shift && controls.turn && map => Gesture::Turn { pointer, last: point },
-            Button::Middle if controls.pan => Gesture::Pan { pointer, last: point },
-            Button::Primary => {
-                let hit = if self.pickable() {
-                    let known = self.probing.at(point);
-                    if known.is_none() {
-                        self.probing.wanted = Some(point);
-                    }
-                    known
-                } else {
-                    Some(None)
-                };
-                Gesture::Press { pointer, from: point, to: point, hit, released: false, modifiers }
+        let turning = button == Button::Secondary || (button == Button::Primary && modifiers.shift);
+        self.gestures.now = if turning && controls.turn && map {
+            let anchor = self.anchor(point, self.probing.at(point).as_ref());
+            Gesture::Turn { pointer, anchor, last: point }
+        } else if button == Button::Middle && controls.pan {
+            let anchor = self.anchor(point, self.probing.at(point).as_ref());
+            Gesture::Pan { pointer, anchor, last: point }
+        } else if button == Button::Primary {
+            let answer = self.probing.at(point);
+            if answer.is_none() {
+                self.probing.wanted = Some(point);
             }
-            _ => Gesture::Idle,
+            Gesture::Press { pointer, from: point, to: point, answer, released: false, modifiers }
+        } else {
+            Gesture::Idle
         };
+        !matches!(self.gestures.now, Gesture::Idle)
     }
 
     fn moved(&mut self, pointer: u32, point: [f32; 2]) {
@@ -152,54 +182,56 @@ impl View {
             shown.dirty |= shown.channels_reading(Deps::POINTER);
         }
         match &mut self.gestures.now {
-            Gesture::Idle => {
-                if self.scene.controls.hover && self.pickable() {
-                    self.probing.wanted = Some(point);
-                }
-            }
+            Gesture::Idle => self.probing.wanted = Some(point),
             Gesture::Press { pointer: p, to, .. } if *p == pointer => {
                 *to = point;
                 self.pressed();
             }
             Gesture::Drag { pointer: p, .. } if *p == pointer => self.drag(Phase::Move, point),
-            Gesture::Pan { pointer: p, last } if *p == pointer => {
-                let from = std::mem::replace(last, point);
-                self.pan(from, point);
+            Gesture::Pan { pointer: p, anchor, last } if *p == pointer => {
+                let (anchor, from) = (*anchor, std::mem::replace(last, point));
+                let delta = [f64::from(point[0] - from[0]), f64::from(point[1] - from[1])];
+                self.gestures.track(delta);
+                let camera = self.camera.panned(&self.projected(), anchor, delta);
+                self.steer(camera);
             }
-            Gesture::Turn { pointer: p, last } if *p == pointer => {
-                let from = std::mem::replace(last, point);
-                let turned = self.camera.turned([
-                    f64::from(point[0] - from[0]) * TURN,
-                    -f64::from(point[1] - from[1]) * TURN,
-                ]);
-                self.flight = None;
-                self.move_camera(turned);
+            Gesture::Turn { pointer: p, anchor, last } if *p == pointer => {
+                let (anchor, from) = (*anchor, std::mem::replace(last, point));
+                let degrees = [f64::from(point[0] - from[0]) * TURN, -f64::from(point[1] - from[1]) * TURN];
+                self.gestures.track(degrees);
+                let camera = self.camera.turned(&self.projected(), anchor, degrees);
+                self.steer(camera);
             }
             Gesture::Pinch { pointers } => {
                 let Some(i) = pointers.iter().position(|(p, _)| *p == pointer) else { return };
                 let before = *pointers;
                 pointers[i].1 = point;
                 let after = *pointers;
-                let middle = |p: [(u32, [f32; 2]); 2]| [(p[0].1[0] + p[1].1[0]) / 2.0, (p[0].1[1] + p[1].1[1]) / 2.0];
+                let middle = |p: [(u32, [f32; 2]); 2]| {
+                    [f32::midpoint(p[0].1[0], p[1].1[0]), f32::midpoint(p[0].1[1], p[1].1[1])]
+                };
                 let spread = |p: [(u32, [f32; 2]); 2]| (p[0].1[0] - p[1].1[0]).hypot(p[0].1[1] - p[1].1[1]).max(1.0);
-                self.pan(middle(before), middle(after));
-                self.zoom(f64::from(spread(after) / spread(before)).log2(), middle(after));
+                let (from, to) = (middle(before), middle(after));
+                let anchor = self.anchor(from, None);
+                let delta = [f64::from(to[0] - from[0]), f64::from(to[1] - from[1])];
+                let camera = self.camera.panned(&self.projected(), anchor, delta);
+                let view = self.projected_with(&camera);
+                let camera = camera.zoomed(&view, anchor, f64::from(spread(after) / spread(before)).log2());
+                self.steer(camera);
             }
             _ => {}
         }
     }
 
-    fn up(&mut self, pointer: u32, point: Option<[f32; 2]>) {
+    fn up(&mut self, pointer: u32, point: Option<[f32; 2]>) -> bool {
         match &mut self.gestures.now {
             Gesture::Press { pointer: p, released, to, .. } if *p == pointer => {
-                if let Some(point) = point {
-                    *to = point;
-                }
-                *released = point.is_some();
-                if point.is_none() {
+                let Some(point) = point else {
                     self.gestures.now = Gesture::Idle;
-                    return;
-                }
+                    return true;
+                };
+                *to = point;
+                *released = true;
                 self.pressed();
             }
             Gesture::Drag { pointer: p, .. } if *p == pointer => {
@@ -207,29 +239,40 @@ impl View {
                 self.drag(Phase::End, at);
                 self.gestures.now = Gesture::Idle;
             }
-            Gesture::Pan { pointer: p, .. } | Gesture::Turn { pointer: p, .. } if *p == pointer => {
+            Gesture::Pan { pointer: p, anchor, .. } if *p == pointer => {
+                let anchor = *anchor;
+                let velocity = self.gestures.release();
+                self.rig.fling(anchor, velocity, [0.0; 2]);
+                self.gestures.now = Gesture::Idle;
+            }
+            Gesture::Turn { pointer: p, anchor, .. } if *p == pointer => {
+                let anchor = *anchor;
+                let velocity = self.gestures.release();
+                self.rig.fling(anchor, [0.0; 2], velocity);
                 self.gestures.now = Gesture::Idle;
             }
             Gesture::Pinch { pointers } if pointers.iter().any(|(p, _)| *p == pointer) => {
                 self.gestures.now = Gesture::Idle;
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
-    /// A probe landed: a press waiting for it resolves, otherwise it is what is hovered.
-    pub(super) fn landed(&mut self, point: [f32; 2], probed: Option<Probed>) {
-        if let Gesture::Press { from, hit: hit @ None, .. } = &mut self.gestures.now
+    /// A probe landed: a press waiting for it decides, otherwise it is what is hovered.
+    pub(super) fn landed(&mut self, point: [f32; 2], answer: Answer) {
+        if let Gesture::Press { from, answer: waiting @ None, .. } = &mut self.gestures.now
             && near(*from, point, 0.5)
         {
-            *hit = Some(probed.clone());
-            self.probing.latest = Some((point, probed));
+            *waiting = Some(answer.clone());
+            self.probing.latest = Some((point, answer));
             self.pressed();
             return;
         }
-        self.probing.latest = Some((point, probed.clone()));
+        let hit = answer.hit.clone();
+        self.probing.latest = Some((point, answer));
         if self.scene.controls.hover {
-            self.hover(probed);
+            self.hover(hit);
         }
     }
 
@@ -243,28 +286,33 @@ impl View {
         }
     }
 
-    /// Decides a press once its row is known: a release clicks, a move drags or pans.
+    /// Decides a press once what lies under it is known: a release clicks, a move drags or pans.
     fn pressed(&mut self) {
-        let Gesture::Press { pointer, from, to, hit: Some(hit), released, modifiers } = &self.gestures.now else {
+        let Gesture::Press { pointer, from, to, answer: Some(answer), released, modifiers } = &self.gestures.now else {
             return;
         };
-        let (pointer, from, to, hit, released, modifiers) = (*pointer, *from, *to, hit.clone(), *released, *modifiers);
+        let (pointer, from, to, answer, released, modifiers) =
+            (*pointer, *from, *to, answer.clone(), *released, *modifiers);
         if released {
             self.gestures.now = Gesture::Idle;
-            self.click(hit, to, modifiers);
+            self.click(answer.hit, to, modifiers);
             return;
         }
         if near(from, to, SLOP) {
             return;
         }
-        match hit {
-            Some(probed) if self.scene.marks.get(probed.hit.mark).is_some_and(|m| m.style().interaction.drag) => {
+        let drags = |probed: &Probed| self.scene.marks.get(probed.hit.mark).is_some_and(|m| m.style().interaction.drag);
+        match answer.hit {
+            Some(probed) if drags(&probed) => {
                 self.gestures.now = Gesture::Drag { pointer, probed };
                 self.drag(Phase::Start, to);
             }
             _ if self.scene.controls.pan => {
-                self.gestures.now = Gesture::Pan { pointer, last: to };
-                self.pan(from, to);
+                let anchor = self.anchor(from, Some(&answer));
+                let delta = [f64::from(to[0] - from[0]), f64::from(to[1] - from[1])];
+                self.gestures.now = Gesture::Pan { pointer, anchor, last: to };
+                let camera = self.camera.panned(&self.projected(), anchor, delta);
+                self.steer(camera);
             }
             _ => self.gestures.now = Gesture::Idle,
         }
@@ -318,36 +366,32 @@ impl View {
     fn drag(&mut self, phase: Phase, point: [f32; 2]) {
         let Gesture::Drag { probed, .. } = &self.gestures.now else { return };
         let view = self.projected();
-        let at = [f64::from(point[0]), f64::from(point[1])];
-        let position = view.position(view.unproject(at, f64::from(probed.depth)));
+        let position = view.position(view.unproject(point.map(f64::from), f64::from(probed.depth)));
         self.events.push(Event::Drag(Drag { phase, hit: probed.hit.clone(), point, position }));
     }
 
-    fn pan(&mut self, from: [f32; 2], to: [f32; 2]) {
-        if !self.scene.controls.pan {
-            return;
+    fn wheel(&mut self, point: [f32; 2], delta: [f32; 2]) -> bool {
+        if !self.scene.controls.zoom {
+            return false;
         }
-        let view = self.projected();
-        let camera = self.camera.panned(&view, from.map(f64::from), to.map(f64::from));
-        self.flight = None;
-        self.move_camera(camera);
+        let anchor = self.anchor(point, self.probing.at(point).as_ref());
+        let levels = f64::from(-delta[1] / 400.0).clamp(-1.0, 1.0);
+        self.rig.owe(anchor, [0.0; 2], [0.0; 2], levels);
+        true
     }
 
-    fn zoom(&mut self, levels: f64, at: [f32; 2]) {
-        if levels == 0.0 || !levels.is_finite() {
-            return;
+    fn key(&mut self, key: Key, modifiers: Modifiers) -> bool {
+        let controls = self.scene.controls;
+        if !controls.keyboard {
+            return false;
         }
-        let camera = self.camera.zoomed(&self.scene.space, self.size, self.area(), levels, at.map(f64::from));
-        self.flight = None;
-        self.move_camera(camera);
-    }
-
-    fn key(&mut self, key: Key, modifiers: Modifiers) {
-        if !self.scene.controls.keyboard {
-            return;
-        }
-        let area = self.area();
-        let middle = [area[0].midpoint(area[2]) as f32, area[1].midpoint(area[3]) as f32];
+        let anchor = match self.camera {
+            Camera::Map { center, .. } => center,
+            Camera::Plot { .. } => {
+                let area = self.area();
+                self.anchor([area[0].midpoint(area[2]) as f32, area[1].midpoint(area[3]) as f32], None)
+            }
+        };
         let arrow = match key {
             Key::Left => Some([1.0, 0.0]),
             Key::Right => Some([-1.0, 0.0]),
@@ -356,19 +400,16 @@ impl View {
             _ => None,
         };
         match (key, arrow) {
-            (_, Some([dx, dy])) if modifiers.shift && self.scene.controls.turn => {
-                let camera = self.camera.turned([-dx * 15.0, dy * 10.0]);
-                self.move_camera(camera);
+            (_, Some([dx, dy])) if modifiers.shift && controls.turn => {
+                self.rig.owe(anchor, [0.0; 2], [-dx * STEP_TURN, dy * STEP_TURN], 0.0);
             }
-            (_, Some([dx, dy])) => {
-                let to = [middle[0] + (dx * STEP) as f32, middle[1] + (dy * STEP) as f32];
-                self.pan(middle, to);
-            }
-            (Key::Plus, _) if self.scene.controls.zoom => self.zoom(0.5, middle),
-            (Key::Minus, _) if self.scene.controls.zoom => self.zoom(-0.5, middle),
+            (_, Some([dx, dy])) if controls.pan => self.rig.owe(anchor, [dx * STEP, dy * STEP], [0.0; 2], 0.0),
+            (Key::Plus, _) if controls.zoom => self.rig.owe(anchor, [0.0; 2], [0.0; 2], STEP_ZOOM),
+            (Key::Minus, _) if controls.zoom => self.rig.owe(anchor, [0.0; 2], [0.0; 2], -STEP_ZOOM),
             (Key::Home, _) => self.fit(Fit::All),
             (Key::Escape, _) => self.reselect(Vec::new()),
-            _ => {}
+            _ => return false,
         }
+        true
     }
 }

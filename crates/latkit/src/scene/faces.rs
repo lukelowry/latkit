@@ -15,12 +15,13 @@ use crate::{Error, Name, Result};
 pub struct Faces {
     pub(crate) style: Style,
     pub(crate) corners: Option<[Name; 3]>,
+    pub(crate) shadow: bool,
 }
 
 impl Faces {
     /// Draws the rows of `table` in dataset `data`.
     pub fn of(data: impl Into<Name>, table: impl Into<Name>) -> Faces {
-        Faces { style: Style::new(data.into(), table.into()), corners: None }
+        Faces { style: Style::new(data.into(), table.into()), corners: None, shadow: false }
     }
 
     /// The reference fields naming each row's three vertices. Without a color, a face blends the
@@ -28,6 +29,13 @@ impl Faces {
     #[must_use]
     pub fn corners(mut self, a: impl Into<Name>, b: impl Into<Name>, c: impl Into<Name>) -> Faces {
         self.corners = Some([a.into(), b.into(), c.into()]);
+        self
+    }
+
+    /// Whether each face casts a shadow straight down onto the ground, in the theme's shadow color.
+    #[must_use]
+    pub fn shadow(mut self, on: bool) -> Faces {
+        self.shadow = on;
         self
     }
 
@@ -40,7 +48,9 @@ impl Faces {
         }
         let mut flags = 0;
         match &self.style.color {
-            Some(expr) => c.channel("color", expr, Store::Color { word: wgsl::FACE_COLOR, fallback: wgsl::THEME_VERTEX })?,
+            Some(expr) => {
+                c.channel("color", expr, Store::Color { word: wgsl::FACE_COLOR, fallback: wgsl::THEME_VERTEX })?;
+            }
             None => flags |= wgsl::ENDS_COLOR,
         }
         c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::FACE_FLAGS, bit: wgsl::VISIBLE })?;

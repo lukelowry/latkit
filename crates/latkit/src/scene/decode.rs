@@ -87,7 +87,11 @@ impl<'de> Deserialize<'de> for Space {
                     return Err(de::Error::unknown_variant(other, &["plane", "earth", "mercator", "globe", "plot"]));
                 }
             },
-            Form::Tagged(Tagged::Earth(e)) => Space::Earth(Earth { projection: e.projection, surface: e.surface }),
+            Form::Tagged(Tagged::Earth(e)) => Space::Earth(Earth {
+                projection: e.projection,
+                surface: e.surface,
+                graticule: e.graticule.unwrap_or(true),
+            }),
             Form::Tagged(Tagged::Plane(p)) => Space::Plane(Plane { grid: p.grid.unwrap_or(Plane::default().grid) }),
             Form::Tagged(Tagged::Plot(p)) => {
                 Space::Plot(Plot { x: p.x.unwrap_or_default(), y: p.y.unwrap_or_default() })
@@ -103,6 +107,8 @@ struct EarthForm {
     projection: Projection,
     #[serde(default)]
     surface: Option<Color>,
+    #[serde(default)]
+    graticule: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -236,6 +242,8 @@ struct VerticesForm {
     #[serde(default)]
     marker: Option<Marker>,
     #[serde(default)]
+    shadow: Option<bool>,
+    #[serde(default)]
     color: Option<Expr>,
     #[serde(default)]
     visible: Option<Expr>,
@@ -266,6 +274,9 @@ impl VerticesForm {
         }
         if let Some(marker) = self.marker {
             v = v.marker(marker);
+        }
+        if let Some(on) = self.shadow {
+            v = v.shadow(on);
         }
         style!(self, v)
     }
@@ -323,6 +334,8 @@ struct FacesForm {
     #[serde(default)]
     corners: Option<(Name, Name, Name)>,
     #[serde(default)]
+    shadow: Option<bool>,
+    #[serde(default)]
     color: Option<Expr>,
     #[serde(default)]
     visible: Option<Expr>,
@@ -341,6 +354,9 @@ impl FacesForm {
         let mut f = Faces::of(self.of.0, self.of.1);
         if let Some((a, b, c)) = self.corners {
             f = f.corners(a, b, c);
+        }
+        if let Some(on) = self.shadow {
+            f = f.shadow(on);
         }
         style!(self, f)
     }
@@ -544,7 +560,7 @@ impl<'de> Deserialize<'de> for Theme {
             dash: Option<f32>,
             flow: Option<Color>,
             flow_spacing: Option<f32>,
-            shadows: Option<bool>,
+            shadow: Option<Color>,
         }
         #[derive(Deserialize)]
         #[serde(untagged)]
@@ -573,7 +589,7 @@ impl<'de> Deserialize<'de> for Theme {
             )*};
         }
         set!(background, surface, grid, vertex, vertex_radius, edge, edge_width, missing, hover, selected, glow, dim);
-        set!(hover_scale, dash, flow, flow_spacing, shadows, line, line_width, shading, text, font_size, playhead);
+        set!(hover_scale, dash, flow, flow_spacing, shadow, line, line_width, shading, text, font_size, playhead);
         if let Some(font) = form.font {
             t.font = font.into();
         }

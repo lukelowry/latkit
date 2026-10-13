@@ -613,6 +613,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "hashbrown 0.17.1",
+ "js-sys",
  "naga",
  "pollster",
  "proptest",

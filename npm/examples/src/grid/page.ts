@@ -22,8 +22,8 @@ function grid(): { data: Data; buses: number; lines: number } {
   const from: number[] = [];
   const to: number[] = [];
   for (let i = 0; i < buses; i++) {
-    if (i % SIDE < SIDE - 1) from.push(i), to.push(i + 1);
-    if (i + SIDE < buses) from.push(i), to.push(i + SIDE);
+    if (i % SIDE < SIDE - 1) (from.push(i), to.push(i + 1));
+    if (i + SIDE < buses) (from.push(i), to.push(i + SIDE));
   }
   const data = new Data('grid').apply(
     new Patch()
@@ -60,15 +60,24 @@ export default function page(stage: Stage): void {
       },
     ],
   });
-  const view = stage.view(scene('earth'), { label: 'A synthetic grid over Texas: click a bus to select it' });
+  const view = stage.view(scene('earth'), {
+    label: 'A synthetic grid over Texas: click a bus to select it',
+  });
   view.setData(data);
   view.fit();
-  stage
-    .section('Space')
-    .choice('Draw on', [['Map', 'earth'], ['Globe', 'globe'], ['Plane', 'plane']] as const, 'earth', (space) => {
+  stage.section('Space').choice(
+    'Draw on',
+    [
+      ['Map', 'earth'],
+      ['Globe', 'globe'],
+      ['Plane', 'plane'],
+    ] as const,
+    'earth',
+    (space) => {
       view.show(scene(space));
       view.fit();
-    });
+    },
+  );
   const selected = stage.section('Selection');
   const readout = document.createElement('p');
   readout.className = 'series';
@@ -92,7 +101,9 @@ export default function page(stage: Stage): void {
     },
   });
   playback.record(data.span!);
-  stage.detail(`${buses.toLocaleString()} buses · ${lines.toLocaleString()} lines · ${SECONDS} s of voltages`);
+  stage.detail(
+    `${buses.toLocaleString()} buses · ${lines.toLocaleString()} lines · ${SECONDS} s of voltages`,
+  );
 }
 
 function mulberry32(seed: number): () => number {

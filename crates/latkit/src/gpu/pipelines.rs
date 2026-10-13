@@ -18,21 +18,23 @@ pub(crate) struct Pipelines {
 /// How a render shader's vertices assemble.
 fn topology(shader: Shader) -> wgpu::PrimitiveTopology {
     match shader {
-        Shader::Backdrop | Shader::Faces => wgpu::PrimitiveTopology::TriangleList,
+        Shader::Backdrop | Shader::Faces | Shader::FacesShadow => wgpu::PrimitiveTopology::TriangleList,
         _ => wgpu::PrimitiveTopology::TriangleStrip,
     }
 }
 
 /// How a render shader meets depth, which is reversed: faces write it, the backdrop and overlay
-/// ignore it, and every other mark draws where nothing nearer was drawn.
+/// ignore it, and every other mark draws where nothing nearer was drawn. A face's ground shadow
+/// writes it too and passes only where no shadow was drawn yet, so overlapping faces darken once.
 fn depth(shader: Shader) -> wgpu::DepthStencilState {
     let compare = match shader {
         Shader::Backdrop | Shader::Overlay => wgpu::CompareFunction::Always,
+        Shader::FacesShadow => wgpu::CompareFunction::Greater,
         _ => wgpu::CompareFunction::GreaterEqual,
     };
     wgpu::DepthStencilState {
         format: DEPTH,
-        depth_write_enabled: Some(shader == Shader::Faces),
+        depth_write_enabled: Some(matches!(shader, Shader::Faces | Shader::FacesShadow)),
         depth_compare: Some(compare),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),

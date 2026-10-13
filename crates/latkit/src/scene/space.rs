@@ -42,6 +42,8 @@ pub struct Earth {
     pub projection: Projection,
     /// The ground's color; `None` takes the theme's.
     pub surface: Option<Color>,
+    /// Whether lines of longitude and latitude cross the ground, in the theme's grid color.
+    pub graticule: bool,
 }
 
 /// How the earth is drawn.
@@ -57,12 +59,12 @@ pub enum Projection {
 impl Earth {
     /// A web mercator map.
     pub fn mercator() -> Earth {
-        Earth { projection: Projection::Mercator, surface: None }
+        Earth { projection: Projection::Mercator, surface: None, graticule: true }
     }
 
     /// A globe.
     pub fn globe() -> Earth {
-        Earth { projection: Projection::Globe, surface: None }
+        Earth { projection: Projection::Globe, surface: None, graticule: true }
     }
 }
 

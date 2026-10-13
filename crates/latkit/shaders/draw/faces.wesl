@@ -1,5 +1,7 @@
 // Faces: one instanced triangle per row between the vertices its corners name, lit from the camera.
-// Facing the camera, a face shows its color; turned away, it darkens by the theme's shading.
+// Facing the camera, a face shows its color; turned away, it darkens by the theme's shading. The
+// shadow variant lays each face flat on the ground in the theme's shadow color; it draws first and
+// writes depth that only a nearer shadow fragment passes, so overlapping faces darken once.
 
 import package::lib::types::{NONE, VISIBLE, PINNED, PLACED, ENDS_COLOR};
 import package::lib::bind::{frame, mark};
@@ -20,8 +22,8 @@ struct Varyings {
     @location(3) @interpolate(flat) row: u32,
 }
 
-@vertex
-fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32) -> Varyings {
+// Corner `corner` of face `row`, laid on the ground when `flat`.
+fn face_corner(corner: u32, row: u32, flat: bool) -> Varyings {
     var out: Varyings;
     out.row = row;
     let f = face_at(row_at(row));
@@ -35,14 +37,22 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32)
         out.clip = culled();
         return out;
     }
-    out.clip = project(v.hi, v.lo, v.elevation);
-    out.world = world(v.hi, v.lo, v.elevation);
+    let elevation = select(v.elevation, 0.0, flat);
+    out.clip = project(v.hi, v.lo, elevation);
+    out.world = world(v.hi, v.lo, elevation);
     out.normal = vec3f(f32(normals[slot * 3u]), f32(normals[slot * 3u + 1u]), f32(normals[slot * 3u + 2u]));
     let color = select(unpack4x8unorm(f.color), unpack4x8unorm(v.color), (mark.flags & ENDS_COLOR) != 0u);
     out.color = vec4f(color.rgb, color.a * faded(row));
     return out;
 }
 
+@if(!shadow)
+@vertex
+fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32) -> Varyings {
+    return face_corner(corner, row, false);
+}
+
+@if(!shadow)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     let eye = normalize(frame.eye.xyz - v.world);
@@ -55,4 +65,17 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     let rim = pow(1.0 - facing, 4.0) * 0.25 * frame.shading;
     let rgb = min(v.color.rgb * diffuse + shine + rim, vec3f(1.0));
     return output(glow(MarkerColor(vec4f(rgb, v.color.a), 0.0), v.row));
+}
+
+@if(shadow)
+@vertex
+fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32) -> Varyings {
+    return face_corner(corner, row, true);
+}
+
+@if(shadow)
+@fragment
+fn fragment(v: Varyings) -> @location(0) vec4f {
+    let a = frame.shadow.a * v.color.a;
+    return output(vec4f(frame.shadow.rgb * a, a));
 }

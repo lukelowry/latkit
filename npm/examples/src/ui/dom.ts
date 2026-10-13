@@ -9,7 +9,8 @@ export function h<K extends keyof HTMLElementTagNameMap>(
 ): HTMLElementTagNameMap[K] {
   const element = document.createElement(tag);
   for (const [name, value] of Object.entries(attributes)) {
-    if (value !== false && value !== undefined) element.setAttribute(name, value === true ? '' : String(value));
+    if (value !== false && value !== undefined)
+      element.setAttribute(name, value === true ? '' : String(value));
   }
   element.append(...children.filter((child): child is Node | string => !!child));
   return element;

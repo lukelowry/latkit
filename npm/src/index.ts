@@ -27,7 +27,8 @@ export interface LatkitError extends Error {
 export type Id = number | string;
 
 /** Row ids: a count for rows `0..n`, or numbers or texts. */
-export type Ids = number | Uint32Array | Float64Array | readonly (number | null)[] | readonly (string | null)[];
+export type Ids =
+  number | Uint32Array | Float64Array | readonly (number | null)[] | readonly (string | null)[];
 
 /** One column of values; `null` is missing. */
 export type Values =
@@ -101,9 +102,18 @@ export interface ViewEvents {
   error: LatkitError;
 }
 
-/** Where a view looks: on the earth or a plane, or on a plot. */
+/**
+ * Where a view looks. On the earth or a plane: the point looked at and turned about (`[x, y]` on the
+ * ground, or `[x, y, elevation]`), log₂ zoom, and degrees of pitch and bearing. On a plot: the ranges
+ * shown, `y: null` fitting the values in view.
+ */
 export type Camera =
-  | { center: [number, number]; zoom: number; pitch: number; bearing: number }
+  | {
+      center: [number, number] | [number, number, number];
+      zoom: number;
+      pitch: number;
+      bearing: number;
+    }
   | { x: [number, number]; y: [number, number] | null };
 
 /** What {@link View.fit} frames: everything, some rows, one row kept in view, or a box. */
@@ -298,6 +308,18 @@ export class View {
     this.inner.setCamera(JSON.stringify(camera));
   }
 
+  /** Where `position` (x, y, elevation) lands on screen, CSS pixels from the top left. */
+  point(position: [number, number, number]): [number, number] | undefined {
+    const point = this.inner.point(Float64Array.from(position));
+    return point ? [point[0]!, point[1]!] : undefined;
+  }
+
+  /** The position on the ground under screen point `point`, if the view shows ground there. */
+  ground(point: [number, number]): [number, number, number] | undefined {
+    const position = this.inner.ground(Float32Array.from(point));
+    return position ? [position[0]!, position[1]!, position[2]!] : undefined;
+  }
+
   /** CSS pixels kept clear at the top, right, bottom, and left, as when panels cover the view. */
   get insets(): [number, number, number, number] {
     const [top, right, bottom, left] = this.inner.insets;
@@ -343,7 +365,9 @@ export class View {
 
   /** Calls `listener` with each event of `type`; returns a function that stops it. */
   on<T extends keyof ViewEvents>(type: T, listener: (event: ViewEvents[T]) => void): () => void {
-    this.#handle ??= this.inner.on((event: { type: keyof ViewEvents; detail: unknown }) => this.#emit(event));
+    this.#handle ??= this.inner.on((event: { type: keyof ViewEvents; detail: unknown }) =>
+      this.#emit(event),
+    );
     let set = this.#listeners.get(type);
     if (!set) this.#listeners.set(type, (set = new Set()));
     set.add(listener);

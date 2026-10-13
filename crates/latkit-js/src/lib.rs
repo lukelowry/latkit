@@ -241,6 +241,18 @@ impl View {
         Ok(())
     }
 
+    /// Where `position` (x, y, elevation) lands on screen, CSS pixels from the top left.
+    pub fn point(&self, position: &[f64]) -> Option<Vec<f32>> {
+        let position: [f64; 3] = position.try_into().ok()?;
+        self.0.read(|v| v.point(position)).map(Vec::from)
+    }
+
+    /// The position on the ground under screen point `point`.
+    pub fn ground(&self, point: &[f32]) -> Option<Vec<f64>> {
+        let point: [f32; 2] = point.try_into().ok()?;
+        self.0.read(|v| v.ground(point)).map(Vec::from)
+    }
+
     #[wasm_bindgen(getter)]
     pub fn insets(&self) -> Vec<f32> {
         self.0.read(|v| v.insets().to_vec())

@@ -51,8 +51,8 @@ pub struct Theme {
     pub flow: Color,
     /// CSS pixels between flowing comets.
     pub flow_spacing: f32,
-    /// Whether vertices cast shadows.
-    pub shadows: bool,
+    /// What shadows darken with: marks that cast them, under them or on the ground below.
+    pub shadow: Color,
 }
 
 impl Theme {
@@ -82,7 +82,7 @@ impl Theme {
             dash: 8.0,
             flow: Color::hex("#ffffff").expect("hex").alpha(0.8),
             flow_spacing: 40.0,
-            shadows: false,
+            shadow: Color::BLACK.alpha(0.32),
         }
     }
 
@@ -100,7 +100,7 @@ impl Theme {
             hover: Color::hex("#000000").expect("hex").alpha(0.35),
             selected: Some(Color::hex("#e36209").expect("hex").alpha(0.9)),
             flow: Color::hex("#ffffff").expect("hex").alpha(0.9),
-            shadows: true,
+            shadow: Color::BLACK.alpha(0.18),
             ..Theme::dark()
         }
     }

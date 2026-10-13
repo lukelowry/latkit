@@ -10,7 +10,7 @@ export default [
   { "space": "plot" },
   { "space": { "plane": { "grid": "off" } } },
   { "space": { "plane": { "grid": { "dots": 10, "snap": true } } }, "layout": { "layered": { "flow": "down", "rankGap": 60 } } },
-  { "space": { "earth": { "projection": "globe", "surface": "#203040" } }, "layout": "stress" },
+  { "space": { "earth": { "projection": "globe", "surface": "#203040", "graticule": false } }, "layout": "stress" },
   { "space": { "plot": { "x": { "label": "Time (s)" }, "y": { "grid": false } } } },
   {
     "space": "globe",
@@ -46,17 +46,18 @@ export default [
           "name": "load",
           "size": [12, { "units": 4 }],
           "marker": { "block": { "corner": 2 } },
+          "shadow": true,
           "color": { "scale": { "field": "load", "of": ["weather", "Station"] }, "range": [0, 1] }
         }
       }
     ],
-    "theme": { "base": "dark", "vertexRadius": 5, "edge": null, "selected": "#ff8800", "shadows": true }
+    "theme": { "base": "dark", "vertexRadius": 5, "edge": null, "selected": "#ff8800", "shadow": "#00000055" }
   },
   {
     "space": { "plane": { "grid": { "lines": 1 } } },
     "controls": { "turn": false, "pickRadius": 14 },
     "marks": [
-      { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false } },
+      { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false, "shadow": true } },
       { "edges": { "of": ["mesh", "Spring"], "ends": ["a", "b"], "color": "#ffffff14" } },
       { "vertices": { "of": ["mesh", "Vertex"], "position": ["x", "y"], "elevation": "z", "select": false, "drag": true } }
     ],

@@ -96,6 +96,8 @@ fn glow(m: MarkerColor, row: u32) -> vec4f {
     return base + vec4f(tint.rgb * halo, halo) * (1.0 - base.a);
 }
 
+// The soft shadow under a marker, premultiplied.
 fn shadow(m: MarkerColor) -> vec4f {
-    return vec4f(0.0, 0.0, 0.0, 0.3 * (1.0 - smoothstep(-2.0, 6.0, m.distance)));
+    let a = frame.shadow.a * (1.0 - smoothstep(-2.0, 6.0, m.distance));
+    return vec4f(frame.shadow.rgb * a, a);
 }

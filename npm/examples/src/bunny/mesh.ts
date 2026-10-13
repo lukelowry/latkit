@@ -35,8 +35,10 @@ export async function loadMesh(url: URL, height = 2.4): Promise<Mesh> {
   }
   const scale = height / (hi[2]! - lo[2]!);
   const center = [(lo[0]! + hi[0]!) / 2, (lo[1]! + hi[1]!) / 2, lo[2]!];
-  for (let i = 0; i < positions.length; i++) positions[i] = (positions[i]! - center[i % 3]!) * scale;
-  const corner = (k: number) => Uint32Array.from({ length: faces }, (_, t) => triangles[t * 3 + k]!);
+  for (let i = 0; i < positions.length; i++)
+    positions[i] = (positions[i]! - center[i % 3]!) * scale;
+  const corner = (k: number) =>
+    Uint32Array.from({ length: faces }, (_, t) => triangles[t * 3 + k]!);
   const seen = new Set<number>();
   const a: number[] = [];
   const b: number[] = [];

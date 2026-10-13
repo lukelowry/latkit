@@ -1,6 +1,9 @@
-// The backdrop under every mark: a plane's grid, or the earth's surface.
+// The backdrop under every mark: a plane's grid, or the earth's surface and graticule. Lines are a
+// pixel wide and antialiased per axis. Their spacing steps by tens, and the next step fades in as the
+// lines crowd, so no seam shows. They fade where the view grazes the ground, and on a plane away from
+// what the camera looks at.
 
-import package::lib::types::{SPACE_EARTH, SPACE_PLANE, GRID_LINES, GRID_DOTS};
+import package::lib::types::{SPACE_EARTH, SPACE_PLANE, GRID_OFF, GRID_DOTS};
 import package::lib::bind::frame;
 import package::lib::color::output;
 import package::lib::project::{PI, NEAR_Z, FAR_Z};
@@ -17,63 +20,110 @@ fn vertex(@builtin(vertex_index) i: u32) -> Varyings {
     return Varyings(vec4f(ndc, 0.0, 1.0), ndc);
 }
 
-// Where the pixel's ray meets the ground (z = 0), relative to the center; w is 0 past the horizon.
-fn ground(ndc: vec2f) -> vec4f {
-    let near = frame.world_from_clip * vec4f(ndc, NEAR_Z, 1.0);
-    let far = frame.world_from_clip * vec4f(ndc, FAR_Z, 1.0);
-    let a = near.xyz / near.w;
-    let b = far.xyz / far.w;
-    let t = a.z / (a.z - b.z);
-    return vec4f(mix(a, b, t), f32(t >= 0.0));
+// Coverage of lines `pitch` apart through `p`, which moves `w` per pixel: a pixel wide, fading out as
+// their cells shrink to a few pixels.
+fn lines(p: vec2f, w: vec2f, pitch: f32) -> f32 {
+    let cells = max(w / pitch, vec2f(1e-12));
+    let px = abs(fract(p / pitch + 0.5) - 0.5) / cells;
+    let c = saturate(1.0 - px) * (1.0 - smoothstep(vec2f(0.08), vec2f(0.25), cells));
+    return max(c.x, c.y);
 }
 
-// Coverage of grid lines or dots `pitch` apart, fading where they would crowd; `footprint` is one
-// pixel's extent in position units.
-fn grid(p: vec2f, pitch: f32, footprint: f32) -> f32 {
-    var spacing = pitch;
-    while spacing < footprint * 8.0 && spacing < 1e30 {
-        spacing *= 10.0;
-    }
-    let center = frame.center_hi + frame.center_lo;
-    let q = (p + center) / spacing;
-    let d = abs(fract(q - 0.5) - 0.5) * spacing / footprint;
-    if frame.grid_kind == GRID_DOTS {
-        return clamp(1.5 - length(d), 0.0, 1.0);
-    }
-    return clamp(1.0 - min(d.x, d.y), 0.0, 1.0);
+fn dots(p: vec2f, w: vec2f, pitch: f32) -> f32 {
+    let cells = max(w / pitch, vec2f(1e-12));
+    let px = abs(fract(p / pitch + 0.5) - 0.5) / cells;
+    return saturate(1.5 - length(px)) * (1.0 - smoothstep(0.08, 0.25, max(cells.x, cells.y)));
 }
 
-// How much of the pixel the earth covers: the mercator band between its latitude limits, or the
-// globe's disc, eased between the two as the projection morphs.
-fn earth(ndc: vec2f, g: vec4f) -> f32 {
+// Lines spaced `pitch` times a power of ten, from the `lowest` power to the `highest`: the spacing
+// nearest twenty pixels draws, and the next coarser one fades in as it crowds.
+fn grid(p: vec2f, w: vec2f, pitch: f32, lowest: f32, highest: f32, dotted: bool) -> f32 {
+    let level = clamp(log2(max(max(w.x, w.y) * 20.0 / pitch, 1e-30)) * 0.30103, lowest, highest);
+    let k = floor(level);
+    let t = level - k;
+    let step = pitch * exp2(k * 3.3219281);
+    if dotted {
+        return max(dots(p, w, step), dots(p, w, step * 10.0) * t);
+    }
+    return max(lines(p, w, step), lines(p, w, step * 10.0) * t);
+}
+
+fn blend(color: vec4f, over: vec4f, coverage: f32) -> vec4f {
+    return vec4f(mix(color.rgb, over.rgb, coverage * over.a), color.a);
+}
+
+// The plane: its grid where the ray meets elevation 0 at `g`, faded where the ray grazes and away
+// from the center.
+fn plane(g: vec3f, d: vec3f, ahead: bool) -> vec4f {
+    let p = g.xy + frame.center_hi + frame.center_lo;
+    let w = fwidth(g.xy);
+    if frame.grid_kind == GRID_OFF {
+        return frame.background;
+    }
+    let near = 1.0 - smoothstep(0.6, 1.0, length(g.xy) / max(frame.grid_fade, 1e-30));
+    let fade = f32(ahead) * smoothstep(0.02, 0.15, abs(d.z)) * select(1.0, near, frame.grid_fade > 0.0);
+    let c = grid(p, w, frame.grid_pitch, 0.0, 30.0, frame.grid_kind == GRID_DOTS) * fade;
+    return blend(frame.background, frame.grid_color, c);
+}
+
+// Longitude and latitude in degrees at world point `w` on the flat map.
+fn map_degrees(w: vec3f) -> vec2f {
+    let lat = degrees(2.0 * atan(exp(w.y + frame.mercator_y)) - 0.5 * PI);
+    return vec2f(frame.center_hi.x + frame.center_lo.x + degrees(w.x), lat);
+}
+
+// Longitude and latitude in degrees at world point `w` on the globe of `radius`.
+fn globe_degrees(w: vec3f, radius: f32) -> vec2f {
     let lat0 = radians(frame.center_hi.y + frame.center_lo.y);
+    let u = normalize(vec3f(w.xy, w.z + radius));
+    let v = vec3f(u.x, u.y * cos(lat0) + u.z * sin(lat0), -u.y * sin(lat0) + u.z * cos(lat0));
+    let lon = frame.center_hi.x + frame.center_lo.x + degrees(atan2(v.x, v.z));
+    return vec2f(lon, degrees(asin(clamp(v.y, -1.0, 1.0))));
+}
+
+// The earth: the mercator band or the globe's disc, eased between as the projection morphs, and the
+// graticule on it.
+fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> vec4f {
     // The flat map ends where web mercator does, at y = ±π.
     let band = PI - abs(g.y + frame.mercator_y);
-    let flat = clamp(band / max(fwidth(band), 1e-9) + 0.5, 0.0, 1.0) * g.w;
+    let flat = saturate(band / max(fwidth(band), 1e-9) + 0.5) * f32(ahead);
     // The globe is a sphere of radius 1 / cos(lat0) whose top touches the ground at the center.
-    let near = frame.world_from_clip * vec4f(ndc, NEAR_Z, 1.0);
-    let far = frame.world_from_clip * vec4f(ndc, FAR_Z, 1.0);
-    let o = near.xyz / near.w;
-    let d = normalize(far.xyz / far.w - o);
-    let radius = 1.0 / cos(lat0);
+    let radius = 1.0 / cos(radians(frame.center_hi.y + frame.center_lo.y));
     let to_center = vec3f(0.0, 0.0, -radius) - o;
     let along = dot(to_center, d);
-    let miss = length(to_center - d * along) - radius;
-    let round = clamp(-miss / max(fwidth(miss), 1e-9) + 0.5, 0.0, 1.0) * f32(along > 0.0);
-    return mix(flat, round, frame.globe);
+    let off = length(to_center - d * along);
+    let miss = off - radius;
+    let round = saturate(-miss / max(fwidth(miss), 1e-9) + 0.5) * f32(along > 0.0);
+    let covered = mix(flat, round, frame.globe);
+    let color = blend(frame.background, frame.surface, covered);
+    let hit = o + d * (along - sqrt(max(radius * radius - off * off, 0.0)));
+    let globe = frame.globe >= 0.5;
+    let p = select(map_degrees(g), globe_degrees(hit, radius), globe);
+    // Longitude jumps where it wraps; its other wrapping steadies the derivative there.
+    let wrapped = fract(p.x / 360.0) * 360.0;
+    let w = vec2f(min(fwidth(p.x), fwidth(wrapped)), fwidth(p.y));
+    if frame.graticule == 0u {
+        return color;
+    }
+    let facing = dot(normalize(hit - vec3f(0.0, 0.0, -radius)), -d);
+    let fade = select(smoothstep(0.02, 0.15, abs(d.z)), smoothstep(0.0, 0.3, facing), globe);
+    return blend(color, frame.grid_color, grid(p, w, 1.0, -2.0, 1.0, false) * fade * covered);
 }
 
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    let g = ground(v.ndc);
-    let footprint = max(max(fwidth(g.x), fwidth(g.y)), 1e-30);
-    let covered = earth(v.ndc, g);
+    let near = frame.world_from_clip * vec4f(v.ndc, NEAR_Z, 1.0);
+    let far = frame.world_from_clip * vec4f(v.ndc, FAR_Z, 1.0);
+    let o = near.xyz / near.w;
+    let d = normalize(far.xyz / far.w - o);
+    // Where the ray meets elevation 0.
+    let t = -o.z / d.z;
+    let g = o + d * max(t, 0.0);
     var color = frame.background;
-    if frame.space == SPACE_EARTH {
-        color = mix(frame.background, frame.surface, covered);
-    } else if frame.space == SPACE_PLANE && frame.grid_kind != 0u && g.w > 0.0 {
-        let c = grid(g.xy, frame.grid_pitch, footprint) * frame.grid_color.a;
-        color = vec4f(mix(color.rgb, frame.grid_color.rgb, c), color.a);
+    if frame.space == SPACE_PLANE {
+        color = plane(g, d, t > 0.0);
+    } else if frame.space == SPACE_EARTH {
+        color = earth(o, d, g, t > 0.0);
     }
     return output(vec4f(color.rgb * color.a, color.a));
 }

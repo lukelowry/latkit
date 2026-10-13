@@ -23,7 +23,11 @@ export type ExprNode =
   | { op: Binary; args: [ExprNode, ExprNode] }
   | { is: [ExprNode, string] }
   | { when: [ExprNode, ExprNode][]; otherwise: ExprNode }
-  | { colormap: ExprNode; map: ColormapName | { kind: ColormapKind; colors: Color[] }; domain?: [number, number] }
+  | {
+      colormap: ExprNode;
+      map: ColormapName | { kind: ColormapKind; colors: Color[] };
+      domain?: [number, number];
+    }
   | { scale: ExprNode; range: [number, number]; domain?: [number, number] };
 
 type FieldNode = { field: string; of?: [data: string, table: string]; step?: boolean };
@@ -173,7 +177,8 @@ export class Mapped extends Expr {
 type MappedNode = Extract<ExprNode, { map: unknown } | { range: unknown }>;
 
 const unary = (op: Unary, a: ExprInput): Expr => new Expr({ op, args: [nodeOf(a)] });
-const binary = (op: Binary, a: ExprInput, b: ExprInput): Expr => new Expr({ op, args: [nodeOf(a), nodeOf(b)] });
+const binary = (op: Binary, a: ExprInput, b: ExprInput): Expr =>
+  new Expr({ op, args: [nodeOf(a), nodeOf(b)] });
 
 /** `node` with every field read through `f`; texts, colors, and names are not fields. */
 function mapFields(node: ExprNode, f: (field: FieldNode) => ExprNode): ExprNode {
@@ -320,7 +325,7 @@ export type Space =
   | 'globe'
   | 'plot'
   | { plane: { grid?: 'off' | { lines: number } | { dots: number; snap?: boolean } } }
-  | { earth: { projection?: 'mercator' | 'globe'; surface?: Color } }
+  | { earth: { projection?: 'mercator' | 'globe'; surface?: Color; graticule?: boolean } }
   | { plot: { x?: Axis; y?: Axis } };
 
 export interface Axis {
@@ -365,7 +370,8 @@ export interface Theme {
   dash?: number;
   flow?: Color;
   flowSpacing?: number;
-  shadows?: boolean;
+  /** What shadows darken with. */
+  shadow?: Color;
 }
 
 interface Style {
@@ -383,7 +389,14 @@ interface Style {
   drag?: boolean;
 }
 
-export type Marker = 'disc' | 'ellipse' | 'rectangle' | 'rounded' | 'diamond' | 'block' | { block: { corner?: number } };
+export type Marker =
+  | 'disc'
+  | 'ellipse'
+  | 'rectangle'
+  | 'rounded'
+  | 'diamond'
+  | 'block'
+  | { block: { corner?: number } };
 
 export type Mark =
   | {
@@ -393,6 +406,8 @@ export type Mark =
         radius?: Size;
         size?: [Size, Size];
         marker?: Marker;
+        /** Whether each row casts a soft shadow. */
+        shadow?: boolean;
       };
     }
   | {
@@ -405,7 +420,11 @@ export type Mark =
     }
   | {
       /** Triangles between three vertices; without a color, each blends its corners' colors. */
-      faces: Style & { corners: [a: string, b: string, c: string] };
+      faces: Style & {
+        corners: [a: string, b: string, c: string];
+        /** Whether each face casts a shadow straight down onto the ground. */
+        shadow?: boolean;
+      };
     }
   | {
       /** On a plot, each row traces the sampled field `samples` across the axis. */
