@@ -13,3 +13,8 @@ benchmark/.results/
 output/
 .playwright-cli/
 packages/monitor/tests/browser/generated
+target
+npm/pkg
+npm/dist
+crates/latkit/colormaps
+npm/test/scenes.js

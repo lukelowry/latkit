@@ -1,0 +1,24 @@
+{
+  "name": "latkit",
+  "version": "0.1.0",
+  "description": "Columnar data drawn as vertices, edges, lines, and areas with WebGPU.",
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "pkg/latkit.js", "pkg/latkit.d.ts", "pkg/latkit_bg.wasm", "pkg/latkit_bg.wasm.d.ts"],
+  "scripts": {
+    "build": "cargo xtask wasm"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,174 @@
+//! The GPU: one device shared by every view, with the page arena, pipelines, colormaps, and text
+//! dictionaries every view draws from.
+
+pub(crate) mod arena;
+pub(crate) mod colormaps;
+pub(crate) mod dictionary;
+pub(crate) mod pipelines;
+pub(crate) mod readback;
+pub(crate) mod shaders;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use arena::Arena;
+use colormaps::Colormaps;
+use dictionary::Dictionaries;
+use pipelines::Pipelines;
+
+use crate::{Error, Result};
+
+/// The GPU device that views draw with. Cheap to clone; views of one `Gpu` share uploaded data.
+#[derive(Clone)]
+pub struct Gpu(pub(crate) Arc<Shared>);
+
+pub(crate) struct Shared {
+    /// The instance and adapter `Gpu::new` created the device from, for surfaces.
+    pub(crate) instance: Option<wgpu::Instance>,
+    pub(crate) adapter: Option<wgpu::Adapter>,
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
+    pub(crate) sampler: wgpu::Sampler,
+    pub(crate) lost: Arc<AtomicBool>,
+    inner: Mutex<Inner>,
+}
+
+pub(crate) struct Inner {
+    pub(crate) arena: Arena,
+    pub(crate) pipelines: Pipelines,
+    pub(crate) colormaps: Colormaps,
+    pub(crate) dictionaries: Dictionaries,
+    pub(crate) budget: Budget,
+}
+
+/// How much GPU memory latkit uses.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Budget {
+    /// Bytes of data pages kept after no view draws them, for when they are needed again. Pages a
+    /// view draws are never refused.
+    pub bytes: u64,
+    /// Bytes uploaded per frame at most; larger data streams in over frames.
+    pub upload_per_frame: u64,
+}
+
+impl Default for Budget {
+    fn default() -> Budget {
+        Budget { bytes: 512 << 20, upload_per_frame: 32 << 20 }
+    }
+}
+
+impl Gpu {
+    /// Creates a device on the best adapter: WebGPU in browsers, Vulkan, Metal, or DX12 natively.
+    pub async fn new() -> Result<Gpu> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY | wgpu::Backends::BROWSER_WEBGPU,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| Error::Unsupported(format!("no GPU adapter: {e}").into()))?;
+        let supported = adapter.limits();
+        let limits = wgpu::Limits {
+            max_storage_buffer_binding_size: supported.max_storage_buffer_binding_size,
+            max_buffer_size: supported.max_buffer_size,
+            ..wgpu::Limits::default()
+        };
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("latkit"),
+                required_limits: limits,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| Error::Unsupported(format!("no GPU device: {e}").into()))?;
+        Ok(Gpu::create(Some(instance), Some(adapter), device, queue))
+    }
+
+    /// Draws with a device the application created, sharing its queue.
+    pub fn from_wgpu(device: wgpu::Device, queue: wgpu::Queue) -> Gpu {
+        Gpu::create(None, None, device, queue)
+    }
+
+    fn create(
+        instance: Option<wgpu::Instance>,
+        adapter: Option<wgpu::Adapter>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Gpu {
+        let lost = Arc::new(AtomicBool::new(false));
+        device.set_device_lost_callback({
+            let lost = lost.clone();
+            move |_, _| lost.store(true, Ordering::Release)
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("latkit ramp"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let inner = Inner {
+            arena: Arena::new(&device),
+            pipelines: Pipelines::new(&device),
+            colormaps: Colormaps::new(&device),
+            dictionaries: Dictionaries::default(),
+            budget: Budget::default(),
+        };
+        #[cfg_attr(
+            target_arch = "wasm32",
+            allow(clippy::arc_with_non_send_sync, reason = "WebGPU objects stay on the one thread a page has")
+        )]
+        let shared = Arc::new(Shared { instance, adapter, device, queue, sampler, lost, inner: Mutex::new(inner) });
+        Gpu(shared)
+    }
+
+    /// The device.
+    pub fn device(&self) -> &wgpu::Device {
+        &self.0.device
+    }
+
+    /// The queue.
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.0.queue
+    }
+
+    /// The instance a `Gpu` from [`Gpu::new`] was created with, for creating surfaces it can draw to.
+    pub fn instance(&self) -> Option<&wgpu::Instance> {
+        self.0.instance.as_ref()
+    }
+
+    /// The adapter a `Gpu` from [`Gpu::new`] was created on, for a surface's capabilities.
+    pub fn adapter(&self) -> Option<&wgpu::Adapter> {
+        self.0.adapter.as_ref()
+    }
+
+    /// Sets how much GPU memory latkit uses.
+    pub fn set_budget(&self, budget: Budget) {
+        self.0.lock().budget = budget;
+    }
+
+    /// How much GPU memory latkit uses.
+    pub fn budget(&self) -> Budget {
+        self.0.lock().budget
+    }
+
+    /// Whether the device was lost; drawing then does nothing, and a new `Gpu` is needed.
+    pub fn lost(&self) -> bool {
+        self.0.lost.load(Ordering::Acquire)
+    }
+}
+
+impl Shared {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl std::fmt::Debug for Gpu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gpu").field("budget", &self.budget()).field("lost", &self.lost()).finish()
+    }
+}

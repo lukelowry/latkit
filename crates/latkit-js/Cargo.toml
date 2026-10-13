@@ -1,0 +1,23 @@
+[package]
+name = "latkit-js"
+description = "The latkit npm package: wasm bindings for the browser."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+latkit = { workspace = true, features = ["gpu", "web", "serde"] }
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+web-sys = { workspace = true, features = ["HtmlCanvasElement"] }
+serde_json.workspace = true
+console_error_panic_hook.workspace = true
+
+[lints]
+workspace = true

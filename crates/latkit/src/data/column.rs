@@ -1,0 +1,175 @@
+use std::sync::Arc;
+
+use super::name::PageId;
+use super::values::{Kind, Pick, Value, Values};
+use crate::Result;
+
+/// Rows per page: pages are the unit of sharing between versions and of upload to the GPU.
+pub(crate) const PAGE_BITS: u32 = 16;
+pub(crate) const PAGE_ROWS: usize = 1 << PAGE_BITS;
+pub(crate) const PAGE_MASK: usize = PAGE_ROWS - 1;
+
+/// One page of a column: up to [`PAGE_ROWS`] values and the id of exactly these contents.
+#[derive(Clone, Debug)]
+pub(crate) struct Page {
+    pub(crate) id: PageId,
+    pub(crate) values: Values,
+}
+
+impl Page {
+    fn new(values: Values) -> Page {
+        Page { id: PageId::next(), values }
+    }
+}
+
+/// A field's values in pages. Writes replace only the pages they touch; others keep their ids.
+#[derive(Clone, Debug)]
+pub(crate) struct Column {
+    len: usize,
+    pages: Arc<[Page]>,
+    /// An empty slice of the column's storage, so an empty column still knows what it holds.
+    like: Values,
+}
+
+impl Column {
+    pub(crate) fn new(values: &Values) -> Column {
+        let len = values.len();
+        let pages = (0..len.div_ceil(PAGE_ROWS))
+            .map(|p| Page::new(values.slice(p * PAGE_ROWS..len.min((p + 1) * PAGE_ROWS))))
+            .collect();
+        Column { len, pages, like: values.slice(0..0) }
+    }
+
+    /// `len` missing values stored like `like`.
+    pub(crate) fn missing(like: &Values, len: usize) -> Column {
+        let empty = Column { len: 0, pages: Arc::new([]), like: like.slice(0..0) };
+        empty.write(len, &[], &empty).expect("same storage")
+    }
+
+    /// A column of whole pages; every page but the last holds [`PAGE_ROWS`] values.
+    pub(crate) fn from_pages(pages: Vec<Values>, like: &Values) -> Column {
+        debug_assert!(pages.iter().rev().skip(1).all(|p| p.len() == PAGE_ROWS));
+        let len = pages.iter().map(Values::len).sum();
+        Column { len, pages: pages.into_iter().map(Page::new).collect(), like: like.slice(0..0) }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn kind(&self) -> Kind {
+        self.like.kind()
+    }
+
+    pub(crate) fn pages(&self) -> &[Page] {
+        &self.pages
+    }
+
+    pub(crate) fn like(&self) -> &Values {
+        &self.like
+    }
+
+    pub(crate) fn get(&self, row: usize) -> Option<Value> {
+        self.pages.get(row >> PAGE_BITS)?.values.get(row & PAGE_MASK)
+    }
+
+    /// The column with `len` rows (at least the current count) and `writes` applied.
+    ///
+    /// `writes` are `(row, row of source)` sorted by row with no row twice. Pages that no write
+    /// touches and whose length does not change keep their ids; new rows not written are missing.
+    pub(crate) fn write(&self, len: usize, writes: &[(usize, usize)], source: &Column) -> Result<Column> {
+        debug_assert!(len >= self.len);
+        debug_assert!(writes.windows(2).all(|w| w[0].0 < w[1].0));
+        let count = len.div_ceil(PAGE_ROWS);
+        let mut pages: Vec<Page> = Vec::with_capacity(count);
+        let mut sources: Vec<&Values> = vec![&self.like];
+        sources.extend(source.pages.iter().map(|p| &p.values));
+        sources.push(&source.like);
+        let mut next = 0;
+        for p in 0..count {
+            let start = p * PAGE_ROWS;
+            let page_len = (len - start).min(PAGE_ROWS);
+            let first = next;
+            while next < writes.len() && writes[next].0 < start + page_len {
+                next += 1;
+            }
+            let page_writes = &writes[first..next];
+            let old = self.pages.get(p);
+            if page_writes.is_empty()
+                && let Some(old) = old
+                && old.values.len() == page_len
+            {
+                pages.push(old.clone());
+                continue;
+            }
+            let mut from = vec![None; page_len];
+            for &(row, k) in page_writes {
+                from[row - start] = Some(k);
+            }
+            sources[0] = old.map_or(&self.like, |o| &o.values);
+            let old_len = sources[0].len();
+            let values = Values::assemble(&sources, page_len, |i| match from[i] {
+                Some(k) => Some((1 + (k >> PAGE_BITS), k & PAGE_MASK)),
+                None if i < old_len => Some((0, i)),
+                None => None,
+            })?;
+            pages.push(Page::new(values));
+        }
+        Ok(Column { len, pages: pages.into(), like: self.like.clone() })
+    }
+
+    /// The column of rows `rows`, in that order. Leading pages whose rows are unchanged keep their ids.
+    pub(crate) fn gather(&self, rows: &[usize]) -> Column {
+        let kept = rows.iter().enumerate().take_while(|&(i, &r)| i == r).count();
+        let kept_pages = (kept / PAGE_ROWS).min(rows.len() / PAGE_ROWS);
+        let sources: Vec<&Values> = std::iter::once(&self.like).chain(self.pages.iter().map(|p| &p.values)).collect();
+        let mut pages: Vec<Page> = self.pages[..kept_pages].to_vec();
+        for p in kept_pages..rows.len().div_ceil(PAGE_ROWS) {
+            let chunk = &rows[p * PAGE_ROWS..rows.len().min((p + 1) * PAGE_ROWS)];
+            let pick = |i: usize| -> Pick { Some((1 + (chunk[i] >> PAGE_BITS), chunk[i] & PAGE_MASK)) };
+            pages.push(Page::new(Values::assemble(&sources, chunk.len(), pick).expect("one storage")));
+        }
+        Column { len: rows.len(), pages: pages.into(), like: self.like.clone() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn numbers(n: usize) -> Values {
+        Values::from((0..n).map(|i| i as f64).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn writes_touch_only_their_pages() {
+        let column = Column::new(&numbers(PAGE_ROWS * 2 + 10));
+        let source = Column::new(&Values::from(vec![-1.0_f64]));
+        let written = column.write(column.len(), &[(PAGE_ROWS + 3, 0)], &source).expect("numbers");
+        assert_eq!(written.pages()[0].id, column.pages()[0].id);
+        assert_ne!(written.pages()[1].id, column.pages()[1].id);
+        assert_eq!(written.pages()[2].id, column.pages()[2].id);
+        assert_eq!(written.get(PAGE_ROWS + 3), Some(Value::Number(-1.0)));
+        assert_eq!(written.get(PAGE_ROWS + 4), Some(Value::Number((PAGE_ROWS + 4) as f64)));
+    }
+
+    #[test]
+    fn growth_pads_with_missing() {
+        let column = Column::new(&numbers(3));
+        let grown = column.write(5, &[(4, 0)], &Column::new(&Values::from(vec![9.0_f64]))).expect("numbers");
+        assert_eq!(grown.len(), 5);
+        assert_eq!(grown.get(3), None);
+        assert_eq!(grown.get(4), Some(Value::Number(9.0)));
+        assert_eq!(Column::missing(&numbers(0), 4).get(2), None);
+    }
+
+    #[test]
+    fn gather_keeps_leading_pages() {
+        let column = Column::new(&numbers(PAGE_ROWS + 5));
+        let rows: Vec<usize> = (0..PAGE_ROWS).chain([PAGE_ROWS + 2, PAGE_ROWS + 4]).collect();
+        let gathered = column.gather(&rows);
+        assert_eq!(gathered.len(), PAGE_ROWS + 2);
+        assert_eq!(gathered.pages()[0].id, column.pages()[0].id);
+        assert_eq!(gathered.get(PAGE_ROWS + 1), Some(Value::Number((PAGE_ROWS + 4) as f64)));
+    }
+}

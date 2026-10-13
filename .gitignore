@@ -11,5 +11,8 @@ output/
 .bench/
 benchmark/.results/
 .playwright-cli/
+.playwright-mcp/
 
 .impeccable/
+target/
+/npm/pkg/

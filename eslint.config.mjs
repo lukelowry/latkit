@@ -19,6 +19,10 @@ export default defineConfig([
       '.playwright-cli/**',
       '.bench/**',
       'benchmark/.results/**',
+      'crates/**',
+      'target/**',
+      'npm/pkg/**',
+      'npm/dist/**',
     ],
   },
   {
