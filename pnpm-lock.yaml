@@ -229,6 +229,19 @@ importers:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
 
+  npm/examples:
+    dependencies:
+      latkit:
+        specifier: link:..
+        version: link:..
+    devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.0.0
+        version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
+
   packages/connect:
     dependencies:
       '@latkit/model':

@@ -1,19 +1,24 @@
 //! Repository tasks, run as `cargo xtask <task>`.
 //!
-//! - `check`: format, lint every feature set and target, test, and document.
-//! - `wasm`: build `latkit-js`, bind it with the `wasm-bindgen` CLI matching `Cargo.lock`, optimize it
-//!   with `wasm-opt` when installed, and compile the npm wrapper.
+//! - `check`: format, lint every feature set and target, test, document, and type-check the npm
+//!   package and its examples.
+//! - `wasm [--dev]`: build `latkit-js`, bind it with the `wasm-bindgen` CLI matching `Cargo.lock`,
+//!   optimize it with `wasm-opt` when installed, and compile the npm wrapper. `--dev` builds faster
+//!   and skips `wasm-opt`.
+//! - `examples`: `wasm --dev`, then serve the example suite at <http://127.0.0.1:5200>.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
+    let dev = std::env::args().any(|a| a == "--dev");
     let result = match task.as_str() {
         "check" => check(),
-        "wasm" => wasm(),
+        "wasm" => wasm(dev),
+        "examples" => wasm(true).and_then(|()| pnpm(&["--dir", "npm/examples", "exec", "vite"])),
         _ => {
-            eprintln!("usage: cargo xtask <check|wasm>");
+            eprintln!("usage: cargo xtask <check|wasm [--dev]|examples>");
             return ExitCode::FAILURE;
         }
     };
@@ -52,6 +57,10 @@ fn npx(args: &[&str]) -> Result {
     run(if cfg!(windows) { "npx.cmd" } else { "npx" }, args)
 }
 
+fn pnpm(args: &[&str]) -> Result {
+    run(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" }, args)
+}
+
 fn check() -> Result {
     cargo(&["fmt", "--all", "--check"])?;
     cargo(&["clippy", "-p", "latkit", "--no-default-features", "--all-targets", "--", "-D", "warnings"])?;
@@ -64,11 +73,13 @@ fn check() -> Result {
         &["doc", "-p", "latkit", "--no-deps", "--all-features"],
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
-    npx(&["--yes", "tsc", "-p", "npm/test"])
+    npx(&["--yes", "tsc", "-p", "npm/test"])?;
+    pnpm(&["--dir", "npm/examples", "exec", "tsc", "--noEmit"])
 }
 
-fn wasm() -> Result {
-    cargo(&["build", "-p", "latkit-js", "--profile", "wasm", "--target", "wasm32-unknown-unknown"])?;
+fn wasm(dev: bool) -> Result {
+    let profile = if dev { "wasm-dev" } else { "wasm" };
+    cargo(&["build", "-p", "latkit-js", "--profile", profile, "--target", "wasm32-unknown-unknown"])?;
     let lock = std::fs::read_to_string(root().join("Cargo.lock")).map_err(|e| format!("Cargo.lock: {e}"))?;
     let version = locked_version(&lock, "wasm-bindgen").ok_or("wasm-bindgen is not in Cargo.lock")?;
     let installed = Command::new("wasm-bindgen").arg("--version").output().ok();
@@ -79,10 +90,13 @@ fn wasm() -> Result {
             installed.trim()
         ));
     }
-    let wasm = "target/wasm32-unknown-unknown/wasm/latkit_js.wasm";
-    run("wasm-bindgen", &[wasm, "--target", "web", "--out-dir", "npm/pkg", "--out-name", "latkit"])?;
+    let wasm = format!("target/wasm32-unknown-unknown/{profile}/latkit_js.wasm");
+    let bind = [wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", "npm/pkg", "--out-name", "latkit"];
+    run("wasm-bindgen", &bind)?;
     let optimized = "npm/pkg/latkit_bg.wasm";
-    if Command::new("wasm-opt").arg("--version").output().is_ok() {
+    if dev {
+        eprintln!("--dev: the wasm is not size-optimized");
+    } else if Command::new("wasm-opt").arg("--version").output().is_ok() {
         run(
             "wasm-opt",
             &["-Oz", "--enable-simd", "--enable-bulk-memory", "--enable-reference-types", optimized, "-o", optimized],

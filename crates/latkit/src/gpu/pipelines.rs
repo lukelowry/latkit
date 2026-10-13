@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use super::shaders::{Binding, MARK_GROUP, Shader, VIEW_GROUP};
+use crate::view::DEPTH;
 
 pub(crate) struct Pipelines {
     pub(crate) view_layout: wgpu::BindGroupLayout,
@@ -17,8 +18,24 @@ pub(crate) struct Pipelines {
 /// How a render shader's vertices assemble.
 fn topology(shader: Shader) -> wgpu::PrimitiveTopology {
     match shader {
-        Shader::Backdrop => wgpu::PrimitiveTopology::TriangleList,
+        Shader::Backdrop | Shader::Faces => wgpu::PrimitiveTopology::TriangleList,
         _ => wgpu::PrimitiveTopology::TriangleStrip,
+    }
+}
+
+/// How a render shader meets depth, which is reversed: faces write it, the backdrop and overlay
+/// ignore it, and every other mark draws where nothing nearer was drawn.
+fn depth(shader: Shader) -> wgpu::DepthStencilState {
+    let compare = match shader {
+        Shader::Backdrop | Shader::Overlay => wgpu::CompareFunction::Always,
+        _ => wgpu::CompareFunction::GreaterEqual,
+    };
+    wgpu::DepthStencilState {
+        format: DEPTH,
+        depth_write_enabled: Some(shader == Shader::Faces),
+        depth_compare: Some(compare),
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
     }
 }
 
@@ -112,7 +129,7 @@ impl Pipelines {
                 buffers: &[],
             },
             primitive: wgpu::PrimitiveState { topology: topology(shader), ..Default::default() },
-            depth_stencil: None,
+            depth_stencil: Some(depth(shader)),
             multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: &module,

@@ -57,8 +57,8 @@ impl Colormap {
         assert!(!colors.is_empty(), "a colormap needs a color");
         let count = colors.len();
         let texels = std::array::from_fn(|texel| match kind {
-            ColormapKind::Categorical => colors[texel % count].to_bytes(),
-            _ if count == 1 => colors[0].to_bytes(),
+            ColormapKind::Categorical => colors[texel % count].to_rgba8(),
+            _ if count == 1 => colors[0].to_rgba8(),
             _ => {
                 let at = if kind == ColormapKind::Cyclic {
                     texel as f32 / 256.0 * count as f32
@@ -70,7 +70,7 @@ impl Colormap {
                 let (from, to) = (colors[left % count].to_array(), colors[right].to_array());
                 let weight = at - left as f32;
                 let [red, green, blue, alpha] = std::array::from_fn(|c| from[c] + (to[c] - from[c]) * weight);
-                Color::rgba(red, green, blue, alpha).to_bytes()
+                Color::rgba(red, green, blue, alpha).to_rgba8()
             }
         });
         Colormap(Map::Custom(Arc::new(Custom { kind, count: count as u32, texels })))
@@ -183,17 +183,17 @@ mod tests {
         assert_eq!(Colormap::VIRIDIS.kind(), ColormapKind::Sequential);
         assert_eq!(Colormap::PHASE.kind(), ColormapKind::Cyclic);
         assert_eq!(Colormap::NAMES.len(), 46);
-        let start = Colormap::VIRIDIS.sample(0.0).to_bytes();
+        let start = Colormap::VIRIDIS.sample(0.0).to_rgba8();
         assert_eq!(start, [0x44, 0x01, 0x54, 255]);
         assert_eq!(Colormap::TAB10.sample(11.0), Colormap::TAB10.sample(1.0));
-        assert_eq!(Colormap::GRAYS.sample(1.0).to_bytes(), [255, 255, 255, 255]);
+        assert_eq!(Colormap::GRAYS.sample(1.0).to_rgba8(), [255, 255, 255, 255]);
     }
 
     #[test]
     fn custom_maps_blend_and_reverse() {
         let map = Colormap::new(ColormapKind::Sequential, &[Color::BLACK, Color::WHITE]);
-        assert_eq!(map.sample(0.5).to_bytes(), [128, 128, 128, 255]);
-        assert_eq!(map.reversed().sample(0.0).to_bytes(), [255, 255, 255, 255]);
+        assert_eq!(map.sample(0.5).to_rgba8(), [128, 128, 128, 255]);
+        assert_eq!(map.reversed().sample(0.0).to_rgba8(), [255, 255, 255, 255]);
         let categories = Colormap::new(ColormapKind::Categorical, &[Color::BLACK, Color::WHITE, Color::TRANSPARENT]);
         assert_eq!(categories.reversed().sample(0.0), Color::TRANSPARENT);
     }

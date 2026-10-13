@@ -28,7 +28,7 @@ pub(crate) use {
     column::{Column, PAGE_ROWS, Page},
     geometry::Geometry,
     name::{PageId, Version},
-    samples::{FramePage, Samples},
+    samples::{AxisPage, FramePage, Samples},
     table::Field,
 };
 

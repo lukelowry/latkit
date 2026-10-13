@@ -2,3 +2,4 @@ packages:
   - 'packages/*'
   - 'examples/*'
   - 'benchmark'
+  - 'npm/examples'

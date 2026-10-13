@@ -90,6 +90,14 @@ const EDGE_WIDTH: u32 = 3u;
 const EDGE_FLOW: u32 = 4u;
 const EDGE_FLAGS: u32 = 5u;
 
+// Face state words.
+const FACE_WORDS: u32 = 5u;
+const FACE_A: u32 = 0u;
+const FACE_B: u32 = 1u;
+const FACE_C: u32 = 2u;
+const FACE_COLOR: u32 = 3u;
+const FACE_FLAGS: u32 = 4u;
+
 // Line state words.
 const LINE_WORDS: u32 = 4u;
 const LINE_COLOR: u32 = 0u;
@@ -118,14 +126,37 @@ const DASH: u32 = 4u;
 // A layout placed the row.
 const PLACED: u32 = 8u;
 
+// Mark kinds.
+const MARK_VERTICES: u32 = 0u;
+const MARK_EDGES: u32 = 1u;
+const MARK_FACES: u32 = 2u;
+const MARK_LINES: u32 = 3u;
+
 // Mark flags.
 const SIZED: u32 = 1u;
 const ARROWS: u32 = 2u;
 const ENDS_COLOR: u32 = 4u;
 
-// Focus bits per row.
+// Focus bits per row; FIT marks the rows a fit measures.
 const SELECTED: u32 = 1u;
 const HOVERED: u32 = 2u;
+const FIT: u32 = 4u;
+
+// Ordered words per mark in the extents buffer: least x, y, z as complements, then greatest.
+const EXTENT_WORDS: u32 = 6u;
+
+// Probe words: the least key (distance, then the mark drawn last), the row plus one, and where the
+// hit lies: its depth and screen point.
+const PROBE_KEY: u32 = 0u;
+const PROBE_ROW: u32 = 1u;
+const PROBE_DEPTH: u32 = 2u;
+const PROBE_X: u32 = 3u;
+const PROBE_Y: u32 = 4u;
+const PROBE_WORDS: u32 = 8u;
+
+// Overlay sprites.
+const SPRITE_LINE: u32 = 0u;
+const SPRITE_TEXT: u32 = 1u;
 
 // Spaces.
 const SPACE_EARTH: u32 = 0u;
@@ -170,26 +201,32 @@ const GRID_DOTS: u32 = 2u;
 struct Frame {
     clip_from_world: mat4x4f,
     world_from_clip: mat4x4f,
+    // The camera's position, and the direction toward the key light, in world units.
+    eye: vec4f,
+    light: vec4f,
     center_hi: vec2f,
     center_lo: vec2f,
     size: vec2f,
     px_per_unit: vec2f,
     pointer: vec2f,
-    pick_origin: vec2f,
+    // Where a probe looks, CSS pixels.
+    probe: vec2f,
     pixel_ratio: f32,
     space: u32,
     globe: f32,
     mercator_y: f32,
-    pick_scale: f32,
-    pick_radius: f32,
+    probe_radius: f32,
     elapsed: f32,
     selecting: u32,
+    // 1 while a fit measures only the rows marked FIT.
+    fitting: u32,
     glow: f32,
     dim: f32,
     dash: f32,
     flow_spacing: f32,
     edge_spacing: f32,
     hover_scale: f32,
+    shading: f32,
     // 1 when the target stores linear color (an sRGB format): outputs convert from sRGB.
     linear: u32,
     hover: vec4f,
@@ -210,6 +247,7 @@ struct Frame {
 // One mark's parameters, at a 256-byte aligned dynamic offset.
 struct Mark {
     index: u32,
+    kind: u32,
     rows: u32,
     state: u32,
     stride: u32,
@@ -231,9 +269,23 @@ struct Mark {
     shape: u32,
     inputs: u32,
     vertices: u32,
+    // The program column a line traces, or NONE.
+    trace: u32,
     // Eased progress of the mark's transition: 1 when none runs.
     motion: f32,
     hole: f32,
     corner: f32,
     pie: array<vec4f, 8>,
+}
+
+// A line or a run of text drawn over the marks, in CSS pixels.
+struct Sprite {
+    // A line's ends, or a text's top left and bottom right.
+    a: vec2f,
+    b: vec2f,
+    // A text's rectangle in the atlas, texels.
+    uv: vec4f,
+    color: vec4f,
+    width: f32,
+    kind: u32,
 }

@@ -26,7 +26,26 @@ web-time = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true, optional = true }
-web-sys = { workspace = true, optional = true, features = ["Window", "HtmlCanvasElement", "Element", "ResizeObserver"] }
+web-sys = { workspace = true, optional = true, features = [
+    "AddEventListenerOptions",
+    "CssStyleDeclaration",
+    "DomRect",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "ImageData",
+    "KeyboardEvent",
+    "MouseEvent",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+    "PointerEvent",
+    "ResizeObserver",
+    "TextMetrics",
+    "WheelEvent",
+    "Window",
+] }
 
 [build-dependencies]
 wesl = { workspace = true, optional = true }

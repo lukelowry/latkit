@@ -5,7 +5,7 @@ import package::lib::types::{
 };
 import package::lib::bind::{frame, mark};
 import package::lib::state::{row_at, vertex_at};
-import package::lib::project::{project, to_screen, to_clip, facing, culled};
+import package::lib::project::{project, to_screen, to_clip, nearer, facing, culled};
 import package::lib::focus::{is_hovered, faded};
 import package::lib::motion::{previous_row, previous_word, previous_float, ease_color, ease, ease_offset};
 import package::lib::marker::{MarkerColor, MarkerFragment, builtin_marker, glow, shadow};
@@ -42,10 +42,10 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32)
     }
     half *= select(1.0, frame.hover_scale, is_hovered(row));
     let anchor = project(hi, v.lo, v.elevation);
-    let reach = half + frame.glow + frame.pick_radius + 1.0;
+    let reach = half + frame.glow + 1.0;
     let quad = vec2f(f32(corner & 1u), f32(corner >> 1u)) * 2.0 - 1.0;
     var out: Varyings;
-    out.clip = to_clip(to_screen(anchor) + quad * reach, anchor);
+    out.clip = nearer(to_clip(to_screen(anchor) + quad * reach, anchor));
     out.p = quad * reach * vec2f(1.0, -1.0);
     out.row = row;
     out.color = vec4f(color.rgb, color.a * faded(row));

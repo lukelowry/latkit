@@ -1,16 +1,141 @@
-//! Views in a browser: a [`Canvas`] draws a view into a `<canvas>` element.
+//! Views in a browser. A [`Canvas`] draws a view into a `<canvas>` element and feeds it the element's
+//! pointer, wheel, and keys. Every canvas of one [`Gpu`] draws in one animation frame, into one
+//! command buffer, after the frame listeners of [`on_frame`] run: linked views always show the same
+//! moment, and an application's per-frame work lands in the frame it was done for.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{HtmlCanvasElement, ResizeObserver};
+use web_sys::{AddEventListenerOptions, HtmlCanvasElement, KeyboardEvent, PointerEvent, ResizeObserver, WheelEvent};
 
-use crate::{Error, Gpu, Result, Target, View};
+use crate::{Button, Cursor, Error, Event, Gpu, Input, Key, Modifiers, Result, Target, View};
 
-/// A view drawn into a `<canvas>`. The canvas sizes itself to its CSS box at the device's pixel ratio
-/// and draws a frame only when the view needs one or the box changes size.
+/// Stops a listener when dropped.
+#[must_use = "the listener stops when this is dropped"]
+pub struct Listener(Option<Box<dyn FnOnce()>>);
+
+impl Listener {
+    /// Keeps listening for as long as what it listens to lives.
+    pub fn forget(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        if let Some(stop) = self.0.take() {
+            stop();
+        }
+    }
+}
+
+type FrameListener = Rc<RefCell<dyn FnMut(f64)>>;
+type EventListener = Rc<RefCell<dyn FnMut(&Event)>>;
+
+/// The animation frames of one `Gpu`: its listeners, then every canvas that needs a frame.
+struct Frames {
+    gpu: Gpu,
+    canvases: Vec<Weak<RefCell<State>>>,
+    listeners: Vec<(u64, FrameListener)>,
+    next: u64,
+    scheduled: Option<i32>,
+    tick: Option<Closure<dyn FnMut(f64)>>,
+}
+
+thread_local! {
+    static FRAMES: RefCell<Vec<Rc<RefCell<Frames>>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn frames_of(gpu: &Gpu) -> Rc<RefCell<Frames>> {
+    FRAMES.with(|all| {
+        let mut all = all.borrow_mut();
+        if let Some(frames) = all.iter().find(|f| Arc::ptr_eq(&f.borrow().gpu.0, &gpu.0)) {
+            return frames.clone();
+        }
+        let frames = Rc::new(RefCell::new(Frames {
+            gpu: gpu.clone(),
+            canvases: Vec::new(),
+            listeners: Vec::new(),
+            next: 0,
+            scheduled: None,
+            tick: None,
+        }));
+        let weak = Rc::downgrade(&frames);
+        frames.borrow_mut().tick = Some(Closure::new(move |now: f64| {
+            if let Some(frames) = weak.upgrade() {
+                tick(&frames, now);
+            }
+        }));
+        all.push(frames.clone());
+        frames
+    })
+}
+
+fn schedule(frames: &Rc<RefCell<Frames>>) {
+    let mut f = frames.borrow_mut();
+    if f.scheduled.is_some() {
+        return;
+    }
+    let (Some(window), Some(tick)) = (web_sys::window(), f.tick.as_ref()) else { return };
+    f.scheduled = window.request_animation_frame(tick.as_ref().unchecked_ref()).ok();
+}
+
+fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
+    frames.borrow_mut().scheduled = None;
+    let listeners = frames.borrow().listeners.clone();
+    for (id, listener) in &listeners {
+        if frames.borrow().listeners.iter().any(|(i, _)| i == id) {
+            (listener.borrow_mut())(now);
+        }
+    }
+    let (gpu, canvases) = {
+        let mut f = frames.borrow_mut();
+        f.canvases.retain(|c| c.strong_count() > 0);
+        (f.gpu.clone(), f.canvases.iter().filter_map(Weak::upgrade).collect::<Vec<_>>())
+    };
+    let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit") });
+    let shown: Vec<wgpu::SurfaceTexture> = canvases.iter().filter_map(|c| c.borrow_mut().record(&mut encoder)).collect();
+    gpu.queue().submit([encoder.finish()]);
+    for texture in shown {
+        gpu.queue().present(texture);
+    }
+    for canvas in &canvases {
+        dispatch(canvas);
+    }
+    let again = !frames.borrow().listeners.is_empty() || canvases.iter().any(|c| c.borrow().wants_frame());
+    if again {
+        schedule(frames);
+    } else if canvases.is_empty() {
+        FRAMES.with(|all| all.borrow_mut().retain(|f| !Rc::ptr_eq(f, frames)));
+    }
+}
+
+/// Calls `listener` with the frame's timestamp, milliseconds as `requestAnimationFrame` gives it,
+/// every animation frame before `gpu`'s canvases draw, until the returned listener is dropped.
+pub fn on_frame(gpu: &Gpu, listener: impl FnMut(f64) + 'static) -> Listener {
+    let frames = frames_of(gpu);
+    let id = {
+        let mut f = frames.borrow_mut();
+        f.next += 1;
+        let id = f.next;
+        f.listeners.push((id, Rc::new(RefCell::new(listener))));
+        id
+    };
+    schedule(&frames);
+    let weak = Rc::downgrade(&frames);
+    Listener(Some(Box::new(move || {
+        if let Some(frames) = weak.upgrade() {
+            frames.borrow_mut().listeners.retain(|(i, _)| *i != id);
+        }
+    })))
+}
+
+/// A view drawn into a `<canvas>`. The canvas sizes itself to its CSS box at the device's pixel ratio,
+/// draws a frame only when the view needs one or the box changes size, and passes its pointer,
+/// wheel, and keys to the view.
 pub struct Canvas(Rc<RefCell<State>>);
 
 struct State {
@@ -19,30 +144,26 @@ struct State {
     element: HtmlCanvasElement,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    /// The pending animation frame's id.
-    scheduled: Option<i32>,
-    frame: Option<Closure<dyn FnMut(f64)>>,
-    resize: Option<Resize>,
-}
-
-/// Schedules a frame when the canvas's box changes size, until dropped.
-struct Resize {
-    observer: ResizeObserver,
-    _resized: Closure<dyn FnMut(JsValue)>,
-}
-
-impl Drop for Resize {
-    fn drop(&mut self) {
-        self.observer.disconnect();
-    }
+    frames: Rc<RefCell<Frames>>,
+    /// Whether a frame was asked for since the last one.
+    due: bool,
+    listeners: Vec<(u64, EventListener)>,
+    next: u64,
+    cursor: Cursor,
+    handlers: Vec<(&'static str, Closure<dyn FnMut(web_sys::Event)>)>,
+    resize: Option<(ResizeObserver, Closure<dyn FnMut(JsValue)>)>,
 }
 
 impl Canvas {
-    /// Draws `view` into `element`. The `Gpu` must come from [`Gpu::new`].
+    /// Draws `view` into `element`. The `Gpu` must come from [`Gpu::new`]; it sets text with the
+    /// browser's fonts unless it was given a host.
     pub fn new(gpu: &Gpu, element: HtmlCanvasElement, view: View) -> Result<Canvas> {
         let (Some(instance), Some(adapter)) = (gpu.instance(), gpu.adapter()) else {
             return Err(Error::Unsupported("a canvas draws with a Gpu made by Gpu::new".into()));
         };
+        if gpu.0.lock().host.is_none() {
+            gpu.set_host(crate::host::Browser);
+        }
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(element.clone()))
             .map_err(|e| Error::Unsupported(format!("no WebGPU canvas: {e}").into()))?;
@@ -71,45 +192,68 @@ impl Canvas {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&gpu.0.device, &config);
+        let _ = element.style().set_property("touch-action", "none");
+        let frames = frames_of(gpu);
         let state = Rc::new(RefCell::new(State {
             gpu: gpu.clone(),
             view,
-            element,
+            element: element.clone(),
             surface,
             config,
-            scheduled: None,
-            frame: None,
+            frames: frames.clone(),
+            due: true,
+            listeners: Vec::new(),
+            next: 0,
+            cursor: Cursor::Default,
+            handlers: Vec::new(),
             resize: None,
         }));
-        let weak = Rc::downgrade(&state);
-        let frame = Closure::<dyn FnMut(f64)>::new(move |_: f64| {
-            if let Some(state) = weak.upgrade() {
-                draw(&state);
-            }
-        });
+        frames.borrow_mut().canvases.push(Rc::downgrade(&state));
         let weak = Rc::downgrade(&state);
         let resized = Closure::<dyn FnMut(JsValue)>::new(move |_: JsValue| {
             if let Some(state) = weak.upgrade() {
-                schedule(&state);
+                state.borrow_mut().due = true;
+                schedule(&state.borrow().frames);
             }
         });
         let observer = ResizeObserver::new(resized.as_ref().unchecked_ref())
             .map_err(|_| Error::Unsupported("no ResizeObserver".into()))?;
-        observer.observe(&state.borrow().element);
-        {
-            let mut s = state.borrow_mut();
-            s.frame = Some(frame);
-            s.resize = Some(Resize { observer, _resized: resized });
-        }
-        schedule(&state);
+        observer.observe(&element);
+        state.borrow_mut().resize = Some((observer, resized));
+        listen(&state)?;
+        schedule(&frames);
         Ok(Canvas(state))
     }
 
     /// Calls `f` with the view, then draws a frame when it needs one.
     pub fn with<R>(&self, f: impl FnOnce(&mut View) -> R) -> R {
         let result = f(&mut self.0.borrow_mut().view);
-        schedule(&self.0);
+        self.0.borrow_mut().due = true;
+        let frames = self.0.borrow().frames.clone();
+        schedule(&frames);
         result
+    }
+
+    /// Calls `f` with the view, to read it without asking for a frame.
+    pub fn read<R>(&self, f: impl FnOnce(&View) -> R) -> R {
+        f(&self.0.borrow().view)
+    }
+
+    /// Calls `listener` with each of the view's events until the returned listener is dropped.
+    pub fn on(&self, listener: impl FnMut(&Event) + 'static) -> Listener {
+        let id = {
+            let mut s = self.0.borrow_mut();
+            s.next += 1;
+            let id = s.next;
+            s.listeners.push((id, Rc::new(RefCell::new(listener))));
+            id
+        };
+        let weak = Rc::downgrade(&self.0);
+        Listener(Some(Box::new(move || {
+            if let Some(state) = weak.upgrade() {
+                state.borrow_mut().listeners.retain(|(i, _)| *i != id);
+            }
+        })))
     }
 
     /// The canvas element.
@@ -118,60 +262,207 @@ impl Canvas {
     }
 }
 
-impl Drop for State {
-    fn drop(&mut self) {
-        if let (Some(id), Some(window)) = (self.scheduled, web_sys::window()) {
-            let _ = window.cancel_animation_frame(id);
-        }
+impl State {
+    fn wants_frame(&self) -> bool {
+        self.due || self.view.needs_render()
     }
-}
 
-fn schedule(state: &Rc<RefCell<State>>) {
-    let mut s = state.borrow_mut();
-    if s.scheduled.is_some() {
-        return;
-    }
-    let (Some(window), Some(frame)) = (web_sys::window(), s.frame.as_ref()) else { return };
-    s.scheduled = window.request_animation_frame(frame.as_ref().unchecked_ref()).ok();
-}
-
-fn draw(state: &Rc<RefCell<State>>) {
-    let again = {
-        let mut guard = state.borrow_mut();
-        let s = &mut *guard;
-        s.scheduled = None;
+    /// Records a frame when one is needed, sizing the canvas to its box first.
+    fn record(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<wgpu::SurfaceTexture> {
         let ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio());
-        let width = (f64::from(s.element.client_width()) * ratio).round().max(1.0) as u32;
-        let height = (f64::from(s.element.client_height()) * ratio).round().max(1.0) as u32;
-        if (width, height) != (s.config.width, s.config.height) {
-            s.element.set_width(width);
-            s.element.set_height(height);
-            s.config.width = width;
-            s.config.height = height;
-            s.surface.configure(&s.gpu.0.device, &s.config);
+        let width = (f64::from(self.element.client_width()) * ratio).round().max(1.0) as u32;
+        let height = (f64::from(self.element.client_height()) * ratio).round().max(1.0) as u32;
+        let resized = (width, height) != (self.config.width, self.config.height);
+        if !(resized || self.wants_frame()) {
+            return None;
         }
-        let texture = match s.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                Some(texture)
-            }
+        if resized {
+            self.element.set_width(width);
+            self.element.set_height(height);
+            self.config.width = width;
+            self.config.height = height;
+            self.surface.configure(&self.gpu.0.device, &self.config);
+        }
+        let texture = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
             _ => {
-                s.surface.configure(&s.gpu.0.device, &s.config);
-                None
+                self.surface.configure(&self.gpu.0.device, &self.config);
+                self.due = true;
+                return None;
             }
         };
-        let drawn = texture.is_some();
-        if let Some(texture) = texture {
-            let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let target =
-                Target { view: &view, format: s.config.format, size: [width, height], pixel_ratio: ratio as f32 };
-            let mut encoder = s.gpu.0.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            s.view.render(&mut encoder, &target);
-            s.gpu.0.queue.submit([encoder.finish()]);
-            s.gpu.0.queue.present(texture);
-        }
-        s.view.needs_render() || !drawn
-    };
-    if again {
-        schedule(state);
+        let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let target = Target { view: &view, format: self.config.format, size: [width, height], pixel_ratio: ratio as f32 };
+        self.due = false;
+        self.view.render(encoder, &target);
+        Some(texture)
     }
+}
+
+/// Hands the view's events to the canvas's listeners, and shows the cursor it asks for.
+fn dispatch(state: &Rc<RefCell<State>>) {
+    let (events, listeners) = {
+        let mut s = state.borrow_mut();
+        let events: Vec<Event> = s.view.events().collect();
+        let cursor = s.view.cursor();
+        if cursor != s.cursor {
+            s.cursor = cursor;
+            let css = match cursor {
+                Cursor::Default => "",
+                Cursor::Pointer => "pointer",
+                Cursor::Grab => "grab",
+                Cursor::Grabbing => "grabbing",
+            };
+            let _ = s.element.style().set_property("cursor", css);
+        }
+        (events, s.listeners.clone())
+    };
+    for event in &events {
+        for (id, listener) in &listeners {
+            if state.borrow().listeners.iter().any(|(i, _)| i == id) {
+                (listener.borrow_mut())(event);
+            }
+        }
+    }
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        for (kind, handler) in &self.handlers {
+            let _ = self.element.remove_event_listener_with_callback(kind, handler.as_ref().unchecked_ref());
+        }
+        if let Some((observer, _)) = &self.resize {
+            observer.disconnect();
+        }
+    }
+}
+
+/// Feeds the element's pointer, wheel, and keys to the view.
+fn listen(state: &Rc<RefCell<State>>) -> Result<()> {
+    let element = state.borrow().element.clone();
+    let add = |kind: &'static str, handle: fn(&HtmlCanvasElement, &web_sys::Event) -> Option<Input>| {
+        let weak = Rc::downgrade(state);
+        let target = element.clone();
+        let handler = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            let Some(state) = weak.upgrade() else { return };
+            let Some(input) = handle(&target, &event) else { return };
+            state.borrow_mut().view.input(&input);
+            state.borrow_mut().due = true;
+            let frames = state.borrow().frames.clone();
+            schedule(&frames);
+            dispatch(&state);
+        });
+        let options = AddEventListenerOptions::new();
+        options.set_passive(false);
+        element
+            .add_event_listener_with_callback_and_add_event_listener_options(
+                kind,
+                handler.as_ref().unchecked_ref(),
+                &options,
+            )
+            .map_err(|_| Error::Unsupported("the canvas takes no input".into()))?;
+        state.borrow_mut().handlers.push((kind, handler));
+        Ok::<(), Error>(())
+    };
+    add("pointerdown", |element, event| {
+        let event = event.dyn_ref::<PointerEvent>()?;
+        let button = match event.button() {
+            0 => Button::Primary,
+            1 => Button::Middle,
+            2 => Button::Secondary,
+            _ => return None,
+        };
+        let _ = element.focus();
+        let _ = element.set_pointer_capture(event.pointer_id());
+        Some(Input::Down {
+            pointer: event.pointer_id() as u32,
+            point: point(element, event),
+            button,
+            modifiers: modifiers(event.shift_key(), event.ctrl_key(), event.alt_key(), event.meta_key()),
+            touch: event.pointer_type() == "touch",
+        })
+    })?;
+    add("pointermove", |element, event| {
+        let event = event.dyn_ref::<PointerEvent>()?;
+        Some(Input::Move {
+            pointer: event.pointer_id() as u32,
+            point: point(element, event),
+            modifiers: modifiers(event.shift_key(), event.ctrl_key(), event.alt_key(), event.meta_key()),
+        })
+    })?;
+    add("pointerup", |element, event| {
+        let event = event.dyn_ref::<PointerEvent>()?;
+        let _ = element.release_pointer_capture(event.pointer_id());
+        Some(Input::Up {
+            pointer: event.pointer_id() as u32,
+            point: point(element, event),
+            modifiers: modifiers(event.shift_key(), event.ctrl_key(), event.alt_key(), event.meta_key()),
+        })
+    })?;
+    add("pointercancel", |_, event| {
+        let event = event.dyn_ref::<PointerEvent>()?;
+        Some(Input::Cancel { pointer: event.pointer_id() as u32 })
+    })?;
+    add("pointerleave", |_, _| Some(Input::Leave))?;
+    add("wheel", |element, event| {
+        let event = event.dyn_ref::<WheelEvent>()?;
+        event.prevent_default();
+        let scale = match event.delta_mode() {
+            1 => 16.0,
+            2 => 400.0,
+            _ => 1.0,
+        };
+        Some(Input::Wheel {
+            point: point(element, event),
+            delta: [(event.delta_x() * scale) as f32, (event.delta_y() * scale) as f32],
+            modifiers: modifiers(event.shift_key(), event.ctrl_key(), event.alt_key(), event.meta_key()),
+        })
+    })?;
+    add("contextmenu", |_, event| {
+        event.prevent_default();
+        None
+    })?;
+    for kind in ["keydown", "keyup"] {
+        add(kind, |_, event| {
+            let event = event.dyn_ref::<KeyboardEvent>()?;
+            let key = match event.key().as_str() {
+                "Escape" => Key::Escape,
+                "Enter" => Key::Enter,
+                "Delete" => Key::Delete,
+                "Backspace" => Key::Backspace,
+                "Home" => Key::Home,
+                "Tab" => Key::Tab,
+                " " => Key::Space,
+                "+" | "=" => Key::Plus,
+                "-" | "_" => Key::Minus,
+                "ArrowLeft" => Key::Left,
+                "ArrowRight" => Key::Right,
+                "ArrowUp" => Key::Up,
+                "ArrowDown" => Key::Down,
+                _ => Key::Other,
+            };
+            if matches!(key, Key::Left | Key::Right | Key::Up | Key::Down | Key::Plus | Key::Minus | Key::Home) {
+                event.prevent_default();
+            }
+            Some(Input::Key {
+                key,
+                down: event.type_() == "keydown",
+                modifiers: modifiers(event.shift_key(), event.ctrl_key(), event.alt_key(), event.meta_key()),
+            })
+        })?;
+    }
+    Ok(())
+}
+
+/// A mouse event's point in CSS pixels from the element's top left.
+fn point(element: &HtmlCanvasElement, event: &web_sys::MouseEvent) -> [f32; 2] {
+    let rect = element.get_bounding_client_rect();
+    [
+        (f64::from(event.client_x()) - rect.left() - f64::from(element.client_left())) as f32,
+        (f64::from(event.client_y()) - rect.top() - f64::from(element.client_top())) as f32,
+    ]
+}
+
+fn modifiers(shift: bool, control: bool, alt: bool, meta: bool) -> Modifiers {
+    Modifiers { shift, control, alt, meta }
 }

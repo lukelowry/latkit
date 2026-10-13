@@ -1,9 +1,12 @@
 //! Scenes: what a view draws, as plain data. Marks name their data; the view is given the data.
 
+mod controls;
 #[cfg(feature = "serde")]
 mod decode;
 mod edges;
+mod faces;
 mod layout;
+mod lines;
 pub(crate) mod mark;
 mod marker;
 mod space;
@@ -12,8 +15,11 @@ mod vertices;
 
 use std::time::Duration;
 
+pub use controls::Controls;
 pub use edges::Edges;
+pub use faces::Faces;
 pub use layout::{Direction, Layered, Layout, Stress};
+pub use lines::Lines;
 pub use mark::Mark;
 pub use marker::{Marker, Shape};
 pub use space::{Axis, Earth, Grid, Plane, Plot, Projection, Space};
@@ -22,7 +28,8 @@ pub use vertices::Vertices;
 
 use crate::{Error, Result};
 
-/// What a view draws: a space, marks in drawing order, a layout, a theme, and how long changes ease.
+/// What a view draws and how it answers input: a space, marks in drawing order, a layout, a theme,
+/// controls, and how long changes ease.
 ///
 /// ```
 /// # use latkit::{Edges, Earth, Scene, Vertices};
@@ -36,6 +43,7 @@ pub struct Scene {
     pub(crate) marks: Vec<Mark>,
     pub(crate) layout: Layout,
     pub(crate) theme: Theme,
+    pub(crate) controls: Controls,
     pub(crate) ease: Duration,
 }
 
@@ -47,6 +55,7 @@ impl Scene {
             marks: Vec::new(),
             layout: Layout::None,
             theme: Theme::default(),
+            controls: Controls::default(),
             ease: Duration::from_millis(300),
         }
     }
@@ -69,6 +78,13 @@ impl Scene {
     #[must_use]
     pub fn theme(mut self, theme: Theme) -> Scene {
         self.theme = theme;
+        self
+    }
+
+    /// How the view answers the pointer and keyboard.
+    #[must_use]
+    pub fn controls(mut self, controls: Controls) -> Scene {
+        self.controls = controls;
         self
     }
 

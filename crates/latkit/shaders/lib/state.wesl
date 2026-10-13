@@ -3,6 +3,7 @@
 import package::lib::types::{
     NONE, VERTEX_WORDS, VERTEX_POSITION, VERTEX_COLOR, VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION,
     VERTEX_FLAGS, EDGE_FROM, EDGE_TO, EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_FLAGS,
+    FACE_A, FACE_B, FACE_C, FACE_COLOR, FACE_FLAGS, LINE_COLOR, LINE_WIDTH, LINE_FLAGS,
 };
 import package::lib::bind::{state, mark};
 
@@ -22,6 +23,18 @@ struct Edge {
     color: u32,
     width: f32,
     flow: f32,
+    flags: u32,
+}
+
+struct Face {
+    corners: vec3u,
+    color: u32,
+    flags: u32,
+}
+
+struct Line {
+    color: u32,
+    width: f32,
     flags: u32,
 }
 
@@ -61,6 +74,15 @@ fn edge_at(at: u32) -> Edge {
         float_at(at + EDGE_FLOW),
         state[at + EDGE_FLAGS],
     );
+}
+
+fn face_at(at: u32) -> Face {
+    let corners = vec3u(state[at + FACE_A], state[at + FACE_B], state[at + FACE_C]);
+    return Face(corners, state[at + FACE_COLOR], state[at + FACE_FLAGS]);
+}
+
+fn line_at(at: u32) -> Line {
+    return Line(state[at + LINE_COLOR], float_at(at + LINE_WIDTH), state[at + LINE_FLAGS]);
 }
 
 fn has_slot(slot: u32) -> bool {

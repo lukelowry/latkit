@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::Color;
 
 /// Colors and sizes marks take where their options read nothing, and the look of focus and motion.
@@ -17,6 +19,20 @@ pub struct Theme {
     pub edge: Option<Color>,
     /// Edge width, CSS pixels.
     pub edge_width: f32,
+    /// Line color.
+    pub line: Color,
+    /// Line width, CSS pixels.
+    pub line_width: f32,
+    /// How much a face turned away from the camera darkens, 0 to 1.
+    pub shading: f32,
+    /// Text: axis ticks and titles.
+    pub text: Color,
+    /// The CSS font family text is set in.
+    pub font: Arc<str>,
+    /// Text size, CSS pixels.
+    pub font_size: f32,
+    /// The line a plot draws at the shown coordinate.
+    pub playhead: Color,
     /// What a missing color reads as.
     pub missing: Color,
     /// The glow around hovered rows.
@@ -50,6 +66,13 @@ impl Theme {
             vertex_radius: 4.0,
             edge: None,
             edge_width: 1.5,
+            line: Color::hex("#7cc4ff").expect("hex"),
+            line_width: 1.5,
+            shading: 0.6,
+            text: Color::hex("#a8b2c2").expect("hex"),
+            font: "ui-monospace, Menlo, Consolas, monospace".into(),
+            font_size: 11.0,
+            playhead: Color::hex("#ffe5d4").expect("hex").alpha(0.8),
             missing: Color::hex("#6b7480").expect("hex"),
             hover: Color::hex("#ffffff").expect("hex").alpha(0.6),
             selected: Some(Color::hex("#ffb000").expect("hex").alpha(0.9)),
@@ -70,6 +93,9 @@ impl Theme {
             surface: Color::hex("#e8ecf0").expect("hex"),
             grid: Color::hex("#000000").expect("hex").alpha(0.08),
             vertex: Color::hex("#1f6feb").expect("hex"),
+            line: Color::hex("#1f6feb").expect("hex"),
+            text: Color::hex("#4a5361").expect("hex"),
+            playhead: Color::hex("#e36209").expect("hex").alpha(0.8),
             missing: Color::hex("#9aa3ad").expect("hex"),
             hover: Color::hex("#000000").expect("hex").alpha(0.35),
             selected: Some(Color::hex("#e36209").expect("hex").alpha(0.9)),

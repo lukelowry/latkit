@@ -7,6 +7,9 @@ import package::lib::bind::frame;
 const PI: f32 = 3.14159265;
 const TAU: f32 = 6.28318531;
 const MAX_LATITUDE: f32 = 85.05113;
+// Depth is reversed: the near plane is at 1 and the far plane at 0, which keeps precision far away.
+const NEAR_Z: f32 = 1.0;
+const FAR_Z: f32 = 0.0;
 
 // The offset of `p` from the camera's center, in position units.
 fn relative(hi: vec2f, lo: vec2f) -> vec2f {
@@ -66,11 +69,15 @@ fn to_screen(clip: vec4f) -> vec2f {
     return (vec2f(ndc.x, -ndc.y) * 0.5 + 0.5) * frame.size;
 }
 
-// Clip coordinates for a screen point at the depth of `at`; a pick pass maps its window to the target.
+// Clip coordinates for a screen point at the depth of `at`.
 fn to_clip(screen: vec2f, at: vec4f) -> vec4f {
-    let local = (screen - frame.pick_origin) * frame.pick_scale;
-    let ndc = local / frame.size * 2.0 - 1.0;
-    return vec4f(vec2f(ndc.x, -ndc.y) * at.w, 0.0, at.w);
+    let ndc = screen / frame.size * 2.0 - 1.0;
+    return vec4f(vec2f(ndc.x, -ndc.y) * at.w, at.z, at.w);
+}
+
+// `clip` a little toward the camera, so a mark lying on a face draws over it.
+fn nearer(clip: vec4f) -> vec4f {
+    return vec4f(clip.xy, min(clip.z * 1.003, clip.w), clip.w);
 }
 
 // A position outside the clip volume: the primitive is dropped.

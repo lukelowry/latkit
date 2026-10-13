@@ -105,7 +105,13 @@ impl Vertices {
                 c.theme("radius", wgsl::THEME_VERTEX_RADIUS, store)?;
             }
         }
-        Ok(Drawing { kind: MarkKind::Vertices, stride: wgsl::VERTEX_WORDS, flags, marker: self.marker.uniform() })
+        Ok(Drawing {
+            kind: MarkKind::Vertices,
+            stride: wgsl::VERTEX_WORDS,
+            flags,
+            marker: self.marker.uniform(),
+            trace: wgsl::NONE,
+        })
     }
 }
 

@@ -3,7 +3,7 @@
 import package::lib::types::{SPACE_EARTH, SPACE_PLANE, GRID_LINES, GRID_DOTS};
 import package::lib::bind::frame;
 import package::lib::color::output;
-import package::lib::project::PI;
+import package::lib::project::{PI, NEAR_Z, FAR_Z};
 
 struct Varyings {
     @builtin(position) clip: vec4f,
@@ -19,8 +19,8 @@ fn vertex(@builtin(vertex_index) i: u32) -> Varyings {
 
 // Where the pixel's ray meets the ground (z = 0), relative to the center; w is 0 past the horizon.
 fn ground(ndc: vec2f) -> vec4f {
-    let near = frame.world_from_clip * vec4f(ndc, 0.0, 1.0);
-    let far = frame.world_from_clip * vec4f(ndc, 1.0, 1.0);
+    let near = frame.world_from_clip * vec4f(ndc, NEAR_Z, 1.0);
+    let far = frame.world_from_clip * vec4f(ndc, FAR_Z, 1.0);
     let a = near.xyz / near.w;
     let b = far.xyz / far.w;
     let t = a.z / (a.z - b.z);
@@ -51,8 +51,8 @@ fn earth(ndc: vec2f, g: vec4f) -> f32 {
     let band = PI - abs(g.y + frame.mercator_y);
     let flat = clamp(band / max(fwidth(band), 1e-9) + 0.5, 0.0, 1.0) * g.w;
     // The globe is a sphere of radius 1 / cos(lat0) whose top touches the ground at the center.
-    let near = frame.world_from_clip * vec4f(ndc, 0.0, 1.0);
-    let far = frame.world_from_clip * vec4f(ndc, 1.0, 1.0);
+    let near = frame.world_from_clip * vec4f(ndc, NEAR_Z, 1.0);
+    let far = frame.world_from_clip * vec4f(ndc, FAR_Z, 1.0);
     let o = near.xyz / near.w;
     let d = normalize(far.xyz / far.w - o);
     let radius = 1.0 / cos(lat0);

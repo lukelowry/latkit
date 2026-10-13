@@ -3,7 +3,7 @@
 import package::lib::types::{NONE, VISIBLE, DASH, PINNED, PLACED, ENDS_COLOR, EDGE_COLOR, EDGE_WIDTH};
 import package::lib::bind::{frame, mark};
 import package::lib::state::{row_at, edge_at, vertex_slot};
-import package::lib::project::{project, to_screen, to_clip, facing, culled};
+import package::lib::project::{project, to_screen, to_clip, nearer, facing, culled};
 import package::lib::focus::faded;
 import package::lib::motion::{previous_row, previous_word, previous_float, ease_color, ease};
 import package::lib::marker::{MarkerColor, glow};
@@ -52,10 +52,10 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32)
     let b = to_screen(cb);
     let dir = normalize(b - a + vec2f(1e-6, 0.0));
     let normal = vec2f(-dir.y, dir.x);
-    let reach = 0.5 * width + frame.glow + frame.pick_radius + 1.0;
+    let reach = 0.5 * width + frame.glow + 1.0;
     let side = f32(corner >> 1u) * 2.0 - 1.0;
     let screen = mix(a - dir * reach, b + dir * reach, t) + normal * side * reach;
-    out.clip = to_clip(screen, select(ca, cb, t > 0.5));
+    out.clip = nearer(to_clip(screen, select(ca, cb, t > 0.5)));
     out.p = screen;
     out.a = a;
     out.b = b;

@@ -29,6 +29,8 @@ pub(crate) enum Op {
     Remove { table: Name, ids: Ids },
     /// Records frames of sampled fields: `at.len()` frames of every row, frame-major.
     Append { table: Name, at: Vec<f64>, fields: Vec<(Name, Values)> },
+    /// Forgets every sampled field's frames before a coordinate.
+    Forget { before: f64 },
 }
 
 impl Patch {
@@ -78,6 +80,14 @@ impl Patch {
     {
         let fields = fields.into_iter().map(|(name, values)| (name.into(), values.into())).collect();
         self.ops.push(Op::Append { table: table.into(), at: vec![at], fields });
+        self
+    }
+
+    /// Forgets every sampled field's frames before axis coordinate `before`. Whole frame pages drop,
+    /// so it costs O(pages); older versions of the dataset keep what they read.
+    #[must_use]
+    pub fn forget(mut self, before: f64) -> Patch {
+        self.ops.push(Op::Forget { before });
         self
     }
 
@@ -158,6 +168,18 @@ impl Op {
                     };
                     samples.append(&at, &values, target.len()).map_err(|e| e.at(&name).at(&table))?;
                     target.insert(name, Field::Sampled(samples, Version::next()));
+                }
+                Ok(())
+            }
+            Op::Forget { before } => {
+                for table in &mut data.tables {
+                    for (_, field) in &mut table.fields {
+                        if let Field::Sampled(samples, version) = field
+                            && samples.forget(before)
+                        {
+                            *version = Version::next();
+                        }
+                    }
                 }
                 Ok(())
             }

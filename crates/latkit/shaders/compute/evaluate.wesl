@@ -18,7 +18,7 @@ import package::lib::project::{project, to_screen};
 import package::lib::reduce::{ordered, unordered};
 
 // Per fitted domain: the order-preserving bits of its least and greatest value.
-@group(2) @binding(1) var<storage, read_write> domains: array<atomic<u32>>;
+@group(2) @binding(4) var<storage, read_write> domains: array<atomic<u32>>;
 
 fn constant(i: u32) -> u32 {
     return program[mark.constants + i];

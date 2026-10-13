@@ -3,7 +3,8 @@
 #![cfg(feature = "gpu")]
 
 use latkit::{
-    Camera, Color, Colormap, Data, Edges, Gpu, Grid, Patch, Plane, Scene, Table, Target, Theme, Vertices, View, field,
+    Axis, Button, Camera, Color, Colormap, Data, Edges, Event, Faces, Gpu, Grid, Input, Lines, Modifiers, Patch, Phase,
+    Plane, Plot, Scene, Table, Target, Theme, Vertices, View, field,
 };
 
 const SIZE: u32 = 128;
@@ -182,7 +183,7 @@ fn new_data_versions_show_and_fit_frames_them() {
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).color(Color::WHITE));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_data(data.clone());
-    view.fit();
+    view.fit(latkit::Fit::All);
     let pixels = frame(&gpu, &mut view);
     let center = SIZE / 2;
     assert!(close(at(&pixels, center, center), [255, 255, 255, 255]), "fit centers the only vertex");
@@ -226,4 +227,145 @@ fn sampled_fields_read_at_the_shown_coordinate() {
     view.set_at(5.0);
     let pixel = at(&frame(&gpu, &mut view), center, center);
     assert!(close(pixel, [0, 0, 0, 255]), "a step reads the last frame: {pixel:?}");
+}
+
+#[test]
+fn faces_blend_their_corners_and_hide_what_lies_behind() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("mesh");
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Vertex", 5)
+                    .field("x", vec![-40.0, 40.0, 0.0, 0.0, 20.0])
+                    .field("y", vec![-30.0, -30.0, 40.0, 0.0, 0.0])
+                    .field("z", vec![0.0, 0.0, 0.0, -20.0, 20.0])
+                    .field("hue", vec![0.0, 0.0, 0.0, 1.0, 1.0]),
+            )
+            .set(
+                Table::new("Face", 1)
+                    .reference("a", "Vertex", vec![0_u64])
+                    .reference("b", "Vertex", vec![1_u64])
+                    .reference("c", "Vertex", vec![2_u64]),
+            ),
+    )
+    .expect("valid");
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    let blue = Color::rgb(0.0, 0.0, 1.0);
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Faces::of("mesh", "Face").corners("a", "b", "c"))
+        .draw(
+            Vertices::of("mesh", "Vertex")
+                .position("x", "y")
+                .elevation("z")
+                .radius(4.0)
+                .color(latkit::when(field("hue").gt(0.5)).then(blue).otherwise(red)),
+        );
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let center = SIZE / 2;
+    assert!(close(at(&pixels, center - 10, center + 10), [255, 0, 0, 255]), "a face seen from above shows its color");
+    assert!(close(at(&pixels, center, center), [255, 0, 0, 255]), "the vertex below the face is hidden");
+    assert!(close(at(&pixels, center + 20, center), [0, 0, 255, 255]), "the vertex above it shows");
+}
+
+#[test]
+fn presses_click_and_drag_the_rows_they_hit() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("graph");
+    data.apply(Table::new("Node", vec![7_u64, 8]).field("x", vec![0.0, 40.0]).field("y", vec![0.0, 0.0]))
+        .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position("x", "y").radius(6.0).drag(true));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    frame(&gpu, &mut view);
+    let center = SIZE as f32 / 2.0;
+    let modifiers = Modifiers::default();
+    let press = |view: &mut View, point: [f32; 2]| {
+        view.input(&Input::Down { pointer: 1, point, button: Button::Primary, modifiers, touch: false });
+    };
+    press(&mut view, [center + 40.0, center]);
+    view.input(&Input::Up { pointer: 1, point: [center + 40.0, center], modifiers });
+    frame(&gpu, &mut view);
+    let events: Vec<Event> = view.events().collect();
+    let clicked = events.iter().find_map(|e| if let Event::Click(hit) = e { Some(hit) } else { None });
+    assert_eq!(clicked.map(|hit| hit.row.id.clone()), Some(8_u64.into()), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, Event::Select(rows) if rows.len() == 1)));
+
+    press(&mut view, [center, center]);
+    frame(&gpu, &mut view);
+    view.input(&Input::Move { pointer: 1, point: [center + 10.0, center - 20.0], modifiers });
+    view.input(&Input::Up { pointer: 1, point: [center + 10.0, center - 20.0], modifiers });
+    let drags: Vec<_> = view.events().filter_map(|e| if let Event::Drag(drag) = e { Some(drag) } else { None }).collect();
+    assert_eq!(drags.iter().map(|d| d.phase).collect::<Vec<_>>(), [Phase::Start, Phase::End]);
+    let end = drags.last().expect("an end").position;
+    assert!((end[0] - 10.0).abs() < 0.5 && (end[1] - 20.0).abs() < 0.5, "the pointer's position: {end:?}");
+    assert_eq!(view.camera(), &camera(), "dragging a row does not pan");
+}
+
+#[test]
+fn lines_trace_their_samples_across_a_plot() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("signals");
+    data.apply(Table::new("Signal", 1)).expect("valid");
+    for t in 0..=10 {
+        data.apply(Patch::new().append(f64::from(t), "Signal", [("v", vec![0.5])])).expect("frame");
+    }
+    let axis = Axis { label: None, grid: false, hidden: true };
+    let scene = Scene::new(Plot { x: axis.clone(), y: axis })
+        .theme(plain_theme())
+        .draw(Lines::of("signals", "Signal").samples("v").color(Color::rgb(1.0, 0.0, 0.0)).width(4.0));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let center = SIZE / 2;
+    assert!(close(at(&pixels, center, center), [255, 0, 0, 255]), "{:?}", at(&pixels, center, center));
+    assert!(close(at(&pixels, center, center - 20), [0, 0, 0, 255]), "only the line is drawn");
+}
+
+#[test]
+fn hover_reaches_what_faces_leave_in_view() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("mesh");
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Vertex", 5)
+                    .field("x", vec![-40.0, 40.0, 0.0, 0.0, 20.0])
+                    .field("y", vec![-30.0, -30.0, 40.0, 0.0, 0.0])
+                    .field("z", vec![0.0, 0.0, 0.0, -20.0, 20.0]),
+            )
+            .set(
+                Table::new("Face", 1)
+                    .reference("a", "Vertex", vec![0_u64])
+                    .reference("b", "Vertex", vec![1_u64])
+                    .reference("c", "Vertex", vec![2_u64]),
+            ),
+    )
+    .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false))
+        .draw(Vertices::of("mesh", "Vertex").position("x", "y").elevation("z").radius(3.0).drag(true));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    frame(&gpu, &mut view);
+    let center = SIZE as f32 / 2.0;
+    let hover = |view: &mut View, point: [f32; 2]| {
+        view.input(&Input::Move { pointer: 1, point, modifiers: Modifiers::default() });
+        frame(&gpu, view);
+        view.events().filter_map(|e| if let Event::Hover(hit) = e { Some(hit) } else { None }).last()
+    };
+    let above = hover(&mut view, [center + 20.0, center]).expect("a hover event");
+    assert_eq!(above.map(|hit| hit.row.id), Some(4_u64.into()), "the vertex above the face");
+    let below = hover(&mut view, [center, center]).expect("a hover event");
+    assert_eq!(below, None, "the vertex below the face is hidden");
 }

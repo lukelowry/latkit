@@ -51,5 +51,19 @@ export default [
       }
     ],
     "theme": { "base": "dark", "vertexRadius": 5, "edge": null, "selected": "#ff8800", "shadows": true }
+  },
+  {
+    "space": { "plane": { "grid": { "lines": 1 } } },
+    "controls": { "turn": false, "pickRadius": 14 },
+    "marks": [
+      { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false } },
+      { "edges": { "of": ["mesh", "Spring"], "ends": ["a", "b"], "color": "#ffffff14" } },
+      { "vertices": { "of": ["mesh", "Vertex"], "position": ["x", "y"], "elevation": "z", "select": false, "drag": true } }
+    ],
+    "theme": { "shading": 0.7, "font": "monospace", "fontSize": 12, "playhead": "#ffe5d4" }
+  },
+  {
+    "space": { "plot": { "x": { "label": "Time (s)" } } },
+    "marks": [{ "lines": { "of": ["mesh", "Body"], "samples": "height", "color": "#66c7ff", "width": 2 } }]
   }
 ];

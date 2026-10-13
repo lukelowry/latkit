@@ -34,6 +34,7 @@ const OP_PUT: u8 = 1;
 const OP_SET: u8 = 2;
 const OP_REMOVE: u8 = 3;
 const OP_APPEND: u8 = 4;
+const OP_FORGET: u8 = 5;
 
 const FIELD_VALUES: u8 = 0;
 const FIELD_REFERENCE: u8 = 1;
@@ -86,6 +87,10 @@ pub(crate) fn encode(name: &str, patch: &Patch) -> Vec<u8> {
                     w.values(values);
                 }
             }
+            Op::Forget { before } => {
+                w.u8(OP_FORGET);
+                w.f64(*before);
+            }
         }
     }
     w.0
@@ -113,6 +118,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<(Name, Patch)> {
                 let fields = (0..count).map(|_| Ok((r.name()?, r.values()?))).collect::<Result<_>>()?;
                 Op::Append { table, at, fields }
             }
+            OP_FORGET => Op::Forget { before: r.f64()? },
             tag => return Err(malformed(format!("unknown operation {tag}"))),
         };
         patch.ops.push(op);
@@ -182,8 +188,8 @@ impl Writer {
                 Field::Sampled(samples, _) => {
                     self.u8(FIELD_SAMPLED);
                     self.u32(table.len());
-                    self.u32(samples.frames() as usize);
-                    for frame in 0..samples.frames() {
+                    self.u32((samples.end() - samples.start()) as usize);
+                    for frame in samples.start()..samples.end() {
                         self.f64(samples.at(frame));
                     }
                     self.slice(&samples.frames_of(table.len()));

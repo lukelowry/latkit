@@ -66,6 +66,8 @@ pub(crate) struct ColumnUse {
     pub(crate) step: bool,
     /// Also read the part `f32` drops of an `f64`, for positions.
     pub(crate) low: bool,
+    /// Read every frame in view, as a line tracing the field does.
+    pub(crate) trace: bool,
 }
 
 /// A constant holding a text's dictionary code in a column; the view writes it.
@@ -220,6 +222,7 @@ impl<'a> Compiler<'a> {
             sampled: false,
             step: false,
             low: false,
+            trace: false,
         });
         let index = self.program.ends.len() as u32;
         self.program.ends.push(target);
@@ -227,6 +230,17 @@ impl<'a> Compiler<'a> {
         self.op(wgsl::OP_STORE_END, word, column, index, 0, 0)?;
         self.close(name, start);
         Ok(())
+    }
+
+    /// The column of sampled field `name` that a line traces over the axis.
+    pub(crate) fn trace(&mut self, name: &str) -> Result<u32> {
+        if self.fields.kind(None, name) != Some(Kind::Sampled) {
+            return Err(invalid("not a sampled field").at(name));
+        }
+        let use_ =
+            ColumnUse { of: None, name: name.into(), part: Part::Values, sampled: true, step: false, low: false, trace: true };
+        self.deps |= Deps::SAMPLES;
+        Ok(self.column(use_))
     }
 
     /// The program: channel ranges, then a range per fitted domain's reduction.
@@ -296,7 +310,8 @@ impl<'a> Compiler<'a> {
             (Kind::Geometry(0), Some(1)) => Part::Y,
             _ => return None,
         };
-        Some(self.column(ColumnUse { of: None, name: f.name.clone(), part, sampled: false, step: false, low: true }))
+        let use_ = ColumnUse { of: None, name: f.name.clone(), part, sampled: false, step: false, low: true, trace: false };
+        Some(self.column(use_))
     }
 
     fn coordinate(&mut self, e: &Expr) -> Result<()> {
@@ -413,7 +428,7 @@ impl<'a> Compiler<'a> {
     fn field_column(&mut self, f: &FieldRef, part: Part, sampled: bool) -> u32 {
         self.deps |= if sampled { Deps::SAMPLES } else { Deps::DATA };
         let step = f.step && sampled;
-        self.column(ColumnUse { of: f.of.clone(), name: f.name.clone(), part, sampled, step, low: false })
+        self.column(ColumnUse { of: f.of.clone(), name: f.name.clone(), part, sampled, step, low: false, trace: false })
     }
 
     fn column(&mut self, use_: ColumnUse) -> u32 {

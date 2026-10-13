@@ -1,10 +1,16 @@
-//! Views: a scene drawn from named data into any wgpu frame.
+//! Views: a scene drawn from named data into any wgpu frame, answering input.
 
+mod axes;
 mod camera;
+mod event;
 mod fit;
+mod focus;
 mod frame;
+mod gestures;
+mod input;
 mod marks;
 mod passes;
+mod probe;
 mod program;
 mod resources;
 mod sync;
@@ -14,14 +20,22 @@ use std::task::Waker;
 use std::time::Duration;
 
 pub use camera::Camera;
+pub use event::{Cursor, Drag, Event, Fit, Hit, Phase, Stats};
+pub use input::{Button, Input, Key, Modifiers};
+pub(crate) use resources::DEPTH;
+
+use camera::{Area, Projected};
 use fit::Fitting;
+use focus::Focus;
+use gestures::Gestures;
 use marks::Shown;
+use probe::Probing;
 use program::Regions;
 use resources::Resources;
 use web_time::Instant;
 
 use crate::expr::compile::Deps;
-use crate::{Data, Error, Gpu, Result, Scene, Space};
+use crate::{Data, Error, Gpu, Result, Row, Scene, Space};
 
 /// Where a frame is drawn: a texture view, its format and size in physical pixels, and how many
 /// physical pixels make a CSS pixel.
@@ -37,19 +51,10 @@ pub struct Target<'a> {
     pub pixel_ratio: f32,
 }
 
-/// What happened in a view, for the application to act on.
-#[derive(Clone, PartialEq, Debug)]
-#[non_exhaustive]
-pub enum Event {
-    /// A mark does not fit its data and draws nothing until a scene or data fixes it.
-    Error(Error),
-    /// The camera moved.
-    Camera,
-}
-
 /// A scene drawn from named data: the application owns data and scene; the view owns camera,
-/// coordinate, and what the frame needs. It has no loop: [`render`](View::render) records a frame
-/// into an encoder the application submits.
+/// coordinate, selection, and what the frame needs. It has no loop: [`render`](View::render) records
+/// a frame into an encoder the application submits, and [`input`](View::input) takes the platform's
+/// pointer and keys.
 ///
 /// ```no_run
 /// # async fn example() -> latkit::Result<()> {
@@ -59,7 +64,7 @@ pub enum Event {
 /// data.apply(Table::new("Node", 3).field("x", vec![0.0, 1.0, 2.0]).field("y", vec![0.0, 1.0, 0.0]))?;
 /// let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(Vertices::of("graph", "Node").position("x", "y")))?;
 /// view.set_data(data);
-/// view.fit();
+/// view.fit(latkit::Fit::All);
 /// # Ok(()) }
 /// ```
 pub struct View {
@@ -69,9 +74,16 @@ pub struct View {
     marks: Vec<Shown>,
     camera: Camera,
     flight: Option<Flight>,
+    /// Degrees of bearing per second.
+    orbit: f64,
+    /// CSS pixels kept clear at the top, right, bottom, and left.
+    insets: [f32; 4],
     fitting: Fitting,
+    /// The value range a plot without one shows, fitted to its traces.
+    plot_y: Option<[f64; 2]>,
     at: f64,
     start: Instant,
+    last: Option<Instant>,
     events: Vec<Event>,
     waker: Option<Waker>,
     resources: Option<Resources>,
@@ -83,6 +95,15 @@ pub struct View {
     changed: bool,
     /// The last upload error reported, so a lasting one is reported once.
     upload_error: Option<Error>,
+    focus: Focus,
+    probing: Probing,
+    gestures: Gestures,
+    /// The pointer over the view, CSS pixels.
+    pointer: Option<[f32; 2]>,
+    /// The size of the last frame, CSS pixels, and its pixel ratio.
+    size: [f64; 2],
+    pixel_ratio: f32,
+    stats: Stats,
 }
 
 struct Flight {
@@ -105,9 +126,13 @@ impl View {
             marks: Vec::new(),
             camera,
             flight: None,
-            fitting: Fitting::Idle,
+            orbit: 0.0,
+            insets: [0.0; 4],
+            fitting: Fitting::default(),
+            plot_y: None,
             at: f64::INFINITY,
             start: Instant::now(),
+            last: None,
             events: Vec::new(),
             waker: None,
             resources: None,
@@ -115,6 +140,13 @@ impl View {
             layout_dirty: true,
             changed: true,
             upload_error: None,
+            focus: Focus::default(),
+            probing: Probing::default(),
+            gestures: Gestures::default(),
+            pointer: None,
+            size: [0.0; 2],
+            pixel_ratio: 1.0,
+            stats: Stats::default(),
         };
         view.show(scene)?;
         Ok(view)
@@ -135,7 +167,7 @@ impl View {
         // Compile every new or changed mark before changing anything.
         let mut fresh = Vec::with_capacity(scene.marks.len());
         for (i, mark) in scene.marks.iter().enumerate() {
-            let kept = !theme_changed && self.marks.iter().any(|s| s.mark == *mark);
+            let kept = !theme_changed && self.marks.iter().any(|s| s.mark.draws_like(mark));
             if kept {
                 fresh.push(None);
                 continue;
@@ -151,10 +183,13 @@ impl View {
             .zip(fresh)
             .map(|(mark, fresh)| {
                 fresh.unwrap_or_else(|| {
-                    old.iter_mut()
-                        .find(|s| s.as_ref().is_some_and(|s| s.mark == *mark))
+                    let mut kept = old
+                        .iter_mut()
+                        .find(|s| s.as_ref().is_some_and(|s| s.mark.draws_like(mark)))
                         .and_then(Option::take)
-                        .expect("kept")
+                        .expect("kept");
+                    kept.mark = mark.clone();
+                    kept
                 })
             })
             .collect();
@@ -164,8 +199,10 @@ impl View {
         drop(inner);
         if !self.camera.fits(&scene.space) {
             self.camera = Camera::default_for(&scene.space);
+            self.plot_y = None;
         }
         self.scene = scene;
+        self.focus.dirty = true;
         self.invalidate();
         Ok(())
     }
@@ -193,6 +230,7 @@ impl View {
             }
         }
         drop(inner);
+        self.focus.dirty = true;
         self.invalidate();
     }
 
@@ -236,11 +274,9 @@ impl View {
 
     /// Looks through `camera` at once.
     pub fn set_camera(&mut self, camera: Camera) {
-        if camera.fits(&self.scene.space) {
+        if camera.fits(&self.scene.space) && camera != self.camera {
             self.flight = None;
-            self.camera = camera;
-            self.events.push(Event::Camera);
-            self.wake();
+            self.move_camera(camera);
         }
     }
 
@@ -253,10 +289,73 @@ impl View {
         }
     }
 
-    /// Frames everything drawn, on the next frame.
-    pub fn fit(&mut self) {
-        self.fitting = Fitting::Requested;
+    /// Frames what `fit` names on the next frame, keeping pitch and bearing.
+    pub fn fit(&mut self, fit: Fit) {
+        self.focus.fitting = match &fit {
+            Fit::Rows(rows) => rows.clone(),
+            Fit::Reveal(row) => vec![row.clone()],
+            _ => Vec::new(),
+        };
+        self.focus.dirty = true;
+        self.fitting.wanted = Some(fit);
         self.wake();
+    }
+
+    /// CSS pixels kept clear at the top, right, bottom, and left: the camera centers and fits in what
+    /// remains, as when panels cover part of the view.
+    pub fn insets(&self) -> [f32; 4] {
+        self.insets
+    }
+
+    /// Keeps `insets` clear.
+    pub fn set_insets(&mut self, insets: [f32; 4]) {
+        if insets != self.insets {
+            self.insets = insets;
+            self.wake();
+        }
+    }
+
+    /// Degrees of bearing a map or plane turns each second.
+    pub fn orbit(&self) -> f64 {
+        self.orbit
+    }
+
+    /// Turns the camera `degrees_per_second` around its center; zero stops it.
+    pub fn set_orbit(&mut self, degrees_per_second: f64) {
+        self.orbit = if degrees_per_second.is_finite() { degrees_per_second } else { 0.0 };
+        self.last = None;
+        self.wake();
+    }
+
+    /// The rows selected.
+    pub fn selection(&self) -> &[Row] {
+        &self.focus.selection
+    }
+
+    /// Selects `rows`, and no others.
+    pub fn select(&mut self, rows: impl IntoIterator<Item = Row>) {
+        let rows: Vec<Row> = rows.into_iter().collect();
+        if rows != self.focus.selection {
+            self.focus.selection = rows;
+            self.focus.dirty = true;
+            self.wake();
+        }
+    }
+
+    /// The pointer the view asks for over what it shows.
+    pub fn cursor(&self) -> Cursor {
+        self.gestures.cursor(self.probing.hovered(), &self.scene)
+    }
+
+    /// What the view did.
+    pub fn stats(&self) -> Stats {
+        let inner = self.gpu.0.lock();
+        Stats {
+            rows: self.marks.iter().map(|m| u64::from(m.rows)).sum(),
+            uploading: inner.arena.pending(),
+            gpu_bytes: inner.arena.resident(),
+            ..self.stats
+        }
     }
 
     /// What happened since the last call.
@@ -269,11 +368,13 @@ impl View {
         self.waker = Some(waker);
     }
 
-    /// Whether a frame would differ from the last one.
+    /// Whether a frame would differ from the last one, or the view waits on the GPU.
     pub fn needs_render(&self) -> bool {
         self.changed
             || self.fitting.busy()
             || self.flight.is_some()
+            || (self.orbit != 0.0 && matches!(self.camera, Camera::Map { .. }))
+            || self.probing.busy()
             || self.marks.iter().any(|m| m.dirty != 0 || m.reduce || m.tables.waiting())
             || self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME)))
             || self.gpu.0.lock().arena.uploading()
@@ -289,20 +390,70 @@ impl View {
     fn invalidate(&mut self) {
         self.layout_dirty = true;
         self.regions.relayout = true;
+        self.fitting.plot_due = true;
         self.wake();
     }
 
-    /// The camera now, advancing a flight.
-    fn advance(&mut self) {
-        let Some(flight) = &self.flight else { return };
-        let t = (flight.start.elapsed().as_secs_f64() / flight.duration.as_secs_f64()).min(1.0);
-        let eased = t * t * (3.0 - 2.0 * t);
-        let earth = matches!(self.scene.space, Space::Earth(_));
-        self.camera = flight.from.ease(&flight.to, eased, earth);
-        self.events.push(Event::Camera);
-        if t >= 1.0 {
-            self.flight = None;
+    /// Moves the camera, telling the application once per batch of moves.
+    fn move_camera(&mut self, camera: Camera) {
+        self.camera = camera;
+        self.fitting.plot_due = true;
+        if self.events.last() != Some(&Event::Camera) {
+            self.events.push(Event::Camera);
         }
+        self.wake();
+    }
+
+    /// Advances a flight and the orbit.
+    fn advance(&mut self) {
+        let now = Instant::now();
+        let dt = self.last.map_or(0.0, |last| now.duration_since(last).as_secs_f64()).min(0.1);
+        self.last = Some(now);
+        if let Some(flight) = &self.flight {
+            let t = (flight.start.elapsed().as_secs_f64() / flight.duration.as_secs_f64()).min(1.0);
+            let eased = t * t * (3.0 - 2.0 * t);
+            let earth = matches!(self.scene.space, Space::Earth(_));
+            let camera = flight.from.ease(&flight.to, eased, earth);
+            if t >= 1.0 {
+                self.flight = None;
+            }
+            self.move_camera(camera);
+        }
+        if self.orbit != 0.0 && dt > 0.0 && matches!(self.camera, Camera::Map { .. }) {
+            let camera = self.camera.turned([self.orbit * dt, 0.0]);
+            self.move_camera(camera);
+        }
+    }
+
+    /// The part of the view the camera frames: inside the insets, and on a plot inside its axes.
+    fn area(&self) -> Area {
+        let [w, h] = self.size;
+        let [top, right, bottom, left] = self.insets.map(f64::from);
+        let mut area = [left, top, w - right, h - bottom];
+        if let Space::Plot(plot) = &self.scene.space {
+            let gutters = axes::gutters(plot, &self.scene.theme);
+            area = [area[0] + gutters[3], area[1] + gutters[0], area[2] - gutters[1], area[3] - gutters[2]];
+        }
+        if area[2] - area[0] < 1.0 {
+            area[2] = area[0] + 1.0;
+        }
+        if area[3] - area[1] < 1.0 {
+            area[3] = area[1] + 1.0;
+        }
+        area
+    }
+
+    /// The camera the frame draws through: a plot without a value range shows the fitted one.
+    fn drawn_camera(&self) -> Camera {
+        match self.camera {
+            Camera::Plot { x, y: None } => Camera::Plot { x, y: Some(self.plot_y.unwrap_or([0.0, 1.0])) },
+            camera => camera,
+        }
+    }
+
+    fn projected(&self) -> Projected {
+        let space = &self.scene.space;
+        Projected::new(space, &self.drawn_camera(), self.size, self.area(), Projected::globe_of(space))
     }
 }
 

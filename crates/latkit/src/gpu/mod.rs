@@ -2,6 +2,7 @@
 //! dictionaries every view draws from.
 
 pub(crate) mod arena;
+pub(crate) mod atlas;
 pub(crate) mod colormaps;
 pub(crate) mod dictionary;
 pub(crate) mod pipelines;
@@ -12,10 +13,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use arena::Arena;
+use atlas::Atlas;
 use colormaps::Colormaps;
 use dictionary::Dictionaries;
 use pipelines::Pipelines;
 
+use crate::host::Host;
 use crate::{Error, Result};
 
 /// The GPU device that views draw with. Cheap to clone; views of one `Gpu` share uploaded data.
@@ -38,6 +41,8 @@ pub(crate) struct Inner {
     pub(crate) pipelines: Pipelines,
     pub(crate) colormaps: Colormaps,
     pub(crate) dictionaries: Dictionaries,
+    pub(crate) atlas: Atlas,
+    pub(crate) host: Option<Arc<dyn Host>>,
     pub(crate) budget: Budget,
 }
 
@@ -115,6 +120,8 @@ impl Gpu {
             pipelines: Pipelines::new(&device),
             colormaps: Colormaps::new(&device),
             dictionaries: Dictionaries::default(),
+            atlas: Atlas::new(&device),
+            host: None,
             budget: Budget::default(),
         };
         #[cfg_attr(
@@ -153,6 +160,11 @@ impl Gpu {
     /// How much GPU memory latkit uses.
     pub fn budget(&self) -> Budget {
         self.0.lock().budget
+    }
+
+    /// Gives views the platform's services, such as setting text.
+    pub fn set_host(&self, host: impl Host) {
+        self.0.lock().host = Some(Arc::new(host));
     }
 
     /// Whether the device was lost; drawing then does nothing, and a new `Gpu` is needed.

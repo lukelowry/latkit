@@ -92,14 +92,15 @@ impl Color {
         Color::rgba(red, green, blue, alpha)
     }
 
-    pub(crate) fn to_bytes(self) -> [u8; 4] {
+    /// Red, green, blue, and alpha as bytes.
+    pub fn to_rgba8(self) -> [u8; 4] {
         let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         [q(self.r), q(self.g), q(self.b), q(self.a)]
     }
 
     /// Packed as WGSL's `pack4x8unorm`: red in the low byte.
     pub(crate) fn packed(self) -> u32 {
-        u32::from_le_bytes(self.to_bytes())
+        u32::from_le_bytes(self.to_rgba8())
     }
 
     pub(crate) fn to_array(self) -> [f32; 4] {
@@ -114,7 +115,7 @@ impl Color {
 
 impl fmt::Display for Color {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let [red, green, blue, alpha] = self.to_bytes();
+        let [red, green, blue, alpha] = self.to_rgba8();
         write!(f, "#{red:02x}{green:02x}{blue:02x}")?;
         if alpha == 255 { Ok(()) } else { write!(f, "{alpha:02x}") }
     }

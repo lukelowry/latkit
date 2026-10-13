@@ -23,9 +23,14 @@ struct Entry {
 const ENTRIES: &[Entry] = &[
     Entry { module: "compute::evaluate", variants: &[("main", &["writes"])] },
     Entry { module: "compute::bounds", variants: &[("main", &[])] },
+    Entry { module: "compute::normals", variants: &[("main", &[])] },
+    Entry { module: "compute::probe", variants: &[("main", &[])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
     Entry { module: "draw::vertices", variants: &[("main", &[]), ("shadow", &["shadow"])] },
     Entry { module: "draw::edges", variants: &[("main", &[])] },
+    Entry { module: "draw::faces", variants: &[("main", &[])] },
+    Entry { module: "draw::lines", variants: &[("main", &[])] },
+    Entry { module: "draw::overlay", variants: &[("main", &[])] },
 ];
 
 const FEATURES: &[&str] = &["writes", "shadow", "pick", "custom"];
@@ -205,6 +210,9 @@ fn bindings(module: &naga::Module, info: Option<&ModuleInfo>, group: u32) -> Vec
                 format!("Kind::Storage {{ read_only: {} }}", !access.contains(StorageAccess::STORE))
             }
             (AddressSpace::Handle, TypeInner::Sampler { .. }) => "Kind::Sampler".to_owned(),
+            (AddressSpace::Handle, TypeInner::Image { dim: ImageDimension::D2, class: ImageClass::Depth { multi }, .. }) => {
+                format!("Kind::Depth {{ multisampled: {multi} }}")
+            }
             (AddressSpace::Handle, TypeInner::Image { dim: ImageDimension::D2, arrayed, class }) => {
                 let filterable = matches!(class, ImageClass::Sampled { kind: ScalarKind::Float, multi: false });
                 format!("Kind::Texture {{ array: {arrayed}, filterable: {filterable} }}")

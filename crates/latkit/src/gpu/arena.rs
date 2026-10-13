@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use rustc_hash::FxBuildHasher;
 
-use crate::data::{FramePage, Geometry, PageId, Values};
+use crate::data::{AxisPage, FramePage, Geometry, PageId, Values};
 use crate::expr::compile::Part;
 use crate::gpu::shaders::{MISSING, NONE};
 use crate::{Error, Result};
@@ -35,6 +35,8 @@ pub(crate) enum Content {
     Values { values: Values, part: Part, low: bool },
     /// A page of samples; it may grow, and only its new tail uploads.
     Frames(FramePage),
+    /// A page of axis coordinates; it grows like a page of samples.
+    Axis(AxisPage),
     /// Words computed on the CPU: text codes, join rows.
     Words(Vec<u32>),
 }
@@ -45,6 +47,7 @@ impl Content {
         match self {
             Content::Values { values, .. } => values.len() as u32,
             Content::Frames(page) => page.read(<[f32]>::len) as u32,
+            Content::Axis(page) => page.read(<[u32]>::len) as u32,
             Content::Words(words) => words.len() as u32,
         }
     }
@@ -56,13 +59,14 @@ impl Content {
             Content::Frames(page) => {
                 page.read(|values| values[from.min(values.len())..].iter().map(|v| v.to_bits()).collect())
             }
+            Content::Axis(page) => page.read(|words| words[from.min(words.len())..].to_vec()),
             Content::Words(words) => words[from.min(words.len())..].to_vec(),
         }
     }
 
     fn class(&self, words: u32) -> usize {
         match self {
-            Content::Frames(_) => CLASSES - 1,
+            Content::Frames(_) | Content::Axis(_) => CLASSES - 1,
             _ => class_of(words),
         }
     }
@@ -197,6 +201,16 @@ impl Arena {
     /// Whether uploads are waiting.
     pub(crate) fn uploading(&self) -> bool {
         !self.uploads.is_empty()
+    }
+
+    /// Bytes waiting to upload.
+    pub(crate) fn pending(&self) -> u64 {
+        self.contents.values().map(|c| u64::from(c.len()) * 4).sum()
+    }
+
+    /// Bytes of resident blocks.
+    pub(crate) fn resident(&self) -> u64 {
+        self.resident
     }
 
     /// Uploads queued pages, at least one and at most `budget` bytes; returns the bytes uploaded.

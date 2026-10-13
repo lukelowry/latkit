@@ -3,7 +3,8 @@
  * the wasm module: a scene is JSON the view decodes.
  */
 
-/** A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. */
+/** A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. Where an option takes an expression, a
+ * string starting with `#` is a hex color and any other string names a field. */
 export type Color = string;
 
 /** What an expression is written as: an {@link Expr}, or its JSON form. */
@@ -285,14 +286,31 @@ export type ColormapName =
   | 'tableau10'
   | 'turbo';
 
-/** What a view draws. */
+/** What a view draws and how it answers input. */
 export interface Scene {
   space: Space;
   marks?: Mark[];
   layout?: Layout;
   theme?: 'dark' | 'light' | Theme;
+  controls?: Controls;
   /** Seconds that changes ease over. */
   ease?: number;
+}
+
+/** How a view answers the pointer and keyboard; every option is on by default. */
+export interface Controls {
+  /** Dragging the background moves the camera. */
+  pan?: boolean;
+  /** The wheel and pinching zoom. */
+  zoom?: boolean;
+  /** Dragging with the secondary button, or with Shift, turns and tilts a map or plane. */
+  turn?: boolean;
+  /** Arrows pan, `+` and `-` zoom, Home fits, and Escape clears the selection. */
+  keyboard?: boolean;
+  /** Rows under the pointer glow. */
+  hover?: boolean;
+  /** CSS pixels around the pointer that picks reach, 6 by default; touch reaches 8 more. */
+  pickRadius?: number;
 }
 
 export type Space =
@@ -327,6 +345,17 @@ export interface Theme {
   vertexRadius?: number;
   edge?: Color | null;
   edgeWidth?: number;
+  line?: Color;
+  lineWidth?: number;
+  /** How much a face turned away from the camera darkens, 0 to 1. */
+  shading?: number;
+  /** Text: axis ticks and titles. */
+  text?: Color;
+  /** A CSS font family list. */
+  font?: string;
+  fontSize?: number;
+  /** The line a plot draws at the shown coordinate. */
+  playhead?: Color;
   missing?: Color;
   hover?: Color;
   selected?: Color | null;
@@ -344,7 +373,14 @@ interface Style {
   of: [data: string, table: string];
   color?: ExprInput;
   visible?: ExprInput;
+  /** Tells two marks of one table apart across scenes. */
   name?: string;
+  /** Whether rows are hovered, clicked, and probed; on by default. */
+  pick?: boolean;
+  /** Whether a click selects a row; on by default. */
+  select?: boolean;
+  /** Whether pressing a row drags it instead of panning; off by default. */
+  drag?: boolean;
 }
 
 export type Marker = 'disc' | 'ellipse' | 'rectangle' | 'rounded' | 'diamond' | 'block' | { block: { corner?: number } };
@@ -366,4 +402,12 @@ export type Mark =
         dash?: ExprInput;
         flow?: ExprInput;
       };
+    }
+  | {
+      /** Triangles between three vertices; without a color, each blends its corners' colors. */
+      faces: Style & { corners: [a: string, b: string, c: string] };
+    }
+  | {
+      /** On a plot, each row traces the sampled field `samples` across the axis. */
+      lines: Style & { samples: string; width?: Size; dash?: ExprInput };
     };

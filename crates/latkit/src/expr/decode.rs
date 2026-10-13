@@ -1,5 +1,5 @@
 //! Expressions from serde data, mirroring the builders: a number or boolean is a constant, a string a
-//! field, and an object one node:
+//! field (or a hex color when it starts with `#`), and an object one node:
 //!
 //! | Form                                                     | Builder                         |
 //! | -------------------------------------------------------- | ------------------------------- |
@@ -94,7 +94,11 @@ impl<'de> Visitor<'de> for ExprVisitor {
         Ok(v.into())
     }
 
+    /// A string is a field, or a hex color when it starts with `#`.
     fn visit_str<E: de::Error>(self, v: &str) -> Result<Expr, E> {
+        if v.starts_with('#') {
+            return Color::hex(v).map(Expr::from).ok_or_else(|| de::Error::custom(format!("not a hex color: {v:?}")));
+        }
         Ok(super::field(v))
     }
 

@@ -1,7 +1,8 @@
 //! The latkit npm package: data, patches, and views for the browser, over WebGPU.
 //!
-//! Scenes and cameras cross as JSON in the forms `latkit`'s serde support reads; field values cross
-//! as typed arrays or arrays and are copied once. The npm wrapper adds the expression builders.
+//! Scenes, cameras, and fits cross as JSON in the forms `latkit`'s serde support reads; field values
+//! cross as typed arrays or arrays and are copied once; events cross as `{ type, detail }` objects.
+//! The npm wrapper adds the expression builders and typed listeners.
 
 #![cfg(target_arch = "wasm32")]
 #![allow(unsafe_code, reason = "wasm-bindgen's generated glue")]
@@ -37,7 +38,25 @@ impl Gpu {
         let view = latkit::View::new(&self.0, scene)?;
         Ok(View(latkit::web::Canvas::new(&self.0, canvas, view)?))
     }
+
+    /// Calls `listener` with the frame's timestamp every animation frame, before the views draw.
+    #[wasm_bindgen(js_name = onFrame)]
+    pub fn on_frame(&self, listener: js_sys::Function) -> Listener {
+        Listener(latkit::web::on_frame(&self.0, move |now| {
+            let _ = listener.call1(&JsValue::NULL, &now.into());
+        }))
+    }
+
+    /// Whether the device was lost.
+    #[wasm_bindgen(getter)]
+    pub fn lost(&self) -> bool {
+        self.0.lost()
+    }
 }
+
+/// A listener; freeing it stops it.
+#[wasm_bindgen]
+pub struct Listener(#[allow(dead_code, reason = "kept until freed")] latkit::web::Listener);
 
 /// A named, immutable collection of tables; `apply` replaces it with the next version.
 #[wasm_bindgen]
@@ -60,9 +79,15 @@ impl Data {
         self.0.name().to_string()
     }
 
-    /// Applies every change of `patch`, or none.
-    pub fn apply(&mut self, patch: &Patch) -> Result<(), Error> {
-        Ok(self.0.apply(patch.0.clone())?)
+    /// The first and last axis coordinates the sampled fields span.
+    #[wasm_bindgen(getter)]
+    pub fn span(&self) -> Option<Vec<f64>> {
+        self.0.span().map(Vec::from)
+    }
+
+    /// Applies every change of `patch`, or none; the patch is spent.
+    pub fn apply(&mut self, patch: Patch) -> Result<(), Error> {
+        Ok(self.0.apply(patch.0)?)
     }
 
     /// Applies a patch received as bytes.
@@ -141,6 +166,11 @@ impl Patch {
         Ok(())
     }
 
+    /// Forgets every sampled field's frames before axis coordinate `before`.
+    pub fn forget(&mut self, before: f64) {
+        self.take(|p| p.forget(before));
+    }
+
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.0.to_bytes()
@@ -175,7 +205,7 @@ impl View {
 
     #[wasm_bindgen(getter)]
     pub fn at(&self) -> f64 {
-        self.0.with(|v| v.at())
+        self.0.read(latkit::View::at)
     }
 
     #[wasm_bindgen(setter)]
@@ -186,7 +216,7 @@ impl View {
     /// The camera as JSON.
     #[wasm_bindgen(getter)]
     pub fn camera(&self) -> String {
-        self.0.with(|v| serde_json::to_string(v.camera()).expect("a camera serializes"))
+        self.0.read(|v| serde_json::to_string(v.camera()).expect("a camera serializes"))
     }
 
     /// Looks through the camera (JSON) at once.
@@ -204,8 +234,61 @@ impl View {
         Ok(())
     }
 
-    /// Frames everything drawn.
-    pub fn fit(&self) {
-        self.0.with(latkit::View::fit);
+    /// Frames what `fit` (JSON) names.
+    pub fn fit(&self, fit: &str) -> Result<(), Error> {
+        let fit: latkit::Fit = serde_json::from_str(fit).map_err(|e| invalid("fit", &e))?;
+        self.0.with(|v| v.fit(fit));
+        Ok(())
     }
+
+    #[wasm_bindgen(getter)]
+    pub fn insets(&self) -> Vec<f32> {
+        self.0.read(|v| v.insets().to_vec())
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_insets(&self, insets: &[f32]) -> Result<(), Error> {
+        let insets: [f32; 4] = insets.try_into().map_err(|_| latkit::Error::invalid("four insets").at("insets"))?;
+        self.0.with(|v| v.set_insets(insets));
+        Ok(())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn orbit(&self) -> f64 {
+        self.0.read(latkit::View::orbit)
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_orbit(&self, degrees_per_second: f64) {
+        self.0.with(|v| v.set_orbit(degrees_per_second));
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn selection(&self) -> js_sys::Array {
+        self.0.read(|v| v.selection().iter().map(convert::row).collect())
+    }
+
+    pub fn select(&self, rows: &js_sys::Array) -> Result<(), Error> {
+        let rows = rows.iter().map(|r| convert::row_of(&r)).collect::<latkit::Result<Vec<_>>>()?;
+        self.0.with(|v| v.select(rows));
+        Ok(())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn stats(&self) -> JsValue {
+        convert::stats(&self.0.read(latkit::View::stats))
+    }
+
+    /// Calls `listener` with each event as `{ type, detail }`.
+    pub fn on(&self, listener: js_sys::Function) -> Listener {
+        Listener(self.0.on(move |event| {
+            let _ = listener.call1(&JsValue::NULL, &convert::event(event));
+        }))
+    }
+}
+
+/// A catalog colormap's 256 RGBA texels, for legends.
+#[wasm_bindgen]
+pub fn colormap(name: &str) -> Option<Vec<u8>> {
+    latkit::Colormap::named(name).map(|map| (0..256).flat_map(|i| map.sample(i as f32 / 255.0).to_rgba8()).collect())
 }

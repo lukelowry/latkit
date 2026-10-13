@@ -80,7 +80,7 @@ impl Edges {
             Some(size) => c.channel("width", &size.expr, width(size.units))?,
             None => c.theme("width", wgsl::THEME_EDGE_WIDTH, width(false))?,
         }
-        Ok(Drawing { kind: MarkKind::Edges, stride: wgsl::EDGE_WORDS, flags, marker: (0, 0, 0.0) })
+        Ok(Drawing { kind: MarkKind::Edges, stride: wgsl::EDGE_WORDS, flags, marker: (0, 0, 0.0), trace: wgsl::NONE })
     }
 }
 

@@ -9,6 +9,7 @@ pub(crate) enum Kind {
     Uniform,
     Storage { read_only: bool },
     Texture { array: bool, filterable: bool },
+    Depth { multisampled: bool },
     Sampler,
 }
 
@@ -63,6 +64,11 @@ impl Binding {
                     wgpu::TextureViewDimension::D2
                 },
                 multisampled: false,
+            },
+            Kind::Depth { multisampled } => wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled,
             },
             Kind::Sampler => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         };
