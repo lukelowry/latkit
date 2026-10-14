@@ -1,7 +1,7 @@
-use super::{Edges, Faces, Label, Lines, Vertices};
+use super::{Areas, Edges, Faces, Label, Lines, Vertices};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Expr, Name, Result, Size};
+use crate::{Expr, Name, Result, Size, Space};
 
 /// One drawn table of a scene.
 #[derive(Clone, PartialEq, Debug)]
@@ -13,8 +13,10 @@ pub enum Mark {
     Edges(Edges),
     /// Rows drawn as triangles between three vertices.
     Faces(Faces),
-    /// Rows drawn as lines through their samples.
+    /// Rows drawn as lines along their paths, or on a plot through their samples.
     Lines(Lines),
+    /// Rows drawn as the areas their polygons cover.
+    Areas(Areas),
 }
 
 impl From<Vertices> for Mark {
@@ -38,6 +40,12 @@ impl From<Faces> for Mark {
 impl From<Lines> for Mark {
     fn from(mark: Lines) -> Mark {
         Mark::Lines(mark)
+    }
+}
+
+impl From<Areas> for Mark {
+    fn from(mark: Areas) -> Mark {
+        Mark::Areas(mark)
     }
 }
 
@@ -129,6 +137,7 @@ pub(crate) enum MarkKind {
     Edges,
     Faces,
     Lines,
+    Areas,
 }
 
 impl MarkKind {
@@ -137,7 +146,7 @@ impl MarkKind {
         match self {
             MarkKind::Vertices => Primitive::Points,
             MarkKind::Edges | MarkKind::Lines => Primitive::Strokes,
-            MarkKind::Faces => Primitive::Triangles,
+            MarkKind::Faces | MarkKind::Areas => Primitive::Triangles,
         }
     }
 }
@@ -198,12 +207,19 @@ pub(crate) struct Labeling {
     pub(crate) max_width: Option<f32>,
 }
 
-/// What a mark compiles in: the theme it falls back on, and whether its space is a diagram, where
-/// every length is a unit and the sheet says where vertices stand and how wires run.
+/// What a mark compiles in: the theme it falls back on, and its space.
 #[derive(Clone, Copy)]
 pub(crate) struct Context<'a> {
     pub(crate) theme: &'a super::Theme,
-    pub(crate) diagram: bool,
+    pub(crate) space: &'a Space,
+}
+
+impl Context<'_> {
+    /// Whether the space is a diagram, where every length is a unit and the sheet says where vertices
+    /// stand and how wires run.
+    pub(crate) fn diagram(&self) -> bool {
+        matches!(self.space, Space::Diagram(_))
+    }
 }
 
 /// What a compiled mark draws with, besides its program.
@@ -212,7 +228,8 @@ pub(crate) struct Drawing {
     pub(crate) kind: MarkKind,
     /// The primitive the mark draws its rows with.
     pub(crate) primitive: Primitive,
-    /// Where a stroke's segments run between: one of the `PATH_*` codes.
+    /// Where a stroke's segments run between, or where a triangle's corners come from: one of the
+    /// `PATH_*` codes.
     pub(crate) path: u32,
     /// Kind words per row, and extra words per row after them.
     pub(crate) stride: u32,
@@ -221,8 +238,9 @@ pub(crate) struct Drawing {
     pub(crate) markers: Markers,
     /// The program column a line traces, or `NONE`.
     pub(crate) trace: u32,
-    /// Program columns: the geometry a stroke's path runs through (a diagram's route, or bends), and
-    /// each row's lane among edges joining the same two vertices; `NONE` without.
+    /// Program columns: the geometry a stroke's path runs through (a diagram's route, bends, or a
+    /// line's path) or an area's triangles; and each row's lane among edges joining the same two
+    /// vertices; `NONE` without.
     pub(crate) geometry: u32,
     pub(crate) lane: u32,
     pub(crate) label: Option<Labeling>,
@@ -236,9 +254,10 @@ pub(crate) struct Drawing {
 impl Drawing {
     pub(crate) fn new(kind: MarkKind, stride: u32) -> Drawing {
         let path = match kind {
-            MarkKind::Edges => wgsl::PATH_ENDS,
+            MarkKind::Edges | MarkKind::Faces => wgsl::PATH_ENDS,
             MarkKind::Lines => wgsl::PATH_TRACE,
-            MarkKind::Vertices | MarkKind::Faces => wgsl::NONE,
+            MarkKind::Areas => wgsl::PATH_GEOMETRY,
+            MarkKind::Vertices => wgsl::NONE,
         };
         Drawing {
             kind,
@@ -265,6 +284,7 @@ impl Mark {
             Mark::Edges(m) => &m.style,
             Mark::Faces(m) => &m.style,
             Mark::Lines(m) => &m.style,
+            Mark::Areas(m) => &m.style,
         }
     }
 
@@ -274,6 +294,7 @@ impl Mark {
             Mark::Edges(m) => &mut m.style,
             Mark::Faces(m) => &mut m.style,
             Mark::Lines(m) => &mut m.style,
+            Mark::Areas(m) => &mut m.style,
         }
     }
 
@@ -283,16 +304,19 @@ impl Mark {
             Mark::Edges(_) => MarkKind::Edges,
             Mark::Faces(_) => MarkKind::Faces,
             Mark::Lines(_) => MarkKind::Lines,
+            Mark::Areas(_) => MarkKind::Areas,
         }
     }
 
-    /// The path a stroke mark's rows run along, one of the `PATH_` codes, which its pipelines are made
-    /// for: in a diagram every wire runs through the geometry its sheet worked out.
-    pub(crate) fn path(&self, diagram: bool) -> Option<u32> {
+    /// The path a stroke mark's rows run along, or an area's triangles come from: one of the `PATH_`
+    /// codes, which its pipelines are made for. In a diagram every wire runs through the geometry
+    /// its sheet worked out; on a plot a line traces its samples, elsewhere it runs along its path.
+    pub(crate) fn path(&self, space: &Space) -> Option<u32> {
         match self {
-            Mark::Edges(_) if diagram => Some(wgsl::PATH_GEOMETRY),
+            Mark::Edges(_) if matches!(space, Space::Diagram(_)) => Some(wgsl::PATH_GEOMETRY),
             Mark::Edges(_) => Some(wgsl::PATH_ENDS),
-            Mark::Lines(_) => Some(wgsl::PATH_TRACE),
+            Mark::Lines(_) if matches!(space, Space::Plot(_)) => Some(wgsl::PATH_TRACE),
+            Mark::Lines(_) | Mark::Areas(_) => Some(wgsl::PATH_GEOMETRY),
             Mark::Vertices(_) | Mark::Faces(_) => None,
         }
     }
@@ -302,6 +326,11 @@ impl Mark {
     pub(crate) fn misplaced(&self, diagram: bool) -> Option<(&'static str, &'static str)> {
         const ONLY: &str = "only a diagram has ports, groups, nets, and orthogonal routes";
         let style = self.style();
+        if let Mark::Areas(_) = self
+            && style.shadow
+        {
+            return Some(("shadow", "an area lies on the ground: it casts no shadow"));
+        }
         if diagram {
             if style.shadow {
                 return Some(("shadow", "a diagram is flat: nothing casts shadows"));
@@ -345,6 +374,7 @@ impl Mark {
             Mark::Edges(m) => m.compile(compiler, context),
             Mark::Faces(m) => m.compile(compiler),
             Mark::Lines(m) => m.compile(compiler, context),
+            Mark::Areas(m) => m.compile(compiler, context),
         }?;
         let style = self.style();
         if let Some(label) = &style.label {

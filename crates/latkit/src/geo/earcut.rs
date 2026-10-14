@@ -1,0 +1,681 @@
+//! Ear clipping: a polygon with holes cut into triangles, after Mapbox's earcut. Holes join the outer
+//! ring through bridges; ears are clipped from a doubly linked ring, found by z-order hashing on
+//! large polygons; what will not clip is cured of local self-intersections, then split in two.
+
+/// No node.
+const NIL: u32 = u32::MAX;
+
+#[derive(Clone, Copy)]
+struct Node {
+    /// The vertex index.
+    i: u32,
+    x: f64,
+    y: f64,
+    prev: u32,
+    next: u32,
+    /// Z-order of the vertex, and its neighbors in z-order.
+    z: u32,
+    prev_z: u32,
+    next_z: u32,
+    /// Whether the vertex is a lone hole point, which may stay in the ring.
+    steiner: bool,
+}
+
+struct Rings<'a> {
+    nodes: Vec<Node>,
+    points: &'a [[f64; 2]],
+    triangles: Vec<[u32; 3]>,
+}
+
+/// The triangles of the polygon whose points are `points`: the outer ring first, then each hole from
+/// where `holes` starts it. Each triangle is three indices into `points`.
+pub(crate) fn earcut(points: &[[f64; 2]], holes: &[usize]) -> Vec<[u32; 3]> {
+    let mut rings = Rings { nodes: Vec::with_capacity(points.len() * 3 / 2), points, triangles: Vec::new() };
+    let outer_end = holes.first().copied().unwrap_or(points.len());
+    let mut outer = rings.linked(0, outer_end, true);
+    if outer == NIL || rings.n(outer).next == rings.n(outer).prev {
+        return rings.triangles;
+    }
+    if !holes.is_empty() {
+        outer = rings.eliminate_holes(holes, outer);
+    }
+    // Large polygons find ears through z-order hashing.
+    let (mut min, mut size) = ([0.0; 2], 0.0);
+    if points.len() > 80 {
+        let mut max = [f64::NEG_INFINITY; 2];
+        min = [f64::INFINITY; 2];
+        for p in &points[..outer_end] {
+            for k in 0..2 {
+                min[k] = min[k].min(p[k]);
+                max[k] = max[k].max(p[k]);
+            }
+        }
+        let span = (max[0] - min[0]).max(max[1] - min[1]);
+        size = if span > 0.0 { 32767.0 / span } else { 0.0 };
+    }
+    rings.clip(outer, min, size, 0);
+    rings.triangles
+}
+
+impl Rings<'_> {
+    fn n(&self, i: u32) -> &Node {
+        &self.nodes[i as usize]
+    }
+
+    fn m(&mut self, i: u32) -> &mut Node {
+        &mut self.nodes[i as usize]
+    }
+
+    fn xy(&self, i: u32) -> (f64, f64) {
+        let n = self.n(i);
+        (n.x, n.y)
+    }
+
+    /// A circular list of points `start..end`, wound as `clockwise` asks.
+    fn linked(&mut self, start: usize, end: usize, clockwise: bool) -> u32 {
+        let mut last = NIL;
+        if clockwise == (signed_area(&self.points[start..end]) > 0.0) {
+            for i in start..end {
+                last = self.insert(i as u32, last);
+            }
+        } else {
+            for i in (start..end).rev() {
+                last = self.insert(i as u32, last);
+            }
+        }
+        if last != NIL && self.equals(last, self.n(last).next) {
+            let next = self.n(last).next;
+            self.remove(last);
+            last = next;
+        }
+        last
+    }
+
+    fn insert(&mut self, i: u32, last: u32) -> u32 {
+        let [x, y] = self.points[i as usize];
+        let p = self.nodes.len() as u32;
+        let mut node = Node { i, x, y, prev: p, next: p, z: 0, prev_z: NIL, next_z: NIL, steiner: false };
+        if last == NIL {
+            self.nodes.push(node);
+        } else {
+            let after = self.n(last).next;
+            node.next = after;
+            node.prev = last;
+            self.nodes.push(node);
+            self.m(after).prev = p;
+            self.m(last).next = p;
+        }
+        p
+    }
+
+    fn remove(&mut self, p: u32) {
+        let Node { prev, next, prev_z, next_z, .. } = *self.n(p);
+        self.m(next).prev = prev;
+        self.m(prev).next = next;
+        if prev_z != NIL {
+            self.m(prev_z).next_z = next_z;
+        }
+        if next_z != NIL {
+            self.m(next_z).prev_z = prev_z;
+        }
+    }
+
+    fn equals(&self, a: u32, b: u32) -> bool {
+        self.xy(a) == self.xy(b)
+    }
+
+    /// Twice the signed area of the triangle `p q r`: negative turning one way.
+    fn area(&self, p: u32, q: u32, r: u32) -> f64 {
+        let ((px, py), (qx, qy), (rx, ry)) = (self.xy(p), self.xy(q), self.xy(r));
+        (qy - py) * (rx - qx) - (qx - px) * (ry - qy)
+    }
+
+    /// The ring from `start` without repeated points and straight runs.
+    fn filter(&mut self, start: u32, end: u32) -> u32 {
+        if start == NIL {
+            return start;
+        }
+        let mut end = if end == NIL { start } else { end };
+        let mut p = start;
+        loop {
+            let mut again = false;
+            let (prev, next) = (self.n(p).prev, self.n(p).next);
+            if !self.n(p).steiner && (self.equals(p, next) || self.area(prev, p, next) == 0.0) {
+                self.remove(p);
+                p = prev;
+                end = prev;
+                if p == self.n(p).next {
+                    break;
+                }
+                again = true;
+            } else {
+                p = next;
+            }
+            if !again && p == end {
+                break;
+            }
+        }
+        end
+    }
+
+    /// Clips ears from the ring at `ear`; past what clips, filters, cures, then splits, by `pass`.
+    fn clip(&mut self, ear: u32, min: [f64; 2], size: f64, pass: u8) {
+        if ear == NIL {
+            return;
+        }
+        if pass == 0 && size > 0.0 {
+            self.index(ear, min, size);
+        }
+        let (mut ear, mut stop) = (ear, ear);
+        while self.n(ear).prev != self.n(ear).next {
+            let (prev, next) = (self.n(ear).prev, self.n(ear).next);
+            let is_ear = if size > 0.0 { self.is_ear_hashed(ear, min, size) } else { self.is_ear(ear) };
+            if is_ear {
+                self.triangles.push([self.n(prev).i, self.n(ear).i, self.n(next).i]);
+                self.remove(ear);
+                ear = self.n(next).next;
+                stop = ear;
+                continue;
+            }
+            ear = next;
+            if ear == stop {
+                match pass {
+                    0 => {
+                        let filtered = self.filter(ear, NIL);
+                        self.clip(filtered, min, size, 1);
+                    }
+                    1 => {
+                        let filtered = self.filter(ear, NIL);
+                        let cured = self.cure(filtered);
+                        self.clip(cured, min, size, 2);
+                    }
+                    _ => self.split(ear, min, size),
+                }
+                break;
+            }
+        }
+    }
+
+    fn is_ear(&self, ear: u32) -> bool {
+        let (a, b, c) = (self.n(ear).prev, ear, self.n(ear).next);
+        if self.area(a, b, c) >= 0.0 {
+            return false;
+        }
+        let ((ax, ay), (bx, by), (cx, cy)) = (self.xy(a), self.xy(b), self.xy(c));
+        let (x0, y0, x1, y1) = (ax.min(bx).min(cx), ay.min(by).min(cy), ax.max(bx).max(cx), ay.max(by).max(cy));
+        let mut p = self.n(c).next;
+        while p != a {
+            let n = self.n(p);
+            if n.x >= x0
+                && n.x <= x1
+                && n.y >= y0
+                && n.y <= y1
+                && inside_triangle([ax, ay], [bx, by], [cx, cy], [n.x, n.y])
+                && self.area(n.prev, p, n.next) >= 0.0
+            {
+                return false;
+            }
+            p = n.next;
+        }
+        true
+    }
+
+    fn is_ear_hashed(&self, ear: u32, min: [f64; 2], size: f64) -> bool {
+        let (a, b, c) = (self.n(ear).prev, ear, self.n(ear).next);
+        if self.area(a, b, c) >= 0.0 {
+            return false;
+        }
+        let ((ax, ay), (bx, by), (cx, cy)) = (self.xy(a), self.xy(b), self.xy(c));
+        let (x0, y0, x1, y1) = (ax.min(bx).min(cx), ay.min(by).min(cy), ax.max(bx).max(cx), ay.max(by).max(cy));
+        let (low, high) = (z_order(x0, y0, min, size), z_order(x1, y1, min, size));
+        let blocks = |p: u32| {
+            let n = self.n(p);
+            n.x >= x0
+                && n.x <= x1
+                && n.y >= y0
+                && n.y <= y1
+                && p != a
+                && p != c
+                && inside_triangle([ax, ay], [bx, by], [cx, cy], [n.x, n.y])
+                && self.area(n.prev, p, n.next) >= 0.0
+        };
+        let (mut p, mut n) = (self.n(ear).prev_z, self.n(ear).next_z);
+        while p != NIL && self.n(p).z >= low && n != NIL && self.n(n).z <= high {
+            if blocks(p) {
+                return false;
+            }
+            p = self.n(p).prev_z;
+            if blocks(n) {
+                return false;
+            }
+            n = self.n(n).next_z;
+        }
+        while p != NIL && self.n(p).z >= low {
+            if blocks(p) {
+                return false;
+            }
+            p = self.n(p).prev_z;
+        }
+        while n != NIL && self.n(n).z <= high {
+            if blocks(n) {
+                return false;
+            }
+            n = self.n(n).next_z;
+        }
+        true
+    }
+
+    /// Clips the triangles of local self-intersections, returning the ring left.
+    fn cure(&mut self, start: u32) -> u32 {
+        let (mut p, mut start) = (start, start);
+        loop {
+            let a = self.n(p).prev;
+            let b = self.n(self.n(p).next).next;
+            let next = self.n(p).next;
+            if !self.equals(a, b)
+                && self.intersects(a, p, next, b)
+                && self.locally_inside(a, b)
+                && self.locally_inside(b, a)
+            {
+                self.triangles.push([self.n(a).i, self.n(p).i, self.n(b).i]);
+                self.remove(p);
+                self.remove(next);
+                p = b;
+                start = b;
+            }
+            p = self.n(p).next;
+            if p == start {
+                break;
+            }
+        }
+        self.filter(p, NIL)
+    }
+
+    /// Splits the ring in two along a valid diagonal, and clips each.
+    fn split(&mut self, start: u32, min: [f64; 2], size: f64) {
+        let mut a = start;
+        loop {
+            let mut b = self.n(self.n(a).next).next;
+            while b != self.n(a).prev {
+                if self.n(a).i != self.n(b).i && self.valid_diagonal(a, b) {
+                    let c = self.split_polygon(a, b);
+                    let a = self.filter(a, self.n(a).next);
+                    let c = self.filter(c, self.n(c).next);
+                    self.clip(a, min, size, 0);
+                    self.clip(c, min, size, 0);
+                    return;
+                }
+                b = self.n(b).next;
+            }
+            a = self.n(a).next;
+            if a == start {
+                break;
+            }
+        }
+    }
+
+    /// Joins every hole to the outer ring, leftmost first.
+    fn eliminate_holes(&mut self, holes: &[usize], mut outer: u32) -> u32 {
+        let mut queue = Vec::with_capacity(holes.len());
+        for (k, &start) in holes.iter().enumerate() {
+            let end = holes.get(k + 1).copied().unwrap_or(self.points.len());
+            if end <= start {
+                continue;
+            }
+            let list = self.linked(start, end, false);
+            if list == NIL {
+                continue;
+            }
+            if list == self.n(list).next {
+                self.m(list).steiner = true;
+            }
+            queue.push(self.leftmost(list));
+        }
+        queue.sort_by(|&a, &b| self.n(a).x.total_cmp(&self.n(b).x));
+        for hole in queue {
+            outer = self.eliminate_hole(hole, outer);
+        }
+        outer
+    }
+
+    fn eliminate_hole(&mut self, hole: u32, outer: u32) -> u32 {
+        let Some(bridge) = self.hole_bridge(hole, outer) else { return outer };
+        let reverse = self.split_polygon(bridge, hole);
+        self.filter(reverse, self.n(reverse).next);
+        self.filter(bridge, self.n(bridge).next)
+    }
+
+    /// The outer ring's point a hole joins it at: seen from the hole's leftmost point, nothing between.
+    fn hole_bridge(&self, hole: u32, outer: u32) -> Option<u32> {
+        let (hx, hy) = self.xy(hole);
+        let mut qx = f64::NEG_INFINITY;
+        let mut m = NIL;
+        let mut p = outer;
+        loop {
+            let (px, py) = self.xy(p);
+            let next = self.n(p).next;
+            let (nx, ny) = self.xy(next);
+            if hy <= py && hy >= ny && ny != py {
+                let x = px + (hy - py) * (nx - px) / (ny - py);
+                if x <= hx && x > qx {
+                    qx = x;
+                    m = if px < nx { p } else { next };
+                    if x == hx {
+                        return Some(m);
+                    }
+                }
+            }
+            p = next;
+            if p == outer {
+                break;
+            }
+        }
+        if m == NIL {
+            return None;
+        }
+        let stop = m;
+        let (mx, my) = self.xy(m);
+        let mut tan_min = f64::INFINITY;
+        p = m;
+        loop {
+            let (px, py) = self.xy(p);
+            let (ax, cx) = if hy < my { (hx, qx) } else { (qx, hx) };
+            if hx >= px && px >= mx && hx != px && inside_triangle([ax, hy], [mx, my], [cx, hy], [px, py]) {
+                let tan = (hy - py).abs() / (hx - px);
+                let (bx, _) = self.xy(m);
+                if self.locally_inside(p, hole)
+                    && (tan < tan_min || (tan == tan_min && (px > bx || (px == bx && self.sector_contains(m, p)))))
+                {
+                    m = p;
+                    tan_min = tan;
+                }
+            }
+            p = self.n(p).next;
+            if p == stop {
+                break;
+            }
+        }
+        Some(m)
+    }
+
+    fn sector_contains(&self, m: u32, p: u32) -> bool {
+        self.area(self.n(m).prev, m, self.n(p).prev) < 0.0 && self.area(self.n(p).next, m, self.n(m).next) < 0.0
+    }
+
+    fn leftmost(&self, start: u32) -> u32 {
+        let (mut p, mut left) = (start, start);
+        loop {
+            let (n, l) = (self.n(p), self.n(left));
+            if n.x < l.x || (n.x == l.x && n.y < l.y) {
+                left = p;
+            }
+            p = n.next;
+            if p == start {
+                break;
+            }
+        }
+        left
+    }
+
+    /// Links the ring in z-order, sorted.
+    fn index(&mut self, start: u32, min: [f64; 2], size: f64) {
+        let mut p = start;
+        loop {
+            let n = *self.n(p);
+            if n.z == 0 {
+                self.m(p).z = z_order(n.x, n.y, min, size);
+            }
+            self.m(p).prev_z = n.prev;
+            self.m(p).next_z = n.next;
+            p = n.next;
+            if p == start {
+                break;
+            }
+        }
+        let last = self.n(p).prev_z;
+        self.m(last).next_z = NIL;
+        self.m(p).prev_z = NIL;
+        self.sort(p);
+    }
+
+    /// Merge-sorts the z-order list from `list`.
+    fn sort(&mut self, mut list: u32) {
+        let mut in_size = 1;
+        loop {
+            let mut p = list;
+            list = NIL;
+            let mut tail = NIL;
+            let mut merges = 0;
+            while p != NIL {
+                merges += 1;
+                let mut q = p;
+                let mut p_size = 0;
+                for _ in 0..in_size {
+                    p_size += 1;
+                    q = self.n(q).next_z;
+                    if q == NIL {
+                        break;
+                    }
+                }
+                let mut q_size = in_size;
+                while p_size > 0 || (q_size > 0 && q != NIL) {
+                    let e;
+                    if p_size != 0 && (q_size == 0 || q == NIL || self.n(p).z <= self.n(q).z) {
+                        e = p;
+                        p = self.n(p).next_z;
+                        p_size -= 1;
+                    } else {
+                        e = q;
+                        q = self.n(q).next_z;
+                        q_size -= 1;
+                    }
+                    if tail == NIL {
+                        list = e;
+                    } else {
+                        self.m(tail).next_z = e;
+                    }
+                    self.m(e).prev_z = tail;
+                    tail = e;
+                }
+                p = q;
+            }
+            if tail != NIL {
+                self.m(tail).next_z = NIL;
+            }
+            in_size *= 2;
+            if merges <= 1 {
+                break;
+            }
+        }
+    }
+
+    fn valid_diagonal(&self, a: u32, b: u32) -> bool {
+        let (na, nb) = (self.n(a), self.n(b));
+        self.n(na.next).i != nb.i
+            && self.n(na.prev).i != nb.i
+            && !self.intersects_polygon(a, b)
+            && ((self.locally_inside(a, b)
+                && self.locally_inside(b, a)
+                && self.middle_inside(a, b)
+                && (self.area(na.prev, a, nb.prev) != 0.0 || self.area(a, nb.prev, b) != 0.0))
+                || (self.equals(a, b) && self.area(na.prev, a, na.next) > 0.0 && self.area(nb.prev, b, nb.next) > 0.0))
+    }
+
+    fn intersects(&self, p1: u32, q1: u32, p2: u32, q2: u32) -> bool {
+        let o1 = sign(self.area(p1, q1, p2));
+        let o2 = sign(self.area(p1, q1, q2));
+        let o3 = sign(self.area(p2, q2, p1));
+        let o4 = sign(self.area(p2, q2, q1));
+        (o1 != o2 && o3 != o4)
+            || (o1 == 0 && self.on_segment(p1, p2, q1))
+            || (o2 == 0 && self.on_segment(p1, q2, q1))
+            || (o3 == 0 && self.on_segment(p2, p1, q2))
+            || (o4 == 0 && self.on_segment(p2, q1, q2))
+    }
+
+    /// Whether `q` lies within the box of segment `p r`, on which it lies.
+    fn on_segment(&self, p: u32, q: u32, r: u32) -> bool {
+        let ((px, py), (qx, qy), (rx, ry)) = (self.xy(p), self.xy(q), self.xy(r));
+        qx <= px.max(rx) && qx >= px.min(rx) && qy <= py.max(ry) && qy >= py.min(ry)
+    }
+
+    fn intersects_polygon(&self, a: u32, b: u32) -> bool {
+        let (ia, ib) = (self.n(a).i, self.n(b).i);
+        let mut p = a;
+        loop {
+            let next = self.n(p).next;
+            let (ip, inext) = (self.n(p).i, self.n(next).i);
+            if ip != ia && inext != ia && ip != ib && inext != ib && self.intersects(p, next, a, b) {
+                return true;
+            }
+            p = next;
+            if p == a {
+                return false;
+            }
+        }
+    }
+
+    fn locally_inside(&self, a: u32, b: u32) -> bool {
+        let n = self.n(a);
+        if self.area(n.prev, a, n.next) < 0.0 {
+            self.area(a, b, n.next) >= 0.0 && self.area(a, n.prev, b) >= 0.0
+        } else {
+            self.area(a, b, n.prev) < 0.0 || self.area(a, n.next, b) < 0.0
+        }
+    }
+
+    fn middle_inside(&self, a: u32, b: u32) -> bool {
+        let ((ax, ay), (bx, by)) = (self.xy(a), self.xy(b));
+        let (px, py) = (f64::midpoint(ax, bx), f64::midpoint(ay, by));
+        let mut inside = false;
+        let mut p = a;
+        loop {
+            let (x, y) = self.xy(p);
+            let next = self.n(p).next;
+            let (nx, ny) = self.xy(next);
+            if ((y > py) != (ny > py)) && ny != y && px < (nx - x) * (py - y) / (ny - y) + x {
+                inside = !inside;
+            }
+            p = next;
+            if p == a {
+                return inside;
+            }
+        }
+    }
+
+    /// Splits the ring along the diagonal `a b` into two; returns the new copy of `b`.
+    fn split_polygon(&mut self, a: u32, b: u32) -> u32 {
+        let (na, nb) = (*self.n(a), *self.n(b));
+        let a2 = self.nodes.len() as u32;
+        let b2 = a2 + 1;
+        let fresh = |n: Node| Node { prev: NIL, next: NIL, z: 0, prev_z: NIL, next_z: NIL, steiner: false, ..n };
+        self.nodes.push(fresh(na));
+        self.nodes.push(fresh(nb));
+        let (an, bp) = (na.next, nb.prev);
+        self.m(a).next = b;
+        self.m(b).prev = a;
+        self.m(a2).next = an;
+        self.m(an).prev = a2;
+        self.m(b2).next = a2;
+        self.m(a2).prev = b2;
+        self.m(bp).next = b2;
+        self.m(b2).prev = bp;
+        b2
+    }
+}
+
+/// Twice the signed area of a ring, by the shoelace sum as earcut takes it.
+fn signed_area(points: &[[f64; 2]]) -> f64 {
+    let Some(&last) = points.last() else { return 0.0 };
+    let mut sum = 0.0;
+    let mut j = last;
+    for &p in points {
+        sum += (j[0] - p[0]) * (p[1] + j[1]);
+        j = p;
+    }
+    sum
+}
+
+/// The z-order of point `(x, y)` in a box from `min` scaled by `size` to 15 bits a side.
+fn z_order(x: f64, y: f64, min: [f64; 2], size: f64) -> u32 {
+    let spread = |v: f64| {
+        let mut v = (v * size) as u32 & 0x7fff;
+        v = (v | (v << 8)) & 0x00ff_00ff;
+        v = (v | (v << 4)) & 0x0f0f_0f0f;
+        v = (v | (v << 2)) & 0x3333_3333;
+        (v | (v << 1)) & 0x5555_5555
+    };
+    spread(x - min[0]) | (spread(y - min[1]) << 1)
+}
+
+fn inside_triangle(a: [f64; 2], b: [f64; 2], c: [f64; 2], p: [f64; 2]) -> bool {
+    (c[0] - p[0]) * (a[1] - p[1]) >= (a[0] - p[0]) * (c[1] - p[1])
+        && (a[0] - p[0]) * (b[1] - p[1]) >= (b[0] - p[0]) * (a[1] - p[1])
+        && (b[0] - p[0]) * (c[1] - p[1]) >= (c[0] - p[0]) * (b[1] - p[1])
+}
+
+fn sign(v: f64) -> i8 {
+    if v > 0.0 {
+        1
+    } else if v < 0.0 {
+        -1
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Twice the area the triangles cover.
+    fn covered(points: &[[f64; 2]], triangles: &[[u32; 3]]) -> f64 {
+        triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| points[i as usize]);
+                ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn a_square_is_two_triangles() {
+        let square = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let triangles = earcut(&square, &[]);
+        assert_eq!(triangles.len(), 2);
+        assert!((covered(&square, &triangles) - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn holes_are_left_out() {
+        let mut points = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        points.extend([[2.0, 2.0], [2.0, 4.0], [4.0, 4.0], [4.0, 2.0]]);
+        points.extend([[6.0, 6.0], [6.0, 8.0], [8.0, 8.0], [8.0, 6.0]]);
+        let triangles = earcut(&points, &[4, 8]);
+        assert!((covered(&points, &triangles) - 2.0 * (100.0 - 8.0)).abs() < 1e-9, "{triangles:?}");
+    }
+
+    #[test]
+    fn large_rings_hash_their_ears() {
+        // A star of 200 points: concave everywhere, so ear finding matters.
+        let points: Vec<[f64; 2]> = (0..200)
+            .map(|k| {
+                let a = f64::from(k) / 200.0 * std::f64::consts::TAU;
+                let r = if k % 2 == 0 { 10.0 } else { 4.0 };
+                [r * a.cos(), r * a.sin()]
+            })
+            .collect();
+        let triangles = earcut(&points, &[]);
+        assert_eq!(triangles.len(), 198);
+        let area = signed_area(&points).abs();
+        assert!((covered(&points, &triangles) - area).abs() < 1e-6 * area);
+    }
+
+    #[test]
+    fn degenerate_rings_answer_nothing() {
+        let none: Vec<[u32; 3]> = Vec::new();
+        assert_eq!(earcut(&[[0.0, 0.0], [1.0, 1.0]], &[]), none);
+        assert_eq!(earcut(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], &[]), none, "collinear");
+    }
+}

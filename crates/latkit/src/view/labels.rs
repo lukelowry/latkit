@@ -1,22 +1,25 @@
 //! Labels: each labeled mark keeps, in the labels buffer, a candidate per row and a run table from
-//! its text codes to where the atlas holds each text. Draws place every label from its anchor each
-//! frame. Placement decides which show: it runs on the GPU when the camera, a labeled mark's state,
-//! or a run table changed, as candidates, then rounds of claim and decide on a grid of cells, and
-//! labels fade in and out after it. A diagram's labels scale with the sheet and show wherever they
-//! fit, so there placement only gathers the texts the atlas lacks. Those are read back; the host
-//! sets a few each frame, and they show the frame after.
+//! its text codes to where the atlas holds each text, or, until the text is set, an estimate of its
+//! size. Draws place every label from its anchor each frame. Placement decides which show: it runs
+//! on the GPU when the camera, a labeled mark's state, or a run table changed, as candidates, then
+//! rounds of claim and decide on a grid of cells, and labels fade in and out after it. Only placed
+//! labels ask for their texts, so the host sets no more texts than fit on screen however many rows
+//! are labeled. A diagram's labels scale with the sheet and show wherever they fit, so there
+//! placement only gathers the texts the atlas lacks. Those are read back, with the texts of labels
+//! shown, which the atlas keeps; the host sets a few each frame, and they show the frame after.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::time::Duration;
 
 use web_time::Instant;
 
 use super::View;
-use super::derived::{Derived, stamp_of};
 use super::passes::{dispatch, offset};
 use super::resources::EyeSlot;
 use super::sync::{Source, table_of};
 use crate::Space;
+use crate::derive::{Derived, stamp_of};
 use crate::gpu::Inner;
 use crate::gpu::atlas::{self, Glyphs};
 use crate::gpu::pipelines::Variant;
@@ -39,6 +42,7 @@ pub(crate) struct Slots {
     pub(crate) candidates: u32,
     pub(crate) runs: u32,
     pub(crate) wanted: u32,
+    pub(crate) seen: u32,
     pub(crate) id: u32,
     /// Rows and codes the slots hold.
     rows: u32,
@@ -61,6 +65,8 @@ pub(crate) struct Labels {
     last: Option<Instant>,
     /// Each labeled mark's written codes, with the run and where it lay.
     written: HashMap<usize, HashMap<u32, (TextRun, Glyphs)>>,
+    /// Each labeled mark's codes whose run table entries hold a run or an estimate.
+    estimated: HashMap<usize, u32>,
     evictions: u64,
     /// Bumps whenever a run table changes.
     changes: u64,
@@ -86,7 +92,7 @@ impl View {
         let column = &compiled.program.columns[labeling.column as usize];
         let style = shown.mark.style();
         let data = self.data(&style.data)?;
-        let source = Source { data, table: data.table(&style.table)?, derived: None };
+        let source = Source { data, table: data.table(&style.table)?, derived: [None; 2] };
         let (d, t) = table_of(column, &source, &self.data)?;
         let text = inner.dictionaries.field(d, &t.name, &column.name).text(code)?.clone();
         Some(atlas::run(text, self.scene.theme.font.clone(), labeling.size, labeling.max_width))
@@ -101,7 +107,7 @@ impl View {
         let style = shown.mark.style();
         let Some(data) = self.data(&style.data) else { return 0 };
         let Some(table) = data.table(&style.table) else { return 0 };
-        let source = Source { data, table, derived: None };
+        let source = Source { data, table, derived: [None; 2] };
         let Some((d, t)) = table_of(column, &source, &self.data) else { return 0 };
         inner.dictionaries.field(d, &t.name, &column.name).len() as u32
     }
@@ -119,7 +125,24 @@ impl View {
             if self.labels.slots(i) != Some(slots) {
                 continue;
             }
-            let at = (slots.wanted - self.labels.slots.iter().flatten().map(|s| s.wanted).min().unwrap_or(0)) as usize;
+            let first = self.labels.slots.iter().flatten().map(|s| s.wanted).min().unwrap_or(0);
+            // Texts labels show stay in the atlas.
+            let seen = (slots.seen - first) as usize;
+            if let (Some(bits), Some(written)) =
+                (words.get(seen..seen + (slots.codes / 32) as usize), self.labels.written.get(&i))
+            {
+                for (k, &word) in bits.iter().enumerate() {
+                    let mut word = word;
+                    while word != 0 {
+                        let code = k as u32 * 32 + word.trailing_zeros();
+                        word &= word - 1;
+                        if let Some((run, _)) = written.get(&code) {
+                            inner.atlas.touch(run);
+                        }
+                    }
+                }
+            }
+            let at = (slots.wanted - first) as usize;
             let count = words.get(at).copied().unwrap_or(0).min(wgsl::WANTED) as usize;
             let mut codes: Vec<u32> = words.get(at + 1..at + 1 + count).unwrap_or(&[]).to_vec();
             codes.sort_unstable();
@@ -160,12 +183,19 @@ impl View {
                 self.marks[i].drawable() && self.marks[i].compiled.as_ref().is_some_and(|c| c.drawing.label.is_some())
             })
             .collect();
-        // Wanted codes first, so one copy reads them all; then the cells; then each mark's candidates
-        // and run table.
+        // Wanted codes, then seen codes, so one copy reads them all; then the cells; then each mark's
+        // candidates and run table.
         let mut at = 0;
+        let codes: Vec<u32> = labeled.iter().map(|&i| self.codes_of(i, inner).next_power_of_two().max(64)).collect();
         for &i in &labeled {
-            slots[i] = Some(Slots { candidates: 0, runs: 0, wanted: at, id: 0, rows: 0, codes: 0 });
+            slots[i] = Some(Slots { candidates: 0, runs: 0, wanted: at, seen: 0, id: 0, rows: 0, codes: 0 });
             at += 1 + wgsl::WANTED;
+        }
+        for (&i, &codes) in labeled.iter().zip(&codes) {
+            let s = slots[i].as_mut().expect("labeled");
+            s.seen = at;
+            s.codes = codes;
+            at += codes / 32;
         }
         let columns = (self.size[0] / f64::from(wgsl::CELL)).ceil().max(1.0) as u32;
         let rows = (self.size[1] / f64::from(wgsl::CELL)).ceil().max(1.0) as u32;
@@ -174,14 +204,12 @@ impl View {
         let mut id = 0;
         for &i in &labeled {
             let mark_rows = self.marks[i].region.capacity;
-            let codes = self.codes_of(i, inner).next_power_of_two().max(64);
             let s = slots[i].as_mut().expect("labeled");
             s.candidates = at;
             s.rows = mark_rows;
             at += mark_rows * wgsl::CANDIDATE_WORDS;
             s.runs = at;
-            s.codes = codes;
-            at += 2 * codes;
+            at += 2 * s.codes;
             s.id = id;
             id += mark_rows;
         }
@@ -194,6 +222,7 @@ impl View {
             self.labels.cells = cells;
             self.labels.words = at;
             self.labels.written.clear();
+            self.labels.estimated.clear();
             self.labels.placed = Derived::default();
             self.labels.asked.clear();
             self.labels.changes += 1;
@@ -206,9 +235,61 @@ impl View {
                 shown.packed = false;
             }
         }
+        self.estimate_runs(inner);
     }
 
-    /// Clears run table entries whose runs the atlas no longer holds where they were.
+    /// Writes the run table entries of each labeled mark's codes new since the last frame: where the
+    /// atlas holds a text, else an estimate of its size, so its label is placed before it is set.
+    fn estimate_runs(&mut self, inner: &mut Inner) {
+        for i in 0..self.labels.slots.len() {
+            let Some(slots) = self.labels.slots[i] else { continue };
+            let from = self.labels.estimated.get(&i).copied().unwrap_or(0);
+            let codes = self.codes_of(i, inner).min(slots.codes);
+            if codes <= from {
+                continue;
+            }
+            let words = self.run_words(i, from..codes, inner);
+            if let Some(resources) = &self.resources {
+                let at = u64::from(slots.runs + 2 * from) * 4;
+                self.gpu.0.queue.write_buffer(resources.labels(), at, bytemuck::cast_slice(&words));
+            }
+            self.labels.estimated.insert(i, codes);
+            self.labels.changes += 1;
+        }
+    }
+
+    /// The run table words of mark `i`'s codes `codes`: where the atlas holds each text set, and an
+    /// estimate of the rest.
+    fn run_words(&self, i: usize, codes: Range<u32>, inner: &mut Inner) -> Vec<u32> {
+        let shown = &self.marks[i];
+        let written = self.labels.written.get(&i);
+        let texts = 'texts: {
+            let Some(compiled) = &shown.compiled else { break 'texts None };
+            let Some(labeling) = &compiled.drawing.label else { break 'texts None };
+            let column = &compiled.program.columns[labeling.column as usize];
+            let style = shown.mark.style();
+            let Some(data) = self.data(&style.data) else { break 'texts None };
+            let Some(table) = data.table(&style.table) else { break 'texts None };
+            let source = Source { data, table, derived: [None; 2] };
+            let Some((d, t)) = table_of(column, &source, &self.data) else { break 'texts None };
+            Some((inner.dictionaries.field(d, &t.name, &column.name), labeling))
+        };
+        let mut words = Vec::with_capacity(2 * codes.len());
+        for code in codes {
+            let entry = match (written.and_then(|w| w.get(&code)), &texts) {
+                (Some((_, glyphs)), _) => glyphs.corners(),
+                (None, Some((dictionary, labeling))) => dictionary.text(code).map_or([0, 0], |text| {
+                    let font = self.scene.theme.font.clone();
+                    atlas::estimate(&atlas::run(text.clone(), font, labeling.size, labeling.max_width))
+                }),
+                (None, None) => [0, 0],
+            };
+            words.extend(entry);
+        }
+        words
+    }
+
+    /// Puts estimates back in run table entries whose runs the atlas no longer holds where they were.
     fn drop_evicted(&mut self, inner: &Inner) {
         let mut cleared = Vec::new();
         for (&i, written) in &mut self.labels.written {
@@ -216,7 +297,7 @@ impl View {
             written.retain(|&code, (run, glyphs)| {
                 let held = inner.atlas.holds(run, *glyphs);
                 if !held {
-                    cleared.push(slots.runs + 2 * code);
+                    cleared.push((slots.runs + 2 * code, atlas::estimate(run)));
                 }
                 held
             });
@@ -225,8 +306,8 @@ impl View {
             return;
         }
         if let Some(resources) = &self.resources {
-            for &at in &cleared {
-                self.gpu.0.queue.write_buffer(resources.labels(), u64::from(at) * 4, &[0; 8]);
+            for (at, words) in &cleared {
+                self.gpu.0.queue.write_buffer(resources.labels(), u64::from(*at) * 4, bytemuck::cast_slice(words));
             }
         }
         self.labels.changes += 1;
@@ -272,6 +353,11 @@ impl View {
             }
             for &(_, slots) in &labeled {
                 encoder.clear_buffer(resources.labels(), u64::from(slots.wanted) * 4, Some(4));
+                encoder.clear_buffer(
+                    resources.labels(),
+                    u64::from(slots.seen) * 4,
+                    Some(u64::from(slots.codes / 32) * 4),
+                );
             }
         }
         let groups = resources.groups(&gpu.0, inner);
@@ -312,6 +398,7 @@ impl View {
                     each(&mut pass, "occupy");
                     cells(&mut pass, &reset);
                 }
+                each(&mut pass, "ask");
             }
             if !diagram {
                 each(&mut pass, "fade");
@@ -319,7 +406,8 @@ impl View {
         }
         if due {
             let first = labeled.iter().map(|(_, s)| s.wanted).min().unwrap_or(0);
-            let words = labeled.len() as u64 * u64::from(1 + wgsl::WANTED);
+            let seen: u64 = labeled.iter().map(|(_, s)| u64::from(s.codes / 32)).sum();
+            let words = labeled.len() as u64 * u64::from(1 + wgsl::WANTED) + seen;
             let readback =
                 Readback::new(&inner.readbacks, device, encoder, resources.labels(), u64::from(first) * 4, words * 4);
             self.labels.placed.start(stamp, readback);

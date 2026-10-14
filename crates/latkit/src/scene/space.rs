@@ -52,6 +52,12 @@ pub struct Earth {
     pub surface: Option<Color>,
     /// Whether lines of longitude and latitude cross the ground, in the theme's grid color.
     pub graticule: bool,
+    /// Lit by the sun as it stands this many seconds after the Unix epoch, plus the view's axis
+    /// coordinate when it shows one: night falls on the ground and what stands on it, down to the
+    /// theme's night. `None` lights the earth evenly.
+    pub daylight: Option<f64>,
+    /// Whether air glows around the globe, in the theme's atmosphere color, brighter where it is day.
+    pub atmosphere: bool,
 }
 
 /// How the earth is drawn.
@@ -67,12 +73,60 @@ pub enum Projection {
 impl Earth {
     /// A web mercator map.
     pub fn mercator() -> Earth {
-        Earth { projection: Projection::Mercator, surface: None, graticule: true }
+        Earth { projection: Projection::Mercator, surface: None, graticule: true, daylight: None, atmosphere: false }
     }
 
     /// A globe.
     pub fn globe() -> Earth {
-        Earth { projection: Projection::Globe, surface: None, graticule: true }
+        Earth { projection: Projection::Globe, ..Earth::mercator() }
+    }
+
+    /// Lit by the sun as it stands `seconds` after the Unix epoch, plus the view's axis coordinate.
+    #[must_use]
+    pub fn daylight(mut self, seconds: f64) -> Earth {
+        self.daylight = Some(seconds);
+        self
+    }
+
+    /// Whether air glows around the globe.
+    #[must_use]
+    pub fn atmosphere(mut self, on: bool) -> Earth {
+        self.atmosphere = on;
+        self
+    }
+}
+
+/// The direction toward the sun `seconds` after the Unix epoch, in the earth's frame: x toward 0°
+/// longitude on the equator, y toward 90° east, z toward the north pole. The sun's place by the
+/// low-precision formulas of the Astronomical Almanac, to a hundredth of a degree.
+pub(crate) fn sun(seconds: f64) -> [f64; 3] {
+    // Days since noon, January 1, 2000.
+    let n = seconds / 86_400.0 - 10_957.5;
+    let mean = (280.460 + 0.985_647_4 * n).rem_euclid(360.0);
+    let anomaly = (357.528 + 0.985_600_3 * n).rem_euclid(360.0).to_radians();
+    let ecliptic = (mean + 1.915 * anomaly.sin() + 0.020 * (2.0 * anomaly).sin()).to_radians();
+    let tilt = (23.439 - 0.000_000_4 * n).to_radians();
+    let ascension = (tilt.cos() * ecliptic.sin()).atan2(ecliptic.cos());
+    let declination = (tilt.sin() * ecliptic.sin()).asin();
+    let sidereal = (280.460_618_37 + 360.985_647_366_29 * n).rem_euclid(360.0).to_radians();
+    let longitude = ascension - sidereal;
+    [declination.cos() * longitude.cos(), declination.cos() * longitude.sin(), declination.sin()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sun;
+
+    #[test]
+    fn the_sun_stands_where_the_almanac_puts_it() {
+        // Noon UTC at the June solstice of 2026: over the tropic of Cancer, near the prime meridian.
+        let [x, y, z] = sun(1_782_043_200.0);
+        let (declination, longitude) = (z.asin().to_degrees(), y.atan2(x).to_degrees());
+        assert!((declination - 23.44).abs() < 0.05, "{declination}");
+        assert!(longitude.abs() < 1.0, "{longitude}");
+        // Six hours on, it stands a quarter turn west.
+        let [x, y, _] = sun(1_782_043_200.0 + 6.0 * 3600.0);
+        assert!((y.atan2(x).to_degrees() + 90.0).abs() < 1.5);
     }
 }
 

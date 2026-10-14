@@ -5,7 +5,7 @@
 import package::lib::types::{
     VERTEX_WORDS, VERTEX_POSITION, VERTEX_COLOR, VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION, VERTEX_DEPTH,
     VERTEX_FLAGS, EDGE_FROM, EDGE_TO, EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_FLAGS, FACE_A, FACE_B, FACE_C,
-    FACE_COLOR, FACE_FLAGS, LINE_COLOR, LINE_WIDTH, LINE_FLOW, LINE_FLAGS,
+    FACE_COLOR, FACE_FLAGS, LINE_COLOR, LINE_WIDTH, LINE_FLOW, LINE_FLAGS, AREA_COLOR, AREA_FLAGS,
 };
 import package::lib::bind::{state, mark};
 
@@ -39,6 +39,11 @@ struct Line {
     color: u32,
     width: f32,
     flow: f32,
+    flags: u32,
+}
+
+struct Area {
+    color: u32,
     flags: u32,
 }
 
@@ -93,4 +98,8 @@ fn face_at(at: u32) -> Face {
 
 fn line_at(at: u32) -> Line {
     return Line(state[at + LINE_COLOR], float_at(at + LINE_WIDTH), float_at(at + LINE_FLOW), state[at + LINE_FLAGS]);
+}
+
+fn area_at(at: u32) -> Area {
+    return Area(state[at + AREA_COLOR], state[at + AREA_FLAGS]);
 }

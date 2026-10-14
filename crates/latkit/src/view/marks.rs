@@ -84,6 +84,9 @@ pub(crate) struct Shown {
     /// whenever where its rows stand or how large they are is.
     pub(crate) version: u64,
     pub(crate) shape_version: u64,
+    /// Why it no longer compiles against data given since the last frame, which that frame reports
+    /// unless a scene shown before then replaced it.
+    pub(crate) failed: Option<Error>,
 }
 
 impl Shown {
@@ -117,6 +120,7 @@ impl Shown {
             geodesic: false,
             version: 0,
             shape_version: 0,
+            failed: None,
         }
     }
 
@@ -139,29 +143,48 @@ impl Shown {
         self.compiled.as_ref().map_or(0, |c| c.drawing.extras)
     }
 
-    /// The path its strokes read, one of the `PATH_` codes, which its stroke pipelines are made for.
+    /// The path its strokes read, or where its triangles' corners come from: one of the `PATH_` codes,
+    /// which its pipelines are made for.
     pub(crate) fn path(&self) -> u32 {
         match &self.compiled {
-            Some(c) if c.drawing.primitive == Primitive::Strokes => c.drawing.path,
+            Some(c) if c.drawing.primitive != Primitive::Points => c.drawing.path,
             _ => wgsl::PATH_ENDS,
         }
     }
 
-    /// Whether its strokes number their segments with a list: rows' paths have different numbers of
-    /// segments, running through a geometry column or along great circles.
+    /// Whether it numbers its instances with a list: strokes whose rows' paths have different numbers
+    /// of segments, running through a geometry column or along great circles, and areas, whose rows
+    /// have different numbers of triangles.
     pub(crate) fn listed(&self) -> bool {
         let Some(compiled) = &self.compiled else { return false };
-        compiled.drawing.primitive == Primitive::Strokes
-            && (compiled.drawing.geometry != wgsl::NONE || (self.path() == wgsl::PATH_ENDS && self.geodesic))
+        match compiled.drawing.primitive {
+            Primitive::Strokes => {
+                compiled.drawing.geometry != wgsl::NONE || (self.path() == wgsl::PATH_ENDS && self.geodesic)
+            }
+            Primitive::Triangles => self.path() == wgsl::PATH_GEOMETRY,
+            Primitive::Points => false,
+        }
     }
 
-    /// Segments its list must have room for: every path's segments, each row's arcs on the earth as
-    /// last found.
+    /// Instances its list must have room for: every path's segments, each row's arcs on the earth as
+    /// last found; or every area's triangles.
     pub(crate) fn segment_capacity(&self) -> u32 {
         let rows = (self.rows + self.exits) as usize;
-        let points = self.compiled.as_ref().map_or(0, |c| self.tables.points(c.drawing.geometry)) as usize;
+        let Some(compiled) = &self.compiled else { return 1 };
+        let points = self.tables.points(compiled.drawing.geometry) as usize;
+        if compiled.drawing.primitive == Primitive::Triangles {
+            return (points / 3 + rows).max(1) as u32;
+        }
         let arcs = if self.geodesic { (self.segments.found.value as usize).max(rows * 4) } else { 0 };
         (points + rows + arcs).max(1) as u32
+    }
+
+    /// Vertices each of its instances draws: a quad per point or segment, three corners per triangle.
+    pub(crate) fn corners(&self) -> u32 {
+        match self.compiled.as_ref().map(|c| c.drawing.primitive) {
+            Some(Primitive::Triangles) => 3,
+            _ => 4,
+        }
     }
 
     /// Its channels that say where its rows stand and how large they are.
@@ -231,6 +254,7 @@ impl Shown {
         self.tables.release(gpu);
         self.compiled = None;
         self.packed = false;
+        self.failed = None;
         let style = self.mark.style();
         let Some(data) = all.iter().find(|d| *d.name() == style.data) else { return Ok(()) };
         let Some(table) = data.table(&style.table) else { return Ok(()) };
@@ -329,6 +353,7 @@ pub(crate) fn kind_stride(kind: MarkKind) -> u32 {
         MarkKind::Edges => wgsl::EDGE_WORDS,
         MarkKind::Faces => wgsl::FACE_WORDS,
         MarkKind::Lines => wgsl::LINE_WORDS,
+        MarkKind::Areas => wgsl::AREA_WORDS,
     }
 }
 

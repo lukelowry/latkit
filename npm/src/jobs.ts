@@ -3,37 +3,57 @@
  * compiled, so nothing is fetched again and nothing is shared but bytes.
  */
 
-/** What a worker answers: the job's id, and its answer's bytes or why it failed. */
+/** What a worker answers: a job's answer's bytes, or why it failed. */
 interface Answer {
-  id: number;
   bytes?: Uint8Array;
   error?: string;
 }
 
-/** A pool of workers holding `module`, and the function that hands one a job's bytes. */
+/** A job no worker has taken yet. */
+interface Job {
+  bytes: Uint8Array;
+  resolve(bytes: Uint8Array): void;
+  reject(error: Error): void;
+}
+
+/**
+ * A pool of workers holding `module`, and the function that hands one a job's bytes. Each worker
+ * takes one job at a time, the oldest waiting, so a long job never holds up the ones behind it. A
+ * worker whose job failed is replaced: a failure may have left its instance unusable.
+ */
 export function jobs(module: WebAssembly.Module): (bytes: Uint8Array) => Promise<Uint8Array> {
   const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
-  const waiting = new Map<number, { resolve(bytes: Uint8Array): void; reject(error: Error): void }>();
-  let workers: Worker[] | undefined;
-  let asked = 0;
-  const pool = () =>
-    (workers ??= Array.from({ length: size }, () => {
-      const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
-      worker.onmessage = ({ data }: MessageEvent<Answer>) => {
-        const job = waiting.get(data.id);
-        waiting.delete(data.id);
-        if (data.bytes) job?.resolve(data.bytes);
-        else job?.reject(new Error(data.error ?? 'a job failed'));
-      };
-      worker.postMessage(module);
-      return worker;
-    }));
-  return (bytes) => {
-    const id = asked++;
-    const worker = pool()[id % size]!;
-    return new Promise((resolve, reject) => {
-      waiting.set(id, { resolve, reject });
-      worker.postMessage({ id, bytes }, [bytes.buffer]);
-    });
+  const queue: Job[] = [];
+  const idle: Worker[] = [];
+  let started = 0;
+  const start = (): Worker => {
+    const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    worker.postMessage(module);
+    return worker;
   };
+  const next = (worker: Worker): void => {
+    const job = queue.shift();
+    if (!job) return void idle.push(worker);
+    const failed = (error: string) => {
+      job.reject(new Error(error));
+      worker.terminate();
+      next(start());
+    };
+    worker.onmessage = ({ data }: MessageEvent<Answer>) => {
+      if (!data.bytes) return failed(data.error ?? 'a job failed');
+      job.resolve(data.bytes);
+      next(worker);
+    };
+    worker.onerror = (event) => {
+      event.preventDefault();
+      failed(event.message || 'a worker failed');
+    };
+    worker.postMessage(job.bytes, [job.bytes.buffer]);
+  };
+  return (bytes) =>
+    new Promise((resolve, reject) => {
+      queue.push({ bytes, resolve, reject });
+      const worker = idle.pop() ?? (started < size ? (started++, start()) : undefined);
+      if (worker) next(worker);
+    });
 }

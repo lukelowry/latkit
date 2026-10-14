@@ -305,6 +305,8 @@ export default function page(stage: Stage): void {
   let data = sketch.data();
   let layout: Layout = { layered: { flow: 'right', gap: 30, rankGap: 80 } };
   let route: 'orthogonal' | 'straight' = 'orthogonal';
+  let comets = false;
+  let dots = true;
   const history = new History();
 
   const scene = (): Scene => {
@@ -312,12 +314,25 @@ export default function page(stage: Stage): void {
     // Containers take the theme's surface, tinted by how deep they sit; their titles head them.
     const title = { text: 'name', size: 11, color: '#7f93a8' };
     if (sketch.stations.length) {
-      marks.push({ vertices: { of: ['studio', 'Station'], contains: ['Group', 'station'], label: title } });
+      marks.push({
+        vertices: { of: ['studio', 'Station'], contains: ['Group', 'station'], label: title },
+      });
     }
     if (sketch.groups.length) {
-      marks.push({ vertices: { of: ['studio', 'Group'], contains: ['Process', 'group'], label: title } });
+      marks.push({
+        vertices: { of: ['studio', 'Group'], contains: ['Process', 'group'], label: title },
+      });
     }
-    marks.push({ edges: { of: ['studio', 'Signal'], route, arrows: true, width: 1.5 } });
+    // Comets run from each signal's driver to its readers.
+    marks.push({
+      edges: {
+        of: ['studio', 'Signal'],
+        route,
+        arrows: true,
+        width: 1.5,
+        ...(comets ? { flow: 40 } : {}),
+      },
+    });
     for (const kind of kinds) {
       // Without a size, a block fits its label and ports.
       marks.push({
@@ -334,7 +349,7 @@ export default function page(stage: Stage): void {
       });
     }
     return {
-      space: { diagram: { grid: { dots: 20 } } },
+      space: { diagram: { grid: dots ? { dots: 20 } : 'off' } },
       layout,
       theme: { base: 'dark', background: '#0b0f14' },
       controls: { connect: true, delete: true, selectBox: true },
@@ -477,6 +492,7 @@ export default function page(stage: Stage): void {
         view.fit();
       },
     },
+    { label: 'Fit', key: 'f', run: () => view.fit() },
   ]);
   const add = stage.section('Add');
   add.actions(
@@ -532,6 +548,14 @@ export default function page(stage: Stage): void {
       view.show(scene());
     },
   );
+  look.toggle('Comets', 'c', comets, (on) => {
+    comets = on;
+    view.show(scene());
+  });
+  look.toggle('Grid', 'g', dots, (on) => {
+    dots = on;
+    view.show(scene());
+  });
 
   // The selected block's name, editable.
   const selected = stage.section('Selected');

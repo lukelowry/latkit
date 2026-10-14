@@ -6,13 +6,19 @@ import type { Stage } from './stage.js';
 export class Legend {
   readonly #ramp = h('span', { class: 'ramp', 'aria-hidden': 'true' });
   readonly #label = h('span');
+  readonly #element = h('p', { class: 'legend' }, this.#ramp, this.#label);
 
   constructor(stage: Stage) {
-    stage.regions.main.append(h('p', { class: 'legend' }, this.#ramp, this.#label));
+    stage.regions.main.append(this.#element);
   }
 
   ramp(colormap: ColormapName, label: string): void {
     this.#ramp.style.background = colormapCss(colormap);
     this.#label.textContent = label;
+  }
+
+  /** Hides the legend, as while nothing it describes shows. */
+  set hidden(hidden: boolean) {
+    this.#element.hidden = hidden;
   }
 }

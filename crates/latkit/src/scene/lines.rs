@@ -2,14 +2,17 @@ use super::Interpolation;
 use super::mark::{Context, Drawing, GEOMETRY, MarkKind, Stroke, StrokeWords, Style, stroke_methods, style_methods};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Error, Name, Result};
+use crate::{Error, Kind, Name, Result, Space};
 
-/// Rows drawn as lines through the field each traces. On a plot, a sampled field traces its history
-/// across the data's axis: what a monitor shows.
+/// Rows drawn as lines along the field each traces: roads, rivers, and borders along a path field,
+/// the outlines of a polygon field's rings; on a plot, a sampled field's history across the data's
+/// axis, what a monitor shows. On the earth paths bend with the globe and stay whole across the
+/// antimeridian.
 ///
 /// ```
 /// # use latkit::Lines;
-/// let height = Lines::of("body", "Body").trace("height").width(2.0);
+/// let roads = Lines::of("city", "roads").width(2.0);
+/// let height = Lines::of("body", "Body").trace("height");
 /// ```
 #[derive(Clone, PartialEq, Debug)]
 pub struct Lines {
@@ -30,16 +33,16 @@ impl Lines {
         }
     }
 
-    /// The field each row traces: a sampled field across the plot's axis. Unless set, the field
-    /// `geometry`; unless named, the mark takes the field's name. A field not recorded yet draws
-    /// nothing until its first frame.
+    /// The field each row traces: a path or polygon field, or on a plot a sampled field across its
+    /// axis. Unless set, the field `geometry`; unless named, the mark takes the field's name. A
+    /// sampled field not recorded yet draws nothing until its first frame.
     #[must_use]
     pub fn trace(mut self, field: impl Into<Name>) -> Lines {
         self.trace = Some(field.into());
         self
     }
 
-    /// How each row runs between its samples.
+    /// How each row runs between its samples, on a plot.
     #[must_use]
     pub fn interpolation(mut self, interpolation: Interpolation) -> Lines {
         self.interpolation = interpolation;
@@ -53,12 +56,37 @@ impl Lines {
 
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
         let field = self.traced();
-        let trace = match (c.kind(&field), &self.trace) {
-            (None, None) => return Err(Error::invalid("name the field each row traces").at("trace")),
-            // Streamed data appends its first frame later; the mark compiles again then.
-            (None, Some(_)) => wgsl::NONE,
-            _ => c.trace(&field).map_err(|e| e.at("trace"))?,
-        };
+        let mut drawing = Drawing::new(MarkKind::Lines, wgsl::LINE_WORDS);
+        if matches!(context.space, Space::Plot(_)) {
+            drawing.trace = match (c.kind(&field), &self.trace) {
+                (None, None) => return Err(Error::invalid("name the sampled field each row traces").at("trace")),
+                // Streamed data appends its first frame later; the mark compiles again then.
+                (None, Some(_)) => wgsl::NONE,
+                _ => c.trace(&field).map_err(|e| e.at("trace"))?,
+            };
+            drawing.flags = match self.interpolation {
+                Interpolation::Linear => 0,
+                Interpolation::StepBefore => wgsl::STEP_BEFORE,
+                Interpolation::StepAfter => wgsl::STEP_AFTER,
+            };
+        } else {
+            match c.kind(&field) {
+                Some(Kind::Geometry(1..=3)) => {}
+                Some(Kind::Sampled) => {
+                    return Err(Error::invalid("only a plot traces a sampled field").at(&field).at("trace"));
+                }
+                Some(_) => return Err(Error::invalid("not a path or polygon field").at(&field).at("trace")),
+                None if self.trace.is_some() => return Err(Error::invalid("no such field").at(&field).at("trace")),
+                None => return Err(Error::invalid("name the path field each row traces").at("trace")),
+            }
+            drawing.path = wgsl::PATH_GEOMETRY;
+            // On the earth a line runs along its path as it bends with the globe.
+            drawing.geometry = if matches!(context.space, Space::Earth(_)) {
+                c.derived_path(&path_of(&field))
+            } else {
+                c.path(&field)
+            };
+        }
         let color = Store::Color { word: wgsl::LINE_COLOR, fallback: wgsl::THEME_LINE };
         match &self.style.color {
             Some(expr) => c.channel("color", expr, color)?,
@@ -71,16 +99,15 @@ impl Lines {
             flags: wgsl::LINE_FLAGS,
             theme_width: wgsl::THEME_LINE_WIDTH,
         };
-        self.stroke.compile(c, &words, context.diagram)?;
-        let mut drawing = Drawing::new(MarkKind::Lines, wgsl::LINE_WORDS);
-        drawing.trace = trace;
-        drawing.flags = match self.interpolation {
-            Interpolation::Linear => 0,
-            Interpolation::StepBefore => wgsl::STEP_BEFORE,
-            Interpolation::StepAfter => wgsl::STEP_AFTER,
-        };
+        self.stroke.compile(c, &words, context.diagram())?;
         Ok(drawing)
     }
+}
+
+/// The derived field holding path field `field` as an earth line draws it: unwrapped across the
+/// antimeridian, with a point every few degrees along longer segments.
+pub(crate) fn path_of(field: &str) -> Name {
+    format!("{field}.path").into()
 }
 
 style_methods!(Lines);

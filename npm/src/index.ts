@@ -14,8 +14,10 @@ import type { ColormapName, Scene } from './scene.js';
 export * from './scene.js';
 
 await init();
-// Work that grows faster than a graph, such as laying out ranks or routing wires, runs in workers.
-if (typeof Worker === 'function') wasm.setJobs(jobs(wasm.module() as WebAssembly.Module));
+// Work too large for a frame, such as laying out ranks, routing wires, cutting areas into triangles,
+// and decoding tiles, runs in workers.
+const run = typeof Worker === 'function' ? jobs(wasm.module() as WebAssembly.Module) : undefined;
+if (run) wasm.setJobs(run);
 
 /**
  * What latkit throws: an `Error` with a `code`, and for invalid input the `path` to the part, such
@@ -273,6 +275,16 @@ export class Data {
     return this.inner.tables();
   }
 
+  /** Every row's id of `table`, in row order. */
+  ids(table: string): Id[] {
+    return this.inner.ids(table) as Id[];
+  }
+
+  /** The names of `table`'s fields. */
+  fields(table: string): string[] {
+    return this.inner.fields(table);
+  }
+
   /** The first and last axis coordinates the sampled fields span. */
   get span(): [number, number] | undefined {
     const span = this.inner.span;
@@ -295,6 +307,19 @@ export class Data {
   toBytes(): Uint8Array {
     return this.inner.toBytes();
   }
+}
+
+/**
+ * The features of GeoJSON `bytes`, gzip-compressed or not, as dataset `name`, read in a worker:
+ * points, line strings, and polygons as tables `points`, `lines`, and `polygons`, each with its
+ * geometry as field `geometry` and its properties as fields.
+ */
+export async function geojson(name: string, bytes: Uint8Array): Promise<Data> {
+  const job = wasm.geojsonJob(name, bytes);
+  const answer = run ? await run(job) : wasm.job(job);
+  if (answer.length === 0)
+    throw Object.assign(new Error(`${name}: the bytes are not GeoJSON`), { code: 'invalid' });
+  return new Data(name).apply(answer);
 }
 
 /** The GPU device views draw with. Views of one GPU draw in one animation frame. */
@@ -343,13 +368,37 @@ export class View {
     this.inner.show(JSON.stringify(scene));
   }
 
-  /** Gives the view `data`, replacing the dataset of its name. */
+  /**
+   * Gives the view `data`, replacing the dataset of its name. A mark it no longer fits draws nothing,
+   * and the next frame reports why as an error, unless a scene shown before then replaces the mark.
+   */
   setData(data: Data): void {
     this.inner.setData(data.inner);
   }
 
   removeData(name: string): void {
     this.inner.removeData(name);
+  }
+
+  /** The dataset named `name`: one given, or the tiles the view fetched. */
+  data(name: string): Data | undefined {
+    const data = this.inner.data(name);
+    return data ? new Data(data) : undefined;
+  }
+
+  /**
+   * Fetches the vector tiles at `url` as the camera asks for them, kept as dataset `name`, which the
+   * view owns: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` template. Each layer is a
+   * table of its features of the kind marks draw it as (areas polygons, lines lines, vertices points),
+   * or named `layer:polygons`, `layer:lines`, or `layer:points`.
+   */
+  setTiles(name: string, url: string): void {
+    this.inner.setTiles(name, url);
+  }
+
+  /** Stops fetching and drawing the tiles of dataset `name`. */
+  removeTiles(name: string): void {
+    this.inner.removeTiles(name);
   }
 
   /** The axis coordinate shown: sampled fields read their last frame at or before it. */

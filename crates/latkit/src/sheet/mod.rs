@@ -5,8 +5,8 @@
 //! position stays where it stood; layouts place only rows without one, until arranging lays every
 //! row out again, and a wire routes again only when its terminals move or a box near it changes.
 //! Superlinear work too large for the frame (layouts, many routes) is a host job answering with a
-//! patch. The sheet writes derived data: a table beside each table it draws, row for row, which
-//! marks read like data.
+//! patch. The sheet is a derivation: it writes a table beside each table it draws, row for row,
+//! which marks read like data.
 
 mod wires;
 
@@ -14,13 +14,14 @@ use std::hash::{Hash, Hasher};
 
 use rustc_hash::{FxHashMap, FxHasher};
 
-use crate::data::{Column, Data, Field, Name, Op, Patch, Row, Table, Value, Values, Version};
+use crate::data::{Data, Field, Name, Row, Table, Value, Values};
+use crate::derive::{Derive, Input, Jobs, Tables, answers, beside, kept};
 use crate::expr::cpu::Rows;
 use crate::gpu::atlas;
 use crate::gpu::shaders::{HEADER_BAND, PORT_SIZE, TEXT_BASE};
-use crate::host::{Host, Job, Key, Placement, TextRun};
+use crate::host::{Job, Key, Placement, TextRun};
 use crate::scene::mark::{GEOMETRY, Style};
-use crate::{Edges, Layout, Mark, Marker, Pending, Scene, Shape, Side, Theme, Vertices};
+use crate::{Edges, Layout, Mark, Marker, Pending, Shape, Side, Theme, Vertices};
 
 /// Texts measured past which the sheet forgets them all.
 const MEASURED: usize = 1 << 16;
@@ -28,6 +29,8 @@ const MEASURED: usize = 1 << 16;
 /// The sheet of a diagram's view.
 #[derive(Default)]
 pub(crate) struct Sheet {
+    /// The derived table beside each table it draws.
+    tables: Tables,
     /// Places layouts gave rows without positions, kept by row, also after a row leaves, so undo
     /// puts it back where it was.
     places: FxHashMap<Row, [f64; 2]>,
@@ -58,18 +61,6 @@ struct Placing {
     pending: Pending<Vec<u8>>,
     generation: u64,
     rows: FxHashMap<Key, Row>,
-}
-
-/// What an update reads.
-pub(crate) struct Input<'a> {
-    pub(crate) scene: &'a Scene,
-    /// Bumps whenever the scene changes.
-    pub(crate) scene_version: u64,
-    pub(crate) data: &'a [Data],
-    pub(crate) host: Option<&'a dyn Host>,
-    pub(crate) spawn: &'a dyn Fn(Job) -> Pending<Vec<u8>>,
-    /// Whether rows are being dragged: their wires route on the frame however many.
-    pub(crate) dragging: bool,
 }
 
 /// The vertex mark a table's rows take their places from, and the vertex index of its first row.
@@ -113,12 +104,48 @@ impl Vertex {
     }
 }
 
-impl Sheet {
+impl Derive for Sheet {
+    /// Brings the sheet up to `input`, writing each drawn table's derived table.
+    fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool {
+        if self.layout != Some(input.scene.layout) {
+            if self.layout.is_some() {
+                self.arrange();
+            }
+            self.layout = Some(input.scene.layout);
+        }
+        let mut changed = false;
+        // A job its host does at once is taken before the frame draws.
+        for _ in 0..4 {
+            self.settle();
+            let stamp = stamp(input, self.landed, self.generation);
+            if stamp == self.stamp {
+                break;
+            }
+            self.stamp = stamp;
+            self.build(input, jobs);
+            changed = true;
+        }
+        changed
+    }
+
     /// Whether a layout or routes are under way.
-    pub(crate) fn busy(&self) -> bool {
+    fn busy(&self) -> bool {
         self.placing.is_some() || self.routing.is_some()
     }
 
+    fn tables(&self) -> &Tables {
+        &self.tables
+    }
+
+    /// Forgets the tables but keeps places and routes: a scene that is a diagram again finds its rows
+    /// where they stood.
+    fn clear(&mut self) {
+        self.tables.clear();
+        self.stamp = 0;
+    }
+}
+
+impl Sheet {
     /// Whether a layout is under way, which a fit waits for.
     pub(crate) fn placing(&self) -> bool {
         self.placing.is_some()
@@ -136,30 +163,6 @@ impl Sheet {
     /// Row `row`'s box, units with y down, once it has one.
     pub(crate) fn bounds(&self, row: &Row) -> Option<[f64; 4]> {
         self.boxes.get(row).copied()
-    }
-
-    /// Brings the sheet up to `input`, writing each drawn table's derived table into `derived`;
-    /// whether anything changed.
-    pub(crate) fn update(&mut self, input: &Input<'_>, derived: &mut FxHashMap<(Name, Name), Table>) -> bool {
-        if self.layout != Some(input.scene.layout) {
-            if self.layout.is_some() {
-                self.arrange();
-            }
-            self.layout = Some(input.scene.layout);
-        }
-        let mut changed = false;
-        // A job its host does at once is taken before the frame draws.
-        for _ in 0..4 {
-            self.settle();
-            let stamp = stamp(input, self.landed, self.generation);
-            if stamp == self.stamp {
-                break;
-            }
-            self.stamp = stamp;
-            self.build(input, derived);
-            changed = true;
-        }
-        changed
     }
 
     /// Takes the answers that landed: places asked in the current generation, and routes.
@@ -189,7 +192,7 @@ impl Sheet {
     }
 
     /// Makes the derived tables again: sizes, places, group boxes, then wires.
-    fn build(&mut self, input: &Input<'_>, derived: &mut FxHashMap<(Name, Name), Table>) {
+    fn build(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) {
         let (vertex_marks, edge_marks) = marks(input);
         let mut vertices = self.vertices(&vertex_marks, input);
         hold(&vertex_marks, &mut vertices);
@@ -209,13 +212,14 @@ impl Sheet {
             }
         }
         stand_groups(&mut vertices, &self.places, &header, padding);
-        self.place(&vertices, &vertex_marks, &edge_marks, &header, padding, input);
+        self.place(&vertices, &vertex_marks, &edge_marks, &header, padding, input, jobs);
         let spacing = f64::from(theme.edge_spacing);
         let context = wires::Context { vertices: &vertices, marks: &vertex_marks, spacing, radius: spacing };
         let moved = wires::moved(&self.boxes, &vertices);
-        let paths = wires::paths(&context, &edge_marks, input, &moved, &mut self.routes, &mut self.routing);
+        let routes = (&mut self.routes, &mut self.routing);
+        let paths = wires::paths(&context, &edge_marks, input, jobs, &moved, routes);
         self.boxes = vertices.iter().filter_map(|v| Some((v.key.clone(), v.bounds?))).collect();
-        write(&vertex_marks, &vertices, &edge_marks, paths, derived);
+        write(&vertex_marks, &vertices, &edge_marks, paths, &mut self.tables);
     }
 
     /// Every vertex row of the diagram, sized, with the position its data gives it.
@@ -327,6 +331,7 @@ impl Sheet {
     /// Asks the scene's layout, once none is under way, to place every row without a place: blocks,
     /// and groups holding nothing; while arranging, every row without a position. The rest hold;
     /// groups lay out around their members.
+    #[allow(clippy::too_many_arguments, reason = "one layout request")]
     fn place(
         &mut self,
         vertices: &[Vertex],
@@ -335,6 +340,7 @@ impl Sheet {
         header: &[f64],
         padding: f64,
         input: &Input<'_>,
+        jobs: &Jobs<'_>,
     ) {
         let layout = input.scene.layout;
         let arranging = self.arranging;
@@ -363,7 +369,7 @@ impl Sheet {
             .collect();
         let placement =
             Placement { sizes: &sizes, pinned: &pinned, groups: &groups, pads: &pads, links: &links, keys: &keys };
-        let pending = (input.spawn)(Job::layout(&layout, &placement));
+        let pending = jobs.spawn(Job::layout(&layout, &placement));
         self.placing = Some(Placing { pending, generation: self.generation, rows });
     }
 }
@@ -404,7 +410,7 @@ fn marks<'a>(input: &Input<'a>) -> (Vec<VertexMark<'a>>, Vec<EdgeMark<'a>>) {
                     Some(_) => {}
                 }
             }
-            Mark::Faces(_) | Mark::Lines(_) => {}
+            Mark::Faces(_) | Mark::Lines(_) | Mark::Areas(_) => {}
         }
     }
     let mut first = 0;
@@ -539,23 +545,8 @@ fn union(a: Option<[f64; 4]>, b: [f64; 4]) -> [f64; 4] {
     a.map_or(b, |a| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])])
 }
 
-/// The values `fields` an answer's patch writes for each row it names, by its key.
-fn answers(bytes: &[u8], fields: &[&str]) -> Vec<(Key, Vec<Option<Value>>)> {
-    let Ok(patch) = Patch::from_bytes(bytes) else { return Vec::new() };
-    let mut out = Vec::new();
-    for op in patch.ops {
-        let Op::Set(table) = op else { continue };
-        for row in 0..table.len() {
-            let Some(id) = table.ids.id(row) else { continue };
-            let values = fields.iter().map(|f| table.value(row, f, f64::INFINITY)).collect();
-            out.push(((table.name.clone(), id), values));
-        }
-    }
-    out
-}
-
 /// A derived table to write: its dataset and table, the table it stands beside, and its fields.
-type Derived<'a> = ((Name, Name), &'a Table, Vec<(&'static str, Values)>);
+type Writing<'a> = ((Name, Name), &'a Table, Vec<(&'static str, Values)>);
 
 /// Writes each drawn table's derived table, dropping those of tables no longer drawn: a vertex
 /// table's centers, half sizes, and depths; an edge table's paths. A field equal to the one before
@@ -565,9 +556,9 @@ fn write(
     vertices: &[Vertex],
     edge_marks: &[EdgeMark<'_>],
     paths: Vec<Vec<wires::Parts>>,
-    derived: &mut FxHashMap<(Name, Name), Table>,
+    derived: &mut Tables,
 ) {
-    let mut tables: Vec<Derived<'_>> = Vec::new();
+    let mut tables: Vec<Writing<'_>> = Vec::new();
     for vm in vertex_marks {
         let own = &vertices[vm.first..vm.first + vm.table.len()];
         let number = |f: fn(&Vertex) -> Option<f64>| Values::from(own.iter().map(f).collect::<Vec<_>>());
@@ -590,35 +581,11 @@ fn write(
     }
     derived.retain(|key, _| tables.iter().any(|(k, ..)| k == key));
     for (key, source, fields) in tables {
-        let table = beside(source, fields, derived.get(&key));
-        derived.insert(key, table);
+        let before = derived.get(&key);
+        let fields: Vec<(Name, Field)> =
+            fields.into_iter().map(|(name, values)| (name.into(), kept(name, &values, source, before))).collect();
+        derived.insert(key, beside(source, fields));
     }
-}
-
-/// A table beside `source`, row for row, holding `fields`; a field equal to `before`'s keeps its
-/// column and version.
-fn beside(source: &Table, fields: Vec<(&'static str, Values)>, before: Option<&Table>) -> Table {
-    let mut table = Table {
-        name: source.name.clone(),
-        ids: source.ids.clone(),
-        index: source.index.clone(),
-        fields: Vec::new(),
-        structure: source.structure,
-        order: source.order,
-    };
-    for (name, values) in fields {
-        let kept = before.filter(|b| b.structure == source.structure).and_then(|b| match b.field_named(name) {
-            Some(field @ Field::Values(column, _)) if same(column, &values) => Some(field.clone()),
-            _ => None,
-        });
-        table.insert(name.into(), kept.unwrap_or_else(|| Field::Values(Column::new(&values), Version::next())));
-    }
-    table
-}
-
-/// Whether `column` holds exactly `values`.
-fn same(column: &Column, values: &Values) -> bool {
-    column.len() == values.len() && (0..values.len()).all(|i| column.get(i) == values.get(i))
 }
 
 /// A row's key in a job: its table and id.

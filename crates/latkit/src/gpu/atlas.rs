@@ -2,7 +2,8 @@
 //! `TEXT_SPREAD` texels past the text's edge, and packed on shelves of one texture. A distance field
 //! draws crisp at any size and gives halos for free, so a run is set once whatever size it shows at.
 //! When no shelf has room, the shelf used least recently is cleared for the new run; only when none
-//! fits does the packing start over. Views follow evictions to drop what they pointed at.
+//! fits does the packing start over. A run counts as used when it is set and whenever labels in view
+//! show it, so what the view shows stays. Views follow evictions to drop what they pointed at.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,6 +33,23 @@ impl Glyphs {
         let [l, t, r, b] = self.rect;
         [l | t << 16, r | b << 16]
     }
+}
+
+/// A run table entry for `run` before it is set: the estimate flag, then the corner a rectangle of
+/// its size by a rough measure would reach from the atlas's own corner, so its label can be placed
+/// while only labels that show have their texts set.
+pub(crate) fn estimate(run: &TextRun) -> [u32; 2] {
+    let size = run.size_px as f32;
+    let width = run.text.chars().count() as f32 * 0.58 * size;
+    let (width, lines) = match run.max_width.map(|w| w as f32) {
+        Some(wrap) if width > wrap => (wrap, (width / wrap).ceil()),
+        _ => (width, 1.0),
+    };
+    // The host pads each run a little, and the field reaches past it.
+    let pad = 2.0 * (2.0 + PAD as f32);
+    let w = ((width + pad).ceil() as u32).min(0xffff);
+    let h = ((lines * 1.25 * size + pad).ceil() as u32).min(0xffff);
+    [crate::gpu::shaders::TEXT_ESTIMATE, w | h << 16]
 }
 
 /// The run the atlas sets for `text` shown at `size`, wrapping at `max_width`, both length units: set
@@ -115,6 +133,13 @@ impl Atlas {
         });
         self.runs.insert(run.clone(), placed);
         placed.map(|(glyphs, _)| glyphs)
+    }
+
+    /// Counts `run` as used now: labels in view show it.
+    pub(crate) fn touch(&mut self, run: &TextRun) {
+        if let Some(Some((_, shelf))) = self.runs.get(run) {
+            self.shelves[*shelf].tick = self.clock;
+        }
     }
 
     /// Whether `glyphs` still lie where they were for `run`.

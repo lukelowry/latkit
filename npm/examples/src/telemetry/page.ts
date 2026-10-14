@@ -18,7 +18,8 @@ const LASTS = 3;
 
 /**
  * Synthetic SCADA voltages: each signal sits near 1 pu at its own offset, its area swings slowly,
- * every signal carries its own noise, and every `EVERY` seconds one area dips and recovers.
+ * every signal carries its own noise, and every `EVERY` seconds one area dips and recovers, as does
+ * an area struck by hand.
  */
 class Signals {
   readonly area: Float64Array;
@@ -26,6 +27,8 @@ class Signals {
   readonly #offset: Float32Array;
   readonly #noise: Float32Array;
   #seed = 11;
+  /** The area struck by hand, and when. */
+  #struck?: { area: number; at: number };
 
   constructor(readonly count: number) {
     this.area = new Float64Array(count);
@@ -39,17 +42,22 @@ class Signals {
     }
   }
 
+  /** Strikes area `area` at `t`: it dips and recovers as the timed disturbances do. */
+  strike(area: number, t: number): void {
+    this.#struck = { area, at: t };
+  }
+
   /** Every signal's value at `t`, into `out`. */
   sample(t: number, out: Float32Array): void {
     const struck = Math.floor(t / EVERY) % AREAS.length;
-    const since = t - Math.floor(t / EVERY) * EVERY;
-    const dip =
-      since < LASTS ? 0.06 * Math.exp(-since * 1.4) * Math.sin(Math.min(since, 0.5) * Math.PI) : 0;
+    const dip = depth(t - Math.floor(t / EVERY) * EVERY);
+    const byHand = this.#struck && t >= this.#struck.at ? depth(t - this.#struck.at) : 0;
     for (let i = 0; i < this.count; i++) {
       const a = this.area[i]!;
       const swing = 0.012 * Math.sin(t * (0.6 + a * 0.13) + a);
       const noise = (this.#random() - 0.5) * this.#noise[i]!;
-      out[i] = 1 + this.#offset[i]! + swing + noise - (a === struck ? dip : 0);
+      const dips = (a === struck ? dip : 0) + (a === this.#struck?.area ? byHand : 0);
+      out[i] = 1 + this.#offset[i]! + swing + noise - dips;
     }
   }
 
@@ -61,11 +69,20 @@ class Signals {
   }
 }
 
+/** How far a disturbance has pulled voltages down, `since` seconds after it struck. */
+function depth(since: number): number {
+  return since < LASTS
+    ? 0.06 * Math.exp(-since * 1.4) * Math.sin(Math.min(since, 0.5) * Math.PI)
+    : 0;
+}
+
 export default function page(stage: Stage): void {
   let count = 2000;
   let window = 20;
   let rate = 50;
   let steps = false;
+  let colorBy: 'area' | 'voltage' = 'area';
+  let width = 1;
   let signals = new Signals(count);
   let values = new Float32Array(count);
   let data = new Data('scada');
@@ -76,7 +93,7 @@ export default function page(stage: Stage): void {
     space: {
       plot: {
         x: { label: 'Time (s)' },
-        y: { label: 'Voltage (pu)', format: 'fixed', precision: 2 },
+        y: { label: 'Voltage (pu)', format: 'fixed', precision: 3 },
       },
     },
     theme: { base: 'dark', background: '#090c11', dim: 0.15 },
@@ -86,8 +103,12 @@ export default function page(stage: Stage): void {
         lines: {
           of: ['scada', 'Signal'],
           trace: 'vm',
-          color: field('area').colormap('tab10'),
-          width: 1,
+          // By voltage, each trace takes the color of its value at the time shown.
+          color:
+            colorBy === 'area'
+              ? field('area').colormap('tab10')
+              : field('vm').colormap('coolwarm').domain(0.95, 1.05),
+          width,
           interpolation: steps ? 'stepAfter' : 'linear',
         },
       },
@@ -192,11 +213,57 @@ export default function page(stage: Stage): void {
     window,
     (w) => (window = w),
   );
+  show.choice(
+    'Color by',
+    [
+      ['Area', 'area'],
+      ['Voltage now', 'voltage'],
+    ] as const,
+    colorBy,
+    (next) => {
+      colorBy = next;
+      view.show(scene());
+      areas.hidden = next !== 'area';
+      legend.hidden = next !== 'voltage';
+    },
+  );
+  show.range(
+    'Width',
+    { min: 0.5, max: 3, step: 0.5, value: width, format: (v) => `${v} px` },
+    (next) => {
+      if (next === width) return;
+      width = next;
+      view.show(scene());
+    },
+  );
   show.toggle('Steps', 's', steps, (on) => {
     steps = on;
     view.show(scene());
   });
-  show.series(AREAS.map(([label, color]) => ({ label, color })));
+  const areas = show.series(AREAS.map(([label, color]) => ({ label, color })));
+  const legend = stage.legend();
+  legend.ramp('coolwarm', 'Voltage now, 0.95 – 1.05 pu');
+  legend.hidden = true;
+
+  const disturb = stage.section('Disturb');
+  let target = 0;
+  disturb.choice(
+    'Area',
+    AREAS.map(([label], i) => [label, i] as const),
+    target,
+    (next) => (target = next),
+  );
+  disturb.actions([
+    {
+      label: 'Strike it now',
+      key: 'd',
+      run: () => {
+        signals.strike(target, t);
+        if (playback.mode !== 'live') playback.play();
+      },
+    },
+  ]);
+  disturb.note(`Every ${EVERY} s one area dips on its own.`);
 
   const detail = () =>
     stage.detail(

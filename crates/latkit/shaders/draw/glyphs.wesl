@@ -5,7 +5,7 @@
 
 import package::lib::types::{
     CANDIDATE_WORDS, CANDIDATE_ALPHA, LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, PORT_SIZE, SIDE_LEFT,
-    SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD, SPACE_DIAGRAM, THEME_TEXT,
+    SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD, TEXT_ESTIMATE, SPACE_DIAGRAM, THEME_TEXT,
 };
 import package::lib::bind::{frame, eye, mark, state, program, ramp};
 import package::lib::state::extra_at;
@@ -62,7 +62,8 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32)
     let code = u32(bitcast<f32>(code_bits));
     let uv0 = labels[mark.runs + 2u * code];
     let uv1 = labels[mark.runs + 2u * code + 1u];
-    if uv0 == 0u && uv1 == 0u {
+    // Nothing to draw until the text is set.
+    if (uv0 == 0u && uv1 == 0u) || (uv0 & TEXT_ESTIMATE) != 0u {
         return unshown();
     }
     let a = anchor(row);

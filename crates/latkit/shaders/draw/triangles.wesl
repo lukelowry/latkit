@@ -4,7 +4,7 @@
 
 import package::lib::bind::{frame, eye};
 import package::lib::project::culled;
-import package::lib::triangles::{triangle_corner, corner_clip};
+import package::lib::triangles::{triangle_corner, triangle_shown, corner_clip};
 import package::lib::marker::{MarkerColor, glow};
 import package::lib::shade::{caster, lit};
 import package::lib::color::output;
@@ -27,7 +27,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32)
     var out: Varyings;
     out.row = row;
     let c = triangle_corner(row, corner);
-    if !c.shown {
+    if !triangle_shown(row) {
         out.clip = culled();
         return out;
     }

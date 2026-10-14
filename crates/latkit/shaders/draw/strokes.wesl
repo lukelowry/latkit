@@ -10,7 +10,7 @@ import package::lib::project::{to_clip, nearer, culled};
 import package::lib::path::{segment, segment_screen, stroke_style, ends_colored, ends_part};
 import package::lib::marker::{MarkerColor, glow};
 import package::lib::stroke::{Stroke, stroke, stroke_distance};
-import package::lib::shade::caster;
+import package::lib::shade::{caster, daylight};
 import package::lib::color::output;
 
 struct Varyings {
@@ -61,7 +61,8 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     if ends_colored() {
         color *= mix(ends[0].color, ends[1].color, t);
     }
-    out.color = color;
+    let light = daylight(mix(ends[0].position.xy, ends[1].position.xy, t));
+    out.color = vec4f(color.rgb * light, color.a);
     out.style = vec4f(width, select(0.0, a.x, PATH == PATH_TRACE), f32(style.dash && !junction), style.flow);
     out.height = mix(ends[0].world.z, ends[1].world.z, t);
     out.arrow = u32(arrow);

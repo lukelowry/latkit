@@ -1,13 +1,14 @@
 // The backdrop under every mark: a plane's or a diagram's grid, or the earth's surface and graticule,
-// darkened where casters shadow the ground. Lines are a pixel wide and antialiased per axis. Their
-// spacing steps by tens, and the next step fades in as the lines crowd, so no seam shows. They fade
-// where the view grazes the ground, and on a plane away from what the camera looks at.
+// darkened where casters shadow the ground, lit by daylight, and on the globe ringed by its air. Lines
+// are a pixel wide and antialiased per axis. Their spacing steps by tens, and the next step fades in as
+// the lines crowd, so no seam shows. They fade where the view grazes the ground, and on a plane away
+// from what the camera looks at.
 
 import package::lib::types::{SPACE_EARTH, SPACE_PLANE, SPACE_DIAGRAM, GRID_OFF, GRID_DOTS};
 import package::lib::bind::{frame, eye};
 import package::lib::color::output;
 import package::lib::project::{PI, NEAR_Z, FAR_Z};
-import package::lib::shade::lit;
+import package::lib::shade::{lit, daylight};
 
 @group(2) @binding(10) var shadows: texture_2d<f32>;
 
@@ -91,15 +92,16 @@ fn globe_degrees(w: vec3f, radius: f32) -> vec2f {
     return vec2f(lon, degrees(asin(clamp(v.y, -1.0, 1.0))));
 }
 
-// The earth: the mercator band or the globe's disc, eased between as the projection morphs, and the
-// graticule on it.
+// The earth: the mercator band or the globe's disc, eased between as the projection morphs, lit by
+// daylight, the graticule on it, and around the globe its air.
 fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> vec4f {
     // The flat map ends where web mercator does, at y = ±π.
     let band = PI - abs(g.y + frame.mercator_y);
     let flat = saturate(band / max(fwidth(band), 1e-9) + 0.5) * f32(ahead);
     // The globe is a sphere of radius 1 / cos(lat0) whose top touches the ground at the center.
     let radius = 1.0 / cos(radians(frame.center_hi.y + frame.center_lo.y));
-    let to_center = vec3f(0.0, 0.0, -radius) - o;
+    let center = vec3f(0.0, 0.0, -radius);
+    let to_center = center - o;
     let along = dot(to_center, d);
     let off = length(to_center - d * along);
     let miss = off - radius;
@@ -107,18 +109,27 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> vec4f {
     let covered = mix(flat, round, frame.globe);
     let hit = o + d * (along - sqrt(max(radius * radius - off * off, 0.0)));
     let globe = frame.globe >= 0.5;
-    let surface = select(shaded(frame.surface, g, ahead), frame.surface, globe);
-    let color = blend(frame.background, surface, covered);
     let p = select(map_degrees(g), globe_degrees(hit, radius), globe);
-    // Longitude jumps where it wraps; its other wrapping steadies the derivative there.
-    let wrapped = fract(p.x / 360.0) * 360.0;
-    let w = vec2f(min(fwidth(p.x), fwidth(wrapped)), fwidth(p.y));
-    if frame.graticule == 0u {
-        return color;
+    let ground = vec4f(frame.surface.rgb * daylight(p), frame.surface.a);
+    var color = blend(frame.background, select(shaded(ground, g, ahead), ground, globe), covered);
+    let facing = dot(normalize(hit - center), -d);
+    if frame.graticule != 0u {
+        // Longitude jumps where it wraps; its other wrapping steadies the derivative there.
+        let wrapped = fract(p.x / 360.0) * 360.0;
+        let w = vec2f(min(fwidth(p.x), fwidth(wrapped)), fwidth(p.y));
+        let fade = select(smoothstep(0.02, 0.15, abs(d.z)), smoothstep(0.0, 0.3, facing), globe);
+        color = blend(color, frame.grid_color, grid(p, w, 1.0, -2.0, 1.0, false) * fade * covered);
     }
-    let facing = dot(normalize(hit - vec3f(0.0, 0.0, -radius)), -d);
-    let fade = select(smoothstep(0.02, 0.15, abs(d.z)), smoothstep(0.0, 0.3, facing), globe);
-    return blend(color, frame.grid_color, grid(p, w, 1.0, -2.0, 1.0, false) * fade * covered);
+    if frame.atmosphere.a > 0.0 && frame.globe > 0.0 {
+        // A rim of air over the globe's edge and a halo past it, lit where the sun is up over the
+        // ground the ray passes nearest.
+        let rim = pow(1.0 - saturate(facing), 3.0) * round;
+        let halo = pow(1.0 - smoothstep(radius, radius * 1.12, off), 2.0) * (1.0 - round) * f32(along > 0.0);
+        let below = daylight(globe_degrees(o + d * along, radius));
+        let air = (rim + halo) * frame.atmosphere.a * frame.globe * mix(0.2, 1.0, below);
+        color = vec4f(mix(color.rgb, frame.atmosphere.rgb, saturate(air)), color.a);
+    }
+    return color;
 }
 
 @fragment

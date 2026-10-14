@@ -11,7 +11,7 @@ import package::lib::marker::{
     MarkerColor, MarkerFragment, builtin_marker, container, outline_distance, shape_distance, filled, over,
     status_ring, glow,
 };
-import package::lib::shade::caster;
+import package::lib::shade::{caster, daylight};
 import package::lib::color::output;
 
 @group(2) @binding(15) var icons: texture_2d_array<f32>;
@@ -62,7 +62,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     out.clip = nearer(to_clip(d.center + quad * d.reach, d.p.clip));
     out.p = quad * d.reach * vec2f(1.0, -1.0);
     out.row = d.p.row;
-    out.color = d.p.color;
+    out.color = vec4f(d.p.color.rgb * daylight(d.p.position), d.p.color.a);
     out.half = max(d.half, vec2f(0.5));
     out.status = d.p.status;
     out.height = d.p.world.z;

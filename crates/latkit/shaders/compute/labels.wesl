@@ -1,16 +1,20 @@
-// Label placement. `candidates` measures each labeled row's label where its anchor puts it, asks for
-// the texts the atlas lacks of labels that could show, and keys it by whether it showed before, its
-// priority, and its id. Then rounds of `claim` (each label wanting room takes the least key into
-// every cell it covers, or drops if one is held), `decide` (a label holding all its cells is placed),
-// and `occupy` (placed labels hold their cells) settle, with cells not held cleared between rounds.
-// That places labels as greedily by key as a sequential pass would. `fade` eases each label in or
-// out. Placement only decides which labels show; draws place them from their anchors every frame. A
-// diagram's labels scale with its sheet, so they need no placement: only `candidates` runs there,
-// to ask for texts.
+// Label placement. `candidates` measures each labeled row's label where its anchor puts it, by the
+// size of its text, or an estimate of it while the text is not set, and keys it by its priority,
+// then whether it showed before, then its id: a label that arrives later still displaces lesser
+// ones, and among equals those shown keep their place. Then rounds of `claim` (each label wanting
+// room takes the least key into every cell it covers, or drops if one is held), `decide` (a label
+// holding all its cells is placed), and `occupy` (placed labels hold their cells) settle, with cells
+// not held cleared between rounds. That places labels as greedily by key as a sequential pass would.
+// `ask` then asks for the texts of placed labels the atlas lacks and notes those it holds, so it
+// keeps them: texts are set only for labels that show, however many rows are in view. `fade` eases
+// each label in or out. Placement only decides which labels show; draws place them from their
+// anchors every frame. A diagram's labels scale with its sheet, so they need no placement: only
+// `candidates` runs there, to ask for the texts of labels in view.
 
 import package::lib::types::{
     NONE, VISIBLE, LABEL_CODE, LABEL_PRIORITY, CANDIDATE_WORDS, CANDIDATE_BOX, CANDIDATE_KEY, CANDIDATE_STATE,
-    CANDIDATE_ALPHA, WANTS, PLACED_LABEL, DROPPED, STICKY, OCCUPIED, CELL, WANTED,
+    CANDIDATE_ALPHA, WANTS, PLACED_LABEL, DROPPED, STICKY, ESTIMATED, TEXT_ESTIMATE, OCCUPIED, CELL, WANTED,
+    SPACE_DIAGRAM,
 };
 import package::lib::bind::{frame, eye, mark, state};
 import package::lib::state::extra_at;
@@ -29,6 +33,19 @@ fn put(at: u32, value: u32) {
 
 fn candidate(row: u32) -> u32 {
     return mark.candidates + row * CANDIDATE_WORDS;
+}
+
+// Asks the host to set the text of `code`.
+fn want(code: u32) {
+    let asked = atomicAdd(&labels[mark.wanted], 1u);
+    if asked < WANTED {
+        put(mark.wanted + 1u + asked, code);
+    }
+}
+
+// Notes that a label shows the text of `code`, so the atlas keeps it.
+fn seen(code: u32) {
+    atomicOr(&labels[mark.seen + code / 32u], 1u << (code % 32u));
 }
 
 @compute @workgroup_size(256)
@@ -51,21 +68,30 @@ fn candidates(@builtin(global_invocation_id) id: vec3u) {
     let uv1 = word(mark.runs + 2u * code + 1u);
     let a = anchor(row);
     let size = length_px(mark.label_size);
-    if uv0 == 0u && uv1 == 0u {
-        // The atlas lacks this text: ask for it, if the label could show, legible and near the view.
+    let diagram = frame.space == SPACE_DIAGRAM;
+    let estimated = (uv0 & TEXT_ESTIMATE) != 0u;
+    if (uv0 == 0u && uv1 == 0u) || (estimated && diagram) {
+        // The atlas lacks this text, and the label cannot wait for placement to ask for it: ask now,
+        // if it could show, legible and near the view.
         let near = 0.25 * eye.size;
         if a.shown && legibility(size) > 0.0 && in_view(a.at - near, a.at + near) {
-            let asked = atomicAdd(&labels[mark.wanted], 1u);
-            if asked < WANTED {
-                put(mark.wanted + 1u + asked, code);
-            }
+            want(code);
         }
         put(at + CANDIDATE_STATE, next);
         return;
     }
-    let t = text_at(uv0, uv1, size, a.at, a.align);
-    if a.shown && in_view(t.lo, t.hi) && fits(t.hi - t.lo, a.room) {
-        next |= WANTS;
+    if estimated {
+        next |= ESTIMATED;
+    }
+    let t = text_at(uv0 & ~TEXT_ESTIMATE, uv1, size, a.at, a.align);
+    if a.shown && in_view(t.lo, t.hi) {
+        // A diagram shows every label in view that fits; elsewhere `ask` notes those placed.
+        if diagram {
+            seen(code);
+        }
+        if fits(t.hi - t.lo, a.room) {
+            next |= WANTS;
+        }
     }
     put(at + CANDIDATE_BOX, bitcast<u32>(t.lo.x));
     put(at + CANDIDATE_BOX + 1u, bitcast<u32>(t.lo.y));
@@ -73,7 +99,7 @@ fn candidates(@builtin(global_invocation_id) id: vec3u) {
     put(at + CANDIDATE_BOX + 3u, bitcast<u32>(t.hi.y));
     let level = u32(clamp(bitcast<f32>(state[extra_at(row, mark.label + LABEL_PRIORITY)]), 0.0, 255.0));
     let id_bits = (mark.label_id + row + 1u) & 0x7fffffu;
-    put(at + CANDIDATE_KEY, select(0x80000000u, 0u, sticky) | ((255u - level) << 23u) | id_bits);
+    put(at + CANDIDATE_KEY, ((255u - level) << 24u) | select(0x800000u, 0u, sticky) | id_bits);
     put(at + CANDIDATE_STATE, next);
 }
 
@@ -166,13 +192,33 @@ fn occupy(@builtin(global_invocation_id) id: vec3u) {
 }
 
 @compute @workgroup_size(256)
+fn ask(@builtin(global_invocation_id) id: vec3u) {
+    let row = id.x;
+    if row >= mark.rows {
+        return;
+    }
+    let s = word(candidate(row) + CANDIDATE_STATE);
+    if (s & PLACED_LABEL) == 0u {
+        return;
+    }
+    let code = u32(bitcast<f32>(state[extra_at(row, mark.label + LABEL_CODE)]));
+    if (s & ESTIMATED) != 0u {
+        want(code);
+    } else {
+        seen(code);
+    }
+}
+
+@compute @workgroup_size(256)
 fn fade(@builtin(global_invocation_id) id: vec3u) {
     let row = id.x;
     if row >= mark.rows {
         return;
     }
     let at = candidate(row);
-    let placed = (word(at + CANDIDATE_STATE) & PLACED_LABEL) != 0u;
+    // A label placed by an estimate waits for its text to fade in.
+    let s = word(at + CANDIDATE_STATE);
+    let placed = (s & PLACED_LABEL) != 0u && (s & ESTIMATED) == 0u;
     let alpha = bitcast<f32>(word(at + CANDIDATE_ALPHA));
     let next = clamp(select(alpha - frame.label_fade, alpha + frame.label_fade, placed), 0.0, 1.0);
     put(at + CANDIDATE_ALPHA, bitcast<u32>(select(next, 0.0, missing_bits(bitcast<u32>(next)))));

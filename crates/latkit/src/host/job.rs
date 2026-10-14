@@ -1,9 +1,13 @@
-//! Jobs: work that grows faster than the graph it reads (laying out in ranks or by stress, routing
-//! wires), handed to the host to do off the frame. A job is bytes in and bytes out, so a thread, or a
-//! worker holding its own copy of latkit, can do it with nothing shared. Its answer is a [`Patch`]:
-//! the rows it worked out, by id, with their places or the paths their wires run along.
+//! Jobs: work too large for the frame (laying out in ranks or by stress, routing wires, cutting areas
+//! into triangles), handed to the host to do off the frame. A job is bytes in and bytes out, so a
+//! thread, or a worker holding its own copy of latkit, can do it with nothing shared. Its answer is a
+//! [`Patch`]: the rows it worked out, by id, with their places, the paths their wires run along, or
+//! their shapes.
 
-use crate::data::{Id, Name, Patch, Table};
+use crate::data::{Field, GeometryBuilder, Id, Name, Op, Patch, Table, Value, Values, Version};
+use crate::geo::mvt::Kind as Geometry;
+use crate::geo::shapes::{earth_parts, triangles};
+use crate::geo::tiles::{Decoded, TileKey, decode};
 use crate::layout::layered::layered;
 use crate::layout::levels::Graph;
 use crate::layout::route::{Net, Terminal, route};
@@ -23,6 +27,74 @@ enum Kind {
     Layered = 1,
     Stress = 2,
     Routes = 3,
+    Shapes = 4,
+    Tile = 5,
+    GeoJson = 6,
+}
+
+/// What a shapes job works out of each row's geometry.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum Shaping {
+    /// An area's triangles, the point its label hangs from first; on the earth, unwrapped and split
+    /// along its grid.
+    Triangles { earth: bool },
+    /// An earth line's path: unwrapped, and bent with the globe; cheap enough that no job makes it.
+    Path,
+}
+
+impl Shaping {
+    fn code(self) -> u32 {
+        match self {
+            Shaping::Triangles { earth: false } => 0,
+            Shaping::Triangles { earth: true } => 1,
+            Shaping::Path => 2,
+        }
+    }
+
+    fn from_code(code: u32) -> Option<Shaping> {
+        match code {
+            0 => Some(Shaping::Triangles { earth: false }),
+            1 => Some(Shaping::Triangles { earth: true }),
+            2 => Some(Shaping::Path),
+            _ => None,
+        }
+    }
+
+    /// The depth of the shapes made from geometry of `depth`.
+    pub(crate) fn depth(self, depth: u8) -> u8 {
+        match self {
+            Shaping::Triangles { .. } => 1,
+            Shaping::Path => depth,
+        }
+    }
+
+    /// The shape of `value`, or `None` where it stays as it is: a path that needs no bending.
+    pub(crate) fn shape(self, value: &Value) -> Option<Value> {
+        match (self, value) {
+            (Shaping::Triangles { earth }, Value::Polygons(polygons)) => Some(Value::Path(triangles(polygons, earth))),
+            (Shaping::Triangles { earth }, Value::Parts(rings)) => {
+                Some(Value::Path(triangles(std::slice::from_ref(rings), earth)))
+            }
+            (Shaping::Triangles { .. }, _) => Some(Value::Path(Vec::new())),
+            (Shaping::Path, Value::Path(path)) => {
+                earth_parts(std::slice::from_ref(path)).and_then(|mut parts| parts.pop()).map(Value::Path)
+            }
+            (Shaping::Path, Value::Parts(parts)) => earth_parts(parts).map(Value::Parts),
+            (Shaping::Path, Value::Polygons(polygons)) => {
+                let shaped: Vec<Option<Vec<Vec<[f64; 2]>>>> = polygons.iter().map(|rings| earth_parts(rings)).collect();
+                shaped.iter().any(Option::is_some).then(|| {
+                    Value::Polygons(
+                        shaped
+                            .into_iter()
+                            .zip(polygons)
+                            .map(|(shaped, rings)| shaped.unwrap_or_else(|| rings.clone()))
+                            .collect(),
+                    )
+                })
+            }
+            (Shaping::Path, _) => None,
+        }
+    }
 }
 
 /// A row a job answers for: its table and id.
@@ -40,10 +112,11 @@ pub(crate) struct Placement<'a> {
     pub(crate) keys: &'a [Option<Key>],
 }
 
-/// Wires to route: around `obstacles`, each net's terminals with the key of the row it draws, runs
-/// beside `fixed` wires already routed, tracks `spacing` apart. Plane units, y up.
+/// Wires to route: around `obstacles` and among `groups`, each net's terminals with the key of the row
+/// it draws, runs beside `fixed` wires already routed, tracks `spacing` apart. Plane units, y up.
 pub(crate) struct Wiring<'a> {
     pub(crate) obstacles: &'a [[f64; 4]],
+    pub(crate) groups: &'a [[f64; 4]],
     pub(crate) nets: &'a [Net],
     pub(crate) keys: &'a [Key],
     pub(crate) fixed: &'a [Vec<[f64; 2]>],
@@ -67,6 +140,9 @@ impl Job {
         let answer = match input.u32() {
             Some(k) if k == Kind::Layered as u32 || k == Kind::Stress as u32 => run_layout(k, &mut input),
             Some(k) if k == Kind::Routes as u32 => run_routes(&mut input),
+            Some(k) if k == Kind::Shapes as u32 => run_shapes(&mut input),
+            Some(k) if k == Kind::Tile as u32 => run_tile(&mut input),
+            Some(k) if k == Kind::GeoJson as u32 => run_geojson(&mut input),
             _ => None,
         };
         answer.map(|patch| patch.to_bytes()).unwrap_or_default()
@@ -115,13 +191,54 @@ impl Job {
         Job(out.0)
     }
 
+    /// Working out `shaping` for every row of `rows`, whose field `geometry` holds each row's
+    /// geometry; it answers each row's shape as field `shape`.
+    pub(crate) fn shapes(shaping: Shaping, rows: Table) -> Job {
+        let mut out = Writer::new(Kind::Shapes);
+        out.u32(shaping.code());
+        out.0.extend(Patch::new().set(rows).to_bytes());
+        Job(out.0)
+    }
+
+    /// Decoding tile `key` from `bytes`, gzip-compressed or not, into the rows of `tables`; it answers
+    /// those rows.
+    pub(crate) fn tile(key: TileKey, tables: &[Decoded], bytes: &[u8]) -> Job {
+        let mut out = Writer::new(Kind::Tile);
+        out.u32(u32::from(key.z));
+        out.u32(key.x);
+        out.u32(key.y);
+        out.u32(tables.len() as u32);
+        for decoded in tables {
+            out.text(&decoded.layer);
+            out.u32(match decoded.kind {
+                Geometry::Points => 0,
+                Geometry::Lines => 1,
+                Geometry::Polygons => 2,
+            });
+            out.text(&decoded.table);
+        }
+        out.0.extend_from_slice(bytes);
+        Job(out.0)
+    }
+
+    /// Reading GeoJSON `bytes` as dataset `name`, as [`geo::geojson`](crate::geo::geojson) does; it
+    /// answers the patch that builds the dataset, or nothing when the bytes are no GeoJSON.
+    pub fn geojson(name: &str, bytes: &[u8]) -> Job {
+        let mut out = Writer::new(Kind::GeoJson);
+        out.text(name);
+        out.0.extend_from_slice(bytes);
+        Job(out.0)
+    }
+
     /// Routing `wiring`; it answers each keyed row's wire as field `route`, its polylines.
     pub(crate) fn routes(wiring: &Wiring<'_>) -> Job {
         let mut out = Writer::new(Kind::Routes);
         out.f64(wiring.spacing);
-        out.u32(wiring.obstacles.len() as u32);
-        for obstacle in wiring.obstacles {
-            out.f64s(obstacle);
+        for boxes in [wiring.obstacles, wiring.groups] {
+            out.u32(boxes.len() as u32);
+            for b in boxes {
+                out.f64s(b);
+            }
         }
         out.u32(wiring.fixed.len() as u32);
         for line in wiring.fixed {
@@ -212,10 +329,11 @@ fn run_layout(kind: u32, input: &mut Reader<'_>) -> Option<Patch> {
 
 fn run_routes(input: &mut Reader<'_>) -> Option<Patch> {
     let spacing = input.f64()?;
-    let count = input.u32()?;
-    let obstacles = (0..count)
-        .map(|_| Some([input.f64()?, input.f64()?, input.f64()?, input.f64()?]))
-        .collect::<Option<Vec<_>>>()?;
+    let mut boxes = || {
+        let count = input.u32()?;
+        (0..count).map(|_| Some([input.f64()?, input.f64()?, input.f64()?, input.f64()?])).collect::<Option<Vec<_>>>()
+    };
+    let (obstacles, groups) = (boxes()?, boxes()?);
     let count = input.u32()?;
     let fixed = (0..count)
         .map(|_| {
@@ -238,8 +356,52 @@ fn run_routes(input: &mut Reader<'_>) -> Option<Patch> {
             .collect::<Option<Vec<_>>>()?;
         nets.push(Net { terminals });
     }
-    let routes = route(&obstacles, &nets, &fixed, spacing);
+    let routes = route(&obstacles, &groups, &nets, &fixed, spacing);
     Some(keyed(&keys, routes, |table, routes| table.field("route", routes)))
+}
+
+fn run_shapes(input: &mut Reader<'_>) -> Option<Patch> {
+    let shaping = Shaping::from_code(input.u32()?)?;
+    let Op::Set(rows) = Patch::from_bytes(input.rest()).ok()?.ops.into_iter().next()? else { return None };
+    let Some(Field::Values(column, _)) = rows.field_named("geometry") else { return None };
+    let crate::Kind::Geometry(depth) = column.kind() else { return None };
+    let mut shapes = GeometryBuilder::new(shaping.depth(depth));
+    for row in 0..rows.len() {
+        match column.get(row) {
+            Some(value) => {
+                let shaped = shaping.shape(&value);
+                shapes.push_value(shaped.as_ref().unwrap_or(&value));
+            }
+            None => shapes.push_empty(),
+        }
+    }
+    let shapes = Values::of_geometry(shapes.finish());
+    let mut answer = rows.clone();
+    answer.fields.clear();
+    answer.insert("shape".into(), Field::Values(crate::data::Column::new(&shapes), Version::next()));
+    Some(Patch::new().set(answer))
+}
+
+fn run_tile(input: &mut Reader<'_>) -> Option<Patch> {
+    let key = TileKey { z: u8::try_from(input.u32()?).ok()?, x: input.u32()?, y: input.u32()? };
+    let count = input.u32()?;
+    let tables = (0..count)
+        .map(|_| {
+            let layer = input.text()?;
+            let kind = match input.u32()? {
+                0 => Geometry::Points,
+                1 => Geometry::Lines,
+                _ => Geometry::Polygons,
+            };
+            Some(Decoded { layer, kind, table: input.text()?.into() })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    decode(input.rest(), key, &tables)
+}
+
+fn run_geojson(input: &mut Reader<'_>) -> Option<Patch> {
+    let name = input.text()?;
+    crate::geo::geojson(name, input.rest()).ok().map(|data| data.to_patch())
 }
 
 /// Little-endian words, floats, and keys, written.
@@ -295,6 +457,11 @@ struct Reader<'a> {
 impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Reader<'a> {
         Reader { bytes }
+    }
+
+    /// Every byte not read yet.
+    fn rest(&mut self) -> &'a [u8] {
+        std::mem::take(&mut self.bytes)
     }
 
     fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
@@ -380,9 +547,16 @@ mod tests {
         let obstacles = [[0.0, 0.0, 10.0, 10.0], [40.0, 0.0, 50.0, 10.0]];
         let terminal = |x: f64, side, owner| Terminal { at: [x, 5.0], side: Some(side), owner: Some(owner) };
         let nets = [Net { terminals: vec![terminal(10.0, Side::Right, 0), terminal(40.0, Side::Left, 1)] }];
-        let wiring = Wiring { obstacles: &obstacles, nets: &nets, keys: &[key("Wire", 3)], fixed: &[], spacing: 2.0 };
+        let wiring = Wiring {
+            obstacles: &obstacles,
+            groups: &[],
+            nets: &nets,
+            keys: &[key("Wire", 3)],
+            fixed: &[],
+            spacing: 2.0,
+        };
         let answer = Job::routes(&wiring).run();
-        let want = route(&obstacles, &nets, &[], 2.0).swap_remove(0);
+        let want = route(&obstacles, &[], &nets, &[], 2.0).swap_remove(0);
         assert_eq!(answered(&answer, "Wire", 3, "route"), Some(Value::Parts(want)));
     }
 

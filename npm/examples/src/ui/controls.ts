@@ -85,13 +85,13 @@ export class Section {
     this.element.append(h('label', { class: 'field' }, h('span', {}, label, output), input));
   }
 
-  /** One of several options. */
+  /** One of several options; returns the select, for outside changes. */
   choice<T>(
     label: string,
     options: readonly (readonly [string, T])[],
     value: T,
     change: (value: T) => void,
-  ): void {
+  ): HTMLSelectElement {
     const select = h(
       'select',
       {},
@@ -101,14 +101,24 @@ export class Section {
       signal: this.stage.signal,
     });
     this.element.append(h('label', { class: 'field' }, h('span', {}, label), select));
+    return select;
   }
 
   /** Swatches naming the series a view draws. */
-  series(items: readonly { label: string; color: string }[]): void {
+  series(items: readonly { label: string; color: string }[]): HTMLElement {
     const swatches = items.map(({ label, color }) =>
       h('span', { style: `--swatch: ${color}` }, label),
     );
-    this.element.append(h('p', { class: 'series' }, ...swatches));
+    const line = h('p', { class: 'series' }, ...swatches);
+    this.element.append(line);
+    return line;
+  }
+
+  /** A line of text the page keeps up to date. */
+  note(text = ''): HTMLParagraphElement {
+    const line = h('p', { class: 'note' }, text);
+    this.element.append(line);
+    return line;
   }
 
   /** A view inside this section. */

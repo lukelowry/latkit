@@ -5,13 +5,14 @@
 // sheet and fades out once too small to read.
 
 import package::lib::types::{
-    POINTS, STROKES, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, HEADER_BAND, SPACE_DIAGRAM,
+    POINTS, STROKES, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, PATH_GEOMETRY, TEXT_BASE, TEXT_SPREAD, HEADER_BAND,
+    SPACE_DIAGRAM,
 };
 import package::lib::bind::{frame, eye, mark};
 import package::lib::project::{to_screen, clip_of};
 import package::lib::points::point;
 import package::lib::path::{PATH, Segment, segment_screen, path_count};
-import package::lib::triangles::triangle_corner;
+import package::lib::triangles::{triangle_corner, area_anchor};
 
 // Where row `row`'s label hangs, CSS pixels, how it aligns to that point (0 left or top, 0.5
 // centered), the room it must fit in (none when zero), and whether its row shows.
@@ -66,6 +67,15 @@ fn anchor(row: u32) -> Anchor {
             }
         }
         default: {
+            a.align = vec2f(0.5);
+            if PATH == PATH_GEOMETRY {
+                // An area's label hangs inside its largest polygon, farthest from its edges.
+                let c = area_anchor(row);
+                let clip = clip_of(c.world);
+                a.shown = c.shown && clip.w > 0.0;
+                a.at = to_screen(clip);
+                return a;
+            }
             var sum = vec2f(0.0);
             a.shown = true;
             for (var k = 0u; k < 3u; k++) {
@@ -75,7 +85,6 @@ fn anchor(row: u32) -> Anchor {
                 sum += to_screen(clip);
             }
             a.at = sum / 3.0;
-            a.align = vec2f(0.5);
         }
     }
     return a;

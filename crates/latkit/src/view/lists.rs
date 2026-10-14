@@ -3,8 +3,8 @@
 //! indirect draw and dispatch arguments, so nothing waits on a readback to know it.
 
 use super::View;
-use super::derived::{Derived, stamp_of};
 use super::passes::dispatch;
+use crate::derive::{Derived, stamp_of};
 use crate::gpu::Inner;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};

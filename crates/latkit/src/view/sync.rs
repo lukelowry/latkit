@@ -15,6 +15,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::data::{Column, Field, FramePage, Geometry, LEVELS, PAGE_ROWS, PageId, Samples, Version, bucket_frames};
+use crate::derive::Beside;
 use crate::expr::compile::{ColumnUse, Part, Program, Reads};
 use crate::gpu::Inner;
 use crate::gpu::arena::{Content, PageKey, page_words};
@@ -101,11 +102,11 @@ pub(crate) enum Synced {
     Changed { columns: u64 },
 }
 
-/// Where a mark's own rows come from, and the table the view derives beside them.
+/// Where a mark's own rows come from, and the tables the view derives beside them.
 pub(crate) struct Source<'a> {
     pub(crate) data: &'a Data,
     pub(crate) table: &'a Table,
-    pub(crate) derived: Option<&'a Table>,
+    pub(crate) derived: Beside<'a>,
 }
 
 /// One column a program reads: a field, or the rows a join maps to.
@@ -347,11 +348,13 @@ fn columns_of(program: &Program, of: &(Name, Name)) -> u64 {
         .fold(0, |bits, (i, _)| bits | Reads::column(i))
 }
 
-/// The dataset and table a column reads: the mark's own, another one joined by id, or the one the
-/// view derives beside the mark's own.
+/// The dataset and table a column reads: the mark's own, another one joined by id, or the derived
+/// table beside the mark's own that holds the field.
 pub(crate) fn table_of<'a>(column: &ColumnUse, source: &Source<'a>, all: &'a [Data]) -> Option<(&'a Name, &'a Table)> {
     if column.derived {
-        return Some((source.data.name(), source.derived?));
+        let mut beside = source.derived.iter().flatten();
+        let table = beside.find(|t| t.field_named(&column.name).is_some()).copied().or(source.derived[0])?;
+        return Some((source.data.name(), table));
     }
     match &column.of {
         None => Some((source.data.name(), source.table)),

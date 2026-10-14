@@ -9,15 +9,16 @@
 // `locate` writes where one row lies on screen.
 
 import package::lib::types::{
-    NONE, FADE_OUT, POINTS, STROKES, TRIANGLES, MARK_EDGES, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH, PROBE_X,
-    PROBE_Y, PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED, LIST_KEPT,
+    NONE, FADE_OUT, POINTS, STROKES, TRIANGLES, MARK_EDGES, PATH_GEOMETRY, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH,
+    PROBE_X, PROBE_Y, PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED,
+    LIST_KEPT,
 };
 import package::lib::bind::{frame, eye, mark, state};
 import package::lib::state::row_at;
 import package::lib::project::{to_screen, clip_of};
 import package::lib::points::{point, port_at};
-import package::lib::path::{Segment, segment, segment_screen, stroke_style, stroke_instances, path_count};
-import package::lib::triangles::triangle_corner;
+import package::lib::path::{PATH, Segment, segment, segment_screen, stroke_style, stroke_instances, path_count};
+import package::lib::triangles::{triangle_corner, triangle_row, triangle_instances, area_anchor};
 import package::lib::marker::outline_distance;
 import package::lib::lists::{lists, list_counts, list_entry};
 
@@ -99,13 +100,15 @@ fn segment_reach(instance: u32, p: vec2f) -> Reach {
     return Reach(max(length(p - q.xy) - 0.5 * style.width, 0.0), q.z, q.xy, s.row, end);
 }
 
-fn triangle_reach(row: u32, p: vec2f) -> Reach {
-    if leaving(row) {
+// A triangle: a face, or one of an area's.
+fn triangle_reach(instance: u32, p: vec2f) -> Reach {
+    let row = triangle_row(instance);
+    if row >= mark.rows || leaving(row) {
         return unreached();
     }
-    let ka = triangle_corner(row, 0u);
-    let kb = triangle_corner(row, 1u);
-    let kc = triangle_corner(row, 2u);
+    let ka = triangle_corner(instance, 0u);
+    let kb = triangle_corner(instance, 1u);
+    let kc = triangle_corner(instance, 2u);
     let ca = clip_of(ka.world);
     let cb = clip_of(kb.world);
     let cc = clip_of(kc.world);
@@ -152,7 +155,7 @@ fn shown(r: Reach) -> bool {
     return drawn_depth(texel) <= r.depth * 1.01 + 1e-7;
 }
 
-// Instances of the mark's primitive: rows and their ports, or a stroke's segments.
+// Instances of the mark's primitive: rows and their ports, a stroke's segments, or triangles.
 fn instances() -> u32 {
     if PROBED == STROKES {
         return stroke_instances();
@@ -160,7 +163,7 @@ fn instances() -> u32 {
     if PROBED == POINTS {
         return mark.rows * (1u + mark.ports);
     }
-    return mark.rows;
+    return triangle_instances();
 }
 
 fn key(instance: u32) -> u32 {
@@ -287,14 +290,15 @@ fn boxed_row(i: u32) -> u32 {
             return NONE;
         }
         default: {
-            if leaving(i) {
+            let row = triangle_row(i);
+            if row >= mark.rows || leaving(row) {
                 return NONE;
             }
             for (var k = 0u; k < 3u; k++) {
                 let c = triangle_corner(i, k);
                 let clip = clip_of(c.world);
                 if c.shown && clip.w > 0.0 && in_box(to_screen(clip)) {
-                    return i;
+                    return row;
                 }
             }
             return NONE;
@@ -337,17 +341,26 @@ fn locate() {
             }
         }
         case TRIANGLES: {
-            var sum = vec2f(0.0);
-            var shown = 0.0;
-            for (var k = 0u; k < 3u; k++) {
-                let clip = clip_of(triangle_corner(row, k).world);
-                if clip.w > 0.0 {
-                    sum += to_screen(clip);
-                    shown += 1.0;
+            if PATH == PATH_GEOMETRY {
+                // An area lies where its label hangs.
+                let anchor = area_anchor(row);
+                let clip = clip_of(anchor.world);
+                if anchor.shown && clip.w > 0.0 {
+                    at = vec4f(to_screen(clip), 1.0, 0.0);
                 }
-            }
-            if shown == 3.0 {
-                at = vec4f(sum / 3.0, 1.0, 0.0);
+            } else {
+                var sum = vec2f(0.0);
+                var shown = 0.0;
+                for (var k = 0u; k < 3u; k++) {
+                    let clip = clip_of(triangle_corner(row, k).world);
+                    if clip.w > 0.0 {
+                        sum += to_screen(clip);
+                        shown += 1.0;
+                    }
+                }
+                if shown == 3.0 {
+                    at = vec4f(sum / 3.0, 1.0, 0.0);
+                }
             }
         }
         default: {

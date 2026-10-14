@@ -11,7 +11,7 @@ include = ["src/**", "build/**", "build.rs", "shaders/**", "colormaps.toml"]
 [features]
 default = ["gpu"]
 gpu = ["dep:wgpu", "dep:glam", "dep:web-time", "dep:wesl", "dep:naga"]
-serde = ["dep:serde"]
+serde = []
 web = ["gpu", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys"]
 
 [dependencies]
@@ -19,7 +19,10 @@ thiserror.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true
 bytemuck.workspace = true
-serde = { workspace = true, optional = true }
+# GeoJSON, tiles' metadata, and gzip-compressed bytes.
+serde = { workspace = true }
+serde_json.workspace = true
+flate2.workspace = true
 wgpu = { workspace = true, optional = true }
 glam = { workspace = true, optional = true }
 web-time = { workspace = true, optional = true }
@@ -36,6 +39,7 @@ web-sys = { workspace = true, optional = true, features = [
     "Event",
     "EventTarget",
     "HtmlCanvasElement",
+    "Headers",
     "HtmlElement",
     "ImageData",
     "KeyboardEvent",
@@ -43,7 +47,10 @@ web-sys = { workspace = true, optional = true, features = [
     "OffscreenCanvas",
     "OffscreenCanvasRenderingContext2d",
     "PointerEvent",
+    "Request",
+    "RequestInit",
     "ResizeObserver",
+    "Response",
     "TextMetrics",
     "WheelEvent",
     "Window",
@@ -56,7 +63,6 @@ naga = { workspace = true, optional = true }
 [dev-dependencies]
 proptest.workspace = true
 pollster.workspace = true
-serde_json.workspace = true
 wgpu.workspace = true
 bytemuck.workspace = true
 

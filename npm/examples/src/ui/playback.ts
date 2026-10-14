@@ -32,6 +32,7 @@ export class Playback {
     'aria-label': 'Time',
   });
   readonly #time = h('output', {}, '0.00 s');
+  readonly #transport = h('div', { class: 'transport' }, this.#toggle);
 
   constructor(
     stage: Stage,
@@ -52,15 +53,14 @@ export class Playback {
       { signal },
     );
     stage.key('k', flip);
-    const transport = h('div', { class: 'transport' }, this.#toggle);
     if (options.replay) {
       const replay = h('button', { type: 'button' }, 'Instant replay', h('kbd', {}, 'R'));
       replay.addEventListener('click', () => this.replay(), { signal });
       stage.key('r', () => this.replay());
-      transport.append(replay);
+      this.#transport.append(replay);
     }
-    transport.append(this.#time);
-    stage.regions.timeline.append(transport, this.#slider);
+    this.#transport.append(this.#time);
+    stage.regions.timeline.append(this.#transport, this.#slider);
     stage.frame((dt) => {
       if (this.mode !== 'playing') return;
       const next = this.#at + dt * this.#rate;
@@ -76,6 +76,18 @@ export class Playback {
 
   get at(): number {
     return this.#at;
+  }
+
+  /** Hides the transport, as while there is nothing to play. */
+  set hidden(hidden: boolean) {
+    this.#transport.hidden = hidden;
+    this.#slider.hidden = hidden;
+  }
+
+  /** Seconds of data a second of playing shows, from now on. */
+  set rate(rate: number) {
+    this.options.rate = rate;
+    if (this.mode === 'playing') this.#rate = rate;
   }
 
   /** The recorded span changed; live playback shows its end. */

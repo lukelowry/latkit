@@ -3,11 +3,11 @@ use std::cell::RefCell;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
-use super::{Host, Job, Raster, TextRun};
+use super::{Host, Job, Raster, Request, TextRun};
 use crate::{Error, Pending};
 
-/// The browser: text set with a 2D canvas in the page's fonts, and jobs done by the page's workers
-/// once [`set_jobs`](Browser::set_jobs) names them, else at once.
+/// The browser: text set with a 2D canvas in the page's fonts, jobs done by the page's workers once
+/// [`set_jobs`](Browser::set_jobs) names them, else at once, and bytes fetched with `fetch`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Browser;
 
@@ -117,6 +117,15 @@ impl Host for Browser {
         pending
     }
 
+    fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
+        let (pending, resolver) = Pending::new();
+        let request = request.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            resolver.resolve(fetched(&request).await);
+        });
+        pending
+    }
+
     fn rasterize(&self, run: &TextRun) -> Option<Raster> {
         with_context(|canvas, context| {
             let layout = Layout::of(context, run)?;
@@ -138,4 +147,38 @@ impl Host for Browser {
             Some(Raster { size, coverage, baseline: (PAD + layout.ascent) as f32 })
         })
     }
+}
+
+/// The bytes `request` asks for: none where there is nothing at its URL, and only the range asked for
+/// where a server sends every byte.
+async fn fetched(request: &Request) -> crate::Result<Vec<u8>> {
+    let failed = |what: &str| Error::Load(format!("{} could not be read: {what}", request.url).into());
+    let init = web_sys::RequestInit::new();
+    let headers = web_sys::Headers::new().map_err(|e| failed(&format!("{e:?}")))?;
+    if let Some(range) = &request.range {
+        let value = format!("bytes={}-{}", range.start, range.end.saturating_sub(1));
+        headers.set("Range", &value).map_err(|e| failed(&format!("{e:?}")))?;
+    }
+    init.set_headers(&headers);
+    let fetch = web_sys::Request::new_with_str_and_init(&request.url, &init).map_err(|e| failed(&format!("{e:?}")))?;
+    let window = web_sys::window().ok_or_else(|| failed("no window"))?;
+    let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&fetch))
+        .await
+        .map_err(|e| failed(&format!("{e:?}")))?;
+    let response: web_sys::Response = response.dyn_into().map_err(|_| failed("not a response"))?;
+    match response.status() {
+        200 | 206 => {}
+        204 | 404 => return Ok(Vec::new()),
+        status => return Err(failed(&format!("status {status}"))),
+    }
+    let body = response.array_buffer().map_err(|e| failed(&format!("{e:?}")))?;
+    let body = wasm_bindgen_futures::JsFuture::from(body).await.map_err(|e| failed(&format!("{e:?}")))?;
+    let mut bytes = js_sys::Uint8Array::new(&body).to_vec();
+    if response.status() == 200
+        && let Some(range) = &request.range
+    {
+        let end = (range.end as usize).min(bytes.len());
+        bytes = bytes.get(range.start as usize..end).map(<[u8]>::to_vec).unwrap_or_default();
+    }
+    Ok(bytes)
 }

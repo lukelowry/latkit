@@ -8,9 +8,14 @@
 // Without `gpu`, some of the data's internals have no reader.
 #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 mod data;
+#[cfg(feature = "gpu")]
+mod derive;
 mod error;
 #[cfg(feature = "gpu")]
 mod expr;
+// Without `gpu`, only GeoJSON and tiles' decoding have readers.
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+pub mod geo;
 #[cfg(feature = "gpu")]
 mod gpu;
 #[cfg(feature = "gpu")]
@@ -39,9 +44,9 @@ pub use {
     gpu::{Budget, Gpu},
     pending::{Pending, Resolver},
     scene::{
-        Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered,
-        Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space, Stress,
-        Theme, Vertices,
+        Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label,
+        Layered, Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space,
+        Stress, Theme, Vertices,
     },
     view::{
         Button, Camera, Cursor, Drag, End, Event, Fit, Hit, Input, Key, Modifiers, Phase, Sample, Stats, Target, View,

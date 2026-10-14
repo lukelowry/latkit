@@ -115,7 +115,7 @@ impl Vertices {
             return Err(crate::Error::invalid("a marker reads at most eight inputs").at("marker"));
         }
         let mut flags = 0;
-        if context.diagram {
+        if context.diagram() {
             // The sheet says where each row stands and how large it is, from the data alone.
             c.check_structure("position", self.position.iter().flatten())?;
             c.check_structure("size", self.size.iter().flatten().map(|s| &s.expr))?;

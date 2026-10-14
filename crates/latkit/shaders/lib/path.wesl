@@ -7,7 +7,7 @@
 
 import package::lib::types::{
     NONE, VISIBLE, PLACED, DASH, ENDS_COLOR, GEODESIC, STEP_BEFORE, STEP_AFTER, MARK_EDGES, PATH_ENDS, PATH_TRACE,
-    PATH_GEOMETRY, EDGE_WIDTH, LINE_WIDTH, GEODESIC_STEP, OWN_HEIGHT,
+    PATH_GEOMETRY, EDGE_WIDTH, LINE_WIDTH, GEODESIC_STEP, OWN_HEIGHT, TRIANGLES,
 };
 import package::lib::bind::{frame, mark};
 import package::lib::state::{row_at, edge_at, line_at, vertex_slot, Vertex};
@@ -107,7 +107,8 @@ fn geometry_count(row: u32) -> u32 {
     return points_of(mark.geometry, row).count;
 }
 
-// Segments row `row`'s path has: the count a list over the mark's rows counts.
+// Segments row `row`'s path has, or for an area its triangles: the count a list over the mark's rows
+// counts.
 fn row_segments(row: u32) -> u32 {
     switch PATH {
         case PATH_ENDS: {
@@ -124,7 +125,12 @@ fn row_segments(row: u32) -> u32 {
             return middle + 1u;
         }
         case PATH_GEOMETRY: {
-            return max(geometry_count(row), 1u) - 1u;
+            let count = geometry_count(row);
+            if mark.primitive == TRIANGLES {
+                // An area's triangles follow the point its label hangs from, three points each.
+                return select(0u, (count - 1u) / 3u, count > 0u);
+            }
+            return max(count, 1u) - 1u;
         }
         default: {
             return mark.per_row;

@@ -15,6 +15,8 @@ import package::lib::mark::px;
 struct Point {
     clip: vec4f,
     world: vec3f,
+    // Where it stands, in position units.
+    position: vec2f,
     // Half the marker's width and height, CSS pixels.
     half: vec2f,
     color: vec4f,
@@ -41,6 +43,7 @@ fn point(row: u32) -> Point {
     let color = unpack4x8unorm(v.color);
     var p: Point;
     p.world = world(v.hi, v.lo, v.elevation);
+    p.position = v.hi + v.lo;
     p.clip = project(v.hi, v.lo, v.elevation);
     p.half = max(half, vec2f(0.0));
     p.color = vec4f(color.rgb, color.a * faded(row, v.flags));

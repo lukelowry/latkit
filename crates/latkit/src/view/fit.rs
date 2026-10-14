@@ -69,15 +69,16 @@ impl View {
         if self.fitting.reading.is_some() || self.size[0] <= 0.0 {
             return None;
         }
-        // A fit frames what shows once data has streamed and any layout has placed it; in a diagram,
-        // once vertices stand where their sheet puts them.
+        // A fit frames what shows once data has streamed, its shapes are triangulated and bent, and any
+        // layout has placed it; in a diagram, once vertices stand where their sheet puts them.
         let easing = matches!(self.scene.space, Space::Diagram(_))
             && self
                 .marks
                 .iter()
                 .any(|m| m.kind() == MarkKind::Vertices && (m.transition.is_some() || m.begin.is_some()));
         let ready = self.marks.iter().filter(|m| m.compiled.is_some()).all(|m| m.drawable() && !m.tables.waiting())
-            && !self.sheet.placing()
+            && !self.derived.sheet.placing()
+            && !self.derived.shaping()
             && !easing;
         if matches!(self.fitting.wanted, Some(Fit::All | Fit::Rows(_) | Fit::Reveal(_))) {
             let measurable = self.marks.iter().any(|m| m.compiled.is_some() && m.measured());
@@ -184,9 +185,9 @@ impl View {
 }
 
 impl super::marks::Shown {
-    /// Whether this mark's extents frame a fit: vertices, and the traces of lines.
+    /// Whether this mark's extents frame a fit: vertices, lines, and areas.
     pub(crate) fn measured(&self) -> bool {
-        matches!(self.kind(), MarkKind::Vertices | MarkKind::Lines)
+        matches!(self.kind(), MarkKind::Vertices | MarkKind::Lines | MarkKind::Areas)
     }
 }
 

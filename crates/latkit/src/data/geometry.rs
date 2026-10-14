@@ -52,6 +52,38 @@ impl Geometry {
         &self.coords
     }
 
+    /// Row `row`'s coordinates, every part's in order.
+    pub(crate) fn row_coords(&self, row: usize) -> &[[f64; 2]] {
+        if self.depth == 0 {
+            return &self.coords[row..=row];
+        }
+        let mut span = row..row + 1;
+        for offsets in &self.levels {
+            span = offsets[span.start] as usize..offsets[span.end] as usize;
+        }
+        &self.coords[span]
+    }
+
+    /// A digest of row `row`: its coordinates and how they break into parts.
+    pub(crate) fn row_hash(&self, row: usize) -> u64 {
+        use std::hash::Hasher;
+        let mut hasher = rustc_hash::FxHasher::default();
+        let mut span = row..row + 1;
+        for offsets in &self.levels {
+            let first = offsets[span.start];
+            for &offset in &offsets[span.clone()] {
+                hasher.write_u32(offset - first);
+            }
+            span = first as usize..offsets[span.end] as usize;
+        }
+        hasher.write_usize(span.len());
+        for point in self.row_coords(row) {
+            hasher.write_u64(point[0].to_bits());
+            hasher.write_u64(point[1].to_bits());
+        }
+        hasher.finish()
+    }
+
     /// At most how many points the rows' paths take as shaders read them: every coordinate, and a
     /// break before each part or ring.
     pub(crate) fn points(&self) -> usize {

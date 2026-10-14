@@ -17,10 +17,17 @@ fn vector(v: DVec3) -> [f32; 4] {
     [v.x as f32, v.y as f32, v.z as f32, 0.0]
 }
 
-/// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels. Pointer,
-/// probe, focus, and shade words start empty. In a diagram every length but glow and halo is a unit,
-/// so the theme's lengths scale with the zoom.
-pub(crate) fn frame(scene: &Scene, projected: &Projected, size: [f64; 2], linear: bool, elapsed: f64) -> wgsl::Frame {
+/// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels, showing
+/// axis coordinate `at`. Pointer, probe, focus, and shade words start empty. In a diagram every length
+/// but glow and halo is a unit, so the theme's lengths scale with the zoom.
+pub(crate) fn frame(
+    scene: &Scene,
+    projected: &Projected,
+    size: [f64; 2],
+    linear: bool,
+    elapsed: f64,
+    at: f64,
+) -> wgsl::Frame {
     let theme = &scene.theme;
     let (cx, cy) = (split(projected.center[0]), split(projected.center[1]));
     let grid = match &scene.space {
@@ -37,6 +44,14 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, size: [f64; 2], linear
     let (surface, graticule) = match &scene.space {
         Space::Earth(earth) => (earth.surface.unwrap_or(theme.surface), earth.graticule),
         _ => (theme.surface, false),
+    };
+    // The sun stands where it does at the earth's daylight instant, on by the axis coordinate shown.
+    let (sun, atmosphere) = match &scene.space {
+        Space::Earth(earth) => (
+            earth.daylight.map(|t| crate::scene::sun(t + if at.is_finite() { at } else { 0.0 })),
+            earth.atmosphere.then(|| theme.atmosphere.to_array()),
+        ),
+        _ => (None, None),
     };
     // A selected color with a negative red asks for each row's own color.
     let selected = theme.selected.map_or([-1.0, 0.0, 0.0, 0.9], Color::to_array);
@@ -73,6 +88,8 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, size: [f64; 2], linear
     frame.grid_pitch = grid_pitch as f32;
     frame.grid_fade = grid_fade(scene, projected, size) as f32;
     frame.graticule = u32::from(graticule);
+    frame.sun = sun.map_or([0.0; 4], |s| [s[0] as f32, s[1] as f32, s[2] as f32, theme.night.clamp(0.0, 1.0)]);
+    frame.atmosphere = atmosphere.unwrap_or([0.0; 4]);
     frame.theme = theme_slots(theme);
     frame.shade.color = theme.shadow.color.to_array();
     frame
@@ -135,6 +152,7 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_EDGE_WIDTH as usize] = theme.edge_width.to_bits();
     slots[wgsl::THEME_LINE as usize] = theme.line.packed();
     slots[wgsl::THEME_LINE_WIDTH as usize] = theme.line_width.to_bits();
+    slots[wgsl::THEME_AREA as usize] = theme.area.packed();
     slots[wgsl::THEME_TEXT as usize] = theme.text.packed();
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
@@ -152,6 +170,7 @@ pub(crate) fn mark(index: usize, shown: &Shown, labels: Option<super::labels::Sl
         MarkKind::Edges => wgsl::MARK_EDGES,
         MarkKind::Faces => wgsl::MARK_FACES,
         MarkKind::Lines => wgsl::MARK_LINES,
+        MarkKind::Areas => wgsl::MARK_AREAS,
     };
     mark.rows = shown.rows;
     mark.exits = shown.exits;
@@ -191,6 +210,7 @@ pub(crate) fn mark(index: usize, shown: &Shown, labels: Option<super::labels::Sl
         mark.candidates = slots.candidates;
         mark.runs = slots.runs;
         mark.wanted = slots.wanted;
+        mark.seen = slots.seen;
         mark.label_id = slots.id;
     }
     if let Some(compiled) = &shown.compiled {

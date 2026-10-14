@@ -1,19 +1,20 @@
-//! What the platform does for latkit: set and measure text in its fonts, and do jobs off the frame.
-//! A [`Gpu`](crate::Gpu) is given its host with [`Gpu::set_host`](crate::Gpu::set_host); without one,
-//! views draw no text and do their jobs at once.
+//! What the platform does for latkit: set and measure text in its fonts, do jobs off the frame, and
+//! fetch bytes. A [`Gpu`](crate::Gpu) is given its host with [`Gpu::set_host`](crate::Gpu::set_host);
+//! without one, views draw no text, do their jobs at once, and fetch nothing.
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod browser;
 mod job;
 
+use std::ops::Range;
 use std::sync::Arc;
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub use browser::Browser;
 pub use job::Job;
-pub(crate) use job::{Key, Placement, Wiring};
+pub(crate) use job::{Key, Placement, Shaping, Wiring};
 
-use crate::Pending;
+use crate::{Error, Pending};
 
 /// The platform services a view uses.
 pub trait Host: Send + Sync + 'static {
@@ -29,6 +30,34 @@ pub trait Host: Send + Sync + 'static {
     /// calling thread.
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         Pending::ready(Ok(job.run()))
+    }
+
+    /// Fetches `request`, resolving to its bytes; to no bytes where there is nothing at its URL, and
+    /// to an error where it cannot be read. By default a host fetches nothing.
+    fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
+        let _ = request;
+        Pending::ready(Err(Error::Unsupported("this host does not fetch".into())))
+    }
+}
+
+/// Bytes to fetch: a URL, and the range of its bytes, or all of them.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Request {
+    /// The URL.
+    pub url: Arc<str>,
+    /// Bytes `start..end`; `None` fetches every byte.
+    pub range: Option<Range<u64>>,
+}
+
+impl Request {
+    /// Every byte at `url`.
+    pub fn new(url: impl Into<Arc<str>>) -> Request {
+        Request { url: url.into(), range: None }
+    }
+
+    /// Bytes `range` at `url`.
+    pub fn range(url: impl Into<Arc<str>>, range: Range<u64>) -> Request {
+        Request { url: url.into(), range: Some(range) }
     }
 }
 

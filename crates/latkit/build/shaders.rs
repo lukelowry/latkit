@@ -43,6 +43,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry { module: "draw::strokes", variants: &[("main", &[]), ("cast", &["casts"])] },
     Entry { module: "draw::triangles", variants: &[("main", &[]), ("cast", &["casts"])] },
+    Entry { module: "draw::areas", variants: &[("main", &[])] },
     Entry { module: "draw::shade", variants: &[("main", &[])] },
     Entry { module: "draw::glyphs", variants: &[("main", &[]), ("ports", &["ports"])] },
     Entry { module: "compute::labels", variants: &[("main", &[])] },
@@ -92,7 +93,7 @@ pub(crate) fn generate() {
             check_shared(&module, &bind_module, entry.module);
             let file = format!("{}.{variant}.wgsl", entry.module.replace("::", "."));
             fs::write(out.join(&file), &source).unwrap();
-            manifest.push(manifest_entry(&file, &module, &types_module, custom));
+            manifest.push(manifest_entry(entry.module, &file, &module, &types_module, custom));
             let name = shader_name(entry.module, variant);
             writeln!(shaders, "    {name},").unwrap();
             let pass = bindings(&module, Some(&info), 2);
@@ -114,7 +115,7 @@ pub(crate) fn generate() {
 
 /// A variant as JSON: its file, whether it draws, its compute entry points, every combination of the
 /// pipeline constants it declares, and the WGSL appended to make it whole (a custom marker's stand-in).
-fn manifest_entry(file: &str, module: &naga::Module, types: &naga::Module, custom: bool) -> String {
+fn manifest_entry(shader: &str, file: &str, module: &naga::Module, types: &naga::Module, custom: bool) -> String {
     let compute: Vec<String> = module
         .entry_points
         .iter()
@@ -134,7 +135,7 @@ fn manifest_entry(file: &str, module: &naga::Module, types: &naga::Module, custo
                     next
                 })
             })
-            .filter(|c| made(c, types))
+            .filter(|c| made(shader, c, types))
             .collect();
     }
     let constants: Vec<String> = combinations
@@ -150,13 +151,22 @@ fn manifest_entry(file: &str, module: &naga::Module, types: &naga::Module, custo
     )
 }
 
-/// Whether a pipeline is ever made with `constants`: a probe made for points or triangles reads no
-/// path, so it keeps the default one.
-fn made(constants: &[(&str, u32)], types: &naga::Module) -> bool {
+/// Whether a pipeline of `module` is ever made with `constants`: faces read their ends and areas
+/// their geometry; a probe made for points reads no path, so it keeps the default one, and one made
+/// for triangles reads a face's ends or an area's geometry.
+fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
     let value = |name: &str| constants.iter().find(|(n, _)| *n == name).map(|&(_, v)| v);
-    match (value("PROBED"), value("PATH")) {
+    let path = value("PATH");
+    match module {
+        "draw::triangles" => return path == Some(type_constant(types, "PATH_ENDS")),
+        "draw::areas" => return path == Some(type_constant(types, "PATH_GEOMETRY")),
+        _ => {}
+    }
+    match (value("PROBED"), path) {
         (Some(probed), Some(path)) => {
-            probed == type_constant(types, "STROKES") || path == type_constant(types, "PATH_ENDS")
+            probed == type_constant(types, "STROKES")
+                || path == type_constant(types, "PATH_ENDS")
+                || (probed == type_constant(types, "TRIANGLES") && path == type_constant(types, "PATH_GEOMETRY"))
         }
         _ => true,
     }

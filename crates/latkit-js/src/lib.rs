@@ -120,6 +120,16 @@ impl Data {
     pub fn tables(&self) -> Vec<String> {
         self.0.tables().map(|t| t.name().to_string()).collect()
     }
+
+    /// Every row's id of `table`, in row order.
+    pub fn ids(&self, table: &str) -> js_sys::Array {
+        self.0.table(table).map(|t| t.ids().map(|id| convert::id_value(&id)).collect()).unwrap_or_default()
+    }
+
+    /// The names of `table`'s fields.
+    pub fn fields(&self, table: &str) -> Vec<String> {
+        self.0.table(table).map(|t| t.fields().map(|(name, _)| name.to_string()).collect()).unwrap_or_default()
+    }
 }
 
 /// Changes to a dataset, applied in order and all at once.
@@ -205,6 +215,22 @@ impl View {
     #[wasm_bindgen(js_name = removeData)]
     pub fn remove_data(&self, name: &str) {
         self.0.with(|v| v.remove_data(name));
+    }
+
+    /// The dataset named `name`: one given, or the tiles the view fetched.
+    pub fn data(&self, name: &str) -> Option<Data> {
+        self.0.read(|v| v.data(name).cloned()).map(Data)
+    }
+
+    /// Fetches the vector tiles at `url` as the camera asks for them, drawn as dataset `name`.
+    #[wasm_bindgen(js_name = setTiles)]
+    pub fn set_tiles(&self, name: &str, url: &str) {
+        self.0.with(|v| v.set_tiles(latkit::geo::Tiles::vector(name, url)));
+    }
+
+    #[wasm_bindgen(js_name = removeTiles)]
+    pub fn remove_tiles(&self, name: &str) {
+        self.0.with(|v| v.remove_tiles(name));
     }
 
     #[wasm_bindgen(getter)]
@@ -345,6 +371,13 @@ pub fn set_jobs(run: js_sys::Function) {
 #[wasm_bindgen]
 pub fn job(bytes: &[u8]) -> Vec<u8> {
     latkit::host::Job::from_bytes(bytes.to_vec()).run()
+}
+
+/// The job reading GeoJSON `bytes` as dataset `name`, for a worker to do: it answers the patch that
+/// builds the dataset, or nothing when the bytes are no GeoJSON.
+#[wasm_bindgen(js_name = geojsonJob)]
+pub fn geojson_job(name: &str, bytes: &[u8]) -> Vec<u8> {
+    latkit::host::Job::geojson(name, bytes).into_bytes()
 }
 
 /// The compiled module, for workers to instantiate.

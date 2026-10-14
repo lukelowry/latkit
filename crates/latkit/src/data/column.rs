@@ -17,7 +17,7 @@ pub(crate) struct Page {
 }
 
 impl Page {
-    fn new(values: Values) -> Page {
+    pub(crate) fn new(values: Values) -> Page {
         Page { id: PageId::next(), values }
     }
 }
@@ -51,6 +51,14 @@ impl Column {
         debug_assert!(pages.iter().rev().skip(1).all(|p| p.len() == PAGE_ROWS));
         let len = pages.iter().map(Values::len).sum();
         Column { len, pages: pages.into_iter().map(Page::new).collect(), like: like.slice(0..0) }
+    }
+
+    /// A column of `pages` as they are, their ids kept; every page but the last holds
+    /// [`PAGE_ROWS`] values.
+    pub(crate) fn of_pages(pages: Vec<Page>, like: &Values) -> Column {
+        debug_assert!(pages.iter().rev().skip(1).all(|p| p.values.len() == PAGE_ROWS));
+        let len = pages.iter().map(|p| p.values.len()).sum();
+        Column { len, pages: pages.into(), like: like.slice(0..0) }
     }
 
     pub(crate) fn len(&self) -> usize {

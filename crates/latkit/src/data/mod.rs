@@ -26,7 +26,7 @@ pub use values::{Kind, Value, Values};
 #[cfg(feature = "gpu")]
 pub(crate) use {
     column::{Column, PAGE_ROWS, Page},
-    geometry::Geometry,
+    geometry::{Geometry, GeometryBuilder},
     name::{PageId, Version},
     patch::Op,
     samples::{AxisPage, FramePage, LEVELS, Samples, bucket_frames},

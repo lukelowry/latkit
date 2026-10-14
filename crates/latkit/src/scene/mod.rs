@@ -1,5 +1,6 @@
 //! Scenes: what a view draws, as plain data. Marks name their data; the view is given the data.
 
+pub(crate) mod areas;
 mod controls;
 #[cfg(feature = "serde")]
 mod decode;
@@ -7,7 +8,7 @@ mod edges;
 mod faces;
 mod label;
 mod layout;
-mod lines;
+pub(crate) mod lines;
 pub(crate) mod mark;
 mod marker;
 mod port;
@@ -17,6 +18,7 @@ mod vertices;
 
 use std::time::Duration;
 
+pub use areas::Areas;
 pub use controls::Controls;
 pub use edges::Edges;
 pub use faces::Faces;
@@ -26,6 +28,7 @@ pub use lines::Lines;
 pub use mark::Mark;
 pub use marker::{Image, Marker, Shape};
 pub use port::{Port, Side};
+pub(crate) use space::sun;
 pub use space::{Axis, Diagram, Earth, Format, Grid, Plane, Plot, Projection, Space};
 pub use theme::{Shadow, Theme};
 pub use vertices::Vertices;

@@ -1,7 +1,7 @@
 use crate::Expr;
 
 /// A row's text, placed beside, inside, or along what its mark draws, following it every frame.
-/// Labels that would overlap give way by priority, and those already shown keep their place. In a
+/// Labels that would overlap give way by priority; among equals, those already shown keep their place. In a
 /// diagram a label is part of the drawing: it scales with the zoom, fades out once too small to
 /// read, and shows wherever it fits its vertex.
 ///

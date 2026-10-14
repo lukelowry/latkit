@@ -131,15 +131,11 @@ impl Camera {
                 let Some(s) = view.screen(a) else { return *self };
                 let to = [s[0] + delta[0], s[1] + delta[1]];
                 if view.globe >= 0.5 {
-                    let Some(p) = view.surface(to) else { return *self };
-                    let p = view.position(p);
-                    let lat = (center[1] + anchor[1] - p[1]).clamp(-MAX_LATITUDE, MAX_LATITUDE);
-                    return Camera::Map {
-                        center: [wrap(center[0] + anchor[0] - p[0]), lat, center[2]],
-                        zoom,
-                        pitch,
-                        bearing,
-                    };
+                    // Past the globe's edge there is nothing to hold the anchor to.
+                    if view.surface(to).is_none() {
+                        return *self;
+                    }
+                    return view.keeping(*self, anchor, to);
                 }
                 let reach = 50.0 * (view.eye - a).length();
                 let level = view.on_plane(to, a.z).filter(|p| (*p - view.eye).length() < reach);
@@ -161,7 +157,11 @@ impl Camera {
         let to_pitch = (pitch + degrees[1]).clamp(0.0, MAX_PITCH);
         let to_bearing = (bearing + degrees[0]).rem_euclid(360.0);
         if view.globe >= 0.5 {
-            return Camera::Map { center, zoom, pitch: to_pitch, bearing: to_bearing };
+            let turned = Camera::Map { center, zoom, pitch: to_pitch, bearing: to_bearing };
+            return match view.screen(view.world(anchor)) {
+                Some(s) => view.keeping(turned, anchor, [s[0], s[1]]),
+                None => turned,
+            };
         }
         // The camera turns rigidly about the anchor: its center goes with it.
         let rig = |p: f64, b: f64| DMat3::from_rotation_z(-b.to_radians()) * DMat3::from_rotation_x(p.to_radians());
@@ -186,7 +186,11 @@ impl Camera {
             Camera::Map { center, zoom, pitch, bearing } => {
                 let to = (zoom + levels).clamp(-MAX_ZOOM, MAX_ZOOM);
                 if view.globe >= 0.5 {
-                    return Camera::Map { center, zoom: to, pitch, bearing };
+                    let zoomed = Camera::Map { center, zoom: to, pitch, bearing };
+                    return match view.screen(view.world(anchor)) {
+                        Some(s) => view.keeping(zoomed, anchor, [s[0], s[1]]),
+                        None => zoomed,
+                    };
                 }
                 let a = view.world(anchor);
                 let c = DVec3::new(0.0, 0.0, center[2]);
@@ -319,6 +323,7 @@ pub(crate) struct Projected {
     pub(crate) globe: f64,
     pub(crate) space: u32,
     size: [f64; 2],
+    area: Area,
 }
 
 impl Projected {
@@ -386,6 +391,48 @@ impl Projected {
             globe: if space_code == wgsl::SPACE_EARTH { globe } else { 0.0 },
             space: space_code,
             size: [w, h],
+            area,
+        }
+    }
+
+    /// `camera` moved on the globe, its center only, so that `anchor` lands at screen point `to`:
+    /// Newton's method on the center's longitude and latitude from where it stands. Where no center
+    /// puts the anchor there in front of the globe, `camera` as it is.
+    pub(crate) fn keeping(&self, camera: Camera, anchor: [f64; 3], to: [f64; 2]) -> Camera {
+        let Camera::Map { center, zoom, pitch, bearing } = camera else { return camera };
+        let earth = Space::Earth(crate::Earth::globe());
+        let at = |center: [f64; 3]| {
+            let camera = Camera::Map { center, zoom, pitch, bearing };
+            let view = Projected::new(&earth, &camera, self.size, self.area, self.globe);
+            let w = view.world(anchor);
+            let radius = 1.0 / center[1].to_radians().cos();
+            let front = (w - DVec3::new(0.0, 0.0, -radius)).dot(view.eye - w) > 0.0;
+            view.screen(w).filter(|_| front).map(|s| [s[0], s[1]])
+        };
+        // A step a few pixels wide measures how the anchor moves with the center.
+        let step = 4.0 * 360.0 / (256.0 * zoom.exp2());
+        let mut c = center;
+        for _ in 0..8 {
+            let Some(s) = at(c) else { return camera };
+            let miss = [to[0] - s[0], to[1] - s[1]];
+            if miss[0].hypot(miss[1]) < 0.01 {
+                break;
+            }
+            let moved = |dc: [f64; 2]| {
+                at([c[0] + dc[0], c[1] + dc[1], c[2]]).map(|m| [(m[0] - s[0]) / step, (m[1] - s[1]) / step])
+            };
+            let (Some(dx), Some(dy)) = (moved([step, 0.0]), moved([0.0, step])) else { return camera };
+            let det = dx[0] * dy[1] - dy[0] * dx[1];
+            if det.abs() < 1e-12 {
+                return camera;
+            }
+            let along = [(miss[0] * dy[1] - dy[0] * miss[1]) / det, (dx[0] * miss[1] - miss[0] * dx[1]) / det];
+            let scale = (30.0 / along[0].hypot(along[1]).max(1e-12)).min(1.0);
+            c = [wrap(c[0] + along[0] * scale), (c[1] + along[1] * scale).clamp(-MAX_LATITUDE, MAX_LATITUDE), c[2]];
+        }
+        match at(c) {
+            Some(s) if (s[0] - to[0]).hypot(s[1] - to[1]) < 0.5 => Camera::Map { center: c, zoom, pitch, bearing },
+            _ => camera,
         }
     }
 
@@ -626,6 +673,24 @@ mod tests {
             assert!((ground[0] - p[0]).abs() < 1e-6 && (ground[1] - p[1]).abs() < 1e-6, "globe {globe}: {ground:?}");
         }
         assert!((latitude(mercator_y(37.5)) - 37.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn globe_gestures_keep_the_anchor_under_the_pointer() {
+        let space = Space::Earth(Earth::globe());
+        let camera = Camera::Map { center: [-97.0, 31.0, 0.0], zoom: 3.0, pitch: 20.0, bearing: 15.0 };
+        let view = Projected::new(&space, &camera, SIZE, AREA, 1.0);
+        let anchor = view.position(view.surface([520.0, 260.0]).expect("the globe"));
+        let at = to_screen(&view, anchor);
+        let check = |moved: Camera, want: [f64; 2]| {
+            let after = Projected::new(&space, &moved, SIZE, AREA, 1.0);
+            let s = to_screen(&after, anchor);
+            assert!((s[0] - want[0]).abs() < 0.5 && (s[1] - want[1]).abs() < 0.5, "{s:?} for {want:?}");
+        };
+        check(camera.panned(&view, anchor, [-90.0, 40.0]), [at[0] - 90.0, at[1] + 40.0]);
+        check(camera.zoomed(&view, anchor, 1.25), at);
+        check(camera.zoomed(&view, anchor, -0.75), at);
+        check(camera.turned(&view, anchor, [25.0, 10.0]), at);
     }
 
     #[test]

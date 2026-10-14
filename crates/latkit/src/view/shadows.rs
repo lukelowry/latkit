@@ -6,10 +6,10 @@
 use glam::DVec3;
 
 use super::View;
-use super::derived::stamp_of;
 use super::resources::{EyeSlot, SHADE, SHADE_SIZE};
 use super::uniforms;
 use crate::Space;
+use crate::derive::stamp_of;
 use crate::gpu::Inner;
 use crate::gpu::pipelines::Variant;
 use crate::gpu::shaders::{self as wgsl, Shader};

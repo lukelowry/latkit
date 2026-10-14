@@ -163,6 +163,11 @@ impl Values {
         }
     }
 
+    /// Geometries as values, every one present.
+    pub(crate) fn of_geometry(geometry: Geometry) -> Values {
+        Values { array: Array::Geometry(geometry), valid: None }
+    }
+
     /// `len` values whose `i`th is row `pick(i).1` of source `pick(i).0`, or missing for `None`.
     ///
     /// The result keeps the first source's storage; numbers from other sources convert to it. A

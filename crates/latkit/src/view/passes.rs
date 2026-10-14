@@ -3,10 +3,10 @@
 //! backdrop, every mark's primitive and ports in scene order with depth, the labels, and the
 //! overlay; a probe, when one waits, reads what the frame drew through the same geometry.
 
-use super::derived::stamp_of;
 use super::resources::{EyeSlot, MARK_STRIDE};
 use super::{Target, View};
 use crate::Space;
+use crate::derive::stamp_of;
 use crate::gpu::Inner;
 use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
@@ -179,7 +179,7 @@ impl View {
             gpu.0.queue.write_buffer(
                 resources.lists(),
                 u64::from(list.header) * 4,
-                bytemuck::cast_slice(&list.header_words(4)),
+                bytemuck::cast_slice(&list.header_words(self.marks[i].corners())),
             );
         }
         {
@@ -220,7 +220,11 @@ impl View {
             if let Some(group) = &bounds_group {
                 pass.set_bind_group(2, group, &[]);
                 for &i in &measured {
-                    let entry = if self.marks[i].kind() == MarkKind::Vertices { "points" } else { "strokes" };
+                    let entry = match self.marks[i].kind() {
+                        MarkKind::Vertices => "points",
+                        MarkKind::Areas => "areas",
+                        _ => "strokes",
+                    };
                     let variant = Variant::compute(Shader::Bounds, entry).path(self.marks[i].path());
                     pass.set_pipeline(&inner.pipelines.compute_pipeline(device, variant));
                     pass.set_bind_group(1, &groups.mark, &[offset(i)]);
@@ -343,6 +347,7 @@ impl View {
             Shader::PointsPorts,
             Shader::Strokes,
             Shader::Triangles,
+            Shader::Areas,
             Shader::Glyphs,
             Shader::GlyphsPorts,
             Shader::Overlay,
@@ -369,6 +374,7 @@ impl View {
                 Primitive::Points if compiled.drawing.markers.custom.is_some() => (Shader::PointsCustom, 4),
                 Primitive::Points => (Shader::Points, 4),
                 Primitive::Strokes => (Shader::Strokes, 4),
+                Primitive::Triangles if shown.path() == wgsl::PATH_GEOMETRY => (Shader::Areas, 3),
                 Primitive::Triangles => (Shader::Triangles, 3),
             };
             let instances = shown.instances();

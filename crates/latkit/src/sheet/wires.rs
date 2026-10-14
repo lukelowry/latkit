@@ -10,15 +10,18 @@ use std::hash::{Hash, Hasher};
 
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
-use super::{EdgeMark, Input, Vertex, VertexMark, answers, drawing, key_of};
+use super::{EdgeMark, Vertex, VertexMark, drawing, key_of};
 use crate::data::{Field, Inverse, Reference, Row, Table, Value};
+use crate::derive::{Input, Jobs, answers, spread};
 use crate::host::{Job, Key, Wiring};
 use crate::layout::route::{Net, Terminal, finish, route, simplify};
 use crate::{Pending, Port, Route, Shape, Side, Vertices};
 
-/// Wires routed on the frame at most while nothing is dragged; more go to a host job.
-const INLINE: usize = 24;
-/// Wires routed on the frame at most while rows are dragged; the rest route once the drag ends.
+/// Microseconds a wire takes to route, by estimate: what it spends of the frame's budget. A batch
+/// that does not fit routes in a host job.
+const ROUTE_COST: u64 = 160;
+/// Wires routed on the frame at most while rows are dragged, whatever the budget; the rest route
+/// once the drag ends.
 const DRAGGED: usize = 256;
 /// How far wires keep from blocks, in tracks: as far as routes keep.
 const CLEARANCE: f64 = 2.0;
@@ -142,14 +145,15 @@ pub(crate) fn links(marks: &[VertexMark<'_>], edge_marks: &[EdgeMark<'_>]) -> Ve
 }
 
 /// Each edge mark's rows' paths, y down: worked out at once where straight or bent, routed where
-/// orthogonal.
+/// orthogonal: on the frame while the budget lasts, else in a job, `routes` holding what was routed
+/// and the job under way.
 pub(crate) fn paths(
     context: &Context<'_>,
     edge_marks: &[EdgeMark<'_>],
     input: &Input<'_>,
+    jobs: &mut Jobs<'_>,
     moved: &[Rect],
-    routes: &mut FxHashMap<Row, Routed>,
-    routing: &mut Option<Routing>,
+    (routes, routing): (&mut FxHashMap<Row, Routed>, &mut Option<Routing>),
 ) -> Vec<Vec<Parts>> {
     let vertices = context.vertices;
     let codes: Vec<Vec<u32>> = context.marks.iter().map(|vm| port_codes(vm.mark)).collect();
@@ -159,7 +163,8 @@ pub(crate) fn paths(
     for (e, em) in edge_marks.iter().enumerate() {
         let joins = Joins::new(context.marks, &codes, em);
         let orthogonal = em.mark.route == Some(Route::Orthogonal);
-        let lanes = if orthogonal || em.mark.bends.is_some() { None } else { joins.lanes(em.table.len()) };
+        let lanes =
+            if orthogonal || em.mark.bends.is_some() { None } else { spread(em.table.len(), |r| joins.ends(r)) };
         for row in 0..em.table.len() {
             let Some(id) = em.table.ids.id(row) else { continue };
             let key = Row { data: em.data.name().clone(), table: em.table.name().clone(), id };
@@ -200,8 +205,8 @@ pub(crate) fn paths(
             }
         }
     }
-    spread(&mut asks, &edges, vertices);
-    wire(context, input, &asks, moved, routes, routing, &mut out);
+    face(&mut asks, &edges, vertices);
+    wire(context, input, jobs, &asks, moved, (routes, routing), &mut out);
     out
 }
 
@@ -210,10 +215,10 @@ pub(crate) fn paths(
 fn wire(
     context: &Context<'_>,
     input: &Input<'_>,
+    jobs: &mut Jobs<'_>,
     asks: &[Ask],
     moved: &[Rect],
-    routes: &mut FxHashMap<Row, Routed>,
-    routing: &mut Option<Routing>,
+    (routes, routing): (&mut FxHashMap<Row, Routed>, &mut Option<Routing>),
     out: &mut [Vec<Parts>],
 ) {
     if let Some(routing) = routing.as_mut() {
@@ -244,12 +249,19 @@ fn wire(
     }
     if !due.is_empty() {
         let (obstacles, owners) = obstacles(vertices);
-        let inline = if input.dragging { DRAGGED } else { INLINE };
-        if due.len() <= inline || input.dragging {
-            let routed = &due[..due.len().min(inline)];
+        let groups = groups(vertices);
+        let cost = ROUTE_COST * due.len() as u64;
+        let inline = if input.dragging {
+            jobs.spend(ROUTE_COST * due.len().min(DRAGGED) as u64);
+            true
+        } else {
+            jobs.fits(cost)
+        };
+        if inline {
+            let routed = &due[..due.len().min(DRAGGED)];
             let nets: Vec<Net> = routed.iter().map(|&k| net(&asks[k], &owners)).collect();
             let fixed = fixed(asks, routed, routes, 4.0 * clearance);
-            for (&k, lines) in routed.iter().zip(route(&obstacles, &nets, &fixed, tracks)) {
+            for (&k, lines) in routed.iter().zip(route(&obstacles, &groups, &nets, &fixed, tracks)) {
                 routes.insert(asks[k].key.clone(), Routed::new(flipped(&lines), stamps[k]));
             }
             if let Some(routing) = routing.as_mut() {
@@ -261,8 +273,15 @@ fn wire(
             let nets: Vec<Net> = due.iter().map(|&k| net(&asks[k], &owners)).collect();
             let fixed = fixed(asks, &due, routes, 4.0 * clearance);
             let keys: Vec<Key> = due.iter().map(|&k| key_of(&asks[k].key)).collect();
-            let wiring = Wiring { obstacles: &obstacles, nets: &nets, keys: &keys, fixed: &fixed, spacing: tracks };
-            let pending = (input.spawn)(Job::routes(&wiring));
+            let wiring = Wiring {
+                obstacles: &obstacles,
+                groups: &groups,
+                nets: &nets,
+                keys: &keys,
+                fixed: &fixed,
+                spacing: tracks,
+            };
+            let pending = jobs.spawn(Job::routes(&wiring));
             let rows = keys.into_iter().zip(&due).map(|(key, &k)| (key, (asks[k].key.clone(), stamps[k]))).collect();
             *routing = Some(Routing { pending, rows, moved: Vec::new(), clearance });
         }
@@ -350,30 +369,6 @@ impl<'a> Joins<'a> {
         }
         terminals
     }
-
-    /// Each row's lane among the edges joining the same two vertices: offsets from the middle, signed
-    /// so edges joining them either way spread apart; `None` when no two share their ends.
-    fn lanes(&self, rows: usize) -> Option<Vec<f64>> {
-        let mut pairs: FxHashMap<[usize; 2], Vec<usize>> = FxHashMap::default();
-        for row in 0..rows {
-            if let Some([a, b]) = self.ends(row) {
-                pairs.entry([a.min(b), a.max(b)]).or_default().push(row);
-            }
-        }
-        if pairs.values().all(|rows| rows.len() < 2) {
-            return None;
-        }
-        let mut lanes = vec![0.0; rows];
-        for rows in pairs.values().filter(|rows| rows.len() > 1) {
-            let middle = (rows.len() - 1) as f64 / 2.0;
-            for (k, &row) in rows.iter().enumerate() {
-                let reversed = self.ends(row).is_some_and(|[a, b]| a > b);
-                let lane = k as f64 - middle;
-                lanes[row] = if reversed { -lane } else { lane };
-            }
-        }
-        Some(lanes)
-    }
 }
 
 /// Each port's code on a vertex mark's rows.
@@ -400,7 +395,7 @@ type Leaving = (f64, usize, usize);
 
 /// Gives each orthogonal edge its ends: on the sides of its vertices facing each other, spread along
 /// each side by where the other ends lie, so wires leave a side without crossing.
-fn spread(asks: &mut [Ask], edges: &[(usize, [usize; 2])], vertices: &[Vertex]) {
+fn face(asks: &mut [Ask], edges: &[(usize, [usize; 2])], vertices: &[Vertex]) {
     let bounds = |v: usize| vertices[v].bounds.unwrap_or(EMPTY);
     // Each vertex's side: the ends leaving by it, each where its other end lies along the side, the
     // edge, and which end.
@@ -467,6 +462,11 @@ fn obstacles(vertices: &[Vertex]) -> (Vec<Rect>, Vec<Option<u32>>) {
         })
         .collect();
     (boxes, owners)
+}
+
+/// The groups wires route among, y up: they cross a group's border at a cost, and keep off it.
+fn groups(vertices: &[Vertex]) -> Vec<Rect> {
+    vertices.iter().filter(|v| v.group).filter_map(|v| v.bounds).map(|b| [b[0], -b[3], b[2], -b[1]]).collect()
 }
 
 /// The net routing `ask`, y up.

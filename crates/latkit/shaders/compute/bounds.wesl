@@ -1,14 +1,16 @@
 // What marks draw, measured for fitting: the least and greatest x, y, and z of each mark's shown
 // instances in position units, as ordered words, through the same geometry the draws use: a vertex
-// as its box, a stroke as its points. While a fit measures chosen rows, only rows marked FIT count.
+// as its box, a stroke as its points, an area as its triangles' corners. While a fit measures chosen
+// rows, only rows marked FIT count.
 
-import package::lib::types::{NONE, FIT, PATH_ENDS, EXTENT_WORDS, VERTEX_POSITION};
+import package::lib::types::{NONE, FIT, PATH_ENDS, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION};
 import package::lib::bind::{frame, eye, mark, state};
 import package::lib::focus::focus_of;
 import package::lib::reduce::ordered;
 import package::lib::state::{row_at, vertex_at};
 import package::lib::points::{placed, vertex_half};
 import package::lib::path::{PATH, segment, segment_ends, stroke_style, stroke_instances};
+import package::lib::triangles::{triangle_corner, triangle_row, triangle_instances};
 
 @group(2) @binding(2) var<storage, read_write> extents: array<atomic<u32>>;
 
@@ -55,6 +57,23 @@ fn strokes(@builtin(global_invocation_id) id: vec3u) {
     for (var i = 0u; i < 2u; i++) {
         if ends[i].shown {
             extend(ends[i].position);
+        }
+    }
+}
+
+@compute @workgroup_size(256)
+fn areas(@builtin(global_invocation_id) id: vec3u) {
+    if PATH != PATH_GEOMETRY || id.x >= triangle_instances() {
+        return;
+    }
+    let row = triangle_row(id.x);
+    if row >= mark.rows || !counted(row) {
+        return;
+    }
+    for (var k = 0u; k < 3u; k++) {
+        let c = triangle_corner(id.x, k);
+        if c.shown {
+            extend(c.position);
         }
     }
 }

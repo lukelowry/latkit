@@ -80,7 +80,7 @@ impl Edges {
             (Some(expr), _) => c.channel("color", expr, color)?,
             (None, Some(_)) => c.theme("color", wgsl::THEME_EDGE, color)?,
             // A diagram's wires, and nets without ends to blend, take the text color.
-            (None, None) if context.diagram || self.ends.is_none() => {
+            (None, None) if context.diagram() || self.ends.is_none() => {
                 c.theme(
                     "color",
                     wgsl::THEME_TEXT,
@@ -96,10 +96,10 @@ impl Edges {
             flags: wgsl::EDGE_FLAGS,
             theme_width: wgsl::THEME_EDGE_WIDTH,
         };
-        self.stroke.compile(c, &words, context.diagram)?;
+        self.stroke.compile(c, &words, context.diagram())?;
         let mut drawing = Drawing::new(MarkKind::Edges, wgsl::EDGE_WORDS);
         drawing.flags = flags;
-        if context.diagram {
+        if context.diagram() {
             // Every wire runs along the path its sheet worked out.
             drawing.path = wgsl::PATH_GEOMETRY;
             drawing.geometry = c.derived_path("route");

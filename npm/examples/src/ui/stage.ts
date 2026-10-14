@@ -57,7 +57,10 @@ export class Stage {
     if (height) canvas.style.height = `${height}px`;
     into.append(canvas);
     const view = this.gpu.view(canvas, scene);
-    view.on('error', this.fail);
+    // What could not be fetched only goes undrawn; anything else stops the page.
+    view.on('error', (error) =>
+      error.code === 'load' ? this.detail(error.message) : this.fail(error),
+    );
     this.#views.add(view);
     return view;
   }
@@ -102,6 +105,13 @@ export class Stage {
   /** A colormap ramp over the main view. */
   legend(): Legend {
     return new Legend(this);
+  }
+
+  /** A line under the main view crediting where its data comes from. */
+  credit(): HTMLElement {
+    const line = h('p', { class: 'credit' });
+    this.regions.main.append(line);
+    return line;
   }
 
   /** A line under the page's summary, such as what its data holds. */

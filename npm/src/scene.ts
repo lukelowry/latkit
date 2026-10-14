@@ -342,7 +342,18 @@ export type Space =
   | 'plot'
   | { plane: { grid?: Grid } }
   | { diagram: { grid?: Grid } }
-  | { earth: { projection?: 'mercator' | 'globe'; surface?: Color; graticule?: boolean } }
+  | {
+      earth: {
+        projection?: 'mercator' | 'globe';
+        surface?: Color;
+        graticule?: boolean;
+        /** Lit by the sun as it stands this many seconds after the Unix epoch, plus the view's axis
+         * coordinate: night falls on the ground and what stands on it. Unlit unless set. */
+        daylight?: number;
+        /** Air glowing around the globe, in the theme's atmosphere color. */
+        atmosphere?: boolean;
+      };
+    }
   | { plot: { x?: Axis; y?: Axis } };
 
 /** A plane's or a diagram's grid: lines or dots `pitch` units apart; drags snap to dots when `snap`. */
@@ -381,6 +392,7 @@ export interface Theme {
   edgeWidth?: number;
   line?: Color;
   lineWidth?: number;
+  area?: Color;
   /** How much a face turned away from the camera darkens, 0 to 1. */
   shading?: number;
   /** Text: labels, axis ticks, and titles. */
@@ -409,6 +421,10 @@ export interface Theme {
   groupPadding?: number;
   /** How marks that cast shadows cast them. */
   shadow?: Shadow;
+  /** The air around the globe, where the earth has an atmosphere. */
+  atmosphere?: Color;
+  /** How bright the earth's night side stays under daylight, 0 to 1. */
+  night?: number;
 }
 
 /** How marks that cast shadows cast them onto the ground and onto faces. */
@@ -442,7 +458,8 @@ interface Style {
   shadow?: boolean;
 }
 
-/** Options of marks that draw strokes: edges and lines. */
+/** Options of marks that draw strokes: edges and lines. On the earth a line's path bends with the
+ * globe. */
 interface Stroke {
   /** CSS pixels, or position units with {@link units}; units in a diagram. */
   width?: Size;
@@ -453,7 +470,8 @@ interface Stroke {
 
 /**
  * A row's text, placed beside, inside, or along what its mark draws; overlapping labels give way by
- * priority. In a diagram a label scales with the zoom and fades out once too small to read.
+ * priority, and among equals those already shown keep their place. In a diagram a label scales with
+ * the zoom and fades out once too small to read.
  */
 export interface Label {
   /** A text field. */
@@ -561,12 +579,22 @@ export type Mark =
       };
     }
   | {
-      /** Rows drawn as lines through the field each traces. */
+      /** Rows drawn as lines along the field each traces: a path or polygon field (rings outline their
+       * areas), or on a plot a sampled field's history. */
       lines: Style &
         Stroke & {
-          /** The field each row traces: a sampled field across the plot's axis. `geometry` unless set. */
+          /** The field each row traces: a path or polygon field, or on a plot a sampled field. `geometry`
+           * unless set. */
           trace?: string;
-          /** How each row runs between its samples. */
+          /** How each row runs between its samples, on a plot. */
           interpolation?: 'linear' | 'stepBefore' | 'stepAfter';
         };
+    }
+  | {
+      /** Rows drawn as the areas a polygon field covers, cut into triangles off the frame when large;
+       * on the earth they bend with the globe. Outline them with a `lines` mark of the same table. */
+      areas: Style & {
+        /** The polygon field each row fills: one polygon's rings, or polygons. `geometry` unless set. */
+        rings?: string;
+      };
     };

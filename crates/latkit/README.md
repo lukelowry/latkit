@@ -15,16 +15,20 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
 1. **One direction:** data → derived data → motion → pixels. Structure comes from data on the CPU,
    never from a readback; readbacks only answer questions (pick, locate, image) and size GPU work.
 2. **The camera is only an eye:** no derivation reads it. Labels hang from world anchors projected
-   every frame; screen-space decisions (legibility, map label collisions) only toggle visibility.
-3. **Derived data is data:** places, sizes, boxes, routes, and lanes are columns the view keeps
-   beside each table, row for row, paged, uploaded, and eased like any column. Small changes apply
-   on the frame; superlinear work is a host job that answers with a `Patch`, kept only where what it
-   was asked from still holds.
+   every frame; screen-space decisions (legibility, map label collisions) only toggle visibility,
+   and only labels that show have their texts set.
+3. **Derived data is data:** places, sizes, boxes, routes, lanes, triangles, and earth paths are
+   columns the view keeps beside each table, row for row, paged, uploaded, and eased like any column.
+   Every derivation shares one lifecycle (`src/derive/`): a stamp of what it reads; work that fits
+   the frame's one budget done on it; the rest a host job answering a `Patch`, kept only where what
+   it was asked from still holds. Tiles are the camera asking: the one derivation reading it.
 4. **Motion eases changes, never drives them:** data and derived data ease alike; changes during a
    drag apply at once; geometry morphs point by point, by fraction along where the counts differ.
 5. **Primitives:** points, strokes, triangles, glyphs. A stroke runs along one path kind, fixed per
-   pipeline: ends (straight, geodesic, lanes), trace (samples), or geometry (any written polyline).
-   A text run is rasterized once as a distance field: any size, halo from the field.
+   pipeline: ends (straight, geodesic, lanes), trace (samples), or geometry (any written polyline);
+   a triangle's corners come from ends (faces) or geometry (areas). Geometry is a field: vertices
+   read points, lines paths and rings, areas polygons, from `geometry` unless told otherwise. A text
+   run is rasterized once as a distance field: any size, halo from the field.
 6. **Lists:** count → scan → write. Capacity is a CPU-known bound; a list past it coarsens every
    item instead of dropping the last.
 7. **Eyes:** every pass draws through an `Eye` (projection, size, pixel ratio): the view, the shadow
@@ -45,7 +49,7 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
 
 | Space | Positions | Lengths | Camera | Only here |
 |---|---|---|---|---|
-| `Earth` | longitude, latitude | CSS px, or `units` | pitch, bearing; mercator ↔ globe | geodesic edges, tiles ○, daylight ○ |
+| `Earth` | longitude, latitude | CSS px, or `units` | pitch, bearing; mercator ↔ globe | geodesic edges, tiles, daylight, atmosphere |
 | `Plane` | x, y, elevation | CSS px, or `units` | pitch, bearing | |
 | `Plot` | axis, value | CSS px | x and y ranges | axes, playhead |
 | `Diagram` | x, y down | units: a CSS px at zoom 0 | center, zoom | ports, groups, nets, orthogonal routes, layouts |
@@ -74,6 +78,23 @@ only glow, halo, and pick radius stay pixels. Zooming scales one fixed picture.
   their junctions, and point at inputs; outputs drive their nets. Free ports are hollow. Hover
   glows; nothing grows.
 
+## Geography
+
+- **Data:** `geo::geojson(name, bytes)` reads GeoJSON (gzip-compressed or not) into tables
+  `points`, `lines`, and `polygons`, properties as fields; npm reads it in a worker.
+- **Tiles:** `View::set_tiles(Tiles::vector(name, url))` takes a PMTiles archive, TileJSON, or a
+  `{z}/{x}/{y}` template. The camera picks tiles that draw at most their size, nearest first; the host
+  fetches them (`Host::fetch`, ranges for archives); jobs decode them, clipped to their tile, into a
+  dataset the view owns. A layer is a table of the kind its marks draw (or `layer:polygons|lines|points`);
+  row ids come from the tile and the feature's place, so they are stable. A tile not loaded draws its
+  nearest loaded ancestor; fetched bytes stay within a budget, least recently drawn first.
+- **Shapes:** areas triangulate by ear clipping with holes, in a job when large, kept per page and per
+  row so a tile landing shapes only its rows. On the earth, longitudes unwrap across the antimeridian,
+  triangles split along a 2° grid and paths gain points every 2°, so both bend with the globe.
+- **Look:** `Earth::daylight(seconds)` lights the ground and what stands on it by the sun at that
+  instant plus the view's axis coordinate, down to the theme's `night`; `atmosphere` rings the globe.
+  Globe gestures keep the point under the pointer exactly.
+
 ## Tree
 
 ```
@@ -83,21 +104,23 @@ crates/latkit/
 │   ├── lib/           types, bind, read, trace, project, state, color, focus, points, path, triangles,
 │   │                  stroke, marker, label, shade, lists, mark, reduce
 │   ├── compute/       evaluate, freeze, bounds, normals, probe, lists, labels (map label collisions)
-│   └── draw/          backdrop (daylight, atmosphere ○), points, strokes, triangles, glyphs, shade, overlay
+│   └── draw/          backdrop (daylight, atmosphere), points, strokes, triangles, areas, glyphs, shade, overlay
 ├── src/
 │   ├── lib.rs         the only entry point
 │   ├── error.rs, pending.rs
 │   ├── data/          columns, ids, samples, tables, patches, bytes, inverse references, geometry pages
 │   ├── expr/          compile, decode, color, colormap, cpu: the executor structure reads
-│   ├── scene/         Scene, marks, Label, Port, Marker, Layout, Theme, Controls, Diagram, decode · Areas ○
-│   ├── sheet/         a diagram's sizes, places, and boxes (mod), and its wires → derived tables
-│   ├── layout/        layered, stress, overlap, pack, route
-│   ├── view/          View; camera, rig, gestures, input; probe, focus, query, fit, axes; marks, sync, rows,
-│   │                  transition, lists, labels, graph, shadows, derived, variants, resources, uniforms,
+│   ├── scene/         Scene, marks (Vertices, Edges, Faces, Lines, Areas), Label, Port, Marker, Layout, Theme,
+│   │                  Controls, spaces, decode
+│   ├── derive/        Derive, Jobs (one budget, one pool), Derivations: lanes, shapes, tiles
+│   ├── sheet/         a diagram's sizes, places, and boxes (mod), and its wires: a derivation
+│   ├── layout/        layered, stress, overlap, pack, route (groups as soft obstacles)
+│   ├── view/          View; camera, rig, gestures, input; probe, focus, query, fit, axes; marks, program,
+│   │                  sync, rows, transition, lists, labels, graph, shadows, variants, resources, uniforms,
 │   │                  passes, frame
 │   ├── gpu/           Gpu, arena, pipelines, atlas (distance fields), readback, colormaps, icons
-│   ├── host/          Host, Job (answers as patches), browser workers · fetch ○, native threads ○
-│   ├── geo/           ○ geojson, mvt, pmtiles, tiles, triangles
+│   ├── host/          Host (text, jobs, fetch), Job (answers as patches), browser · native threads ○
+│   ├── geo/           geojson, mvt, pmtiles, tiles, shapes, earcut
 │   ├── web.rs         Canvas: frames, input, events
 │   └── winit.rs       ○ input from winit
 ├── tests/
@@ -118,8 +141,13 @@ grid.apply(
 )?;
 grid.apply(Patch::new().append(0.5, "Bus", [("vm", [1.01, 0.99, 1.0])]))?; // a sampled frame
 
-// A map: marks name their data; options are expressions.
-let map = Scene::new(Earth::globe())
+// A map: marks name their data; options are expressions. Geometry is a field.
+view.set_data(geo::geojson("states", &bytes)?);
+view.set_tiles(geo::Tiles::vector("base", "https://tiles.openfreemap.org/planet"));
+let map = Scene::new(Earth::globe().daylight(1_782_043_200.0).atmosphere(true))
+    .draw(Areas::of("base", "water").color(Color::hex("#1d3557")?))
+    .draw(Areas::of("states", "polygons").color(field("load").colormap(Colormap::MAKO)))
+    .draw(Lines::of("base", "transportation").width(field("lanes")))
     .draw(Edges::of("grid", "Branch").ends("from", "to").flow(field("p")))
     .draw(
         Vertices::of("grid", "Bus")
@@ -166,9 +194,8 @@ let hits = view.pick([120.0, 80.0], 6.0); // Pending<Vec<Hit>>, nearest first
 view.arrange();                           // lay out every row without a position again
 ```
 
-Still to add: `Areas::of(..).rings(field)`, `geo::{geojson, Tiles}` with `View::set_tiles`, and
-`Earth { daylight, atmosphere }` (M5); `View::image` and `winit::input` (M6). npm `latkit` mirrors the
-crate with scenes as JSON; its `Data.apply` returns the next version.
+Still to add: `View::image` and `winit::input` (M6). npm `latkit` mirrors the crate with scenes as
+JSON; its `Data.apply` returns the next version, and `geojson` reads in a worker.
 
 ## Milestones
 
@@ -177,7 +204,7 @@ crate with scenes as JSON; its `Data.apply` returns the next version.
 | M1–M4 | data, expressions, arena, probes; transitions, shadows; labels, picks, samples; graph, layouts, routes, groups | ✓ |
 | Gate, Cutover, Pages | browser gate; host jobs in workers, path kinds, lists that coarsen; telemetry and diagram studio pages | ✓ |
 | Sheet | `Diagram`; derived data and geometry pages; the CPU executor; the sheet with incremental layout and routing; jobs answer with patches; stress as a job; `Port::output`; `arrange`; anchored labels and distance-field text; drags apply at once; the diagram page rebuilt on it. Removed folding, the GPU groups and stress passes, stand-ins, and the view's layout and route words | ✓ |
-| M5 | Areas (a triangulation job), GeoJSON, tiles and `Host::fetch`, daylight, atmosphere, exact globe gestures; Grid at scale and Colors pages | ○ |
+| M5 | `src/derive/`: one lifecycle, budget, and pool for the sheet, lanes, shapes, and tiles; geometry as a field (lines along paths and rings); `Areas` (ear clipping in jobs, cached per page and row, earth grid split); `geo::geojson`; `Host::fetch`, PMTiles, TileJSON, MVT decoded in jobs into a view-owned dataset; daylight, atmosphere, exact globe gestures; groups as soft router obstacles; atlas residency by placement; Grid at scale and Colors pages | ✓ |
 | Scale | `cargo xtask bench` with work gates, GPU timestamps, native jobs on threads, 1M-row grids | ○ |
 | M6 | `image`, `png`, npm `view.video`, winit, docs; the Video page | ○ |
 | Retire | delete `packages/`, `examples/`, `benchmark/`, the old `docs/` and their configs | ○ |

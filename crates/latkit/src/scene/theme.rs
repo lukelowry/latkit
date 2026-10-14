@@ -25,6 +25,8 @@ pub struct Theme {
     pub line: Color,
     /// Line width.
     pub line_width: f32,
+    /// Area color.
+    pub area: Color,
     /// How much a face turned away from the camera darkens, 0 to 1.
     pub shading: f32,
     /// Text: labels, axis ticks, and titles.
@@ -64,6 +66,10 @@ pub struct Theme {
     pub group_padding: f32,
     /// How marks that cast shadows cast them.
     pub shadow: Shadow,
+    /// The air glowing around the globe, where the earth has an atmosphere.
+    pub atmosphere: Color,
+    /// How bright the earth's night side stays where it is lit by daylight, 0 to 1.
+    pub night: f32,
 }
 
 /// How marks that cast shadows cast them onto the ground and onto faces.
@@ -92,6 +98,7 @@ impl Theme {
             edge_width: 1.5,
             line: Color::hex("#7cc4ff").expect("hex"),
             line_width: 1.5,
+            area: Color::hex("#2b3d50").expect("hex"),
             shading: 0.6,
             text: Color::hex("#a8b2c2").expect("hex"),
             font: "ui-monospace, Menlo, Consolas, monospace".into(),
@@ -111,6 +118,8 @@ impl Theme {
             halo: 2.0,
             group_padding: 16.0,
             shadow: Shadow { color: Color::BLACK.alpha(0.45), light: [-0.35, 0.45, 1.0], softness: 0.15, lift: 3.0 },
+            atmosphere: Color::hex("#5aa9ff").expect("hex").alpha(0.55),
+            night: 0.3,
         }
     }
 
@@ -122,6 +131,7 @@ impl Theme {
             grid: Color::hex("#000000").expect("hex").alpha(0.08),
             vertex: Color::hex("#1f6feb").expect("hex"),
             line: Color::hex("#1f6feb").expect("hex"),
+            area: Color::hex("#c5d2df").expect("hex"),
             text: Color::hex("#4a5361").expect("hex"),
             playhead: Color::hex("#e36209").expect("hex").alpha(0.8),
             missing: Color::hex("#9aa3ad").expect("hex"),
@@ -129,6 +139,8 @@ impl Theme {
             selected: Some(Color::hex("#e36209").expect("hex").alpha(0.9)),
             flow: Color::hex("#ffffff").expect("hex").alpha(0.9),
             shadow: Shadow { color: Color::BLACK.alpha(0.22), ..Theme::dark().shadow },
+            atmosphere: Color::hex("#6cb4ff").expect("hex").alpha(0.45),
+            night: 0.55,
             ..Theme::dark()
         }
     }

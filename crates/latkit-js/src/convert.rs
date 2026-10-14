@@ -176,13 +176,21 @@ fn numbers(values: &[f64]) -> JsValue {
     values.iter().map(|&v| JsValue::from(v)).collect::<Array>().into()
 }
 
-/// A row as `{ data, table, id }`.
-pub(crate) fn row(row: &latkit::Row) -> JsValue {
-    let id: JsValue = match &row.id {
+/// An id as a number or a text.
+pub(crate) fn id_value(id: &latkit::Id) -> JsValue {
+    match id {
         latkit::Id::Number(n) => (*n as f64).into(),
         latkit::Id::Text(t) => JsValue::from_str(t),
-    };
-    object(&[("data", JsValue::from_str(&row.data)), ("table", JsValue::from_str(&row.table)), ("id", id)])
+    }
+}
+
+/// A row as `{ data, table, id }`.
+pub(crate) fn row(row: &latkit::Row) -> JsValue {
+    object(&[
+        ("data", JsValue::from_str(&row.data)),
+        ("table", JsValue::from_str(&row.table)),
+        ("id", id_value(&row.id)),
+    ])
 }
 
 /// A row from `{ data, table, id }`.

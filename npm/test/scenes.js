@@ -12,6 +12,16 @@ export default [
   { "space": { "plane": { "grid": "off" } } },
   { "space": { "diagram": { "grid": { "dots": 10, "snap": true } } }, "layout": { "layered": { "flow": "down", "rankGap": 60 } } },
   { "space": { "earth": { "projection": "globe", "surface": "#203040", "graticule": false } } },
+  {
+    "space": { "earth": { "projection": "globe", "daylight": 1782043200, "atmosphere": true } },
+    "marks": [
+      { "areas": { "of": ["base", "water"], "color": "#1d3557" } },
+      { "areas": { "of": ["city", "polygons"], "rings": "geometry", "color": { "colormap": "use", "map": "tab10" }, "label": "name" } },
+      { "lines": { "of": ["city", "polygons"], "width": 1, "color": "#ffffff40" } },
+      { "lines": { "of": ["base", "transportation"], "width": { "op": "div", "args": ["lanes", 2] } } }
+    ],
+    "theme": { "area": "#223344", "atmosphere": "#5aa9ff88", "night": 0.35 }
+  },
   { "space": { "plot": { "x": { "label": "Time (s)" }, "y": { "grid": false } } } },
   {
     "space": "globe",

@@ -1,9 +1,25 @@
-// The ground's shadow map. Casters draw into it through the light's eye, blended by MIN: the most
-// covered (1 − coverage), the lowest caster above the ground, and the highest (negated). The ground
-// darkens at the level its lowest caster sets, sharp at contact and soft from high up; faces compare
-// their height with the highest caster over them.
+// Light: the ground's shadow map, and the earth's daylight. Casters draw into the map through the
+// light's eye, blended by MIN: the most covered (1 − coverage), the lowest caster above the ground,
+// and the highest (negated). The ground darkens at the level its lowest caster sets, sharp at contact
+// and soft from high up; faces compare their height with the highest caster over them.
 
+import package::lib::types::SPACE_EARTH;
 import package::lib::bind::{frame, eye, ramp};
+
+// How far the sun stands below the horizon, in the cosine of its angle, where night has fallen.
+const TWILIGHT: f32 = 0.1;
+
+// How lit the earth is at longitude and latitude `p`, in degrees: 1 by day, down to the night's
+// brightness, eased across the terminator; 1 everywhere without daylight.
+fn daylight(p: vec2f) -> f32 {
+    let sun = frame.sun;
+    if frame.space != SPACE_EARTH || dot(sun.xyz, sun.xyz) == 0.0 {
+        return 1.0;
+    }
+    let r = radians(p);
+    let n = vec3f(cos(r.y) * cos(r.x), cos(r.y) * sin(r.x), sin(r.y));
+    return mix(sun.w, 1.0, smoothstep(-TWILIGHT, TWILIGHT * 0.5, dot(n, sun.xyz)));
+}
 
 // What a caster writes, blended by MIN.
 fn caster(coverage: f32, height: f32) -> vec4f {

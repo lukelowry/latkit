@@ -2,7 +2,6 @@
 
 mod axes;
 mod camera;
-mod derived;
 mod event;
 mod fit;
 mod focus;
@@ -30,11 +29,12 @@ use std::task::Waker;
 use std::time::Duration;
 
 pub use camera::Camera;
+pub(crate) use camera::Projected;
 pub use event::{Cursor, Drag, End, Event, Fit, Hit, Phase, Sample, Stats};
 pub use input::{Button, Input, Key, Modifiers};
 pub(crate) use resources::{DEPTH, SHADE};
 
-use camera::{Area, Projected};
+use camera::Area;
 use fit::Fitting;
 use focus::Focus;
 use gestures::Gestures;
@@ -43,13 +43,12 @@ use probe::Probing;
 use program::Regions;
 use resources::Resources;
 use rig::Rig;
-use rustc_hash::FxHashMap;
 use web_time::Instant;
 
+use crate::derive::{Derivations, Derived};
 use crate::expr::compile::Deps;
 use crate::scene::mark::Context;
-use crate::sheet::Sheet;
-use crate::{Data, Error, Gpu, Name, Result, Row, Scene, Space, Table};
+use crate::{Data, Error, Gpu, Result, Row, Scene, Space};
 
 /// Where a frame is drawn: a texture view, its format and size in physical pixels, and how many
 /// physical pixels make a CSS pixel.
@@ -87,11 +86,9 @@ pub struct View {
     /// Bumps whenever the scene changes.
     scene_version: u64,
     data: Vec<Data>,
-    /// What the view derives beside each table it draws, row for row, which marks read like data:
-    /// a diagram's sheet, or elsewhere the lanes of edges sharing their ends.
-    derived: FxHashMap<(Name, Name), Table>,
-    sheet: Sheet,
-    lanes: graph::Lanes,
+    /// What the view derives from the data and the scene: tables beside the tables it draws, row for
+    /// row, which marks read like data.
+    derived: Derivations,
     marks: Vec<Shown>,
     camera: Camera,
     rig: Rig,
@@ -118,8 +115,8 @@ pub struct View {
     /// The format and samples per pixel the scene's pipelines were made for.
     pipelines_made: Option<(wgpu::TextureFormat, u32)>,
     /// The shadow map and the face normals, made from what they read.
-    shadow_map: derived::Derived<()>,
-    normals: derived::Derived<()>,
+    shadow_map: Derived<()>,
+    normals: Derived<()>,
     focus: Focus,
     probing: Probing,
     queries: query::Queries,
@@ -146,9 +143,7 @@ impl View {
             scene: Scene::new(scene.space.clone()),
             scene_version: 0,
             data: Vec::new(),
-            derived: FxHashMap::default(),
-            sheet: Sheet::default(),
-            lanes: graph::Lanes::default(),
+            derived: Derivations::default(),
             marks: Vec::new(),
             camera,
             rig: Rig::default(),
@@ -166,8 +161,8 @@ impl View {
             upload_error: None,
             told_lost: false,
             pipelines_made: None,
-            shadow_map: derived::Derived::default(),
-            normals: derived::Derived::default(),
+            shadow_map: Derived::default(),
+            normals: Derived::default(),
             focus: Focus::default(),
             probing: Probing::default(),
             queries: query::Queries::default(),
@@ -197,7 +192,7 @@ impl View {
         // A mark compiles again when its theme or space changed.
         let context_changed = scene.theme != self.scene.theme
             || std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
-        let context = Context { theme: &scene.theme, diagram: matches!(scene.space, Space::Diagram(_)) };
+        let context = Context { theme: &scene.theme, space: &scene.space };
         // Compile every new or changed mark before changing anything.
         let mut fresh = Vec::with_capacity(scene.marks.len());
         for (i, mark) in scene.marks.iter().enumerate() {
@@ -259,8 +254,18 @@ impl View {
     }
 
     /// Gives the view the dataset `data`, replacing the one of the same name. Cheap: unchanged pages
-    /// are shared and only changed fields are evaluated again.
+    /// are shared and only changed fields are evaluated again. A mark it no longer fits draws nothing,
+    /// and the next frame reports why, unless a scene shown before then replaces the mark: new data
+    /// and the scene reading it can be given in either order.
     pub fn set_data(&mut self, data: Data) {
+        let gpu = self.gpu.clone();
+        let mut inner = gpu.0.lock();
+        self.take_data(data, &mut inner);
+    }
+
+    /// Takes `data` with the GPU's state locked: marks whose schema it changed compile again, and
+    /// those that fail wait for the frame to report it.
+    fn take_data(&mut self, data: Data, inner: &mut crate::gpu::Inner) {
         let at = match self.data.binary_search_by(|d| d.name().cmp(data.name())) {
             Ok(i) => {
                 self.data[i] = data;
@@ -271,17 +276,14 @@ impl View {
                 i
             }
         };
-        let gpu = self.gpu.clone();
-        let mut inner = gpu.0.lock();
-        let context = Context { theme: &self.scene.theme, diagram: matches!(self.scene.space, Space::Diagram(_)) };
-        for i in 0..self.marks.len() {
-            if self.marks[i].stale(&self.data[at])
-                && let Err(e) = self.marks[i].compile(&self.data, context, &mut inner)
+        let context = Context { theme: &self.scene.theme, space: &self.scene.space };
+        for shown in &mut self.marks {
+            if shown.stale(&self.data[at])
+                && let Err(e) = shown.compile(&self.data, context, inner)
             {
-                self.events.push(Event::Error(e.at(i).at("marks")));
+                shown.failed = Some(e);
             }
         }
-        drop(inner);
         // Rows may have moved under the focus.
         self.focus.dirty = true;
         self.fitting.plot_due = true;
@@ -291,6 +293,21 @@ impl View {
     /// The dataset named `name`.
     pub fn data(&self, name: &str) -> Option<&Data> {
         self.data.iter().find(|d| d.name() == name)
+    }
+
+    /// Fetches `tiles` as the camera asks for them, kept as the dataset they name, which the view
+    /// owns: marks draw it like any other, and [`data`](View::data) reads it. Tiles of the same name
+    /// replace these.
+    pub fn set_tiles(&mut self, tiles: crate::geo::Tiles) {
+        self.derived.tiles.set(tiles);
+        self.wake();
+    }
+
+    /// Stops fetching the tiles drawn as dataset `name`, and drawing them.
+    pub fn remove_tiles(&mut self, name: &str) {
+        if self.derived.tiles.remove(name) {
+            self.remove_data(name);
+        }
     }
 
     /// Stops drawing the dataset named `name`.
@@ -363,7 +380,7 @@ impl View {
     /// Lays every vertex without a position out again by the diagram's layout. Places a layout gave
     /// otherwise hold, so rows added later are placed around the rest.
     pub fn arrange(&mut self) {
-        self.sheet.arrange();
+        self.derived.sheet.arrange();
         self.wake();
     }
 
@@ -454,7 +471,7 @@ impl View {
             || self.rig.moving()
             || self.probing.busy()
             || self.queries.busy()
-            || self.sheet.busy()
+            || self.derived.busy()
             || self.awaiting()
             || self.labels.busy()
             || self

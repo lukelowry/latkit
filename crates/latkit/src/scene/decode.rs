@@ -22,7 +22,7 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
 use super::{
-    Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered,
+    Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered,
     Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shape, Side, Space, Stress, Theme,
     Vertices,
 };
@@ -95,6 +95,8 @@ impl<'de> Deserialize<'de> for Space {
                 projection: e.projection,
                 surface: e.surface,
                 graticule: e.graticule.unwrap_or(true),
+                daylight: e.daylight,
+                atmosphere: e.atmosphere,
             }),
             Form::Tagged(Tagged::Plane(p)) => Space::Plane(Plane { grid: p.grid.unwrap_or(Plane::default().grid) }),
             Form::Tagged(Tagged::Diagram(d)) => {
@@ -116,6 +118,10 @@ struct EarthForm {
     surface: Option<Color>,
     #[serde(default)]
     graticule: Option<bool>,
+    #[serde(default)]
+    daylight: Option<f64>,
+    #[serde(default)]
+    atmosphere: bool,
 }
 
 #[derive(Deserialize)]
@@ -333,12 +339,14 @@ impl<'de> Deserialize<'de> for Mark {
             Edges(EdgesForm),
             Faces(FacesForm),
             Lines(LinesForm),
+            Areas(AreasForm),
         }
         Ok(match Form::deserialize(deserializer)? {
             Form::Vertices(v) => Mark::Vertices(v.build()),
             Form::Edges(e) => Mark::Edges(e.build()),
             Form::Faces(f) => Mark::Faces(f.build()),
             Form::Lines(l) => Mark::Lines(l.build()),
+            Form::Areas(a) => Mark::Areas(a.build()),
         })
     }
 }
@@ -403,6 +411,15 @@ impl LinesForm {
     fn build(self) -> Lines {
         let l = apply!(self, Lines::of(self.of.0, self.of.1); trace, width, dash, flow, interpolation);
         style!(self, l)
+    }
+}
+
+form!(AreasForm { rings: Name });
+
+impl AreasForm {
+    fn build(self) -> Areas {
+        let a = apply!(self, Areas::of(self.of.0, self.of.1); rings);
+        style!(self, a)
     }
 }
 
@@ -686,6 +703,7 @@ impl<'de> Deserialize<'de> for Theme {
             edge_width: Option<f32>,
             line: Option<Color>,
             line_width: Option<f32>,
+            area: Option<Color>,
             shading: Option<f32>,
             text: Option<Color>,
             font: Option<String>,
@@ -706,6 +724,8 @@ impl<'de> Deserialize<'de> for Theme {
             halo: Option<f32>,
             group_padding: Option<f32>,
             shadow: Option<ShadowForm>,
+            atmosphere: Option<Color>,
+            night: Option<f32>,
         }
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -743,7 +763,7 @@ impl<'de> Deserialize<'de> for Theme {
         }
         set!(background, surface, grid, vertex, vertex_radius, edge, edge_width, missing, hover, selected, glow, dim);
         set!(hover_scale, dash, flow, flow_spacing, line, line_width, shading, text, font_size, playhead);
-        set!(edge_spacing, arrow, halo, group_padding);
+        set!(edge_spacing, arrow, halo, group_padding, area, atmosphere, night);
         if let Some(font) = form.font {
             t.font = font.into();
         }
@@ -817,6 +837,24 @@ mod tests {
                     .flow(8.0),
             )
             .draw(Vertices::of("mesh", "Vertex").select(false).drag(true));
+        assert_eq!(scene, built);
+    }
+
+    #[test]
+    fn areas_and_the_earths_look_match_builders() {
+        let json = r##"{
+            "space": { "earth": { "projection": "globe", "daylight": 1782043200, "atmosphere": true } },
+            "marks": [
+                { "areas": { "of": ["map", "states"], "rings": "outline", "color": "#336699" } },
+                { "lines": { "of": ["map", "states"], "trace": "outline" } }
+            ],
+            "theme": { "area": "#223344", "night": 0.4 }
+        }"##;
+        let scene: Scene = serde_json::from_str(json).expect("a scene");
+        let built = Scene::new(Earth::globe().daylight(1_782_043_200.0).atmosphere(true))
+            .theme(Theme { area: Color::hex("#223344").expect("hex"), night: 0.4, ..Theme::default() })
+            .draw(Areas::of("map", "states").rings("outline").color(Color::hex("#336699").expect("hex")))
+            .draw(Lines::of("map", "states").trace("outline"));
         assert_eq!(scene, built);
     }
 

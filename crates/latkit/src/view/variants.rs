@@ -7,7 +7,7 @@
 use super::{SHADE, View};
 use crate::gpu::Inner;
 use crate::gpu::pipelines::{self, Variant};
-use crate::gpu::shaders::{PATH_ENDS, Shader};
+use crate::gpu::shaders::{PATH_ENDS, PATH_GEOMETRY, Shader};
 use crate::{Mark, Marker, Space};
 
 /// The probe's entry points the hover reads every probed mark with.
@@ -50,29 +50,36 @@ impl View {
         if any(|m| m.style().interaction.pick) {
             variants.push(compute(probe, "under"));
         }
-        if any(|m| matches!(m, Mark::Edges(_) | Mark::Lines(_))) {
+        if any(|m| matches!(m, Mark::Edges(_) | Mark::Lines(_) | Mark::Areas(_))) {
             variants.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| compute(Shader::Lists, e)));
         }
         let labels = if diagram { &LABELS[..1] } else { &LABELS[..] };
         for mark in marks {
             let style = mark.style();
             let primitive = mark.kind().primitive().code();
-            // A stroke mark's pipelines are made for the path it runs along; others' read none.
-            let path = mark.path(diagram).unwrap_or(PATH_ENDS);
+            // A stroke mark's pipelines are made for the path it runs along, an area's for its triangles'
+            // geometry; others' read none.
+            let path = mark.path(&scene.space).unwrap_or(PATH_ENDS);
             let (shader, cast) = match mark {
                 Mark::Vertices(v) if matches!(v.marker, Marker::Wgsl { .. }) => (None, None),
                 Mark::Vertices(_) => (Some(Shader::Points), Some(Shader::PointsCast)),
                 Mark::Faces(_) => (Some(Shader::Triangles), Some(Shader::TrianglesCast)),
+                Mark::Areas(_) => (Some(Shader::Areas), None),
                 Mark::Edges(_) | Mark::Lines(_) => (Some(Shader::Strokes), Some(Shader::StrokesCast)),
             };
             variants.extend(shader.map(|s| draw(s).path(path)));
             if style.shadow {
                 variants.extend(cast.map(|s| Variant::draw(s, SHADE, 1).path(path)));
             }
-            let bounds = if matches!(mark, Mark::Vertices(_)) { "points" } else { "strokes" };
+            let bounds = match mark {
+                Mark::Vertices(_) => "points",
+                Mark::Areas(_) => "areas",
+                _ => "strokes",
+            };
             variants.push(compute(Shader::Bounds, bounds).path(path));
-            // An edge's rows may run through different numbers of segments, which a list numbers.
-            if matches!(mark, Mark::Edges(_)) {
+            // Rows running through different numbers of segments, or areas of different numbers of
+            // triangles, are numbered by a list.
+            if matches!(mark, Mark::Edges(_)) || path == PATH_GEOMETRY {
                 variants.extend(["count_segments", "write_segments"].map(|e| compute(Shader::Lists, e).path(path)));
             }
             if style.interaction.pick {
@@ -98,7 +105,7 @@ impl View {
                         }
                     }
                 }
-                Mark::Edges(_) | Mark::Lines(_) => {}
+                Mark::Edges(_) | Mark::Lines(_) | Mark::Areas(_) => {}
             }
         }
         inner.pipelines.make(device, variants);

@@ -13,9 +13,8 @@ use super::{Camera, Event, Target, View, uniforms};
 use crate::expr::compile::Deps;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
-use crate::host::Job;
 use crate::scene::mark::MarkKind;
-use crate::{Error, Pending, Space, sheet};
+use crate::{Error, derive};
 
 impl View {
     /// Records a frame of the scene into `encoder` for `target`; the caller submits it.
@@ -45,7 +44,7 @@ impl View {
         self.make_pipelines(&mut inner, target.format, super::resources::samples(target.pixel_ratio));
         inner.atlas.tick();
         self.settle_labels(&mut inner);
-        self.derive(&inner);
+        self.derive(&mut inner);
         self.stream(&mut inner);
         for i in 0..self.marks.len() {
             let geodesic = self.geodesic(&self.marks[i]);
@@ -80,7 +79,7 @@ impl View {
         let query = self.lay_out_lists();
         let projected = self.projected();
         let elapsed = self.start.elapsed().as_secs_f64();
-        let mut frame = uniforms::frame(&self.scene, &projected, self.size, target.format.is_srgb(), elapsed);
+        let mut frame = uniforms::frame(&self.scene, &projected, self.size, target.format.is_srgb(), elapsed, self.at);
         frame.pointer = self.pointer.unwrap_or([-1e9, -1e9]);
         frame.selecting = u32::from(!self.focus.selection.is_empty());
         frame.fitting = u32::from(measure.as_ref().is_some_and(|m| m.rows));
@@ -121,37 +120,51 @@ impl View {
         self.stats.cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
     }
 
-    /// Takes what landed since the last frame: probes, fits, queries, and the events waiting on
-    /// picks.
+    /// Takes what landed since the last frame: probes, fits, queries, the events waiting on picks,
+    /// and why marks the data given since no longer fits failed.
     fn settle(&mut self) {
         self.settle_fit();
         self.settle_probe();
         self.settle_query();
         self.settle_awaiting();
+        for (i, shown) in self.marks.iter_mut().enumerate() {
+            if let Some(error) = shown.failed.take() {
+                self.events.push(Event::Error(error.at(i).at("marks")));
+            }
+        }
     }
 
-    /// Derives what marks read beside their data, from the data and the scene alone: a diagram's
-    /// sheet, with the jobs it hands the host; elsewhere the lanes of edges sharing their ends.
-    fn derive(&mut self, inner: &Inner) {
-        if !matches!(self.scene.space, Space::Diagram(_)) {
-            self.derive_lanes();
-            return;
-        }
+    /// Derives what marks read beside their data, from the data and the scene alone, handing the
+    /// host what the frame cannot afford. First the tiles the camera asks for, whose datasets the
+    /// rest derive from.
+    fn derive(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
-        let spawn = |job: Job| match &host {
-            Some(host) => host.spawn(job),
-            None => Pending::ready(Ok(job.run())),
-        };
-        let input = sheet::Input {
+        let projected = self.projected();
+        let sight = derive::tiles::Sight { projected: &projected, size: self.size };
+        let jobs = derive::Jobs::new(host.as_deref());
+        let earth = matches!(self.scene.space, crate::Space::Earth(_));
+        let mut tiles = std::mem::take(&mut self.derived.tiles);
+        tiles.update(&self.derive_input(host.as_deref()), earth.then_some(&sight), &jobs);
+        self.events.extend(tiles.take_errors().into_iter().map(Event::Error));
+        for data in tiles.take_changed() {
+            self.take_data(data, inner);
+        }
+        self.derived.tiles = tiles;
+        let mut derived = std::mem::take(&mut self.derived);
+        if derived.update(&self.derive_input(host.as_deref())) {
+            self.changed = true;
+        }
+        self.derived = derived;
+    }
+
+    /// What derivations read this frame.
+    fn derive_input<'a>(&'a self, host: Option<&'a dyn crate::host::Host>) -> derive::Input<'a> {
+        derive::Input {
             scene: &self.scene,
             scene_version: self.scene_version,
             data: &self.data,
-            host: host.as_deref(),
-            spawn: &spawn,
+            host,
             dragging: self.dragging(),
-        };
-        if self.sheet.update(&input, &mut self.derived) {
-            self.changed = true;
         }
     }
 
@@ -256,7 +269,7 @@ impl View {
             let style = shown.mark.style();
             let Some(data) = self.data.iter().find(|d| *d.name() == style.data) else { continue };
             let Some(table) = data.table(&style.table) else { continue };
-            let derived = self.derived.get(&(style.data.clone(), style.table.clone()));
+            let derived = self.derived.beside(&style.data, &style.table);
             let source = Source { data, table, derived };
             let synced = shown.tables.sync(&program, &source, &self.data, at, window, geometry, inner);
             waiting |= matches!(synced, Synced::Waiting);

@@ -1,0 +1,386 @@
+//! GeoJSON as data: a feature collection's features become rows of three tables by what their
+//! geometry is, `points`, `lines`, and `polygons`, each with its geometry as field `geometry` and its
+//! properties as fields.
+
+use std::fmt;
+
+use serde::Deserialize;
+use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
+use serde_json::{Map, Value as Json};
+
+use crate::data::{Data, Ids, Name, Patch, Table, Values};
+use crate::{Error, Result};
+
+type Point = [f64; 2];
+
+/// The features of GeoJSON `bytes`, gzip-compressed or not, as dataset `name`: a feature collection,
+/// one feature, or a bare geometry.
+///
+/// Points become rows of table `points`, a point field `geometry`; line strings rows of `lines`, a
+/// field of parts; polygons rows of `polygons`, a field of polygons. A multi-point is a row per point,
+/// and a geometry collection a row per member. Properties become fields: numbers, booleans, and texts,
+/// any other value written as its JSON. Rows take their features' ids where every row of a table has
+/// one and no two share it, and are numbered in order otherwise.
+///
+/// ```
+/// let data = latkit::geo::geojson("city", br#"{"type": "Feature", "properties": {"name": "Hall"},
+///     "geometry": {"type": "Point", "coordinates": [-97.74, 30.27]}}"#)?;
+/// assert_eq!(data.table("points").map(latkit::Table::len), Some(1));
+/// # Ok::<(), latkit::Error>(())
+/// ```
+pub fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Data> {
+    let bytes = super::gunzipped(bytes)?;
+    let top: Top = serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("not GeoJSON: {e}")))?;
+    let mut tables = [Rows::default(), Rows::default(), Rows::default()];
+    let mut add = |feature: Feature| {
+        if let Some(geometry) = feature.geometry {
+            let properties = feature.properties.unwrap_or_default();
+            geometry.into_rows(feature.id.as_ref(), &properties, &mut tables);
+        }
+    };
+    match top.kind.as_str() {
+        "FeatureCollection" => top.features.unwrap_or_default().into_iter().for_each(&mut add),
+        "Feature" => add(Feature { id: top.id, geometry: top.geometry, properties: top.properties }),
+        _ => add(Feature {
+            id: None,
+            geometry: Some(Geometry { kind: top.kind, coordinates: top.coordinates, geometries: top.geometries }),
+            properties: None,
+        }),
+    }
+    let mut patch = Patch::new();
+    for (rows, name) in tables.into_iter().zip(["points", "lines", "polygons"]) {
+        if let Some(table) = rows.table(name) {
+            patch = patch.put(table);
+        }
+    }
+    let mut data = Data::new(name);
+    data.apply(patch)?;
+    Ok(data)
+}
+
+/// The top of a document: a collection, a feature, or a geometry, as one struct of each's members.
+#[derive(Deserialize)]
+struct Top {
+    #[serde(rename = "type")]
+    kind: String,
+    features: Option<Vec<Feature>>,
+    id: Option<Json>,
+    geometry: Option<Geometry>,
+    properties: Option<Map<String, Json>>,
+    coordinates: Option<Coordinates>,
+    geometries: Option<Vec<Geometry>>,
+}
+
+#[derive(Deserialize)]
+struct Feature {
+    id: Option<Json>,
+    geometry: Option<Geometry>,
+    properties: Option<Map<String, Json>>,
+}
+
+#[derive(Deserialize)]
+struct Geometry {
+    #[serde(rename = "type")]
+    kind: String,
+    coordinates: Option<Coordinates>,
+    geometries: Option<Vec<Geometry>>,
+}
+
+/// Which table a geometry's rows go to.
+const POINTS: usize = 0;
+const LINES: usize = 1;
+const POLYGONS: usize = 2;
+
+impl Geometry {
+    /// Adds this geometry's rows, with the feature's id and properties, to the table of each kind.
+    fn into_rows(self, id: Option<&Json>, properties: &Map<String, Json>, tables: &mut [Rows; 3]) {
+        let coordinates = self.coordinates.unwrap_or(Coordinates::Empty);
+        match (self.kind.as_str(), coordinates) {
+            ("Point", Coordinates::Position(p)) => tables[POINTS].push(id, properties, Shape::Point(p)),
+            ("MultiPoint", Coordinates::Line(points)) => {
+                for p in points {
+                    tables[POINTS].push(id, properties, Shape::Point(p));
+                }
+            }
+            ("LineString", Coordinates::Line(line)) => tables[LINES].push(id, properties, Shape::Parts(vec![line])),
+            ("MultiLineString", Coordinates::Rings(lines)) => tables[LINES].push(id, properties, Shape::Parts(lines)),
+            ("Polygon", Coordinates::Rings(rings)) => {
+                tables[POLYGONS].push(id, properties, Shape::Polygons(vec![rings]));
+            }
+            ("MultiPolygon", Coordinates::Polygons(polygons)) => {
+                tables[POLYGONS].push(id, properties, Shape::Polygons(polygons));
+            }
+            ("GeometryCollection", _) => {
+                for member in self.geometries.unwrap_or_default() {
+                    member.into_rows(id, properties, tables);
+                }
+            }
+            // A geometry without coordinates, or of a type GeoJSON does not have, adds no row.
+            _ => {}
+        }
+    }
+}
+
+enum Shape {
+    Point(Point),
+    Parts(Vec<Vec<Point>>),
+    Polygons(Vec<Vec<Vec<Point>>>),
+}
+
+/// One table's rows as they are read: each row's id, its properties, and its shape.
+#[derive(Default)]
+struct Rows {
+    ids: Vec<Option<Json>>,
+    properties: Vec<Map<String, Json>>,
+    shapes: Vec<Shape>,
+}
+
+impl Rows {
+    fn push(&mut self, id: Option<&Json>, properties: &Map<String, Json>, shape: Shape) {
+        self.ids.push(id.cloned());
+        self.properties.push(properties.clone());
+        self.shapes.push(shape);
+    }
+
+    /// The rows as table `name`, or `None` without any.
+    fn table(self, name: &str) -> Option<Table> {
+        if self.shapes.is_empty() {
+            return None;
+        }
+        let count = self.shapes.len();
+        let mut table = Table::new(name, ids(&self.ids).unwrap_or_else(|| Ids::from(count)));
+        let geometry: Values = match &self.shapes[0] {
+            Shape::Point(_) => self
+                .shapes
+                .iter()
+                .map(|s| if let Shape::Point(p) = s { *p } else { [f64::NAN; 2] })
+                .collect::<Vec<_>>()
+                .into(),
+            Shape::Parts(_) => self
+                .shapes
+                .into_iter()
+                .map(|s| if let Shape::Parts(parts) = s { parts } else { Vec::new() })
+                .collect::<Vec<_>>()
+                .into(),
+            Shape::Polygons(_) => self
+                .shapes
+                .into_iter()
+                .map(|s| if let Shape::Polygons(polygons) = s { polygons } else { Vec::new() })
+                .collect::<Vec<_>>()
+                .into(),
+        };
+        table = table.field("geometry", geometry);
+        let mut keys: Vec<&String> = Vec::new();
+        for properties in &self.properties {
+            for key in properties.keys() {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        for key in keys {
+            // A property named like the geometry would replace it.
+            if key == "geometry" {
+                continue;
+            }
+            let values: Vec<Option<&Json>> =
+                self.properties.iter().map(|p| p.get(key.as_str()).filter(|v| !v.is_null())).collect();
+            table = table.field(key.as_str(), property(&values));
+        }
+        Some(table)
+    }
+}
+
+/// The rows' ids: every one present, of one kind, and distinct; else `None`.
+fn ids(ids: &[Option<Json>]) -> Option<Ids> {
+    let mut seen = std::collections::HashSet::with_capacity(ids.len());
+    if ids.iter().all(|id| id.as_ref().and_then(Json::as_u64).is_some_and(|n| seen.insert(n.to_string()))) {
+        return Some(Ids::from(
+            ids.iter().map(|id| id.as_ref().and_then(Json::as_u64).unwrap_or(0)).collect::<Vec<u64>>(),
+        ));
+    }
+    seen.clear();
+    if ids.iter().all(|id| id.as_ref().and_then(Json::as_str).is_some_and(|t| seen.insert(t.to_owned()))) {
+        let texts: Vec<&str> = ids.iter().map(|id| id.as_ref().and_then(Json::as_str).unwrap_or("")).collect();
+        return Some(Ids::from(texts));
+    }
+    None
+}
+
+/// A property's values as a field: numbers where every value present is one, booleans likewise, and
+/// texts otherwise, any value not a text written as its JSON.
+fn property(values: &[Option<&Json>]) -> Values {
+    let present = || values.iter().flatten();
+    if present().all(|v| v.is_number()) {
+        return values.iter().map(|v| v.and_then(Json::as_f64)).collect::<Vec<_>>().into();
+    }
+    if present().all(|v| v.is_boolean()) {
+        return values.iter().map(|v| v.and_then(Json::as_bool)).collect::<Vec<_>>().into();
+    }
+    let texts: Vec<Option<String>> = values
+        .iter()
+        .map(|v| {
+            v.map(|v| match v {
+                Json::String(text) => text.clone(),
+                other => other.to_string(),
+            })
+        })
+        .collect();
+    texts.into()
+}
+
+/// Coordinates of any depth: a position, a list of them, lists of those, or polygons. Positions read
+/// their longitude and latitude and skip any altitude.
+enum Coordinates {
+    Number(f64),
+    Position(Point),
+    Line(Vec<Point>),
+    Rings(Vec<Vec<Point>>),
+    Polygons(Vec<Vec<Vec<Point>>>),
+    Empty,
+}
+
+impl<'de> Deserialize<'de> for Coordinates {
+    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> std::result::Result<Coordinates, D::Error> {
+        deserializer.deserialize_any(Depth)
+    }
+}
+
+/// Reads coordinates of any depth: the first element of each array says how deep the rest are.
+struct Depth;
+
+impl<'de> Visitor<'de> for Depth {
+    type Value = Coordinates;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("GeoJSON coordinates")
+    }
+
+    fn visit_f64<E: de::Error>(self, v: f64) -> std::result::Result<Coordinates, E> {
+        Ok(Coordinates::Number(v))
+    }
+
+    fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<Coordinates, E> {
+        Ok(Coordinates::Number(v as f64))
+    }
+
+    fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<Coordinates, E> {
+        Ok(Coordinates::Number(v as f64))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Coordinates, A::Error> {
+        Ok(match seq.next_element::<Coordinates>()? {
+            None => Coordinates::Empty,
+            Some(Coordinates::Number(x)) => {
+                let y = seq.next_element::<f64>()?.unwrap_or(f64::NAN);
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Coordinates::Position([x, y])
+            }
+            Some(Coordinates::Position(p)) => {
+                let mut line = vec![p];
+                while let Some(Position(p)) = seq.next_element()? {
+                    line.push(p);
+                }
+                Coordinates::Line(line)
+            }
+            Some(Coordinates::Line(first)) => {
+                let mut rings = vec![first];
+                while let Some(ring) = seq.next_element::<Vec<Position>>()? {
+                    rings.push(ring.into_iter().map(|p| p.0).collect());
+                }
+                Coordinates::Rings(rings)
+            }
+            Some(Coordinates::Rings(first)) => {
+                let mut polygons = vec![first];
+                while let Some(polygon) = seq.next_element::<Vec<Vec<Position>>>()? {
+                    polygons.push(polygon.into_iter().map(|r| r.into_iter().map(|p| p.0).collect()).collect());
+                }
+                Coordinates::Polygons(polygons)
+            }
+            Some(Coordinates::Polygons(_) | Coordinates::Empty) => {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Coordinates::Empty
+            }
+        })
+    }
+}
+
+/// One position: longitude and latitude, any altitude skipped.
+struct Position(Point);
+
+impl<'de> Deserialize<'de> for Position {
+    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> std::result::Result<Position, D::Error> {
+        struct Numbers;
+        impl<'de> Visitor<'de> for Numbers {
+            type Value = Position;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a position")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Position, A::Error> {
+                let x = seq.next_element::<f64>()?.unwrap_or(f64::NAN);
+                let y = seq.next_element::<f64>()?.unwrap_or(f64::NAN);
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(Position([x, y]))
+            }
+        }
+        deserializer.deserialize_seq(Numbers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Kind, Value};
+
+    const COLLECTION: &str = r#"{
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "id": 7, "properties": {"name": "Austin", "pop": 974447, "capital": true},
+             "geometry": {"type": "Point", "coordinates": [-97.74, 30.27, 149.0]}},
+            {"type": "Feature", "id": 9, "properties": {"name": "Dallas", "pop": null, "tags": ["big"]},
+             "geometry": {"type": "Point", "coordinates": [-96.8, 32.78]}},
+            {"type": "Feature", "properties": {"river": "Colorado"},
+             "geometry": {"type": "LineString", "coordinates": [[-98.0, 30.0], [-97.0, 29.0]]}},
+            {"type": "Feature", "properties": {"county": "Travis"},
+             "geometry": {"type": "MultiPolygon", "coordinates": [[[[0, 0], [1, 0], [1, 1], [0, 0]]],
+                                                                 [[[2, 2], [3, 2], [3, 3], [2, 2]]]]}}
+        ]
+    }"#;
+
+    #[test]
+    fn features_become_rows_of_tables_by_kind() {
+        let data = geojson("texas", COLLECTION.as_bytes()).expect("valid");
+        let points = data.table("points").expect("points");
+        assert_eq!(points.len(), 2);
+        assert_eq!(points.get(7_u64, "geometry"), Some(Value::Point([-97.74, 30.27])), "altitude skipped");
+        assert_eq!(points.get(7_u64, "pop"), Some(Value::Number(974_447.0)));
+        assert_eq!(points.get(9_u64, "pop"), None, "null is missing");
+        assert_eq!(points.get(7_u64, "capital"), Some(Value::Bool(true)));
+        assert_eq!(points.get(9_u64, "tags"), Some(Value::Text("[\"big\"]".into())), "other values as JSON");
+        assert_eq!(data.table("lines").map(|t| t.kind("geometry")), Some(Some(Kind::Geometry(2))));
+        let polygons = data.table("polygons").expect("polygons");
+        assert_eq!(polygons.kind("geometry"), Some(Kind::Geometry(3)));
+        let Some(Value::Polygons(shapes)) = polygons.get(0_u64, "geometry") else { panic!("polygons") };
+        assert_eq!(shapes.len(), 2, "a multipolygon is one row");
+        assert_eq!(polygons.get(0_u64, "county"), Some(Value::Text("Travis".into())));
+    }
+
+    #[test]
+    fn gzip_compressed_bytes_read_alike() {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(COLLECTION.as_bytes()).expect("written");
+        let data = geojson("texas", &encoder.finish().expect("finished")).expect("valid");
+        assert_eq!(data.table("points").map(Table::len), Some(2));
+    }
+
+    #[test]
+    fn bare_geometries_and_bad_documents() {
+        let data = geojson("g", br#"{"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [0, 1], [0, 0]]]}"#)
+            .expect("a geometry");
+        assert_eq!(data.table("polygons").map(Table::len), Some(1));
+        assert!(geojson("g", b"{\"type\": \"FeatureCollection\"").is_err(), "cut short");
+    }
+}

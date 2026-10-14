@@ -129,6 +129,11 @@ const LINE_WIDTH: u32 = 1u;
 const LINE_FLOW: u32 = 2u;
 const LINE_FLAGS: u32 = 3u;
 
+// Area state words.
+const AREA_WORDS: u32 = 2u;
+const AREA_COLOR: u32 = 0u;
+const AREA_FLAGS: u32 = 1u;
+
 // Label words, among a labeled mark's extra words: the text's code, its priority as a level from 0
 // to 255, and its color.
 const LABEL_WORDS: u32 = 3u;
@@ -148,11 +153,16 @@ const CANDIDATE_ALPHA: u32 = 6u;
 // past the text's edge.
 const TEXT_BASE: f32 = 32.0;
 const TEXT_SPREAD: f32 = 8.0;
-// Candidate states: in view and wanting room, placed, dropped, and placed in the frame before.
+// Candidate states: in view and wanting room, placed, dropped, placed in the frame before, and
+// measured by an estimate while its text is not set.
 const WANTS: u32 = 1u;
 const PLACED_LABEL: u32 = 2u;
 const DROPPED: u32 = 4u;
 const STICKY: u32 = 8u;
+const ESTIMATED: u32 = 16u;
+// A run table entry whose text is not set yet holds this flag as its first corner and the run's
+// estimated size as its second, so its label can be placed before it is set.
+const TEXT_ESTIMATE: u32 = 0x80000000u;
 // A cell a placed label holds.
 const OCCUPIED: u32 = 0u;
 // CSS pixels a cell of the label grid covers.
@@ -180,6 +190,7 @@ const MARK_VERTICES: u32 = 0u;
 const MARK_EDGES: u32 = 1u;
 const MARK_FACES: u32 = 2u;
 const MARK_LINES: u32 = 3u;
+const MARK_AREAS: u32 = 4u;
 
 // Primitives.
 const POINTS: u32 = 0u;
@@ -188,7 +199,8 @@ const TRIANGLES: u32 = 2u;
 const GLYPHS: u32 = 3u;
 
 // What a stroke's segments run between: two vertices (straight, along a great circle, or through
-// bends), samples across the axis, or a geometry column's points.
+// bends), samples across the axis, or a geometry column's points. A triangle's corners come from
+// three vertices, or from a geometry column three points at a time.
 const PATH_ENDS: u32 = 0u;
 const PATH_TRACE: u32 = 1u;
 const PATH_GEOMETRY: u32 = 2u;
@@ -268,13 +280,12 @@ const THEME_EDGE_WIDTH: u32 = 3u;
 const THEME_LINE: u32 = 4u;
 const THEME_LINE_WIDTH: u32 = 5u;
 const THEME_AREA: u32 = 6u;
-const THEME_OUTLINE: u32 = 7u;
-const THEME_TEXT: u32 = 8u;
-const THEME_MISSING: u32 = 9u;
+const THEME_TEXT: u32 = 7u;
+const THEME_MISSING: u32 = 8u;
 // Nothing: a fully transparent color, what a missing status draws.
-const THEME_CLEAR: u32 = 10u;
+const THEME_CLEAR: u32 = 9u;
 // What a group's container is filled with.
-const THEME_SURFACE: u32 = 11u;
+const THEME_SURFACE: u32 = 10u;
 const THEME_SLOTS: u32 = 16u;
 
 // Backdrop grids.
@@ -368,6 +379,11 @@ struct Frame {
     background: vec4f,
     surface: vec4f,
     grid_color: vec4f,
+    // The direction toward the sun in the earth's frame (x toward 0° longitude on the equator, z
+    // toward the north pole), and how bright night stays; no direction where daylight is off.
+    sun: vec4f,
+    // The air glowing around the globe; clear where the earth has none.
+    atmosphere: vec4f,
     shade: Shade,
     theme: array<vec4u, 4>,
 }
@@ -444,12 +460,14 @@ struct Mark {
     port_info: u32,
     ports: u32,
     // The extra word of the label's code, or NONE; the labels buffer's offsets of its candidates, its
-    // run table (two words per code), and its wanted codes (a count, then codes); the id of its first
-    // candidate, unique across marks; the size labels and port labels are set at, in length units.
+    // run table (two words per code), its wanted codes (a count, then codes), and its seen codes (a
+    // bit per code shown in view); the id of its first candidate, unique across marks; the size
+    // labels and port labels are set at, in length units.
     label: u32,
     candidates: u32,
     runs: u32,
     wanted: u32,
+    seen: u32,
     label_id: u32,
     label_size: f32,
     port_label_size: f32,

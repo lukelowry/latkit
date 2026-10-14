@@ -296,6 +296,41 @@ fn lines_wait_for_the_first_frame_of_the_field_they_trace() {
 }
 
 #[test]
+fn new_data_and_the_scene_reading_it_change_together() {
+    let Some(gpu) = gpu() else { return };
+    let dataset = |field_name: &str| {
+        let mut data = Data::new("d");
+        data.apply(Table::new("T", 1).field("x", vec![0.0]).field("y", vec![0.0]).field(field_name, vec![1.0]))
+            .expect("valid");
+        data
+    };
+    let reading = |field_name: &str| {
+        Scene::new(plane()).theme(plain_theme()).draw(
+            Vertices::of("d", "T")
+                .position("x", "y")
+                .radius(6.0)
+                .color(field(field_name).colormap(Colormap::GRAYS).domain(0.0..=1.0)),
+        )
+    };
+    let mut view = View::new(&gpu, reading("a")).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(dataset("a"));
+    frame(&gpu, &mut view);
+    // Data the mark no longer fits, then the scene that fits it, before the frame: nothing to report.
+    view.set_data(dataset("b"));
+    view.show(reading("b")).expect("valid scene");
+    let pixels = frame(&gpu, &mut view);
+    assert_eq!(common::errors(&mut view), Vec::new());
+    let center = SIZE / 2;
+    assert!(at(&pixels, center, center)[0] > 200, "the new mark draws: {:?}", at(&pixels, center, center));
+    // Data no mark fits by the frame is reported then.
+    view.set_data(dataset("a"));
+    frame(&gpu, &mut view);
+    let errors = common::errors(&mut view);
+    assert!(errors.len() == 1 && errors[0].to_string().contains("no field b"), "{errors:?}");
+}
+
+#[test]
 fn hover_reaches_what_faces_leave_in_view() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("mesh");

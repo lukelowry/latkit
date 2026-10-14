@@ -1,4 +1,15 @@
-import { Data, Patch, field, reference, type Scene } from 'latkit';
+import {
+  Data,
+  Patch,
+  color,
+  field,
+  missing,
+  reference,
+  when,
+  type ColormapName,
+  type Mark,
+  type Scene,
+} from 'latkit';
 import type { Stage } from '../ui/stage.js';
 
 /** Buses on a side of the lattice. */
@@ -47,29 +58,62 @@ function grid(): { data: Data; buses: number; lines: number } {
 
 export default function page(stage: Stage): void {
   const { data, buses, lines } = grid();
-  const scene = (space: Scene['space']): Scene => ({
-    space,
-    theme: { base: 'dark', background: '#090c11' },
-    controls: { selectBox: true },
-    marks: [
-      { edges: { of: ['grid', 'Line'], ends: ['from', 'to'], width: 1, pick: false } },
-      {
-        vertices: {
-          of: ['grid', 'Bus'],
-          position: ['lon', 'lat'],
-          radius: field('kv').div(100).add(1),
-          color: field('vm').colormap('balance').domain(0.96, 1.04),
-          label: { text: 'name', priority: 'kv', size: 10 },
-        },
+  const look = {
+    space: 'earth' as Scene['space'],
+    colormap: 'balance' as ColormapName,
+    /** How far from 1 pu the colormap's ends lie. */
+    spread: 0.04,
+    size: 1,
+    lines: true,
+    labels: true,
+    outliers: false,
+  };
+  const scene = (): Scene => {
+    const marks: Mark[] = [];
+    if (look.lines)
+      marks.push({ edges: { of: ['grid', 'Line'], ends: ['from', 'to'], width: 1, pick: false } });
+    marks.push({
+      vertices: {
+        of: ['grid', 'Bus'],
+        position: ['lon', 'lat'],
+        radius: field('kv').div(100).add(1).mul(look.size),
+        color: field('vm')
+          .colormap(look.colormap)
+          .domain(1 - look.spread, 1 + look.spread),
+        // Buses past the colormap's ends ring, so they stand out at any zoom.
+        ...(look.outliers
+          ? {
+              status: when(field('vm').sub(1).abs().gt(look.spread))
+                .then(color('#ffd166'))
+                .otherwise(missing()),
+            }
+          : {}),
+        ...(look.labels ? { label: { text: 'name', priority: 'kv', size: 10 } } : {}),
       },
-    ],
-  });
-  const view = stage.view(scene('earth'), {
+    });
+    return {
+      space: look.space,
+      theme: { base: 'dark', background: '#090c11' },
+      controls: { selectBox: true },
+      marks,
+    };
+  };
+  const view = stage.view(scene(), {
     label: 'A synthetic grid over Texas: click a bus to select it, or Shift-drag a box',
   });
   view.setData(data);
   view.fit();
-  stage.section('Space').choice(
+  const legend = stage.legend();
+  const restyle = () => {
+    view.show(scene());
+    legend.ramp(
+      look.colormap,
+      `Voltage ${(1 - look.spread).toFixed(2)} – ${(1 + look.spread).toFixed(2)} pu`,
+    );
+  };
+
+  const space = stage.section('Space');
+  space.choice(
     'Draw on',
     [
       ['Map', 'earth'],
@@ -77,24 +121,77 @@ export default function page(stage: Stage): void {
       ['Plane', 'plane'],
     ] as const,
     'earth',
-    (space) => {
-      view.show(scene(space));
+    (next) => {
+      look.space = next;
+      restyle();
       view.fit();
     },
   );
+  space.actions([{ label: 'Fit', key: 'f', run: () => view.fit() }]);
+
+  const style = stage.section('Look');
+  style.choice(
+    'Colormap',
+    (['balance', 'vik', 'coolwarm', 'rdbu', 'berlin'] as const).map(
+      (name) => [name, name] as const,
+    ),
+    look.colormap,
+    (colormap) => {
+      look.colormap = colormap;
+      restyle();
+    },
+  );
+  style.choice(
+    'Colors span',
+    [
+      ['±2%', 0.02],
+      ['±4%', 0.04],
+      ['±6%', 0.06],
+    ] as const,
+    look.spread,
+    (spread) => {
+      look.spread = spread;
+      restyle();
+    },
+  );
+  style.range(
+    'Bus size',
+    { min: 0.5, max: 3, step: 0.25, value: look.size, format: (v) => `${v.toFixed(2)}×` },
+    (size) => {
+      if (size === look.size) return;
+      look.size = size;
+      restyle();
+    },
+  );
+  style.toggle('Lines', 'l', look.lines, (on) => {
+    look.lines = on;
+    restyle();
+  });
+  style.toggle('Labels', 'n', look.labels, (on) => {
+    look.labels = on;
+    restyle();
+  });
+  style.toggle('Ring outliers', 'o', look.outliers, (on) => {
+    look.outliers = on;
+    restyle();
+  });
+
   const selected = stage.section('Selection');
-  const readout = document.createElement('p');
-  readout.className = 'series';
-  readout.textContent = 'Click a bus.';
-  selected.element.append(readout);
+  const readout = selected.note();
   const describe = () => {
-    const [row] = view.selection;
-    if (!row) return (readout.textContent = 'Click a bus.');
-    const vm = data.get('Bus', row.id, 'vm', view.at) as number | null;
-    readout.textContent = `Bus ${row.id}: ${data.get('Bus', row.id, 'kv')} kV, ${vm?.toFixed(3) ?? '–'} pu`;
+    const rows = view.selection;
+    const vm = (row: (typeof rows)[number]) =>
+      data.get('Bus', row.id, 'vm', view.at) as number | null;
+    if (!rows.length) readout.textContent = 'Click a bus, or Shift-drag a box.';
+    else if (rows.length === 1) {
+      const row = rows[0]!;
+      readout.textContent = `Bus ${row.id}: ${data.get('Bus', row.id, 'kv')} kV, ${vm(row)?.toFixed(3) ?? '–'} pu`;
+    } else {
+      const values = rows.map(vm).filter((v): v is number => v !== null);
+      readout.textContent = `${rows.length} buses: ${Math.min(...values).toFixed(3)} – ${Math.max(...values).toFixed(3)} pu`;
+    }
   };
   view.on('select', describe);
-  stage.legend().ramp('balance', 'Voltage 0.96 – 1.04 pu');
   stage.meter(view);
   const playback = stage.playback({
     live: false,
@@ -104,7 +201,19 @@ export default function page(stage: Stage): void {
       describe();
     },
   });
+  selected.choice(
+    'Plays at',
+    [
+      ['1×', 1],
+      ['4×', 4],
+      ['10×', 10],
+    ] as const,
+    4,
+    (rate) => (playback.rate = rate),
+  );
   playback.record(data.span!);
+  restyle();
+  describe();
   stage.detail(
     `${buses.toLocaleString()} buses · ${lines.toLocaleString()} lines · ${SECONDS} s of voltages`,
   );
