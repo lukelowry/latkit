@@ -4,10 +4,12 @@
 //! primitive in scene order with depth, and the overlay; a probe, when one waits, reads what the
 //! frame drew through the same geometry.
 
+use super::derived::stamp_of;
 use super::resources::{EyeSlot, MARK_STRIDE};
 use super::{Target, View};
 use crate::Space;
 use crate::gpu::Inner;
+use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::{MarkKind, Primitive};
@@ -101,7 +103,7 @@ impl super::marks::Shown {
     /// Instances its primitive draws: rows and exits, or every segment of their paths; at most what
     /// its segment list keeps.
     pub(crate) fn instances(&self) -> u32 {
-        if let Some(list) = &self.segments {
+        if let Some(list) = &self.segments.list {
             return list.kept;
         }
         let rows = self.rows + self.exits;
@@ -114,7 +116,7 @@ impl super::marks::Shown {
 
     /// Instances a probe or a measure reaches: live rows and their ports only.
     pub(crate) fn live_instances(&self) -> u32 {
-        if let Some(list) = &self.segments {
+        if let Some(list) = &self.segments.list {
             return list.kept;
         }
         match self.compiled.as_ref().map(|c| c.drawing.primitive) {
@@ -132,7 +134,7 @@ impl super::marks::Shown {
 
     /// Records the draw of its instances: as many as its segment list holds, when it has one.
     pub(crate) fn record(&self, pass: &mut wgpu::RenderPass<'_>, corners: u32, lists: &wgpu::Buffer) {
-        match &self.segments {
+        match &self.segments.list {
             Some(list) => pass.draw_indirect(lists, u64::from(list.header + wgsl::LIST_DRAW) * 4),
             None => pass.draw(0..corners, 0..self.instances()),
         }
@@ -183,7 +185,7 @@ impl View {
             .filter(|(marks, _)| !marks.is_empty())
             .map(|_| resources.pass(device, inner, Shader::Groups));
         for &i in &segments {
-            let list = self.marks[i].segments.expect("listed");
+            let list = self.marks[i].segments.list.expect("listed");
             gpu.0.queue.write_buffer(
                 resources.lists(),
                 u64::from(list.header) * 4,
@@ -233,7 +235,8 @@ impl View {
                 pass.set_bind_group(2, group, &[]);
                 for &i in &measured {
                     let entry = if self.marks[i].kind() == MarkKind::Vertices { "points" } else { "strokes" };
-                    pass.set_pipeline(&inner.pipelines.compute(device, Shader::Bounds, entry));
+                    let variant = Variant::compute(Shader::Bounds, entry).path(self.marks[i].path());
+                    pass.set_pipeline(&inner.pipelines.compute_pipeline(device, variant));
                     pass.set_bind_group(1, &groups.mark, &[offset(i)]);
                     dispatch(&mut pass, self.marks[i].live_instances());
                 }
@@ -279,7 +282,8 @@ impl View {
     }
 
     /// Records the groups pass: clears the stand-ins of `slots` vertex slots, then stands each group
-    /// mark's rows around their members, once per level of groups they hold.
+    /// mark's rows around their members, once per level of groups they hold: each level opens the
+    /// groups' boxes, widens them a member a thread, and stands each group in its box.
     fn stand_groups(
         &self,
         pass: &mut wgpu::ComputePass<'_>,
@@ -293,12 +297,19 @@ impl View {
         pass.set_bind_group(1, mark, &[0]);
         pass.set_pipeline(&inner.pipelines.compute(device, Shader::Groups, "clear"));
         dispatch(pass, slots);
-        pass.set_pipeline(&inner.pipelines.compute(device, Shader::Groups, "bound"));
+        let [open, widen, stand] =
+            ["open", "widen", "stand"].map(|e| inner.pipelines.compute(device, Shader::Groups, e));
         // Each level settles the groups holding the ones settled before.
         for _ in 0..levels {
             for &i in marks {
+                let shown = &self.marks[i];
+                let entries =
+                    shown.graph.members().len().saturating_sub(shown.rows as usize + 1) as u32 / wgsl::TERMINAL_WORDS;
                 pass.set_bind_group(1, mark, &[offset(i)]);
-                dispatch(pass, self.marks[i].rows);
+                for (pipeline, threads) in [(&open, shown.rows), (&widen, entries), (&stand, shown.rows)] {
+                    pass.set_pipeline(pipeline);
+                    dispatch(pass, threads);
+                }
             }
         }
     }
@@ -314,11 +325,14 @@ impl View {
         let device = &self.gpu.0.device;
         for &i in marks {
             let items = self.marks[i].rows + self.marks[i].exits;
+            let path = self.marks[i].path();
             pass.set_bind_group(1, mark, &[offset(i)]);
-            pass.set_pipeline(&inner.pipelines.compute(device, Shader::Lists, "count_segments"));
+            let count = Variant::compute(Shader::Lists, "count_segments").path(path);
+            pass.set_pipeline(&inner.pipelines.compute_pipeline(device, count));
             dispatch(pass, items);
             super::lists::scan(pass, &mut inner.pipelines, device, items, false);
-            pass.set_pipeline(&inner.pipelines.compute(device, Shader::Lists, "write_segments"));
+            let write = Variant::compute(Shader::Lists, "write_segments").path(path);
+            pass.set_pipeline(&inner.pipelines.compute_pipeline(device, write));
             dispatch(pass, items);
         }
     }
@@ -328,28 +342,26 @@ impl View {
     /// or the slots moved. With no group marks left, the stand-ins are cleared once.
     fn groups_due(&mut self) -> Option<(Vec<usize>, u32)> {
         let marks: Vec<usize> =
-            (0..self.marks.len()).filter(|&i| self.marks[i].drawable() && self.marks[i].graph.depth > 0).collect();
+            (0..self.marks.len()).filter(|&i| self.marks[i].drawable() && self.marks[i].graph.depth() > 0).collect();
         if marks.is_empty() {
-            return self.groups_drawn.take().map(|_| (marks, 0));
+            let cleared = self.group_bounds.due(0);
+            self.group_bounds.mark(0);
+            return cleared.then_some((marks, 0));
         }
         let generation = self.resources.as_ref().map_or(0, super::resources::Resources::generation);
-        let mut stamp: Vec<u64> = self
+        let versions: Vec<u64> = self
             .marks
             .iter()
             .filter(|m| m.kind() == MarkKind::Vertices)
             .map(|m| m.version + u64::from(m.dirty != 0))
             .collect();
-        stamp.extend([
-            u64::from(self.px_per_unit.to_bits()),
-            u64::from(self.scene.theme.group_padding.to_bits()),
-            generation,
-        ]);
-        stamp.extend(marks.iter().map(|&i| i as u64));
-        if self.groups_drawn.as_ref() == Some(&stamp) {
+        let padding = self.scene.theme.group_padding.to_bits();
+        let stamp = stamp_of((versions, self.px_per_unit.to_bits(), padding, generation, &marks));
+        if !self.group_bounds.due(stamp) {
             return None;
         }
-        self.groups_drawn = Some(stamp);
-        let levels = marks.iter().map(|&i| self.marks[i].graph.depth).max().unwrap_or(0);
+        self.group_bounds.mark(stamp);
+        let levels = marks.iter().map(|&i| self.marks[i].graph.depth()).max().unwrap_or(0);
         Some((marks, levels))
     }
 
@@ -360,24 +372,21 @@ impl View {
         if !faces {
             return false;
         }
-        let mut stamp: Vec<u64> = self
+        let versions: Vec<u64> = self
             .marks
             .iter()
             .filter(|m| matches!(m.kind(), MarkKind::Vertices | MarkKind::Faces))
             .map(|m| m.version + u64::from(m.dirty != 0))
             .collect();
-        if matches!(self.scene.space, Space::Earth(_)) {
-            let camera = self.camera;
-            stamp.push(match camera {
-                crate::Camera::Map { center, .. } => center[0].to_bits() ^ center[1].to_bits().rotate_left(17),
-                crate::Camera::Plot { .. } => 0,
-            });
-        }
-        stamp.push(self.marks.len() as u64);
-        if self.normals_drawn.as_ref() == Some(&stamp) {
+        let turned = match (&self.scene.space, self.camera) {
+            (Space::Earth(_), crate::Camera::Map { center, .. }) => Some([center[0].to_bits(), center[1].to_bits()]),
+            _ => None,
+        };
+        let stamp = stamp_of((versions, turned, self.marks.len()));
+        if !self.normals.due(stamp) {
             return false;
         }
-        self.normals_drawn = Some(stamp);
+        self.normals.mark(stamp);
         true
     }
 
@@ -438,9 +447,10 @@ impl View {
                 Primitive::Triangles => (Shader::Triangles, 3),
             };
             let instances = shown.instances();
+            let variant = Variant::draw(shader, target.format, samples).path(shown.path());
             let pipeline = match &compiled.drawing.markers.custom {
                 Some(source) => inner.pipelines.custom(device, source, shader, target.format, samples),
-                None => Some(inner.pipelines.render(device, shader, target.format, samples)),
+                None => Some(inner.pipelines.render_pipeline(device, variant)),
             };
             let Some(pipeline) = pipeline.filter(|_| instances > 0) else { continue };
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
@@ -492,8 +502,8 @@ impl View {
             pass.set_bind_group(2, &group, &[]);
             for entry in ["nearest", "topmost", "describe"] {
                 for &i in &probed {
-                    let primitive = self.marks[i].primitive();
-                    pass.set_pipeline(&inner.pipelines.probing(device, shader, entry, primitive));
+                    let variant = Variant::probe(shader, entry, self.marks[i].primitive()).path(self.marks[i].path());
+                    pass.set_pipeline(&inner.pipelines.compute_pipeline(device, variant));
                     pass.set_bind_group(1, &groups.mark, &[offset(i)]);
                     if entry == "describe" {
                         pass.dispatch_workgroups(1, 1, 1);

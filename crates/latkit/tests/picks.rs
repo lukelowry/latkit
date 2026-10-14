@@ -121,7 +121,7 @@ fn hovering_a_trace_names_its_sample() {
     let axis = Axis { hidden: true, grid: false, ..Axis::default() };
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
         .theme(plain_theme())
-        .draw(Lines::of("signals", "Signal").samples("v").width(3.0));
+        .draw(Lines::of("signals", "Signal").trace("v").width(3.0));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
     view.set_data(data);

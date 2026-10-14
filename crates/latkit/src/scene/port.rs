@@ -48,4 +48,9 @@ impl Side {
             Side::Bottom => 3,
         }
     }
+
+    /// The side of `code`, or `None` for any other number.
+    pub(crate) fn from_code(code: u32) -> Option<Side> {
+        [Side::Left, Side::Right, Side::Top, Side::Bottom].get(code as usize).copied()
+    }
 }

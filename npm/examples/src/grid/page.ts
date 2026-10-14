@@ -27,7 +27,7 @@ function grid(): { data: Data; buses: number; lines: number } {
     if (i % SIDE < SIDE - 1) (from.push(i), to.push(i + 1));
     if (i + SIDE < buses) (from.push(i), to.push(i + SIDE));
   }
-  const data = new Data('grid').apply(
+  let data = new Data('grid').apply(
     new Patch()
       .axis('time', 's')
       .set('Bus', buses, { lon, lat, kv, name })
@@ -40,7 +40,7 @@ function grid(): { data: Data; buses: number; lines: number } {
       const y = Math.floor(i / SIDE) / SIDE;
       vm[i] = 1 + 0.04 * Math.sin(6 * x + t / 6) * Math.cos(5 * y - t / 9);
     }
-    data.apply(new Patch().append(t, 'Bus', { vm }));
+    data = data.apply(new Patch().append(t, 'Bus', { vm }));
   }
   return { data, buses, lines: from.length };
 }

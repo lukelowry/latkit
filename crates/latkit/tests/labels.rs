@@ -1,5 +1,5 @@
-//! Labels show beside their rows once the host sets their texts; where two would overlap, the one of
-//! higher priority shows.
+//! Labels show beside their rows once the host sets their texts, or inside a block while they fit;
+//! where two would overlap, the one of higher priority shows.
 
 #![cfg(feature = "gpu")]
 
@@ -20,6 +20,10 @@ impl Host for Boxes {
 }
 
 fn view(gpu: &latkit::Gpu, x: Vec<f64>, priority: Vec<f64>) -> View {
+    shown(gpu, x, priority, |v| v.radius(2.0))
+}
+
+fn shown(gpu: &latkit::Gpu, x: Vec<f64>, priority: Vec<f64>, shape: impl Fn(Vertices) -> Vertices) -> View {
     gpu.set_host(Boxes);
     let mut data = Data::new("d");
     let n = x.len();
@@ -40,7 +44,7 @@ fn view(gpu: &latkit::Gpu, x: Vec<f64>, priority: Vec<f64>) -> View {
         .color(latkit::when(field("hue").lt(0.5)).then(red).otherwise(blue));
     let scene = Scene::new(plane())
         .theme(latkit::Theme { halo: 0.0, ..plain_theme() })
-        .draw(Vertices::of("d", "V").position("x", "y").radius(2.0).pick(false).label(label));
+        .draw(shape(Vertices::of("d", "V").position("x", "y")).pick(false).label(label));
     let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_data(data);
@@ -59,6 +63,20 @@ fn labels_show_beside_their_rows() {
     assert!(first[0] > 200 && first[2] < 60, "the first row's label: {first:?}");
     assert!(second[2] > 200 && second[0] < 60, "the second row's label: {second:?}");
     assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn a_block_holds_its_label_while_it_fits() {
+    let Some(gpu) = gpu() else { return };
+    let c = SIZE / 2;
+    let green = Color::rgb(0.0, 1.0, 0.0);
+    // The label is 36 by 10 pixels: a 60 by 20 block holds it, a 20 by 20 one does not.
+    let mut wide = shown(&gpu, vec![0.0], vec![0.0], |v| v.size(60.0, 20.0).color(green));
+    let middle = at(&frame(&gpu, &mut wide), c, c);
+    assert!(middle[0] > 200 && middle[1] < 60, "the label inside: {middle:?}");
+    let mut narrow = shown(&gpu, vec![0.0], vec![0.0], |v| v.size(20.0, 20.0).color(green));
+    let middle = at(&frame(&gpu, &mut narrow), c, c);
+    assert!(middle[1] > 200 && middle[0] < 60, "only the block: {middle:?}");
 }
 
 #[test]

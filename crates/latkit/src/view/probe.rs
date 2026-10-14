@@ -143,7 +143,7 @@ impl View {
         };
         let style = shown.mark.style();
         let table = self.data(&style.data)?.table(&style.table)?;
-        let crate::data::Field::Sampled(samples, _) = table.field_named(lines.samples.as_ref()?)? else { return None };
+        let crate::data::Field::Sampled(samples, _) = table.field_named(&lines.traced())? else { return None };
         let value = samples.value(row as usize, frame)?;
         Some(Sample { frame, at: samples.at(frame), value })
     }

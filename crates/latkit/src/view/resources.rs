@@ -143,6 +143,8 @@ pub(crate) struct Resources {
     extents: Grown,
     normals: Grown,
     stand_ins: Grown,
+    /// Each group slot's box as its members widen it: four words a vertex slot.
+    boxes: Grown,
     layout: Grown,
     probe: wgpu::Buffer,
     sprites: Grown,
@@ -180,6 +182,7 @@ impl Resources {
             extents: Grown::new(device, "latkit extents", storage | wgpu::BufferUsages::COPY_SRC),
             normals: Grown::new(device, "latkit normals", storage),
             stand_ins: Grown::new(device, "latkit stand-ins", storage),
+            boxes: Grown::new(device, "latkit group boxes", storage),
             layout: Grown::new(device, "latkit layout", storage),
             probe: create(device, "latkit probe", storage | wgpu::BufferUsages::COPY_SRC, probe_bytes),
             sprites: Grown::new(device, "latkit sprites", storage),
@@ -289,6 +292,7 @@ impl Resources {
         replaced |= self.marks.ensure(device, MARK_STRIDE * count);
         replaced |= self.normals.ensure(device, words(3 * vertices));
         replaced |= self.stand_ins.ensure(device, words(vertices));
+        replaced |= self.boxes.ensure(device, words(4 * vertices));
         if replaced {
             self.generation += 1;
         }
@@ -310,13 +314,12 @@ impl Resources {
         }
     }
 
-    /// Makes the lists buffer hold `words`; true when it was replaced, emptied.
-    pub(crate) fn fit_lists(&mut self, device: &wgpu::Device, words: u64) -> bool {
-        let replaced = self.lists.ensure(device, (words + 1) * 4);
-        if replaced {
+    /// Makes the lists buffer hold `words`; replacing it, emptied, changes the generation, so every
+    /// list counts again.
+    pub(crate) fn fit_lists(&mut self, device: &wgpu::Device, words: u64) {
+        if self.lists.ensure(device, (words + 1) * 4) {
             self.generation += 1;
         }
-        replaced
     }
 
     /// Replaces the labels buffer with `words` of zeros.
@@ -516,6 +519,7 @@ impl Resources {
                     15 => wgpu::BindingResource::TextureView(&inner.icons.view),
                     16 => self.places.as_entire_binding(),
                     17 => self.layout.buffer.as_entire_binding(),
+                    18 => self.boxes.buffer.as_entire_binding(),
                     other => unreachable!("no resource for pass binding {other}"),
                 };
                 wgpu::BindGroupEntry { binding: binding.slot, resource }

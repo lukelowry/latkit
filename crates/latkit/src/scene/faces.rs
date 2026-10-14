@@ -15,13 +15,12 @@ use crate::{Error, Name, Result};
 pub struct Faces {
     pub(crate) style: Style,
     pub(crate) corners: Option<[Name; 3]>,
-    pub(crate) shadow: bool,
 }
 
 impl Faces {
     /// Draws the rows of `table` in dataset `data`.
     pub fn of(data: impl Into<Name>, table: impl Into<Name>) -> Faces {
-        Faces { style: Style::new(data.into(), table.into()), corners: None, shadow: false }
+        Faces { style: Style::new(data.into(), table.into()), corners: None }
     }
 
     /// The reference fields naming each row's three vertices. Without a color, a face blends the
@@ -29,14 +28,6 @@ impl Faces {
     #[must_use]
     pub fn corners(mut self, a: impl Into<Name>, b: impl Into<Name>, c: impl Into<Name>) -> Faces {
         self.corners = Some([a.into(), b.into(), c.into()]);
-        self
-    }
-
-    /// Whether each face casts a shadow onto the ground and onto other faces, away from the theme's
-    /// light.
-    #[must_use]
-    pub fn shadow(mut self, on: bool) -> Faces {
-        self.shadow = on;
         self
     }
 
@@ -56,7 +47,7 @@ impl Faces {
         }
         c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::FACE_FLAGS, bit: wgsl::VISIBLE })?;
         let mut drawing = Drawing::new(MarkKind::Faces, wgsl::FACE_WORDS);
-        drawing.flags = flags | if self.shadow { wgsl::CASTS } else { 0 };
+        drawing.flags = flags;
         Ok(drawing)
     }
 }

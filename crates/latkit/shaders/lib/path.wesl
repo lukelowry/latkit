@@ -2,7 +2,7 @@
 // edge's ends (through its bends or route, or along the great circle on the earth), from each of a
 // net's terminals to its junction, through a line's samples across the axis, or through points the
 // view wrote. Draws, casts, probes, bounds, and labels all read a segment through `segment_ends` and
-// `segment_screen`.
+// `segment_screen`. Which path a pipeline reads is its `PATH`, so each compiles one kind of path.
 
 import package::lib::types::{
     NONE, MISSING, VISIBLE, PINNED, PLACED, DASH, ENDS_COLOR, GEODESIC, STEP_BEFORE, STEP_AFTER,
@@ -19,7 +19,10 @@ import package::lib::trace::{
 import package::lib::focus::faded;
 import package::lib::mark::px;
 import package::lib::points::{port_place, vertex_half};
-import package::lib::lists::{lists, list_counts, list_entry, list_total};
+import package::lib::lists::{lists, list_entry, list_start, list_total};
+
+// The path a pipeline's strokes read: one of the `PATH_` codes, fixed when the pipeline is made.
+override PATH: u32 = PATH_ENDS;
 
 // One segment of a row's path.
 struct Segment {
@@ -71,7 +74,7 @@ fn segment(instance: u32) -> Segment {
         return Segment(instance / per, instance % per);
     }
     let row = lists[list_entry(mark.list, instance)];
-    return Segment(row, instance - lists[list_counts(mark.list) + row]);
+    return Segment(row, instance - list_start(mark.list, row));
 }
 
 // Segments of every live row's path.
@@ -87,8 +90,7 @@ fn path_count(row: u32) -> u32 {
     if mark.per_row != NONE {
         return mark.per_row;
     }
-    let counts = list_counts(mark.list);
-    return lists[counts + row + 1u] - lists[counts + row];
+    return list_start(mark.list, row + 1u) - list_start(mark.list, row);
 }
 
 // Points written for row `row` beside the program: where they start, and how many.
@@ -125,7 +127,7 @@ fn arcs(a: vec2f, b: vec2f) -> u32 {
 
 // Segments row `row`'s path has: the count a list over the mark's rows counts.
 fn row_segments(row: u32) -> u32 {
-    switch mark.source {
+    switch PATH {
         case PATH_ENDS: {
             let middle = written(row).y;
             if middle == 0u && (mark.flags & GEODESIC) != 0u {
@@ -231,7 +233,8 @@ fn end_point(row: u32, i: u32) -> PathPoint {
     let b = vertex_at(ends.y * VERTEX_WORDS);
     let middle = written(row);
     let geodesic = middle.y == 0u && (mark.flags & GEODESIC) != 0u;
-    let last = select(middle.y + 1u, arcs(a.hi + a.lo, b.hi + b.lo), geodesic);
+    // A great circle runs in as many arcs as its list kept for it.
+    let last = select(middle.y + 1u, path_count(row), geodesic);
     if i == 0u || i >= last {
         var v = a;
         if i != 0u {
@@ -339,7 +342,7 @@ fn geometry_point(row: u32, i: u32) -> PathPoint {
 // Point `i` of row `row`'s path, whatever it runs through, placed in the world.
 fn path_point(row: u32, i: u32) -> PathPoint {
     var p = hidden();
-    switch mark.source {
+    switch PATH {
         case PATH_ENDS: { p = end_point(row, i); }
         case PATH_TRACE: { p = trace_point(row, i); }
         case PATH_GEOMETRY: { p = geometry_point(row, i); }
@@ -352,7 +355,7 @@ fn path_point(row: u32, i: u32) -> PathPoint {
 // The two points segment `s` runs between: points `index` and `index + 1` of its row's path, or of
 // a net's, `2 index` and `2 index + 1`. One loop makes both, so the path is compiled once.
 fn segment_ends(s: Segment) -> array<PathPoint, 2> {
-    let first = select(s.index, 2u * s.index, mark.source == PATH_NET);
+    let first = select(s.index, 2u * s.index, PATH == PATH_NET);
     var ends: array<PathPoint, 2>;
     for (var e = 0u; e < 2u; e++) {
         ends[e] = path_point(s.row, first + e);

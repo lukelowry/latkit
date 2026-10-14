@@ -6,19 +6,14 @@
 use glam::DVec3;
 
 use super::View;
+use super::derived::stamp_of;
 use super::resources::{EyeSlot, SHADE, SHADE_SIZE};
 use super::uniforms;
 use crate::Space;
 use crate::gpu::Inner;
+use crate::gpu::pipelines::Variant;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::{MarkKind, Primitive};
-
-/// What the map was drawn from: the light's eye and each caster's state version.
-#[derive(Clone, PartialEq, Debug, Default)]
-pub(crate) struct Drawn {
-    eye: Vec<u32>,
-    casters: Vec<(usize, u64)>,
-}
 
 impl View {
     /// Indices of marks that cast shadows and draw.
@@ -68,14 +63,13 @@ impl View {
     /// would show changed.
     pub(super) fn cast(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, light: &wgsl::Eye) {
         let casters = self.casters();
-        let drawn = Drawn {
-            eye: bytemuck::cast_slice(bytemuck::bytes_of(light)).to_vec(),
-            casters: casters.iter().map(|&i| (i, self.marks[i].version)).collect(),
-        };
-        if self.shadows_drawn.as_ref() == Some(&drawn) {
+        // What the map is drawn from: the light's eye and each caster's state.
+        let versions: Vec<(usize, u64)> = casters.iter().map(|&i| (i, self.marks[i].version)).collect();
+        let stamp = stamp_of((bytemuck::bytes_of(light), versions));
+        if !self.shadow_map.due(stamp) {
             return;
         }
-        self.shadows_drawn = Some(drawn);
+        self.shadow_map.mark(stamp);
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let resources = self.resources.as_mut().expect("created before shadows");
@@ -95,7 +89,9 @@ impl View {
             };
             let pipeline = match custom {
                 Some(source) => inner.pipelines.custom(device, source, shader, SHADE, 1),
-                None => Some(inner.pipelines.render(device, shader, SHADE, 1)),
+                None => {
+                    Some(inner.pipelines.render_pipeline(device, Variant::draw(shader, SHADE, 1).path(shown.path())))
+                }
             };
             let Some(pipeline) = pipeline else { continue };
             draws.push((i, pipeline, corners, resources.pass(device, inner, shader)));

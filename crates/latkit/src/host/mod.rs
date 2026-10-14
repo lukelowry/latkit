@@ -1,18 +1,30 @@
-//! What the platform does for latkit: set text in its fonts. A [`Gpu`](crate::Gpu) is given its host
-//! with [`Gpu::set_host`](crate::Gpu::set_host); without one, views draw no text.
+//! What the platform does for latkit: set text in its fonts, and do jobs off the frame. A
+//! [`Gpu`](crate::Gpu) is given its host with [`Gpu::set_host`](crate::Gpu::set_host); without one,
+//! views draw no text and do their jobs at once.
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod browser;
+mod job;
 
 use std::sync::Arc;
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub use browser::Browser;
+pub use job::Job;
+pub(crate) use job::{centers, polylines};
+
+use crate::Pending;
 
 /// The platform services a view uses.
 pub trait Host: Send + Sync + 'static {
     /// Sets `run` as coverage, or `None` when the platform cannot.
     fn rasterize(&self, run: &TextRun) -> Option<Raster>;
+
+    /// Does `job` off the frame, resolving to what [`Job::run`] answers; by default at once, on the
+    /// calling thread.
+    fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
+        Pending::ready(Ok(job.run()))
+    }
 }
 
 /// A line of text to set.

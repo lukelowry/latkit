@@ -3,11 +3,21 @@
 //! indirect draw and dispatch arguments, so nothing waits on a readback to know it.
 
 use super::View;
+use super::derived::{Derived, Landed, Work, stamp_of};
 use super::passes::dispatch;
 use crate::gpu::Inner;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::MarkKind;
+
+/// A stroke mark's segment list, when its rows' paths have different numbers of segments: where it
+/// lies, and its count, made from a stamp of the list, the paths, and for great circles the
+/// vertices. A geodesic mark's count is read back, and its list makes room for what it found.
+#[derive(Default)]
+pub(crate) struct Segments {
+    pub(crate) list: Option<List>,
+    pub(crate) found: Derived<u32>,
+}
 
 /// Where a list lies in the lists buffer, in words.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -62,71 +72,65 @@ impl List {
 }
 
 impl View {
-    /// Lays out every listed stroke mark's segment list at the front of the lists buffer; a mark
-    /// whose list moved or grew counts its segments again.
+    /// Lays out every listed stroke mark's segment list at the front of the lists buffer, taking
+    /// counts read back: a list too small for what its rows were found to have grows.
     pub(super) fn lay_out_segments(&mut self) {
         let mut at = 0;
         for shown in &mut self.marks {
-            if let Some(reading) = &shown.segments_reading
-                && let Some(bytes) = reading.take()
-            {
-                shown.segments_reading = None;
-                let found = bytes.ok().and_then(|b| b.get(..4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])));
-                if let Some(found) = found.filter(|&f| shown.segments.is_some_and(|l| f > l.kept)) {
-                    shown.segments_found = found + found / 4;
-                }
+            if let Some((stamp, Landed::Read(bytes))) = shown.segments.found.landed() {
+                let found = bytes.get(..4).map_or(0, |w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+                let kept = shown.segments.list.map_or(0, |l| l.kept);
+                let room = if found > kept { found + found / 4 } else { shown.segments.found.value };
+                shown.segments.found.make(stamp, room);
             }
             if !shown.listed() {
-                shown.segments = None;
+                shown.segments.list = None;
                 continue;
             }
             let items = shown.rows + shown.exits;
             let kept = shown.segment_capacity();
-            let list = match shown.segments {
+            let list = match shown.segments.list {
                 Some(list) if list.header == at && list.items == items && list.kept >= kept => list,
                 _ => {
-                    shown.segments_due = true;
                     let kept = kept + kept / 4;
                     List::at(at, at + List::front_words(kept, 1), items, kept, 1)
                 }
             };
             at += List::front_words(list.kept, 1) + List::back_words(items);
-            shown.segments = Some(list);
+            shown.segments.list = Some(list);
         }
         self.segment_words = at;
     }
 
-    /// The marks whose segments must be counted this frame: their list was laid out again, or the
-    /// arcs of a geodesic mark's rows may have changed with the vertices they join.
+    /// The marks whose segments must be counted this frame: their list, the lists buffer, or their
+    /// paths changed, or, on great circles, the vertices their rows join moved.
     pub(super) fn segments_due(&mut self) -> Vec<usize> {
         let vertices: u64 = self.marks.iter().filter(|m| m.kind() == MarkKind::Vertices).map(|m| m.version).sum();
+        let generation = self.resources.as_ref().map_or(0, super::resources::Resources::generation);
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
-            if shown.segments.is_none() || !shown.drawable() {
-                continue;
-            }
-            let stamp = if shown.geodesic { vertices.wrapping_add(shown.version) } else { 0 };
-            if shown.segments_due || stamp != shown.segments_counted {
+            let Some(list) = shown.segments.list.filter(|_| shown.drawable()) else { continue };
+            let arcs = if shown.geodesic { vertices.wrapping_add(shown.version) } else { 0 };
+            let stamp = stamp_of((list.header, list.items, list.kept, shown.graph.version, generation, arcs));
+            if shown.segments.found.due(stamp) {
+                shown.segments.found.mark(stamp);
                 due.push(i);
             }
-            shown.segments_due = false;
-            shown.segments_counted = stamp;
         }
         due
     }
 
-    /// Reads back how many segments each geodesic mark counted, so a list too small grows.
+    /// Reads back how many segments each geodesic mark of `counted` found, so a list too small grows.
     pub(super) fn count_found(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &Inner, counted: &[usize]) {
         let gpu = self.gpu.clone();
         let Some(resources) = &self.resources else { return };
         for &i in counted {
             let shown = &mut self.marks[i];
-            let Some(list) = shown.segments.filter(|_| shown.geodesic && shown.segments_reading.is_none()) else {
-                continue;
-            };
+            let Some(list) = shown.segments.list.filter(|_| shown.geodesic) else { continue };
             let at = u64::from(list.total()) * 4;
-            shown.segments_reading =
-                Some(Readback::new(&inner.readbacks, &gpu.0.device, encoder, resources.lists(), at, 4));
+            let readback = Readback::new(&inner.readbacks, &gpu.0.device, encoder, resources.lists(), at, 4);
+            let stamp = shown.segments.found.stamp();
+            shown.segments.found.start(stamp, Work::Read(readback));
         }
     }
 }

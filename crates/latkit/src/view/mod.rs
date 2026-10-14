@@ -2,6 +2,7 @@
 
 mod axes;
 mod camera;
+mod derived;
 mod event;
 mod fit;
 mod focus;
@@ -10,20 +11,22 @@ mod gestures;
 mod graph;
 mod input;
 mod labels;
+mod layouts;
 mod lists;
 mod marks;
 mod passes;
-mod places;
 mod probe;
 mod program;
 mod query;
 mod resources;
 mod rig;
+mod routes;
 mod rows;
 mod shadows;
 mod sync;
 mod transition;
 mod uniforms;
+mod variants;
 
 use std::task::Waker;
 use std::time::Duration;
@@ -31,9 +34,6 @@ use std::time::Duration;
 pub use camera::Camera;
 pub use event::{Cursor, Drag, End, Event, Fit, Hit, Phase, Sample, Stats};
 pub use input::{Button, Input, Key, Modifiers};
-pub use query::Pending;
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
-pub(crate) use resources::samples;
 pub(crate) use resources::{DEPTH, SHADE};
 
 use camera::{Area, Projected};
@@ -107,19 +107,21 @@ pub struct View {
     upload_error: Option<Error>,
     /// Whether the application was told the device was lost.
     told_lost: bool,
-    /// What the shadow map and the face normals were last drawn from.
-    shadows_drawn: Option<shadows::Drawn>,
-    normals_drawn: Option<Vec<u64>>,
+    /// The format and samples per pixel the scene's pipelines were made for.
+    pipelines_made: Option<(wgpu::TextureFormat, u32)>,
+    /// The shadow map and the face normals, made from what they read.
+    shadow_map: derived::Derived<()>,
+    normals: derived::Derived<()>,
     focus: Focus,
     probing: Probing,
     queries: query::Queries,
-    placing: places::Placing,
-    routing: places::Routing,
+    placing: layouts::Placing,
+    routing: routes::Routing,
     /// Words the marks' segment lists take at the front of the lists buffer.
     segment_words: u32,
-    /// What the groups were last stood around their members from, and CSS pixels per position
-    /// unit this frame.
-    groups_drawn: Option<Vec<u64>>,
+    /// The groups stood around their members, made from what they read; and CSS pixels per
+    /// position unit this frame.
+    group_bounds: derived::Derived<()>,
     px_per_unit: f32,
     labels: labels::Labels,
     gestures: Gestures,
@@ -157,15 +159,16 @@ impl View {
             changed: true,
             upload_error: None,
             told_lost: false,
-            shadows_drawn: None,
-            normals_drawn: None,
+            pipelines_made: None,
+            shadow_map: derived::Derived::default(),
+            normals: derived::Derived::default(),
             focus: Focus::default(),
             probing: Probing::default(),
             queries: query::Queries::default(),
-            placing: places::Placing::default(),
-            routing: places::Routing::default(),
+            placing: layouts::Placing::default(),
+            routing: routes::Routing::default(),
             segment_words: 0,
-            groups_drawn: None,
+            group_bounds: derived::Derived::default(),
             px_per_unit: 1.0,
             labels: labels::Labels::default(),
             gestures: Gestures::default(),
@@ -240,6 +243,7 @@ impl View {
             self.plot_y = None;
         }
         self.scene = scene;
+        self.pipelines_made = None;
         self.focus.dirty = true;
         self.invalidate();
         Ok(())
@@ -388,7 +392,8 @@ impl View {
         &self.focus.selection
     }
 
-    /// Selects `rows`, and no others.
+    /// Selects `rows`, and no others. Rows the data drops, or no pickable mark shows, leave the
+    /// selection with a [`Select`](Event::Select) event.
     pub fn select(&mut self, rows: impl IntoIterator<Item = Row>) {
         let rows: Vec<Row> = rows.into_iter().collect();
         if rows != self.focus.selection {
@@ -435,9 +440,10 @@ impl View {
             || self.routing.busy()
             || self.awaiting()
             || self.labels.busy()
-            || self.marks.iter().any(|m| {
-                m.dirty != 0 || m.reduce || m.tables.waiting() || m.begin.is_some() || m.segments_reading.is_some()
-            })
+            || self
+                .marks
+                .iter()
+                .any(|m| m.dirty != 0 || m.reduce || m.tables.waiting() || m.begin.is_some() || m.segments.found.busy())
             || self.marks.iter().any(|m| m.transition.is_some())
             || self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME)))
             || self.gpu.0.lock().arena.uploading()

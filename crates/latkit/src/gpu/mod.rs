@@ -21,8 +21,8 @@ use icons::Icons;
 use pipelines::Pipelines;
 use readback::Readbacks;
 
-use crate::host::Host;
-use crate::{Error, Result};
+use crate::host::{Host, Job};
+use crate::{Error, Pending, Result};
 
 /// The GPU device that views draw with. Cheap to clone; views of one `Gpu` share uploaded data.
 #[derive(Clone)]
@@ -182,16 +182,18 @@ impl Gpu {
         self.0.lock().budget
     }
 
-    /// Gives views the platform's services, such as setting text.
+    /// Gives views the platform's services: setting text, and doing jobs off the frame.
     pub fn set_host(&self, host: impl Host) {
         self.0.lock().host = Some(Arc::new(host));
     }
 
-    /// Makes every pipeline a view drawing into `format` with `samples` per pixel uses, so the first
-    /// hover, shadow, or plot does not wait for one to compile.
-    pub fn prepare(&self, format: wgpu::TextureFormat, samples: u32) {
-        let mut inner = self.0.lock();
-        inner.pipelines.prepare(&self.0.device, format, samples);
+    /// Does `job` through the host, or at once without one.
+    pub(crate) fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
+        let host = self.0.lock().host.clone();
+        match host {
+            Some(host) => host.spawn(job),
+            None => Pending::ready(Ok(job.run())),
+        }
     }
 
     /// Whether the device was lost; drawing then does nothing, and a new `Gpu` is needed.

@@ -198,8 +198,6 @@ impl Canvas {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&gpu.0.device, &config);
-        let ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio()) as f32;
-        gpu.prepare(format, crate::view::samples(ratio));
         let _ = element.style().set_property("touch-action", "none");
         let frames = frames_of(gpu);
         let state = Rc::new(RefCell::new(State {

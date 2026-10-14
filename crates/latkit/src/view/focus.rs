@@ -1,9 +1,10 @@
 //! Selection, hover, and the rows a fit measures, as focus words: one per row of every mark, written
-//! only where they change.
+//! only where they change. The selection keeps only rows a pickable mark shows.
 
 use std::collections::HashMap;
 
 use super::View;
+use super::event::Event;
 use crate::Row;
 use crate::expr::compile::Deps;
 use crate::gpu::shaders as wgsl;
@@ -34,24 +35,37 @@ impl View {
             return;
         }
         let mut words: HashMap<u32, u32> = HashMap::new();
+        // Marks `rows` with `bit` in every mark showing them, and keeps those some mark shows.
         let mut mark = |rows: &[Row], bit: u32, picked: bool| {
+            let mut kept = Vec::new();
             for row in rows {
                 let Some(table) = self.data(&row.data).and_then(|d| d.table(&row.table)) else { continue };
                 let Some(index) = table.row(row.id.as_ref()) else { continue };
+                let mut shows = false;
                 for shown in &self.marks {
                     let style = shown.mark.style();
                     if (picked && !style.interaction.pick) || style.data != row.data || style.table != row.table {
                         continue;
                     }
+                    shows = true;
                     if (index as u32) < shown.rows {
                         *words.entry(shown.region.focus + index as u32).or_default() |= bit;
                     }
                 }
+                if shows {
+                    kept.push(row.clone());
+                }
             }
+            kept
         };
-        mark(&self.focus.selection, wgsl::SELECTED, true);
+        let selection = mark(&self.focus.selection, wgsl::SELECTED, true);
         mark(self.focus.hovered.as_slice(), wgsl::HOVERED, true);
         mark(&self.focus.fitting, wgsl::FIT, false);
+        // Rows the data no longer holds, or no mark shows, leave the selection.
+        if selection.len() < self.focus.selection.len() {
+            self.focus.selection.clone_from(&selection);
+            self.events.push(Event::Select(selection));
+        }
         let changed = self.focus.written.keys().filter(|w| !words.contains_key(w)).count()
             + words.iter().filter(|(w, b)| self.focus.written.get(w) != Some(b)).count();
         if changed > WHOLE {

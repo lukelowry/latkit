@@ -1,12 +1,12 @@
 // The scan of a list: each block of 256 counts scans in its workgroup and leaves its total, one
 // workgroup scans the totals, and every count adds its block's offset. Counts become where each
 // item's entries start, the total follows them, and the header's indirect arguments take the
-// entries the list keeps.
+// entries the list keeps. Each count is held to its share of a u32, so the total never wraps.
 // Reduce-then-scan needs no forward progress between workgroups, so it is safe on every device.
 
 import package::lib::bind::mark;
 import package::lib::types::{LIST_ITEMS, LIST_COUNTS, LIST_SUMS, LIST_ENTRIES, LIST_DRAW, LIST_DISPATCH, LIST_KEPT};
-import package::lib::lists::lists;
+import package::lib::lists::{lists, list_start};
 import package::lib::path::row_segments;
 
 var<workgroup> tile: array<u32, 256>;
@@ -39,7 +39,9 @@ fn scan_blocks(@builtin(local_invocation_id) l: vec3u, @builtin(workgroup_id) g:
     let n = lists[h + LIST_ITEMS];
     let counts = lists[h + LIST_COUNTS];
     let i = g.x * 256u + l.x;
-    let own = select(0u, lists[counts + min(i, max(n, 1u) - 1u)], i < n);
+    // Whatever the counts, the starts climb, so every item's writes end.
+    let share = 0xffffffffu / max(n, 1u);
+    let own = select(0u, min(lists[counts + min(i, max(n, 1u) - 1u)], share), i < n);
     tile[l.x] = own;
     workgroupBarrier();
     scan_tile(l.x);
@@ -106,10 +108,9 @@ fn write_segments(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= lists[mark.list + LIST_ITEMS] {
         return;
     }
-    let at = lists[lists[mark.list + LIST_COUNTS] + id.x];
-    let count = lists[lists[mark.list + LIST_COUNTS] + id.x + 1u] - at;
-    let kept = lists[mark.list + LIST_KEPT];
-    for (var k = 0u; k < count && at + k < kept; k++) {
-        lists[lists[mark.list + LIST_ENTRIES] + at + k] = id.x;
+    let at = list_start(mark.list, id.x);
+    let end = list_start(mark.list, id.x + 1u);
+    for (var k = at; k < end; k++) {
+        lists[lists[mark.list + LIST_ENTRIES] + k] = id.x;
     }
 }

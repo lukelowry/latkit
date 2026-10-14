@@ -395,8 +395,23 @@ impl<'a> Compiler<'a> {
             Node::Binary(op, a, b) => self.binary(*op, a, b),
             Node::When(c, a, b) => {
                 self.expect(c, Ty::Bool).map_err(|e| e.at("when"))?;
-                let (ta, tb) = (self.emit(a)?, self.emit(b)?);
-                let ty = match (ta, tb) {
+                // A missing value takes the other branch's type, so it goes last: a missing first
+                // branch swaps the branches and negates the condition.
+                let (a, b) = match (&*a.0, &*b.0) {
+                    (Node::Missing, Node::Missing) => (a, b),
+                    (Node::Missing, _) => {
+                        self.op(unary_code(Unary::Not), 0, 0, 0, 1, 1)?;
+                        (b, a)
+                    }
+                    _ => (a, b),
+                };
+                let ta = self.emit(a)?;
+                if let Node::Missing = &*b.0 {
+                    self.expect(b, ta)?;
+                    self.op(wgsl::OP_SELECT, 0, 0, 0, 3, 1)?;
+                    return Ok(ta);
+                }
+                let ty = match (ta, self.emit(b)?) {
                     (a, b) if a == b => a,
                     (Ty::Bool, Ty::Number) | (Ty::Number, Ty::Bool) => Ty::Number,
                     (a, b) => return Err(invalid(format!("when chooses between {} and {}", ty_name(a), ty_name(b)))),

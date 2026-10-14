@@ -8,7 +8,7 @@ mod common;
 use std::sync::Arc;
 
 use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane};
-use latkit::{Color, Data, Event, Image, Marker, Scene, Shape, Table, Vertices, View, field};
+use latkit::{Color, Data, Event, Expr, Image, Marker, Scene, Shape, Table, Vertices, View, field, when};
 
 fn one(marker: Marker) -> (View, latkit::Gpu) {
     let gpu = gpu().expect("a GPU");
@@ -107,4 +107,33 @@ fn status_rings_surround_their_markers() {
     let ring = at(&pixels, c + 11, c);
     assert!(ring[0] > 200 && ring[1] < 80, "a red ring just outside: {ring:?}");
     assert!(close(at(&pixels, c, c), WHITE));
+}
+
+#[test]
+fn a_missing_status_draws_no_ring_whichever_branch_it_is() {
+    let Some(gpu) = gpu() else { return };
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    // Only the alarmed row on the left rings.
+    let forms: [Expr; 2] = [
+        when(field("alarm").gt(0.5)).then(red).otherwise(Expr::missing()),
+        when(field("alarm").lt(0.5)).then(Expr::missing()).otherwise(red),
+    ];
+    for status in forms {
+        let mut data = Data::new("d");
+        let table = Table::new("V", 2).field("x", vec![-30.0, 30.0]).field("y", vec![0.0, 0.0]);
+        data.apply(table.field("alarm", vec![1.0, 0.0])).expect("valid");
+        let scene = Scene::new(plane())
+            .theme(plain_theme())
+            .draw(Vertices::of("d", "V").position("x", "y").radius(10.0).color(Color::WHITE).status(status));
+        let mut view = View::new(&gpu, scene).expect("valid scene");
+        view.set_camera(camera());
+        view.set_data(data);
+        let pixels = frame(&gpu, &mut view);
+        let c = SIZE / 2;
+        let alarmed = at(&pixels, c - 30 + 11, c);
+        assert!(alarmed[0] > 200 && alarmed[1] < 80, "the alarmed row rings: {alarmed:?}");
+        let quiet = at(&pixels, c + 30 + 11, c);
+        assert!(quiet[0] < 80, "the quiet row does not: {quiet:?}");
+        assert_eq!(errors(&mut view), Vec::new());
+    }
 }

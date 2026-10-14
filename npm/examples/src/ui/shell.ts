@@ -2,6 +2,13 @@ import type { Gpu } from 'latkit';
 import { h } from './dom.js';
 import { Stage } from './stage.js';
 
+declare global {
+  interface Window {
+    /** The page showing, for the browser gate to watch. */
+    stage?: Stage;
+  }
+}
+
 /** A page of the suite: what the bar shows, and the module that draws it into a stage. */
 export interface Page {
   readonly id: string;
@@ -46,7 +53,7 @@ export class Shell {
     const showing = ++this.#showing;
     const page = this.pages.find((p) => `#${p.id}` === location.hash) ?? this.pages[0]!;
     this.#stage?.close();
-    this.#stage = undefined;
+    this.#stage = window.stage = undefined;
     this.#error.hidden = true;
     document.title = `${page.title} · latkit`;
     this.#title.textContent = page.title;
@@ -59,7 +66,7 @@ export class Shell {
       const [gpu, module] = await Promise.all([this.gpu, page.load()]);
       if (showing !== this.#showing) return;
       const stage = new Stage(gpu, this.#regions, this.#detail, (error) => this.#fail(error));
-      this.#stage = stage;
+      this.#stage = window.stage = stage;
       await module.default(stage);
     } catch (error) {
       if (showing === this.#showing) this.#fail(error);
@@ -68,7 +75,7 @@ export class Shell {
 
   #fail(error: unknown): void {
     this.#stage?.close();
-    this.#stage = undefined;
+    this.#stage = window.stage = undefined;
     this.#error.hidden = false;
     const unsupported = (error as { code?: string }).code === 'unsupported';
     this.#error.textContent = unsupported

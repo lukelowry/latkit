@@ -39,6 +39,11 @@ export class Stage {
     );
   }
 
+  /** Every view the page made. */
+  get views(): View[] {
+    return [...this.#views];
+  }
+
   /** A view in a canvas of its own, in `into`, the main region unless given. */
   view(
     scene: Scene,

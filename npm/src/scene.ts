@@ -424,6 +424,17 @@ interface Style {
   drag?: boolean;
   /** Each row's text: a text field, or a {@link Label}. */
   label?: ExprInput | Label;
+  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
+  shadow?: boolean;
+}
+
+/** Options of marks that draw strokes: edges and lines. */
+interface Stroke {
+  /** CSS pixels, or position units with {@link units}. */
+  width?: Size;
+  dash?: ExprInput;
+  /** Comets flowing along each row, CSS pixels per second; negative flows backward. */
+  flow?: ExprInput;
 }
 
 /** A row's text, placed beside, inside, or along what its mark draws; overlapping labels give way by priority. */
@@ -474,7 +485,10 @@ export type Marker =
 export function icon(images: ImageData[], index: ExprInput): Marker {
   return {
     icon: {
-      images: images.map((image) => ({ size: [image.width, image.height], rgba: Array.from(image.data) })),
+      images: images.map((image) => ({
+        size: [image.width, image.height],
+        rgba: Array.from(image.data),
+      })),
       index,
     },
   };
@@ -483,6 +497,7 @@ export function icon(images: ImageData[], index: ExprInput): Marker {
 export type Mark =
   | {
       vertices: Style & {
+        /** Without one, a point field named `geometry` places rows, else the scene's layout does. */
         position?: [ExprInput, ExprInput];
         elevation?: ExprInput;
         radius?: Size;
@@ -490,8 +505,6 @@ export type Mark =
         marker?: Marker;
         /** A ring around each row's marker in this color. */
         status?: ExprInput;
-        /** Whether each row casts a shadow onto the ground, away from the theme's light. */
-        shadow?: boolean;
         /** A port on each row for each reference field naming a net, which an `edges` mark of the
          * net table without ends draws. */
         ports?: [reference: string, port: Port][];
@@ -505,36 +518,30 @@ export type Mark =
   | {
       /** Rows drawn as strokes between the vertices two reference fields name; without ends, each
        * row is a net joining every vertex port whose reference field names it. */
-      edges: Style & {
-        ends?: [from: string, to: string];
-        width?: Size;
-        dash?: ExprInput;
-        flow?: ExprInput;
-        /** Whether each row casts a shadow onto the ground, away from the theme's light. */
-        shadow?: boolean;
-        /** A path field of points each row runs through between its ends. */
-        bends?: string;
-        /** How each row runs between its ends; on the earth geodesic, elsewhere straight, unless set. */
-        route?: 'straight' | 'geodesic' | 'orthogonal';
-        /** Whether each row ends in an arrowhead at its second end. */
-        arrows?: boolean;
-      };
+      edges: Style &
+        Stroke & {
+          ends?: [from: string, to: string];
+          /** A path field of points each row runs through between its ends. */
+          bends?: string;
+          /** How each row runs between its ends; on the earth geodesic, elsewhere straight, unless set. */
+          route?: 'straight' | 'geodesic' | 'orthogonal';
+          /** Whether each row ends in an arrowhead at its second end. */
+          arrows?: boolean;
+        };
     }
   | {
       /** Triangles between three vertices; without a color, each blends its corners' colors. */
       faces: Style & {
         corners: [a: string, b: string, c: string];
-        /** Whether each face casts a shadow onto the ground and onto other faces. */
-        shadow?: boolean;
       };
     }
   | {
-      /** On a plot, each row traces the sampled field `samples` across the axis. */
-      lines: Style & {
-        samples: string;
-        width?: Size;
-        dash?: ExprInput;
-        /** How each row runs between its samples. */
-        interpolation?: 'linear' | 'stepBefore' | 'stepAfter';
-      };
+      /** Rows drawn as lines through the field each traces. */
+      lines: Style &
+        Stroke & {
+          /** The field each row traces: a sampled field across the plot's axis. `geometry` unless set. */
+          trace?: string;
+          /** How each row runs between its samples. */
+          interpolation?: 'linear' | 'stepBefore' | 'stepAfter';
+        };
     };

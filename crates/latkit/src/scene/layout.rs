@@ -10,10 +10,11 @@ pub enum Layout {
     Layered(Layered),
 }
 
-/// Stress majorization: each pair of vertices pulls toward its graph distance.
+/// Stress majorization: each pair of vertices pulls toward its graph distance; then their boxes
+/// part, keeping a quarter of the gap clear.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Stress {
-    /// Units between adjacent vertices.
+    /// Units between adjacent vertices' centers.
     pub gap: f64,
 }
 
@@ -23,7 +24,8 @@ impl Default for Stress {
     }
 }
 
-/// Layered drawing: vertices in ranks, edges pointing along `flow`.
+/// Layered drawing: vertices in ranks, edges pointing along `flow`, and nets from their ports on the
+/// side it leaves by.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Layered {
     /// Where edges point.

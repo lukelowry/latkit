@@ -1,6 +1,6 @@
 //! Interaction events: a secondary click asks for a menu of what lies under it, dragging from a port
-//! draws a connection to the vertex it is released over, an edge's end can be dragged off it, and
-//! Delete tells the selection.
+//! draws a connection to the vertex it is released over, an edge's end can be dragged off it, a
+//! double click opens what it hits, and Delete tells the selection.
 
 #![cfg(feature = "gpu")]
 
@@ -129,6 +129,32 @@ fn dragging_an_edge_lets_go_of_its_nearer_end() {
     assert_eq!(from.row, Row::new("graph", "Node", 1_u64), "the end that stays");
     assert_eq!(to.map(|t| t.row), Some(Row::new("graph", "Node", 2_u64)));
     assert_eq!(edge, Some(Row::new("graph", "Link", 0_u64)));
+}
+
+#[test]
+fn a_double_click_faster_than_its_probe_opens() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = view(&gpu);
+    // Both clicks land before any frame answers what lies under them.
+    let at = [C + 40.0, C];
+    for input in [down(at, Button::Primary), up(at), down(at, Button::Primary), up(at)] {
+        view.input(&input);
+    }
+    let opened = after(&gpu, &mut view, &[], |e| if let Event::Open(hit) = e { Some(hit.row.clone()) } else { None });
+    assert_eq!(opened, Row::new("graph", "Node", 2_u64));
+}
+
+#[test]
+fn the_selection_lets_go_of_rows_the_data_drops() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = view(&gpu);
+    view.select([Row::new("graph", "Node", 2_u64), Row::new("graph", "Node", 3_u64)]);
+    let mut data = view.data("graph").expect("shown").clone();
+    data.apply(Patch::new().remove("Node", vec![2_u64])).expect("valid");
+    view.set_data(data);
+    let selected = after(&gpu, &mut view, &[], |e| if let Event::Select(rows) = e { Some(rows.clone()) } else { None });
+    assert_eq!(selected, vec![Row::new("graph", "Node", 3_u64)]);
+    assert_eq!(view.selection(), &[Row::new("graph", "Node", 3_u64)]);
 }
 
 #[test]

@@ -17,10 +17,17 @@ export const pages: readonly Page[] = [
     load: () => import('./grid/page.js'),
   },
   {
-    id: 'diagram',
-    title: 'Plant diagram',
+    id: 'telemetry',
+    title: 'Telemetry',
     summary:
-      'Units in areas laid out in ranks, pipes routed around them, a drain joining ports: connect, rewire, fold, and delete.',
+      'Thousands of live voltage traces in a rolling window: appended every frame, forgotten after two minutes, read under the pointer.',
+    load: () => import('./telemetry/page.js'),
+  },
+  {
+    id: 'diagram',
+    title: 'Diagram studio',
+    summary:
+      'Blocks with typed ports, wired by signals routed around them, in groups that fold: add, move, rename, wire, delete, undo.',
     load: () => import('./diagram/page.js'),
   },
 ];

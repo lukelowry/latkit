@@ -9,9 +9,6 @@
 //! otherwise from a probe of its own a frame or two later; the press waits for it and catches up.
 //! Menus and connections tell what lies under their point once a pick answers.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use web_time::Instant;
@@ -20,15 +17,15 @@ use super::View;
 use super::event::{Cursor, Drag, End, Event, Fit, Hit, Phase};
 use super::input::{Button, Input, Key, Modifiers};
 use super::probe::{Answer, Probed, near};
-use super::query::Pending;
 use crate::expr::compile::Deps;
 use crate::scene::mark::MarkKind;
-use crate::{Camera, Row, Scene};
+use crate::{Camera, Pending, Row, Scene};
 
 /// CSS pixels a press moves before it drags or pans.
 const SLOP: f32 = 4.0;
-/// Clicks this close in time make a double click.
+/// Clicks this close in time, and in CSS pixels, make a double click.
 const DOUBLE: Duration = Duration::from_millis(400);
+const DOUBLE_REACH: f32 = 6.0;
 /// A drag released this long after its last move does not coast.
 const HELD: Duration = Duration::from_millis(60);
 /// Degrees a pixel of turning drag turns.
@@ -42,7 +39,8 @@ const STEP_ZOOM: f64 = 0.5;
 pub(crate) enum Gesture {
     #[default]
     Idle,
-    /// A pointer pressed; `answer` is `None` while its probe is in flight.
+    /// A pointer pressed; `answer` is `None` while its probe is in flight. `earlier` is a press
+    /// released here before its own answer came, which clicks first on this one's.
     Press {
         pointer: u32,
         button: Button,
@@ -51,6 +49,7 @@ pub(crate) enum Gesture {
         answer: Option<Answer>,
         released: bool,
         modifiers: Modifiers,
+        earlier: Option<(Button, [f32; 2], Modifiers)>,
     },
     /// A connection drawn from `from` toward the pointer at `to`; `anchor` is where it starts on
     /// screen, once known.
@@ -178,7 +177,7 @@ impl View {
     fn down(&mut self, pointer: u32, point: [f32; 2], button: Button, modifiers: Modifiers, touch: bool) -> bool {
         self.probing.touch = touch;
         let controls = self.scene.controls;
-        match self.gestures.now {
+        let earlier = match self.gestures.now {
             Gesture::Press { pointer: first, to: at, .. } | Gesture::Pan { pointer: first, last: at, .. }
                 if first != pointer && controls.zoom =>
             {
@@ -186,9 +185,12 @@ impl View {
                 self.gestures.now = Gesture::Pinch { pointers: [(first, at), (pointer, point)] };
                 return true;
             }
-            Gesture::Idle => {}
+            Gesture::Press { button, to: at, answer: None, released: true, modifiers, .. } => {
+                near(at, point, DOUBLE_REACH).then_some((button, at, modifiers))
+            }
+            Gesture::Idle => None,
             _ => return true,
-        }
+        };
         self.rig.hold();
         let map = matches!(self.camera, Camera::Map { .. });
         let boxing = button == Button::Primary && modifiers.shift && controls.select_box;
@@ -206,7 +208,7 @@ impl View {
             if answer.is_none() {
                 self.probing.wanted = Some(point);
             }
-            Gesture::Press { pointer, button, from: point, to: point, answer, released: false, modifiers }
+            Gesture::Press { pointer, button, from: point, to: point, answer, released: false, modifiers, earlier }
         } else {
             Gesture::Idle
         };
@@ -345,20 +347,19 @@ impl View {
     /// Decides a press once what lies under it is known: a release clicks or asks for a menu, a move
     /// connects, drags, pans, or turns.
     fn pressed(&mut self) {
-        let Gesture::Press { pointer, button, from, to, answer: Some(answer), released, modifiers } =
-            &self.gestures.now
+        let Gesture::Press { pointer, button, from, to, answer: Some(answer), released, modifiers, earlier } =
+            &mut self.gestures.now
         else {
             return;
         };
-        let (pointer, button, from, to, answer, released, modifiers) =
-            (*pointer, *button, *from, *to, answer.clone(), *released, *modifiers);
+        let (pointer, button, from, to, answer, released, modifiers, earlier) =
+            (*pointer, *button, *from, *to, answer.clone(), *released, *modifiers, earlier.take());
+        if let Some((button, at, modifiers)) = earlier {
+            self.tap(button, answer.hit.clone(), at, modifiers);
+        }
         if released {
             self.gestures.now = Gesture::Idle;
-            if button == Button::Secondary {
-                self.menu(to, false, modifiers);
-            } else {
-                self.click(answer.hit, to, modifiers);
-            }
+            self.tap(button, answer.hit, to, modifiers);
             return;
         }
         if near(from, to, SLOP) {
@@ -398,6 +399,15 @@ impl View {
         }
     }
 
+    /// A press let go where it began: a click, or a menu for the secondary button.
+    fn tap(&mut self, button: Button, hit: Option<Probed>, point: [f32; 2], modifiers: Modifiers) {
+        if button == Button::Secondary {
+            self.menu(point, false, modifiers);
+        } else {
+            self.click(hit, point, modifiers);
+        }
+    }
+
     fn click(&mut self, hit: Option<Probed>, point: [f32; 2], modifiers: Modifiers) {
         let now = Instant::now();
         let row = hit.as_ref().map(|p| p.hit.row.clone());
@@ -405,7 +415,7 @@ impl View {
             .gestures
             .clicked
             .take()
-            .is_some_and(|(at, p, r)| now.duration_since(at) < DOUBLE && near(p, point, 6.0) && r == row);
+            .is_some_and(|(at, p, r)| now.duration_since(at) < DOUBLE && near(p, point, DOUBLE_REACH) && r == row);
         if !double {
             self.gestures.clicked = Some((now, point, row));
         }
@@ -479,9 +489,8 @@ impl View {
     /// Tells the menus and connections whose picks answered, and starts a connection being drawn
     /// where the row it stays at lies.
     pub(super) fn settle_awaiting(&mut self) {
-        let mut context = Context::from_waker(Waker::noop());
         if let Gesture::Connect { anchor, locating: Some(locating), .. } = &mut self.gestures.now
-            && let Poll::Ready(found) = Pin::new(locating).poll(&mut context)
+            && let Some(found) = locating.take()
         {
             *anchor = found.ok().flatten();
             if let Gesture::Connect { locating, .. } = &mut self.gestures.now {
@@ -490,7 +499,7 @@ impl View {
         }
         let mut i = 0;
         while i < self.gestures.awaiting.len() {
-            let Poll::Ready(hits) = Pin::new(&mut self.gestures.awaiting[i].0).poll(&mut context) else {
+            let Some(hits) = self.gestures.awaiting[i].0.take() else {
                 i += 1;
                 continue;
             };

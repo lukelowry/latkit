@@ -165,7 +165,7 @@ impl View {
             let crate::Mark::Lines(lines) = &shown.mark else { return None };
             let style = shown.mark.style();
             let table = self.data(&style.data)?.table(&style.table)?;
-            match table.field_named(lines.samples.as_ref()?)? {
+            match table.field_named(&lines.traced())? {
                 crate::data::Field::Sampled(samples, _) => samples.span(),
                 _ => None,
             }

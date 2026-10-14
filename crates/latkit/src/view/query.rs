@@ -4,10 +4,6 @@
 //! wait their turn.
 
 use std::collections::VecDeque;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::task::{Context, Poll, Waker};
 
 use super::View;
 use super::event::Hit;
@@ -15,70 +11,19 @@ use super::lists::{List, scan};
 use super::passes::{dispatch, offset};
 use super::resources::EyeSlot;
 use crate::gpu::Inner;
+use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
-use crate::{Result, Row};
-
-/// What a view will answer once the GPU has: a future its frames resolve. It resolves to an error
-/// when the device is lost, and stays pending while no frames are drawn.
-#[must_use = "a pending answer does nothing unless awaited"]
-pub struct Pending<T>(Arc<Mutex<Slot<T>>>);
-
-enum Slot<T> {
-    Waiting(Option<Waker>),
-    Ready(Result<T>),
-    Taken,
-}
-
-/// The side of a [`Pending`] the view answers.
-pub(crate) struct Reply<T>(Arc<Mutex<Slot<T>>>);
-
-impl<T> Reply<T> {
-    fn send(self, value: Result<T>) {
-        let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Slot::Waiting(waker) = std::mem::replace(&mut *slot, Slot::Ready(value))
-            && let Some(waker) = waker
-        {
-            waker.wake();
-        }
-    }
-}
-
-fn pending<T>() -> (Pending<T>, Reply<T>) {
-    let slot = Arc::new(Mutex::new(Slot::Waiting(None)));
-    (Pending(slot.clone()), Reply(slot))
-}
-
-impl<T> Future for Pending<T> {
-    type Output = Result<T>;
-
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Result<T>> {
-        let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        match std::mem::replace(&mut *slot, Slot::Taken) {
-            Slot::Ready(value) => Poll::Ready(value),
-            Slot::Waiting(_) => {
-                *slot = Slot::Waiting(Some(context.waker().clone()));
-                Poll::Pending
-            }
-            Slot::Taken => panic!("a pending answer polled after it resolved"),
-        }
-    }
-}
-
-impl<T> std::fmt::Debug for Pending<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Pending")
-    }
-}
+use crate::{Pending, Resolver, Row};
 
 /// A question for the GPU.
 pub(crate) enum Ask {
     /// Every row within `radius` CSS pixels of `point`.
-    Hits { point: [f32; 2], radius: f32, reply: Reply<Vec<Hit>> },
+    Hits { point: [f32; 2], radius: f32, reply: Resolver<Vec<Hit>> },
     /// Every row in the box between two corners; they become the selection.
     Boxed { corners: [[f32; 2]; 2] },
     /// Where a row lies.
-    Locate { row: Row, reply: Reply<Option<[f32; 2]>> },
+    Locate { row: Row, reply: Resolver<Option<[f32; 2]>> },
 }
 
 impl Ask {
@@ -142,7 +87,7 @@ impl View {
     /// Every row of a mark that picks within `radius` CSS pixels of `point`, nearest first, as the
     /// next frames draw them.
     pub fn pick(&mut self, point: [f32; 2], radius: f32) -> Pending<Vec<Hit>> {
-        let (answer, reply) = pending();
+        let (answer, reply) = Pending::new();
         self.queries.waiting.push_back(Ask::Hits { point, radius: radius.max(0.0), reply });
         self.wake();
         answer
@@ -151,7 +96,7 @@ impl View {
     /// Where `row` lies on screen, CSS pixels from the top left, as the next frames draw it; `None`
     /// when no mark draws it in view.
     pub fn locate(&mut self, row: &Row) -> Pending<Option<[f32; 2]>> {
-        let (answer, reply) = pending();
+        let (answer, reply) = Pending::new();
         self.queries.waiting.push_back(Ask::Locate { row: row.clone(), reply });
         self.wake();
         answer
@@ -198,7 +143,7 @@ impl View {
             && let Ask::Locate { reply, .. } = ask
         {
             // No mark draws the row: nothing to ask the GPU.
-            reply.send(Ok(None));
+            reply.resolve(Ok(None));
             return self.next_query();
         }
         let words = ask.words(&marks, self);
@@ -257,10 +202,11 @@ impl View {
             });
             pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
             for (i, list) in &running.marks {
-                let primitive = self.marks[*i].primitive();
+                let probing =
+                    |entry| Variant::probe(shader, entry, self.marks[*i].primitive()).path(self.marks[*i].path());
                 pass.set_bind_group(1, &groups.mark, &[offset(*i)]);
                 pass.set_bind_group(2, &probe_group, &[]);
-                pass.set_pipeline(&inner.pipelines.probing(device, shader, count, primitive));
+                pass.set_pipeline(&inner.pipelines.compute_pipeline(device, probing(count)));
                 if write.is_empty() {
                     pass.dispatch_workgroups(1, 1, 1);
                     continue;
@@ -269,7 +215,7 @@ impl View {
                 pass.set_bind_group(2, &lists_group, &[]);
                 scan(&mut pass, &mut inner.pipelines, device, list.items, true);
                 pass.set_bind_group(2, &probe_group, &[]);
-                pass.set_pipeline(&inner.pipelines.probing(device, shader, write, primitive));
+                pass.set_pipeline(&inner.pipelines.compute_pipeline(device, probing(write)));
                 dispatch(&mut pass, list.items);
             }
         }
@@ -295,15 +241,15 @@ impl View {
             Ok(bytes) => bytemuck::cast_slice(&bytes).to_vec(),
             Err(error) => {
                 match ask {
-                    Ask::Hits { reply, .. } => reply.send(Err(error)),
-                    Ask::Locate { reply, .. } => reply.send(Err(error)),
+                    Ask::Hits { reply, .. } => reply.resolve(Err(error)),
+                    Ask::Locate { reply, .. } => reply.resolve(Err(error)),
                     Ask::Boxed { .. } => {}
                 }
                 return;
             }
         };
         match ask {
-            Ask::Hits { reply, .. } => reply.send(Ok(self.hits(&marks, &words, base))),
+            Ask::Hits { reply, .. } => reply.resolve(Ok(self.hits(&marks, &words, base))),
             Ask::Boxed { .. } => {
                 let mut rows = Vec::new();
                 for &(i, list) in &marks {
@@ -323,7 +269,7 @@ impl View {
             Ask::Locate { reply, .. } => {
                 let found = words.get(2).is_some_and(|&w| w != 0);
                 let point = found.then(|| [f32::from_bits(words[0]), f32::from_bits(words[1])]);
-                reply.send(Ok(point));
+                reply.resolve(Ok(point));
             }
         }
         self.wake();

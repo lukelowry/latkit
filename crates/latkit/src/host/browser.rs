@@ -1,16 +1,27 @@
 use std::cell::RefCell;
 
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
-use super::{Host, Raster, TextRun};
+use super::{Host, Job, Raster, TextRun};
+use crate::{Error, Pending};
 
-/// The browser: text set with a 2D canvas in the page's fonts.
+/// The browser: text set with a 2D canvas in the page's fonts, and jobs done by the page's workers
+/// once [`set_jobs`](Browser::set_jobs) names them, else at once.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Browser;
 
 thread_local! {
     static CANVAS: RefCell<Option<(OffscreenCanvas, OffscreenCanvasRenderingContext2d)>> = const { RefCell::new(None) };
+    static JOBS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+}
+
+impl Browser {
+    /// Has views' jobs done by `run`, which takes a job's bytes as a `Uint8Array` and returns a
+    /// promise of its answer's: a pool of workers, each holding the page's compiled module.
+    pub fn set_jobs(run: js_sys::Function) {
+        JOBS.with(|jobs| *jobs.borrow_mut() = Some(run));
+    }
 }
 
 /// Pixels of room around each run, so antialiasing and overhangs are kept.
@@ -41,6 +52,25 @@ fn lines(
 }
 
 impl Host for Browser {
+    fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
+        let Some(run) = JOBS.with(|jobs| jobs.borrow().clone()) else { return Pending::ready(Ok(job.run())) };
+        let bytes = js_sys::Uint8Array::from(&job.into_bytes()[..]);
+        let promise = match run.call1(&JsValue::NULL, &bytes).map(js_sys::Promise::from) {
+            Ok(promise) => promise,
+            Err(error) => return Pending::ready(Err(Error::Unsupported(format!("jobs: {error:?}").into()))),
+        };
+        let (pending, resolver) = Pending::new();
+        wasm_bindgen_futures::spawn_local(async move {
+            let answer = wasm_bindgen_futures::JsFuture::from(promise).await;
+            resolver.resolve(
+                answer
+                    .map(|bytes| js_sys::Uint8Array::new(&bytes).to_vec())
+                    .map_err(|error| Error::Unsupported(format!("a job failed: {error:?}").into())),
+            );
+        });
+        pending
+    }
+
     fn rasterize(&self, run: &TextRun) -> Option<Raster> {
         CANVAS.with(|cell| {
             let mut cell = cell.borrow_mut();

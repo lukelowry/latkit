@@ -1,5 +1,5 @@
 use super::Port;
-use super::mark::{Drawing, MarkKind, Style, style_methods};
+use super::mark::{Drawing, GEOMETRY, MarkKind, Style, style_methods};
 use super::marker::Marker;
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
@@ -23,7 +23,6 @@ pub struct Vertices {
     pub(crate) size: Option<[Size; 2]>,
     pub(crate) marker: Marker,
     pub(crate) status: Option<Expr>,
-    pub(crate) shadow: bool,
     pub(crate) ports: Vec<(Name, Port)>,
     pub(crate) members: Option<(Name, Name)>,
     pub(crate) collapsed: Option<Expr>,
@@ -40,7 +39,6 @@ impl Vertices {
             size: None,
             marker: Marker::default(),
             status: None,
-            shadow: false,
             ports: Vec::new(),
             members: None,
             collapsed: None,
@@ -65,14 +63,15 @@ impl Vertices {
         self
     }
 
-    /// Whether each group hides its members inside it; edges to them end at the group.
+    /// Whether each group hides its members inside it; edges to them end at the group. Folding
+    /// eases: members move into the group, shrinking and fading.
     #[must_use]
     pub fn collapsed(mut self, collapsed: impl Into<Expr>) -> Vertices {
         self.collapsed = Some(collapsed.into());
         self
     }
 
-    /// Each row's position. Without one, a point field named `point` places rows, else the
+    /// Each row's position. Without one, a point field named `geometry` places rows, else the
     /// scene's layout does.
     #[must_use]
     pub fn position(mut self, x: impl Into<Expr>, y: impl Into<Expr>) -> Vertices {
@@ -115,19 +114,12 @@ impl Vertices {
         self
     }
 
-    /// Whether each row casts a shadow onto the ground, away from the theme's light.
-    #[must_use]
-    pub fn shadow(mut self, on: bool) -> Vertices {
-        self.shadow = on;
-        self
-    }
-
     pub(crate) fn compile(&self, c: &mut Compiler<'_>) -> Result<Drawing> {
         let at = wgsl::VERTEX_POSITION;
         match &self.position {
             Some([x, y]) => c.position(x, y, at),
-            None if c.kind("point") == Some(Kind::Geometry(0)) => {
-                c.position(&Expr::component("point", 0), &Expr::component("point", 1), at)
+            None if c.kind(GEOMETRY) == Some(Kind::Geometry(0)) => {
+                c.position(&Expr::component(GEOMETRY, 0), &Expr::component(GEOMETRY, 1), at)
             }
             None => c.position(&Expr::missing(), &Expr::missing(), at),
         }
@@ -175,7 +167,7 @@ impl Vertices {
         }
         if let Some(status) = &self.status {
             flags |= wgsl::STATUS;
-            c.channel("status", status, Store::Color { word: wgsl::VERTEX_STATUS, fallback: wgsl::THEME_MISSING })?;
+            c.channel("status", status, Store::Color { word: wgsl::VERTEX_STATUS, fallback: wgsl::THEME_CLEAR })?;
         }
         for (i, input) in inputs.iter().enumerate() {
             let store = Store::Number { word: wgsl::VERTEX_WORDS + i as u32, fallback: None };
@@ -185,7 +177,9 @@ impl Vertices {
             if self.members.is_none() {
                 return Err(crate::Error::invalid("only groups collapse: name what each row contains").at("collapsed"));
             }
-            c.channel("collapsed", collapsed, Store::Flag { word: wgsl::VERTEX_FLAGS, bit: wgsl::COLLAPSED })?;
+            // How far each group folded, which eases like any number.
+            let fold = crate::when(collapsed.clone()).then(1.0).otherwise(0.0);
+            c.channel("collapsed", &fold, Store::Number { word: wgsl::VERTEX_FOLD, fallback: None })?;
         }
         for (reference, _) in &self.ports {
             if c.kind(reference) != Some(Kind::Reference) {
@@ -193,7 +187,7 @@ impl Vertices {
             }
         }
         let mut drawing = Drawing::new(MarkKind::Vertices, wgsl::VERTEX_WORDS);
-        drawing.flags = flags | if self.shadow { wgsl::CASTS } else { 0 };
+        drawing.flags = flags;
         drawing.markers = self.marker.markers(0);
         drawing.extras = inputs.len() as u32 + if group { 2 } else { 0 };
         drawing.ports.clone_from(&self.ports);

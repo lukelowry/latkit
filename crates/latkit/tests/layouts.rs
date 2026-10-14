@@ -1,5 +1,6 @@
-//! Layouts place the vertices their data gives no position: layered in ranks along the flow, stress
-//! at graph distances; vertices with positions stay where they are.
+//! Layouts place the vertices their data gives no position: layered in ranks along the flow, nets
+//! running from their outputs, stress at graph distances with boxes parted; vertices with positions
+//! stay where they are.
 
 #![cfg(feature = "gpu")]
 
@@ -10,7 +11,7 @@ use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
 use common::{SIZE, errors, frame, gpu, plain_theme, plane, step};
-use latkit::{Camera, Data, Edges, Layered, Layout, Patch, Scene, Stress, Table, Vertices, View};
+use latkit::{Camera, Data, Edges, Layered, Layout, Patch, Scene, Side, Stress, Table, Vertices, View};
 
 /// Renders frames until `pending` resolves, within the settle deadline.
 fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
@@ -42,15 +43,19 @@ fn graph(pin: Option<[f64; 2]>) -> Data {
 
 /// Where each node settled, by id.
 fn placed(layout: impl Into<Layout>, pin: Option<[f64; 2]>) -> Vec<[f64; 2]> {
-    let Some(gpu) = gpu() else { return Vec::new() };
     let scene = Scene::new(plane())
-        .theme(plain_theme())
         .layout(layout)
         .draw(Edges::of("graph", "Link").ends("from", "to"))
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
+    settled(scene, graph(pin))
+}
+
+/// Where each of nodes 1 to 4 of `data` settled under `scene`.
+fn settled(scene: Scene, data: Data) -> Vec<[f64; 2]> {
+    let Some(gpu) = gpu() else { return Vec::new() };
+    let mut view = View::new(&gpu, scene.theme(plain_theme())).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: -2.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(graph(pin));
+    view.set_data(data);
     frame(&gpu, &mut view);
     let c = SIZE as f32 / 2.0;
     let pending = view.pick([c, c], SIZE as f32);
@@ -86,6 +91,35 @@ fn layered_ranks_follow_the_flow() {
 }
 
 #[test]
+fn nets_run_from_their_outputs() {
+    // Nodes 1 and 2 drive the net from their right side, 3 reads it on its left, and 4 drives 1.
+    let mut data = Data::new("graph");
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Node", vec![1_u64, 2, 3, 4])
+                    .field("x", vec![None::<f64>; 4])
+                    .field("y", vec![None::<f64>; 4])
+                    .reference("out", "Net", vec![Some(1_u64), Some(1), None, Some(2)])
+                    .reference("in", "Net", vec![Some(2_u64), None, Some(1), None]),
+            )
+            .set(Table::new("Net", vec![1_u64, 2])),
+    )
+    .expect("valid");
+    let scene = Scene::new(plane()).layout(Layered::default()).draw(Edges::of("graph", "Net")).draw(
+        Vertices::of("graph", "Node").position("x", "y").radius(4.0).port("in", Side::Left).port("out", Side::Right),
+    );
+    let p = settled(scene, data);
+    if p.is_empty() {
+        return;
+    }
+    let gap = Layered::default().rank_gap;
+    assert!(p[0][0] - p[3][0] > gap, "1 a rank after 4, which drives it: {p:?}");
+    assert!((p[1][0] - p[3][0]).abs() < 1.0, "2 drives the net 3 reads, so it shares 4's rank: {p:?}");
+    assert!(p[2][0] - p[0][0] > gap, "3 reads after both drivers: {p:?}");
+}
+
+#[test]
 fn stress_puts_neighbors_a_gap_apart() {
     let p = placed(Stress::default(), None);
     if p.is_empty() {
@@ -98,6 +132,34 @@ fn stress_puts_neighbors_a_gap_apart() {
         assert!((d - gap).abs() < 0.35 * gap, "{a}–{b} {d} apart: {p:?}");
     }
     assert!(apart(p[2], p[3]) > 1.4 * gap, "leaves spread: {p:?}");
+}
+
+#[test]
+fn stress_parts_the_boxes_it_crowds() {
+    let Some(gpu) = gpu() else { return };
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .layout(Stress::default())
+        .draw(Edges::of("graph", "Link").ends("from", "to"))
+        .draw(Vertices::of("graph", "Node").position("x", "y").size(60.0, 20.0));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom: -2.0, pitch: 0.0, bearing: 0.0 });
+    view.set_data(graph(None));
+    frame(&gpu, &mut view);
+    let at: Vec<[f32; 2]> = (1..=4_u64)
+        .map(|id| {
+            let pending = view.locate(&latkit::Row::new("graph", "Node", id));
+            answer(&gpu, &mut view, pending).expect("shown")
+        })
+        .collect();
+    // Stress puts neighbors 10 pixels apart; their 60 by 20 pixel boxes part, 2.5 pixels clear.
+    for i in 0..4 {
+        for j in i + 1..4 {
+            let (dx, dy) = ((at[i][0] - at[j][0]).abs(), (at[i][1] - at[j][1]).abs());
+            assert!(dx >= 62.0 || dy >= 22.0, "{i} and {j} overlap: {at:?}");
+        }
+    }
+    assert_eq!(errors(&mut view), Vec::new());
 }
 
 #[test]

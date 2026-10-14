@@ -1,11 +1,12 @@
 // Evaluated rows: words of the `state` buffer. A row's kind words sit at `mark.state`, `mark.stride`
 // apart, so vertex slots count every vertex mark's rows; its extra words (labels, marker inputs) sit
 // at `mark.extra`, `mark.extras` apart. Each vertex slot also names the group it is in, if any: one
-// plus the group's slot, with `OPEN_GROUP` unless the group is collapsed.
+// plus the group's slot, with `OPEN_GROUP` unless the group is folded all the way. While a group
+// folds, its members draw moving into it, shrinking and fading as far as it folded.
 
 import package::lib::types::{
     VERTEX_WORDS, VERTEX_POSITION, VERTEX_COLOR, VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION,
-    VERTEX_FLAGS, EDGE_FROM, EDGE_TO, EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_FLAGS,
+    VERTEX_FLAGS, VERTEX_FOLD, EDGE_FROM, EDGE_TO, EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_FLAGS,
     FACE_A, FACE_B, FACE_C, FACE_COLOR, FACE_FLAGS, LINE_COLOR, LINE_WIDTH, LINE_FLOW, LINE_FLAGS, OPEN_GROUP,
     GROUP_DEPTH,
 };
@@ -92,9 +93,49 @@ fn resolved(slot: u32) -> u32 {
     return standing;
 }
 
-// The vertex in graph slot `slot`, from any vertex mark, or the collapsed group standing in for it.
+// The outermost group folding over vertex slot `slot`, and how far it has folded.
+struct Folding {
+    group: u32,
+    fold: f32,
+}
+
+fn folding(slot: u32) -> Folding {
+    var at = slot;
+    var out = Folding(slot, 0.0);
+    for (var level = 0u; level < GROUP_DEPTH; level++) {
+        let group = stand_ins[at];
+        if group == 0u {
+            break;
+        }
+        at = (group & ~OPEN_GROUP) - 1u;
+        let fold = float_at(at * VERTEX_WORDS + VERTEX_FOLD);
+        if fold > 0.0 {
+            out = Folding(at, fold);
+        }
+    }
+    return out;
+}
+
+// The vertex in graph slot `slot` as drawn, from any vertex mark: the group folded all the way over
+// it, or itself, moved toward a group folding over it, shrunk, and faded, as far as it folded.
 fn vertex_slot(slot: u32) -> Vertex {
-    return vertex_at(resolved(slot) * VERTEX_WORDS);
+    let standing = resolved(slot);
+    var v = vertex_at(standing * VERTEX_WORDS);
+    if standing != slot {
+        return v;
+    }
+    let f = folding(slot);
+    if f.fold <= 0.0 {
+        return v;
+    }
+    let g = vertex_at(f.group * VERTEX_WORDS);
+    v.hi = mix(v.hi + v.lo, g.hi + g.lo, f.fold);
+    v.lo = vec2f(0.0);
+    v.elevation = mix(v.elevation, g.elevation, f.fold);
+    v.half *= 1.0 - f.fold;
+    let color = unpack4x8unorm(v.color);
+    v.color = pack4x8unorm(vec4f(color.rgb, color.a * (1.0 - f.fold)));
+    return v;
 }
 
 fn edge_at(at: u32) -> Edge {

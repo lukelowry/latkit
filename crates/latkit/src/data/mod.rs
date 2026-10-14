@@ -29,7 +29,7 @@ pub(crate) use {
     geometry::Geometry,
     name::{PageId, Version},
     samples::{AxisPage, FramePage, LEVELS, Samples, bucket_frames},
-    table::Field,
+    table::{Field, Inverse, Reference},
 };
 
 #[cfg(test)]

@@ -172,6 +172,32 @@ fn dangling_references_wire_up_when_the_row_arrives() {
 }
 
 #[test]
+fn inverses_follow_every_change_and_snapshots_keep_theirs() {
+    let inverse = |data: &Data, target: usize| {
+        let Some(super::table::Field::Reference(r)) = data.table("Branch").and_then(|t| t.field_named("from")) else {
+            panic!("a reference");
+        };
+        r.inverse().of(target).to_vec()
+    };
+    let mut data = Data::new("grid");
+    data.apply(Patch::new().set(Table::new("Bus", vec![1_u64, 2, 3])).set(Table::new("Branch", 4).reference(
+        "from",
+        "Bus",
+        vec![1_u64, 2, 1, 3],
+    )))
+    .expect("valid");
+    assert_eq!(inverse(&data, 0), vec![0, 2]);
+    assert_eq!(inverse(&data, 2), vec![3]);
+    let before = data.clone();
+    data.apply(Table::new("Branch", vec![1_u64]).reference("from", "Bus", vec![3_u64])).expect("valid");
+    assert_eq!((inverse(&data, 0), inverse(&data, 2)), (vec![0, 2], vec![1, 3]));
+    data.apply(Patch::new().remove("Bus", vec![1_u64])).expect("valid");
+    // Bus 1 left: what named it names nothing, and the rest moved up a row.
+    assert_eq!((inverse(&data, 0), inverse(&data, 1)), (vec![], vec![1, 3]));
+    assert_eq!(inverse(&before, 0), vec![0, 2]);
+}
+
+#[test]
 fn schema_changes_only_with_fields() {
     let mut data = Data::new("grid");
     data.apply(Table::new("Bus", 2).field("kv", vec![1.0, 2.0])).expect("valid");

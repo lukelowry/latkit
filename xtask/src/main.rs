@@ -1,24 +1,28 @@
 //! Repository tasks, run as `cargo xtask <task>`.
 //!
-//! - `check`: format, lint every feature set and target, test, document, and type-check the npm
-//!   package and its examples.
+//! - `check`: format, lint every feature set and target, test, document, type-check the npm
+//!   package, its examples, and the gate, then run the browser gate.
+//! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`: every
+//!   shader variant's pipelines compile in Chrome within budget, and every example page draws and
+//!   answers the pointer without errors or stalls.
 //! - `wasm [--dev]`: build `latkit-js`, bind it with the `wasm-bindgen` CLI matching `Cargo.lock`,
 //!   optimize it with `wasm-opt` when installed, and compile the npm wrapper. `--dev` builds faster
 //!   and skips `wasm-opt`.
 //! - `examples`: `wasm --dev`, then serve the example suite at <http://127.0.0.1:5200>.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let dev = std::env::args().any(|a| a == "--dev");
     let result = match task.as_str() {
         "check" => check(),
+        "browser" => browser(),
         "wasm" => wasm(dev),
         "examples" => wasm(true).and_then(|()| pnpm(&["--dir", "npm/examples", "exec", "vite"])),
         _ => {
-            eprintln!("usage: cargo xtask <check|wasm [--dev]|examples>");
+            eprintln!("usage: cargo xtask <check|browser|wasm [--dev]|examples>");
             return ExitCode::FAILURE;
         }
     };
@@ -74,7 +78,40 @@ fn check() -> Result {
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
     npx(&["--yes", "tsc", "-p", "npm/test"])?;
-    pnpm(&["--dir", "npm/examples", "exec", "tsc", "--noEmit"])
+    pnpm(&["--dir", "npm/examples", "exec", "tsc", "--noEmit"])?;
+    pnpm(&["--dir", "npm/examples", "exec", "tsc", "-p", "gate"])?;
+    browser()
+}
+
+/// Builds the package for the browser, then runs the gate over the shaders the build linked.
+fn browser() -> Result {
+    let shaders = shaders_dir()?;
+    wasm(true)?;
+    run("node", &["npm/examples/gate/gate.ts", &shaders])
+}
+
+/// The directory `latkit`'s build script wrote the linked shaders and `shaders.json` to.
+fn shaders_dir() -> Result<String> {
+    eprintln!("$ cargo check -p latkit --message-format=json");
+    let output = Command::new(env!("CARGO"))
+        .args(["check", "-p", "latkit", "--message-format=json"])
+        .current_dir(root())
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|e| format!("cargo: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("cargo check exited with {}", output.status));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|message| {
+            message["reason"] == "build-script-executed"
+                && message["package_id"].as_str().is_some_and(|id| id.contains("/crates/latkit#"))
+        })
+        .and_then(|message| message["out_dir"].as_str().map(str::to_owned))
+        .ok_or_else(|| "cargo did not report latkit's build output".to_owned())
 }
 
 fn wasm(dev: bool) -> Result {

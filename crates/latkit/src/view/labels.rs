@@ -5,18 +5,18 @@
 //! a few each frame, and they show the frame after. Labels fade in and out after each placement.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
-use rustc_hash::FxHasher;
 use web_time::Instant;
 
 use super::View;
+use super::derived::{Derived, Landed, Work, stamp_of};
 use super::passes::{dispatch, offset};
 use super::resources::EyeSlot;
 use super::sync::{Source, table_of};
 use crate::gpu::Inner;
 use crate::gpu::atlas::Glyphs;
+use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::host::TextRun;
@@ -47,13 +47,13 @@ pub(crate) struct Labels {
     /// The cell grid: where it starts, its columns, and its rows.
     pub(crate) cells: [u32; 3],
     words: u32,
-    /// What placement last ran from.
-    placed: Option<u64>,
+    /// What placement last ran from, and the readback of the texts it asked for.
+    placed: Derived<()>,
+    /// The labeled marks' slots when placement asked.
+    asked: Vec<(usize, Slots)>,
     /// Labels fade until then.
     fading: Option<Instant>,
     last: Option<Instant>,
-    /// Asked-for codes being read back, and each mark's slots then.
-    reading: Option<(Readback, Vec<(usize, Slots)>)>,
     /// Each labeled mark's written codes, with the run and where it lay.
     written: HashMap<usize, HashMap<u32, (TextRun, Glyphs)>>,
     evictions: u64,
@@ -63,7 +63,7 @@ pub(crate) struct Labels {
 
 impl Labels {
     pub(crate) fn busy(&self) -> bool {
-        self.reading.is_some() || self.fading.is_some_and(|until| Instant::now() < until)
+        self.placed.busy() || self.fading.is_some_and(|until| Instant::now() < until)
     }
 
     pub(crate) fn slots(&self, mark: usize) -> Option<Slots> {
@@ -108,10 +108,8 @@ impl View {
 
     /// Sets the texts a placement asked for, within the frame's budget.
     pub(super) fn settle_labels(&mut self, inner: &mut Inner) {
-        let Some((readback, _)) = &self.labels.reading else { return };
-        let Some(bytes) = readback.take() else { return };
-        let (_, asked) = self.labels.reading.take().expect("reading");
-        let Ok(bytes) = bytes else { return };
+        let Some((_, Landed::Read(bytes))) = self.labels.placed.landed() else { return };
+        let asked = std::mem::take(&mut self.labels.asked);
         let words: &[u32] = bytemuck::cast_slice(&bytes);
         let gpu = self.gpu.clone();
         let mut budget = BUDGET;
@@ -196,8 +194,8 @@ impl View {
             self.labels.cells = cells;
             self.labels.words = at;
             self.labels.written.clear();
-            self.labels.placed = None;
-            self.labels.reading = None;
+            self.labels.placed = Derived::default();
+            self.labels.asked.clear();
             self.labels.changes += 1;
         }
         if inner.atlas.evictions != self.labels.evictions {
@@ -250,14 +248,9 @@ impl View {
         if labeled.is_empty() {
             return;
         }
-        let mut hasher = FxHasher::default();
-        bytemuck::bytes_of(eye).hash(&mut hasher);
-        self.labels.changes.hash(&mut hasher);
-        for &(i, _) in &labeled {
-            self.marks[i].version.hash(&mut hasher);
-        }
-        let stamp = hasher.finish();
-        let due = self.labels.placed != Some(stamp) && self.labels.reading.is_none();
+        let versions: Vec<u64> = labeled.iter().map(|&(i, _)| self.marks[i].version).collect();
+        let stamp = stamp_of((bytemuck::bytes_of(eye), self.labels.changes, versions));
+        let due = self.labels.placed.due(stamp) && !self.labels.placed.busy();
         let fading = self.labels.fading.is_some_and(|until| Instant::now() < until);
         if !due && !fading {
             return;
@@ -266,7 +259,7 @@ impl View {
         let device = &gpu.0.device;
         let resources = self.resources.as_mut().expect("created before labels");
         if due {
-            self.labels.placed = Some(stamp);
+            self.labels.placed.mark(stamp);
             self.labels.fading = Some(Instant::now() + FADE + Duration::from_millis(50));
             for &(_, slots) in &labeled {
                 encoder.clear_buffer(resources.labels(), u64::from(slots.wanted) * 4, Some(4));
@@ -282,12 +275,14 @@ impl View {
             });
             pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
             pass.set_bind_group(2, &group, &[]);
-            let rows_of: Vec<(usize, u32)> = labeled.iter().map(|&(i, _)| (i, self.marks[i].rows)).collect();
+            let marks: Vec<(usize, u32, u32)> =
+                labeled.iter().map(|&(i, _)| (i, self.marks[i].rows, self.marks[i].path())).collect();
             let clear = inner.pipelines.compute(device, Shader::Labels, "clear_cells");
             let reset = inner.pipelines.compute(device, Shader::Labels, "reset_cells");
             let mut each = |pass: &mut wgpu::ComputePass<'_>, entry: &'static str| {
-                pass.set_pipeline(&inner.pipelines.compute(device, Shader::Labels, entry));
-                for &(i, rows) in &rows_of {
+                for &(i, rows, path) in &marks {
+                    let variant = Variant::compute(Shader::Labels, entry).path(path);
+                    pass.set_pipeline(&inner.pipelines.compute_pipeline(device, variant));
                     pass.set_bind_group(1, &groups.mark, &[offset(i)]);
                     dispatch(pass, rows);
                 }
@@ -314,7 +309,8 @@ impl View {
             let words = labeled.len() as u64 * u64::from(1 + wgsl::WANTED);
             let readback =
                 Readback::new(&inner.readbacks, device, encoder, resources.labels(), u64::from(first) * 4, words * 4);
-            self.labels.reading = Some((readback, labeled));
+            self.labels.placed.start(stamp, Work::Read(readback));
+            self.labels.asked = labeled;
         }
     }
 

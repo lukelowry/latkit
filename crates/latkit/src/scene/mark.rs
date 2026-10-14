@@ -1,7 +1,7 @@
 use super::{Edges, Faces, Label, Lines, Vertices};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Expr, Name, Result};
+use crate::{Expr, Name, Result, Size};
 
 /// One drawn table of a scene.
 #[derive(Clone, PartialEq, Debug)]
@@ -41,6 +41,9 @@ impl From<Lines> for Mark {
     }
 }
 
+/// The field a mark reads its shape from unless told otherwise: what geography's tables hold.
+pub(crate) const GEOMETRY: &str = "geometry";
+
 /// Options every mark has.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Style {
@@ -51,6 +54,41 @@ pub(crate) struct Style {
     pub(crate) name: Option<Name>,
     pub(crate) interaction: Interaction,
     pub(crate) label: Option<Label>,
+    pub(crate) shadow: bool,
+}
+
+/// Options of marks that draw strokes: edges and lines.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Stroke {
+    pub(crate) width: Option<Size>,
+    pub(crate) dash: Expr,
+    pub(crate) flow: Expr,
+}
+
+impl Default for Stroke {
+    fn default() -> Stroke {
+        Stroke { width: None, dash: false.into(), flow: 0.0.into() }
+    }
+}
+
+/// Where a stroke mark keeps its width, flow, and flags in each row, and the theme's width.
+pub(crate) struct StrokeWords {
+    pub(crate) width: u32,
+    pub(crate) flow: u32,
+    pub(crate) flags: u32,
+    pub(crate) theme_width: u32,
+}
+
+impl Stroke {
+    pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords) -> Result<()> {
+        c.channel("dash", &self.dash, Store::Flag { word: words.flags, bit: wgsl::DASH })?;
+        c.channel("flow", &self.flow, Store::Number { word: words.flow, fallback: None })?;
+        let width = |units| Store::Size { word: words.width, units, fallback: Some(words.theme_width) };
+        match &self.width {
+            Some(size) => c.channel("width", &size.expr, width(size.units)),
+            None => c.theme("width", words.theme_width, width(false)),
+        }
+    }
 }
 
 /// How a mark's rows answer the pointer.
@@ -77,6 +115,7 @@ impl Style {
             name: None,
             interaction: Interaction::default(),
             label: None,
+            shadow: false,
         }
     }
 }
@@ -88,6 +127,17 @@ pub(crate) enum MarkKind {
     Edges,
     Faces,
     Lines,
+}
+
+impl MarkKind {
+    /// The primitive its rows draw with.
+    pub(crate) fn primitive(self) -> Primitive {
+        match self {
+            MarkKind::Vertices => Primitive::Points,
+            MarkKind::Edges | MarkKind::Lines => Primitive::Strokes,
+            MarkKind::Faces => Primitive::Triangles,
+        }
+    }
 }
 
 /// Identifies a mark across scenes: a new scene's mark with the same key eases from the old one.
@@ -173,15 +223,14 @@ pub(crate) struct Drawing {
 
 impl Drawing {
     pub(crate) fn new(kind: MarkKind, stride: u32) -> Drawing {
-        let (primitive, source) = match kind {
-            MarkKind::Vertices => (Primitive::Points, wgsl::NONE),
-            MarkKind::Edges => (Primitive::Strokes, wgsl::PATH_ENDS),
-            MarkKind::Faces => (Primitive::Triangles, wgsl::NONE),
-            MarkKind::Lines => (Primitive::Strokes, wgsl::PATH_TRACE),
+        let source = match kind {
+            MarkKind::Edges => wgsl::PATH_ENDS,
+            MarkKind::Lines => wgsl::PATH_TRACE,
+            MarkKind::Vertices | MarkKind::Faces => wgsl::NONE,
         };
         Drawing {
             kind,
-            primitive,
+            primitive: kind.primitive(),
             source,
             stride,
             extras: 0,
@@ -225,11 +274,23 @@ impl Mark {
         }
     }
 
-    /// Lines that trace a field are keyed by that field unless named.
+    /// The paths a stroke mark's rows run along, one of the `PATH_` codes each, which its pipelines
+    /// are made for: an orthogonally routed net's both, as it runs along its route once it has one.
+    pub(crate) fn paths(&self) -> &'static [u32] {
+        match self {
+            Mark::Edges(e) if e.ends.is_some() => &[wgsl::PATH_ENDS],
+            Mark::Edges(e) if e.route == Some(super::Route::Orthogonal) => &[wgsl::PATH_NET, wgsl::PATH_GEOMETRY],
+            Mark::Edges(_) => &[wgsl::PATH_NET],
+            Mark::Lines(_) => &[wgsl::PATH_TRACE],
+            Mark::Vertices(_) | Mark::Faces(_) => &[],
+        }
+    }
+
+    /// Lines are keyed by the field they trace unless named.
     pub(crate) fn key(&self) -> Key {
         let style = self.style();
         let name = match self {
-            Mark::Lines(lines) => style.name.clone().or_else(|| lines.samples.clone()),
+            Mark::Lines(lines) => style.name.clone().or_else(|| Some(lines.traced().clone())),
             _ => style.name.clone(),
         };
         Key { kind: self.kind(), data: style.data.clone(), table: style.table.clone(), name }
@@ -249,8 +310,12 @@ impl Mark {
             Mark::Faces(m) => m.compile(compiler),
             Mark::Lines(m) => m.compile(compiler),
         }?;
-        if let Some(label) = &self.style().label {
+        let style = self.style();
+        if let Some(label) = &style.label {
             compile_label(label, compiler, theme, &mut drawing).map_err(|e| e.at("label"))?;
+        }
+        if style.shadow {
+            drawing.flags |= wgsl::CASTS;
         }
         Ok(drawing)
     }
@@ -327,8 +392,44 @@ macro_rules! style_methods {
                 self.style.label = Some(label);
                 self
             }
+
+            /// Whether each row casts a shadow onto the ground and onto faces, away from the theme's
+            /// light.
+            #[must_use]
+            pub fn shadow(mut self, on: bool) -> Self {
+                self.style.shadow = on;
+                self
+            }
         }
     };
 }
 
-pub(crate) use style_methods;
+/// The options of marks that draw strokes, as inherent methods.
+macro_rules! stroke_methods {
+    ($mark:ty) => {
+        impl $mark {
+            /// Each row's width: CSS pixels, or position units with [`units`](crate::units).
+            #[must_use]
+            pub fn width(mut self, width: impl Into<$crate::Size>) -> Self {
+                self.stroke.width = Some(width.into());
+                self
+            }
+
+            /// Whether each row is dashed.
+            #[must_use]
+            pub fn dash(mut self, dash: impl Into<$crate::Expr>) -> Self {
+                self.stroke.dash = dash.into();
+                self
+            }
+
+            /// Comets flowing along each row, CSS pixels per second; negative flows backward.
+            #[must_use]
+            pub fn flow(mut self, px_per_second: impl Into<$crate::Expr>) -> Self {
+                self.stroke.flow = px_per_second.into();
+                self
+            }
+        }
+    };
+}
+
+pub(crate) use {stroke_methods, style_methods};

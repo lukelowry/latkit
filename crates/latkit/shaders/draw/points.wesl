@@ -2,7 +2,7 @@
 // quads through the light's eye into the shadow map; the ports variant draws one quad per port of
 // every row, on its side of the row's marker.
 
-import package::lib::types::{STATUS, MARKER_ICON, PORT_SIZE};
+import package::lib::types::{STATUS, MARKER_ICON};
 import package::lib::bind::{frame, mark, state, ramp, program};
 import package::lib::state::extra_at;
 import package::lib::project::{to_screen, to_clip, nearer, culled};
@@ -46,7 +46,7 @@ fn drawn(instance: u32) -> Drawn {
     let n = max(mark.ports, 1u);
     let p = point(instance / n);
     let port = port_at(p, instance % n);
-    let half = vec2f(0.5 * PORT_SIZE);
+    let half = vec2f(port.half);
     return Drawn(p, port.center, half, half + frame.glow + 2.0, port.shape);
 }
 

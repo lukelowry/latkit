@@ -4,10 +4,10 @@
 
 mod common;
 
-use common::{SIZE, at, camera, close, frame, gpu, plain_theme, plane};
+use common::{SIZE, at, camera, close, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Axis, Button, Camera, Color, Colormap, Data, Edges, Event, Faces, Input, Lines, Modifiers, Patch, Phase, Plot,
-    Scene, Table, Theme, Vertices, View, field,
+    Axis, Button, Camera, Color, Colormap, Data, Earth, Edges, Event, Faces, Input, Lines, Modifiers, Patch, Phase,
+    Plot, Scene, Table, Theme, Vertices, View, field,
 };
 
 #[test]
@@ -81,6 +81,41 @@ fn edges_join_their_ends_and_colormaps_fit_the_values() {
     );
     let middle = at(&pixels, center, center);
     assert!(middle[0] > 100 && middle[0] < 160, "the middle value is grey: {middle:?}");
+}
+
+#[test]
+fn great_circles_longer_than_their_list_coarsen_instead_of_stopping_short() {
+    let Some(gpu) = gpu() else { return };
+    // One edge a third of the way around the equator: sixty arcs, where its list first keeps six.
+    let mut data = Data::new("grid");
+    data.apply(
+        Patch::new()
+            .set(Table::new("Bus", vec![1_u64, 2]).field("lon", vec![-60.0, 60.0]).field("lat", vec![0.0, 0.0]))
+            .set(Table::new("Line", 1).reference("from", "Bus", vec![1_u64]).reference("to", "Bus", vec![2_u64])),
+    )
+    .expect("valid");
+    let scene = Scene::new(Earth { surface: Some(Color::BLACK), graticule: false, ..Earth::mercator() })
+        .theme(Theme { edge: Some(Color::rgb(0.0, 1.0, 0.0)), ..plain_theme() })
+        .draw(Edges::of("grid", "Line").ends("from", "to").width(4.0))
+        .draw(Vertices::of("grid", "Bus").position("lon", "lat").radius(1.0));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom: -1.5, pitch: 0.0, bearing: 0.0 });
+    view.set_data(data);
+    let green = |view: &View, pixels: &[[u8; 4]], lon: f64| {
+        let [x, y] = view.point([lon, 0.0, 0.0]).expect("in view").map(|v| v.round() as u32);
+        let [r, g, ..] = at(pixels, x.min(SIZE - 1), y.min(SIZE - 1));
+        g > 150 && r < 80
+    };
+    // Every frame that draws the edge draws it whole, coarsely while its list is too small.
+    let mut drawn = 0;
+    for frame in 0..12 {
+        let pixels = step(&gpu, &mut view);
+        if green(&view, &pixels, -50.0) {
+            assert!(green(&view, &pixels, 50.0), "frame {frame}: the edge stops short of its far end");
+            drawn += 1;
+        }
+    }
+    assert!(drawn > 2, "the edge drew in {drawn} frames");
 }
 
 #[test]
@@ -228,7 +263,7 @@ fn lines_trace_their_samples_across_a_plot() {
     let axis = Axis { grid: false, hidden: true, ..Axis::default() };
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
         .theme(plain_theme())
-        .draw(Lines::of("signals", "Signal").samples("v").color(Color::rgb(1.0, 0.0, 0.0)).width(4.0));
+        .draw(Lines::of("signals", "Signal").trace("v").color(Color::rgb(1.0, 0.0, 0.0)).width(4.0));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
     view.set_data(data);
@@ -236,6 +271,28 @@ fn lines_trace_their_samples_across_a_plot() {
     let center = SIZE / 2;
     assert!(close(at(&pixels, center, center), [255, 0, 0, 255]), "{:?}", at(&pixels, center, center));
     assert!(close(at(&pixels, center, center - 20), [0, 0, 0, 255]), "only the line is drawn");
+}
+
+#[test]
+fn lines_wait_for_the_first_frame_of_the_field_they_trace() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("signals");
+    data.apply(Patch::new().axis("time", "s").set(Table::new("Signal", 1))).expect("valid");
+    let scene = Scene::new(Plot::default())
+        .theme(plain_theme())
+        .draw(Lines::of("signals", "Signal").trace("v").color(Color::rgb(1.0, 0.0, 0.0)).width(4.0));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_data(data.clone());
+    frame(&gpu, &mut view);
+    assert_eq!(common::errors(&mut view), Vec::new(), "a field not recorded yet is no error");
+    for t in 0..3 {
+        data.apply(Patch::new().append(f64::from(t), "Signal", [("v", vec![f64::from(t)])])).expect("valid");
+    }
+    view.set_data(data);
+    view.set_camera(Camera::Plot { x: [0.0, 2.0], y: Some([0.0, 2.0]) });
+    let pixels = frame(&gpu, &mut view);
+    assert!(pixels.iter().any(|p| p[0] > 200 && p[1] < 60), "the trace draws once recorded");
+    assert_eq!(common::errors(&mut view), Vec::new());
 }
 
 #[test]
@@ -338,7 +395,7 @@ fn long_histories_draw_from_their_levels_of_detail() {
     let axis = Axis { grid: false, hidden: true, ..Axis::default() };
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
         .theme(plain_theme())
-        .draw(Lines::of("signals", "Signal").samples("v").color(Color::rgb(1.0, 0.0, 0.0)).width(2.0));
+        .draw(Lines::of("signals", "Signal").trace("v").color(Color::rgb(1.0, 0.0, 0.0)).width(2.0));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Plot { x: [0.0, 20_000.0], y: Some([0.0, 1.0]) });
     view.set_data(data);

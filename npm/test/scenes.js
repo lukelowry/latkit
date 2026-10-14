@@ -65,7 +65,7 @@ export default [
   },
   {
     "space": { "plot": { "x": { "label": "Time (s)" } } },
-    "marks": [{ "lines": { "of": ["mesh", "Body"], "samples": "height", "color": "#66c7ff", "width": 2 } }]
+    "marks": [{ "lines": { "of": ["mesh", "Body"], "trace": "height", "color": "#66c7ff", "width": 2, "flow": 12, "shadow": true } }]
   },
   {
     "space": { "plot": { "y": { "format": "engineering", "precision": 1, "ticks": [0, [0.5, "half"], 1] } } },
@@ -74,7 +74,7 @@ export default [
       {
         "lines": {
           "of": ["mesh", "Body"],
-          "samples": "speed",
+          "trace": "speed",
           "interpolation": "stepAfter",
           "label": { "text": "name", "size": 11, "priority": "rank", "maxWidth": 120 }
         }

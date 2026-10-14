@@ -219,32 +219,58 @@ impl<'de> Deserialize<'de> for Axis {
     }
 }
 
+/// A mark's form: `of`, the options given, then the options every mark has.
+macro_rules! form {
+    ($form:ident { $($field:ident: $ty:ty),* $(,)? }) => {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct $form {
+            of: (Name, Name),
+            $(
+                #[serde(default)]
+                $field: Option<$ty>,
+            )*
+            #[serde(default)]
+            color: Option<Expr>,
+            #[serde(default)]
+            visible: Option<Expr>,
+            #[serde(default)]
+            name: Option<Name>,
+            #[serde(default)]
+            pick: Option<bool>,
+            #[serde(default)]
+            select: Option<bool>,
+            #[serde(default)]
+            drag: Option<bool>,
+            #[serde(default)]
+            label: Option<Label>,
+            #[serde(default)]
+            shadow: Option<bool>,
+        }
+    };
+}
+
+/// Applies each option of `form` given, by the builder method of its name.
+macro_rules! apply {
+    ($form:ident, $mark:expr; $($field:ident),* $(,)?) => {{
+        let mut mark = $mark;
+        $(
+            if let Some(value) = $form.$field {
+                mark = mark.$field(value);
+            }
+        )*
+        mark
+    }};
+}
+
 /// Applies the options every mark has.
 macro_rules! style {
-    ($form:ident, $mark:ident) => {{
-        let mut mark = $mark;
-        if let Some(color) = $form.color {
-            mark = mark.color(color);
+    ($form:ident, $mark:expr) => {{
+        let mark = apply!($form, $mark; color, visible, pick, select, drag, label, shadow);
+        match $form.name {
+            Some(name) => mark.named(name),
+            None => mark,
         }
-        if let Some(visible) = $form.visible {
-            mark = mark.visible(visible);
-        }
-        if let Some(name) = $form.name {
-            mark = mark.named(name);
-        }
-        if let Some(on) = $form.pick {
-            mark = mark.pick(on);
-        }
-        if let Some(on) = $form.select {
-            mark = mark.select(on);
-        }
-        if let Some(on) = $form.drag {
-            mark = mark.drag(on);
-        }
-        if let Some(label) = $form.label {
-            mark = mark.label(label);
-        }
-        mark
     }};
 }
 
@@ -310,173 +336,50 @@ impl<'de> Deserialize<'de> for Mark {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct VerticesForm {
-    of: (Name, Name),
-    #[serde(default)]
-    position: Option<(Expr, Expr)>,
-    #[serde(default)]
-    elevation: Option<Expr>,
-    #[serde(default)]
-    radius: Option<Size>,
-    #[serde(default)]
-    size: Option<(Size, Size)>,
-    #[serde(default)]
-    marker: Option<Marker>,
-    #[serde(default)]
-    status: Option<Expr>,
-    #[serde(default)]
-    shadow: Option<bool>,
-    #[serde(default)]
+form!(VerticesForm {
+    position: (Expr, Expr),
+    elevation: Expr,
+    radius: Size,
+    size: (Size, Size),
+    marker: Marker,
+    status: Expr,
     ports: Vec<(Name, Port)>,
-    #[serde(default)]
-    contains: Option<(Name, Name)>,
-    #[serde(default)]
-    collapsed: Option<Expr>,
-    #[serde(default)]
-    color: Option<Expr>,
-    #[serde(default)]
-    visible: Option<Expr>,
-    #[serde(default)]
-    name: Option<Name>,
-    #[serde(default)]
-    pick: Option<bool>,
-    #[serde(default)]
-    select: Option<bool>,
-    #[serde(default)]
-    drag: Option<bool>,
-    #[serde(default)]
-    label: Option<Label>,
-}
+    contains: (Name, Name),
+    collapsed: Expr,
+});
 
 impl VerticesForm {
     fn build(self) -> Vertices {
-        let mut v = Vertices::of(self.of.0, self.of.1);
+        let mut v = apply!(self, Vertices::of(self.of.0, self.of.1); elevation, radius, marker, status, collapsed);
         if let Some((x, y)) = self.position {
             v = v.position(x, y);
-        }
-        if let Some(z) = self.elevation {
-            v = v.elevation(z);
-        }
-        if let Some(radius) = self.radius {
-            v = v.radius(radius);
         }
         if let Some((w, h)) = self.size {
             v = v.size(w, h);
         }
-        if let Some(marker) = self.marker {
-            v = v.marker(marker);
-        }
-        if let Some(status) = self.status {
-            v = v.status(status);
-        }
-        if let Some(on) = self.shadow {
-            v = v.shadow(on);
-        }
-        for (reference, port) in self.ports {
+        for (reference, port) in self.ports.unwrap_or_default() {
             v = v.port(reference, port);
         }
         if let Some((table, reference)) = self.contains {
             v = v.contains(table, reference);
         }
-        if let Some(collapsed) = self.collapsed {
-            v = v.collapsed(collapsed);
-        }
         style!(self, v)
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct EdgesForm {
-    of: (Name, Name),
-    #[serde(default)]
-    ends: Option<(Name, Name)>,
-    #[serde(default)]
-    width: Option<Size>,
-    #[serde(default)]
-    dash: Option<Expr>,
-    #[serde(default)]
-    flow: Option<Expr>,
-    #[serde(default)]
-    shadow: Option<bool>,
-    #[serde(default)]
-    bends: Option<Name>,
-    #[serde(default)]
-    route: Option<Route>,
-    #[serde(default)]
-    arrows: Option<bool>,
-    #[serde(default)]
-    color: Option<Expr>,
-    #[serde(default)]
-    visible: Option<Expr>,
-    #[serde(default)]
-    name: Option<Name>,
-    #[serde(default)]
-    pick: Option<bool>,
-    #[serde(default)]
-    select: Option<bool>,
-    #[serde(default)]
-    drag: Option<bool>,
-    #[serde(default)]
-    label: Option<Label>,
-}
+form!(EdgesForm { ends: (Name, Name), width: Size, dash: Expr, flow: Expr, bends: Name, route: Route, arrows: bool });
 
 impl EdgesForm {
     fn build(self) -> Edges {
-        let mut e = Edges::of(self.of.0, self.of.1);
+        let mut e = apply!(self, Edges::of(self.of.0, self.of.1); width, dash, flow, bends, route, arrows);
         if let Some((from, to)) = self.ends {
             e = e.ends(from, to);
-        }
-        if let Some(width) = self.width {
-            e = e.width(width);
-        }
-        if let Some(dash) = self.dash {
-            e = e.dash(dash);
-        }
-        if let Some(flow) = self.flow {
-            e = e.flow(flow);
-        }
-        if let Some(on) = self.shadow {
-            e = e.shadow(on);
-        }
-        if let Some(bends) = self.bends {
-            e = e.bends(bends);
-        }
-        if let Some(route) = self.route {
-            e = e.route(route);
-        }
-        if let Some(on) = self.arrows {
-            e = e.arrows(on);
         }
         style!(self, e)
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct FacesForm {
-    of: (Name, Name),
-    #[serde(default)]
-    corners: Option<(Name, Name, Name)>,
-    #[serde(default)]
-    shadow: Option<bool>,
-    #[serde(default)]
-    color: Option<Expr>,
-    #[serde(default)]
-    visible: Option<Expr>,
-    #[serde(default)]
-    name: Option<Name>,
-    #[serde(default)]
-    pick: Option<bool>,
-    #[serde(default)]
-    select: Option<bool>,
-    #[serde(default)]
-    drag: Option<bool>,
-    #[serde(default)]
-    label: Option<Label>,
-}
+form!(FacesForm { corners: (Name, Name, Name) });
 
 impl FacesForm {
     fn build(self) -> Faces {
@@ -484,56 +387,15 @@ impl FacesForm {
         if let Some((a, b, c)) = self.corners {
             f = f.corners(a, b, c);
         }
-        if let Some(on) = self.shadow {
-            f = f.shadow(on);
-        }
         style!(self, f)
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LinesForm {
-    of: (Name, Name),
-    #[serde(default)]
-    samples: Option<Name>,
-    #[serde(default)]
-    width: Option<Size>,
-    #[serde(default)]
-    dash: Option<Expr>,
-    #[serde(default)]
-    interpolation: Option<Interpolation>,
-    #[serde(default)]
-    color: Option<Expr>,
-    #[serde(default)]
-    visible: Option<Expr>,
-    #[serde(default)]
-    name: Option<Name>,
-    #[serde(default)]
-    pick: Option<bool>,
-    #[serde(default)]
-    select: Option<bool>,
-    #[serde(default)]
-    drag: Option<bool>,
-    #[serde(default)]
-    label: Option<Label>,
-}
+form!(LinesForm { trace: Name, width: Size, dash: Expr, flow: Expr, interpolation: Interpolation });
 
 impl LinesForm {
     fn build(self) -> Lines {
-        let mut l = Lines::of(self.of.0, self.of.1);
-        if let Some(samples) = self.samples {
-            l = l.samples(samples);
-        }
-        if let Some(width) = self.width {
-            l = l.width(width);
-        }
-        if let Some(dash) = self.dash {
-            l = l.dash(dash);
-        }
-        if let Some(interpolation) = self.interpolation {
-            l = l.interpolation(interpolation);
-        }
+        let l = apply!(self, Lines::of(self.of.0, self.of.1); trace, width, dash, flow, interpolation);
         style!(self, l)
     }
 }
@@ -929,16 +791,22 @@ mod tests {
             "space": "plane",
             "controls": { "turn": false, "pickRadius": 12 },
             "marks": [
-                { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false } },
-                { "lines": { "of": ["mesh", "Body"], "samples": "height", "color": "#66c7ff", "width": 2 } },
+                { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false, "shadow": true } },
+                { "lines": { "of": ["mesh", "Body"], "trace": "height", "color": "#66c7ff", "width": 2, "flow": 8 } },
                 { "vertices": { "of": ["mesh", "Vertex"], "select": false, "drag": true } }
             ]
         }"##;
         let scene: Scene = serde_json::from_str(json).expect("a scene");
         let built = Scene::new(Plane::default())
             .controls(Controls { turn: false, pick_radius: 12.0, ..Controls::default() })
-            .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false))
-            .draw(Lines::of("mesh", "Body").samples("height").color(Color::hex("#66c7ff").expect("hex")).width(2.0))
+            .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false).shadow(true))
+            .draw(
+                Lines::of("mesh", "Body")
+                    .trace("height")
+                    .color(Color::hex("#66c7ff").expect("hex"))
+                    .width(2.0)
+                    .flow(8.0),
+            )
             .draw(Vertices::of("mesh", "Vertex").select(false).drag(true));
         assert_eq!(scene, built);
     }

@@ -9,7 +9,7 @@
 // `locate` writes where one row lies on screen.
 
 import package::lib::types::{
-    NONE, FADE_OUT, POINTS, STROKES, TRIANGLES, PORT_SIZE, MARK_EDGES, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH, PROBE_X,
+    NONE, FADE_OUT, POINTS, STROKES, TRIANGLES, MARK_EDGES, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH, PROBE_X,
     PROBE_Y, PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED, LIST_KEPT,
 };
 import package::lib::bind::{frame, eye, mark, state};
@@ -71,8 +71,8 @@ fn point_reach(instance: u32, p: vec2f) -> Reach {
     let s = screen(pt.clip);
     if instance >= mark.rows {
         let k = port % max(mark.ports, 1u);
-        let at = port_at(pt, k).center;
-        return Reach(max(length(p - at) - 0.5 * PORT_SIZE, 0.0), s.z, at, row, k + 1u);
+        let port = port_at(pt, k);
+        return Reach(max(length(p - port.center) - port.half, 0.0), s.z, port.center, row, k + 1u);
     }
     let d = outline_distance((p - s.xy) * vec2f(1.0, -1.0), max(pt.half, vec2f(0.5)));
     return Reach(max(d, 0.0), s.z, s.xy, row, 0u);

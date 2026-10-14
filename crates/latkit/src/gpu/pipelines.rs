@@ -1,15 +1,15 @@
-//! Pipelines, kept per shader, target format, and sample count, and made ahead of use by
-//! [`Gpu::prepare`](crate::Gpu::prepare). Every pipeline shares the view and mark group layouts; each
-//! shader's pass group comes from its WGSL.
+//! Pipelines, kept by [`Variant`]: what a scene uses is made on the first frame drawing it, the rest
+//! when first used. Every pipeline shares the view and mark group layouts; each shader's pass group
+//! comes from its WGSL.
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
-use super::shaders::{Binding, MARK_GROUP, Shader, VIEW_GROUP};
+use super::shaders::{Binding, MARK_GROUP, PATH_ENDS, Shader, VIEW_GROUP};
 use crate::Error;
-use crate::view::{DEPTH, SHADE};
+use crate::view::DEPTH;
 
 /// A check of a custom marker's shader, resolving to its error if it has one: sent between threads
 /// natively, kept on the page's one thread in browsers.
@@ -25,21 +25,62 @@ struct Custom {
     failed: bool,
 }
 
+/// One pipeline: a shader's entry point made for one primitive's geometry (its `PROBED`) and one
+/// kind of path (its `PATH`), and for a render shader, the format and samples per pixel it draws into.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct Variant {
+    shader: Shader,
+    entry: &'static str,
+    primitive: u32,
+    path: u32,
+    target: Option<(wgpu::TextureFormat, u32)>,
+}
+
+impl Variant {
+    /// `shader` drawing into `format` with `samples` per pixel.
+    pub(crate) fn draw(shader: Shader, format: wgpu::TextureFormat, samples: u32) -> Variant {
+        Variant { shader, entry: "vertex", primitive: 0, path: PATH_ENDS, target: Some((format, samples)) }
+    }
+
+    /// `shader`'s compute entry point `entry`.
+    pub(crate) fn compute(shader: Shader, entry: &'static str) -> Variant {
+        Variant { shader, entry, primitive: 0, path: PATH_ENDS, target: None }
+    }
+
+    /// A probe's entry point `entry`, made for marks of `primitive` (a `POINTS`, `STROKES`, or
+    /// `TRIANGLES` code).
+    pub(crate) fn probe(shader: Shader, entry: &'static str, primitive: u32) -> Variant {
+        Variant { shader, entry, primitive, path: PATH_ENDS, target: None }
+    }
+
+    /// The variant whose strokes read `path`, one of the `PATH_` codes.
+    #[must_use]
+    pub(crate) fn path(mut self, path: u32) -> Variant {
+        self.path = path;
+        self
+    }
+
+    /// The pipeline constants its shader declares, set.
+    fn constants(&self) -> Vec<(&'static str, f64)> {
+        let value = |name: &str| match name {
+            "PROBED" => self.primitive,
+            "PATH" => self.path,
+            other => unreachable!("no value for the pipeline constant {other}"),
+        };
+        self.shader.source().overrides.iter().map(|&name| (name, f64::from(value(name)))).collect()
+    }
+}
+
 pub(crate) struct Pipelines {
     pub(crate) view_layout: wgpu::BindGroupLayout,
     pub(crate) mark_layout: wgpu::BindGroupLayout,
     pass_layouts: HashMap<Vec<wgpu::BindGroupLayoutEntry>, wgpu::BindGroupLayout>,
     modules: HashMap<Shader, wgpu::ShaderModule>,
-    render: HashMap<(Shader, wgpu::TextureFormat, u32), wgpu::RenderPipeline>,
-    compute: HashMap<(Shader, &'static str, u32), wgpu::ComputePipeline>,
+    render: HashMap<Variant, wgpu::RenderPipeline>,
+    compute: HashMap<Variant, wgpu::ComputePipeline>,
     custom: HashMap<(String, Shader, wgpu::TextureFormat, u32), Custom>,
 }
 
-/// Every render shader that draws into a frame's targets.
-const FRAME_SHADERS: [Shader; 6] =
-    [Shader::Backdrop, Shader::Points, Shader::Strokes, Shader::Triangles, Shader::Glyphs, Shader::Overlay];
-/// Every shader that draws into the shadow map.
-const MAP_SHADERS: [Shader; 4] = [Shader::PointsCast, Shader::StrokesCast, Shader::TrianglesCast, Shader::Shade];
 /// Shaders that draw into the shadow map, custom markers' included.
 const CASTERS: [Shader; 5] =
     [Shader::PointsCast, Shader::StrokesCast, Shader::TrianglesCast, Shader::Shade, Shader::PointsCustomCast];
@@ -47,38 +88,6 @@ const CASTERS: [Shader; 5] =
 pub(crate) fn probe(samples: u32) -> Shader {
     if samples > 1 { Shader::ProbeMultisampled } else { Shader::Probe }
 }
-
-/// Every compute entry point but the probe's, which are made for each primitive as marks of it are
-/// first probed.
-const COMPUTE: &[(Shader, &str)] = &[
-    (Shader::Evaluate, "evaluate"),
-    (Shader::Evaluate, "reduce"),
-    (Shader::Freeze, "gather"),
-    (Shader::Normals, "accumulate"),
-    (Shader::Bounds, "points"),
-    (Shader::Bounds, "strokes"),
-    (Shader::Lists, "scan_blocks"),
-    (Shader::Lists, "scan_sums"),
-    (Shader::Lists, "add_sums"),
-    (Shader::Stress, "seed"),
-    (Shader::Stress, "forward"),
-    (Shader::Stress, "backward"),
-    (Shader::Stress, "settle"),
-    (Shader::Groups, "clear"),
-    (Shader::Groups, "bound"),
-    (Shader::Lists, "count_segments"),
-    (Shader::Lists, "write_segments"),
-    (Shader::ListsQuery, "scan_blocks"),
-    (Shader::ListsQuery, "scan_sums"),
-    (Shader::ListsQuery, "add_sums"),
-    (Shader::Labels, "candidates"),
-    (Shader::Labels, "clear_cells"),
-    (Shader::Labels, "reset_cells"),
-    (Shader::Labels, "claim"),
-    (Shader::Labels, "decide"),
-    (Shader::Labels, "occupy"),
-    (Shader::Labels, "fade"),
-];
 
 /// How a render shader's vertices assemble.
 fn topology(shader: Shader) -> wgpu::PrimitiveTopology {
@@ -151,16 +160,14 @@ impl Pipelines {
         }
     }
 
-    /// Makes every pipeline a frame into `format` with `samples` per pixel, and the shadow map, use.
-    pub(crate) fn prepare(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) {
-        for shader in FRAME_SHADERS {
-            self.render(device, shader, format, samples);
-        }
-        for shader in MAP_SHADERS {
-            self.render(device, shader, SHADE, 1);
-        }
-        for &(shader, entry) in COMPUTE {
-            self.compute(device, shader, entry);
+    /// Makes each of `variants` not yet made.
+    pub(crate) fn make(&mut self, device: &wgpu::Device, variants: impl IntoIterator<Item = Variant>) {
+        for variant in variants {
+            if variant.target.is_some() {
+                self.render_pipeline(device, variant);
+            } else {
+                self.compute_pipeline(device, variant);
+            }
         }
     }
 
@@ -221,7 +228,7 @@ impl Pipelines {
             label: Some("latkit custom marker"),
             source: wgpu::ShaderSource::Wgsl(format!("{}\n{source}", shader.source().wgsl).into()),
         });
-        let pipeline = self.pipeline(device, shader, &module, format, samples);
+        let pipeline = self.pipeline(device, Variant::draw(shader, format, samples), &module);
         let check: Check = Box::pin(scope.pop());
         let custom = Custom { pipeline: pipeline.clone(), check: Some(check), failed: false };
         self.custom.insert(key, custom);
@@ -253,31 +260,38 @@ impl Pipelines {
         format: wgpu::TextureFormat,
         samples: u32,
     ) -> wgpu::RenderPipeline {
-        if let Some(pipeline) = self.render.get(&(shader, format, samples)) {
+        self.render_pipeline(device, Variant::draw(shader, format, samples))
+    }
+
+    /// The render pipeline `variant` names.
+    pub(crate) fn render_pipeline(&mut self, device: &wgpu::Device, variant: Variant) -> wgpu::RenderPipeline {
+        if let Some(pipeline) = self.render.get(&variant) {
             return pipeline.clone();
         }
-        let module = self.module(device, shader);
-        let pipeline = self.pipeline(device, shader, &module, format, samples);
-        self.render.insert((shader, format, samples), pipeline.clone());
+        let module = self.module(device, variant.shader);
+        let pipeline = self.pipeline(device, variant, &module);
+        self.render.insert(variant, pipeline.clone());
         pipeline
     }
 
     fn pipeline(
         &mut self,
         device: &wgpu::Device,
-        shader: Shader,
+        variant: Variant,
         module: &wgpu::ShaderModule,
-        format: wgpu::TextureFormat,
-        samples: u32,
     ) -> wgpu::RenderPipeline {
+        let shader = variant.shader;
+        let (format, samples) = variant.target.expect("a render variant");
         let layout = self.pipeline_layout(device, shader);
+        let constants = variant.constants();
+        let options = || wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(shader.source().label),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module,
                 entry_point: Some("vertex"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: options(),
                 buffers: &[],
             },
             primitive: wgpu::PrimitiveState { topology: topology(shader), ..Default::default() },
@@ -286,7 +300,7 @@ impl Pipelines {
             fragment: Some(wgpu::FragmentState {
                 module,
                 entry_point: Some("fragment"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: options(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: blend(shader),
@@ -305,36 +319,26 @@ impl Pipelines {
         shader: Shader,
         entry: &'static str,
     ) -> wgpu::ComputePipeline {
-        self.probing(device, shader, entry, 0)
+        self.compute_pipeline(device, Variant::compute(shader, entry))
     }
 
-    /// A probe entry made for marks of `primitive` (a `POINTS`, `STROKES`, or `TRIANGLES` code).
-    pub(crate) fn probing(
-        &mut self,
-        device: &wgpu::Device,
-        shader: Shader,
-        entry: &'static str,
-        primitive: u32,
-    ) -> wgpu::ComputePipeline {
-        if let Some(pipeline) = self.compute.get(&(shader, entry, primitive)) {
+    /// The compute pipeline `variant` names.
+    pub(crate) fn compute_pipeline(&mut self, device: &wgpu::Device, variant: Variant) -> wgpu::ComputePipeline {
+        if let Some(pipeline) = self.compute.get(&variant) {
             return pipeline.clone();
         }
-        let module = self.module(device, shader);
-        let layout = self.pipeline_layout(device, shader);
-        let probed = [("PROBED", f64::from(primitive))];
-        let probes = matches!(shader, Shader::Probe | Shader::ProbeMultisampled);
+        let module = self.module(device, variant.shader);
+        let layout = self.pipeline_layout(device, variant.shader);
+        let constants = variant.constants();
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(entry),
+            label: Some(variant.entry),
             layout: Some(&layout),
             module: &module,
-            entry_point: Some(entry),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: if probes { &probed } else { &[] },
-                ..Default::default()
-            },
+            entry_point: Some(variant.entry),
+            compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
             cache: None,
         });
-        self.compute.insert((shader, entry, primitive), pipeline.clone());
+        self.compute.insert(variant, pipeline.clone());
         pipeline
     }
 }

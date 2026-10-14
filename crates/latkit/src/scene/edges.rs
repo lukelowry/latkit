@@ -1,9 +1,9 @@
 use super::Route;
 use super::Theme;
-use super::mark::{Drawing, MarkKind, Style, style_methods};
+use super::mark::{Drawing, MarkKind, Stroke, StrokeWords, Style, stroke_methods, style_methods};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Error, Expr, Kind, Name, Result, Size};
+use crate::{Error, Kind, Name, Result};
 
 /// Rows drawn as strokes between the vertices two reference fields name: branches, links, wires.
 /// Without ends, each row is a net: it joins every vertex port whose reference field names it.
@@ -15,11 +15,8 @@ use crate::{Error, Expr, Kind, Name, Result, Size};
 #[derive(Clone, PartialEq, Debug)]
 pub struct Edges {
     pub(crate) style: Style,
+    pub(crate) stroke: Stroke,
     pub(crate) ends: Option<(Name, Name)>,
-    pub(crate) width: Option<Size>,
-    pub(crate) dash: Expr,
-    pub(crate) flow: Expr,
-    pub(crate) shadow: bool,
     pub(crate) bends: Option<Name>,
     pub(crate) route: Option<Route>,
     pub(crate) arrows: bool,
@@ -30,11 +27,8 @@ impl Edges {
     pub fn of(data: impl Into<Name>, table: impl Into<Name>) -> Edges {
         Edges {
             style: Style::new(data.into(), table.into()),
+            stroke: Stroke::default(),
             ends: None,
-            width: None,
-            dash: false.into(),
-            flow: 0.0.into(),
-            shadow: false,
             bends: None,
             route: None,
             arrows: false,
@@ -62,38 +56,10 @@ impl Edges {
         self
     }
 
-    /// Whether each row casts a shadow onto the ground, away from the theme's light.
-    #[must_use]
-    pub fn shadow(mut self, on: bool) -> Edges {
-        self.shadow = on;
-        self
-    }
-
     /// The reference fields naming each row's two vertices.
     #[must_use]
     pub fn ends(mut self, from: impl Into<Name>, to: impl Into<Name>) -> Edges {
         self.ends = Some((from.into(), to.into()));
-        self
-    }
-
-    /// Each row's width: CSS pixels, or position units with [`units`](crate::units).
-    #[must_use]
-    pub fn width(mut self, width: impl Into<Size>) -> Edges {
-        self.width = Some(width.into());
-        self
-    }
-
-    /// Whether each row is dashed.
-    #[must_use]
-    pub fn dash(mut self, dash: impl Into<Expr>) -> Edges {
-        self.dash = dash.into();
-        self
-    }
-
-    /// Comets flowing along each row, CSS pixels per second; negative flows from the second end.
-    #[must_use]
-    pub fn flow(mut self, px_per_second: impl Into<Expr>) -> Edges {
-        self.flow = px_per_second.into();
         self
     }
 
@@ -117,15 +83,15 @@ impl Edges {
             (None, None) => flags |= wgsl::ENDS_COLOR,
         }
         c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::EDGE_FLAGS, bit: wgsl::VISIBLE })?;
-        c.channel("dash", &self.dash, Store::Flag { word: wgsl::EDGE_FLAGS, bit: wgsl::DASH })?;
-        c.channel("flow", &self.flow, Store::Number { word: wgsl::EDGE_FLOW, fallback: None })?;
-        let width = |units| Store::Size { word: wgsl::EDGE_WIDTH, units, fallback: Some(wgsl::THEME_EDGE_WIDTH) };
-        match &self.width {
-            Some(size) => c.channel("width", &size.expr, width(size.units))?,
-            None => c.theme("width", wgsl::THEME_EDGE_WIDTH, width(false))?,
-        }
+        let words = StrokeWords {
+            width: wgsl::EDGE_WIDTH,
+            flow: wgsl::EDGE_FLOW,
+            flags: wgsl::EDGE_FLAGS,
+            theme_width: wgsl::THEME_EDGE_WIDTH,
+        };
+        self.stroke.compile(c, &words)?;
         let mut drawing = Drawing::new(MarkKind::Edges, wgsl::EDGE_WORDS);
-        drawing.flags = flags | if self.shadow { wgsl::CASTS } else { 0 };
+        drawing.flags = flags;
         if self.ends.is_none() {
             drawing.source = wgsl::PATH_NET;
         }
@@ -136,3 +102,4 @@ impl Edges {
 }
 
 style_methods!(Edges);
+stroke_methods!(Edges);

@@ -219,7 +219,7 @@ fn set(existing: &Table, input: Table) -> Result<Table> {
             }
             (Some(Field::Reference(old)), Field::Reference(source)) if old.to == source.to => {
                 let ids = old.ids.write(len, &writes, &source.ids).map_err(|e| e.at(&name))?;
-                Field::Reference(Reference { ids, version: Version::next(), ..old.clone() })
+                Field::Reference(Reference { ids, version: Version::next(), inverse: Arc::default(), ..old.clone() })
             }
             (None, Field::Reference(source)) => {
                 let ids = Column::missing(source.ids.like(), existing.len()).write(len, &writes, &source.ids)?;
@@ -278,6 +278,7 @@ fn remove(existing: &Table, ids: &Ids) -> Result<Table> {
             Field::Reference(reference) => Field::Reference(Reference {
                 ids: reference.ids.gather(&keep),
                 version: Version::next(),
+                inverse: Arc::default(),
                 ..reference.clone()
             }),
             Field::Sampled(samples, _) => Field::Sampled(samples.gather(&keep), Version::next()),

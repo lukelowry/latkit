@@ -147,10 +147,11 @@ canvas:focus-visible {
   pointer-events: none;
 }
 
+/* Top right: plots title their value axis at the top left. */
 .meter {
   top: 10px;
-  left: 12px;
   right: 12px;
+  text-align: right;
 }
 
 .legend {

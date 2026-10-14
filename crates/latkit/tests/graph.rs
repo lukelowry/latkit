@@ -237,6 +237,31 @@ fn orthogonal_routes_run_around_vertices() {
 }
 
 #[test]
+fn routes_wait_for_the_rows_they_were_routed_for() {
+    let Some(gpu) = gpu() else { return };
+    let links = |n: usize| {
+        let mut data = Data::new("graph");
+        data.apply(Patch::new().set(nodes(vec![-50.0, 50.0, 0.0], vec![0.0, 0.0, 0.0])).set(
+            Table::new("Link", n).reference("from", "Node", vec![1_u64; n]).reference("to", "Node", vec![2_u64; n]),
+        ))
+        .expect("valid");
+        data
+    };
+    let scene = Scene::new(plane())
+        .draw(Edges::of("graph", "Link").ends("from", "to").route(latkit::Route::Orthogonal).width(2.0))
+        .draw(Vertices::of("graph", "Node").position("x", "y").size(20.0, 20.0).marker(latkit::Shape::Rectangle));
+    let mut view = show(&gpu, scene, links(1));
+    frame(&gpu, &mut view);
+    // Many more rows than the routes in hand: until their own land, each draws without them.
+    view.set_data(links(64));
+    for _ in 0..4 {
+        step(&gpu, &mut view);
+    }
+    frame(&gpu, &mut view);
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
 fn neighbors_follow_edges_and_nets() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");

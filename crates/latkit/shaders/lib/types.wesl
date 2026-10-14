@@ -79,13 +79,15 @@ const POINT_BITS: u32 = 14u;
 const POINT_MASK: u32 = 16383u;
 
 // Vertex state words.
-const VERTEX_WORDS: u32 = 10u;
+const VERTEX_WORDS: u32 = 11u;
 const VERTEX_POSITION: u32 = 0u;
 const VERTEX_COLOR: u32 = 4u;
 const VERTEX_STATUS: u32 = 5u;
 const VERTEX_HALF: u32 = 6u;
 const VERTEX_ELEVATION: u32 = 8u;
-const VERTEX_FLAGS: u32 = 9u;
+// How far a group has folded over its members: 0 open, 1 folded. It eases like any number.
+const VERTEX_FOLD: u32 = 9u;
+const VERTEX_FLAGS: u32 = 10u;
 
 // Edge state words. Every kind's flags are its last word.
 const EDGE_WORDS: u32 = 6u;
@@ -167,13 +169,13 @@ const FADE_IN: u32 = 16u;
 const FADE_OUT: u32 = 32u;
 // A row that entered with this change: it has no state to ease from.
 const ENTERING: u32 = 64u;
-// A group whose members are hidden inside it.
+// A group folded all the way over its members, which hide inside it.
 const COLLAPSED: u32 = 128u;
 // A vertex whose size is in position units, and one with its own height: what any reader of its
 // slot needs to know its size in pixels.
 const HALF_UNITS: u32 = 256u;
 const OWN_HEIGHT: u32 = 512u;
-// A stand-in word's bit for a member of a group that is not collapsed.
+// A stand-in word's bit for a member of a group that is not folded all the way.
 const OPEN_GROUP: u32 = 0x80000000u;
 // Levels of groups within groups that are followed.
 const GROUP_DEPTH: u32 = 8u;
@@ -271,6 +273,8 @@ const THEME_AREA: u32 = 6u;
 const THEME_OUTLINE: u32 = 7u;
 const THEME_TEXT: u32 = 8u;
 const THEME_MISSING: u32 = 9u;
+// Nothing: a fully transparent color, what a missing status draws.
+const THEME_CLEAR: u32 = 10u;
 const THEME_SLOTS: u32 = 16u;
 
 // Backdrop grids.
@@ -385,7 +389,6 @@ struct Mark {
     index: u32,
     kind: u32,
     primitive: u32,
-    source: u32,
     // Rows drawn and evaluated, and rows past them that left and fade out.
     rows: u32,
     exits: u32,

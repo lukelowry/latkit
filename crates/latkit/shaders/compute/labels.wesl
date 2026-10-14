@@ -6,15 +6,15 @@
 // greedily by key as a sequential pass would. `fade` eases each label in or out.
 
 import package::lib::types::{
-    NONE, VISIBLE, MARKER_BLOCK, POINTS, STROKES, LABEL_CODE, LABEL_PRIORITY, LABEL_COLOR, CANDIDATE_WORDS,
+    NONE, VISIBLE, SIZED, VERTEX_WORDS, MARKER_BLOCK, POINTS, STROKES, LABEL_CODE, LABEL_PRIORITY, LABEL_COLOR, CANDIDATE_WORDS,
     CANDIDATE_BOX, CANDIDATE_KEY, CANDIDATE_STATE, CANDIDATE_UV, CANDIDATE_COLOR, CANDIDATE_ALPHA, WANTS,
     PLACED_LABEL, DROPPED, STICKY, OCCUPIED, CELL, WANTED, PATH_TRACE,
 };
 import package::lib::bind::{frame, eye, mark, state};
-import package::lib::state::extra_at;
+import package::lib::state::{extra_at, folding};
 import package::lib::project::{to_screen, clip_of};
 import package::lib::points::point;
-import package::lib::path::{Segment, segment_screen, path_count};
+import package::lib::path::{PATH, Segment, segment_screen, path_count};
 import package::lib::triangles::triangle_corner;
 import package::lib::read::missing_bits;
 
@@ -32,11 +32,12 @@ fn candidate(row: u32) -> u32 {
     return mark.candidates + row * CANDIDATE_WORDS;
 }
 
-// Where row `row`'s label hangs, CSS pixels, how it aligns to that point (0 left, 0.5 centered), and
-// whether it shows.
+// Where row `row`'s label hangs, CSS pixels, how it aligns to that point (0 left, 0.5 centered),
+// the room it must fit in (none when zero), and whether it shows.
 struct Anchor {
     at: vec2f,
     align: vec2f,
+    room: vec2f,
     shown: bool,
 }
 
@@ -45,11 +46,19 @@ fn anchor(row: u32) -> Anchor {
     switch mark.primitive {
         case POINTS: {
             let p = point(row);
-            a.shown = p.shown && p.clip.w > 0.0;
+            // A row folding into its group gives its label up as it starts.
+            let folds = folding(mark.state / VERTEX_WORDS + row).fold > 0.0;
+            a.shown = p.shown && p.clip.w > 0.0 && !folds;
             let center = to_screen(p.clip);
-            if mark.marker == MARKER_BLOCK {
+            // A group titles its box from above its top left corner; a block, or any marker given a
+            // width and height, holds its label while it fits; a round one hangs it beside.
+            if mark.members != NONE {
+                a.at = center + vec2f(-p.half.x, -p.half.y - 3.0);
+                a.align = vec2f(0.0, 1.0);
+            } else if mark.marker == MARKER_BLOCK || (mark.flags & SIZED) != 0u {
                 a.at = center;
                 a.align = vec2f(0.5);
+                a.room = 2.0 * p.half;
             } else {
                 a.at = center + vec2f(p.half.x + 4.0, 0.0);
                 a.align = vec2f(0.0, 0.5);
@@ -58,7 +67,7 @@ fn anchor(row: u32) -> Anchor {
         case STROKES: {
             let count = path_count(row);
             // A trace labels its last sample; other paths their middle.
-            let last = mark.source == PATH_TRACE;
+            let last = PATH == PATH_TRACE;
             let on = segment_screen(Segment(row, select(count / 2u, max(count, 1u) - 1u, last)));
             a.shown = count > 0u && on.shown;
             if last {
@@ -118,7 +127,8 @@ fn candidates(@builtin(global_invocation_id) id: vec3u) {
     let lo = a.at - size * a.align;
     let hi = lo + size;
     let in_view = all(hi > vec2f(0.0)) && all(lo < eye.size);
-    if a.shown && in_view {
+    let fits = a.room.x <= 0.0 || all(size <= a.room);
+    if a.shown && in_view && fits {
         next |= WANTS;
     }
     put(at + CANDIDATE_BOX, bitcast<u32>(lo.x));

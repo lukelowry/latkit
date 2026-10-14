@@ -8,11 +8,14 @@
  */
 
 import init, * as wasm from '../pkg/latkit.js';
+import { jobs } from './jobs.js';
 import type { ColormapName, Scene } from './scene.js';
 
 export * from './scene.js';
 
 await init();
+// Work that grows faster than a graph, such as laying out ranks or routing wires, runs in workers.
+if (typeof Worker === 'function') wasm.setJobs(jobs(wasm.module() as WebAssembly.Module));
 
 /**
  * What latkit throws: an `Error` with a `code`, and for invalid input the `path` to the part, such
@@ -244,7 +247,10 @@ export class Patch {
   }
 }
 
-/** A named collection of tables. `apply` moves it to its next version. */
+/**
+ * A named, immutable collection of tables. `apply` gives its next version and leaves this one as it
+ * was, so keeping earlier versions, as an undo history does, costs nothing but the pages they hold.
+ */
 export class Data {
   /** @internal */
   readonly inner: wasm.Data;
@@ -273,11 +279,12 @@ export class Data {
     return span ? [span[0]!, span[1]!] : undefined;
   }
 
-  /** Applies every change of `patch`, or none of them when one is invalid. The patch is spent. */
-  apply(patch: Patch | Uint8Array): this {
-    if (patch instanceof Uint8Array) this.inner.applyBytes(patch);
-    else this.inner.apply(patch.inner);
-    return this;
+  /** The next version: every change of `patch`, or none of them when one is invalid. The patch is
+   * spent. */
+  apply(patch: Patch | Uint8Array): Data {
+    return new Data(
+      patch instanceof Uint8Array ? this.inner.applyBytes(patch) : this.inner.apply(patch.inner),
+    );
   }
 
   /** The value of `field` for the row with `id` in `table`, at axis coordinate `at` when given. */

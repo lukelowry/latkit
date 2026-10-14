@@ -18,6 +18,8 @@ pub mod host;
 #[cfg(feature = "gpu")]
 mod layout;
 #[cfg(feature = "gpu")]
+mod pending;
+#[cfg(feature = "gpu")]
 mod scene;
 #[cfg(feature = "gpu")]
 mod view;
@@ -33,13 +35,13 @@ pub use {
         units, when, zoom,
     },
     gpu::{Budget, Gpu},
+    pending::{Pending, Resolver},
     scene::{
         Axis, Controls, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered, Layout,
         Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space, Stress, Theme,
         Vertices,
     },
     view::{
-        Button, Camera, Cursor, Drag, End, Event, Fit, Hit, Input, Key, Modifiers, Pending, Phase, Sample, Stats,
-        Target, View,
+        Button, Camera, Cursor, Drag, End, Event, Fit, Hit, Input, Key, Modifiers, Phase, Sample, Stats, Target, View,
     },
 };

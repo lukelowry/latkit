@@ -29,15 +29,18 @@ pub fn wait(gpu: &Gpu) {
 }
 
 /// Renders frames until the view is settled, transitions included, then reads the target's pixels.
+/// The time to settle counts from the first frame, which makes the scene's pipelines; the browser
+/// gate holds those to their own budget.
 pub fn frame(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
+    let mut pixels = step(gpu, view);
     let started = std::time::Instant::now();
     loop {
-        let pixels = step(gpu, view);
         if !view.needs_render() {
             return pixels;
         }
         assert!(started.elapsed() < SETTLE, "the view settles within {SETTLE:?}");
         std::thread::sleep(std::time::Duration::from_millis(8));
+        pixels = step(gpu, view);
     }
 }
 

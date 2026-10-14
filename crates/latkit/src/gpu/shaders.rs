@@ -31,6 +31,8 @@ pub(crate) struct ShaderSource {
     pub(crate) label: &'static str,
     pub(crate) wgsl: &'static str,
     pub(crate) pass: &'static [Binding],
+    /// The pipeline constants it declares.
+    pub(crate) overrides: &'static [&'static str],
 }
 
 impl Binding {

@@ -56,7 +56,7 @@ export default async function bunny(stage: Stage): Promise<void> {
   let carry = 0;
 
   // The mesh once; then every step, a frame of every vertex and of the body as a whole.
-  const data = new Data('bunny').apply(
+  let data = new Data('bunny').apply(
     new Patch()
       .axis('time', 's')
       .set('Vertex', mesh.count, {})
@@ -220,7 +220,7 @@ export default async function bunny(stage: Stage): Promise<void> {
       theme: THEME,
       controls: { pan: false, zoom: false, turn: false },
       marks: SERIES.map((s) => ({
-        lines: { of: ['bunny', 'Body'], samples: s.field, color: s.color, width: 2 },
+        lines: { of: ['bunny', 'Body'], trace: s.field, color: s.color, width: 2 },
       })),
     },
     { label: 'Center height, speed, and volume', height: 220 },
@@ -245,7 +245,7 @@ export default async function bunny(stage: Stage): Promise<void> {
   const publish = () => {
     body.sample(frame);
     const [height, speed, volume] = body.metrics();
-    data.apply(
+    data = data.apply(
       new Patch()
         .append(body.time, 'Vertex', { ...frame })
         .append(body.time, 'Body', { height: [height], speed: [speed], volume: [volume] })

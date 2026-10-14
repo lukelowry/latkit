@@ -41,6 +41,7 @@ impl View {
         self.settle();
         self.advance();
         let mut inner = gpu.0.lock();
+        self.make_pipelines(&mut inner, target.format, super::resources::samples(target.pixel_ratio));
         inner.atlas.tick();
         self.settle_labels(&mut inner);
         self.stream(&mut inner);
@@ -98,7 +99,7 @@ impl View {
         if let Some(light) = &light {
             self.cast(encoder, &mut inner, light);
         } else {
-            self.shadows_drawn = None;
+            self.shadow_map.mark(0);
         }
         self.place_labels(encoder, &mut inner, &main);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
@@ -145,11 +146,7 @@ impl View {
         let query = self.next_query();
         let words = self.queries.words().max(self.segment_words);
         let device = &self.gpu.0.device;
-        if self.resources.as_mut().expect("created").fit_lists(device, u64::from(words)) {
-            for shown in &mut self.marks {
-                shown.segments_due = true;
-            }
-        }
+        self.resources.as_mut().expect("created").fit_lists(device, u64::from(words));
         query
     }
 
@@ -303,7 +300,7 @@ fn ends(marks: &[Shown], i: usize) -> Vec<u32> {
         .program
         .ends
         .iter()
-        .chain(&marks[i].graph.end_tables)
+        .chain(marks[i].graph.end_tables())
         .map(|table| {
             super::graph::end_mark(marks, data, table)
                 .map_or(wgsl::NONE, |m| marks[m].region.state / wgsl::VERTEX_WORDS)

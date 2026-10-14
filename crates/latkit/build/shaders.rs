@@ -4,6 +4,9 @@
 //!   size is checked against WGSL;
 //! - the shared bind group layouts of `lib/bind.wesl` (group 0 per view, group 1 per mark);
 //! - per shader and variant: its WGSL text, entry points, and the layout of its pass group (group 2).
+//!
+//! It also writes `OUT_DIR/shaders.json`, every variant's file, entry points, and the pipeline
+//! constants it is made with, from which the browser gate times each pipeline in Chrome.
 
 use std::collections::BTreeMap;
 use std::env;
@@ -56,6 +59,13 @@ const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { retur
 /// Uniforms bound at a dynamic offset: each mark's, and each pass's eye.
 const DYNAMIC: &[&str] = &["mark", "eye"];
 
+/// The values each pipeline constant is made with, as constants of `lib/types.wesl`: the primitive a
+/// probe reads, and the path a stroke reads.
+const OVERRIDES: &[(&str, &[&str])] = &[
+    ("PROBED", &["POINTS", "STROKES", "TRIANGLES"]),
+    ("PATH", &["PATH_ENDS", "PATH_TRACE", "PATH_GEOMETRY", "PATH_NET"]),
+];
+
 pub(crate) fn generate() {
     let root = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("shaders");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -75,22 +85,25 @@ pub(crate) fn generate() {
 
     let mut shaders = String::new();
     let mut sources = String::new();
+    let mut manifest = Vec::new();
     for entry in ENTRIES {
         for &(variant, features) in entry.variants {
             let source = link(&root, entry.module, features, false);
             // A custom marker's variant lacks the marker an application supplies; a stand-in validates it.
-            let checked =
-                if features.contains(&"custom") { format!("{source}\n{CUSTOM_MARKER}") } else { source.clone() };
+            let custom = features.contains(&"custom");
+            let checked = if custom { format!("{source}\n{CUSTOM_MARKER}") } else { source.clone() };
             let (module, info) = validate(&format!("{}.{variant}", entry.module), &checked);
             check_shared(&module, &bind_module, entry.module);
             let file = format!("{}.{variant}.wgsl", entry.module.replace("::", "."));
             fs::write(out.join(&file), &source).unwrap();
+            manifest.push(manifest_entry(&file, &module, &types_module, custom));
             let name = shader_name(entry.module, variant);
             writeln!(shaders, "    {name},").unwrap();
             let pass = bindings(&module, Some(&info), 2);
+            let overrides: Vec<String> = module.overrides.iter().filter_map(|(_, o)| o.name.clone()).collect();
             writeln!(
                 sources,
-                "        Shader::{name} => &ShaderSource {{ label: {label:?}, wgsl: include_str!(concat!(env!(\"OUT_DIR\"), \"/{file}\")), pass: &[{pass}] }},",
+                "        Shader::{name} => &ShaderSource {{ label: {label:?}, wgsl: include_str!(concat!(env!(\"OUT_DIR\"), \"/{file}\")), pass: &[{pass}], overrides: &{overrides:?} }},",
                 label = format!("latkit {}.{variant}", entry.module),
                 pass = pass.join(", "),
             )
@@ -100,6 +113,66 @@ pub(crate) fn generate() {
     writeln!(rust, "/// Every linked shader and variant.\n#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]\npub(crate) enum Shader {{\n{shaders}}}\n").unwrap();
     writeln!(rust, "impl Shader {{\n    pub(crate) fn source(self) -> &'static ShaderSource {{\n        match self {{\n{sources}        }}\n    }}\n}}").unwrap();
     fs::write(out.join("shaders.rs"), rust).unwrap();
+    fs::write(out.join("shaders.json"), format!("[\n{}\n]\n", manifest.join(",\n"))).unwrap();
+}
+
+/// A variant as JSON: its file, whether it draws, its compute entry points, every combination of the
+/// pipeline constants it declares, and the WGSL appended to make it whole (a custom marker's stand-in).
+fn manifest_entry(file: &str, module: &naga::Module, types: &naga::Module, custom: bool) -> String {
+    let compute: Vec<String> = module
+        .entry_points
+        .iter()
+        .filter(|e| e.stage == naga::ShaderStage::Compute)
+        .map(|e| format!("{:?}", e.name))
+        .collect();
+    let mut combinations: Vec<Vec<(&str, u32)>> = vec![Vec::new()];
+    for (_, o) in module.overrides.iter() {
+        let name = o.name.as_deref().expect("a named override");
+        let (_, values) = OVERRIDES.iter().find(|(n, _)| *n == name).unwrap_or_else(|| panic!("no values for {name}"));
+        combinations = combinations
+            .iter()
+            .flat_map(|before| {
+                values.iter().map(move |value| {
+                    let mut next = before.clone();
+                    next.push((name, type_constant(types, value)));
+                    next
+                })
+            })
+            .filter(|c| made(c, types))
+            .collect();
+    }
+    let constants: Vec<String> = combinations
+        .iter()
+        .map(|c| format!("{{{}}}", c.iter().map(|(n, v)| format!("{n:?}: {v}")).collect::<Vec<_>>().join(", ")))
+        .collect();
+    format!(
+        "  {{ \"file\": {file:?}, \"draws\": {draws}, \"compute\": [{}], \"constants\": [{}], \"append\": {:?} }}",
+        compute.join(", "),
+        constants.join(", "),
+        if custom { CUSTOM_MARKER } else { "" },
+        draws = compute.is_empty(),
+    )
+}
+
+/// Whether a pipeline is ever made with `constants`: a probe made for points or triangles reads no
+/// path, so it keeps the default one.
+fn made(constants: &[(&str, u32)], types: &naga::Module) -> bool {
+    let value = |name: &str| constants.iter().find(|(n, _)| *n == name).map(|&(_, v)| v);
+    match (value("PROBED"), value("PATH")) {
+        (Some(probed), Some(path)) => {
+            probed == type_constant(types, "STROKES") || path == type_constant(types, "PATH_ENDS")
+        }
+        _ => true,
+    }
+}
+
+/// The value of `lib/types.wesl`'s `u32` constant `name`.
+fn type_constant(types: &naga::Module, name: &str) -> u32 {
+    let (_, constant) = types.constants.iter().find(|(_, c)| c.name.as_deref() == Some(name)).expect("a constant");
+    match types.global_expressions[constant.init] {
+        naga::Expression::Literal(naga::Literal::U32(v)) => v,
+        _ => panic!("{name} is not a u32"),
+    }
 }
 
 fn shader_name(module: &str, variant: &str) -> String {

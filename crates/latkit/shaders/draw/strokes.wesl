@@ -2,6 +2,7 @@
 // variant draws the same quads through the light's eye into the shadow map.
 
 import package::lib::types::{ARROWS, PATH_TRACE};
+import package::lib::path::PATH;
 import package::lib::bind::{frame, mark};
 import package::lib::project::{to_clip, nearer, culled};
 import package::lib::path::{segment, segment_screen, stroke_style, ends_colored, path_count};
@@ -57,7 +58,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
         color *= mix(ends[0].color, ends[1].color, t);
     }
     out.color = color;
-    out.style = vec4f(style.width, select(0.0, a.x, mark.source == PATH_TRACE), f32(style.dash), style.flow);
+    out.style = vec4f(style.width, select(0.0, a.x, PATH == PATH_TRACE), f32(style.dash), style.flow);
     out.height = mix(ends[0].world.z, ends[1].world.z, t);
     out.arrow = u32(arrow);
     return out;

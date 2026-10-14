@@ -1,14 +1,14 @@
 // What marks draw, measured for fitting: the least and greatest x, y, and z of each mark's shown
-// instances in position units, as ordered words, through the same geometry the draws use. While a
-// fit measures chosen rows, only rows marked FIT count.
+// instances in position units, as ordered words, through the same geometry the draws use: a vertex
+// as its box, a stroke as its points. While a fit measures chosen rows, only rows marked FIT count.
 
 import package::lib::types::{NONE, FIT, PATH_ENDS, EXTENT_WORDS, VERTEX_POSITION};
-import package::lib::bind::{frame, mark, state};
+import package::lib::bind::{frame, eye, mark, state};
 import package::lib::focus::focus_of;
 import package::lib::reduce::ordered;
 import package::lib::state::{row_at, vertex_at};
-import package::lib::points::placed;
-import package::lib::path::{segment, segment_ends, stroke_style, stroke_instances};
+import package::lib::points::{placed, vertex_half};
+import package::lib::path::{PATH, segment, segment_ends, stroke_style, stroke_instances};
 
 @group(2) @binding(2) var<storage, read_write> extents: array<atomic<u32>>;
 
@@ -35,12 +35,16 @@ fn points(@builtin(global_invocation_id) id: vec3u) {
     if (v.flags & 1u) == 0u || !placed(v) {
         return;
     }
-    extend(vec3f(v.hi + v.lo, v.elevation));
+    // Sizes in pixels count at the zoom they are measured at.
+    let half = vertex_half(v) / eye.px_per_unit.x;
+    let p = v.hi + v.lo;
+    extend(vec3f(p - half, v.elevation));
+    extend(vec3f(p + half, v.elevation));
 }
 
 @compute @workgroup_size(256)
 fn strokes(@builtin(global_invocation_id) id: vec3u) {
-    if mark.source == PATH_ENDS || id.x >= stroke_instances() {
+    if PATH == PATH_ENDS || id.x >= stroke_instances() {
         return;
     }
     let s = segment(id.x);

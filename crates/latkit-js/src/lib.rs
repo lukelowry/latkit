@@ -58,7 +58,7 @@ impl Gpu {
 #[wasm_bindgen]
 pub struct Listener(#[allow(dead_code, reason = "kept until freed")] latkit::web::Listener);
 
-/// A named, immutable collection of tables; `apply` replaces it with the next version.
+/// A named, immutable collection of tables; `apply` makes its next version.
 #[wasm_bindgen]
 pub struct Data(latkit::Data);
 
@@ -85,15 +85,19 @@ impl Data {
         self.0.span().map(Vec::from)
     }
 
-    /// Applies every change of `patch`, or none; the patch is spent.
-    pub fn apply(&mut self, patch: Patch) -> Result<(), Error> {
-        Ok(self.0.apply(patch.0)?)
+    /// The next version: this one with every change of `patch`, or none; the patch is spent.
+    pub fn apply(&self, patch: Patch) -> Result<Data, Error> {
+        let mut next = self.0.clone();
+        next.apply(patch.0)?;
+        Ok(Data(next))
     }
 
-    /// Applies a patch received as bytes.
+    /// The next version, with a patch received as bytes.
     #[wasm_bindgen(js_name = applyBytes)]
-    pub fn apply_bytes(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        Ok(self.0.apply(latkit::Patch::from_bytes(bytes)?)?)
+    pub fn apply_bytes(&self, bytes: &[u8]) -> Result<Data, Error> {
+        let mut next = self.0.clone();
+        next.apply(latkit::Patch::from_bytes(bytes)?)?;
+        Ok(Data(next))
     }
 
     #[wasm_bindgen(js_name = toBytes)]
@@ -324,6 +328,24 @@ impl View {
             let _ = listener.call1(&JsValue::NULL, &convert::event(event));
         }))
     }
+}
+
+/// Has views' jobs done by `run`: `(bytes: Uint8Array) => Promise<Uint8Array>`, the page's workers.
+#[wasm_bindgen(js_name = setJobs)]
+pub fn set_jobs(run: js_sys::Function) {
+    latkit::host::Browser::set_jobs(run);
+}
+
+/// Does a job a view handed the page, in a worker: its answer's bytes.
+#[wasm_bindgen]
+pub fn job(bytes: &[u8]) -> Vec<u8> {
+    latkit::host::Job::from_bytes(bytes.to_vec()).run()
+}
+
+/// The compiled module, for workers to instantiate.
+#[wasm_bindgen]
+pub fn module() -> JsValue {
+    wasm_bindgen::module()
 }
 
 /// A catalog colormap's 256 RGBA texels, for legends.

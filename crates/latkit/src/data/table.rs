@@ -47,6 +47,27 @@ pub(crate) struct Reference {
     /// What each page of `rows` was resolved from.
     pub(crate) resolved: Arc<[Resolved]>,
     pub(crate) version: Version,
+    /// The rows naming each target row, built on first use from `rows`, and shared by every snapshot
+    /// holding them.
+    pub(crate) inverse: Arc<OnceLock<Inverse>>,
+}
+
+/// The rows naming each target row of a reference: target `t`'s are `rows[starts[t]..starts[t + 1]]`,
+/// in row order.
+#[derive(Default)]
+pub(crate) struct Inverse {
+    starts: Vec<u32>,
+    rows: Vec<u32>,
+}
+
+impl Inverse {
+    /// The rows naming target row `target`.
+    pub(crate) fn of(&self, target: usize) -> &[u32] {
+        match (self.starts.get(target), self.starts.get(target + 1)) {
+            (Some(&start), Some(&end)) => &self.rows[start as usize..end as usize],
+            _ => &[],
+        }
+    }
 }
 
 /// The inputs one page of a reference's rows was resolved from.
@@ -80,7 +101,40 @@ impl Field {
 impl Reference {
     pub(crate) fn new(to: Name, ids: Column) -> Reference {
         let rows = Column::missing(&Values::from(Vec::<u32>::new()), 0);
-        Reference { to, ids, rows, resolved: Arc::new([]), version: Version::next() }
+        Reference { to, ids, rows, resolved: Arc::new([]), version: Version::next(), inverse: Arc::default() }
+    }
+
+    /// The target row row `row` names.
+    pub(crate) fn target(&self, row: usize) -> Option<u32> {
+        match self.rows.get(row)? {
+            Value::Number(n) => Some(n as u32),
+            _ => None,
+        }
+    }
+
+    /// The rows naming each target row: counted, the counts summed, then each row written at its
+    /// target's place.
+    pub(crate) fn inverse(&self) -> &Inverse {
+        self.inverse.get_or_init(|| {
+            let targets: Vec<Option<u32>> = (0..self.rows.len()).map(|row| self.target(row)).collect();
+            let count = targets.iter().flatten().max().map_or(0, |&t| t as usize + 1);
+            let mut starts = vec![0_u32; count + 1];
+            for &t in targets.iter().flatten() {
+                starts[t as usize + 1] += 1;
+            }
+            for t in 0..count {
+                starts[t + 1] += starts[t];
+            }
+            let mut next = starts.clone();
+            let mut rows = vec![0_u32; starts[count] as usize];
+            for (row, t) in targets.iter().enumerate() {
+                if let Some(t) = t {
+                    rows[next[*t as usize] as usize] = row as u32;
+                    next[*t as usize] += 1;
+                }
+            }
+            Inverse { starts, rows }
+        })
     }
 
     /// Whether `rows` must be resolved again against a target with these versions.
@@ -129,6 +183,7 @@ impl Reference {
             rows: Column::from_pages(pages, &Values::from(Vec::<u32>::new())),
             resolved: resolved.into(),
             version: Version::next(),
+            inverse: Arc::default(),
         })
     }
 }

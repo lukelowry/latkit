@@ -3,10 +3,10 @@
 
 import package::lib::types::{
     NONE, VISIBLE, PINNED, PLACED, SIZED, STATUS, VERTEX_HALF, VERTEX_WORDS, SIDE_LEFT, SIDE_RIGHT, SIDE_TOP,
-    PORT_WORDS, PORT_CODE, PORT_SHAPE, HALF_UNITS, OWN_HEIGHT,
+    PORT_WORDS, PORT_CODE, PORT_SHAPE, PORT_SIZE, HALF_UNITS, OWN_HEIGHT,
 };
 import package::lib::bind::{frame, eye, mark, program};
-import package::lib::state::{row_at, vertex_at, resolved, Vertex};
+import package::lib::state::{vertex_slot, resolved, Vertex};
 import package::lib::project::{project, world, facing, to_screen};
 import package::lib::focus::{is_hovered, faded};
 import package::lib::mark::px;
@@ -28,7 +28,8 @@ fn placed(v: Vertex) -> bool {
 
 // The marker of row `row` of the current vertex mark.
 fn point(row: u32) -> Point {
-    let v = vertex_at(row_at(row));
+    let slot = mark.state / VERTEX_WORDS + row;
+    let v = vertex_slot(slot);
     var half = vec2f(px(v.half.x, VERTEX_HALF));
     if (mark.flags & SIZED) != 0u {
         half.y = px(v.half.y, VERTEX_HALF + 1u);
@@ -42,8 +43,7 @@ fn point(row: u32) -> Point {
     p.color = vec4f(color.rgb, color.a * faded(row, v.flags));
     p.status = unpack4x8unorm(v.status);
     p.row = row;
-    // A row inside a collapsed group shows as the group.
-    let slot = mark.state / VERTEX_WORDS + row;
+    // A row inside a group folded all the way shows as the group.
     p.shown = (v.flags & VISIBLE) != 0u && placed(v) && facing(v.hi, v.lo) && p.clip.w > 0.0 && resolved(slot) == slot;
     return p;
 }
@@ -72,13 +72,18 @@ fn port_place(half: vec2f, code: u32) -> vec2f {
 
 struct Port {
     center: vec2f,
+    // Half its size, CSS pixels: never past a quarter of its marker's shorter side, so a small
+    // marker still shows under its ports.
+    half: f32,
     shape: u32,
 }
 
 // Port `k` of the current vertex mark on point `p`'s marker, on screen.
 fn port_at(p: Point, k: u32) -> Port {
     let info = mark.port_info + k * PORT_WORDS;
-    return Port(to_screen(p.clip) + port_place(p.half, program[info + PORT_CODE]), program[info + PORT_SHAPE]);
+    let center = to_screen(p.clip) + port_place(p.half, program[info + PORT_CODE]);
+    let half = min(0.5 * PORT_SIZE, 0.5 * min(p.half.x, p.half.y));
+    return Port(center, half, program[info + PORT_SHAPE]);
 }
 
 // CSS pixels a point's quad reaches past its center: the marker, its status ring, and its glow.

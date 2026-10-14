@@ -93,15 +93,8 @@ pub(crate) struct Shown {
     pub(crate) query: u32,
     /// Words derived from the data's topology, written beside the program.
     pub(crate) graph: super::graph::Graph,
-    /// The list numbering a stroke mark's segments when rows have different numbers of them, whether
-    /// it must be counted again, and what it was last counted from.
-    pub(crate) segments: Option<super::lists::List>,
-    pub(crate) segments_due: bool,
-    pub(crate) segments_counted: u64,
-    /// Segments a geodesic mark's rows were last found to have, which its list makes room for, and
-    /// the readback finding them.
-    pub(crate) segments_found: u32,
-    pub(crate) segments_reading: Option<crate::gpu::readback::Readback>,
+    /// The list numbering a stroke mark's segments when rows have different numbers of them.
+    pub(crate) segments: super::lists::Segments,
     /// Whether an edge mark follows great circles.
     pub(crate) geodesic: bool,
     /// Bumps whenever the mark's state is written, so what derives from it knows to follow; and
@@ -137,11 +130,7 @@ impl Shown {
             remap: 0,
             query: wgsl::NONE,
             graph: super::graph::Graph::default(),
-            segments: None,
-            segments_due: true,
-            segments_counted: 0,
-            segments_found: 0,
-            segments_reading: None,
+            segments: super::lists::Segments::default(),
             geodesic: false,
             version: 0,
             shape_version: 0,
@@ -171,21 +160,31 @@ impl Shown {
     /// segments.
     pub(crate) fn listed(&self) -> bool {
         let Some(compiled) = &self.compiled else { return false };
-        let source = compiled.drawing.source;
+        let path = self.path();
         compiled.drawing.primitive == crate::scene::mark::Primitive::Strokes
-            && (source == wgsl::PATH_NET
-                || source == wgsl::PATH_GEOMETRY
-                || (source == wgsl::PATH_ENDS && (self.geodesic || !self.graph.paths.is_empty())))
+            && (path == wgsl::PATH_NET
+                || path == wgsl::PATH_GEOMETRY
+                || (path == wgsl::PATH_ENDS && (self.geodesic || !self.graph.paths().is_empty())))
+    }
+
+    /// The path its strokes read, one of the `PATH_` codes, which its stroke pipelines are made
+    /// for: a net routed around vertices runs along the points its route wrote.
+    pub(crate) fn path(&self) -> u32 {
+        match &self.compiled {
+            Some(c) if c.drawing.source == wgsl::PATH_NET && !self.graph.paths().is_empty() => wgsl::PATH_GEOMETRY,
+            Some(c) if c.drawing.primitive == crate::scene::mark::Primitive::Strokes => c.drawing.source,
+            _ => wgsl::PATH_ENDS,
+        }
     }
 
     /// Segments its list must have room for: every path's segments, each row's arcs on the earth
     /// as last found.
     pub(crate) fn segment_capacity(&self) -> u32 {
         let rows = (self.rows + self.exits) as usize;
-        let points = self.graph.paths.len().saturating_sub(self.rows as usize + 1) / 2;
+        let points = self.graph.paths().len().saturating_sub(self.rows as usize + 1) / 2;
         let terminals =
-            self.graph.terminals.len().saturating_sub(self.rows as usize + 1) / wgsl::TERMINAL_WORDS as usize;
-        let arcs = if self.geodesic { (self.segments_found as usize).max(rows * 4) } else { 0 };
+            self.graph.terminals().len().saturating_sub(self.rows as usize + 1) / wgsl::TERMINAL_WORDS as usize;
+        let arcs = if self.geodesic { (self.segments.found.value as usize).max(rows * 4) } else { 0 };
         (points + rows + terminals + arcs).max(1) as u32
     }
 
@@ -338,11 +337,11 @@ impl Shown {
             out.extend(words);
             start
         };
-        let lanes = part(out, &self.graph.lanes);
-        let paths = part(out, &self.graph.paths);
-        let terminals = part(out, &self.graph.terminals);
-        let port_info = part(out, &self.graph.ports);
-        let members = part(out, &self.graph.members);
+        let lanes = part(out, self.graph.lanes());
+        let paths = part(out, self.graph.paths());
+        let terminals = part(out, self.graph.terminals());
+        let port_info = part(out, self.graph.ports());
+        let members = part(out, self.graph.members());
         self.offsets =
             Offsets { columns, ranges, code, constants, ends, palette, lanes, paths, terminals, port_info, members };
     }

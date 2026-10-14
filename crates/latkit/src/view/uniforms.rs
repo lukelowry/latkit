@@ -132,6 +132,7 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_LINE_WIDTH as usize] = theme.line_width.to_bits();
     slots[wgsl::THEME_TEXT as usize] = theme.text.packed();
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
+    slots[wgsl::THEME_CLEAR as usize] = 0;
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
@@ -179,7 +180,7 @@ pub(crate) fn mark(index: usize, shown: &Shown, labels: Option<super::labels::Sl
     mark.remap = shown.remap;
     mark.trace = wgsl::NONE;
     mark.per_row = 1;
-    mark.list = shown.segments.map_or(wgsl::NONE, |list| list.header);
+    mark.list = shown.segments.list.map_or(wgsl::NONE, |list| list.header);
     mark.query = shown.query;
     mark.label = wgsl::NONE;
     if let Some(slots) = labels {
@@ -192,11 +193,6 @@ pub(crate) fn mark(index: usize, shown: &Shown, labels: Option<super::labels::Sl
         let program = &compiled.program;
         let drawing = &compiled.drawing;
         mark.primitive = drawing.primitive.code();
-        mark.source = drawing.source;
-        // Routed nets run along the points their routes wrote.
-        if mark.source == wgsl::PATH_NET && !shown.graph.paths.is_empty() {
-            mark.source = wgsl::PATH_GEOMETRY;
-        }
         mark.channels = program.channels.len() as u32;
         mark.reductions = program.domains.len() as u32;
         mark.units = program.units;
@@ -215,7 +211,7 @@ pub(crate) fn mark(index: usize, shown: &Shown, labels: Option<super::labels::Sl
         if shown.kind() == MarkKind::Lines {
             mark.per_row = shown.segments_per_row();
         }
-        if shown.segments.is_some() {
+        if shown.segments.list.is_some() {
             mark.per_row = wgsl::NONE;
         }
         if shown.geodesic {
