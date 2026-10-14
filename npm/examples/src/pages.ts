@@ -27,7 +27,7 @@ export const pages: readonly Page[] = [
     id: 'diagram',
     title: 'Diagram studio',
     summary:
-      'Blocks with typed ports, wired by signals routed around them, in groups that fold: add, move, rename, wire, delete, undo.',
+      'Blocks with typed ports in nested groups, wired by signals routed around them on a sheet that zooms as one picture: add, move, rename, wire, delete, undo.',
     load: () => import('./diagram/page.js'),
   },
 ];

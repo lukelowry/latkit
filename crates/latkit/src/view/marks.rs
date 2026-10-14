@@ -7,10 +7,10 @@ use super::sync::Tables;
 use super::transition::{Begin, Transition};
 use crate::data::Table;
 use crate::expr::compile::{Compiler, Deps, Fields, Program};
-use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
-use crate::scene::mark::{Drawing, Key, MarkKind};
-use crate::{Data, Error, Kind, Mark, Name, Result, Theme};
+use crate::gpu::{Inner, atlas};
+use crate::scene::mark::{Context, Drawing, Key, MarkKind, Primitive};
+use crate::{Data, Error, Kind, Mark, Name, Port, Result, Shape};
 
 /// A mark's program and how it draws, compiled against one schema of its data.
 pub(crate) struct Compiled {
@@ -29,29 +29,12 @@ pub(crate) struct Offsets {
     pub(crate) constants: u32,
     pub(crate) ends: u32,
     pub(crate) palette: u32,
-    pub(crate) lanes: u32,
-    pub(crate) paths: u32,
-    pub(crate) terminals: u32,
     pub(crate) port_info: u32,
-    pub(crate) members: u32,
 }
 
 impl Default for Offsets {
     fn default() -> Offsets {
-        let none = wgsl::NONE;
-        Offsets {
-            columns: 0,
-            ranges: 0,
-            code: 0,
-            constants: 0,
-            ends: 0,
-            palette: 0,
-            lanes: none,
-            paths: none,
-            terminals: none,
-            port_info: none,
-            members: none,
-        }
+        Offsets { columns: 0, ranges: 0, code: 0, constants: 0, ends: 0, palette: 0, port_info: wgsl::NONE }
     }
 }
 
@@ -80,6 +63,8 @@ pub(crate) struct Shown {
     pub(crate) constants: Vec<u32>,
     /// Graph slot of vertex 0 of each table the program's ends name.
     pub(crate) ends: Vec<u32>,
+    /// A vertex mark's ports, `PORT_WORDS` each, their labels' places in the atlas written in.
+    pub(crate) ports: Vec<u32>,
     /// The mark's region of the program buffer, `[start, capacity]` in words, and where its parts
     /// are; `packed` is false until the region holds the current words.
     pub(crate) words: Option<[u32; 2]>,
@@ -91,8 +76,6 @@ pub(crate) struct Shown {
     pub(crate) remap: u32,
     /// Where the header of the list this frame's query builds over its instances starts.
     pub(crate) query: u32,
-    /// Words derived from the data's topology, written beside the program.
-    pub(crate) graph: super::graph::Graph,
     /// The list numbering a stroke mark's segments when rows have different numbers of them.
     pub(crate) segments: super::lists::Segments,
     /// Whether an edge mark follows great circles.
@@ -122,6 +105,7 @@ impl Shown {
             code: Vec::new(),
             constants: Vec::new(),
             ends: Vec::new(),
+            ports: Vec::new(),
             words: None,
             offsets: Offsets::default(),
             packed: false,
@@ -129,7 +113,6 @@ impl Shown {
             transition: None,
             remap: 0,
             query: wgsl::NONE,
-            graph: super::graph::Graph::default(),
             segments: super::lists::Segments::default(),
             geodesic: false,
             version: 0,
@@ -156,36 +139,29 @@ impl Shown {
         self.compiled.as_ref().map_or(0, |c| c.drawing.extras)
     }
 
-    /// Whether its strokes number their segments with a list: rows' paths have different numbers of
-    /// segments.
-    pub(crate) fn listed(&self) -> bool {
-        let Some(compiled) = &self.compiled else { return false };
-        let path = self.path();
-        compiled.drawing.primitive == crate::scene::mark::Primitive::Strokes
-            && (path == wgsl::PATH_NET
-                || path == wgsl::PATH_GEOMETRY
-                || (path == wgsl::PATH_ENDS && (self.geodesic || !self.graph.paths().is_empty())))
-    }
-
-    /// The path its strokes read, one of the `PATH_` codes, which its stroke pipelines are made
-    /// for: a net routed around vertices runs along the points its route wrote.
+    /// The path its strokes read, one of the `PATH_` codes, which its stroke pipelines are made for.
     pub(crate) fn path(&self) -> u32 {
         match &self.compiled {
-            Some(c) if c.drawing.source == wgsl::PATH_NET && !self.graph.paths().is_empty() => wgsl::PATH_GEOMETRY,
-            Some(c) if c.drawing.primitive == crate::scene::mark::Primitive::Strokes => c.drawing.source,
+            Some(c) if c.drawing.primitive == Primitive::Strokes => c.drawing.path,
             _ => wgsl::PATH_ENDS,
         }
     }
 
-    /// Segments its list must have room for: every path's segments, each row's arcs on the earth
-    /// as last found.
+    /// Whether its strokes number their segments with a list: rows' paths have different numbers of
+    /// segments, running through a geometry column or along great circles.
+    pub(crate) fn listed(&self) -> bool {
+        let Some(compiled) = &self.compiled else { return false };
+        compiled.drawing.primitive == Primitive::Strokes
+            && (compiled.drawing.geometry != wgsl::NONE || (self.path() == wgsl::PATH_ENDS && self.geodesic))
+    }
+
+    /// Segments its list must have room for: every path's segments, each row's arcs on the earth as
+    /// last found.
     pub(crate) fn segment_capacity(&self) -> u32 {
         let rows = (self.rows + self.exits) as usize;
-        let points = self.graph.paths().len().saturating_sub(self.rows as usize + 1) / 2;
-        let terminals =
-            self.graph.terminals().len().saturating_sub(self.rows as usize + 1) / wgsl::TERMINAL_WORDS as usize;
+        let points = self.compiled.as_ref().map_or(0, |c| self.tables.points(c.drawing.geometry)) as usize;
         let arcs = if self.geodesic { (self.segments.found.value as usize).max(rows * 4) } else { 0 };
-        (points + rows + terminals + arcs).max(1) as u32
+        (points + rows + arcs).max(1) as u32
     }
 
     /// Its channels that say where its rows stand and how large they are.
@@ -200,17 +176,9 @@ impl Shown {
             .fold(0, |mask, (k, c)| if shaping.contains(&&*c.name) { mask | 1 << k } else { mask })
     }
 
-    /// Its position channel stores again: a layout moved its places.
-    pub(crate) fn place_dirty(&mut self) {
-        let Some(compiled) = &self.compiled else { return };
-        if let Some(k) = compiled.program.channels.iter().position(|c| &*c.name == "position") {
-            self.dirty |= 1 << k;
-        }
-    }
-
-    /// Whether layouts place the mark's rows.
-    pub(crate) fn placed(&self) -> bool {
-        self.kind() == MarkKind::Vertices
+    /// Ports each row has.
+    pub(crate) fn port_count(&self) -> u32 {
+        self.compiled.as_ref().map_or(0, |c| c.drawing.ports.len() as u32)
     }
 
     /// Fitted domains the program reduces.
@@ -257,8 +225,9 @@ impl Shown {
         }
     }
 
-    /// Compiles the mark against `all`; it stays uncompiled while its data or table is not set.
-    pub(crate) fn compile(&mut self, all: &[Data], theme: &Theme, gpu: &mut Inner) -> Result<()> {
+    /// Compiles the mark against `all` in `context`; it stays uncompiled while its data or table is
+    /// not set.
+    pub(crate) fn compile(&mut self, all: &[Data], context: Context<'_>, gpu: &mut Inner) -> Result<()> {
         self.tables.release(gpu);
         self.compiled = None;
         self.packed = false;
@@ -267,7 +236,7 @@ impl Shown {
         let Some(table) = data.table(&style.table) else { return Ok(()) };
         let fields = Schema { table, all };
         let mut compiler = Compiler::new(&fields);
-        let drawing = self.mark.compile(&mut compiler, theme)?;
+        let drawing = self.mark.compile(&mut compiler, context)?;
         let program = compiler.finish();
         if program.channels.len() > 32 {
             return Err(Error::invalid("more than 32 options read data"));
@@ -298,8 +267,26 @@ impl Shown {
         }
     }
 
+    /// Writes its ports' words: each one's code, shape, and reference column, and where the atlas
+    /// holds its label, set in `font` by the host the first time.
+    pub(crate) fn write_ports(&mut self, font: &Arc<str>, queue: &wgpu::Queue, gpu: &mut Inner) {
+        self.ports.clear();
+        let Some(compiled) = &self.compiled else { return };
+        let ports = &compiled.drawing.ports;
+        let codes = Port::codes(&ports.iter().map(|(_, port, _)| port).collect::<Vec<_>>());
+        let host = gpu.host.clone();
+        for ((_, port, column), code) in ports.iter().zip(codes) {
+            let corners = port.label.as_deref().and_then(|label| {
+                let run = atlas::run(label.into(), font.clone(), compiled.drawing.port_label_size, None);
+                gpu.atlas.text(queue, host.as_deref(), &run)
+            });
+            let [uv0, uv1] = corners.map_or([0, 0], |glyphs| glyphs.corners());
+            self.ports.extend([code, shape_code(port.shape), *column, uv0, uv1]);
+        }
+    }
+
     /// Words the mark's program region needs: descriptors and tables, ranges, code, constants, ends,
-    /// and its markers' palette.
+    /// its markers' palette, and its ports.
     pub(crate) fn packed_len(&self) -> u32 {
         let Some(compiled) = &self.compiled else { return 0 };
         (self.tables.len()
@@ -308,7 +295,7 @@ impl Shown {
             + self.constants.len()
             + self.ends.len()
             + compiled.drawing.markers.palette.len()
-            + self.graph.len()) as u32
+            + self.ports.len()) as u32
     }
 
     /// Appends the mark's words, which start at word `base` of the program buffer, and records where
@@ -329,21 +316,9 @@ impl Shown {
         out.extend(&self.ends);
         let palette = at(out);
         out.extend(&compiled.drawing.markers.palette);
-        let part = |out: &mut Vec<u32>, words: &[u32]| {
-            if words.is_empty() {
-                return wgsl::NONE;
-            }
-            let start = at(out);
-            out.extend(words);
-            start
-        };
-        let lanes = part(out, self.graph.lanes());
-        let paths = part(out, self.graph.paths());
-        let terminals = part(out, self.graph.terminals());
-        let port_info = part(out, self.graph.ports());
-        let members = part(out, self.graph.members());
-        self.offsets =
-            Offsets { columns, ranges, code, constants, ends, palette, lanes, paths, terminals, port_info, members };
+        let port_info = if self.ports.is_empty() { wgsl::NONE } else { at(out) };
+        out.extend(&self.ports);
+        self.offsets = Offsets { columns, ranges, code, constants, ends, palette, port_info };
     }
 }
 
@@ -354,6 +329,15 @@ pub(crate) fn kind_stride(kind: MarkKind) -> u32 {
         MarkKind::Edges => wgsl::EDGE_WORDS,
         MarkKind::Faces => wgsl::FACE_WORDS,
         MarkKind::Lines => wgsl::LINE_WORDS,
+    }
+}
+
+fn shape_code(shape: Shape) -> u32 {
+    match shape {
+        Shape::Ellipse => wgsl::SHAPE_ELLIPSE,
+        Shape::Rectangle => wgsl::SHAPE_RECTANGLE,
+        Shape::Rounded => wgsl::SHAPE_ROUNDED,
+        Shape::Diamond => wgsl::SHAPE_DIAMOND,
     }
 }
 

@@ -1,7 +1,8 @@
 // The overlay: lines, boxes, and runs of text in CSS pixels over every mark, such as a plot's axes,
-// a selection box, and a connection being drawn.
+// a selection box, and a connection being drawn. Text is the atlas's distance field, its quad
+// reaching over the field's spread.
 
-import package::lib::types::{Sprite, SPRITE_TEXT, SPRITE_BOX};
+import package::lib::types::{Sprite, SPRITE_TEXT, SPRITE_BOX, TEXT_SPREAD};
 import package::lib::bind::{eye, ramp};
 import package::lib::mark::coverage;
 import package::lib::color::output;
@@ -40,7 +41,10 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     if s.kind == SPRITE_TEXT {
         let t = (v.p - s.a) / max(s.b - s.a, vec2f(1e-6));
         let uv = mix(s.uv.xy, s.uv.zw, t) / vec2f(textureDimensions(atlas));
-        c = textureSampleLevel(atlas, ramp, uv, 0.0).r;
+        // CSS pixels per texel, then target pixels past the text's edge.
+        let scale = (s.b.y - s.a.y) / max(s.uv.w - s.uv.y, 1e-6);
+        let d = (textureSampleLevel(atlas, ramp, uv, 0.0).r - 0.5) * 2.0 * TEXT_SPREAD * scale * eye.pixel_ratio;
+        c = clamp(0.5 + d, 0.0, 1.0);
     } else if s.kind == SPRITE_BOX {
         let lo = min(s.a, s.b);
         let hi = max(s.a, s.b);

@@ -1,14 +1,15 @@
-// Points: one instanced quad per vertex row, shaded by its marker. The cast variant draws the same
-// quads through the light's eye into the shadow map; the ports variant draws one quad per port of
-// every row, on its side of the row's marker.
+// Points: one instanced quad per vertex row, shaded by its marker; a group's rows draw as
+// containers. The cast variant draws the same quads through the light's eye into the shadow map; the
+// ports variant draws one quad per port of every row, on its side of the row's marker.
 
-import package::lib::types::{STATUS, MARKER_ICON};
+import package::lib::types::{STATUS, MARKER_ICON, GROUP};
 import package::lib::bind::{frame, mark, state, ramp, program};
 import package::lib::state::extra_at;
 import package::lib::project::{to_screen, to_clip, nearer, culled};
 import package::lib::points::{Point, point, reach, port_at};
 import package::lib::marker::{
-    MarkerColor, MarkerFragment, builtin_marker, outline_distance, shape_distance, filled, over, status_ring, glow,
+    MarkerColor, MarkerFragment, builtin_marker, container, outline_distance, shape_distance, filled, over,
+    status_ring, glow,
 };
 import package::lib::shade::caster;
 import package::lib::color::output;
@@ -24,6 +25,8 @@ struct Varyings {
     @location(4) @interpolate(flat) status: vec4f,
     @location(5) @interpolate(flat) height: f32,
     @location(6) @interpolate(flat) shape: u32,
+    // A group's depth; for a port, 1 when its reference names a net.
+    @location(7) @interpolate(flat) extra: f32,
 }
 
 // What an instance draws: a row's marker, or with `ports` one of a row's ports.
@@ -33,12 +36,13 @@ struct Drawn {
     half: vec2f,
     reach: vec2f,
     shape: u32,
+    extra: f32,
 }
 
 @if(!ports)
 fn drawn(instance: u32) -> Drawn {
     let p = point(instance);
-    return Drawn(p, to_screen(p.clip), p.half, reach(p), mark.shape);
+    return Drawn(p, to_screen(p.clip), p.half, reach(p), mark.shape, p.depth);
 }
 
 @if(ports)
@@ -47,7 +51,7 @@ fn drawn(instance: u32) -> Drawn {
     let p = point(instance / n);
     let port = port_at(p, instance % n);
     let half = vec2f(port.half);
-    return Drawn(p, port.center, half, half + frame.glow + 2.0, port.shape);
+    return Drawn(p, port.center, half, half + frame.glow + 2.0, port.shape, f32(port.wired));
 }
 
 @vertex
@@ -63,6 +67,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     out.status = d.p.status;
     out.height = d.p.world.z;
     out.shape = d.shape;
+    out.extra = d.extra;
     if !d.p.shown {
         out.clip = culled();
     }
@@ -97,16 +102,26 @@ fn marker(f: MarkerFragment) -> MarkerColor {
     return builtin_marker(f);
 }
 
-// A port: its shape in its row's color, ringed by the background so it reads apart from the marker.
+// A port: its shape in its row's color, ringed by the background so it reads apart from the marker;
+// hollow while no net plugs into it.
 @if(ports)
 fn shaded(v: Varyings) -> MarkerColor {
     let d = shape_distance(v.shape, v.p, v.half);
-    return over(filled(v.color, d), filled(vec4f(frame.background.rgb, v.color.a), d - 1.5));
+    let ring = filled(vec4f(frame.background.rgb, v.color.a), d - 1.5);
+    if v.extra > 0.5 {
+        return over(filled(v.color, d), ring);
+    }
+    let hollow = over(filled(v.color, abs(d + 0.75) - 0.75), filled(vec4f(frame.background.rgb, v.color.a), d));
+    return over(hollow, ring);
 }
 
 @if(!ports)
 fn shaded(v: Varyings) -> MarkerColor {
-    var m = marker(MarkerFragment(v.p, v.half, v.color, inputs(v.row)));
+    let f = MarkerFragment(v.p, v.half, v.color, inputs(v.row));
+    var m = marker(f);
+    if (mark.flags & GROUP) != 0u {
+        m = container(f, v.extra);
+    }
     if (mark.flags & STATUS) != 0u && v.status.a > 0.0 {
         m = status_ring(m, v.p, v.half, vec4f(v.status.rgb, v.status.a * v.color.a));
     }

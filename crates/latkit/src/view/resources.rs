@@ -3,7 +3,7 @@
 //!
 //! Every shader's pass group (group 2) binds by one convention: 0 state, 1 frozen state, 2 extents,
 //! 3 normals, 4 domains, 5 probe, 6 depth, 7 sprites, 8 the text atlas, 9 lists, 10 the shadow map,
-//! 11 a level of it, 12 remap words, 13 labels, 15 icons, 16 places.
+//! 11 a level of it, 12 remap words, 13 labels, 15 icons.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -124,7 +124,6 @@ impl ShadowMap {
 /// Buffers a layout of rows replaced, kept until their rows are copied out.
 pub(crate) struct OldRows {
     pub(crate) state: wgpu::Buffer,
-    pub(crate) places: wgpu::Buffer,
     pub(crate) frozen: Option<wgpu::Buffer>,
 }
 
@@ -135,17 +134,12 @@ pub(crate) struct Resources {
     program: Grown,
     focus: wgpu::Buffer,
     state: wgpu::Buffer,
-    places: wgpu::Buffer,
     frozen: Option<wgpu::Buffer>,
     retired: Option<OldRows>,
     remap: Grown,
     domains: Grown,
     extents: Grown,
     normals: Grown,
-    stand_ins: Grown,
-    /// Each group slot's box as its members widen it: four words a vertex slot.
-    boxes: Grown,
-    layout: Grown,
     probe: wgpu::Buffer,
     sprites: Grown,
     lists: Grown,
@@ -174,16 +168,12 @@ impl Resources {
             program: Grown::new(device, "latkit program", storage),
             focus: create(device, "latkit focus", storage, 256),
             state: create(device, "latkit state", ROWS, 256),
-            places: create(device, "latkit places", ROWS, 256),
             frozen: None,
             retired: None,
             remap: Grown::new(device, "latkit remap", storage),
             domains: Grown::new(device, "latkit domains", storage),
             extents: Grown::new(device, "latkit extents", storage | wgpu::BufferUsages::COPY_SRC),
             normals: Grown::new(device, "latkit normals", storage),
-            stand_ins: Grown::new(device, "latkit stand-ins", storage),
-            boxes: Grown::new(device, "latkit group boxes", storage),
-            layout: Grown::new(device, "latkit layout", storage),
             probe: create(device, "latkit probe", storage | wgpu::BufferUsages::COPY_SRC, probe_bytes),
             sprites: Grown::new(device, "latkit sprites", storage),
             lists: Grown::new(
@@ -207,12 +197,10 @@ impl Resources {
     pub(crate) fn replace_rows(&mut self, device: &wgpu::Device, sizes: Sizes) -> OldRows {
         let words = |n: u64| (n + 1) * 4;
         let state = create(device, "latkit state", ROWS, words(sizes.state));
-        let places = create(device, "latkit places", ROWS, words(sizes.places));
         self.focus = create(device, "latkit focus", wgpu::BufferUsages::STORAGE, words(sizes.focus));
         let frozen = self.frozen.as_ref().map(|_| create(device, "latkit frozen", ROWS, words(sizes.state)));
         let old = OldRows {
             state: std::mem::replace(&mut self.state, state),
-            places: std::mem::replace(&mut self.places, places),
             frozen: std::mem::replace(&mut self.frozen, frozen),
         };
         self.generation += 1;
@@ -291,8 +279,6 @@ impl Resources {
         replaced |= self.extents.ensure(device, words(u64::from(wgsl::EXTENT_WORDS) * count));
         replaced |= self.marks.ensure(device, MARK_STRIDE * count);
         replaced |= self.normals.ensure(device, words(3 * vertices));
-        replaced |= self.stand_ins.ensure(device, words(vertices));
-        replaced |= self.boxes.ensure(device, words(4 * vertices));
         if replaced {
             self.generation += 1;
         }
@@ -368,10 +354,6 @@ impl Resources {
         &self.state
     }
 
-    pub(crate) fn places(&self) -> &wgpu::Buffer {
-        &self.places
-    }
-
     pub(crate) fn domains(&self) -> &wgpu::Buffer {
         &self.domains.buffer
     }
@@ -390,21 +372,6 @@ impl Resources {
 
     pub(crate) fn sprites(&self) -> &wgpu::Buffer {
         &self.sprites.buffer
-    }
-
-    /// Makes room for `words` of a layout's terms and positions.
-    pub(crate) fn fit_layout(&mut self, device: &wgpu::Device, words: u64) {
-        if self.layout.ensure(device, (words + 1) * 4) {
-            self.generation += 1;
-        }
-    }
-
-    pub(crate) fn layout(&self) -> &wgpu::Buffer {
-        &self.layout.buffer
-    }
-
-    pub(crate) fn stand_ins(&self) -> &wgpu::Buffer {
-        &self.stand_ins.buffer
     }
 
     /// Changes whenever a buffer or texture is replaced.
@@ -515,11 +482,7 @@ impl Resources {
                     10 => wgpu::BindingResource::TextureView(&self.shadows.view),
                     12 => self.remap.buffer.as_entire_binding(),
                     13 => self.labels.as_entire_binding(),
-                    14 => self.stand_ins.buffer.as_entire_binding(),
                     15 => wgpu::BindingResource::TextureView(&inner.icons.view),
-                    16 => self.places.as_entire_binding(),
-                    17 => self.layout.buffer.as_entire_binding(),
-                    18 => self.boxes.buffer.as_entire_binding(),
                     other => unreachable!("no resource for pass binding {other}"),
                 };
                 wgpu::BindGroupEntry { binding: binding.slot, resource }

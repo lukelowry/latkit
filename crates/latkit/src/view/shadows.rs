@@ -21,7 +21,7 @@ impl View {
         let ground = match &self.scene.space {
             Space::Plane(_) => true,
             Space::Earth(_) => self.projected().globe < 0.5,
-            Space::Plot(_) => false,
+            Space::Plot(_) | Space::Diagram(_) => false,
         };
         if !ground {
             return Vec::new();

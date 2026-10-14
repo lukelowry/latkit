@@ -1,7 +1,9 @@
 use crate::Expr;
 
-/// A row's text, placed beside, inside, or along what its mark draws. Labels that would overlap give
-/// way by priority, and those already shown keep their place.
+/// A row's text, placed beside, inside, or along what its mark draws, following it every frame.
+/// Labels that would overlap give way by priority, and those already shown keep their place. In a
+/// diagram a label is part of the drawing: it scales with the zoom, fades out once too small to
+/// read, and shows wherever it fits its vertex.
 ///
 /// ```
 /// # use latkit::{field, Label, Vertices};
@@ -22,10 +24,10 @@ impl Label {
         Label { text: text.into(), size: None, color: None, priority: 0.0.into(), max_width: None }
     }
 
-    /// Text size, CSS pixels; the theme's font size unless set.
+    /// Text size, CSS pixels, or units in a diagram; the theme's font size unless set.
     #[must_use]
-    pub fn size(mut self, px: f32) -> Label {
-        self.size = Some(px);
+    pub fn size(mut self, size: f32) -> Label {
+        self.size = Some(size);
         self
     }
 
@@ -43,10 +45,10 @@ impl Label {
         self
     }
 
-    /// CSS pixels a line of text runs to before it wraps.
+    /// How far a line of text runs before it wraps: CSS pixels, or units in a diagram.
     #[must_use]
-    pub fn max_width(mut self, px: f32) -> Label {
-        self.max_width = Some(px);
+    pub fn max_width(mut self, width: f32) -> Label {
+        self.max_width = Some(width);
         self
     }
 }

@@ -1,11 +1,14 @@
-//! Jobs: work that grows faster than the graph it reads (laying out in ranks, pushing boxes apart,
-//! routing wires), handed to the host to do off the frame. A job is bytes in and bytes out, so a thread, or a worker holding
-//! its own copy of latkit, can do it with nothing shared.
+//! Jobs: work that grows faster than the graph it reads (laying out in ranks or by stress, routing
+//! wires), handed to the host to do off the frame. A job is bytes in and bytes out, so a thread, or a
+//! worker holding its own copy of latkit, can do it with nothing shared. Its answer is a [`Patch`]:
+//! the rows it worked out, by id, with their places or the paths their wires run along.
 
-use crate::layout::layered::{Ranked, layered};
-use crate::layout::overlap::separate;
+use crate::data::{Id, Name, Patch, Table};
+use crate::layout::layered::layered;
+use crate::layout::levels::Graph;
 use crate::layout::route::{Net, Terminal, route};
-use crate::{Direction, Layered, Side};
+use crate::layout::stress::stress;
+use crate::{Direction, Layered, Layout, Side};
 
 /// Work latkit hands its [`Host`](super::Host) to do off the frame: bytes in, bytes out.
 ///
@@ -18,8 +21,33 @@ pub struct Job(Vec<u8>);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
     Layered = 1,
-    Routes = 2,
-    Overlaps = 3,
+    Stress = 2,
+    Routes = 3,
+}
+
+/// A row a job answers for: its table and id.
+pub(crate) type Key = (Name, Id);
+
+/// Vertices to place: each one's size, its center when it has one, its group and how far a group's
+/// box reaches past its members (left, bottom, right, top), links between them, and the key of
+/// each vertex the answer places; vertices without a key are only placed around. Plane units, y up.
+pub(crate) struct Placement<'a> {
+    pub(crate) sizes: &'a [[f64; 2]],
+    pub(crate) pinned: &'a [Option<[f64; 2]>],
+    pub(crate) groups: &'a [Option<u32>],
+    pub(crate) pads: &'a [[f64; 4]],
+    pub(crate) links: &'a [[u32; 2]],
+    pub(crate) keys: &'a [Option<Key>],
+}
+
+/// Wires to route: around `obstacles`, each net's terminals with the key of the row it draws, runs
+/// beside `fixed` wires already routed, tracks `spacing` apart. Plane units, y up.
+pub(crate) struct Wiring<'a> {
+    pub(crate) obstacles: &'a [[f64; 4]],
+    pub(crate) nets: &'a [Net],
+    pub(crate) keys: &'a [Key],
+    pub(crate) fixed: &'a [Vec<[f64; 2]>],
+    pub(crate) spacing: f64,
 }
 
 impl Job {
@@ -33,70 +61,78 @@ impl Job {
         self.0
     }
 
-    /// Does the job: lays out ranks, pushes boxes apart, or routes wires. Bytes that are no job
-    /// answer nothing.
+    /// Does the job, answering with a patch's bytes. Bytes that are no job answer nothing.
     pub fn run(self) -> Vec<u8> {
         let mut input = Reader::new(&self.0);
         let answer = match input.u32() {
-            Some(k) if k == Kind::Layered as u32 => run_layered(&mut input),
+            Some(k) if k == Kind::Layered as u32 || k == Kind::Stress as u32 => run_layout(k, &mut input),
             Some(k) if k == Kind::Routes as u32 => run_routes(&mut input),
-            Some(k) if k == Kind::Overlaps as u32 => run_overlaps(&mut input),
             _ => None,
         };
-        answer.unwrap_or_default()
+        answer.map(|patch| patch.to_bytes()).unwrap_or_default()
     }
 
-    /// Laying `graph` out in ranks by `options`; it answers each vertex's center.
-    pub(crate) fn layered(graph: &Ranked<'_>, options: &Layered) -> Job {
-        let mut out = Writer::new(Kind::Layered);
-        let flow = match options.flow {
-            Direction::Right => 0,
-            Direction::Left => 1,
-            Direction::Down => 2,
-            Direction::Up => 3,
+    /// Placing `placement` by `layout`, which is layered or stress; it answers each keyed vertex's
+    /// center as fields `x` and `y`, y up.
+    pub(crate) fn layout(layout: &Layout, placement: &Placement<'_>) -> Job {
+        let mut out = match *layout {
+            Layout::Stress(stress) => {
+                let mut out = Writer::new(Kind::Stress);
+                out.f64(stress.gap);
+                out
+            }
+            Layout::Layered(layered) => {
+                let mut out = Writer::new(Kind::Layered);
+                out.u32(match layered.flow {
+                    Direction::Right => 0,
+                    Direction::Left => 1,
+                    Direction::Down => 2,
+                    Direction::Up => 3,
+                });
+                out.f64(layered.gap);
+                out.f64(layered.rank_gap);
+                out
+            }
+            Layout::None => unreachable!("a sheet asks for a layout only when its scene has one"),
         };
-        out.u32(flow);
-        out.f64(options.gap);
-        out.f64(options.rank_gap);
-        out.u32(graph.sizes.len() as u32);
-        for (size, (pin, group)) in graph.sizes.iter().zip(graph.pinned.iter().zip(graph.groups)) {
-            out.f64s(size);
-            out.u32(u32::from(pin.is_some()));
-            out.f64s(&pin.unwrap_or_default());
-            out.u32(group.unwrap_or(u32::MAX));
+        out.u32(placement.sizes.len() as u32);
+        for v in 0..placement.sizes.len() {
+            out.f64s(&placement.sizes[v]);
+            out.u32(u32::from(placement.pinned[v].is_some()));
+            out.f64s(&placement.pinned[v].unwrap_or_default());
+            out.u32(placement.groups[v].unwrap_or(u32::MAX));
+            out.f64s(&placement.pads[v]);
+            out.u32(u32::from(placement.keys[v].is_some()));
+            if let Some(key) = &placement.keys[v] {
+                out.key(key);
+            }
         }
-        out.u32(graph.edges.len() as u32);
-        for edge in graph.edges {
-            out.u32(edge[0]);
-            out.u32(edge[1]);
-        }
-        Job(out.0)
-    }
-
-    /// Pushing `boxes` (center, then half width and height) apart until none come within
-    /// `clearance`, the `pinned` ones held; it answers each box's center.
-    pub(crate) fn overlaps(boxes: &[[f64; 4]], pinned: &[bool], clearance: f64) -> Job {
-        let mut out = Writer::new(Kind::Overlaps);
-        out.f64(clearance);
-        out.u32(boxes.len() as u32);
-        for (b, &pin) in boxes.iter().zip(pinned) {
-            out.f64s(b);
-            out.u32(u32::from(pin));
+        out.u32(placement.links.len() as u32);
+        for link in placement.links {
+            out.u32(link[0]);
+            out.u32(link[1]);
         }
         Job(out.0)
     }
 
-    /// Routing `nets` around `obstacles`, parallel runs `spacing` apart; it answers each net's
-    /// polylines.
-    pub(crate) fn routes(obstacles: &[[f64; 4]], nets: &[Net], spacing: f64) -> Job {
+    /// Routing `wiring`; it answers each keyed row's wire as field `route`, its polylines.
+    pub(crate) fn routes(wiring: &Wiring<'_>) -> Job {
         let mut out = Writer::new(Kind::Routes);
-        out.f64(spacing);
-        out.u32(obstacles.len() as u32);
-        for obstacle in obstacles {
+        out.f64(wiring.spacing);
+        out.u32(wiring.obstacles.len() as u32);
+        for obstacle in wiring.obstacles {
             out.f64s(obstacle);
         }
-        out.u32(nets.len() as u32);
-        for net in nets {
+        out.u32(wiring.fixed.len() as u32);
+        for line in wiring.fixed {
+            out.u32(line.len() as u32);
+            for point in line {
+                out.f64s(point);
+            }
+        }
+        out.u32(wiring.nets.len() as u32);
+        for (net, key) in wiring.nets.iter().zip(wiring.keys) {
+            out.key(key);
             out.u32(net.terminals.len() as u32);
             for terminal in &net.terminals {
                 out.f64s(&terminal.at);
@@ -114,86 +150,83 @@ impl std::fmt::Debug for Job {
     }
 }
 
-/// A layered or overlaps job's answer: each vertex's center.
-pub(crate) fn centers(answer: &[u8]) -> Option<Vec<[f64; 2]>> {
-    let mut input = Reader::new(answer);
-    let count = input.u32()?;
-    (0..count).map(|_| Some([input.f64()?, input.f64()?])).collect()
+/// A patch writing `values` for `keys`, one table at a time in the order the keys name them.
+fn keyed<T>(keys: &[Key], values: Vec<T>, write: impl Fn(Table, Vec<T>) -> Table) -> Patch {
+    let mut tables: Vec<(Name, Vec<Id>, Vec<T>)> = Vec::new();
+    for ((table, id), value) in keys.iter().zip(values) {
+        match tables.iter_mut().find(|(name, ..)| name == table) {
+            Some((_, ids, values)) => {
+                ids.push(id.clone());
+                values.push(value);
+            }
+            None => tables.push((table.clone(), vec![id.clone()], vec![value])),
+        }
+    }
+    tables.into_iter().fold(Patch::new(), |patch, (name, ids, values)| patch.set(write(Table::new(name, ids), values)))
 }
 
-/// A routes job's answer: each net's polylines.
-pub(crate) fn polylines(answer: &[u8]) -> Option<Vec<Vec<Vec<[f64; 2]>>>> {
-    let mut input = Reader::new(answer);
-    let nets = input.u32()?;
-    (0..nets)
-        .map(|_| {
-            let lines = input.u32()?;
-            (0..lines)
-                .map(|_| {
-                    let points = input.u32()?;
-                    (0..points).map(|_| Some([input.f64()?, input.f64()?])).collect()
-                })
-                .collect()
-        })
-        .collect()
-}
-
-fn run_layered(input: &mut Reader<'_>) -> Option<Vec<u8>> {
-    let flow = match input.u32()? {
-        0 => Direction::Right,
-        1 => Direction::Left,
-        2 => Direction::Down,
-        _ => Direction::Up,
+fn run_layout(kind: u32, input: &mut Reader<'_>) -> Option<Patch> {
+    let options = if kind == Kind::Stress as u32 {
+        Layout::Stress(crate::Stress { gap: input.f64()? })
+    } else {
+        let flow = match input.u32()? {
+            0 => Direction::Right,
+            1 => Direction::Left,
+            2 => Direction::Down,
+            _ => Direction::Up,
+        };
+        Layout::Layered(Layered { flow, gap: input.f64()?, rank_gap: input.f64()? })
     };
-    let options = Layered { flow, gap: input.f64()?, rank_gap: input.f64()? };
     let count = input.u32()? as usize;
-    let (mut sizes, mut pinned, mut groups) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut sizes, mut pinned, mut groups, mut pads, mut keys) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for _ in 0..count {
         sizes.push([input.f64()?, input.f64()?]);
         let pin = input.u32()? != 0;
         let at = [input.f64()?, input.f64()?];
         pinned.push(pin.then_some(at));
         groups.push(Some(input.u32()?).filter(|&g| (g as usize) < count));
+        pads.push([input.f64()?, input.f64()?, input.f64()?, input.f64()?]);
+        let keyed = input.u32()? != 0;
+        keys.push(if keyed { Some(input.key()?) } else { None });
     }
     let links = input.u32()?;
-    let edges = (0..links).map(|_| Some([input.u32()?, input.u32()?])).collect::<Option<Vec<_>>>()?;
-    if edges.iter().flatten().any(|&v| v as usize >= count) {
+    let links = (0..links).map(|_| Some([input.u32()?, input.u32()?])).collect::<Option<Vec<_>>>()?;
+    if links.iter().flatten().any(|&v| v as usize >= count) {
         return None;
     }
-    let centers = layered(&Ranked { sizes: &sizes, edges: &edges, pinned: &pinned, groups: &groups }, &options);
-    Some(centers_bytes(&centers))
+    let graph = Graph { sizes: &sizes, links: &links, pinned: &pinned, groups: &groups, pads: &pads };
+    let centers = match options {
+        Layout::Stress(s) => stress(&graph, s.gap),
+        Layout::Layered(l) => layered(&graph, &l),
+        Layout::None => return None,
+    };
+    let placed: Vec<(Key, [f64; 2])> =
+        keys.into_iter().zip(centers).filter_map(|(key, center)| Some((key?, center))).collect();
+    let (keys, centers): (Vec<Key>, Vec<[f64; 2]>) = placed.into_iter().unzip();
+    Some(keyed(&keys, centers, |table, centers| {
+        let (x, y): (Vec<f64>, Vec<f64>) = centers.into_iter().map(|c| (c[0], c[1])).unzip();
+        table.field("x", x).field("y", y)
+    }))
 }
 
-fn run_overlaps(input: &mut Reader<'_>) -> Option<Vec<u8>> {
-    let clearance = input.f64()?;
-    let count = input.u32()?;
-    let (mut boxes, mut pinned) = (Vec::new(), Vec::new());
-    for _ in 0..count {
-        boxes.push([input.f64()?, input.f64()?, input.f64()?, input.f64()?]);
-        pinned.push(input.u32()? != 0);
-    }
-    Some(centers_bytes(&separate(&boxes, &pinned, clearance)))
-}
-
-/// Centers as a layered or overlaps job answers them.
-fn centers_bytes(centers: &[[f64; 2]]) -> Vec<u8> {
-    let mut out = Writer(Vec::with_capacity(4 + 16 * centers.len()));
-    out.u32(centers.len() as u32);
-    for center in centers {
-        out.f64s(center);
-    }
-    out.0
-}
-
-fn run_routes(input: &mut Reader<'_>) -> Option<Vec<u8>> {
+fn run_routes(input: &mut Reader<'_>) -> Option<Patch> {
     let spacing = input.f64()?;
     let count = input.u32()?;
     let obstacles = (0..count)
         .map(|_| Some([input.f64()?, input.f64()?, input.f64()?, input.f64()?]))
         .collect::<Option<Vec<_>>>()?;
     let count = input.u32()?;
-    let mut nets = Vec::new();
+    let fixed = (0..count)
+        .map(|_| {
+            let points = input.u32()?;
+            (0..points).map(|_| Some([input.f64()?, input.f64()?])).collect::<Option<Vec<_>>>()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let count = input.u32()?;
+    let (mut nets, mut keys) = (Vec::new(), Vec::new());
     for _ in 0..count {
+        keys.push(input.key()?);
         let terminals = input.u32()?;
         let terminals = (0..terminals)
             .map(|_| {
@@ -205,22 +238,11 @@ fn run_routes(input: &mut Reader<'_>) -> Option<Vec<u8>> {
             .collect::<Option<Vec<_>>>()?;
         nets.push(Net { terminals });
     }
-    let routes = route(&obstacles, &nets, spacing);
-    let mut out = Writer(Vec::new());
-    out.u32(routes.len() as u32);
-    for lines in &routes {
-        out.u32(lines.len() as u32);
-        for line in lines {
-            out.u32(line.len() as u32);
-            for point in line {
-                out.f64s(point);
-            }
-        }
-    }
-    Some(out.0)
+    let routes = route(&obstacles, &nets, &fixed, spacing);
+    Some(keyed(&keys, routes, |table, routes| table.field("route", routes)))
 }
 
-/// Little-endian words and floats, written.
+/// Little-endian words, floats, and keys, written.
 struct Writer(Vec<u8>);
 
 impl Writer {
@@ -243,9 +265,29 @@ impl Writer {
             self.f64(v);
         }
     }
+
+    fn text(&mut self, text: &str) {
+        self.u32(text.len() as u32);
+        self.0.extend(text.as_bytes());
+    }
+
+    /// A key: 1 then a numbered id, or 2 then a texted one; the table's name after.
+    fn key(&mut self, (table, id): &Key) {
+        match id {
+            Id::Number(n) => {
+                self.u32(1);
+                self.0.extend(n.to_le_bytes());
+            }
+            Id::Text(t) => {
+                self.u32(2);
+                self.text(t);
+            }
+        }
+        self.text(table);
+    }
 }
 
-/// Little-endian words and floats, read; `None` past the end.
+/// Little-endian words, floats, and keys, read; `None` past the end.
 struct Reader<'a> {
     bytes: &'a [u8],
 }
@@ -268,39 +310,80 @@ impl<'a> Reader<'a> {
     fn f64(&mut self) -> Option<f64> {
         self.take().map(f64::from_le_bytes)
     }
+
+    fn text(&mut self) -> Option<String> {
+        let len = self.u32()? as usize;
+        let (head, rest) = self.bytes.split_at_checked(len)?;
+        self.bytes = rest;
+        String::from_utf8(head.to_vec()).ok()
+    }
+
+    /// A key as [`Writer::key`] wrote it.
+    fn key(&mut self) -> Option<Key> {
+        let id = match self.u32()? {
+            1 => Id::Number(u64::from_le_bytes(self.take()?)),
+            2 => Id::from(self.text()?),
+            _ => return None,
+        };
+        Some((self.text()?.into(), id))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::Value;
 
-    #[test]
-    fn layered_jobs_answer_as_the_layout_does() {
-        let sizes = [[10.0, 10.0]; 3];
-        let edges = [[0, 1], [1, 2]];
-        let pinned = [None, Some([5.0, 5.0]), None];
-        let groups = [None; 3];
-        let graph = Ranked { sizes: &sizes, edges: &edges, pinned: &pinned, groups: &groups };
-        let options = Layered::default();
-        let answer = Job::from_bytes(Job::layered(&graph, &options).into_bytes()).run();
-        assert_eq!(centers(&answer), Some(layered(&graph, &options)));
+    fn key(table: &str, id: u64) -> Key {
+        (table.into(), Id::Number(id))
+    }
+
+    /// Field `field` of `table`'s row `id` in the answer.
+    fn answered(answer: &[u8], table: &str, id: u64, field: &str) -> Option<Value> {
+        let mut data = crate::Data::new("d");
+        data.apply(Patch::from_bytes(answer).ok()?).ok()?;
+        data.get(&crate::Row::new("d", table, id), field)
     }
 
     #[test]
-    fn route_jobs_answer_as_the_router_does() {
+    fn layout_jobs_answer_the_rows_they_place() {
+        let sizes = [[10.0, 10.0]; 3];
+        let pinned = [None, Some([5.0, 5.0]), None];
+        let keys = [Some(key("V", 7)), None, Some(key("V", 9))];
+        let placement = Placement {
+            sizes: &sizes,
+            pinned: &pinned,
+            groups: &[None; 3],
+            pads: &[[0.0; 4]; 3],
+            links: &[[0, 1], [1, 2]],
+            keys: &keys,
+        };
+        let answer = Job::from_bytes(Job::layout(&Layout::Layered(Layered::default()), &placement).into_bytes()).run();
+        let ranked = layered(
+            &Graph {
+                sizes: &sizes,
+                links: &[[0, 1], [1, 2]],
+                pinned: &pinned,
+                groups: &[None; 3],
+                pads: &[[0.0; 4]; 3],
+            },
+            &Layered::default(),
+        );
+        assert_eq!(answered(&answer, "V", 9, "x"), Some(Value::Number(ranked[2][0])));
+        assert_eq!(answered(&answer, "V", 7, "y"), Some(Value::Number(ranked[0][1])));
+        let stress = Job::layout(&Layout::Stress(crate::Stress::default()), &placement).run();
+        assert!(matches!(answered(&stress, "V", 7, "x"), Some(Value::Number(_))), "stress answers alike");
+    }
+
+    #[test]
+    fn route_jobs_answer_routed_wires() {
         let obstacles = [[0.0, 0.0, 10.0, 10.0], [40.0, 0.0, 50.0, 10.0]];
         let terminal = |x: f64, side, owner| Terminal { at: [x, 5.0], side: Some(side), owner: Some(owner) };
         let nets = [Net { terminals: vec![terminal(10.0, Side::Right, 0), terminal(40.0, Side::Left, 1)] }];
-        let answer = Job::routes(&obstacles, &nets, 2.0).run();
-        assert_eq!(polylines(&answer), Some(route(&obstacles, &nets, 2.0)));
-    }
-
-    #[test]
-    fn overlap_jobs_answer_as_separating_does() {
-        let boxes = [[0.0, 0.0, 10.0, 10.0], [5.0, 1.0, 10.0, 10.0], [40.0, 0.0, 3.0, 3.0]];
-        let pinned = [false, true, false];
-        let answer = Job::overlaps(&boxes, &pinned, 2.0).run();
-        assert_eq!(centers(&answer), Some(separate(&boxes, &pinned, 2.0)));
+        let wiring = Wiring { obstacles: &obstacles, nets: &nets, keys: &[key("Wire", 3)], fixed: &[], spacing: 2.0 };
+        let answer = Job::routes(&wiring).run();
+        let want = route(&obstacles, &nets, &[], 2.0).swap_remove(0);
+        assert_eq!(answered(&answer, "Wire", 3, "route"), Some(Value::Parts(want)));
     }
 
     #[test]

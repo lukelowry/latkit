@@ -9,6 +9,7 @@ import {
   type Id,
   type Layout,
   type Mark,
+  type Port,
   type Row,
   type Scene,
   type Shape,
@@ -52,10 +53,17 @@ interface Plug {
 const direction = (kind: Kind, port: string) =>
   KINDS[kind].ports.find(([name]) => name === port)?.[2];
 
+/** A kind's ports as the scene declares them: outputs drive their signals, and a feedback port is named. */
+const ports = (kind: Kind): [string, Port][] =>
+  KINDS[kind].ports.map(([name, side, way]): [string, Port] => [
+    name,
+    { side, output: way === 'out', ...(name === 'feedback' ? { label: 'feedback' } : {}) },
+  ]);
+
 /**
  * A diagram drawn up as rows: blocks of each kind, the signals their ports plug into, and the groups
- * holding Process blocks, themselves held by stations. Positions are optional: blocks without one
- * are placed by the layout.
+ * holding Process blocks, themselves held by stations. Positions, x right and y down, are optional:
+ * blocks without one are placed by the layout.
  */
 class Sketch {
   readonly blocks = new Map<
@@ -73,7 +81,7 @@ class Sketch {
   block(kind: Kind, name: string, at?: [number, number], group?: number): Plug {
     const id = this.next++;
     const rows = this.blocks.get(kind) ?? [];
-    rows.push({ id, name, at: at && [at[0], -at[1]], group });
+    rows.push({ id, name, at, group });
     this.blocks.set(kind, rows);
     return { kind, id, port: 'out' };
   }
@@ -112,7 +120,7 @@ class Sketch {
       patch.set(
         'Station',
         this.stations.map((s) => s.id),
-        { name: this.stations.map((s) => s.name), folded: this.stations.map(() => false) },
+        { name: this.stations.map((s) => s.name) },
       );
     }
     if (this.groups.length) {
@@ -122,13 +130,12 @@ class Sketch {
         this.groups.map((g) => g.id),
         {
           name: this.groups.map((g) => g.name),
-          folded: this.groups.map(() => false),
           ...(this.stations.length ? { station: reference('Station', stations) } : {}),
         },
       );
     }
     for (const [kind, rows] of this.blocks) {
-      const ports = Object.fromEntries(
+      const plugged = Object.fromEntries(
         KINDS[kind].ports.map(([port]) => [
           port,
           reference(
@@ -146,7 +153,7 @@ class Sketch {
           x: rows.map((row) => row.at?.[0] ?? null),
           y: rows.map((row) => row.at?.[1] ?? null),
           status: rows.map((row) => (this.alarms.has(row.id) ? 1 : 0)),
-          ...ports,
+          ...plugged,
           ...(grouped
             ? {
                 group: reference(
@@ -162,7 +169,7 @@ class Sketch {
   }
 }
 
-/** The presets: a water plant laid out in ranks, then the old studio's four. */
+/** The presets: a water plant laid out in ranks, then four drawn where they stand. */
 const PRESETS: readonly (readonly [string, () => Sketch])[] = [
   [
     'Water plant',
@@ -302,60 +309,40 @@ export default function page(stage: Stage): void {
 
   const scene = (): Scene => {
     const marks: Mark[] = [];
-    const label = { text: 'name', size: 11, color: '#7f93a8' };
+    // Containers take the theme's surface, tinted by how deep they sit; their titles head them.
+    const title = { text: 'name', size: 11, color: '#7f93a8' };
     if (sketch.stations.length) {
-      marks.push({
-        vertices: {
-          of: ['studio', 'Station'],
-          contains: ['Group', 'station'],
-          collapsed: 'folded',
-          marker: 'rounded',
-          size: [{ units: 120 }, { units: 50 }],
-          color: '#121922',
-          label,
-        },
-      });
+      marks.push({ vertices: { of: ['studio', 'Station'], contains: ['Group', 'station'], label: title } });
     }
     if (sketch.groups.length) {
-      marks.push({
-        vertices: {
-          of: ['studio', 'Group'],
-          contains: ['Process', 'group'],
-          collapsed: 'folded',
-          marker: 'rounded',
-          size: [{ units: 110 }, { units: 46 }],
-          color: '#18212c',
-          label,
-        },
-      });
+      marks.push({ vertices: { of: ['studio', 'Group'], contains: ['Process', 'group'], label: title } });
     }
-    marks.push({ edges: { of: ['studio', 'Signal'], route, width: 1.5, color: '#9fb2c6' } });
+    marks.push({ edges: { of: ['studio', 'Signal'], route, arrows: true, width: 1.5 } });
     for (const kind of kinds) {
+      // Without a size, a block fits its label and ports.
       marks.push({
         vertices: {
           of: ['studio', kind],
           position: ['x', 'y'],
-          size: [{ units: 120 }, { units: 44 }],
           marker: KINDS[kind].shape,
           color: '#2c3b4d',
           status: when(field('status').gt(0)).then(color('#ff8c42')).otherwise(missing()),
-          ports: KINDS[kind].ports.map(([port, side]) => [port, side] as [string, Side]),
+          ports: ports(kind),
           drag: true,
-          label: { text: 'name', size: 11 },
+          label: { text: 'name', size: 12 },
         },
       });
     }
     return {
-      space: { plane: { grid: { dots: 20 } } },
+      space: { diagram: { grid: { dots: 20 } } },
       layout,
-      theme: { base: 'dark', background: '#0b0f14', groupPadding: 14 },
+      theme: { base: 'dark', background: '#0b0f14' },
       controls: { connect: true, delete: true, selectBox: true },
       marks,
     };
   };
   const view = stage.view(scene(), {
-    label:
-      'A diagram: drag blocks, drag from a port to wire it, Delete removes, double-click a group to fold it',
+    label: 'A diagram: drag blocks, drag from a port to wire it, Delete removes',
   });
 
   /** Shows `next` as the current version. */
@@ -377,7 +364,7 @@ export default function page(stage: Stage): void {
     view.show(scene());
     show(sketch.data());
     view.fit();
-    note(`${choice[0]}: drag, wire, rename, fold, delete, undo.`);
+    note(`${choice[0]}: drag, wire, rename, delete, undo.`);
     const blocks = kinds.reduce((n, kind) => n + (sketch.blocks.get(kind)?.length ?? 0), 0);
     stage.detail(
       `${blocks.toLocaleString()} blocks · ${sketch.signals.length.toLocaleString()} signals`,
@@ -388,17 +375,26 @@ export default function page(stage: Stage): void {
     (data.get(row.table, row.id, 'name') as string | null) ?? `${row.table} ${row.id}`;
   const isBlock = (table: string): table is Kind => table in KINDS;
 
-  // Moving: the drag shows as it goes, and lands as one edit.
-  let dragged: Data | undefined;
+  // Moving: a block keeps where it was grabbed, moves at once, and lands as one edit.
+  let dragged: { before: Data; offset: [number, number] } | undefined;
   view.on('drag', ({ phase, hit, position }) => {
     if (!isBlock(hit.row.table)) return;
-    if (phase === 'start') dragged = data;
+    if (phase === 'start') {
+      const grab = { before: data, offset: [0, 0] as [number, number] };
+      dragged = grab;
+      void view.locate(hit.row).then((at) => {
+        const center = at && view.ground(at);
+        if (center) grab.offset = [center[0] - position[0], center[1] - position[1]];
+      });
+      return;
+    }
+    const offset = dragged?.offset ?? [0, 0];
     const at = new Patch().set(hit.row.table, [hit.row.id as number], {
-      x: [position[0]],
-      y: [position[1]],
+      x: [position[0] + offset[0]],
+      y: [position[1] + offset[1]],
     });
     if (phase === 'end') {
-      if (dragged) history.commit(dragged);
+      if (dragged) history.commit(dragged.before);
       dragged = undefined;
       show(data.apply(at));
       note(`Moved ${name(hit.row)}.`);
@@ -441,16 +437,6 @@ export default function page(stage: Stage): void {
     edit(patch, `Removed ${rows.map(name).join(', ')}.`);
   });
 
-  // A double click folds or unfolds a group.
-  view.on('open', ({ row }) => {
-    if (row.table !== 'Group' && row.table !== 'Station') return;
-    const folded = data.get(row.table, row.id, 'folded') === true;
-    edit(
-      new Patch().set(row.table, [row.id as number], { folded: [!folded] }),
-      `${folded ? 'Opened' : 'Folded'} ${name(row)}.`,
-    );
-  });
-
   const studio = stage.section('Diagram');
   studio.choice(
     'Preset',
@@ -478,7 +464,7 @@ export default function page(stage: Stage): void {
     {
       label: 'Arrange',
       key: 'a',
-      // Blocks without positions are the layout's to place.
+      // Every block lets go of its position, and the layout places them all again.
       run: () => {
         const patch = new Patch();
         for (const kind of kinds) {
@@ -487,6 +473,7 @@ export default function page(stage: Stage): void {
           if (all.length) patch.set(kind, all, { x: all.map(() => null), y: all.map(() => null) });
         }
         edit(patch, 'Arranged.');
+        view.arrange();
         view.fit();
       },
     },
@@ -497,7 +484,7 @@ export default function page(stage: Stage): void {
       label: kind,
       key: String(i + 1),
       run: () => {
-        // New blocks land where the camera looks.
+        // New blocks land where the camera looks; nothing else moves.
         const camera = view.camera;
         const [x, y] = 'center' in camera ? camera.center : [0, 0];
         const id = sketch.next++;
@@ -505,7 +492,7 @@ export default function page(stage: Stage): void {
           ...(sketch.blocks.get(kind) ?? []),
           { id, name: `New ${kind.toLowerCase()}` },
         ]);
-        const ports = Object.fromEntries(
+        const plugged = Object.fromEntries(
           KINDS[kind].ports.map(([port]) => [port, reference('Signal', [null])]),
         );
         edit(
@@ -514,7 +501,7 @@ export default function page(stage: Stage): void {
             x: [x],
             y: [y],
             status: [0],
-            ...ports,
+            ...plugged,
           }),
           `Added a ${kind.toLowerCase()} block.`,
         );

@@ -3,7 +3,7 @@
 //! indirect draw and dispatch arguments, so nothing waits on a readback to know it.
 
 use super::View;
-use super::derived::{Derived, Landed, Work, stamp_of};
+use super::derived::{Derived, stamp_of};
 use super::passes::dispatch;
 use crate::gpu::Inner;
 use crate::gpu::readback::Readback;
@@ -77,7 +77,7 @@ impl View {
     pub(super) fn lay_out_segments(&mut self) {
         let mut at = 0;
         for shown in &mut self.marks {
-            if let Some((stamp, Landed::Read(bytes))) = shown.segments.found.landed() {
+            if let Some((stamp, bytes)) = shown.segments.found.landed() {
                 let found = bytes.get(..4).map_or(0, |w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
                 let kept = shown.segments.list.map_or(0, |l| l.kept);
                 let room = if found > kept { found + found / 4 } else { shown.segments.found.value };
@@ -111,7 +111,8 @@ impl View {
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(list) = shown.segments.list.filter(|_| shown.drawable()) else { continue };
             let arcs = if shown.geodesic { vertices.wrapping_add(shown.version) } else { 0 };
-            let stamp = stamp_of((list.header, list.items, list.kept, shown.graph.version, generation, arcs));
+            let tables = shown.tables.generation();
+            let stamp = stamp_of((list.header, list.items, list.kept, tables, generation, arcs));
             if shown.segments.found.due(stamp) {
                 shown.segments.found.mark(stamp);
                 due.push(i);
@@ -130,7 +131,7 @@ impl View {
             let at = u64::from(list.total()) * 4;
             let readback = Readback::new(&inner.readbacks, &gpu.0.device, encoder, resources.lists(), at, 4);
             let stamp = shown.segments.found.stamp();
-            shown.segments.found.start(stamp, Work::Read(readback));
+            shown.segments.found.start(stamp, readback);
         }
     }
 }

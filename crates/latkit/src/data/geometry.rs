@@ -52,6 +52,22 @@ impl Geometry {
         &self.coords
     }
 
+    /// At most how many points the rows' paths take as shaders read them: every coordinate, and a
+    /// break before each part or ring.
+    pub(crate) fn points(&self) -> usize {
+        let Some(last) = self.levels.len().checked_sub(1) else { return self.len() };
+        // The items of each level the rows span, down to the parts or rings, then their coordinates.
+        let mut span = 0..self.len();
+        let mut parts = 0;
+        for (level, offsets) in self.levels.iter().enumerate() {
+            if level == last {
+                parts = span.len();
+            }
+            span = offsets[span.start] as usize..offsets[span.end] as usize;
+        }
+        span.len() + parts
+    }
+
     pub(crate) fn get(&self, row: usize) -> Value {
         match self.depth {
             0 => Value::Point(self.coords[row]),

@@ -1,11 +1,13 @@
-// Strokes: one instanced quad per segment of every row's path, for edges and lines alike. The cast
-// variant draws the same quads through the light's eye into the shadow map.
+// Strokes: one instanced quad per segment of every row's path, for edges and lines alike. A segment
+// that ends a part of its path carries the arrowhead; in a diagram, a segment of no length is a
+// junction, drawn as a dot. The cast variant draws the same quads through the light's eye into the
+// shadow map.
 
-import package::lib::types::{ARROWS, PATH_TRACE};
+import package::lib::types::{ARROWS, PATH_TRACE, SPACE_DIAGRAM};
 import package::lib::path::PATH;
 import package::lib::bind::{frame, mark};
 import package::lib::project::{to_clip, nearer, culled};
-import package::lib::path::{segment, segment_screen, stroke_style, ends_colored, path_count};
+import package::lib::path::{segment, segment_screen, stroke_style, ends_colored, ends_part};
 import package::lib::marker::{MarkerColor, glow};
 import package::lib::stroke::{Stroke, stroke, stroke_distance};
 import package::lib::shade::caster;
@@ -41,11 +43,13 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let cb = on.cb;
     let a = on.a;
     let b = on.b;
+    let junction = frame.space == SPACE_DIAGRAM && length(b - a) < 1e-3;
+    let width = select(style.width, 3.0 * style.width, junction);
     let dir = normalize(b - a + vec2f(1e-6, 0.0));
     let normal = vec2f(-dir.y, dir.x);
-    let arrow = (mark.flags & ARROWS) != 0u && s.index + 1u == path_count(s.row);
-    let head = select(0.0, frame.arrow + style.width, arrow);
-    let reach = 0.5 * style.width + head + frame.glow + 1.0;
+    let arrow = (mark.flags & ARROWS) != 0u && !junction && ends_part(s);
+    let head = select(0.0, frame.arrow + width, arrow);
+    let reach = 0.5 * width + head + frame.glow + 1.0;
     let t = f32(corner & 1u);
     let side = f32(corner >> 1u) * 2.0 - 1.0;
     let screen = mix(a - dir * reach, b + dir * reach, t) + normal * side * reach;
@@ -58,7 +62,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
         color *= mix(ends[0].color, ends[1].color, t);
     }
     out.color = color;
-    out.style = vec4f(style.width, select(0.0, a.x, PATH == PATH_TRACE), f32(style.dash), style.flow);
+    out.style = vec4f(width, select(0.0, a.x, PATH == PATH_TRACE), f32(style.dash && !junction), style.flow);
     out.height = mix(ends[0].world.z, ends[1].world.z, t);
     out.arrow = u32(arrow);
     return out;

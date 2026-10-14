@@ -1,12 +1,11 @@
 use super::Route;
-use super::Theme;
-use super::mark::{Drawing, MarkKind, Stroke, StrokeWords, Style, stroke_methods, style_methods};
+use super::mark::{Context, Drawing, MarkKind, Stroke, StrokeWords, Style, stroke_methods, style_methods};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Kind, Name, Result};
 
-/// Rows drawn as strokes between the vertices two reference fields name: branches, links, wires.
-/// Without ends, each row is a net: it joins every vertex port whose reference field names it.
+/// Rows drawn as strokes between the vertices two reference fields name: branches, links, wires. In a
+/// diagram, a row without ends is a net: it joins every vertex port whose reference field names it.
 ///
 /// ```
 /// # use latkit::{field, Edges};
@@ -49,7 +48,7 @@ impl Edges {
         self
     }
 
-    /// Whether each row ends in an arrowhead at its second end.
+    /// Whether each row ends in an arrowhead at its second end; a net's at each input it reaches.
     #[must_use]
     pub fn arrows(mut self, on: bool) -> Edges {
         self.arrows = on;
@@ -63,7 +62,7 @@ impl Edges {
         self
     }
 
-    pub(crate) fn compile(&self, c: &mut Compiler<'_>, theme: &Theme) -> Result<Drawing> {
+    pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
         if let Some((from, to)) = &self.ends {
             c.end(from, wgsl::EDGE_FROM).map_err(|e| e.at("ends"))?;
             c.end(to, wgsl::EDGE_TO).map_err(|e| e.at("ends"))?;
@@ -71,15 +70,23 @@ impl Edges {
             return Err(Error::invalid("bends run between ends; name them").at("bends"));
         }
         if let Some(bends) = &self.bends
-            && !matches!(c.kind(bends), Some(Kind::Geometry(1 | 2)))
+            && !matches!(c.kind(bends), Some(Kind::Geometry(1)))
         {
             return Err(Error::invalid("not a path field").at(bends).at("bends"));
         }
         let mut flags = if self.arrows { wgsl::ARROWS } else { 0 };
         let color = Store::Color { word: wgsl::EDGE_COLOR, fallback: wgsl::THEME_EDGE };
-        match (&self.style.color, theme.edge) {
+        match (&self.style.color, context.theme.edge) {
             (Some(expr), _) => c.channel("color", expr, color)?,
             (None, Some(_)) => c.theme("color", wgsl::THEME_EDGE, color)?,
+            // A diagram's wires, and nets without ends to blend, take the text color.
+            (None, None) if context.diagram || self.ends.is_none() => {
+                c.theme(
+                    "color",
+                    wgsl::THEME_TEXT,
+                    Store::Color { word: wgsl::EDGE_COLOR, fallback: wgsl::THEME_TEXT },
+                )?;
+            }
             (None, None) => flags |= wgsl::ENDS_COLOR,
         }
         c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::EDGE_FLAGS, bit: wgsl::VISIBLE })?;
@@ -89,14 +96,17 @@ impl Edges {
             flags: wgsl::EDGE_FLAGS,
             theme_width: wgsl::THEME_EDGE_WIDTH,
         };
-        self.stroke.compile(c, &words)?;
+        self.stroke.compile(c, &words, context.diagram)?;
         let mut drawing = Drawing::new(MarkKind::Edges, wgsl::EDGE_WORDS);
         drawing.flags = flags;
-        if self.ends.is_none() {
-            drawing.source = wgsl::PATH_NET;
+        if context.diagram {
+            // Every wire runs along the path its sheet worked out.
+            drawing.path = wgsl::PATH_GEOMETRY;
+            drawing.geometry = c.derived_path("route");
+        } else {
+            drawing.geometry = self.bends.as_ref().map_or(wgsl::NONE, |bends| c.path(bends));
+            drawing.lane = c.derived_number("lane");
         }
-        drawing.bends.clone_from(&self.bends);
-        drawing.route = self.route;
         Ok(drawing)
     }
 }

@@ -1,19 +1,19 @@
 //! The pipelines a scene uses, made on the first frame drawing it: for each kind of mark, its draw
-//! and the compute passes it needs, each stroke pipeline for each path its marks run along, shadows
-//! when something casts, and the hover's probes for what picks. Chrome compiles them with that frame
+//! and the compute passes it needs, a stroke mark's for the path it runs along, shadows when
+//! something casts, and the hover's probes for what picks. Chrome compiles them with that frame
 //! rather than when the pointer first moves; what the scene never uses is never made. The queries
 //! behind picks, box selection, and locating are made when first asked.
 
 use super::{SHADE, View};
 use crate::gpu::Inner;
 use crate::gpu::pipelines::{self, Variant};
-use crate::gpu::shaders::Shader;
-use crate::{Layout, Mark, Marker, Space};
+use crate::gpu::shaders::{PATH_ENDS, Shader};
+use crate::{Mark, Marker, Space};
 
 /// The probe's entry points the hover reads every probed mark with.
 const HOVER: [&str; 3] = ["nearest", "topmost", "describe"];
 
-/// The label passes run for each labeled mark.
+/// The label passes run for each labeled mark; in a diagram, only the first.
 const LABELS: [&str; 5] = ["candidates", "claim", "decide", "occupy", "fade"];
 
 impl View {
@@ -37,15 +37,12 @@ impl View {
             compute(Shader::Freeze, "gather"),
         ];
         let controls = scene.controls;
+        let diagram = matches!(scene.space, Space::Diagram(_));
         if matches!(scene.space, Space::Plot(_)) || controls.select_box || controls.connect {
             variants.push(draw(Shader::Overlay));
         }
-        if any(|m| m.style().label.is_some()) {
-            variants.extend([
-                draw(Shader::Glyphs),
-                compute(Shader::Labels, "clear_cells"),
-                compute(Shader::Labels, "reset_cells"),
-            ]);
+        if any(|m| m.style().label.is_some()) && !diagram {
+            variants.extend([compute(Shader::Labels, "clear_cells"), compute(Shader::Labels, "reset_cells")]);
         }
         if any(|m| m.style().shadow) {
             variants.push(Variant::draw(Shader::Shade, SHADE, 1));
@@ -56,45 +53,43 @@ impl View {
         if any(|m| matches!(m, Mark::Edges(_) | Mark::Lines(_))) {
             variants.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| compute(Shader::Lists, e)));
         }
-        if any(|m| matches!(m, Mark::Vertices(v) if v.members.is_some())) {
-            variants.extend(["clear", "open", "widen", "stand"].map(|e| compute(Shader::Groups, e)));
-        }
-        if matches!(scene.layout, Layout::Stress(_)) {
-            variants.extend(["seed", "forward", "backward", "settle"].map(|e| compute(Shader::Stress, e)));
-        }
+        let labels = if diagram { &LABELS[..1] } else { &LABELS[..] };
         for mark in marks {
             let style = mark.style();
             let primitive = mark.kind().primitive().code();
-            // A stroke mark's pipelines are made once for each path it runs along; others' once.
-            let paths = if mark.paths().is_empty() { &[crate::gpu::shaders::PATH_ENDS][..] } else { mark.paths() };
-            for &path in paths {
-                let (shader, cast) = match mark {
-                    Mark::Vertices(v) if matches!(v.marker, Marker::Wgsl { .. }) => (None, None),
-                    Mark::Vertices(_) => (Some(Shader::Points), Some(Shader::PointsCast)),
-                    Mark::Faces(_) => (Some(Shader::Triangles), Some(Shader::TrianglesCast)),
-                    Mark::Edges(_) | Mark::Lines(_) => (Some(Shader::Strokes), Some(Shader::StrokesCast)),
-                };
-                variants.extend(shader.map(|s| draw(s).path(path)));
-                if style.shadow {
-                    variants.extend(cast.map(|s| Variant::draw(s, SHADE, 1).path(path)));
-                }
-                let bounds = if matches!(mark, Mark::Vertices(_)) { "points" } else { "strokes" };
-                variants.push(compute(Shader::Bounds, bounds).path(path));
-                if !mark.paths().is_empty() {
-                    variants.extend(["count_segments", "write_segments"].map(|e| compute(Shader::Lists, e).path(path)));
-                }
-                if style.interaction.pick {
-                    variants.extend(HOVER.map(|e| Variant::probe(probe, e, primitive).path(path)));
-                }
-                if style.label.is_some() {
-                    variants.extend(LABELS.map(|e| compute(Shader::Labels, e).path(path)));
-                }
+            // A stroke mark's pipelines are made for the path it runs along; others' read none.
+            let path = mark.path(diagram).unwrap_or(PATH_ENDS);
+            let (shader, cast) = match mark {
+                Mark::Vertices(v) if matches!(v.marker, Marker::Wgsl { .. }) => (None, None),
+                Mark::Vertices(_) => (Some(Shader::Points), Some(Shader::PointsCast)),
+                Mark::Faces(_) => (Some(Shader::Triangles), Some(Shader::TrianglesCast)),
+                Mark::Edges(_) | Mark::Lines(_) => (Some(Shader::Strokes), Some(Shader::StrokesCast)),
+            };
+            variants.extend(shader.map(|s| draw(s).path(path)));
+            if style.shadow {
+                variants.extend(cast.map(|s| Variant::draw(s, SHADE, 1).path(path)));
+            }
+            let bounds = if matches!(mark, Mark::Vertices(_)) { "points" } else { "strokes" };
+            variants.push(compute(Shader::Bounds, bounds).path(path));
+            // An edge's rows may run through different numbers of segments, which a list numbers.
+            if matches!(mark, Mark::Edges(_)) {
+                variants.extend(["count_segments", "write_segments"].map(|e| compute(Shader::Lists, e).path(path)));
+            }
+            if style.interaction.pick {
+                variants.extend(HOVER.map(|e| Variant::probe(probe, e, primitive).path(path)));
+            }
+            if style.label.is_some() {
+                variants.push(draw(Shader::Glyphs).path(path));
+                variants.extend(labels.iter().map(|e| compute(Shader::Labels, e).path(path)));
             }
             match mark {
                 Mark::Faces(_) => variants.push(compute(Shader::Normals, "accumulate")),
                 Mark::Vertices(vertices) => {
                     if !vertices.ports.is_empty() {
                         variants.push(draw(Shader::PointsPorts));
+                    }
+                    if vertices.ports.iter().any(|(_, port)| port.label.is_some()) {
+                        variants.push(draw(Shader::GlyphsPorts));
                     }
                     if let Marker::Wgsl { source, .. } = &vertices.marker {
                         inner.pipelines.custom(device, source, Shader::PointsCustom, format, samples);

@@ -3,33 +3,35 @@ use std::sync::Arc;
 use crate::Color;
 
 /// Colors and sizes marks take where their options read nothing, and the look of focus and motion.
+/// Lengths are CSS pixels; in a diagram they are units, except `glow` and `halo`.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Theme {
     /// Behind everything.
     pub background: Color,
-    /// The earth's ground.
+    /// The earth's ground, and a group's container.
     pub surface: Color,
-    /// A plane's grid.
+    /// A plane's or a diagram's grid.
     pub grid: Color,
     /// Vertex color.
     pub vertex: Color,
-    /// Vertex radius, CSS pixels.
+    /// Vertex radius.
     pub vertex_radius: f32,
-    /// Edge color; `None` blends the colors of each edge's two vertices.
+    /// Edge color; `None` blends the colors of each edge's two vertices, and in a diagram takes the
+    /// text color.
     pub edge: Option<Color>,
-    /// Edge width, CSS pixels.
+    /// Edge width.
     pub edge_width: f32,
     /// Line color.
     pub line: Color,
-    /// Line width, CSS pixels.
+    /// Line width.
     pub line_width: f32,
     /// How much a face turned away from the camera darkens, 0 to 1.
     pub shading: f32,
-    /// Text: axis ticks and titles.
+    /// Text: labels, axis ticks, and titles.
     pub text: Color,
     /// The CSS font family text is set in.
     pub font: Arc<str>,
-    /// Text size, CSS pixels.
+    /// Text size.
     pub font_size: f32,
     /// The line a plot draws at the shown coordinate.
     pub playhead: Color,
@@ -43,21 +45,22 @@ pub struct Theme {
     pub glow: f32,
     /// The opacity of rows outside a selection.
     pub dim: f32,
-    /// How much a hovered vertex grows.
+    /// How much a hovered vertex sized in CSS pixels grows.
     pub hover_scale: f32,
-    /// Length of a dash, CSS pixels.
+    /// Length of a dash.
     pub dash: f32,
     /// Comets flowing along edges.
     pub flow: Color,
-    /// CSS pixels between flowing comets.
+    /// Distance between flowing comets.
     pub flow_spacing: f32,
-    /// CSS pixels between the lanes of edges joining the same two vertices.
+    /// Distance between the lanes of edges joining the same two vertices, and between parallel
+    /// orthogonal wires, which keep twice it apart.
     pub edge_spacing: f32,
-    /// CSS pixels an arrowhead reaches past its edge's width.
+    /// How far an arrowhead reaches past its edge's width.
     pub arrow: f32,
     /// CSS pixels of background around label text.
     pub halo: f32,
-    /// CSS pixels between a group's members and its outline.
+    /// Distance between a group's members and its outline.
     pub group_padding: f32,
     /// How marks that cast shadows cast them.
     pub shadow: Shadow,
@@ -106,7 +109,7 @@ impl Theme {
             edge_spacing: 4.0,
             arrow: 7.0,
             halo: 2.0,
-            group_padding: 12.0,
+            group_padding: 16.0,
             shadow: Shadow { color: Color::BLACK.alpha(0.45), light: [-0.35, 0.45, 1.0], softness: 0.15, lift: 3.0 },
         }
     }

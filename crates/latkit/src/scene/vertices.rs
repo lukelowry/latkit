@@ -1,5 +1,5 @@
 use super::Port;
-use super::mark::{Drawing, GEOMETRY, MarkKind, Style, style_methods};
+use super::mark::{Context, Drawing, GEOMETRY, MarkKind, Style, style_methods};
 use super::marker::Marker;
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
@@ -25,7 +25,6 @@ pub struct Vertices {
     pub(crate) status: Option<Expr>,
     pub(crate) ports: Vec<(Name, Port)>,
     pub(crate) members: Option<(Name, Name)>,
-    pub(crate) collapsed: Option<Expr>,
 }
 
 impl Vertices {
@@ -41,12 +40,11 @@ impl Vertices {
             status: None,
             ports: Vec::new(),
             members: None,
-            collapsed: None,
         }
     }
 
     /// A port on each row: where the net its reference field `reference` names meets it. An `Edges`
-    /// mark of the net table, without ends, draws the nets.
+    /// mark of the net table, without ends, draws the nets. Diagrams only.
     #[must_use]
     pub fn port(mut self, reference: impl Into<Name>, port: impl Into<Port>) -> Vertices {
         let reference = reference.into();
@@ -56,44 +54,40 @@ impl Vertices {
     }
 
     /// Makes each row a group: it holds the rows of `table` whose reference field `reference` names
-    /// it, and is drawn around them.
+    /// it, and draws as a container around them, its label a title in its header. Diagrams only.
     #[must_use]
     pub fn contains(mut self, table: impl Into<Name>, reference: impl Into<Name>) -> Vertices {
         self.members = Some((table.into(), reference.into()));
         self
     }
 
-    /// Whether each group hides its members inside it; edges to them end at the group. Folding
-    /// eases: members move into the group, shrinking and fading.
-    #[must_use]
-    pub fn collapsed(mut self, collapsed: impl Into<Expr>) -> Vertices {
-        self.collapsed = Some(collapsed.into());
-        self
-    }
-
-    /// Each row's position. Without one, a point field named `geometry` places rows, else the
-    /// scene's layout does.
+    /// Each row's position. Without one, a point field named `geometry` places rows, else a
+    /// diagram's layout does.
     #[must_use]
     pub fn position(mut self, x: impl Into<Expr>, y: impl Into<Expr>) -> Vertices {
         self.position = Some([x.into(), y.into()]);
         self
     }
 
-    /// Height above the ground: on the earth, a fraction of its radius.
+    /// Height above the ground: on the earth, a fraction of its radius. Not in a diagram, which is
+    /// flat.
     #[must_use]
     pub fn elevation(mut self, z: impl Into<Expr>) -> Vertices {
         self.elevation = z.into();
         self
     }
 
-    /// Each row's radius: CSS pixels, or position units with [`units`](crate::units).
+    /// Each row's radius: CSS pixels, or position units with [`units`](crate::units); units in a
+    /// diagram.
     #[must_use]
     pub fn radius(mut self, radius: impl Into<Size>) -> Vertices {
         self.radius = Some(radius.into());
         self
     }
 
-    /// Each row's width and height, for markers that are not round.
+    /// Each row's width and height, for markers that are not round: CSS pixels, or position units
+    /// with [`units`](crate::units); units in a diagram, where a block without a size fits its label
+    /// and ports.
     #[must_use]
     pub fn size(mut self, width: impl Into<Size>, height: impl Into<Size>) -> Vertices {
         self.size = Some([width.into(), height.into()]);
@@ -114,57 +108,64 @@ impl Vertices {
         self
     }
 
-    pub(crate) fn compile(&self, c: &mut Compiler<'_>) -> Result<Drawing> {
-        let at = wgsl::VERTEX_POSITION;
-        match &self.position {
-            Some([x, y]) => c.position(x, y, at),
-            None if c.kind(GEOMETRY) == Some(Kind::Geometry(0)) => {
-                c.position(&Expr::component(GEOMETRY, 0), &Expr::component(GEOMETRY, 1), at)
-            }
-            None => c.position(&Expr::missing(), &Expr::missing(), at),
-        }
-        .map_err(|e| e.at("position"))?;
-        let color = Store::Color { word: wgsl::VERTEX_COLOR, fallback: wgsl::THEME_VERTEX };
-        match &self.style.color {
-            Some(expr) => c.channel("color", expr, color)?,
-            None => c.theme("color", wgsl::THEME_VERTEX, color)?,
-        }
-        let visible = Store::Flag { word: wgsl::VERTEX_FLAGS, bit: wgsl::VISIBLE };
-        c.channel("visible", &self.style.visible, visible)?;
-        c.channel("elevation", &self.elevation, Store::Number { word: wgsl::VERTEX_ELEVATION, fallback: None })?;
+    pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
+        let group = self.members.is_some();
         let inputs = self.marker.inputs();
         if inputs.len() > 8 {
             return Err(crate::Error::invalid("a marker reads at most eight inputs").at("marker"));
         }
-        // A group's own size is what it shows collapsed, in extra words after the marker's inputs;
-        // the groups pass sizes it, in position units, around its members.
-        let group = self.members.is_some();
-        let own = if group { wgsl::VERTEX_WORDS + inputs.len() as u32 } else { wgsl::VERTEX_HALF };
-        let half =
-            |word: u32, size: &Size| Store::Size { word, units: size.units, fallback: Some(wgsl::THEME_VERTEX_RADIUS) };
-        let mut flags = if group { wgsl::SIZED } else { 0 };
-        match (&self.size, &self.radius) {
-            (Some([w, h]), _) => {
-                flags |= wgsl::SIZED;
-                c.channel("width", &(w.expr.clone() * 0.5), half(own, w))?;
-                c.channel("height", &(h.expr.clone() * 0.5), half(own + 1, h))?;
+        let mut flags = 0;
+        if context.diagram {
+            // The sheet says where each row stands and how large it is, from the data alone.
+            c.check_structure("position", self.position.iter().flatten())?;
+            c.check_structure("size", self.size.iter().flatten().map(|s| &s.expr))?;
+            c.check_structure("radius", self.radius.iter().map(|s| &s.expr))?;
+            c.derived_position(wgsl::VERTEX_POSITION).map_err(|e| e.at("position"))?;
+            for (k, field) in ["half_x", "half_y"].into_iter().enumerate() {
+                let store = Store::Size { word: wgsl::VERTEX_HALF + k as u32, units: true, fallback: None };
+                c.derived(["width", "height"][k], field, store)?;
             }
-            (None, Some(radius)) => {
-                c.channel("radius", &radius.expr, half(own, radius))?;
-                if group {
-                    c.channel("height", &radius.expr, half(own + 1, radius))?;
+            if group {
+                c.derived("depth", "depth", Store::Number { word: wgsl::VERTEX_DEPTH, fallback: None })?;
+            }
+            flags |= wgsl::SIZED;
+        } else {
+            let at = wgsl::VERTEX_POSITION;
+            match &self.position {
+                Some([x, y]) => c.position(x, y, at),
+                None if c.kind(GEOMETRY) == Some(Kind::Geometry(0)) => {
+                    c.position(&Expr::component(GEOMETRY, 0), &Expr::component(GEOMETRY, 1), at)
+                }
+                None => c.position(&Expr::missing(), &Expr::missing(), at),
+            }
+            .map_err(|e| e.at("position"))?;
+            let half = |word: u32, size: &Size| Store::Size {
+                word,
+                units: size.units,
+                fallback: Some(wgsl::THEME_VERTEX_RADIUS),
+            };
+            match (&self.size, &self.radius) {
+                (Some([w, h]), _) => {
+                    flags |= wgsl::SIZED;
+                    c.channel("width", &(w.expr.clone() * 0.5), half(wgsl::VERTEX_HALF, w))?;
+                    c.channel("height", &(h.expr.clone() * 0.5), half(wgsl::VERTEX_HALF + 1, h))?;
+                }
+                (None, Some(radius)) => c.channel("radius", &radius.expr, half(wgsl::VERTEX_HALF, radius))?,
+                (None, None) => {
+                    let store = Store::Size { word: wgsl::VERTEX_HALF, units: false, fallback: None };
+                    c.theme("radius", wgsl::THEME_VERTEX_RADIUS, store)?;
                 }
             }
-            (None, None) => {
-                for word in if group { own..own + 2 } else { own..own + 1 } {
-                    let store = Store::Size { word, units: false, fallback: None };
-                    c.theme(if word == own { "radius" } else { "height" }, wgsl::THEME_VERTEX_RADIUS, store)?;
-                }
-            }
+            c.channel("elevation", &self.elevation, Store::Number { word: wgsl::VERTEX_ELEVATION, fallback: None })?;
         }
-        if group {
-            c.in_units(wgsl::VERTEX_HALF..wgsl::VERTEX_HALF + 2);
+        let fallback = if group { wgsl::THEME_SURFACE } else { wgsl::THEME_VERTEX };
+        let color = Store::Color { word: wgsl::VERTEX_COLOR, fallback };
+        match &self.style.color {
+            Some(expr) => c.channel("color", expr, color)?,
+            None => c.theme("color", fallback, color)?,
         }
+        let visible = Store::Flag { word: wgsl::VERTEX_FLAGS, bit: wgsl::VISIBLE };
+        c.channel("visible", &self.style.visible, visible)?;
         if let Some(status) = &self.status {
             flags |= wgsl::STATUS;
             c.channel("status", status, Store::Color { word: wgsl::VERTEX_STATUS, fallback: wgsl::THEME_CLEAR })?;
@@ -173,25 +174,23 @@ impl Vertices {
             let store = Store::Number { word: wgsl::VERTEX_WORDS + i as u32, fallback: None };
             c.channel(&format!("input{i}"), input, store).map_err(|e| e.at(i).at("marker"))?;
         }
-        if let Some(collapsed) = &self.collapsed {
-            if self.members.is_none() {
-                return Err(crate::Error::invalid("only groups collapse: name what each row contains").at("collapsed"));
-            }
-            // How far each group folded, which eases like any number.
-            let fold = crate::when(collapsed.clone()).then(1.0).otherwise(0.0);
-            c.channel("collapsed", &fold, Store::Number { word: wgsl::VERTEX_FOLD, fallback: None })?;
-        }
-        for (reference, _) in &self.ports {
-            if c.kind(reference) != Some(Kind::Reference) {
-                return Err(crate::Error::invalid("not a reference field").at(reference).at("port"));
-            }
+        let mut ports = Vec::with_capacity(self.ports.len());
+        for (reference, port) in &self.ports {
+            let column = c.bits(reference).map_err(|e| e.at(reference).at("port"))?;
+            ports.push((reference.clone(), port.clone(), column));
         }
         let mut drawing = Drawing::new(MarkKind::Vertices, wgsl::VERTEX_WORDS);
-        drawing.flags = flags;
         drawing.markers = self.marker.markers(0);
-        drawing.extras = inputs.len() as u32 + if group { 2 } else { 0 };
-        drawing.ports.clone_from(&self.ports);
-        drawing.members.clone_from(&self.members);
+        if group {
+            // A container is a box whatever its marker.
+            flags |= wgsl::GROUP;
+            drawing.markers.marker = wgsl::MARKER_SHAPE;
+            drawing.markers.shape = wgsl::SHAPE_RECTANGLE;
+        }
+        drawing.flags = flags;
+        drawing.extras = inputs.len() as u32;
+        drawing.ports = ports;
+        drawing.port_label_size = 0.8 * context.theme.font_size;
         Ok(drawing)
     }
 }

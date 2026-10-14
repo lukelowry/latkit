@@ -80,10 +80,12 @@ pub(crate) struct StrokeWords {
 }
 
 impl Stroke {
-    pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords) -> Result<()> {
+    /// Compiles the stroke's options; in a diagram its width is in units.
+    pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords, diagram: bool) -> Result<()> {
         c.channel("dash", &self.dash, Store::Flag { word: words.flags, bit: wgsl::DASH })?;
         c.channel("flow", &self.flow, Store::Number { word: words.flow, fallback: None })?;
-        let width = |units| Store::Size { word: words.width, units, fallback: Some(words.theme_width) };
+        let width =
+            |units| Store::Size { word: words.width, units: units || diagram, fallback: Some(words.theme_width) };
         match &self.width {
             Some(size) => c.channel("width", &size.expr, width(size.units)),
             None => c.theme("width", words.theme_width, width(false)),
@@ -186,13 +188,22 @@ pub(crate) struct Markers {
 }
 
 /// How a compiled mark's labels draw: the extra word their words start at, the program column of
-/// their text, their size in CSS pixels, and where their lines wrap.
+/// their text, their size in length units (CSS pixels, or units in a diagram), and where their lines
+/// wrap.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Labeling {
     pub(crate) extra: u32,
     pub(crate) column: u32,
     pub(crate) size: f32,
     pub(crate) max_width: Option<f32>,
+}
+
+/// What a mark compiles in: the theme it falls back on, and whether its space is a diagram, where
+/// every length is a unit and the sheet says where vertices stand and how wires run.
+#[derive(Clone, Copy)]
+pub(crate) struct Context<'a> {
+    pub(crate) theme: &'a super::Theme,
+    pub(crate) diagram: bool,
 }
 
 /// What a compiled mark draws with, besides its program.
@@ -202,7 +213,7 @@ pub(crate) struct Drawing {
     /// The primitive the mark draws its rows with.
     pub(crate) primitive: Primitive,
     /// Where a stroke's segments run between: one of the `PATH_*` codes.
-    pub(crate) source: u32,
+    pub(crate) path: u32,
     /// Kind words per row, and extra words per row after them.
     pub(crate) stride: u32,
     pub(crate) extras: u32,
@@ -210,20 +221,21 @@ pub(crate) struct Drawing {
     pub(crate) markers: Markers,
     /// The program column a line traces, or `NONE`.
     pub(crate) trace: u32,
+    /// Program columns: the geometry a stroke's path runs through (a diagram's route, or bends), and
+    /// each row's lane among edges joining the same two vertices; `NONE` without.
+    pub(crate) geometry: u32,
+    pub(crate) lane: u32,
     pub(crate) label: Option<Labeling>,
-    /// A vertex mark's ports, by the reference field that names their nets.
-    pub(crate) ports: Vec<(Name, super::Port)>,
-    /// A vertex mark's members: rows of a table whose reference field names the row they are in.
-    pub(crate) members: Option<(Name, Name)>,
-    /// An edge mark's bends: a path field of points between its ends.
-    pub(crate) bends: Option<Name>,
-    /// How an edge mark's rows run; `None` takes the space's way.
-    pub(crate) route: Option<super::Route>,
+    /// A vertex mark's ports, by the reference field that names their nets, with the program column
+    /// reading that field.
+    pub(crate) ports: Vec<(Name, super::Port, u32)>,
+    /// The size a vertex mark's port labels are set at, in length units.
+    pub(crate) port_label_size: f32,
 }
 
 impl Drawing {
     pub(crate) fn new(kind: MarkKind, stride: u32) -> Drawing {
-        let source = match kind {
+        let path = match kind {
             MarkKind::Edges => wgsl::PATH_ENDS,
             MarkKind::Lines => wgsl::PATH_TRACE,
             MarkKind::Vertices | MarkKind::Faces => wgsl::NONE,
@@ -231,17 +243,17 @@ impl Drawing {
         Drawing {
             kind,
             primitive: kind.primitive(),
-            source,
+            path,
             stride,
             extras: 0,
             flags: 0,
             markers: Markers::default(),
             trace: wgsl::NONE,
+            geometry: wgsl::NONE,
+            lane: wgsl::NONE,
             label: None,
             ports: Vec::new(),
-            members: None,
-            bends: None,
-            route: None,
+            port_label_size: 0.0,
         }
     }
 }
@@ -274,15 +286,39 @@ impl Mark {
         }
     }
 
-    /// The paths a stroke mark's rows run along, one of the `PATH_` codes each, which its pipelines
-    /// are made for: an orthogonally routed net's both, as it runs along its route once it has one.
-    pub(crate) fn paths(&self) -> &'static [u32] {
+    /// The path a stroke mark's rows run along, one of the `PATH_` codes, which its pipelines are made
+    /// for: in a diagram every wire runs through the geometry its sheet worked out.
+    pub(crate) fn path(&self, diagram: bool) -> Option<u32> {
         match self {
-            Mark::Edges(e) if e.ends.is_some() => &[wgsl::PATH_ENDS],
-            Mark::Edges(e) if e.route == Some(super::Route::Orthogonal) => &[wgsl::PATH_NET, wgsl::PATH_GEOMETRY],
-            Mark::Edges(_) => &[wgsl::PATH_NET],
-            Mark::Lines(_) => &[wgsl::PATH_TRACE],
-            Mark::Vertices(_) | Mark::Faces(_) => &[],
+            Mark::Edges(_) if diagram => Some(wgsl::PATH_GEOMETRY),
+            Mark::Edges(_) => Some(wgsl::PATH_ENDS),
+            Mark::Lines(_) => Some(wgsl::PATH_TRACE),
+            Mark::Vertices(_) | Mark::Faces(_) => None,
+        }
+    }
+
+    /// The first option of this mark only a diagram has, if any: ports, groups, nets, orthogonal
+    /// routes. A diagram's own refusals: shadows and elevation.
+    pub(crate) fn misplaced(&self, diagram: bool) -> Option<(&'static str, &'static str)> {
+        const ONLY: &str = "only a diagram has ports, groups, nets, and orthogonal routes";
+        let style = self.style();
+        if diagram {
+            if style.shadow {
+                return Some(("shadow", "a diagram is flat: nothing casts shadows"));
+            }
+            if let Mark::Vertices(v) = self
+                && v.elevation != Expr::from(0.0)
+            {
+                return Some(("elevation", "a diagram is flat: vertices have no elevation"));
+            }
+            return None;
+        }
+        match self {
+            Mark::Vertices(v) if !v.ports.is_empty() => Some(("port", ONLY)),
+            Mark::Vertices(v) if v.members.is_some() => Some(("contains", ONLY)),
+            Mark::Edges(e) if e.ends.is_none() => Some(("ends", ONLY)),
+            Mark::Edges(e) if e.route == Some(super::Route::Orthogonal) => Some(("route", ONLY)),
+            _ => None,
         }
     }
 
@@ -303,16 +339,16 @@ impl Mark {
         a == *other
     }
 
-    pub(crate) fn compile(&self, compiler: &mut Compiler<'_>, theme: &super::Theme) -> Result<Drawing> {
+    pub(crate) fn compile(&self, compiler: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
         let mut drawing = match self {
-            Mark::Vertices(m) => m.compile(compiler),
-            Mark::Edges(m) => m.compile(compiler, theme),
+            Mark::Vertices(m) => m.compile(compiler, context),
+            Mark::Edges(m) => m.compile(compiler, context),
             Mark::Faces(m) => m.compile(compiler),
-            Mark::Lines(m) => m.compile(compiler),
+            Mark::Lines(m) => m.compile(compiler, context),
         }?;
         let style = self.style();
         if let Some(label) = &style.label {
-            compile_label(label, compiler, theme, &mut drawing).map_err(|e| e.at("label"))?;
+            compile_label(label, compiler, context.theme, &mut drawing).map_err(|e| e.at("label"))?;
         }
         if style.shadow {
             drawing.flags |= wgsl::CASTS;
@@ -408,7 +444,8 @@ macro_rules! style_methods {
 macro_rules! stroke_methods {
     ($mark:ty) => {
         impl $mark {
-            /// Each row's width: CSS pixels, or position units with [`units`](crate::units).
+            /// Each row's width: CSS pixels, or position units with [`units`](crate::units); units in
+            /// a diagram.
             #[must_use]
             pub fn width(mut self, width: impl Into<$crate::Size>) -> Self {
                 self.stroke.width = Some(width.into());
@@ -422,7 +459,8 @@ macro_rules! stroke_methods {
                 self
             }
 
-            /// Comets flowing along each row, CSS pixels per second; negative flows backward.
+            /// Comets flowing along each row, CSS pixels per second, or units in a diagram; negative
+            /// flows backward.
             #[must_use]
             pub fn flow(mut self, px_per_second: impl Into<$crate::Expr>) -> Self {
                 self.stroke.flow = px_per_second.into();

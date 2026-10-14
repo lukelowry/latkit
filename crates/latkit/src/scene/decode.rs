@@ -13,8 +13,8 @@
 //! }
 //! ```
 //!
-//! A space is `"plane"`, `"earth"` (mercator), `"globe"`, `"plot"`, or an object such as
-//! `{ "plane": { "grid": { "dots": 10, "snap": true } } }`.
+//! A space is `"plane"`, `"diagram"`, `"earth"` (mercator), `"globe"`, `"plot"`, or an object such as
+//! `{ "diagram": { "grid": { "dots": 20, "snap": true } } }`.
 
 use std::time::Duration;
 
@@ -22,8 +22,9 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
 use super::{
-    Axis, Controls, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered, Layout, Lines,
-    Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shape, Side, Space, Stress, Theme, Vertices,
+    Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered,
+    Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shape, Side, Space, Stress, Theme,
+    Vertices,
 };
 use crate::{Color, Expr, Name, Size};
 
@@ -69,6 +70,7 @@ impl<'de> Deserialize<'de> for Space {
         enum Tagged {
             Earth(EarthForm),
             Plane(PlaneForm),
+            Diagram(PlaneForm),
             Plot(PlotForm),
         }
         #[derive(Deserialize)]
@@ -80,11 +82,13 @@ impl<'de> Deserialize<'de> for Space {
         Ok(match Form::deserialize(deserializer)? {
             Form::Name(name) => match name.as_str() {
                 "plane" => Space::Plane(Plane::default()),
+                "diagram" => Space::Diagram(Diagram::default()),
                 "earth" | "mercator" => Space::Earth(Earth::mercator()),
                 "globe" => Space::Earth(Earth::globe()),
                 "plot" => Space::Plot(Plot::default()),
                 other => {
-                    return Err(de::Error::unknown_variant(other, &["plane", "earth", "mercator", "globe", "plot"]));
+                    let names = &["plane", "diagram", "earth", "mercator", "globe", "plot"];
+                    return Err(de::Error::unknown_variant(other, names));
                 }
             },
             Form::Tagged(Tagged::Earth(e)) => Space::Earth(Earth {
@@ -93,6 +97,9 @@ impl<'de> Deserialize<'de> for Space {
                 graticule: e.graticule.unwrap_or(true),
             }),
             Form::Tagged(Tagged::Plane(p)) => Space::Plane(Plane { grid: p.grid.unwrap_or(Plane::default().grid) }),
+            Form::Tagged(Tagged::Diagram(d)) => {
+                Space::Diagram(Diagram { grid: d.grid.unwrap_or(Diagram::default().grid) })
+            }
             Form::Tagged(Tagged::Plot(p)) => {
                 Space::Plot(Plot { x: p.x.unwrap_or_default(), y: p.y.unwrap_or_default() })
             }
@@ -345,12 +352,11 @@ form!(VerticesForm {
     status: Expr,
     ports: Vec<(Name, Port)>,
     contains: (Name, Name),
-    collapsed: Expr,
 });
 
 impl VerticesForm {
     fn build(self) -> Vertices {
-        let mut v = apply!(self, Vertices::of(self.of.0, self.of.1); elevation, radius, marker, status, collapsed);
+        let mut v = apply!(self, Vertices::of(self.of.0, self.of.1); elevation, radius, marker, status);
         if let Some((x, y)) = self.position {
             v = v.position(x, y);
         }
@@ -620,6 +626,8 @@ impl<'de> Deserialize<'de> for Port {
             order: Option<u32>,
             label: Option<String>,
             shape: Option<String>,
+            #[serde(default)]
+            output: bool,
         }
         #[derive(Deserialize)]
         #[serde(untagged)]
@@ -642,6 +650,7 @@ impl<'de> Deserialize<'de> for Port {
                         return Err(de::Error::unknown_variant(other, &["ellipse", "rectangle", "rounded", "diamond"]));
                     }
                 },
+                output: full.output,
             },
         })
     }

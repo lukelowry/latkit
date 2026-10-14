@@ -2,8 +2,9 @@
 //! a port, an Alt-held vertex, or an edge it draws a connection when connecting is on; on a row of a
 //! draggable mark it drags the row; elsewhere it pans. A secondary press turns once it moves and asks
 //! for a menu when it does not. Shift drags turn or select in a box, the wheel and pinches zoom, and
-//! keys step. Every camera move is about the point under the pointer and goes through the rig, which
-//! carries a released drag on and keeps the camera within reach.
+//! keys step. A diagram never turns, and its drags snap to its grid when it says so. Every camera
+//! move is about the point under the pointer and goes through the rig, which carries a released drag
+//! on and keeps the camera within reach.
 //!
 //! The point under a press comes from the latest probe when it was taken where the press is,
 //! otherwise from a probe of its own a frame or two later; the press waits for it and catches up.
@@ -19,7 +20,7 @@ use super::input::{Button, Input, Key, Modifiers};
 use super::probe::{Answer, Probed, near};
 use crate::expr::compile::Deps;
 use crate::scene::mark::MarkKind;
-use crate::{Camera, Pending, Row, Scene};
+use crate::{Camera, Grid, Pending, Row, Scene, Space};
 
 /// CSS pixels a press moves before it drags or pans.
 const SLOP: f32 = 4.0;
@@ -197,7 +198,7 @@ impl View {
         let turning = button == Button::Primary && modifiers.shift && !boxing;
         self.gestures.now = if boxing {
             Gesture::Box { pointer, from: point, to: point }
-        } else if turning && controls.turn && map {
+        } else if turning && self.turns() && map {
             let anchor = self.anchor(point, self.probing.at(point).as_ref());
             Gesture::Turn { pointer, anchor, last: point }
         } else if button == Button::Middle && controls.pan {
@@ -367,7 +368,7 @@ impl View {
         }
         if button == Button::Secondary {
             self.gestures.now = Gesture::Idle;
-            if self.scene.controls.turn && matches!(self.camera, Camera::Map { .. }) {
+            if self.turns() && matches!(self.camera, Camera::Map { .. }) {
                 let anchor = self.anchor(from, Some(&answer));
                 self.gestures.now = Gesture::Turn { pointer, anchor, last: from };
                 self.moved(pointer, to);
@@ -456,8 +457,26 @@ impl View {
     fn drag(&mut self, phase: Phase, point: [f32; 2]) {
         let Gesture::Drag { probed, .. } = &self.gestures.now else { return };
         let view = self.projected();
-        let position = view.position(view.unproject(point.map(f64::from), f64::from(probed.depth)));
+        let mut position = view.position(view.unproject(point.map(f64::from), f64::from(probed.depth)));
+        if let Space::Diagram(diagram) = &self.scene.space
+            && let Grid::Dots { pitch, snap: true } = diagram.grid
+            && pitch > 0.0
+        {
+            for v in &mut position[..2] {
+                *v = (*v / pitch).round() * pitch;
+            }
+        }
         self.events.push(Event::Drag(Drag { phase, hit: probed.hit.clone(), point, position }));
+    }
+
+    /// Whether a row is being dragged: what it moves follows at once.
+    pub(super) fn dragging(&self) -> bool {
+        matches!(self.gestures.now, Gesture::Drag { .. })
+    }
+
+    /// Whether gestures and keys turn the camera: never in a diagram.
+    fn turns(&self) -> bool {
+        self.scene.controls.turn && !matches!(self.scene.space, Space::Diagram(_))
     }
 
     /// Where a connection starts from what a press hit: a port, or a vertex with Alt, starts one
@@ -565,7 +584,7 @@ impl View {
             _ => None,
         };
         match (key, arrow) {
-            (_, Some([dx, dy])) if modifiers.shift && controls.turn => {
+            (_, Some([dx, dy])) if modifiers.shift && self.turns() => {
                 self.rig.owe(anchor, [0.0; 2], [-dx * STEP_TURN, dy * STEP_TURN], 0.0);
             }
             (_, Some([dx, dy])) if controls.pan => self.rig.owe(anchor, [dx * STEP, dy * STEP], [0.0; 2], 0.0),

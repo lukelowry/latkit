@@ -1,8 +1,7 @@
-//! A frame's passes: compute evaluates dirty channels, reduces fitted domains, stands groups around
-//! their members, numbers segments, sums face normals when their corners moved, and measures extents
-//! when asked; render draws the backdrop, every mark's
-//! primitive in scene order with depth, and the overlay; a probe, when one waits, reads what the
-//! frame drew through the same geometry.
+//! A frame's passes: compute evaluates dirty channels, reduces fitted domains, numbers segments, sums
+//! face normals when their corners moved, and measures extents when asked; render draws the
+//! backdrop, every mark's primitive and ports in scene order with depth, the labels, and the
+//! overlay; a probe, when one waits, reads what the frame drew through the same geometry.
 
 use super::derived::stamp_of;
 use super::resources::{EyeSlot, MARK_STRIDE};
@@ -66,7 +65,6 @@ fn main_pass<'e>(
 /// What a frame's compute pass does.
 struct Work {
     evaluated: Vec<usize>,
-    grouped: Option<(Vec<usize>, u32)>,
     segments: Vec<usize>,
     faces: Vec<usize>,
     measured: Vec<usize>,
@@ -121,7 +119,7 @@ impl super::marks::Shown {
         }
         match self.compiled.as_ref().map(|c| c.drawing.primitive) {
             Some(Primitive::Strokes) => self.rows * self.segments_per_row(),
-            Some(Primitive::Points) => self.rows * (1 + self.graph.port_count()),
+            Some(Primitive::Points) => self.rows * (1 + self.port_count()),
             Some(_) => self.rows,
             None => 0,
         }
@@ -152,8 +150,8 @@ impl View {
     ) -> Option<Readback> {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let Work { evaluated: work, grouped, segments, faces, measured } = self.work(measure);
-        if work.is_empty() && faces.is_empty() && measured.is_empty() && segments.is_empty() && grouped.is_none() {
+        let Work { evaluated: work, segments, faces, measured } = self.work(measure);
+        if work.is_empty() && faces.is_empty() && measured.is_empty() && segments.is_empty() {
             return None;
         }
         let resources = self.resources.as_mut().expect("created before passes");
@@ -176,14 +174,6 @@ impl View {
         let normals_group = (!faces.is_empty()).then(|| resources.pass(device, inner, Shader::Normals));
         let bounds_group = (!measured.is_empty()).then(|| resources.pass(device, inner, Shader::Bounds));
         let lists_group = (!segments.is_empty()).then(|| resources.pass(device, inner, Shader::Lists));
-        let slots = (resources.stand_ins().size() / 4) as u32;
-        if grouped.is_some() {
-            encoder.clear_buffer(resources.stand_ins(), 0, None);
-        }
-        let groups_group = grouped
-            .as_ref()
-            .filter(|(marks, _)| !marks.is_empty())
-            .map(|_| resources.pass(device, inner, Shader::Groups));
         for &i in &segments {
             let list = self.marks[i].segments.list.expect("listed");
             gpu.0.queue.write_buffer(
@@ -215,10 +205,6 @@ impl View {
                     shown.reduce = false;
                 }
             }
-            if let (Some(group), Some((marks, levels))) = (&groups_group, &grouped) {
-                pass.set_bind_group(2, group, &[]);
-                self.stand_groups(&mut pass, inner, &groups.mark, marks, *levels, slots);
-            }
             if let Some(group) = &lists_group {
                 pass.set_bind_group(2, group, &[]);
                 self.count_segments(&mut pass, inner, &groups.mark, &segments);
@@ -248,8 +234,8 @@ impl View {
             .then(|| Readback::new(&inner.readbacks, device, encoder, resources.extents(), 0, extent_bytes))
     }
 
-    /// What this frame's compute pass does: the marks it evaluates, the groups it stands, the segment
-    /// lists it counts, the faces whose normals it sums, and the marks it measures.
+    /// What this frame's compute pass does: the marks it evaluates, the segment lists it counts, the
+    /// faces whose normals it sums, and the marks it measures.
     fn work(&mut self, measure: bool) -> Work {
         for shown in &mut self.marks {
             // A mark without rows has nothing to evaluate.
@@ -268,7 +254,6 @@ impl View {
                 shown.shape_version += 1;
             }
         }
-        let grouped = self.groups_due();
         let segments = self.segments_due();
         let faces = if self.normals_due() {
             (0..self.marks.len()).filter(|&i| self.marks[i].drawable() && self.marks[i].faces()).collect()
@@ -278,40 +263,7 @@ impl View {
         let measured = (0..self.marks.len())
             .filter(|&i| measure && self.marks[i].drawable() && self.marks[i].measured())
             .collect();
-        Work { evaluated: work, grouped, segments, faces, measured }
-    }
-
-    /// Records the groups pass: clears the stand-ins of `slots` vertex slots, then stands each group
-    /// mark's rows around their members, once per level of groups they hold: each level opens the
-    /// groups' boxes, widens them a member a thread, and stands each group in its box.
-    fn stand_groups(
-        &self,
-        pass: &mut wgpu::ComputePass<'_>,
-        inner: &mut Inner,
-        mark: &wgpu::BindGroup,
-        marks: &[usize],
-        levels: u32,
-        slots: u32,
-    ) {
-        let device = &self.gpu.0.device;
-        pass.set_bind_group(1, mark, &[0]);
-        pass.set_pipeline(&inner.pipelines.compute(device, Shader::Groups, "clear"));
-        dispatch(pass, slots);
-        let [open, widen, stand] =
-            ["open", "widen", "stand"].map(|e| inner.pipelines.compute(device, Shader::Groups, e));
-        // Each level settles the groups holding the ones settled before.
-        for _ in 0..levels {
-            for &i in marks {
-                let shown = &self.marks[i];
-                let entries =
-                    shown.graph.members().len().saturating_sub(shown.rows as usize + 1) as u32 / wgsl::TERMINAL_WORDS;
-                pass.set_bind_group(1, mark, &[offset(i)]);
-                for (pipeline, threads) in [(&open, shown.rows), (&widen, entries), (&stand, shown.rows)] {
-                    pass.set_pipeline(pipeline);
-                    dispatch(pass, threads);
-                }
-            }
-        }
+        Work { evaluated: work, segments, faces, measured }
     }
 
     /// Records the count → scan → write of each of `marks`' segment lists.
@@ -335,34 +287,6 @@ impl View {
             pass.set_pipeline(&inner.pipelines.compute_pipeline(device, write));
             dispatch(pass, items);
         }
-    }
-
-    /// The group marks to stand around their members this frame, and the levels of groups they
-    /// hold: when a vertex mark wrote its state, the zoom turned sizes in pixels into other units,
-    /// or the slots moved. With no group marks left, the stand-ins are cleared once.
-    fn groups_due(&mut self) -> Option<(Vec<usize>, u32)> {
-        let marks: Vec<usize> =
-            (0..self.marks.len()).filter(|&i| self.marks[i].drawable() && self.marks[i].graph.depth() > 0).collect();
-        if marks.is_empty() {
-            let cleared = self.group_bounds.due(0);
-            self.group_bounds.mark(0);
-            return cleared.then_some((marks, 0));
-        }
-        let generation = self.resources.as_ref().map_or(0, super::resources::Resources::generation);
-        let versions: Vec<u64> = self
-            .marks
-            .iter()
-            .filter(|m| m.kind() == MarkKind::Vertices)
-            .map(|m| m.version + u64::from(m.dirty != 0))
-            .collect();
-        let padding = self.scene.theme.group_padding.to_bits();
-        let stamp = stamp_of((versions, self.px_per_unit.to_bits(), padding, generation, &marks));
-        if !self.group_bounds.due(stamp) {
-            return None;
-        }
-        self.group_bounds.mark(stamp);
-        let levels = marks.iter().map(|&i| self.marks[i].graph.depth()).max().unwrap_or(0);
-        Some((marks, levels))
     }
 
     /// Whether face normals must be summed again: a face mark or a vertex mark wrote its state since
@@ -420,6 +344,7 @@ impl View {
             Shader::Strokes,
             Shader::Triangles,
             Shader::Glyphs,
+            Shader::GlyphsPorts,
             Shader::Overlay,
         ] {
             passes.push((shader, resources.pass(device, inner, shader)));
@@ -464,15 +389,15 @@ impl View {
             if clipped {
                 pass.set_scissor_rect(0, 0, w, h);
             }
-            let ports = shown.graph.port_count();
+            let ports = shown.port_count();
             if compiled.drawing.primitive == Primitive::Points && ports > 0 {
                 pass.set_pipeline(&inner.pipelines.render(device, Shader::PointsPorts, target.format, samples));
                 pass.set_bind_group(2, group(Shader::PointsPorts), &[]);
                 pass.draw(0..4, 0..(shown.rows + shown.exits) * ports);
             }
         }
-        let glyphs = inner.pipelines.render(device, Shader::Glyphs, target.format, samples);
-        self.draw_labels(&mut pass, &glyphs, &groups, group(Shader::Glyphs));
+        let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(|shader| (shader, group(shader)));
+        self.draw_labels(&mut pass, inner, target.format, samples, &groups, glyphs);
         if sprites > 0 {
             pass.set_pipeline(&inner.pipelines.render(device, Shader::Overlay, target.format, samples));
             pass.set_bind_group(2, group(Shader::Overlay), &[]);

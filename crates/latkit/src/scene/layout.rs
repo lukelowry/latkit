@@ -1,4 +1,5 @@
-/// How vertices without positions are placed.
+/// How a diagram places vertices without positions. A place, once given, holds: rows added later are
+/// placed around the rest, and [`View::arrange`](crate::View::arrange) lays every row out again.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum Layout {
     /// Unplaced vertices are not drawn.
@@ -24,8 +25,7 @@ impl Default for Stress {
     }
 }
 
-/// Layered drawing: vertices in ranks, edges pointing along `flow`, and nets from their ports on the
-/// side it leaves by.
+/// Layered drawing: vertices in ranks, edges pointing along `flow`, and nets from their outputs.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Layered {
     /// Where edges point.
@@ -49,7 +49,8 @@ pub enum Route {
     Straight,
     /// Along the great circle, on the earth.
     Geodesic,
-    /// In horizontal and vertical runs around vertices, leaving and entering at their sides.
+    /// In horizontal and vertical runs around vertices, leaving and entering at their sides, bends
+    /// rounded. Diagrams only.
     Orthogonal,
 }
 

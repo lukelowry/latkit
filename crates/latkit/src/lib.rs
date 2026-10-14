@@ -22,6 +22,8 @@ mod pending;
 #[cfg(feature = "gpu")]
 mod scene;
 #[cfg(feature = "gpu")]
+mod sheet;
+#[cfg(feature = "gpu")]
 mod view;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub mod web;
@@ -37,9 +39,9 @@ pub use {
     gpu::{Budget, Gpu},
     pending::{Pending, Resolver},
     scene::{
-        Axis, Controls, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered, Layout,
-        Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space, Stress, Theme,
-        Vertices,
+        Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered,
+        Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space, Stress,
+        Theme, Vertices,
     },
     view::{
         Button, Camera, Cursor, Drag, End, Event, Fit, Hit, Input, Key, Modifiers, Phase, Sample, Stats, Target, View,

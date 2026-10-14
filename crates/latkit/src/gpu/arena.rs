@@ -1,4 +1,5 @@
-//! Data pages on the GPU: power-of-two blocks carved from 64 Ki-word chunks of one storage buffer.
+//! Data pages on the GPU: power-of-two blocks carved from 64 Ki-word chunks of one storage buffer;
+//! a page larger than a chunk, such as a geometry's points, takes whole chunks side by side.
 //!
 //! A page is identified by its id and the part of it a program reads. Page tables pin the pages they
 //! reference, so a page in use is never evicted; unpinned pages stay cached in least-recently-used
@@ -9,7 +10,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use rustc_hash::FxBuildHasher;
 
-use crate::data::{AxisPage, FramePage, Geometry, PageId, Values};
+use crate::data::{AxisPage, FramePage, Geometry, PageId, Value, Values};
 use crate::expr::compile::Part;
 use crate::gpu::shaders::{MISSING, NONE};
 use crate::{Error, Result};
@@ -72,17 +73,29 @@ impl Content {
     }
 }
 
+/// The class of a block holding `words`: a power of two up to a chunk, then whole chunks.
 fn class_of(words: u32) -> usize {
+    if words > CHUNK_WORDS {
+        return CLASSES - 2 + words.div_ceil(CHUNK_WORDS) as usize;
+    }
     let bits = words.max(1).next_power_of_two().trailing_zeros().max(MIN_CLASS_BITS);
     (bits - MIN_CLASS_BITS) as usize
 }
 
+/// Chunks a block of `class` takes side by side, past the largest carved class.
+fn chunks_of(class: usize) -> u32 {
+    (class + 2 - CLASSES) as u32
+}
+
 fn class_words(class: usize) -> u32 {
+    if class >= CLASSES {
+        return CHUNK_WORDS * chunks_of(class);
+    }
     1 << (class as u32 + MIN_CLASS_BITS)
 }
 
 /// The words a page uploads for `part`: numbers as `f32`, the low part of `f64`s, point components,
-/// or reference rows as `u32`. Missing values are `MISSING`, or `NONE` for rows.
+/// reference rows as `u32`, or a geometry's points. Missing values are `MISSING`, or `NONE` for rows.
 pub(crate) fn page_words(values: &Values, part: Part, low: bool) -> Vec<u32> {
     let n = values.len();
     let word = |x: f64| {
@@ -90,6 +103,7 @@ pub(crate) fn page_words(values: &Values, part: Part, low: bool) -> Vec<u32> {
         if low { (x - f64::from(hi)) as f32 } else { hi }.to_bits()
     };
     match part {
+        Part::Path => path_words(values),
         Part::Values => (0..n).map(|i| if values.is_valid(i) { word(values.number(i)) } else { MISSING }).collect(),
         Part::Bits => (0..n).map(|i| if values.is_valid(i) { values.number(i) as u32 } else { NONE }).collect(),
         Part::X | Part::Y => {
@@ -106,6 +120,45 @@ pub(crate) fn page_words(values: &Values, part: Part, low: bool) -> Vec<u32> {
         }
         Part::Codes => unreachable!("text codes upload as words"),
     }
+}
+
+/// A geometry page's points, as `lib/read.wesl` reads them: the row count, each row's first point
+/// and the end, then every point's x and y. A row's parts, or its polygons' rings, are broken by a
+/// missing point.
+fn path_words(values: &Values) -> Vec<u32> {
+    let n = values.len();
+    let mut starts = Vec::with_capacity(n + 1);
+    let mut points: Vec<u32> = Vec::new();
+    let push = |part: &[[f64; 2]], points: &mut Vec<u32>, first: bool| {
+        if !first {
+            points.extend([MISSING, MISSING]);
+        }
+        points.extend(part.iter().flat_map(|p| p.map(|v| (v as f32).to_bits())));
+    };
+    for row in 0..n {
+        starts.push((points.len() / 2) as u32);
+        match values.get(row) {
+            Some(Value::Point(p)) => push(&[p], &mut points, true),
+            Some(Value::Path(path)) => push(&path, &mut points, true),
+            Some(Value::Parts(parts)) => {
+                for (k, part) in parts.iter().enumerate() {
+                    push(part, &mut points, k == 0);
+                }
+            }
+            Some(Value::Polygons(polygons)) => {
+                for (k, ring) in polygons.iter().flatten().enumerate() {
+                    push(ring, &mut points, k == 0);
+                }
+            }
+            _ => {}
+        }
+    }
+    starts.push((points.len() / 2) as u32);
+    let mut words = Vec::with_capacity(1 + starts.len() + points.len());
+    words.push(n as u32);
+    words.extend(starts);
+    words.extend(points);
+    words
 }
 
 struct Block {
@@ -281,11 +334,32 @@ impl Arena {
     }
 
     fn release(&mut self, offset: u32, class: usize) {
-        self.free[class].push(offset);
+        if class >= CLASSES {
+            // A large block's chunks return one by one.
+            for k in 0..chunks_of(class) {
+                self.free[CLASSES - 1].push(offset + k * CHUNK_WORDS);
+            }
+        } else {
+            self.free[class].push(offset);
+        }
         self.resident -= u64::from(class_words(class)) * 4;
     }
 
     fn allocate(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, class: usize) -> Result<u32> {
+        if class >= CLASSES {
+            // Whole chunks side by side, from the uncarved end of the buffer.
+            let count = chunks_of(class);
+            loop {
+                if self.carved + count <= self.chunks {
+                    let offset = self.carved * CHUNK_WORDS;
+                    self.carved += count;
+                    return Ok(offset);
+                }
+                if !self.grow(device, queue) {
+                    return Err(Error::Limit("a geometry page exceeds the GPU's largest storage buffer".into()));
+                }
+            }
+        }
         loop {
             if let Some(offset) = self.free[class].pop() {
                 return Ok(offset);
@@ -347,11 +421,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classes_round_up_to_powers_of_two() {
+    fn classes_round_up_to_powers_of_two_then_chunks() {
         assert_eq!(class_of(1), 0);
         assert_eq!(class_words(class_of(64)), 64);
         assert_eq!(class_words(class_of(65)), 128);
         assert_eq!(class_words(class_of(65536)), 65536);
+        assert_eq!(class_words(class_of(65537)), 2 * 65536);
+        assert_eq!(class_words(class_of(5 * 65536)), 5 * 65536);
         assert_eq!(CLASSES, 11);
     }
 

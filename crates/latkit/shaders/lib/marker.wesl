@@ -1,9 +1,10 @@
 // Markers are signed distance fields in CSS pixels; a custom marker supplies `fn marker`.
 
 import package::lib::types::{
-    SELECTED, SHAPE_RECTANGLE, SHAPE_ROUNDED, SHAPE_DIAMOND, MARKER_GAUGE, MARKER_PIE, MARKER_BLOCK,
+    SELECTED, SHAPE_RECTANGLE, SHAPE_ROUNDED, SHAPE_DIAMOND, MARKER_GAUGE, MARKER_PIE, MARKER_BLOCK, LABELED,
+    HEADER_BAND, THEME_TEXT,
 };
-import package::lib::bind::{frame, mark, program};
+import package::lib::bind::{frame, eye, mark, program};
 import package::lib::focus::focus_of;
 import package::lib::mark::coverage;
 import package::lib::project::TAU;
@@ -93,6 +94,24 @@ fn builtin_marker(f: MarkerFragment) -> MarkerColor {
         case MARKER_PIE: { return pie(f.p, min(f.half.x, f.half.y), f.input, mark.inputs, mark.hole); }
         default: { return filled(f.color, outline_distance(f.p, f.half)); }
     }
+}
+
+// A group's container: a rounded box filled in its color, tinted a step toward the text color for
+// each group holding it; a header band across its top where its title sits; and a hairline border.
+fn container(f: MarkerFragment, depth: f32) -> MarkerColor {
+    let text = unpack4x8unorm(frame.theme[THEME_TEXT / 4u][THEME_TEXT % 4u]).rgb;
+    let fill = mix(f.color.rgb, text, min(0.06 * depth, 0.3));
+    let d = box_distance(f.p, f.half, min(6.0 * frame.unit, 0.2 * min(f.half.x, f.half.y)));
+    var body = filled(vec4f(fill, f.color.a), d);
+    if (mark.flags & LABELED) != 0u {
+        // y is up in a marker: the header band runs down from its top.
+        let header = mark.label_size * frame.unit * HEADER_BAND;
+        let band = max(d, (f.half.y - header) - f.p.y);
+        body = over(filled(vec4f(mix(fill, text, 0.07), f.color.a), band), body);
+    }
+    let hairline = 0.5 / eye.pixel_ratio;
+    let border = filled(vec4f(mix(fill, text, 0.28), f.color.a), abs(d + hairline) - hairline);
+    return MarkerColor(over(border, body).color, d);
 }
 
 // A ring of the status color just outside the marker's outline.

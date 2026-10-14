@@ -1,8 +1,10 @@
 //! Labels: each labeled mark keeps, in the labels buffer, a candidate per row and a run table from
-//! its text codes to where the atlas holds each text. Placement runs on the GPU when the camera,
-//! a labeled mark's state, or a run table changed: candidates, then rounds of claim and decide on a
-//! grid of cells. Texts the atlas lacks are asked for in the same pass and read back; the host sets
-//! a few each frame, and they show the frame after. Labels fade in and out after each placement.
+//! its text codes to where the atlas holds each text. Draws place every label from its anchor each
+//! frame. Placement decides which show: it runs on the GPU when the camera, a labeled mark's state,
+//! or a run table changed, as candidates, then rounds of claim and decide on a grid of cells, and
+//! labels fade in and out after it. A diagram's labels scale with the sheet and show wherever they
+//! fit, so there placement only gathers the texts the atlas lacks. Those are read back; the host
+//! sets a few each frame, and they show the frame after.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -10,12 +12,13 @@ use std::time::Duration;
 use web_time::Instant;
 
 use super::View;
-use super::derived::{Derived, Landed, Work, stamp_of};
+use super::derived::{Derived, stamp_of};
 use super::passes::{dispatch, offset};
 use super::resources::EyeSlot;
 use super::sync::{Source, table_of};
+use crate::Space;
 use crate::gpu::Inner;
-use crate::gpu::atlas::Glyphs;
+use crate::gpu::atlas::{self, Glyphs};
 use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
@@ -25,8 +28,10 @@ use crate::host::TextRun;
 const ROUNDS: u32 = 6;
 /// How long labels fade in or out.
 const FADE: Duration = Duration::from_millis(200);
-/// Texts the host sets per frame at most.
+/// Texts the host sets per frame at most, and the time setting them and making their distance
+/// fields may take.
 const BUDGET: usize = 48;
+const BUDGET_TIME: Duration = Duration::from_millis(4);
 
 /// Where one labeled mark's words lie in the labels buffer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,7 +77,8 @@ impl Labels {
 }
 
 impl View {
-    /// The run each code of mark `i`'s label text is set as.
+    /// The run each code of mark `i`'s label text is set as: at the base size, whatever size it shows
+    /// at, as a diagram's sheet measures it.
     fn run_of(&self, i: usize, code: u32, inner: &mut Inner) -> Option<TextRun> {
         let shown = &self.marks[i];
         let compiled = shown.compiled.as_ref()?;
@@ -80,16 +86,10 @@ impl View {
         let column = &compiled.program.columns[labeling.column as usize];
         let style = shown.mark.style();
         let data = self.data(&style.data)?;
-        let source = Source { data, table: data.table(&style.table)? };
-        let (d, t) = table_of(column.of.as_ref(), &source, &self.data)?;
-        let text = inner.dictionaries.field(d.name(), &t.name, &column.name).text(code)?.clone();
-        let ratio = self.pixel_ratio;
-        Some(TextRun {
-            text,
-            font: self.scene.theme.font.clone(),
-            size_px: (labeling.size * ratio).round().max(1.0) as u32,
-            max_width: labeling.max_width.map(|w| (w * ratio).round() as u32),
-        })
+        let source = Source { data, table: data.table(&style.table)?, derived: None };
+        let (d, t) = table_of(column, &source, &self.data)?;
+        let text = inner.dictionaries.field(d, &t.name, &column.name).text(code)?.clone();
+        Some(atlas::run(text, self.scene.theme.font.clone(), labeling.size, labeling.max_width))
     }
 
     /// Codes mark `i`'s label text has so far.
@@ -101,20 +101,21 @@ impl View {
         let style = shown.mark.style();
         let Some(data) = self.data(&style.data) else { return 0 };
         let Some(table) = data.table(&style.table) else { return 0 };
-        let source = Source { data, table };
-        let Some((d, t)) = table_of(column.of.as_ref(), &source, &self.data) else { return 0 };
-        inner.dictionaries.field(d.name(), &t.name, &column.name).len() as u32
+        let source = Source { data, table, derived: None };
+        let Some((d, t)) = table_of(column, &source, &self.data) else { return 0 };
+        inner.dictionaries.field(d, &t.name, &column.name).len() as u32
     }
 
-    /// Sets the texts a placement asked for, within the frame's budget.
+    /// Sets the texts a placement asked for, within the frame's budget; placement asks again for
+    /// those left.
     pub(super) fn settle_labels(&mut self, inner: &mut Inner) {
-        let Some((_, Landed::Read(bytes))) = self.labels.placed.landed() else { return };
+        let Some((_, bytes)) = self.labels.placed.landed() else { return };
         let asked = std::mem::take(&mut self.labels.asked);
         let words: &[u32] = bytemuck::cast_slice(&bytes);
         let gpu = self.gpu.clone();
-        let mut budget = BUDGET;
-        let mut wrote = false;
-        for (i, slots) in asked {
+        let started = Instant::now();
+        let (mut set, mut left) = (0, false);
+        'marks: for (i, slots) in asked {
             if self.labels.slots(i) != Some(slots) {
                 continue;
             }
@@ -123,27 +124,26 @@ impl View {
             let mut codes: Vec<u32> = words.get(at + 1..at + 1 + count).unwrap_or(&[]).to_vec();
             codes.sort_unstable();
             codes.dedup();
-            for code in codes {
-                if budget == 0 || code >= slots.codes {
-                    break;
+            for code in codes.into_iter().take_while(|&code| code < slots.codes) {
+                if set == BUDGET || started.elapsed() > BUDGET_TIME {
+                    left = true;
+                    break 'marks;
                 }
                 let Some(run) = self.run_of(i, code, inner) else { continue };
                 let host = inner.host.clone();
                 let Some(glyphs) = inner.atlas.text(&gpu.0.queue, host.as_deref(), &run) else { continue };
-                budget -= 1;
-                wrote = true;
+                set += 1;
                 self.write_run(i, slots, code, run, glyphs);
             }
         }
-        if wrote || budget == 0 {
+        if set > 0 || left {
             self.labels.changes += 1;
             self.wake();
         }
     }
 
     fn write_run(&mut self, i: usize, slots: Slots, code: u32, run: TextRun, glyphs: Glyphs) {
-        let [l, t, r, b] = glyphs.rect;
-        let words = [l | t << 16, r | b << 16];
+        let words = glyphs.corners();
         if let Some(resources) = &self.resources {
             let at = u64::from(slots.runs + 2 * code) * 4;
             self.gpu.0.queue.write_buffer(resources.labels(), at, bytemuck::cast_slice(&words));
@@ -201,6 +201,10 @@ impl View {
         if inner.atlas.evictions != self.labels.evictions {
             self.labels.evictions = inner.atlas.evictions;
             self.drop_evicted(inner);
+            // Port labels look for their texts again where the atlas holds them now.
+            for shown in self.marks.iter_mut().filter(|m| m.port_count() > 0) {
+                shown.packed = false;
+            }
         }
     }
 
@@ -248,10 +252,13 @@ impl View {
         if labeled.is_empty() {
             return;
         }
+        // A diagram's labels follow the camera without placement; the camera only says which texts
+        // they ask for.
+        let diagram = matches!(self.scene.space, Space::Diagram(_));
         let versions: Vec<u64> = labeled.iter().map(|&(i, _)| self.marks[i].version).collect();
         let stamp = stamp_of((bytemuck::bytes_of(eye), self.labels.changes, versions));
         let due = self.labels.placed.due(stamp) && !self.labels.placed.busy();
-        let fading = self.labels.fading.is_some_and(|until| Instant::now() < until);
+        let fading = !diagram && self.labels.fading.is_some_and(|until| Instant::now() < until);
         if !due && !fading {
             return;
         }
@@ -260,7 +267,9 @@ impl View {
         let resources = self.resources.as_mut().expect("created before labels");
         if due {
             self.labels.placed.mark(stamp);
-            self.labels.fading = Some(Instant::now() + FADE + Duration::from_millis(50));
+            if !diagram {
+                self.labels.fading = Some(Instant::now() + FADE + Duration::from_millis(50));
+            }
             for &(_, slots) in &labeled {
                 encoder.clear_buffer(resources.labels(), u64::from(slots.wanted) * 4, Some(4));
             }
@@ -294,6 +303,8 @@ impl View {
             };
             if due {
                 each(&mut pass, "candidates");
+            }
+            if due && !diagram {
                 cells(&mut pass, &clear);
                 for _ in 0..ROUNDS {
                     each(&mut pass, "claim");
@@ -302,38 +313,54 @@ impl View {
                     cells(&mut pass, &reset);
                 }
             }
-            each(&mut pass, "fade");
+            if !diagram {
+                each(&mut pass, "fade");
+            }
         }
         if due {
             let first = labeled.iter().map(|(_, s)| s.wanted).min().unwrap_or(0);
             let words = labeled.len() as u64 * u64::from(1 + wgsl::WANTED);
             let readback =
                 Readback::new(&inner.readbacks, device, encoder, resources.labels(), u64::from(first) * 4, words * 4);
-            self.labels.placed.start(stamp, Work::Read(readback));
+            self.labels.placed.start(stamp, readback);
             self.labels.asked = labeled;
         }
     }
 
-    /// Draws every labeled mark's placed labels.
+    /// Draws every labeled mark's labels, then every vertex mark's port labels: `glyphs` are the
+    /// pass groups of the labels' and the port labels' shaders.
     pub(super) fn draw_labels(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
-        pipeline: &wgpu::RenderPipeline,
+        inner: &mut Inner,
+        format: wgpu::TextureFormat,
+        samples: u32,
         groups: &super::resources::Groups,
-        group: &wgpu::BindGroup,
+        glyphs: [(Shader, &wgpu::BindGroup); 2],
     ) {
-        let mut set = false;
+        let device = &self.gpu.0.device;
+        let [(labels, labels_group), (ports, ports_group)] = glyphs;
         for (i, slots) in self.labels.slots.iter().enumerate() {
-            if slots.is_none() || self.marks[i].rows == 0 {
+            let shown = &self.marks[i];
+            if slots.is_none() || shown.rows == 0 {
                 continue;
             }
-            if !set {
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(2, group, &[]);
-                set = true;
-            }
+            let variant = Variant::draw(labels, format, samples).path(shown.path());
+            pass.set_pipeline(&inner.pipelines.render_pipeline(device, variant));
+            pass.set_bind_group(2, labels_group, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-            pass.draw(0..4, 0..self.marks[i].rows);
+            pass.draw(0..4, 0..shown.rows);
+        }
+        for (i, shown) in self.marks.iter().enumerate() {
+            let labeled =
+                shown.compiled.as_ref().is_some_and(|c| c.drawing.ports.iter().any(|(_, p, _)| p.label.is_some()));
+            if !labeled || !shown.drawable() || shown.rows == 0 {
+                continue;
+            }
+            pass.set_pipeline(&inner.pipelines.render(device, ports, format, samples));
+            pass.set_bind_group(2, ports_group, &[]);
+            pass.set_bind_group(1, &groups.mark, &[offset(i)]);
+            pass.draw(0..4, 0..shown.rows * shown.port_count());
         }
     }
 }

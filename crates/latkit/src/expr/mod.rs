@@ -3,6 +3,7 @@
 mod color;
 mod colormap;
 pub(crate) mod compile;
+pub(crate) mod cpu;
 #[cfg(feature = "serde")]
 mod decode;
 

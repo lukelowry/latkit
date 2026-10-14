@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{SIZE, camera, frame, gpu, plain_theme, plane, step};
+use common::{SIZE, camera, diagram, frame, gpu, plain_theme, step};
 use latkit::{
     Button, Controls, Data, Edges, End, Event, Input, Key, Modifiers, Patch, Row, Scene, Side, Table, Vertices, View,
 };
@@ -20,7 +20,7 @@ fn view(gpu: &latkit::Gpu) -> View {
             .set(
                 Table::new("Node", vec![1_u64, 2, 3])
                     .field("x", vec![-40.0, 40.0, 0.0])
-                    .field("y", vec![0.0, 0.0, 40.0])
+                    .field("y", vec![0.0, 0.0, -40.0])
                     .reference("net", "Net", vec![None::<u64>, None, None]),
             )
             .set(Table::new("Net", 0))
@@ -28,7 +28,7 @@ fn view(gpu: &latkit::Gpu) -> View {
     )
     .expect("valid");
     let controls = Controls { connect: true, delete: true, ..Controls::default() };
-    let scene = Scene::new(plane())
+    let scene = Scene::new(diagram())
         .theme(plain_theme())
         .controls(controls)
         .draw(Edges::of("graph", "Link").ends("from", "to").width(3.0))
@@ -93,7 +93,7 @@ fn secondary_clicks_ask_for_a_menu() {
 fn dragging_from_a_port_connects() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu);
-    // Node 1's port sits on its right side, 8 pixels from its middle.
+    // Node 1's port sits on its right side, 8 units from its middle.
     let port = [C - 32.0, C];
     let target = [C + 40.0, C];
     let inputs = [

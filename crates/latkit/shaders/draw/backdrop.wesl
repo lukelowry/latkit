@@ -1,9 +1,9 @@
-// The backdrop under every mark: a plane's grid, or the earth's surface and graticule, darkened where
-// casters shadow the ground. Lines are a pixel wide and antialiased per axis. Their spacing steps by
-// tens, and the next step fades in as the lines crowd, so no seam shows. They fade where the view
-// grazes the ground, and on a plane away from what the camera looks at.
+// The backdrop under every mark: a plane's or a diagram's grid, or the earth's surface and graticule,
+// darkened where casters shadow the ground. Lines are a pixel wide and antialiased per axis. Their
+// spacing steps by tens, and the next step fades in as the lines crowd, so no seam shows. They fade
+// where the view grazes the ground, and on a plane away from what the camera looks at.
 
-import package::lib::types::{SPACE_EARTH, SPACE_PLANE, GRID_OFF, GRID_DOTS};
+import package::lib::types::{SPACE_EARTH, SPACE_PLANE, SPACE_DIAGRAM, GRID_OFF, GRID_DOTS};
 import package::lib::bind::{frame, eye};
 import package::lib::color::output;
 import package::lib::project::{PI, NEAR_Z, FAR_Z};
@@ -131,7 +131,7 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     let t = -o.z / d.z;
     let g = o + d * max(t, 0.0);
     var color = frame.background;
-    if frame.space == SPACE_PLANE {
+    if frame.space == SPACE_PLANE || frame.space == SPACE_DIAGRAM {
         color = plane(g, d, t > 0.0);
     } else if frame.space == SPACE_EARTH {
         color = earth(o, d, g, t > 0.0);

@@ -26,7 +26,7 @@ pub use lines::Lines;
 pub use mark::Mark;
 pub use marker::{Image, Marker, Shape};
 pub use port::{Port, Side};
-pub use space::{Axis, Earth, Format, Grid, Plane, Plot, Projection, Space};
+pub use space::{Axis, Diagram, Earth, Format, Grid, Plane, Plot, Projection, Space};
 pub use theme::{Shadow, Theme};
 pub use vertices::Vertices;
 
@@ -71,7 +71,7 @@ impl Scene {
         self
     }
 
-    /// Places vertices that have no position.
+    /// Places vertices that have no position. Diagrams only.
     #[must_use]
     pub fn layout(mut self, layout: impl Into<Layout>) -> Scene {
         self.layout = layout.into();
@@ -109,12 +109,20 @@ impl Scene {
         &self.marks
     }
 
-    /// Two marks with one key would be indistinguishable across scenes.
+    /// Two marks with one key would be indistinguishable across scenes; options a space does not have
+    /// are refused.
     pub(crate) fn check(&self) -> Result<()> {
+        let diagram = matches!(self.space, Space::Diagram(_));
+        if !diagram && self.layout != Layout::None {
+            return Err(Error::invalid("only a diagram lays out vertices").at("layout"));
+        }
         for (i, mark) in self.marks.iter().enumerate() {
             if self.marks[..i].iter().any(|m| m.key() == mark.key()) {
                 let reason = "draws the same table as an earlier mark of its kind; give one a name with named";
                 return Err(Error::invalid(reason).at(i).at("marks"));
+            }
+            if let Some((option, reason)) = mark.misplaced(diagram) {
+                return Err(Error::invalid(reason).at(option).at(i).at("marks"));
             }
         }
         Ok(())

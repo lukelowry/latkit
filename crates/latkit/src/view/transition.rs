@@ -5,7 +5,8 @@
 //! Rows that left are frozen past the new rows and fade out there. While the mark eases, `evaluate`
 //! blends every store from the frozen state by the mark's progress, so draws, probes, bounds, and
 //! shadows read eased state without knowing a transition runs. The frozen buffer mirrors the state
-//! buffer's layout and exists only while a transition does.
+//! buffer's layout and exists only while a transition does. A stroke's geometry column keeps the
+//! table it had as the transition began, and its paths morph from it point by point.
 
 use std::time::Duration;
 
@@ -121,6 +122,10 @@ impl View {
                 shown.transition = None;
                 shown.exits = 0;
                 shown.all_dirty();
+                if shown.tables.frozen().is_some() {
+                    shown.tables.thaw(inner);
+                    shown.packed = false;
+                }
             } else {
                 running = true;
                 shown.all_dirty();

@@ -118,7 +118,7 @@ impl View {
             return None;
         }
         let compiled = shown.compiled.as_ref()?;
-        compiled.drawing.ports.get(number as usize - 1).map(|(name, _)| name.clone())
+        compiled.drawing.ports.get(number as usize - 1).map(|(name, ..)| name.clone())
     }
 
     /// The sample point `point` of a traced row's path stands for, on a mark tracing a field.

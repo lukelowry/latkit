@@ -55,12 +55,17 @@ pub(crate) enum Part {
     X,
     /// A point's y.
     Y,
+    /// A geometry's points per row: a page's row count, each row's first point and the end, then
+    /// every point's x and y; parts are broken by a missing point.
+    Path,
 }
 
-/// A column a program reads.
+/// A column a program reads: of the mark's own table, of another dataset's table joined by row id,
+/// or of the table the view derives beside the mark's own, row for row.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ColumnUse {
     pub(crate) of: Option<(Name, Name)>,
+    pub(crate) derived: bool,
     pub(crate) name: Name,
     pub(crate) part: Part,
     pub(crate) sampled: bool,
@@ -69,6 +74,27 @@ pub(crate) struct ColumnUse {
     pub(crate) low: bool,
     /// Read every frame in view, as a line tracing the field does.
     pub(crate) trace: bool,
+}
+
+impl ColumnUse {
+    /// The mark's own field `name`, read as `part`.
+    fn own(name: impl Into<Name>, part: Part) -> ColumnUse {
+        ColumnUse {
+            of: None,
+            derived: false,
+            name: name.into(),
+            part,
+            sampled: false,
+            step: false,
+            low: false,
+            trace: false,
+        }
+    }
+
+    /// The derived field `name`, read as `part`.
+    fn derived(name: impl Into<Name>, part: Part) -> ColumnUse {
+        ColumnUse { derived: true, ..ColumnUse::own(name, part) }
+    }
 }
 
 /// A constant holding a text's dictionary code in a column; the view writes it.
@@ -209,6 +235,83 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Compiles a position channel reading the place the view derives for each row, at full
+    /// precision.
+    pub(crate) fn derived_position(&mut self, word: u32) -> Result<()> {
+        let start = self.begin();
+        let [x, y] =
+            ["x", "y"].map(|name| self.column(ColumnUse { low: true, ..ColumnUse::derived(name, Part::Values) }));
+        self.deps |= Deps::DATA;
+        self.op(wgsl::OP_POSITION, word, x, y, 0, 0)?;
+        self.close("position", start);
+        Ok(())
+    }
+
+    /// Compiles channel `name` storing the number the view derives as field `field`.
+    pub(crate) fn derived(&mut self, name: &str, field: &str, store: Store) -> Result<()> {
+        let start = self.begin();
+        let column = self.column(ColumnUse::derived(field, Part::Values));
+        self.deps |= Deps::DATA;
+        self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
+        self.store_op(store)?;
+        self.close(name, start);
+        Ok(())
+    }
+
+    /// The program column of the derived number field `field`, which shaders read directly.
+    pub(crate) fn derived_number(&mut self, field: &str) -> u32 {
+        self.column(ColumnUse::derived(field, Part::Values))
+    }
+
+    /// The program column of the derived geometry field `field`, read as points per row.
+    pub(crate) fn derived_path(&mut self, field: &str) -> u32 {
+        self.column(ColumnUse::derived(field, Part::Path))
+    }
+
+    /// The program column of the mark's geometry field `field`, read as points per row.
+    pub(crate) fn path(&mut self, field: &str) -> u32 {
+        self.column(ColumnUse::own(field, Part::Path))
+    }
+
+    /// The program column of the mark's reference field `name`, read as the rows it names.
+    pub(crate) fn bits(&mut self, name: &str) -> Result<u32> {
+        if self.fields.kind(None, name) != Some(Kind::Reference) {
+            return Err(invalid("not a reference field"));
+        }
+        Ok(self.column(ColumnUse::own(name, Part::Bits)))
+    }
+
+    /// Refuses `exprs` for option `name` when they read anything but static fields: where a
+    /// diagram's rows stand and how large they are is its structure, made from the data alone.
+    pub(crate) fn check_structure<'e>(&self, name: &str, exprs: impl IntoIterator<Item = &'e Expr>) -> Result<()> {
+        for expr in exprs {
+            if let Some(reason) = self.unstructural(expr) {
+                return Err(invalid(format!("a diagram's {name} reads data only, not {reason}")).at(name));
+            }
+        }
+        Ok(())
+    }
+
+    /// What `expr` reads that structure cannot: view state or a sampled field.
+    fn unstructural(&self, expr: &Expr) -> Option<&'static str> {
+        match &*expr.0 {
+            Node::State(State::Selected | State::Hovered) => Some("selection or hover"),
+            Node::State(State::Pointer) => Some("the pointer"),
+            Node::State(State::Elapsed) => Some("time"),
+            Node::State(State::Zoom) => Some("the zoom"),
+            Node::Field(f) if self.fields.kind(f.of.as_ref(), &f.name) == Some(Kind::Sampled) => {
+                Some("a sampled field")
+            }
+            Node::Unary(_, a) | Node::Is(a, _) => self.unstructural(a),
+            Node::Binary(_, a, b) => self.unstructural(a).or_else(|| self.unstructural(b)),
+            Node::When(c, a, b) => {
+                self.unstructural(c).or_else(|| self.unstructural(a)).or_else(|| self.unstructural(b))
+            }
+            Node::Scale { input, .. } | Node::Colormap { input, .. } => self.unstructural(input),
+            _ => None,
+        }
+    }
+
     /// Compiles end `index` of an edge: the vertex the reference field `name` names.
     pub(crate) fn end(&mut self, name: &str, word: u32) -> Result<()> {
         let start = self.begin();
@@ -216,15 +319,7 @@ impl<'a> Compiler<'a> {
             return Err(invalid("not a reference field").at(name));
         }
         let target = self.fields.target(name).ok_or_else(|| invalid("not a reference field").at(name))?;
-        let column = self.column(ColumnUse {
-            of: None,
-            name: name.into(),
-            part: Part::Bits,
-            sampled: false,
-            step: false,
-            low: false,
-            trace: false,
-        });
+        let column = self.column(ColumnUse::own(name, Part::Bits));
         let index = self.program.ends.len() as u32;
         self.program.ends.push(target);
         self.deps |= Deps::DATA;
@@ -253,27 +348,12 @@ impl<'a> Compiler<'a> {
         if self.fields.kind(None, name) != Some(Kind::Sampled) {
             return Err(invalid("not a sampled field").at(name));
         }
-        let use_ = ColumnUse {
-            of: None,
-            name: name.into(),
-            part: Part::Values,
-            sampled: true,
-            step: false,
-            low: false,
-            trace: true,
-        };
+        let use_ = ColumnUse { sampled: true, trace: true, ..ColumnUse::own(name, Part::Values) };
         self.deps |= Deps::SAMPLES;
         Ok(self.column(use_))
     }
 
     /// The program: channel ranges, then a range per fitted domain's reduction.
-    /// Marks state words `words` as held in position units, though no channel stores them.
-    pub(crate) fn in_units(&mut self, words: std::ops::Range<u32>) {
-        for word in words {
-            self.program.units |= 1 << word;
-        }
-    }
-
     pub(crate) fn finish(mut self) -> Program {
         for code in std::mem::take(&mut self.reductions) {
             let start = self.program.code.len() as u32;
@@ -341,9 +421,7 @@ impl<'a> Compiler<'a> {
             (Kind::Geometry(0), Some(1)) => Part::Y,
             _ => return None,
         };
-        let use_ =
-            ColumnUse { of: None, name: f.name.clone(), part, sampled: false, step: false, low: true, trace: false };
-        Some(self.column(use_))
+        Some(self.column(ColumnUse { low: true, ..ColumnUse::own(f.name.clone(), part) }))
     }
 
     fn coordinate(&mut self, e: &Expr) -> Result<()> {
@@ -476,7 +554,7 @@ impl<'a> Compiler<'a> {
     fn field_column(&mut self, f: &FieldRef, part: Part, sampled: bool) -> u32 {
         self.deps |= if sampled { Deps::SAMPLES } else { Deps::DATA };
         let step = f.step && sampled;
-        self.column(ColumnUse { of: f.of.clone(), name: f.name.clone(), part, sampled, step, low: false, trace: false })
+        self.column(ColumnUse { of: f.of.clone(), sampled, step, ..ColumnUse::own(f.name.clone(), part) })
     }
 
     fn column(&mut self, use_: ColumnUse) -> u32 {

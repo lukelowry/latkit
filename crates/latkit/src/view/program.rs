@@ -1,6 +1,6 @@
-//! The program buffer: each mark's descriptors, tables, ranges, code, constants, and ends in a region
-//! of its own, rewritten alone when only that mark changed. A region that outgrows its room moves to
-//! the end of the buffer; when the end passes the buffer, every region is laid out again.
+//! The program buffer: each mark's descriptors, tables, ranges, code, constants, ends, and ports in a
+//! region of its own, rewritten alone when only that mark changed. A region that outgrows its room
+//! moves to the end of the buffer; when the end passes the buffer, every region is laid out again.
 
 use super::{Event, View};
 use crate::gpu::Inner;
@@ -21,7 +21,9 @@ impl View {
     /// Writes every mark whose words changed into its region of the program buffer.
     pub(super) fn pack(&mut self, inner: &mut Inner) {
         let gpu = self.gpu.clone();
+        let font = self.scene.theme.font.clone();
         for shown in self.marks.iter_mut().filter(|m| !m.packed) {
+            shown.write_ports(&font, &gpu.0.queue, inner);
             let Some(compiled) = &mut shown.compiled else { continue };
             let markers = &mut compiled.drawing.markers;
             if !markers.icons.is_empty() {

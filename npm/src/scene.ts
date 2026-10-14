@@ -297,6 +297,7 @@ export type ColormapName =
 export interface Scene {
   space: Space;
   marks?: Mark[];
+  /** How a diagram places vertices without positions. */
   layout?: Layout;
   theme?: 'dark' | 'light' | Theme;
   controls?: Controls;
@@ -310,7 +311,7 @@ export interface Controls {
   pan?: boolean;
   /** The wheel and pinching zoom. */
   zoom?: boolean;
-  /** Dragging with the secondary button, or with Shift, turns and tilts a map or plane. */
+  /** Dragging with the secondary button, or with Shift, turns and tilts a map or plane; a diagram never turns. */
   turn?: boolean;
   /** Arrows pan, `+` and `-` zoom, Home fits, and Escape clears the selection. */
   keyboard?: boolean;
@@ -327,15 +328,25 @@ export interface Controls {
   delete?: boolean;
 }
 
+/**
+ * The coordinate space positions are in. A diagram is a flat sheet seen from straight above: y runs
+ * down, and every length is a unit, a CSS pixel at zoom 0, except glow, halo, and pick radius. Only a
+ * diagram has ports, groups, nets, orthogonal routes, and layouts.
+ */
 export type Space =
   | 'plane'
+  | 'diagram'
   | 'earth'
   | 'mercator'
   | 'globe'
   | 'plot'
-  | { plane: { grid?: 'off' | { lines: number } | { dots: number; snap?: boolean } } }
+  | { plane: { grid?: Grid } }
+  | { diagram: { grid?: Grid } }
   | { earth: { projection?: 'mercator' | 'globe'; surface?: Color; graticule?: boolean } }
   | { plot: { x?: Axis; y?: Axis } };
+
+/** A plane's or a diagram's grid: lines or dots `pitch` units apart; drags snap to dots when `snap`. */
+export type Grid = 'off' | { lines: number } | { dots: number; snap?: boolean };
 
 export interface Axis {
   label?: string;
@@ -349,6 +360,7 @@ export interface Axis {
   precision?: number;
 }
 
+/** How a diagram places vertices without positions. Places hold once given; `arrange` lays out again. */
 export type Layout =
   | 'none'
   | 'stress'
@@ -356,9 +368,11 @@ export type Layout =
   | { stress: { gap?: number } }
   | { layered: { flow?: 'right' | 'left' | 'down' | 'up'; gap?: number; rankGap?: number } };
 
+/** Colors and sizes marks take unless set. Lengths are CSS pixels; in a diagram, units, except `glow` and `halo`. */
 export interface Theme {
   base?: 'dark' | 'light';
   background?: Color;
+  /** The earth's ground, and a group's container. */
   surface?: Color;
   grid?: Color;
   vertex?: Color;
@@ -369,7 +383,7 @@ export interface Theme {
   lineWidth?: number;
   /** How much a face turned away from the camera darkens, 0 to 1. */
   shading?: number;
-  /** Text: axis ticks and titles. */
+  /** Text: labels, axis ticks, and titles. */
   text?: Color;
   /** A CSS font family list. */
   font?: string;
@@ -385,13 +399,13 @@ export interface Theme {
   dash?: number;
   flow?: Color;
   flowSpacing?: number;
-  /** CSS pixels between the lanes of edges joining the same two vertices. */
+  /** Between the lanes of edges joining the same two vertices; orthogonal wires keep twice it apart. */
   edgeSpacing?: number;
-  /** CSS pixels an arrowhead reaches past its edge's width. */
+  /** How far an arrowhead reaches past its edge's width. */
   arrow?: number;
   /** CSS pixels of background around label text. */
   halo?: number;
-  /** CSS pixels between a group's members and its outline. */
+  /** Between a group's members and its outline. */
   groupPadding?: number;
   /** How marks that cast shadows cast them. */
   shadow?: Shadow;
@@ -430,23 +444,26 @@ interface Style {
 
 /** Options of marks that draw strokes: edges and lines. */
 interface Stroke {
-  /** CSS pixels, or position units with {@link units}. */
+  /** CSS pixels, or position units with {@link units}; units in a diagram. */
   width?: Size;
   dash?: ExprInput;
-  /** Comets flowing along each row, CSS pixels per second; negative flows backward. */
+  /** Comets flowing along each row, CSS pixels per second, or units in a diagram; negative flows backward. */
   flow?: ExprInput;
 }
 
-/** A row's text, placed beside, inside, or along what its mark draws; overlapping labels give way by priority. */
+/**
+ * A row's text, placed beside, inside, or along what its mark draws; overlapping labels give way by
+ * priority. In a diagram a label scales with the zoom and fades out once too small to read.
+ */
 export interface Label {
   /** A text field. */
   text: ExprInput;
-  /** CSS pixels; the theme's font size unless set. */
+  /** CSS pixels, or units in a diagram; the theme's font size unless set. */
   size?: number;
   color?: ExprInput;
   /** Where labels would overlap, the higher shows. */
   priority?: ExprInput;
-  /** CSS pixels a line runs to before it wraps. */
+  /** How far a line runs before it wraps: CSS pixels, or units in a diagram. */
   maxWidth?: number;
 }
 
@@ -455,16 +472,21 @@ export type Shape = 'ellipse' | 'rectangle' | 'rounded' | 'diamond';
 /** A side of a marker. */
 export type Side = 'left' | 'right' | 'top' | 'bottom';
 
-/** A vertex's port: where a net its reference field names meets it, on one side of its marker. */
+/**
+ * A vertex's port: where a net its reference field names meets it, on one side of its marker. An
+ * output drives its net: layouts rank the net from it, and its wires point away from it.
+ */
 export type Port =
   | Side
   | {
       side: Side;
       /** Its place among the ports on that side, from the top or the left; in declaration order unless set. */
       order?: number;
-      /** Its name drawn beside it. */
+      /** Its name, drawn beside it inside the marker. */
       label?: string;
       shape?: Shape;
+      /** Whether it drives its net; an input unless set. */
+      output?: boolean;
     };
 
 export type Marker =
@@ -497,22 +519,24 @@ export function icon(images: ImageData[], index: ExprInput): Marker {
 export type Mark =
   | {
       vertices: Style & {
-        /** Without one, a point field named `geometry` places rows, else the scene's layout does. */
+        /** Without one, a point field named `geometry` places rows, else a diagram's layout does. */
         position?: [ExprInput, ExprInput];
+        /** Height above the ground; not in a diagram, which is flat. */
         elevation?: ExprInput;
+        /** CSS pixels, or position units with {@link units}; units in a diagram. */
         radius?: Size;
+        /** Width and height: CSS pixels, or position units with {@link units}; units in a diagram, where
+         * a block without a size fits its label and ports. */
         size?: [Size, Size];
         marker?: Marker;
         /** A ring around each row's marker in this color. */
         status?: ExprInput;
         /** A port on each row for each reference field naming a net, which an `edges` mark of the
-         * net table without ends draws. */
+         * net table without ends draws. Diagrams only. */
         ports?: [reference: string, port: Port][];
         /** Makes each row a group: it holds the rows of `table` whose reference field names it, and is
-         * drawn around them. */
+         * drawn as a container around them, its label a title in its header. Diagrams only. */
         contains?: [table: string, reference: string];
-        /** Whether each group hides its members inside it; edges to them end at the group. */
-        collapsed?: ExprInput;
       };
     }
   | {
@@ -523,9 +547,10 @@ export type Mark =
           ends?: [from: string, to: string];
           /** A path field of points each row runs through between its ends. */
           bends?: string;
-          /** How each row runs between its ends; on the earth geodesic, elsewhere straight, unless set. */
+          /** How each row runs between its ends; on the earth geodesic, elsewhere straight, unless set.
+           * Orthogonal routes run around blocks, bends rounded; diagrams only. */
           route?: 'straight' | 'geodesic' | 'orthogonal';
-          /** Whether each row ends in an arrowhead at its second end. */
+          /** Whether each row ends in an arrowhead at its second end; a net's at each input it reaches. */
           arrows?: boolean;
         };
     }

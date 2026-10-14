@@ -11,7 +11,6 @@ mod gestures;
 mod graph;
 mod input;
 mod labels;
-mod layouts;
 mod lists;
 mod marks;
 mod passes;
@@ -20,7 +19,6 @@ mod program;
 mod query;
 mod resources;
 mod rig;
-mod routes;
 mod rows;
 mod shadows;
 mod sync;
@@ -45,10 +43,13 @@ use probe::Probing;
 use program::Regions;
 use resources::Resources;
 use rig::Rig;
+use rustc_hash::FxHashMap;
 use web_time::Instant;
 
 use crate::expr::compile::Deps;
-use crate::{Data, Error, Gpu, Result, Row, Scene, Space};
+use crate::scene::mark::Context;
+use crate::sheet::Sheet;
+use crate::{Data, Error, Gpu, Name, Result, Row, Scene, Space, Table};
 
 /// Where a frame is drawn: a texture view, its format and size in physical pixels, and how many
 /// physical pixels make a CSS pixel.
@@ -83,7 +84,14 @@ pub struct Target<'a> {
 pub struct View {
     gpu: Gpu,
     scene: Scene,
+    /// Bumps whenever the scene changes.
+    scene_version: u64,
     data: Vec<Data>,
+    /// What the view derives beside each table it draws, row for row, which marks read like data:
+    /// a diagram's sheet, or elsewhere the lanes of edges sharing their ends.
+    derived: FxHashMap<(Name, Name), Table>,
+    sheet: Sheet,
+    lanes: graph::Lanes,
     marks: Vec<Shown>,
     camera: Camera,
     rig: Rig,
@@ -115,14 +123,8 @@ pub struct View {
     focus: Focus,
     probing: Probing,
     queries: query::Queries,
-    placing: layouts::Placing,
-    routing: routes::Routing,
     /// Words the marks' segment lists take at the front of the lists buffer.
     segment_words: u32,
-    /// The groups stood around their members, made from what they read; and CSS pixels per
-    /// position unit this frame.
-    group_bounds: derived::Derived<()>,
-    px_per_unit: f32,
     labels: labels::Labels,
     gestures: Gestures,
     /// The pointer over the view, CSS pixels.
@@ -142,7 +144,11 @@ impl View {
         let mut view = View {
             gpu: gpu.clone(),
             scene: Scene::new(scene.space.clone()),
+            scene_version: 0,
             data: Vec::new(),
+            derived: FxHashMap::default(),
+            sheet: Sheet::default(),
+            lanes: graph::Lanes::default(),
             marks: Vec::new(),
             camera,
             rig: Rig::default(),
@@ -165,11 +171,7 @@ impl View {
             focus: Focus::default(),
             probing: Probing::default(),
             queries: query::Queries::default(),
-            placing: layouts::Placing::default(),
-            routing: routes::Routing::default(),
             segment_words: 0,
-            group_bounds: derived::Derived::default(),
-            px_per_unit: 1.0,
             labels: labels::Labels::default(),
             gestures: Gestures::default(),
             pointer: None,
@@ -192,17 +194,20 @@ impl View {
         scene.check()?;
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
-        let theme_changed = scene.theme != self.scene.theme;
+        // A mark compiles again when its theme or space changed.
+        let context_changed = scene.theme != self.scene.theme
+            || std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
+        let context = Context { theme: &scene.theme, diagram: matches!(scene.space, Space::Diagram(_)) };
         // Compile every new or changed mark before changing anything.
         let mut fresh = Vec::with_capacity(scene.marks.len());
         for (i, mark) in scene.marks.iter().enumerate() {
-            let kept = !theme_changed && self.marks.iter().any(|s| s.mark.draws_like(mark));
+            let kept = !context_changed && self.marks.iter().any(|s| s.mark.draws_like(mark));
             if kept {
                 fresh.push(None);
                 continue;
             }
             let mut shown = Shown::new(mark.clone());
-            shown.compile(&self.data, &scene.theme, &mut inner).map_err(|e| e.at(i).at("marks"))?;
+            shown.compile(&self.data, context, &mut inner).map_err(|e| e.at(i).at("marks"))?;
             fresh.push(Some(shown));
         }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
@@ -242,7 +247,11 @@ impl View {
             self.camera = Camera::default_for(&scene.space);
             self.plot_y = None;
         }
+        if matches!(scene.space, Space::Diagram(_)) {
+            self.rig.orbit = 0.0;
+        }
         self.scene = scene;
+        self.scene_version += 1;
         self.pipelines_made = None;
         self.focus.dirty = true;
         self.invalidate();
@@ -264,9 +273,10 @@ impl View {
         };
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
+        let context = Context { theme: &self.scene.theme, diagram: matches!(self.scene.space, Space::Diagram(_)) };
         for i in 0..self.marks.len() {
             if self.marks[i].stale(&self.data[at])
-                && let Err(e) = self.marks[i].compile(&self.data, &self.scene.theme, &mut inner)
+                && let Err(e) = self.marks[i].compile(&self.data, context, &mut inner)
             {
                 self.events.push(Event::Error(e.at(i).at("marks")));
             }
@@ -350,6 +360,13 @@ impl View {
         view.surface(point.map(f64::from)).map(|w| view.position(w))
     }
 
+    /// Lays every vertex without a position out again by the diagram's layout. Places a layout gave
+    /// otherwise hold, so rows added later are placed around the rest.
+    pub fn arrange(&mut self) {
+        self.sheet.arrange();
+        self.wake();
+    }
+
     /// Frames what `fit` names on the next frame, keeping pitch and bearing.
     pub fn fit(&mut self, fit: Fit) {
         self.focus.fitting = match &fit {
@@ -381,9 +398,10 @@ impl View {
         self.rig.orbit
     }
 
-    /// Turns the camera `degrees_per_second` about its center; zero stops it.
+    /// Turns the camera `degrees_per_second` about its center; zero stops it. A diagram never turns.
     pub fn set_orbit(&mut self, degrees_per_second: f64) {
-        self.rig.orbit = if degrees_per_second.is_finite() { degrees_per_second } else { 0.0 };
+        let turns = degrees_per_second.is_finite() && !matches!(self.scene.space, Space::Diagram(_));
+        self.rig.orbit = if turns { degrees_per_second } else { 0.0 };
         self.wake();
     }
 
@@ -436,8 +454,7 @@ impl View {
             || self.rig.moving()
             || self.probing.busy()
             || self.queries.busy()
-            || self.placing.busy()
-            || self.routing.busy()
+            || self.sheet.busy()
             || self.awaiting()
             || self.labels.busy()
             || self

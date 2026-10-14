@@ -1,5 +1,5 @@
 use super::Interpolation;
-use super::mark::{Drawing, GEOMETRY, MarkKind, Stroke, StrokeWords, Style, stroke_methods, style_methods};
+use super::mark::{Context, Drawing, GEOMETRY, MarkKind, Stroke, StrokeWords, Style, stroke_methods, style_methods};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Name, Result};
@@ -51,7 +51,7 @@ impl Lines {
         self.trace.clone().unwrap_or_else(|| GEOMETRY.into())
     }
 
-    pub(crate) fn compile(&self, c: &mut Compiler<'_>) -> Result<Drawing> {
+    pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
         let field = self.traced();
         let trace = match (c.kind(&field), &self.trace) {
             (None, None) => return Err(Error::invalid("name the field each row traces").at("trace")),
@@ -71,7 +71,7 @@ impl Lines {
             flags: wgsl::LINE_FLAGS,
             theme_width: wgsl::THEME_LINE_WIDTH,
         };
-        self.stroke.compile(c, &words)?;
+        self.stroke.compile(c, &words, context.diagram)?;
         let mut drawing = Drawing::new(MarkKind::Lines, wgsl::LINE_WORDS);
         drawing.trace = trace;
         drawing.flags = match self.interpolation {

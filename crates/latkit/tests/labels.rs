@@ -1,20 +1,21 @@
 //! Labels show beside their rows once the host sets their texts, or inside a block while they fit;
-//! where two would overlap, the one of higher priority shows.
+//! where two would overlap, the one of higher priority shows. A diagram's labels scale with the
+//! sheet and fade out once too small to read.
 
 #![cfg(feature = "gpu")]
 
 mod common;
 
-use common::{SIZE, at, camera, errors, frame, gpu, plain_theme, plane};
+use common::{SIZE, at, camera, diagram, errors, frame, gpu, plain_theme, plane};
 use latkit::host::{Host, Raster, TextRun};
-use latkit::{Color, Data, Label, Scene, Table, Vertices, View, field};
+use latkit::{Camera, Color, Data, Label, Marker, Scene, Table, Vertices, View, field};
 
-/// Sets a text as a solid box six pixels wide per character, as tall as its size.
+/// Sets a text as a solid box six tenths of its size wide per character, as tall as its size.
 struct Boxes;
 
 impl Host for Boxes {
     fn rasterize(&self, run: &TextRun) -> Option<Raster> {
-        let size = [6 * run.text.chars().count() as u32, run.size_px];
+        let size = [(0.6 * (run.text.chars().count() as u32 * run.size_px) as f32) as u32, run.size_px];
         Some(Raster { size, coverage: vec![255; (size[0] * size[1]) as usize], baseline: size[1] as f32 * 0.8 })
     }
 }
@@ -89,4 +90,50 @@ fn overlapping_labels_give_way_by_priority() {
     assert!(shared[2] > 200 && shared[0] < 60, "the higher priority label shows: {shared:?}");
     let only_first = at(&pixels, c + 7, c);
     assert!(only_first[0] < 60, "the lower one gave way: {only_first:?}");
+}
+
+/// A block in a diagram, 60 by 20 units, labeled in red at size 10, seen at `zoom`.
+fn diagram_block(gpu: &latkit::Gpu, zoom: f64) -> Vec<[u8; 4]> {
+    gpu.set_host(Boxes);
+    let mut data = Data::new("d");
+    data.apply(Table::new("V", 1).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["abcdef"]))
+        .expect("valid");
+    let label = Label::new("name").size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
+    let scene = Scene::new(diagram()).theme(latkit::Theme { halo: 0.0, ..plain_theme() }).draw(
+        Vertices::of("d", "V")
+            .position("x", "y")
+            .size(60.0, 20.0)
+            .marker(Marker::block())
+            .color(Color::rgb(0.0, 1.0, 0.0))
+            .pick(false)
+            .label(label),
+    );
+    let mut view = View::new(gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
+    view.set_data(data);
+    let pixels = frame(gpu, &mut view);
+    assert_eq!(errors(&mut view), Vec::new());
+    pixels
+}
+
+#[test]
+fn diagram_labels_scale_with_the_sheet() {
+    let Some(gpu) = gpu() else { return };
+    let c = SIZE / 2;
+    let red = |p: [u8; 4]| p[0] > 200 && p[1] < 60;
+    // At zoom 0 the label is 36 by 10 pixels; at zoom 1 twice that, still inside its block.
+    let near = diagram_block(&gpu, 0.0);
+    assert!(red(at(&near, c + 15, c)) && !red(at(&near, c + 21, c)), "36 wide at zoom 0");
+    let closer = diagram_block(&gpu, 1.0);
+    assert!(red(at(&closer, c + 33, c)) && !red(at(&closer, c + 39, c)), "72 wide at zoom 1");
+}
+
+#[test]
+fn diagram_labels_fade_once_too_small_to_read() {
+    let Some(gpu) = gpu() else { return };
+    let c = SIZE / 2;
+    // At zoom −2 the text is 2.5 pixels tall: past reading, it is gone, and the block shows.
+    let far = diagram_block(&gpu, -2.0);
+    let middle = at(&far, c, c);
+    assert!(middle[1] > 120 && middle[0] < 60, "only the block: {middle:?}");
 }

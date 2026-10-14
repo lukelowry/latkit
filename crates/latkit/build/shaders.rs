@@ -28,8 +28,6 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "compute::freeze", variants: &[("main", &[])] },
     Entry { module: "compute::bounds", variants: &[("main", &[])] },
     Entry { module: "compute::normals", variants: &[("main", &[])] },
-    Entry { module: "compute::groups", variants: &[("main", &["writes", "groups"])] },
-    Entry { module: "compute::stress", variants: &[("main", &["stress"])] },
     Entry { module: "compute::probe", variants: &[("main", &["lists"]), ("multisampled", &["multisampled", "lists"])] },
     Entry { module: "compute::lists", variants: &[("main", &["lists"]), ("query", &["lists", "query"])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
@@ -46,12 +44,12 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "draw::strokes", variants: &[("main", &[]), ("cast", &["casts"])] },
     Entry { module: "draw::triangles", variants: &[("main", &[]), ("cast", &["casts"])] },
     Entry { module: "draw::shade", variants: &[("main", &[])] },
-    Entry { module: "draw::glyphs", variants: &[("main", &[])] },
+    Entry { module: "draw::glyphs", variants: &[("main", &[]), ("ports", &["ports"])] },
     Entry { module: "compute::labels", variants: &[("main", &[])] },
     Entry { module: "draw::overlay", variants: &[("main", &[])] },
 ];
 
-const FEATURES: &[&str] = &["writes", "casts", "custom", "multisampled", "lists", "query", "ports", "groups", "stress"];
+const FEATURES: &[&str] = &["writes", "casts", "custom", "multisampled", "lists", "query", "ports"];
 
 /// What a custom marker supplies, for validating its variant.
 const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";
@@ -61,10 +59,8 @@ const DYNAMIC: &[&str] = &["mark", "eye"];
 
 /// The values each pipeline constant is made with, as constants of `lib/types.wesl`: the primitive a
 /// probe reads, and the path a stroke reads.
-const OVERRIDES: &[(&str, &[&str])] = &[
-    ("PROBED", &["POINTS", "STROKES", "TRIANGLES"]),
-    ("PATH", &["PATH_ENDS", "PATH_TRACE", "PATH_GEOMETRY", "PATH_NET"]),
-];
+const OVERRIDES: &[(&str, &[&str])] =
+    &[("PROBED", &["POINTS", "STROKES", "TRIANGLES"]), ("PATH", &["PATH_ENDS", "PATH_TRACE", "PATH_GEOMETRY"])];
 
 pub(crate) fn generate() {
     let root = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("shaders");

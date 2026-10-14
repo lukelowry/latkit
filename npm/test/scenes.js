@@ -8,9 +8,10 @@ export default [
   { "space": "earth", "ease": 0 },
   { "space": "globe", "theme": "light" },
   { "space": "plot" },
+  { "space": "diagram", "layout": "stress" },
   { "space": { "plane": { "grid": "off" } } },
-  { "space": { "plane": { "grid": { "dots": 10, "snap": true } } }, "layout": { "layered": { "flow": "down", "rankGap": 60 } } },
-  { "space": { "earth": { "projection": "globe", "surface": "#203040", "graticule": false } }, "layout": "stress" },
+  { "space": { "diagram": { "grid": { "dots": 10, "snap": true } } }, "layout": { "layered": { "flow": "down", "rankGap": 60 } } },
+  { "space": { "earth": { "projection": "globe", "surface": "#203040", "graticule": false } } },
   { "space": { "plot": { "x": { "label": "Time (s)" }, "y": { "grid": false } } } },
   {
     "space": "globe",
@@ -96,19 +97,22 @@ export default [
     "theme": { "edgeSpacing": 5, "arrow": 8, "halo": 2, "shadow": { "light": [-1, 1, 2], "softness": 0.2 } }
   },
   {
-    "space": "plane",
+    "space": "diagram",
     "layout": { "stress": { "gap": 50 } },
     "controls": { "connect": true, "delete": true },
     "marks": [
-      { "vertices": { "of": ["diagram", "Area"], "contains": ["Device", "area"], "collapsed": "folded", "marker": "rounded" } },
-      { "edges": { "of": ["diagram", "Wire"], "ends": ["from", "to"], "bends": "path", "route": "orthogonal", "arrows": true } },
-      { "edges": { "of": ["diagram", "Net"] } },
+      { "vertices": { "of": ["plant", "Area"], "contains": ["Device", "area"], "label": "name" } },
+      { "edges": { "of": ["plant", "Wire"], "ends": ["from", "to"], "bends": "path", "arrows": true } },
+      { "edges": { "of": ["plant", "Net"], "route": "orthogonal", "arrows": true } },
       {
         "vertices": {
-          "of": ["diagram", "Device"],
+          "of": ["plant", "Device"],
           "size": [40, 24],
-          "marker": "rectangle",
-          "ports": [["input", "left"], ["output", { "side": "right", "order": 0, "label": "out", "shape": "diamond" }]]
+          "marker": "block",
+          "ports": [
+            ["input", "left"],
+            ["output", { "side": "right", "order": 0, "label": "out", "shape": "diamond", "output": true }]
+          ]
         }
       }
     ],

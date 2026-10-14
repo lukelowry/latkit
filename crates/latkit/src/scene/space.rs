@@ -5,15 +5,23 @@ use crate::Color;
 pub enum Space {
     /// Longitude and latitude in degrees, on a map or a globe.
     Earth(Earth),
-    /// Plane units, for diagrams and graphs.
+    /// Plane units with elevation: graphs and scenes the camera turns and tilts around.
     Plane(Plane),
     /// The data's axis across, values up.
     Plot(Plot),
+    /// A sheet for diagrams: x right and y down in units, every length a unit.
+    Diagram(Diagram),
 }
 
 impl Default for Space {
     fn default() -> Space {
         Space::Plane(Plane::default())
+    }
+}
+
+impl From<Diagram> for Space {
+    fn from(diagram: Diagram) -> Space {
+        Space::Diagram(diagram)
     }
 }
 
@@ -87,7 +95,23 @@ impl Default for Plane {
     }
 }
 
-/// A plane's grid.
+/// A sheet for diagrams, flat and seen from straight above: the camera pans and zooms. Positions are
+/// units with y down, and every length is a unit, a CSS pixel at zoom 0 (sizes, padding, ports,
+/// strokes, text, and the theme's), except glow, halo, and pick radius. Zooming scales one fixed
+/// picture. Only a diagram has ports, groups, nets, orthogonal routes, and layouts.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Diagram {
+    /// The grid under the marks.
+    pub grid: Grid,
+}
+
+impl Default for Diagram {
+    fn default() -> Diagram {
+        Diagram { grid: Grid::Dots { pitch: 20.0, snap: false } }
+    }
+}
+
+/// A plane's or a diagram's grid.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Grid {
     /// No grid.

@@ -9,18 +9,18 @@ use crate::gpu::shaders as wgsl;
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(untagged, deny_unknown_fields))]
 pub enum Camera {
-    /// On the earth or a plane: the point looked at and turned about, how far in, and how tilted
-    /// and turned.
+    /// On the earth, a plane, or a diagram: the point looked at and turned about, how far in, and how
+    /// tilted and turned. A diagram is always seen from straight above, upright.
     Map {
-        /// Longitude, latitude, and elevation on the earth; x, y, and elevation on a plane. In JSON,
-        /// `[x, y]` looks at the ground.
+        /// Longitude, latitude, and elevation on the earth; x, y, and elevation on a plane or a
+        /// diagram. In JSON, `[x, y]` looks at the ground.
         #[cfg_attr(feature = "serde", serde(with = "center"))]
         center: [f64; 3],
-        /// On the earth the web mercator level; on a plane, log₂ of pixels per unit.
+        /// On the earth the web mercator level; elsewhere, log₂ of pixels per unit.
         zoom: f64,
-        /// Degrees from looking straight down, up to 75.
+        /// Degrees from looking straight down, up to 75; 0 in a diagram.
         pitch: f64,
-        /// Degrees clockwise from north, or from up on a plane.
+        /// Degrees clockwise from north, or from up on a plane; 0 in a diagram.
         bearing: f64,
     },
     /// On a plot: the axis range across, and the value range up; `None` fits the values in view.
@@ -71,7 +71,9 @@ impl Camera {
     pub(crate) fn default_for(space: &Space) -> Camera {
         match space {
             Space::Earth(_) => Camera::Map { center: [0.0, 20.0, 0.0], zoom: 1.5, pitch: 0.0, bearing: 0.0 },
-            Space::Plane(_) => Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 },
+            Space::Plane(_) | Space::Diagram(_) => {
+                Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 0.0, bearing: 0.0 }
+            }
             Space::Plot(_) => Camera::Plot { x: [0.0, 1.0], y: None },
         }
     }
@@ -80,7 +82,8 @@ impl Camera {
     pub(crate) fn fits(&self, space: &Space) -> bool {
         matches!(
             (self, space),
-            (Camera::Map { .. }, Space::Earth(_) | Space::Plane(_)) | (Camera::Plot { .. }, Space::Plot(_))
+            (Camera::Map { .. }, Space::Earth(_) | Space::Plane(_) | Space::Diagram(_))
+                | (Camera::Plot { .. }, Space::Plot(_))
         )
     }
 
@@ -152,6 +155,9 @@ impl Camera {
     /// Turned by `degrees` of bearing and pitch about `anchor`, which keeps its place on screen.
     pub(crate) fn turned(&self, view: &Projected, anchor: [f64; 3], degrees: [f64; 2]) -> Camera {
         let Camera::Map { center, zoom, pitch, bearing } = *self else { return *self };
+        if view.space == wgsl::SPACE_DIAGRAM {
+            return *self;
+        }
         let to_pitch = (pitch + degrees[1]).clamp(0.0, MAX_PITCH);
         let to_bearing = (bearing + degrees[0]).rem_euclid(360.0);
         if view.globe >= 0.5 {
@@ -234,7 +240,7 @@ impl Camera {
                 let center = [min[0].midpoint(max[0]), latitude(y0.midpoint(y1)), height];
                 Camera::Map { center, zoom, pitch, bearing }.framed(space, min, max, size, area, room)
             }
-            Space::Plane(_) => {
+            Space::Plane(_) | Space::Diagram(_) => {
                 let dx = (max[0] - min[0]).max(1e-9);
                 let dy = (max[1] - min[1]).max(1e-9);
                 let zoom = (room[0] / dx).min(room[1] / dy).log2().clamp(-MAX_ZOOM, MAX_ZOOM);
@@ -339,6 +345,10 @@ impl Projected {
                 let px = zoom.exp2();
                 (center, [px, px], pitch, bearing, wgsl::SPACE_PLANE)
             }
+            (Space::Diagram(_), Camera::Map { center, zoom, .. }) => {
+                let px = zoom.exp2();
+                (center, [px, px], 0.0, 0.0, wgsl::SPACE_DIAGRAM)
+            }
             (_, Camera::Plot { x, y }) => {
                 let y = y.unwrap_or([0.0, 1.0]);
                 let px = [room[0] / (x[1] - x[0]).abs().max(1e-12), room[1] / (y[1] - y[0]).abs().max(1e-12)];
@@ -349,10 +359,12 @@ impl Projected {
         let distance = 0.5 * h / (0.5 * FOV).tan();
         // Reversed depth: the near plane maps to 1 and the far plane to 0.
         let projection = perspective(FOV, w / h, distance * 100.0, distance * 0.01);
+        // A diagram's y runs down the screen.
+        let up = if space_code == wgsl::SPACE_DIAGRAM { -px_per_unit[1] } else { px_per_unit[1] };
         let view = DMat4::from_translation(DVec3::new(0.0, 0.0, -distance))
             * DMat4::from_rotation_x(-pitch.clamp(0.0, MAX_PITCH).to_radians())
             * DMat4::from_rotation_z(bearing.to_radians())
-            * DMat4::from_scale(DVec3::new(px_per_unit[0], px_per_unit[1], px_per_unit[0]))
+            * DMat4::from_scale(DVec3::new(px_per_unit[0], up, px_per_unit[0]))
             * DMat4::from_translation(DVec3::new(0.0, 0.0, -center[2]));
         let middle = [area[0].midpoint(area[2]) / w * 2.0 - 1.0, 1.0 - area[1].midpoint(area[3]) / h * 2.0];
         let offset = DMat4::from_cols(DVec4::X, DVec4::Y, DVec4::Z, DVec4::new(middle[0], middle[1], 0.0, 1.0));
@@ -527,6 +539,18 @@ mod tests {
         let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
         assert!(near(to_screen(&view, [10.0, 20.0, 0.0]), [400.0, 300.0]));
         assert!(near(to_screen(&view, [11.0, 21.0, 0.0]), [402.0, 298.0]), "two pixels per unit, y up");
+    }
+
+    #[test]
+    fn a_diagram_runs_y_down_and_never_turns() {
+        let space = Space::Diagram(crate::Diagram::default());
+        let camera = Camera::Map { center: [10.0, 20.0, 0.0], zoom: 1.0, pitch: 40.0, bearing: 30.0 };
+        let view = Projected::new(&space, &camera, SIZE, AREA, 0.0);
+        assert!(near(to_screen(&view, [10.0, 20.0, 0.0]), [400.0, 300.0]));
+        assert!(near(to_screen(&view, [11.0, 21.0, 0.0]), [402.0, 302.0]), "two pixels per unit, y down, upright");
+        assert_eq!(camera.turned(&view, [0.0; 3], [20.0, 10.0]), camera);
+        let back = view.position(view.surface([402.0, 302.0]).expect("the sheet"));
+        assert!((back[0] - 11.0).abs() < 1e-9 && (back[1] - 21.0).abs() < 1e-9, "{back:?}");
     }
 
     #[test]

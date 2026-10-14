@@ -1,7 +1,6 @@
-use std::cmp::Reverse;
-
 use rustc_hash::FxHashMap;
 
+use super::levels::{Graph, Level, Runs, bounds, frame, nested, union};
 use super::pack;
 use crate::scene::{Direction, Layered};
 
@@ -10,193 +9,33 @@ const ASPECT: f64 = 16.0 / 9.0;
 /// Crossing-reduction sweeps, alternately down and up the ranks.
 const SWEEPS: usize = 8;
 
-/// A graph to lay out in ranks. Units are plane units with y pointing up (`Direction::Up` means toward +y, `Down`
-/// toward -y).
-pub(crate) struct Ranked<'a> {
-    /// Each vertex's width and height.
-    pub(crate) sizes: &'a [[f64; 2]],
-    /// Edges, each pointing from one vertex to another; cycles are allowed and broken.
-    pub(crate) edges: &'a [[u32; 2]],
-    /// A vertex's center when its data gives it: it stays there.
-    pub(crate) pinned: &'a [Option<[f64; 2]>],
-    /// The group each vertex belongs to, by vertex index, if any. Groups nest; a group vertex's own size is ignored.
-    pub(crate) groups: &'a [Option<u32>],
+/// Every vertex's center: pinned vertices where they are; the others in ranks along `options.flow`
+/// (`Direction::Up` toward +y), `options.gap` apart within a rank and `options.rank_gap` between
+/// ranks, ordered to cross few links, each pointing from one vertex to another; cycles are broken.
+/// Each connected part is laid out alone, and parts nothing pins pack into rows (aspect 16:9) beside
+/// the pinned ones. Across the flow, each vertex lines up with its sources; in a part nothing pins,
+/// each source then settles amid the vertices it fans out to. Groups nest as [`nested`] lays them
+/// out.
+pub(crate) fn layered(graph: &Graph<'_>, options: &Layered) -> Vec<[f64; 2]> {
+    nested(graph, |level| arrange(level, options))
 }
 
-/// Every vertex's center: pinned vertices where they are; the others in ranks along `options.flow`, `options.gap`
-/// apart within a rank and `options.rank_gap` between ranks, ordered to cross few edges. Each connected part is laid
-/// out alone, and parts nothing pins pack into rows (aspect 16:9) beside the pinned ones. Across the flow, each vertex
-/// lines up with its sources; in a part nothing pins, each source then settles amid the vertices it fans out to.
-///
-/// A group vertex's center is the middle of its members' bounds. A group's members are laid out first, innermost
-/// groups first, and the group then lays out as one vertex: its members' bounds padded by half a gap on each side, with
-/// the edges between members of different groups lifted to the groups they meet in. A pinned member holds its group
-/// where its members settled; a group's own pin moves its members only when none of them is pinned.
-pub(crate) fn layered(graph: &Ranked<'_>, options: &Layered) -> Vec<[f64; 2]> {
-    let count = graph.sizes.len();
-    assert!(graph.pinned.len() == count && graph.groups.len() == count, "a pin and a group for each vertex");
-    let parent = tree(graph.groups);
-    let depth = depths(&parent);
-    // A level is the members of the top or of one group: level 0 is the top, then the groups innermost first.
-    let mut holds = vec![false; count];
-    for &group in parent.iter().flatten() {
-        holds[group as usize] = true;
-    }
-    let mut groups: Vec<usize> = (0..count).filter(|&group| holds[group]).collect();
-    groups.sort_by_key(|&group| Reverse(depth[group]));
-    let mut level = vec![0; count];
-    for (k, &group) in groups.iter().enumerate() {
-        level[group] = k + 1;
-    }
-    let level_of = |vertex: usize| parent[vertex].map_or(0, |group| level[group as usize]);
-    let members = Runs::new(groups.len() + 1, (0..count).map(|vertex| (level_of(vertex), vertex as u32)));
-    let lifted: Vec<[u32; 2]> = graph.edges.iter().filter_map(|&[from, to]| lift(from, to, &parent, &depth)).collect();
-    let links = Runs::new(groups.len() + 1, lifted.iter().map(|&link| (level_of(link[0] as usize), link)));
-
-    let mut sizes: Vec<[f64; 2]> =
-        graph.sizes.iter().map(|&[width, height]| [width.max(0.0), height.max(0.0)]).collect();
-    let mut pins: Vec<Option<[f64; 2]>> =
-        graph.pinned.iter().map(|pin| pin.filter(|at| at[0].is_finite() && at[1].is_finite())).collect();
-    // Centers within each vertex's level, and each group's members' middle within its own.
-    let mut centers = vec![[0.0; 2]; count];
-    let mut middles = vec![[0.0; 2]; count];
-    let mut local = vec![0; count];
-    let padding = options.gap / 2.0;
-    for (k, &group) in groups.iter().enumerate() {
-        let inside = members.get(k + 1);
-        arrange(inside, links.get(k + 1), &sizes, &pins, options, &mut local, &mut centers);
-        let bounds = bounds(inside.iter().map(|&vertex| frame(centers[vertex as usize], sizes[vertex as usize])));
-        middles[group] = [bounds[0].midpoint(bounds[2]), bounds[1].midpoint(bounds[3])];
-        sizes[group] = [bounds[2] - bounds[0] + 2.0 * padding, bounds[3] - bounds[1] + 2.0 * padding];
-        if inside.iter().any(|&vertex| pins[vertex as usize].is_some()) {
-            pins[group] = Some(middles[group]);
-        }
-    }
-    arrange(members.get(0), links.get(0), &sizes, &pins, options, &mut local, &mut centers);
-    // Each group's members move with it, outermost first.
-    let mut shifts = vec![[0.0; 2]; count];
-    for &group in groups.iter().rev() {
-        let outer = parent[group].map_or([0.0; 2], |up| shifts[up as usize]);
-        shifts[group] =
-            [centers[group][0] + outer[0] - middles[group][0], centers[group][1] + outer[1] - middles[group][1]];
-    }
-    centers
-        .iter()
-        .zip(&parent)
-        .map(|(center, group)| {
-            let shift = group.map_or([0.0; 2], |group| shifts[group as usize]);
-            [center[0] + shift[0], center[1] + shift[1]]
-        })
-        .collect()
-}
-
-/// Each vertex's group: groups out of range or of themselves dropped, and each cycle of groups cut where a walk up it
-/// closes.
-fn tree(groups: &[Option<u32>]) -> Vec<Option<u32>> {
-    const NEW: u8 = 0;
-    const WALKING: u8 = 1;
-    const DONE: u8 = 2;
-    let count = groups.len();
-    let mut parent: Vec<Option<u32>> = groups
-        .iter()
-        .enumerate()
-        .map(|(vertex, group)| group.filter(|&group| (group as usize) < count && group as usize != vertex))
-        .collect();
-    let mut state = vec![NEW; count];
-    let mut walk: Vec<usize> = Vec::new();
-    for start in 0..count {
-        let mut at = start;
-        loop {
-            if state[at] != NEW {
-                if state[at] == WALKING {
-                    parent[*walk.last().expect("a walk reaches itself only after a step")] = None;
-                }
-                break;
-            }
-            state[at] = WALKING;
-            walk.push(at);
-            match parent[at] {
-                Some(group) => at = group as usize,
-                None => break,
-            }
-        }
-        for vertex in walk.drain(..) {
-            state[vertex] = DONE;
-        }
-    }
-    parent
-}
-
-/// How many groups hold each vertex.
-fn depths(parent: &[Option<u32>]) -> Vec<u32> {
-    let mut depth = vec![u32::MAX; parent.len()];
-    let mut walk: Vec<usize> = Vec::new();
-    for start in 0..parent.len() {
-        let mut at = start;
-        while depth[at] == u32::MAX {
-            walk.push(at);
-            match parent[at] {
-                Some(group) => at = group as usize,
-                None => break,
-            }
-        }
-        // The walk ends at a vertex already counted, or at the top, which it holds.
-        let mut next = if depth[at] == u32::MAX { 0 } else { depth[at] + 1 };
-        while let Some(vertex) = walk.pop() {
-            depth[vertex] = next;
-            next += 1;
-        }
-    }
-    depth
-}
-
-/// The edge `from` → `to` between the outermost groups (or vertices) that hold each end and share a level; `None` for
-/// an edge within one of them or with an end out of range.
-fn lift(from: u32, to: u32, parent: &[Option<u32>], depth: &[u32]) -> Option<[u32; 2]> {
-    if from as usize >= parent.len() || to as usize >= parent.len() {
-        return None;
-    }
-    let up = |vertex: usize| parent[vertex].expect("a held vertex has a group") as usize;
-    let (mut from, mut to) = (from as usize, to as usize);
-    while depth[from] > depth[to] {
-        from = up(from);
-    }
-    while depth[to] > depth[from] {
-        to = up(to);
-    }
-    while parent[from] != parent[to] {
-        (from, to) = (up(from), up(to));
-    }
-    (from != to).then_some([from as u32, to as u32])
-}
-
-/// Places one level's members: each part that `links` join laid out alone in ranks, then the parts nothing pins packed
-/// in rows below the pinned ones, tallest first. `local` is scratch, one slot a vertex.
-fn arrange(
-    members: &[u32],
-    links: &[[u32; 2]],
-    sizes: &[[f64; 2]],
-    pins: &[Option<[f64; 2]>],
-    options: &Layered,
-    local: &mut [u32],
-    centers: &mut [[f64; 2]],
-) {
-    for (i, &vertex) in members.iter().enumerate() {
-        local[vertex as usize] = i as u32;
-    }
-    let local_links: Vec<[u32; 2]> =
-        links.iter().map(|&[from, to]| [local[from as usize], local[to as usize]]).collect();
-    let (part, count) = parts(members.len(), &local_links);
-    let inside = Runs::new(count, (0..members.len()).map(|i| (part[i] as usize, i as u32)));
-    let joins = Runs::new(count, local_links.iter().map(|&link| (part[link[0] as usize] as usize, link)));
+/// Places one level: each part that its links join laid out alone in ranks, then the parts nothing
+/// pins packed in rows below the pinned ones, tallest first.
+fn arrange(level: &Level, options: &Layered) -> Vec<[f64; 2]> {
+    let (sizes, pins) = (&level.sizes, &level.pinned);
+    let mut centers = vec![[0.0; 2]; sizes.len()];
+    let (part, count) = parts(sizes.len(), &level.links);
+    let inside = Runs::new(count, (0..sizes.len()).map(|i| (part[i] as usize, i as u32)));
+    let joins = Runs::new(count, level.links.iter().map(|&link| (part[link[0] as usize] as usize, link)));
     // Each member's place in its part, whose members run in index order.
-    let mut slot = vec![0_u32; members.len()];
+    let mut slot = vec![0_u32; sizes.len()];
     for p in 0..count {
         for (s, &i) in inside.get(p).iter().enumerate() {
             slot[i as usize] = s as u32;
         }
     }
-    let vertex = |i: u32| members[i as usize] as usize;
+    let vertex = |i: u32| i as usize;
     let flow = options.flow;
     let mut anchored: Option<[f64; 4]> = None;
     let mut loose: Vec<(usize, [f64; 4])> = Vec::new();
@@ -229,7 +68,7 @@ fn arrange(
         }
     }
     if loose.is_empty() {
-        return;
+        return centers;
     }
     // Tallest first, then by first member, so like parts line up.
     loose.sort_by(|a, b| (b.1[3] - b.1[1]).total_cmp(&(a.1[3] - a.1[1])));
@@ -244,6 +83,7 @@ fn arrange(
             *center = [center[0] + shift[0], center[1] + shift[1]];
         }
     }
+    centers
 }
 
 /// Each of `count` vertices' part, the parts that `links` join numbered by their first vertex, and how many parts
@@ -308,22 +148,6 @@ fn extent(flow: Direction, [width, height]: [f64; 2]) -> [f64; 2] {
         Direction::Right | Direction::Left => [width, height],
         Direction::Down | Direction::Up => [height, width],
     }
-}
-
-/// The box of a vertex centered at `center`: its least x and y, then its greatest.
-fn frame(center: [f64; 2], size: [f64; 2]) -> [f64; 4] {
-    let half = [size[0] / 2.0, size[1] / 2.0];
-    [center[0] - half[0], center[1] - half[1], center[0] + half[0], center[1] + half[1]]
-}
-
-/// The box holding two boxes.
-fn union(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
-    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
-}
-
-/// The box holding `boxes`; a point at the origin for none.
-fn bounds(boxes: impl Iterator<Item = [f64; 4]>) -> [f64; 4] {
-    boxes.reduce(union).unwrap_or([0.0; 4])
 }
 
 /// One part's centers in flow coordinates (see [`to_flow`]). `extents` are each vertex's length along the flow and
@@ -695,59 +519,6 @@ fn cells(cell: f64, area: [f64; 4]) -> impl Iterator<Item = [i64; 2]> {
         .flat_map(move |along| (across_from..=across_to).map(move |across| [along, across]))
 }
 
-/// Items bucketed by key, each bucket's in the order given: bucket `k` is `items[offsets[k]..offsets[k + 1]]`.
-struct Runs<T> {
-    offsets: Vec<usize>,
-    items: Vec<T>,
-}
-
-impl<T: Copy + Default> Runs<T> {
-    /// `keyed` items in `buckets` buckets, each item's key below `buckets`.
-    fn new(buckets: usize, keyed: impl Iterator<Item = (usize, T)> + Clone) -> Runs<T> {
-        let mut offsets = vec![0; buckets + 1];
-        for (key, _) in keyed.clone() {
-            offsets[key] += 1;
-        }
-        let mut total = 0;
-        for offset in &mut offsets {
-            (*offset, total) = (total, total + *offset);
-        }
-        let mut items = vec![T::default(); total];
-        let mut fill = offsets.clone();
-        for (key, item) in keyed {
-            items[fill[key]] = item;
-            fill[key] += 1;
-        }
-        Runs { offsets, items }
-    }
-}
-
-impl<T> Runs<T> {
-    /// How many buckets.
-    fn len(&self) -> usize {
-        self.offsets.len() - 1
-    }
-
-    /// Bucket `k`'s items.
-    fn get(&self, k: usize) -> &[T] {
-        &self.items[self.offsets[k]..self.offsets[k + 1]]
-    }
-
-    /// Bucket `k`'s items, to change.
-    fn get_mut(&mut self, k: usize) -> &mut [T] {
-        &mut self.items[self.offsets[k]..self.offsets[k + 1]]
-    }
-}
-
-impl<T: Ord> Runs<T> {
-    /// Sorts the items within each bucket.
-    fn sort_each(&mut self) {
-        for k in 0..self.len() {
-            self.get_mut(k).sort_unstable();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -759,26 +530,35 @@ mod tests {
     }
 
     /// A graph's columns, owned.
-    struct Graph {
+    struct Columns {
         sizes: Vec<[f64; 2]>,
         edges: Vec<[u32; 2]>,
         pinned: Vec<Option<[f64; 2]>>,
         groups: Vec<Option<u32>>,
+        pads: Vec<[f64; 4]>,
     }
 
-    impl Graph {
-        /// `count` vertices of [`SIZE`] joined by `edges`, none pinned or grouped.
-        fn new(count: usize, edges: &[[u32; 2]]) -> Graph {
-            Graph {
+    impl Columns {
+        /// `count` vertices of [`SIZE`] joined by `edges`, none pinned or grouped; a group pads its members by
+        /// half a gap.
+        fn new(count: usize, edges: &[[u32; 2]]) -> Columns {
+            Columns {
                 sizes: vec![SIZE; count],
                 edges: edges.to_vec(),
                 pinned: vec![None; count],
                 groups: vec![None; count],
+                pads: vec![[5.0; 4]; count],
             }
         }
 
         fn layout(&self, options: &Layered) -> Vec<[f64; 2]> {
-            let graph = Ranked { sizes: &self.sizes, edges: &self.edges, pinned: &self.pinned, groups: &self.groups };
+            let graph = Graph {
+                sizes: &self.sizes,
+                links: &self.edges,
+                pinned: &self.pinned,
+                groups: &self.groups,
+                pads: &self.pads,
+            };
             layered(&graph, options)
         }
 
@@ -821,7 +601,7 @@ mod tests {
 
     #[test]
     fn a_chain_ranks_along_the_flow_in_order() {
-        let graph = Graph::new(4, &[[2, 3], [0, 1], [1, 2]]);
+        let graph = Columns::new(4, &[[2, 3], [0, 1], [1, 2]]);
         for flow in [Direction::Right, Direction::Left, Direction::Down, Direction::Up] {
             let centers = graph.layout(&options(flow));
             let (along, across, sign) = match flow {
@@ -842,7 +622,7 @@ mod tests {
     #[test]
     fn a_source_centers_on_its_fan() {
         // 0 fans out to 1, 2, and 3; 3 runs on to 4.
-        let centers = Graph::new(5, &[[0, 1], [0, 2], [0, 3], [3, 4]]).layout(&options(Direction::Down));
+        let centers = Columns::new(5, &[[0, 1], [0, 2], [0, 3], [3, 4]]).layout(&options(Direction::Down));
         assert!(near(centers[0][0], centers[2][0]), "the source sits amid its fan: {centers:?}");
         assert!(near(centers[3][0], centers[4][0]), "a chain stays in line: {centers:?}");
         assert!(centers[1][0] < centers[2][0] && centers[2][0] < centers[3][0], "{centers:?}");
@@ -850,7 +630,7 @@ mod tests {
 
     #[test]
     fn pinned_vertices_stay_put() {
-        let mut graph = Graph::new(5, &[[0, 1], [1, 2], [1, 3], [3, 4]]);
+        let mut graph = Columns::new(5, &[[0, 1], [1, 2], [1, 3], [3, 4]]);
         graph.pinned[1] = Some([500.0, -300.0]);
         graph.pinned[3] = Some([620.0, -260.0]);
         let centers = graph.layout(&options(Direction::Right));
@@ -866,7 +646,7 @@ mod tests {
 
     #[test]
     fn disconnected_parts_do_not_overlap() {
-        let graph = Graph::new(8, &[[0, 1], [1, 2], [3, 4], [4, 5]]);
+        let graph = Columns::new(8, &[[0, 1], [1, 2], [3, 4], [4, 5]]);
         let centers = graph.layout(&options(Direction::Right));
         for a in 0..8 {
             for b in a + 1..8 {
@@ -879,7 +659,7 @@ mod tests {
 
     #[test]
     fn a_cycle_still_lays_out() {
-        let graph = Graph::new(4, &[[0, 1], [1, 2], [2, 0], [2, 3]]);
+        let graph = Columns::new(4, &[[0, 1], [1, 2], [2, 0], [2, 3]]);
         let centers = graph.layout(&options(Direction::Right));
         assert!(centers.iter().flatten().all(|at| at.is_finite()));
         assert!(
@@ -896,7 +676,7 @@ mod tests {
         for (count, width, edges) in [(4, 2, &small[..]), (9, 3, &large[..])] {
             let in_index_order: Vec<[f64; 2]> = (0..count).map(|v| [(v / width) as f64, (v % width) as f64]).collect();
             assert!(crossings(edges, &in_index_order) > 0);
-            let centers = Graph::new(count, edges).layout(&options(Direction::Right));
+            let centers = Columns::new(count, edges).layout(&options(Direction::Right));
             assert_eq!(crossings(edges, &centers), 0, "{centers:?}");
         }
     }
@@ -904,7 +684,7 @@ mod tests {
     #[test]
     fn groups_hold_their_members_apart_from_the_rest() {
         // Group 0 holds 1 → 2 → 3 and group 6, which holds 7 → 8; 4 feeds the group and 5 drains it.
-        let mut graph = Graph::new(9, &[[1, 2], [2, 3], [4, 1], [3, 5], [2, 7], [7, 8]]);
+        let mut graph = Columns::new(9, &[[1, 2], [2, 3], [4, 1], [3, 5], [2, 7], [7, 8]]);
         graph.groups = vec![None, Some(0), Some(0), Some(0), None, None, Some(0), Some(6), Some(6)];
         let options = options(Direction::Right);
         let centers = graph.layout(&options);
@@ -927,7 +707,7 @@ mod tests {
 
     #[test]
     fn a_pinned_member_holds_its_group_and_a_pinned_group_carries_its_members() {
-        let mut graph = Graph::new(7, &[[1, 2], [3, 0], [5, 6], [4, 5]]);
+        let mut graph = Columns::new(7, &[[1, 2], [3, 0], [5, 6], [4, 5]]);
         graph.groups = vec![None, Some(0), Some(0), None, None, Some(4), Some(4)];
         graph.pinned[1] = Some([300.0, 200.0]);
         graph.pinned[4] = Some([-1000.0, 1000.0]);
@@ -954,7 +734,7 @@ mod tests {
         };
         let mut edges: Vec<[u32; 2]> = (51..count).map(|v| [(50 + random(v - 50)) as u32, v as u32]).collect();
         edges.extend((0..count / 2).map(|_| [(50 + random(count - 50)) as u32, (50 + random(count - 50)) as u32]));
-        let mut graph = Graph::new(count, &edges);
+        let mut graph = Columns::new(count, &edges);
         for v in 50..1050 {
             graph.groups[v] = Some(((v - 50) / 20) as u32);
         }

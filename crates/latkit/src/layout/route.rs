@@ -35,16 +35,68 @@ pub(crate) struct Net {
 
 /// Each net's route as polylines (a tree for nets of more than two terminals, sharing junction points),
 /// running in horizontal and vertical segments around `obstacles` (each `[min x, min y, max x, max y]`),
-/// leaving each terminal along its side, with parallel runs of different nets `spacing` apart.
-/// A net whose route cannot avoid the obstacles still gets an orthogonal route through them.
+/// leaving each terminal along its side, with parallel runs of different nets `spacing` apart. Runs of
+/// `fixed` polylines, wires already routed, keep their tracks, and the new runs take tracks beside
+/// them. A net whose route cannot avoid the obstacles still gets an orthogonal route through them.
 ///
 /// Wires keep twice `spacing` from obstacles where they can. A net of fewer than two terminals at
 /// finite points gets no polylines; obstacles with a non-finite or inverted box are left out.
-pub(crate) fn route(obstacles: &[[f64; 4]], nets: &[Net], spacing: f64) -> Vec<Vec<Vec<[f64; 2]>>> {
+pub(crate) fn route(
+    obstacles: &[[f64; 4]],
+    nets: &[Net],
+    fixed: &[Vec<[f64; 2]>],
+    spacing: f64,
+) -> Vec<Vec<Vec<[f64; 2]>>> {
     let mut router = Router::new(obstacles, spacing);
     let mut trees: Vec<Option<Tree>> = nets.iter().map(|net| router.net(net)).collect();
+    let routed = trees.len();
+    trees.extend(fixed.iter().filter(|line| line.len() > 1).map(|line| Some(Tree::fixed(line))));
     router.separate(&mut trees);
+    trees.truncate(routed);
     trees.iter().map(|tree| tree.as_ref().map_or_else(Vec::new, Tree::polylines)).collect()
+}
+
+/// Arc points a rounded bend takes between its ends.
+const ARC: usize = 3;
+
+/// A net's polylines as drawn: each bend between perpendicular runs rounded by up to `radius`, and
+/// each part ending where another starts doubled at its end, so that point draws as a junction and
+/// takes no arrowhead.
+pub(crate) fn finish(lines: &[Vec<Point>], radius: f64) -> Vec<Vec<Point>> {
+    lines
+        .iter()
+        .map(|line| {
+            let mut out: Vec<Point> = Vec::with_capacity(line.len() + ARC * line.len().saturating_sub(2));
+            out.extend(line.first());
+            for k in 1..line.len().saturating_sub(1) {
+                let (a, p, b) = (line[k - 1], line[k], line[k + 1]);
+                let (u, v) = (direction(a, p), direction(p, b));
+                let r = radius.min(manhattan(a, p) / 2.0).min(manhattan(p, b) / 2.0);
+                if u[0] * v[0] + u[1] * v[1] != 0.0 || r <= SAME || (u == [0.0; 2]) || (v == [0.0; 2]) {
+                    out.push(p);
+                    continue;
+                }
+                // A quarter circle from `p - u r` to `p + v r` about `p - u r + v r`.
+                let center = [p[0] - u[0] * r + v[0] * r, p[1] - u[1] * r + v[1] * r];
+                for i in 0..=ARC + 1 {
+                    let t = i as f64 / (ARC + 1) as f64 * std::f64::consts::FRAC_PI_2;
+                    let (cos, sin) = (t.cos(), t.sin());
+                    out.push([
+                        center[0] - v[0] * r * cos + u[0] * r * sin,
+                        center[1] - v[1] * r * cos + u[1] * r * sin,
+                    ]);
+                }
+            }
+            if line.len() > 1 {
+                out.extend(line.last());
+            }
+            let end = *out.last().expect("a polyline has points");
+            if lines.iter().any(|other| other.first() == Some(&end)) {
+                out.push(end);
+            }
+            out
+        })
+        .collect()
 }
 
 /// A point on the plane.
@@ -350,6 +402,16 @@ struct Tree {
 }
 
 impl Tree {
+    /// A wire already routed, as a chain of joints none of which moves: its runs hold their tracks.
+    fn fixed(line: &[Point]) -> Tree {
+        let mut tree = Tree::default();
+        let mut parent = NONE;
+        for &point in line {
+            parent = tree.add(point, parent, Joint::Terminal);
+        }
+        tree
+    }
+
     /// Adds a joint at `point` below `parent`.
     fn add(&mut self, point: Point, parent: usize, joint: Joint) -> usize {
         self.points.push(point);
@@ -1150,7 +1212,7 @@ fn direction(from: Point, to: Point) -> Point {
 }
 
 /// A path's points without repeats or in-line middles.
-fn simplify(path: &[Point]) -> Vec<Point> {
+pub(crate) fn simplify(path: &[Point]) -> Vec<Point> {
     let mut out: Vec<Point> = Vec::with_capacity(path.len());
     for &p in path {
         if out.last() == Some(&p) {
@@ -1317,14 +1379,14 @@ mod tests {
     fn side_by_side_boxes_join_by_a_straight_run() {
         let boxes = [[0.0, 0.0, 20.0, 20.0], [100.0, 0.0, 120.0, 20.0]];
         let nets = [Net { terminals: vec![on([20.0, 10.0], Side::Right, 0), on([100.0, 10.0], Side::Left, 1)] }];
-        assert_eq!(route(&boxes, &nets, SPACING), vec![vec![vec![[20.0, 10.0], [100.0, 10.0]]]]);
+        assert_eq!(route(&boxes, &nets, &[], SPACING), vec![vec![vec![[20.0, 10.0], [100.0, 10.0]]]]);
     }
 
     #[test]
     fn a_wire_bends_around_an_obstacle_between() {
         let boxes = [[0.0, 0.0, 20.0, 20.0], [200.0, 0.0, 220.0, 20.0], [80.0, -30.0, 140.0, 50.0]];
         let nets = [Net { terminals: vec![on([20.0, 10.0], Side::Right, 0), on([200.0, 10.0], Side::Left, 1)] }];
-        let wire = &route(&boxes, &nets, SPACING)[0];
+        let wire = &route(&boxes, &nets, &[], SPACING)[0];
         assert!(orthogonal(wire), "{wire:?}");
         assert!(segments(wire).len() > 2, "it bends: {wire:?}");
         assert!(outside(wire, &boxes), "{wire:?}");
@@ -1340,7 +1402,7 @@ mod tests {
             [100.0, -400.0, 120.0, 90.0],
         ];
         let nets = [Net { terminals: vec![on([20.0, 10.0], Side::Right, 0), on([200.0, 10.0], Side::Left, 1)] }];
-        let wire = &route(&boxes, &nets, SPACING)[0];
+        let wire = &route(&boxes, &nets, &[], SPACING)[0];
         assert!(orthogonal(wire) && outside(wire, &boxes), "{wire:?}");
     }
 
@@ -1356,7 +1418,7 @@ mod tests {
             Net { terminals: vec![on([10.0, 20.0], Side::Top, 0), on([100.0, 110.0], Side::Left, 1)] },
             Net { terminals: vec![on([10.0, 200.0], Side::Bottom, 2), on([120.0, -90.0], Side::Right, 3)] },
         ];
-        let routes = route(&boxes, &nets, SPACING);
+        let routes = route(&boxes, &nets, &[], SPACING);
         for (net, wire) in nets.iter().zip(&routes) {
             assert!(orthogonal(wire) && outside(wire, &boxes), "{wire:?}");
             for terminal in &net.terminals {
@@ -1379,7 +1441,7 @@ mod tests {
                 on([100.0, 70.0], Side::Left, 2),
             ],
         };
-        let wire = &route(&boxes, std::slice::from_ref(&net), SPACING)[0];
+        let wire = &route(&boxes, std::slice::from_ref(&net), &[], SPACING)[0];
         assert!(wire.len() >= 3, "a junction splits it: {wire:?}");
         assert!(orthogonal(wire) && outside(wire, &boxes), "{wire:?}");
         assert!(one_tree(wire, &net.terminals), "{wire:?}");
@@ -1393,7 +1455,7 @@ mod tests {
             Net { terminals: vec![on([20.0, 10.0], Side::Right, 0), on([100.0, 70.0], Side::Left, 2)] },
             Net { terminals: vec![on([20.0, 40.0], Side::Right, 1), on([100.0, 100.0], Side::Left, 3)] },
         ];
-        let routes = route(&boxes, &nets, SPACING);
+        let routes = route(&boxes, &nets, &[], SPACING);
         // A segment as the axis it runs along, its line, and its extent along it.
         let run = |[a, b]: [Point; 2]| {
             let axis = usize::from(a[0] == b[0]);
@@ -1425,7 +1487,7 @@ mod tests {
         let mut boxes = vec![[0.0, 0.0, 20.0, 20.0], [100.0, 0.0, 120.0, 20.0]];
         boxes.extend(ring);
         let nets = [Net { terminals: vec![on([20.0, 10.0], Side::Right, 0), on([100.0, 10.0], Side::Left, 1)] }];
-        let wire = &route(&boxes, &nets, SPACING)[0];
+        let wire = &route(&boxes, &nets, &[], SPACING)[0];
         assert!(orthogonal(wire) && one_tree(wire, &nets[0].terminals), "{wire:?}");
     }
 
@@ -1465,8 +1527,8 @@ mod tests {
                 Net { terminals }
             })
             .collect();
-        let routes = route(&boxes, &nets, SPACING);
-        assert_eq!(routes, route(&boxes, &nets, SPACING), "the same input routes the same");
+        let routes = route(&boxes, &nets, &[], SPACING);
+        assert_eq!(routes, route(&boxes, &nets, &[], SPACING), "the same input routes the same");
         for (net, wire) in nets.iter().zip(&routes) {
             assert!(orthogonal(wire), "{wire:?}");
             assert!(one_tree(wire, &net.terminals), "{net:?}: {wire:?}");
@@ -1486,7 +1548,7 @@ mod tests {
             Net { terminals: vec![free] },
             Net { terminals: vec![free, Terminal { at: [f64::NAN, 0.0], ..free }] },
         ];
-        assert_eq!(route(&[], &nets, SPACING), vec![Vec::<Vec<Point>>::new(); 3]);
+        assert_eq!(route(&[], &nets, &[], SPACING), vec![Vec::<Vec<Point>>::new(); 3]);
     }
 
     #[test]
@@ -1498,7 +1560,7 @@ mod tests {
                 Terminal { at: [100.0, 50.0], side: None, owner: None },
             ],
         }];
-        let wire = &route(&boxes, &nets, SPACING)[0];
+        let wire = &route(&boxes, &nets, &[], SPACING)[0];
         assert!(orthogonal(wire) && outside(wire, &boxes), "{wire:?}");
         assert_eq!(leaving(wire, [20.0, 10.0])[1], 10.0, "it leaves by the side it is on: {wire:?}");
     }

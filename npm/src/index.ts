@@ -160,9 +160,9 @@ export interface ViewEvents {
 }
 
 /**
- * Where a view looks. On the earth or a plane: the point looked at and turned about (`[x, y]` on the
- * ground, or `[x, y, elevation]`), log₂ zoom, and degrees of pitch and bearing. On a plot: the ranges
- * shown, `y: null` fitting the values in view.
+ * Where a view looks. On the earth, a plane, or a diagram: the point looked at and turned about
+ * (`[x, y]` on the ground, or `[x, y, elevation]`), log₂ zoom, and degrees of pitch and bearing, which
+ * a diagram keeps at 0. On a plot: the ranges shown, `y: null` fitting the values in view.
  */
 export type Camera =
   | {
@@ -391,7 +391,7 @@ export class View {
     this.inner.insets = Float32Array.from(insets);
   }
 
-  /** Degrees per second a map or plane turns around its center; 0 stops it. */
+  /** Degrees per second a map or plane turns around its center; 0 stops it. A diagram never turns. */
   get orbit(): number {
     return this.inner.orbit;
   }
@@ -433,6 +433,12 @@ export class View {
   /** Frames what `fit` names on the next frame, keeping pitch and bearing. */
   fit(fit: Fit = 'all'): void {
     this.inner.fit(JSON.stringify(fit));
+  }
+
+  /** Lays every vertex without a position out again by the diagram's layout. Places a layout gave
+   * otherwise hold, so rows added later are placed around the rest. */
+  arrange(): void {
+    this.inner.arrange();
   }
 
   get stats(): Stats {

@@ -245,6 +245,11 @@ impl View {
         Ok(())
     }
 
+    /// Lays every vertex without a position out again by the diagram's layout.
+    pub fn arrange(&self) {
+        self.0.with(latkit::View::arrange);
+    }
+
     /// Where `position` (x, y, elevation) lands on screen, CSS pixels from the top left.
     pub fn point(&self, position: &[f64]) -> Option<Vec<f32>> {
         let position: [f64; 3] = position.try_into().ok()?;

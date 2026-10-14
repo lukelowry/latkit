@@ -8,15 +8,16 @@
 //! Only columns whose inputs changed are rebuilt: moving the shown coordinate rebuilds sampled
 //! columns' cursors and nothing else. A mark keeps drawing its current tables until every page of
 //! its rebuilt ones is resident, then swaps them in together, so a data version appears whole.
-//! Tables pin the pages they reference.
+//! Tables pin the pages they reference. While a mark eases, the table its geometry column had when
+//! the transition began stays, packed after the rest, so paths morph from it.
 
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::data::{Column, Field, FramePage, LEVELS, PAGE_ROWS, PageId, Samples, Version, bucket_frames};
+use crate::data::{Column, Field, FramePage, Geometry, LEVELS, PAGE_ROWS, PageId, Samples, Version, bucket_frames};
 use crate::expr::compile::{ColumnUse, Part, Program, Reads};
 use crate::gpu::Inner;
-use crate::gpu::arena::{Content, PageKey};
+use crate::gpu::arena::{Content, PageKey, page_words};
 use crate::gpu::shaders as wgsl;
 use crate::{Data, Name, Table};
 
@@ -63,6 +64,8 @@ struct ColumnTable {
     pins: Vec<PageKey>,
     /// What a traced column draws.
     plan: Option<Plan>,
+    /// At most how many points a geometry column's paths take.
+    points: u32,
 }
 
 /// Rows of the mark's table joined by id to rows of another table.
@@ -78,10 +81,14 @@ pub(crate) struct Tables {
     current: Vec<ColumnTable>,
     /// Rebuilt tables waiting for their pages, by index into `current`.
     pending: Vec<(usize, ColumnTable)>,
+    /// The geometry column's table before it was last rebuilt, kept while the mark eases from it.
+    frozen: Option<ColumnTable>,
     joins: Vec<Join>,
     synced: bool,
     /// The rows of the table last synced, which a program reading no columns follows alone.
     structure: Option<crate::data::Version>,
+    /// Bumps whenever a table is swapped in.
+    generation: u64,
 }
 
 /// What a sync did.
@@ -94,10 +101,11 @@ pub(crate) enum Synced {
     Changed { columns: u64 },
 }
 
-/// Where a mark's own rows come from.
+/// Where a mark's own rows come from, and the table the view derives beside them.
 pub(crate) struct Source<'a> {
     pub(crate) data: &'a Data,
     pub(crate) table: &'a Table,
+    pub(crate) derived: Option<&'a Table>,
 }
 
 /// One column a program reads: a field, or the rows a join maps to.
@@ -108,7 +116,9 @@ enum Use<'a> {
 
 impl Tables {
     /// Brings the tables up to date with `source` and every dataset in `all` at coordinate `at`;
-    /// traced columns hold the frames across `window`, or every frame without one.
+    /// traced columns hold the frames across `window`, or every frame without one. When column
+    /// `geometry` is rebuilt, its table before stays frozen until [`thaw`](Tables::thaw).
+    #[allow(clippy::too_many_arguments, reason = "one sync of a mark's tables")]
     pub(crate) fn sync(
         &mut self,
         program: &Program,
@@ -116,6 +126,7 @@ impl Tables {
         all: &[Data],
         at: f64,
         window: Window,
+        geometry: u32,
         gpu: &mut Inner,
     ) -> Synced {
         let joins = joins(program);
@@ -135,15 +146,16 @@ impl Tables {
         for (i, use_) in uses.iter().enumerate() {
             let stamp = match use_ {
                 Use::Field { column, .. } => stamp(column, source, all, at, window),
-                Use::Join(of) => match table_of(Some(of), source, all) {
-                    Some((_, other)) => Stamp::Join(source.table.structure, other.structure),
+                Use::Join(of) => match joined(of, all) {
+                    Some(other) => Stamp::Join(source.table.structure, other.structure),
                     None => Stamp::Missing,
                 },
             };
             if !reshape && self.current[i].stamp == stamp {
                 continue;
             }
-            let mut builder = Builder { words: Vec::new(), pins: Vec::new(), ready: true, plan: None, gpu: &mut *gpu };
+            let mut builder =
+                Builder { words: Vec::new(), pins: Vec::new(), ready: true, plan: None, points: 0, gpu: &mut *gpu };
             let descriptor = match use_ {
                 Use::Field { column, join } => {
                     let mut descriptor = builder.column(column, source, all, at, window);
@@ -157,12 +169,12 @@ impl Tables {
                     descriptor
                 }
             };
-            let Builder { words, pins, ready: column_ready, plan, gpu: _ } = builder;
+            let Builder { words, pins, ready: column_ready, plan, points, gpu: _ } = builder;
             for &key in &pins {
                 gpu.arena.pin(key);
             }
             ready &= column_ready;
-            rebuilt.push((i, ColumnTable { stamp, descriptor, words, pins, plan }));
+            rebuilt.push((i, ColumnTable { stamp, descriptor, words, pins, plan, points }));
         }
         for (_, table) in std::mem::take(&mut self.pending) {
             unpin(&table.pins, gpu);
@@ -174,7 +186,9 @@ impl Tables {
             self.pending = rebuilt;
             return Synced::Waiting;
         }
+        self.generation += 1;
         let changed = if reshape {
+            self.thaw(gpu);
             for table in std::mem::take(&mut self.current) {
                 unpin(&table.pins, gpu);
             }
@@ -183,8 +197,13 @@ impl Tables {
         } else {
             let mut changed = 0;
             for (i, table) in rebuilt {
-                unpin(&self.current[i].pins, gpu);
-                self.current[i] = table;
+                let old = std::mem::replace(&mut self.current[i], table);
+                if i as u32 == geometry {
+                    self.thaw(gpu);
+                    self.frozen = Some(old);
+                } else {
+                    unpin(&old.pins, gpu);
+                }
                 changed |= match &uses[i] {
                     Use::Field { .. } => Reads::column(i),
                     Use::Join(of) => columns_of(program, of),
@@ -194,6 +213,28 @@ impl Tables {
         };
         self.synced = true;
         Synced::Changed { columns: changed }
+    }
+
+    /// Drops the frozen geometry table: the mark no longer eases from it.
+    pub(crate) fn thaw(&mut self, gpu: &mut Inner) {
+        if let Some(table) = self.frozen.take() {
+            unpin(&table.pins, gpu);
+        }
+    }
+
+    /// The program column the frozen geometry table packs as, once there is one.
+    pub(crate) fn frozen(&self) -> Option<u32> {
+        self.frozen.as_ref().map(|_| self.current.len() as u32)
+    }
+
+    /// Bumps whenever a table is swapped in.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// At most how many points the paths of geometry column `column` take; 0 for other columns.
+    pub(crate) fn points(&self, column: u32) -> u32 {
+        self.current.get(column as usize).map_or(0, |t| t.points)
     }
 
     /// Whether the tables were built at least once.
@@ -218,14 +259,19 @@ impl Tables {
 
     /// Words the descriptors and tables take in the program buffer.
     pub(crate) fn len(&self) -> usize {
-        self.current.iter().map(|t| WORDS + t.words.len()).sum()
+        self.packed().map(|t| WORDS + t.words.len()).sum()
+    }
+
+    /// The tables packed: the current ones, then the frozen geometry table.
+    fn packed(&self) -> impl Iterator<Item = &ColumnTable> + Clone {
+        self.current.iter().chain(&self.frozen)
     }
 
     /// Appends every descriptor, then every table; `base` is the word of the program buffer the
     /// first descriptor lands at, so table offsets are absolute.
     pub(crate) fn pack(&self, base: u32, out: &mut Vec<u32>) {
-        let mut at = base + (self.current.len() * WORDS) as u32;
-        for table in &self.current {
+        let mut at = base + (self.packed().count() * WORDS) as u32;
+        for table in self.packed() {
             let mut d = table.descriptor;
             d[wgsl::COLUMN_TABLE as usize] += at;
             if d[wgsl::COLUMN_LOW as usize] != wgsl::NONE {
@@ -234,13 +280,14 @@ impl Tables {
             out.extend(d);
             at += table.words.len() as u32;
         }
-        for table in &self.current {
+        for table in self.packed() {
             out.extend(&table.words);
         }
     }
 
     /// Releases every pin.
     pub(crate) fn release(&mut self, gpu: &mut Inner) {
+        self.thaw(gpu);
         for table in self.current.drain(..).chain(self.pending.drain(..).map(|(_, t)| t)) {
             unpin(&table.pins, gpu);
         }
@@ -249,7 +296,7 @@ impl Tables {
 
     /// The join rows for `of`, reused while neither table's rows change.
     fn join(&self, of: &(Name, Name), source: &Source<'_>, all: &[Data]) -> Join {
-        let Some((_, other)) = table_of(Some(of), source, all) else {
+        let Some(other) = joined(of, all) else {
             return Join {
                 of: of.clone(),
                 structure: (source.table.structure, source.table.structure),
@@ -300,19 +347,24 @@ fn columns_of(program: &Program, of: &(Name, Name)) -> u64 {
         .fold(0, |bits, (i, _)| bits | Reads::column(i))
 }
 
-/// The dataset and table a column reads: the mark's own, or another one joined by id.
-pub(crate) fn table_of<'a>(
-    of: Option<&(Name, Name)>,
-    source: &Source<'a>,
-    all: &'a [Data],
-) -> Option<(&'a Data, &'a Table)> {
-    match of {
-        None => Some((source.data, source.table)),
+/// The dataset and table a column reads: the mark's own, another one joined by id, or the one the
+/// view derives beside the mark's own.
+pub(crate) fn table_of<'a>(column: &ColumnUse, source: &Source<'a>, all: &'a [Data]) -> Option<(&'a Name, &'a Table)> {
+    if column.derived {
+        return Some((source.data.name(), source.derived?));
+    }
+    match &column.of {
+        None => Some((source.data.name(), source.table)),
         Some((data, table)) => {
             let data = all.iter().find(|d| d.name() == data)?;
-            Some((data, data.table(table)?))
+            Some((data.name(), data.table(table)?))
         }
     }
+}
+
+/// The table a join reads.
+fn joined<'a>((data, table): &(Name, Name), all: &'a [Data]) -> Option<&'a Table> {
+    all.iter().find(|d| d.name() == data)?.table(table)
 }
 
 /// The frames a trace across `window` draws: from the last frame at or before its start through the
@@ -342,7 +394,7 @@ fn plan(samples: &Samples, window: Window) -> Plan {
 }
 
 fn stamp(column: &ColumnUse, source: &Source<'_>, all: &[Data], at: f64, window: Window) -> Stamp {
-    let Some((_, table)) = table_of(column.of.as_ref(), source, all) else { return Stamp::Missing };
+    let Some((_, table)) = table_of(column, source, all) else { return Stamp::Missing };
     match table.field_named(&column.name) {
         None => Stamp::Missing,
         Some(Field::Sampled(samples, version)) if column.trace => Stamp::Trace(*version, plan(samples, window)),
@@ -361,6 +413,7 @@ struct Builder<'g> {
     pins: Vec<PageKey>,
     ready: bool,
     plan: Option<Plan>,
+    points: u32,
     gpu: &'g mut Inner,
 }
 
@@ -378,11 +431,11 @@ impl Builder<'_> {
         if column.part == Part::Bits {
             d[wgsl::COLUMN_FLAGS as usize] = wgsl::BITS;
         }
-        let Some((data, table)) = table_of(column.of.as_ref(), source, all) else { return d };
+        let Some((data, table)) = table_of(column, source, all) else { return d };
         d[wgsl::COLUMN_ROWS as usize] = table.len() as u32;
         match table.field_named(&column.name) {
             Some(Field::Values(values, _)) if column.part == Part::Codes => {
-                let field = (data.name(), &table.name, &column.name);
+                let field = (data, &table.name, &column.name);
                 for page in values.pages() {
                     let key = PageKey { page: page.id, part: Part::Codes, low: false };
                     let dictionary = self.gpu.dictionaries.field(field.0, field.1, field.2);
@@ -437,7 +490,13 @@ impl Builder<'_> {
         for page in column.pages() {
             let key = PageKey { page: page.id, part, low };
             let values = page.values.clone();
-            let offset = self.gpu.arena.get(key, page.values.len() as u32, || Content::Values { values, part, low });
+            let offset = if part == Part::Path {
+                // A geometry's points take as many words as they do; a resident page holds them all.
+                self.points += values.geometry().map_or(0, Geometry::points) as u32;
+                self.gpu.arena.get(key, 1, || Content::Words(page_words(&values, part, low)))
+            } else {
+                self.gpu.arena.get(key, values.len() as u32, || Content::Values { values, part, low })
+            };
             self.push(key, offset);
         }
     }

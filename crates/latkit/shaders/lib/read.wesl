@@ -91,3 +91,32 @@ fn column_value(column: u32, row: u32) -> vec2u {
     }
     return static_value(column, r);
 }
+
+// One row's points in a geometry column: the word of its first point in `pages`, and how many.
+// Parts are broken by a missing point.
+struct Points {
+    start: u32,
+    count: u32,
+}
+
+// Row `row`'s points of geometry column `column`. A geometry page holds its row count, then each
+// row's first point and the end (in points), then every point as x and y bits.
+fn points_of(column: u32, row: u32) -> Points {
+    if column == NONE || row >= column_word(column, COLUMN_ROWS) {
+        return Points(0u, 0u);
+    }
+    let block = program[column_word(column, COLUMN_TABLE) + (row >> PAGE_BITS)];
+    if block == NONE {
+        return Points(0u, 0u);
+    }
+    let local = row & PAGE_MASK;
+    let rows = pages[block];
+    let first = pages[block + 1u + local];
+    let end = pages[block + 2u + local];
+    return Points(block + 2u + rows + 2u * first, end - first);
+}
+
+// Point `k` of a row's points, as x and y bits.
+fn point_bits(points: Points, k: u32) -> vec2u {
+    return vec2u(pages[points.start + 2u * k], pages[points.start + 2u * k + 1u]);
+}

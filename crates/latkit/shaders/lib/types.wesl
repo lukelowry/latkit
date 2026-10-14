@@ -69,14 +69,10 @@ const COLUMN_T: u32 = 5u;
 const SAMPLED: u32 = 1u;
 const STEP: u32 = 2u;
 const BITS: u32 = 4u;
-const GEOMETRY: u32 = 8u;
 
 // Rows per data page, as a shift.
 const PAGE_BITS: u32 = 16u;
 const PAGE_MASK: u32 = 65535u;
-// Points of a geometry page per arena block: four words each, high then low.
-const POINT_BITS: u32 = 14u;
-const POINT_MASK: u32 = 16383u;
 
 // Vertex state words.
 const VERTEX_WORDS: u32 = 11u;
@@ -85,8 +81,8 @@ const VERTEX_COLOR: u32 = 4u;
 const VERTEX_STATUS: u32 = 5u;
 const VERTEX_HALF: u32 = 6u;
 const VERTEX_ELEVATION: u32 = 8u;
-// How far a group has folded over its members: 0 open, 1 folded. It eases like any number.
-const VERTEX_FOLD: u32 = 9u;
+// How many groups hold a group row: containers tint by it.
+const VERTEX_DEPTH: u32 = 9u;
 const VERTEX_FLAGS: u32 = 10u;
 
 // Edge state words. Every kind's flags are its last word.
@@ -98,19 +94,23 @@ const EDGE_WIDTH: u32 = 3u;
 const EDGE_FLOW: u32 = 4u;
 const EDGE_FLAGS: u32 = 5u;
 
-// Graph words, which the view writes beside a mark's program: a port's side, its place among the
-// ports on that side, and how many share the side; a net's terminal: the end table it is in, its row
-// there, and its port.
-const PORT_WORDS: u32 = 2u;
+// A vertex mark's ports, beside its program: each port's code (its side in two bits, its place
+// among the ports on that side and how many share it in eight each, and whether it is an output),
+// its shape, the program column of its reference field, and its label's rectangle in the atlas.
+const PORT_WORDS: u32 = 5u;
 const PORT_CODE: u32 = 0u;
 const PORT_SHAPE: u32 = 1u;
+const PORT_COLUMN: u32 = 2u;
+const PORT_UV: u32 = 3u;
+const PORT_OUTPUT: u32 = 0x40000u;
 const SIDE_LEFT: u32 = 0u;
 const SIDE_RIGHT: u32 = 1u;
 const SIDE_TOP: u32 = 2u;
 const SIDE_BOTTOM: u32 = 3u;
-const TERMINAL_WORDS: u32 = 3u;
-// CSS pixels across a port's marker.
+// Length units across a port's marker: CSS pixels, or units in a diagram.
 const PORT_SIZE: f32 = 7.0;
+// A group's header band, in label sizes: its title sits in it.
+const HEADER_BAND: f32 = 1.8;
 // Angle a geodesic segment spans at most, in degrees.
 const GEODESIC_STEP: f32 = 2.0;
 
@@ -136,15 +136,18 @@ const LABEL_CODE: u32 = 0u;
 const LABEL_PRIORITY: u32 = 1u;
 const LABEL_COLOR: u32 = 2u;
 
-// A label's words in the labels buffer, per labeled row: its box in CSS pixels, its key, its state,
-// its text's rectangle in the atlas (two corners, 16 bits each), its color, and how present it is.
-const CANDIDATE_WORDS: u32 = 10u;
+// A label's words in the labels buffer, per labeled row: the box placement measured it in, CSS
+// pixels; its key; its state; and how present it is. Draws place a label from its anchor every
+// frame; placement only decides whether it shows.
+const CANDIDATE_WORDS: u32 = 7u;
 const CANDIDATE_BOX: u32 = 0u;
 const CANDIDATE_KEY: u32 = 4u;
 const CANDIDATE_STATE: u32 = 5u;
-const CANDIDATE_UV: u32 = 6u;
-const CANDIDATE_COLOR: u32 = 8u;
-const CANDIDATE_ALPHA: u32 = 9u;
+const CANDIDATE_ALPHA: u32 = 6u;
+// Text is set once per run at this size, in atlas texels, as a distance field reaching this far
+// past the text's edge.
+const TEXT_BASE: f32 = 32.0;
+const TEXT_SPREAD: f32 = 8.0;
 // Candidate states: in view and wanting room, placed, dropped, and placed in the frame before.
 const WANTS: u32 = 1u;
 const PLACED_LABEL: u32 = 2u;
@@ -159,26 +162,18 @@ const WANTED: u32 = 64u;
 
 // State flags.
 const VISIBLE: u32 = 1u;
-// The row's position comes from its data.
-const PINNED: u32 = 2u;
+// The row has a position: from its data, or in a diagram from its sheet.
+const PLACED: u32 = 2u;
 const DASH: u32 = 4u;
-// A layout placed the row.
-const PLACED: u32 = 8u;
 // While a mark eases, a row that appears fades in and one that disappears or left fades out.
-const FADE_IN: u32 = 16u;
-const FADE_OUT: u32 = 32u;
+const FADE_IN: u32 = 8u;
+const FADE_OUT: u32 = 16u;
 // A row that entered with this change: it has no state to ease from.
-const ENTERING: u32 = 64u;
-// A group folded all the way over its members, which hide inside it.
-const COLLAPSED: u32 = 128u;
+const ENTERING: u32 = 32u;
 // A vertex whose size is in position units, and one with its own height: what any reader of its
 // slot needs to know its size in pixels.
-const HALF_UNITS: u32 = 256u;
-const OWN_HEIGHT: u32 = 512u;
-// A stand-in word's bit for a member of a group that is not folded all the way.
-const OPEN_GROUP: u32 = 0x80000000u;
-// Levels of groups within groups that are followed.
-const GROUP_DEPTH: u32 = 8u;
+const HALF_UNITS: u32 = 64u;
+const OWN_HEIGHT: u32 = 128u;
 
 // Mark kinds.
 const MARK_VERTICES: u32 = 0u;
@@ -192,11 +187,11 @@ const STROKES: u32 = 1u;
 const TRIANGLES: u32 = 2u;
 const GLYPHS: u32 = 3u;
 
-// What a stroke's segments run between.
+// What a stroke's segments run between: two vertices (straight, along a great circle, or through
+// bends), samples across the axis, or a geometry column's points.
 const PATH_ENDS: u32 = 0u;
 const PATH_TRACE: u32 = 1u;
 const PATH_GEOMETRY: u32 = 2u;
-const PATH_NET: u32 = 3u;
 
 // Mark flags.
 const SIZED: u32 = 1u;
@@ -208,6 +203,8 @@ const LABELED: u32 = 32u;
 const STEP_BEFORE: u32 = 64u;
 const STEP_AFTER: u32 = 128u;
 const CASTS: u32 = 256u;
+// A vertex mark whose rows hold rows: drawn as containers.
+const GROUP: u32 = 512u;
 
 // Focus bits per row; FIT marks the rows a fit measures.
 const SELECTED: u32 = 1u;
@@ -243,6 +240,7 @@ const SPRITE_BOX: u32 = 2u;
 const SPACE_EARTH: u32 = 0u;
 const SPACE_PLANE: u32 = 1u;
 const SPACE_PLOT: u32 = 2u;
+const SPACE_DIAGRAM: u32 = 3u;
 
 // Built-in markers and shapes.
 const MARKER_SHAPE: u32 = 0u;
@@ -275,6 +273,8 @@ const THEME_TEXT: u32 = 8u;
 const THEME_MISSING: u32 = 9u;
 // Nothing: a fully transparent color, what a missing status draws.
 const THEME_CLEAR: u32 = 10u;
+// What a group's container is filled with.
+const THEME_SURFACE: u32 = 11u;
 const THEME_SLOTS: u32 = 16u;
 
 // Backdrop grids.
@@ -344,8 +344,11 @@ struct Frame {
     shading: f32,
     arrow: f32,
     halo: f32,
-    // CSS pixels between a group's members and its outline.
+    // CSS pixels between a group's members and its outline: its title's inset.
     group_padding: f32,
+    // CSS pixels per length unit: per position unit in a diagram, where every length is a unit; 1
+    // elsewhere. Lengths in the frame above are already in pixels.
+    unit: f32,
     zoom: f32,
     // The label grid: where its cells start in the labels buffer, and its columns and rows; and how
     // far labels fade per frame.
@@ -429,28 +432,27 @@ struct Mark {
     // a query builds over its instances.
     list: u32,
     query: u32,
-    // Where row 0's place starts in the places buffer, or NONE.
-    places: u32,
-    // The first program column a group's members are read through, or NONE.
-    members: u32,
     // Where the mark's remap words start, while its transition is being frozen.
     remap: u32,
-    // Graph words in the program: each row's lane, in lanes from the middle among edges joining the
-    // same two vertices; each row's path points (row starts, then x and y); each net row's terminals
-    // (row starts, then terminals); each port of a vertex mark's rows, and how many each row has.
-    lanes: u32,
-    paths: u32,
-    terminals: u32,
+    // Program columns: the geometry a stroke's path runs through (a route or bends), the geometry
+    // it ran through when its transition began, and each row's lane among edges joining the same
+    // two vertices; NONE without.
+    geometry: u32,
+    frozen_geometry: u32,
+    lane: u32,
+    // Each port of a vertex mark's rows, and how many each row has.
     port_info: u32,
     ports: u32,
     // The extra word of the label's code, or NONE; the labels buffer's offsets of its candidates, its
     // run table (two words per code), and its wanted codes (a count, then codes); the id of its first
-    // candidate, unique across marks.
+    // candidate, unique across marks; the size labels and port labels are set at, in length units.
     label: u32,
     candidates: u32,
     runs: u32,
     wanted: u32,
     label_id: u32,
+    label_size: f32,
+    port_label_size: f32,
 }
 
 // A line or a run of text drawn over the marks, in CSS pixels.

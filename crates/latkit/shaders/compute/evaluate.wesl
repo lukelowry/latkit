@@ -6,7 +6,7 @@
 // row whose visibility flips fades. Rows past `mark.rows` left; they only fade.
 
 import package::lib::types::{
-    NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PINNED, PLACED, FADE_IN, FADE_OUT, ENTERING,
+    NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING,
     VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, HALF_UNITS, OWN_HEIGHT, SIZED, MARK_VERTICES,
     OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME, OP_ZOOM,
     OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP,
@@ -21,7 +21,6 @@ import package::lib::focus::{is_selected, is_hovered};
 import package::lib::color::{scale, colormap};
 import package::lib::project::{project, to_screen};
 import package::lib::reduce::{ordered, unordered};
-import package::lib::places::{places, is_placed};
 
 // Each row's state as drawn when the mark's transition began.
 @group(2) @binding(1) var<storage, read> frozen: array<u32>;
@@ -163,7 +162,7 @@ fn ease_color(row: u32, w: u32, now: u32, flags: u32) -> u32 {
 // the row showed so the destination keeps its precision.
 fn store_position(row: u32, w: u32, now: vec4f, flags: u32) {
     var hi = now.xy;
-    if easing() && !entering(row, flags) && (was(row, flags) & (PINNED | PLACED)) != 0u {
+    if easing() && !entering(row, flags) && (was(row, flags) & PLACED) != 0u {
         let from_hi = vec2f(number(was(row, w)), number(was(row, w + 1u)));
         let from_lo = vec2f(number(was(row, w + 2u)), number(was(row, w + 3u)));
         hi += ((from_hi - now.xy) + (from_lo - now.zw)) * (1.0 - mark.motion);
@@ -194,31 +193,16 @@ fn store_flag(row: u32, w: u32, bit: u32, on: bool) {
     state[at] = flags & ~ENTERING;
 }
 
-// The place a layout gave `row` as bits, or missing.
-fn place(row: u32) -> vec2u {
-    if mark.places == NONE {
-        return vec2u(MISSING);
-    }
-    let p = vec2u(places[mark.places + 2u * row], places[mark.places + 2u * row + 1u]);
-    return select(vec2u(MISSING), p, is_placed(p.x, p.y));
-}
-
-// A position from data, or where data has none the place a layout gave the row.
+// A position, from data or in a diagram from its sheet; a row without one is not placed.
 fn position(row: u32, w: u32, x: vec2u, y: vec2u) {
     let flags = w + VERTEX_FLAGS - VERTEX_POSITION;
     let at = word_at(row, flags);
-    if !missing_bits(x.x) && !missing_bits(y.x) {
-        store_position(row, w, vec4f(number(x.x), number(y.x), number(x.y), number(y.y)), flags);
-        state[at] = (state[at] | PINNED) & ~PLACED;
+    if missing_bits(x.x) || missing_bits(y.x) {
+        state[at] &= ~PLACED;
         return;
     }
-    let p = place(row);
-    if missing_bits(p.x) || missing_bits(p.y) {
-        state[at] &= ~(PINNED | PLACED);
-        return;
-    }
-    store_position(row, w, vec4f(number(p.x), number(p.y), 0.0, 0.0), flags);
-    state[at] = (state[at] & ~PINNED) | PLACED;
+    store_position(row, w, vec4f(number(x.x), number(y.x), number(x.y), number(y.y)), flags);
+    state[at] |= PLACED;
 }
 
 fn run(row: u32, start: u32, end: u32, flags: u32) {

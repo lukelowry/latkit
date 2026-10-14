@@ -1,7 +1,7 @@
 // Triangles: the corners of a face row, between the vertices its references name. Draws, casts,
 // and probes read a triangle through `triangle_corner`.
 
-import package::lib::types::{NONE, VISIBLE, PINNED, PLACED, ENDS_COLOR};
+import package::lib::types::{NONE, VISIBLE, PLACED, ENDS_COLOR};
 import package::lib::bind::{mark};
 import package::lib::state::{row_at, face_at, vertex_slot};
 import package::lib::project::{world, clip_of};
@@ -27,7 +27,7 @@ fn triangle_corner(row: u32, corner: u32) -> Corner {
     c.world = world(v.hi, v.lo, v.elevation);
     let color = select(unpack4x8unorm(f.color), unpack4x8unorm(v.color), (mark.flags & ENDS_COLOR) != 0u);
     c.color = vec4f(color.rgb, color.a * faded(row, f.flags));
-    c.shown = (v.flags & (PINNED | PLACED)) != 0u;
+    c.shown = (v.flags & PLACED) != 0u;
     return c;
 }
 

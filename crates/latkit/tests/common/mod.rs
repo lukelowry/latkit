@@ -2,7 +2,7 @@
 
 #![allow(dead_code, unreachable_pub, reason = "each test file uses some")]
 
-use latkit::{Camera, Color, Gpu, Grid, Plane, Target, Theme, View};
+use latkit::{Camera, Color, Diagram, Gpu, Grid, Plane, Target, Theme, View};
 
 pub const SIZE: u32 = 128;
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -105,6 +105,11 @@ pub fn plain_theme() -> Theme {
 
 pub fn plane() -> Plane {
     Plane { grid: Grid::Off }
+}
+
+/// A diagram without a grid: y runs down, and at zoom 0 a unit is a pixel.
+pub fn diagram() -> Diagram {
+    Diagram { grid: Grid::Off }
 }
 
 pub fn camera() -> Camera {

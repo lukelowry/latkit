@@ -94,8 +94,13 @@ impl View {
     }
 
     /// Where `row` lies on screen, CSS pixels from the top left, as the next frames draw it; `None`
-    /// when no mark draws it in view.
+    /// when no mark draws it in view. A diagram's vertices answer at once from its sheet.
     pub fn locate(&mut self, row: &Row) -> Pending<Option<[f32; 2]>> {
+        if let Some(b) = self.sheet.bounds(row).filter(|_| matches!(self.scene.space, crate::Space::Diagram(_))) {
+            let view = self.projected();
+            let center = [b[0].midpoint(b[2]), b[1].midpoint(b[3]), 0.0];
+            return Pending::ready(Ok(view.screen(view.world(center)).map(|s| [s[0] as f32, s[1] as f32])));
+        }
         let (answer, reply) = Pending::new();
         self.queries.waiting.push_back(Ask::Locate { row: row.clone(), reply });
         self.wake();

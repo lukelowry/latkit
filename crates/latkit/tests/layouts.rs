@@ -1,6 +1,7 @@
-//! Layouts place the vertices their data gives no position: layered in ranks along the flow, nets
-//! running from their outputs, stress at graph distances with boxes parted; vertices with positions
-//! stay where they are.
+//! Layouts place a diagram's vertices its data gives no position: layered in ranks along the flow,
+//! nets running from their outputs, stress at graph distances with boxes parted. Vertices with
+//! positions stay where they are, places hold once given, and rows added later are placed around the
+//! rest until the view arranges every row again.
 
 #![cfg(feature = "gpu")]
 
@@ -10,8 +11,8 @@ use std::future::Future;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use common::{SIZE, errors, frame, gpu, plain_theme, plane, step};
-use latkit::{Camera, Data, Edges, Layered, Layout, Patch, Scene, Side, Stress, Table, Vertices, View};
+use common::{diagram, errors, frame, gpu, plain_theme, step};
+use latkit::{Camera, Data, Edges, Layered, Layout, Patch, Port, Row, Scene, Side, Stress, Table, Vertices, View};
 
 /// Renders frames until `pending` resolves, within the settle deadline.
 fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
@@ -41,32 +42,44 @@ fn graph(pin: Option<[f64; 2]>) -> Data {
     data
 }
 
-/// Where each node settled, by id.
-fn placed(layout: impl Into<Layout>, pin: Option<[f64; 2]>) -> Vec<[f64; 2]> {
-    let scene = Scene::new(plane())
+fn scene(layout: impl Into<Layout>) -> Scene {
+    Scene::new(diagram())
+        .theme(plain_theme())
         .layout(layout)
         .draw(Edges::of("graph", "Link").ends("from", "to"))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0));
-    settled(scene, graph(pin))
+        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0))
 }
 
-/// Where each of nodes 1 to 4 of `data` settled under `scene`.
-fn settled(scene: Scene, data: Data) -> Vec<[f64; 2]> {
-    let Some(gpu) = gpu() else { return Vec::new() };
-    let mut view = View::new(&gpu, scene.theme(plain_theme())).expect("valid scene");
+fn show(gpu: &latkit::Gpu, scene: Scene, data: Data) -> View {
+    let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: -2.0, pitch: 0.0, bearing: 0.0 });
     view.set_data(data);
-    frame(&gpu, &mut view);
-    let c = SIZE as f32 / 2.0;
-    let pending = view.pick([c, c], SIZE as f32);
-    let hits = answer(&gpu, &mut view, pending);
-    assert_eq!(errors(&mut view), Vec::new());
-    (1..=4_u64)
+    frame(gpu, &mut view);
+    view
+}
+
+/// Where each of nodes 1 to `count` stands, units with y down, as the view locates it on screen.
+fn located(gpu: &latkit::Gpu, view: &mut View, count: u64) -> Vec<[f64; 2]> {
+    let projected = |p: [f32; 2]| {
+        // A quarter pixel per unit, about the middle of the view.
+        let c = f64::from(common::SIZE) / 2.0;
+        [(f64::from(p[0]) - c) * 4.0, (f64::from(p[1]) - c) * 4.0]
+    };
+    (1..=count)
         .map(|id| {
-            let row = latkit::Row::new("graph", "Node", id);
-            hits.iter().find(|h| h.row == row).map_or([f64::NAN; 2], |h| [h.position[0], h.position[1]])
+            let pending = view.locate(&Row::new("graph", "Node", id));
+            answer(gpu, view, pending).map_or([f64::NAN; 2], projected)
         })
         .collect()
+}
+
+/// Where each node settled under `layout`, units.
+fn placed(layout: impl Into<Layout>, pin: Option<[f64; 2]>) -> Vec<[f64; 2]> {
+    let Some(gpu) = gpu() else { return Vec::new() };
+    let mut view = show(&gpu, scene(layout), graph(pin));
+    let p = located(&gpu, &mut view, 4);
+    assert_eq!(errors(&mut view), Vec::new());
+    p
 }
 
 fn apart(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -80,9 +93,9 @@ fn layered_ranks_follow_the_flow() {
         return;
     }
     assert!(p.iter().all(|v| v[0].is_finite()), "every node placed and drawn: {p:?}");
-    // Markers of 4 pixels at a quarter pixel per unit are 32 units across; ranks and rows of a rank
-    // stand their gaps apart edge to edge.
-    let size = 32.0;
+    // Markers of radius 4 are 8 units across; ranks and rows of a rank stand their gaps apart edge to
+    // edge.
+    let size = 8.0;
     let rank_gap = Layered::default().rank_gap;
     assert!((p[1][0] - p[0][0] - rank_gap - size).abs() < 1.0, "a rank apart: {p:?}");
     assert!((p[2][0] - p[1][0] - rank_gap - size).abs() < 1.0, "a rank apart: {p:?}");
@@ -92,7 +105,8 @@ fn layered_ranks_follow_the_flow() {
 
 #[test]
 fn nets_run_from_their_outputs() {
-    // Nodes 1 and 2 drive the net from their right side, 3 reads it on its left, and 4 drives 1.
+    // Nodes 1 and 2 drive the net from their outputs, 3 reads it, and 4 drives 1.
+    let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
     data.apply(
         Patch::new()
@@ -106,17 +120,20 @@ fn nets_run_from_their_outputs() {
             .set(Table::new("Net", vec![1_u64, 2])),
     )
     .expect("valid");
-    let scene = Scene::new(plane()).layout(Layered::default()).draw(Edges::of("graph", "Net")).draw(
-        Vertices::of("graph", "Node").position("x", "y").radius(4.0).port("in", Side::Left).port("out", Side::Right),
+    let scene = Scene::new(diagram()).layout(Layered::default()).draw(Edges::of("graph", "Net")).draw(
+        Vertices::of("graph", "Node")
+            .position("x", "y")
+            .radius(4.0)
+            .port("in", Side::Left)
+            .port("out", Port::output(Side::Right)),
     );
-    let p = settled(scene, data);
-    if p.is_empty() {
-        return;
-    }
+    let mut view = show(&gpu, scene, data);
+    let p = located(&gpu, &mut view, 4);
     let gap = Layered::default().rank_gap;
     assert!(p[0][0] - p[3][0] > gap, "1 a rank after 4, which drives it: {p:?}");
     assert!((p[1][0] - p[3][0]).abs() < 1.0, "2 drives the net 3 reads, so it shares 4's rank: {p:?}");
     assert!(p[2][0] - p[0][0] > gap, "3 reads after both drivers: {p:?}");
+    assert_eq!(errors(&mut view), Vec::new());
 }
 
 #[test]
@@ -137,26 +154,18 @@ fn stress_puts_neighbors_a_gap_apart() {
 #[test]
 fn stress_parts_the_boxes_it_crowds() {
     let Some(gpu) = gpu() else { return };
-    let scene = Scene::new(plane())
+    let scene = Scene::new(diagram())
         .theme(plain_theme())
         .layout(Stress::default())
         .draw(Edges::of("graph", "Link").ends("from", "to"))
         .draw(Vertices::of("graph", "Node").position("x", "y").size(60.0, 20.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
-    view.set_camera(Camera::Map { center: [0.0; 3], zoom: -2.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(graph(None));
-    frame(&gpu, &mut view);
-    let at: Vec<[f32; 2]> = (1..=4_u64)
-        .map(|id| {
-            let pending = view.locate(&latkit::Row::new("graph", "Node", id));
-            answer(&gpu, &mut view, pending).expect("shown")
-        })
-        .collect();
-    // Stress puts neighbors 10 pixels apart; their 60 by 20 pixel boxes part, 2.5 pixels clear.
+    let mut view = show(&gpu, scene, graph(None));
+    let p = located(&gpu, &mut view, 4);
+    // Stress puts neighbors 40 units apart; their 60 by 20 boxes part, a quarter of the gap clear.
     for i in 0..4 {
         for j in i + 1..4 {
-            let (dx, dy) = ((at[i][0] - at[j][0]).abs(), (at[i][1] - at[j][1]).abs());
-            assert!(dx >= 62.0 || dy >= 22.0, "{i} and {j} overlap: {at:?}");
+            let (dx, dy) = ((p[i][0] - p[j][0]).abs(), (p[i][1] - p[j][1]).abs());
+            assert!(dx >= 64.0 || dy >= 24.0, "{i} and {j} overlap: {p:?}");
         }
     }
     assert_eq!(errors(&mut view), Vec::new());
@@ -169,7 +178,47 @@ fn pinned_vertices_stay_put() {
         if p.is_empty() {
             return;
         }
-        assert!(apart(p[0], [-100.0, 60.0]) < 2.0, "{layout:?}: {p:?}");
+        assert!(apart(p[0], [-100.0, 60.0]) < 4.0, "{layout:?}: {p:?}");
         assert!(p.iter().all(|v| v[0].is_finite()), "{layout:?}: every node placed: {p:?}");
+    }
+}
+
+#[test]
+fn rows_added_later_move_nothing_else() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = show(&gpu, scene(Layered::default()), graph(None));
+    let before = located(&gpu, &mut view, 4);
+    // A fifth node joins the end of the chain: the four placed hold, and it is placed after them.
+    let mut data = view.data("graph").expect("shown").clone();
+    data.apply(
+        Patch::new()
+            .set(Table::new("Node", vec![5_u64]).field("x", vec![None::<f64>]).field("y", vec![None::<f64>]))
+            .set(Table::new("Link", vec![3_u64]).reference("from", "Node", vec![3_u64]).reference(
+                "to",
+                "Node",
+                vec![5_u64],
+            )),
+    )
+    .expect("valid");
+    view.set_data(data);
+    frame(&gpu, &mut view);
+    let after = located(&gpu, &mut view, 5);
+    for k in 0..4 {
+        assert!(apart(before[k], after[k]) < 1e-3, "node {} held: {before:?} → {after:?}", k + 1);
+    }
+    assert!(after[4][0] > after[2][0], "the new node after the one it follows: {after:?}");
+    // Arranged, every row is laid out again.
+    view.arrange();
+    frame(&gpu, &mut view);
+    let arranged = located(&gpu, &mut view, 5);
+    assert!(arranged.iter().all(|p| p[0].is_finite()), "every node placed again: {arranged:?}");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn layouts_answer_the_same_for_the_same_graph() {
+    for layout in [Layout::from(Stress::default()), Layout::from(Layered::default())] {
+        let (a, b) = (placed(layout, None), placed(layout, None));
+        assert_eq!(a, b, "{layout:?}");
     }
 }

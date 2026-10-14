@@ -18,18 +18,22 @@ fn vector(v: DVec3) -> [f32; 4] {
 }
 
 /// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels. Pointer,
-/// probe, focus, and shade words start empty.
+/// probe, focus, and shade words start empty. In a diagram every length but glow and halo is a unit,
+/// so the theme's lengths scale with the zoom.
 pub(crate) fn frame(scene: &Scene, projected: &Projected, size: [f64; 2], linear: bool, elapsed: f64) -> wgsl::Frame {
     let theme = &scene.theme;
     let (cx, cy) = (split(projected.center[0]), split(projected.center[1]));
-    let (grid_kind, grid_pitch) = match &scene.space {
-        Space::Plane(plane) => match plane.grid {
-            Grid::Off => (wgsl::GRID_OFF, 1.0),
-            Grid::Lines { pitch } => (wgsl::GRID_LINES, pitch),
-            Grid::Dots { pitch, .. } => (wgsl::GRID_DOTS, pitch),
-        },
-        _ => (wgsl::GRID_OFF, 1.0),
+    let grid = match &scene.space {
+        Space::Plane(plane) => plane.grid,
+        Space::Diagram(diagram) => diagram.grid,
+        Space::Earth(_) | Space::Plot(_) => Grid::Off,
     };
+    let (grid_kind, grid_pitch) = match grid {
+        Grid::Off => (wgsl::GRID_OFF, 1.0),
+        Grid::Lines { pitch } => (wgsl::GRID_LINES, pitch),
+        Grid::Dots { pitch, .. } => (wgsl::GRID_DOTS, pitch),
+    };
+    let unit = if projected.space == wgsl::SPACE_DIAGRAM { projected.px_per_unit[0] as f32 } else { 1.0 };
     let (surface, graticule) = match &scene.space {
         Space::Earth(earth) => (earth.surface.unwrap_or(theme.surface), earth.graticule),
         _ => (theme.surface, false),
@@ -48,14 +52,15 @@ pub(crate) fn frame(scene: &Scene, projected: &Projected, size: [f64; 2], linear
     frame.elapsed = elapsed as f32;
     frame.glow = theme.glow;
     frame.dim = theme.dim;
-    frame.dash = theme.dash;
-    frame.flow_spacing = theme.flow_spacing;
-    frame.edge_spacing = theme.edge_spacing;
+    frame.dash = theme.dash * unit;
+    frame.flow_spacing = theme.flow_spacing * unit;
+    frame.edge_spacing = theme.edge_spacing * unit;
     frame.hover_scale = theme.hover_scale;
     frame.shading = theme.shading;
-    frame.arrow = theme.arrow;
+    frame.arrow = theme.arrow * unit;
     frame.halo = theme.halo;
-    frame.group_padding = theme.group_padding;
+    frame.group_padding = theme.group_padding * unit;
+    frame.unit = unit;
     frame.zoom = projected.zoom as f32;
     frame.linear = u32::from(linear);
     frame.hover = theme.hover.to_array();
@@ -133,6 +138,7 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_TEXT as usize] = theme.text.packed();
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
+    slots[wgsl::THEME_SURFACE as usize] = theme.surface.packed();
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
@@ -169,19 +175,17 @@ pub(crate) fn mark(index: usize, shown: &Shown, labels: Option<super::labels::Sl
     mark.constants = shown.offsets.constants;
     mark.ends = shown.offsets.ends;
     mark.palette = shown.offsets.palette;
-    mark.lanes = shown.offsets.lanes;
-    mark.paths = shown.offsets.paths;
-    mark.terminals = shown.offsets.terminals;
     mark.port_info = shown.offsets.port_info;
-    mark.ports = shown.graph.port_count();
-    mark.members = shown.offsets.members;
+    mark.ports = shown.port_count();
     mark.mask = shown.dirty;
-    mark.places = region.places;
     mark.remap = shown.remap;
     mark.trace = wgsl::NONE;
     mark.per_row = 1;
     mark.list = shown.segments.list.map_or(wgsl::NONE, |list| list.header);
     mark.query = shown.query;
+    mark.geometry = wgsl::NONE;
+    mark.frozen_geometry = wgsl::NONE;
+    mark.lane = wgsl::NONE;
     mark.label = wgsl::NONE;
     if let Some(slots) = labels {
         mark.candidates = slots.candidates;
@@ -205,8 +209,15 @@ pub(crate) fn mark(index: usize, shown: &Shown, labels: Option<super::labels::Sl
         mark.hole = markers.hole;
         mark.inputs = markers.inputs;
         mark.input = markers.input;
+        mark.geometry = drawing.geometry;
+        mark.lane = drawing.lane;
+        if shown.transition.is_some() {
+            mark.frozen_geometry = shown.tables.frozen().unwrap_or(wgsl::NONE);
+        }
+        mark.port_label_size = drawing.port_label_size;
         if let Some(labeling) = &drawing.label {
             mark.label = labeling.extra;
+            mark.label_size = labeling.size;
         }
         if shown.kind() == MarkKind::Lines {
             mark.per_row = shown.segments_per_row();

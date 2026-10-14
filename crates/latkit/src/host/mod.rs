@@ -1,5 +1,5 @@
-//! What the platform does for latkit: set text in its fonts, and do jobs off the frame. A
-//! [`Gpu`](crate::Gpu) is given its host with [`Gpu::set_host`](crate::Gpu::set_host); without one,
+//! What the platform does for latkit: set and measure text in its fonts, and do jobs off the frame.
+//! A [`Gpu`](crate::Gpu) is given its host with [`Gpu::set_host`](crate::Gpu::set_host); without one,
 //! views draw no text and do their jobs at once.
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub use browser::Browser;
 pub use job::Job;
-pub(crate) use job::{centers, polylines};
+pub(crate) use job::{Key, Placement, Wiring};
 
 use crate::Pending;
 
@@ -19,6 +19,11 @@ use crate::Pending;
 pub trait Host: Send + Sync + 'static {
     /// Sets `run` as coverage, or `None` when the platform cannot.
     fn rasterize(&self, run: &TextRun) -> Option<Raster>;
+
+    /// The width and height `run` takes once set, in pixels; by default what setting it takes.
+    fn measure(&self, run: &TextRun) -> Option<[f32; 2]> {
+        self.rasterize(run).map(|raster| raster.size.map(|v| v as f32))
+    }
 
     /// Does `job` off the frame, resolving to what [`Job::run`] answers; by default at once, on the
     /// calling thread.
@@ -34,13 +39,13 @@ pub struct TextRun {
     pub text: Arc<str>,
     /// A CSS font family list.
     pub font: Arc<str>,
-    /// The size in physical pixels.
+    /// The size in pixels.
     pub size_px: u32,
-    /// Physical pixels a line runs to before it wraps at a space; `None` keeps one line.
+    /// Pixels a line runs to before it wraps at a space; `None` keeps one line.
     pub max_width: Option<u32>,
 }
 
-/// Text set as coverage: one byte per physical pixel, rows top to bottom.
+/// Text set as coverage: one byte per pixel, rows top to bottom.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Raster {
     /// Width and height in pixels.

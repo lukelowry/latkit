@@ -21,8 +21,8 @@ use icons::Icons;
 use pipelines::Pipelines;
 use readback::Readbacks;
 
-use crate::host::{Host, Job};
-use crate::{Error, Pending, Result};
+use crate::host::Host;
+use crate::{Error, Result};
 
 /// The GPU device that views draw with. Cheap to clone; views of one `Gpu` share uploaded data.
 #[derive(Clone)]
@@ -185,15 +185,6 @@ impl Gpu {
     /// Gives views the platform's services: setting text, and doing jobs off the frame.
     pub fn set_host(&self, host: impl Host) {
         self.0.lock().host = Some(Arc::new(host));
-    }
-
-    /// Does `job` through the host, or at once without one.
-    pub(crate) fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
-        let host = self.0.lock().host.clone();
-        match host {
-            Some(host) => host.spawn(job),
-            None => Pending::ready(Ok(job.run())),
-        }
     }
 
     /// Whether the device was lost; drawing then does nothing, and a new `Gpu` is needed.
