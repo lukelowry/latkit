@@ -1,4 +1,4 @@
-import { Data, Patch, field, reference, type ColormapName, type Scene } from 'latkit';
+import { Data, Patch, field, reference, units, type ColormapName, type Scene } from 'latkit';
 import type { Stage } from '../ui/stage.js';
 import { Body, ROOM, STEP, type Controls } from './body.js';
 import { loadMesh } from './mesh.js';
@@ -12,6 +12,13 @@ const PAINTS: Record<
   string,
   { label: string; field: string; colormap: ColormapName; domain: [number, number]; legend: string }
 > = {
+  solid: {
+    label: 'Pearl',
+    field: 'strain',
+    colormap: 'turbo',
+    domain: [-0.05, 0.35],
+    legend: '',
+  },
   strain: {
     label: 'Strain',
     field: 'strain',
@@ -44,14 +51,39 @@ const THEME = {
   background: '#090c11',
   grid: '#ffffff1c',
   shading: 0.7,
-  shadow: { color: '#00000073' },
 } as const;
+
+// A soft floor footprint avoids self-shadow acne on deforming triangles in the packaged renderer.
+// This is a custom marker through the public JS scene API, with no renderer changes.
+const CONTACT_SHADOW = `fn marker(f: MarkerFragment) -> MarkerColor {
+  let p = f.p / max(f.half, vec2f(0.001));
+  let d = length(p);
+  let alpha = (1.0 - smoothstep(0.15, 1.0, d)) * f.input[0];
+  return MarkerColor(vec4f(0.0, 0.0, 0.0, alpha), (d - 1.0) * f.half.x);
+}`;
 
 export default async function bunny(stage: Stage): Promise<void> {
   const mesh = await loadMesh(new URL('./stanford-bunny.bin', import.meta.url));
   const body = new Body(mesh);
-  const controls: Controls = { gravity: 9.81, firmness: 0.45, inflate: 1, wind: false };
-  let paint = 'strain';
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  const controls: Controls = {
+    gravity: 9.81,
+    firmness: 0.45,
+    inflate: 1,
+    wind: false,
+    reducedMotion: reducedMotion.matches,
+  };
+  reducedMotion.addEventListener(
+    'change',
+    () => {
+      controls.reducedMotion = reducedMotion.matches;
+      if (reducedMotion.matches) space.orbit = 0;
+    },
+    { signal: stage.signal },
+  );
+  let paint = 'solid';
+  let inspect = false;
+  let fragments = false;
   let timeScale = 1;
   let carry = 0;
 
@@ -69,6 +101,12 @@ export default async function bunny(stage: Stage): Promise<void> {
         b: reference('Vertex', mesh.faces.b),
         c: reference('Vertex', mesh.faces.c),
       })
+      .set('ChunkVertex', body.burst.count, {})
+      .set('ChunkFace', body.burst.faces.a.length, {
+        a: reference('ChunkVertex', body.burst.faces.a),
+        b: reference('ChunkVertex', body.burst.faces.b),
+        c: reference('ChunkVertex', body.burst.faces.c),
+      })
       .set('Corner', 4, { x: [-ROOM, ROOM, ROOM, -ROOM], y: [-ROOM, -ROOM, ROOM, ROOM] })
       .set('Wall', 4, {
         from: reference('Corner', [0, 1, 2, 3]),
@@ -77,8 +115,9 @@ export default async function bunny(stage: Stage): Promise<void> {
       .set('Body', 1, {}),
   );
 
-  // The faces are lit and cast their shadow on the floor; the vertices they join are the dots you
-  // grab.
+  data = data.apply(new Patch().set('Shadow', body.burst.chunks.length + 1, {}));
+
+  // Lit faces and soft contact shadows; the vertices remain pickable with inspection dots hidden.
   const room = (live: boolean): Scene => {
     const p = PAINTS[paint]!;
     return {
@@ -86,6 +125,16 @@ export default async function bunny(stage: Stage): Promise<void> {
       theme: THEME,
       controls: { pickRadius: 14 },
       marks: [
+        {
+          vertices: {
+            of: ['bunny', 'Shadow'],
+            position: ['x', 'y'],
+            size: [units(field('radius').mul(2)), units(field('radius'))],
+            marker: { wgsl: { source: CONTACT_SHADOW, inputs: [field('opacity')] } },
+            color: '#000000',
+            pick: false,
+          },
+        },
         {
           vertices: {
             of: ['bunny', 'Corner'],
@@ -104,7 +153,15 @@ export default async function bunny(stage: Stage): Promise<void> {
             pick: false,
           },
         },
-        { faces: { of: ['bunny', 'Face'], corners: ['a', 'b', 'c'], pick: false, shadow: true } },
+        {
+          faces: {
+            of: ['bunny', fragments ? 'ChunkFace' : 'Face'],
+            corners: ['a', 'b', 'c'],
+            ...(paint === 'solid' ? { color: '#edccb4' } : {}),
+            pick: false,
+            shadow: false,
+          },
+        },
         {
           edges: {
             of: ['bunny', 'Spring'],
@@ -112,19 +169,26 @@ export default async function bunny(stage: Stage): Promise<void> {
             color: '#ffffff14',
             width: 1,
             pick: false,
+            visible: inspect && !fragments,
           },
         },
         {
           vertices: {
-            of: ['bunny', 'Vertex'],
+            of: ['bunny', fragments ? 'ChunkVertex' : 'Vertex'],
             position: ['x', 'y'],
             elevation: 'z',
-            radius: 1.6,
-            color: field(p.field)
-              .colormap(p.colormap)
-              .domain(...p.domain),
+            radius: inspect ? 1.6 : 0,
+            color:
+              paint === 'solid'
+                ? inspect
+                  ? '#edccb4'
+                  : '#edccb400'
+                : field(p.field)
+                    .colormap(p.colormap)
+                    .domain(...p.domain),
             select: false,
-            drag: live,
+            drag: live && !fragments,
+            pick: !fragments,
           },
         },
       ],
@@ -141,10 +205,11 @@ export default async function bunny(stage: Stage): Promise<void> {
     playback.play();
     run();
   };
-  stage.section('Actions').actions([
-    { label: 'Jump', key: ' ', run: act(() => body.jump()) },
+  const actions = stage.section('Actions');
+  actions.actions([
+    { label: 'Hop', key: ' ', run: act(() => body.jump()) },
     { label: 'Squash', key: 's', run: act(() => body.squash()) },
-    { label: 'Explode', key: 'e', run: act(() => body.explode()) },
+    { label: 'Pop', key: 'e', run: act(() => body.explode()) },
     { label: 'Drop', key: 'd', run: act(() => body.drop()) },
     {
       label: 'Poke',
@@ -152,9 +217,25 @@ export default async function bunny(stage: Stage): Promise<void> {
       run: act(() => body.poke(Math.floor(Math.random() * mesh.count), 9)),
     },
   ]);
+  const popButton = actions.element.querySelectorAll('button')[2]!;
+  popButton.title = 'Pop into soft pieces; press again to gather them';
+  const squashButton = actions.element.querySelectorAll('button')[1]!;
+  squashButton.title = 'Hold to squash; release to rebound';
+  squashButton.addEventListener(
+    'pointerdown',
+    (event) => {
+      if (event.button !== 0) return;
+      squashButton.setPointerCapture(event.pointerId);
+      act(() => body.squash(true))();
+    },
+    { signal: stage.signal },
+  );
+  for (const event of ['pointerup', 'pointercancel', 'lostpointercapture'])
+    squashButton.addEventListener(event, () => body.endSquash(), { signal: stage.signal });
+  actions.toggle('Playful', 'a', false, (on) => (controls.playful = on));
   const world = stage.section('World');
   world.toggle('Wind', 'w', false, (on) => (controls.wind = on));
-  world.toggle('Orbit', 'o', false, (on) => (space.orbit = on ? 12 : 0));
+  world.toggle('Orbit', 'o', false, (on) => (space.orbit = on && !controls.reducedMotion ? 12 : 0));
   world.choice(
     'Gravity',
     [
@@ -200,11 +281,17 @@ export default async function bunny(stage: Stage): Promise<void> {
     },
   );
   const legend = stage.legend();
+  const legendElement = stage.regions.main.querySelector<HTMLElement>('.legend')!;
   const repaint = (p: string) => {
     paint = p;
     space.show(room(playback.mode === 'live'));
     legend.ramp(PAINTS[p]!.colormap, PAINTS[p]!.legend);
+    legendElement.style.display = p === 'solid' ? 'none' : '';
   };
+  material.toggle('Inspect mesh', 'i', false, (on) => {
+    inspect = on;
+    space.show(room(playback.mode === 'live'));
+  });
   material.choice(
     'Color',
     Object.entries(PAINTS).map(([key, p]) => [p.label, key] as const),
@@ -227,8 +314,13 @@ export default async function bunny(stage: Stage): Promise<void> {
   );
 
   const playback = stage.playback({
-    replay: { seconds: 3, rate: 0.3 },
+    replay: { seconds: 5, rate: 0.3 },
     show(at) {
+      const pieces = data.get('Body', 0, 'phase', at) === 1;
+      if (pieces !== fragments) {
+        fragments = pieces;
+        space.show(room(playback.mode === 'live'));
+      }
       space.at = at;
       plot.at = at;
       const x0 = Math.max(playback.start, at - WINDOW * 0.85);
@@ -237,23 +329,61 @@ export default async function bunny(stage: Stage): Promise<void> {
     change(live) {
       // Paused, a press pans instead of grabbing.
       space.show(room(live));
-      if (!live) body.release();
+      if (!live) {
+        body.release(true);
+        body.endSquash();
+      }
     },
   });
 
   const frame = body.frame();
+  const chunkFrame = body.burst.frame();
+  const shadow = {
+    x: new Float32Array(body.burst.chunks.length + 1),
+    y: new Float32Array(body.burst.chunks.length + 1),
+    radius: new Float32Array(body.burst.chunks.length + 1),
+    opacity: new Float32Array(body.burst.chunks.length + 1),
+  };
+  let recordedChunks = false;
+  let wasBurst = false;
   const publish = () => {
     body.sample(frame);
     const [height, speed, volume] = body.metrics();
-    data = data.apply(
-      new Patch()
-        .append(body.time, 'Vertex', { ...frame })
-        .append(body.time, 'Body', { height: [height], speed: [speed], volume: [volume] })
-        .forget(body.time - HISTORY),
-    );
+    shadow.opacity.fill(0);
+    if (body.burst.active) {
+      body.burst.chunks.forEach((chunk, i) => {
+        shadow.x[i + 1] = chunk.position[0];
+        shadow.y[i + 1] = chunk.position[1];
+        shadow.radius[i + 1] = chunk.radius + chunk.position[2] * 0.12;
+        shadow.opacity[i + 1] = 0.32 / (1 + chunk.position[2]);
+      });
+    } else {
+      shadow.x[0] = frame.x.reduce((sum, v) => sum + v, 0) / mesh.count;
+      shadow.y[0] = frame.y.reduce((sum, v) => sum + v, 0) / mesh.count;
+      shadow.radius[0] = 0.85 * Math.cbrt(controls.inflate) + height * 0.15;
+      shadow.opacity[0] = 0.42 / (1 + height * height * 0.4);
+    }
+    const patch = new Patch()
+      .append(body.time, 'Vertex', { ...frame })
+      .append(body.time, 'Shadow', shadow)
+      .append(body.time, 'Body', {
+        height: [height],
+        speed: [speed],
+        volume: [Number.isFinite(volume) ? volume : null],
+        phase: [body.burst.active ? 1 : 0],
+      })
+      .forget(body.time - HISTORY);
+    if (body.burst.active || wasBurst || !recordedChunks) {
+      body.burst.sample(chunkFrame, STEP);
+      patch.append(body.time, 'ChunkVertex', { ...chunkFrame });
+      recordedChunks = true;
+    }
+    wasBurst = body.burst.active;
+    data = data.apply(patch);
     space.setData(data);
     plot.setData(data);
     playback.record(data.span!);
+    popButton.firstChild!.textContent = body.burst.active ? 'Gather' : 'Pop';
   };
 
   space.on('drag', ({ phase, hit, position }) => {
@@ -263,10 +393,40 @@ export default async function bunny(stage: Stage): Promise<void> {
   });
   space.on('click', (hit) => act(() => body.poke(hit.row.id as number))());
 
+  const canvas = stage.regions.main.querySelector('canvas')!;
+  canvas.addEventListener(
+    'pointermove',
+    (event) => {
+      const rect = canvas.getBoundingClientRect();
+      body.lookAt(space.ground([event.clientX - rect.left, event.clientY - rect.top]));
+    },
+    { signal: stage.signal },
+  );
+  canvas.addEventListener('pointerleave', () => body.lookAt(), { signal: stage.signal });
+  // The JS drag event intentionally combines release and cancellation. Capture cancellation
+  // before the view's bubbling listener, so it cannot leave a throw behind.
+  canvas.addEventListener('pointercancel', () => body.release(true), {
+    capture: true,
+    signal: stage.signal,
+  });
+  addEventListener(
+    'blur',
+    () => {
+      body.release(true);
+      body.endSquash();
+    },
+    { signal: stage.signal },
+  );
+
   const meter = stage.meter(space);
   meter.note(() => {
-    const [height, speed, volume] = body.metrics();
-    return `center ${height.toFixed(2)} m  ·  ${speed.toFixed(1)} m/s  ·  volume ${(volume * 100).toFixed(0)}%`;
+    const at = playback.at;
+    const height = (data.get('Body', 0, 'height', at) as number | null) ?? 0;
+    const speed = (data.get('Body', 0, 'speed', at) as number | null) ?? 0;
+    const volume = data.get('Body', 0, 'volume', at) as number | null;
+    const state =
+      playback.mode === 'live' ? body.state : playback.mode === 'playing' ? 'replay' : 'paused';
+    return `${state}  ·  center ${height.toFixed(2)} m  ·  ${speed.toFixed(1)} m/s  ·  ${volume !== null && Number.isFinite(volume) ? `volume ${(volume * 100).toFixed(0)}%` : '24 pieces'}`;
   });
   stage.frame((dt) => {
     if (playback.mode !== 'live') return;
@@ -282,6 +442,7 @@ export default async function bunny(stage: Stage): Promise<void> {
     `${mesh.count.toLocaleString()} vertices · ${mesh.springs.a.length.toLocaleString()} springs · ${mesh.faces.a.length.toLocaleString()} faces`,
   );
   legend.ramp(PAINTS[paint]!.colormap, PAINTS[paint]!.legend);
+  legendElement.style.display = 'none';
   body.drop(true);
   publish();
 }

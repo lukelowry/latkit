@@ -1,0 +1,202 @@
+/** Example-only numerical checks. Bundle with esbuild and run with node --test; no wasm build. */
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import { Body, ROOM, STEP, type Controls } from './body.js';
+import { fracture } from './fracture.js';
+import { loadMesh } from './mesh.js';
+
+const bytes = readFileSync('npm/examples/src/bunny/stanford-bunny.bin');
+const mesh = await loadMesh(
+  new URL(`data:application/octet-stream;base64,${bytes.toString('base64')}`),
+);
+const controls: Controls = { gravity: 9.81, firmness: 0.45, inflate: 1, wind: false };
+
+function run(body: Body, seconds: number, settings = controls): void {
+  for (let i = 0; i < Math.ceil(seconds / (STEP * 8)); i++) body.advance(STEP * 8, settings);
+}
+
+function bounded(body: Body): void {
+  const positions = body.burst.active ? body.burst.x : body.x;
+  assert.ok(positions.every(Number.isFinite), 'all positions remain finite');
+  for (let i = 0; i < positions.length; i += 3) {
+    assert.ok(Math.abs(positions[i]!) <= ROOM + 1e-6);
+    assert.ok(Math.abs(positions[i + 1]!) <= ROOM + 1e-6);
+    assert.ok(positions[i + 2]! >= -1e-6 && positions[i + 2]! <= 6.5 + 1e-6);
+  }
+}
+
+await test('fracture makes 24 closed, outward solids with normalized surface bindings', () => {
+  const pieces = fracture(mesh);
+  assert.equal(pieces.length, 24);
+  let volume = 0;
+  for (const piece of pieces) {
+    const edges = new Map<string, number>();
+    let pieceVolume = 0;
+    for (const face of piece.faces) {
+      for (let e = 0; e < 3; e++) {
+        const a = face[e]!,
+          b = face[(e + 1) % 3]!;
+        const key = `${Math.min(a, b)}:${Math.max(a, b)}`;
+        edges.set(key, (edges.get(key) ?? 0) + (a < b ? 1 : -1));
+      }
+      const [a, b, c] = face.map((i) => piece.vertices[i]!.p);
+      pieceVolume +=
+        (a![0] * (b![1] * c![2] - b![2] * c![1]) +
+          a![1] * (b![2] * c![0] - b![0] * c![2]) +
+          a![2] * (b![0] * c![1] - b![1] * c![0])) /
+        6;
+    }
+    assert.ok(
+      [...edges.values()].every((v) => v === 0),
+      'each edge has an opposite winding',
+    );
+    assert.ok(pieceVolume > 0, 'piece is outward wound');
+    volume += pieceVolume;
+    for (const vertex of piece.vertices) {
+      assert.ok(Math.abs([...vertex.weights.values()].reduce((a, b) => a + b, 0) - 1) < 1e-8);
+      for (let axis = 0; axis < 3; axis++) {
+        const mapped = [...vertex.weights].reduce(
+          (sum, [row, w]) => sum + mesh.positions[row * 3 + axis]! * w,
+          0,
+        );
+        assert.ok(Math.abs(mapped - vertex.p[axis]!) < 1e-7);
+      }
+    }
+  }
+  const body = new Body(mesh);
+  assert.ok(Math.abs(volume - body.volume) < 1e-6, 'cuts preserve enclosed volume');
+});
+
+await test('body settles, anticipates a hop, and rejects impulse stacking in flight', () => {
+  const body = new Body(mesh);
+  body.drop(true);
+  run(body, 5);
+  bounded(body);
+  const before = body.metrics()[0];
+  assert.ok(body.metrics()[1] < 0.3, `rest speed: ${body.metrics()[1]}`);
+  body.jump();
+  assert.equal(body.state, 'getting ready');
+  run(body, 0.1);
+  assert.ok(body.metrics()[0] < before + 0.1, 'no immediate launch');
+  run(body, 0.15);
+  assert.equal(body.state, 'hopping');
+  const copy = body.x.slice();
+  const speed = body.metrics()[1];
+  for (let i = 0; i < 20; i++) body.jump();
+  assert.deepEqual(body.x, copy);
+  assert.equal(body.metrics()[1], speed, 'repeated hops do not change velocity');
+  run(body, 0.3);
+  assert.ok(body.metrics()[0] > before + 0.2, 'hop leaves the floor');
+  assert.ok(body.metrics()[0] < before + 1.4, 'hop has bounded height');
+  run(body, 3);
+  bounded(body);
+  assert.ok(body.metrics()[1] < 0.4);
+});
+
+await test('pop gathers under zero, Earth, and high gravity, without a mesh snap', () => {
+  for (const gravity of [0, 9.81, 24.8]) {
+    const body = new Body(mesh);
+    body.explode();
+    run(body, 0.2, { ...controls, gravity });
+    assert.ok(body.burst.active);
+    assert.ok(Number.isNaN(body.metrics()[2]), 'disconnected pieces have no body volume');
+    for (let i = 0; i < 20; i++) body.explode();
+    let steps = 0;
+    while (body.burst.active && steps++ < 1440) {
+      body.advance(STEP, { ...controls, gravity });
+      bounded(body);
+    }
+    assert.ok(!body.burst.active, `gathers at gravity ${gravity}`);
+    for (const chunk of body.burst.chunks)
+      for (let j = 0; j < chunk.piece.vertices.length; j++) {
+        for (let a = 0; a < 3; a++) {
+          const target = [...chunk.piece.vertices[j]!.weights].reduce(
+            (sum, [row, w]) => sum + body.x[row * 3 + a]! * w,
+            0,
+          );
+          assert.ok(
+            Math.abs(body.burst.x[(chunk.offset + j) * 3 + a]! - target) < 0.02,
+            'seam closes before restoring mesh',
+          );
+        }
+      }
+    assert.ok(Number.isFinite(body.metrics()[2]));
+    body.explode();
+    run(body, 0.2);
+    body.drop(true);
+    assert.ok(!body.burst.active, 'drop cancels burst');
+  }
+});
+
+await test('pop lifts every piece and visibly separates before gathering', () => {
+  const body = new Body(mesh);
+  run(body, 2);
+  body.explode();
+  while (!body.burst.active) body.advance(STEP, controls);
+  const launch = body.burst.chunks.map((chunk) => [...chunk.position]);
+  assert.ok(
+    body.burst.chunks.every((chunk) => chunk.velocity[2] > 2),
+    'every piece clears the floor',
+  );
+  run(body, 0.6);
+  const separated = body.burst.chunks.filter(
+    (chunk, i) =>
+      Math.hypot(chunk.position[0] - launch[i]![0]!, chunk.position[1] - launch[i]![1]!) > 0.8,
+  );
+  assert.ok(separated.length >= 20, `${separated.length}/24 pieces left the original silhouette`);
+  run(body, 0.6);
+  assert.ok(!body.burst.gathering, 'the full scatter has time to read before automatic return');
+  run(body, 4);
+  assert.ok(!body.burst.active, 'automatic assembly still completes');
+
+  body.explode();
+  while (!body.burst.active) body.advance(STEP, controls);
+  for (let i = 0; i < 20; i++) body.explode();
+  run(body, 0.4);
+  assert.ok(!body.burst.gathering, 'repeat presses cannot abort separation');
+  run(body, 3);
+  assert.ok(!body.burst.active, 'the early gather request completes after separation');
+});
+
+await test('large grabs, cancellation, and material extremes stay bounded', () => {
+  const body = new Body(mesh);
+  run(body, 1);
+  let ear = 0;
+  for (let i = 1; i < mesh.count; i++)
+    if (mesh.positions[i * 3 + 2]! > mesh.positions[ear * 3 + 2]!) ear = i;
+  body.grab(ear, Array.from(body.x.subarray(ear * 3, ear * 3 + 3)));
+  body.drag([100, -100, 100]);
+  run(body, 1);
+  bounded(body);
+  body.release(true);
+  assert.equal(body.metrics()[1], 0, 'cancelled drag does not throw');
+  for (const firmness of [0, 1])
+    for (const inflate of [0.5, 1.8]) {
+      run(body, 1, { ...controls, firmness, inflate, wind: true });
+      bounded(body);
+    }
+});
+
+await test('held squash releases, and reduced motion still completes an inflated pop', () => {
+  const body = new Body(mesh);
+  run(body, 2);
+  body.squash(true);
+  run(body, 1);
+  assert.equal(body.state, 'squash');
+  bounded(body);
+  body.endSquash();
+  run(body, 1);
+  assert.equal(body.state, 'idle');
+  const settings = { ...controls, inflate: 1.8, reducedMotion: true, playful: true };
+  run(body, 2, settings);
+  body.explode();
+  run(body, 0.2, settings);
+  assert.ok(body.burst.active);
+  run(body, 4, settings);
+  assert.ok(!body.burst.active);
+  bounded(body);
+  assert.ok(Math.abs(body.metrics()[2] - settings.inflate) < 0.08);
+  run(body, 8, settings);
+  assert.equal(body.state, 'idle', 'reduced motion disables autonomous hops');
+});
