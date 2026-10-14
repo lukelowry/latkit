@@ -105,8 +105,9 @@ fn casts(shader: Shader) -> bool {
     CASTERS.contains(&shader)
 }
 
-/// How a render shader meets depth, which is reversed: triangles write it, the backdrop and overlay
-/// ignore it, and every other mark draws where nothing nearer was drawn.
+/// How a render shader meets depth, which is reversed: the backdrop writes the globe's, triangles
+/// write theirs, the overlay and labels ignore it, and every other mark draws where nothing nearer
+/// was drawn.
 fn depth(shader: Shader) -> Option<wgpu::DepthStencilState> {
     if casts(shader) {
         return None;
@@ -117,7 +118,7 @@ fn depth(shader: Shader) -> Option<wgpu::DepthStencilState> {
     };
     Some(wgpu::DepthStencilState {
         format: DEPTH,
-        depth_write_enabled: Some(shader == Shader::Triangles),
+        depth_write_enabled: Some(matches!(shader, Shader::Triangles | Shader::Backdrop)),
         depth_compare: Some(compare),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),

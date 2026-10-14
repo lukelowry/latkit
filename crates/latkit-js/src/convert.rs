@@ -1,7 +1,7 @@
 //! JavaScript values to latkit's and back. Typed arrays copy once; plain arrays read their first
 //! present element to know what they hold.
 
-use js_sys::{Array, Float32Array, Float64Array, Int32Array, Object, Reflect, Uint32Array};
+use js_sys::{Array, Float32Array, Float64Array, Int32Array, Object, Reflect, Uint8Array, Uint32Array};
 use latkit::{Error, Result};
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -26,7 +26,7 @@ pub(crate) fn ids(value: &JsValue) -> Result<latkit::Ids> {
         return Ok(latkit::Ids::from(a.to_vec()));
     }
     if let Some(a) = value.dyn_ref::<Float64Array>() {
-        return Ok(latkit::Ids::from(a.to_vec().into_iter().map(|v| Some(v as u64)).collect::<Vec<_>>()));
+        return Ok(latkit::Ids::from(a.to_vec().into_iter().map(|v| v as u64).collect::<Vec<_>>()));
     }
     let Some(array) = value.dyn_ref::<Array>() else { return Err(error("ids are a count, numbers, or texts")) };
     let first = array.iter().find(|v| !v.is_null() && !v.is_undefined());
@@ -77,9 +77,12 @@ pub(crate) fn values_of(fields: &Object) -> Result<Vec<(String, latkit::Values)>
         .collect()
 }
 
-/// Values: a typed array, or an array of numbers, booleans, texts, or `[x, y]` geometries; `null`
-/// is missing.
+/// Values: a typed array (a `Uint8Array` of booleans, nonzero true), or an array of numbers,
+/// booleans, texts, or `[x, y]` geometries; `null` is missing.
 pub(crate) fn values(value: &JsValue) -> Result<latkit::Values> {
+    if let Some(a) = value.dyn_ref::<Uint8Array>() {
+        return Ok(a.to_vec().iter().map(|&b| b != 0).collect::<Vec<bool>>().into());
+    }
     if let Some(a) = value.dyn_ref::<Float64Array>() {
         return Ok(a.to_vec().into());
     }
@@ -287,7 +290,7 @@ pub(crate) fn event(event: &latkit::Event) -> JsValue {
     object(&[("type", JsValue::from_str(kind)), ("detail", detail)])
 }
 
-/// Stats as `{ frames, rows, uploading, gpuBytes, cpuMs }`.
+/// Stats as `{ frames, rows, uploading, gpuBytes, cpuMs, gpuMs, covered }`.
 pub(crate) fn stats(stats: &latkit::Stats) -> JsValue {
     object(&[
         ("frames", (stats.frames as f64).into()),
@@ -295,5 +298,7 @@ pub(crate) fn stats(stats: &latkit::Stats) -> JsValue {
         ("uploading", (stats.uploading as f64).into()),
         ("gpuBytes", (stats.gpu_bytes as f64).into()),
         ("cpuMs", f64::from(stats.cpu_ms).into()),
+        ("gpuMs", f64::from(stats.gpu_ms).into()),
+        ("covered", (stats.covered as f64).into()),
     ])
 }

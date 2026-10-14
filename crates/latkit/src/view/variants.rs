@@ -14,7 +14,7 @@ use crate::{Mark, Marker, Space};
 const HOVER: [&str; 3] = ["nearest", "topmost", "describe"];
 
 /// The label passes run for each labeled mark; in a diagram, only the first.
-const LABELS: [&str; 5] = ["candidates", "claim", "decide", "occupy", "fade"];
+const LABELS: [&str; 6] = ["candidates", "claim", "decide", "occupy", "ask", "fade"];
 
 impl View {
     /// Makes every pipeline the scene uses, for frames into `format` with `samples` per pixel.
@@ -54,20 +54,27 @@ impl View {
             variants.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| compute(Shader::Lists, e)));
         }
         let labels = if diagram { &LABELS[..1] } else { &LABELS[..] };
+        // Focus lights what picks and the ends of edges, so every mark that can be lit draws lit rows.
+        let lights = any(|m| m.style().interaction.pick);
         for mark in marks {
             let style = mark.style();
             let primitive = mark.kind().primitive().code();
             // A stroke mark's pipelines are made for the path it runs along, an area's for its triangles'
             // geometry; others' read none.
             let path = mark.path(&scene.space).unwrap_or(PATH_ENDS);
-            let (shader, cast) = match mark {
-                Mark::Vertices(v) if matches!(v.marker, Marker::Wgsl { .. }) => (None, None),
-                Mark::Vertices(_) => (Some(Shader::Points), Some(Shader::PointsCast)),
-                Mark::Faces(_) => (Some(Shader::Triangles), Some(Shader::TrianglesCast)),
-                Mark::Areas(_) => (Some(Shader::Areas), None),
-                Mark::Edges(_) | Mark::Lines(_) => (Some(Shader::Strokes), Some(Shader::StrokesCast)),
+            let (shader, cast, lit) = match mark {
+                Mark::Vertices(v) if matches!(v.marker, Marker::Wgsl { .. }) => (None, None, None),
+                Mark::Vertices(_) => (Some(Shader::Points), Some(Shader::PointsCast), Some(Shader::PointsFocus)),
+                Mark::Faces(_) => (Some(Shader::Triangles), Some(Shader::TrianglesCast), None),
+                Mark::Areas(_) => (Some(Shader::Areas), None, Some(Shader::AreasFocus)),
+                Mark::Edges(_) | Mark::Lines(_) => {
+                    (Some(Shader::Strokes), Some(Shader::StrokesCast), Some(Shader::StrokesFocus))
+                }
             };
             variants.extend(shader.map(|s| draw(s).path(path)));
+            if lights {
+                variants.extend(lit.map(|s| draw(s).path(path)));
+            }
             if style.shadow {
                 variants.extend(cast.map(|s| Variant::draw(s, SHADE, 1).path(path)));
             }
@@ -77,6 +84,12 @@ impl View {
                 _ => "strokes",
             };
             variants.push(compute(Shader::Bounds, bounds).path(path));
+            // A mark crowding the screen covers; points and strokes may.
+            match mark {
+                Mark::Vertices(_) => variants.push(compute(Shader::Cover, "points").path(path)),
+                Mark::Edges(_) | Mark::Lines(_) => variants.push(compute(Shader::Cover, "strokes").path(path)),
+                Mark::Faces(_) | Mark::Areas(_) => {}
+            }
             // Rows running through different numbers of segments, or areas of different numbers of
             // triangles, are numbered by a list.
             if matches!(mark, Mark::Edges(_)) || path == PATH_GEOMETRY {
@@ -100,6 +113,9 @@ impl View {
                     }
                     if let Marker::Wgsl { source, .. } = &vertices.marker {
                         inner.pipelines.custom(device, source, Shader::PointsCustom, format, samples);
+                        if lights {
+                            inner.pipelines.custom(device, source, Shader::PointsCustomFocus, format, samples);
+                        }
                         if style.shadow {
                             inner.pipelines.custom(device, source, Shader::PointsCustomCast, SHADE, 1);
                         }

@@ -220,9 +220,26 @@ impl RowIds {
         }
     }
 
+    /// Every page's numbered ids, when every id is a number: what lookups read without matching each
+    /// id's kind.
+    pub(crate) fn numbers(&self) -> Option<Vec<&[u64]>> {
+        let RowIds::Listed(column) = self else { return None };
+        column
+            .pages()
+            .iter()
+            .map(|page| match (&page.values.array, &page.values.valid) {
+                (Array::U64(v), None) => Some(&v[..]),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The id → row index; an error names a missing or repeated id.
     pub(crate) fn index(&self) -> Result<Index> {
         let RowIds::Listed(_) = self else { return Ok(Index::Identity(self.len() as u32)) };
+        if let Some(pages) = self.numbers() {
+            return numbered(&pages, self.len());
+        }
         let mut table = HashTable::with_capacity(self.len());
         for row in 0..self.len() {
             let key = self.key(row).ok_or_else(|| Error::invalid("a row needs an id").at(row))?;
@@ -239,6 +256,24 @@ impl RowIds {
     }
 }
 
+/// The index of numbered ids, read page by page.
+fn numbered(pages: &[&[u64]], len: usize) -> Result<Index> {
+    let id = |r: u32| pages[r as usize >> PAGE_BITS][r as usize & PAGE_MASK];
+    let mut table = HashTable::with_capacity(len);
+    for (p, page) in pages.iter().enumerate() {
+        for (i, &n) in page.iter().enumerate() {
+            let row = p << PAGE_BITS | i;
+            match table.entry(hash(IdRef::Number(n)), |&r| id(r) == n, |&r| hash(IdRef::Number(id(r)))) {
+                Entry::Occupied(_) => return Err(Error::invalid(format!("id {n} appears twice")).at(row)),
+                Entry::Vacant(slot) => {
+                    slot.insert(row as u32);
+                }
+            }
+        }
+    }
+    Ok(Index::Table(table))
+}
+
 /// Finds a row by id without allocating.
 #[derive(Debug)]
 pub(crate) enum Index {
@@ -251,6 +286,40 @@ pub(crate) fn hash(key: IdRef<'_>) -> u64 {
 }
 
 impl Index {
+    /// The rows numbered ids `ids` name, `unwired` where one names none or is missing, and whether a
+    /// present id named no row: the loop chosen once for the ids' and the rows' kinds.
+    pub(crate) fn resolve(&self, rows: &RowIds, ids: &Values, unwired: u32) -> (Vec<u32>, bool) {
+        let valid = |i: usize| ids.valid.as_ref().is_none_or(|v| v.get(i));
+        let mut dangling = false;
+        let mut found = |row: Option<usize>| {
+            dangling |= row.is_none();
+            row.map_or(unwired, |r| r as u32)
+        };
+        let resolved = match (self, &ids.array, rows.numbers()) {
+            (Index::Identity(count), Array::U64(v), _) => {
+                let count = u64::from(*count);
+                v.iter()
+                    .enumerate()
+                    .map(|(i, &n)| if valid(i) { found((n < count).then_some(n as usize)) } else { unwired })
+                    .collect()
+            }
+            (Index::Table(table), Array::U64(v), Some(pages)) => {
+                let id = |r: u32| pages[r as usize >> PAGE_BITS][r as usize & PAGE_MASK];
+                v.iter()
+                    .enumerate()
+                    .map(|(i, &n)| {
+                        if !valid(i) {
+                            return unwired;
+                        }
+                        found(table.find(hash(IdRef::Number(n)), |&r| id(r) == n).map(|&r| r as usize))
+                    })
+                    .collect()
+            }
+            _ => (0..ids.len()).map(|i| key(ids, i).map_or(unwired, |key| found(self.get(rows, key)))).collect(),
+        };
+        (resolved, dangling)
+    }
+
     pub(crate) fn get(&self, ids: &RowIds, key: IdRef<'_>) -> Option<usize> {
         match (self, key) {
             (Index::Identity(n), IdRef::Number(i)) => (i < u64::from(*n)).then_some(i as usize),

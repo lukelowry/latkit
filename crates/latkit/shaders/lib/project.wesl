@@ -40,19 +40,22 @@ fn on_sphere(hi: vec2f, lo: vec2f) -> vec3f {
     return vec3f(v.x, v.y * cos(lat0) - v.z * sin(lat0), v.y * sin(lat0) + v.z * cos(lat0));
 }
 
-// World coordinates: plane or plot units, or mercator radians morphing onto the globe.
+// World coordinates: plane or plot units, or mercator radians morphing onto the globe. Only the
+// morph works out both.
 fn world(hi: vec2f, lo: vec2f, z: f32) -> vec3f {
     if frame.space != SPACE_EARTH {
         return vec3f(relative(hi, lo), z);
     }
-    let flat = vec3f(mercator(hi, lo), z);
     if frame.globe <= 0.0 {
-        return flat;
+        return vec3f(mercator(hi, lo), z);
     }
     let lat0 = radians(frame.center_hi.y + frame.center_lo.y);
     let s = on_sphere(hi, lo) * (1.0 + z);
     let round = vec3f(s.xy, s.z - 1.0) / cos(lat0);
-    return mix(flat, round, frame.globe);
+    if frame.globe >= 1.0 {
+        return round;
+    }
+    return mix(vec3f(mercator(hi, lo), z), round, frame.globe);
 }
 
 fn clip_of(w: vec3f) -> vec4f {
@@ -63,9 +66,21 @@ fn project(hi: vec2f, lo: vec2f, z: f32) -> vec4f {
     return clip_of(world(hi, lo, z));
 }
 
-// Whether `p` is on the visible side of the globe.
-fn facing(hi: vec2f, lo: vec2f) -> bool {
-    return frame.globe < 0.5 || frame.space != SPACE_EARTH || on_sphere(hi, lo).z > 0.0;
+// The globe's center in world units: a sphere of radius `-center.z` whose top touches the ground at
+// the camera's center.
+fn globe_center() -> vec3f {
+    return vec3f(0.0, 0.0, -1.0 / cos(radians(frame.center_hi.y + frame.center_lo.y)));
+}
+
+// Whether world point `w` shows past the globe: on the round globe, whether it lies in front of the
+// plane the eye sees the globe's edge on, exactly, at any pitch. On the map, or while the globe
+// morphs, everything shows, and what the ground hides is left to its depth.
+fn shows(w: vec3f) -> bool {
+    if frame.space != SPACE_EARTH || frame.globe < 1.0 {
+        return true;
+    }
+    let c = globe_center();
+    return dot(w - c, eye.position.xyz - w) > 0.0;
 }
 
 // CSS pixels from the top left.

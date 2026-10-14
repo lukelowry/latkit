@@ -90,9 +90,12 @@ impl Gpu {
             max_storage_buffers_per_shader_stage: supported.max_storage_buffers_per_shader_stage,
             ..wgpu::Limits::default()
         };
+        // Timestamps, where the adapter writes them, measure what each frame costs the GPU.
+        let features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("latkit"),
+                required_features: features,
                 required_limits: limits,
                 ..Default::default()
             })

@@ -45,6 +45,8 @@ export interface Case {
   readonly machines: number;
   /** Bytes downloaded, compressed. */
   readonly bytes: number;
+  /** Whether its buses have names, which labels show. */
+  readonly named: boolean;
   /** Each bus's longitude and latitude, and its load and generation in MW. */
   readonly positions: Float32Array;
   readonly load: Float32Array;
@@ -178,6 +180,7 @@ export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.by
     lines: m,
     machines: g,
     bytes: downloaded,
+    named: true,
     positions: position,
     load,
     generation,

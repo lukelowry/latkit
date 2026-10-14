@@ -1,15 +1,15 @@
 //! One frame, in order: settle readbacks, advance the camera, derive what marks read beside their
 //! data, sync columns, stream uploads, fit rows into their regions, freeze transitions, pack the
-//! program buffer, write focus and uniforms, then record the compute, shadow, render, and probe
-//! passes into the caller's encoder. Nothing here submits.
+//! program buffer, write focus and uniforms, then record the compute, shadow, label, cover, render,
+//! and probe passes into the caller's encoder. Nothing here submits.
 
 use web_time::Instant;
 
 use super::marks::Shown;
 use super::resources::{EyeSlot, MARK_STRIDE, Resources};
 use super::sync::{Source, Synced, Window, table_of};
-use super::transition::remap;
-use super::{Camera, Event, Target, View, uniforms};
+use super::transition::{remap, replaced};
+use super::{Camera, Event, Target, View, timer, uniforms};
 use crate::expr::compile::Deps;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
@@ -32,6 +32,9 @@ impl View {
         let started = Instant::now();
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        if let Some(timer) = &mut self.timer {
+            timer.begin(encoder);
+        }
         // Runs the callbacks of finished readbacks; a no-op in browsers, which run them themselves.
         let _ = device.poll(wgpu::PollType::Poll);
         self.tell_gpu_errors();
@@ -46,27 +49,7 @@ impl View {
         self.settle_labels(&mut inner);
         self.derive(&mut inner);
         self.stream(&mut inner);
-        for i in 0..self.marks.len() {
-            let geodesic = self.geodesic(&self.marks[i]);
-            self.marks[i].geodesic = geodesic;
-        }
-        let resources = self.resources.get_or_insert_with(|| Resources::new(device));
-        resources.forget_retired();
-        let moved = self.fit_rows(encoder);
-        self.transitions(encoder, &mut inner);
-        self.attach_ends();
-        let domains = self.place_domains();
-        let resources = self.resources.as_mut().expect("created");
-        let vertices: u64 = self
-            .marks
-            .iter()
-            .filter(|m| m.kind() == MarkKind::Vertices)
-            .map(|m| u64::from(m.region.state / wgsl::VERTEX_WORDS + m.region.capacity))
-            .max()
-            .unwrap_or(0);
-        resources.fit(device, self.marks.len() as u64, domains, vertices);
-        self.pack(&mut inner);
-        self.lay_out_labels(&mut inner);
+        let moved = self.lay_out(encoder, &mut inner);
         for shown in &mut self.marks {
             shown.dirty |= shown.channels_reading(Deps::TIME);
         }
@@ -74,6 +57,9 @@ impl View {
         let (buffer, capacity) = (resources.focus().clone(), resources.focus_words());
         self.focus.dirty |= moved;
         self.write_focus(queue, &buffer, capacity, moved);
+        if let Some(rows) = self.focus.take_lit() {
+            self.resources.as_mut().expect("created").write_lit(device, queue, &rows);
+        }
         let measure = self.measuring();
         let probe = self.probe_point();
         let query = self.lay_out_lists();
@@ -91,6 +77,9 @@ impl View {
             frame.query = words;
         }
         self.label_words(&mut frame);
+        let zoom = f64::from(frame.zoom);
+        let cover = self.lay_out_cover(&mut frame, target.size, zoom);
+        self.resources.as_mut().expect("created").fit_cover(device, cover);
         let main = uniforms::eye(&projected, self.size, self.pixel_ratio);
         let light = self.shade(&mut frame, &main);
         let sprites = self.overlay(&mut inner, queue);
@@ -104,6 +93,7 @@ impl View {
             self.shadow_map.mark(0);
         }
         self.place_labels(encoder, &mut inner, &main);
+        self.cover(encoder, &mut inner, cover);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
         self.draw(encoder, &mut inner, target, sprites.len() as u32, depth);
         if let Some(point) = probe {
@@ -111,6 +101,9 @@ impl View {
             self.probing(point, readback);
         }
         self.run_query(encoder, &mut inner);
+        if let Some(timer) = &mut self.timer {
+            timer.end(encoder, &inner.readbacks, device);
+        }
         for shown in &mut self.marks {
             shown.held = shown.rows + shown.exits;
             shown.moved = None;
@@ -120,9 +113,42 @@ impl View {
         self.stats.cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
     }
 
+    /// Lays the frame out: where every mark's rows sit, the transitions starting, the ends edges
+    /// attach to, fitted domains, the buffers they fit, the program, and the labels; whether rows
+    /// moved.
+    fn lay_out(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> bool {
+        let gpu = self.gpu.clone();
+        let device = &gpu.0.device;
+        for i in 0..self.marks.len() {
+            let geodesic = self.geodesic(&self.marks[i]);
+            self.marks[i].geodesic = geodesic;
+        }
+        let resources = self.resources.get_or_insert_with(|| Resources::new(device));
+        resources.forget_retired();
+        let moved = self.fit_rows(encoder);
+        self.transitions(encoder, inner);
+        self.attach_ends();
+        let domains = self.place_domains();
+        let resources = self.resources.as_mut().expect("created");
+        let vertices: u64 = self
+            .marks
+            .iter()
+            .filter(|m| m.kind() == MarkKind::Vertices)
+            .map(|m| u64::from(m.region.state / wgsl::VERTEX_WORDS + m.region.capacity))
+            .max()
+            .unwrap_or(0);
+        resources.fit(device, self.marks.len() as u64, domains, vertices);
+        self.pack(inner);
+        self.lay_out_labels(inner);
+        moved
+    }
+
     /// Takes what landed since the last frame: probes, fits, queries, the events waiting on picks,
     /// and why marks the data given since no longer fits failed.
     fn settle(&mut self) {
+        if let Some(ms) = self.timer.as_mut().and_then(timer::Timer::landed) {
+            self.stats.gpu_ms = ms;
+        }
         self.settle_fit();
         self.settle_probe();
         self.settle_query();
@@ -274,17 +300,24 @@ impl View {
             let synced = shown.tables.sync(&program, &source, &self.data, at, window, geometry, inner);
             waiting |= matches!(synced, Synced::Waiting);
             let Synced::Changed { columns } = synced else { continue };
-            let moved = shown.drawn.as_ref().and_then(|old| remap(old, table));
+            let moved = shown.drawn.as_ref().and_then(|(origin, old)| {
+                if *origin == data.origin() { remap(old, table) } else { Some(replaced(old, table)) }
+            });
+            // A path morphs from the one its row ran through only while every row keeps its place;
+            // rows that moved, as tiles' do when finer ones replace them, fade instead.
+            let kept = moved.as_ref().is_none_or(|(sources, exits)| {
+                exits.is_empty() && sources.iter().enumerate().all(|(r, &s)| s == r as u32 || s == wgsl::NONE)
+            });
             if easing && shown.held > 0 && (moved.is_some() || shown.static_columns(columns)) {
                 shown.begin(moved);
             } else if moved.is_some() {
                 shown.exits = 0;
             }
-            if shown.begin.is_none() && shown.transition.is_none() {
+            if !kept || (shown.begin.is_none() && shown.transition.is_none()) {
                 shown.tables.thaw(inner);
             }
             shown.rows = table.len() as u32;
-            shown.drawn = Some(table.clone());
+            shown.drawn = Some((data.origin(), table.clone()));
             shown.columns_changed(columns);
             if shown.kind() == MarkKind::Lines {
                 self.fitting.plot_due = true;

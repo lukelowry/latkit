@@ -4,7 +4,9 @@
 //! copied when the rows are the same, gathered by id when rows were added, removed, or reordered.
 //! Rows that left are frozen past the new rows and fade out there. While the mark eases, `evaluate`
 //! blends every store from the frozen state by the mark's progress, so draws, probes, bounds, and
-//! shadows read eased state without knowing a transition runs. The frozen buffer mirrors the state
+//! shadows read eased state without knowing a transition runs. Where no row is the same as one shown
+//! before, as when another dataset replaces the one drawn, every row only fades: evaluated once as
+//! the transition starts, the mark eases by its progress alone. The frozen buffer mirrors the state
 //! buffer's layout and exists only while a transition does. A stroke's geometry column keeps the
 //! table it had as the transition began, and its paths morph from it point by point.
 
@@ -19,16 +21,19 @@ use crate::gpu::Inner;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::MarkKind;
 
-/// A mark easing from what it showed.
+/// A mark easing from what it showed, and whether its rows only fade.
 pub(crate) struct Transition {
     started: Instant,
     duration: Duration,
+    fades: bool,
 }
 
 /// A transition waiting for the frame that freezes it.
 pub(crate) struct Begin {
     /// Each new row's old row, then each exit's, when rows moved; `None` when they kept their places.
     sources: Option<Vec<u32>>,
+    /// Whether no row was shown before, so rows only fade in and out.
+    fades: bool,
 }
 
 impl Transition {
@@ -53,18 +58,33 @@ pub(crate) fn remap(old: &Table, new: &Table) -> Option<(Vec<u32>, Vec<u32>)> {
         let sources = (0..new.len()).map(|r| if r < old.len() { r as u32 } else { wgsl::NONE }).collect();
         return Some((sources, Vec::new()));
     }
-    let mut kept = vec![false; old.len()];
-    let sources = (0..new.len())
-        .map(|r| {
-            let old_row = new.ids.key(r).and_then(|key| old.row(key));
-            if let Some(o) = old_row {
-                kept[o] = true;
+    // Each row is looked up by id in the other table, from the smaller side.
+    let mut sources = vec![wgsl::NONE; new.len()];
+    let mut exits = Vec::new();
+    if old.len() <= new.len() {
+        for o in 0..old.len() {
+            match old.ids.key(o).and_then(|key| new.row(key)) {
+                Some(r) => sources[r] = o as u32,
+                None => exits.push(o as u32),
             }
-            old_row.map_or(wgsl::NONE, |o| o as u32)
-        })
-        .collect();
-    let exits = (0..old.len()).filter(|&o| !kept[o]).map(|o| o as u32).collect();
+        }
+    } else {
+        let mut kept = vec![false; old.len()];
+        for (r, source) in sources.iter_mut().enumerate() {
+            if let Some(o) = new.ids.key(r).and_then(|key| old.row(key)) {
+                kept[o] = true;
+                *source = o as u32;
+            }
+        }
+        exits.extend((0..old.len()).filter(|&o| !kept[o]).map(|o| o as u32));
+    }
     Some((sources, exits))
+}
+
+/// The rows of `new` replacing every row of `old`, as when another dataset of the same name replaces
+/// the one drawn: each enters, and each old row leaves, whatever its id.
+pub(crate) fn replaced(old: &Table, new: &Table) -> (Vec<u32>, Vec<u32>) {
+    (vec![wgsl::NONE; new.len()], (0..old.len() as u32).collect())
 }
 
 impl Shown {
@@ -82,6 +102,7 @@ impl Shown {
         if self.held == 0 {
             return;
         }
+        let fades = moved.as_ref().is_some_and(|(sources, _)| sources.iter().all(|&s| s == wgsl::NONE));
         let sources = moved.map(|(mut sources, exits)| {
             self.exits = exits.len() as u32;
             sources.extend(exits);
@@ -90,7 +111,7 @@ impl Shown {
         if sources.is_none() {
             self.exits = 0;
         }
-        self.begin = Some(Begin { sources });
+        self.begin = Some(Begin { sources, fades });
         self.all_dirty();
     }
 }
@@ -108,9 +129,11 @@ impl View {
                     self.marks[i].exits = 0;
                 }
             } else {
+                let fades: Vec<bool> =
+                    starting.iter().map(|&i| self.marks[i].begin.as_ref().is_some_and(|b| b.fades)).collect();
                 self.freeze(encoder, inner, &starting);
-                for &i in &starting {
-                    self.marks[i].transition = Some(Transition { started: Instant::now(), duration });
+                for (&i, fades) in starting.iter().zip(fades) {
+                    self.marks[i].transition = Some(Transition { started: Instant::now(), duration, fades });
                 }
             }
         }
@@ -128,7 +151,10 @@ impl View {
                 }
             } else {
                 running = true;
-                shown.all_dirty();
+                // Rows that only fade were written once; their fade follows the mark's progress.
+                if !transition.fades {
+                    shown.all_dirty();
+                }
             }
         }
         if !running && self.marks.iter().all(|m| m.transition.is_none()) {

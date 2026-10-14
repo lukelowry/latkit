@@ -11,33 +11,21 @@
 
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
-import { chromium, type Browser, type Page } from 'playwright-core';
+import type { Browser, Page } from 'playwright-core';
 import { createServer } from 'vite';
+import { STEP, deadline, launch as chrome } from './browser.ts';
 
-/** Milliseconds Chrome may take to make any one pipeline, cold. The slowest takes 0.2–0.9 s today,
- * as the machine is busy; the combined probe this guards against took 11 s. */
-const COMPILE_BUDGET = 2000;
-/** Milliseconds from opening a page to its views' first frames. */
-const FIRST_FRAME_BUDGET = 5000;
+/** Milliseconds Chrome may take to make any one pipeline, cold: the slowest takes about 0.35 s. */
+const COMPILE_BUDGET = 800;
+/** Milliseconds from opening a page to its views' first frames: about 0.5 s, now and then 1.2 s. */
+const FIRST_FRAME_BUDGET = 2000;
 /** Milliseconds between two animation frames while a page opens. Chrome holds frames back while its
- * GPU process compiles the pipelines a first frame makes, for 0.1–6 s today depending on the run;
- * this catches the 20–40 s kind of stall, not that jitter. */
-const OPENING_BUDGET = 10_000;
+ * GPU process compiles the pipelines a first frame makes, up to about 1.3 s. */
+const OPENING_BUDGET = 2500;
 /** Milliseconds between two animation frames while the pointer moves over a page: nothing compiles
- * then, so a frame takes about 20 ms. */
-const STALL_BUDGET = 250;
-/** Milliseconds any one step may take before the gate gives up on it. */
-const STEP = 60_000;
-
-const ARGS = [
-  '--enable-unsafe-webgpu',
-  '--ignore-gpu-blocklist',
-  '--enable-features=WebGPU',
-  // Every launch compiles cold, as a first visit does.
-  '--disable-gpu-shader-disk-cache',
-];
+ * then, so the longest takes 20–50 ms. */
+const STALL_BUDGET = 80;
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
 const examples = path.dirname(here);
@@ -66,57 +54,9 @@ interface Timing {
   error?: string;
 }
 
-/** Rejects after `ms` with what timed out. */
-function deadline<T>(work: Promise<T>, ms: number, step: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms: ${step}`)), ms);
-  });
-  return Promise.race([work, late]).finally(() => clearTimeout(timer));
-}
-
-/** Chrome to drive: `$LATKIT_CHROME`, or the newest Chromium in Playwright's browser cache. */
-function chrome(): string {
-  const given = process.env.LATKIT_CHROME;
-  if (given) return given;
-  const cache =
-    process.env.PLAYWRIGHT_BROWSERS_PATH ??
-    (process.platform === 'win32'
-      ? path.join(process.env.LOCALAPPDATA ?? '', 'ms-playwright')
-      : process.platform === 'darwin'
-        ? path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright')
-        : path.join(os.homedir(), '.cache', 'ms-playwright'));
-  const builds = fs.existsSync(cache)
-    ? fs
-        .readdirSync(cache)
-        .filter((name) => /^chromium-\d+$/.test(name))
-        .sort((a, b) => Number(b.slice(9)) - Number(a.slice(9)))
-    : [];
-  const executables = [
-    'chrome-win64/chrome.exe',
-    'chrome-win/chrome.exe',
-    'chrome-linux64/chrome',
-    'chrome-linux/chrome',
-    'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
-    'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
-  ];
-  for (const build of builds) {
-    for (const executable of executables) {
-      const found = path.join(cache, build, executable);
-      if (fs.existsSync(found)) return found;
-    }
-  }
-  throw new Error(
-    `no Chrome found in ${cache}: set LATKIT_CHROME, or run \`pnpm --dir npm/examples exec playwright-core install chromium\``,
-  );
-}
-
+/** Chrome compiling cold on every launch, as a first visit does. */
 function launch(): Promise<Browser> {
-  return deadline(
-    chromium.launch({ executablePath: chrome(), headless: true, args: ARGS }),
-    STEP,
-    'launch Chrome',
-  );
+  return chrome(['--disable-gpu-shader-disk-cache']);
 }
 
 /** Every pipeline the variants in `dir` make: each compute entry, or the draw, per constants. */
@@ -176,6 +116,7 @@ async function time({
     if (!module)
       modules.set(pipeline.code, (module = device.createShaderModule({ code: pipeline.code })));
     const constants = pipeline.constants;
+    // Draws test against depth, as latkit's do; the backdrop writes it.
     const made = pipeline.draws
       ? device.createRenderPipelineAsync({
           layout: 'auto',
@@ -187,6 +128,11 @@ async function time({
             targets: [{ format: 'rgba8unorm' }],
           },
           primitive: { topology: 'triangle-list' },
+          depthStencil: {
+            format: 'depth32float',
+            depthWriteEnabled: true,
+            depthCompare: 'greater-equal',
+          },
         })
       : device.createComputePipelineAsync({
           layout: 'auto',

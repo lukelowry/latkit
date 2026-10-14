@@ -1,5 +1,6 @@
 //! Changes ease: a moved vertex starts where it was, a removed one fades where it stood, and edges
-//! follow their vertices; sampled fields and new frames never ease.
+//! follow their vertices; another dataset of the same name replaces rows rather than moving them;
+//! sampled fields and new frames never ease.
 
 #![cfg(feature = "gpu")]
 
@@ -82,6 +83,27 @@ fn removed_rows_fade_where_they_stood_and_new_rows_grow() {
     assert!(close(at(&pixels, c + 30, c), WHITE));
     assert!(close(at(&pixels, c, c + 40), WHITE), "the new one has grown in");
     assert!(close(at(&pixels, c, c), BLACK), "the removed edge is gone");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn another_dataset_of_the_same_name_replaces_rows_rather_than_moving_them() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = View::new(&gpu, scene()).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(graph());
+    let c = SIZE / 2;
+    frame(&gpu, &mut view);
+    // The same ids in a dataset of its own: its rows are not the drawn ones moved.
+    let mut other = graph();
+    other.apply(Table::new("Node", vec![1_u64]).field("y", vec![40.0])).expect("valid");
+    view.set_data(other);
+    let pixels = step(&gpu, &mut view);
+    assert!(close(at(&pixels, c - 30, c), WHITE), "the replaced vertex fades where it stood");
+    assert!(at(&pixels, c - 30, c - 40)[0] < 60, "its replacement grows from nothing");
+    let pixels = frame(&gpu, &mut view);
+    assert!(close(at(&pixels, c - 30, c - 40), WHITE), "{:?}", at(&pixels, c - 30, c - 40));
+    assert!(close(at(&pixels, c - 30, c), BLACK));
     assert_eq!(errors(&mut view), Vec::new());
 }
 

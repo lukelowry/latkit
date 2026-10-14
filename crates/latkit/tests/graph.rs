@@ -1,4 +1,4 @@
-//! The graph: edges joining the same two vertices spread into lanes, edges bend through the points of
+//! The graph: edges joining the same two vertices bow into lanes, edges bend through the points of
 //! a path field, and edges end in arrowheads; in a diagram, nets join the ports of the vertices
 //! naming them, and orthogonal wires route around blocks.
 
@@ -46,7 +46,7 @@ fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = l
 }
 
 #[test]
-fn edges_joining_the_same_vertices_spread_into_lanes() {
+fn edges_joining_the_same_vertices_bow_into_lanes_in_world_units() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
     data.apply(
@@ -59,9 +59,14 @@ fn edges_joining_the_same_vertices_spread_into_lanes() {
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(latkit::Color::WHITE))
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(2.0));
     let mut view = show(&gpu, scene, data);
-    let pixels = frame(&gpu, &mut view);
-    assert!(lit(at(&pixels, C, C - 2)) && lit(at(&pixels, C, C + 2)), "two lanes");
-    assert!(!lit(at(&pixels, C, C)), "apart: {:?}", at(&pixels, C, C));
+    // Half a lane each way, bowing 0.12 of the edges' 80 units a lane: 4.8 units off at the middle,
+    // which zooming in scales as it does the rest of the drawing.
+    for (zoom, off) in [(0.0, 5), (1.0, 10)] {
+        view.set_camera(latkit::Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
+        let pixels = frame(&gpu, &mut view);
+        assert!(lit(at(&pixels, C, C - off)) && lit(at(&pixels, C, C + off)), "two lanes at zoom {zoom}");
+        assert!(!lit(at(&pixels, C, C)), "apart at zoom {zoom}: {:?}", at(&pixels, C, C));
+    }
     assert_eq!(errors(&mut view), Vec::new());
 }
 

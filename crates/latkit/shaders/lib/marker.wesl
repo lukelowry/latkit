@@ -1,11 +1,10 @@
 // Markers are signed distance fields in CSS pixels; a custom marker supplies `fn marker`.
 
 import package::lib::types::{
-    SELECTED, SHAPE_RECTANGLE, SHAPE_ROUNDED, SHAPE_DIAMOND, MARKER_GAUGE, MARKER_PIE, MARKER_BLOCK, LABELED,
-    HEADER_BAND, THEME_TEXT,
+    SELECTED, HOVERED, SHAPE_RECTANGLE, SHAPE_ROUNDED, SHAPE_DIAMOND, MARKER_GAUGE, MARKER_PIE, MARKER_BLOCK,
+    LABELED, HEADER_BAND, THEME_TEXT,
 };
 import package::lib::bind::{frame, eye, mark, program};
-import package::lib::focus::focus_of;
 import package::lib::mark::coverage;
 import package::lib::project::TAU;
 
@@ -120,16 +119,24 @@ fn status_ring(m: MarkerColor, p: vec2f, half: vec2f, status: vec4f) -> MarkerCo
     return over(filled(status, abs(d - 1.5) - 1.25), m);
 }
 
-// A premultiplied color with the row's focus glow around its shape.
-fn glow(m: MarkerColor, row: u32) -> vec4f {
-    let base = vec4f(m.color.rgb * m.color.a, m.color.a);
-    let focus = focus_of(row);
+// `m` premultiplied.
+fn premultiplied(m: MarkerColor) -> vec4f {
+    return vec4f(m.color.rgb * m.color.a, m.color.a);
+}
+
+// A premultiplied color with the glow of focus bits `focus` around its shape: the selection's, the
+// hover's, or for the end of a lit edge the hover's, fainter.
+fn glow(m: MarkerColor, focus: u32) -> vec4f {
+    let base = premultiplied(m);
     if focus == 0u || frame.glow <= 0.0 {
         return base;
     }
     let own = vec4f(m.color.rgb, frame.selected.a);
     let selected = select(frame.selected, own, frame.selected.r < 0.0);
-    let tint = select(frame.hover, selected, (focus & SELECTED) != 0u);
+    var tint = select(frame.hover, selected, (focus & SELECTED) != 0u);
+    if (focus & (SELECTED | HOVERED)) == 0u {
+        tint.a *= 0.55;
+    }
     let halo = tint.a * (1.0 - smoothstep(0.0, frame.glow, max(m.distance, 0.0)));
     return base + vec4f(tint.rgb * halo, halo) * (1.0 - base.a);
 }

@@ -2,15 +2,15 @@
 // bounds, and labels all read a point through `point`.
 
 import package::lib::types::{
-    NONE, VISIBLE, PLACED, SIZED, STATUS, VERTEX_HALF, VERTEX_WORDS, SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, PORT_WORDS,
-    PORT_CODE, PORT_SHAPE, PORT_COLUMN, PORT_SIZE, HALF_UNITS, OWN_HEIGHT,
+    NONE, VISIBLE, PLACED, SIZED, STATUS, HOVERED, VERTEX_HALF, VERTEX_WORDS, SIDE_LEFT, SIDE_RIGHT, SIDE_TOP,
+    PORT_WORDS, PORT_CODE, PORT_SHAPE, PORT_COLUMN, PORT_SIZE, HALF_UNITS, OWN_HEIGHT,
 };
 import package::lib::bind::{frame, eye, mark, program};
 import package::lib::state::{vertex_slot, Vertex};
-import package::lib::project::{project, world, facing, to_screen};
-import package::lib::focus::{is_hovered, faded};
+import package::lib::project::{world, clip_of, shows, to_screen};
+import package::lib::focus::{focus_of, faded, growth};
 import package::lib::read::bits_value;
-import package::lib::mark::px;
+import package::lib::mark::{px, fringe};
 
 struct Point {
     clip: vec4f,
@@ -23,6 +23,8 @@ struct Point {
     status: vec4f,
     depth: f32,
     row: u32,
+    // Its focus bits: selected, hovered, an end of a lit edge.
+    focus: u32,
     shown: bool,
 }
 
@@ -38,19 +40,21 @@ fn point(row: u32) -> Point {
     if (mark.flags & SIZED) != 0u {
         half.y = px(v.half.y, VERTEX_HALF + 1u);
     }
-    let grows = (mark.units & (1u << VERTEX_HALF)) == 0u && is_hovered(row);
-    half *= select(1.0, frame.hover_scale, grows);
+    let focus = focus_of(row);
+    let grows = (mark.units & (1u << VERTEX_HALF)) == 0u && (focus & HOVERED) != 0u;
+    half *= select(1.0, frame.hover_scale, grows) * growth(v.flags);
     let color = unpack4x8unorm(v.color);
     var p: Point;
     p.world = world(v.hi, v.lo, v.elevation);
     p.position = v.hi + v.lo;
-    p.clip = project(v.hi, v.lo, v.elevation);
+    p.clip = clip_of(p.world);
     p.half = max(half, vec2f(0.0));
     p.color = vec4f(color.rgb, color.a * faded(row, v.flags));
     p.status = unpack4x8unorm(v.status);
     p.depth = v.depth;
     p.row = row;
-    p.shown = (v.flags & VISIBLE) != 0u && placed(v) && facing(v.hi, v.lo) && p.clip.w > 0.0;
+    p.focus = focus;
+    p.shown = (v.flags & VISIBLE) != 0u && placed(v) && shows(p.world) && p.clip.w > 0.0;
     return p;
 }
 
@@ -108,8 +112,9 @@ fn port_at(p: Point, k: u32) -> Port {
     return Port(center, half, program[info + PORT_SHAPE], code, wired);
 }
 
-// CSS pixels a point's quad reaches past its center: the marker, its status ring, and its glow.
-fn reach(p: Point) -> vec2f {
-    let ring = select(0.0, 3.0, (mark.flags & STATUS) != 0u);
-    return p.half + ring + frame.glow + 1.0;
+// CSS pixels a point's quad reaches past its center: the marker, its status ring when it has one, a
+// target pixel of edge, and when `lit`, as the focus draw draws it, its glow.
+fn reach(p: Point, lit: bool) -> vec2f {
+    let ring = select(0.0, 3.0, (mark.flags & STATUS) != 0u && p.status.a > 0.0);
+    return p.half + ring + select(0.0, frame.glow, lit) + fringe();
 }

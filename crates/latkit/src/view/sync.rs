@@ -238,6 +238,11 @@ impl Tables {
         self.current.get(column as usize).map_or(0, |t| t.points)
     }
 
+    /// Whether program column `column` reads a field its table has.
+    pub(crate) fn holds(&self, column: u32) -> bool {
+        self.current.get(column as usize).is_some_and(|t| t.stamp != Stamp::Missing)
+    }
+
     /// Whether the tables were built at least once.
     pub(crate) fn synced(&self) -> bool {
         self.synced

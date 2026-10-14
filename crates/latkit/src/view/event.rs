@@ -162,4 +162,9 @@ pub struct Stats {
     pub gpu_bytes: u64,
     /// Milliseconds the last frame took to record on the CPU.
     pub cpu_ms: f32,
+    /// Milliseconds the GPU takes on a frame: the median of the last frames it measured; 0 where the
+    /// device cannot measure.
+    pub gpu_ms: f32,
+    /// Instances crowded marks left out under later ones in their cells, as last counted.
+    pub covered: u64,
 }

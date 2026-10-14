@@ -411,8 +411,12 @@ export interface Theme {
   dash?: number;
   flow?: Color;
   flowSpacing?: number;
-  /** Between the lanes of edges joining the same two vertices; orthogonal wires keep twice it apart. */
+  /** In a diagram, between the lanes of edges joining the same two vertices; orthogonal wires keep
+   * twice it apart. */
   edgeSpacing?: number;
+  /** Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction of
+   * the edge's length at its middle. */
+  laneBow?: number;
   /** How far an arrowhead reaches past its edge's width. */
   arrow?: number;
   /** CSS pixels of background around label text. */

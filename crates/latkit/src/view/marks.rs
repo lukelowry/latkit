@@ -48,8 +48,9 @@ pub(crate) struct Shown {
     pub(crate) exits: u32,
     /// Rows the region held when the frame began: what moves and freezes.
     pub(crate) held: u32,
-    /// The table whose rows the mark's state holds, for following rows by id when they move.
-    pub(crate) drawn: Option<Table>,
+    /// The table whose rows the mark's state holds, for following rows by id when they move, and the
+    /// origin of its dataset: rows of another dataset are not followed but replaced.
+    pub(crate) drawn: Option<(crate::data::Version, Table)>,
     /// Where its rows sit in every per-row buffer, and where they sat before this frame moved them.
     pub(crate) region: Region,
     pub(crate) moved: Option<Region>,
@@ -84,6 +85,12 @@ pub(crate) struct Shown {
     /// whenever where its rows stand or how large they are is.
     pub(crate) version: u64,
     pub(crate) shape_version: u64,
+    /// The rows its focus draw lights.
+    pub(crate) lit: super::focus::Lit,
+    /// Where its cells start in the cover buffer while it covers, NONE otherwise; and whether its
+    /// instances crowd, as its last check found.
+    pub(crate) cover: u32,
+    pub(crate) crowding: super::cover::Crowding,
     /// Why it no longer compiles against data given since the last frame, which that frame reports
     /// unless a scene shown before then replaced it.
     pub(crate) failed: Option<Error>,
@@ -120,6 +127,9 @@ impl Shown {
             geodesic: false,
             version: 0,
             shape_version: 0,
+            lit: super::focus::Lit::default(),
+            cover: wgsl::NONE,
+            crowding: super::cover::Crowding::default(),
             failed: None,
         }
     }
@@ -153,21 +163,27 @@ impl Shown {
     }
 
     /// Whether it numbers its instances with a list: strokes whose rows' paths have different numbers
-    /// of segments, running through a geometry column or along great circles, and areas, whose rows
-    /// have different numbers of triangles.
+    /// of segments, running through a geometry column, along great circles, or bowed into lanes; and
+    /// areas, whose rows have different numbers of triangles.
     pub(crate) fn listed(&self) -> bool {
         let Some(compiled) = &self.compiled else { return false };
         match compiled.drawing.primitive {
-            Primitive::Strokes => {
-                compiled.drawing.geometry != wgsl::NONE || (self.path() == wgsl::PATH_ENDS && self.geodesic)
-            }
+            Primitive::Strokes => compiled.drawing.geometry != wgsl::NONE || self.curved(),
             Primitive::Triangles => self.path() == wgsl::PATH_GEOMETRY,
             Primitive::Points => false,
         }
     }
 
-    /// Instances its list must have room for: every path's segments, each row's arcs on the earth as
-    /// last found; or every area's triangles.
+    /// Whether its edges curve between their ends, along great circles or bowed into lanes: how many
+    /// pieces each takes is found on the GPU and read back.
+    pub(crate) fn curved(&self) -> bool {
+        let Some(compiled) = &self.compiled else { return false };
+        let laned = compiled.drawing.lane != wgsl::NONE && self.tables.holds(compiled.drawing.lane);
+        self.path() == wgsl::PATH_ENDS && (self.geodesic || laned)
+    }
+
+    /// Instances its list must have room for: every path's segments, each curve's pieces as last
+    /// found; or every area's triangles.
     pub(crate) fn segment_capacity(&self) -> u32 {
         let rows = (self.rows + self.exits) as usize;
         let Some(compiled) = &self.compiled else { return 1 };
@@ -175,8 +191,8 @@ impl Shown {
         if compiled.drawing.primitive == Primitive::Triangles {
             return (points / 3 + rows).max(1) as u32;
         }
-        let arcs = if self.geodesic { (self.segments.found.value as usize).max(rows * 4) } else { 0 };
-        (points + rows + arcs).max(1) as u32
+        let pieces = if self.curved() { (self.segments.found.value as usize).max(rows * 4) } else { 0 };
+        (points + rows + pieces).max(1) as u32
     }
 
     /// Vertices each of its instances draws: a quad per point or segment, three corners per triangle.
@@ -234,10 +250,16 @@ impl Shown {
         self.packed = false;
     }
 
-    /// Whether any column of `columns` holds static values: changing it eases.
+    /// Whether any column of `columns` holds static values that show eased: values a channel reads,
+    /// or the path a stroke runs along. Changing one eases; a column only shaders read, such as a
+    /// lane, shows at once.
     pub(crate) fn static_columns(&self, columns: u64) -> bool {
         let Some(compiled) = &self.compiled else { return false };
-        compiled.program.columns.iter().enumerate().any(|(i, c)| !c.sampled && columns & (1 << i.min(63)) != 0)
+        let program = &compiled.program;
+        let geometry = compiled.drawing.geometry;
+        let eased = program.channels.iter().fold(0, |mask, c| mask | c.reads.columns)
+            | if geometry == wgsl::NONE { 0 } else { 1 << geometry.min(63) };
+        program.columns.iter().enumerate().any(|(i, c)| !c.sampled && columns & eased & (1 << i.min(63)) != 0)
     }
 
     pub(crate) fn all_dirty(&mut self) {

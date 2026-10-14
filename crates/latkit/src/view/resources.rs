@@ -3,7 +3,7 @@
 //!
 //! Every shader's pass group (group 2) binds by one convention: 0 state, 1 frozen state, 2 extents,
 //! 3 normals, 4 domains, 5 probe, 6 depth, 7 sprites, 8 the text atlas, 9 lists, 10 the shadow map,
-//! 11 a level of it, 12 remap words, 13 labels, 15 icons.
+//! 11 a level of it, 12 remap words, 13 labels, 15 icons, 16 cover cells.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -133,6 +133,8 @@ pub(crate) struct Resources {
     marks: Grown,
     program: Grown,
     focus: wgpu::Buffer,
+    /// The rows each mark's focus draw lights.
+    lit: Grown,
     state: wgpu::Buffer,
     frozen: Option<wgpu::Buffer>,
     retired: Option<OldRows>,
@@ -144,10 +146,14 @@ pub(crate) struct Resources {
     sprites: Grown,
     lists: Grown,
     labels: wgpu::Buffer,
+    /// Every covered mark's cells.
+    cover: Grown,
     empty: wgpu::Buffer,
     pub(crate) shadows: ShadowMap,
-    /// Changes whenever one of the buffers or textures above is replaced.
+    /// Changes whenever one of the buffers or textures above is replaced; and whenever the lists
+    /// buffer is, emptied.
     generation: u64,
+    lists_generation: u64,
     /// Built from (arena, colormaps, icons, own) generations.
     groups: Option<((u64, u64, u64, u64), Groups)>,
     /// Pass groups, built at `passes_generation`.
@@ -167,6 +173,7 @@ impl Resources {
             marks: Grown::new(device, "latkit marks", uniform),
             program: Grown::new(device, "latkit program", storage),
             focus: create(device, "latkit focus", storage, 256),
+            lit: Grown::new(device, "latkit lit", storage),
             state: create(device, "latkit state", ROWS, 256),
             frozen: None,
             retired: None,
@@ -182,9 +189,11 @@ impl Resources {
                 storage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
             ),
             labels: create(device, "latkit labels", ROWS, 256),
+            cover: Grown::new(device, "latkit cover", storage | wgpu::BufferUsages::COPY_SRC),
             empty: create(device, "latkit empty", ROWS, 256),
             shadows: ShadowMap::new(device, 1),
             generation: 0,
+            lists_generation: 0,
             groups: None,
             passes: HashMap::new(),
             passes_generation: (u64::MAX, 0),
@@ -264,6 +273,16 @@ impl Resources {
         }
     }
 
+    /// Writes the rows every mark's focus draw lights.
+    pub(crate) fn write_lit(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, rows: &[u32]) {
+        if self.lit.ensure(device, (rows.len() as u64 + 1) * 4) {
+            self.generation += 1;
+        }
+        if !rows.is_empty() {
+            queue.write_buffer(&self.lit.buffer, 0, bytemuck::cast_slice(rows));
+        }
+    }
+
     pub(crate) fn write_remap(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, words: &[u32]) {
         if self.remap.ensure(device, (words.len() as u64 + 1) * 4) {
             self.generation += 1;
@@ -300,12 +319,24 @@ impl Resources {
         }
     }
 
-    /// Makes the lists buffer hold `words`; replacing it, emptied, changes the generation, so every
-    /// list counts again.
+    /// Makes the lists buffer hold `words`; replacing it, emptied, changes the lists generation, so
+    /// every list counts again.
     pub(crate) fn fit_lists(&mut self, device: &wgpu::Device, words: u64) {
         if self.lists.ensure(device, (words + 1) * 4) {
             self.generation += 1;
+            self.lists_generation += 1;
         }
+    }
+
+    /// Makes room for `words` of cover cells.
+    pub(crate) fn fit_cover(&mut self, device: &wgpu::Device, words: u64) {
+        if self.cover.ensure(device, (words + 1) * 4) {
+            self.generation += 1;
+        }
+    }
+
+    pub(crate) fn cover(&self) -> &wgpu::Buffer {
+        &self.cover.buffer
     }
 
     /// Replaces the labels buffer with `words` of zeros.
@@ -374,9 +405,9 @@ impl Resources {
         &self.sprites.buffer
     }
 
-    /// Changes whenever a buffer or texture is replaced.
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation
+    /// Changes whenever the lists buffer is replaced, emptied, so every list counts again.
+    pub(crate) fn lists_generation(&self) -> u64 {
+        self.lists_generation
     }
 
     pub(crate) fn lists(&self) -> &wgpu::Buffer {
@@ -406,6 +437,7 @@ impl Resources {
                 entry(4, wgpu::BindingResource::TextureView(&inner.colormaps.view)),
                 entry(5, wgpu::BindingResource::Sampler(&gpu.sampler)),
                 entry(6, wgpu::BindingResource::Buffer(eye)),
+                entry(7, self.lit.buffer.as_entire_binding()),
             ],
         });
         let binding = wgpu::BufferBinding {
@@ -483,6 +515,7 @@ impl Resources {
                     12 => self.remap.buffer.as_entire_binding(),
                     13 => self.labels.as_entire_binding(),
                     15 => wgpu::BindingResource::TextureView(&inner.icons.view),
+                    16 => self.cover.buffer.as_entire_binding(),
                     other => unreachable!("no resource for pass binding {other}"),
                 };
                 wgpu::BindGroupEntry { binding: binding.slot, resource }

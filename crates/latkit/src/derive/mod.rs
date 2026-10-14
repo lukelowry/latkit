@@ -13,7 +13,7 @@ mod lanes;
 mod shapes;
 pub(crate) mod tiles;
 
-pub(crate) use lanes::spread;
+pub(crate) use lanes::{answer as lanes_answer, spread};
 
 use std::hash::{Hash, Hasher};
 

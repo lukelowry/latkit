@@ -1,20 +1,31 @@
 // Points: one instanced quad per vertex row, shaded by its marker; a group's rows draw as
-// containers. The cast variant draws the same quads through the light's eye into the shadow map; the
-// ports variant draws one quad per port of every row, on its side of the row's marker.
+// containers. A quad covers its marker and a pixel of edge, no more, and a small one a later one
+// covers in a crowded cell is left out. The focus variant draws the rows the mark's focus lights
+// again, over everything, reaching out to their glow. The cast variant draws the same quads through
+// the light's eye into the shadow map; the ports variant draws one quad per port of every row, on its
+// side of the row's marker.
 
 import package::lib::types::{STATUS, MARKER_ICON, GROUP};
-import package::lib::bind::{frame, mark, state, ramp, program};
+import package::lib::bind::{frame, mark, state, ramp, program, focused};
 import package::lib::state::extra_at;
 import package::lib::project::{to_screen, to_clip, nearer, culled};
 import package::lib::points::{Point, point, reach, port_at};
 import package::lib::marker::{
     MarkerColor, MarkerFragment, builtin_marker, container, outline_distance, shape_distance, filled, over,
-    status_ring, glow,
+    status_ring, glow, premultiplied,
 };
 import package::lib::shade::{caster, daylight};
+import package::lib::mark::fringe;
 import package::lib::color::output;
+import package::lib::cover::covered;
 
 @group(2) @binding(15) var icons: texture_2d_array<f32>;
+
+// Whether this variant draws every row's marker into the view, where crowded cells are covered.
+@if(!ports && !focused && !casts)
+const MAIN_DRAW: bool = true;
+@else
+const MAIN_DRAW: bool = false;
 
 struct Varyings {
     @builtin(position) clip: vec4f,
@@ -27,6 +38,8 @@ struct Varyings {
     @location(6) @interpolate(flat) shape: u32,
     // A group's depth; for a port, 1 when its reference names a net.
     @location(7) @interpolate(flat) extra: f32,
+    // The row's focus bits, which the focus draw glows by.
+    @location(8) @interpolate(flat) focus: u32,
 }
 
 // What an instance draws: a row's marker, or with `ports` one of a row's ports.
@@ -39,10 +52,16 @@ struct Drawn {
     extra: f32,
 }
 
-@if(!ports)
+@if(!ports && !focused)
 fn drawn(instance: u32) -> Drawn {
     let p = point(instance);
-    return Drawn(p, to_screen(p.clip), p.half, reach(p), mark.shape, p.depth);
+    return Drawn(p, to_screen(p.clip), p.half, reach(p, false), mark.shape, p.depth);
+}
+
+@if(focused)
+fn drawn(instance: u32) -> Drawn {
+    let p = point(focused[mark.focused + instance]);
+    return Drawn(p, to_screen(p.clip), p.half, reach(p, true), mark.shape, p.depth);
 }
 
 @if(ports)
@@ -51,7 +70,7 @@ fn drawn(instance: u32) -> Drawn {
     let p = point(instance / n);
     let port = port_at(p, instance % n);
     let half = vec2f(port.half);
-    return Drawn(p, port.center, half, half + frame.glow + 2.0, port.shape, f32(port.wired));
+    return Drawn(p, port.center, half, half + 1.0 + fringe(), port.shape, f32(port.wired));
 }
 
 @vertex
@@ -68,7 +87,8 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     out.height = d.p.world.z;
     out.shape = d.shape;
     out.extra = d.extra;
-    if !d.p.shown {
+    out.focus = d.p.focus;
+    if !d.p.shown || (MAIN_DRAW && covered(instance, d.center, max(d.reach.x, d.reach.y))) {
         out.clip = culled();
     }
     return out;
@@ -128,10 +148,16 @@ fn shaded(v: Varyings) -> MarkerColor {
     return m;
 }
 
-@if(!casts)
+@if(!casts && !focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    return output(glow(shaded(v), v.row));
+    return output(premultiplied(shaded(v)));
+}
+
+@if(focused)
+@fragment
+fn fragment(v: Varyings) -> @location(0) vec4f {
+    return output(glow(shaded(v), v.focus));
 }
 
 @if(casts)

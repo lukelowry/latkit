@@ -29,8 +29,24 @@ impl Bits {
         Bits { words: self.words.slice(first..last.max(first)), offset: bit & 63, len: range.end - range.start }
     }
 
+    /// `len` bits, bit `i` being `bit(i)`, packed a word at a time.
+    pub(crate) fn from_fn(len: usize, bit: impl Fn(usize) -> bool) -> Bits {
+        let words = (0..len.div_ceil(64))
+            .map(|w| {
+                let base = w * 64;
+                (base..(base + 64).min(len)).fold(0_u64, |word, i| word | u64::from(bit(i)) << (i - base))
+            })
+            .collect::<Vec<u64>>();
+        Bits { words: words.into(), offset: 0, len }
+    }
+
     pub(crate) fn all(&self) -> bool {
-        (0..self.len).all(|i| self.get(i))
+        if self.offset != 0 {
+            return (0..self.len).all(|i| self.get(i));
+        }
+        let (full, rest) = (self.len / 64, self.len % 64);
+        let mask = (1_u64 << rest).wrapping_sub(1);
+        self.words[..full].iter().all(|&w| w == u64::MAX) && (rest == 0 || self.words[full] & mask == mask)
     }
 
     /// The bits as little-endian words starting at bit 0, for byte encoding.
@@ -74,28 +90,30 @@ impl std::fmt::Debug for Bits {
     }
 }
 
-/// Builds [`Bits`] one bit at a time.
+/// Builds [`Bits`] one bit at a time, keeping the word it fills apart.
 pub(crate) struct BitsBuilder {
     words: Vec<u64>,
+    word: u64,
     len: usize,
 }
 
 impl BitsBuilder {
     pub(crate) fn with_capacity(bits: usize) -> BitsBuilder {
-        BitsBuilder { words: Vec::with_capacity(bits.div_ceil(64)), len: 0 }
+        BitsBuilder { words: Vec::with_capacity(bits.div_ceil(64)), word: 0, len: 0 }
     }
 
     pub(crate) fn push(&mut self, bit: bool) {
-        if self.len.is_multiple_of(64) {
-            self.words.push(0);
-        }
-        if bit {
-            *self.words.last_mut().expect("pushed") |= 1 << (self.len & 63);
-        }
+        self.word |= u64::from(bit) << (self.len & 63);
         self.len += 1;
+        if self.len.is_multiple_of(64) {
+            self.words.push(std::mem::take(&mut self.word));
+        }
     }
 
-    pub(crate) fn finish(self) -> Bits {
+    pub(crate) fn finish(mut self) -> Bits {
+        if !self.len.is_multiple_of(64) {
+            self.words.push(self.word);
+        }
         Bits { words: self.words.into(), offset: 0, len: self.len }
     }
 }

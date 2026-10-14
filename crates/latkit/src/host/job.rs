@@ -30,6 +30,7 @@ enum Kind {
     Shapes = 4,
     Tile = 5,
     GeoJson = 6,
+    Lanes = 7,
 }
 
 /// What a shapes job works out of each row's geometry.
@@ -143,6 +144,7 @@ impl Job {
             Some(k) if k == Kind::Shapes as u32 => run_shapes(&mut input),
             Some(k) if k == Kind::Tile as u32 => run_tile(&mut input),
             Some(k) if k == Kind::GeoJson as u32 => run_geojson(&mut input),
+            Some(k) if k == Kind::Lanes as u32 => run_lanes(&mut input),
             _ => None,
         };
         answer.map(|patch| patch.to_bytes()).unwrap_or_default()
@@ -227,6 +229,16 @@ impl Job {
         let mut out = Writer::new(Kind::GeoJson);
         out.text(name);
         out.0.extend_from_slice(bytes);
+        Job(out.0)
+    }
+
+    /// Finding every edge row's lane among the rows joining the same two vertices, from each row's two
+    /// ends; it answers a table of every row's lane as field `lane`, without rows when none share.
+    pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Job {
+        let mut out = Writer::new(Kind::Lanes);
+        out.u32(from.len() as u32);
+        out.words(from);
+        out.words(to);
         Job(out.0)
     }
 
@@ -404,6 +416,12 @@ fn run_geojson(input: &mut Reader<'_>) -> Option<Patch> {
     crate::geo::geojson(name, input.rest()).ok().map(|data| data.to_patch())
 }
 
+fn run_lanes(input: &mut Reader<'_>) -> Option<Patch> {
+    let rows = input.u32()? as usize;
+    let (from, to) = (input.words(rows)?, input.words(rows)?);
+    Some(crate::derive::lanes_answer(&from, &to))
+}
+
 /// Little-endian words, floats, and keys, written.
 struct Writer(Vec<u8>);
 
@@ -420,6 +438,15 @@ impl Writer {
 
     fn f64(&mut self, v: f64) {
         self.0.extend(v.to_le_bytes());
+    }
+
+    /// Words, copied whole where the machine is little-endian too.
+    fn words(&mut self, words: &[u32]) {
+        if cfg!(target_endian = "little") {
+            self.0.extend_from_slice(bytemuck::cast_slice(words));
+        } else {
+            self.0.extend(words.iter().flat_map(|w| w.to_le_bytes()));
+        }
     }
 
     fn f64s(&mut self, vs: &[f64]) {
@@ -476,6 +503,13 @@ impl<'a> Reader<'a> {
 
     fn f64(&mut self) -> Option<f64> {
         self.take().map(f64::from_le_bytes)
+    }
+
+    /// `n` words.
+    fn words(&mut self, n: usize) -> Option<Vec<u32>> {
+        let (head, rest) = self.bytes.split_at_checked(n.checked_mul(4)?)?;
+        self.bytes = rest;
+        Some(head.as_chunks::<4>().0.iter().map(|&w| u32::from_le_bytes(w)).collect())
     }
 
     fn text(&mut self) -> Option<String> {

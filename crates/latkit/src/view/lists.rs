@@ -12,12 +12,16 @@ use crate::scene::mark::MarkKind;
 
 /// A stroke mark's segment list, when its rows' paths have different numbers of segments: where it
 /// lies, and its count, made from a stamp of the list, the paths, and for great circles the
-/// vertices. A geodesic mark's count is read back, and its list makes room for what it found.
+/// vertices. Each entry is a segment's row and how far along its path it starts. A curved mark's
+/// count is read back, and its list makes room for what it found.
 #[derive(Default)]
 pub(crate) struct Segments {
     pub(crate) list: Option<List>,
     pub(crate) found: Derived<u32>,
 }
+
+/// Words a segment list keeps per segment: its row, and its distance along.
+const SEGMENT_WORDS: u32 = 2;
 
 /// Where a list lies in the lists buffer, in words.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -93,10 +97,10 @@ impl View {
                 Some(list) if list.header == at && list.items == items && list.kept >= kept => list,
                 _ => {
                     let kept = kept + kept / 4;
-                    List::at(at, at + List::front_words(kept, 1), items, kept, 1)
+                    List::at(at, at + List::front_words(kept, SEGMENT_WORDS), items, kept, SEGMENT_WORDS)
                 }
             };
-            at += List::front_words(list.kept, 1) + List::back_words(items);
+            at += List::front_words(list.kept, SEGMENT_WORDS) + List::back_words(items);
             shown.segments.list = Some(list);
         }
         self.segment_words = at;
@@ -106,7 +110,7 @@ impl View {
     /// paths changed, or, on great circles, the vertices their rows join moved.
     pub(super) fn segments_due(&mut self) -> Vec<usize> {
         let vertices: u64 = self.marks.iter().filter(|m| m.kind() == MarkKind::Vertices).map(|m| m.version).sum();
-        let generation = self.resources.as_ref().map_or(0, super::resources::Resources::generation);
+        let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(list) = shown.segments.list.filter(|_| shown.drawable()) else { continue };
@@ -121,13 +125,13 @@ impl View {
         due
     }
 
-    /// Reads back how many segments each geodesic mark of `counted` found, so a list too small grows.
+    /// Reads back how many segments each curved mark of `counted` found, so a list too small grows.
     pub(super) fn count_found(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &Inner, counted: &[usize]) {
         let gpu = self.gpu.clone();
         let Some(resources) = &self.resources else { return };
         for &i in counted {
             let shown = &mut self.marks[i];
-            let Some(list) = shown.segments.list.filter(|_| shown.geodesic) else { continue };
+            let Some(list) = shown.segments.list.filter(|_| shown.curved()) else { continue };
             let at = u64::from(list.total()) * 4;
             let readback = Readback::new(&inner.readbacks, &gpu.0.device, encoder, resources.lists(), at, 4);
             let stamp = shown.segments.found.stamp();

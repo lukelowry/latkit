@@ -401,8 +401,7 @@ impl<'a> Compiler<'a> {
             Store::Number { word, fallback } => self.op(wgsl::OP_STORE, word, slot(fallback), 0, 1, 0),
             Store::Size { word, units, fallback } => {
                 self.program.units |= u32::from(units) << word;
-                // Sizes grow from nothing as rows enter.
-                self.op(wgsl::OP_STORE, word, slot(fallback), 1, 1, 0)
+                self.op(wgsl::OP_STORE, word, slot(fallback), 0, 1, 0)
             }
             Store::Color { word, fallback } => self.op(wgsl::OP_STORE_COLOR, word, fallback, 0, 1, 0),
             Store::Flag { word, bit } => self.op(wgsl::OP_STORE_FLAG, word, bit, 0, 1, 0),

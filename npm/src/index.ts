@@ -35,12 +35,13 @@ export type Id = number | string;
 export type Ids =
   number | Uint32Array | Float64Array | readonly (number | null)[] | readonly (string | null)[];
 
-/** One column of values; `null` is missing. */
+/** One column of values; `null` is missing. A `Uint8Array` holds booleans, nonzero true. */
 export type Values =
   | Float64Array
   | Float32Array
   | Int32Array
   | Uint32Array
+  | Uint8Array
   | readonly (number | null)[]
   | readonly (boolean | null)[]
   | readonly (string | null)[]
@@ -192,6 +193,10 @@ export interface Stats {
   gpuBytes: number;
   /** Milliseconds the last frame took to record. */
   cpuMs: number;
+  /** Milliseconds the GPU takes on a frame: the median of the last it measured; 0 where it cannot. */
+  gpuMs: number;
+  /** Instances crowded marks left out under later ones in their cells, as last counted. */
+  covered: number;
 }
 
 /** Changes to a dataset, applied in order and all at once by {@link Data.apply}. */

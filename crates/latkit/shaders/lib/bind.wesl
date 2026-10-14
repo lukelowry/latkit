@@ -13,6 +13,8 @@ import package::lib::types::{Frame, Eye, Mark};
 @group(0) @binding(5) var ramp: sampler;
 // What the pass draws through, at a dynamic offset.
 @group(0) @binding(6) var<uniform> eye: Eye;
+// The rows each mark's focus draw lights: every mark's, at its `focused`.
+@group(0) @binding(7) var<storage, read> focused: array<u32>;
 
 @group(1) @binding(0) var<uniform> mark: Mark;
 

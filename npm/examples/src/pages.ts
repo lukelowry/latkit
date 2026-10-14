@@ -24,6 +24,13 @@ export const pages: readonly Page[] = [
     load: () => import('./network/page.js'),
   },
   {
+    id: 'operations',
+    title: 'Grid operations',
+    summary:
+      'A state’s grid as a control room watches it: gauges of every plant and load, branches by loading with comets along their flow, solved every tick; push demand or trip a line and watch it cascade.',
+    load: () => import('./operations/page.js'),
+  },
+  {
     id: 'telemetry',
     title: 'Telemetry',
     summary:

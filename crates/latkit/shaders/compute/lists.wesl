@@ -5,9 +5,11 @@
 // Reduce-then-scan needs no forward progress between workgroups, so it is safe on every device.
 
 import package::lib::bind::mark;
-import package::lib::types::{LIST_ITEMS, LIST_COUNTS, LIST_SUMS, LIST_ENTRIES, LIST_DRAW, LIST_DISPATCH, LIST_KEPT};
+import package::lib::types::{
+    LIST_ITEMS, LIST_COUNTS, LIST_SUMS, LIST_ENTRIES, LIST_DRAW, LIST_DISPATCH, LIST_KEPT, PATH_TRACE, TRIANGLES,
+};
 import package::lib::lists::{lists, list_start};
-import package::lib::path::row_segments;
+import package::lib::path::{row_segments, path_point, path_length, PATH};
 
 var<workgroup> tile: array<u32, 256>;
 var<workgroup> shared_items: u32;
@@ -93,7 +95,8 @@ fn add_sums(@builtin(global_invocation_id) id: vec3u) {
 }
 
 // A mark's segments, numbered by its list: each row counts the segments of its path, then writes
-// its row at each of their places, so a segment's instance finds its row and its index in it.
+// its row at each of their places, with how far along its path each starts, so a segment's instance
+// finds its row, its index in it, and where dashes and comets stand at its start.
 @if(!query)
 @compute @workgroup_size(256)
 fn count_segments(@builtin(global_invocation_id) id: vec3u) {
@@ -110,7 +113,18 @@ fn write_segments(@builtin(global_invocation_id) id: vec3u) {
     }
     let at = list_start(mark.list, id.x);
     let end = list_start(mark.list, id.x + 1u);
+    let entries = lists[mark.list + LIST_ENTRIES];
+    // An area's triangles have no distance along.
+    let measured = mark.primitive != TRIANGLES && PATH != PATH_TRACE;
+    var along = 0.0;
+    var last = path_point(id.x, 0u);
     for (var k = at; k < end; k++) {
-        lists[lists[mark.list + LIST_ENTRIES] + k] = id.x;
+        lists[entries + 2u * k] = id.x;
+        lists[entries + 2u * k + 1u] = bitcast<u32>(along);
+        if measured {
+            let next = path_point(id.x, k - at + 1u);
+            along += select(0.0, path_length(last, next), last.shown && next.shown);
+            last = next;
+        }
     }
 }

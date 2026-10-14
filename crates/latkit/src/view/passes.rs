@@ -62,6 +62,71 @@ fn main_pass<'e>(
     })
 }
 
+/// What every mark's draw in the main pass shares: the device and target, the bind groups, the
+/// lists buffer, and a plot's axes, which its lines clip to.
+struct Marks<'a> {
+    device: &'a wgpu::Device,
+    format: wgpu::TextureFormat,
+    samples: u32,
+    groups: &'a super::resources::Groups,
+    passes: &'a [(Shader, wgpu::BindGroup)],
+    lists: &'a wgpu::Buffer,
+    clip: Option<[u32; 4]>,
+    size: [u32; 2],
+}
+
+impl Marks<'_> {
+    /// Draws mark `i`, `shown`: every instance, or with `lit` the rows its focus lights, glowing.
+    fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        inner: &mut Inner,
+        i: usize,
+        shown: &super::marks::Shown,
+        lit: bool,
+    ) {
+        let Some(compiled) = &shown.compiled else { return };
+        let custom = compiled.drawing.markers.custom.is_some();
+        let areas = shown.path() == wgsl::PATH_GEOMETRY;
+        let (shader, corners) = match (compiled.drawing.primitive, lit) {
+            (Primitive::Points, false) if custom => (Shader::PointsCustom, 4),
+            (Primitive::Points, false) => (Shader::Points, 4),
+            (Primitive::Points, true) if custom => (Shader::PointsCustomFocus, 4),
+            (Primitive::Points, true) => (Shader::PointsFocus, 4),
+            (Primitive::Strokes, false) => (Shader::Strokes, 4),
+            (Primitive::Strokes, true) => (Shader::StrokesFocus, 4),
+            (Primitive::Triangles, false) if areas => (Shader::Areas, 3),
+            (Primitive::Triangles, false) => (Shader::Triangles, 3),
+            (Primitive::Triangles, true) if areas => (Shader::AreasFocus, 3),
+            // A face lights by its color alone.
+            (Primitive::Triangles, true) => return,
+        };
+        let pipeline = if let Some(source) = &compiled.drawing.markers.custom {
+            inner.pipelines.custom(self.device, source, shader, self.format, self.samples)
+        } else {
+            let variant = Variant::draw(shader, self.format, self.samples).path(shown.path());
+            Some(inner.pipelines.render_pipeline(self.device, variant))
+        };
+        let Some(pipeline) = pipeline else { return };
+        let group = &self.passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
+        pass.set_bind_group(1, &self.groups.mark, &[offset(i)]);
+        let clip = self.clip.filter(|_| shown.kind() == MarkKind::Lines);
+        if let Some([x, y, w, h]) = clip {
+            pass.set_scissor_rect(x, y, w, h);
+        }
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(2, group, &[]);
+        if lit {
+            pass.draw(0..corners, 0..shown.lit.rows * shown.lit.pieces);
+        } else {
+            shown.record(pass, corners, self.lists);
+        }
+        if clip.is_some() {
+            pass.set_scissor_rect(0, 0, self.size[0], self.size[1]);
+        }
+    }
+}
+
 /// What a frame's compute pass does.
 struct Work {
     evaluated: Vec<usize>,
@@ -332,7 +397,6 @@ impl View {
         let device = &gpu.0.device;
         let background = self.scene.theme.background.to_array().map(f64::from);
         let plot = matches!(self.scene.space, Space::Plot(_));
-        let [w, h] = target.size;
         let scissor = scissor(self.area(), target);
         let samples = super::resources::samples(target.pixel_ratio);
         let resources = self.resources.as_mut().expect("created before passes");
@@ -348,6 +412,10 @@ impl View {
             Shader::Strokes,
             Shader::Triangles,
             Shader::Areas,
+            Shader::PointsFocus,
+            Shader::PointsCustomFocus,
+            Shader::StrokesFocus,
+            Shader::AreasFocus,
             Shader::Glyphs,
             Shader::GlyphsPorts,
             Shader::Overlay,
@@ -365,41 +433,32 @@ impl View {
         pass.set_pipeline(&inner.pipelines.render(device, Shader::Backdrop, target.format, samples));
         pass.set_bind_group(2, group(Shader::Backdrop), &[]);
         pass.draw(0..3, 0..1);
+        let marks = Marks {
+            device,
+            format: target.format,
+            samples,
+            groups: &groups,
+            passes: &passes,
+            lists: &lists,
+            clip: (plot && scissor[2] > 0 && scissor[3] > 0).then_some(scissor),
+            size: target.size,
+        };
         for (i, shown) in self.marks.iter().enumerate() {
-            if !shown.drawable() {
+            if !shown.drawable() || shown.instances() == 0 {
                 continue;
             }
-            let Some(compiled) = &shown.compiled else { continue };
-            let (shader, corners) = match compiled.drawing.primitive {
-                Primitive::Points if compiled.drawing.markers.custom.is_some() => (Shader::PointsCustom, 4),
-                Primitive::Points => (Shader::Points, 4),
-                Primitive::Strokes => (Shader::Strokes, 4),
-                Primitive::Triangles if shown.path() == wgsl::PATH_GEOMETRY => (Shader::Areas, 3),
-                Primitive::Triangles => (Shader::Triangles, 3),
-            };
-            let instances = shown.instances();
-            let variant = Variant::draw(shader, target.format, samples).path(shown.path());
-            let pipeline = match &compiled.drawing.markers.custom {
-                Some(source) => inner.pipelines.custom(device, source, shader, target.format, samples),
-                None => Some(inner.pipelines.render_pipeline(device, variant)),
-            };
-            let Some(pipeline) = pipeline.filter(|_| instances > 0) else { continue };
-            pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-            let clipped = plot && shown.kind() == MarkKind::Lines && scissor[2] > 0 && scissor[3] > 0;
-            if clipped {
-                pass.set_scissor_rect(scissor[0], scissor[1], scissor[2], scissor[3]);
-            }
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(2, group(shader), &[]);
-            shown.record(&mut pass, corners, &lists);
-            if clipped {
-                pass.set_scissor_rect(0, 0, w, h);
-            }
+            marks.draw(&mut pass, inner, i, shown, false);
             let ports = shown.port_count();
-            if compiled.drawing.primitive == Primitive::Points && ports > 0 {
+            if shown.compiled.as_ref().is_some_and(|c| c.drawing.primitive == Primitive::Points) && ports > 0 {
                 pass.set_pipeline(&inner.pipelines.render(device, Shader::PointsPorts, target.format, samples));
                 pass.set_bind_group(2, group(Shader::PointsPorts), &[]);
                 pass.draw(0..4, 0..(shown.rows + shown.exits) * ports);
+            }
+        }
+        // The rows focus lights draw again over every mark but labels, glowing: nothing covers them.
+        for (i, shown) in self.marks.iter().enumerate() {
+            if shown.drawable() && shown.lit.rows > 0 {
+                marks.draw(&mut pass, inner, i, shown, true);
             }
         }
         let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(|shader| (shader, group(shader)));

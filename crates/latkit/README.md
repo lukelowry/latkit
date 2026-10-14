@@ -6,6 +6,7 @@ Columnar data drawn as vertices, edges, faces, lines, and areas on the GPU. This
 ```sh
 cargo xtask check      # fmt, clippy, tests, docs, TypeScript, browser gate
 cargo xtask browser    # the browser gate: shader compile budgets, then every example page in Chrome
+cargo xtask bench      # grids of 240 to 2M buses held to load, frame GPU and CPU, and idle budgets
 cargo xtask wasm       # latkit-js → npm/pkg, the npm wrapper → npm/dist (--dev: no wasm-opt)
 cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
 ```
@@ -33,6 +34,14 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
    item instead of dropping the last.
 7. **Eyes:** every pass draws through an `Eye` (projection, size, pixel ratio): the view, the shadow
    light, an exported image.
+8. **Geometry is the world's:** lanes bow by a share of their edge's length, arcs follow great
+   circles, and both are pieces of the path, so the camera never reshapes them. The globe writes its
+   depth a hair under its surface, and a mark past its horizon draws nothing. A segment list keeps
+   each segment's distance along its path, so dashes and comets run on across segments.
+9. **Work follows what shows:** a mark drawing enough instances to crowd the screen covers: a pass
+   claims each 2×2-pixel cell for the last small instance in it, and the draw leaves out what that
+   covers, so a crowded mark costs its cells, not its rows. It counts what it covers now and then,
+   and stops while covering does not pay.
 
 ## Rules
 
@@ -43,16 +52,19 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
 - Every order the user can see comes from count → scan → write, never from atomic appends.
 - Every shader passes naga at build time and Chrome within its compile budget.
 - Every wait races a deadline; readbacks are taken, never awaited.
-- No public type before it draws. Benchmarks gate on work, which is exact, and report time.
+- No public type before it draws. `Stats::gpu_ms` is the median of the last frames the device timed;
+  `cargo xtask bench` holds the network page's grids to budgets in Chrome.
+- A dataset's versions ease from one to the next; another dataset of the same name replaces it, its
+  rows fading in as the old fade out. Rows that only fade evaluate once.
 
 ## Spaces
 
-| Space | Positions | Lengths | Camera | Only here |
-|---|---|---|---|---|
-| `Earth` | longitude, latitude | CSS px, or `units` | pitch, bearing; mercator ↔ globe | geodesic edges, tiles, daylight, atmosphere |
-| `Plane` | x, y, elevation | CSS px, or `units` | pitch, bearing | |
-| `Plot` | axis, value | CSS px | x and y ranges | axes, playhead |
-| `Diagram` | x, y down | units: a CSS px at zoom 0 | center, zoom | ports, groups, nets, orthogonal routes, layouts |
+| Space     | Positions           | Lengths                   | Camera                           | Only here                                       |
+| --------- | ------------------- | ------------------------- | -------------------------------- | ----------------------------------------------- |
+| `Earth`   | longitude, latitude | CSS px, or `units`        | pitch, bearing; mercator ↔ globe | geodesic edges, tiles, daylight, atmosphere     |
+| `Plane`   | x, y, elevation     | CSS px, or `units`        | pitch, bearing                   |                                                 |
+| `Plot`    | axis, value         | CSS px                    | x and y ranges                   | axes, playhead                                  |
+| `Diagram` | x, y down           | units: a CSS px at zoom 0 | center, zoom                     | ports, groups, nets, orthogonal routes, layouts |
 
 ## Diagram
 
@@ -102,8 +114,8 @@ crates/latkit/
 ├── build.rs, build/   link WESL, validate with naga, mirror shared constants; colormaps; shaders.json
 ├── shaders/
 │   ├── lib/           types, bind, read, trace, project, state, color, focus, points, path, triangles,
-│   │                  stroke, marker, label, shade, lists, mark, reduce
-│   ├── compute/       evaluate, freeze, bounds, normals, probe, lists, labels (map label collisions)
+│   │                  stroke, marker, label, shade, lists, mark, reduce, cover
+│   ├── compute/       evaluate, freeze, bounds, normals, probe, lists, labels (map label collisions), cover
 │   └── draw/          backdrop (daylight, atmosphere), points, strokes, triangles, areas, glyphs, shade, overlay
 ├── src/
 │   ├── lib.rs         the only entry point
@@ -117,7 +129,7 @@ crates/latkit/
 │   ├── layout/        layered, stress, overlap, pack, route (groups as soft obstacles)
 │   ├── view/          View; camera, rig, gestures, input; probe, focus, query, fit, axes; marks, program,
 │   │                  sync, rows, transition, lists, labels, graph, shadows, variants, resources, uniforms,
-│   │                  passes, frame
+│   │                  cover, timer, passes, frame
 │   ├── gpu/           Gpu, arena, pipelines, atlas (distance fields), readback, colormaps, icons
 │   ├── host/          Host (text, jobs, fetch), Job (answers as patches), browser · native threads ○
 │   ├── geo/           geojson, mvt, pmtiles, tiles, shapes, earcut
@@ -199,12 +211,12 @@ JSON; its `Data.apply` returns the next version, and `geojson` reads in a worker
 
 ## Milestones
 
-| Step | Contents | Status |
-|---|---|---|
-| M1–M4 | data, expressions, arena, probes; transitions, shadows; labels, picks, samples; graph, layouts, routes, groups | ✓ |
-| Gate, Cutover, Pages | browser gate; host jobs in workers, path kinds, lists that coarsen; telemetry and diagram studio pages | ✓ |
-| Sheet | `Diagram`; derived data and geometry pages; the CPU executor; the sheet with incremental layout and routing; jobs answer with patches; stress as a job; `Port::output`; `arrange`; anchored labels and distance-field text; drags apply at once; the diagram page rebuilt on it. Removed folding, the GPU groups and stress passes, stand-ins, and the view's layout and route words | ✓ |
-| M5 | `src/derive/`: one lifecycle, budget, and pool for the sheet, lanes, shapes, and tiles; geometry as a field (lines along paths and rings); `Areas` (ear clipping in jobs, cached per page and row, earth grid split); `geo::geojson`; `Host::fetch`, PMTiles, TileJSON, MVT decoded in jobs into a view-owned dataset; daylight, atmosphere, exact globe gestures; groups as soft router obstacles; atlas residency by placement; Grid at scale and Colors pages | ✓ |
-| Scale | `cargo xtask bench` with work gates, GPU timestamps, native jobs on threads, 1M-row grids | ○ |
-| M6 | `image`, `png`, npm `view.video`, winit, docs; the Video page | ○ |
-| Retire | delete `packages/`, `examples/`, `benchmark/`, the old `docs/` and their configs | ○ |
+| Step                 | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Status |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| M1–M4                | data, expressions, arena, probes; transitions, shadows; labels, picks, samples; graph, layouts, routes, groups                                                                                                                                                                                                                                                                                                                                                   | ✓      |
+| Gate, Cutover, Pages | browser gate; host jobs in workers, path kinds, lists that coarsen; telemetry and diagram studio pages                                                                                                                                                                                                                                                                                                                                                           | ✓      |
+| Sheet                | `Diagram`; derived data and geometry pages; the CPU executor; the sheet with incremental layout and routing; jobs answer with patches; stress as a job; `Port::output`; `arrange`; anchored labels and distance-field text; drags apply at once; the diagram page rebuilt on it. Removed folding, the GPU groups and stress passes, stand-ins, and the view's layout and route words                                                                             | ✓      |
+| M5                   | `src/derive/`: one lifecycle, budget, and pool for the sheet, lanes, shapes, and tiles; geometry as a field (lines along paths and rings); `Areas` (ear clipping in jobs, cached per page and row, earth grid split); `geo::geojson`; `Host::fetch`, PMTiles, TileJSON, MVT decoded in jobs into a view-owned dataset; daylight, atmosphere, exact globe gestures; groups as soft router obstacles; atlas residency by placement; Grid at scale and Colors pages | ✓      |
+| Scale                | `cargo xtask bench` and budgets; GPU time in `Stats`; covering; lanes as world-space bows; globe occlusion by depth; dashes and comets along paths; focus draws only lit rows; bulk column reads; the 2M-bus grid and Grid operations pages. Native jobs on threads ○                                                                                                                                                                                            | ◐      |
+| M6                   | `image`, `png`, npm `view.video`, winit, docs; the Video page                                                                                                                                                                                                                                                                                                                                                                                                    | ○      |
+| Retire               | delete `packages/`, `examples/`, `benchmark/`, the old `docs/` and their configs                                                                                                                                                                                                                                                                                                                                                                                 | ○      |

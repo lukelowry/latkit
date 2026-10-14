@@ -36,6 +36,9 @@ pub(crate) struct Inner {
     /// Sorted by name.
     pub(crate) tables: Vec<Table>,
     pub(crate) version: Version,
+    /// The version the dataset began at, which every version applied from it shares: a view eases
+    /// rows from one of them to the next, and replaces the rows of another dataset of the same name.
+    pub(crate) origin: Version,
     /// Changes when a table, field, or kind is added or changed; marks recompile only then.
     pub(crate) schema: u64,
 }
@@ -43,7 +46,8 @@ pub(crate) struct Inner {
 impl Data {
     /// An empty dataset named `name`.
     pub fn new(name: impl Into<Name>) -> Data {
-        Data(Arc::new(Inner { name: name.into(), axis: None, tables: Vec::new(), version: Version::next(), schema: 0 }))
+        let version = Version::next();
+        Data(Arc::new(Inner { name: name.into(), axis: None, tables: Vec::new(), version, origin: version, schema: 0 }))
     }
 
     /// The dataset's name.
@@ -144,6 +148,11 @@ impl Data {
 
     pub(crate) fn schema(&self) -> u64 {
         self.0.schema
+    }
+
+    /// The version the dataset began at; see [`Inner::origin`].
+    pub(crate) fn origin(&self) -> Version {
+        self.0.origin
     }
 }
 

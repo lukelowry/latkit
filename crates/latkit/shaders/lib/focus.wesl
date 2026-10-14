@@ -29,6 +29,12 @@ fn presence(flags: u32) -> f32 {
     return 1.0;
 }
 
+// How large a row shows while its mark eases: rows appearing grow from nothing. Draws grow them, so
+// a mark whose rows only appear evaluates once.
+fn growth(flags: u32) -> f32 {
+    return select(1.0, mark.motion, (flags & FADE_IN) != 0u);
+}
+
 // A row's opacity: rows outside a non-empty selection dim, and rows easing in or out fade.
 fn faded(row: u32, flags: u32) -> f32 {
     let dim = select(1.0, frame.dim, frame.selecting != 0u && !is_selected(row));

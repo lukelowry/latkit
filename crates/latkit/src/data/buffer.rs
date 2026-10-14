@@ -1,9 +1,9 @@
 use std::ops::{Deref, Range};
 use std::sync::Arc;
 
-/// A shared, immutable slice: clones and sub-slices never copy.
+/// A shared, immutable slice: making one from a vector, cloning it, and slicing it never copy.
 pub(crate) struct Buffer<T> {
-    data: Arc<[T]>,
+    data: Arc<Vec<T>>,
     start: usize,
     end: usize,
 }
@@ -23,7 +23,7 @@ impl<T> Buffer<T> {
 
 impl<T> Default for Buffer<T> {
     fn default() -> Buffer<T> {
-        Buffer { data: Arc::new([]), start: 0, end: 0 }
+        Buffer::from(Vec::new())
     }
 }
 
@@ -38,20 +38,13 @@ impl<T> Deref for Buffer<T> {
 impl<T> From<Vec<T>> for Buffer<T> {
     fn from(values: Vec<T>) -> Buffer<T> {
         let end = values.len();
-        Buffer { data: values.into(), start: 0, end }
-    }
-}
-
-impl<T> From<Arc<[T]>> for Buffer<T> {
-    fn from(data: Arc<[T]>) -> Buffer<T> {
-        let end = data.len();
-        Buffer { data, start: 0, end }
+        Buffer { data: Arc::new(values), start: 0, end }
     }
 }
 
 impl<T: Clone> From<&[T]> for Buffer<T> {
     fn from(values: &[T]) -> Buffer<T> {
-        Buffer::from(Arc::<[T]>::from(values))
+        Buffer::from(values.to_vec())
     }
 }
 

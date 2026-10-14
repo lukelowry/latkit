@@ -99,7 +99,10 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit") });
     let shown: Vec<wgpu::SurfaceTexture> =
         canvases.iter().filter_map(|c| c.borrow_mut().record(&mut encoder)).collect();
-    gpu.queue().submit([encoder.finish()]);
+    // A frame no canvas drew submits nothing: listeners alone keep frames coming.
+    if !shown.is_empty() {
+        gpu.queue().submit([encoder.finish()]);
+    }
     for texture in shown {
         gpu.queue().present(texture);
     }

@@ -5,6 +5,9 @@
 //! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`: every
 //!   shader variant's pipelines compile in Chrome within budget, and every example page draws and
 //!   answers the pointer without errors or stalls.
+//! - `bench`: the quick benchmark (`npm/examples/gate/bench.ts`) over a release `wasm`: the network
+//!   page's grids, from 240 buses to two million, each held to budgets for loading, the frame's CPU
+//!   and GPU time while the camera moves, and frames drawn while it does not.
 //! - `wasm [--dev]`: build `latkit-js`, bind it with the `wasm-bindgen` CLI matching `Cargo.lock`,
 //!   optimize it with `wasm-opt` when installed, and compile the npm wrapper. `--dev` builds faster
 //!   and skips `wasm-opt`.
@@ -19,10 +22,11 @@ fn main() -> ExitCode {
     let result = match task.as_str() {
         "check" => check(),
         "browser" => browser(),
+        "bench" => wasm(false).and_then(|()| run("node", &["npm/examples/gate/bench.ts"])),
         "wasm" => wasm(dev),
         "examples" => wasm(true).and_then(|()| pnpm(&["--dir", "npm/examples", "exec", "vite"])),
         _ => {
-            eprintln!("usage: cargo xtask <check|browser|wasm [--dev]|examples>");
+            eprintln!("usage: cargo xtask <check|browser|bench|wasm [--dev]|examples>");
             return ExitCode::FAILURE;
         }
     };

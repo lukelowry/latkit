@@ -104,8 +104,8 @@ pub(crate) fn page_words(values: &Values, part: Part, low: bool) -> Vec<u32> {
     };
     match part {
         Part::Path => path_words(values),
-        Part::Values => (0..n).map(|i| if values.is_valid(i) { word(values.number(i)) } else { MISSING }).collect(),
-        Part::Bits => (0..n).map(|i| if values.is_valid(i) { values.number(i) as u32 } else { NONE }).collect(),
+        Part::Values => values.map_numbers(|x| x.map_or(MISSING, word)),
+        Part::Bits => values.map_numbers(|x| x.map_or(NONE, |x| x as u32)),
         Part::X | Part::Y => {
             let component = usize::from(part == Part::Y);
             let coords = values.geometry().map(Geometry::coords);

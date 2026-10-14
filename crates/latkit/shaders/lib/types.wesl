@@ -113,6 +113,16 @@ const PORT_SIZE: f32 = 7.0;
 const HEADER_BAND: f32 = 1.8;
 // Angle a geodesic segment spans at most, in degrees.
 const GEODESIC_STEP: f32 = 2.0;
+// Pieces a path between two ends takes at most: along a great circle, or bowed into a lane.
+const MAX_PIECES: u32 = 64u;
+// Pieces a path bowed into a lane takes at least.
+const BOW_PIECES: u32 = 16u;
+// Covering crowded marks: target pixels across a cell; the most a small instance reaches from its
+// middle, in target pixels; and how many small instances a cell holds before the last of them
+// covers the rest. Only small instances in crowded cells are left out.
+const COVER_CELL: f32 = 2.0;
+const COVER_REACH: f32 = 3.0;
+const COVER_CROWD: u32 = 6u;
 
 // Face state words.
 const FACE_WORDS: u32 = 5u;
@@ -218,10 +228,13 @@ const CASTS: u32 = 256u;
 // A vertex mark whose rows hold rows: drawn as containers.
 const GROUP: u32 = 512u;
 
-// Focus bits per row; FIT marks the rows a fit measures.
+// Focus bits per row: selected, hovered, and an end of a selected or hovered edge, which the focus
+// draw lights over the rest; FIT marks the rows a fit measures.
 const SELECTED: u32 = 1u;
 const HOVERED: u32 = 2u;
 const FIT: u32 = 4u;
+const END: u32 = 8u;
+const LIT: u32 = 11u;
 
 // Ordered words per mark in the extents buffer: least x, y, z as complements, then greatest.
 const EXTENT_WORDS: u32 = 6u;
@@ -350,7 +363,8 @@ struct Frame {
     dim: f32,
     dash: f32,
     flow_spacing: f32,
-    edge_spacing: f32,
+    // How far a lane bows, in its edge's lengths at its middle.
+    lane_bow: f32,
     hover_scale: f32,
     shading: f32,
     arrow: f32,
@@ -373,6 +387,9 @@ struct Frame {
     grid_pitch: f32,
     grid_fade: f32,
     graticule: u32,
+    // The cells covering the target, across and down.
+    cover_columns: u32,
+    cover_rows: u32,
     hover: vec4f,
     selected: vec4f,
     flow: vec4f,
@@ -450,6 +467,11 @@ struct Mark {
     query: u32,
     // Where the mark's remap words start, while its transition is being frozen.
     remap: u32,
+    // The rows its focus draw lights, at `focused` in the focused buffer, how many, and the
+    // instances each takes: a point one, a path as many as its longest piece count.
+    focused: u32,
+    focused_rows: u32,
+    pieces: u32,
     // Program columns: the geometry a stroke's path runs through (a route or bends), the geometry
     // it ran through when its transition began, and each row's lane among edges joining the same
     // two vertices; NONE without.
@@ -471,6 +493,9 @@ struct Mark {
     label_id: u32,
     label_size: f32,
     port_label_size: f32,
+    // Where the mark's cells start in the cover buffer, while it crowds enough instances to cover;
+    // NONE otherwise.
+    cover: u32,
 }
 
 // A line or a run of text drawn over the marks, in CSS pixels.

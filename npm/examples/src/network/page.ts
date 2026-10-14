@@ -1,9 +1,9 @@
 /**
- * A grid at scale over the earth. Choose a synthetic grid, from WECC 240-bus to ACTIVSg70k, or a
- * lattice of up to a million buses, and the map beneath it: coasts and borders, Natural Earth's
- * states colored by the grid's figures, or OpenStreetMap's planet as vector tiles. Play a simulated
- * fault and watch the machines' speeds swing; turn the globe at noon or now; hover or click anything
- * to inspect it.
+ * A grid at scale over the earth. Choose a synthetic grid, from WECC 240-bus to ACTIVSg70k, a
+ * continent's grid of two million buses built in the page, or a lattice of up to a million buses,
+ * and the map beneath it: coasts and borders, Natural Earth's states colored by the grid's figures,
+ * or OpenStreetMap's planet as vector tiles. Play a simulated fault and watch the machines' speeds
+ * swing; turn the globe at noon or now; hover or click anything to inspect it.
  */
 import {
   field,
@@ -16,6 +16,7 @@ import {
 } from 'latkit';
 import type { Stage } from '../ui/stage.js';
 import { LEVELS, loadCase, type Case } from './cases.js';
+import { continent } from './continent.js';
 import { lattice } from './lattice.js';
 import { LOOK, MAPS, type Loaded, type MapChoice } from './maps.js';
 import { STATE_FIELDS, joinStates, type Joined, type StateField } from './states.js';
@@ -27,6 +28,7 @@ const GRIDS = [
   ['ACTIVSg10k, western US, simulated fault', 'activsg10k'],
   ['ACTIVSg25k, US Northeast', 'activsg25k'],
   ['ACTIVSg70k, eastern US', 'activsg70k'],
+  ['North America, 2,000,000 buses', 'continent-2m'],
   ['Lattice, 100,000 buses', 'lattice-100k'],
   ['Lattice, 1,000,000 buses', 'lattice-1m'],
 ] as const;
@@ -179,8 +181,11 @@ export default async function page(stage: Stage): Promise<void> {
           of: ['grid', 'Bus'],
           position: ['lon', 'lat'],
           color,
-          radius: big ? 1.4 : grid.buses > 5000 ? 2 : 3,
-          ...(state.labels ? { label: { text: 'name', priority: 'kv', size: 10 } } : {}),
+          // Where buses crowd, those of higher voltage stand out.
+          radius: big ? field('level').scale(0.8, 2.6).domain(0, 5) : grid.buses > 5000 ? 2 : 3,
+          ...(state.labels && grid.case.named
+            ? { label: { text: 'name', priority: 'kv', size: 10 } }
+            : {}),
         },
       });
     }
@@ -438,7 +443,7 @@ export default async function page(stage: Stage): Promise<void> {
         summary: `built in ${(performance.now() - started).toFixed(0)} ms`,
       };
     } else {
-      const found = await loadCase(id, load.signal);
+      const found = id.startsWith('continent') ? continent(id) : await loadCase(id, load.signal);
       if (load.signal.aborted) return;
       view.setData(found.data);
       const peak = (values: Float32Array) => values.reduce((top, v) => Math.max(top, v), 0);
@@ -454,7 +459,9 @@ export default async function page(stage: Stage): Promise<void> {
           generation: peak(found.generation),
           power: peak(found.machinePower),
         },
-        summary: `${(found.bytes / 1e6).toFixed(2)} MB in ${(performance.now() - started).toFixed(0)} ms`,
+        summary: found.bytes
+          ? `${(found.bytes / 1e6).toFixed(2)} MB in ${(performance.now() - started).toFixed(0)} ms`
+          : `built in ${(performance.now() - started).toFixed(0)} ms`,
       };
     }
     grid = next;
@@ -514,5 +521,5 @@ function format(value: unknown): string {
   if (typeof value === 'number')
     return Number.isInteger(value) ? value.toLocaleString() : value.toPrecision(4);
   if (typeof value === 'object' && 'id' in value) return String((value as Row).id);
-  return String(value);
+  return typeof value === 'object' ? JSON.stringify(value) : String(value as string | boolean);
 }

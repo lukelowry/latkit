@@ -30,7 +30,7 @@ pub(crate) use {
     name::{PageId, Version},
     patch::Op,
     samples::{AxisPage, FramePage, LEVELS, Samples, bucket_frames},
-    table::{Field, Inverse, Reference},
+    table::{Field, Inverse, Reference, UNWIRED},
 };
 
 #[cfg(test)]

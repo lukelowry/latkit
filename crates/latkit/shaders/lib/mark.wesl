@@ -11,3 +11,8 @@ fn px(size: f32, word: u32) -> f32 {
 fn coverage(d: f32) -> f32 {
     return clamp(0.5 - d * eye.pixel_ratio, 0.0, 1.0);
 }
+
+// CSS pixels a quad reaches past the shape it draws: one target pixel, over which its edge fades.
+fn fringe() -> f32 {
+    return 1.0 / eye.pixel_ratio;
+}

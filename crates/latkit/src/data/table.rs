@@ -1,10 +1,11 @@
 use std::sync::{Arc, OnceLock};
 
+use super::bits::Bits;
 use super::column::Column;
 use super::ids::{Ids, Index, RowIds};
 use super::name::{Id, IdRef, Name, PageId, Version};
 use super::samples::Samples;
-use super::values::{Kind, Value, Values};
+use super::values::{Array, Kind, Value, Values};
 use crate::{Error, Result};
 
 /// A named set of rows with fields: the rows of one type in a dataset, or rows to write into one.
@@ -51,6 +52,9 @@ pub(crate) struct Reference {
     /// holding them.
     pub(crate) inverse: Arc<OnceLock<Inverse>>,
 }
+
+/// A reference row's target where it names no row.
+pub(crate) const UNWIRED: u32 = u32::MAX;
 
 /// The rows naming each target row of a reference: target `t`'s are `rows[starts[t]..starts[t + 1]]`,
 /// in row order.
@@ -112,14 +116,33 @@ impl Reference {
         }
     }
 
+    /// Every row's target row, [`UNWIRED`] where it names none: read page by page, not value by value.
+    pub(crate) fn targets(&self) -> Vec<u32> {
+        let mut out = Vec::with_capacity(self.rows.len());
+        for page in self.rows.pages() {
+            let values = &page.values;
+            match (&values.array, &values.valid) {
+                (Array::U32(rows), None) => out.extend_from_slice(rows),
+                (Array::U32(rows), Some(valid)) => {
+                    out.extend(rows.iter().enumerate().map(|(i, &t)| if valid.get(i) { t } else { UNWIRED }));
+                }
+                _ => out.extend((0..values.len()).map(|i| match values.get(i) {
+                    Some(Value::Number(n)) => n as u32,
+                    _ => UNWIRED,
+                })),
+            }
+        }
+        out
+    }
+
     /// The rows naming each target row: counted, the counts summed, then each row written at its
     /// target's place.
     pub(crate) fn inverse(&self) -> &Inverse {
         self.inverse.get_or_init(|| {
-            let targets: Vec<Option<u32>> = (0..self.rows.len()).map(|row| self.target(row)).collect();
-            let count = targets.iter().flatten().max().map_or(0, |&t| t as usize + 1);
+            let targets = self.targets();
+            let count = targets.iter().filter(|&&t| t != UNWIRED).max().map_or(0, |&t| t as usize + 1);
             let mut starts = vec![0_u32; count + 1];
-            for &t in targets.iter().flatten() {
+            for &t in targets.iter().filter(|&&t| t != UNWIRED) {
                 starts[t as usize + 1] += 1;
             }
             for t in 0..count {
@@ -127,10 +150,10 @@ impl Reference {
             }
             let mut next = starts.clone();
             let mut rows = vec![0_u32; starts[count] as usize];
-            for (row, t) in targets.iter().enumerate() {
-                if let Some(t) = t {
-                    rows[next[*t as usize] as usize] = row as u32;
-                    next[*t as usize] += 1;
+            for (row, &t) in targets.iter().enumerate() {
+                if t != UNWIRED {
+                    rows[next[t as usize] as usize] = row as u32;
+                    next[t as usize] += 1;
                 }
             }
             Inverse { starts, rows }
@@ -165,16 +188,9 @@ impl Reference {
                 resolved.push(*r);
                 continue;
             }
-            let ids = Ids(super::ids::IdList::Listed(page.values.clone()));
-            let mut dangling = false;
-            let rows: Vec<Option<u32>> = (0..ids.len())
-                .map(|i| {
-                    let row = index.get(&target.ids, ids.key(i)?);
-                    dangling |= row.is_none();
-                    row.map(|r| r as u32)
-                })
-                .collect();
-            pages.push(Values::from(rows));
+            let (rows, dangling) = index.resolve(&target.ids, &page.values, UNWIRED);
+            let valid = Bits::from_fn(rows.len(), |i| rows[i] != UNWIRED);
+            pages.push(Values { array: Array::U32(rows.into()), valid: (!valid.all()).then_some(valid) });
             resolved.push(Resolved { ids: page.id, order, structure, dangling });
         }
         Ok(Reference {

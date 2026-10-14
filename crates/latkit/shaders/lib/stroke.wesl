@@ -6,8 +6,9 @@ import package::lib::mark::coverage;
 struct Stroke {
     a: vec2f,
     b: vec2f,
-    // Distance along the whole line at `a`, CSS pixels.
-    along: f32,
+    // Distance along the whole line at `a` and at `b`, CSS pixels: dashes and comets run on across
+    // segments.
+    phase: vec2f,
     width: f32,
     color: vec4f,
     // Comet speed, CSS pixels per second; 0 for none.
@@ -43,7 +44,7 @@ fn stroke_distance(p: vec2f, s: Stroke) -> vec2f {
     if s.arrow {
         d = min(d, head_distance(p, s.b, dir, s.width));
     }
-    return vec2f(d, s.along + clamp(dot(p - s.a, dir), 0.0, len));
+    return vec2f(d, mix(s.phase.x, s.phase.y, clamp(dot(p - s.a, dir) / max(len, 1e-6), 0.0, 1.0)));
 }
 
 fn stroke(p: vec2f, s: Stroke) -> vec4f {

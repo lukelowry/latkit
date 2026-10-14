@@ -55,9 +55,12 @@ pub struct Theme {
     pub flow: Color,
     /// Distance between flowing comets.
     pub flow_spacing: f32,
-    /// Distance between the lanes of edges joining the same two vertices, and between parallel
-    /// orthogonal wires, which keep twice it apart.
+    /// In a diagram, distance between the lanes of edges joining the same two vertices, and between
+    /// parallel orthogonal wires, which keep twice it apart.
     pub edge_spacing: f32,
+    /// Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction
+    /// of the edge's length at its middle. A bow is part of the drawing, so zooming never moves it.
+    pub lane_bow: f32,
     /// How far an arrowhead reaches past its edge's width.
     pub arrow: f32,
     /// CSS pixels of background around label text.
@@ -114,6 +117,7 @@ impl Theme {
             flow: Color::hex("#ffffff").expect("hex").alpha(0.8),
             flow_spacing: 40.0,
             edge_spacing: 4.0,
+            lane_bow: 0.12,
             arrow: 7.0,
             halo: 2.0,
             group_padding: 16.0,

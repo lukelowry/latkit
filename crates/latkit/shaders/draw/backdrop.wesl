@@ -2,12 +2,13 @@
 // darkened where casters shadow the ground, lit by daylight, and on the globe ringed by its air. Lines
 // are a pixel wide and antialiased per axis. Their spacing steps by tens, and the next step fades in as
 // the lines crowd, so no seam shows. They fade where the view grazes the ground, and on a plane away
-// from what the camera looks at.
+// from what the camera looks at. The round globe writes its depth a hair under its surface, so what
+// lies behind it hides and what lies on it draws.
 
 import package::lib::types::{SPACE_EARTH, SPACE_PLANE, SPACE_DIAGRAM, GRID_OFF, GRID_DOTS};
 import package::lib::bind::{frame, eye};
 import package::lib::color::output;
-import package::lib::project::{PI, NEAR_Z, FAR_Z};
+import package::lib::project::{PI, NEAR_Z, FAR_Z, globe_center};
 import package::lib::shade::{lit, daylight};
 
 @group(2) @binding(10) var shadows: texture_2d<f32>;
@@ -15,6 +16,21 @@ import package::lib::shade::{lit, daylight};
 struct Varyings {
     @builtin(position) clip: vec4f,
     @location(0) ndc: vec2f,
+}
+
+// How far under its surface the globe's depth lies, in its radii: deeper than a chord of a few
+// degrees sags, so paths and areas on the ground draw over it.
+const SURFACE_BIAS: f32 = 1e-3;
+
+// What a pixel of the backdrop draws: its color, and the depth of the ground there.
+struct Ground {
+    color: vec4f,
+    depth: f32,
+}
+
+struct Out {
+    @location(0) color: vec4f,
+    @builtin(frag_depth) depth: f32,
 }
 
 @vertex
@@ -94,13 +110,12 @@ fn globe_degrees(w: vec3f, radius: f32) -> vec2f {
 
 // The earth: the mercator band or the globe's disc, eased between as the projection morphs, lit by
 // daylight, the graticule on it, and around the globe its air.
-fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> vec4f {
+fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
     // The flat map ends where web mercator does, at y = ±π.
     let band = PI - abs(g.y + frame.mercator_y);
     let flat = saturate(band / max(fwidth(band), 1e-9) + 0.5) * f32(ahead);
-    // The globe is a sphere of radius 1 / cos(lat0) whose top touches the ground at the center.
-    let radius = 1.0 / cos(radians(frame.center_hi.y + frame.center_lo.y));
-    let center = vec3f(0.0, 0.0, -radius);
+    let center = globe_center();
+    let radius = -center.z;
     let to_center = center - o;
     let along = dot(to_center, d);
     let off = length(to_center - d * along);
@@ -109,9 +124,16 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> vec4f {
     let covered = mix(flat, round, frame.globe);
     let hit = o + d * (along - sqrt(max(radius * radius - off * off, 0.0)));
     let globe = frame.globe >= 0.5;
-    let p = select(map_degrees(g), globe_degrees(hit, radius), globe);
-    let ground = vec4f(frame.surface.rgb * daylight(p), frame.surface.a);
-    var color = blend(frame.background, select(shaded(ground, g, ahead), ground, globe), covered);
+    var p: vec2f;
+    var ground = frame.surface;
+    if globe {
+        p = globe_degrees(hit, radius);
+        ground = vec4f(ground.rgb * daylight(p), ground.a);
+    } else {
+        p = map_degrees(g);
+        ground = shaded(vec4f(ground.rgb * daylight(p), ground.a), g, ahead);
+    }
+    var color = blend(frame.background, ground, covered);
     let facing = dot(normalize(hit - center), -d);
     if frame.graticule != 0u {
         // Longitude jumps where it wraps; its other wrapping steadies the derivative there.
@@ -129,11 +151,16 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> vec4f {
         let air = (rim + halo) * frame.atmosphere.a * frame.globe * mix(0.2, 1.0, below);
         color = vec4f(mix(color.rgb, frame.atmosphere.rgb, saturate(air)), color.a);
     }
-    return color;
+    var depth = FAR_Z;
+    if frame.globe >= 1.0 && round > 0.5 {
+        let under = eye.clip_from_world * vec4f(hit - normalize(hit - center) * radius * SURFACE_BIAS, 1.0);
+        depth = clamp(under.z / under.w, FAR_Z, NEAR_Z);
+    }
+    return Ground(color, depth);
 }
 
 @fragment
-fn fragment(v: Varyings) -> @location(0) vec4f {
+fn fragment(v: Varyings) -> Out {
     let near = eye.world_from_clip * vec4f(v.ndc, NEAR_Z, 1.0);
     let far = eye.world_from_clip * vec4f(v.ndc, FAR_Z, 1.0);
     let o = near.xyz / near.w;
@@ -142,10 +169,13 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     let t = -o.z / d.z;
     let g = o + d * max(t, 0.0);
     var color = frame.background;
+    var depth = FAR_Z;
     if frame.space == SPACE_PLANE || frame.space == SPACE_DIAGRAM {
         color = plane(g, d, t > 0.0);
     } else if frame.space == SPACE_EARTH {
-        color = earth(o, d, g, t > 0.0);
+        let ground = earth(o, d, g, t > 0.0);
+        color = ground.color;
+        depth = ground.depth;
     }
-    return output(vec4f(color.rgb * color.a, color.a));
+    return Out(output(vec4f(color.rgb * color.a, color.a)), depth);
 }

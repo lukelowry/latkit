@@ -139,13 +139,14 @@ fn fallback(x: u32, slot: u32) -> u32 {
     return x;
 }
 
-// A number eased from what `row` showed; a row that entered grows from nothing when `grows`.
-fn ease_number(row: u32, w: u32, now: u32, flags: u32, grows: bool) -> u32 {
-    if !easing() || missing_bits(now) {
+// A number eased from what `row` showed; a row that entered shows its own at once, and appears as
+// its draw grows it in.
+fn ease_number(row: u32, w: u32, now: u32, flags: u32) -> u32 {
+    if !easing() || missing_bits(now) || entering(row, flags) {
         return now;
     }
-    let start = select(was(row, w), word(0.0), entering(row, flags));
-    if missing_bits(start) || (entering(row, flags) && !grows) {
+    let start = was(row, w);
+    if missing_bits(start) {
         return now;
     }
     return word(mix(number(start), number(now), mark.motion));
@@ -244,10 +245,9 @@ fn run(row: u32, start: u32, end: u32, flags: u32) {
                 stack[sp - 1u] = colormap(a & 0xffffu, a >> 16u, number(stack[sp - 1u]), domain(b));
             }
             case OP_STORE: {
-                // `c` is 1 for sizes, which grow from nothing as a row enters.
                 sp--;
                 let now = fallback(stack[sp], b);
-                state[word_at(row, a)] = ease_number(row, a, now, flags, c != 0u);
+                state[word_at(row, a)] = ease_number(row, a, now, flags);
             }
             case OP_STORE_COLOR: {
                 sp--;

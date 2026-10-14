@@ -56,7 +56,7 @@ fn anchor(row: u32) -> Anchor {
             let count = path_count(row);
             // A trace labels its last sample; other paths their middle.
             let last = PATH == PATH_TRACE;
-            let on = segment_screen(Segment(row, select(count / 2u, max(count, 1u) - 1u, last)));
+            let on = segment_screen(Segment(row, select(count / 2u, max(count, 1u) - 1u, last), 0.0));
             a.shown = count > 0u && on.shown;
             if last {
                 a.at = on.b + vec2f(6.0, 0.0);
@@ -72,7 +72,7 @@ fn anchor(row: u32) -> Anchor {
                 // An area's label hangs inside its largest polygon, farthest from its edges.
                 let c = area_anchor(row);
                 let clip = clip_of(c.world);
-                a.shown = c.shown && clip.w > 0.0;
+                a.shown = c.shown && c.ahead && clip.w > 0.0;
                 a.at = to_screen(clip);
                 return a;
             }
@@ -81,7 +81,7 @@ fn anchor(row: u32) -> Anchor {
             for (var k = 0u; k < 3u; k++) {
                 let c = triangle_corner(row, k);
                 let clip = clip_of(c.world);
-                a.shown = a.shown && c.shown && clip.w > 0.0;
+                a.shown = a.shown && c.shown && c.ahead && clip.w > 0.0;
                 sum += to_screen(clip);
             }
             a.at = sum / 3.0;

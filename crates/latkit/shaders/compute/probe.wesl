@@ -112,7 +112,8 @@ fn triangle_reach(instance: u32, p: vec2f) -> Reach {
     let ca = clip_of(ka.world);
     let cb = clip_of(kb.world);
     let cc = clip_of(kc.world);
-    if !ka.shown || !kb.shown || !kc.shown || ca.w <= 0.0 || cb.w <= 0.0 || cc.w <= 0.0 {
+    let ahead = ka.ahead || kb.ahead || kc.ahead;
+    if !ka.shown || !kb.shown || !kc.shown || !ahead || ca.w <= 0.0 || cb.w <= 0.0 || cc.w <= 0.0 {
         return unreached();
     }
     let a = screen(ca);
@@ -297,7 +298,7 @@ fn boxed_row(i: u32) -> u32 {
             for (var k = 0u; k < 3u; k++) {
                 let c = triangle_corner(i, k);
                 let clip = clip_of(c.world);
-                if c.shown && clip.w > 0.0 && in_box(to_screen(clip)) {
+                if c.shown && c.ahead && clip.w > 0.0 && in_box(to_screen(clip)) {
                     return row;
                 }
             }
@@ -345,7 +346,7 @@ fn locate() {
                 // An area lies where its label hangs.
                 let anchor = area_anchor(row);
                 let clip = clip_of(anchor.world);
-                if anchor.shown && clip.w > 0.0 {
+                if anchor.shown && anchor.ahead && clip.w > 0.0 {
                     at = vec4f(to_screen(clip), 1.0, 0.0);
                 }
             } else {
@@ -365,7 +366,7 @@ fn locate() {
         }
         default: {
             // A path lies where its middle segment's middle is.
-            let on = segment_screen(Segment(row, path_count(row) / 2u));
+            let on = segment_screen(Segment(row, path_count(row) / 2u, 0.0));
             if on.shown {
                 at = vec4f(0.5 * (on.a + on.b), 1.0, 0.0);
             }

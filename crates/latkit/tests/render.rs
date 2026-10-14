@@ -443,3 +443,43 @@ fn long_histories_draw_from_their_levels_of_detail() {
     let stats = view.stats();
     assert_eq!(stats.rows, 1);
 }
+
+#[test]
+fn frames_tell_what_they_cost_the_gpu_where_it_measures() {
+    let Some(gpu) = gpu() else { return };
+    if !gpu.device().features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+        return;
+    }
+    let mut data = Data::new("graph");
+    data.apply(Table::new("Node", 1).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    let started = std::time::Instant::now();
+    while view.stats().gpu_ms == 0.0 {
+        assert!(started.elapsed() < common::SETTLE, "a measure lands within {:?}", common::SETTLE);
+        step(&gpu, &mut view);
+    }
+    let ms = view.stats().gpu_ms;
+    assert!(ms > 0.0 && ms < 1000.0, "{ms} ms");
+}
+
+#[test]
+fn dashes_run_on_across_a_paths_segments() {
+    let Some(gpu) = gpu() else { return };
+    // A path of a hundred segments a pixel long, dashed. Were each segment to start its dashes
+    // afresh, each would show only the blank first half of a dash, and the path nothing.
+    let points: Vec<[f64; 2]> = (0..=100).map(|i| [f64::from(i) - 50.0, 0.0]).collect();
+    let mut data = Data::new("d");
+    data.apply(Table::new("Path", 1).field("geometry", vec![points])).expect("valid");
+    let scene =
+        Scene::new(plane()).theme(plain_theme()).draw(Lines::of("d", "Path").width(3.0).dash(true).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    let on = (c - 40..c + 40).filter(|&x| at(&pixels, x, c)[0] > 128).count();
+    assert!(on > 20 && on < 60, "about half of the path dashes: {on} of 80 pixels");
+}

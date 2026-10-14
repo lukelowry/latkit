@@ -6,7 +6,7 @@
 import package::lib::types::{NONE, VISIBLE, PLACED, ENDS_COLOR, PATH_GEOMETRY};
 import package::lib::bind::mark;
 import package::lib::state::{row_at, face_at, area_at, vertex_slot};
-import package::lib::project::{world, clip_of, facing};
+import package::lib::project::{world, clip_of, shows};
 import package::lib::focus::faded;
 import package::lib::read::{points_of, point_bits, missing_bits};
 import package::lib::path::{PATH, Segment, segment, stroke_instances};
@@ -19,7 +19,9 @@ struct Corner {
     slot: u32,
     color: vec4f,
     row: u32,
+    // Whether it has a place to stand, and whether it lies in front of the globe's horizon.
     shown: bool,
+    ahead: bool,
 }
 
 // Triangles every live row draws: a face per row, or each of every area's, as its list numbers them.
@@ -38,14 +40,18 @@ fn triangle_corner(instance: u32, corner: u32) -> Corner {
     return face_corner(instance, corner);
 }
 
-// Whether triangle `instance` draws: every corner shown, for a triangle draws whole or not at all.
+// Whether triangle `instance` draws: every corner placed, and one in front of the globe's horizon;
+// the globe's depth cuts a triangle reaching past its edge.
 fn triangle_shown(instance: u32) -> bool {
+    var ahead = false;
     for (var k = 0u; k < 3u; k++) {
-        if !triangle_corner(instance, k).shown {
+        let c = triangle_corner(instance, k);
+        if !c.shown {
             return false;
         }
+        ahead = ahead || c.ahead;
     }
-    return true;
+    return ahead;
 }
 
 // The row triangle `instance` belongs to.
@@ -71,12 +77,12 @@ fn face_corner(row: u32, corner: u32) -> Corner {
     let color = select(unpack4x8unorm(f.color), unpack4x8unorm(v.color), (mark.flags & ENDS_COLOR) != 0u);
     c.color = vec4f(color.rgb, color.a * faded(row, f.flags));
     c.shown = (v.flags & PLACED) != 0u;
+    c.ahead = shows(c.world);
     return c;
 }
 
 // Point `offset` of the points of triangle `t.index` of area row `t.row`: 0 is where its label hangs,
-// 1 to 3 its corners. A point behind the globe hides, and with it its triangle: an earth triangle
-// spans a few degrees at most, so the sliver lost at the horizon is far under a pixel.
+// 1 to 3 its corners.
 fn area_point(t: Segment, offset: u32) -> Corner {
     var c: Corner;
     c.row = t.row;
@@ -98,13 +104,14 @@ fn area_point(t: Segment, offset: u32) -> Corner {
     c.world = world(xy, vec2f(0.0), 0.0);
     let color = unpack4x8unorm(a.color);
     c.color = vec4f(color.rgb, color.a * faded(t.row, a.flags));
-    c.shown = facing(xy, vec2f(0.0));
+    c.shown = true;
+    c.ahead = shows(c.world);
     return c;
 }
 
 // Where area row `row`'s label hangs: inside its largest polygon, farthest from its edges.
 fn area_anchor(row: u32) -> Corner {
-    return area_point(Segment(row, 0u), 0u);
+    return area_point(Segment(row, 0u, 0.0), 0u);
 }
 
 fn corner_clip(c: Corner) -> vec4f {

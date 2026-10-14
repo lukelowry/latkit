@@ -136,6 +136,27 @@ impl Values {
         Values { array, valid: self.valid.as_ref().map(|v| v.slice(range)) }
     }
 
+    /// Every value as `number` reads it, `None` where missing, mapped by `f`: a loop per storage, so
+    /// the storage is matched once rather than per value.
+    pub(crate) fn map_numbers<T>(&self, mut f: impl FnMut(Option<f64>) -> T) -> Vec<T> {
+        macro_rules! each {
+            ($v:expr, $number:expr) => {
+                match &self.valid {
+                    None => $v.iter().map(|&x| f(Some($number(x)))).collect(),
+                    Some(valid) => $v.iter().enumerate().map(|(i, &x)| f(valid.get(i).then(|| $number(x)))).collect(),
+                }
+            };
+        }
+        match &self.array {
+            Array::F64(v) => each!(v, |x: f64| x),
+            Array::F32(v) => each!(v, f64::from),
+            Array::I32(v) => each!(v, f64::from),
+            Array::U32(v) => each!(v, f64::from),
+            Array::U64(v) => each!(v, |x: u64| x as f64),
+            _ => (0..self.len()).map(|i| f(self.is_valid(i).then(|| self.number(i)))).collect(),
+        }
+    }
+
     /// Value `i` as a number; booleans are 0 or 1, others NaN.
     pub(crate) fn number(&self, i: usize) -> f64 {
         match &self.array {
@@ -246,8 +267,8 @@ impl Values {
         if same || self.kind() != Kind::Number {
             return self.clone();
         }
-        let converted: Buffer<T> = (0..self.len()).map(|i| convert(self.number(i))).collect();
-        Values { array: converted.into(), valid: self.valid.clone() }
+        let converted = self.map_numbers(|x| convert(x.unwrap_or(0.0)));
+        Values { array: Buffer::from(converted).into(), valid: self.valid.clone() }
     }
 }
 
@@ -292,16 +313,10 @@ macro_rules! numbers_from {
             }
         }
 
-        impl From<Arc<[$t]>> for Values {
-            fn from(values: Arc<[$t]>) -> Values {
-                Values { array: Array::$variant(values.into()), valid: None }
-            }
-        }
-
         impl From<Vec<Option<$t>>> for Values {
             fn from(values: Vec<Option<$t>>) -> Values {
-                let valid: Bits = values.iter().map(Option::is_some).collect();
-                let array = Array::$variant(values.into_iter().map(Option::unwrap_or_default).collect());
+                let valid = Bits::from_fn(values.len(), |i| values[i].is_some());
+                let array = Array::$variant(values.iter().map(|v| v.unwrap_or_default()).collect());
                 Values { array, valid: (!valid.all()).then_some(valid) }
             }
         }
@@ -312,20 +327,20 @@ numbers_from!(F64: f64, F32: f32, I32: i32, U32: u32, U64: u64);
 
 impl From<Vec<bool>> for Values {
     fn from(values: Vec<bool>) -> Values {
-        Values { array: Array::Bool(values.into_iter().collect()), valid: None }
+        Values::from(&values[..])
     }
 }
 
 impl From<&[bool]> for Values {
     fn from(values: &[bool]) -> Values {
-        Values { array: Array::Bool(values.iter().copied().collect()), valid: None }
+        Values { array: Array::Bool(Bits::from_fn(values.len(), |i| values[i])), valid: None }
     }
 }
 
 impl From<Vec<Option<bool>>> for Values {
     fn from(values: Vec<Option<bool>>) -> Values {
-        let valid: Bits = values.iter().map(Option::is_some).collect();
-        let array = Array::Bool(values.into_iter().map(|v| v.unwrap_or(false)).collect());
+        let valid = Bits::from_fn(values.len(), |i| values[i].is_some());
+        let array = Array::Bool(Bits::from_fn(values.len(), |i| values[i] == Some(true)));
         Values { array, valid: (!valid.all()).then_some(valid) }
     }
 }

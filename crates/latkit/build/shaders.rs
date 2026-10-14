@@ -30,6 +30,7 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "compute::normals", variants: &[("main", &[])] },
     Entry { module: "compute::probe", variants: &[("main", &["lists"]), ("multisampled", &["multisampled", "lists"])] },
     Entry { module: "compute::lists", variants: &[("main", &["lists"]), ("query", &["lists", "query"])] },
+    Entry { module: "compute::cover", variants: &[("main", &["covering"])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
     Entry {
         module: "draw::points",
@@ -38,19 +39,22 @@ const ENTRIES: &[Entry] = &[
             ("cast", &["casts"]),
             ("custom", &["custom"]),
             ("custom_cast", &["custom", "casts"]),
+            ("custom_focus", &["custom", "focused"]),
             ("ports", &["ports"]),
+            ("focus", &["focused"]),
         ],
     },
-    Entry { module: "draw::strokes", variants: &[("main", &[]), ("cast", &["casts"])] },
+    Entry { module: "draw::strokes", variants: &[("main", &[]), ("cast", &["casts"]), ("focus", &["focused"])] },
     Entry { module: "draw::triangles", variants: &[("main", &[]), ("cast", &["casts"])] },
-    Entry { module: "draw::areas", variants: &[("main", &[])] },
+    Entry { module: "draw::areas", variants: &[("main", &[]), ("focus", &["focused"])] },
     Entry { module: "draw::shade", variants: &[("main", &[])] },
     Entry { module: "draw::glyphs", variants: &[("main", &[]), ("ports", &["ports"])] },
     Entry { module: "compute::labels", variants: &[("main", &[])] },
     Entry { module: "draw::overlay", variants: &[("main", &[])] },
 ];
 
-const FEATURES: &[&str] = &["writes", "casts", "custom", "multisampled", "lists", "query", "ports"];
+const FEATURES: &[&str] =
+    &["writes", "casts", "custom", "multisampled", "lists", "query", "ports", "focused", "covering"];
 
 /// What a custom marker supplies, for validating its variant.
 const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";

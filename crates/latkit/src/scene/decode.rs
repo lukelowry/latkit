@@ -720,6 +720,7 @@ impl<'de> Deserialize<'de> for Theme {
             flow: Option<Color>,
             flow_spacing: Option<f32>,
             edge_spacing: Option<f32>,
+            lane_bow: Option<f32>,
             arrow: Option<f32>,
             halo: Option<f32>,
             group_padding: Option<f32>,
@@ -763,7 +764,7 @@ impl<'de> Deserialize<'de> for Theme {
         }
         set!(background, surface, grid, vertex, vertex_radius, edge, edge_width, missing, hover, selected, glow, dim);
         set!(hover_scale, dash, flow, flow_spacing, line, line_width, shading, text, font_size, playhead);
-        set!(edge_spacing, arrow, halo, group_padding, area, atmosphere, night);
+        set!(edge_spacing, lane_bow, arrow, halo, group_padding, area, atmosphere, night);
         if let Some(font) = form.font {
             t.font = font.into();
         }

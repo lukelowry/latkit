@@ -2,6 +2,7 @@
 
 mod axes;
 mod camera;
+mod cover;
 mod event;
 mod fit;
 mod focus;
@@ -21,6 +22,7 @@ mod rig;
 mod rows;
 mod shadows;
 mod sync;
+mod timer;
 mod transition;
 mod uniforms;
 mod variants;
@@ -117,6 +119,8 @@ pub struct View {
     /// The shadow map and the face normals, made from what they read.
     shadow_map: Derived<()>,
     normals: Derived<()>,
+    /// Measures what frames cost the GPU, where it can.
+    timer: Option<timer::Timer>,
     focus: Focus,
     probing: Probing,
     queries: query::Queries,
@@ -163,6 +167,7 @@ impl View {
             pipelines_made: None,
             shadow_map: Derived::default(),
             normals: Derived::default(),
+            timer: timer::Timer::new(&gpu.0.device, &gpu.0.queue),
             focus: Focus::default(),
             probing: Probing::default(),
             queries: query::Queries::default(),
@@ -450,6 +455,7 @@ impl View {
             rows: self.marks.iter().map(|m| u64::from(m.rows)).sum(),
             uploading: inner.arena.pending(),
             gpu_bytes: inner.arena.resident(),
+            covered: self.marks.iter().map(|m| u64::from(m.crowding.covered())).sum(),
             ..self.stats
         }
     }
