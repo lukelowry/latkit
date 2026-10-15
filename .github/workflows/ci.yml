@@ -7,6 +7,20 @@ on:
       - main
 
 jobs:
+  rust-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up pinned Rust toolchain
+        run: rustup show
+      - name: Verify native Rust package
+        run: cargo package --locked --package latkit
+      - name: Verify browser-target Rust package
+        run: >-
+          cargo package --locked --package latkit
+          --target wasm32-unknown-unknown
+          --features web,serde
+
   quality:
     runs-on: ubuntu-latest
     steps:
