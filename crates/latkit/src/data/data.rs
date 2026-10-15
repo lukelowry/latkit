@@ -154,6 +154,20 @@ impl Data {
     pub(crate) fn origin(&self) -> Version {
         self.0.origin
     }
+
+    /// A version of `self` holding `tables` instead, its name, axis, schema, and origin kept: what a
+    /// view draws of a dataset it draws in part, eased from one version to the next like `self`'s.
+    pub(crate) fn drawn(&self, mut tables: Vec<Table>) -> Data {
+        tables.sort_by(|a, b| a.name.cmp(&b.name));
+        Data(Arc::new(Inner {
+            name: self.0.name.clone(),
+            axis: self.0.axis.clone(),
+            tables,
+            version: Version::next(),
+            origin: self.0.origin,
+            schema: self.0.schema,
+        }))
+    }
 }
 
 impl PartialEq for Data {

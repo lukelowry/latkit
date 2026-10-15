@@ -248,6 +248,8 @@ macro_rules! form {
             #[serde(default)]
             visible: Option<Expr>,
             #[serde(default)]
+            priority: Option<Expr>,
+            #[serde(default)]
             name: Option<Name>,
             #[serde(default)]
             pick: Option<bool>,
@@ -279,7 +281,7 @@ macro_rules! apply {
 /// Applies the options every mark has.
 macro_rules! style {
     ($form:ident, $mark:expr) => {{
-        let mark = apply!($form, $mark; color, visible, pick, select, drag, label, shadow);
+        let mark = apply!($form, $mark; color, visible, priority, pick, select, drag, label, shadow);
         match $form.name {
             Some(name) => mark.named(name),
             None => mark,

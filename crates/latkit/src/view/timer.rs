@@ -68,7 +68,7 @@ impl Timer {
         let slot = &mut self.slots[i];
         mark(&slot.set, encoder, None, Some(1));
         encoder.resolve_query_set(&slot.set, 0..2, &slot.resolved, 0);
-        slot.pending = Some(Readback::new(pool, device, encoder, &slot.resolved, 0, 16));
+        slot.pending = Some(Readback::new(pool, device, encoder, &slot.resolved, 0, 16, std::task::Waker::noop()));
     }
 
     /// The median milliseconds of the last frames measured, once a measure landed since last asked.

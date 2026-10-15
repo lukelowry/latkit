@@ -14,14 +14,14 @@ pub struct Label {
     pub(crate) text: Expr,
     pub(crate) size: Option<f32>,
     pub(crate) color: Option<Expr>,
-    pub(crate) priority: Expr,
+    pub(crate) priority: Option<Expr>,
     pub(crate) max_width: Option<f32>,
 }
 
 impl Label {
     /// Labels each row with a text field's value.
     pub fn new(text: impl Into<Expr>) -> Label {
-        Label { text: text.into(), size: None, color: None, priority: 0.0.into(), max_width: None }
+        Label { text: text.into(), size: None, color: None, priority: None, max_width: None }
     }
 
     /// Text size, CSS pixels, or units in a diagram; the theme's font size unless set.
@@ -38,10 +38,11 @@ impl Label {
         self
     }
 
-    /// Each row's priority: where labels would overlap, the higher shows.
+    /// Each row's priority: where labels would overlap, the higher shows. The mark's priority
+    /// unless set.
     #[must_use]
     pub fn priority(mut self, priority: impl Into<Expr>) -> Label {
-        self.priority = priority.into();
+        self.priority = Some(priority.into());
         self
     }
 

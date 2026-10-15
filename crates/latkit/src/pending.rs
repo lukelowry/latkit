@@ -35,6 +35,16 @@ impl<T> Pending<T> {
         Pending(Arc::new(Mutex::new(Slot::Ready(result))))
     }
 
+    /// Wakes `waker` once the value is resolved: at once when it already is.
+    pub(crate) fn notify(&self, waker: &Waker) {
+        let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match &mut *slot {
+            Slot::Waiting(waiting) => *waiting = Some(waker.clone()),
+            Slot::Ready(_) => waker.wake_by_ref(),
+            Slot::Taken => {}
+        }
+    }
+
     /// The value once resolved, taking it; `None` while it waits, and after it was taken.
     pub fn take(&self) -> Option<Result<T>> {
         let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);

@@ -84,12 +84,6 @@ impl View {
                 _ => "strokes",
             };
             variants.push(compute(Shader::Bounds, bounds).path(path));
-            // A mark crowding the screen covers; points and strokes may.
-            match mark {
-                Mark::Vertices(_) => variants.push(compute(Shader::Cover, "points").path(path)),
-                Mark::Edges(_) | Mark::Lines(_) => variants.push(compute(Shader::Cover, "strokes").path(path)),
-                Mark::Faces(_) | Mark::Areas(_) => {}
-            }
             // Rows running through different numbers of segments, or areas of different numbers of
             // triangles, are numbered by a list.
             if matches!(mark, Mark::Edges(_)) || path == PATH_GEOMETRY {

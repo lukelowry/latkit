@@ -52,6 +52,22 @@ impl Gpu {
     pub fn lost(&self) -> bool {
         self.0.lost()
     }
+
+    /// How much GPU memory data takes, as `{ bytes, uploadPerFrame }`.
+    #[wasm_bindgen(getter)]
+    pub fn budget(&self) -> JsValue {
+        let budget = self.0.budget();
+        convert::object(&[
+            ("bytes", (budget.bytes as f64).into()),
+            ("uploadPerFrame", (budget.upload_per_frame as f64).into()),
+        ])
+    }
+
+    /// Sets how much GPU memory data takes.
+    #[wasm_bindgen(js_name = setBudget)]
+    pub fn set_budget(&self, bytes: f64, upload_per_frame: f64) {
+        self.0.set_budget(latkit::Budget { bytes: bytes as u64, upload_per_frame: upload_per_frame as u64 });
+    }
 }
 
 /// A listener; freeing it stops it.

@@ -10,12 +10,16 @@
 //! datasets the view owns.
 
 mod lanes;
+pub(crate) mod pyramid;
 mod shapes;
+pub(crate) mod sight;
+pub(crate) mod tiled;
 pub(crate) mod tiles;
 
 pub(crate) use lanes::{answer as lanes_answer, spread};
 
 use std::hash::{Hash, Hasher};
+use std::task::Waker;
 
 use rustc_hash::{FxHashMap, FxHasher};
 
@@ -117,16 +121,18 @@ impl<T, A: Answer> Derived<T, A> {
 /// goes to the host as jobs.
 const FRAME_WORK: u32 = 4000;
 
-/// The frame's budget of inline work and the host's pool, which every derivation shares.
+/// The frame's budget of inline work and the host's pool, which every derivation shares. Each job
+/// and fetch wakes the view when it lands.
 pub(crate) struct Jobs<'a> {
     host: Option<&'a dyn Host>,
+    waker: &'a Waker,
     /// Microseconds of inline work left this frame, by estimate.
     left: u32,
 }
 
 impl<'a> Jobs<'a> {
-    pub(crate) fn new(host: Option<&'a dyn Host>) -> Jobs<'a> {
-        Jobs { host, left: FRAME_WORK }
+    pub(crate) fn new(host: Option<&'a dyn Host>, waker: &'a Waker) -> Jobs<'a> {
+        Jobs { host, waker, left: FRAME_WORK }
     }
 
     /// Whether work of `cost` microseconds fits what is left of the frame's budget, spending it if so.
@@ -138,6 +144,11 @@ impl<'a> Jobs<'a> {
         fits
     }
 
+    /// Microseconds of inline work left this frame, by estimate.
+    pub(crate) fn left(&self) -> u64 {
+        u64::from(self.left)
+    }
+
     /// Spends `cost` microseconds of the budget whether it fits or not: work the frame cannot defer.
     pub(crate) fn spend(&mut self, cost: u64) {
         self.left = self.left.saturating_sub(cost.min(u64::from(u32::MAX)) as u32);
@@ -145,29 +156,34 @@ impl<'a> Jobs<'a> {
 
     /// Has the host do `job` off the frame; without a host, at once.
     pub(crate) fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
-        match self.host {
+        let pending = match self.host {
             Some(host) => host.spawn(job),
             None => Pending::ready(Ok(job.run())),
-        }
+        };
+        pending.notify(self.waker);
+        pending
     }
 
     /// Has the host fetch `request`; without a host, nothing can be fetched.
     pub(crate) fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
-        match self.host {
+        let pending = match self.host {
             Some(host) => host.fetch(request),
             None => Pending::ready(Err(crate::Error::Unsupported("fetching needs a host".into()))),
-        }
+        };
+        pending.notify(self.waker);
+        pending
     }
 }
 
-/// What every derivation reads: the scene and its data, the host that measures text, and whether rows
-/// are being dragged.
+/// What every derivation reads: the scene and its data, the host that measures text and does jobs,
+/// what a landing job wakes, and whether rows are being dragged.
 pub(crate) struct Input<'a> {
     pub(crate) scene: &'a Scene,
     /// Bumps whenever the scene changes.
     pub(crate) scene_version: u64,
     pub(crate) data: &'a [Data],
     pub(crate) host: Option<&'a dyn Host>,
+    pub(crate) waker: &'a Waker,
     /// Whether rows are being dragged: what they move derives on the frame, however much.
     pub(crate) dragging: bool,
 }
@@ -209,6 +225,8 @@ pub(crate) struct Derivations {
     shapes: shapes::Shapes,
     /// The tiles the camera asks for, as datasets the view owns.
     pub(crate) tiles: tiles::TileSets,
+    /// What the view draws of each dataset it draws in part.
+    pub(crate) tiled: tiled::Tiled,
 }
 
 /// The derived tables beside one drawn table: the sheet's or the lanes', then the shapes'.
@@ -217,7 +235,7 @@ pub(crate) type Beside<'a> = [Option<&'a Table>; 2];
 impl Derivations {
     /// Brings every derivation up to `input`; whether any table changed.
     pub(crate) fn update(&mut self, input: &Input<'_>) -> bool {
-        let mut jobs = Jobs::new(input.host);
+        let mut jobs = Jobs::new(input.host, input.waker);
         let diagram = matches!(input.scene.space, Space::Diagram(_));
         let (on, off): (&mut dyn Derive, &mut dyn Derive) =
             if diagram { (&mut self.sheet, &mut self.lanes) } else { (&mut self.lanes, &mut self.sheet) };
@@ -227,9 +245,9 @@ impl Derivations {
         changed
     }
 
-    /// Whether any derivation's work is under way.
+    /// Whether a job or a fetch any derivation asked for is under way.
     pub(crate) fn busy(&self) -> bool {
-        self.sheet.busy() || self.lanes.busy() || self.shapes.busy() || self.tiles.busy()
+        self.sheet.busy() || self.lanes.busy() || self.shapes.busy() || self.tiles.busy() || self.tiled.busy()
     }
 
     /// Whether shapes are being triangulated or bent: until they land, marks draw the ones before.

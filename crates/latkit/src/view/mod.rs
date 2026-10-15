@@ -2,7 +2,6 @@
 
 mod axes;
 mod camera;
-mod cover;
 mod event;
 mod fit;
 mod focus;
@@ -14,6 +13,7 @@ mod labels;
 mod lists;
 mod marks;
 mod passes;
+mod plan;
 mod probe;
 mod program;
 mod query;
@@ -26,7 +26,9 @@ mod timer;
 mod transition;
 mod uniforms;
 mod variants;
+mod wake;
 
+use std::sync::Arc;
 use std::task::Waker;
 use std::time::Duration;
 
@@ -50,7 +52,7 @@ use web_time::Instant;
 use crate::derive::{Derivations, Derived};
 use crate::expr::compile::Deps;
 use crate::scene::mark::Context;
-use crate::{Data, Error, Gpu, Result, Row, Scene, Space};
+use crate::{Data, Gpu, Result, Row, Scene, Space};
 
 /// Where a frame is drawn: a texture view, its format and size in physical pixels, and how many
 /// physical pixels make a CSS pixel.
@@ -87,6 +89,9 @@ pub struct View {
     scene: Scene,
     /// Bumps whenever the scene changes.
     scene_version: u64,
+    /// The datasets given, and those the view fetches as the camera asks, by name.
+    sources: Vec<Data>,
+    /// What marks draw of each: the dataset as it is, or as drawn in part.
     data: Vec<Data>,
     /// What the view derives from the data and the scene: tables beside the tables it draws, row for
     /// row, which marks read like data.
@@ -102,7 +107,9 @@ pub struct View {
     at: f64,
     start: Instant,
     events: Vec<Event>,
-    waker: Option<Waker>,
+    /// What landing work wakes, and the waker it is: readbacks, jobs, and fetches hold it.
+    signal: Arc<wake::Signal>,
+    waker: Waker,
     resources: Option<Resources>,
     /// Marks' regions of the program buffer.
     regions: Regions,
@@ -110,8 +117,6 @@ pub struct View {
     regions_dirty: bool,
     /// Something visible changed since the last frame.
     changed: bool,
-    /// The last upload error reported, so a lasting one is reported once.
-    upload_error: Option<Error>,
     /// Whether the application was told the device was lost.
     told_lost: bool,
     /// The format and samples per pixel the scene's pipelines were made for.
@@ -133,6 +138,8 @@ pub struct View {
     /// The size of the last frame, CSS pixels, and its pixel ratio.
     size: [f64; 2],
     pixel_ratio: f32,
+    /// Pixel columns a trace spans at most: as many as the plan holds.
+    trace_columns: u32,
     stats: Stats,
 }
 
@@ -142,10 +149,12 @@ impl View {
     pub fn new(gpu: &Gpu, scene: Scene) -> Result<View> {
         scene.check()?;
         let camera = Camera::default_for(&scene.space);
+        let signal = Arc::new(wake::Signal::default());
         let mut view = View {
             gpu: gpu.clone(),
             scene: Scene::new(scene.space.clone()),
             scene_version: 0,
+            sources: Vec::new(),
             data: Vec::new(),
             derived: Derivations::default(),
             marks: Vec::new(),
@@ -157,12 +166,12 @@ impl View {
             at: f64::INFINITY,
             start: Instant::now(),
             events: Vec::new(),
-            waker: None,
+            waker: Waker::from(signal.clone()),
+            signal,
             resources: None,
             regions: Regions::default(),
             regions_dirty: true,
             changed: true,
-            upload_error: None,
             told_lost: false,
             pipelines_made: None,
             shadow_map: Derived::default(),
@@ -177,6 +186,7 @@ impl View {
             pointer: None,
             size: [0.0; 2],
             pixel_ratio: 1.0,
+            trace_columns: u32::MAX,
             stats: Stats::default(),
         };
         view.show(scene)?;
@@ -207,7 +217,7 @@ impl View {
                 continue;
             }
             let mut shown = Shown::new(mark.clone());
-            shown.compile(&self.data, context, &mut inner).map_err(|e| e.at(i).at("marks"))?;
+            shown.compile(&self.sources, context, &mut inner).map_err(|e| e.at(i).at("marks"))?;
             fresh.push(Some(shown));
         }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
@@ -269,22 +279,22 @@ impl View {
     }
 
     /// Takes `data` with the GPU's state locked: marks whose schema it changed compile again, and
-    /// those that fail wait for the frame to report it.
+    /// those that fail wait for the frame to report it. The frame draws it, as it is or in part.
     fn take_data(&mut self, data: Data, inner: &mut crate::gpu::Inner) {
-        let at = match self.data.binary_search_by(|d| d.name().cmp(data.name())) {
+        let at = match self.sources.binary_search_by(|d| d.name().cmp(data.name())) {
             Ok(i) => {
-                self.data[i] = data;
+                self.sources[i] = data;
                 i
             }
             Err(i) => {
-                self.data.insert(i, data);
+                self.sources.insert(i, data);
                 i
             }
         };
         let context = Context { theme: &self.scene.theme, space: &self.scene.space };
         for shown in &mut self.marks {
-            if shown.stale(&self.data[at])
-                && let Err(e) = shown.compile(&self.data, context, inner)
+            if shown.stale(&self.sources[at])
+                && let Err(e) = shown.compile(&self.sources, context, inner)
             {
                 shown.failed = Some(e);
             }
@@ -295,8 +305,18 @@ impl View {
         self.wake();
     }
 
-    /// The dataset named `name`.
+    /// The dataset named `name`, as given, or as the view fetches it.
     pub fn data(&self, name: &str) -> Option<&Data> {
+        self.source(name)
+    }
+
+    /// The dataset named `name`, whole.
+    fn source(&self, name: &str) -> Option<&Data> {
+        self.sources.iter().find(|d| d.name() == name)
+    }
+
+    /// What marks draw of the dataset named `name`: it as it is, or as drawn in part.
+    fn drawn(&self, name: &str) -> Option<&Data> {
         self.data.iter().find(|d| d.name() == name)
     }
 
@@ -317,6 +337,7 @@ impl View {
 
     /// Stops drawing the dataset named `name`.
     pub fn remove_data(&mut self, name: &str) {
+        self.sources.retain(|d| d.name() != name);
         self.data.retain(|d| d.name() != name);
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
@@ -451,11 +472,17 @@ impl View {
     /// What the view did.
     pub fn stats(&self) -> Stats {
         let inner = self.gpu.0.lock();
+        let rows = |m: &Shown| {
+            let style = m.mark.style();
+            self.source(&style.data).and_then(|d| d.table(&style.table)).map_or(0, |t| t.len() as u64)
+        };
         Stats {
-            rows: self.marks.iter().map(|m| u64::from(m.rows)).sum(),
+            rows: self.marks.iter().map(rows).sum(),
+            drawn: self.marks.iter().map(|m| u64::from(m.rows)).sum(),
             uploading: inner.arena.pending(),
-            gpu_bytes: inner.arena.resident(),
-            covered: self.marks.iter().map(|m| u64::from(m.crowding.covered())).sum(),
+            resident: inner.arena.resident(),
+            budget: inner.budget.bytes.min(inner.arena.capacity()),
+            waiting: self.waiting(),
             ..self.stats
         }
     }
@@ -465,35 +492,42 @@ impl View {
         self.events.drain(..)
     }
 
-    /// Woken when the view needs a frame without being asked: uploads finish, motion continues.
+    /// Woken when the view needs a frame without being asked: work it waited on lands, data or the
+    /// camera changes.
     pub fn set_waker(&mut self, waker: Waker) {
-        self.waker = Some(waker);
+        self.signal.set_waker(waker);
     }
 
-    /// Whether a frame would differ from the last one, or the view waits on the GPU.
+    /// Whether a frame would differ from the last one: something changed, moves, or streams in, or
+    /// work the view waited on landed. While it only waits, it needs none: what it waits on wakes it.
     pub fn needs_render(&self) -> bool {
         self.changed
-            || self.fitting.busy()
+            || self.signal.landed()
             || self.rig.moving()
-            || self.probing.busy()
-            || self.queries.busy()
-            || self.derived.busy()
-            || self.awaiting()
-            || self.labels.busy()
-            || self
-                .marks
-                .iter()
-                .any(|m| m.dirty != 0 || m.reduce || m.tables.waiting() || m.begin.is_some() || m.segments.found.busy())
-            || self.marks.iter().any(|m| m.transition.is_some())
+            || self.fitting.due()
+            || self.probing.due()
+            || self.queries.due()
+            || self.derived.tiled.due()
+            || self.labels.fading()
+            // A mark evaluates once its columns synced: until then, the pages they wait for wake it.
+            || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
             || self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME)))
             || self.gpu.0.lock().arena.uploading()
     }
 
     fn wake(&mut self) {
         self.changed = true;
-        if let Some(waker) = &self.waker {
-            waker.wake_by_ref();
-        }
+        self.signal.ask();
+    }
+
+    /// Whether work the view waits on is under way.
+    fn waiting(&self) -> bool {
+        self.derived.busy()
+            || self.fitting.reading()
+            || self.probing.reading()
+            || self.queries.reading()
+            || self.labels.reading()
+            || self.marks.iter().any(|m| m.segments.found.busy())
     }
 
     fn invalidate(&mut self) {

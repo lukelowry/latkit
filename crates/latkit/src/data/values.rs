@@ -157,6 +157,27 @@ impl Values {
         }
     }
 
+    /// Calls `f` with every value as `number` reads it, `None` where missing: a loop per storage,
+    /// allocating nothing.
+    pub(crate) fn each_number(&self, mut f: impl FnMut(Option<f64>)) {
+        macro_rules! each {
+            ($v:expr, $number:expr) => {
+                match &self.valid {
+                    None => $v.iter().for_each(|&x| f(Some($number(x)))),
+                    Some(valid) => $v.iter().enumerate().for_each(|(i, &x)| f(valid.get(i).then(|| $number(x)))),
+                }
+            };
+        }
+        match &self.array {
+            Array::F64(v) => each!(v, |x: f64| x),
+            Array::F32(v) => each!(v, f64::from),
+            Array::I32(v) => each!(v, f64::from),
+            Array::U32(v) => each!(v, f64::from),
+            Array::U64(v) => each!(v, |x: u64| x as f64),
+            _ => (0..self.len()).for_each(|i| f(self.is_valid(i).then(|| self.number(i)))),
+        }
+    }
+
     /// Value `i` as a number; booleans are 0 or 1, others NaN.
     pub(crate) fn number(&self, i: usize) -> f64 {
         match &self.array {
@@ -167,6 +188,22 @@ impl Values {
             Array::U64(v) => v[i] as f64,
             Array::Bool(v) => f64::from(u8::from(v.get(i))),
             Array::Text(_) | Array::Geometry(_) => f64::NAN,
+        }
+    }
+
+    /// The values as `u32`s, when they are stored so and none is missing.
+    pub(crate) fn u32s(&self) -> Option<&[u32]> {
+        match (&self.array, &self.valid) {
+            (Array::U32(v), None) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// The values as `u64`s, when they are stored so and none is missing.
+    pub(crate) fn u64s(&self) -> Option<&[u64]> {
+        match (&self.array, &self.valid) {
+            (Array::U64(v), None) => Some(v),
+            _ => None,
         }
     }
 

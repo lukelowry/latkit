@@ -4,7 +4,7 @@
 
 import package::lib::types::{
     NONE, MISSING, COLUMN_WORDS, COLUMN_FLAGS, COLUMN_ROWS, COLUMN_TABLE, COLUMN_LOW, COLUMN_JOIN, COLUMN_T,
-    SAMPLED, STEP, PAGE_BITS, PAGE_MASK,
+    SAMPLED, STEP, PAGE_BITS, PAGE_MASK, POINT_BITS, POINT_MASK,
 };
 import package::lib::bind::{pages, program, mark};
 
@@ -92,31 +92,40 @@ fn column_value(column: u32, row: u32) -> vec2u {
     return static_value(column, r);
 }
 
-// One row's points in a geometry column: the word of its first point in `pages`, and how many.
-// Parts are broken by a missing point.
+// One row's points in a geometry column: where its page's blocks of points are listed in `program`,
+// its first point among the page's, and how many. Parts are broken by a missing point.
 struct Points {
-    start: u32,
+    blocks: u32,
+    first: u32,
     count: u32,
 }
 
-// Row `row`'s points of geometry column `column`. A geometry page holds its row count, then each
-// row's first point and the end (in points), then every point as x and y bits.
+// Row `row`'s points of geometry column `column`. The column's table holds, per page, the block of
+// each row's first point, where the page's blocks of points are listed in the table, and how many
+// points the page has; a block holds `1 << POINT_BITS` points as x and y bits.
 fn points_of(column: u32, row: u32) -> Points {
     if column == NONE || row >= column_word(column, COLUMN_ROWS) {
-        return Points(0u, 0u);
+        return Points(0u, 0u, 0u);
     }
-    let block = program[column_word(column, COLUMN_TABLE) + (row >> PAGE_BITS)];
-    if block == NONE {
-        return Points(0u, 0u);
+    let rows = column_word(column, COLUMN_ROWS);
+    let table = column_word(column, COLUMN_TABLE);
+    let page = table + 3u * (row >> PAGE_BITS);
+    let firsts = program[page];
+    if firsts == NONE {
+        return Points(0u, 0u, 0u);
     }
     let local = row & PAGE_MASK;
-    let rows = pages[block];
-    let first = pages[block + 1u + local];
-    let end = pages[block + 2u + local];
-    return Points(block + 2u + rows + 2u * first, end - first);
+    let first = pages[firsts + local];
+    var end = program[page + 2u];
+    if local < PAGE_MASK && row + 1u < rows {
+        end = pages[firsts + local + 1u];
+    }
+    return Points(table + program[page + 1u], first, end - first);
 }
 
 // Point `k` of a row's points, as x and y bits.
 fn point_bits(points: Points, k: u32) -> vec2u {
-    return vec2u(pages[points.start + 2u * k], pages[points.start + 2u * k + 1u]);
+    let i = points.first + k;
+    let at = program[points.blocks + (i >> POINT_BITS)] + 2u * (i & POINT_MASK);
+    return vec2u(pages[at], pages[at + 1u]);
 }

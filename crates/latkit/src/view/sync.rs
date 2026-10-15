@@ -14,11 +14,11 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::data::{Column, Field, FramePage, Geometry, LEVELS, PAGE_ROWS, PageId, Samples, Version, bucket_frames};
+use crate::data::{Column, Field, FramePage, LEVELS, PAGE_ROWS, PageId, Samples, Version, bucket_frames};
 use crate::derive::Beside;
 use crate::expr::compile::{ColumnUse, Part, Program, Reads};
 use crate::gpu::Inner;
-use crate::gpu::arena::{Content, PageKey, page_words};
+use crate::gpu::arena::{Content, PIECE_POINTS, PageKey, path_pieces, path_points};
 use crate::gpu::shaders as wgsl;
 use crate::{Data, Name, Table};
 
@@ -445,7 +445,7 @@ impl Builder<'_> {
             Some(Field::Values(values, _)) if column.part == Part::Codes => {
                 let field = (data, &table.name, &column.name);
                 for page in values.pages() {
-                    let key = PageKey { page: page.id, part: Part::Codes, low: false };
+                    let key = PageKey::of(page.id, Part::Codes, false);
                     let dictionary = self.gpu.dictionaries.field(field.0, field.1, field.2);
                     dictionary.scan(page);
                     let codes = &mut self.gpu.dictionaries;
@@ -455,6 +455,7 @@ impl Builder<'_> {
                     self.push(key, offset);
                 }
             }
+            Some(Field::Values(values, _)) if column.part == Part::Path => self.path(values),
             Some(Field::Values(values, _)) => {
                 self.pages(values, column.part, false);
                 if column.low {
@@ -487,7 +488,7 @@ impl Builder<'_> {
         d[wgsl::COLUMN_LOW as usize] = wgsl::NONE;
         d[wgsl::COLUMN_JOIN as usize] = wgsl::NONE;
         for (id, words) in &join.pages {
-            let key = PageKey { page: *id, part: Part::Bits, low: false };
+            let key = PageKey::of(*id, Part::Bits, false);
             let offset = self.gpu.arena.get(key, words.len() as u32, || Content::Words(words.to_vec()));
             self.push(key, offset);
         }
@@ -496,24 +497,45 @@ impl Builder<'_> {
 
     fn pages(&mut self, column: &Column, part: Part, low: bool) {
         for page in column.pages() {
-            let key = PageKey { page: page.id, part, low };
+            let key = PageKey::of(page.id, part, low);
             let values = page.values.clone();
-            let offset = if part == Part::Path {
-                // A geometry's points take as many words as they do; a resident page holds them all.
-                self.points += values.geometry().map_or(0, Geometry::points) as u32;
-                self.gpu.arena.get(key, 1, || Content::Words(page_words(&values, part, low)))
-            } else {
-                self.gpu.arena.get(key, values.len() as u32, || Content::Values { values, part, low })
-            };
+            let offset = self.gpu.arena.get(key, values.len() as u32, || Content::Values { values, part, low });
             self.push(key, offset);
+        }
+    }
+
+    /// A geometry column's table, as `lib/read.wesl` reads it: per page, the block of each row's
+    /// first point, where the page's blocks of points are listed in the table, and how many points
+    /// it has; then those lists. A page's points take as many blocks of a chunk as they need.
+    fn path(&mut self, column: &Column) {
+        let pages = column.pages();
+        self.words.resize(3 * pages.len(), 0);
+        for (p, page) in pages.iter().enumerate() {
+            let points = path_points(&page.values);
+            self.points += points as u32;
+            let mut made: Option<Vec<Vec<u32>>> = None;
+            let mut blocks = Vec::with_capacity(1 + points.div_ceil(PIECE_POINTS));
+            for piece in 0..=points.div_ceil(PIECE_POINTS) {
+                let key = PageKey { page: page.id, part: Part::Path, low: false, piece: piece as u32 };
+                let offset = self.gpu.arena.get(key, 1, || {
+                    let pieces = made.get_or_insert_with(|| path_pieces(&page.values));
+                    Content::Words(std::mem::take(&mut pieces[piece]))
+                });
+                self.pins.push(key);
+                self.ready &= offset.is_some();
+                blocks.push(offset.unwrap_or(wgsl::NONE));
+            }
+            let listed = self.words.len() as u32;
+            self.words[3 * p..3 * p + 3].copy_from_slice(&[blocks[0], listed, points as u32]);
+            self.words.extend(&blocks[1..]);
         }
     }
 
     /// What a line draws, laid out as `lib/trace.wesl` reads it: a header (the first frame and how
     /// many, axis page and row block counts, the level, its first bucket and how many), the axis
-    /// pages as (offset, first frame), per row block where its frame pages and level pages start and
-    /// how many, then those pages as (offset, first frame or bucket, words per entry). Offsets within
-    /// the table are relative to it.
+    /// pages as (offset, first frame), per row block how many frame pages, pages of least values, and
+    /// pages of greatest values it has and where each list starts, then those pages as (offset, first
+    /// frame or bucket, words per entry). Offsets within the table are relative to it.
     fn trace(&mut self, samples: &Samples, plan: Plan, rows: usize) {
         let span = bucket_frames(plan.level);
         let axis_frames =
@@ -532,7 +554,7 @@ impl Builder<'_> {
         ]);
         for (i, page) in axis.iter().enumerate() {
             let through = axis.get(i + 1).map_or(axis_frames.end, |next| next.first).min(axis_frames.end);
-            let key = PageKey { page: page.id, part: Part::Values, low: false };
+            let key = PageKey::of(page.id, Part::Values, false);
             let need = through.saturating_sub(page.first) * 2;
             let offset = self.gpu.arena.get(key, need, || Content::Axis(page.clone()));
             self.pins.push(key);
@@ -540,17 +562,22 @@ impl Builder<'_> {
             self.words.extend([offset.unwrap_or(wgsl::NONE), page.first]);
         }
         let header = self.words.len();
-        self.words.resize(header + 4 * blocks, 0);
+        self.words.resize(header + 6 * blocks, 0);
         for block in 0..blocks {
             let frames = samples.frame_pages(block, plan.frames.clone());
-            self.words[header + 4 * block] = frames.len() as u32;
-            self.words[header + 4 * block + 1] = self.words.len() as u32;
+            self.words[header + 6 * block] = frames.len() as u32;
+            self.words[header + 6 * block + 1] = self.words.len() as u32;
             self.sample_pages(&frames, plan.frames.end);
-            let buckets =
-                if plan.level > 0 { samples.level_pages(block, plan.level, plan.buckets.clone()) } else { Vec::new() };
-            self.words[header + 4 * block + 2] = buckets.len() as u32;
-            self.words[header + 4 * block + 3] = self.words.len() as u32;
-            self.sample_pages(&buckets, plan.buckets.end);
+            for which in 0..2 {
+                let buckets = if plan.level > 0 {
+                    samples.level_pages(block, plan.level, which, plan.buckets.clone())
+                } else {
+                    Vec::new()
+                };
+                self.words[header + 6 * block + 2 + 2 * which] = buckets.len() as u32;
+                self.words[header + 6 * block + 3 + 2 * which] = self.words.len() as u32;
+                self.sample_pages(&buckets, plan.buckets.end);
+            }
         }
         self.plan = Some(plan);
     }
@@ -559,7 +586,7 @@ impl Builder<'_> {
     fn sample_pages(&mut self, pages: &[FramePage], end: u32) {
         for (i, page) in pages.iter().enumerate() {
             let through = pages.get(i + 1).map_or(end, |next| next.first).min(end);
-            let key = PageKey { page: page.id, part: Part::Values, low: false };
+            let key = PageKey::of(page.id, Part::Values, false);
             let need = through.saturating_sub(page.first) * page.rows;
             let offset = self.gpu.arena.get(key, need, || Content::Frames(page.clone()));
             self.pins.push(key);
@@ -574,7 +601,7 @@ impl Builder<'_> {
             let mut cursor = [wgsl::NONE, 0, wgsl::NONE, 0, 0, 0];
             for (i, f) in [frame, frame.map(|f| f + 1)].into_iter().enumerate() {
                 let Some((page, base)) = f.and_then(|f| samples.cursor(block, f)) else { continue };
-                let key = PageKey { page: page.id, part: Part::Values, low: false };
+                let key = PageKey::of(page.id, Part::Values, false);
                 let rows_in_page = page.rows;
                 let offset = self.gpu.arena.get(key, base + rows_in_page, || Content::Frames(page.clone()));
                 self.pins.push(key);

@@ -117,6 +117,26 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     }
 }
 
+/// Asks for an animation frame of the `Gpu` whose shared state lies at `gpu`: what a view's waker does
+/// when work it waited on lands, always on the page's one thread.
+struct Wakes {
+    gpu: usize,
+}
+
+impl std::task::Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let frames = FRAMES
+            .with(|all| all.borrow().iter().find(|f| Arc::as_ptr(&f.borrow().gpu.0) as usize == self.gpu).cloned());
+        if let Some(frames) = frames {
+            schedule(&frames);
+        }
+    }
+}
+
 /// Calls `listener` with the frame's timestamp, milliseconds as `requestAnimationFrame` gives it,
 /// every animation frame before `gpu`'s canvases draw, until the returned listener is dropped.
 pub fn on_frame(gpu: &Gpu, listener: impl FnMut(f64) + 'static) -> Listener {
@@ -166,7 +186,9 @@ type Resizing = (ResizeObserver, Closure<dyn FnMut(JsValue)>);
 impl Canvas {
     /// Draws `view` into `element`. The `Gpu` must come from [`Gpu::new`]; it sets text with the
     /// browser's fonts unless it was given a host.
-    pub fn new(gpu: &Gpu, element: &HtmlCanvasElement, view: View) -> Result<Canvas> {
+    pub fn new(gpu: &Gpu, element: &HtmlCanvasElement, mut view: View) -> Result<Canvas> {
+        // The view sleeps while it waits; what it waits on asks for the next frame as it lands.
+        view.set_waker(std::task::Waker::from(Arc::new(Wakes { gpu: Arc::as_ptr(&gpu.0) as usize })));
         let (Some(instance), Some(adapter)) = (gpu.instance(), gpu.adapter()) else {
             return Err(Error::Unsupported("a canvas draws with a Gpu made by Gpu::new".into()));
         };

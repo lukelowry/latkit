@@ -154,17 +154,23 @@ pub enum Cursor {
 pub struct Stats {
     /// Frames rendered.
     pub frames: u64,
-    /// Rows of every mark.
+    /// Rows of every mark's table.
     pub rows: u64,
+    /// Rows every mark draws: every row of a table drawn whole, the rows of the tiles in view of one
+    /// drawn through tiles.
+    pub drawn: u64,
     /// Bytes of data waiting to upload.
     pub uploading: u64,
-    /// Bytes of data resident on the GPU, for every view of its `Gpu`.
-    pub gpu_bytes: u64,
+    /// Bytes of data pages on the GPU, for every view of its `Gpu`.
+    pub resident: u64,
+    /// Bytes the GPU's [`Budget`](crate::Budget) lets data take.
+    pub budget: u64,
+    /// Whether work the view waits on is under way: jobs, fetches, or answers the GPU reads back. It
+    /// wakes the view as it lands.
+    pub waiting: bool,
     /// Milliseconds the last frame took to record on the CPU.
     pub cpu_ms: f32,
     /// Milliseconds the GPU takes on a frame: the median of the last frames it measured; 0 where the
     /// device cannot measure.
     pub gpu_ms: f32,
-    /// Instances crowded marks left out under later ones in their cells, as last counted.
-    pub covered: u64,
 }

@@ -281,6 +281,15 @@ impl<'a> Compiler<'a> {
         Ok(self.column(ColumnUse::own(name, Part::Bits)))
     }
 
+    /// Refuses `expr` for option `name` when it reads anything but static fields: the CPU works it
+    /// out from the data alone, as it does a row's priority.
+    pub(crate) fn check_data(&self, name: &str, expr: &Expr) -> Result<()> {
+        match self.unstructural(expr) {
+            Some(reason) => Err(invalid(format!("{name} reads data only, not {reason}")).at(name)),
+            None => Ok(()),
+        }
+    }
+
     /// Refuses `exprs` for option `name` when they read anything but static fields: where a
     /// diagram's rows stand and how large they are is its structure, made from the data alone.
     pub(crate) fn check_structure<'e>(&self, name: &str, exprs: impl IntoIterator<Item = &'e Expr>) -> Result<()> {

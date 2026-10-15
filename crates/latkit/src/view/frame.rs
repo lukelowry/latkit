@@ -1,7 +1,7 @@
 //! One frame, in order: settle readbacks, advance the camera, derive what marks read beside their
 //! data, sync columns, stream uploads, fit rows into their regions, freeze transitions, pack the
-//! program buffer, write focus and uniforms, then record the compute, shadow, label, cover, render,
-//! and probe passes into the caller's encoder. Nothing here submits.
+//! program buffer, write focus and uniforms, then record the compute, shadow, label, render, and
+//! probe passes into the caller's encoder. Nothing here submits.
 
 use web_time::Instant;
 
@@ -30,6 +30,7 @@ impl View {
             return;
         }
         let started = Instant::now();
+        self.signal.clear();
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         if let Some(timer) = &mut self.timer {
@@ -77,9 +78,6 @@ impl View {
             frame.query = words;
         }
         self.label_words(&mut frame);
-        let zoom = f64::from(frame.zoom);
-        let cover = self.lay_out_cover(&mut frame, target.size, zoom);
-        self.resources.as_mut().expect("created").fit_cover(device, cover);
         let main = uniforms::eye(&projected, self.size, self.pixel_ratio);
         let light = self.shade(&mut frame, &main);
         let sprites = self.overlay(&mut inner, queue);
@@ -93,7 +91,6 @@ impl View {
             self.shadow_map.mark(0);
         }
         self.place_labels(encoder, &mut inner, &main);
-        self.cover(encoder, &mut inner, cover);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
         self.draw(encoder, &mut inner, target, sprites.len() as u32, depth);
         if let Some(point) = probe {
@@ -161,14 +158,16 @@ impl View {
     }
 
     /// Derives what marks read beside their data, from the data and the scene alone, handing the
-    /// host what the frame cannot afford. First the tiles the camera asks for, whose datasets the
-    /// rest derive from.
+    /// host what the frame cannot afford. First the tiles the camera asks for: the datasets vector
+    /// tiles make, then what each dataset drawn in part draws, which the rest derive from.
     fn derive(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let projected = self.projected();
-        let sight = derive::tiles::Sight { projected: &projected, size: self.size };
-        let jobs = derive::Jobs::new(host.as_deref());
         let earth = matches!(self.scene.space, crate::Space::Earth(_));
+        let placing = earth || matches!(self.scene.space, crate::Space::Plane(_));
+        let sight = derive::sight::Sight { projected: &projected, size: self.size, earth };
+        let waker = self.waker.clone();
+        let mut jobs = derive::Jobs::new(host.as_deref(), &waker);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
         tiles.update(&self.derive_input(host.as_deref()), earth.then_some(&sight), &jobs);
         self.events.extend(tiles.take_errors().into_iter().map(Event::Error));
@@ -176,11 +175,50 @@ impl View {
             self.take_data(data, inner);
         }
         self.derived.tiles = tiles;
+        let (plans, trace_columns) = self.plan(inner.budget.bytes);
+        self.trace_columns = trace_columns;
+        let pinned: Vec<crate::Row> = self.focus.selection.iter().chain(&self.focus.fitting).cloned().collect();
+        let ask = derive::tiled::Ask {
+            sources: &self.sources,
+            plans: &plans,
+            sight: placing.then_some(&sight),
+            earth,
+            pinned: &pinned,
+            at: self.at,
+        };
+        let mut tiled = std::mem::take(&mut self.derived.tiled);
+        let (changed, _) = tiled.update(&ask, &mut jobs);
+        self.derived.tiled = tiled;
+        self.follow_sources(&changed);
         let mut derived = std::mem::take(&mut self.derived);
         if derived.update(&self.derive_input(host.as_deref())) {
             self.changed = true;
         }
         self.derived = derived;
+    }
+
+    /// Makes what marks draw follow the sources: each dataset as it is, or as drawn in part, which
+    /// `changed` holds the new versions of.
+    fn follow_sources(&mut self, changed: &[crate::Data]) {
+        let mut next = Vec::with_capacity(self.sources.len());
+        for source in &self.sources {
+            let name = source.name();
+            let drawn = match changed.iter().find(|d| d.name() == name).cloned() {
+                Some(drawn) => drawn,
+                None if self.derived.tiled.draws(name) => match self.drawn(name) {
+                    Some(drawn) => drawn.clone(),
+                    None => continue,
+                },
+                None => source.clone(),
+            };
+            next.push(drawn);
+        }
+        if next != self.data {
+            self.data = next;
+            // Rows may have moved under the focus.
+            self.focus.dirty = true;
+            self.fitting.plot_due = true;
+        }
     }
 
     /// What derivations read this frame.
@@ -190,6 +228,7 @@ impl View {
             scene_version: self.scene_version,
             data: &self.data,
             host,
+            waker: &self.waker,
             dragging: self.dragging(),
         }
     }
@@ -239,14 +278,7 @@ impl View {
         let gpu = self.gpu.clone();
         let waiting = self.sync(inner);
         let budget = inner.budget;
-        match inner.arena.pump(&gpu.0.device, &gpu.0.queue, budget.upload_per_frame, budget.bytes) {
-            Ok(_) => self.upload_error = None,
-            Err(error) if self.upload_error.as_ref() != Some(&error) => {
-                self.upload_error = Some(error.clone());
-                self.events.push(Event::Error(error));
-            }
-            Err(_) => {}
-        }
+        inner.arena.pump(&gpu.0.device, &gpu.0.queue, budget.upload_per_frame);
         if waiting {
             // Pages that just uploaded can show this frame.
             self.sync(inner);
@@ -283,7 +315,7 @@ impl View {
                 Camera::Plot { x, .. } => Some(x),
                 Camera::Map { .. } => None,
             },
-            columns: ((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32,
+            columns: (((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32).min(self.trace_columns),
         };
         // A drag moves rows at once.
         let easing = !self.scene.ease.is_zero() && !self.dragging();
@@ -308,6 +340,10 @@ impl View {
             let kept = moved.as_ref().is_none_or(|(sources, exits)| {
                 exits.is_empty() && sources.iter().enumerate().all(|(r, &s)| s == r as u32 || s == wgsl::NONE)
             });
+            // Rows that came, went, or moved evaluate every channel, constants included.
+            if moved.is_some() || shown.rows != table.len() as u32 {
+                shown.all_dirty();
+            }
             if easing && shown.held > 0 && (moved.is_some() || shown.static_columns(columns)) {
                 shown.begin(moved);
             } else if moved.is_some() {

@@ -93,11 +93,16 @@ impl View {
 
     /// Sets `bit` in the focus words of `rows` in every mark showing them (with `picked`, every
     /// pickable one), and lights the ends of each edge among them; returns the rows some mark shows.
+    /// A row its data holds stays shown while a table drawn in part does not draw it.
     fn focus_rows(&self, rows: &[Row], bit: u32, picked: bool, words: &mut HashMap<u32, u32>) -> Vec<Row> {
         let mut kept = Vec::new();
         for row in rows {
-            let Some(table) = self.data(&row.data).and_then(|d| d.table(&row.table)) else { continue };
-            let Some(index) = table.row(row.id.as_ref()) else { continue };
+            let held = self.data(&row.data).and_then(|d| d.table(&row.table)).and_then(|t| t.row(row.id.as_ref()));
+            if held.is_none() {
+                continue;
+            }
+            let table = self.drawn(&row.data).and_then(|d| d.table(&row.table));
+            let index = table.and_then(|t| t.row(row.id.as_ref()));
             let mut shows = false;
             for shown in &self.marks {
                 let style = shown.mark.style();
@@ -105,6 +110,7 @@ impl View {
                     continue;
                 }
                 shows = true;
+                let (Some(table), Some(index)) = (table, index) else { continue };
                 if (index as u32) < shown.rows {
                     *words.entry(shown.region.focus + index as u32).or_default() |= bit;
                 }
@@ -183,7 +189,7 @@ impl View {
         let Some(compiled) = &shown.compiled else { return 0 };
         let Some(column) = compiled.program.columns.get(compiled.drawing.geometry as usize) else { return 0 };
         let style = shown.mark.style();
-        let Some(data) = self.data(&style.data) else { return 0 };
+        let Some(data) = self.drawn(&style.data) else { return 0 };
         let Some(table) = data.table(&style.table) else { return 0 };
         let source = Source { data, table, derived: self.derived.beside(&style.data, &style.table) };
         let Some((_, table)) = table_of(column, &source, &self.data) else { return 0 };

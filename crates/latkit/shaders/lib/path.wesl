@@ -17,7 +17,7 @@ import package::lib::trace::{
     trace_first, trace_axis, trace_value, trace_level, trace_bucket_first, trace_buckets, trace_bucket,
 };
 import package::lib::focus::{faded, growth};
-import package::lib::mark::{px, fringe};
+import package::lib::mark::px;
 import package::lib::points::vertex_half;
 import package::lib::lists::{lists, list_entry, list_start, list_total};
 
@@ -409,12 +409,6 @@ fn segment_screen(s: Segment) -> OnScreen {
         out.b -= dir * min(outline(ends[1], dir), room);
     }
     return out;
-}
-
-// CSS pixels a segment on screen reaches from its middle, stroked as `style` says: what covering
-// measures a segment by.
-fn stroke_reach(on: OnScreen, style: Style) -> f32 {
-    return 0.5 * length(on.b - on.a) + 0.5 * style.width + fringe();
 }
 
 // How row `row`'s path is stroked: never thinner than a hairline. Comets flow in length units per

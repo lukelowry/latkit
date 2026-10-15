@@ -186,17 +186,34 @@ export type Fit =
 /** What a view does each frame. */
 export interface Stats {
   frames: number;
+  /** Rows of every mark's table. */
   rows: number;
+  /** Rows every mark draws: every row of a table drawn whole, the rows of the tiles in view of one
+   * drawn through tiles. */
+  drawn: number;
   /** Bytes of data waiting to upload. */
   uploading: number;
-  /** Bytes of data resident on the GPU. */
-  gpuBytes: number;
+  /** Bytes of data pages on the GPU, for every view of its GPU. */
+  resident: number;
+  /** Bytes the GPU's budget lets data take. */
+  budget: number;
+  /** Whether work the view waits on is under way: jobs, fetches, or answers the GPU reads back. */
+  waiting: boolean;
   /** Milliseconds the last frame took to record. */
   cpuMs: number;
   /** Milliseconds the GPU takes on a frame: the median of the last it measured; 0 where it cannot. */
   gpuMs: number;
-  /** Instances crowded marks left out under later ones in their cells, as last counted. */
-  covered: number;
+}
+
+/**
+ * How much GPU memory data takes. A view draws a table too large for its share of `bytes` through
+ * the tiles the camera asks for, so what it draws always fits; pages no view draws stay cached in
+ * the room left. By default half the device's largest storage buffer; set it before data draws.
+ */
+export interface Budget {
+  bytes: number;
+  /** Bytes uploaded per frame at most; larger data streams in over frames. */
+  uploadPerFrame: number;
 }
 
 /** Changes to a dataset, applied in order and all at once by {@link Data.apply}. */
@@ -353,6 +370,15 @@ export class Gpu {
   /** Whether the device was lost; a new `Gpu` is needed. */
   get lost(): boolean {
     return this.inner.lost;
+  }
+
+  /** How much GPU memory data takes. */
+  get budget(): Budget {
+    return this.inner.budget as Budget;
+  }
+
+  set budget(budget: Budget) {
+    this.inner.setBudget(budget.bytes, budget.uploadPerFrame);
   }
 
   destroy(): void {

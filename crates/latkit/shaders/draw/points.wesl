@@ -17,15 +17,8 @@ import package::lib::marker::{
 import package::lib::shade::{caster, daylight};
 import package::lib::mark::fringe;
 import package::lib::color::output;
-import package::lib::cover::covered;
 
 @group(2) @binding(15) var icons: texture_2d_array<f32>;
-
-// Whether this variant draws every row's marker into the view, where crowded cells are covered.
-@if(!ports && !focused && !casts)
-const MAIN_DRAW: bool = true;
-@else
-const MAIN_DRAW: bool = false;
 
 struct Varyings {
     @builtin(position) clip: vec4f,
@@ -88,7 +81,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     out.shape = d.shape;
     out.extra = d.extra;
     out.focus = d.p.focus;
-    if !d.p.shown || (MAIN_DRAW && covered(instance, d.center, max(d.reach.x, d.reach.y))) {
+    if !d.p.shown {
         out.clip = culled();
     }
     return out;

@@ -299,8 +299,9 @@ impl View {
         }
         self.count_found(encoder, inner, &segments);
         let resources = self.resources.as_ref().expect("created before passes");
-        (!measured.is_empty())
-            .then(|| Readback::new(&inner.readbacks, device, encoder, resources.extents(), 0, extent_bytes))
+        (!measured.is_empty()).then(|| {
+            Readback::new(&inner.readbacks, device, encoder, resources.extents(), 0, extent_bytes, &self.waker)
+        })
     }
 
     /// What this frame's compute pass does: the marks it evaluates, the segment lists it counts, the
@@ -507,6 +508,14 @@ impl View {
             pass.dispatch_workgroups(1, 1, 1);
         }
         let resources = self.resources.as_ref().expect("created before passes");
-        Readback::new(&inner.readbacks, device, encoder, resources.probe(), 0, u64::from(wgsl::PROBE_WORDS) * 4)
+        Readback::new(
+            &inner.readbacks,
+            device,
+            encoder,
+            resources.probe(),
+            0,
+            u64::from(wgsl::PROBE_WORDS) * 4,
+            &self.waker,
+        )
     }
 }

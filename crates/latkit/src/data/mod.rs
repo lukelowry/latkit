@@ -27,6 +27,7 @@ pub use values::{Kind, Value, Values};
 pub(crate) use {
     column::{Column, PAGE_ROWS, Page},
     geometry::{Geometry, GeometryBuilder},
+    ids::RowIds,
     name::{PageId, Version},
     patch::Op,
     samples::{AxisPage, FramePage, LEVELS, Samples, bucket_frames},

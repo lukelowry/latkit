@@ -73,8 +73,14 @@ pub(crate) struct Queries {
 }
 
 impl Queries {
-    pub(crate) fn busy(&self) -> bool {
-        !self.waiting.is_empty() || self.running.is_some() || self.reading.is_some()
+    /// Whether a query's answer is being read back.
+    pub(crate) fn reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
+    /// Whether a query waits to run.
+    pub(crate) fn due(&self) -> bool {
+        !self.waiting.is_empty() || self.running.is_some()
     }
 
     /// Where the running query's lists end in the lists buffer, in words.
@@ -120,14 +126,14 @@ impl View {
         if style.data != row.data || style.table != row.table {
             return None;
         }
-        let index = self.data(&style.data)?.table(&style.table)?.row(row.id.as_ref())?;
+        let index = self.drawn(&style.data)?.table(&style.table)?.row(row.id.as_ref())?;
         (index < self.marks[i].rows as usize).then_some(index as u32)
     }
 
     /// The row at `index` of mark `i`'s table.
     pub(super) fn row_at(&self, i: usize, index: u32) -> Option<Row> {
         let style = self.marks.get(i)?.mark.style();
-        let id = self.data(&style.data)?.table(&style.table)?.ids.id(index as usize)?;
+        let id = self.drawn(&style.data)?.table(&style.table)?.ids.id(index as usize)?;
         Some(Row { data: style.data.clone(), table: style.table.clone(), id })
     }
 
@@ -228,11 +234,19 @@ impl View {
         let resources = self.resources.as_ref().expect("created");
         let readback = if let Ask::Locate { .. } = &running.ask {
             let at = u64::from(wgsl::PROBE_LOCATE_X) * 4;
-            Readback::new(&inner.readbacks, device, encoder, resources.probe(), at, 16)
+            Readback::new(&inner.readbacks, device, encoder, resources.probe(), at, 16, &self.waker)
         } else {
             let front: u32 = running.marks.iter().map(|(_, l)| List::front_words(l.kept, l.stride)).sum();
             let base = u64::from(running.words[0]) * 4;
-            Readback::new(&inner.readbacks, device, encoder, resources.lists(), base, u64::from(front.max(1)) * 4)
+            Readback::new(
+                &inner.readbacks,
+                device,
+                encoder,
+                resources.lists(),
+                base,
+                u64::from(front.max(1)) * 4,
+                &self.waker,
+            )
         };
         let base = running.words[0];
         self.queries.reading = Some(Reading { ask: running.ask, marks: running.marks, base, readback });

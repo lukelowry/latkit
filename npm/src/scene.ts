@@ -448,6 +448,9 @@ interface Style {
   of: [data: string, table: string];
   color?: ExprInput;
   visible?: ExprInput;
+  /** Each row's priority, from its data alone: what matters more draws on top, stays drawn as a
+   * table too large to draw whole thins to the tiles in view, and is labeled first. */
+  priority?: ExprInput;
   /** Tells two marks of one table apart across scenes. */
   name?: string;
   /** Whether rows are hovered, clicked, and probed; on by default. */
@@ -483,7 +486,7 @@ export interface Label {
   /** CSS pixels, or units in a diagram; the theme's font size unless set. */
   size?: number;
   color?: ExprInput;
-  /** Where labels would overlap, the higher shows. */
+  /** Where labels would overlap, the higher shows; the mark's priority unless set. */
   priority?: ExprInput;
   /** How far a line runs before it wraps: CSS pixels, or units in a diagram. */
   maxWidth?: number;

@@ -1,8 +1,9 @@
 //! Bytes read back from the GPU: copied in a frame's encoder and mapped when the caller submits it,
-//! so reading never stalls a frame and never submits on its own. Map buffers come from a pool and
-//! go back to it once read, so hovering allocates nothing.
+//! so reading never stalls a frame and never submits on its own; once mapped, it wakes what waits on
+//! it. Map buffers come from a pool and go back to it once read, so hovering allocates nothing.
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::Waker;
 
 use crate::{Error, Result};
 
@@ -43,7 +44,9 @@ pub(crate) struct Readback {
 }
 
 impl Readback {
-    /// Copies `size` bytes of `source` from `offset`, to read once `encoder` is submitted.
+    /// Copies `size` bytes of `source` from `offset`, to read once `encoder` is submitted; `waker`
+    /// wakes once they can be read.
+    #[allow(clippy::too_many_arguments, reason = "where to copy from, and what to wake")]
     pub(crate) fn new(
         pool: &Readbacks,
         device: &wgpu::Device,
@@ -51,14 +54,17 @@ impl Readback {
         source: &wgpu::Buffer,
         offset: u64,
         size: u64,
+        waker: &Waker,
     ) -> Readback {
         let buffer = pool.take(device, size);
         encoder.copy_buffer_to_buffer(source, offset, &buffer, 0, size);
         let mapping = Arc::new(Mutex::new(Mapping::Waiting));
         let done = mapping.clone();
+        let waker = waker.clone();
         encoder.map_buffer_on_submit(&buffer, wgpu::MapMode::Read, ..size, move |result| {
             *done.lock().unwrap_or_else(PoisonError::into_inner) =
                 if result.is_ok() { Mapping::Ready } else { Mapping::Failed };
+            waker.wake();
         });
         Readback { buffer: Some(buffer), size, pool: pool.clone(), mapping }
     }

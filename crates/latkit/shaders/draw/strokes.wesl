@@ -10,10 +10,8 @@ import package::lib::path::PATH;
 import package::lib::bind::{frame, mark};
 import package::lib::project::{to_clip, nearer, culled};
 import package::lib::path::{
-    segment, segment_screen, stroke_style, stroke_reach, ends_colored, ends_part, path_count, path_length,
-    px_per_length,
+    segment, segment_screen, stroke_style, ends_colored, ends_part, path_count, path_length, px_per_length,
 };
-import package::lib::cover::covered;
 import package::lib::marker::{MarkerColor, glow};
 import package::lib::focus::focus_of;
 import package::lib::mark::fringe;
@@ -37,16 +35,11 @@ struct Varyings {
     @location(8) @interpolate(flat) focus: u32,
 }
 
-// Whether this variant draws lit rows, its quads reaching out to their glow; and whether it draws
-// every row's path into the view, where crowded cells are covered.
+// Whether this variant draws lit rows, its quads reaching out to their glow.
 @if(focused)
 const LIT_DRAW: bool = true;
 @if(!focused)
 const LIT_DRAW: bool = false;
-@if(!focused && !casts)
-const MAIN_DRAW: bool = true;
-@else
-const MAIN_DRAW: bool = false;
 
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
@@ -60,7 +53,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let style = stroke_style(s.row);
     let on = segment_screen(s);
     let ends = on.ends;
-    if !style.shown || !on.shown || (MAIN_DRAW && covered(instance, 0.5 * (on.a + on.b), stroke_reach(on, style))) {
+    if !style.shown || !on.shown {
         out.clip = culled();
         return out;
     }

@@ -167,7 +167,7 @@ pub(crate) fn value(value: &latkit::Value) -> JsValue {
     }
 }
 
-fn object(entries: &[(&str, JsValue)]) -> JsValue {
+pub(crate) fn object(entries: &[(&str, JsValue)]) -> JsValue {
     let object = Object::new();
     for (key, value) in entries {
         let _ = Reflect::set(&object, &(*key).into(), value);
@@ -290,15 +290,17 @@ pub(crate) fn event(event: &latkit::Event) -> JsValue {
     object(&[("type", JsValue::from_str(kind)), ("detail", detail)])
 }
 
-/// Stats as `{ frames, rows, uploading, gpuBytes, cpuMs, gpuMs, covered }`.
+/// Stats as `{ frames, rows, drawn, uploading, resident, budget, waiting, cpuMs, gpuMs }`.
 pub(crate) fn stats(stats: &latkit::Stats) -> JsValue {
     object(&[
         ("frames", (stats.frames as f64).into()),
         ("rows", (stats.rows as f64).into()),
+        ("drawn", (stats.drawn as f64).into()),
         ("uploading", (stats.uploading as f64).into()),
-        ("gpuBytes", (stats.gpu_bytes as f64).into()),
+        ("resident", (stats.resident as f64).into()),
+        ("budget", (stats.budget as f64).into()),
+        ("waiting", stats.waiting.into()),
         ("cpuMs", f64::from(stats.cpu_ms).into()),
         ("gpuMs", f64::from(stats.gpu_ms).into()),
-        ("covered", (stats.covered as f64).into()),
     ])
 }

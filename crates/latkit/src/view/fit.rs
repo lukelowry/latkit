@@ -21,8 +21,14 @@ pub(crate) struct Fitting {
 }
 
 impl Fitting {
-    pub(crate) fn busy(&self) -> bool {
-        self.wanted.is_some() || self.reading.is_some()
+    /// Whether extents are being read back.
+    pub(crate) fn reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
+    /// Whether a fit waits for a frame to measure it: none while extents are being read back.
+    pub(crate) fn due(&self) -> bool {
+        self.wanted.is_some() && self.reading.is_none()
     }
 }
 
@@ -76,7 +82,13 @@ impl View {
                 .marks
                 .iter()
                 .any(|m| m.kind() == MarkKind::Vertices && (m.transition.is_some() || m.begin.is_some()));
-        let ready = self.marks.iter().filter(|m| m.compiled.is_some()).all(|m| m.drawable() && !m.tables.waiting())
+        let all = matches!(self.fitting.wanted, Some(Fit::All));
+        // Everything a table drawn through tiles holds frames by its rows' bounds, whatever is drawn.
+        let ready = self
+            .marks
+            .iter()
+            .filter(|m| m.compiled.is_some())
+            .all(|m| (m.drawable() && !m.tables.waiting()) || (all && self.tiled_bounds(m).is_some()))
             && !self.derived.sheet.placing()
             && !self.derived.shaping()
             && !easing;
@@ -87,6 +99,17 @@ impl View {
                 return None;
             }
             if !ready {
+                return None;
+            }
+            // Where only tables drawn through tiles are measured, their bounds frame at once.
+            let tiled: Vec<[f64; 4]> =
+                self.marks.iter().filter(|m| m.measured()).filter_map(|m| self.tiled_bounds(m)).collect();
+            let gpu = self.marks.iter().any(|m| m.measured() && m.drawable() && self.tiled_bounds(m).is_none());
+            if all && !gpu && !tiled.is_empty() {
+                self.fitting.wanted = None;
+                let lo = tiled.iter().fold([f64::INFINITY; 2], |a, b| [a[0].min(b[0]), a[1].min(b[1])]);
+                let hi = tiled.iter().fold([f64::NEG_INFINITY; 2], |a, b| [a[0].max(b[2]), a[1].max(b[3])]);
+                self.frame_box([lo[0], lo[1], 0.0], [hi[0], hi[1], 0.0]);
                 return None;
             }
             let fit = self.fitting.wanted.take();
@@ -110,8 +133,16 @@ impl View {
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
         for (i, shown) in self.marks.iter().enumerate() {
+            if !shown.measured() {
+                continue;
+            }
+            if let Some([w, s, e, n]) = self.tiled_bounds(shown).filter(|_| matches!(fit, Some(Fit::All))) {
+                lo = [lo[0].min(w), lo[1].min(s), lo[2].min(0.0)];
+                hi = [hi[0].max(e), hi[1].max(n), hi[2].max(0.0)];
+                continue;
+            }
             let Some(e) = words.get(stride * i..stride * (i + 1)) else { break };
-            if !shown.measured() || e[3] == 0 {
+            if e[3] == 0 {
                 continue;
             }
             for k in 0..3 {
@@ -145,6 +176,12 @@ impl View {
         }
     }
 
+    /// The bounds of every row `shown` draws through tiles, whatever tiles are drawn.
+    fn tiled_bounds(&self, shown: &super::marks::Shown) -> Option<[f64; 4]> {
+        let style = shown.mark.style();
+        self.derived.tiled.bounds(&style.data, &style.table)
+    }
+
     /// Frames the box `min..max` at once, and keeps the camera within reach of it.
     fn frame_box(&mut self, min: [f64; 3], max: [f64; 3]) {
         let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.area());
@@ -172,7 +209,7 @@ impl View {
         let spans = self.marks.iter().filter_map(|shown| {
             let crate::Mark::Lines(lines) = &shown.mark else { return None };
             let style = shown.mark.style();
-            let table = self.data(&style.data)?.table(&style.table)?;
+            let table = self.drawn(&style.data)?.table(&style.table)?;
             match table.field_named(&lines.traced())? {
                 crate::data::Field::Sampled(samples, _) => samples.span(),
                 _ => None,

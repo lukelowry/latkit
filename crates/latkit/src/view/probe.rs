@@ -4,6 +4,7 @@
 
 use super::View;
 use super::event::{Hit, Sample};
+use super::marks::Shown;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
 use crate::{Camera, Row};
@@ -37,8 +38,14 @@ pub(crate) struct Probing {
 }
 
 impl Probing {
-    pub(crate) fn busy(&self) -> bool {
-        self.wanted.is_some() || self.reading.is_some()
+    /// Whether a probe is being read back.
+    pub(crate) fn reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
+    /// Whether a point waits for a frame to probe it: none while a probe is being read back.
+    pub(crate) fn due(&self) -> bool {
+        self.wanted.is_some() && self.reading.is_none()
     }
 
     pub(crate) fn hovered(&self) -> Option<&Probed> {
@@ -59,10 +66,12 @@ pub(crate) fn near(a: [f32; 2], b: [f32; 2], within: f32) -> bool {
 impl View {
     /// The point this frame probes: one waits and none is in flight.
     pub(super) fn probe_point(&mut self) -> Option<[f32; 2]> {
-        if self.probing.reading.is_some() || self.marks.iter().all(|m| !m.drawable()) {
+        if self.probing.reading.is_some() {
             return None;
         }
-        self.probing.wanted.take()
+        // Where nothing is drawn, there is nothing to probe.
+        let point = self.probing.wanted.take();
+        point.filter(|_| self.marks.iter().any(Shown::drawable))
     }
 
     pub(super) fn probing(&mut self, point: [f32; 2], readback: Readback) {
@@ -94,7 +103,7 @@ impl View {
         let mark = 255 - (key & 255) as usize;
         let shown = self.marks.get(mark)?;
         let style = shown.mark.style();
-        let id = self.data(&style.data)?.table(&style.table)?.ids.id(row as usize)?;
+        let id = self.drawn(&style.data)?.table(&style.table)?.ids.id(row as usize)?;
         let depth = f32::from_bits(word(wgsl::PROBE_DEPTH));
         let point = [f32::from_bits(word(wgsl::PROBE_X)), f32::from_bits(word(wgsl::PROBE_Y))];
         let view = self.projected();
@@ -142,7 +151,7 @@ impl View {
             plan.frames.start + up
         };
         let style = shown.mark.style();
-        let table = self.data(&style.data)?.table(&style.table)?;
+        let table = self.drawn(&style.data)?.table(&style.table)?;
         let crate::data::Field::Sampled(samples, _) = table.field_named(&lines.traced())? else { return None };
         let value = samples.value(row as usize, frame)?;
         Some(Sample { frame, at: samples.at(frame), value })

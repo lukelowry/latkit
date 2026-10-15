@@ -160,6 +160,31 @@ impl Reference {
         })
     }
 
+    /// This reference for ids `ids`, naming rows `targets` of a target table of `order` and
+    /// `structure`, [`UNWIRED`] where none: resolved already, as a table drawn in part holds it.
+    /// `targets` holds a row for each id.
+    pub(crate) fn resolved_to(&self, ids: Column, targets: &[u32], order: Version, structure: Version) -> Reference {
+        let mut pages = Vec::with_capacity(ids.pages().len());
+        let mut resolved = Vec::with_capacity(ids.pages().len());
+        let mut start = 0;
+        for page in ids.pages() {
+            let rows = &targets[start..start + page.values.len()];
+            start += rows.len();
+            let valid = Bits::from_fn(rows.len(), |i| rows[i] != UNWIRED);
+            let dangling = (0..rows.len()).any(|i| rows[i] == UNWIRED && page.values.is_valid(i));
+            pages.push(Values { array: Array::U32(rows.to_vec().into()), valid: (!valid.all()).then_some(valid) });
+            resolved.push(Resolved { ids: page.id, order, structure, dangling });
+        }
+        Reference {
+            to: self.to.clone(),
+            ids,
+            rows: Column::from_pages(pages, &Values::from(Vec::<u32>::new())),
+            resolved: resolved.into(),
+            version: Version::next(),
+            inverse: Arc::default(),
+        }
+    }
+
     /// Whether `rows` must be resolved again against a target with these versions.
     pub(crate) fn stale(&self, order: Version, structure: Version) -> bool {
         self.resolved.len() != self.ids.pages().len()

@@ -56,16 +56,22 @@ pub(crate) struct Inner {
 /// How much GPU memory latkit uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Budget {
-    /// Bytes of data pages kept after no view draws them, for when they are needed again. Pages a
-    /// view draws are never refused.
+    /// Bytes the data every view of the `Gpu` draws may take on the GPU: its pages, and each view's
+    /// rows. A view draws a table too large for its share through the tiles the camera asks for, so
+    /// what it draws always fits; pages no view draws stay cached in the room left, the least
+    /// recently drawn going first. By default half the device's largest storage buffer. The pool of
+    /// pages grows as data needs it, and never shrinks: set the budget before data draws.
     pub bytes: u64,
     /// Bytes uploaded per frame at most; larger data streams in over frames.
     pub upload_per_frame: u64,
 }
 
-impl Default for Budget {
-    fn default() -> Budget {
-        Budget { bytes: 512 << 20, upload_per_frame: 32 << 20 }
+impl Budget {
+    /// Half the largest storage buffer `device` binds, and 32 MiB uploaded per frame.
+    fn of(device: &wgpu::Device) -> Budget {
+        let limits = device.limits();
+        let largest = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
+        Budget { bytes: largest / 2, upload_per_frame: 32 << 20 }
     }
 }
 
@@ -135,8 +141,9 @@ impl Gpu {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
+        let budget = Budget::of(&device);
         let inner = Inner {
-            arena: Arena::new(&device),
+            arena: Arena::new(&device, budget.bytes),
             pipelines: Pipelines::new(&device),
             colormaps: Colormaps::new(&device),
             dictionaries: Dictionaries::default(),
@@ -144,7 +151,7 @@ impl Gpu {
             icons: Icons::new(&device),
             readbacks: Readbacks::default(),
             host: None,
-            budget: Budget::default(),
+            budget,
         };
         #[cfg_attr(
             target_arch = "wasm32",
@@ -175,9 +182,11 @@ impl Gpu {
         self.0.adapter.as_ref()
     }
 
-    /// Sets how much GPU memory latkit uses.
+    /// Sets how much GPU memory latkit uses; bytes past what the device binds are not used.
     pub fn set_budget(&self, budget: Budget) {
-        self.0.lock().budget = budget;
+        let mut inner = self.0.lock();
+        inner.arena.set_limit(&self.0.device, budget.bytes);
+        inner.budget = budget;
     }
 
     /// How much GPU memory latkit uses.

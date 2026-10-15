@@ -161,6 +161,8 @@ export default async function page(stage: Stage): Promise<void> {
         edges: {
           of: ['grid', 'Line'],
           ends: ['from', 'to'],
+          // Lines of higher voltage draw on top, and stay drawn as the camera pulls back.
+          priority: 'level',
           color: level,
           width: field('level')
             .scale(big ? 0.5 : 0.8, big ? 1.8 : 2.8)
@@ -181,7 +183,8 @@ export default async function page(stage: Stage): Promise<void> {
           of: ['grid', 'Bus'],
           position: ['lon', 'lat'],
           color,
-          // Where buses crowd, those of higher voltage stand out.
+          // Where buses crowd, those of higher voltage stand out, on top and from farther out.
+          priority: 'level',
           radius: big ? field('level').scale(0.8, 2.6).domain(0, 5) : grid.buses > 5000 ? 2 : 3,
           ...(state.labels && grid.case.named
             ? { label: { text: 'name', priority: 'kv', size: 10 } }
@@ -390,8 +393,11 @@ export default async function page(stage: Stage): Promise<void> {
   view.on('select', inspect);
 
   const meter = stage.meter(view);
-  meter.note(() => `${(view.stats.rows / 1000).toFixed(0)}k rows`);
-  meter.note(() => `${(view.stats.gpuBytes / 1e6).toFixed(0)} MB on the GPU`);
+  const thousands = (n: number) => `${(n / 1000).toFixed(0)}k`;
+  meter.note(() => `${thousands(view.stats.drawn)} of ${thousands(view.stats.rows)} rows drawn`);
+  meter.note(
+    () => `${(view.stats.resident / 1e6).toFixed(0)} of ${(view.stats.budget / 1e6).toFixed(0)} MB on the GPU`,
+  );
 
   function showLegend(): void {
     levels.hidden = !grid?.case || state.color !== 'level';

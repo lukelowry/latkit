@@ -8,7 +8,8 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 
 use super::{Binary, Domain, Expr, FieldRef, Node, Unary};
-use crate::data::{Data, Table, Value};
+use crate::Kind;
+use crate::data::{Data, Field, Geometry, Table, Value};
 
 /// The rows an expression reads: a table, and every dataset its joins may name.
 pub(crate) struct Rows<'a> {
@@ -27,6 +28,44 @@ impl<'a> Rows<'a> {
     pub(crate) fn number(&self, expr: &Expr, row: usize) -> Option<f64> {
         let v = self.eval(expr, row);
         v.is_finite().then_some(v)
+    }
+
+    /// `expr` for every row, NaN where it reads missing, each made into a `T` by `make`: a plain
+    /// field read page by page, anything else row by row.
+    pub(crate) fn numbers<T>(&self, expr: &Expr, mut make: impl FnMut(f64) -> T) -> Vec<T> {
+        let n = self.table.len();
+        let mut out = Vec::with_capacity(n);
+        match &*expr.0 {
+            Node::Number(v) => {
+                out.resize_with(n, || make(*v));
+                return out;
+            }
+            Node::Field(f) if f.of.is_none() => {
+                if let Some(Field::Values(column, _)) = self.table.field_named(&f.name) {
+                    let pages = column.pages().iter().map(|p| &p.values);
+                    match (column.kind(), f.component) {
+                        (Kind::Number | Kind::Bool, None) => {
+                            pages.for_each(|v| v.each_number(|x| out.push(make(x.unwrap_or(f64::NAN)))));
+                            return out;
+                        }
+                        (Kind::Geometry(0), Some(k)) => {
+                            let k = usize::from(k.min(1));
+                            for v in pages {
+                                let coords = v.geometry().map_or(&[][..], Geometry::coords);
+                                out.extend(
+                                    (0..v.len()).map(|i| make(if v.is_valid(i) { coords[i][k] } else { f64::NAN })),
+                                );
+                            }
+                            return out;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        out.extend((0..n).map(|row| make(self.eval(expr, row))));
+        out
     }
 
     /// The text field `expr` names, for `row`.

@@ -537,10 +537,6 @@ impl View {
         }
     }
 
-    pub(crate) fn awaiting(&self) -> bool {
-        !self.gestures.awaiting.is_empty() || matches!(self.gestures.now, Gesture::Connect { locating: Some(_), .. })
-    }
-
     fn wheel(&mut self, point: [f32; 2], delta: [f32; 2]) -> bool {
         if !self.scene.controls.zoom {
             return false;

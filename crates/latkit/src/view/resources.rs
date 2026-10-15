@@ -3,7 +3,7 @@
 //!
 //! Every shader's pass group (group 2) binds by one convention: 0 state, 1 frozen state, 2 extents,
 //! 3 normals, 4 domains, 5 probe, 6 depth, 7 sprites, 8 the text atlas, 9 lists, 10 the shadow map,
-//! 11 a level of it, 12 remap words, 13 labels, 15 icons, 16 cover cells.
+//! 11 a level of it, 12 remap words, 13 labels, 15 icons.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -146,8 +146,6 @@ pub(crate) struct Resources {
     sprites: Grown,
     lists: Grown,
     labels: wgpu::Buffer,
-    /// Every covered mark's cells.
-    cover: Grown,
     empty: wgpu::Buffer,
     pub(crate) shadows: ShadowMap,
     /// Changes whenever one of the buffers or textures above is replaced; and whenever the lists
@@ -189,7 +187,6 @@ impl Resources {
                 storage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
             ),
             labels: create(device, "latkit labels", ROWS, 256),
-            cover: Grown::new(device, "latkit cover", storage | wgpu::BufferUsages::COPY_SRC),
             empty: create(device, "latkit empty", ROWS, 256),
             shadows: ShadowMap::new(device, 1),
             generation: 0,
@@ -326,17 +323,6 @@ impl Resources {
             self.generation += 1;
             self.lists_generation += 1;
         }
-    }
-
-    /// Makes room for `words` of cover cells.
-    pub(crate) fn fit_cover(&mut self, device: &wgpu::Device, words: u64) {
-        if self.cover.ensure(device, (words + 1) * 4) {
-            self.generation += 1;
-        }
-    }
-
-    pub(crate) fn cover(&self) -> &wgpu::Buffer {
-        &self.cover.buffer
     }
 
     /// Replaces the labels buffer with `words` of zeros.
@@ -515,7 +501,6 @@ impl Resources {
                     12 => self.remap.buffer.as_entire_binding(),
                     13 => self.labels.as_entire_binding(),
                     15 => wgpu::BindingResource::TextureView(&inner.icons.view),
-                    16 => self.cover.buffer.as_entire_binding(),
                     other => unreachable!("no resource for pass binding {other}"),
                 };
                 wgpu::BindGroupEntry { binding: binding.slot, resource }

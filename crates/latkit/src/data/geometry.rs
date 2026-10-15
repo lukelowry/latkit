@@ -84,20 +84,31 @@ impl Geometry {
         hasher.finish()
     }
 
-    /// At most how many points the rows' paths take as shaders read them: every coordinate, and a
-    /// break before each part or ring.
-    pub(crate) fn points(&self) -> usize {
-        let Some(last) = self.levels.len().checked_sub(1) else { return self.len() };
-        // The items of each level the rows span, down to the parts or rings, then their coordinates.
+    /// Coordinates the rows span, every part's.
+    pub(crate) fn coords_spanned(&self) -> usize {
+        if self.depth == 0 {
+            return self.len();
+        }
         let mut span = 0..self.len();
-        let mut parts = 0;
-        for (level, offsets) in self.levels.iter().enumerate() {
-            if level == last {
-                parts = span.len();
-            }
+        for offsets in &self.levels {
             span = offsets[span.start] as usize..offsets[span.end] as usize;
         }
-        span.len() + parts
+        span.len()
+    }
+
+    /// How many points row `row`'s path takes as shaders read it: every coordinate, and a break
+    /// between its parts or rings.
+    pub(crate) fn row_points(&self, row: usize) -> usize {
+        if self.depth == 0 {
+            return 1;
+        }
+        // The row's parts or rings: the items of the level above its coordinates.
+        let mut span = row..row + 1;
+        for offsets in &self.levels[..self.levels.len() - 1] {
+            span = offsets[span.start] as usize..offsets[span.end] as usize;
+        }
+        let breaks = if self.depth == 1 { 0 } else { span.len().saturating_sub(1) };
+        self.row_coords(row).len() + breaks
     }
 
     pub(crate) fn get(&self, row: usize) -> Value {

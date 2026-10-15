@@ -133,7 +133,8 @@ impl View {
             let shown = &mut self.marks[i];
             let Some(list) = shown.segments.list.filter(|_| shown.curved()) else { continue };
             let at = u64::from(list.total()) * 4;
-            let readback = Readback::new(&inner.readbacks, &gpu.0.device, encoder, resources.lists(), at, 4);
+            let readback =
+                Readback::new(&inner.readbacks, &gpu.0.device, encoder, resources.lists(), at, 4, &self.waker);
             let stamp = shown.segments.found.stamp();
             shown.segments.found.start(stamp, readback);
         }

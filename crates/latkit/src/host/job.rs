@@ -1,10 +1,14 @@
 //! Jobs: work too large for the frame (laying out in ranks or by stress, routing wires, cutting areas
-//! into triangles), handed to the host to do off the frame. A job is bytes in and bytes out, so a
+//! into triangles, grouping a large table's rows into tiles), handed to the host to do off the frame. A job is bytes in and bytes out, so a
 //! thread, or a worker holding its own copy of latkit, can do it with nothing shared. Its answer is a
 //! [`Patch`]: the rows it worked out, by id, with their places, the paths their wires run along, or
 //! their shapes.
 
+use std::sync::Arc;
+
 use crate::data::{Field, GeometryBuilder, Id, Name, Op, Patch, Table, Value, Values, Version};
+use crate::derive::pyramid::{Leveling, Places, Placing};
+use crate::derive::sight::Domain;
 use crate::geo::mvt::Kind as Geometry;
 use crate::geo::shapes::{earth_parts, triangles};
 use crate::geo::tiles::{Decoded, TileKey, decode};
@@ -31,6 +35,7 @@ enum Kind {
     Tile = 5,
     GeoJson = 6,
     Lanes = 7,
+    Pyramid = 8,
 }
 
 /// What a shapes job works out of each row's geometry.
@@ -145,6 +150,7 @@ impl Job {
             Some(k) if k == Kind::Tile as u32 => run_tile(&mut input),
             Some(k) if k == Kind::GeoJson as u32 => run_geojson(&mut input),
             Some(k) if k == Kind::Lanes as u32 => run_lanes(&mut input),
+            Some(k) if k == Kind::Pyramid as u32 => run_pyramid(&mut input),
             _ => None,
         };
         answer.map(|patch| patch.to_bytes()).unwrap_or_default()
@@ -239,6 +245,45 @@ impl Job {
         out.u32(from.len() as u32);
         out.words(from);
         out.words(to);
+        Job(out.0)
+    }
+
+    /// Grouping `leveling`'s tables into tiles; it answers each table's pyramid, as
+    /// [`Pyramid::read`](crate::derive::pyramid::Pyramid::read) reads it.
+    pub(crate) fn pyramid(leveling: &Leveling) -> Job {
+        let mut out = Writer::new(Kind::Pyramid);
+        match leveling.domain {
+            Domain::Earth => out.f64s(&[0.0, 0.0, 0.0, 0.0]),
+            Domain::Plane { min, size } => out.f64s(&[1.0, min[0], min[1], size]),
+        }
+        out.u32(leveling.tables.len() as u32);
+        for table in &leveling.tables {
+            let places = match &table.places {
+                Places::None => 0,
+                Places::Points(_) => 1,
+                Places::Boxes(_) => 2,
+            };
+            let flags = u32::from(table.leveled)
+                | u32::from(table.answered) << 1
+                | places << 2
+                | u32::from(!table.priority.is_empty()) << 4
+                | u32::from(table.ends.is_some()) << 5;
+            out.u32(table.rows);
+            out.u32(flags);
+            match &table.places {
+                Places::None => {}
+                Places::Points(points) => out.words(bytemuck::cast_slice(&points[..])),
+                Places::Boxes(boxes) => out.words(bytemuck::cast_slice(&boxes[..])),
+            }
+            out.words(bytemuck::cast_slice(&table.priority));
+            if let Some((target, ends)) = &table.ends {
+                out.u32(*target);
+                out.u32(ends.len() as u32);
+                for end in ends {
+                    out.words(end);
+                }
+            }
+        }
         Job(out.0)
     }
 
@@ -414,6 +459,36 @@ fn run_tile(input: &mut Reader<'_>) -> Option<Patch> {
 fn run_geojson(input: &mut Reader<'_>) -> Option<Patch> {
     let name = input.text()?;
     crate::geo::geojson(name, input.rest()).ok().map(|data| data.to_patch())
+}
+
+fn run_pyramid(input: &mut Reader<'_>) -> Option<Patch> {
+    let domain = match [input.f64()?, input.f64()?, input.f64()?, input.f64()?] {
+        [0.0, ..] => Domain::Earth,
+        [_, x, y, size] => Domain::Plane { min: [x, y], size },
+    };
+    let count = input.u32()?;
+    let mut tables = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let rows = input.u32()?;
+        let flags = input.u32()?;
+        let n = rows as usize;
+        let has = |bit: u32| flags & 1 << bit != 0;
+        let places = match flags >> 2 & 3 {
+            1 => Places::Points(input.words(2 * n)?.as_chunks::<2>().0.iter().map(|w| w.map(f32::from_bits)).collect()),
+            2 => Places::Boxes(input.words(4 * n)?.as_chunks::<4>().0.iter().map(|w| w.map(f32::from_bits)).collect()),
+            _ => Places::None,
+        };
+        let priority = if has(4) { input.words(n)?.into_iter().map(f32::from_bits).collect() } else { Arc::from([]) };
+        let ends = if has(5) {
+            let target = input.u32()?;
+            let count = input.u32()?;
+            Some((target, (0..count).map(|_| input.words(n).map(Arc::from)).collect::<Option<Vec<_>>>()?))
+        } else {
+            None
+        };
+        tables.push(Placing { rows, leveled: has(0), answered: has(1), places, priority, ends });
+    }
+    Some(crate::derive::pyramid::answer(&Leveling { domain, tables }))
 }
 
 fn run_lanes(input: &mut Reader<'_>) -> Option<Patch> {

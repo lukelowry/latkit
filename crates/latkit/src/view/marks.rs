@@ -87,10 +87,6 @@ pub(crate) struct Shown {
     pub(crate) shape_version: u64,
     /// The rows its focus draw lights.
     pub(crate) lit: super::focus::Lit,
-    /// Where its cells start in the cover buffer while it covers, NONE otherwise; and whether its
-    /// instances crowd, as its last check found.
-    pub(crate) cover: u32,
-    pub(crate) crowding: super::cover::Crowding,
     /// Why it no longer compiles against data given since the last frame, which that frame reports
     /// unless a scene shown before then replaced it.
     pub(crate) failed: Option<Error>,
@@ -128,8 +124,6 @@ impl Shown {
             version: 0,
             shape_version: 0,
             lit: super::focus::Lit::default(),
-            cover: wgsl::NONE,
-            crowding: super::cover::Crowding::default(),
             failed: None,
         }
     }

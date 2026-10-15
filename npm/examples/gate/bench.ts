@@ -2,7 +2,8 @@
  * The quick benchmark. Loads the network page's grids in Chrome, from 240 buses to two million, and
  * holds each to its budget:
  *
- * - load: milliseconds from choosing the grid to its first frame with every row on the GPU;
+ * - load: milliseconds from choosing the grid to its first frame drawing it, every row it draws on
+ *   the GPU: a large grid's first look, an even sample of its rows, while its tiles are placed;
  * - hitch: the longest a frame took to record while it loaded;
  * - GPU and CPU: milliseconds per frame while the camera pans and zooms, the median of a second of
  *   frames, read from the view's own stats;
@@ -30,12 +31,14 @@ interface Budget {
 }
 
 // About twice what each measures today. On the same machine the TypeScript implementation took
-// 0.9–1.5 s to draw the first three, and 2.6–9 ms of GPU a frame at a million buses.
+// 0.9–1.5 s to draw the first three, and 2.6–9 ms of GPU a frame at a million buses; drawing every
+// row whole took 3.2 ms at one and two million. A grid denser than a screen draws the tiles in view.
+// The page opens on the first grid, so the second is measured first: each measured grid replaces one.
 const BUDGETS: Budget[] = [
-  { grid: 'WECC 240-bus', load: 250, hitch: 20, gpu: 0.8, cpu: 0.3 },
-  { grid: 'ACTIVSg70k', load: 300, hitch: 20, gpu: 1.4, cpu: 0.3 },
-  { grid: 'Lattice, 1,000,000', load: 400, hitch: 100, gpu: 4.5, cpu: 0.3 },
-  { grid: 'North America, 2,000,000', load: 1300, hitch: 120, gpu: 5, cpu: 0.5 },
+  { grid: 'ACTIVSg70k', load: 250, hitch: 15, gpu: 1.4, cpu: 0.3 },
+  { grid: 'WECC 240-bus', load: 60, hitch: 10, gpu: 0.8, cpu: 0.3 },
+  { grid: 'Lattice, 1,000,000', load: 250, hitch: 100, gpu: 1.4, cpu: 0.3 },
+  { grid: 'North America, 2,000,000', load: 1300, hitch: 110, gpu: 1.2, cpu: 0.3 },
 ];
 /** Frames a view may draw once nothing moves: none. */
 const IDLE = 0;
@@ -57,7 +60,9 @@ async function measure(label: string): Promise<Measured> {
   interface Stats {
     frames: number;
     rows: number;
+    drawn: number;
     uploading: number;
+    waiting: boolean;
     cpuMs: number;
     gpuMs: number;
   }
@@ -69,12 +74,12 @@ async function measure(label: string): Promise<Measured> {
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const frame = () => new Promise<number>((r) => requestAnimationFrame(r));
   const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] ?? 0;
-  /** Waits until no frame has drawn for 300 ms, or `limit` ms went by. */
+  /** Waits until nothing is under way and no frame has drawn for 300 ms, or `limit` ms went by. */
   const settled = async (limit: number) => {
     const until = performance.now() + limit;
     let frames = view.stats.frames;
     let still = performance.now();
-    while (performance.now() < until && performance.now() - still < 300) {
+    while (performance.now() < until && (view.stats.waiting || performance.now() - still < 300)) {
       await wait(50);
       if (view.stats.frames !== frames) [frames, still] = [view.stats.frames, performance.now()];
     }
@@ -83,7 +88,9 @@ async function measure(label: string): Promise<Measured> {
   const select = [...document.querySelectorAll('label.field')]
     .find((l) => l.querySelector('span')?.textContent === 'Grid')!
     .querySelector('select')!;
-  // Load: until the page says the grid is in and a frame drew every row of it.
+  // What loads beside the grid, as the map does, lands first.
+  await settled(20000);
+  // Load: until the page says the grid is in and a frame drew it, every row it draws uploaded.
   const rows = view.stats.rows;
   const began = performance.now();
   select.selectedIndex = [...select.options].findIndex((o) => o.textContent!.startsWith(label));
@@ -93,10 +100,12 @@ async function measure(label: string): Promise<Measured> {
     await frame();
     hitch = Math.max(hitch, view.stats.cpuMs);
     const loaded = detail().startsWith(label) && !detail().includes('loading');
-    if (loaded && view.stats.rows !== rows && view.stats.uploading === 0) break;
+    const s = view.stats;
+    const drawn = s.rows !== rows && s.drawn > 0 && s.uploading === 0;
+    if (loaded && drawn) break;
   }
   const load = performance.now() - began;
-  // What lands off the frame lands: lanes, segment counts, the first checks of crowding.
+  // What lands off the frame lands: lanes, segment counts, the tiles in view.
   await settled(5000);
   // A second of panning and zooming about where the page framed the grid.
   const start = view.camera;

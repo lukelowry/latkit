@@ -38,20 +38,28 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
    circles, and both are pieces of the path, so the camera never reshapes them. The globe writes its
    depth a hair under its surface, and a mark past its horizon draws nothing. A segment list keeps
    each segment's distance along its path, so dashes and comets run on across segments.
-9. **Work follows what shows:** a mark drawing enough instances to crowd the screen covers: a pass
-   claims each 2×2-pixel cell for the last small instance in it, and the draw leaves out what that
-   covers, so a crowded mark costs its cells, not its rows. It counts what it covers now and then,
-   and stops while covering does not pay.
+9. **Work follows what shows:** a view plans what it draws within its share of the `Budget`. A
+   table draws whole while it fits and is no denser than a screen shows; a larger one a mark places
+   on a map or a plane draws through tiles. A job gives each row the coarsest level it shows at, by
+   its size, then its `priority`; edges land by their own, carrying their ends. The rows of the tiles
+   the camera wants, as many as the plan holds, are the dataset marks draw, so glow, lanes,
+   transitions, and labels work unchanged, and picks and selection name source rows. A table a mark
+   traces draws whole, its traces as coarse in time as fit. GPU pages are one size in one pool, the
+   least recently drawn evicted first, so what draws always fits.
 
 ## Rules
 
-- CPU per frame is O(marks), plus O(changed pages) on new data and O(sampled pages) when `at` moves.
+- CPU per frame is O(marks), plus O(changed pages) on new data, O(sampled pages) when `at` moves,
+  and O(rows drawn) when the tiles the camera wants change.
 - Work superlinear in graph size runs in a host job, never on the frame.
 - Picks probe what the frame drew, through the draws' own geometry.
 - A scene's pipelines are made on its first frame; only custom markers compile WGSL at runtime.
 - Every order the user can see comes from count → scan → write, never from atomic appends.
 - Every shader passes naga at build time and Chrome within its compile budget.
-- Every wait races a deadline; readbacks are taken, never awaited.
+- Every wait races a deadline; readbacks are taken, never awaited. A view sleeps while it waits:
+  readbacks, jobs, fetches, and uploads wake it.
+- Size never fails a draw: the plan always fits the budget, and `priority` decides what draws first,
+  on top, and labeled.
 - No public type before it draws. `Stats::gpu_ms` is the median of the last frames the device timed;
   `cargo xtask bench` holds the network page's grids to budgets in Chrome.
 - A dataset's versions ease from one to the next; another dataset of the same name replaces it, its
@@ -114,8 +122,8 @@ crates/latkit/
 ├── build.rs, build/   link WESL, validate with naga, mirror shared constants; colormaps; shaders.json
 ├── shaders/
 │   ├── lib/           types, bind, read, trace, project, state, color, focus, points, path, triangles,
-│   │                  stroke, marker, label, shade, lists, mark, reduce, cover
-│   ├── compute/       evaluate, freeze, bounds, normals, probe, lists, labels (map label collisions), cover
+│   │                  stroke, marker, label, shade, lists, mark, reduce
+│   ├── compute/       evaluate, freeze, bounds, normals, probe, lists, labels (map label collisions)
 │   └── draw/          backdrop (daylight, atmosphere), points, strokes, triangles, areas, glyphs, shade, overlay
 ├── src/
 │   ├── lib.rs         the only entry point
@@ -124,13 +132,15 @@ crates/latkit/
 │   ├── expr/          compile, decode, color, colormap, cpu: the executor structure reads
 │   ├── scene/         Scene, marks (Vertices, Edges, Faces, Lines, Areas), Label, Port, Marker, Layout, Theme,
 │   │                  Controls, spaces, decode
-│   ├── derive/        Derive, Jobs (one budget, one pool), Derivations: lanes, shapes, tiles
+│   ├── derive/        Derive, Jobs (one budget, one pool), Derivations: lanes, shapes, tiles; sight (what
+│   │                  the camera sees, as tiles), pyramid (each row's level, in jobs), tiled (the rows drawn)
 │   ├── sheet/         a diagram's sizes, places, and boxes (mod), and its wires: a derivation
 │   ├── layout/        layered, stress, overlap, pack, route (groups as soft obstacles)
-│   ├── view/          View; camera, rig, gestures, input; probe, focus, query, fit, axes; marks, program,
-│   │                  sync, rows, transition, lists, labels, graph, shadows, variants, resources, uniforms,
-│   │                  cover, timer, passes, frame
-│   ├── gpu/           Gpu, arena, pipelines, atlas (distance fields), readback, colormaps, icons
+│   ├── view/          View; camera, rig, gestures, input; probe, focus, query, fit, axes; plan, marks,
+│   │                  program, sync, rows, transition, lists, labels, graph, shadows, variants, resources,
+│   │                  uniforms, wake, timer, passes, frame
+│   ├── gpu/           Gpu, Budget, arena (fixed pages, one pool), pipelines, atlas (distance fields), readback,
+│   │                  colormaps, icons
 │   ├── host/          Host (text, jobs, fetch), Job (answers as patches), browser · native threads ○
 │   ├── geo/           geojson, mvt, pmtiles, tiles, shapes, earcut
 │   ├── web.rs         Canvas: frames, input, events
@@ -148,8 +158,8 @@ use latkit::*;
 let mut grid = Data::new("grid");
 grid.apply(
     Patch::new()
-        .set(Table::new("Bus", 3).field("lon", [-97.7, -96.8, -95.4]).field("lat", [30.3, 32.8, 29.8]).field("name", ["A", "B", "C"]))
-        .set(Table::new("Branch", 2).reference("from", "Bus", [0_u64, 1]).reference("to", "Bus", [1_u64, 2]).field("p", [120.0, -40.0])),
+        .set(Table::new("Bus", 3).field("lon", [-97.7, -96.8, -95.4]).field("lat", [30.3, 32.8, 29.8]).field("name", ["A", "B", "C"]).field("kv", [345.0, 138.0, 69.0]))
+        .set(Table::new("Branch", 2).reference("from", "Bus", [0_u64, 1]).reference("to", "Bus", [1_u64, 2]).field("p", [120.0, -40.0]).field("kv", [345.0, 138.0])),
 )?;
 grid.apply(Patch::new().append(0.5, "Bus", [("vm", [1.01, 0.99, 1.0])]))?; // a sampled frame
 
@@ -160,10 +170,11 @@ let map = Scene::new(Earth::globe().daylight(1_782_043_200.0).atmosphere(true))
     .draw(Areas::of("base", "water").color(Color::hex("#1d3557")?))
     .draw(Areas::of("states", "polygons").color(field("load").colormap(Colormap::MAKO)))
     .draw(Lines::of("base", "transportation").width(field("lanes")))
-    .draw(Edges::of("grid", "Branch").ends("from", "to").flow(field("p")))
+    .draw(Edges::of("grid", "Branch").ends("from", "to").flow(field("p")).priority(field("kv")))
     .draw(
         Vertices::of("grid", "Bus")
             .position("lon", "lat")
+            .priority(field("kv"))                  // draws first, on top, and labeled; shows coarsest
             .color(field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05))
             .label(Label::new("name")),
     );
@@ -189,6 +200,7 @@ let diagram = Scene::new(Diagram::default())
     );
 
 // A view draws a scene from data by name into the caller's encoder, and turns input into events.
+gpu.set_budget(Budget { bytes: 512 << 20, upload_per_frame: 32 << 20 }); // before data draws
 let mut view = View::new(&gpu, diagram)?;
 view.set_data(plant);                     // cheap: unchanged pages are shared
 view.fit(Fit::All);
@@ -204,6 +216,7 @@ for event in view.events() {
 }
 let hits = view.pick([120.0, 80.0], 6.0); // Pending<Vec<Hit>>, nearest first
 view.arrange();                           // lay out every row without a position again
+let Stats { rows, drawn, resident, budget, .. } = view.stats(); // rows given and drawn, GPU bytes
 ```
 
 Still to add: `View::image` and `winit::input` (M6). npm `latkit` mirrors the crate with scenes as
@@ -217,6 +230,6 @@ JSON; its `Data.apply` returns the next version, and `geojson` reads in a worker
 | Gate, Cutover, Pages | browser gate; host jobs in workers, path kinds, lists that coarsen; telemetry and diagram studio pages                                                                                                                                                                                                                                                                                                                                                           | ✓      |
 | Sheet                | `Diagram`; derived data and geometry pages; the CPU executor; the sheet with incremental layout and routing; jobs answer with patches; stress as a job; `Port::output`; `arrange`; anchored labels and distance-field text; drags apply at once; the diagram page rebuilt on it. Removed folding, the GPU groups and stress passes, stand-ins, and the view's layout and route words                                                                             | ✓      |
 | M5                   | `src/derive/`: one lifecycle, budget, and pool for the sheet, lanes, shapes, and tiles; geometry as a field (lines along paths and rings); `Areas` (ear clipping in jobs, cached per page and row, earth grid split); `geo::geojson`; `Host::fetch`, PMTiles, TileJSON, MVT decoded in jobs into a view-owned dataset; daylight, atmosphere, exact globe gestures; groups as soft router obstacles; atlas residency by placement; Grid at scale and Colors pages | ✓      |
-| Scale                | `cargo xtask bench` and budgets; GPU time in `Stats`; covering; lanes as world-space bows; globe occlusion by depth; dashes and comets along paths; focus draws only lit rows; bulk column reads; the 2M-bus grid and Grid operations pages. Native jobs on threads ○                                                                                                                                                                                            | ◐      |
+| Scale                | `cargo xtask bench` and budgets; GPU time in `Stats`; fixed pages in one pool within a `Budget`; plans that always fit; tiles for anything large (pyramids in jobs, edges with their ends); `priority`; views that sleep while they wait; lanes as world-space bows; globe occlusion by depth; dashes and comets along paths; focus draws only lit rows; bulk column reads; the 2M-bus grid and Grid operations pages. Native jobs on threads ○                | ◐      |
 | M6                   | `image`, `png`, npm `view.video`, winit, docs; the Video page                                                                                                                                                                                                                                                                                                                                                                                                    | ○      |
 | Retire               | delete `packages/`, `examples/`, `benchmark/`, the old `docs/` and their configs                                                                                                                                                                                                                                                                                                                                                                                 | ○      |

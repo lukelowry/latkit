@@ -59,6 +59,8 @@ pub(crate) struct Style {
     pub(crate) table: Name,
     pub(crate) color: Option<Expr>,
     pub(crate) visible: Expr,
+    /// Each row's priority, read from its data alone.
+    pub(crate) priority: Option<Expr>,
     pub(crate) name: Option<Name>,
     pub(crate) interaction: Interaction,
     pub(crate) label: Option<Label>,
@@ -122,6 +124,7 @@ impl Style {
             table,
             color: None,
             visible: true.into(),
+            priority: None,
             name: None,
             interaction: Interaction::default(),
             label: None,
@@ -377,8 +380,12 @@ impl Mark {
             Mark::Areas(m) => m.compile(compiler, context),
         }?;
         let style = self.style();
+        if let Some(priority) = &style.priority {
+            compiler.check_data("priority", priority)?;
+        }
         if let Some(label) = &style.label {
-            compile_label(label, compiler, context.theme, &mut drawing).map_err(|e| e.at("label"))?;
+            let priority = label.priority.as_ref().or(style.priority.as_ref());
+            compile_label(label, priority, compiler, context.theme, &mut drawing).map_err(|e| e.at("label"))?;
         }
         if style.shadow {
             drawing.flags |= wgsl::CASTS;
@@ -387,12 +394,19 @@ impl Mark {
     }
 }
 
-/// Compiles `label`'s text, priority, and color into extra words after the mark's own.
-fn compile_label(label: &Label, c: &mut Compiler<'_>, theme: &super::Theme, drawing: &mut Drawing) -> Result<()> {
+/// Compiles `label`'s text, `priority` (its own, else the mark's), and color into extra words after
+/// the mark's own.
+fn compile_label(
+    label: &Label,
+    priority: Option<&Expr>,
+    c: &mut Compiler<'_>,
+    theme: &super::Theme,
+    drawing: &mut Drawing,
+) -> Result<()> {
     let extra = drawing.extras;
     let word = |k: u32| drawing.stride + extra + k;
     let column = c.text("text", &label.text, word(wgsl::LABEL_CODE))?;
-    let priority: Expr = label.priority.clone().scale(0.0..=255.0).into();
+    let priority: Expr = priority.cloned().unwrap_or_else(|| 0.0.into()).scale(0.0..=255.0).into();
     c.channel("priority", &priority, Store::Number { word: word(wgsl::LABEL_PRIORITY), fallback: None })?;
     let color = Store::Color { word: word(wgsl::LABEL_COLOR), fallback: wgsl::THEME_TEXT };
     match &label.color {
@@ -421,6 +435,14 @@ macro_rules! style_methods {
             #[must_use]
             pub fn visible(mut self, visible: impl Into<$crate::Expr>) -> Self {
                 self.style.visible = visible.into();
+                self
+            }
+
+            /// Each row's priority, from its data alone: what matters more draws on top, stays drawn
+            /// as a table too large to draw whole thins to the tiles in view, and is labeled first.
+            #[must_use]
+            pub fn priority(mut self, priority: impl Into<$crate::Expr>) -> Self {
+                self.style.priority = Some(priority.into());
                 self
             }
 

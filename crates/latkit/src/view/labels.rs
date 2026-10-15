@@ -73,8 +73,14 @@ pub(crate) struct Labels {
 }
 
 impl Labels {
-    pub(crate) fn busy(&self) -> bool {
-        self.placed.busy() || self.fading.is_some_and(|until| Instant::now() < until)
+    /// Whether the texts a placement asked for are being read back.
+    pub(crate) fn reading(&self) -> bool {
+        self.placed.busy()
+    }
+
+    /// Whether labels are fading in or out.
+    pub(crate) fn fading(&self) -> bool {
+        self.fading.is_some_and(|until| Instant::now() < until)
     }
 
     pub(crate) fn slots(&self, mark: usize) -> Option<Slots> {
@@ -91,7 +97,7 @@ impl View {
         let labeling = compiled.drawing.label.as_ref()?;
         let column = &compiled.program.columns[labeling.column as usize];
         let style = shown.mark.style();
-        let data = self.data(&style.data)?;
+        let data = self.drawn(&style.data)?;
         let source = Source { data, table: data.table(&style.table)?, derived: [None; 2] };
         let (d, t) = table_of(column, &source, &self.data)?;
         let text = inner.dictionaries.field(d, &t.name, &column.name).text(code)?.clone();
@@ -105,7 +111,7 @@ impl View {
         let Some(labeling) = &compiled.drawing.label else { return 0 };
         let column = &compiled.program.columns[labeling.column as usize];
         let style = shown.mark.style();
-        let Some(data) = self.data(&style.data) else { return 0 };
+        let Some(data) = self.drawn(&style.data) else { return 0 };
         let Some(table) = data.table(&style.table) else { return 0 };
         let source = Source { data, table, derived: [None; 2] };
         let Some((d, t)) = table_of(column, &source, &self.data) else { return 0 };
@@ -268,7 +274,7 @@ impl View {
             let Some(labeling) = &compiled.drawing.label else { break 'texts None };
             let column = &compiled.program.columns[labeling.column as usize];
             let style = shown.mark.style();
-            let Some(data) = self.data(&style.data) else { break 'texts None };
+            let Some(data) = self.drawn(&style.data) else { break 'texts None };
             let Some(table) = data.table(&style.table) else { break 'texts None };
             let source = Source { data, table, derived: [None; 2] };
             let Some((d, t)) = table_of(column, &source, &self.data) else { break 'texts None };
@@ -408,8 +414,15 @@ impl View {
             let first = labeled.iter().map(|(_, s)| s.wanted).min().unwrap_or(0);
             let seen: u64 = labeled.iter().map(|(_, s)| u64::from(s.codes / 32)).sum();
             let words = labeled.len() as u64 * u64::from(1 + wgsl::WANTED) + seen;
-            let readback =
-                Readback::new(&inner.readbacks, device, encoder, resources.labels(), u64::from(first) * 4, words * 4);
+            let readback = Readback::new(
+                &inner.readbacks,
+                device,
+                encoder,
+                resources.labels(),
+                u64::from(first) * 4,
+                words * 4,
+                &self.waker,
+            );
             self.labels.placed.start(stamp, readback);
             self.labels.asked = labeled;
         }

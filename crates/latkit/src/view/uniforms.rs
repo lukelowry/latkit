@@ -201,7 +201,6 @@ pub(crate) fn mark(index: usize, shown: &Shown, labels: Option<super::labels::Sl
     mark.focused = shown.lit.at;
     mark.focused_rows = shown.lit.rows;
     mark.pieces = shown.lit.pieces;
-    mark.cover = shown.cover;
     mark.trace = wgsl::NONE;
     mark.per_row = 1;
     mark.list = shown.segments.list.map_or(wgsl::NONE, |list| list.header);

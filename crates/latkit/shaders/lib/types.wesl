@@ -73,6 +73,9 @@ const BITS: u32 = 4u;
 // Rows per data page, as a shift.
 const PAGE_BITS: u32 = 16u;
 const PAGE_MASK: u32 = 65535u;
+// Points per block of a geometry's points, as a shift: a block of x and y words is a chunk.
+const POINT_BITS: u32 = 15u;
+const POINT_MASK: u32 = 32767u;
 
 // Vertex state words.
 const VERTEX_WORDS: u32 = 11u;
@@ -117,12 +120,6 @@ const GEODESIC_STEP: f32 = 2.0;
 const MAX_PIECES: u32 = 64u;
 // Pieces a path bowed into a lane takes at least.
 const BOW_PIECES: u32 = 16u;
-// Covering crowded marks: target pixels across a cell; the most a small instance reaches from its
-// middle, in target pixels; and how many small instances a cell holds before the last of them
-// covers the rest. Only small instances in crowded cells are left out.
-const COVER_CELL: f32 = 2.0;
-const COVER_REACH: f32 = 3.0;
-const COVER_CROWD: u32 = 6u;
 
 // Face state words.
 const FACE_WORDS: u32 = 5u;
@@ -387,9 +384,6 @@ struct Frame {
     grid_pitch: f32,
     grid_fade: f32,
     graticule: u32,
-    // The cells covering the target, across and down.
-    cover_columns: u32,
-    cover_rows: u32,
     hover: vec4f,
     selected: vec4f,
     flow: vec4f,
@@ -493,9 +487,6 @@ struct Mark {
     label_id: u32,
     label_size: f32,
     port_label_size: f32,
-    // Where the mark's cells start in the cover buffer, while it crowds enough instances to cover;
-    // NONE otherwise.
-    cover: u32,
 }
 
 // A line or a run of text drawn over the marks, in CSS pixels.
