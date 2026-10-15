@@ -10,6 +10,8 @@ use std::task::{Wake, Waker};
 #[derive(Default)]
 pub(crate) struct Signal {
     landed: AtomicBool,
+    /// Whether a shot draws the view, so nothing else does.
+    lent: AtomicBool,
     /// Whatever draws the view's frames, as `View::set_waker` gave it.
     waker: Mutex<Option<Waker>>,
 }
@@ -27,6 +29,25 @@ impl Signal {
 
     pub(crate) fn set_waker(&self, waker: Waker) {
         *self.waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(waker);
+    }
+
+    /// Lends the view to a shot: `waker` wakes the shot in place of whatever drew the view, which
+    /// draws it no more until it is given back; returns the waker it had.
+    pub(crate) fn lend(&self, waker: Waker) -> Option<Waker> {
+        self.lent.store(true, Ordering::Release);
+        self.waker.lock().unwrap_or_else(PoisonError::into_inner).replace(waker)
+    }
+
+    /// Gives the view back to whatever drew it, `waker` waking it again, and asks it for a frame.
+    pub(crate) fn give_back(&self, waker: Option<Waker>) {
+        *self.waker.lock().unwrap_or_else(PoisonError::into_inner) = waker;
+        self.lent.store(false, Ordering::Release);
+        self.ask();
+    }
+
+    /// Whether a shot draws the view.
+    pub(crate) fn lent(&self) -> bool {
+        self.lent.load(Ordering::Acquire)
     }
 
     /// Asks whatever draws the view for a frame.

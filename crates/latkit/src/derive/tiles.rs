@@ -95,6 +95,8 @@ struct TileSet {
     changed: bool,
     /// Whether a failure was told: a source that went away tells it once.
     told: bool,
+    /// Whether a tile the camera wanted at the last update drew an ancestor, or nothing, instead.
+    standing_in: bool,
 }
 
 impl TileSet {
@@ -113,6 +115,7 @@ impl TileSet {
             tick: 0,
             changed: false,
             told: false,
+            standing_in: false,
         }
     }
 }
@@ -136,14 +139,10 @@ impl TileSets {
         self.sets.push(TileSet::new(tiles));
     }
 
-    /// Whether a fetch or decode is under way.
-    pub(crate) fn busy(&self) -> bool {
-        self.sets.iter().any(|s| {
-            matches!(s.source, Source::Opening(_) | Source::Root(..))
-                || !s.fetching.is_empty()
-                || !s.decoding.is_empty()
-                || !s.leaf_fetches.is_empty()
-        })
+    /// Whether every tile the camera wants draws at its own level: none stands in by an ancestor, or
+    /// by nothing while its source opens. A tile that could not be fetched draws nothing, and is final.
+    pub(crate) fn complete(&self) -> bool {
+        self.sets.iter().all(|s| !matches!(s.source, Source::Opening(_) | Source::Root(..)) && !s.standing_in)
     }
 
     /// Whether the view owns dataset `name`: tiles fetched as the camera asks, drawn as they are.
@@ -229,6 +228,7 @@ impl TileSet {
     /// Brings the tiles up to `tables` and what `sight` shows; a failure to tell, if any.
     fn update(&mut self, tables: &[Decoded], sight: Option<&Sight<'_>>, jobs: &Jobs<'_>) -> Option<Error> {
         self.tick += 1;
+        self.standing_in = false;
         let mut failure = self.open(jobs);
         let Some((zooms, bounds)) = self.zooms() else { return failure };
         let stamp = super::stamp_of(tables);
@@ -265,6 +265,7 @@ impl TileSet {
         for key in decode {
             self.decode(key, stamp, tables, jobs);
         }
+        self.standing_in = !needed.is_empty();
         self.draw(&drawn, stamp);
         let tick = self.tick;
         for key in &drawn {

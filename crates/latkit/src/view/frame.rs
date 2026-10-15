@@ -1,7 +1,7 @@
-//! One frame, in order: settle readbacks, advance the camera, derive what marks read beside their
-//! data, sync columns, stream uploads, fit rows into their regions, freeze transitions, pack the
-//! program buffer, write focus and uniforms, then record the compute, shadow, label, render, and
-//! probe passes into the caller's encoder. Nothing here submits.
+//! One frame, in order: tick the clock, settle readbacks, advance the camera, derive what marks read
+//! beside their data, sync columns, stream uploads, fit rows into their regions, freeze transitions,
+//! pack the program buffer, write focus and uniforms, then record the compute, shadow, label, render,
+//! and probe passes into the caller's encoder. Nothing here submits.
 
 use web_time::Instant;
 
@@ -9,7 +9,7 @@ use super::marks::Shown;
 use super::resources::{EyeSlot, MARK_STRIDE, Resources};
 use super::sync::{Source, Synced, Window, table_of};
 use super::transition::{remap, replaced};
-use super::{Camera, Event, Target, View, timer, uniforms};
+use super::{Camera, Event, Frame, View, timer, uniforms};
 use crate::expr::compile::Deps;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
@@ -17,11 +17,11 @@ use crate::scene::mark::MarkKind;
 use crate::{Error, derive};
 
 impl View {
-    /// Records a frame of the scene into `encoder` for `target`; the caller submits it.
+    /// Records `frame` of the scene into `encoder`; the caller submits it.
     ///
     /// Uploads stream within the GPU's budget per frame. A mark shows a new data version once all of
     /// its changed pages are on the GPU, and keeps drawing the previous one until then.
-    pub fn render(&mut self, encoder: &mut wgpu::CommandEncoder, target: &Target<'_>) {
+    pub fn render(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>) {
         if self.gpu.lost() {
             if !self.told_lost {
                 self.told_lost = true;
@@ -31,6 +31,7 @@ impl View {
         }
         let started = Instant::now();
         self.signal.clear();
+        let dt = self.clock.tick(frame.time);
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         if let Some(timer) = &mut self.timer {
@@ -39,20 +40,24 @@ impl View {
         // Runs the callbacks of finished readbacks; a no-op in browsers, which run them themselves.
         let _ = device.poll(wgpu::PollType::Poll);
         self.tell_gpu_errors();
-        self.pixel_ratio = target.pixel_ratio.max(0.01);
+        self.pixel_ratio = frame.pixel_ratio.max(0.01);
         let ratio = f64::from(self.pixel_ratio);
-        self.size = [f64::from(target.size[0]) / ratio, f64::from(target.size[1]) / ratio];
+        self.size = [f64::from(frame.size[0]) / ratio, f64::from(frame.size[1]) / ratio];
         self.settle();
-        self.advance();
+        self.advance(dt);
         let mut inner = gpu.0.lock();
-        self.make_pipelines(&mut inner, target.format, super::resources::samples(target.pixel_ratio));
+        self.make_pipelines(&mut inner, frame.format, super::resources::samples(frame.pixel_ratio));
         inner.atlas.tick();
         self.settle_labels(&mut inner);
         self.derive(&mut inner);
         self.stream(&mut inner);
         let moved = self.lay_out(encoder, &mut inner);
-        for shown in &mut self.marks {
-            shown.dirty |= shown.channels_reading(Deps::TIME);
+        // What reads the clock shows anything new only when it moved; a frame drawn again at the same
+        // instant, as a shot draws while it waits, evaluates none of it.
+        if self.clock.moved() {
+            for shown in &mut self.marks {
+                shown.dirty |= shown.channels_reading(Deps::TIME);
+            }
         }
         let resources = self.resources.as_ref().expect("created");
         let (buffer, capacity) = (resources.focus().clone(), resources.focus_words());
@@ -65,23 +70,23 @@ impl View {
         let probe = self.probe_point();
         let query = self.lay_out_lists();
         let projected = self.projected();
-        let elapsed = self.start.elapsed().as_secs_f64();
-        let mut frame = uniforms::frame(&self.scene, &projected, self.size, target.format.is_srgb(), elapsed, self.at);
-        frame.pointer = self.pointer.unwrap_or([-1e9, -1e9]);
-        frame.selecting = u32::from(!self.focus.selection.is_empty());
-        frame.fitting = u32::from(measure.as_ref().is_some_and(|m| m.rows));
+        let srgb = frame.format.is_srgb();
+        let mut uniform = uniforms::frame(&self.scene, &projected, self.size, srgb, self.clock.now(), self.at);
+        uniform.pointer = self.pointer.unwrap_or([-1e9, -1e9]);
+        uniform.selecting = u32::from(!self.focus.selection.is_empty());
+        uniform.fitting = u32::from(measure.as_ref().is_some_and(|m| m.rows));
         if let Some(point) = probe {
-            frame.probe = point;
-            frame.probe_radius = self.scene.controls.pick_radius + if self.probing.touch { 8.0 } else { 0.0 };
+            uniform.probe = point;
+            uniform.probe_radius = self.scene.controls.pick_radius + if self.probing.touch { 8.0 } else { 0.0 };
         }
         if let Some((words, _)) = query {
-            frame.query = words;
+            uniform.query = words;
         }
-        self.label_words(&mut frame);
+        self.label_words(&mut uniform, dt);
         let main = uniforms::eye(&projected, self.size, self.pixel_ratio);
-        let light = self.shade(&mut frame, &main);
+        let light = self.shade(&mut uniform, &main);
         let sprites = self.overlay(&mut inner, queue);
-        self.write_uniforms(&frame, &main, light.as_ref(), &sprites);
+        self.write_uniforms(&uniform, &main, light.as_ref(), &sprites);
         if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some()) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
@@ -92,7 +97,7 @@ impl View {
         }
         self.place_labels(encoder, &mut inner, &main);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
-        self.draw(encoder, &mut inner, target, sprites.len() as u32, depth);
+        self.draw(encoder, &mut inner, frame, sprites.len() as u32, depth);
         if let Some(point) = probe {
             let readback = self.probe(encoder, &mut inner);
             self.probing(point, readback);
@@ -105,6 +110,7 @@ impl View {
             shown.held = shown.rows + shown.exits;
             shown.moved = None;
         }
+        self.complete = self.drew_complete();
         self.changed = false;
         self.stats.frames += 1;
         self.stats.cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
@@ -289,7 +295,7 @@ impl View {
     pub(super) fn mark_uniforms(&self) -> Vec<u8> {
         let mut marks = vec![0_u8; self.marks.len() * MARK_STRIDE as usize];
         for (i, shown) in self.marks.iter().enumerate() {
-            let uniform = uniforms::mark(i, shown, self.labels.slots(i));
+            let uniform = uniforms::mark(i, shown, self.labels.slots(i), &self.clock);
             let at = i * MARK_STRIDE as usize;
             marks[at..at + size_of::<wgsl::Mark>()].copy_from_slice(bytemuck::bytes_of(&uniform));
         }

@@ -4,16 +4,19 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
 use super::{Host, Job, Raster, Request, TextRun};
+use crate::video::{Encoder, Encoding, Unit};
 use crate::{Error, Pending};
 
 /// The browser: text set with a 2D canvas in the page's fonts, jobs done by the page's workers once
-/// [`set_jobs`](Browser::set_jobs) names them, else at once, and bytes fetched with `fetch`.
+/// [`set_jobs`](Browser::set_jobs) names them, else at once, bytes fetched with `fetch`, and video
+/// encoded by WebCodecs once [`set_encoder`](Browser::set_encoder) names how.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Browser;
 
 thread_local! {
     static CANVAS: RefCell<Option<(OffscreenCanvas, OffscreenCanvasRenderingContext2d)>> = const { RefCell::new(None) };
     static JOBS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+    static ENCODERS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
 }
 
 impl Browser {
@@ -21,6 +24,67 @@ impl Browser {
     /// promise of its answer's: a pool of workers, each holding the page's compiled module.
     pub fn set_jobs(run: js_sys::Function) {
         JOBS.with(|jobs| *jobs.borrow_mut() = Some(run));
+    }
+
+    /// Has videos encoded by what `create` makes of `(width, height, fps, bitrate)`: an object whose
+    /// `encode(nv12, time, key)` and `finish()` return promises of the units finished since, each
+    /// `[time, key, bytes]`, in order. The npm package makes one with WebCodecs.
+    pub fn set_encoder(create: js_sys::Function) {
+        ENCODERS.with(|encoders| *encoders.borrow_mut() = Some(create));
+    }
+}
+
+/// An encoder the page made: its `encode` and `finish` answer promises of units.
+struct Script(JsValue);
+
+impl Script {
+    /// Calls method `name` with `args`, resolving to the units its promise answers.
+    fn call(&self, name: &str, args: &js_sys::Array) -> Pending<Vec<Unit>> {
+        let promise = js_sys::Reflect::get(&self.0, &name.into())
+            .and_then(JsCast::dyn_into::<js_sys::Function>)
+            .and_then(|f| f.apply(&self.0, args))
+            .map(|answer| js_sys::Promise::resolve(&answer));
+        let promise = match promise {
+            Ok(promise) => promise,
+            Err(error) => return Pending::ready(Err(Error::Unsupported(format!("the encoder: {error:?}").into()))),
+        };
+        let (pending, resolver) = Pending::new();
+        wasm_bindgen_futures::spawn_local(async move {
+            let answer = wasm_bindgen_futures::JsFuture::from(promise).await;
+            resolver.resolve(
+                answer
+                    .map_err(|error| Error::Unsupported(format!("the encoder failed: {error:?}").into()))
+                    .and_then(units),
+            );
+        });
+        pending
+    }
+}
+
+/// The units an encoder answered: `[time, key, bytes]` each.
+fn units(answer: JsValue) -> crate::Result<Vec<Unit>> {
+    let units: js_sys::Array =
+        answer.dyn_into().map_err(|_| Error::Unsupported("the encoder answered no units".into()))?;
+    units
+        .iter()
+        .map(|unit| {
+            let unit: js_sys::Array =
+                unit.dyn_into().map_err(|_| Error::Unsupported("a unit is [time, key, bytes]".into()))?;
+            let time = unit.get(0).as_f64().ok_or_else(|| Error::Unsupported("a unit's time".into()))?;
+            let bytes = js_sys::Uint8Array::new(&unit.get(2));
+            Ok(Unit { time: time as u64, key: unit.get(1).is_truthy(), annex_b: bytes.to_vec() })
+        })
+        .collect()
+}
+
+impl Encoder for Script {
+    fn encode(&mut self, nv12: &[u8], time: u64, key: bool) -> Pending<Vec<Unit>> {
+        let bytes = js_sys::Uint8Array::from(nv12);
+        self.call("encode", &js_sys::Array::of3(&bytes, &(time as f64).into(), &key.into()))
+    }
+
+    fn finish(&mut self) -> Pending<Vec<Unit>> {
+        self.call("finish", &js_sys::Array::new())
     }
 }
 
@@ -146,6 +210,23 @@ impl Host for Browser {
             let coverage = rgba.0.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
             Some(Raster { size, coverage, baseline: (PAD + layout.ascent) as f32 })
         })
+    }
+
+    fn encoder(&self, encoding: &Encoding) -> crate::Result<Box<dyn Encoder>> {
+        let unsupported =
+            || Error::Unsupported("videos in a browser encode with WebCodecs, which the page did not give".into());
+        let create = ENCODERS.with(|encoders| encoders.borrow().clone()).ok_or_else(unsupported)?;
+        let [width, height] = encoding.size;
+        let args = js_sys::Array::of4(
+            &width.into(),
+            &height.into(),
+            &encoding.fps.into(),
+            &f64::from(encoding.bitrate).into(),
+        );
+        let encoder = create
+            .apply(&JsValue::NULL, &args)
+            .map_err(|error| Error::Unsupported(format!("no encoder for {width}×{height}: {error:?}").into()))?;
+        Ok(Box::new(Script(encoder)))
     }
 }
 

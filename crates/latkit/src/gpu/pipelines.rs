@@ -74,6 +74,9 @@ impl Variant {
 pub(crate) struct Pipelines {
     pub(crate) view_layout: wgpu::BindGroupLayout,
     pub(crate) mark_layout: wgpu::BindGroupLayout,
+    /// What a shader reading neither shared group binds in their place.
+    pub(crate) empty: wgpu::BindGroup,
+    empty_layout: wgpu::BindGroupLayout,
     pass_layouts: HashMap<Vec<wgpu::BindGroupLayoutEntry>, wgpu::BindGroupLayout>,
     modules: HashMap<Shader, wgpu::ShaderModule>,
     render: HashMap<Variant, wgpu::RenderPipeline>,
@@ -150,9 +153,17 @@ fn layout(device: &wgpu::Device, label: &str, bindings: &[Binding]) -> wgpu::Bin
 
 impl Pipelines {
     pub(crate) fn new(device: &wgpu::Device) -> Pipelines {
+        let empty_layout = layout(device, "latkit empty", &[]);
+        let empty = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("latkit empty"),
+            layout: &empty_layout,
+            entries: &[],
+        });
         Pipelines {
             view_layout: layout(device, "latkit view", VIEW_GROUP),
             mark_layout: layout(device, "latkit mark", MARK_GROUP),
+            empty,
+            empty_layout,
             pass_layouts: HashMap::new(),
             modules: HashMap::new(),
             render: HashMap::new(),
@@ -197,9 +208,15 @@ impl Pipelines {
             .clone()
     }
 
+    /// The layout of `shader`'s pipelines: the view and mark groups, empty where it reads neither, then
+    /// its pass group.
     fn pipeline_layout(&mut self, device: &wgpu::Device, shader: Shader) -> wgpu::PipelineLayout {
         let pass = (!shader.source().pass.is_empty()).then(|| self.pass_layout(device, shader));
-        let mut groups = vec![Some(&self.view_layout), Some(&self.mark_layout)];
+        let mut groups = if shader.source().shared {
+            vec![Some(&self.view_layout), Some(&self.mark_layout)]
+        } else {
+            vec![Some(&self.empty_layout), Some(&self.empty_layout)]
+        };
         if let Some(pass) = &pass {
             groups.push(Some(pass));
         }

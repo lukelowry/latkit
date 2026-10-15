@@ -3,7 +3,8 @@
 //! - every constant and struct of `lib/types.wesl`, as Rust constants and `#[repr(C)]` mirrors whose
 //!   size is checked against WGSL;
 //! - the shared bind group layouts of `lib/bind.wesl` (group 0 per view, group 1 per mark);
-//! - per shader and variant: its WGSL text, entry points, and the layout of its pass group (group 2).
+//! - per shader and variant: its WGSL text, entry points, the layout of its pass group (group 2), and
+//!   whether it reads the shared groups at all.
 //!
 //! It also writes `OUT_DIR/shaders.json`, every variant's file, entry points, and the pipeline
 //! constants it is made with, from which the browser gate times each pipeline in Chrome.
@@ -50,6 +51,7 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "draw::glyphs", variants: &[("main", &[]), ("ports", &["ports"])] },
     Entry { module: "compute::labels", variants: &[("main", &[])] },
     Entry { module: "draw::overlay", variants: &[("main", &[])] },
+    Entry { module: "compute::compose", variants: &[("main", &[])] },
 ];
 
 const FEATURES: &[&str] = &["writes", "casts", "custom", "multisampled", "lists", "query", "ports", "focused"];
@@ -100,9 +102,10 @@ pub(crate) fn generate() {
             writeln!(shaders, "    {name},").unwrap();
             let pass = bindings(&module, Some(&info), 2);
             let overrides: Vec<String> = module.overrides.iter().filter_map(|(_, o)| o.name.clone()).collect();
+            let shared = module.global_variables.iter().any(|(_, g)| g.binding.as_ref().is_some_and(|b| b.group < 2));
             writeln!(
                 sources,
-                "        Shader::{name} => &ShaderSource {{ label: {label:?}, wgsl: include_str!(concat!(env!(\"OUT_DIR\"), \"/{file}\")), pass: &[{pass}], overrides: &{overrides:?} }},",
+                "        Shader::{name} => &ShaderSource {{ label: {label:?}, wgsl: include_str!(concat!(env!(\"OUT_DIR\"), \"/{file}\")), pass: &[{pass}], overrides: &{overrides:?}, shared: {shared} }},",
                 label = format!("latkit {}.{variant}", entry.module),
                 pass = pass.join(", "),
             )

@@ -176,8 +176,12 @@ export interface Stats {
   resident: number;
   /** Bytes the GPU's budget lets data take. */
   budget: number;
-  /** Whether work the view waits on is under way: jobs, fetches, or answers the GPU reads back. */
-  waiting: boolean;
+  /**
+   * Whether the last frame drew everything as the data, scene, and camera say, with nothing
+   * standing in for work under way: no tile drawing its ancestor, no wire its elbows, no label its
+   * estimate.
+   */
+  complete: boolean;
   /** Milliseconds the last frame took to record. */
   cpuMs: number;
   /** Milliseconds the GPU takes on a frame: the median of the last it measured; 0 where it cannot. */

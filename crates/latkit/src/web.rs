@@ -11,7 +11,9 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{AddEventListenerOptions, HtmlCanvasElement, KeyboardEvent, PointerEvent, ResizeObserver, WheelEvent};
 
-use crate::{Button, Cursor, Error, Event, Gpu, Input, Key, Modifiers, Result, Target, View};
+use crate::gpu::FORMAT;
+use crate::shot::Views;
+use crate::{Button, Cursor, Error, Event, Frame, Gpu, Image, Input, Key, Modifiers, Result, Shot, Video, View};
 
 /// Stops a listener when dropped.
 #[must_use = "the listener stops when this is dropped"]
@@ -98,7 +100,7 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     };
     let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit") });
     let shown: Vec<wgpu::SurfaceTexture> =
-        canvases.iter().filter_map(|c| c.borrow_mut().record(&mut encoder)).collect();
+        canvases.iter().filter_map(|c| c.borrow_mut().record(&mut encoder, now / 1000.0)).collect();
     // A frame no canvas drew submits nothing: listeners alone keep frames coming.
     if !shown.is_empty() {
         gpu.queue().submit([encoder.finish()]);
@@ -175,14 +177,13 @@ pub fn on_frame(gpu: &Gpu, listener: impl FnMut(f64) + 'static) -> Listener {
 /// A view drawn into a `<canvas>`. The canvas sizes itself to its CSS box at the device's pixel ratio,
 /// draws a frame only when the view needs one or the box changes size, and passes its pointer,
 /// wheel, and keys to the view.
+#[derive(Clone)]
 pub struct Canvas(Rc<RefCell<State>>);
 
 struct State {
-    gpu: Gpu,
     view: View,
     element: HtmlCanvasElement,
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
+    surface: Surface,
     frames: Rc<RefCell<Frames>>,
     /// Whether a frame was asked for since the last one.
     due: bool,
@@ -204,48 +205,17 @@ impl Canvas {
     pub fn new(gpu: &Gpu, element: &HtmlCanvasElement, mut view: View) -> Result<Canvas> {
         // The view sleeps while it waits; what it waits on asks for the next frame as it lands.
         view.set_waker(std::task::Waker::from(Arc::new(Wakes { gpu: Arc::as_ptr(&gpu.0) as usize })));
-        let (Some(instance), Some(adapter)) = (gpu.instance(), gpu.adapter()) else {
-            return Err(Error::Unsupported("a canvas draws with a Gpu made by Gpu::new".into()));
-        };
         if gpu.0.lock().host.is_none() {
             gpu.set_host(crate::host::Browser);
         }
-        let surface = instance
-            .create_surface(wgpu::SurfaceTarget::Canvas(element.clone()))
-            .map_err(|e| Error::Unsupported(format!("no WebGPU canvas: {e}").into()))?;
-        let capabilities = surface.get_capabilities(adapter);
-        let format = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(|f| matches!(f, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm))
-            .or_else(|| capabilities.formats.first().copied())
-            .ok_or_else(|| Error::Unsupported("the canvas offers no format".into()))?;
-        let alpha_mode = if capabilities.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
-            wgpu::CompositeAlphaMode::PreMultiplied
-        } else {
-            wgpu::CompositeAlphaMode::Auto
-        };
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: element.width().max(1),
-            height: element.height().max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 2,
-            alpha_mode,
-            view_formats: Vec::new(),
-            color_space: wgpu::SurfaceColorSpace::Auto,
-        };
-        surface.configure(&gpu.0.device, &config);
+        let size = [element.width(), element.height()];
+        let surface = Surface::new(gpu, element, size)?;
         let _ = element.style().set_property("touch-action", "none");
         let frames = frames_of(gpu);
         let state = Rc::new(RefCell::new(State {
-            gpu: gpu.clone(),
             view,
             element: element.clone(),
             surface,
-            config,
             frames: frames.clone(),
             due: true,
             listeners: Vec::new(),
@@ -309,40 +279,144 @@ impl Canvas {
 }
 
 impl State {
+    /// Whether a frame is due; never while a shot draws the view, which the canvas holds its last
+    /// frame for.
     fn wants_frame(&self) -> bool {
-        self.due || self.view.needs_render()
+        !self.view.lent() && (self.due || self.view.needs_render())
     }
 
     /// Records a frame when one is needed, sizing the canvas to its box first.
-    fn record(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<wgpu::SurfaceTexture> {
+    fn record(&mut self, encoder: &mut wgpu::CommandEncoder, time: f64) -> Option<wgpu::SurfaceTexture> {
         let ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio());
         let width = (f64::from(self.element.client_width()) * ratio).round().max(1.0) as u32;
         let height = (f64::from(self.element.client_height()) * ratio).round().max(1.0) as u32;
-        let resized = (width, height) != (self.config.width, self.config.height);
-        if !(resized || self.wants_frame()) {
+        let resized = [width, height] != self.surface.size();
+        if self.view.lent() || !(resized || self.wants_frame()) {
             return None;
         }
         if resized {
             self.element.set_width(width);
             self.element.set_height(height);
-            self.config.width = width;
-            self.config.height = height;
-            self.surface.configure(&self.gpu.0.device, &self.config);
+        }
+        let texture = self.surface.draw(encoder, &mut self.view, [width, height], ratio as f32, time);
+        self.due = texture.is_none();
+        texture
+    }
+}
+
+/// A canvas's surface: in the one format views draw in wherever the browser offers it, so canvases and
+/// shots share their pipelines; alpha premultiplied; configured again whenever its size changes.
+struct Surface {
+    gpu: Gpu,
+    raw: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+}
+
+impl Surface {
+    /// The surface of `element`, `size` pixels, drawn with `gpu`, which must come from [`Gpu::new`].
+    fn new(gpu: &Gpu, element: &HtmlCanvasElement, size: [u32; 2]) -> Result<Surface> {
+        let (Some(instance), Some(adapter)) = (gpu.instance(), gpu.adapter()) else {
+            return Err(Error::Unsupported("a canvas draws with a Gpu made by Gpu::new".into()));
+        };
+        let raw = instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(element.clone()))
+            .map_err(|e| Error::Unsupported(format!("no WebGPU canvas: {e}").into()))?;
+        let capabilities = raw.get_capabilities(adapter);
+        let format = if capabilities.formats.contains(&FORMAT) {
+            FORMAT
+        } else {
+            capabilities
+                .formats
+                .first()
+                .copied()
+                .ok_or_else(|| Error::Unsupported("the canvas offers no format".into()))?
+        };
+        let alpha_mode = if capabilities.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else {
+            wgpu::CompositeAlphaMode::Auto
+        };
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: size[0].max(1),
+            height: size[1].max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+            alpha_mode,
+            view_formats: Vec::new(),
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        raw.configure(gpu.device(), &config);
+        Ok(Surface { gpu: gpu.clone(), raw, config })
+    }
+
+    /// Its width and height in pixels, as last configured.
+    fn size(&self) -> [u32; 2] {
+        [self.config.width, self.config.height]
+    }
+
+    /// Records a frame of `view` at `size` pixels, `pixel_ratio` of them a CSS pixel, at `time`,
+    /// configuring the surface again first when its size changed: the texture to present once the
+    /// encoder is submitted, or `None` when the surface had none to give, which a later frame tries
+    /// again.
+    fn draw(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &mut View,
+        size: [u32; 2],
+        pixel_ratio: f32,
+        time: f64,
+    ) -> Option<wgpu::SurfaceTexture> {
+        let size = size.map(|v| v.max(1));
+        if size != self.size() {
+            [self.config.width, self.config.height] = size;
+            self.raw.configure(self.gpu.device(), &self.config);
         }
         let (wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture)) =
-            self.surface.get_current_texture()
+            self.raw.get_current_texture()
         else {
-            self.surface.configure(&self.gpu.0.device, &self.config);
-            self.due = true;
+            self.raw.configure(self.gpu.device(), &self.config);
             return None;
         };
-        let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let target =
-            Target { view: &view, format: self.config.format, size: [width, height], pixel_ratio: ratio as f32 };
-        self.due = false;
-        self.view.render(encoder, &target);
+        let target = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        view.render(encoder, &Frame { target: &target, format: self.config.format, size, pixel_ratio, time });
         Some(texture)
     }
+}
+
+/// The views of canvases, lent to a shot a step at a time, so the page reads them between steps.
+struct Canvases<'a>(&'a [Canvas]);
+
+impl Canvases<'_> {
+    /// The canvases, each once.
+    fn of(canvases: &[Canvas]) -> Result<Canvases<'_>> {
+        let twice = canvases.iter().enumerate().any(|(i, a)| canvases[i + 1..].iter().any(|b| Rc::ptr_eq(&a.0, &b.0)));
+        if twice {
+            return Err(Error::invalid("a shot draws each canvas's view in one panel"));
+        }
+        Ok(Canvases(canvases))
+    }
+}
+
+impl Views for Canvases<'_> {
+    fn lend<R>(&mut self, f: impl FnOnce(&mut [&mut View]) -> R) -> R {
+        let mut states: Vec<std::cell::RefMut<'_, State>> = self.0.iter().map(|c| c.0.borrow_mut()).collect();
+        let mut views: Vec<&mut View> = states.iter_mut().map(|s| &mut s.view).collect();
+        f(&mut views)
+    }
+}
+
+/// The picture `shot` takes of the views of `canvases`, one per panel, once they are complete and
+/// still. The canvases hold their last frames meanwhile.
+pub async fn image(shot: &Shot, canvases: &[Canvas]) -> Result<Image> {
+    shot.image_of(&mut Canvases::of(canvases)?).await
+}
+
+/// Draws `video`'s next frame of the views of `canvases`, one per panel. The canvases hold their last
+/// frames until the video is finished or dropped.
+pub async fn frame<W: std::io::Write>(video: &mut Video<W>, canvases: &[Canvas]) -> Result<()> {
+    video.frame_of(&mut Canvases::of(canvases)?).await
 }
 
 /// Hands the view's events to the canvas's listeners, and shows the cursor it asks for.
@@ -394,7 +468,7 @@ fn listen(state: &Rc<RefCell<State>>) -> Result<()> {
         let handler = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
             let Some(state) = weak.upgrade() else { return };
             let Some(input) = handle(&target, &event) else { return };
-            let used = state.borrow_mut().view.input(&input);
+            let used = state.borrow_mut().view.input(&input, event.time_stamp() / 1000.0);
             // A wheel the view zooms with does not scroll the page; a key it uses does not either.
             if used && matches!(kind, "wheel" | "keydown") {
                 event.prevent_default();

@@ -1,6 +1,7 @@
-//! What the platform does for latkit: set and measure text in its fonts, do jobs off the frame, and
-//! fetch bytes. A [`Gpu`](crate::Gpu) is given its host with [`Gpu::set_host`](crate::Gpu::set_host);
-//! without one, views draw no text, do their jobs at once, and fetch nothing.
+//! What the platform does for latkit: set and measure text in its fonts, do jobs off the frame, fetch
+//! bytes, and encode video. A [`Gpu`](crate::Gpu) is given its host with
+//! [`Gpu::set_host`](crate::Gpu::set_host); without one, views draw no text, do their jobs at once,
+//! fetch nothing, and encode no video. A browser's host is [`Browser`], with the `web` feature.
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod browser;
@@ -14,6 +15,7 @@ pub use browser::Browser;
 pub use job::Job;
 pub(crate) use job::{Key, Placement, Shaping, Wiring};
 
+use crate::video::{Encoder, Encoding};
 use crate::{Error, Pending};
 
 /// The platform services a view uses.
@@ -37,6 +39,13 @@ pub trait Host: Send + Sync + 'static {
     fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
         let _ = request;
         Pending::ready(Err(Error::Unsupported("this host does not fetch".into())))
+    }
+
+    /// An H.264 encoder for pictures as `encoding` says, hardware where the platform has one: what a
+    /// [`Video`](crate::Video) encodes with. By default a host encodes no video.
+    fn encoder(&self, encoding: &Encoding) -> crate::Result<Box<dyn Encoder>> {
+        let _ = encoding;
+        Err(Error::Unsupported("this host encodes no video".into()))
     }
 }
 

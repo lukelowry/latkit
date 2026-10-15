@@ -230,10 +230,10 @@ fn presses_click_and_drag_the_rows_they_hit() {
     let center = SIZE as f32 / 2.0;
     let modifiers = Modifiers::default();
     let press = |view: &mut View, point: [f32; 2]| {
-        view.input(&Input::Down { pointer: 1, point, button: Button::Primary, modifiers, touch: false });
+        view.input(&Input::Down { pointer: 1, point, button: Button::Primary, modifiers, touch: false }, common::now());
     };
     press(&mut view, [center + 40.0, center]);
-    view.input(&Input::Up { pointer: 1, point: [center + 40.0, center], modifiers });
+    view.input(&Input::Up { pointer: 1, point: [center + 40.0, center], modifiers }, common::now());
     frame(&gpu, &mut view);
     let events: Vec<Event> = view.events().collect();
     let clicked = events.iter().find_map(|e| if let Event::Click(hit) = e { Some(hit) } else { None });
@@ -242,8 +242,8 @@ fn presses_click_and_drag_the_rows_they_hit() {
 
     press(&mut view, [center, center]);
     frame(&gpu, &mut view);
-    view.input(&Input::Move { pointer: 1, point: [center + 10.0, center - 20.0], modifiers });
-    view.input(&Input::Up { pointer: 1, point: [center + 10.0, center - 20.0], modifiers });
+    view.input(&Input::Move { pointer: 1, point: [center + 10.0, center - 20.0], modifiers }, common::now());
+    view.input(&Input::Up { pointer: 1, point: [center + 10.0, center - 20.0], modifiers }, common::now());
     let drags: Vec<_> =
         view.events().filter_map(|e| if let Event::Drag(drag) = e { Some(drag) } else { None }).collect();
     assert_eq!(drags.iter().map(|d| d.phase).collect::<Vec<_>>(), [Phase::Start, Phase::End]);
@@ -271,6 +271,24 @@ fn lines_trace_their_samples_across_a_plot() {
     let center = SIZE / 2;
     assert!(close(at(&pixels, center, center), [255, 0, 0, 255]), "{:?}", at(&pixels, center, center));
     assert!(close(at(&pixels, center, center - 20), [0, 0, 0, 255]), "only the line is drawn");
+}
+
+#[test]
+fn a_plot_frames_its_traces_whole_span_wherever_it_shows() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("signals");
+    data.apply(Table::new("Signal", 1)).expect("valid");
+    for t in 0..=10 {
+        data.apply(Patch::new().append(f64::from(t) * 6.0, "Signal", [("v", vec![f64::from(t)])])).expect("frame");
+    }
+    let scene = Scene::new(Plot::default()).draw(Lines::of("signals", "Signal").trace("v"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_data(data);
+    view.set_at(0.0);
+    view.fit(latkit::Fit::All);
+    frame(&gpu, &mut view);
+    let Camera::Plot { x, .. } = *view.camera() else { panic!("a plot camera") };
+    assert_eq!(x, [0.0, 60.0], "the whole span, though only its first sample shows");
 }
 
 #[test]
@@ -360,7 +378,7 @@ fn hover_reaches_what_faces_leave_in_view() {
     frame(&gpu, &mut view);
     let center = SIZE as f32 / 2.0;
     let hover = |view: &mut View, point: [f32; 2]| {
-        view.input(&Input::Move { pointer: 1, point, modifiers: Modifiers::default() });
+        view.input(&Input::Move { pointer: 1, point, modifiers: Modifiers::default() }, common::now());
         frame(&gpu, view);
         view.events().filter_map(|e| if let Event::Hover(hit) = e { Some(hit) } else { None }).last()
     };
@@ -402,14 +420,17 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
     view.set_data(data);
     frame(&gpu, &mut view);
     let top = view.point([0.0, 0.0, 2.0]).expect("the top is in view");
-    view.input(&Input::Move { pointer: 1, point: top, modifiers: Modifiers::default() });
+    view.input(&Input::Move { pointer: 1, point: top, modifiers: Modifiers::default() }, common::now());
     frame(&gpu, &mut view);
     let hovered = view.events().find_map(|e| if let Event::Hover(hit) = e { hit } else { None });
     assert_eq!(hovered.map(|hit| hit.row.id), Some(5_u64.into()), "the top vertex is hovered");
     assert_eq!(view.cursor(), latkit::Cursor::Grab);
     let modifiers = Modifiers::default();
-    view.input(&Input::Down { pointer: 1, point: top, button: Button::Primary, modifiers, touch: false });
-    view.input(&Input::Move { pointer: 1, point: [top[0], top[1] - 30.0], modifiers });
+    view.input(
+        &Input::Down { pointer: 1, point: top, button: Button::Primary, modifiers, touch: false },
+        common::now(),
+    );
+    view.input(&Input::Move { pointer: 1, point: [top[0], top[1] - 30.0], modifiers }, common::now());
     let drag = view.events().find_map(|e| if let Event::Drag(drag) = e { Some(drag) } else { None }).expect("a drag");
     assert_eq!(drag.phase, Phase::Start);
     assert!(drag.position[2] > 2.0, "dragged up: {:?}", drag.position);
@@ -456,9 +477,11 @@ fn frames_tell_what_they_cost_the_gpu_where_it_measures() {
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_data(data);
-    let started = std::time::Instant::now();
-    while view.stats().gpu_ms == 0.0 {
-        assert!(started.elapsed() < common::SETTLE, "a measure lands within {:?}", common::SETTLE);
+    for _ in 0..common::SETTLE {
+        if view.stats().gpu_ms > 0.0 {
+            break;
+        }
+        common::finish(&gpu);
         step(&gpu, &mut view);
     }
     let ms = view.stats().gpu_ms;

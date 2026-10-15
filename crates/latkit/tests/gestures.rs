@@ -43,18 +43,17 @@ fn view(gpu: &latkit::Gpu) -> View {
 /// Feeds `inputs`, rendering a frame after each, then renders until `wanted` finds its event.
 fn after<T>(gpu: &latkit::Gpu, view: &mut View, inputs: &[Input], wanted: impl Fn(&Event) -> Option<T>) -> T {
     for input in inputs {
-        view.input(input);
+        view.input(input, common::now());
         step(gpu, view);
         step(gpu, view);
     }
-    let started = std::time::Instant::now();
-    loop {
+    for _ in 0..common::SETTLE {
         if let Some(found) = view.events().find_map(|e| wanted(&e)) {
             return found;
         }
-        assert!(started.elapsed() < common::SETTLE, "the event arrives within {:?}", common::SETTLE);
         step(gpu, view);
     }
+    panic!("the event arrives within {} frames", common::SETTLE);
 }
 
 fn down(point: [f32; 2], button: Button) -> Input {
@@ -138,7 +137,7 @@ fn a_double_click_faster_than_its_probe_opens() {
     // Both clicks land before any frame answers what lies under them.
     let at = [C + 40.0, C];
     for input in [down(at, Button::Primary), up(at), down(at, Button::Primary), up(at)] {
-        view.input(&input);
+        view.input(&input, common::now());
     }
     let opened = after(&gpu, &mut view, &[], |e| if let Event::Open(hit) = e { Some(hit.row.clone()) } else { None });
     assert_eq!(opened, Row::new("graph", "Node", 2_u64));

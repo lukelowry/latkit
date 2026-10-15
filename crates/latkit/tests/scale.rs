@@ -6,10 +6,10 @@
 
 mod common;
 
-use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane, wait};
+use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane};
 use latkit::{
-    Axis, Budget, Camera, Color, Data, Edges, Fit, Lines, Patch, Plot, Row, Scene, Table, Target, Vertices, View,
-    field, when,
+    Axis, Budget, Camera, Color, Data, Edges, Fit, Frame, Lines, Patch, Plot, Row, Scene, Table, Vertices, View, field,
+    when,
 };
 
 /// A grid of `columns` by `rows` vertices a unit apart, from the origin, and an edge from each to
@@ -238,11 +238,17 @@ fn a_view_sleeps_while_it_waits() {
         view_formats: &[],
     });
     let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let target = Target { view: &target_view, format: common::FORMAT, size: [SIZE, SIZE], pixel_ratio: 1.0 };
+    let target = Frame {
+        target: &target_view,
+        format: common::FORMAT,
+        size: [SIZE, SIZE],
+        pixel_ratio: 1.0,
+        time: common::now(),
+    };
     let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     view.render(&mut encoder, &target);
     gpu.queue().submit([encoder.finish()]);
     assert!(!view.needs_render(), "while the answer is read back, the view sleeps");
-    wait(&gpu);
+    common::finish(&gpu);
     assert!(view.needs_render(), "the answer landing wakes it");
 }

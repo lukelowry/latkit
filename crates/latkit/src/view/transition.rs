@@ -10,21 +10,19 @@
 //! buffer's layout and exists only while a transition does. A stroke's geometry column keeps the
 //! table it had as the transition began, and its paths morph from it point by point.
 
-use std::time::Duration;
-
-use web_time::Instant;
-
 use super::View;
+use super::clock::Clock;
 use super::marks::Shown;
 use crate::data::Table;
 use crate::gpu::Inner;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::MarkKind;
 
-/// A mark easing from what it showed, and whether its rows only fade.
+/// A mark easing from what it showed, begun at a time on the view's clock, and whether its rows
+/// only fade.
 pub(crate) struct Transition {
-    started: Instant,
-    duration: Duration,
+    start: f64,
+    seconds: f64,
     fades: bool,
 }
 
@@ -37,14 +35,13 @@ pub(crate) struct Begin {
 }
 
 impl Transition {
-    /// Eased progress, `0..=1`.
-    pub(crate) fn motion(&self) -> f32 {
-        let t = (self.started.elapsed().as_secs_f64() / self.duration.as_secs_f64().max(1e-3)).min(1.0) as f32;
-        t * t * (3.0 - 2.0 * t)
+    /// Eased progress on `clock`, `0..=1`.
+    pub(crate) fn motion(&self, clock: &Clock) -> f32 {
+        clock.eased(self.start, self.seconds) as f32
     }
 
-    fn done(&self) -> bool {
-        self.started.elapsed() >= self.duration
+    fn done(&self, clock: &Clock) -> bool {
+        clock.done(self.start, self.seconds)
     }
 }
 
@@ -120,10 +117,10 @@ impl View {
     /// Freezes every transition starting this frame and advances the running ones; true while any
     /// runs.
     pub(super) fn transitions(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> bool {
-        let duration = self.scene.ease;
+        let seconds = self.scene.ease.as_secs_f64();
         let starting: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].begin.is_some()).collect();
         if !starting.is_empty() {
-            if duration.is_zero() {
+            if seconds == 0.0 {
                 for &i in &starting {
                     self.marks[i].begin = None;
                     self.marks[i].exits = 0;
@@ -132,15 +129,16 @@ impl View {
                 let fades: Vec<bool> =
                     starting.iter().map(|&i| self.marks[i].begin.as_ref().is_some_and(|b| b.fades)).collect();
                 self.freeze(encoder, inner, &starting);
+                let start = self.clock.now();
                 for (&i, fades) in starting.iter().zip(fades) {
-                    self.marks[i].transition = Some(Transition { started: Instant::now(), duration, fades });
+                    self.marks[i].transition = Some(Transition { start, seconds, fades });
                 }
             }
         }
         let mut running = false;
         for shown in &mut self.marks {
             let Some(transition) = &shown.transition else { continue };
-            if transition.done() {
+            if transition.done(&self.clock) {
                 // One more evaluation writes every row's settled state.
                 shown.transition = None;
                 shown.exits = 0;
@@ -151,8 +149,9 @@ impl View {
                 }
             } else {
                 running = true;
-                // Rows that only fade were written once; their fade follows the mark's progress.
-                if !transition.fades {
+                // Rows that only fade were written once; their fade follows the mark's progress. The
+                // rest evaluate as the clock moves, and only then.
+                if !transition.fades && self.clock.moved() {
                     shown.all_dirty();
                 }
             }

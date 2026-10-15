@@ -75,6 +75,12 @@ impl View {
         if self.fitting.reading.is_some() || self.size[0] <= 0.0 {
             return None;
         }
+        // A plot that traces frames everything by its traces' whole span, which settles once their
+        // data is drawn; measuring them first would frame only what shows up to the coordinate shown.
+        let plot = matches!(self.scene.space, Space::Plot(_));
+        if plot && matches!(self.fitting.wanted, Some(Fit::All)) && self.traces() {
+            return None;
+        }
         // A fit frames what shows once data has streamed, its shapes are triangulated and bent, and any
         // layout has placed it; in a diagram, once vertices stand where their sheet puts them.
         let easing = matches!(self.scene.space, Space::Diagram(_))
@@ -205,6 +211,11 @@ impl View {
     }
 
     /// The coordinates a plot's traces span.
+    /// Whether a mark traces a sampled field.
+    fn traces(&self) -> bool {
+        self.marks.iter().any(|shown| matches!(&shown.mark, crate::Mark::Lines(lines) if lines.trace.is_some()))
+    }
+
     fn traced_span(&self) -> Option<[f64; 2]> {
         let spans = self.marks.iter().filter_map(|shown| {
             let crate::Mark::Lines(lines) = &shown.mark else { return None };

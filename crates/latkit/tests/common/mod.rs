@@ -1,8 +1,29 @@
-//! What every GPU test shares: a device, frames rendered headless and read back, and plain scenes.
+//! What every GPU test shares: a device, frames rendered headless on a clock the test steps and
+//! read back, and plain scenes.
 
 #![allow(dead_code, unreachable_pub, reason = "each test file uses some")]
 
-use latkit::{Camera, Color, Diagram, Gpu, Grid, Plane, Target, Theme, View};
+use std::cell::Cell;
+
+use latkit::{Camera, Color, Diagram, Frame, Gpu, Grid, Plane, Theme, View};
+
+/// Seconds a frame steps the test's clock: frames run as a display's would, however fast they draw.
+pub const TICK: f64 = 1.0 / 60.0;
+
+thread_local! {
+    /// The test's clock: every frame steps it, and inputs read it.
+    static NOW: Cell<f64> = const { Cell::new(0.0) };
+}
+
+/// The test's clock, for inputs.
+pub fn now() -> f64 {
+    NOW.with(Cell::get)
+}
+
+/// Steps the test's clock `seconds` without drawing.
+pub fn wait(seconds: f64) {
+    NOW.with(|now| now.set(now.get() + seconds));
+}
 
 pub const SIZE: u32 = 128;
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -20,32 +41,29 @@ pub fn gpu() -> Option<Gpu> {
 
 /// The longest the GPU may take to finish a frame in these tests.
 pub const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-/// The longest a view may take to settle: uploads, probes, and a transition.
-pub const SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// The most frames a view may take to settle: uploads, probes, and a transition of two seconds.
+pub const SETTLE: u32 = 600;
 
-pub fn wait(gpu: &Gpu) {
+pub fn finish(gpu: &Gpu) {
     let wait = wgpu::PollType::Wait { submission_index: None, timeout: Some(DEADLINE) };
     gpu.device().poll(wait).expect("the GPU finishes within the deadline");
 }
 
 /// Renders frames until the view is settled, transitions included, then reads the target's pixels.
-/// The time to settle counts from the first frame, which makes the scene's pipelines; the browser
-/// gate holds those to their own budget.
 pub fn frame(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
     let mut pixels = step(gpu, view);
-    let started = std::time::Instant::now();
-    loop {
+    for _ in 0..SETTLE {
         if !view.needs_render() {
             return pixels;
         }
-        assert!(started.elapsed() < SETTLE, "the view settles within {SETTLE:?}");
-        std::thread::sleep(std::time::Duration::from_millis(8));
         pixels = step(gpu, view);
     }
+    panic!("the view settles within {SETTLE} frames");
 }
 
-/// Renders one frame and reads the target's pixels.
+/// Steps the test's clock a frame, renders one frame, and reads the target's pixels.
 pub fn step(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
+    wait(TICK);
     let device = gpu.device();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("target"),
@@ -58,9 +76,9 @@ pub fn step(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
         view_formats: &[],
     });
     let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let target = Target { view: &target_view, format: FORMAT, size: [SIZE, SIZE], pixel_ratio: 1.0 };
+    let frame = Frame { target: &target_view, format: FORMAT, size: [SIZE, SIZE], pixel_ratio: 1.0, time: now() };
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    view.render(&mut encoder, &target);
+    view.render(&mut encoder, &frame);
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
         size: u64::from(SIZE * SIZE * 4),
@@ -82,7 +100,7 @@ pub fn step(gpu: &Gpu, view: &mut View) -> Vec<[u8; 4]> {
     gpu.queue().submit([encoder.finish()]);
     let slice = readback.slice(..);
     slice.map_async(wgpu::MapMode::Read, |result| result.expect("mapped"));
-    wait(gpu);
+    finish(gpu);
     bytemuck::cast_slice::<u8, [u8; 4]>(&slice.get_mapped_range().expect("mapped")).to_vec()
 }
 

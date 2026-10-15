@@ -19,14 +19,13 @@ use latkit::{
 fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
     let mut pending = pin!(pending);
     let mut context = Context::from_waker(Waker::noop());
-    let started = std::time::Instant::now();
-    loop {
+    for _ in 0..common::SETTLE {
         if let Poll::Ready(value) = pending.as_mut().poll(&mut context) {
             return value.expect("an answer");
         }
-        assert!(started.elapsed() < common::SETTLE, "the query answers within {:?}", common::SETTLE);
         step(gpu, view);
     }
+    panic!("the query answers within {} frames", common::SETTLE);
 }
 
 fn graph() -> Data {
@@ -91,15 +90,12 @@ fn a_shift_drag_selects_the_rows_in_its_box() {
     let mut view = view(&gpu, Controls { select_box: true, ..Controls::default() });
     let c = SIZE as f32 / 2.0;
     let shift = Modifiers { shift: true, ..Modifiers::default() };
-    view.input(&Input::Down {
-        pointer: 1,
-        point: [c - 5.0, c - 5.0],
-        button: Button::Primary,
-        modifiers: shift,
-        touch: false,
-    });
-    view.input(&Input::Move { pointer: 1, point: [c + 15.0, c + 5.0], modifiers: shift });
-    view.input(&Input::Up { pointer: 1, point: [c + 15.0, c + 5.0], modifiers: shift });
+    view.input(
+        &Input::Down { pointer: 1, point: [c - 5.0, c - 5.0], button: Button::Primary, modifiers: shift, touch: false },
+        common::now(),
+    );
+    view.input(&Input::Move { pointer: 1, point: [c + 15.0, c + 5.0], modifiers: shift }, common::now());
+    view.input(&Input::Up { pointer: 1, point: [c + 15.0, c + 5.0], modifiers: shift }, common::now());
     frame(&gpu, &mut view);
     let selected: Vec<Vec<latkit::Row>> =
         view.events().filter_map(|e| if let Event::Select(rows) = e { Some(rows) } else { None }).collect();

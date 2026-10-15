@@ -26,7 +26,7 @@ pub use label::Label;
 pub use layout::{Direction, Interpolation, Layered, Layout, Route, Stress};
 pub use lines::Lines;
 pub use mark::Mark;
-pub use marker::{Image, Marker, Shape};
+pub use marker::{Marker, Shape};
 pub use port::{Port, Side};
 pub(crate) use space::sun;
 pub use space::{Axis, Diagram, Earth, Format, Grid, Plane, Plot, Projection, Space};

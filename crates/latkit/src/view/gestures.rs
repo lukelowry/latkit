@@ -10,10 +10,6 @@
 //! otherwise from a probe of its own a frame or two later; the press waits for it and catches up.
 //! Menus and connections tell what lies under their point once a pick answers.
 
-use std::time::Duration;
-
-use web_time::Instant;
-
 use super::View;
 use super::event::{Cursor, Drag, End, Event, Fit, Hit, Phase};
 use super::input::{Button, Input, Key, Modifiers};
@@ -24,11 +20,11 @@ use crate::{Camera, Grid, Pending, Row, Scene, Space};
 
 /// CSS pixels a press moves before it drags or pans.
 const SLOP: f32 = 4.0;
-/// Clicks this close in time, and in CSS pixels, make a double click.
-const DOUBLE: Duration = Duration::from_millis(400);
+/// Clicks this close in seconds, and in CSS pixels, make a double click.
+const DOUBLE: f64 = 0.4;
 const DOUBLE_REACH: f32 = 6.0;
-/// A drag released this long after its last move does not coast.
-const HELD: Duration = Duration::from_millis(60);
+/// A drag released this many seconds after its last move does not coast.
+const HELD: f64 = 0.06;
 /// Degrees a pixel of turning drag turns.
 const TURN: f64 = 0.3;
 /// What a step of the keys moves: CSS pixels, degrees, levels.
@@ -98,11 +94,13 @@ pub(crate) struct Gestures {
     pub(crate) now: Gesture,
     /// Picks whose answers events wait for.
     awaiting: Vec<(Pending<Vec<Hit>>, Awaited)>,
+    /// The time of the input being taken, on the clock of whatever feeds the view its input.
+    time: f64,
     /// The last click: when, where, and on which row.
-    clicked: Option<(Instant, [f32; 2], Option<Row>)>,
+    clicked: Option<(f64, [f32; 2], Option<Row>)>,
     /// How fast the pan or turn under way moves, per second, and when it last moved.
     velocity: [f64; 2],
-    moved: Option<Instant>,
+    moved: Option<f64>,
 }
 
 impl Gestures {
@@ -122,9 +120,8 @@ impl Gestures {
 
     /// Follows the velocity of a move of `delta` per second-scaled step.
     fn track(&mut self, delta: [f64; 2]) {
-        let now = Instant::now();
-        let dt = self.moved.map_or(0.0, |at| now.duration_since(at).as_secs_f64());
-        self.moved = Some(now);
+        let dt = self.moved.map_or(0.0, |at| self.time - at);
+        self.moved = Some(self.time);
         if dt > 0.0 {
             let k = (dt / 0.05).min(1.0);
             self.velocity = [0, 1].map(|i| self.velocity[i] + (delta[i] / dt - self.velocity[i]) * k);
@@ -133,7 +130,7 @@ impl Gestures {
 
     /// The velocity a release coasts with: none when the pointer stopped before letting go.
     fn release(&mut self) -> [f64; 2] {
-        let held = self.moved.is_none_or(|at| at.elapsed() > HELD);
+        let held = self.moved.is_none_or(|at| self.time - at > HELD);
         let velocity = std::mem::take(&mut self.velocity);
         self.moved = None;
         if held { [0.0; 2] } else { velocity }
@@ -141,12 +138,16 @@ impl Gestures {
 }
 
 impl View {
-    /// Takes one pointer, wheel, or key input; events it causes queue for [`events`](View::events).
-    /// Returns whether the view used it, so a platform stops its default handling: scrolling the
-    /// page, its context menu.
-    pub fn input(&mut self, input: &Input) -> bool {
+    /// Takes one pointer, wheel, or key input at `time`, seconds on the clock its frames give;
+    /// events it causes queue for [`events`](View::events). Double clicks and flings measure the
+    /// times between inputs. Returns whether the view used it, so a platform stops its default
+    /// handling: scrolling the page, its context menu.
+    pub fn input(&mut self, input: &Input, time: f64) -> bool {
         if self.size[0] <= 0.0 {
             return false;
+        }
+        if time.is_finite() {
+            self.gestures.time = time;
         }
         let used = match *input {
             Input::Down { pointer, point, button, modifiers, touch } => {
@@ -410,13 +411,13 @@ impl View {
     }
 
     fn click(&mut self, hit: Option<Probed>, point: [f32; 2], modifiers: Modifiers) {
-        let now = Instant::now();
+        let now = self.gestures.time;
         let row = hit.as_ref().map(|p| p.hit.row.clone());
         let double = self
             .gestures
             .clicked
             .take()
-            .is_some_and(|(at, p, r)| now.duration_since(at) < DOUBLE && near(p, point, DOUBLE_REACH) && r == row);
+            .is_some_and(|(at, p, r)| now - at < DOUBLE && near(p, point, DOUBLE_REACH) && r == row);
         if !double {
             self.gestures.clicked = Some((now, point, row));
         }

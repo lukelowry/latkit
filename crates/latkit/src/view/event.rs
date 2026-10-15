@@ -165,9 +165,9 @@ pub struct Stats {
     pub resident: u64,
     /// Bytes the GPU's [`Budget`](crate::Budget) lets data take.
     pub budget: u64,
-    /// Whether work the view waits on is under way: jobs, fetches, or answers the GPU reads back. It
-    /// wakes the view as it lands.
-    pub waiting: bool,
+    /// Whether the last frame drew everything as the data, scene, and camera say, with nothing
+    /// standing in for work under way: see [`View::complete`](crate::View::complete).
+    pub complete: bool,
     /// Milliseconds the last frame took to record on the CPU.
     pub cpu_ms: f32,
     /// Milliseconds the GPU takes on a frame: the median of the last frames it measured; 0 where the

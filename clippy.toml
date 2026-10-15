@@ -1,2 +1,2 @@
 # Names of formats and products that read as prose, not code.
-doc-valid-idents = ["GeoJSON", "TileJSON", "PMTiles", ".."]
+doc-valid-idents = ["GeoJSON", "TileJSON", "PMTiles", "WebCodecs", ".."]

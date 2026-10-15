@@ -23,6 +23,8 @@ bytemuck.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 flate2.workspace = true
+# Images: icons read from PNG, and shots written as PNG.
+png.workspace = true
 wgpu = { workspace = true, optional = true }
 glam = { workspace = true, optional = true }
 web-time = { workspace = true, optional = true }

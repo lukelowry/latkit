@@ -2,16 +2,7 @@ use std::sync::Arc;
 
 use super::mark::Markers;
 use crate::gpu::shaders as wgsl;
-use crate::{Color, Expr};
-
-/// An image: RGBA texels, rows top to bottom.
-#[derive(Clone, PartialEq, Debug)]
-pub struct Image {
-    /// Width and height in texels.
-    pub size: [u32; 2],
-    /// `size[0] * size[1] * 4` bytes, straight alpha.
-    pub rgba: Arc<[u8]>,
-}
+use crate::{Color, Expr, Image};
 
 /// How a vertex is drawn.
 #[derive(Clone, PartialEq, Debug)]

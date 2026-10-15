@@ -14,7 +14,8 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
 ## Foundation
 
 1. **One direction:** data → derived data → motion → pixels. Structure comes from data on the CPU,
-   never from a readback; readbacks only answer questions (pick, locate, image) and size GPU work.
+   never from a readback; readbacks only answer questions (pick, locate), size GPU work, and carry
+   pictures out.
 2. **The camera is only an eye:** no derivation reads it. Labels hang from world anchors projected
    every frame; screen-space decisions (legibility, map label collisions) only toggle visibility,
    and only labels that show have their texts set.
@@ -25,6 +26,10 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
    it was asked from still holds. Tiles are the camera asking: the one derivation reading it.
 4. **Motion eases changes, never drives them:** data and derived data ease alike; changes during a
    drag apply at once; geometry morphs point by point, by fraction along where the counts differ.
+   **Time is an input:** every frame and input carries the time of whatever draws it (an animation
+   frame, a video frame, a test's step), and each view's clock moves by the steps between, a quarter
+   second at most and never back. Eases, flights, coasting, orbits, fades, and `elapsed()` read it,
+   never the wall, and what reads it evaluates only when it moves.
 5. **Primitives:** points, strokes, triangles, glyphs. A stroke runs along one path kind, fixed per
    pipeline: ends (straight, geodesic, lanes), trace (samples), or geometry (any written polyline);
    a triangle's corners come from ends (faces) or geometry (areas). Geometry is a field: vertices
@@ -32,8 +37,8 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
    run is rasterized once as a distance field: any size, halo from the field.
 6. **Lists:** count → scan → write. Capacity is a CPU-known bound; a list past it coarsens every
    item instead of dropping the last.
-7. **Eyes:** every pass draws through an `Eye` (projection, size, pixel ratio): the view, the shadow
-   light, an exported image.
+7. **Eyes:** every pass draws through an `Eye` (projection, size, pixel ratio): the view or the shadow
+   light. A picture is a frame like any other, drawn at a size of its own.
 8. **Geometry is the world's:** lanes bow by a share of their edge's length, arcs follow great
    circles, and both are pieces of the path, so the camera never reshapes them. The globe writes its
    depth a hair under its surface, and a mark past its horizon draws nothing. A segment list keeps
@@ -46,6 +51,11 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
    transitions, and labels work unchanged, and picks and selection name source rows. A table a mark
    traces draws whole, its traces as coarse in time as fit. GPU pages are one size in one pool, the
    least recently drawn evicted first, so what draws always fits.
+10. **Complete:** a frame is complete when nothing in it stands in for work under way: no page
+    waiting to upload, no tile drawn as its ancestor, no table as its first sample, no row standing
+    where it was until a layout lands, no wire drawn as elbows, no area as its earlier triangles, no
+    label at its estimated size, no fit due. Every derivation says so of itself; pictures, video
+    frames, tests, and the benchmark wait on the one predicate.
 
 ## Rules
 
@@ -64,6 +74,9 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
   `cargo xtask bench` holds the network page's grids to budgets in Chrome.
 - A dataset's versions ease from one to the next; another dataset of the same name replaces it, its
   rows fading in as the old fade out. Rows that only fade evaluate once.
+- A picture composes on the GPU into exactly the bytes its consumer takes, RGBA for an image and
+  NV12 for an encoder; the CPU touches no pixel. A view draws at one size at a time: while a shot
+  draws it, its canvas holds its last frame.
 
 ## Spaces
 
@@ -115,6 +128,21 @@ only glow, halo, and pick radius stay pixels. Zooming scales one fixed picture.
   instant plus the view's axis coordinate, down to the theme's `night`; `atmosphere` rings the globe.
   Globe gestures keep the point under the pointer exactly.
 
+## Pictures and video
+
+- **Shot** (`src/shot.rs`): plain data, a picture of views each drawn into its part of `size` pixels
+  at `scale` pixels per CSS pixel. `image(views)` steps the views' clocks a sixtieth of a second while
+  they ease and waits while work is under way, within a deadline, until every view is complete and
+  still; `compute/compose.wesl` then writes each panel's part in whole words, and a plain buffer copy
+  reads the RGBA back. `Image::png` writes it; the npm package writes it in a worker.
+- **Video** (`src/video/`): a shot's frames at a fixed rate, NV12 composed on the GPU, three frames
+  under way (one drawing, one reading back, one encoding). A frame where nothing moved is neither
+  drawn nor encoded: frames last until the next one's time. `Host::encoder` is the seam, NV12 in and
+  Annex B out with no B-frames; a browser's is WebCodecs, which npm hands the host. `mp4.rs` writes
+  fragmented MP4 as it goes, a fragment per keyframe run, from the first keyframe's parameter sets.
+- **Lending:** views lend themselves to a drawing a step at a time (`shot::Views`), so a canvas's
+  view is borrowed only while a step draws it and the page reads it between steps.
+
 ## Tree
 
 ```
@@ -123,11 +151,14 @@ crates/latkit/
 ├── shaders/
 │   ├── lib/           types, bind, read, trace, project, state, color, focus, points, path, triangles,
 │   │                  stroke, marker, label, shade, lists, mark, reduce
-│   ├── compute/       evaluate, freeze, bounds, normals, probe, lists, labels (map label collisions)
+│   ├── compute/       evaluate, freeze, bounds, normals, probe, lists, labels (map label collisions),
+│   │                  compose (a shot's panels into RGBA or NV12)
 │   └── draw/          backdrop (daylight, atmosphere), points, strokes, triangles, areas, glyphs, shade, overlay
 ├── src/
 │   ├── lib.rs         the only entry point
-│   ├── error.rs, pending.rs
+│   ├── error.rs, pending.rs, image.rs (PNG), time.rs (bounded waits)
+│   ├── shot.rs        Shot, the drawing that steps views and composes their panels
+│   ├── video/         Video, Encoder, Encoding, Unit; mp4 (fragmented, as it goes)
 │   ├── data/          columns, ids, samples, tables, patches, bytes, inverse references, geometry pages
 │   ├── expr/          compile, decode, color, colormap, cpu: the executor structure reads
 │   ├── scene/         Scene, marks (Vertices, Edges, Faces, Lines, Areas), Label, Port, Marker, Layout, Theme,
@@ -136,15 +167,14 @@ crates/latkit/
 │   │                  the camera sees, as tiles), pyramid (each row's level, in jobs), tiled (the rows drawn)
 │   ├── sheet/         a diagram's sizes, places, and boxes (mod), and its wires: a derivation
 │   ├── layout/        layered, stress, overlap, pack, route (groups as soft obstacles)
-│   ├── view/          View; camera, rig, gestures, input; probe, focus, query, fit, axes; plan, marks,
+│   ├── view/          View; clock, camera, rig, gestures, input; probe, focus, query, fit, axes; plan, marks,
 │   │                  program, sync, rows, transition, lists, labels, graph, shadows, variants, resources,
 │   │                  uniforms, wake, timer, passes, frame
 │   ├── gpu/           Gpu, Budget, arena (fixed pages, one pool), pipelines, atlas (distance fields), readback,
 │   │                  colormaps, icons
-│   ├── host/          Host (text, jobs, fetch), Job (answers as patches), browser · native threads ○
+│   ├── host/          Host (text, jobs, fetch, encoder), Job, browser (workers, canvas text, fetch, WebCodecs)
 │   ├── geo/           geojson, mvt, pmtiles, tiles, shapes, earcut
-│   ├── web.rs         Canvas: frames, input, events
-│   └── winit.rs       ○ input from winit
+│   └── web.rs         Canvas: its surface, frames, input, events; pictures and video frames of canvases
 ├── tests/
 └── benches/           ○ work gates, time reports
 ```
@@ -204,8 +234,8 @@ gpu.set_budget(Budget { bytes: 512 << 20, upload_per_frame: 32 << 20 }); // befo
 let mut view = View::new(&gpu, diagram)?;
 view.set_data(plant);                     // cheap: unchanged pages are shared
 view.fit(Fit::All);
-view.render(&mut encoder, &target);       // each frame; the caller submits
-view.input(&input);
+view.render(&mut encoder, &frame);        // each frame, at its time; the caller submits
+view.input(&input, time);
 for event in view.events() {
     match event {
         Event::Drag(drag) => {}                         // patch drag.hit.row's x and y
@@ -216,11 +246,34 @@ for event in view.events() {
 }
 let hits = view.pick([120.0, 80.0], 6.0); // Pending<Vec<Hit>>, nearest first
 view.arrange();                           // lay out every row without a position again
-let Stats { rows, drawn, resident, budget, .. } = view.stats(); // rows given and drawn, GPU bytes
+let Stats { rows, drawn, resident, budget, complete, .. } = view.stats(); // rows given and drawn, GPU bytes
+
+// Pictures and video: plain data, drawn once every view is complete.
+let png = Shot::new([3840, 2160]).scale(2.0).image(&mut [&mut view]).await?.png();
+let shot = Shot::new([1920, 1080]).scale(1.5).panel([0.0, 0.0, 1.0, 0.7]).panel([0.0, 0.7, 1.0, 0.3]);
+let mut video = shot.video(&gpu, 60.0, file)?;    // the host's encoder
+while video.time() < 24.0 {
+    map.set_at(video.time() * 3600.0);            // the script is the loop
+    video.frame(&mut [&mut map, &mut plot]).await?;
+}
+video.finish().await?;
 ```
 
-Still to add: `View::image` and `winit::input` (M6). npm `latkit` mirrors the crate with scenes as
-JSON; its `Data.apply` returns the next version, and `geojson` reads in a worker.
+npm `latkit` mirrors the crate with scenes as JSON; its `Data.apply` returns the next version,
+`geojson` and `Image.png` run in a worker, and `Shot.video` encodes with WebCodecs:
+
+```ts
+const png = await (await new Shot([3840, 2160]).scale(2).image([view])).png();
+const video = new Shot([1920, 1080])
+  .panel([0, 0, 1, 0.7])
+  .panel([0, 0.7, 1, 0.3])
+  .video(gpu, 60, writable);
+while (video.time < 24) {
+  map.at = plot.at = video.time * 3600;
+  await video.frame([map, plot]);
+}
+await video.finish();
+```
 
 ## Milestones
 
@@ -230,6 +283,6 @@ JSON; its `Data.apply` returns the next version, and `geojson` reads in a worker
 | Gate, Cutover, Pages | browser gate; host jobs in workers, path kinds, lists that coarsen; telemetry and diagram studio pages                                                                                                                                                                                                                                                                                                                                                           | ✓      |
 | Sheet                | `Diagram`; derived data and geometry pages; the CPU executor; the sheet with incremental layout and routing; jobs answer with patches; stress as a job; `Port::output`; `arrange`; anchored labels and distance-field text; drags apply at once; the diagram page rebuilt on it. Removed folding, the GPU groups and stress passes, stand-ins, and the view's layout and route words                                                                             | ✓      |
 | M5                   | `src/derive/`: one lifecycle, budget, and pool for the sheet, lanes, shapes, and tiles; geometry as a field (lines along paths and rings); `Areas` (ear clipping in jobs, cached per page and row, earth grid split); `geo::geojson`; `Host::fetch`, PMTiles, TileJSON, MVT decoded in jobs into a view-owned dataset; daylight, atmosphere, exact globe gestures; groups as soft router obstacles; atlas residency by placement; Grid at scale and Colors pages | ✓      |
-| Scale                | `cargo xtask bench` and budgets; GPU time in `Stats`; fixed pages in one pool within a `Budget`; plans that always fit; tiles for anything large (pyramids in jobs, edges with their ends); `priority`; views that sleep while they wait; lanes as world-space bows; globe occlusion by depth; dashes and comets along paths; focus draws only lit rows; bulk column reads; the 2M-bus grid and Grid operations pages. Native jobs on threads ○                | ◐      |
-| M6                   | `image`, `png`, npm `view.video`, winit, docs; the Video page                                                                                                                                                                                                                                                                                                                                                                                                    | ○      |
+| Scale                | `cargo xtask bench` and budgets; GPU time in `Stats`; fixed pages in one pool within a `Budget`; plans that always fit; tiles for anything large (pyramids in jobs, edges with their ends); `priority`; views that sleep while they wait; lanes as world-space bows; globe occlusion by depth; dashes and comets along paths; focus draws only lit rows; bulk column reads; the 2M-bus grid and Grid operations pages                                            | ✓      |
+| M6                   | time as an input (`Frame`, `input(time)`, the view's clock); `complete`; `Shot` and `Image` (compose pass, PNG in a worker); `Video` (NV12 on the GPU, three frames under way, held frames free, fragmented MP4, `Host::encoder` with WebCodecs); npm `Shot`, `Image`, `Video`                                                                                                                                                                                   | ✓      |
 | Retire               | delete `packages/`, `examples/`, `benchmark/`, the old `docs/` and their configs                                                                                                                                                                                                                                                                                                                                                                                 | ○      |

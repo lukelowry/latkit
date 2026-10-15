@@ -22,11 +22,11 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
 use super::{
-    Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label, Layered,
+    Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Interpolation, Label, Layered,
     Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shape, Side, Space, Stress, Theme,
     Vertices,
 };
-use crate::{Color, Expr, Name, Size};
+use crate::{Color, Expr, Image, Name, Size};
 
 impl<'de> Deserialize<'de> for Scene {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Scene, D::Error> {

@@ -29,8 +29,8 @@ use crate::host::TextRun;
 
 /// Rounds of claim and decide each placement runs.
 const ROUNDS: u32 = 6;
-/// How long labels fade in or out.
-const FADE: Duration = Duration::from_millis(200);
+/// Seconds labels fade in or out over.
+const FADE: f64 = 0.2;
 /// Texts the host sets per frame at most, and the time setting them and making their distance
 /// fields may take.
 const BUDGET: usize = 48;
@@ -60,9 +60,10 @@ pub(crate) struct Labels {
     placed: Derived<()>,
     /// The labeled marks' slots when placement asked.
     asked: Vec<(usize, Slots)>,
-    /// Labels fade until then.
-    fading: Option<Instant>,
-    last: Option<Instant>,
+    /// Labels fade until then, on the view's clock.
+    fading: Option<f64>,
+    /// Whether the last placement that landed asked for texts, which the next one shows.
+    wanting: bool,
     /// Each labeled mark's written codes, with the run and where it lay.
     written: HashMap<usize, HashMap<u32, (TextRun, Glyphs)>>,
     /// Each labeled mark's codes whose run table entries hold a run or an estimate.
@@ -73,14 +74,15 @@ pub(crate) struct Labels {
 }
 
 impl Labels {
-    /// Whether the texts a placement asked for are being read back.
-    pub(crate) fn reading(&self) -> bool {
-        self.placed.busy()
+    /// Whether every label placed shows its text: no placement is read back, and the last asked
+    /// for no text it lacked.
+    pub(crate) fn complete(&self) -> bool {
+        !self.placed.busy() && !self.wanting
     }
 
-    /// Whether labels are fading in or out.
-    pub(crate) fn fading(&self) -> bool {
-        self.fading.is_some_and(|until| Instant::now() < until)
+    /// Whether labels are fading in or out at `now` on the view's clock.
+    pub(crate) fn fading(&self, now: f64) -> bool {
+        self.fading.is_some_and(|until| now < until)
     }
 
     pub(crate) fn slots(&self, mark: usize) -> Option<Slots> {
@@ -165,7 +167,8 @@ impl View {
                 self.write_run(i, slots, code, run, glyphs);
             }
         }
-        if set > 0 || left {
+        self.labels.wanting = set > 0 || left;
+        if self.labels.wanting {
             self.labels.changes += 1;
             self.wake();
         }
@@ -319,16 +322,13 @@ impl View {
         self.labels.changes += 1;
     }
 
-    /// The labels' words of the frame uniform.
-    pub(super) fn label_words(&mut self, frame: &mut wgsl::Frame) {
-        let now = Instant::now();
-        let dt = self.labels.last.map_or(0.0, |last| now.duration_since(last).as_secs_f32());
-        self.labels.last = Some(now);
+    /// The labels' words of the frame uniform, the clock having moved `dt` seconds.
+    pub(super) fn label_words(&mut self, frame: &mut wgsl::Frame, dt: f64) {
         let [cells, columns, rows] = self.labels.cells;
         frame.cells = cells;
         frame.cell_columns = columns;
         frame.cell_rows = rows;
-        frame.label_fade = (dt / FADE.as_secs_f32()).min(1.0);
+        frame.label_fade = (dt / FADE).min(1.0) as f32;
     }
 
     /// Places labels when what they would show changed, and fades them; reads back the texts
@@ -345,7 +345,8 @@ impl View {
         let versions: Vec<u64> = labeled.iter().map(|&(i, _)| self.marks[i].version).collect();
         let stamp = stamp_of((bytemuck::bytes_of(eye), self.labels.changes, versions));
         let due = self.labels.placed.due(stamp) && !self.labels.placed.busy();
-        let fading = !diagram && self.labels.fading.is_some_and(|until| Instant::now() < until);
+        let now = self.clock.now();
+        let fading = !diagram && self.labels.fading(now);
         if !due && !fading {
             return;
         }
@@ -355,7 +356,7 @@ impl View {
         if due {
             self.labels.placed.mark(stamp);
             if !diagram {
-                self.labels.fading = Some(Instant::now() + FADE + Duration::from_millis(50));
+                self.labels.fading = Some(now + FADE + 0.05);
             }
             for &(_, slots) in &labeled {
                 encoder.clear_buffer(resources.labels(), u64::from(slots.wanted) * 4, Some(4));

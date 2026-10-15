@@ -10,11 +10,13 @@
 
 mod convert;
 mod error;
+mod shot;
 
 use wasm_bindgen::prelude::*;
 
 use convert::{invalid, value};
 pub use error::Error;
+pub use shot::{Handle, Image, Video, image, set_encoder};
 
 #[wasm_bindgen(start)]
 fn start() {
@@ -67,6 +69,12 @@ impl Gpu {
     #[wasm_bindgen(js_name = setBudget)]
     pub fn set_budget(&self, bytes: f64, upload_per_frame: f64) {
         self.0.set_budget(latkit::Budget { bytes: bytes as u64, upload_per_frame: upload_per_frame as u64 });
+    }
+
+    /// A video of `shot`'s pictures at `fps` frames a second, encoded by WebCodecs at `bitrate` bits
+    /// a second, or about 0.15 bits a pixel a frame.
+    pub fn video(&self, shot: &JsValue, fps: f64, bitrate: Option<f64>) -> Result<Video, Error> {
+        shot::video(&self.0, shot, fps, bitrate)
     }
 }
 
@@ -367,6 +375,11 @@ impl View {
     pub fn neighbors(&self, row: &JsValue) -> Result<js_sys::Array, Error> {
         let row = convert::row_of(row)?;
         Ok(self.0.read(|v| v.neighbors(&row)).iter().map(convert::row).collect())
+    }
+
+    /// The view's canvas, for a shot to draw.
+    pub fn handle(&self) -> Handle {
+        Handle(self.0.clone())
     }
 
     /// Calls `listener` with each event as `{ type, detail }`.

@@ -13,6 +13,7 @@ mod derive;
 mod error;
 #[cfg(feature = "gpu")]
 mod expr;
+mod image;
 // Without `gpu`, only GeoJSON and tiles' decoding have readers.
 #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 pub mod geo;
@@ -29,12 +30,19 @@ mod scene;
 #[cfg(feature = "gpu")]
 mod sheet;
 #[cfg(feature = "gpu")]
+mod shot;
+#[cfg(feature = "gpu")]
+mod time;
+#[cfg(feature = "gpu")]
+mod video;
+#[cfg(feature = "gpu")]
 mod view;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub mod web;
 
 pub use data::{Data, Id, Ids, Kind, Name, Patch, Row, Table, Value, Values};
 pub use error::{Error, Path, Result, Step};
+pub use image::Image;
 #[cfg(feature = "gpu")]
 pub use {
     expr::{
@@ -44,11 +52,13 @@ pub use {
     gpu::{Budget, Gpu},
     pending::{Pending, Resolver},
     scene::{
-        Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Image, Interpolation, Label,
-        Layered, Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space,
-        Stress, Theme, Vertices,
+        Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Interpolation, Label, Layered,
+        Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space, Stress,
+        Theme, Vertices,
     },
+    shot::Shot,
+    video::{Encoder, Encoding, TIMESCALE, Unit, Video},
     view::{
-        Button, Camera, Cursor, Drag, End, Event, Fit, Hit, Input, Key, Modifiers, Phase, Sample, Stats, Target, View,
+        Button, Camera, Cursor, Drag, End, Event, Fit, Frame, Hit, Input, Key, Modifiers, Phase, Sample, Stats, View,
     },
 };

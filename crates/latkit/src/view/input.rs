@@ -1,4 +1,4 @@
-//! Input as a view reads it, from any platform: `web` and `winit` translate their events into these.
+//! Input as a view reads it, from any platform: a browser canvas translates its events into these.
 
 /// A pointer, wheel, or key event, with points in CSS pixels from the view's top left.
 #[derive(Clone, Copy, PartialEq, Debug)]

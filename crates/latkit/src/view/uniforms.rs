@@ -18,8 +18,9 @@ fn vector(v: DVec3) -> [f32; 4] {
 }
 
 /// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels, showing
-/// axis coordinate `at`. Pointer, probe, focus, and shade words start empty. In a diagram every length
-/// but glow and halo is a unit, so the theme's lengths scale with the zoom.
+/// axis coordinate `at`, `elapsed` seconds of motion into the view's clock. Pointer, probe, focus,
+/// and shade words start empty. In a diagram every length but glow and halo is a unit, so the
+/// theme's lengths scale with the zoom.
 pub(crate) fn frame(
     scene: &Scene,
     projected: &Projected,
@@ -160,8 +161,13 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
-/// The uniform of mark `index`.
-pub(crate) fn mark(index: usize, shown: &Shown, labels: Option<super::labels::Slots>) -> wgsl::Mark {
+/// The uniform of mark `index`, easing by `clock`.
+pub(crate) fn mark(
+    index: usize,
+    shown: &Shown,
+    labels: Option<super::labels::Slots>,
+    clock: &super::clock::Clock,
+) -> wgsl::Mark {
     let mut mark: wgsl::Mark = bytemuck::Zeroable::zeroed();
     let region = &shown.region;
     mark.index = index as u32;
@@ -184,7 +190,7 @@ pub(crate) fn mark(index: usize, shown: &Shown, labels: Option<super::labels::Sl
     if let Some(transition) = &shown.transition {
         mark.frozen = region.state;
         mark.frozen_extra = region.extra;
-        mark.motion = transition.motion();
+        mark.motion = transition.motion(clock);
     }
     mark.focus = region.focus;
     mark.domains = shown.domains;

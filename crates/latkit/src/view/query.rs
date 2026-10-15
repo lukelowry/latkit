@@ -73,11 +73,6 @@ pub(crate) struct Queries {
 }
 
 impl Queries {
-    /// Whether a query's answer is being read back.
-    pub(crate) fn reading(&self) -> bool {
-        self.reading.is_some()
-    }
-
     /// Whether a query waits to run.
     pub(crate) fn due(&self) -> bool {
         !self.waiting.is_empty() || self.running.is_some()

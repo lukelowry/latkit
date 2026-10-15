@@ -128,9 +128,10 @@ impl Tiled {
         (changed, gone)
     }
 
-    /// Whether a pyramid job is under way.
-    pub(crate) fn busy(&self) -> bool {
-        self.sets.iter().any(|s| !s.working.is_empty())
+    /// Whether every table drawn in part draws from its pyramid: none draws its first sample while
+    /// its pyramid is worked out.
+    pub(crate) fn complete(&self) -> bool {
+        self.sets.iter().all(|s| s.working.is_empty() && !s.deferred && !s.sampling)
     }
 
     /// Whether a dataset waits for a frame to ask for its pyramids.
@@ -198,6 +199,8 @@ struct Set {
     /// What the dataset drawn was gathered from.
     gathered: u64,
     tables: FxHashMap<Name, Gathered>,
+    /// Whether a table draws an even sample of its rows until its pyramid lands.
+    sampling: bool,
 }
 
 impl Set {
@@ -210,6 +213,7 @@ impl Set {
             deferred: false,
             gathered: 0,
             tables: FxHashMap::default(),
+            sampling: false,
         }
     }
 
@@ -324,6 +328,7 @@ impl Set {
             };
             chosen.push((table.name.clone(), choice));
         }
+        self.sampling = chosen.iter().any(|(_, choice)| matches!(choice, Choice::Sample(_)));
         let pinned: Vec<&Row> = ask.pinned.iter().filter(|r| r.data == self.name).collect();
         let frames: Vec<Option<u32>> = sampled_frames(source, ask);
         let pyramids: Vec<usize> = serving.iter().map(|(_, p)| Arc::as_ptr(p) as usize).collect();

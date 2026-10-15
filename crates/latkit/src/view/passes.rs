@@ -4,7 +4,7 @@
 //! overlay; a probe, when one waits, reads what the frame drew through the same geometry.
 
 use super::resources::{EyeSlot, MARK_STRIDE};
-use super::{Target, View};
+use super::{Frame, View};
 use crate::Space;
 use crate::derive::stamp_of;
 use crate::gpu::Inner;
@@ -16,9 +16,9 @@ use crate::scene::mark::{MarkKind, Primitive};
 const WORKGROUP: u32 = 256;
 
 /// The target pixels of `area`: a plot's lines draw only inside its axes.
-fn scissor(area: super::camera::Area, target: &Target<'_>) -> [u32; 4] {
-    let [w, h] = target.size.map(f64::from);
-    let r = f64::from(target.pixel_ratio);
+fn scissor(area: super::camera::Area, frame: &Frame<'_>) -> [u32; 4] {
+    let [w, h] = frame.size.map(f64::from);
+    let r = f64::from(frame.pixel_ratio);
     let x0 = (area[0] * r).floor().clamp(0.0, w);
     let y0 = (area[1] * r).floor().clamp(0.0, h);
     let x1 = (area[2] * r).ceil().clamp(x0, w);
@@ -390,7 +390,7 @@ impl View {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
-        target: &Target<'_>,
+        frame: &Frame<'_>,
         sprites: u32,
         probing: bool,
     ) {
@@ -398,10 +398,10 @@ impl View {
         let device = &gpu.0.device;
         let background = self.scene.theme.background.to_array().map(f64::from);
         let plot = matches!(self.scene.space, Space::Plot(_));
-        let scissor = scissor(self.area(), target);
-        let samples = super::resources::samples(target.pixel_ratio);
+        let scissor = scissor(self.area(), frame);
+        let samples = super::resources::samples(frame.pixel_ratio);
         let resources = self.resources.as_mut().expect("created before passes");
-        let (color, depth) = resources.targets(device, target.size, target.format, samples);
+        let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
         let groups = resources.groups(&gpu.0, inner);
         let lists = resources.lists().clone();
         let mut passes: Vec<(Shader, wgpu::BindGroup)> = Vec::new();
@@ -425,24 +425,24 @@ impl View {
         }
         let group = |shader: Shader| &passes.iter().find(|(s, _)| *s == shader).expect("listed").1;
         let (view, resolve) = match &color {
-            Some(color) => (color, Some(target.view)),
-            None => (target.view, None),
+            Some(color) => (color, Some(frame.target)),
+            None => (frame.target, None),
         };
         let mut pass = main_pass(encoder, view, resolve, &depth, background, probing);
         pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
         pass.set_bind_group(1, &groups.mark, &[0]);
-        pass.set_pipeline(&inner.pipelines.render(device, Shader::Backdrop, target.format, samples));
+        pass.set_pipeline(&inner.pipelines.render(device, Shader::Backdrop, frame.format, samples));
         pass.set_bind_group(2, group(Shader::Backdrop), &[]);
         pass.draw(0..3, 0..1);
         let marks = Marks {
             device,
-            format: target.format,
+            format: frame.format,
             samples,
             groups: &groups,
             passes: &passes,
             lists: &lists,
             clip: (plot && scissor[2] > 0 && scissor[3] > 0).then_some(scissor),
-            size: target.size,
+            size: frame.size,
         };
         for (i, shown) in self.marks.iter().enumerate() {
             if !shown.drawable() || shown.instances() == 0 {
@@ -451,7 +451,7 @@ impl View {
             marks.draw(&mut pass, inner, i, shown, false);
             let ports = shown.port_count();
             if shown.compiled.as_ref().is_some_and(|c| c.drawing.primitive == Primitive::Points) && ports > 0 {
-                pass.set_pipeline(&inner.pipelines.render(device, Shader::PointsPorts, target.format, samples));
+                pass.set_pipeline(&inner.pipelines.render(device, Shader::PointsPorts, frame.format, samples));
                 pass.set_bind_group(2, group(Shader::PointsPorts), &[]);
                 pass.draw(0..4, 0..(shown.rows + shown.exits) * ports);
             }
@@ -463,9 +463,9 @@ impl View {
             }
         }
         let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(|shader| (shader, group(shader)));
-        self.draw_labels(&mut pass, inner, target.format, samples, &groups, glyphs);
+        self.draw_labels(&mut pass, inner, frame.format, samples, &groups, glyphs);
         if sprites > 0 {
-            pass.set_pipeline(&inner.pipelines.render(device, Shader::Overlay, target.format, samples));
+            pass.set_pipeline(&inner.pipelines.render(device, Shader::Overlay, frame.format, samples));
             pass.set_bind_group(2, group(Shader::Overlay), &[]);
             pass.draw(0..4, 0..sprites);
         }

@@ -38,11 +38,6 @@ pub(crate) struct Probing {
 }
 
 impl Probing {
-    /// Whether a probe is being read back.
-    pub(crate) fn reading(&self) -> bool {
-        self.reading.is_some()
-    }
-
     /// Whether a point waits for a frame to probe it: none while a probe is being read back.
     pub(crate) fn due(&self) -> bool {
         self.wanted.is_some() && self.reading.is_none()

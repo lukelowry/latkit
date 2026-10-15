@@ -24,6 +24,10 @@ use readback::Readbacks;
 use crate::host::Host;
 use crate::{Error, Result};
 
+/// The format views draw canvases and shots in, so both share one set of pipelines: every WebGPU
+/// canvas takes it.
+pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+
 /// The GPU device that views draw with. Cheap to clone; views of one `Gpu` share uploaded data.
 #[derive(Clone)]
 pub struct Gpu(pub(crate) Arc<Shared>);

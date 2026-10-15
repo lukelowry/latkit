@@ -87,8 +87,12 @@ impl Camera {
         )
     }
 
-    /// `self` eased toward `to` by `t` in `0..=1`; longitude and bearing turn the short way.
-    pub(crate) fn ease(&self, to: &Camera, t: f64, earth: bool) -> Camera {
+    /// The camera `t` of the way from `self` to `to`, `t` from 0 to 1, as a view of `space` flies:
+    /// bearing, and on the earth longitude, turn the short way. A script moving the camera over time
+    /// reads it.
+    #[must_use]
+    pub fn ease(&self, to: &Camera, t: f64, space: &Space) -> Camera {
+        let earth = matches!(space, Space::Earth(_));
         let lerp = |a: f64, b: f64| a + (b - a) * t;
         let turn = |a: f64, b: f64, full: f64| a + ((b - a + full * 1.5).rem_euclid(full) - full * 0.5) * t;
         match (self, to) {
@@ -697,7 +701,8 @@ mod tests {
     fn longitude_eases_the_short_way() {
         let a = Camera::Map { center: [170.0, 0.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 350.0 };
         let b = Camera::Map { center: [-170.0, 0.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 10.0 };
-        let Camera::Map { center, bearing, .. } = a.ease(&b, 0.5, true) else { panic!("a map camera") };
+        let earth = Space::Earth(crate::Earth::default());
+        let Camera::Map { center, bearing, .. } = a.ease(&b, 0.5, &earth) else { panic!("a map camera") };
         assert!((center[0] - 180.0).abs() < 1e-9);
         assert!((bearing - 360.0).abs() < 1e-9);
     }

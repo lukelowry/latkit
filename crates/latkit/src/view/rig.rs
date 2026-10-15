@@ -1,15 +1,11 @@
 //! How the camera moves. A gesture moves it at once, about the point under the pointer. The wheel,
 //! the keys, and a released drag leave motion owed about such a point, which the next frames pay out
 //! exponentially, so a fling coasts and a wheel notch glides by the same rule. A flight eases over a
-//! set time, an orbit turns steadily, and what a fit framed bounds how far the rest can take it.
-
-use std::time::Duration;
-
-use web_time::Instant;
+//! set time, an orbit turns steadily, and what a fit framed bounds how far the rest can take it. All
+//! of it moves by the view's clock.
 
 use super::camera::{Bounds, Camera};
 use super::{Event, View};
-use crate::Space;
 
 /// Seconds over which owed motion pays out: a fling's pan and turn coast longer than a zoom glides.
 const COAST: f64 = 0.3;
@@ -28,20 +24,25 @@ pub(crate) struct Rig {
     pub(crate) orbit: f64,
     /// What the last fit framed.
     pub(crate) bounds: Option<Bounds>,
-    last: Option<Instant>,
 }
 
+/// A flight from one camera to another, begun at a time on the view's clock.
 struct Flight {
     from: Camera,
     to: Camera,
-    start: Instant,
-    duration: Duration,
+    start: f64,
+    seconds: f64,
 }
 
 impl Rig {
     /// Whether the camera will move without input.
     pub(crate) fn moving(&self) -> bool {
         self.flight.is_some() || self.orbit != 0.0 || self.owed()
+    }
+
+    /// Whether the camera eases toward where it goes: a flight, or motion owed. An orbit never settles.
+    pub(crate) fn easing(&self) -> bool {
+        self.flight.is_some() || self.owed()
     }
 
     fn owed(&self) -> bool {
@@ -70,9 +71,10 @@ impl Rig {
         self.owe(anchor, pan.map(|v| v * COAST), turn.map(|v| v * COAST), 0.0);
     }
 
-    pub(crate) fn fly(&mut self, from: Camera, to: Camera, duration: Duration) {
+    /// Flies from `from` to `to` over `seconds`, beginning at `start` on the view's clock.
+    pub(crate) fn fly(&mut self, from: Camera, to: Camera, start: f64, seconds: f64) {
         self.hold();
-        self.flight = Some(Flight { from, to, start: Instant::now(), duration });
+        self.flight = Some(Flight { from, to, start, seconds });
     }
 }
 
@@ -86,17 +88,13 @@ impl View {
         self.move_camera(camera);
     }
 
-    /// Pays out this frame's share of motion owed, advances a flight, and orbits.
-    pub(super) fn advance(&mut self) {
-        let now = Instant::now();
-        let dt = self.rig.last.map_or(0.0, |last| now.duration_since(last).as_secs_f64()).min(0.1);
-        self.rig.last = self.rig.moving().then_some(now);
+    /// Pays out the share of motion owed for the `dt` seconds the clock moved, advances a flight,
+    /// and orbits.
+    pub(super) fn advance(&mut self, dt: f64) {
         if let Some(flight) = &self.rig.flight {
-            let t = (flight.start.elapsed().as_secs_f64() / flight.duration.as_secs_f64().max(1e-3)).min(1.0);
-            let eased = t * t * (3.0 - 2.0 * t);
-            let earth = matches!(self.scene.space, Space::Earth(_));
-            let camera = flight.from.ease(&flight.to, eased, earth);
-            if t >= 1.0 {
+            let eased = self.clock.eased(flight.start, flight.seconds);
+            let camera = flight.from.ease(&flight.to, eased, &self.scene.space);
+            if self.clock.done(flight.start, flight.seconds) {
                 self.rig.flight = None;
             }
             self.move_camera(camera);

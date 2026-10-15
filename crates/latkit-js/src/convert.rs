@@ -299,7 +299,7 @@ pub(crate) fn stats(stats: &latkit::Stats) -> JsValue {
         ("uploading", (stats.uploading as f64).into()),
         ("resident", (stats.resident as f64).into()),
         ("budget", (stats.budget as f64).into()),
-        ("waiting", stats.waiting.into()),
+        ("complete", stats.complete.into()),
         ("cpuMs", f64::from(stats.cpu_ms).into()),
         ("gpuMs", f64::from(stats.gpu_ms).into()),
     ])

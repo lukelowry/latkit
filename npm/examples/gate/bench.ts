@@ -62,7 +62,7 @@ async function measure(label: string): Promise<Measured> {
     rows: number;
     drawn: number;
     uploading: number;
-    waiting: boolean;
+    complete: boolean;
     cpuMs: number;
     gpuMs: number;
   }
@@ -74,12 +74,12 @@ async function measure(label: string): Promise<Measured> {
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const frame = () => new Promise<number>((r) => requestAnimationFrame(r));
   const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] ?? 0;
-  /** Waits until nothing is under way and no frame has drawn for 300 ms, or `limit` ms went by. */
+  /** Waits until a frame drew everything and no frame has drawn for 300 ms, or `limit` ms went by. */
   const settled = async (limit: number) => {
     const until = performance.now() + limit;
     let frames = view.stats.frames;
     let still = performance.now();
-    while (performance.now() < until && (view.stats.waiting || performance.now() - still < 300)) {
+    while (performance.now() < until && (!view.stats.complete || performance.now() - still < 300)) {
       await wait(50);
       if (view.stats.frames !== frames) [frames, still] = [view.stats.frames, performance.now()];
     }

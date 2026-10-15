@@ -399,7 +399,7 @@ struct Frame {
     theme: array<vec4u, 4>,
 }
 
-// What one pass draws through: the view, the light casting shadows, or an exported image.
+// What one pass draws through: the view, or the light casting shadows.
 struct Eye {
     clip_from_world: mat4x4f,
     world_from_clip: mat4x4f,
@@ -499,4 +499,20 @@ struct Sprite {
     color: vec4f,
     width: f32,
     kind: u32,
+}
+
+// One panel of a shot composed into the bytes a consumer takes: RGBA rows for an image, or NV12
+// planes for an encoder. Pixels are the shot's.
+struct Compose {
+    // Where the panel's top left lands in the picture, and its size.
+    origin: vec2u,
+    size: vec2u,
+    // The picture's size.
+    picture: vec2u,
+    // Where NV12's interleaved chroma plane starts, in words.
+    chroma: u32,
+    // Whether pixels keep their alpha: an image of a transparent shot.
+    alpha: u32,
+    // What shows where no panel draws: straight sRGB.
+    background: vec4f,
 }

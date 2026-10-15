@@ -35,14 +35,13 @@ fn nodes(x: Vec<f64>, y: Vec<f64>) -> Table {
 fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
     let mut pending = pin!(pending);
     let mut context = Context::from_waker(Waker::noop());
-    let started = std::time::Instant::now();
-    loop {
+    for _ in 0..common::SETTLE {
         if let Poll::Ready(value) = pending.as_mut().poll(&mut context) {
             return value.expect("an answer");
         }
-        assert!(started.elapsed() < common::SETTLE, "the query answers within {:?}", common::SETTLE);
         step(gpu, view);
     }
+    panic!("the query answers within {} frames", common::SETTLE);
 }
 
 #[test]

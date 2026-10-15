@@ -2,6 +2,7 @@
 
 mod axes;
 mod camera;
+mod clock;
 mod event;
 mod fit;
 mod focus;
@@ -37,8 +38,10 @@ pub(crate) use camera::Projected;
 pub use event::{Cursor, Drag, End, Event, Fit, Hit, Phase, Sample, Stats};
 pub use input::{Button, Input, Key, Modifiers};
 pub(crate) use resources::{DEPTH, SHADE};
+pub(crate) use wake::Signal;
 
 use camera::Area;
+use clock::Clock;
 use fit::Fitting;
 use focus::Focus;
 use gestures::Gestures;
@@ -47,25 +50,28 @@ use probe::Probing;
 use program::Regions;
 use resources::Resources;
 use rig::Rig;
-use web_time::Instant;
 
 use crate::derive::{Derivations, Derived};
 use crate::expr::compile::Deps;
 use crate::scene::mark::Context;
 use crate::{Data, Gpu, Result, Row, Scene, Space};
 
-/// Where a frame is drawn: a texture view, its format and size in physical pixels, and how many
-/// physical pixels make a CSS pixel.
+/// A frame to draw: where, a texture view of a format and size in physical pixels at a ratio of
+/// physical pixels to CSS pixels, and when.
 #[derive(Clone, Copy, Debug)]
-pub struct Target<'a> {
+pub struct Frame<'a> {
     /// The texture view to draw into.
-    pub view: &'a wgpu::TextureView,
+    pub target: &'a wgpu::TextureView,
     /// Its format; sRGB formats are handled.
     pub format: wgpu::TextureFormat,
     /// Its width and height in physical pixels.
     pub size: [u32; 2],
     /// Physical pixels per CSS pixel.
     pub pixel_ratio: f32,
+    /// Seconds on the clock of whatever draws the frames: an animation frame's timestamp, a video
+    /// frame's time, a test's step. The view's motion moves by the steps between them, a quarter of
+    /// a second at most, and never back.
+    pub time: f64,
 }
 
 /// A scene drawn from named data: the application owns data and scene; the view owns camera,
@@ -105,7 +111,7 @@ pub struct View {
     /// The value range a plot without one shows, fitted to its traces.
     plot_y: Option<[f64; 2]>,
     at: f64,
-    start: Instant,
+    clock: Clock,
     events: Vec<Event>,
     /// What landing work wakes, and the waker it is: readbacks, jobs, and fetches hold it.
     signal: Arc<wake::Signal>,
@@ -119,6 +125,8 @@ pub struct View {
     changed: bool,
     /// Whether the application was told the device was lost.
     told_lost: bool,
+    /// Whether the last frame drew everything with nothing standing in.
+    complete: bool,
     /// The format and samples per pixel the scene's pipelines were made for.
     pipelines_made: Option<(wgpu::TextureFormat, u32)>,
     /// The shadow map and the face normals, made from what they read.
@@ -164,7 +172,7 @@ impl View {
             fitting: Fitting::default(),
             plot_y: None,
             at: f64::INFINITY,
-            start: Instant::now(),
+            clock: Clock::default(),
             events: Vec::new(),
             waker: Waker::from(signal.clone()),
             signal,
@@ -173,6 +181,7 @@ impl View {
             regions_dirty: true,
             changed: true,
             told_lost: false,
+            complete: false,
             pipelines_made: None,
             shadow_map: Derived::default(),
             normals: Derived::default(),
@@ -380,11 +389,11 @@ impl View {
         }
     }
 
-    /// Eases to `camera`.
+    /// Eases to `camera` over twice the scene's ease, on the view's clock.
     pub fn fly(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
-            let duration = self.scene.ease.max(Duration::from_millis(1)) * 2;
-            self.rig.fly(self.camera, camera, duration);
+            let seconds = (self.scene.ease.max(Duration::from_millis(1)) * 2).as_secs_f64();
+            self.rig.fly(self.camera, camera, self.clock.now(), seconds);
             self.wake();
         }
     }
@@ -482,9 +491,18 @@ impl View {
             uploading: inner.arena.pending(),
             resident: inner.arena.resident(),
             budget: inner.budget.bytes.min(inner.arena.capacity()),
-            waiting: self.waiting(),
+            complete: self.complete,
             ..self.stats
         }
+    }
+
+    /// Whether the last frame drew everything as the data, scene, and camera say, with nothing
+    /// standing in for work under way: no changed page waited to upload, no tile drew its ancestor,
+    /// no table its first sample, no row stood where it was until a layout landed, no wire drew its
+    /// elbows, no area its earlier triangles, no label its estimate, and no fit was due. Whatever
+    /// captures frames waits for it.
+    pub fn complete(&self) -> bool {
+        self.complete
     }
 
     /// What happened since the last call.
@@ -498,6 +516,28 @@ impl View {
         self.signal.set_waker(waker);
     }
 
+    /// What wakes the view: a shot drawing it waits on it.
+    pub(crate) fn signal(&self) -> &Arc<wake::Signal> {
+        &self.signal
+    }
+
+    /// Whether a [`Shot`](crate::Shot) or a [`Video`](crate::Video) draws the view: nothing else
+    /// should draw it meanwhile, as a canvas or a window holds its last frame, since a view draws at
+    /// one size at a time.
+    pub fn lent(&self) -> bool {
+        self.signal.lent()
+    }
+
+    /// The GPU the view draws with.
+    pub(crate) fn gpu(&self) -> &Gpu {
+        &self.gpu
+    }
+
+    /// Tells the application `error` with the next events.
+    pub(crate) fn tell(&mut self, error: crate::Error) {
+        self.events.push(Event::Error(error));
+    }
+
     /// Whether a frame would differ from the last one: something changed, moves, or streams in, or
     /// work the view waited on landed. While it only waits, it needs none: what it waits on wakes it.
     pub fn needs_render(&self) -> bool {
@@ -508,7 +548,7 @@ impl View {
             || self.probing.due()
             || self.queries.due()
             || self.derived.tiled.due()
-            || self.labels.fading()
+            || self.labels.fading(self.clock.now())
             // A mark evaluates once its columns synced: until then, the pages they wait for wake it.
             || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
             || self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME)))
@@ -520,14 +560,29 @@ impl View {
         self.signal.ask();
     }
 
-    /// Whether work the view waits on is under way.
-    fn waiting(&self) -> bool {
-        self.derived.busy()
-            || self.fitting.reading()
-            || self.probing.reading()
-            || self.queries.reading()
-            || self.labels.reading()
-            || self.marks.iter().any(|m| m.segments.found.busy())
+    /// Whether the frame just drawn is complete: see [`complete`](View::complete). A mark without
+    /// its data, or that failed, draws nothing however long it waits, and stands in for nothing.
+    fn drew_complete(&self) -> bool {
+        let marks = self
+            .marks
+            .iter()
+            .filter(|m| m.compiled.is_some())
+            .all(|m| m.tables.synced() && !m.tables.waiting() && !m.segments.found.busy() && m.begin.is_none());
+        marks
+            && self.derived.complete()
+            && self.labels.complete()
+            && !self.fitting.due()
+            && !self.fitting.reading()
+            && !self.regions_dirty
+    }
+
+    /// Whether something eases toward where it goes: a transition, a flight, coasting, or a label
+    /// fade. An orbit, a comet, and anything else that moves for as long as it is shown never settles,
+    /// and is not counted.
+    pub(crate) fn easing(&self) -> bool {
+        self.rig.easing()
+            || self.labels.fading(self.clock.now())
+            || self.marks.iter().any(|m| m.begin.is_some() || m.transition.is_some())
     }
 
     fn invalidate(&mut self) {

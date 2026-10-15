@@ -208,6 +208,13 @@ pub(crate) trait Derive {
     /// Whether work it asked for is under way.
     fn busy(&self) -> bool;
 
+    /// Whether what it derived is final: nothing it writes stands in for work under way. Rows
+    /// standing where they were until a layout lands, elbows until routes land, earlier triangles
+    /// until shapes land, and straight edges until lanes land all stand in.
+    fn complete(&self) -> bool {
+        !self.busy()
+    }
+
     /// The tables it derives.
     fn tables(&self) -> &Tables;
 
@@ -245,9 +252,14 @@ impl Derivations {
         changed
     }
 
-    /// Whether a job or a fetch any derivation asked for is under way.
-    pub(crate) fn busy(&self) -> bool {
-        self.sheet.busy() || self.lanes.busy() || self.shapes.busy() || self.tiles.busy() || self.tiled.busy()
+    /// Whether everything derived is final: no layout, route, lane, or shape job stands in, no tile
+    /// draws its ancestor, and no table drawn in part draws its first sample.
+    pub(crate) fn complete(&self) -> bool {
+        self.sheet.complete()
+            && self.lanes.complete()
+            && self.shapes.complete()
+            && self.tiles.complete()
+            && self.tiled.complete()
     }
 
     /// Whether shapes are being triangulated or bent: until they land, marks draw the ones before.

@@ -33,6 +33,8 @@ pub(crate) struct ShaderSource {
     pub(crate) pass: &'static [Binding],
     /// The pipeline constants it declares.
     pub(crate) overrides: &'static [&'static str],
+    /// Whether it reads the view and mark groups; one that does not binds its pass group alone.
+    pub(crate) shared: bool,
 }
 
 impl Binding {

@@ -1,6 +1,7 @@
 /** WASM-backed data and rendering, loaded only by loadLatkit(). */
 
 import init, * as wasm from '../pkg/latkit.js';
+import { encoder } from './encoder.js';
 import { jobs } from './jobs.js';
 import type { LoadOptions } from './load.js';
 import type { ColormapName, Scene } from './scene.js';
@@ -27,7 +28,8 @@ export async function initialize(options: LoadOptions) {
     run = jobs(wasm.module() as WebAssembly.Module, options.createWorker);
     wasm.setJobs(run);
   }
-  return Object.freeze({ Data, Patch, Gpu, geojson, colormapCss });
+  if (typeof VideoEncoder === 'function') wasm.setEncoder(encoder);
+  return Object.freeze({ Data, Patch, Gpu, Shot, geojson, colormapCss });
 }
 
 /** Changes to a dataset, applied in order and all at once by {@link Data.apply}. */
@@ -210,7 +212,8 @@ export class Gpu {
     this.#inner = inner;
   }
 
-  private get inner(): wasm.Gpu {
+  /** @internal */
+  get inner(): wasm.Gpu {
     if (!this.#inner) throw new Error('this Gpu has been destroyed');
     return this.#inner;
   }
@@ -287,6 +290,11 @@ export class View {
   private get inner(): wasm.View {
     if (!this.#inner) throw new Error('this View has been destroyed');
     return this.#inner;
+  }
+
+  /** @internal The view's canvas, lent to a shot for one call. */
+  handle(): wasm.Handle {
+    return this.inner.handle();
   }
 
   /** Draws `scene` instead; an invalid scene throws and changes nothing. */
@@ -452,6 +460,155 @@ export class View {
 
   [Symbol.dispose](): void {
     this.destroy();
+  }
+}
+
+/**
+ * A picture of views, each drawn into its part of `size` pixels at `scale` pixels per CSS pixel:
+ * plain data, like a scene. A view a shot draws holds its canvas's last frame meanwhile.
+ *
+ * ```ts
+ * const png = await (await new Shot([3840, 2160]).scale(2).image([view])).png();
+ * ```
+ */
+export class Shot {
+  /** @internal */
+  constructor(
+    readonly size: readonly [number, number],
+    /** @internal */
+    readonly settings: Readonly<{
+      scale: number;
+      panels: readonly (readonly [number, number, number, number])[];
+      transparent: boolean;
+      deadline: number;
+    }> = { scale: 1, panels: [], transparent: false, deadline: 30_000 },
+  ) {}
+
+  /** Draws `scale` pixels per CSS pixel: a view lays out `size / scale` CSS pixels. */
+  scale(scale: number): Shot {
+    return new Shot(this.size, { ...this.settings, scale });
+  }
+
+  /** Adds a view's part of the picture, `[x, y, width, height]` as fractions; views fill parts in order. */
+  panel(part: readonly [number, number, number, number]): Shot {
+    return new Shot(this.size, { ...this.settings, panels: [...this.settings.panels, part] });
+  }
+
+  /** Keeps the picture's alpha: views clear to transparent where their themes' backgrounds are. */
+  transparent(): Shot {
+    return new Shot(this.size, { ...this.settings, transparent: true });
+  }
+
+  /** The longest, in milliseconds, a picture waits for its views to complete: 30 seconds unless set. */
+  deadline(ms: number): Shot {
+    return new Shot(this.size, { ...this.settings, deadline: ms });
+  }
+
+  /** The picture of `views`, one per panel, once every one is complete and still. */
+  async image(views: readonly View[]): Promise<Image> {
+    return new Image(
+      (await wasm.image(
+        this.#config(),
+        views.map((v) => v.handle()),
+      )) as wasm.Image,
+    );
+  }
+
+  /**
+   * A video of these pictures at `fps` frames a second, H.264 in MP4, written to `output` as it is
+   * drawn, at `bitrate` bits a second or about 0.15 bits a pixel a frame. Width and height are
+   * multiples of 4 and 2.
+   */
+  video(
+    gpu: Gpu,
+    fps: number,
+    output: WritableStream<Uint8Array>,
+    options: { bitrate?: number } = {},
+  ): Video {
+    return new Video(gpu.inner.video(this.#config(), fps, options.bitrate), output.getWriter());
+  }
+
+  #config() {
+    return { size: [...this.size], ...this.settings };
+  }
+}
+
+/** RGBA pixels, straight alpha, rows top to bottom. */
+export class Image {
+  #inner?: wasm.Image;
+
+  /** @internal */
+  constructor(inner: wasm.Image) {
+    this.#inner = inner;
+  }
+
+  private get inner(): wasm.Image {
+    if (!this.#inner) throw new Error('this Image has been destroyed');
+    return this.#inner;
+  }
+
+  get width(): number {
+    return this.inner.width;
+  }
+
+  get height(): number {
+    return this.inner.height;
+  }
+
+  /** The pixels, copied. */
+  get rgba(): Uint8Array {
+    return this.inner.rgba;
+  }
+
+  /** The image as a PNG file, written in a worker. */
+  async png(): Promise<Uint8Array> {
+    const job = this.inner.pngJob();
+    return run ? await run(job) : wasm.job(job);
+  }
+
+  destroy(): void {
+    this.#inner?.free();
+    this.#inner = undefined;
+  }
+
+  [Symbol.dispose](): void {
+    this.destroy();
+  }
+}
+
+/** A video being drawn, encoded, and written. */
+export class Video {
+  /** @internal */
+  constructor(
+    private readonly inner: wasm.Video,
+    private readonly writer: WritableStreamDefaultWriter<Uint8Array>,
+  ) {}
+
+  /** Seconds into the video the next frame shows at. */
+  get time(): number {
+    return this.inner.time;
+  }
+
+  /** Frames drawn or held so far. */
+  get frames(): number {
+    return this.inner.frames;
+  }
+
+  /**
+   * Draws the next frame of `views`, one per panel, at its time once they are complete, and writes
+   * what is encoded. It resolves once there is room for another frame; a frame where nothing moved
+   * is held, not drawn.
+   */
+  async frame(views: readonly View[]): Promise<void> {
+    const bytes = (await this.inner.frame(views.map((v) => v.handle()))) as Uint8Array;
+    if (bytes.length) await this.writer.write(bytes);
+  }
+
+  /** Encodes every frame under way, writes the end of the file, and closes the output. */
+  async finish(): Promise<void> {
+    const bytes = (await this.inner.finish()) as Uint8Array;
+    if (bytes.length) await this.writer.write(bytes);
+    await this.writer.close();
   }
 }
 
