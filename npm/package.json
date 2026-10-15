@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Columnar data drawn as vertices, edges, lines, and areas with WebGPU.",
   "type": "module",
+  "sideEffects": false,
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
@@ -12,11 +13,20 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./wasm": "./pkg/latkit_bg.wasm",
+    "./worker": "./dist/worker.js"
   },
-  "files": ["dist", "pkg/latkit.js", "pkg/latkit.d.ts", "pkg/latkit_bg.wasm", "pkg/latkit_bg.wasm.d.ts"],
+  "files": [
+    "dist",
+    "pkg/latkit.js",
+    "pkg/latkit.d.ts",
+    "pkg/latkit_bg.wasm",
+    "pkg/latkit_bg.wasm.d.ts"
+  ],
   "scripts": {
-    "build": "cargo xtask wasm"
+    "build": "cargo xtask wasm",
+    "pack:release": "cargo xtask package"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

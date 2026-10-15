@@ -3,7 +3,7 @@
  * color by: buses, load, and generation counted where each bus stands, and where the grid was
  * simulated, how far its machines' speeds swing in each state, frame by frame.
  */
-import { Patch, type Data, type Id } from 'latkit';
+import { Patch, type Data, type Id } from '../latkit.js';
 import type { Case } from './cases.js';
 
 /** What each state's figures hold, and in what unit. */

@@ -9,8 +9,10 @@
 //!   page's grids, from 240 buses to two million, each held to budgets for loading, the frame's CPU
 //!   and GPU time while the camera moves, and frames drawn while it does not.
 //! - `wasm [--dev]`: build `latkit-js`, bind it with the `wasm-bindgen` CLI matching `Cargo.lock`,
-//!   optimize it with `wasm-opt` when installed, and compile the npm wrapper. `--dev` builds faster
+//!   optimize it with the pinned Binaryen tool, and compile the npm wrapper. `--dev` builds faster
 //!   and skips `wasm-opt`.
+//! - `package`: build an isolated, optimized npm tarball and report its sizes and hashes.
+//! - `package-test`: install the latest tarball into a consumer and verify it in Chrome.
 //! - `examples`: `wasm --dev`, then serve the example suite at <http://127.0.0.1:5200>.
 
 use std::path::{Path, PathBuf};
@@ -24,9 +26,11 @@ fn main() -> ExitCode {
         "browser" => browser(),
         "bench" => wasm(false).and_then(|()| run("node", &["npm/examples/gate/bench.ts"])),
         "wasm" => wasm(dev),
+        "package" => package(),
+        "package-test" => package_test(),
         "examples" => wasm(true).and_then(|()| pnpm(&["--dir", "npm/examples", "exec", "vite"])),
         _ => {
-            eprintln!("usage: cargo xtask <check|browser|bench|wasm [--dev]|examples>");
+            eprintln!("usage: cargo xtask <check|browser|bench|wasm [--dev]|package|package-test|examples>");
             return ExitCode::FAILURE;
         }
     };
@@ -61,10 +65,6 @@ fn cargo(args: &[&str]) -> Result {
     run(env!("CARGO"), args)
 }
 
-fn npx(args: &[&str]) -> Result {
-    run(if cfg!(windows) { "npx.cmd" } else { "npx" }, args)
-}
-
 fn pnpm(args: &[&str]) -> Result {
     run(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" }, args)
 }
@@ -81,16 +81,21 @@ fn check() -> Result {
         &["doc", "-p", "latkit", "--no-deps", "--all-features"],
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
-    npx(&["--yes", "tsc", "-p", "npm/test"])?;
+    wasm(true)?;
+    pnpm(&["exec", "tsc", "-p", "npm/test"])?;
     pnpm(&["--dir", "npm/examples", "exec", "tsc", "--noEmit"])?;
     pnpm(&["--dir", "npm/examples", "exec", "tsc", "-p", "gate"])?;
-    browser()
+    browser_gate()
 }
 
 /// Builds the package for the browser, then runs the gate over the shaders the build linked.
 fn browser() -> Result {
-    let shaders = shaders_dir()?;
     wasm(true)?;
+    browser_gate()
+}
+
+fn browser_gate() -> Result {
+    let shaders = shaders_dir()?;
     run("node", &["npm/examples/gate/gate.ts", &shaders])
 }
 
@@ -119,33 +124,70 @@ fn shaders_dir() -> Result<String> {
 }
 
 fn wasm(dev: bool) -> Result {
+    build_wasm(dev, "npm")
+}
+
+fn build_wasm(dev: bool, output: &str) -> Result {
     let profile = if dev { "wasm-dev" } else { "wasm" };
-    cargo(&["build", "-p", "latkit-js", "--profile", profile, "--target", "wasm32-unknown-unknown"])?;
+    cargo(&["build", "--locked", "-p", "latkit-js", "--profile", profile, "--target", "wasm32-unknown-unknown"])?;
     let lock = std::fs::read_to_string(root().join("Cargo.lock")).map_err(|e| format!("Cargo.lock: {e}"))?;
     let version = locked_version(&lock, "wasm-bindgen").ok_or("wasm-bindgen is not in Cargo.lock")?;
     let installed = Command::new("wasm-bindgen").arg("--version").output().ok();
     let installed = installed.and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();
-    if !installed.contains(&version) {
+    if installed.split_whitespace().nth(1) != Some(version.as_str()) {
         return Err(format!(
             "wasm-bindgen CLI {version} is required (found {:?}); run `cargo install wasm-bindgen-cli --version {version}`",
             installed.trim()
         ));
     }
     let wasm = format!("target/wasm32-unknown-unknown/{profile}/latkit_js.wasm");
-    let bind = [wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", "npm/pkg", "--out-name", "latkit"];
+    let pkg = format!("{output}/pkg");
+    let bind = [wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", &pkg, "--out-name", "latkit"];
     run("wasm-bindgen", &bind)?;
-    let optimized = "npm/pkg/latkit_bg.wasm";
+    let optimized = format!("{pkg}/latkit_bg.wasm");
     if dev {
         eprintln!("--dev: the wasm is not size-optimized");
-    } else if Command::new("wasm-opt").arg("--version").output().is_ok() {
-        run(
-            "wasm-opt",
-            &["-Oz", "--enable-simd", "--enable-bulk-memory", "--enable-reference-types", optimized, "-o", optimized],
-        )?;
     } else {
-        eprintln!("wasm-opt not found: the wasm is not size-optimized");
+        run("node", &["npm/build.mjs", "optimize", &optimized])?;
     }
-    npx(&["--yes", "tsc", "-p", "npm"])
+    run("node", &["npm/build.mjs", "compile", output])
+}
+
+fn package() -> Result {
+    let stamp =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos();
+    let stage = format!("target/npm/stage-{stamp}");
+    run("node", &["npm/build.mjs", "prepare", &stage, env!("CARGO_PKG_VERSION")])?;
+    build_wasm(false, &stage)?;
+    run(
+        if cfg!(windows) { "npm.cmd" } else { "npm" },
+        &["pack", &format!("./{stage}"), "--ignore-scripts", "--pack-destination", "target/npm"],
+    )?;
+    run("node", &["npm/build.mjs", "report", &stage])
+}
+
+fn package_test() -> Result {
+    // Preparation prints the isolated consumer path into a stable manifest for the browser runner.
+    run("node", &["npm/build.mjs", "consumer"])?;
+    let report = std::fs::read_to_string(root().join("target/npm/package.json")).map_err(|e| e.to_string())?;
+    let report: serde_json::Value = serde_json::from_str(&report).map_err(|e| e.to_string())?;
+    let tarball = report["tarball"].as_str().ok_or("package report has no tarball")?;
+    let consumer = report["consumer"].as_str().ok_or("package report has no consumer")?;
+    run(
+        if cfg!(windows) { "npm.cmd" } else { "npm" },
+        &[
+            "install",
+            "--prefix",
+            consumer,
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            "--no-package-lock",
+            "--offline",
+            tarball,
+        ],
+    )?;
+    run("node", &["npm/examples/gate/package.ts"])
 }
 
 /// The version of `package` in a `Cargo.lock`.

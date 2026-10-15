@@ -6,7 +6,7 @@
  * swing onto what is left, and loads cut off from every plant go dark. Each tick eases into place;
  * what trips pulses until it is restored.
  */
-import { Data, Patch, elapsed, field, reference, when, type Hit, type Scene } from 'latkit';
+import { Data, Patch, elapsed, field, reference, when, type Hit, type Scene } from '../latkit.js';
 import type { Stage } from '../ui/stage.js';
 import texas from './texas.json';
 

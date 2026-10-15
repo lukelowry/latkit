@@ -1,59 +1,112 @@
-/**
- * The page's workers, doing views' jobs off the main thread. Each instantiates the module the page
- * compiled, so nothing is fetched again and nothing is shared but bytes.
- */
-
-/** What a worker answers: a job's answer's bytes, or why it failed. */
+/** Shared on-demand workers. Each receives the compiled module once and owns its WASM memory. */
 interface Answer {
+  ready?: boolean;
   bytes?: Uint8Array;
   error?: string;
 }
 
-/** A job no worker has taken yet. */
 interface Job {
   bytes: Uint8Array;
   resolve(bytes: Uint8Array): void;
   reject(error: Error): void;
 }
 
+interface Slot {
+  worker: Worker;
+  ready: boolean;
+  job?: Job;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 /**
- * A pool of workers holding `module`, and the function that hands one a job's bytes. Each worker
- * takes one job at a time, the oldest waiting, so a long job never holds up the ones behind it. A
- * worker whose job failed is replaced: a failure may have left its instance unusable.
+ * Runs one job per worker. Idle workers retire after 30 seconds; startup and jobs have a one-minute
+ * deadline. Failure rejects the affected job and retires the worker; later jobs get a fresh one.
  */
-export function jobs(module: WebAssembly.Module): (bytes: Uint8Array) => Promise<Uint8Array> {
-  const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+export function jobs(
+  module: WebAssembly.Module,
+  createWorker = () => new Worker(new URL('./worker.js', import.meta.url)),
+): (bytes: Uint8Array) => Promise<Uint8Array> {
+  const size = Math.max(1, Math.min(4, (globalThis.navigator?.hardwareConcurrency || 2) - 1));
   const queue: Job[] = [];
-  const idle: Worker[] = [];
-  let started = 0;
-  const start = (): Worker => {
-    const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
-    worker.postMessage(module);
-    return worker;
+  const slots = new Set<Slot>();
+
+  const retire = (slot: Slot): void => {
+    clearTimeout(slot.timer);
+    slot.worker.onmessage = null;
+    slot.worker.onerror = null;
+    slot.worker.onmessageerror = null;
+    slot.worker.terminate();
+    slots.delete(slot);
   };
-  const next = (worker: Worker): void => {
-    const job = queue.shift();
-    if (!job) return void idle.push(worker);
-    const failed = (error: string) => {
-      job.reject(new Error(error));
-      worker.terminate();
-      next(start());
-    };
+
+  const fail = (slot: Slot, cause: unknown): void => {
+    const job = slot.job;
+    retire(slot);
+    job?.reject(cause instanceof Error ? cause : new Error(String(cause)));
+    pump();
+  };
+
+  const send = (slot: Slot): void => {
+    const job = slot.job;
+    if (!job || !slot.ready) return;
+    try {
+      slot.worker.postMessage(job.bytes, [job.bytes.buffer]);
+    } catch (error) {
+      fail(slot, error);
+    }
+  };
+
+  const start = (): Slot => {
+    const worker = createWorker();
+    const slot: Slot = { worker, ready: false };
+    slots.add(slot);
     worker.onmessage = ({ data }: MessageEvent<Answer>) => {
-      if (!data.bytes) return failed(data.error ?? 'a job failed');
-      job.resolve(data.bytes);
-      next(worker);
+      if (!slot.ready) {
+        if (!data.ready) return fail(slot, data.error ?? 'worker initialization failed');
+        slot.ready = true;
+        send(slot);
+      } else if (slot.job) {
+        if (!(data.bytes instanceof Uint8Array))
+          return fail(slot, data.error ?? 'invalid worker answer');
+        const job = slot.job;
+        slot.job = undefined;
+        clearTimeout(slot.timer);
+        slot.timer = setTimeout(() => retire(slot), 30_000);
+        job.resolve(data.bytes);
+        pump();
+      }
     };
     worker.onerror = (event) => {
       event.preventDefault();
-      failed(event.message || 'a worker failed');
+      fail(slot, event.message || 'worker failed');
     };
-    worker.postMessage(job.bytes, [job.bytes.buffer]);
+    worker.onmessageerror = () => fail(slot, 'could not read worker message');
+    return slot;
   };
+
+  function pump(): void {
+    while (queue.length) {
+      let slot = [...slots].find((candidate) => !candidate.job);
+      if (!slot && slots.size >= size) return;
+      const job = queue.shift()!;
+      try {
+        slot ??= start();
+        clearTimeout(slot.timer);
+        slot.job = job;
+        const active = slot;
+        slot.timer = setTimeout(() => fail(active, 'worker job timed out'), 60_000);
+        if (slot.ready) send(slot);
+        else slot.worker.postMessage(module);
+      } catch (error) {
+        if (slot) retire(slot);
+        job.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+  }
+
   return (bytes) =>
     new Promise((resolve, reject) => {
       queue.push({ bytes, resolve, reject });
-      const worker = idle.pop() ?? (started < size ? (started++, start()) : undefined);
-      if (worker) next(worker);
+      pump();
     });
 }

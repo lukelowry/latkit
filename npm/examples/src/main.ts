@@ -1,4 +1,4 @@
-import { Gpu } from 'latkit';
+import { Gpu } from './latkit.js';
 import { pages } from './pages.js';
 import { Shell } from './ui/shell.js';
 import './ui/style.css';

@@ -14,7 +14,7 @@ import {
   type Scene,
   type Shape,
   type Side,
-} from 'latkit';
+} from '../latkit.js';
 import type { Stage } from '../ui/stage.js';
 
 /** Kinds of block: the shape each draws as, and its ports, each naming the signal it is plugged into. */

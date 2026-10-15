@@ -3,7 +3,7 @@
  * size. Each bus joins its right and lower neighbours, and a few lines span the whole box as great
  * circles. Built in time linear in the bus count.
  */
-import { Data, Patch, reference, type Fit } from 'latkit';
+import { Data, Patch, reference, type Fit } from '../latkit.js';
 
 interface Spec {
   readonly cols: number;

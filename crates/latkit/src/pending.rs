@@ -6,11 +6,12 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
-use crate::Result;
+use crate::{Error, Result};
 
 /// A value still to come: a future its [`Resolver`] resolves, from a view's frames, a host's worker,
 /// or the network. A view's answers resolve to an error when the device is lost, and stay pending
-/// while no frames are drawn. Await it, or [`take`](Pending::take) it from a frame loop.
+/// while no frames are drawn. Destroying their owner cancels them. Await it, or [`take`](Pending::take)
+/// it from a frame loop.
 #[must_use = "a pending value does nothing unless awaited or taken"]
 pub struct Pending<T>(Arc<Mutex<Slot<T>>>);
 
@@ -20,7 +21,8 @@ enum Slot<T> {
     Taken,
 }
 
-/// What resolves a [`Pending`]: a host keeps it until its job or fetch is done.
+/// What resolves a [`Pending`]: a host keeps it until its job or fetch is done. Dropping it without
+/// resolving cancels the answer and wakes its waiter.
 pub struct Resolver<T>(Arc<Mutex<Slot<T>>>);
 
 impl<T> Pending<T> {
@@ -71,6 +73,21 @@ impl<T> Resolver<T> {
     }
 }
 
+impl<T> Drop for Resolver<T> {
+    fn drop(&mut self) {
+        let waker = {
+            let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let Slot::Waiting(waker) = &mut *slot else { return };
+            let waker = waker.take();
+            *slot = Slot::Ready(Err(Error::Cancelled));
+            waker
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
 impl<T> Future for Pending<T> {
     type Output = Result<T>;
 
@@ -96,5 +113,39 @@ impl<T> std::fmt::Debug for Pending<T> {
 impl<T> std::fmt::Debug for Resolver<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Resolver")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::Wake;
+
+    struct Notified(AtomicBool);
+
+    impl Wake for Notified {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn dropping_the_resolver_cancels_and_wakes_the_waiter() {
+        let (mut pending, resolver) = Pending::<u32>::new();
+        let notified = Arc::new(Notified(AtomicBool::new(false)));
+        let waker = Waker::from(notified.clone());
+        assert!(Pin::new(&mut pending).poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(resolver);
+        assert!(notified.0.load(Ordering::Relaxed));
+        assert_eq!(pending.take(), Some(Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn resolving_preserves_the_answer_when_the_resolver_drops() {
+        let (pending, resolver) = Pending::new();
+        resolver.resolve(Ok(42));
+        assert_eq!(pending.take(), Some(Ok(42)));
+        assert_eq!(pending.take(), None);
     }
 }

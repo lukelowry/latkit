@@ -13,5 +13,5 @@
     "types": ["node"],
     "lib": ["ES2023", "DOM", "DOM.Iterable"]
   },
-  "include": ["gate.ts", "bench.ts", "browser.ts"]
+  "include": ["gate.ts", "bench.ts", "browser.ts", "package.ts"]
 }

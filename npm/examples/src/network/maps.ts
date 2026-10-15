@@ -4,7 +4,7 @@
  * repository; or OpenStreetMap's planet as OpenFreeMap's vector tiles. GeoJSON downloads as bytes
  * and is read in a worker; tiles are fetched as the camera asks for them.
  */
-import { field, geojson, type ColormapName, type Data, type Mark, type View } from 'latkit';
+import { field, geojson, type ColormapName, type Data, type Mark, type View } from '../latkit.js';
 import { download } from './cases.js';
 
 /** The page's colors, as CSS. */

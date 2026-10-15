@@ -7,12 +7,35 @@ on:
       - main
 
 jobs:
+  npm-wasm-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.30.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: rustup show
+      - run: pnpm install --frozen-lockfile
+      - name: Install matching WASM bindings generator
+        run: |
+          version=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - run: pnpm --dir npm/examples exec playwright-core install --with-deps chromium
+      - run: cargo xtask package
+      - run: cargo xtask package-test
+
   rust-package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - name: Set up pinned Rust toolchain
         run: rustup show
+      - name: Test Rust library
+        run: cargo test --locked --package latkit --lib
       - name: Verify native Rust package
         run: cargo package --locked --package latkit
       - name: Verify browser-target Rust package

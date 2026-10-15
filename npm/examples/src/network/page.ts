@@ -13,7 +13,7 @@ import {
   type Mark,
   type Row,
   type Scene,
-} from 'latkit';
+} from '../latkit.js';
 import type { Stage } from '../ui/stage.js';
 import { LEVELS, loadCase, type Case } from './cases.js';
 import { continent } from './continent.js';
@@ -396,7 +396,8 @@ export default async function page(stage: Stage): Promise<void> {
   const thousands = (n: number) => `${(n / 1000).toFixed(0)}k`;
   meter.note(() => `${thousands(view.stats.drawn)} of ${thousands(view.stats.rows)} rows drawn`);
   meter.note(
-    () => `${(view.stats.resident / 1e6).toFixed(0)} of ${(view.stats.budget / 1e6).toFixed(0)} MB on the GPU`,
+    () =>
+      `${(view.stats.resident / 1e6).toFixed(0)} of ${(view.stats.budget / 1e6).toFixed(0)} MB on the GPU`,
   );
 
   function showLegend(): void {

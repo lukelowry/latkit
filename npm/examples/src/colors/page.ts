@@ -12,7 +12,7 @@ import {
   type Hit,
   type Mark,
   type Scene,
-} from 'latkit';
+} from '../latkit.js';
 import type { Stage } from '../ui/stage.js';
 import { h } from '../ui/dom.js';
 

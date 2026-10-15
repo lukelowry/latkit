@@ -9,7 +9,7 @@ import {
   type ColormapName,
   type Mark,
   type Scene,
-} from 'latkit';
+} from '../latkit.js';
 import type { Stage } from '../ui/stage.js';
 
 /** Buses on a side of the lattice. */

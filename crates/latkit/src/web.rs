@@ -117,6 +117,20 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     }
 }
 
+/// Releases the registry's GPU and cancels its frame as soon as its final owner disappears.
+fn release_idle(frames: &Rc<RefCell<Frames>>) {
+    let mut f = frames.borrow_mut();
+    f.canvases.retain(|c| c.strong_count() > 0);
+    if !f.canvases.is_empty() || !f.listeners.is_empty() {
+        return;
+    }
+    if let (Some(window), Some(id)) = (web_sys::window(), f.scheduled.take()) {
+        let _ = window.cancel_animation_frame(id);
+    }
+    drop(f);
+    FRAMES.with(|all| all.borrow_mut().retain(|f| !Rc::ptr_eq(f, frames)));
+}
+
 /// Asks for an animation frame of the `Gpu` whose shared state lies at `gpu`: what a view's waker does
 /// when work it waited on lands, always on the page's one thread.
 struct Wakes {
@@ -153,6 +167,7 @@ pub fn on_frame(gpu: &Gpu, listener: impl FnMut(f64) + 'static) -> Listener {
     Listener(Some(Box::new(move || {
         if let Some(frames) = weak.upgrade() {
             frames.borrow_mut().listeners.retain(|(i, _)| *i != id);
+            release_idle(&frames);
         }
     })))
 }
@@ -366,6 +381,7 @@ impl Drop for State {
         if let Some((observer, _)) = &self.resize {
             observer.disconnect();
         }
+        release_idle(&self.frames);
     }
 }
 

@@ -1,4 +1,4 @@
-import { colormapCss, type ColormapName } from 'latkit';
+import { colormapCss, type ColormapName } from '../latkit.js';
 import { h } from './dom.js';
 import type { Stage } from './stage.js';
 

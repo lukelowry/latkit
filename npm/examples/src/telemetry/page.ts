@@ -1,4 +1,4 @@
-import { Data, Patch, field, type Hit, type Scene } from 'latkit';
+import { Data, Patch, field, type Hit, type Scene } from '../latkit.js';
 import type { Stage } from '../ui/stage.js';
 
 /** The areas signals belong to, in the colors tab10 gives them. */

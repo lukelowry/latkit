@@ -27,6 +27,9 @@ pub enum Error {
     /// The GPU device was lost; create a new `Gpu`.
     #[error("GPU device lost")]
     DeviceLost,
+    /// The owner of pending work was destroyed before it could answer.
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 /// A `Result` whose error is [`Error`].
@@ -39,7 +42,7 @@ impl Error {
     }
 
     /// A short, stable name for the kind of error: `invalid`, `unsupported`, `limit`, `load`, or
-    /// `device-lost`.
+    /// `device-lost`, or `cancelled`.
     pub fn code(&self) -> &'static str {
         match self {
             Error::Invalid { .. } => "invalid",
@@ -47,6 +50,7 @@ impl Error {
             Error::Limit(_) => "limit",
             Error::Load(_) => "load",
             Error::DeviceLost => "device-lost",
+            Error::Cancelled => "cancelled",
         }
     }
 

@@ -1,4 +1,4 @@
-import { Data, Patch, field, reference, units, type ColormapName, type Scene } from 'latkit';
+import { Data, Patch, field, reference, units, type ColormapName, type Scene } from '../latkit.js';
 import type { Stage } from '../ui/stage.js';
 import { Body, ROOM, STEP, type Controls } from './body.js';
 import { loadMesh } from './mesh.js';
