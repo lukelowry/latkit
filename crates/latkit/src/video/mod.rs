@@ -95,7 +95,7 @@ impl Encoding {
 /// ```no_run
 /// # async fn example(gpu: &latkit::Gpu, map: &mut latkit::View, plot: &mut latkit::View) -> latkit::Result<()> {
 /// use latkit::{Mp4, Shot};
-/// let shot = Shot::new([1920, 1080]).scale(1.5).panel([0.0, 0.0, 1.0, 0.7]).panel([0.0, 0.7, 1.0, 0.3]);
+/// let shot = Shot::new([1920, 1080]).scale(1.5).panels([[0.0, 0.0, 1.0, 0.7], [0.0, 0.7, 1.0, 0.3]]);
 /// let file = std::fs::File::create("film.mp4").expect("a file");
 /// let mut video = shot.video(gpu, 60.0, Mp4::new(file))?;
 /// while video.time() < 24.0 {
@@ -202,11 +202,7 @@ impl Shot {
         if !(fps.is_finite() && (1.0..=240.0).contains(&fps)) {
             return Err(Error::invalid("a video shows 1 to 240 frames a second").at("fps"));
         }
-        let [width, height] = self.size();
-        if S::PIXELS == Pixels::Nv12 && (width % 4 != 0 || height % 2 != 0) {
-            let reason = format!("an NV12 video's width is a multiple of 4 and its height of 2, not {width}×{height}");
-            return Err(Error::invalid(reason).at("size"));
-        }
+        self.check(S::PIXELS)?;
         let host = gpu.0.lock().host.clone();
         sink.begin(&Encoding::new(self.size(), fps), host.as_deref())?;
         Ok(Video {

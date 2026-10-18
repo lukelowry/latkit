@@ -152,11 +152,14 @@ fn a_video_is_whole_blocks_and_needs_an_encoder() {
         "a width of whole 4-pixel blocks"
     );
     let mut view = view(&gpu);
-    let mut two = Shot::new([SIZE, SIZE]).panel([0.0, 0.0, 0.5, 1.0]).panel([0.5, 0.0, 0.5, 1.0]);
+    let mut two = Shot::new([SIZE, SIZE]).panels([[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 0.5, 1.0]]);
     let mut video = two.video(&gpu, 30.0, Mp4::new(Vec::new())).expect("made");
     assert!(pollster::block_on(video.frame(&mut [&mut view])).is_err(), "a view for each panel");
     two = two.scale(0.0);
-    assert!(two.video(&gpu, 30.0, Mp4::new(Vec::new())).is_ok(), "the scale is checked as the first frame draws");
+    assert!(two.video(&gpu, 30.0, Mp4::new(Vec::new())).is_err(), "the scale is checked before a frame draws");
+    let clear = Shot::new([SIZE, SIZE]).transparent();
+    assert!(clear.video(&gpu, 30.0, Mp4::new(Vec::new())).is_err(), "a video keeps no alpha");
+    assert!(clear.check(latkit::Pixels::Rgba).is_ok() && clear.check(latkit::Pixels::Nv12).is_err());
 }
 
 /// A sink keeping what it is given: each frame's index and whether it was drawn, and the RGBA bytes.

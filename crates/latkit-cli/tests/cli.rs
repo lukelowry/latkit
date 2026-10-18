@@ -89,7 +89,7 @@ fn usage_errors_exit_2_before_reading_or_drawing() {
         vec!["render", "missing.json", "-o", "out.png", "--at", "inf"],
         vec!["render", "missing.json", "-o", "out.png", "--elapsed", "1e100"],
         vec!["render", "missing.json", "-o", "out.png", "--deadline", "0"],
-        vec!["render", "missing.json", "-o", "out.jpg"],
+        vec!["render", "missing.json", "-o", "out.gif"],
         vec!["render", "missing.json", "-o", "out.mp4"],
         vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out.mp4", "--size", "62x64"],
         vec!["render", "missing.json", "--frames", "f.jsonl", "-o", "out.mp4", "--transparent"],
@@ -196,6 +196,11 @@ fn a_labeled_still_renders_to_a_file_and_to_stdout() {
     ok(&stdout);
     assert_eq!(Image::from_png(&stdout.stdout).unwrap(), image);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 4, "no temporary output left behind");
+    for (file, starts) in [("out.jpg", &[0xff, 0xd8, 0xff][..]), ("out.webp", &b"RIFF"[..])] {
+        args[5] = file;
+        ok(&run(dir.path(), &args, None));
+        assert!(std::fs::read(dir.path().join(file)).unwrap().starts_with(starts), "{file} is what it says");
+    }
 }
 
 #[test]

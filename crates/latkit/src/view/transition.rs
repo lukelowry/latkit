@@ -92,6 +92,7 @@ impl Shown {
         self.rows = before.rows;
         self.drawn.clone_from(&before.drawn);
         self.version = before.version + 1;
+        self.place_version = before.place_version + 1;
     }
 
     /// Starts easing from what the mark shows: its rows moved as `moved` says, if they did.

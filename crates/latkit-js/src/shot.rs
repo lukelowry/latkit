@@ -1,23 +1,35 @@
-//! Pictures and videos of views: a shot crosses as JSON, `{ size, scale, panels, transparent,
-//! deadline, elapsed }` with times in seconds, and draws the views of the canvases given, which hold
-//! their last frames meanwhile. An image's pixels cross once; a video hands back the bytes each frame
-//! made, for the page to write.
+//! Canvases, pictures, and videos of views: a canvas shows views in panels; a shot crosses as JSON,
+//! `{ size, scale, panels, transparent, deadline, elapsed }` with times in seconds, and draws the views
+//! given, whose canvases hold their last frames meanwhile. An image's pixels cross once and its files
+//! are written in workers; a video hands back the bytes each frame made, for the page to write.
 
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
-use latkit::web::Canvas;
+use latkit::web::PageView;
 use wasm_bindgen::prelude::*;
 
 use crate::Error;
 
-/// A view's canvas, lent to a shot: what `view.handle()` gives.
+/// A view, for a canvas to show or a shot to draw: what `view.handle()` gives.
 #[wasm_bindgen]
-pub struct Handle(pub(crate) Canvas);
+pub struct Handle(pub(crate) PageView);
 
-fn canvases(views: Vec<Handle>) -> Vec<Canvas> {
-    views.into_iter().map(|h| h.0).collect()
+fn views_of(handles: Vec<Handle>) -> Vec<PageView> {
+    handles.into_iter().map(|h| h.0).collect()
+}
+
+/// Views shown in the panels of a `<canvas>` or an `OffscreenCanvas`; freeing it stops drawing them.
+#[wasm_bindgen]
+pub struct Canvas(pub(crate) latkit::web::Canvas);
+
+#[wasm_bindgen]
+impl Canvas {
+    /// Shows `views`, one per panel, in place of those it showed.
+    pub fn show(&self, views: Vec<Handle>) -> Result<(), Error> {
+        Ok(self.0.show(&views_of(views))?)
+    }
 }
 
 /// RGBA pixels, straight alpha, rows top to bottom.
@@ -42,10 +54,17 @@ impl Image {
         self.0.rgba.to_vec()
     }
 
-    /// The job writing the image as PNG, for a worker to do.
-    #[wasm_bindgen(js_name = pngJob)]
-    pub fn png_job(&self) -> Vec<u8> {
-        latkit::host::Job::png(&self.0).into_bytes()
+    /// The job writing the image as a `png`, `jpeg` at `quality` from 1 to 100, or `webp` file, for a
+    /// worker to do.
+    #[wasm_bindgen(js_name = encodeJob)]
+    pub fn encode_job(&self, format: &str, quality: Option<u8>) -> Result<Vec<u8>, Error> {
+        let format = match format {
+            "png" => latkit::ImageFormat::Png,
+            "jpeg" => latkit::ImageFormat::Jpeg { quality: quality.unwrap_or(90) },
+            "webp" => latkit::ImageFormat::WebP,
+            other => return Err(latkit::Error::invalid(format!("no image format {other:?}")).at("format").into()),
+        };
+        Ok(latkit::host::Job::encode(&self.0, format).into_bytes())
     }
 }
 
@@ -54,9 +73,9 @@ impl Image {
 #[wasm_bindgen]
 pub fn image(shot: &str, views: Vec<Handle>) -> Result<js_sys::Promise, Error> {
     let shot: latkit::Shot = crate::json("shot", shot)?;
-    let canvases = canvases(views);
+    let views = views_of(views);
     Ok(wasm_bindgen_futures::future_to_promise(async move {
-        let image = latkit::web::image(&shot, &canvases).await.map_err(|e| JsValue::from(Error::from(e)))?;
+        let image = latkit::web::image(&shot, &views).await.map_err(|e| JsValue::from(Error::from(e)))?;
         Ok(Image(image).into())
     }))
 }
@@ -104,12 +123,12 @@ impl Video {
     /// ready to write, once there is room for another frame.
     pub fn frame(&self, views: Vec<Handle>) -> js_sys::Promise {
         let (inner, written, frames) = (self.inner.clone(), self.written.clone(), self.frames.clone());
-        let canvases = canvases(views);
+        let views = views_of(views);
         wasm_bindgen_futures::future_to_promise(async move {
             let taken = inner.borrow_mut().take();
             let error = || latkit::Error::invalid("a video draws one frame at a time, until it is finished");
             let mut video = taken.ok_or_else(|| JsValue::from(Error::from(error())))?;
-            let drawn = latkit::web::frame(&mut video, &canvases).await;
+            let drawn = latkit::web::frame(&mut video, &views).await;
             *frames.borrow_mut() = video.frames();
             *inner.borrow_mut() = Some(video);
             drawn.map_err(|e| JsValue::from(Error::from(e)))?;

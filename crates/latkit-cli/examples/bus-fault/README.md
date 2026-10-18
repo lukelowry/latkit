@@ -12,8 +12,8 @@ output frame that appends them. latkit reads the states' GeoJSON, draws the map 
 legend over the plot, and encodes the MP4: 5.5 s for the 997 frames on an RTX 2080 SUPER.
 
 ```sh
-python examples/bus-fault/render.py <outputs> --cli target/cli/latkit --preview
-python examples/bus-fault/render.py <outputs> --cli target/cli/latkit
+python crates/latkit-cli/examples/bus-fault/render.py <outputs> --cli target/cli/latkit --preview
+python crates/latkit-cli/examples/bus-fault/render.py <outputs> --cli target/cli/latkit
 ```
 
 `<outputs>` is the recording's directory: `buses.json`, `topology.json`, `usa-states.geojson`,

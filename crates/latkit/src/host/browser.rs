@@ -243,10 +243,14 @@ async fn fetched(request: &Request) -> crate::Result<Vec<u8>> {
     }
     init.set_headers(&headers);
     let fetch = web_sys::Request::new_with_str_and_init(&request.url, &init).map_err(|e| failed(&format!("{e:?}")))?;
-    let window = web_sys::window().ok_or_else(|| failed("no window"))?;
-    let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&fetch))
-        .await
-        .map_err(|e| failed(&format!("{e:?}")))?;
+    // The page's fetch, or a worker's.
+    let global = js_sys::global();
+    let promise = match (global.dyn_ref::<web_sys::Window>(), global.dyn_ref::<web_sys::WorkerGlobalScope>()) {
+        (Some(window), _) => window.fetch_with_request(&fetch),
+        (None, Some(worker)) => worker.fetch_with_request(&fetch),
+        (None, None) => return Err(failed("no fetch here")),
+    };
+    let response = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(|e| failed(&format!("{e:?}")))?;
     let response: web_sys::Response = response.dyn_into().map_err(|_| failed("not a response"))?;
     match response.status() {
         200 | 206 => {}

@@ -342,7 +342,8 @@ impl View {
         // A diagram's labels follow the camera without placement; the camera only says which texts
         // they ask for.
         let diagram = matches!(self.scene.space, Space::Diagram(_));
-        let versions: Vec<u64> = labeled.iter().map(|&(i, _)| self.marks[i].version).collect();
+        // What places labels: a color changing every frame moves none.
+        let versions: Vec<u64> = labeled.iter().map(|&(i, _)| self.marks[i].place_version).collect();
         let stamp = stamp_of((bytemuck::bytes_of(eye), self.labels.changes, versions));
         let due = self.labels.placed.due(stamp) && !self.labels.placed.busy();
         let now = self.clock.now();

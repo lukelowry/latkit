@@ -73,7 +73,7 @@ async function run(custom: boolean, compiled: boolean) {
   check(conflict, 'conflicting configuration must reject');
   check(createdWorkers === 0, 'loading must not create workers');
 
-  const { Data, Patch, Gpu } = kit;
+  const { Data, Patch, Gpu, Shot } = kit;
   const empty = new Data('grid');
   const patch = new Patch().put('Bus', 1, { x: [0], y: [0], radius: [12] });
   const data = empty.apply(patch);
@@ -87,10 +87,15 @@ async function run(custom: boolean, compiled: boolean) {
   const secondGpu = await Gpu.create();
   const deviceReady = performance.now();
   const canvas = (id: string) => document.querySelector<HTMLCanvasElement>(`#${id}`)!;
-  const first = gpu.view(canvas('first'), scene);
-  const second = gpu.view(canvas('second'), scene);
-  const third = secondGpu.view(canvas('third'), scene);
-  for (const view of [first, second, third]) {
+  const first = gpu.view(scene);
+  const second = gpu.view(scene);
+  const third = secondGpu.view(scene);
+  gpu.canvas(canvas('first')).show([first]);
+  gpu.canvas(canvas('second')).show([second]);
+  secondGpu.canvas(canvas('third')).show([third]);
+  // A view no canvas shows still draws in shots.
+  const headless = gpu.view(scene);
+  for (const view of [first, second, third, headless]) {
     view.on('error', (error) => {
       throw error;
     });
@@ -101,6 +106,28 @@ async function run(custom: boolean, compiled: boolean) {
     [first, second, third].every((view) => view.stats.frames > 0 && view.stats.drawn === 1),
   );
   const firstFrame = performance.now();
+  const picture = await new Shot([64, 64]).image([headless]);
+  check(picture.width === 64 && picture.height === 64, 'a view without a canvas draws in a shot');
+  const png = await picture.encode('png');
+  const jpeg = await picture.encode('jpeg', { quality: 80 });
+  const webp = await picture.encode('webp');
+  check(
+    png[1] === 0x50 && jpeg[0] === 0xff && webp[0] === 0x52,
+    'pictures write as PNG, JPEG, and WebP',
+  );
+  picture.destroy();
+  headless.destroy();
+  check(
+    (() => {
+      try {
+        gpu.canvas(document.createElement('canvas')).show([second]);
+        return false;
+      } catch {
+        return true;
+      }
+    })(),
+    'a view shows in one canvas at a time',
+  );
   const hits = await first.pick([128, 128], 8);
   check(
     hits.some((hit) => hit.row.table === 'Bus'),
@@ -123,7 +150,7 @@ async function run(custom: boolean, compiled: boolean) {
   stop();
   stop();
   destroyed(() => second.stats);
-  destroyed(() => gpu.view(canvas('first'), scene));
+  destroyed(() => gpu.view(scene));
   for (const answer of await pending) {
     check(answer.status === 'rejected', 'destroying the view must cancel pending queries');
     const error: unknown = answer.reason;

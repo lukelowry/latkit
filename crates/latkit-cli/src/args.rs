@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
+use latkit::{ImageFormat, Pixels, Shot};
 
 #[derive(Parser)]
 #[command(name = "latkit", version, about = "Render scenes of JSON or binary data to images and videos")]
@@ -57,6 +58,9 @@ pub(crate) struct Job {
     /// What to write; otherwise the output's extension says, or PNG for stdout
     #[arg(long, value_enum)]
     pub(crate) format: Option<Format>,
+    /// A JPEG's quality, from 1, smallest, to 100, sharpest
+    #[arg(long, default_value = "90", value_parser = clap::value_parser!(u8).range(1..=100))]
+    pub(crate) quality: u8,
     /// The picture's width and height in pixels, such as 1920x1080
     #[arg(long, default_value = "1600x900", value_parser = size)]
     pub(crate) size: [u32; 2],
@@ -104,8 +108,12 @@ pub(crate) struct Job {
 /// What an output is.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Format {
-    /// PNG: one picture, or one a frame where the output has a %d pattern
+    /// PNG, lossless with alpha: one picture, or one a frame where the output has a %d pattern
     Png,
+    /// JPEG at --quality, its alpha dropped: one picture, or one a frame
+    Jpeg,
+    /// WebP, lossless with alpha: one picture, or one a frame
+    Webp,
     /// Raw RGBA, straight alpha, frames back to back
     Rgba,
     /// YUV4MPEG2: 4:2:0 BT.709 limited range, for any encoder
@@ -135,6 +143,26 @@ impl std::str::FromStr for Source {
     }
 }
 
+impl Format {
+    /// The bytes its pictures compose into.
+    pub(crate) fn pixels(self) -> Pixels {
+        match self {
+            Format::Mp4 | Format::Y4m => Pixels::Nv12,
+            Format::Png | Format::Jpeg | Format::Webp | Format::Rgba => Pixels::Rgba,
+        }
+    }
+
+    /// The image file it writes, at `quality` for a JPEG; `None` for raw frames and video.
+    pub(crate) fn image(self, quality: u8) -> Option<ImageFormat> {
+        match self {
+            Format::Png => Some(ImageFormat::Png),
+            Format::Jpeg => Some(ImageFormat::Jpeg { quality }),
+            Format::Webp => Some(ImageFormat::WebP),
+            Format::Rgba | Format::Y4m | Format::Mp4 => None,
+        }
+    }
+}
+
 impl Job {
     /// What the output is: `--format`, else its extension, else PNG.
     pub(crate) fn format(&self) -> Format {
@@ -144,9 +172,17 @@ impl Job {
                 Some("mp4") => Format::Mp4,
                 Some("y4m") => Format::Y4m,
                 Some("rgba") => Format::Rgba,
+                Some("jpg" | "jpeg") => Format::Jpeg,
+                Some("webp") => Format::Webp,
                 _ => Format::Png,
             }
         })
+    }
+
+    /// The picture the job takes: its size, scale, panels, alpha, and deadline.
+    pub(crate) fn shot(&self) -> Shot {
+        let shot = Shot::new(self.size).scale(self.scale).deadline(self.deadline).panels(self.panel.clone());
+        if self.transparent { shot.transparent() } else { shot }
     }
 
     /// Whether the output names one file a frame: a `%d` or `%0Nd` pattern.
@@ -206,24 +242,20 @@ impl Cli {
         };
         let format = job.format();
         let extension = output.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-        let known = matches!(extension.as_deref(), Some("png" | "mp4" | "y4m" | "rgba"));
+        let known = matches!(extension.as_deref(), Some("png" | "jpg" | "jpeg" | "webp" | "mp4" | "y4m" | "rgba"));
         if job.format.is_none() && !is_stdio(output) && !known {
-            return Err(invalid("--output ends in .png, .mp4, .y4m, or .rgba, or --format says what it is"));
+            return Err(invalid(
+                "--output ends in .png, .jpg, .webp, .mp4, .y4m, or .rgba, or --format says what it is",
+            ));
         }
         let video = matches!(format, Format::Mp4 | Format::Y4m);
         if (video || job.sequence()) && job.frames.is_none() {
             return Err(invalid("a video or an image sequence takes --frames"));
         }
-        if job.sequence() && (format != Format::Png || is_stdio(output)) {
-            return Err(invalid("a %d pattern names a PNG file a frame"));
+        if job.sequence() && (format.image(job.quality).is_none() || is_stdio(output)) {
+            return Err(invalid("a %d pattern names an image file a frame"));
         }
-        if video && job.transparent {
-            return Err(invalid("a video keeps no alpha"));
-        }
-        if video && (job.size[0] % 4 != 0 || job.size[1] % 2 != 0) {
-            return Err(invalid("a video's width is a multiple of 4 and its height of 2"));
-        }
-        Ok(())
+        job.shot().check(format.pixels()).map_err(|e| invalid(&e.to_string()))
     }
 }
 

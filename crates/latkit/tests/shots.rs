@@ -70,7 +70,7 @@ fn panels_compose_side_by_side() {
     let (blue_scene, blue) = dot(0.0, Color::rgb(0.0, 0.0, 1.0));
     let mut left = view(&gpu, red_scene, red);
     let mut right = view(&gpu, blue_scene, blue);
-    let shot = Shot::new([2 * SIZE, SIZE]).panel([0.0, 0.0, 0.5, 1.0]).panel([0.5, 0.0, 0.5, 1.0]);
+    let shot = Shot::new([2 * SIZE, SIZE]).panels([[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 0.5, 1.0]]);
     let image = pollster::block_on(shot.image(&mut [&mut left, &mut right])).expect("a picture");
     assert!(close(pixel(&image, SIZE / 2, SIZE / 2), RED), "{:?}", pixel(&image, SIZE / 2, SIZE / 2));
     assert!(close(pixel(&image, SIZE + SIZE / 2, SIZE / 2), [0, 0, 255, 255]));
@@ -88,7 +88,7 @@ fn a_transparent_picture_keeps_its_alpha() {
     let image = pollster::block_on(Shot::new([SIZE, SIZE]).transparent().image(&mut [&mut view])).expect("a picture");
     assert_eq!(pixel(&image, 3, 3)[3], 0, "nothing drawn is clear");
     assert!(close(pixel(&image, SIZE / 2, SIZE / 2), RED), "{:?}", pixel(&image, SIZE / 2, SIZE / 2));
-    let png = Image::from_png(&image.png()).expect("a PNG");
+    let png = Image::from_png(&image.encode(latkit::ImageFormat::Png).expect("written")).expect("a PNG");
     assert_eq!(png, image);
 }
 
@@ -167,7 +167,7 @@ fn fixed_effect_time_is_repeatable_and_independent_of_capture_steps() {
     let again = pollster::block_on(shot.image(&mut [&mut view])).unwrap();
     assert_ne!(first, later);
     assert_eq!(first, again);
-    assert_eq!(Image::from_png(&first.png()).unwrap(), first);
+    assert_eq!(Image::from_png(&first.encode(latkit::ImageFormat::Png).unwrap()).unwrap(), first);
 }
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]

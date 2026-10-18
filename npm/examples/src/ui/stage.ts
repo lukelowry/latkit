@@ -1,4 +1,4 @@
-import type { Gpu, Scene, View } from 'latkit';
+import type { Canvas, Gpu, Scene, View } from 'latkit';
 import { Section } from './controls.js';
 import { h } from './dom.js';
 import { Legend } from './legend.js';
@@ -18,7 +18,11 @@ export class Stage {
   /** Aborted when the page closes: pass it to listeners the page adds itself. */
   readonly signal = this.#abort.signal;
   readonly #views = new Set<View>();
+  readonly #canvases = new Set<Canvas>();
+  /** Each view a canvas of the page shows, and its element, in the order they were made. */
+  readonly shown: { view: View; element: HTMLCanvasElement }[] = [];
   readonly #keys = new Map<string, () => void>();
+  #holding = 0;
 
   constructor(
     readonly gpu: Gpu,
@@ -56,7 +60,9 @@ export class Stage {
     const canvas = h('canvas', { tabindex: 0, 'aria-label': label });
     if (height) canvas.style.height = `${height}px`;
     into.append(canvas);
-    const view = this.gpu.view(canvas, scene);
+    const view = this.gpu.view(scene);
+    this.#canvases.add(this.gpu.canvas(canvas).show([view]));
+    this.shown.push({ view, element: canvas });
     // What could not be fetched only goes undrawn; anything else stops the page.
     view.on('error', (error) =>
       error.code === 'load' ? this.detail(error.message) : this.fail(error),
@@ -65,12 +71,14 @@ export class Stage {
     return view;
   }
 
-  /** Calls `step` every frame before the views draw, with the seconds since the last, at most 0.1. */
+  /** Calls `step` every frame before the views draw, with the seconds since the last, at most 0.1;
+   * not while the page holds still. */
   frame(step: (dt: number) => void): void {
     let last: number | undefined;
     const stop = this.gpu.on('frame', (now) => {
-      const dt = last === undefined ? 0 : Math.min(0.1, (now - last) / 1000);
+      const dt = last === undefined || this.#holding ? 0 : Math.min(0.1, (now - last) / 1000);
       last = now;
+      if (this.#holding) return;
       try {
         step(dt);
       } catch (error) {
@@ -78,6 +86,16 @@ export class Stage {
       }
     });
     this.signal.addEventListener('abort', stop);
+  }
+
+  /** Holds the page's frame steps still while `work` runs, as a picture of it waits for stillness. */
+  async hold<T>(work: () => Promise<T>): Promise<T> {
+    this.#holding++;
+    try {
+      return await work();
+    } finally {
+      this.#holding--;
+    }
   }
 
   /** Runs `action` when `key` is pressed outside a text field. */
@@ -121,6 +139,7 @@ export class Stage {
 
   close(): void {
     this.#abort.abort();
+    for (const canvas of this.#canvases) canvas.destroy();
     for (const view of this.#views) view.destroy();
     for (const region of Object.values(this.regions)) region.replaceChildren();
     this.line.textContent = '';

@@ -149,7 +149,13 @@ only glow, halo, and pick radius stay pixels. Zooming scales one fixed picture.
   at `scale` pixels per CSS pixel. `image(views)` steps the views' clocks a sixtieth of a second while
   they ease and waits while work is under way, within a deadline, until every view is complete and
   still; `compute/compose.wesl` then writes each panel's part in whole words, and a plain buffer copy
-  reads the RGBA back. `Image::png` writes it; the npm package writes it in a worker.
+  reads the RGBA back. `Image::encode` writes it as PNG, JPEG, or lossless WebP; jobs do the same
+  on the host's workers, as npm's `Image.encode` does. `Panels` lay views out in a picture, a
+  video, and a browser canvas alike.
+- **Browser** (`src/web.rs`): a `PageView` is a view the page holds, with or without a canvas; a
+  `Canvas` shows views in the panels of a `<canvas>`, or an `OffscreenCanvas` in a worker, and
+  feeds each the input landing on its panel. One view filling a canvas draws straight into it;
+  several draw into textures of their own, only those that changed, copied into place.
 - **Video** (`src/video/`): a shot's frames at a fixed rate handed in order to a `Sink`, which
   says the `Pixels` it takes (RGBA or NV12), composed on the GPU, and begins with the video's
   `Encoding` and the host; three frames under way (one drawing, one reading back, one in the sink).
@@ -275,8 +281,8 @@ view.arrange();                           // lay out every row without a positio
 let Stats { rows, drawn, resident, budget, waiting, .. } = view.stats(); // rows, GPU bytes, work under way
 
 // Pictures and video: plain data, drawn once every view is complete.
-let png = Shot::new([3840, 2160]).scale(2.0).image(&mut [&mut view]).await?.png();
-let shot = Shot::new([1920, 1080]).scale(1.5).panel([0.0, 0.0, 1.0, 0.7]).panel([0.0, 0.7, 1.0, 0.3]);
+let png = Shot::new([3840, 2160]).scale(2.0).image(&mut [&mut view]).await?.encode(ImageFormat::Png)?;
+let shot = Shot::new([1920, 1080]).scale(1.5).panels([[0.0, 0.0, 1.0, 0.7], [0.0, 0.7, 1.0, 0.3]]);
 let mut video = shot.video(&gpu, 60.0, Mp4::new(file))?; // or any Sink: raw frames, PNGs
 while video.time() < 24.0 {
     map.set_at(video.time() * 3600.0);            // the script is the loop
@@ -286,19 +292,24 @@ video.finish().await?;
 ```
 
 npm `latkit` mirrors the crate with scenes as JSON; its `Data.apply` returns the next version,
-`geojson` and `Image.png` run in a worker, and `Shot.video` encodes with WebCodecs:
+`geojson` and `Image.encode` run in a worker, and `Shot.video` encodes with WebCodecs:
 
 ```ts
-const png = await (await new Shot([3840, 2160]).scale(2).image([view])).png();
-const video = new Shot([1920, 1080])
-  .panel([0, 0, 1, 0.7])
-  .panel([0, 0.7, 1, 0.3])
-  .video(gpu, 60, writable);
-while (video.time < 24) {
-  map.at = plot.at = video.time * 3600;
-  await video.frame([map, plot]);
-}
-await video.finish();
+const panels = [
+  [0, 0, 1, 0.7],
+  [0, 0.7, 1, 0.3],
+] as const;
+const [map, plot] = [gpu.view(mapScene), gpu.view(plotScene)];
+gpu.canvas(element, { panels }).show([map, plot]); // one canvas, input routed by panel
+const png = await (
+  await new Shot([3840, 2160]).scale(2).panels(panels).image([map, plot])
+).encode('png');
+const video = new Shot([1920, 1080]).panels(panels).video(gpu, 60, writable, { signal });
+await video.record(
+  [map, plot],
+  (time) => ((map.at = plot.at = time * 3600), time < 24),
+  onProgress,
+);
 ```
 
 ## Milestones

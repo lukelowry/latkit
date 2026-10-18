@@ -226,6 +226,7 @@ export async function geojson(name: string, bytes: Uint8Array): Promise<Data> {
 export class Gpu {
   #inner?: wasm.Gpu;
   #views = new Set<View>();
+  #canvases = new Set<Canvas>();
   #listeners = new Set<() => void>();
 
   private constructor(inner: wasm.Gpu) {
@@ -243,14 +244,35 @@ export class Gpu {
     return new Gpu(await wasm.Gpu.create());
   }
 
-  /** A view drawing `scene` into `canvas`; its marks draw once {@link View.setData} gives their data. */
-  view(canvas: HTMLCanvasElement, scene: Scene): View {
+  /**
+   * A view of `scene`; its marks draw once {@link View.setData} gives their data. A {@link Canvas}
+   * shows it, and a {@link Shot} draws it with or without one.
+   */
+  view(scene: Scene): View {
     const view: View = new View(
-      (tell) => this.inner.view(canvas, JSON.stringify(scene), tell),
+      (tell) => this.inner.view(JSON.stringify(scene), tell),
       () => this.#views.delete(view),
     );
     this.#views.add(view);
     return view;
+  }
+
+  /**
+   * A canvas showing views in `panels` of `target`: a `<canvas>` element, which sizes itself to its
+   * CSS box and passes each view the input landing on its panel, or an `OffscreenCanvas` in a
+   * worker, which keeps the size it is given at `pixelRatio` pixels a CSS pixel. Panels are
+   * `[x, y, width, height]` fractions, one per view; by default one view fills the canvas.
+   */
+  canvas(
+    target: HTMLCanvasElement | OffscreenCanvas,
+    options: { panels?: readonly Panel[]; pixelRatio?: number } = {},
+  ): Canvas {
+    const canvas: Canvas = new Canvas(
+      this.inner.canvas(target, JSON.stringify(options.panels ?? []), options.pixelRatio),
+      () => this.#canvases.delete(canvas),
+    );
+    this.#canvases.add(canvas);
+    return canvas;
   }
 
   /**
@@ -285,9 +307,10 @@ export class Gpu {
     return JSON.parse(this.inner.work) as Work;
   }
 
-  /** Releases this GPU's views and frame listeners. Other GPUs and data handles remain usable. */
+  /** Releases this GPU's canvases, views, and frame listeners. Other GPUs and data handles remain usable. */
   destroy(): void {
     if (!this.#inner) return;
+    for (const canvas of this.#canvases) canvas.destroy();
     for (const view of this.#views) view.destroy();
     for (const stop of this.#listeners) stop();
     this.#inner.free();
@@ -299,7 +322,42 @@ export class Gpu {
   }
 }
 
-/** A scene drawn into a canvas, from data it is given by name, answering the canvas's input. */
+/** A view's part of a canvas or a picture: `[x, y, width, height]` as fractions of it. */
+export type Panel = readonly [number, number, number, number];
+
+/** Views shown in the panels of a `<canvas>` or an `OffscreenCanvas`. */
+export class Canvas {
+  #inner?: wasm.Canvas;
+
+  /** @internal */
+  constructor(
+    inner: wasm.Canvas,
+    private readonly released: () => void,
+  ) {
+    this.#inner = inner;
+  }
+
+  /** Shows `views`, one per panel, in place of those it showed. A view shows in one canvas at a time. */
+  show(views: readonly View[]): this {
+    if (!this.#inner) throw new Error('this Canvas has been destroyed');
+    this.#inner.show(views.map((v) => v.handle()));
+    return this;
+  }
+
+  /** Stops drawing; the views remain, and the element keeps its last frame. */
+  destroy(): void {
+    if (!this.#inner) return;
+    this.#inner.free();
+    this.#inner = undefined;
+    this.released();
+  }
+
+  [Symbol.dispose](): void {
+    this.destroy();
+  }
+}
+
+/** A scene drawn from data it is given by name: shown by a canvas, which passes it input, or drawn by shots. */
 export class View {
   #listeners = new Map<keyof ViewEvents, Set<(event: never) => void>>();
   #inner?: wasm.View;
@@ -317,7 +375,7 @@ export class View {
     return this.#inner;
   }
 
-  /** @internal The view's canvas, lent to a shot for one call. */
+  /** @internal The view, for a canvas to show or a shot to draw. */
   handle(): wasm.Handle {
     return this.inner.handle();
   }
@@ -487,7 +545,7 @@ export class View {
     }
   }
 
-  /** Stops drawing and frees the view; the canvas keeps its last frame. */
+  /** Frees the view; a canvas showing it keeps its last frame. */
   destroy(): void {
     if (!this.#inner) return;
     for (const listeners of this.#listeners.values()) listeners.clear();
@@ -524,7 +582,7 @@ function failure({ code, message, path }: Failure): LatkitError {
  * plain data, like a scene. A view a shot draws holds its canvas's last frame meanwhile.
  *
  * ```ts
- * const png = await (await new Shot([3840, 2160]).scale(2).image([view])).png();
+ * const png = await (await new Shot([3840, 2160]).scale(2).image([view])).encode('png');
  * ```
  */
 export class Shot {
@@ -534,7 +592,7 @@ export class Shot {
     /** @internal */
     readonly settings: Readonly<{
       scale: number;
-      panels: readonly (readonly [number, number, number, number])[];
+      panels: readonly Panel[];
       transparent: boolean;
       deadline: number;
       elapsed?: number;
@@ -546,9 +604,9 @@ export class Shot {
     return new Shot(this.size, { ...this.settings, scale });
   }
 
-  /** Adds a view's part of the picture, `[x, y, width, height]` as fractions; views fill parts in order. */
-  panel(part: readonly [number, number, number, number]): Shot {
-    return new Shot(this.size, { ...this.settings, panels: [...this.settings.panels, part] });
+  /** Where each view draws, `[x, y, width, height]` as fractions, one per view in order; by default one fills it. */
+  panels(panels: readonly Panel[]): Shot {
+    return new Shot(this.size, { ...this.settings, panels });
   }
 
   /** Keeps the picture's alpha: views clear to transparent where their themes' backgrounds are. */
@@ -579,15 +637,24 @@ export class Shot {
   /**
    * A video of these pictures at `fps` frames a second, H.264 in MP4, written to `output` as it is
    * drawn, at `bitrate` bits a second or about 0.15 bits a pixel a frame. Width and height are
-   * multiples of 4 and 2.
+   * multiples of 4 and 2. `signal` aborts it: the output is aborted and the views are given back.
    */
   video(
     gpu: Gpu,
     fps: number,
     output: WritableStream<Uint8Array>,
-    options: { bitrate?: number } = {},
+    options: { bitrate?: number; signal?: AbortSignal } = {},
   ): Video {
-    return new Video(gpu.inner.video(this.#config(), fps, options.bitrate), output.getWriter());
+    options.signal?.throwIfAborted();
+    const video = new Video(
+      gpu.inner.video(this.#config(), fps, options.bitrate),
+      output.getWriter(),
+      fps,
+    );
+    options.signal?.addEventListener('abort', () => void video.abort(options.signal?.reason), {
+      once: true,
+    });
+    return video;
   }
 
   /** The shot as the crate reads it: JSON, times in seconds. */
@@ -623,10 +690,18 @@ export class Image {
     return this.inner.rgba;
   }
 
-  /** The image as a PNG file, written in a worker. */
-  async png(): Promise<Uint8Array> {
-    const job = this.inner.pngJob();
-    return run ? await run(job) : wasm.job(job);
+  /**
+   * The image as a file, written in a worker: PNG, lossless with alpha; JPEG at `quality` from 1 to
+   * 100 (90 by default), small, its alpha dropped; or WebP, lossless with alpha, smaller than PNG.
+   */
+  async encode(format: ImageFormat, options: { quality?: number } = {}): Promise<Uint8Array> {
+    const job = this.inner.encodeJob(format, options.quality);
+    const file = run ? await run(job) : wasm.job(job);
+    if (file.length === 0)
+      throw Object.assign(new Error(`the image could not be written as ${format}`), {
+        code: 'invalid',
+      });
+    return file;
   }
 
   destroy(): void {
@@ -639,22 +714,40 @@ export class Image {
   }
 }
 
+/** How an image is written as a file. */
+export type ImageFormat = 'png' | 'jpeg' | 'webp';
+
 /** A video being drawn, encoded, and written. */
 export class Video {
+  #inner?: wasm.Video;
+  #aborted: unknown;
+
   /** @internal */
   constructor(
-    private readonly inner: wasm.Video,
+    inner: wasm.Video,
     private readonly writer: WritableStreamDefaultWriter<Uint8Array>,
-  ) {}
+    private readonly fps: number,
+  ) {
+    this.#inner = inner;
+  }
+
+  private get inner(): wasm.Video {
+    if (!this.#inner)
+      throw Object.assign(new Error('this Video was finished or aborted'), {
+        code: 'cancelled',
+        cause: this.#aborted,
+      });
+    return this.#inner;
+  }
 
   /** Seconds into the video the next frame shows at. */
   get time(): number {
-    return this.inner.time;
+    return this.#inner?.time ?? 0;
   }
 
   /** Frames drawn or held so far. */
   get frames(): number {
-    return this.inner.frames;
+    return this.#inner?.frames ?? 0;
   }
 
   /**
@@ -667,11 +760,39 @@ export class Video {
     if (bytes.length) await this.writer.write(bytes);
   }
 
-  /** Encodes every frame under way, writes the end of the file, and closes the output. */
+  /**
+   * Records `views` frame after frame: before each, `step` moves them to the frame's time, in
+   * seconds, and says whether to draw it, waiting first if it needs to; once it says no, the video
+   * is finished. `onProgress` hears the frames written and the time reached after each.
+   */
+  async record(
+    views: readonly View[],
+    step: (time: number) => boolean | Promise<boolean>,
+    onProgress?: (progress: { frames: number; time: number }) => void,
+  ): Promise<void> {
+    while (await step(this.frames / this.fps)) {
+      await this.frame(views);
+      onProgress?.({ frames: this.frames, time: this.time });
+    }
+    await this.finish();
+  }
+
+  /** Encodes every frame under way, writes the end of the file, closes the output, and gives the views back. */
   async finish(): Promise<void> {
     const bytes = (await this.inner.finish()) as Uint8Array;
+    this.#inner?.free();
+    this.#inner = undefined;
     if (bytes.length) await this.writer.write(bytes);
     await this.writer.close();
+  }
+
+  /** Stops the video: drops what was not written, aborts the output, and gives the views back. */
+  async abort(reason?: unknown): Promise<void> {
+    if (!this.#inner) return;
+    this.#aborted = reason;
+    this.#inner.free();
+    this.#inner = undefined;
+    await this.writer.abort(reason).catch(() => {});
   }
 }
 

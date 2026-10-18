@@ -28,8 +28,8 @@ as latkit JSON, then renders them, every picture framing the same box with `--fi
 
 ```sh
 cargo build --locked -p latkit-cli --profile cli
-python examples/cli-gallery/gallery.py --cli target/cli/latkit --font C:/Windows/Fonts/segoeui.ttf
-latkit render examples/cli-gallery/helios.json -d examples/cli-gallery/helios.data.json -o helios.png --size 1600x1000
+python crates/latkit-cli/examples/cli-gallery/gallery.py --cli target/cli/latkit --font C:/Windows/Fonts/segoeui.ttf
+latkit render crates/latkit-cli/examples/cli-gallery/helios.json -d crates/latkit-cli/examples/cli-gallery/helios.data.json -o helios.png --size 1600x1000
 ```
 
 These renders use Segoe UI; without `--font` the CLI uses system fonts, so text can differ.

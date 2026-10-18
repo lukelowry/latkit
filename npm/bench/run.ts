@@ -188,12 +188,22 @@ try {
           );
           break;
         }
-        for (let r = 0; r < repeats; r++) {
-          runs.push((last = await measure(warm, scenario, size)));
+        let failed: Run | undefined;
+        for (let r = 0; r < repeats && !failed; r++) {
+          const run = await measure(warm, scenario, size);
           console.log(
-            `  ${scenario.name} at ${size}: loaded in ${last.phases.load?.ms.toFixed(0)} ms` +
-              (last.errors.length ? `, ${last.errors.length} errors` : ''),
+            `  ${scenario.name} at ${size}: loaded in ${run.phases.load?.ms.toFixed(0)} ms` +
+              (run.errors.length ? `, ${run.errors.length} errors` : ''),
           );
+          // Where the old packages fail, they cannot draw that size: their record ends before it.
+          if (old && run.errors.length) failed = run;
+          else runs.push((last = run));
+        }
+        if (failed) {
+          notes.push(
+            `${scenario.name} stops before ${size}: the old packages failed, ${failed.errors[0]}`,
+          );
+          break;
         }
       }
     } catch (error) {

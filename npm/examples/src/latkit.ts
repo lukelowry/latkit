@@ -4,4 +4,5 @@ export * from 'latkit';
 export type Data = import('latkit').Data;
 export type Patch = import('latkit').Patch;
 export type Gpu = import('latkit').Gpu;
-export const { Data, Patch, Gpu, geojson, colormapCss } = await loadLatkit();
+export type Shot = import('latkit').Shot;
+export const { Data, Patch, Gpu, Shot, geojson, colormapCss } = await loadLatkit();

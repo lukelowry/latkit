@@ -15,12 +15,13 @@ const scene: Scene = {
   space: 'plane',
   marks: [{ vertices: { of: ['grid', 'Bus'], position: ['x', 'y'], radius: 6 } }],
 };
-const view = gpu.view(document.querySelector('canvas')!, scene);
+const view = gpu.view(scene);
+gpu.canvas(document.querySelector('canvas')!).show([view]); // or several views in { panels }
 view.setData(data);
 view.fit('all');
 
 // When the application closes this visualization:
-gpu.destroy(); // also destroys its views and frame listeners
+gpu.destroy(); // also destroys its canvases, views, and frame listeners
 data.destroy();
 ```
 

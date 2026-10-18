@@ -306,10 +306,7 @@ function shot(s: Stage) {
   const width = Math.round(Math.sqrt((s.size * 16) / 9) / 4) * 4;
   const height = Math.round((width * 9) / 16 / 2) * 2;
   const n = s.views.length;
-  return s.views.reduce(
-    (shot, _, i) => shot.panel([i / n, 0, 1 / n, 1]),
-    new s.latkit.Shot([width, height]),
-  );
+  return new s.latkit.Shot([width, height]).panels(s.views.map((_, i) => [i / n, 0, 1 / n, 1]));
 }
 
 const image = (): Phase => ({
@@ -323,7 +320,7 @@ const png = (): Phase => ({
   order: { time: 1 },
   run: async (s) => {
     const picture = await deadline(shot(s).image(s.views), 60_000, 'a picture');
-    return s.once(() => picture.png());
+    return s.once(() => picture.encode('png'));
   },
 });
 

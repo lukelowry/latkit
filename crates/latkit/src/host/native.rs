@@ -320,7 +320,7 @@ mod tests {
     fn background_jobs_complete_without_a_runtime_or_font_discovery() {
         let host = Native::new();
         let image = crate::Image::new([1, 1], vec![255, 0, 0, 128]).unwrap();
-        let jobs: Vec<_> = (0..12).map(|_| host.spawn(Job::png(&image))).collect();
+        let jobs: Vec<_> = (0..12).map(|_| host.spawn(Job::encode(&image, crate::ImageFormat::Png))).collect();
         for job in jobs {
             assert_eq!(crate::Image::from_png(&pollster::block_on(job).unwrap()).unwrap(), image);
         }

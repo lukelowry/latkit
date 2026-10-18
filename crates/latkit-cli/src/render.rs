@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 
 use latkit::geo::Tiles;
 use latkit::host::Native;
-use latkit::{Camera, Data, Error, Fit, Gpu, Mp4, Patch, Scene, Shot, Sink, View};
+use latkit::{Camera, Data, Error, Fit, Gpu, Mp4, Patch, Scene, Sink, View};
 
 use crate::args::{Format, Job, Source};
 use crate::inputs::{self, Ahead, Each, Frame, Frames};
 use crate::report::Report;
-use crate::sinks::{Commit, Output, Png, Pngs, Raw, Y4m};
+use crate::sinks::{Commit, Images, Output, Raw, Y4m};
 use crate::{Failure, block};
 
 /// What a job reads before it draws, and the host that read it.
@@ -72,18 +72,6 @@ impl Inputs {
     }
 }
 
-/// The picture the job takes: its size, scale, panels, alpha, and deadline.
-fn shot(job: &Job) -> Shot {
-    let mut shot = Shot::new(job.size).scale(job.scale).deadline(job.deadline);
-    for &part in &job.panel {
-        shot = shot.panel(part);
-    }
-    if job.transparent {
-        shot = shot.transparent();
-    }
-    shot
-}
-
 pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
     let mut inputs = Inputs::read(job)?;
     let gpu = block(job.deadline, Gpu::new())?;
@@ -91,15 +79,15 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
     let mut views = inputs.views(&gpu, job)?;
     let output = job.output.as_deref().expect("render takes an output");
     let Some(path) = &job.frames else {
-        let mut shot = shot(job);
+        let mut shot = job.shot();
         if let Some(elapsed) = job.elapsed {
             shot = shot.elapsed(elapsed);
         }
         let image = block(job.deadline, shot.image(&mut views.iter_mut().collect::<Vec<_>>()))?;
         let mut out = Output::create(output)?;
-        match job.format() {
-            Format::Rgba => std::io::Write::write_all(&mut out, &image.rgba).map_err(|e| Failure::io(&e, output))?,
-            _ => image.write_png(&mut out).map_err(|e| Failure::at(e, output))?,
+        match job.format().image(job.quality) {
+            Some(format) => image.write(format, &mut out).map_err(|e| Failure::at(e, output))?,
+            None => std::io::Write::write_all(&mut out, &image.rgba).map_err(|e| Failure::io(&e, output))?,
         }
         out.commit()?;
         report.done(1, &views, &gpu);
@@ -108,9 +96,17 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
     let frames = Frames::open(path, inputs.host.clone(), job.deadline)?.ahead();
     let host = inputs.host.clone();
     let mut sequence = Sequence { job, path, gpu: &gpu, views: &mut views, inputs: &mut inputs, report };
-    match job.format() {
-        Format::Png if job.sequence() => sequence.run(frames, Pngs::new(output.to_path_buf(), host)),
-        Format::Png => sequence.run(frames, Png::new(Output::create(output)?)),
+    let format = job.format();
+    if let Some(image) = format.image(job.quality) {
+        let images = if job.sequence() {
+            Images::numbered(output.to_path_buf(), image, host)
+        } else {
+            Images::one(Output::create(output)?, image, host)
+        };
+        return sequence.run(frames, images);
+    }
+    match format {
+        Format::Png | Format::Jpeg | Format::Webp => unreachable!("images write above"),
         Format::Rgba => sequence.run(frames, Raw::new(Output::create(output)?)),
         Format::Y4m => sequence.run(frames, Y4m::new(Output::create(output)?)),
         Format::Mp4 => {
@@ -137,7 +133,7 @@ impl Sequence<'_> {
     fn run<S: Sink + Commit>(&mut self, frames: Ahead, sink: S) -> Result<(), Failure> {
         let (job, path) = (self.job, self.path);
         let output = job.output.as_deref().unwrap_or(path);
-        let mut video = shot(job).video(self.gpu, job.fps, sink).map_err(|e| Failure::at(e, output))?;
+        let mut video = job.shot().video(self.gpu, job.fps, sink).map_err(|e| Failure::at(e, output))?;
         let mut any = false;
         for next in frames {
             let (index, frame, patches) = next?;

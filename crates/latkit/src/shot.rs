@@ -16,9 +16,10 @@ use web_time::Instant;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::gpu::{FORMAT, Gpu};
+use crate::panels::Rect;
 use crate::time::Notify;
 use crate::view::Signal;
-use crate::{Error, Frame, Image, Pixels, Result, View};
+use crate::{Error, Frame, Image, Panels, Pixels, Result, View};
 
 /// Seconds a picture steps its views' clocks while they ease toward where they go.
 pub(crate) const TICK: f64 = 1.0 / 60.0;
@@ -32,14 +33,14 @@ const FRAME: Duration = Duration::from_millis(16);
 /// # async fn example(view: &mut latkit::View) -> latkit::Result<()> {
 /// use latkit::Shot;
 /// let image = Shot::new([3840, 2160]).scale(2.0).image(&mut [view]).await?;
-/// std::fs::write("view.png", image.png()).expect("written");
+/// std::fs::write("view.png", image.encode(latkit::ImageFormat::Png)?).expect("written");
 /// # Ok(()) }
 /// ```
 #[derive(Clone, PartialEq, Debug)]
 pub struct Shot {
     size: [u32; 2],
     scale: f32,
-    panels: Vec<[f32; 4]>,
+    panels: Panels,
     transparent: bool,
     deadline: Duration,
     elapsed: Option<Duration>,
@@ -51,7 +52,7 @@ impl Shot {
         Shot {
             size,
             scale: 1.0,
-            panels: Vec::new(),
+            panels: Panels::default(),
             transparent: false,
             deadline: Duration::from_secs(30),
             elapsed: None,
@@ -66,11 +67,10 @@ impl Shot {
         self
     }
 
-    /// Adds a view's part of the picture: x, y, width, and height as fractions of it. Views fill
-    /// their parts in order; with none given, one view fills the picture.
+    /// Where each view draws in the picture, one part per view in order; by default one view fills it.
     #[must_use]
-    pub fn panel(mut self, part: [f32; 4]) -> Shot {
-        self.panels.push(part);
+    pub fn panels(mut self, panels: impl Into<Panels>) -> Shot {
+        self.panels = panels.into();
         self
     }
 
@@ -100,6 +100,24 @@ impl Shot {
     /// The picture's width and height in pixels.
     pub fn size(&self) -> [u32; 2] {
         self.size
+    }
+
+    /// Checks, without a GPU, that its pictures compose into `pixels`: a positive scale, panels that
+    /// cover pixels, and for NV12 a width a multiple of 4, a height of 2, and no alpha.
+    pub fn check(&self, pixels: Pixels) -> Result<()> {
+        if !(self.scale.is_finite() && self.scale > 0.0) {
+            return Err(Error::invalid("a shot's scale is positive").at("scale"));
+        }
+        self.panels.rects(self.size, align(pixels))?;
+        let [width, height] = self.size;
+        if pixels == Pixels::Nv12 && (width % 4 != 0 || height % 2 != 0) {
+            let reason = format!("an NV12 video's width is a multiple of 4 and its height of 2, not {width}×{height}");
+            return Err(Error::invalid(reason).at("size"));
+        }
+        if pixels == Pixels::Nv12 && self.transparent {
+            return Err(Error::invalid("a video keeps no alpha; take it without transparent").at("transparent"));
+        }
+        Ok(())
     }
 
     /// The picture of `views`, one per panel, once every one is complete and still: transitions,
@@ -134,28 +152,6 @@ impl Shot {
             }
         }
     }
-
-    /// The parts of the picture its views fill, in pixels: origin and size, edges on multiples of
-    /// `align`. With none given, one view fills it.
-    fn parts(&self, align: [u32; 2]) -> Result<Vec<([u32; 2], [u32; 2])>> {
-        let whole = [[0.0, 0.0, 1.0, 1.0]];
-        let parts = if self.panels.is_empty() { &whole[..] } else { &self.panels[..] };
-        let edge = |f: f32, length: u32, align: u32| {
-            let units = (f64::from(f.clamp(0.0, 1.0)) * f64::from(length) / f64::from(align)).round() as u32;
-            (units * align).min(length)
-        };
-        parts
-            .iter()
-            .map(|p| {
-                let x = [edge(p[0], self.size[0], align[0]), edge(p[0] + p[2], self.size[0], align[0])];
-                let y = [edge(p[1], self.size[1], align[1]), edge(p[1] + p[3], self.size[1], align[1])];
-                if x[1] <= x[0] || y[1] <= y[0] {
-                    return Err(Error::invalid(format!("panel {p:?} covers no pixels of the picture")).at("panels"));
-                }
-                Ok(([x[0], y[0]], [x[1] - x[0], y[1] - y[0]]))
-            })
-            .collect()
-    }
 }
 
 /// A shot as JSON: `{ "size": [w, h], "scale", "panels": [[x, y, w, h]], "transparent", "deadline",
@@ -169,7 +165,7 @@ impl<'de> serde::Deserialize<'de> for Shot {
             size: [u32; 2],
             scale: Option<f32>,
             #[serde(default)]
-            panels: Vec<[f32; 4]>,
+            panels: Panels,
             #[serde(default)]
             transparent: bool,
             deadline: Option<f64>,
@@ -184,9 +180,7 @@ impl<'de> serde::Deserialize<'de> for Shot {
         if let Some(scale) = form.scale {
             shot = shot.scale(scale);
         }
-        for part in form.panels {
-            shot = shot.panel(part);
-        }
+        shot = shot.panels(form.panels);
         if form.transparent {
             shot = shot.transparent();
         }
@@ -271,7 +265,7 @@ impl Drawing {
     /// drawing until it is done, and nothing else draws them.
     pub(crate) fn begin(&mut self, views: &[&mut View]) -> Result<()> {
         self.started = Some(Instant::now());
-        let expected = self.shot.panels.len().max(1);
+        let expected = self.shot.panels.len();
         if views.len() != expected {
             return Err(Error::invalid(format!("a shot of {expected} panels draws {} views", views.len())));
         }
@@ -305,14 +299,8 @@ impl Drawing {
 impl Picture {
     /// What pictures of `shot` from `views`, one per panel, draw into, composed into `pixels`.
     fn new(shot: &Shot, views: &[&mut View], pixels: Pixels) -> Result<Picture> {
-        let align = match pixels {
-            Pixels::Rgba => [1, 1],
-            Pixels::Nv12 => [4, 2],
-        };
-        let parts = shot.parts(align)?;
-        if !(shot.scale.is_finite() && shot.scale > 0.0) {
-            return Err(Error::invalid("a shot's scale is positive").at("scale"));
-        }
+        shot.check(pixels)?;
+        let rects = shot.panels.rects(shot.size, align(pixels))?;
         let [width, height] = shot.size;
         let gpu = views[0].gpu().clone();
         let device = gpu.device();
@@ -374,9 +362,9 @@ impl Picture {
                 ],
             })
         };
-        let panels: Vec<Panel> = parts
+        let panels: Vec<Panel> = rects
             .iter()
-            .map(|&(origin, size)| {
+            .map(|&Rect { origin, size }| {
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("latkit panel"),
                     size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
@@ -392,8 +380,8 @@ impl Picture {
                 Panel { target, size, group }
             })
             .collect();
-        let covered: u64 = parts.iter().map(|(_, s)| u64::from(s[0]) * u64::from(s[1])).sum();
-        let overlap = parts.iter().enumerate().any(|(i, a)| parts[i + 1..].iter().any(|b| overlaps(*a, *b)));
+        let covered: u64 = rects.iter().map(|r| u64::from(r.size[0]) * u64::from(r.size[1])).sum();
+        let overlap = rects.iter().enumerate().any(|(i, a)| rects[i + 1..].iter().any(|b| a.overlaps(*b)));
         let fill = (covered < area || overlap).then(|| group(&panels[0].target, &uniform([0, 0], shot.size)));
         Ok(Picture { gpu: gpu.clone(), panels, buffer, len, fill })
     }
@@ -521,22 +509,11 @@ impl Drop for Drawing {
     }
 }
 
-/// Whether two parts of a picture share a pixel.
-fn overlaps(a: ([u32; 2], [u32; 2]), b: ([u32; 2], [u32; 2])) -> bool {
-    (0..2).all(|i| a.0[i] < b.0[i] + b.1[i] && b.0[i] < a.0[i] + a.1[i])
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn panels_split_the_picture_on_whole_blocks() {
-        let shot = Shot::new([1920, 1080]).panel([0.0, 0.0, 1.0, 0.7]).panel([0.0, 0.7, 1.0, 0.3]);
-        let parts = shot.parts([4, 2]).expect("valid");
-        assert_eq!(parts, vec![([0, 0], [1920, 756]), ([0, 756], [1920, 324])]);
-        assert!(!overlaps(parts[0], parts[1]));
-        assert_eq!(Shot::new([10, 10]).parts([1, 1]).expect("valid"), vec![([0, 0], [10, 10])]);
-        assert!(Shot::new([10, 10]).panel([0.5, 0.5, 0.0, 0.5]).parts([1, 1]).is_err());
+/// The blocks a picture composed into `pixels` is made of: a pixel, or NV12's 4×2 of luma and
+/// shared chroma.
+fn align(pixels: Pixels) -> [u32; 2] {
+    match pixels {
+        Pixels::Rgba => [1, 1],
+        Pixels::Nv12 => [4, 2],
     }
 }

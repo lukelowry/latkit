@@ -78,9 +78,10 @@ pub(crate) struct Shown {
     /// Whether an edge mark follows great circles.
     pub(crate) geodesic: bool,
     /// Bumps whenever the mark's state is written, so what derives from it knows to follow; and
-    /// whenever where its rows stand or how large they are is.
+    /// whenever what places its labels is: where its rows stand, how large and whether they show,
+    /// and their labels' texts and priorities. A color that changes every frame moves no label.
     pub(crate) version: u64,
-    pub(crate) shape_version: u64,
+    pub(crate) place_version: u64,
     /// The rows its focus draw lights.
     pub(crate) lit: super::focus::Lit,
     /// Why it no longer compiles against the data, kept until data fits it again, and whether a frame
@@ -119,7 +120,7 @@ impl Shown {
             segments: super::lists::Segments::default(),
             geodesic: false,
             version: 0,
-            shape_version: 0,
+            place_version: 0,
             lit: super::focus::Lit::default(),
             failure: None,
         }
@@ -194,10 +195,11 @@ impl Shown {
         }
     }
 
-    /// Its channels that say where its rows stand and how large they are.
-    pub(crate) fn shape_channels(&self) -> u32 {
+    /// Its channels that say where its rows' labels go and whether they show: where rows stand, how
+    /// large they are and whether they show, and their labels' texts and priorities.
+    pub(crate) fn placing_channels(&self) -> u32 {
         let Some(compiled) = &self.compiled else { return 0 };
-        let shaping = ["position", "radius", "width", "height"];
+        let shaping = ["position", "radius", "width", "height", "elevation", "visible", "text", "priority"];
         compiled
             .program
             .channels

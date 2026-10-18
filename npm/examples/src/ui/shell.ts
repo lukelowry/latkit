@@ -1,5 +1,6 @@
 import type { Gpu } from 'latkit';
 import { h } from './dom.js';
+import { exportSection } from './export.js';
 import { Stage } from './stage.js';
 
 declare global {
@@ -68,6 +69,7 @@ export class Shell {
       const stage = new Stage(gpu, this.#regions, this.#detail, (error) => this.#fail(error));
       this.#stage = window.stage = stage;
       await module.default(stage);
+      if (showing === this.#showing) exportSection(stage);
     } catch (error) {
       if (showing === this.#showing) this.#fail(error);
     }

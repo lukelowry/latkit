@@ -1,9 +1,9 @@
 //! Jobs: work too large for the frame (laying out in ranks or by stress, routing wires, cutting areas
-//! into triangles, grouping a large table's rows into tiles, writing a picture as PNG), handed to the
+//! into triangles, grouping a large table's rows into tiles, writing a picture as a file), handed to the
 //! host to do off the frame. A job is bytes in and bytes out, so a thread, or a worker holding its own
 //! copy of latkit, can do it with nothing shared. A view's job answers with a [`Patch`]: the rows it
-//! worked out, by id, with their places, the paths their wires run along, or their shapes; a PNG job
-//! answers with the file.
+//! worked out, by id, with their places, the paths their wires run along, or their shapes; an image
+//! job answers with the file.
 
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ enum Kind {
     GeoJson = 6,
     Lanes = 7,
     Pyramid = 8,
-    Png = 9,
+    Image = 9,
 }
 
 /// What a shapes job works out of each row's geometry.
@@ -146,8 +146,8 @@ impl Job {
     pub fn run(self) -> Vec<u8> {
         let mut input = Reader::new(&self.0);
         let kind = input.u32();
-        if kind == Some(Kind::Png as u32) {
-            return run_png(&mut input).unwrap_or_default();
+        if kind == Some(Kind::Image as u32) {
+            return run_image(&mut input).unwrap_or_default();
         }
         let answer = match kind {
             Some(k) if k == Kind::Layered as u32 || k == Kind::Stress as u32 => run_layout(k, &mut input),
@@ -235,9 +235,15 @@ impl Job {
         Job(out.0)
     }
 
-    /// The job writing `image` as a PNG file, which it answers with.
-    pub fn png(image: &crate::Image) -> Job {
-        let mut out = Writer::new(Kind::Png);
+    /// The job writing `image` as a file of `format`, which it answers with; nothing where it
+    /// cannot be written.
+    pub fn encode(image: &crate::Image, format: crate::ImageFormat) -> Job {
+        let mut out = Writer::new(Kind::Image);
+        out.u32(match format {
+            crate::ImageFormat::Png => 0,
+            crate::ImageFormat::Jpeg { quality } => 0x100 | u32::from(quality),
+            crate::ImageFormat::WebP => 1,
+        });
         out.u32(image.size[0]);
         out.u32(image.size[1]);
         out.0.extend_from_slice(&image.rgba);
@@ -471,10 +477,14 @@ fn run_tile(input: &mut Reader<'_>) -> Option<Patch> {
     decode(input.rest(), key, &tables)
 }
 
-fn run_png(input: &mut Reader<'_>) -> Option<Vec<u8>> {
+fn run_image(input: &mut Reader<'_>) -> Option<Vec<u8>> {
+    let format = match input.u32()? {
+        0 => crate::ImageFormat::Png,
+        1 => crate::ImageFormat::WebP,
+        jpeg => crate::ImageFormat::Jpeg { quality: (jpeg & 0xff) as u8 },
+    };
     let size = [input.u32()?, input.u32()?];
-    let image = crate::Image::new(size, input.rest()).ok()?;
-    Some(image.png())
+    crate::Image::new(size, input.rest()).ok()?.encode(format).ok()
 }
 
 fn run_geojson(input: &mut Reader<'_>) -> Option<Patch> {

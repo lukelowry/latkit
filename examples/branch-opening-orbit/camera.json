@@ -1,0 +1,10 @@
+{
+  "title": "Orbit",
+  "keyframes": [
+    {"at": 0.6, "center": [-84.5, 37.5], "scale": 38, "pitch": 50, "bearing": -70},
+    {"at": 2.8, "center": [-85, 37.5], "scale": 40, "pitch": 48, "bearing": -48},
+    {"at": 5.8, "center": [-86, 37.5], "scale": 40, "pitch": 46, "bearing": -12},
+    {"at": 8.0, "center": [-86.5, 37.5], "scale": 38, "pitch": 46, "bearing": 15},
+    {"at": 10.0, "center": [-87, 37.5], "scale": 38, "pitch": 48, "bearing": 38}
+  ]
+}

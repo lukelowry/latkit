@@ -110,7 +110,8 @@ export class Stage {
     this.scene = scene;
     return this.once(() => {
       for (const canvas of this.canvases) {
-        const view = this.gpu.view(canvas, scene);
+        const view = this.gpu.view(scene);
+        this.gpu.canvas(canvas).show([view]);
         view.on('error', (error) =>
           this.errors.push(`${error.path ?? ''} ${error.message}`.trim()),
         );

@@ -331,8 +331,8 @@ impl View {
         for &i in &work {
             let shown = &mut self.marks[i];
             shown.version += 1;
-            if shown.dirty & shown.shape_channels() != 0 {
-                shown.shape_version += 1;
+            if shown.dirty & shown.placing_channels() != 0 {
+                shown.place_version += 1;
             }
         }
         let segments = self.segments_due();

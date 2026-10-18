@@ -1,5 +1,5 @@
 //! Images: RGBA texels, what an icon marker draws and what a shot reads its picture back as, written
-//! to and read from PNG.
+//! as PNG, JPEG, or lossless WebP and read from PNG.
 
 use std::io::{Cursor, Write};
 use std::sync::Arc;
@@ -26,27 +26,42 @@ impl Image {
         Ok(Image { size, rgba })
     }
 
-    /// The image as a PNG file: eight bits a channel, alpha kept, tagged sRGB, deflated fast, since
-    /// a picture is written far more often than it is stored long.
-    pub fn png(&self) -> Vec<u8> {
+    /// The image written as a file of `format`.
+    pub fn encode(&self, format: ImageFormat) -> Result<Vec<u8>> {
         let mut out = Vec::new();
-        self.write_png(&mut out).expect("valid image written to memory");
-        out
+        self.write(format, &mut out)?;
+        Ok(out)
     }
 
-    /// Writes a PNG directly to a file or stream, reporting invalid dimensions and write failures.
-    /// Uses the same encoding as [`png`](Self::png) without allocating a second complete file.
-    pub fn write_png(&self, output: impl Write) -> Result<()> {
+    /// Writes the image as a file of `format` to a file or stream, reporting write failures.
+    pub fn write(&self, format: ImageFormat, mut output: impl Write) -> Result<()> {
         Self::new(self.size, self.rgba.clone())?;
-        let failed = |error: png::EncodingError| Error::Load(format!("cannot write PNG: {error}").into());
-        let mut encoder = png::Encoder::new(output, self.size[0], self.size[1]);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
-        encoder.set_compression(png::Compression::Fast);
-        let mut writer = encoder.write_header().map_err(failed)?;
-        writer.write_image_data(&self.rgba).map_err(failed)?;
-        writer.finish().map_err(failed)
+        let [width, height] = self.size;
+        let failed = |error: &dyn std::fmt::Display| Error::Load(format!("cannot write {format}: {error}").into());
+        match format {
+            ImageFormat::Png => {
+                let mut encoder = png::Encoder::new(output, width, height);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+                // A picture is written far more often than it is stored long.
+                encoder.set_compression(png::Compression::Fast);
+                let mut writer = encoder.write_header().map_err(|e| failed(&e))?;
+                writer.write_image_data(&self.rgba).map_err(|e| failed(&e))?;
+                writer.finish().map_err(|e| failed(&e))
+            }
+            ImageFormat::Jpeg { quality } => {
+                let side = |v: u32| u16::try_from(v).map_err(|_| failed(&"a JPEG is at most 65535 pixels a side"));
+                let mut bytes = Vec::new();
+                jpeg_encoder::Encoder::new(&mut bytes, quality.clamp(1, 100))
+                    .encode(&self.rgba, side(width)?, side(height)?, jpeg_encoder::ColorType::Rgba)
+                    .map_err(|e| failed(&e))?;
+                output.write_all(&bytes).map_err(|e| failed(&e))
+            }
+            ImageFormat::WebP => image_webp::WebPEncoder::new(output)
+                .encode(&self.rgba, width, height, image_webp::ColorType::Rgba8)
+                .map_err(|e| failed(&e)),
+        }
     }
 
     /// The image a PNG file holds, any color type and depth made eight bit RGBA.
@@ -73,6 +88,43 @@ impl Image {
     }
 }
 
+/// How an image is written as a file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ImageFormat {
+    /// PNG: lossless, alpha kept, tagged sRGB.
+    #[default]
+    Png,
+    /// JPEG at `quality` from 1 to 100: small, its alpha dropped.
+    Jpeg {
+        /// From 1, smallest, to 100, sharpest; 90 is good for pictures of views.
+        quality: u8,
+    },
+    /// WebP, lossless: smaller than PNG, alpha kept.
+    WebP,
+}
+
+impl ImageFormat {
+    /// The format a file's `extension` names: `png`, `jpg` or `jpeg` at quality 90, or `webp`.
+    pub fn of_extension(extension: &str) -> Option<ImageFormat> {
+        match extension.to_ascii_lowercase().as_str() {
+            "png" => Some(ImageFormat::Png),
+            "jpg" | "jpeg" => Some(ImageFormat::Jpeg { quality: 90 }),
+            "webp" => Some(ImageFormat::WebP),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ImageFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ImageFormat::Png => "PNG",
+            ImageFormat::Jpeg { .. } => "JPEG",
+            ImageFormat::WebP => "WebP",
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,8 +133,20 @@ mod tests {
     fn png_holds_what_it_was_given() {
         let rgba: Vec<u8> = (0..3 * 2 * 4).map(|i| (i * 11) as u8).collect();
         let image = Image::new([3, 2], rgba).expect("whole");
-        let back = Image::from_png(&image.png()).expect("a PNG");
+        let back = Image::from_png(&image.encode(ImageFormat::Png).expect("written")).expect("a PNG");
         assert_eq!(back, image);
+    }
+
+    #[test]
+    fn every_format_writes_its_file() {
+        let rgba: Vec<u8> = (0..16 * 8 * 4).map(|i| (i * 7) as u8).collect();
+        let image = Image::new([16, 8], rgba).expect("whole");
+        let jpeg = image.encode(ImageFormat::Jpeg { quality: 90 }).expect("written");
+        assert_eq!(jpeg[..3], [0xff, 0xd8, 0xff], "a JPEG starts with its marker");
+        let webp = image.encode(ImageFormat::WebP).expect("written");
+        assert!(webp.starts_with(b"RIFF") && &webp[8..12] == b"WEBP", "a WebP is a RIFF file");
+        assert_eq!(ImageFormat::of_extension("JPG"), Some(ImageFormat::Jpeg { quality: 90 }));
+        assert_eq!(ImageFormat::of_extension("gif"), None);
     }
 
     #[test]
@@ -105,6 +169,6 @@ mod tests {
             }
         }
         let image = Image::new([1, 1], vec![0; 4]).unwrap();
-        assert!(image.write_png(Broken).is_err());
+        assert!(image.write(ImageFormat::Png, Broken).is_err());
     }
 }

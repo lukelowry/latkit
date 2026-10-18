@@ -13,11 +13,12 @@ mod convert;
 mod error;
 mod shot;
 
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 use convert::{invalid, value};
 pub use error::Error;
-pub use shot::{Handle, Image, Video, image, set_encoder};
+pub use shot::{Canvas, Handle, Image, Video, image, set_encoder};
 
 #[wasm_bindgen(start)]
 fn start() {
@@ -45,20 +46,28 @@ impl Gpu {
         Ok(Gpu(latkit::Gpu::new().await?))
     }
 
-    /// A view drawing `scene` (JSON) into `canvas`, telling `tell` its events from the start: each
-    /// batch a JSON array of `{ type, detail }`.
-    pub fn view(
-        &self,
-        canvas: &web_sys::HtmlCanvasElement,
-        scene: &str,
-        tell: js_sys::Function,
-    ) -> Result<View, Error> {
-        let view = latkit::View::new(&self.0, json("scene", scene)?)?;
-        let canvas = latkit::web::Canvas::new(&self.0, canvas, view)?;
-        let telling = canvas.on(move |events| {
+    /// A view of `scene` (JSON), telling `tell` its events from the start: each batch a JSON array of
+    /// `{ type, detail }`. A canvas shows it; a shot draws it with or without one.
+    pub fn view(&self, scene: &str, tell: js_sys::Function) -> Result<View, Error> {
+        let view = latkit::web::PageView::new(latkit::View::new(&self.0, json("scene", scene)?)?);
+        let telling = view.on(move |events| {
             let _ = tell.call1(&JsValue::NULL, &JsValue::from_str(&to_json(&events)));
         });
-        Ok(View { canvas, _telling: telling })
+        Ok(View { view, _telling: telling })
+    }
+
+    /// A canvas showing views in `panels` (JSON) of `target`: a `<canvas>` element, or an
+    /// `OffscreenCanvas` at `pixel_ratio` pixels a CSS pixel.
+    pub fn canvas(&self, target: &JsValue, panels: &str, pixel_ratio: Option<f32>) -> Result<Canvas, Error> {
+        let panels: latkit::Panels = json("panels", panels)?;
+        let canvas = if let Some(element) = target.dyn_ref::<web_sys::HtmlCanvasElement>() {
+            latkit::web::Canvas::new(&self.0, element, panels)?
+        } else if let Some(offscreen) = target.dyn_ref::<web_sys::OffscreenCanvas>() {
+            latkit::web::Canvas::offscreen(&self.0, offscreen, panels, pixel_ratio.unwrap_or(1.0))?
+        } else {
+            return Err(latkit::Error::invalid("a canvas draws into a <canvas> or an OffscreenCanvas").into());
+        };
+        Ok(Canvas(canvas))
     }
 
     /// Calls `listener` with the frame's timestamp every animation frame, before the views draw.
@@ -260,10 +269,10 @@ impl Patch {
     }
 }
 
-/// A scene drawn into a canvas, telling its events from the start.
+/// A view of a scene, telling its events from the start.
 #[wasm_bindgen]
 pub struct View {
-    canvas: latkit::web::Canvas,
+    view: latkit::web::PageView,
     _telling: latkit::web::Listener,
 }
 
@@ -272,147 +281,147 @@ impl View {
     /// Draws `scene` (JSON) instead; an invalid scene changes nothing.
     pub fn show(&self, scene: &str) -> Result<(), Error> {
         let scene = json("scene", scene)?;
-        Ok(self.canvas.with(|v| v.show(scene))?)
+        Ok(self.view.with(|v| v.show(scene))?)
     }
 
     #[wasm_bindgen(js_name = setData)]
     pub fn set_data(&self, data: &Data) {
-        self.canvas.with(|v| v.set_data(data.0.clone()));
+        self.view.with(|v| v.set_data(data.0.clone()));
     }
 
     #[wasm_bindgen(js_name = removeData)]
     pub fn remove_data(&self, name: &str) {
-        self.canvas.with(|v| v.remove_data(name));
+        self.view.with(|v| v.remove_data(name));
     }
 
     /// The dataset named `name`: one given, or the tiles the view fetched.
     pub fn data(&self, name: &str) -> Option<Data> {
-        self.canvas.read(|v| v.data(name).cloned()).map(Data)
+        self.view.read(|v| v.data(name).cloned()).map(Data)
     }
 
     /// Fetches the vector tiles at `url` as the camera asks for them, drawn as dataset `name`.
     #[wasm_bindgen(js_name = setTiles)]
     pub fn set_tiles(&self, name: &str, url: &str) {
-        self.canvas.with(|v| v.set_tiles(latkit::geo::Tiles::vector(name, url)));
+        self.view.with(|v| v.set_tiles(latkit::geo::Tiles::vector(name, url)));
     }
 
     #[wasm_bindgen(js_name = removeTiles)]
     pub fn remove_tiles(&self, name: &str) {
-        self.canvas.with(|v| v.remove_tiles(name));
+        self.view.with(|v| v.remove_tiles(name));
     }
 
     #[wasm_bindgen(getter)]
     pub fn at(&self) -> f64 {
-        self.canvas.read(latkit::View::at)
+        self.view.read(latkit::View::at)
     }
 
     #[wasm_bindgen(setter)]
     pub fn set_at(&self, at: f64) {
-        self.canvas.with(|v| v.set_at(at));
+        self.view.with(|v| v.set_at(at));
     }
 
     /// The camera as JSON.
     #[wasm_bindgen(getter)]
     pub fn camera(&self) -> String {
-        self.canvas.read(|v| to_json(v.camera()))
+        self.view.read(|v| to_json(v.camera()))
     }
 
     /// Looks through the camera (JSON) at once.
     #[wasm_bindgen(js_name = setCamera)]
     pub fn set_camera(&self, camera: &str) -> Result<(), Error> {
         let camera = json("camera", camera)?;
-        self.canvas.with(|v| v.set_camera(camera));
+        self.view.with(|v| v.set_camera(camera));
         Ok(())
     }
 
     /// Eases to the camera (JSON).
     pub fn fly(&self, camera: &str) -> Result<(), Error> {
         let camera = json("camera", camera)?;
-        self.canvas.with(|v| v.fly(camera));
+        self.view.with(|v| v.fly(camera));
         Ok(())
     }
 
     /// Frames what `fit` (JSON) names.
     pub fn fit(&self, fit: &str) -> Result<(), Error> {
         let fit = json("fit", fit)?;
-        self.canvas.with(|v| v.fit(fit));
+        self.view.with(|v| v.fit(fit));
         Ok(())
     }
 
     /// Lays every vertex without a position out again by the diagram's layout.
     pub fn arrange(&self) {
-        self.canvas.with(latkit::View::arrange);
+        self.view.with(latkit::View::arrange);
     }
 
     /// Where `position` (x, y, elevation) lands on screen, CSS pixels from the top left.
     pub fn point(&self, position: &[f64]) -> Option<Vec<f32>> {
         let position: [f64; 3] = position.try_into().ok()?;
-        self.canvas.read(|v| v.point(position)).map(Vec::from)
+        self.view.read(|v| v.point(position)).map(Vec::from)
     }
 
     /// The position on the ground under screen point `point`.
     pub fn ground(&self, point: &[f32]) -> Option<Vec<f64>> {
         let point: [f32; 2] = point.try_into().ok()?;
-        self.canvas.read(|v| v.ground(point)).map(Vec::from)
+        self.view.read(|v| v.ground(point)).map(Vec::from)
     }
 
     #[wasm_bindgen(getter)]
     pub fn insets(&self) -> Vec<f32> {
-        self.canvas.read(|v| v.insets().to_vec())
+        self.view.read(|v| v.insets().to_vec())
     }
 
     #[wasm_bindgen(setter)]
     pub fn set_insets(&self, insets: &[f32]) -> Result<(), Error> {
         let insets: [f32; 4] = insets.try_into().map_err(|_| latkit::Error::invalid("four insets").at("insets"))?;
-        self.canvas.with(|v| v.set_insets(insets));
+        self.view.with(|v| v.set_insets(insets));
         Ok(())
     }
 
     #[wasm_bindgen(getter)]
     pub fn orbit(&self) -> f64 {
-        self.canvas.read(latkit::View::orbit)
+        self.view.read(latkit::View::orbit)
     }
 
     #[wasm_bindgen(setter)]
     pub fn set_orbit(&self, degrees_per_second: f64) {
-        self.canvas.with(|v| v.set_orbit(degrees_per_second));
+        self.view.with(|v| v.set_orbit(degrees_per_second));
     }
 
     /// The rows selected, as JSON.
     #[wasm_bindgen(getter)]
     pub fn selection(&self) -> String {
-        self.canvas.read(|v| to_json(&v.selection()))
+        self.view.read(|v| to_json(&v.selection()))
     }
 
     /// Selects the rows (JSON), and no others.
     pub fn select(&self, rows: &str) -> Result<(), Error> {
         let rows: Vec<latkit::Row> = json("rows", rows)?;
-        self.canvas.with(|v| v.select(rows));
+        self.view.with(|v| v.select(rows));
         Ok(())
     }
 
     /// What the user points at, as a JSON hit or `null`.
     #[wasm_bindgen(getter)]
     pub fn hovered(&self) -> String {
-        self.canvas.read(|v| to_json(&v.hovered()))
+        self.view.read(|v| to_json(&v.hovered()))
     }
 
     /// Every mark that draws nothing because its data no longer fits it, as JSON errors.
     #[wasm_bindgen(getter)]
     pub fn failures(&self) -> String {
-        self.canvas.read(|v| to_json(&v.failures().collect::<Vec<_>>()))
+        self.view.read(|v| to_json(&v.failures().collect::<Vec<_>>()))
     }
 
     /// What the view does each frame, as JSON.
     #[wasm_bindgen(getter)]
     pub fn stats(&self) -> String {
-        to_json(&self.canvas.read(latkit::View::stats))
+        to_json(&self.view.read(latkit::View::stats))
     }
 
     /// Every row within `radius` CSS pixels of `point`, nearest first, as JSON hits.
     pub fn pick(&self, point: &[f32], radius: f32) -> Result<js_sys::Promise, Error> {
         let point: [f32; 2] = point.try_into().map_err(|_| latkit::Error::invalid("a point is [x, y]").at("point"))?;
-        let pending = self.canvas.with(|v| v.pick(point, radius));
+        let pending = self.view.with(|v| v.pick(point, radius));
         Ok(wasm_bindgen_futures::future_to_promise(async move {
             let hits = pending.await.map_err(|e| JsValue::from(Error::from(e)))?;
             Ok(JsValue::from_str(&to_json(&hits)))
@@ -422,7 +431,7 @@ impl View {
     /// Where the row (JSON) lies on screen, `[x, y]`, or `null`.
     pub fn locate(&self, row: &str) -> Result<js_sys::Promise, Error> {
         let row: latkit::Row = json("row", row)?;
-        let pending = self.canvas.with(|v| v.locate(&row));
+        let pending = self.view.with(|v| v.locate(&row));
         Ok(wasm_bindgen_futures::future_to_promise(async move {
             let point = pending.await.map_err(|e| JsValue::from(Error::from(e)))?;
             Ok(point.map_or(JsValue::NULL, |p| js_sys::Array::of2(&p[0].into(), &p[1].into()).into()))
@@ -433,12 +442,12 @@ impl View {
     /// edge's or a net's vertices.
     pub fn neighbors(&self, row: &str) -> Result<String, Error> {
         let row: latkit::Row = json("row", row)?;
-        Ok(self.canvas.read(|v| to_json(&v.neighbors(&row))))
+        Ok(self.view.read(|v| to_json(&v.neighbors(&row))))
     }
 
-    /// The view's canvas, for a shot to draw.
+    /// The view, for a canvas to show or a shot to draw.
     pub fn handle(&self) -> Handle {
-        Handle(self.canvas.clone())
+        Handle(self.view.clone())
     }
 }
 

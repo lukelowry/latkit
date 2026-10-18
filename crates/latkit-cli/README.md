@@ -76,8 +76,8 @@ flowing comets follow the video's time.
 
 | Output                   | Writes                                                           |
 | ------------------------ | ---------------------------------------------------------------- |
-| `.png`                   | one picture, or a sequence's single frame                        |
-| `frame-%04d.png`         | a PNG a frame, encoded on the host's workers (`--frames`)        |
+| `.png`, `.jpg`, `.webp`  | one picture, or a sequence's single frame; JPEG at `--quality`   |
+| `frame-%04d.png`         | an image a frame, encoded on the host's workers (`--frames`)     |
 | `.rgba`, `--format rgba` | straight-alpha RGBA, frames back to back, no header              |
 | `.y4m`                   | YUV4MPEG2, 4:2:0 BT.709 limited, for any encoder (`--frames`)    |
 | `.mp4`                   | H.264 in fragmented MP4 from the platform's encoder (`--frames`) |
@@ -96,5 +96,5 @@ path, such as `frames[3].patch.grid[0].Bus.x`; on a terminal, rendering shows pr
 frame, `stats` when done (frames, seconds, each view's stats, the GPU's work), and `error` with the
 library's `{code, message, path}` and its `source`.
 
-[The gallery](../../examples/cli-gallery/README.md) and [the 70,000-bus fault](../../examples/bus-fault/README.md)
+[The gallery](examples/cli-gallery/README.md) and [the 70,000-bus fault](examples/bus-fault/README.md)
 are made with Python and this CLI alone.

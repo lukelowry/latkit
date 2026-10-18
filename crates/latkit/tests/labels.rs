@@ -80,6 +80,18 @@ fn labels_show_beside_their_rows() {
 }
 
 #[test]
+fn a_color_changing_every_frame_leaves_labels_placed() {
+    let Some(gpu) = gpu() else { return };
+    // A pulse reads the clock, so the mark evaluates every frame; nothing that places its labels moved.
+    let pulse = latkit::elapsed().sin().colormap(latkit::Colormap::VIRIDIS).domain(-1.0..=1.0);
+    let mut view = shown(&gpu, vec![-50.0, 10.0], vec![0.0, 0.0], |v| v.radius(2.0).color(pulse.clone()));
+    for _ in 0..30 {
+        common::step(&gpu, &mut view);
+    }
+    assert!(view.complete(), "waiting on {}", view.stats().waiting);
+}
+
+#[test]
 fn a_block_holds_its_label_while_it_fits() {
     let Some(gpu) = gpu() else { return };
     let c = SIZE / 2;

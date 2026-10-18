@@ -24,6 +24,8 @@ pub mod host;
 #[cfg(feature = "gpu")]
 mod layout;
 #[cfg(feature = "gpu")]
+mod panels;
+#[cfg(feature = "gpu")]
 mod pending;
 #[cfg(feature = "gpu")]
 mod scene;
@@ -42,7 +44,7 @@ pub mod web;
 
 pub use data::{Data, Id, Ids, Kind, Name, Patch, Row, Table, Value, Values};
 pub use error::{Error, Path, Result, Step};
-pub use image::Image;
+pub use image::{Image, ImageFormat};
 #[cfg(feature = "gpu")]
 pub use {
     expr::{
@@ -50,6 +52,7 @@ pub use {
         units, when, zoom,
     },
     gpu::{Budget, Gpu, work::Work},
+    panels::Panels,
     pending::{Pending, Resolver},
     scene::{
         Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Flow, Format, Grid, Interpolation, Label,

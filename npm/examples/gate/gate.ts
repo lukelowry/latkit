@@ -283,6 +283,21 @@ async function visit(url: string, id: string): Promise<string[]> {
       });
       await act(`click canvas ${c}`, () => page.mouse.click(cx, cy));
     }
+    // Every page exports a picture of its views: a shot draws them and a worker writes the PNG.
+    await deadline(page.keyboard.press('x'), STEP, 'ask for a picture');
+    const saved = page.waitForFunction(
+      () => document.body.innerText.includes('Saved views.png'),
+      undefined,
+      {
+        timeout: STEP,
+        polling: 100,
+      },
+    );
+    try {
+      await deadline(saved, STEP + 1000, `${id}'s picture`);
+    } catch {
+      failures.push('no picture exported');
+    }
     const { gap, step } = longest;
     console.log(
       `${id}: first frame ${first.toFixed(0)} ms, longest while opening ${opening.toFixed(0)} ms; ` +

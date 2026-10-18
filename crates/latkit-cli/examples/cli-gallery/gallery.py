@@ -1,6 +1,6 @@
 """Write the CLI gallery's datasets and scenes as latkit JSON, and render each with the CLI.
 
-    python examples/cli-gallery/gallery.py --cli target/cli/latkit
+    python crates/latkit-cli/examples/cli-gallery/gallery.py --cli target/cli/latkit
 
 Every picture is drawn by latkit, titles included, with no postprocessing. The data is synthetic.
 """

@@ -23,7 +23,9 @@ bytemuck.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 flate2.workspace = true
-# Images: icons read from PNG, and shots written as PNG.
+# Images: icons read from PNG; pictures written as PNG, JPEG, or lossless WebP.
+image-webp.workspace = true
+jpeg-encoder.workspace = true
 png.workspace = true
 wgpu = { workspace = true, optional = true }
 glam = { workspace = true, optional = true }
@@ -44,6 +46,7 @@ js-sys = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
     "AddEventListenerOptions",
     "CssStyleDeclaration",
+    "DedicatedWorkerGlobalScope",
     "DomRect",
     "Element",
     "Event",
@@ -64,6 +67,7 @@ web-sys = { workspace = true, optional = true, features = [
     "TextMetrics",
     "WheelEvent",
     "Window",
+    "WorkerGlobalScope",
 ] }
 
 [build-dependencies]
