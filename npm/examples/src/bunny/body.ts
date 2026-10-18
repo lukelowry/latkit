@@ -10,8 +10,6 @@ export interface Controls {
   /** The volume the body's pressure holds, as a share of its rest volume. */
   inflate: number;
   wind: boolean;
-  playful?: boolean;
-  reducedMotion?: boolean;
 }
 
 /** One frame of every vertex, a column per field, filled in place by {@link Body.sample}. */
@@ -30,6 +28,21 @@ export const STEP = 1 / 120;
 /** The walls stand this far from the center. */
 export const ROOM = 3.6;
 const CEILING = 6.5;
+/** Mean speed, in meters per second, that counts as still, and the seconds it lasts before the
+ * body rests. */
+const STILL = 0.02;
+const REST_AFTER = 0.5;
+/** Floor friction against how far a vertex sank this step: static holds it, kinetic slows it. */
+const STATIC_FRICTION = 0.8;
+const KINETIC_FRICTION = 0.5;
+/** Bends resist folding at this multiple of the springs' compliance. */
+const BEND = 12;
+/** How far a full squash lowers the rest shape, which keeps its volume. */
+const SQUASH = 0.29;
+/** Past this tilt from upright, as the cosine of its angle, the bunny topples and stays down. */
+const TIPPING = 0.6;
+/** How fast, per second, a standing bunny's turn returns upright. */
+const BALANCE = 18;
 
 type Vec3 = [number, number, number];
 const cross = (a: Vec3, b: Vec3): Vec3 => [
@@ -38,6 +51,9 @@ const cross = (a: Vec3, b: Vec3): Vec3 => [
   a[0] * b[1] - a[1] * b[0],
 ];
 const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+/** A vector's length: what `Math.hypot` gives, at a fraction of its cost in the inner loops. */
+const norm = (x: number, y: number, z: number) => Math.sqrt(x * x + y * y + z * z);
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 /** Column-major rotation of a unit quaternion [x, y, z, w]. */
 function rotation([x, y, z, w]: number[]): [Vec3, Vec3, Vec3] {
   return [
@@ -48,8 +64,9 @@ function rotation([x, y, z, w]: number[]): [Vec3, Vec3, Vec3] {
 }
 
 /**
- * A soft bunny: Verlet integration with compliant stretch, bend, and volume constraints. Soft pose
- * targets give the torso support, let the ear tips lag, and drive anticipation and recovery.
+ * A soft bunny: Verlet integration with compliant stretch, bend, and volume constraints, pulled
+ * toward its rest shape. It moves only when something acts on it, and rests once still, so a
+ * resting bunny costs nothing until it is touched.
  */
 export class Body {
   readonly count: number;
@@ -58,11 +75,18 @@ export class Body {
   private readonly previous: Float64Array;
   /** Rest positions about the rest center. */
   private readonly rest: Float64Array;
+  /** How closely each vertex follows the rest shape: the ears, softer, lag behind. */
+  private readonly softness: Float64Array;
+  /**
+   * Distance constraints, a spring along every edge and then a bend across it: their two ends,
+   * rest lengths, compliance as a multiple of the springs', and multipliers.
+   */
+  private readonly ends: Uint32Array;
   private readonly lengths: Float64Array;
+  private readonly compliances: Float64Array;
   private readonly lambdas: Float64Array;
   private readonly inverseMass: Float64Array;
   private readonly neighbors: { row: number; length: number }[][];
-  private readonly bends: { a: number; b: number; length: number; lambda: number }[] = [];
   private volumeLambda = 0;
   private readonly gradient: Float64Array;
   /** Unit outward normals, as of the last step. */
@@ -78,19 +102,14 @@ export class Body {
   /** Seconds simulated. */
   time = 0;
   readonly burst: Burst;
-  private action: 'idle' | 'crouch' | 'flight' | 'land' | 'squash' | 'pop' = 'idle';
-  private age = 0;
-  private supported = false;
-  private contacts = 0;
-  private idleFor = 0;
-  private nextHop = 7;
-  private look?: Vec3;
-  private attention = 0;
-  private crouch = 0;
-  private squashHeld = false;
-  private scale = 1;
-  private animate = true;
   volume = 0;
+  private contacts = 0;
+  /** Seconds it has been still with nothing acting on it. */
+  private still = 0;
+  private scale = 1;
+  /** How far squashed, 0 to 1, and until when the squash holds. */
+  private squashing = 0;
+  private squashUntil = -Infinity;
   private grabbed?: {
     readonly rows: Uint32Array;
     readonly weights: Float64Array;
@@ -106,15 +125,26 @@ export class Body {
     this.rest = Float64Array.from(mesh.positions);
     const center = this.center(this.rest);
     for (let i = 0; i < count * 3; i++) this.rest[i] = this.rest[i]! - center[i % 3]!;
+    // The ears, above 1.5 m, follow the rest shape loosely, their tips most.
+    this.softness = Float64Array.from(
+      { length: count },
+      (_, i) => 1 - 0.8 * clamp((mesh.positions[i * 3 + 2]! - 1.5) / 0.75, 0, 1),
+    );
     const { a, b } = mesh.springs;
-    this.lengths = Float64Array.from(a, (_, e) => this.distance(this.x, a[e]!, b[e]!));
-    this.lambdas = new Float64Array(a.length);
+    const ends: number[] = [];
+    const lengths: number[] = [];
+    const compliances: number[] = [];
     this.neighbors = Array.from({ length: count }, () => []);
     for (let e = 0; e < a.length; e++) {
-      this.neighbors[a[e]!]!.push({ row: b[e]!, length: this.lengths[e]! });
-      this.neighbors[b[e]!]!.push({ row: a[e]!, length: this.lengths[e]! });
+      const length = this.distance(this.x, a[e]!, b[e]!);
+      ends.push(a[e]!, b[e]!);
+      lengths.push(length);
+      compliances.push(1);
+      this.neighbors[a[e]!]!.push({ row: b[e]!, length });
+      this.neighbors[b[e]!]!.push({ row: a[e]!, length });
     }
-    // Area-weighted mass avoids making dense parts of the scan artificially heavy.
+    // Area-weighted mass avoids making dense parts of the scan artificially heavy. Each edge's two
+    // opposite corners make a bend.
     const mass = new Float64Array(count);
     const opposite = new Map<number, number>();
     for (let t = 0; t < mesh.faces.a.length; t++) {
@@ -129,11 +159,19 @@ export class Body {
           w = face[(e + 2) % 3]!;
         const key = Math.min(u, v) * count + Math.max(u, v);
         const other = opposite.get(key);
-        if (other !== undefined)
-          this.bends.push({ a: other, b: w, length: this.distance(this.x, other, w), lambda: 0 });
-        else opposite.set(key, w);
+        if (other === undefined) {
+          opposite.set(key, w);
+          continue;
+        }
+        ends.push(other, w);
+        lengths.push(this.distance(this.x, other, w));
+        compliances.push(BEND);
       }
     }
+    this.ends = Uint32Array.from(ends);
+    this.lengths = Float64Array.from(lengths);
+    this.compliances = Float64Array.from(compliances);
+    this.lambdas = new Float64Array(lengths.length);
     const mean = mass.reduce((sum, v) => sum + v, 0) / count;
     this.inverseMass = Float64Array.from(mass, (m) => mean / Math.max(mean * 0.2, m));
     this.gradient = new Float64Array(count * 3);
@@ -149,16 +187,28 @@ export class Body {
     return { x: column(), y: column(), z: column(), speed: column(), strain: column() };
   }
 
-  /** Advance by whole steps; returns how many ran. */
+  /** Resting: still, with nothing acting on it. Nothing steps until something wakes it. */
+  get asleep(): boolean {
+    return this.still >= REST_AFTER;
+  }
+
+  /** Anything that acts on the body wakes it, as do changed controls. */
+  wake(): void {
+    this.still = 0;
+  }
+
+  /** Advance by whole steps, none while resting; returns how many ran. */
   advance(seconds: number, controls: Controls): number {
-    const steps = Math.min(16, Math.floor(seconds / STEP));
-    for (let s = 0; s < steps; s++) this.step(controls);
+    const most = Math.min(16, Math.floor(seconds / STEP));
+    let steps = 0;
+    for (; steps < most && !this.asleep; steps++) this.step(controls);
     return steps;
   }
 
   /** Every vertex's position, speed, and strain now. */
   sample(frame: Frame): void {
     const [c, r0, r1, r2] = this.goal;
+    const [lateral, vertical] = this.shape();
     for (let i = 0; i < this.count; i++) {
       const x = this.x[i * 3]!;
       const y = this.x[i * 3 + 1]!;
@@ -167,15 +217,16 @@ export class Body {
       frame.y[i] = y;
       frame.z[i] = z;
       frame.speed[i] =
-        Math.hypot(
+        norm(
           x - this.previous[i * 3]!,
           y - this.previous[i * 3 + 1]!,
           z - this.previous[i * 3 + 2]!,
         ) / STEP;
-      const rx = this.rest[i * 3]!;
-      const ry = this.rest[i * 3 + 1]!;
-      const rz = this.rest[i * 3 + 2]!;
-      frame.strain[i] = Math.hypot(
+      // Strain is the distance from the shape the body is pulled toward: inflated and squashed.
+      const rx = this.rest[i * 3]! * lateral;
+      const ry = this.rest[i * 3 + 1]! * lateral;
+      const rz = this.rest[i * 3 + 2]! * vertical;
+      frame.strain[i] = norm(
         c[0] + r0[0] * rx + r1[0] * ry + r2[0] * rz - x,
         c[1] + r0[1] * rx + r1[1] * ry + r2[1] * rz - y,
         c[2] + r0[2] * rx + r1[2] * ry + r2[2] * rz - z,
@@ -189,13 +240,13 @@ export class Body {
       const chunks = this.burst.chunks;
       return [
         chunks.reduce((sum, c) => sum + c.position[2], 0) / chunks.length,
-        chunks.reduce((sum, c) => sum + Math.hypot(...c.velocity), 0) / chunks.length,
+        chunks.reduce((sum, c) => sum + norm(...c.velocity), 0) / chunks.length,
         NaN,
       ];
     }
     let speed = 0;
     for (let i = 0; i < this.count * 3; i += 3)
-      speed += Math.hypot(
+      speed += norm(
         this.x[i]! - this.previous[i]!,
         this.x[i + 1]! - this.previous[i + 1]!,
         this.x[i + 2]! - this.previous[i + 2]!,
@@ -213,39 +264,45 @@ export class Body {
       this.previous[row * 3 + a] = this.previous[row * 3 + a]! - v[a]! * STEP;
   }
 
-  /** A grounded hop: first crouch, then push off. Repeated presses never stack impulses. */
-  jump(): void {
-    if (!this.supported || this.grabbed || this.burst.active || this.action !== 'idle') return;
-    this.action = 'crouch';
-    this.age = 0;
+  /** A hop: an upward push, and a little forward, while on the floor; `gentle` hops lower. */
+  hop(gentle = false): void {
+    if (this.contacts === 0 || this.grabbed || this.burst.active) return;
+    const facing = this.goal[1];
+    const speed = gentle ? 2 : 3.8;
+    for (let i = 0; i < this.count; i++) {
+      const vz = (this.x[i * 3 + 2]! - this.previous[i * 3 + 2]!) / STEP;
+      this.push(i, [facing[0] * 0.45, facing[1] * 0.45, Math.max(0, speed - vz)]);
+    }
+    // It has left the floor: presses before it lands do nothing.
+    this.contacts = 0;
+    this.wake();
   }
 
-  /** Compress briefly, then let the material rebound. */
+  /** Squash now: held, until {@link endSquash}; else for a moment. The material does the rebound. */
   squash(held = false): void {
-    if (this.burst.active || this.grabbed || this.action !== 'idle') return;
-    this.action = 'squash';
-    this.squashHeld = held;
-    this.age = 0;
+    if (this.burst.active || this.grabbed) return;
+    this.squashUntil = held ? Infinity : this.time + 0.3;
+    this.wake();
   }
 
   endSquash(): void {
-    if (this.action === 'squash' && this.squashHeld) this.age = 0.22;
-    this.squashHeld = false;
+    if (this.squashUntil === Infinity) this.squashUntil = this.time;
   }
 
-  /** Pop into capped pieces; pressing again calls them home. */
-  explode(): void {
+  /** Pop into capped pieces now, `gentle` ones flying less; pressed again, call them home. */
+  pop(gentle = false): void {
     if (this.burst.active) return this.burst.gather();
-    if (this.action === 'pop') return;
     this.release();
-    this.action = 'pop';
-    this.age = 0;
+    this.squashUntil = -Infinity;
+    this.squashing = 0;
+    const yaw = Math.atan2(this.goal[1][1], this.goal[1][0]);
+    this.burst.start(this.x, this.previous, STEP, yaw, gentle, this.scale);
+    this.wake();
   }
 
   /** Dent the surface around a vertex. */
   poke(row: number, speed = 6): void {
-    if (this.burst.active || this.action === 'pop') return;
-    this.idleFor = 0;
+    if (this.burst.active) return;
     const near = this.near(row, 0.7);
     for (let j = 0; j < near.rows.length; j++) {
       const i = near.rows[j]!;
@@ -256,6 +313,7 @@ export class Body {
         -this.normals[i * 3 + 2]! * w,
       ]);
     }
+    this.wake();
   }
 
   /** Lift it high, turned at random unless `upright`, and let go. */
@@ -274,19 +332,19 @@ export class Body {
     }
     this.quaternion = [0, 0, 0, 1];
     this.burst.reset();
-    this.action = 'idle';
-    this.age = this.idleFor = this.crouch = 0;
-    this.supported = false;
+    this.squashUntil = -Infinity;
+    this.squashing = 0;
+    this.contacts = 0;
     this.grabbed = undefined;
     this.match(0);
     this.measure();
+    this.wake();
   }
 
   /** Hold a vertex and the surface around it toward `target` until released. */
   grab(row: number, target: readonly number[]): void {
-    if (this.burst.active || this.action === 'pop') return;
-    this.action = 'idle';
-    this.crouch = this.idleFor = 0;
+    if (this.burst.active) return;
+    this.squashUntil = -Infinity;
     const near = this.near(row, 0.65);
     const offsets = new Float64Array(near.rows.length * 3);
     near.rows.forEach((i, j) => {
@@ -294,53 +352,63 @@ export class Body {
     });
     const point: Vec3 = [target[0]!, target[1]!, target[2]!];
     this.grabbed = { ...near, offsets, target: point, filtered: [...point] };
+    this.wake();
   }
 
   drag(target: readonly number[]): void {
     if (this.grabbed)
       this.grabbed.target = [
-        Math.max(-ROOM, Math.min(ROOM, target[0]!)),
-        Math.max(-ROOM, Math.min(ROOM, target[1]!)),
-        Math.max(0.1, Math.min(CEILING - 0.2, target[2]!)),
+        clamp(target[0]!, -ROOM, ROOM),
+        clamp(target[1]!, -ROOM, ROOM),
+        clamp(target[2]!, 0.1, CEILING - 0.2),
       ];
   }
 
   release(cancelled = false): void {
-    if (cancelled && this.grabbed) this.previous.set(this.x);
+    if (!this.grabbed) return;
+    if (cancelled) this.previous.set(this.x);
     this.grabbed = undefined;
-  }
-
-  lookAt(target?: readonly number[]): void {
-    this.look = target ? [target[0]!, target[1]!, target[2]!] : undefined;
+    this.wake();
   }
 
   get state(): string {
     if (this.burst.active) return this.burst.gathering ? 'gathering' : 'tumbling';
     if (this.grabbed) return 'held';
-    return this.action === 'flight'
-      ? 'hopping'
-      : this.action === 'crouch'
-        ? 'getting ready'
-        : this.action;
+    if (this.squashing > 0.01) return 'squashed';
+    if (this.contacts === 0) return 'airborne';
+    if (!this.asleep) return 'settling';
+    return this.goal[3][2] > TIPPING ? 'resting' : 'toppled';
   }
 
   private step(controls: Controls): void {
-    const { x, previous, count, normals } = this;
-    const t = (this.time += STEP);
+    this.time += STEP;
     if (this.burst.active) {
       if (this.burst.step(STEP, controls.gravity)) {
-        x.set(this.burst.targetBody);
-        previous.set(x);
-        this.crouch = 0;
-        this.action = 'land';
-        this.age = 0;
+        this.x.set(this.burst.targetBody);
+        this.previous.set(this.x);
         this.match(0);
         this.measure();
       }
+      this.still = 0;
       return;
     }
-    this.behave(controls);
-    if (this.burst.active) return;
+    this.integrate(controls);
+    this.scale = Math.cbrt(controls.inflate);
+    const squashed = this.time < this.squashUntil ? 1 : 0;
+    this.squashing += (squashed - this.squashing) * (1 - Math.exp(-20 * STEP));
+    this.solve(controls);
+    this.match(1 - Math.exp(-(1.2 + 6 * controls.firmness * controls.firmness) * STEP));
+    if (this.grabbed) this.hold(this.grabbed);
+    const speed = this.collide();
+    const falling = this.contacts === 0 && controls.gravity > 0;
+    const acting = controls.wind || !!this.grabbed || this.squashing > 0.01 || falling;
+    this.still = !acting && speed < STILL ? this.still + STEP : 0;
+  }
+
+  /** Gravity, wind, and damping move every vertex on from where its last step took it. */
+  private integrate(controls: Controls): void {
+    const { x, previous, count, normals } = this;
+    const t = this.time;
     const gust = controls.wind ? 16 : 0;
     const wx = Math.cos(t * 0.4);
     const wy = Math.sin(t * 0.4);
@@ -363,144 +431,65 @@ export class Body {
       for (let a = 0; a < 3; a++) {
         const k = i * 3 + a;
         const now = x[k]!;
-        const velocity = Math.max(-10 * STEP, Math.min(10 * STEP, now - previous[k]!));
+        const velocity = clamp(now - previous[k]!, -10 * STEP, 10 * STEP);
         x[k] = now + velocity * damping + (a === 0 ? ax : a === 1 ? ay : az) * dt2;
         previous[k] = now;
       }
     }
-    const firm = controls.firmness;
-    const breathing =
-      controls.reducedMotion || this.grabbed || this.action !== 'idle'
-        ? 1
-        : 1 + 0.004 * Math.sin(t * 2.2);
-    this.scale = Math.cbrt(controls.inflate * breathing);
+  }
+
+  /** Three rounds of every distance constraint and the pressure, then the normals once. */
+  private solve(controls: Controls): void {
+    const compliance = 1e-7 * 10 ** (3 * (1 - controls.firmness));
     this.lambdas.fill(0);
     this.volumeLambda = 0;
-    for (const bend of this.bends) bend.lambda = 0;
-    const compliance = 1e-7 * 10 ** (3 * (1 - firm));
     for (let iteration = 0; iteration < 3; iteration++) {
-      this.springs(compliance);
-      this.pressure(1e-8, controls.inflate * breathing);
+      this.distances(compliance);
+      this.pressure(1e-8, controls.inflate);
     }
-    this.match(1 - Math.exp(-(1.2 + 6 * firm * firm) * STEP));
-    if (this.grabbed) this.hold(this.grabbed);
-    this.collide();
+    this.normalize();
   }
 
-  private behave(controls: Controls): void {
-    this.animate = !controls.reducedMotion;
-    this.age += STEP;
-    this.idleFor = this.grabbed ? 0 : this.idleFor + STEP;
-    if (this.action === 'crouch') {
-      this.crouch = Math.min(1, this.age / 0.14);
-      if (this.age >= 0.14) {
-        if (this.supported) {
-          const facing = this.goal[1];
-          const speed = controls.reducedMotion ? 2 : 3.8;
-          for (let i = 0; i < this.count; i++) {
-            const vz = (this.x[i * 3 + 2]! - this.previous[i * 3 + 2]!) / STEP;
-            this.push(i, [facing[0] * 0.45, facing[1] * 0.45, Math.max(0, speed - vz)]);
-          }
-        }
-        this.action = 'flight';
-        this.age = this.crouch = 0;
-      }
-    } else if (this.action === 'flight' && this.age > 0.15 && this.contacts > 0) {
-      this.action = 'land';
-      this.age = 0;
-    } else if (this.action === 'land' && this.age > 0.35) this.action = 'idle';
-    else if (this.action === 'squash') {
-      this.crouch = this.squashHeld
-        ? 1.8 * Math.min(1, this.age / 0.16)
-        : 1.8 * Math.sin(Math.PI * Math.min(1, this.age / 0.45));
-      if (!this.squashHeld && this.age > 0.45) this.action = 'idle';
-    } else if (this.action === 'pop') {
-      this.crouch = Math.min(1.4, (this.age / 0.16) * 1.4);
-      if (this.age >= 0.16) {
-        this.burst.start(
-          this.x,
-          this.previous,
-          STEP,
-          Math.atan2(this.goal[1][1], this.goal[1][0]),
-          !!controls.reducedMotion,
-          Math.cbrt(controls.inflate),
-        );
-        this.crouch = 0;
-      }
-    } else if (this.action === 'idle') {
-      this.crouch = 0;
-      if (controls.playful && !controls.reducedMotion && this.idleFor > this.nextHop) {
-        this.jump();
-        this.idleFor = 0;
-        this.nextHop = 6 + 3 * (0.5 + 0.5 * Math.sin(this.time * 1.7));
-      }
-    }
-    let attention = 0;
-    if (this.look && !this.grabbed && !controls.reducedMotion) {
-      const c = this.goal[0];
-      const direction = Math.atan2(this.look[1] - c[1], this.look[0] - c[0]);
-      const yaw = Math.atan2(this.goal[1][1], this.goal[1][0]);
-      attention = Math.max(
-        -0.35,
-        Math.min(0.35, Math.atan2(Math.sin(direction - yaw), Math.cos(direction - yaw))),
-      );
-    }
-    this.attention += (attention - this.attention) * (1 - Math.exp(-8 * STEP));
-  }
-
-  private springs(compliance: number): void {
-    const { lengths } = this;
-    const { a: from, b: to } = this.mesh.springs;
-    for (let e = 0; e < lengths.length; e++) {
-      this.lambdas[e] = this.distanceConstraint(
-        from[e]!,
-        to[e]!,
-        lengths[e]!,
-        compliance,
-        this.lambdas[e]!,
-      );
-    }
-    for (const bend of this.bends)
-      bend.lambda = this.distanceConstraint(
-        bend.a,
-        bend.b,
-        bend.length,
-        compliance * 12,
-        bend.lambda,
-      );
-  }
-
-  private distanceConstraint(
-    a: number,
-    b: number,
-    rest: number,
-    compliance: number,
-    lambda: number,
-  ): number {
-    const ia = a * 3,
-      ib = b * 3;
-    const dx = this.x[ia]! - this.x[ib]!,
-      dy = this.x[ia + 1]! - this.x[ib + 1]!,
-      dz = this.x[ia + 2]! - this.x[ib + 2]!;
-    const length = Math.hypot(dx, dy, dz);
-    if (length < 1e-9) return lambda;
-    const wa = this.inverseMass[a]!,
-      wb = this.inverseMass[b]!;
+  /** Every spring and bend, each pulled toward its rest length, inflated. */
+  private distances(compliance: number): void {
+    const { x, ends, lengths, compliances, lambdas, inverseMass, scale } = this;
     const alpha = compliance / (STEP * STEP);
-    const delta = (-(length - rest * this.scale) - alpha * lambda) / (wa + wb + alpha);
-    const k = delta / length;
-    this.x[ia] = this.x[ia]! + wa * dx * k;
-    this.x[ia + 1] = this.x[ia + 1]! + wa * dy * k;
-    this.x[ia + 2] = this.x[ia + 2]! + wa * dz * k;
-    this.x[ib] = this.x[ib]! - wb * dx * k;
-    this.x[ib + 1] = this.x[ib + 1]! - wb * dy * k;
-    this.x[ib + 2] = this.x[ib + 2]! - wb * dz * k;
-    return lambda + delta;
+    for (let e = 0; e < lengths.length; e++) {
+      const a = ends[e * 2]!;
+      const b = ends[e * 2 + 1]!;
+      const ia = a * 3;
+      const ib = b * 3;
+      const dx = x[ia]! - x[ib]!;
+      const dy = x[ia + 1]! - x[ib + 1]!;
+      const dz = x[ia + 2]! - x[ib + 2]!;
+      const length = norm(dx, dy, dz);
+      if (length < 1e-9) continue;
+      const wa = inverseMass[a]!;
+      const wb = inverseMass[b]!;
+      const compliant = alpha * compliances[e]!;
+      const delta =
+        (-(length - lengths[e]! * scale) - compliant * lambdas[e]!) / (wa + wb + compliant);
+      lambdas[e] = lambdas[e]! + delta;
+      const k = delta / length;
+      x[ia] = x[ia]! + wa * dx * k;
+      x[ia + 1] = x[ia + 1]! + wa * dy * k;
+      x[ia + 2] = x[ia + 2]! + wa * dz * k;
+      x[ib] = x[ib]! - wb * dx * k;
+      x[ib + 1] = x[ib + 1]! - wb * dy * k;
+      x[ib + 2] = x[ib + 2]! - wb * dz * k;
+    }
   }
 
-  /** The enclosed volume, with its gradient per vertex and the normals it implies. */
+  /** The enclosed volume and its gradient per vertex, with the normals they imply. */
   private measure(): number {
-    const { x, gradient, normals } = this;
+    const volume = this.enclose();
+    this.normalize();
+    return volume;
+  }
+
+  /** The enclosed volume, and its gradient per vertex. */
+  private enclose(): number {
+    const { x, gradient } = this;
     const { a: fa, b: fb, c: fc } = this.mesh.faces;
     gradient.fill(0);
     let volume = 0;
@@ -526,30 +515,50 @@ export class Body {
       gradient[c + 1] = gradient[c + 1]! + az * bx - ax * bz;
       gradient[c + 2] = gradient[c + 2]! + ax * by - ay * bx;
     }
-    for (let i = 0; i < gradient.length; i += 3) {
-      const length = Math.hypot(gradient[i]!, gradient[i + 1]!, gradient[i + 2]!) || 1;
-      for (let k = 0; k < 3; k++) normals[i + k] = gradient[i + k]! / length;
-    }
     return (this.volume = volume / 6);
   }
 
+  /** The unit outward normals the last volume gradient implies. */
+  private normalize(): void {
+    const { gradient, normals } = this;
+    for (let i = 0; i < gradient.length; i += 3) {
+      const length = norm(gradient[i]!, gradient[i + 1]!, gradient[i + 2]!) || 1;
+      normals[i] = gradient[i]! / length;
+      normals[i + 1] = gradient[i + 1]! / length;
+      normals[i + 2] = gradient[i + 2]! / length;
+    }
+  }
+
+  /** Pull the enclosed volume toward `inflate` of the rest volume. */
   private pressure(compliance: number, inflate: number): void {
-    const volume = this.measure();
-    const { x, gradient } = this;
-    let norm = 0;
-    for (let i = 0; i < gradient.length; i++)
-      norm += this.inverseMass[Math.floor(i / 3)]! * (gradient[i]! / 6) ** 2;
-    if (norm < 1e-12) return;
+    const volume = this.enclose();
+    const { x, gradient, inverseMass, count } = this;
+    let sum = 0;
+    for (let i = 0; i < count; i++) {
+      const g = norm(gradient[i * 3]!, gradient[i * 3 + 1]!, gradient[i * 3 + 2]!) / 6;
+      sum += inverseMass[i]! * g * g;
+    }
+    if (sum < 1e-12) return;
     const alpha = compliance / (STEP * STEP);
-    const delta = (this.restVolume * inflate - volume - alpha * this.volumeLambda) / (norm + alpha);
+    const delta = (this.restVolume * inflate - volume - alpha * this.volumeLambda) / (sum + alpha);
     this.volumeLambda += delta;
-    for (let i = 0; i < x.length; i++)
-      x[i] = x[i]! + (delta * this.inverseMass[Math.floor(i / 3)]! * gradient[i]!) / 6;
+    for (let i = 0; i < count; i++) {
+      const k = (delta * inverseMass[i]!) / 6;
+      x[i * 3] = x[i * 3]! + k * gradient[i * 3]!;
+      x[i * 3 + 1] = x[i * 3 + 1]! + k * gradient[i * 3 + 1]!;
+      x[i * 3 + 2] = x[i * 3 + 2]! + k * gradient[i * 3 + 2]!;
+    }
+  }
+
+  /** The rest shape's sideways and upward scale: inflated, and squashed keeping its volume. */
+  private shape(): [number, number] {
+    const squashed = 1 - SQUASH * this.squashing;
+    return [this.scale / Math.sqrt(squashed), this.scale * squashed];
   }
 
   /** Pull toward the rest shape, turned and moved to fit where the body is now. */
   private match(stiffness: number): void {
-    const { x, rest, count } = this;
+    const { x, rest, count, softness } = this;
     const c = this.center(x);
     // A = sum of (x - c) times rest transposed, by columns.
     const A: [Vec3, Vec3, Vec3] = [
@@ -583,7 +592,7 @@ export class Body {
         denominator += dot(R[col]!, A[col]!);
       }
       const k = 1 / (Math.abs(denominator) + 1e-9);
-      const w = Math.hypot(omega[0], omega[1], omega[2]) * k;
+      const w = norm(omega[0], omega[1], omega[2]) * k;
       if (w < 1e-9) break;
       const s = Math.sin(w / 2) / (w / k);
       const dq = [omega[0] * s, omega[1] * s, omega[2] * s, Math.cos(w / 2)];
@@ -596,18 +605,16 @@ export class Body {
       const n = Math.hypot(...q);
       q = q.map((v) => v / n);
     }
-    // A quiet recovery motor rights a resting bunny, but never fights a grab or a flight.
-    if (
-      stiffness > 0 &&
-      this.contacts > 8 &&
-      !this.grabbed &&
-      this.idleFor > 0.7 &&
-      this.action === 'idle'
-    ) {
-      const yaw = Math.atan2(rotation(q)[0][1], rotation(q)[0][0]);
+    // Matching reads part of gravity's sag as a turn, and on its own would roll the bunny over:
+    // standing short of its tipping point, the turn keeps upright at the same heading. Toppled
+    // past it, the bunny lies where it fell.
+    if (stiffness > 0 && this.contacts > 8 && !this.grabbed && rotation(q)[2][2] > TIPPING) {
+      const heading = rotation(q)[0];
+      const yaw = Math.atan2(heading[1], heading[0]);
       const upright = [0, 0, Math.sin(yaw / 2), Math.cos(yaw / 2)];
       const sign = q.reduce((sum, v, i) => sum + v * upright[i]!, 0) < 0 ? -1 : 1;
-      q = q.map((v, i) => v + (upright[i]! * sign - v) * (1 - Math.exp(-18 * STEP)));
+      const k = 1 - Math.exp(-BALANCE * STEP);
+      q = q.map((v, i) => v + (upright[i]! * sign - v) * k);
       const length = Math.hypot(...q);
       q = q.map((v) => v / length);
     }
@@ -615,29 +622,15 @@ export class Body {
     const [r0, r1, r2] = rotation(q);
     this.goal = [c, r0, r1, r2];
     if (stiffness <= 0) return;
+    const [lateral, vertical] = this.shape();
     for (let i = 0; i < count; i++) {
-      const height = this.mesh.positions[i * 3 + 2]!;
-      const ear = Math.max(0, Math.min(1, (height - 1.5) / 0.75));
-      const head = Math.max(0, Math.min(1, (height - 0.9) / 0.65));
-      const turn = this.attention * head;
-      // Brief, offset ear adjustments; no per-frame randomness or continuous waving.
-      const earTime = (this.time + (rest[i * 3]! > 0 ? 1.7 : 0)) % 9;
-      const flick =
-        this.animate && !this.grabbed && this.action === 'idle'
-          ? 0.08 * Math.exp(-(((earTime - 0.8) / 0.14) ** 2)) * ear * ear
-          : 0;
-      const vertical = 1 - this.crouch * 0.16;
-      const lateral = 1 / Math.sqrt(vertical);
-      const rx =
-        (rest[i * 3]! * Math.cos(turn) - rest[i * 3 + 1]! * Math.sin(turn)) * this.scale * lateral;
-      const ry =
-        (rest[i * 3]! * Math.sin(turn) + rest[i * 3 + 1]! * Math.cos(turn)) * this.scale * lateral +
-        flick;
-      const rz = rest[i * 3 + 2]! * this.scale * vertical;
+      const rx = rest[i * 3]! * lateral;
+      const ry = rest[i * 3 + 1]! * lateral;
+      const rz = rest[i * 3 + 2]! * vertical;
+      const k = stiffness * softness[i]!;
       for (let a = 0; a < 3; a++) {
-        const k = i * 3 + a;
         const goal = c[a]! + r0[a]! * rx + r1[a]! * ry + r2[a]! * rz;
-        x[k] = x[k]! + (goal - x[k]!) * stiffness * (1 - ear * 0.8);
+        x[i * 3 + a] = x[i * 3 + a]! + (goal - x[i * 3 + a]!) * k;
       }
     }
   }
@@ -654,19 +647,40 @@ export class Body {
       for (let a = 0; a < 3; a++) {
         const k = i * 3 + a;
         const correction = (grabbed.filtered[a]! + grabbed.offsets[j * 3 + a]! - x[k]!) * w;
-        x[k] = x[k]! + Math.max(-0.025, Math.min(0.025, correction));
+        x[k] = x[k]! + clamp(correction, -0.025, 0.025);
       }
     }
   }
 
-  private collide(): void {
+  /** The floor with its friction, the ceiling, then the walls; returns the mean speed this step. */
+  private collide(): number {
     const { x, previous } = this;
-    this.contacts = 0;
-    let feet = 0;
+    let contacts = 0;
+    let travel = 0;
     for (let i = 0; i < x.length; i += 3) {
-      if (x[i + 2]! < 0.012) {
-        this.contacts++;
-        if (this.mesh.positions[i + 2]! < 0.25) feet++;
+      // The floor first: friction needs where the vertex was, before a wall's bounce rewrites it.
+      if (x[i + 2]! < 0) {
+        const depth = -x[i + 2]!;
+        const vz = x[i + 2]! - previous[i + 2]!;
+        x[i + 2] = 0;
+        previous[i + 2] = vz < -0.5 * STEP ? vz * 0.18 : 0;
+        // Friction acts on what this step moved it along the floor, so no push from the springs
+        // or the rest shape can ratchet the body across it.
+        const tx = x[i]! - previous[i]!;
+        const ty = x[i + 1]! - previous[i + 1]!;
+        const slide = Math.sqrt(tx * tx + ty * ty);
+        if (slide <= STATIC_FRICTION * depth) {
+          x[i] = previous[i]!;
+          x[i + 1] = previous[i + 1]!;
+        } else {
+          const k = (KINETIC_FRICTION * depth) / slide;
+          x[i] = x[i]! - tx * k;
+          x[i + 1] = x[i + 1]! - ty * k;
+        }
+      } else if (x[i + 2]! > CEILING) {
+        const vz = x[i + 2]! - previous[i + 2]!;
+        x[i + 2] = CEILING;
+        previous[i + 2] = CEILING + vz * 0.3;
       }
       for (let a = 0; a < 2; a++) {
         const limit = x[i + a]! < 0 ? -ROOM : ROOM;
@@ -675,20 +689,15 @@ export class Body {
         x[i + a] = limit;
         previous[i + a] = limit + v * 0.4;
       }
-      if (x[i + 2]! < 0) {
-        const vz = x[i + 2]! - previous[i + 2]!;
-        x[i + 2] = 0;
-        previous[i + 2] = vz < -0.5 * STEP ? vz * 0.18 : 0;
-        // Friction: keep a little of the sliding.
-        previous[i] = x[i]! - (x[i]! - previous[i]!) * 0.55;
-        previous[i + 1] = x[i + 1]! - (x[i + 1]! - previous[i + 1]!) * 0.55;
-      } else if (x[i + 2]! > CEILING) {
-        const vz = x[i + 2]! - previous[i + 2]!;
-        x[i + 2] = CEILING;
-        previous[i + 2] = CEILING + vz * 0.3;
-      }
+      if (x[i + 2]! < 0.012) contacts++;
+      travel += norm(
+        x[i]! - previous[i]!,
+        x[i + 1]! - previous[i + 1]!,
+        x[i + 2]! - previous[i + 2]!,
+      );
     }
-    this.supported = feet >= 3 && this.goal[3][2] > 0.5;
+    this.contacts = contacts;
+    return travel / this.count / STEP;
   }
 
   private near(row: number, radius: number) {
@@ -719,7 +728,7 @@ export class Body {
   }
 
   private distance(x: Float64Array, a: number, b: number): number {
-    return Math.hypot(
+    return norm(
       x[a * 3]! - x[b * 3]!,
       x[a * 3 + 1]! - x[b * 3 + 1]!,
       x[a * 3 + 2]! - x[b * 3 + 2]!,

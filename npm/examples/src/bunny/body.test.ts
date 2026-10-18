@@ -68,40 +68,73 @@ await test('fracture makes 24 closed, outward solids with normalized surface bin
   assert.ok(Math.abs(volume - body.volume) < 1e-6, 'cuts preserve enclosed volume');
 });
 
-await test('body settles, anticipates a hop, and rejects impulse stacking in flight', () => {
+/** Steps until the body rests, for at most `seconds`. */
+function rest(body: Body, settings = controls, seconds = 10): void {
+  for (let steps = 0; !body.asleep && steps < seconds / STEP; steps++) body.advance(STEP, settings);
+}
+
+await test('body rests where it lands, hops at once, and ignores presses in the air', () => {
   const body = new Body(mesh);
   body.drop(true);
-  run(body, 5);
+  run(body, 6);
   bounded(body);
+  assert.equal(body.state, 'resting', `rest speed: ${body.metrics()[1]}`);
+  const resting = body.x.slice();
+  run(body, 2);
+  assert.deepEqual(body.x, resting, 'a resting body does not move');
   const before = body.metrics()[0];
-  assert.ok(body.metrics()[1] < 0.3, `rest speed: ${body.metrics()[1]}`);
-  body.jump();
-  assert.equal(body.state, 'getting ready');
-  run(body, 0.1);
-  assert.ok(body.metrics()[0] < before + 0.1, 'no immediate launch');
+  body.hop();
+  assert.ok(!body.asleep, 'a hop wakes it');
   run(body, 0.15);
-  assert.equal(body.state, 'hopping');
+  assert.equal(body.state, 'airborne');
   const copy = body.x.slice();
   const speed = body.metrics()[1];
-  for (let i = 0; i < 20; i++) body.jump();
+  for (let i = 0; i < 20; i++) body.hop();
   assert.deepEqual(body.x, copy);
-  assert.equal(body.metrics()[1], speed, 'repeated hops do not change velocity');
-  run(body, 0.3);
+  assert.equal(body.metrics()[1], speed, 'presses in the air change nothing');
+  run(body, 0.15);
   assert.ok(body.metrics()[0] > before + 0.2, 'hop leaves the floor');
   assert.ok(body.metrics()[0] < before + 1.4, 'hop has bounded height');
-  run(body, 3);
+  run(body, 8);
   bounded(body);
-  assert.ok(body.metrics()[1] < 0.4);
+  assert.equal(body.state, 'resting', 'it rests again after landing');
+});
+
+await test('stands at any firmness, stays down once toppled, and wakes when poked', () => {
+  // Creeping as fast as before, a body would never count as still, and never rest.
+  for (const firmness of [0, 0.45, 1]) {
+    const body = new Body(mesh);
+    body.drop(true);
+    const settings = { ...controls, firmness };
+    rest(body, settings);
+    assert.equal(body.state, 'resting', `firmness ${firmness}: ${body.metrics()[1]} m/s`);
+    body.poke(0);
+    assert.ok(!body.asleep, 'a poke wakes it');
+    run(body, 0.5, settings);
+    assert.ok(body.metrics()[1] > 0, 'and it moves');
+  }
+  // Pulled past its tipping point, it lies where it fell.
+  const body = new Body(mesh);
+  body.drop(true);
+  rest(body);
+  let top = 0;
+  for (let i = 1; i < mesh.count; i++)
+    if (mesh.positions[i * 3 + 2]! > mesh.positions[top * 3 + 2]!) top = i;
+  body.grab(top, [3, 0, 0.6]);
+  run(body, 2);
+  body.release();
+  rest(body);
+  assert.equal(body.state, 'toppled');
 });
 
 await test('pop gathers under zero, Earth, and high gravity, without a mesh snap', () => {
   for (const gravity of [0, 9.81, 24.8]) {
     const body = new Body(mesh);
-    body.explode();
+    body.pop();
     run(body, 0.2, { ...controls, gravity });
     assert.ok(body.burst.active);
     assert.ok(Number.isNaN(body.metrics()[2]), 'disconnected pieces have no body volume');
-    for (let i = 0; i < 20; i++) body.explode();
+    for (let i = 0; i < 20; i++) body.pop();
     let steps = 0;
     while (body.burst.active && steps++ < 1440) {
       body.advance(STEP, { ...controls, gravity });
@@ -122,7 +155,7 @@ await test('pop gathers under zero, Earth, and high gravity, without a mesh snap
         }
       }
     assert.ok(Number.isFinite(body.metrics()[2]));
-    body.explode();
+    body.pop();
     run(body, 0.2);
     body.drop(true);
     assert.ok(!body.burst.active, 'drop cancels burst');
@@ -132,8 +165,8 @@ await test('pop gathers under zero, Earth, and high gravity, without a mesh snap
 await test('pop lifts every piece and visibly separates before gathering', () => {
   const body = new Body(mesh);
   run(body, 2);
-  body.explode();
-  while (!body.burst.active) body.advance(STEP, controls);
+  body.pop();
+  assert.ok(body.burst.active, 'a pop starts at once');
   const launch = body.burst.chunks.map((chunk) => [...chunk.position]);
   assert.ok(
     body.burst.chunks.every((chunk) => chunk.velocity[2] > 2),
@@ -150,9 +183,8 @@ await test('pop lifts every piece and visibly separates before gathering', () =>
   run(body, 4);
   assert.ok(!body.burst.active, 'automatic assembly still completes');
 
-  body.explode();
-  while (!body.burst.active) body.advance(STEP, controls);
-  for (let i = 0; i < 20; i++) body.explode();
+  body.pop();
+  for (let i = 0; i < 20; i++) body.pop();
   run(body, 0.4);
   assert.ok(!body.burst.gathering, 'repeat presses cannot abort separation');
   run(body, 3);
@@ -178,19 +210,20 @@ await test('large grabs, cancellation, and material extremes stay bounded', () =
     }
 });
 
-await test('held squash releases, and reduced motion still completes an inflated pop', () => {
+await test('held squash releases, and a gentle pop of an inflated body completes', () => {
   const body = new Body(mesh);
   run(body, 2);
   body.squash(true);
   run(body, 1);
-  assert.equal(body.state, 'squash');
+  assert.equal(body.state, 'squashed');
   bounded(body);
   body.endSquash();
   run(body, 1);
-  assert.equal(body.state, 'idle');
-  const settings = { ...controls, inflate: 1.8, reducedMotion: true, playful: true };
+  assert.notEqual(body.state, 'squashed');
+  const settings = { ...controls, inflate: 1.8 };
+  body.wake();
   run(body, 2, settings);
-  body.explode();
+  body.pop(true);
   run(body, 0.2, settings);
   assert.ok(body.burst.active);
   run(body, 4, settings);
@@ -198,5 +231,5 @@ await test('held squash releases, and reduced motion still completes an inflated
   bounded(body);
   assert.ok(Math.abs(body.metrics()[2] - settings.inflate) < 0.08);
   run(body, 8, settings);
-  assert.equal(body.state, 'idle', 'reduced motion disables autonomous hops');
+  assert.equal(body.state, 'resting', 'with nothing acting on it, it rests');
 });

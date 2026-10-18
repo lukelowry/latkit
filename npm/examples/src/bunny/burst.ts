@@ -143,7 +143,7 @@ export class Burst {
         (Math.hypot(dx, dy) > 0.05 ? Math.atan2(dy, dx) : random() * Math.PI * 2) +
         (random() - 0.5) * 0.7;
       const strength = (3.2 + random() * 1.2) * (reduced ? 0.45 : 1);
-      // Separate lift from radial spread so crouching and lower pieces cannot cancel the pop.
+      // Separate lift from radial spread, so pieces already moving down cannot cancel the pop.
       chunk.velocity[0] = clamp(chunk.velocity[0] * 0.35, -1.2, 1.2) + Math.cos(angle) * strength;
       chunk.velocity[1] = clamp(chunk.velocity[1] * 0.35, -1.2, 1.2) + Math.sin(angle) * strength;
       chunk.velocity[2] =

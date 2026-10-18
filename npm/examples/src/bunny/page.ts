@@ -5,6 +5,8 @@ import { loadMesh } from './mesh.js';
 
 /** Seconds of frames kept to replay and scrub. */
 const HISTORY = 20;
+/** Seconds of simulation between recorded frames, whatever the display's refresh rate. */
+const RECORD = 1 / 60;
 /** Seconds the plot shows. */
 const WINDOW = 12;
 /** What the bunny can be painted by. Each domain starts below rest, so a bunny at rest draws bright. */
@@ -65,27 +67,29 @@ const CONTACT_SHADOW = `fn marker(f: MarkerFragment) -> MarkerColor {
 export default async function bunny(stage: Stage): Promise<void> {
   const mesh = await loadMesh(new URL('./stanford-bunny.bin', import.meta.url));
   const body = new Body(mesh);
+  // Reduced motion hops lower, pops gentler, and never orbits.
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-  const controls: Controls = {
-    gravity: 9.81,
-    firmness: 0.45,
-    inflate: 1,
-    wind: false,
-    reducedMotion: reducedMotion.matches,
-  };
   reducedMotion.addEventListener(
     'change',
     () => {
-      controls.reducedMotion = reducedMotion.matches;
       if (reducedMotion.matches) space.orbit = 0;
     },
     { signal: stage.signal },
   );
+  const controls: Controls = { gravity: 9.81, firmness: 0.45, inflate: 1, wind: false };
+  /** Sets a control, waking the body: a resting body answers new gravity or a new material. */
+  const waking =
+    <T>(set: (value: T) => void) =>
+    (value: T) => {
+      set(value);
+      body.wake();
+    };
   let paint = 'solid';
   let inspect = false;
   let fragments = false;
   let timeScale = 1;
   let carry = 0;
+  let recordAt = 0;
 
   // The mesh once; then every step, a frame of every vertex and of the body as a whole.
   let data = new Data('bunny').apply(
@@ -207,9 +211,9 @@ export default async function bunny(stage: Stage): Promise<void> {
   };
   const actions = stage.section('Actions');
   actions.actions([
-    { label: 'Hop', key: ' ', run: act(() => body.jump()) },
+    { label: 'Hop', key: ' ', run: act(() => body.hop(reducedMotion.matches)) },
     { label: 'Squash', key: 's', run: act(() => body.squash()) },
-    { label: 'Pop', key: 'e', run: act(() => body.explode()) },
+    { label: 'Pop', key: 'e', run: act(() => body.pop(reducedMotion.matches)) },
     { label: 'Drop', key: 'd', run: act(() => body.drop()) },
     {
       label: 'Poke',
@@ -232,10 +236,14 @@ export default async function bunny(stage: Stage): Promise<void> {
   );
   for (const event of ['pointerup', 'pointercancel', 'lostpointercapture'])
     squashButton.addEventListener(event, () => body.endSquash(), { signal: stage.signal });
-  actions.toggle('Playful', 'a', false, (on) => (controls.playful = on));
   const world = stage.section('World');
-  world.toggle('Wind', 'w', false, (on) => (controls.wind = on));
-  world.toggle('Orbit', 'o', false, (on) => (space.orbit = on && !controls.reducedMotion ? 12 : 0));
+  world.toggle(
+    'Wind',
+    'w',
+    false,
+    waking((on: boolean) => (controls.wind = on)),
+  );
+  world.toggle('Orbit', 'o', false, (on) => (space.orbit = on && !reducedMotion.matches ? 12 : 0));
   world.choice(
     'Gravity',
     [
@@ -245,9 +253,7 @@ export default async function bunny(stage: Stage): Promise<void> {
       ['Jupiter 24.8', 24.8],
     ],
     9.81,
-    (g) => {
-      controls.gravity = g;
-    },
+    waking((g: number) => (controls.gravity = g)),
   );
   world.choice(
     'Time',
@@ -269,16 +275,12 @@ export default async function bunny(stage: Stage): Promise<void> {
       value: 0.45,
       format: (v) => (v < 0.2 ? 'Jelly' : v < 0.6 ? 'Gummy' : 'Rubber'),
     },
-    (v) => {
-      controls.firmness = v;
-    },
+    waking((v: number) => (controls.firmness = v)),
   );
   material.range(
     'Inflate',
     { min: 0.5, max: 1.8, step: 0.01, value: 1, format: (v) => `${Math.round(v * 100)}%` },
-    (v) => {
-      controls.inflate = v;
-    },
+    waking((v: number) => (controls.inflate = v)),
   );
   const legend = stage.legend();
   const legendElement = stage.regions.main.querySelector<HTMLElement>('.legend')!;
@@ -394,15 +396,6 @@ export default async function bunny(stage: Stage): Promise<void> {
   space.on('click', (hit) => act(() => body.poke(hit.row.id as number))());
 
   const canvas = stage.regions.main.querySelector('canvas')!;
-  canvas.addEventListener(
-    'pointermove',
-    (event) => {
-      const rect = canvas.getBoundingClientRect();
-      body.lookAt(space.ground([event.clientX - rect.left, event.clientY - rect.top]));
-    },
-    { signal: stage.signal },
-  );
-  canvas.addEventListener('pointerleave', () => body.lookAt(), { signal: stage.signal });
   // The JS drag event intentionally combines release and cancellation. Capture cancellation
   // before the view's bubbling listener, so it cannot leave a throw behind.
   canvas.addEventListener('pointercancel', () => body.release(true), {
@@ -430,11 +423,20 @@ export default async function bunny(stage: Stage): Promise<void> {
   });
   stage.frame((dt) => {
     if (playback.mode !== 'live') return;
+    // A resting bunny steps and records nothing, so both views sleep until something acts on it.
+    if (body.asleep) {
+      carry = 0;
+      return;
+    }
     meter.measure('simulate', () => {
       carry = Math.min(carry + dt * timeScale, 16 * STEP);
       const steps = body.advance(carry, controls);
       carry -= steps * STEP;
-      if (steps) publish();
+      // Recorded at a fixed rate of simulated time, and once more as it comes to rest.
+      if (steps && (body.time + STEP / 2 >= recordAt || body.asleep)) {
+        publish();
+        recordAt = body.time + RECORD;
+      }
     });
   });
 
