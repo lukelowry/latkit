@@ -11,6 +11,7 @@ use crate::gpu::Inner;
 use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
+use crate::gpu::work::Count;
 use crate::scene::mark::{MarkKind, Primitive};
 
 const WORKGROUP: u32 = 256;
@@ -266,6 +267,7 @@ impl View {
                     }
                     pass.set_pipeline(&evaluate);
                     dispatch(&mut pass, shown.rows + shown.exits);
+                    gpu.0.counters.add(Count::Evaluated, u64::from(shown.rows + shown.exits));
                     shown.dirty = 0;
                     shown.reduce = false;
                 }

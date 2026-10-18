@@ -290,7 +290,7 @@ impl Picture {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            gpu.queue().write_buffer(&uniform, 0, bytemuck::bytes_of(&compose));
+            gpu.0.queue.write_buffer(&uniform, 0, bytemuck::bytes_of(&compose));
             uniform
         };
         let group = |target: &wgpu::TextureView, uniform: &wgpu::Buffer| {
@@ -351,7 +351,9 @@ impl Drawing {
         let step = if (complete && !easing) || overdue {
             if !complete {
                 for view in views.iter_mut().filter(|v| !v.complete()) {
-                    view.tell(Error::Load("a shot's deadline passed while its views waited for work under way".into()));
+                    let waiting = view.waiting();
+                    let message = format!("a shot's deadline passed while its view waited on {waiting}");
+                    view.tell(Error::Load(message.into()));
                 }
             }
             picture.compose(&mut encoder, self.bytes, self.shot.size);

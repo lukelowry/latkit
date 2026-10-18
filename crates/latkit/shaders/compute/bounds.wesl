@@ -3,7 +3,7 @@
 // as its box, a stroke as its points, an area as its triangles' corners. While a fit measures chosen
 // rows, only rows marked FIT count.
 
-import package::lib::types::{NONE, FIT, PATH_ENDS, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION};
+import package::lib::types::{NONE, FIT, PATH_ENDS, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION, HALF_UNITS};
 import package::lib::bind::{frame, eye, mark, state};
 import package::lib::focus::focus_of;
 import package::lib::reduce::ordered;
@@ -37,8 +37,11 @@ fn points(@builtin(global_invocation_id) id: vec3u) {
     if (v.flags & 1u) == 0u || !placed(v) {
         return;
     }
-    // Sizes in pixels count at the zoom they are measured at.
-    let half = vertex_half(v) / eye.px_per_unit.x;
+    // A marker sized in units is part of the box. One sized in pixels is that size at any zoom, so
+    // it counts as its position, and the fit's padding holds its pixels: measured at the zoom shown,
+    // its pixels would stand for any number of units.
+    let units = (v.flags & HALF_UNITS) != 0u;
+    let half = select(vec2f(0.0), vertex_half(v) / eye.px_per_unit.x, units);
     let p = v.hi + v.lo;
     extend(vec3f(p - half, v.elevation));
     extend(vec3f(p + half, v.elevation));

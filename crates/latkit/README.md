@@ -6,7 +6,7 @@ Columnar data drawn as vertices, edges, faces, lines, and areas on the GPU. This
 ```sh
 cargo xtask check      # fmt, clippy, tests, docs, TypeScript, browser gate
 cargo xtask browser    # the browser gate: shader compile budgets, then every example page in Chrome
-cargo xtask bench      # grids of 240 to 2M buses held to load, frame GPU and CPU, and idle budgets
+cargo xtask bench      # every scenario swept over sizes in Chrome: time, work, and how each grows
 cargo xtask wasm       # latkit-js → npm/pkg, the npm wrapper → npm/dist (--dev: no wasm-opt)
 cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
 ```
@@ -54,8 +54,9 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
 10. **Complete:** a frame is complete when nothing in it stands in for work under way: no page
     waiting to upload, no tile drawn as its ancestor, no table as its first sample, no row standing
     where it was until a layout lands, no wire drawn as elbows, no area as its earlier triangles, no
-    label at its estimated size, no fit due. Every derivation says so of itself; pictures, video
-    frames, tests, and the benchmark wait on the one predicate.
+    label at its estimated size, no fit due. Every derivation says so of itself, and `Stats::waiting`
+    names what a frame stood in for; pictures, video frames, tests, and the benchmark wait on the one
+    predicate.
 
 ## Rules
 
@@ -70,8 +71,12 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
   readbacks, jobs, fetches, and uploads wake it.
 - Size never fails a draw: the plan always fits the budget, and `priority` decides what draws first,
   on top, and labeled.
-- No public type before it draws. `Stats::gpu_ms` is the median of the last frames the device timed;
-  `cargo xtask bench` holds the network page's grids to budgets in Chrome.
+- No public type before it draws. `Stats::gpu_ms` is the median of the last frames the device timed.
+- Work is counted exactly (`Gpu::work`: bytes uploaded and written, rows evaluated, readbacks, jobs,
+  texts, pipelines); every write goes through the counting queue. The benchmark (`npm/bench`) climbs
+  each scenario's sizes while the last one fits a phase's limit, times each phase from its action to
+  the frame where every view is complete, holds it to how it may grow, to the committed work, and to
+  this machine's times, and stops the sweep at a lost device.
 - A dataset's versions ease from one to the next; another dataset of the same name replaces it, its
   rows fading in as the old fade out. Rows that only fade evaluate once.
 - A picture composes on the GPU into exactly the bytes its consumer takes, RGBA for an image and
@@ -170,13 +175,16 @@ crates/latkit/
 │   ├── view/          View; clock, camera, rig, gestures, input; probe, focus, query, fit, axes; plan, marks,
 │   │                  program, sync, rows, transition, lists, labels, graph, shadows, variants, resources,
 │   │                  uniforms, wake, timer, passes, frame
-│   ├── gpu/           Gpu, Budget, arena (fixed pages, one pool), pipelines, atlas (distance fields), readback,
-│   │                  colormaps, icons
+│   ├── gpu/           Gpu, Budget, work (Work, the counting queue), arena (fixed pages, one pool), pipelines,
+│   │                  atlas (distance fields), readback, colormaps, icons
 │   ├── host/          Host (text, jobs, fetch, encoder), Job, browser (workers, canvas text, fetch, WebCodecs)
 │   ├── geo/           geojson, mvt, pmtiles, tiles, shapes, earcut
 │   └── web.rs         Canvas: its surface, frames, input, events; pictures and video frames of canvases
-├── tests/
-└── benches/           ○ work gates, time reports
+└── tests/
+
+npm/bench/             the benchmark: one page (scenarios, the stage measuring phases, data), the runner,
+                       the judge (rules, orders, baselines), the report, baselines/ (work, times per machine,
+                       the old packages' times)
 ```
 
 ## API
@@ -246,7 +254,7 @@ for event in view.events() {
 }
 let hits = view.pick([120.0, 80.0], 6.0); // Pending<Vec<Hit>>, nearest first
 view.arrange();                           // lay out every row without a position again
-let Stats { rows, drawn, resident, budget, complete, .. } = view.stats(); // rows given and drawn, GPU bytes
+let Stats { rows, drawn, resident, budget, waiting, .. } = view.stats(); // rows, GPU bytes, work under way
 
 // Pictures and video: plain data, drawn once every view is complete.
 let png = Shot::new([3840, 2160]).scale(2.0).image(&mut [&mut view]).await?.png();

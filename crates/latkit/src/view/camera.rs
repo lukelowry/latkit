@@ -229,6 +229,15 @@ impl Camera {
             Camera::Plot { .. } => (0.0, 0.0),
         };
         let height = min[2].midpoint(max[2]);
+        // A box with no extent, as one point's is, has no zoom of its own: the camera looks at it at
+        // the zoom it shows.
+        if let Camera::Map { zoom, .. } = *self
+            && !matches!(space, Space::Plot(_))
+            && max[0] - min[0] <= 1e-9
+            && max[1] - min[1] <= 1e-9
+        {
+            return Camera::Map { center: [min[0], min[1], height], zoom, pitch, bearing };
+        }
         match space {
             Space::Plot(_) => {
                 let pad = |lo: f64, hi: f64, px: f64| {

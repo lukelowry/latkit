@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::gpu::shaders::{TEXT_BASE, TEXT_SPREAD};
+use crate::gpu::work::{Count, Counters, Queue};
 use crate::host::{Host, TextRun};
 
 /// Texels across the atlas: room for about 1,400 labels of ten characters at the base size.
@@ -77,10 +78,12 @@ pub(crate) struct Atlas {
     clock: u64,
     /// Changes whenever runs are evicted, so what pointed at them looks again.
     pub(crate) evictions: u64,
+    /// What counts the texts the host is asked to set.
+    counters: Arc<Counters>,
 }
 
 impl Atlas {
-    pub(crate) fn new(device: &wgpu::Device) -> Atlas {
+    pub(crate) fn new(device: &wgpu::Device, counters: Arc<Counters>) -> Atlas {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("latkit text"),
             size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
@@ -92,7 +95,7 @@ impl Atlas {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Atlas { texture, view, shelves: Vec::new(), runs: HashMap::new(), clock: 0, evictions: 0 }
+        Atlas { texture, view, shelves: Vec::new(), runs: HashMap::new(), clock: 0, evictions: 0, counters }
     }
 
     /// Starts a frame: runs asked for from now on count as used in it.
@@ -101,13 +104,15 @@ impl Atlas {
     }
 
     /// Where `run` lies, set by `host` the first time it is asked for.
-    pub(crate) fn text(&mut self, queue: &wgpu::Queue, host: Option<&dyn Host>, run: &TextRun) -> Option<Glyphs> {
+    pub(crate) fn text(&mut self, queue: &Queue, host: Option<&dyn Host>, run: &TextRun) -> Option<Glyphs> {
         if let Some(found) = self.runs.get(run) {
             let (glyphs, shelf) = (*found)?;
             self.shelves[shelf].tick = self.clock;
             return Some(glyphs);
         }
-        let raster = host?.rasterize(run);
+        let host = host?;
+        self.counters.add(Count::Texts, 1);
+        let raster = host.rasterize(run);
         let placed = raster.and_then(|raster| {
             let [w, h] = raster.size;
             let (width, height) = (w + 2 * PAD, h + 2 * PAD);

@@ -49,7 +49,7 @@ pub use {
         Color, Colormap, ColormapKind, Expr, Mapped, Size, Then, When, elapsed, field, hovered, pointer, selected,
         units, when, zoom,
     },
-    gpu::{Budget, Gpu},
+    gpu::{Budget, Gpu, work::Work},
     pending::{Pending, Resolver},
     scene::{
         Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Interpolation, Label, Layered,
@@ -60,5 +60,6 @@ pub use {
     video::{Encoder, Encoding, TIMESCALE, Unit, Video},
     view::{
         Button, Camera, Cursor, Drag, End, Event, Fit, Frame, Hit, Input, Key, Modifiers, Phase, Sample, Stats, View,
+        Waiting,
     },
 };

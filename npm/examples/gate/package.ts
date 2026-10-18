@@ -6,8 +6,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { build } from 'vite';
-import type { Browser } from 'playwright-core';
-import { deadline, launch, STEP } from './browser.ts';
+import { deadline, launch, STEP, type Chrome } from './browser.ts';
 
 const root = path.resolve(import.meta.dirname, '../../..');
 const reportPath = path.join(root, 'target/npm/package.json');
@@ -62,17 +61,12 @@ const server = http.createServer((request, response) => {
 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
 const address = server.address();
 assert(address && typeof address !== 'string');
-let browser: Browser | undefined;
+let chrome: Chrome | undefined;
 const timings: unknown[] = [];
 try {
   for (const mode of ['default', 'custom', 'compiled']) {
-    browser = await launch([
-      '--disable-gpu-shader-disk-cache',
-      ...(process.platform === 'linux'
-        ? ['--use-angle=swiftshader', '--use-vulkan=swiftshader', '--enable-features=Vulkan,WebGPU']
-        : []),
-    ]);
-    const page = await browser.newPage();
+    chrome = await launch(['--disable-gpu-shader-disk-cache']);
+    const page = await chrome.browser.newPage();
     const errors: string[] = [];
     const requests: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
@@ -118,13 +112,13 @@ try {
     assert.deepEqual(errors, []);
     timings.push({ mode, ...(result as object) });
     await page.close();
-    await browser.close();
+    await chrome.close();
   }
   const measurement = {
     platform: process.platform,
     arch: process.arch,
     cpu: os.cpus()[0]?.model,
-    browser: browser?.version(),
+    browser: chrome?.browser.version(),
     origin: 'localhost',
     freshBrowserPerCase: true,
     shaderDiskCache: false,
@@ -137,7 +131,7 @@ try {
   );
   console.log(JSON.stringify(measurement, null, 2));
 } finally {
-  await browser?.close();
+  await chrome?.close();
   server.closeAllConnections();
   server.close();
 }

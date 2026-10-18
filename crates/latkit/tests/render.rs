@@ -139,6 +139,24 @@ fn new_data_versions_show_and_fit_frames_them() {
 }
 
 #[test]
+fn a_fit_frames_data_whatever_its_units_and_its_markers_pixels() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("graph");
+    data.apply(Table::new("Node", 2).field("x", vec![0.0, 1.0]).field("y", vec![0.0, 1.0])).expect("valid");
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_data(data);
+    view.fit(latkit::Fit::All);
+    for _ in 0..4 {
+        frame(&gpu, &mut view);
+    }
+    // Markers a few pixels across leave a unit square filling the view, not lost in its middle.
+    let [a, b] = [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]].map(|p| view.point(p).expect("in view"));
+    let across = (b[0] - a[0]).abs().min((b[1] - a[1]).abs());
+    assert!(across > SIZE as f32 * 0.5, "the unit square spans {across} of {SIZE} pixels");
+}
+
+#[test]
 fn sampled_fields_read_at_the_shown_coordinate() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("grid");

@@ -10,6 +10,7 @@ use std::num::NonZeroU64;
 
 use super::rows::Sizes;
 use crate::gpu::shaders::{self as wgsl, Shader};
+use crate::gpu::work::Queue;
 use crate::gpu::{Inner, Shared};
 
 /// Bytes between marks' uniforms and between eyes: the dynamic offset alignment every device supports.
@@ -271,7 +272,7 @@ impl Resources {
     }
 
     /// Writes the rows every mark's focus draw lights.
-    pub(crate) fn write_lit(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, rows: &[u32]) {
+    pub(crate) fn write_lit(&mut self, device: &wgpu::Device, queue: &Queue, rows: &[u32]) {
         if self.lit.ensure(device, (rows.len() as u64 + 1) * 4) {
             self.generation += 1;
         }
@@ -280,7 +281,7 @@ impl Resources {
         }
     }
 
-    pub(crate) fn write_remap(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, words: &[u32]) {
+    pub(crate) fn write_remap(&mut self, device: &wgpu::Device, queue: &Queue, words: &[u32]) {
         if self.remap.ensure(device, (words.len() as u64 + 1) * 4) {
             self.generation += 1;
         }

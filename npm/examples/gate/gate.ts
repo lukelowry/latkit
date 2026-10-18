@@ -12,9 +12,9 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import type { Browser, Page } from 'playwright-core';
+import type { Page } from 'playwright-core';
 import { createServer } from 'vite';
-import { STEP, deadline, launch as chrome } from './browser.ts';
+import { STEP, deadline, launch, type Chrome } from './browser.ts';
 
 /** Milliseconds Chrome may take to make any one pipeline, cold: the slowest takes about 0.35 s. */
 const COMPILE_BUDGET = 800;
@@ -55,8 +55,8 @@ interface Timing {
 }
 
 /** Chrome compiling cold on every launch, as a first visit does. */
-function launch(): Promise<Browser> {
-  return chrome(['--disable-gpu-shader-disk-cache']);
+function cold(): Promise<Chrome> {
+  return launch(['--disable-gpu-shader-disk-cache']);
 }
 
 /** Every pipeline the variants in `dir` make: each compute entry, or the draw, per constants. */
@@ -165,9 +165,9 @@ async function compileBudget(dir: string): Promise<string[]> {
   );
   await new Promise<void>((resolve) => blank.listen(0, '127.0.0.1', resolve));
   const { port } = blank.address() as { port: number };
-  const browser = await launch();
+  const chrome = await cold();
   try {
-    const page = await browser.newPage();
+    const page = await chrome.browser.newPage();
     await deadline(page.goto(`http://127.0.0.1:${port}/`), STEP, 'open a blank page');
     const all = pipelines(dir);
     // Each pipeline races its own deadline in the page.
@@ -186,7 +186,7 @@ async function compileBudget(dir: string): Promise<string[]> {
           : [],
     );
   } finally {
-    await browser.close();
+    await chrome.close();
     blank.close();
   }
 }
@@ -203,9 +203,9 @@ function frames(page: Page): Promise<void> {
  * every view: hovering a grid of points, zooming, panning, and clicking. Returns the failures. */
 async function visit(url: string, id: string): Promise<string[]> {
   const failures: string[] = [];
-  const browser = await launch();
+  const chrome = await cold();
   try {
-    const context = await browser.newContext({
+    const context = await chrome.browser.newContext({
       viewport: { width: 1280, height: 800 },
       deviceScaleFactor: 1,
     });
@@ -293,7 +293,7 @@ async function visit(url: string, id: string): Promise<string[]> {
     if (gap > STALL_BUDGET)
       failures.push(`a frame took ${gap.toFixed(0)} ms on ${step}, over ${STALL_BUDGET}`);
   } finally {
-    await browser.close();
+    await chrome.close();
   }
   return failures;
 }
@@ -310,10 +310,10 @@ async function suite(only: string[]): Promise<string[]> {
   try {
     const url = server.resolvedUrls?.local[0];
     if (!url) throw new Error('the suite has no address');
-    const browser = await launch();
+    const chrome = await cold();
     let ids: string[];
     try {
-      const page = await browser.newPage();
+      const page = await chrome.browser.newPage();
       await deadline(page.goto(url), STEP, 'open the suite');
       const links = page.locator('nav a');
       await deadline(links.first().waitFor(), STEP, 'the page bar');
@@ -321,7 +321,7 @@ async function suite(only: string[]): Promise<string[]> {
         (h) => h.slice(1),
       );
     } finally {
-      await browser.close();
+      await chrome.close();
     }
     const failures: string[] = [];
     for (const id of only.length ? ids.filter((id) => only.includes(id)) : ids) {

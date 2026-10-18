@@ -104,13 +104,13 @@ impl View {
         }
         self.run_query(encoder, &mut inner);
         if let Some(timer) = &mut self.timer {
-            timer.end(encoder, &inner.readbacks, device);
+            timer.end(encoder, device);
         }
         for shown in &mut self.marks {
             shown.held = shown.rows + shown.exits;
             shown.moved = None;
         }
-        self.complete = self.drew_complete();
+        self.waiting = self.under_way();
         self.changed = false;
         self.stats.frames += 1;
         self.stats.cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
@@ -172,8 +172,9 @@ impl View {
         let earth = matches!(self.scene.space, crate::Space::Earth(_));
         let placing = earth || matches!(self.scene.space, crate::Space::Plane(_));
         let sight = derive::sight::Sight { projected: &projected, size: self.size, earth };
-        let waker = self.waker.clone();
-        let mut jobs = derive::Jobs::new(host.as_deref(), &waker);
+        // One budget for the frame: the tiles, what is drawn in part, then every other derivation.
+        let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
+        let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
         tiles.update(&self.derive_input(host.as_deref()), earth.then_some(&sight), &jobs);
         self.events.extend(tiles.take_errors().into_iter().map(Event::Error));
@@ -197,7 +198,7 @@ impl View {
         self.derived.tiled = tiled;
         self.follow_sources(&changed);
         let mut derived = std::mem::take(&mut self.derived);
-        if derived.update(&self.derive_input(host.as_deref())) {
+        if derived.update(&self.derive_input(host.as_deref()), &mut jobs) {
             self.changed = true;
         }
         self.derived = derived;
@@ -234,7 +235,6 @@ impl View {
             scene_version: self.scene_version,
             data: &self.data,
             host,
-            waker: &self.waker,
             dragging: self.dragging(),
         }
     }

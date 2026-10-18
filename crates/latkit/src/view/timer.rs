@@ -24,6 +24,8 @@ pub(crate) struct Timer {
     period: f64,
     /// Milliseconds of the last frames measured, oldest first.
     measured: Vec<f32>,
+    /// Its own map buffers, whose readbacks count as no work: only some devices have a timer.
+    pool: Readbacks,
 }
 
 impl Timer {
@@ -51,6 +53,7 @@ impl Timer {
             current: None,
             period: f64::from(queue.get_timestamp_period()),
             measured: Vec::with_capacity(KEPT),
+            pool: Readbacks::uncounted(),
         })
     }
 
@@ -63,12 +66,13 @@ impl Timer {
     }
 
     /// Ends the measure this frame began, reading it back once submitted.
-    pub(crate) fn end(&mut self, encoder: &mut wgpu::CommandEncoder, pool: &Readbacks, device: &wgpu::Device) {
+    pub(crate) fn end(&mut self, encoder: &mut wgpu::CommandEncoder, device: &wgpu::Device) {
         let Some(i) = self.current.take() else { return };
         let slot = &mut self.slots[i];
         mark(&slot.set, encoder, None, Some(1));
         encoder.resolve_query_set(&slot.set, 0..2, &slot.resolved, 0);
-        slot.pending = Some(Readback::new(pool, device, encoder, &slot.resolved, 0, 16, std::task::Waker::noop()));
+        let waker = std::task::Waker::noop();
+        slot.pending = Some(Readback::new(&self.pool, device, encoder, &slot.resolved, 0, 16, waker));
     }
 
     /// The median milliseconds of the last frames measured, once a measure landed since last asked.

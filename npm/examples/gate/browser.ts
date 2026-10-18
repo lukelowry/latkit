@@ -55,20 +55,56 @@ export function chrome(): string {
   );
 }
 
-/** Chrome, headless, with WebGPU on and `args` besides. */
-export function launch(args: readonly string[] = []): Promise<Browser> {
-  return deadline(
-    chromium.launch({
+/** A Chrome being driven, and how it ends. */
+export interface Chrome {
+  browser: Browser;
+  /**
+   * Ends Chrome: politely within seconds, else by killing its processes. A page stuck on its GPU
+   * never closes politely, and a Chrome left behind keeps the GPU busy under the next one.
+   */
+  close(): Promise<void>;
+}
+
+/**
+ * WebGPU on SwiftShader, which draws on the CPU, so no shader can hang the machine's GPU. These
+ * override Chrome's own GPU checks, so a real GPU never gets them.
+ */
+const SOFTWARE = [
+  '--enable-unsafe-webgpu',
+  '--ignore-gpu-blocklist',
+  '--use-angle=swiftshader',
+  '--use-vulkan=swiftshader',
+  '--use-webgpu-adapter=swiftshader',
+  '--enable-unsafe-swiftshader',
+  '--enable-features=Vulkan,WebGPU',
+];
+
+/** Chrome, headless, with `args` besides: on SwiftShader when `software`, as Linux always is. */
+export async function launch(
+  args: readonly string[] = [],
+  software = process.platform === 'linux',
+): Promise<Chrome> {
+  const server = await deadline(
+    chromium.launchServer({
       executablePath: chrome(),
       headless: true,
-      args: [
-        '--enable-unsafe-webgpu',
-        '--ignore-gpu-blocklist',
-        '--enable-features=WebGPU',
-        ...args,
-      ],
+      args: [...(software ? SOFTWARE : []), ...args],
     }),
     STEP,
     'launch Chrome',
   );
+  // Killing ends the whole process tree, as `taskkill /T /F` does on Windows.
+  const kill = () => deadline(server.kill(), 10_000, 'kill Chrome').catch(() => {});
+  try {
+    const browser = await deadline(
+      chromium.connect(server.wsEndpoint()),
+      STEP,
+      'connect to Chrome',
+    );
+    const close = () => deadline(server.close(), 5_000, 'close Chrome').catch(kill);
+    return { browser, close };
+  } catch (error) {
+    await kill();
+    throw error;
+  }
 }

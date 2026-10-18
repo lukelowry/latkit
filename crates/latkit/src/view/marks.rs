@@ -8,6 +8,7 @@ use super::transition::{Begin, Transition};
 use crate::data::Table;
 use crate::expr::compile::{Compiler, Deps, Fields, Program};
 use crate::gpu::shaders as wgsl;
+use crate::gpu::work::Queue;
 use crate::gpu::{Inner, atlas};
 use crate::scene::mark::{Context, Drawing, Key, MarkKind, Primitive};
 use crate::{Data, Error, Kind, Mark, Name, Port, Result, Shape};
@@ -309,7 +310,7 @@ impl Shown {
 
     /// Writes its ports' words: each one's code, shape, and reference column, and where the atlas
     /// holds its label, set in `font` by the host the first time.
-    pub(crate) fn write_ports(&mut self, font: &Arc<str>, queue: &wgpu::Queue, gpu: &mut Inner) {
+    pub(crate) fn write_ports(&mut self, font: &Arc<str>, queue: &Queue, gpu: &mut Inner) {
         self.ports.clear();
         let Some(compiled) = &self.compiled else { return };
         let ports = &compiled.drawing.ports;

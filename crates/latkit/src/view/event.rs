@@ -165,12 +165,48 @@ pub struct Stats {
     pub resident: u64,
     /// Bytes the GPU's [`Budget`](crate::Budget) lets data take.
     pub budget: u64,
-    /// Whether the last frame drew everything as the data, scene, and camera say, with nothing
-    /// standing in for work under way: see [`View::complete`](crate::View::complete).
-    pub complete: bool,
+    /// The work under way the last frame stood in for; nothing when it drew everything as the data,
+    /// scene, and camera say: see [`View::complete`](crate::View::complete).
+    pub waiting: Waiting,
     /// Milliseconds the last frame took to record on the CPU.
     pub cpu_ms: f32,
     /// Milliseconds the GPU takes on a frame: the median of the last frames it measured; 0 where the
     /// device cannot measure.
     pub gpu_ms: f32,
+}
+
+/// The work under way a frame stood in for, by kind; nothing when the frame was complete.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Waiting {
+    /// Pages its marks draw still uploading, or tables not yet built from them.
+    pub data: bool,
+    /// Layouts, routes, lanes, shapes, tiles, or pyramids under way.
+    pub derived: bool,
+    /// A label placement being read back, or texts asked for and not yet set.
+    pub labels: bool,
+    /// A fit due or being measured.
+    pub fit: bool,
+    /// Row regions laid out again, segment counts being read back, or a transition beginning.
+    pub marks: bool,
+}
+
+impl Waiting {
+    /// Whether it waits on nothing: the frame was complete.
+    pub fn is_empty(&self) -> bool {
+        *self == Waiting::default()
+    }
+
+    /// The names of what it waits on, as its fields are named.
+    pub fn names(&self) -> impl Iterator<Item = &'static str> {
+        let Waiting { data, derived, labels, fit, marks } = *self;
+        [("data", data), ("derived", derived), ("labels", labels), ("fit", fit), ("marks", marks)]
+            .into_iter()
+            .filter_map(|(name, waiting)| waiting.then_some(name))
+    }
+}
+
+impl std::fmt::Display for Waiting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.names().collect::<Vec<_>>().join(", "))
+    }
 }

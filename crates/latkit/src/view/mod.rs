@@ -35,7 +35,7 @@ use std::time::Duration;
 
 pub use camera::Camera;
 pub(crate) use camera::Projected;
-pub use event::{Cursor, Drag, End, Event, Fit, Hit, Phase, Sample, Stats};
+pub use event::{Cursor, Drag, End, Event, Fit, Hit, Phase, Sample, Stats, Waiting};
 pub use input::{Button, Input, Key, Modifiers};
 pub(crate) use resources::{DEPTH, SHADE};
 pub(crate) use wake::Signal;
@@ -125,8 +125,8 @@ pub struct View {
     changed: bool,
     /// Whether the application was told the device was lost.
     told_lost: bool,
-    /// Whether the last frame drew everything with nothing standing in.
-    complete: bool,
+    /// The work under way the last frame stood in for.
+    waiting: Waiting,
     /// The format and samples per pixel the scene's pipelines were made for.
     pipelines_made: Option<(wgpu::TextureFormat, u32)>,
     /// The shadow map and the face normals, made from what they read.
@@ -181,7 +181,7 @@ impl View {
             regions_dirty: true,
             changed: true,
             told_lost: false,
-            complete: false,
+            waiting: Waiting::default(),
             pipelines_made: None,
             shadow_map: Derived::default(),
             normals: Derived::default(),
@@ -199,6 +199,8 @@ impl View {
             stats: Stats::default(),
         };
         view.show(scene)?;
+        // Until it draws, a view waits on everything its first frame would.
+        view.waiting = view.under_way();
         Ok(view)
     }
 
@@ -491,7 +493,7 @@ impl View {
             uploading: inner.arena.pending(),
             resident: inner.arena.resident(),
             budget: inner.budget.bytes.min(inner.arena.capacity()),
-            complete: self.complete,
+            waiting: self.waiting,
             ..self.stats
         }
     }
@@ -500,9 +502,14 @@ impl View {
     /// standing in for work under way: no changed page waited to upload, no tile drew its ancestor,
     /// no table its first sample, no row stood where it was until a layout landed, no wire drew its
     /// elbows, no area its earlier triangles, no label its estimate, and no fit was due. Whatever
-    /// captures frames waits for it.
+    /// captures frames waits for it; [`Stats::waiting`] says what it waits on.
     pub fn complete(&self) -> bool {
-        self.complete
+        self.waiting.is_empty()
+    }
+
+    /// The work under way the last frame stood in for.
+    pub(crate) fn waiting(&self) -> Waiting {
+        self.waiting
     }
 
     /// What happened since the last call.
@@ -560,20 +567,18 @@ impl View {
         self.signal.ask();
     }
 
-    /// Whether the frame just drawn is complete: see [`complete`](View::complete). A mark without
-    /// its data, or that failed, draws nothing however long it waits, and stands in for nothing.
-    fn drew_complete(&self) -> bool {
-        let marks = self
-            .marks
-            .iter()
-            .filter(|m| m.compiled.is_some())
-            .all(|m| m.tables.synced() && !m.tables.waiting() && !m.segments.found.busy() && m.begin.is_none());
-        marks
-            && self.derived.complete()
-            && self.labels.complete()
-            && !self.fitting.due()
-            && !self.fitting.reading()
-            && !self.regions_dirty
+    /// The work under way a frame drawn now stands in for: see [`complete`](View::complete). A mark
+    /// without its data, or that failed, draws nothing however long it waits, and stands in for
+    /// nothing.
+    fn under_way(&self) -> Waiting {
+        let marks = || self.marks.iter().filter(|m| m.compiled.is_some());
+        Waiting {
+            data: marks().any(|m| !m.tables.synced() || m.tables.waiting()),
+            derived: !self.derived.complete(),
+            labels: !self.labels.complete(),
+            fit: self.fitting.due() || self.fitting.reading(),
+            marks: self.regions_dirty || marks().any(|m| m.segments.found.busy() || m.begin.is_some()),
+        }
     }
 
     /// Whether something eases toward where it goes: a transition, a flight, coasting, or a label

@@ -25,6 +25,7 @@ use rustc_hash::{FxHashMap, FxHasher};
 
 use crate::data::{Column, Data, Field, Name, Op, Patch, Table, Value, Values, Version};
 use crate::gpu::readback::Readback;
+use crate::gpu::work::{Count, Counters};
 use crate::host::{Host, Job, Key, Request};
 use crate::sheet::Sheet;
 use crate::{Pending, Result, Scene, Space};
@@ -126,13 +127,15 @@ const FRAME_WORK: u32 = 4000;
 pub(crate) struct Jobs<'a> {
     host: Option<&'a dyn Host>,
     waker: &'a Waker,
+    /// What counts the jobs handed out.
+    counters: &'a Counters,
     /// Microseconds of inline work left this frame, by estimate.
     left: u32,
 }
 
 impl<'a> Jobs<'a> {
-    pub(crate) fn new(host: Option<&'a dyn Host>, waker: &'a Waker) -> Jobs<'a> {
-        Jobs { host, waker, left: FRAME_WORK }
+    pub(crate) fn new(host: Option<&'a dyn Host>, waker: &'a Waker, counters: &'a Counters) -> Jobs<'a> {
+        Jobs { host, waker, counters, left: FRAME_WORK }
     }
 
     /// Whether work of `cost` microseconds fits what is left of the frame's budget, spending it if so.
@@ -156,6 +159,7 @@ impl<'a> Jobs<'a> {
 
     /// Has the host do `job` off the frame; without a host, at once.
     pub(crate) fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
+        self.counters.add(Count::Jobs, 1);
         let pending = match self.host {
             Some(host) => host.spawn(job),
             None => Pending::ready(Ok(job.run())),
@@ -175,15 +179,14 @@ impl<'a> Jobs<'a> {
     }
 }
 
-/// What every derivation reads: the scene and its data, the host that measures text and does jobs,
-/// what a landing job wakes, and whether rows are being dragged.
+/// What every derivation reads: the scene and its data, the host that measures text, and whether
+/// rows are being dragged. Jobs go through the frame's [`Jobs`].
 pub(crate) struct Input<'a> {
     pub(crate) scene: &'a Scene,
     /// Bumps whenever the scene changes.
     pub(crate) scene_version: u64,
     pub(crate) data: &'a [Data],
     pub(crate) host: Option<&'a dyn Host>,
-    pub(crate) waker: &'a Waker,
     /// Whether rows are being dragged: what they move derives on the frame, however much.
     pub(crate) dragging: bool,
 }
@@ -240,15 +243,15 @@ pub(crate) struct Derivations {
 pub(crate) type Beside<'a> = [Option<&'a Table>; 2];
 
 impl Derivations {
-    /// Brings every derivation up to `input`; whether any table changed.
-    pub(crate) fn update(&mut self, input: &Input<'_>) -> bool {
-        let mut jobs = Jobs::new(input.host, input.waker);
+    /// Brings every derivation up to `input`, spending what the tiles left of the frame's `jobs`;
+    /// whether any table changed.
+    pub(crate) fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool {
         let diagram = matches!(input.scene.space, Space::Diagram(_));
         let (on, off): (&mut dyn Derive, &mut dyn Derive) =
             if diagram { (&mut self.sheet, &mut self.lanes) } else { (&mut self.lanes, &mut self.sheet) };
         off.clear();
-        let mut changed = on.update(input, &mut jobs);
-        changed |= self.shapes.update(input, &mut jobs);
+        let mut changed = on.update(input, jobs);
+        changed |= self.shapes.update(input, jobs);
         changed
     }
 

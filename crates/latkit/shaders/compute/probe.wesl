@@ -11,7 +11,7 @@
 import package::lib::types::{
     NONE, FADE_OUT, POINTS, STROKES, TRIANGLES, MARK_EDGES, PATH_GEOMETRY, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH,
     PROBE_X, PROBE_Y, PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED,
-    LIST_KEPT,
+    LIST_KEPT, LIST_ITEMS,
 };
 import package::lib::bind::{frame, eye, mark, state};
 import package::lib::state::row_at;
@@ -225,9 +225,15 @@ fn query_hit(i: u32) -> Reach {
     return r;
 }
 
+// Items the query's list counts: as many as the CPU sized it for, which a stroke's segment list may
+// draw fewer of. Every one is counted, 0 past what draws, so no word left from before is summed.
+fn query_items() -> u32 {
+    return lists[mark.query + LIST_ITEMS];
+}
+
 @compute @workgroup_size(256)
 fn count_hits(@builtin(global_invocation_id) id: vec3u) {
-    if id.x < instances() {
+    if id.x < query_items() {
         lists[list_counts(mark.query) + id.x] = u32(query_hit(id.x).row != NONE);
     }
 }
@@ -309,7 +315,7 @@ fn boxed_row(i: u32) -> u32 {
 
 @compute @workgroup_size(256)
 fn count_boxed(@builtin(global_invocation_id) id: vec3u) {
-    if id.x < instances() {
+    if id.x < query_items() {
         lists[list_counts(mark.query) + id.x] = u32(boxed_row(id.x) != NONE);
     }
 }

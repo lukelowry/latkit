@@ -5,16 +5,34 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::Waker;
 
+use super::work::{Count, Counters};
 use crate::{Error, Result};
 
-/// Map buffers no readback holds, by size.
-#[derive(Clone, Default)]
-pub(crate) struct Readbacks(Arc<Mutex<Vec<wgpu::Buffer>>>);
+/// Map buffers no readback holds, by size, and what counts the readbacks made from them. Every pool
+/// says whether it counts, so none stops counting by default.
+#[derive(Clone)]
+pub(crate) struct Readbacks {
+    free: Arc<Mutex<Vec<wgpu::Buffer>>>,
+    counters: Option<Arc<Counters>>,
+}
 
 impl Readbacks {
+    /// A pool whose readbacks `counters` counts: the `Gpu`'s.
+    pub(crate) fn counted(counters: Arc<Counters>) -> Readbacks {
+        Readbacks { free: Arc::default(), counters: Some(counters) }
+    }
+
+    /// A pool whose readbacks count as no work: the frame timer's, which only some devices have.
+    pub(crate) fn uncounted() -> Readbacks {
+        Readbacks { free: Arc::default(), counters: None }
+    }
+
     fn take(&self, device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+        if let Some(counters) = &self.counters {
+            counters.add(Count::Readbacks, 1);
+        }
         let class = size.max(256).next_power_of_two();
-        let mut free = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(i) = free.iter().position(|b| b.size() == class) {
             return free.swap_remove(i);
         }
@@ -98,7 +116,7 @@ impl Drop for Readback {
             buffer.unmap();
         }
         if matches!(mapping, Mapping::Ready | Mapping::Read) {
-            self.pool.0.lock().unwrap_or_else(PoisonError::into_inner).push(buffer);
+            self.pool.free.lock().unwrap_or_else(PoisonError::into_inner).push(buffer);
         }
     }
 }

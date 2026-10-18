@@ -12,6 +12,7 @@ use crate::Row;
 use crate::data::{Field, PAGE_ROWS, Reference};
 use crate::expr::compile::Deps;
 use crate::gpu::shaders as wgsl;
+use crate::gpu::work::Queue;
 use crate::scene::mark::Primitive;
 
 /// Changed words past which the whole buffer is written at once.
@@ -48,7 +49,7 @@ pub(crate) struct Lit {
 impl View {
     /// Writes the focus words that changed; after `fresh`, a new buffer, every word. Channels reading
     /// selection or hover evaluate again, and every mark's lit rows are laid out again.
-    pub(super) fn write_focus(&mut self, queue: &wgpu::Queue, buffer: &wgpu::Buffer, capacity: u64, fresh: bool) {
+    pub(super) fn write_focus(&mut self, queue: &Queue, buffer: &wgpu::Buffer, capacity: u64, fresh: bool) {
         if fresh {
             self.focus.written.clear();
             self.focus.dirty = true;

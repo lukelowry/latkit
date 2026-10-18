@@ -3,3 +3,4 @@ packages:
   - 'examples/*'
   - 'benchmark'
   - 'npm/examples'
+  - 'npm/bench'

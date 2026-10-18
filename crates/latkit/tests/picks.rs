@@ -73,6 +73,57 @@ fn picks_list_every_row_in_reach_nearest_first() {
 }
 
 #[test]
+fn every_hit_of_geodesic_edges_lies_in_reach() {
+    let Some(gpu) = gpu() else { return };
+    // A lattice on the globe: geodesic edges drawn through a segment list, which draws fewer segments
+    // than the query's list is sized for.
+    let side = 24_usize;
+    let (mut lon, mut lat, mut from, mut to) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for i in 0..side * side {
+        lon.push(-170.0 + 340.0 * (i % side) as f64 / (side - 1) as f64);
+        lat.push(-75.0 + 150.0 * (i / side) as f64 / (side - 1) as f64);
+        if i % side < side - 1 {
+            from.push(i as u64);
+            to.push(i as u64 + 1);
+        }
+        if i + side < side * side {
+            from.push(i as u64);
+            to.push((i + side) as u64);
+        }
+    }
+    let mut data = Data::new("grid");
+    let lines = from.len();
+    data.apply(
+        Patch::new()
+            .set(Table::new("Bus", side * side).field("lon", lon).field("lat", lat))
+            .set(Table::new("Line", lines).reference("from", "Bus", from).reference("to", "Bus", to)),
+    )
+    .expect("valid");
+    let earth = latkit::Earth { graticule: false, ..latkit::Earth::globe() };
+    let scene = Scene::new(earth)
+        .theme(plain_theme())
+        .draw(Edges::of("grid", "Line").ends("from", "to"))
+        .draw(Vertices::of("grid", "Bus").position("lon", "lat"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_data(data);
+    view.fit(latkit::Fit::All);
+    frame(&gpu, &mut view);
+    let c = SIZE as f32 / 2.0;
+    // A wide pick first leaves its counts in the lists buffer; a narrow one after must not sum them.
+    for radius in [40.0, 4.0] {
+        let pending = view.pick([c, c], radius);
+        let hits = answer(&gpu, &mut view, pending);
+        assert!(!hits.is_empty(), "the middle of the lattice is in reach");
+        for hit in &hits {
+            // A vertex is reached at its outline and lies at its center, a marker's radius further.
+            let reach = (hit.point[0] - c).hypot(hit.point[1] - c);
+            let what = format!("{} {} at {:?}, {reach} away", hit.row.table, hit.row.id, hit.point);
+            assert!(hit.distance <= radius && reach <= radius + 8.0, "{what}");
+        }
+    }
+}
+
+#[test]
 fn locate_finds_a_row_on_screen() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, Controls::default());

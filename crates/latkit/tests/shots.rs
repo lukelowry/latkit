@@ -118,5 +118,6 @@ fn a_frame_tells_whether_anything_stood_in() {
     view.set_data(data);
     frame(&gpu, &mut view);
     assert!(view.complete());
-    assert!(view.stats().complete);
+    let waiting = view.stats().waiting;
+    assert!(waiting.is_empty(), "waiting on {waiting}");
 }

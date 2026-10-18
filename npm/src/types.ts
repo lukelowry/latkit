@@ -177,15 +177,50 @@ export interface Stats {
   /** Bytes the GPU's budget lets data take. */
   budget: number;
   /**
-   * Whether the last frame drew everything as the data, scene, and camera say, with nothing
-   * standing in for work under way: no tile drawing its ancestor, no wire its elbows, no label its
-   * estimate.
+   * The work under way the last frame stood in for; empty when it drew everything as the data,
+   * scene, and camera say: no tile drawing its ancestor, no wire its elbows, no label its estimate.
    */
-  complete: boolean;
+  waiting: Waiting[];
   /** Milliseconds the last frame took to record. */
   cpuMs: number;
   /** Milliseconds the GPU takes on a frame: the median of the last it measured; 0 where it cannot. */
   gpuMs: number;
+}
+
+/**
+ * Work under way a frame stands in for: pages uploading or tables not yet built from them
+ * (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or
+ * texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again,
+ * segment counts, or a transition beginning (`marks`).
+ */
+export type Waiting = 'data' | 'derived' | 'labels' | 'fit' | 'marks';
+
+/**
+ * What a GPU did since it was created, counted exactly. Unlike time, it repeats wherever the
+ * budget, the device's limits, and the frames drawn do, so tests and benchmarks hold it to what it
+ * was; subtract two for what happened between.
+ */
+export interface Work {
+  /** Bytes of data pages uploaded. */
+  uploaded: number;
+  /** Bytes written besides pages: uniforms, programs, label runs, the selection, textures. */
+  written: number;
+  /** Rows whose channels the GPU evaluated. */
+  evaluated: number;
+  /**
+   * Reads back from the GPU: probes, queries, fits, label placements, segment counts, pictures;
+   * not the frame timer's, which only some devices have.
+   */
+  readbacks: number;
+  /**
+   * Jobs handed out: layouts, routes, lanes, triangulations, pyramids, tiles; to workers, or done
+   * at once without them.
+   */
+  jobs: number;
+  /** Label texts asked to be set. */
+  texts: number;
+  /** Pipelines made. */
+  pipelines: number;
 }
 
 /**

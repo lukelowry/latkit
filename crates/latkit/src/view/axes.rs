@@ -8,6 +8,7 @@ use super::View;
 use super::camera::Area;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
+use crate::gpu::work::Queue;
 use crate::host::TextRun;
 use crate::{Axis, Camera, Color, Format, Plot, Space, Theme};
 
@@ -101,7 +102,7 @@ enum Align {
 
 struct Writer<'a> {
     inner: &'a mut Inner,
-    queue: &'a wgpu::Queue,
+    queue: &'a Queue,
     font: Arc<str>,
     size_px: u32,
     ratio: f64,
@@ -135,7 +136,7 @@ impl Writer<'_> {
 
 impl View {
     /// The sprites drawn over the marks this frame: a plot's axes, and a box being selected.
-    pub(super) fn overlay(&self, inner: &mut Inner, queue: &wgpu::Queue) -> Vec<wgsl::Sprite> {
+    pub(super) fn overlay(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
         let mut sprites = self.axes_sprites(inner, queue);
         let theme = &self.scene.theme;
         let color = theme.selected.unwrap_or(theme.hover);
@@ -154,7 +155,7 @@ impl View {
         sprites
     }
 
-    fn axes_sprites(&self, inner: &mut Inner, queue: &wgpu::Queue) -> Vec<wgsl::Sprite> {
+    fn axes_sprites(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
         let Space::Plot(plot) = &self.scene.space else { return Vec::new() };
         let Camera::Plot { x, y: Some(y) } = self.drawn_camera() else { return Vec::new() };
         let theme = &self.scene.theme;
@@ -169,7 +170,7 @@ impl View {
     fn axes(
         &self,
         inner: &mut Inner,
-        queue: &wgpu::Queue,
+        queue: &Queue,
         plot: &Plot,
         theme: &Theme,
         area: Area,

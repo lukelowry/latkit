@@ -1,7 +1,8 @@
 //! What the platform does for latkit: set and measure text in its fonts, do jobs off the frame, fetch
 //! bytes, and encode video. A [`Gpu`](crate::Gpu) is given its host with
 //! [`Gpu::set_host`](crate::Gpu::set_host); without one, views draw no text, do their jobs at once,
-//! fetch nothing, and encode no video. A browser's host is [`Browser`], with the `web` feature.
+//! fetch nothing, and encode no video. A browser's host is `Browser`, built with the `web` feature
+//! for `wasm32`.
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod browser;

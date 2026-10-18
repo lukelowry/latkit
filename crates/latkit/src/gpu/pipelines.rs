@@ -5,9 +5,11 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use super::shaders::{Binding, MARK_GROUP, PATH_ENDS, Shader, VIEW_GROUP};
+use super::work::{Count, Counters};
 use crate::Error;
 use crate::view::DEPTH;
 
@@ -82,6 +84,8 @@ pub(crate) struct Pipelines {
     render: HashMap<Variant, wgpu::RenderPipeline>,
     compute: HashMap<Variant, wgpu::ComputePipeline>,
     custom: HashMap<(String, Shader, wgpu::TextureFormat, u32), Custom>,
+    /// What counts the pipelines made.
+    counters: Arc<Counters>,
 }
 
 /// Shaders that draw into the shadow map, custom markers' included.
@@ -152,7 +156,7 @@ fn layout(device: &wgpu::Device, label: &str, bindings: &[Binding]) -> wgpu::Bin
 }
 
 impl Pipelines {
-    pub(crate) fn new(device: &wgpu::Device) -> Pipelines {
+    pub(crate) fn new(device: &wgpu::Device, counters: Arc<Counters>) -> Pipelines {
         let empty_layout = layout(device, "latkit empty", &[]);
         let empty = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("latkit empty"),
@@ -169,6 +173,7 @@ impl Pipelines {
             render: HashMap::new(),
             compute: HashMap::new(),
             custom: HashMap::new(),
+            counters,
         }
     }
 
@@ -300,6 +305,7 @@ impl Pipelines {
     ) -> wgpu::RenderPipeline {
         let shader = variant.shader;
         let (format, samples) = variant.target.expect("a render variant");
+        self.counters.add(Count::Pipelines, 1);
         let layout = self.pipeline_layout(device, shader);
         let constants = variant.constants();
         let options = || wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
@@ -348,6 +354,7 @@ impl Pipelines {
         let module = self.module(device, variant.shader);
         let layout = self.pipeline_layout(device, variant.shader);
         let constants = variant.constants();
+        self.counters.add(Count::Pipelines, 1);
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(variant.entry),
             layout: Some(&layout),

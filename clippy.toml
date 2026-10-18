@@ -1,2 +1,7 @@
 # Names of formats and products that read as prose, not code.
 doc-valid-idents = ["GeoJSON", "TileJSON", "PMTiles", "WebCodecs", ".."]
+# Every write to the GPU is counted: through `gpu::work::Queue`, never the raw queue.
+disallowed-methods = [
+  { path = "wgpu::Queue::write_buffer", reason = "write through gpu::work::Queue, which counts" },
+  { path = "wgpu::Queue::write_texture", reason = "write through gpu::work::Queue, which counts" },
+]

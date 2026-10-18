@@ -9,6 +9,7 @@ pub(crate) mod icons;
 pub(crate) mod pipelines;
 pub(crate) mod readback;
 pub(crate) mod shaders;
+pub(crate) mod work;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -20,6 +21,7 @@ use dictionary::Dictionaries;
 use icons::Icons;
 use pipelines::Pipelines;
 use readback::Readbacks;
+use work::{Counters, Queue, Work};
 
 use crate::host::Host;
 use crate::{Error, Result};
@@ -37,7 +39,11 @@ pub(crate) struct Shared {
     pub(crate) instance: Option<wgpu::Instance>,
     pub(crate) adapter: Option<wgpu::Adapter>,
     pub(crate) device: wgpu::Device,
-    pub(crate) queue: wgpu::Queue,
+    /// The queue, counting what is written through it.
+    pub(crate) queue: Queue,
+    /// What the GPU did, counted: views count the rows they evaluate and the jobs they hand out
+    /// through it, and [`Gpu::work`] reads it.
+    pub(crate) counters: Arc<Counters>,
     pub(crate) sampler: wgpu::Sampler,
     pub(crate) lost: Arc<AtomicBool>,
     /// Errors the device reported outside any scope, for views to tell.
@@ -146,24 +152,42 @@ impl Gpu {
             ..Default::default()
         });
         let budget = Budget::of(&device);
+        let counters = Arc::new(Counters::default());
         let inner = Inner {
             arena: Arena::new(&device, budget.bytes),
-            pipelines: Pipelines::new(&device),
+            pipelines: Pipelines::new(&device, counters.clone()),
             colormaps: Colormaps::new(&device),
             dictionaries: Dictionaries::default(),
-            atlas: Atlas::new(&device),
+            atlas: Atlas::new(&device, counters.clone()),
             icons: Icons::new(&device),
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::counted(counters.clone()),
             host: None,
             budget,
         };
+        let queue = Queue::new(queue, counters.clone());
         #[cfg_attr(
             target_arch = "wasm32",
             allow(clippy::arc_with_non_send_sync, reason = "WebGPU objects stay on the one thread a page has")
         )]
-        let shared =
-            Arc::new(Shared { instance, adapter, device, queue, sampler, lost, errors, inner: Mutex::new(inner) });
+        let shared = Arc::new(Shared {
+            instance,
+            adapter,
+            device,
+            queue,
+            counters,
+            sampler,
+            lost,
+            errors,
+            inner: Mutex::new(inner),
+        });
         Gpu(shared)
+    }
+
+    /// What this GPU did since it was made, counted exactly. It repeats wherever the budget, the
+    /// device's limits, and the frames drawn do, so tests and benchmarks hold it to what it was.
+    /// Subtract two for what happened between.
+    pub fn work(&self) -> Work {
+        self.0.counters.work()
     }
 
     /// The device.

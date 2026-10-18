@@ -65,6 +65,22 @@ impl Gpu {
         ])
     }
 
+    /// What the GPU did since it was made, counted exactly: `{ uploaded, written, evaluated, readbacks,
+    /// jobs, texts, pipelines }`.
+    #[wasm_bindgen(getter)]
+    pub fn work(&self) -> JsValue {
+        let work = self.0.work();
+        convert::object(&[
+            ("uploaded", (work.uploaded as f64).into()),
+            ("written", (work.written as f64).into()),
+            ("evaluated", (work.evaluated as f64).into()),
+            ("readbacks", (work.readbacks as f64).into()),
+            ("jobs", (work.jobs as f64).into()),
+            ("texts", (work.texts as f64).into()),
+            ("pipelines", (work.pipelines as f64).into()),
+        ])
+    }
+
     /// Sets how much GPU memory data takes.
     #[wasm_bindgen(js_name = setBudget)]
     pub fn set_budget(&self, bytes: f64, upload_per_frame: f64) {

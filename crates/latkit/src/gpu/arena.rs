@@ -17,6 +17,7 @@ use rustc_hash::FxBuildHasher;
 use crate::data::{AxisPage, FramePage, PageId, Value, Values};
 use crate::expr::compile::Part;
 use crate::gpu::shaders::{MISSING, NONE, POINT_BITS};
+use crate::gpu::work::Queue;
 
 /// Words in a chunk: the largest block, and the largest page.
 pub(crate) const CHUNK_WORDS: u32 = 1 << 16;
@@ -335,7 +336,7 @@ impl Arena {
     ///
     /// A page that finds no room stays queued at the front, and later pages wait behind it, so the
     /// pages of one table upload in order; it tries again once a pin lets room go.
-    pub(crate) fn pump(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, budget: u64) -> u64 {
+    pub(crate) fn pump(&mut self, device: &wgpu::Device, queue: &Queue, budget: u64) -> u64 {
         let mut bytes = 0;
         while !self.starved
             && (bytes == 0 || bytes < budget)
@@ -358,7 +359,7 @@ impl Arena {
             };
             let tail = content.words(written as usize);
             if !tail.is_empty() {
-                queue.write_buffer(&self.buffer, u64::from(offset + written) * 4, bytemuck::cast_slice(&tail));
+                queue.upload(&self.buffer, u64::from(offset + written) * 4, bytemuck::cast_slice(&tail));
                 bytes += tail.len() as u64 * 4;
             }
             self.blocks.get_mut(&key).expect("placed").written = written + tail.len() as u32;
@@ -367,7 +368,7 @@ impl Arena {
     }
 
     /// Allocates a block of `class` for `key`, releasing a smaller one it had.
-    fn place(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: PageKey, class: usize) -> Option<u32> {
+    fn place(&mut self, device: &wgpu::Device, queue: &Queue, key: PageKey, class: usize) -> Option<u32> {
         let offset = self.allocate(device, queue, class, key)?;
         if let Some(old) = self.blocks.get(&key).filter(|b| b.offset != NONE) {
             let (old_offset, old_class) = (old.offset, old.class);
@@ -406,7 +407,7 @@ impl Arena {
     /// A block of `class`: a free one of its size, a free chunk carved, the pool grown, or room the
     /// least recently used unpinned blocks leave, whatever their size; `None` when every block left
     /// is pinned. `keep` is the page it is for, which is never evicted for itself.
-    fn allocate(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, class: usize, keep: PageKey) -> Option<u32> {
+    fn allocate(&mut self, device: &wgpu::Device, queue: &Queue, class: usize, keep: PageKey) -> Option<u32> {
         loop {
             if let Some(&k) = self.partial[class].first() {
                 let chunk = &mut self.chunks[k as usize];
@@ -438,7 +439,7 @@ impl Arena {
     }
 
     /// Doubles the buffer up to the limit, copying what it holds.
-    fn grow(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
+    fn grow(&mut self, device: &wgpu::Device, queue: &Queue) -> bool {
         let before = self.chunks.len() as u32;
         let chunks = (before * 2).min(self.limit);
         if chunks <= before {

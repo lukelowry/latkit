@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::gpu::work::Queue;
+
 /// Texels across an icon layer.
 const SIZE: u32 = 64;
 
@@ -42,7 +44,7 @@ impl Icons {
     }
 
     /// The layer of each of `images`, uploading the ones not yet on the GPU.
-    pub(crate) fn layers(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, images: &[crate::Image]) -> Vec<u32> {
+    pub(crate) fn layers(&mut self, device: &wgpu::Device, queue: &Queue, images: &[crate::Image]) -> Vec<u32> {
         let needed = self.layers.len() as u32 + images.len() as u32;
         if needed > self.capacity {
             let capacity = needed.next_power_of_two().min(device.limits().max_texture_array_layers);

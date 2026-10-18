@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::expr::{Colormap, ColormapKey};
+use crate::gpu::work::Queue;
 use crate::{Error, Result};
 
 const INITIAL_LAYERS: u32 = 16;
@@ -41,7 +42,7 @@ impl Colormaps {
     }
 
     /// The layer holding `colormap`, uploading it the first time.
-    pub(crate) fn layer(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, colormap: &Colormap) -> Result<u32> {
+    pub(crate) fn layer(&mut self, device: &wgpu::Device, queue: &Queue, colormap: &Colormap) -> Result<u32> {
         let key = colormap.key();
         if let Some(&layer) = self.layers.get(&key) {
             return Ok(layer);

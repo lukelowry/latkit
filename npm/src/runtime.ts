@@ -17,6 +17,7 @@ import type {
   Stats,
   Values,
   ViewEvents,
+  Work,
 } from './types.js';
 
 let run: ((bytes: Uint8Array) => Promise<Uint8Array>) | undefined;
@@ -257,6 +258,11 @@ export class Gpu {
 
   set budget(budget: Budget) {
     this.inner.setBudget(budget.bytes, budget.uploadPerFrame);
+  }
+
+  /** What this GPU did since it was created, counted exactly; see {@link Work}. */
+  get work(): Work {
+    return this.inner.work as Work;
   }
 
   /** Releases this GPU's views and frame listeners. Other GPUs and data handles remain usable. */

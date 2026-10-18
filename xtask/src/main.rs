@@ -5,9 +5,11 @@
 //! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`: every
 //!   shader variant's pipelines compile in Chrome within budget, and every example page draws and
 //!   answers the pointer without errors or stalls.
-//! - `bench`: the quick benchmark (`npm/examples/gate/bench.ts`) over a release `wasm`: the network
-//!   page's grids, from 240 buses to two million, each held to budgets for loading, the frame's CPU
-//!   and GPU time while the camera moves, and frames drawn while it does not.
+//! - `bench [--quick] [--only a,b] [--repeats n] [--update] [--against old] [--software]`: the
+//!   benchmark (`npm/bench`) over a release `wasm`: every scenario up its sizes in Chrome while the
+//!   last one fits, each phase's time, GPU time, stalls, and exact work, held to how it may grow with
+//!   size, to the committed work, and to the times taken on this machine; a lost device stops the
+//!   sweep. See `npm/bench/run.ts`.
 //! - `wasm [--dev]`: build `latkit-js`, bind it with the `wasm-bindgen` CLI matching `Cargo.lock`,
 //!   optimize it with the pinned Binaryen tool, and compile the npm wrapper. `--dev` builds faster
 //!   and skips `wasm-opt`.
@@ -24,13 +26,18 @@ fn main() -> ExitCode {
     let result = match task.as_str() {
         "check" => check(),
         "browser" => browser(),
-        "bench" => wasm(false).and_then(|()| run("node", &["npm/examples/gate/bench.ts"])),
+        "bench" => wasm(false).and_then(|()| {
+            let flags: Vec<String> = std::env::args().skip(2).collect();
+            let mut args = vec!["npm/bench/run.ts"];
+            args.extend(flags.iter().map(String::as_str));
+            run("node", &args)
+        }),
         "wasm" => wasm(dev),
         "package" => package(),
         "package-test" => package_test(),
         "examples" => wasm(true).and_then(|()| pnpm(&["--dir", "npm/examples", "exec", "vite"])),
         _ => {
-            eprintln!("usage: cargo xtask <check|browser|bench|wasm [--dev]|package|package-test|examples>");
+            eprintln!("usage: cargo xtask <check|browser|bench [flags]|wasm [--dev]|package|package-test|examples>");
             return ExitCode::FAILURE;
         }
     };
@@ -85,6 +92,7 @@ fn check() -> Result {
     pnpm(&["exec", "tsc", "-p", "npm/test"])?;
     pnpm(&["--dir", "npm/examples", "exec", "tsc", "--noEmit"])?;
     pnpm(&["--dir", "npm/examples", "exec", "tsc", "-p", "gate"])?;
+    pnpm(&["--dir", "npm/bench", "exec", "tsc", "-p", "."])?;
     browser_gate()
 }
 
