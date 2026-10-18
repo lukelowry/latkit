@@ -213,3 +213,25 @@ fn a_legend_draws_its_marks_colormap_across_the_domain() {
     let scene = Scene::new(plane()).draw(Vertices::of("graph", "Node").position("x", "y").legend(""));
     assert!(View::new(&gpu, scene).is_err(), "a legend needs a colormap with a domain");
 }
+
+#[test]
+fn a_legend_lists_named_categories_by_their_colors() {
+    use latkit::{Colormap, ColormapKind, field};
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("graph");
+    data.apply(Table::new("Node", 2).field("x", vec![-1.0, 1.0]).field("y", vec![0.0, 0.0]).field("k", vec![0.0, 1.0]))
+        .expect("valid");
+    let map = Colormap::new(ColormapKind::Categorical, &[Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0)]);
+    let node = Vertices::of("graph", "Node").position("x", "y").radius(4.0);
+    let scene = Scene::new(plane()).theme(plain_theme());
+    let unnamed = scene.clone().draw(node.clone().color(field("k").colormap(map.clone())).legend(""));
+    assert!(View::new(&gpu, unnamed).is_err(), "categories without names need a domain");
+    let named = field("k").colormap(map.categories(["red", "blue"]));
+    let mut view = view(&gpu, scene.draw(node.color(named).legend("")), data);
+    let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
+    // Without a host no names are set, so the swatches end at the right margin, a row each above the
+    // bottom one: rows of 16.5 px up from 16 px above the bottom.
+    let x = 400 - 16 - 4;
+    assert!(close(pixel(&image, x, 200 - 16 - 25), RED), "the first category: {:?}", pixel(&image, x, 159));
+    assert!(close(pixel(&image, x, 200 - 16 - 8), [0, 0, 255, 255]), "the second: {:?}", pixel(&image, x, 176));
+}

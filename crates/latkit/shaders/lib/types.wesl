@@ -88,14 +88,16 @@ const VERTEX_ELEVATION: u32 = 8u;
 const VERTEX_DEPTH: u32 = 9u;
 const VERTEX_FLAGS: u32 = 10u;
 
-// Edge state words. Every kind's flags are its last word.
-const EDGE_WORDS: u32 = 6u;
+// Edge state words. Every kind's flags are its last word. A stroke's travel is how far its comets
+// moved, which no channel writes.
+const EDGE_WORDS: u32 = 7u;
 const EDGE_FROM: u32 = 0u;
 const EDGE_TO: u32 = 1u;
 const EDGE_COLOR: u32 = 2u;
 const EDGE_WIDTH: u32 = 3u;
 const EDGE_FLOW: u32 = 4u;
-const EDGE_FLAGS: u32 = 5u;
+const EDGE_TRAVEL: u32 = 5u;
+const EDGE_FLAGS: u32 = 6u;
 
 // A vertex mark's ports, beside its program: each port's code (its side in two bits, its place
 // among the ports on that side and how many share it in eight each, and whether it is an output),
@@ -130,11 +132,12 @@ const FACE_COLOR: u32 = 3u;
 const FACE_FLAGS: u32 = 4u;
 
 // Line state words.
-const LINE_WORDS: u32 = 4u;
+const LINE_WORDS: u32 = 5u;
 const LINE_COLOR: u32 = 0u;
 const LINE_WIDTH: u32 = 1u;
 const LINE_FLOW: u32 = 2u;
-const LINE_FLAGS: u32 = 3u;
+const LINE_TRAVEL: u32 = 3u;
+const LINE_FLAGS: u32 = 4u;
 
 // Area state words.
 const AREA_WORDS: u32 = 2u;
@@ -360,7 +363,14 @@ struct Frame {
     glow: f32,
     dim: f32,
     dash: f32,
+    // Comets: the distance between them and how far a tail trails its head, in the theme's lengths
+    // or with `flow_units` in position units; how wide a head is, in CSS pixels; and the seconds
+    // they travel this frame.
     flow_spacing: f32,
+    flow_length: f32,
+    flow_width: f32,
+    flow_units: u32,
+    flow_step: f32,
     // How far a lane bows, in its edge's lengths at its middle.
     lane_bow: f32,
     hover_scale: f32,

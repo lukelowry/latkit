@@ -69,7 +69,11 @@ pub(crate) fn frame(
     frame.glow = theme.glow;
     frame.dim = theme.dim;
     frame.dash = theme.dash * unit;
-    frame.flow_spacing = theme.flow_spacing * unit;
+    // Comets travel in their own lengths, which a stroke turns into pixels where it draws them.
+    frame.flow_spacing = theme.flow.spacing;
+    frame.flow_length = theme.flow.length;
+    frame.flow_width = theme.flow.width * unit;
+    frame.flow_units = u32::from(theme.flow.units);
     frame.lane_bow = theme.lane_bow;
     // Hover is state either way; the controls say only whether it glows.
     let glows = scene.controls.hover;
@@ -83,7 +87,7 @@ pub(crate) fn frame(
     frame.linear = u32::from(linear);
     frame.hover = if glows { theme.hover.to_array() } else { [0.0; 4] };
     frame.selected = selected;
-    frame.flow = theme.flow.to_array();
+    frame.flow = theme.flow.color.to_array();
     frame.background = theme.background.to_array();
     frame.surface = surface.to_array();
     frame.grid_color = theme.grid.to_array();

@@ -110,6 +110,8 @@ export default async function page(stage: Stage): Promise<void> {
       atmosphere: '#5aa9ff99',
       night: 0.28,
       glow: 5,
+      // Comets kept soft, as rivers carry them across the map too.
+      flow: { color: '#d6e6ffa6', width: 3, length: 20, spacing: 72 },
     },
     controls: { selectBox: true },
     marks: [...mapMarks(), ...gridMarks()],

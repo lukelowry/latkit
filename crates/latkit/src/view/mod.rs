@@ -574,7 +574,13 @@ impl View {
             // A mark evaluates once its columns synced: until then, the pages they wait for wake it.
             || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
             || self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME)))
+            || self.flowing()
             || self.gpu.0.lock().arena.uploading()
+    }
+
+    /// Whether comets travel along a mark's rows: one that flows draws, and the theme shows them.
+    fn flowing(&self) -> bool {
+        self.scene.theme.flow.color.a > 0.0 && self.marks.iter().any(|m| m.drawable() && m.mark.flows())
     }
 
     /// Whether the next frame does work this one left: pages to upload past the frame's budget, rows

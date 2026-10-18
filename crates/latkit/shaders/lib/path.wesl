@@ -51,16 +51,18 @@ struct PathPoint {
     ahead: bool,
 }
 
-// How a row's path is stroked.
+// How a row's path is stroked: its comets' flow, and how far they traveled.
 struct Style {
     width: f32,
     color: vec4f,
     flow: f32,
+    travel: f32,
     dash: bool,
     shown: bool,
 }
 
-// A segment on screen: its ends as points, in CSS pixels, and in clip space, and whether it shows.
+// A segment on screen: its ends as points, in CSS pixels, and in clip space, whether it shows, and
+// how far along it its ends stop short of the vertices they meet, as fractions of it.
 struct OnScreen {
     ends: array<PathPoint, 2>,
     a: vec2f,
@@ -68,6 +70,7 @@ struct OnScreen {
     ca: vec4f,
     cb: vec4f,
     shown: bool,
+    kept: vec2f,
 }
 
 // The segment drawn as instance `instance`: a fixed number per row, or numbered by the mark's list,
@@ -83,12 +86,18 @@ fn segment(instance: u32) -> Segment {
     return Segment(row, instance - list_start(mark.list, row), bitcast<f32>(lists[entry + 1u]));
 }
 
-// In the focus draw, piece `instance % mark.pieces` of the lit row `instance / mark.pieces`; pieces
-// past the row's own end draw nothing.
+// In the focus draw, piece `instance % mark.pieces` of the lit row `instance / mark.pieces`, as far
+// along as its list keeps it; pieces past the row's own end draw nothing.
 @if(focused)
 fn segment(instance: u32) -> Segment {
     let pieces = max(mark.pieces, 1u);
-    return Segment(focused[mark.focused + instance / pieces], instance % pieces, 0.0);
+    let row = focused[mark.focused + instance / pieces];
+    let index = instance % pieces;
+    var along = 0.0;
+    if mark.per_row == NONE && row < mark.rows && index < path_count(row) {
+        along = bitcast<f32>(lists[list_entry(mark.list, 2u * (list_start(mark.list, row) + index)) + 1u]);
+    }
+    return Segment(row, index, along);
 }
 
 // Length units between two points of a path: what a segment adds to the distance along it.
@@ -399,20 +408,23 @@ fn segment_screen(s: Segment) -> OnScreen {
     out.shown = ends[0].shown && ends[1].shown && ahead && out.ca.w > 0.0 && out.cb.w > 0.0;
     out.a = to_screen(out.ca);
     out.b = to_screen(out.cb);
+    out.kept = vec2f(0.0, 1.0);
     // Strokes stop at the outlines of the vertices they end at, without passing each other.
     let along = out.b - out.a;
     let length_along = length(along);
     if length_along > 1e-3 {
         let dir = along / length_along;
         let room = 0.5 * length_along;
-        out.a += dir * min(outline(ends[0], dir), room);
-        out.b -= dir * min(outline(ends[1], dir), room);
+        let short = vec2f(min(outline(ends[0], dir), room), min(outline(ends[1], dir), room));
+        out.a += dir * short.x;
+        out.b -= dir * short.y;
+        out.kept = vec2f(short.x, length_along - short.y) / length_along;
     }
     return out;
 }
 
-// How row `row`'s path is stroked: never thinner than a hairline. Comets flow in length units per
-// second, as their spacing is: CSS pixels, or units in a diagram.
+// How row `row`'s path is stroked: never thinner than a hairline. Its comets' flow and travel are in
+// the lengths the theme's flow measures them in.
 fn stroke_style(row: u32) -> Style {
     var s: Style;
     if mark.kind == MARK_EDGES {
@@ -421,7 +433,8 @@ fn stroke_style(row: u32) -> Style {
         // An edge colored by its ends takes their colors where it draws; this only fades it.
         s.color = select(unpack4x8unorm(e.color), vec4f(1.0), ends_colored());
         s.color.a *= faded(row, e.flags);
-        s.flow = e.flow * frame.unit;
+        s.flow = e.flow;
+        s.travel = e.travel;
         s.dash = (e.flags & DASH) != 0u;
         s.shown = (e.flags & VISIBLE) != 0u;
     } else {
@@ -429,7 +442,8 @@ fn stroke_style(row: u32) -> Style {
         s.width = px(l.width, LINE_WIDTH) * growth(l.flags);
         s.color = unpack4x8unorm(l.color);
         s.color.a *= faded(row, l.flags);
-        s.flow = l.flow * frame.unit;
+        s.flow = l.flow;
+        s.travel = l.travel;
         s.dash = (l.flags & DASH) != 0u;
         s.shown = (l.flags & VISIBLE) != 0u;
     }

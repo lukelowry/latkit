@@ -52,9 +52,9 @@ pub use {
     gpu::{Budget, Gpu, work::Work},
     pending::{Pending, Resolver},
     scene::{
-        Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Format, Grid, Interpolation, Label, Layered,
-        Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space, Stress,
-        Theme, Vertices,
+        Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Flow, Format, Grid, Interpolation, Label,
+        Layered, Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space,
+        Stress, Theme, Vertices,
     },
     shot::Shot,
     video::{Encoding, Mp4, Pixels, Sink, Video},

@@ -1,23 +1,23 @@
 /**
  * Grid operations: a state's transmission grid as a control room watches it. Each substation is a
- * gauge of its output, a plant's round and a load's square; branches color by loading, carry comets
- * along their flow, and bow apart where they run in parallel. The flows come from a DC power flow
- * solved every tick: push demand up or trip a line, and overloaded branches trip in turn, flows
- * swing onto what is left, and loads cut off from every plant go dark. Each tick eases into place;
- * what trips pulses until it is restored.
+ * gauge of its output sized by its capacity, a plant's round and a load's square; branches are as
+ * wide as their rating, color by loading, carry comets along their flow, and bow apart where they
+ * run in parallel. The flows come from a DC power flow solved every tick: push demand up or trip a
+ * line, and overloaded branches trip in turn, flows swing onto what is left, and loads cut off from
+ * every plant go dark. Each tick eases into place; what trips pulses until it is restored.
  */
 import { Data, Patch, elapsed, field, reference, when, type Hit, type Scene } from '../latkit.js';
 import type { Stage } from '../ui/stage.js';
 import texas from './texas.json';
 
-/** The control room's dark theme. */
+/** The control room's dark theme: a quiet network, its alarms and flows bright. */
 const LOOK = {
-  background: '#0a0a0a',
-  ground: '#101214',
-  border: '#8a919c',
-  text: '#fafafa',
+  background: '#07090c',
+  ground: '#10161d',
+  border: '#3b4552',
+  text: '#dfe6ee',
   hover: '#53a3f2',
-  flow: '#5ad87e',
+  comet: '#e8fff4',
   warning: '#ffc000',
   critical: '#ff6200',
   tripped: '#ff1915',
@@ -28,20 +28,35 @@ const KINDS = [
   { label: 'nuclear', color: '#a181ef', fuels: ['Nuclear Steam'] },
   {
     label: 'thermal',
-    color: '#987a59',
+    color: '#c08a52',
     fuels: ['Gas Turbine', 'Gas Combined Cycle', 'Coal-fired Steam'],
   },
   { label: 'wind', color: '#00d1da', fuels: ['Wind'] },
   { label: 'solar', color: '#ffca29', fuels: ['Solar PV'] },
-  { label: 'load', color: '#6b727e', fuels: ['Load'] },
+  { label: 'load', color: '#8a93a0', fuels: ['Load'] },
 ] as const;
-/** A branch's state, by color index: in service, near its rating, past it, or out. */
-const STATES = [
-  { label: 'in service', color: LOOK.text },
-  { label: '90% of rating', color: LOOK.warning },
-  { label: 'overloaded', color: LOOK.critical },
-  { label: 'out', color: LOOK.tripped },
-] as const;
+/** A branch's color by its loading, % of its rating: calm blues to 80%, then amber at 90% through
+ * red where its protection trips it. */
+const LOADING = field('loading')
+  .colormap({
+    kind: 'sequential',
+    colors: [
+      '#2b3e54',
+      '#2e4760',
+      '#31506c',
+      '#345a78',
+      '#376484',
+      '#3b6e8f',
+      '#40799a',
+      '#4a86a3',
+      '#6a9eaa',
+      LOOK.warning,
+      '#ff8f00',
+      LOOK.critical,
+      LOOK.tripped,
+    ],
+  })
+  .domain(0, 120);
 
 /** Seconds between ticks of the simulation. */
 const TICK = 0.5;
@@ -269,9 +284,6 @@ class Grid {
     const kind = Float32Array.from(this.kind, (k, i) =>
       this.tripped(i) || (this.load[i] && this.fill[i]! < 0.05) ? KINDS.length : k,
     );
-    const state = Float32Array.from(this.loading, (l, j) =>
-      this.out[j] ? 3 : l > 1 ? 2 : l > 0.9 ? 1 : 0,
-    );
     return new Patch()
       .set('Substation', this.n, {
         fill: this.fill,
@@ -280,9 +292,9 @@ class Grid {
         mw: Float64Array.from(this.injection, Math.abs),
       })
       .set('Branch', this.m, {
-        state,
         out: this.out,
-        alarm: Uint8Array.from(state, (s) => (s >= 2 ? 1 : 0)),
+        // Overloaded or out.
+        alarm: Uint8Array.from(this.loading, (l, j) => (this.out[j] || l > 1 ? 1 : 0)),
         flow: Float64Array.from(this.flow, (f, j) =>
           this.out[j] ? 0 : Math.max(-1, Math.min(1, f / this.rating[j]!)),
         ),
@@ -337,9 +349,18 @@ export default async function page(stage: Stage): Promise<void> {
     .sin()
     .colormap({ kind: 'sequential', colors: ['#5c0805', LOOK.tripped] })
     .domain(-1, 1);
-  const kinds = field('kind')
-    .colormap({ kind: 'categorical', colors: [...KINDS.map((k) => k.color), LOOK.tripped] })
-    .domain(0, KINDS.length);
+  const kinds = field('kind').colormap({
+    kind: 'categorical',
+    colors: [...KINDS.map((k) => k.color), LOOK.tripped],
+    categories: [...KINDS.map((k) => k.label), 'tripped or dark'],
+  });
+  // Comets run with the flow, in degrees a second, faster the nearer its rating, and never on a
+  // branch out.
+  const comets = when(field('out').gt(0.5))
+    .then(0)
+    .when(field('flow').lt(0))
+    .then(field('flow').mul(1.8).sub(0.45))
+    .otherwise(field('flow').mul(1.8).add(0.45));
   /** A substation mark: plants as round gauges, loads as square ones, in one table. */
   const substations = (name: string, load: number, shape: 'ellipse' | 'rounded') => ({
     vertices: {
@@ -347,12 +368,14 @@ export default async function page(stage: Stage): Promise<void> {
       name,
       position: ['lon', 'lat'] as [string, string],
       visible: field('load').eq(load),
-      // Both marks size every row alike, so branches stop at the outline that shows.
-      radius: when(field('load').eq(1)).then(9).otherwise(11),
+      // Both marks size every row alike, by its capacity, so branches stop at the outline that shows.
+      radius: field('capacity').sqrt().scale(8, 17).domain(11, 46),
       marker: { gauge: { fill: field('fill'), shape } },
       color: kinds,
       status: when(field('alarm').gt(0.5)).then(pulse).otherwise('#00000000'),
-      ...(state.labels ? { label: { text: 'name', size: 13, priority: 'capacity' } } : {}),
+      shadow: true,
+      ...(load ? {} : { legend: 'Substations' }),
+      ...(state.labels ? { label: { text: 'name', size: 12, priority: 'capacity' } } : {}),
     },
   });
   const scene = (): Scene => ({
@@ -363,32 +386,27 @@ export default async function page(stage: Stage): Promise<void> {
       text: LOOK.text,
       hover: LOOK.hover,
       selected: LOOK.hover,
-      flow: LOOK.flow,
-      flowSpacing: 26,
+      // Comets are part of the map, in degrees: they zoom with it and stay on their branches.
+      flow: { color: LOOK.comet, spacing: 1.35, length: 0.6, width: 6, units: true },
       font: 'Jura, sans-serif',
+      fontSize: 12,
       halo: 3,
       glow: 6,
-      laneBow: 0.1,
+      laneBow: 0.22,
     },
     ease: 0.45,
     marks: [
-      { lines: { of: ['state', 'Border'], width: 1.5, color: LOOK.border, pick: false } },
+      { lines: { of: ['state', 'Border'], width: 1.25, color: LOOK.border, pick: false } },
       {
         edges: {
           of: ['grid', 'Branch'],
           ends: ['from', 'to'],
           route: 'straight',
-          width: 2.5,
-          color: when(field('alarm').gt(0.5))
-            .then(pulse)
-            .otherwise(
-              field('state')
-                .colormap({ kind: 'categorical', colors: STATES.map((x) => x.color) })
-                .domain(0, 3),
-            ),
+          width: field('rating').scale(1.6, 3.6).domain(300, 800),
+          color: when(field('alarm').gt(0.5)).then(pulse).otherwise(LOADING),
           dash: 'out',
-          // Comets run with the flow, faster the nearer its rating.
-          ...(state.comets ? { flow: field('flow').mul(70) } : {}),
+          legend: 'Loading, % of rating',
+          ...(state.comets ? { flow: comets } : {}),
         },
       },
       substations('plants', 0, 'ellipse'),
@@ -424,8 +442,6 @@ export default async function page(stage: Stage): Promise<void> {
   ]);
   gridSection.toggle('Run', ' ', state.playing, (on) => (state.playing = on));
   const totals = gridSection.note();
-  gridSection.series(KINDS.map(({ label, color }) => ({ label, color })));
-  gridSection.series(STATES.map(({ label, color }) => ({ label, color })));
 
   // ── Layers ──
   const layers = stage.section('Layers');

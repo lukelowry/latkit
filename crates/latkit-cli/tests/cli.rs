@@ -149,7 +149,7 @@ fn failures_name_the_part_and_the_file_and_keep_the_output() {
     std::fs::write(dir.path().join("out.png"), b"keep this").unwrap();
     assert_eq!(run(dir.path(), &["render", "scene.json", "-o", "out.png"], None).status.code(), Some(1));
     assert_eq!(std::fs::read(dir.path().join("out.png")).unwrap(), b"keep this");
-    // A legend shows a color mapped through a colormap with a domain.
+    // A legend shows a color mapped through a colormap with a domain or named categories.
     let legend = r#"{"space":"plane","marks":[{"vertices":{"of":["grid","Bus"],"legend":"Buses"}}]}"#;
     let output =
         run(dir.path(), &["--diagnostics", "json", "validate", "-", "-d", "grid.json"], Some(legend.as_bytes()));

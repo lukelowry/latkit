@@ -65,10 +65,12 @@ pub(crate) struct Shown {
     pub(crate) words: Option<[u32; 2]>,
     pub(crate) offsets: Offsets,
     pub(crate) packed: bool,
-    /// A transition waiting to freeze, the one running, and where its remap words start.
+    /// A transition waiting to freeze, the one running, and where its remap words start; and whether
+    /// this frame's froze rows where they moved, so their comets' travel follows them.
     pub(crate) begin: Option<Begin>,
     pub(crate) transition: Option<Transition>,
     pub(crate) remap: u32,
+    pub(crate) carry: bool,
     /// Where the header of the list this frame's query builds over its instances starts.
     pub(crate) query: u32,
     /// The list numbering a stroke mark's segments when rows have different numbers of them.
@@ -112,6 +114,7 @@ impl Shown {
             begin: None,
             transition: None,
             remap: 0,
+            carry: false,
             query: wgsl::NONE,
             segments: super::lists::Segments::default(),
             geodesic: false,

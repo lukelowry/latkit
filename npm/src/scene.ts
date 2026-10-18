@@ -23,11 +23,7 @@ export type ExprNode =
   | { op: Binary; args: [ExprNode, ExprNode] }
   | { is: [ExprNode, string] }
   | { when: [ExprNode, ExprNode][]; otherwise: ExprNode }
-  | {
-      colormap: ExprNode;
-      map: ColormapName | { kind: ColormapKind; colors: Color[] };
-      domain?: [number, number];
-    }
+  | { colormap: ExprNode; map: Colormap; domain?: [number, number] }
   | { scale: ExprNode; range: [number, number]; domain?: [number, number] };
 
 type FieldNode = { field: string; of?: [data: string, table: string]; step?: boolean };
@@ -156,7 +152,7 @@ export class Expr {
   }
 
   /** The value through a colormap: a catalog name, or your own colors. */
-  colormap(map: ColormapName | { kind: ColormapKind; colors: Color[] }): Mapped {
+  colormap(map: Colormap): Mapped {
     return new Mapped({ colormap: this.node, map });
   }
 
@@ -244,6 +240,15 @@ class Then {
 /** A size: CSS pixels, or position units with {@link units}. */
 export type Size = ExprInput | { units: ExprNode };
 
+/**
+ * Colors for a range of values: a catalog name, or your own colors, evenly spaced and blended in
+ * sRGB, or one per category. Category `i` takes color `i`; `categories` names them in that order,
+ * for a legend.
+ */
+export type Colormap =
+  | ColormapName
+  | { kind: Exclude<ColormapKind, 'categorical'>; colors: Color[] }
+  | { kind: 'categorical'; colors: Color[]; categories?: string[] };
 export type ColormapKind = 'sequential' | 'diverging' | 'cyclic' | 'categorical';
 export type ColormapName =
   | 'amber'
@@ -413,8 +418,8 @@ export interface Theme {
   dim?: number;
   hoverScale?: number;
   dash?: number;
-  flow?: Color;
-  flowSpacing?: number;
+  /** How comets flowing along edges and lines look. */
+  flow?: Flow;
   /** In a diagram, between the lanes of edges joining the same two vertices; orthogonal wires keep
    * twice it apart. */
   edgeSpacing?: number;
@@ -433,6 +438,25 @@ export interface Theme {
   atmosphere?: Color;
   /** How bright the earth's night side stays under daylight, 0 to 1. */
   night?: number;
+}
+
+/** How comets flowing along edges and lines look: each a round head, brightest at its middle,
+ * trailing a tail that thins and fades. */
+export interface Flow {
+  /** A comet's color; its alpha is how strongly a comet covers its stroke. */
+  color?: Color;
+  /** Distance between comets. */
+  spacing?: number;
+  /** How far a comet's tail trails its head. */
+  length?: number;
+  /** How wide a comet's head is, CSS pixels, or units in a diagram; never narrower than its stroke. */
+  width?: number;
+  /**
+   * Whether comets are part of the drawing: their spacing, length, and each row's flow in position
+   * units, degrees on the earth, so they zoom with the view and stay where they are on their lines.
+   * Otherwise they keep their size and speed on screen, and slide along their lines as it zooms.
+   */
+  units?: boolean;
 }
 
 /** How marks that cast shadows cast them onto the ground and onto faces. */
@@ -469,7 +493,9 @@ interface Style {
   shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
-   * domain, ticked, or a cell for each category. The color maps through a colormap with a domain.
+   * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.
+   * The color maps through a colormap with a domain or named categories; a conditional's
+   * `otherwise` is read before its cases.
    */
   legend?: string;
 }
@@ -480,7 +506,11 @@ interface Stroke {
   /** CSS pixels, or position units with {@link units}; units in a diagram. */
   width?: Size;
   dash?: ExprInput;
-  /** Comets flowing along each row, CSS pixels per second, or units in a diagram; negative flows backward. */
+  /**
+   * Comets flowing along each row at this speed a second: CSS pixels, units in a diagram, or position
+   * units where the theme's {@link Flow} is in units; negative flows backward. A speed that changes
+   * carries comets on from where they are.
+   */
   flow?: ExprInput;
 }
 

@@ -6,7 +6,7 @@
 use std::ops::BitOr;
 use std::sync::Arc;
 
-use super::{Binary, Colormap, Domain, Expr, FieldRef, Node, State, Unary};
+use super::{Binary, Colormap, ColormapKind, Domain, Expr, FieldRef, Node, State, Unary};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Kind, Name, Result};
 
@@ -529,7 +529,14 @@ impl<'a> Compiler<'a> {
             }
             Node::Colormap { input, colormap, domain } => {
                 self.expect(input, Ty::Number)?;
-                let d = self.domain(input, *domain)?;
+                // A categorical map bins values by their integer part, so it has nothing to fit.
+                let domain = match domain {
+                    Domain::Fit if colormap.kind() == ColormapKind::Categorical => {
+                        Domain::Fixed([0.0, f64::from(colormap.count())])
+                    }
+                    _ => *domain,
+                };
+                let d = self.domain(input, domain)?;
                 let at = self.program.code.len() as u32;
                 self.program.colormaps.push((at, colormap.clone()));
                 self.op(wgsl::OP_COLORMAP, (colormap.kind() as u32) << 16, d, colormap.count(), 1, 1)?;

@@ -5,7 +5,7 @@ use super::Color;
 /// Colors for a range of values: one of the catalog's, or one of your own.
 ///
 /// Sequential and diverging maps clamp, cyclic maps wrap, and categorical maps bin values by their
-/// integer part.
+/// integer part: category `i` takes color `i`, and may be named with [`Colormap::categories`].
 #[derive(Clone, PartialEq, Debug)]
 pub struct Colormap(Map);
 
@@ -20,6 +20,7 @@ struct Custom {
     kind: ColormapKind,
     count: u32,
     texels: [[u8; 4]; 256],
+    categories: Vec<Arc<str>>,
 }
 
 /// How a colormap spans values.
@@ -73,7 +74,29 @@ impl Colormap {
                 Color::rgba(red, green, blue, alpha).to_rgba8()
             }
         });
-        Colormap(Map::Custom(Arc::new(Custom { kind, count: count as u32, texels })))
+        Colormap(Map::Custom(Arc::new(Custom { kind, count: count as u32, texels, categories: Vec::new() })))
+    }
+
+    /// The same categorical map with its categories named in order, from category 0: what its legend
+    /// lists. Panics for a continuous map.
+    #[must_use]
+    pub fn categories<S: Into<Arc<str>>>(&self, names: impl IntoIterator<Item = S>) -> Colormap {
+        assert_eq!(self.kind(), ColormapKind::Categorical, "only a categorical map has categories");
+        let categories = names.into_iter().map(Into::into).collect();
+        Colormap(Map::Custom(Arc::new(Custom {
+            kind: self.kind(),
+            count: self.count(),
+            texels: *self.texels(),
+            categories,
+        })))
+    }
+
+    /// The names of the categories, from category 0; none unless named.
+    pub(crate) fn named_categories(&self) -> &[Arc<str>] {
+        match &self.0 {
+            Map::Catalog(_) => &[],
+            Map::Custom(c) => &c.categories,
+        }
     }
 
     /// How the colormap spans values.
@@ -114,7 +137,8 @@ impl Colormap {
                 texels[i] = texels[i % n];
             }
         }
-        Colormap(Map::Custom(Arc::new(Custom { kind: self.kind(), count: self.count(), texels })))
+        let categories = self.named_categories().to_vec();
+        Colormap(Map::Custom(Arc::new(Custom { kind: self.kind(), count: self.count(), texels, categories })))
     }
 
     /// The color at `t` in `0..=1`: clamped, wrapped for cyclic maps, binned for categorical maps.
@@ -196,5 +220,10 @@ mod tests {
         assert_eq!(map.reversed().sample(0.0).to_rgba8(), [255, 255, 255, 255]);
         let categories = Colormap::new(ColormapKind::Categorical, &[Color::BLACK, Color::WHITE, Color::TRANSPARENT]);
         assert_eq!(categories.reversed().sample(0.0), Color::TRANSPARENT);
+        let named = Colormap::TAB10.categories(["a", "b"]);
+        assert_eq!(named.sample(1.0), Colormap::TAB10.sample(1.0));
+        assert_eq!(named.reversed().named_categories(), named.named_categories());
+        assert_eq!(&*named.named_categories()[1], "b");
+        assert_eq!(named.key(), Colormap::TAB10.categories(["c"]).key());
     }
 }

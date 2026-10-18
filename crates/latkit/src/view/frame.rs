@@ -16,6 +16,9 @@ use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
 use crate::{Error, derive};
 
+/// The most seconds comets travel in one frame: after a pause they carry on, not leap.
+const TRAVEL: f64 = 0.1;
+
 impl View {
     /// Records `frame` of the scene into `encoder`; the caller submits it.
     ///
@@ -55,6 +58,9 @@ impl View {
         // What reads the clock shows anything new only when it moved; a frame drawn again at the same
         // instant, as a shot draws while it waits, evaluates none of it.
         let elapsed = self.signal.elapsed().unwrap_or_else(|| self.clock.now());
+        // Seconds comets travel: the clock's step since the last frame, none at first or back in time,
+        // and never more than a pause's worth.
+        let travel = if self.effect_time.is_nan() { 0.0 } else { (elapsed - self.effect_time).clamp(0.0, TRAVEL) };
         if self.effect_time != elapsed {
             self.effect_time = elapsed;
             for shown in &mut self.marks {
@@ -74,6 +80,7 @@ impl View {
         let projected = self.projected();
         let srgb = frame.format.is_srgb();
         let mut uniform = uniforms::frame(&self.scene, &projected, self.size, srgb, elapsed, self.at);
+        uniform.flow_step = travel as f32;
         if self.signal.transparent() {
             uniform.background[3] = 0.0;
         }
@@ -92,7 +99,7 @@ impl View {
         let light = self.shade(&mut uniform, &main);
         let sprites = self.overlay(&mut inner, queue);
         self.write_uniforms(&uniform, &main, light.as_ref(), &sprites);
-        if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some()) {
+        if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some(), travel > 0.0) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
         if let Some(light) = &light {
@@ -114,6 +121,7 @@ impl View {
         for shown in &mut self.marks {
             shown.held = shown.rows + shown.exits;
             shown.moved = None;
+            shown.carry = false;
         }
         self.events.extend(inner.atlas.errors.drain(..).map(Event::Error));
         self.events.extend(self.derived.sheet.errors.drain(..).map(Event::Error));

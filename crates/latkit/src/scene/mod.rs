@@ -31,7 +31,7 @@ pub use marker::{Marker, Shape};
 pub use port::{Port, Side};
 pub(crate) use space::sun;
 pub use space::{Axis, Diagram, Earth, Format, Grid, Plane, Plot, Projection, Space};
-pub use theme::{Shadow, Theme};
+pub use theme::{Flow, Shadow, Theme};
 pub use vertices::Vertices;
 
 use crate::{Data, Error, Expr, Result};
@@ -175,9 +175,12 @@ impl Scene {
                 return Err(Error::invalid(reason).at(option).at(i).at("marks"));
             }
             let style = mark.style();
-            let colors = style.color.as_ref().and_then(Expr::colormap_of);
-            if style.legend.is_some() && !matches!(colors, Some((_, Some(_)))) {
-                let reason = "a legend shows a color mapped through a colormap with a domain";
+            let shown = match style.color.as_ref().and_then(Expr::colormap_of) {
+                Some((colormap, domain)) => domain.is_some() || !colormap.named_categories().is_empty(),
+                None => false,
+            };
+            if style.legend.is_some() && !shown {
+                let reason = "a legend shows a color mapped through a colormap with a domain or named categories";
                 return Err(Error::invalid(reason).at("legend").at(i).at("marks"));
             }
         }

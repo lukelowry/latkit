@@ -16,6 +16,7 @@ import package::lib::types::{
     OP_POSITION, OP_STORE_END, OP_STORE_CODE, OP_REDUCE,
 };
 import package::lib::bind::{frame, program, mark, state};
+import package::lib::state::travel_words;
 import package::lib::read::{column_value, bits_value, missing, missing_bits};
 import package::lib::focus::{is_selected, is_hovered};
 import package::lib::color::{scale, colormap};
@@ -288,10 +289,14 @@ fn run(row: u32, start: u32, end: u32, flags: u32) {
     }
 }
 
-// A row that left fades out with its mark's transition; its frozen state is what it showed.
+// A row that left fades out with its mark's transition; its frozen state is what it showed, but for
+// its comets, which travel on.
 fn fade_exit(row: u32, flags: u32) {
+    let travel = travel_words().x;
     for (var w = 0u; w < mark.stride; w++) {
-        state[word_at(row, w)] = was(row, w);
+        if w != travel {
+            state[word_at(row, w)] = was(row, w);
+        }
     }
     state[word_at(row, flags)] = (was(row, flags) & ~FADE_IN) | FADE_OUT;
 }
@@ -318,6 +323,35 @@ fn evaluate(@builtin(global_invocation_id) id: vec3u) {
         let own = select(0u, OWN_HEIGHT, (mark.flags & SIZED) != 0u);
         state[at] = (state[at] & ~(HALF_UNITS | OWN_HEIGHT)) | units | own;
     }
+}
+
+// Comets travel on by each stroke row's flow over the frame's step, so a flow that changes carries
+// on from where its comets are. Wrapped at their spacing, travel keeps its precision however long
+// they run.
+@compute @workgroup_size(256)
+fn travel(@builtin(global_invocation_id) id: vec3u) {
+    let words = travel_words();
+    if id.x >= mark.rows + mark.exits || words.x == NONE {
+        return;
+    }
+    let at = word_at(id.x, words.x);
+    let flow = number(state[word_at(id.x, words.y)]);
+    let spacing = max(frame.flow_spacing, 1e-6);
+    var moved = number(state[at]) + select(flow, 0.0, missing(flow)) * frame.flow_step;
+    moved -= spacing * floor(moved / spacing);
+    // Words a row never held read as no travel.
+    state[at] = word(select(0.0, moved, moved >= 0.0 && moved <= spacing));
+}
+
+// Where a transition moved rows, their comets carry on from where they were: each row takes the
+// travel its frozen state holds.
+@compute @workgroup_size(256)
+fn carry(@builtin(global_invocation_id) id: vec3u) {
+    let travel = travel_words().x;
+    if id.x >= mark.rows + mark.exits || travel == NONE || !easing() {
+        return;
+    }
+    state[word_at(id.x, travel)] = was(id.x, travel);
 }
 
 @compute @workgroup_size(256)

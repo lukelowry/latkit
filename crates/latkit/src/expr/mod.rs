@@ -283,7 +283,8 @@ impl Expr {
         }
     }
 
-    /// The first colormap a color maps through, and its domain when set: what a legend shows.
+    /// The first colormap a color maps through, and its domain when set: what a legend shows. A
+    /// conditional's general case, its `otherwise`, comes before the cases it makes exceptions for.
     pub(crate) fn colormap_of(&self) -> Option<(&Colormap, Option<[f64; 2]>)> {
         match &*self.0 {
             Node::Colormap { colormap, domain, .. } => {
@@ -291,7 +292,7 @@ impl Expr {
             }
             Node::Unary(_, a) | Node::Is(a, _) => a.colormap_of(),
             Node::Binary(_, a, b) => a.colormap_of().or_else(|| b.colormap_of()),
-            Node::When(c, a, b) => a.colormap_of().or_else(|| b.colormap_of()).or_else(|| c.colormap_of()),
+            Node::When(c, a, b) => b.colormap_of().or_else(|| a.colormap_of()).or_else(|| c.colormap_of()),
             Node::Scale { input, .. } => input.colormap_of(),
             Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::Field(_) | Node::State(_) => None,
         }

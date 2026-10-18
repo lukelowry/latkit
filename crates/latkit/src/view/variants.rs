@@ -47,6 +47,9 @@ impl View {
         if any(|m| m.style().shadow) {
             variants.push(Variant::draw(Shader::Shade, SHADE, 1));
         }
+        if any(Mark::flows) {
+            variants.extend([compute(Shader::Evaluate, "travel"), compute(Shader::Evaluate, "carry")]);
+        }
         if any(|m| m.style().interaction.pick) {
             variants.push(compute(probe, "under"));
         }

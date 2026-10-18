@@ -3,9 +3,10 @@
 // at `mark.extra`, `mark.extras` apart.
 
 import package::lib::types::{
-    VERTEX_WORDS, VERTEX_POSITION, VERTEX_COLOR, VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION, VERTEX_DEPTH,
-    VERTEX_FLAGS, EDGE_FROM, EDGE_TO, EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_FLAGS, FACE_A, FACE_B, FACE_C,
-    FACE_COLOR, FACE_FLAGS, LINE_COLOR, LINE_WIDTH, LINE_FLOW, LINE_FLAGS, AREA_COLOR, AREA_FLAGS,
+    NONE, VERTEX_WORDS, VERTEX_POSITION, VERTEX_COLOR, VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION, VERTEX_DEPTH,
+    VERTEX_FLAGS, EDGE_FROM, EDGE_TO, EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_TRAVEL, EDGE_FLAGS, FACE_A, FACE_B,
+    FACE_C, FACE_COLOR, FACE_FLAGS, LINE_COLOR, LINE_WIDTH, LINE_FLOW, LINE_TRAVEL, LINE_FLAGS, AREA_COLOR,
+    AREA_FLAGS, MARK_EDGES, MARK_LINES,
 };
 import package::lib::bind::{state, mark};
 
@@ -26,6 +27,7 @@ struct Edge {
     color: u32,
     width: f32,
     flow: f32,
+    travel: f32,
     flags: u32,
 }
 
@@ -39,6 +41,7 @@ struct Line {
     color: u32,
     width: f32,
     flow: f32,
+    travel: f32,
     flags: u32,
 }
 
@@ -87,6 +90,7 @@ fn edge_at(at: u32) -> Edge {
         state[at + EDGE_COLOR],
         float_at(at + EDGE_WIDTH),
         float_at(at + EDGE_FLOW),
+        float_at(at + EDGE_TRAVEL),
         state[at + EDGE_FLAGS],
     );
 }
@@ -97,7 +101,23 @@ fn face_at(at: u32) -> Face {
 }
 
 fn line_at(at: u32) -> Line {
-    return Line(state[at + LINE_COLOR], float_at(at + LINE_WIDTH), float_at(at + LINE_FLOW), state[at + LINE_FLAGS]);
+    return Line(
+        state[at + LINE_COLOR],
+        float_at(at + LINE_WIDTH),
+        float_at(at + LINE_FLOW),
+        float_at(at + LINE_TRAVEL),
+        state[at + LINE_FLAGS],
+    );
+}
+
+// The current mark's words for how far a stroke row's comets traveled and for its flow; NONE for a
+// mark that draws no strokes.
+fn travel_words() -> vec2u {
+    switch mark.kind {
+        case MARK_EDGES: { return vec2u(EDGE_TRAVEL, EDGE_FLOW); }
+        case MARK_LINES: { return vec2u(LINE_TRAVEL, LINE_FLOW); }
+        default: { return vec2u(NONE); }
+    }
 }
 
 fn area_at(at: u32) -> Area {

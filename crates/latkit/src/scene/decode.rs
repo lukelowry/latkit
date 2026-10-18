@@ -731,8 +731,7 @@ impl<'de> Deserialize<'de> for Theme {
             dim: Option<f32>,
             hover_scale: Option<f32>,
             dash: Option<f32>,
-            flow: Option<Color>,
-            flow_spacing: Option<f32>,
+            flow: Option<FlowForm>,
             edge_spacing: Option<f32>,
             lane_bow: Option<f32>,
             arrow: Option<f32>,
@@ -741,6 +740,15 @@ impl<'de> Deserialize<'de> for Theme {
             shadow: Option<ShadowForm>,
             atmosphere: Option<Color>,
             night: Option<f32>,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct FlowForm {
+            color: Option<Color>,
+            spacing: Option<f32>,
+            length: Option<f32>,
+            width: Option<f32>,
+            units: Option<bool>,
         }
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -769,25 +777,25 @@ impl<'de> Deserialize<'de> for Theme {
             Some(name) => base(name)?,
             None => Theme::default(),
         };
+        // Each field the form gives replaces the base theme's.
         macro_rules! set {
-            ($($field:ident),*) => {$(
-                if let Some(v) = form.$field {
-                    t.$field = v;
+            ($form:expr => $theme:expr; $($field:ident),*) => {$(
+                if let Some(v) = $form.$field {
+                    $theme.$field = v;
                 }
             )*};
         }
-        set!(background, surface, grid, vertex, vertex_radius, edge, edge_width, missing, hover, selected, glow, dim);
-        set!(hover_scale, dash, flow, flow_spacing, line, line_width, shading, text, font_size, playhead);
-        set!(edge_spacing, lane_bow, arrow, halo, group_padding, area, atmosphere, night);
+        set!(form => t; background, surface, grid, vertex, vertex_radius, edge, edge_width, missing, hover, selected);
+        set!(form => t; glow, dim, hover_scale, dash, line, line_width, shading, text, font_size, playhead);
+        set!(form => t; edge_spacing, lane_bow, arrow, halo, group_padding, area, atmosphere, night);
         if let Some(font) = form.font {
             t.font = font.into();
         }
+        if let Some(flow) = form.flow {
+            set!(flow => t.flow; color, spacing, length, width, units);
+        }
         if let Some(shadow) = form.shadow {
-            let s = &mut t.shadow;
-            s.color = shadow.color.unwrap_or(s.color);
-            s.light = shadow.light.unwrap_or(s.light);
-            s.softness = shadow.softness.unwrap_or(s.softness);
-            s.lift = shadow.lift.unwrap_or(s.lift);
+            set!(shadow => t.shadow; color, light, softness, lift);
         }
         Ok(t)
     }
@@ -801,7 +809,7 @@ fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(deserializer: D) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Colormap, field};
+    use crate::{Colormap, ColormapKind, Flow, field};
 
     #[test]
     fn scenes_match_builders() {
@@ -871,6 +879,29 @@ mod tests {
             .draw(Areas::of("map", "states").rings("outline").color(Color::hex("#336699").expect("hex")))
             .draw(Lines::of("map", "states").trace("outline"));
         assert_eq!(scene, built);
+    }
+
+    #[test]
+    fn comets_and_named_categories_match_builders() {
+        let json = r##"{
+            "space": "plane",
+            "marks": [
+                { "vertices": { "of": ["grid", "Bus"], "legend": "Kind",
+                    "color": { "colormap": "k", "map": { "kind": "categorical", "colors": ["#ff0000", "#0000ff"],
+                        "categories": ["red", "blue"] } } } }
+            ],
+            "theme": { "flow": { "color": "#00ff00", "width": 6 } }
+        }"##;
+        let scene: Scene = serde_json::from_str(json).expect("a scene");
+        let map = Colormap::new(ColormapKind::Categorical, &[Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0)]);
+        let flow = Flow { color: Color::rgb(0.0, 1.0, 0.0), width: 6.0, ..Theme::default().flow };
+        let built = Scene::new(Plane::default()).theme(Theme { flow, ..Theme::default() }).draw(
+            Vertices::of("grid", "Bus").legend("Kind").color(field("k").colormap(map.categories(["red", "blue"]))),
+        );
+        assert_eq!(scene, built);
+        let continuous =
+            r#"{ "colormap": "k", "map": { "kind": "sequential", "colors": ["red"], "categories": ["a"] } }"#;
+        assert!(serde_json::from_str::<crate::Expr>(continuous).is_err(), "only a categorical map has categories");
     }
 
     #[test]

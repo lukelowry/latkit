@@ -196,6 +196,7 @@ impl View {
                     words.extend([was.state, was.extra, slot_words, table.unwrap_or(wgsl::NONE)]);
                     words.extend(sources);
                     shown.remap = at;
+                    shown.carry = true;
                     gathers.push(i);
                 }
             }

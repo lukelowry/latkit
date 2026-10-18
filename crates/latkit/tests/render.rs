@@ -536,3 +536,100 @@ fn dashes_run_on_across_a_paths_segments() {
     let on = (c - 40..c + 40).filter(|&x| at(&pixels, x, c)[0] > 128).count();
     assert!(on > 20 && on < 60, "about half of the path dashes: {on} of 80 pixels");
 }
+
+/// A view of a gray line a pixel wide from x -50 to 50, its comets red and 8 pixels wide, 30 apart
+/// with tails of 8, in position units when `units`; flowing at `speed`, or not at all.
+fn comets(gpu: &latkit::Gpu, units: bool, speed: Option<f64>) -> View {
+    let mut data = Data::new("d");
+    data.apply(Table::new("Path", 1).field("geometry", vec![vec![[-50.0, 0.0], [50.0, 0.0]]])).expect("valid");
+    let mut view = View::new(gpu, comets_scene(units, speed)).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    view
+}
+
+fn comets_scene(units: bool, speed: Option<f64>) -> Scene {
+    let flow = latkit::Flow { color: Color::rgb(1.0, 0.0, 0.0), spacing: 30.0, length: 8.0, width: 8.0, units };
+    let line = Lines::of("d", "Path").width(1.0).color(Color::rgb(0.25, 0.25, 0.25));
+    let line = match speed {
+        Some(speed) => line.flow(speed),
+        None => line,
+    };
+    Scene::new(plane()).theme(Theme { flow, ..plain_theme() }).ease(std::time::Duration::ZERO).draw(line)
+}
+
+/// Where comets' heads are along row `y`, CSS pixels: the reddest pixel of each run of red.
+fn heads(pixels: &[[u8; 4]], y: u32) -> Vec<u32> {
+    let red = |x: u32| at(pixels, x, y)[0];
+    let mut heads = Vec::new();
+    let mut x = 0;
+    while x < SIZE {
+        if red(x) <= 60 {
+            x += 1;
+            continue;
+        }
+        let start = x;
+        while x < SIZE && red(x) > 60 {
+            x += 1;
+        }
+        heads.extend((start..x).max_by_key(|&x| red(x)));
+    }
+    heads
+}
+
+#[test]
+fn comets_run_wider_than_their_line() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = comets(&gpu, false, Some(40.0));
+    let c = SIZE / 2;
+    let red = |pixels: &[[u8; 4]], y: u32| (c - 45..c + 45).filter(|&x| at(pixels, x, y)[0] > 100).count();
+    // Comets never settle: a few frames draw them.
+    let pixels = (0..3).map(|_| step(&gpu, &mut view)).last().expect("frames");
+    assert!(view.needs_render(), "comets travel every frame");
+    let beside = red(&pixels, c + 2);
+    assert!(beside > 0 && beside < 60, "comets reach past the line, spaced apart: {beside} of 90 pixels");
+    assert_eq!(red(&pixels, c + 6), 0, "and no further than their width");
+    view.show(comets_scene(false, None)).expect("valid scene");
+    assert_eq!(red(&frame(&gpu, &mut view), c + 2), 0, "a line without flow has no comets");
+}
+
+#[test]
+fn comets_carry_on_from_where_they_are_when_their_flow_changes() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = comets(&gpu, false, Some(40.0));
+    for _ in 0..3 {
+        step(&gpu, &mut view);
+    }
+    // Long after the view began, as a page left running is, a pause moves them a tenth of a second.
+    common::wait(100_000.0);
+    let paused = heads(&step(&gpu, &mut view), SIZE / 2 + 2);
+    let before = heads(&step(&gpu, &mut view), SIZE / 2 + 2);
+    let moved = |a: &[u32], b: &[u32]| a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(99);
+    assert!(!before.is_empty() && moved(&paused, &before) <= 2, "{paused:?} then {before:?}");
+    view.show(comets_scene(false, Some(41.0))).expect("valid scene");
+    let after = heads(&step(&gpu, &mut view), SIZE / 2 + 2);
+    assert_eq!(before.len(), after.len(), "{before:?} then {after:?}");
+    assert!(moved(&before, &after) <= 2, "a new speed moves comets a frame's way: {before:?} then {after:?}");
+}
+
+#[test]
+fn comets_in_units_stay_on_their_lines_as_the_view_zooms() {
+    let Some(gpu) = gpu() else { return };
+    let c = f64::from(SIZE / 2);
+    // Where comets' heads stand in position units at zoom 0 and zoom 1, so slow they stand still.
+    let heads_at = |units: bool| {
+        let mut view = comets(&gpu, units, Some(1e-4));
+        [0.0, 1.0].map(|zoom: f64| {
+            view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
+            step(&gpu, &mut view);
+            let heads = heads(&step(&gpu, &mut view), SIZE / 2 + 2);
+            heads.into_iter().map(|x| (f64::from(x) - c) / 2f64.powf(zoom)).collect::<Vec<_>>()
+        })
+    };
+    let stayed = |[near, zoomed]: &[Vec<f64>; 2]| zoomed.iter().all(|z| near.iter().any(|n| (n - z).abs() <= 1.5));
+    let drawn = heads_at(true);
+    assert!(drawn[1].len() >= 2, "comets 30 units apart across 64: {drawn:?}");
+    assert!(stayed(&drawn), "comets in units stay where they were: {drawn:?}");
+    let on_screen = heads_at(false);
+    assert!(!stayed(&on_screen), "comets in pixels keep their spacing on screen instead: {on_screen:?}");
+}

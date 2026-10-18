@@ -13,6 +13,9 @@
 //! | `{ "scale": a, "range": [0, 1], "domain": [lo, hi] }`    | `a.scale(..).domain(..)`        |
 //! | `{ "colormap": a, "map": "viridis", "domain": [lo, hi] }` | `a.colormap(..).domain(..)`     |
 //! | `{ "units": a }` (sizes only)                            | `units(a)`                      |
+//!
+//! A map is a catalog name or `{ "kind": "categorical", "colors": [..], "categories": [..] }`, its
+//! categories named only when categorical: `Colormap::new(..).categories(..)`.
 
 use std::fmt;
 
@@ -50,14 +53,23 @@ impl<'de> Deserialize<'de> for Colormap {
         #[serde(untagged)]
         enum Form {
             Named(String),
-            Colors { kind: ColormapKind, colors: Vec<Color> },
+            Colors {
+                kind: ColormapKind,
+                colors: Vec<Color>,
+                #[serde(default)]
+                categories: Vec<String>,
+            },
         }
         match Form::deserialize(deserializer)? {
             Form::Named(name) => {
                 Colormap::named(&name).ok_or_else(|| de::Error::custom(format!("no colormap named {name:?}")))
             }
             Form::Colors { colors, .. } if colors.is_empty() => Err(de::Error::custom("a colormap needs a color")),
-            Form::Colors { kind, colors } => Ok(Colormap::new(kind, &colors)),
+            Form::Colors { kind, categories, .. } if kind != ColormapKind::Categorical && !categories.is_empty() => {
+                Err(de::Error::custom("only a categorical map has categories"))
+            }
+            Form::Colors { kind, colors, categories } if categories.is_empty() => Ok(Colormap::new(kind, &colors)),
+            Form::Colors { kind, colors, categories } => Ok(Colormap::new(kind, &colors).categories(categories)),
         }
     }
 }

@@ -134,6 +134,9 @@ struct Work {
     segments: Vec<usize>,
     faces: Vec<usize>,
     measured: Vec<usize>,
+    /// Marks whose comets carry their travel over to rows a transition moved, and that travel.
+    carried: Vec<usize>,
+    travelled: Vec<usize>,
 }
 
 /// Dispatches a workgroup for every `WORKGROUP` of `items`, if there are any.
@@ -207,17 +210,19 @@ impl super::marks::Shown {
 
 impl View {
     /// Evaluates dirty channels, and sums face normals when what they rest on changed; with
-    /// `measure`, also measures every measured mark's extents and reads them back.
+    /// `measure`, also measures every measured mark's extents and reads them back. With `travel`,
+    /// comets travel on by the frame's step.
     pub(super) fn compute(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
         measure: bool,
+        travel: bool,
     ) -> Option<Readback> {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let Work { evaluated: work, segments, faces, measured } = self.work(measure);
-        if work.is_empty() && faces.is_empty() && measured.is_empty() && segments.is_empty() {
+        let Work { evaluated: work, segments, faces, measured, carried, travelled } = self.work(measure, travel);
+        if [&work, &segments, &faces, &measured, &carried, &travelled].iter().all(|marks| marks.is_empty()) {
             return None;
         }
         let resources = self.resources.as_mut().expect("created before passes");
@@ -254,10 +259,11 @@ impl View {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
+            pass.set_bind_group(2, &evaluate_group, &[]);
+            self.every_row(&mut pass, inner, &groups.mark, "carry", &carried);
             if !work.is_empty() {
                 let evaluate = inner.pipelines.compute(device, Shader::Evaluate, "evaluate");
                 let reduce = inner.pipelines.compute(device, Shader::Evaluate, "reduce");
-                pass.set_bind_group(2, &evaluate_group, &[]);
                 for &i in &work {
                     let shown = &mut self.marks[i];
                     pass.set_bind_group(1, &groups.mark, &[offset(i)]);
@@ -272,6 +278,8 @@ impl View {
                     shown.reduce = false;
                 }
             }
+            // After evaluating, so comets travel at the flow this frame shows.
+            self.every_row(&mut pass, inner, &groups.mark, "travel", &travelled);
             if let Some(group) = &lists_group {
                 pass.set_bind_group(2, group, &[]);
                 self.count_segments(&mut pass, inner, &groups.mark, &segments);
@@ -307,8 +315,9 @@ impl View {
     }
 
     /// What this frame's compute pass does: the marks it evaluates, the segment lists it counts, the
-    /// faces whose normals it sums, and the marks it measures.
-    fn work(&mut self, measure: bool) -> Work {
+    /// faces whose normals it sums, the marks it measures, and with `travel` the marks whose comets
+    /// travel.
+    fn work(&mut self, measure: bool, travel: bool) -> Work {
         for shown in &mut self.marks {
             // A mark without rows has nothing to evaluate.
             if shown.rows + shown.exits == 0 && shown.tables.synced() {
@@ -335,7 +344,29 @@ impl View {
         let measured = (0..self.marks.len())
             .filter(|&i| measure && self.marks[i].drawable() && self.marks[i].measured())
             .collect();
-        Work { evaluated: work, segments, faces, measured }
+        let flowing = |i: &usize| self.marks[*i].drawable() && self.marks[*i].mark.flows();
+        let carried = (0..self.marks.len()).filter(|i| self.marks[*i].carry && flowing(i)).collect();
+        let travelled = (0..self.marks.len()).filter(|i| travel && flowing(i)).collect();
+        Work { evaluated: work, segments, faces, measured, carried, travelled }
+    }
+
+    /// Runs the expression machine's entry point `entry` over every row and exit of each of `marks`.
+    fn every_row(
+        &self,
+        pass: &mut wgpu::ComputePass<'_>,
+        inner: &mut Inner,
+        mark: &wgpu::BindGroup,
+        entry: &'static str,
+        marks: &[usize],
+    ) {
+        if marks.is_empty() {
+            return;
+        }
+        pass.set_pipeline(&inner.pipelines.compute(&self.gpu.0.device, Shader::Evaluate, entry));
+        for &i in marks {
+            pass.set_bind_group(1, mark, &[offset(i)]);
+            dispatch(pass, self.marks[i].rows + self.marks[i].exits);
+        }
     }
 
     /// Records the count → scan → write of each of `marks`' segment lists.

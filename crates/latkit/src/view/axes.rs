@@ -94,6 +94,8 @@ pub(super) enum Align {
     Below,
     /// Right edge at the anchor, centered up and down.
     Left,
+    /// Left edge at the anchor, centered up and down.
+    Right,
     /// Left edge at the anchor, bottom at the anchor.
     Above,
     /// Right edge at the anchor, top at the anchor.
@@ -123,6 +125,7 @@ impl Writer<'_> {
         let [x, y] = match align {
             Align::Below => [anchor[0] - w / 2.0, anchor[1]],
             Align::Left => [anchor[0] - w, anchor[1] - h / 2.0],
+            Align::Right => [anchor[0], anchor[1] - h / 2.0],
             Align::Above => [anchor[0], anchor[1] - h],
             Align::BelowLeft => [anchor[0] - w, anchor[1]],
             Align::BelowRight => anchor,

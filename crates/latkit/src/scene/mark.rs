@@ -316,6 +316,16 @@ impl Mark {
         }
     }
 
+    /// Whether its rows can carry comets: a stroke mark flowing at more than a constant 0.
+    pub(crate) fn flows(&self) -> bool {
+        let stroke = match self {
+            Mark::Edges(m) => &m.stroke,
+            Mark::Lines(m) => &m.stroke,
+            Mark::Vertices(_) | Mark::Faces(_) | Mark::Areas(_) => return false,
+        };
+        stroke.flow != Stroke::default().flow
+    }
+
     /// The path a stroke mark's rows run along, or an area's triangles come from: one of the `PATH_`
     /// codes, which its pipelines are made for. In a diagram every wire runs through the geometry
     /// its sheet worked out; on a plot a line traces its samples, elsewhere it runs along its path.
@@ -495,8 +505,10 @@ macro_rules! style_methods {
             }
 
             /// Draws a legend of the colors at the view's bottom right, under `title`: the colormap
-            /// across its domain, ticked, or a cell for each category. The color maps through a
-            /// colormap with a domain. Legends stack upward in the marks' order.
+            /// across its domain, ticked; a cell for each category; or a swatch beside each name of
+            /// [named categories](crate::Colormap::categories). The color maps through a colormap
+            /// with a domain or named categories; a conditional's `otherwise` is read before its
+            /// cases. Legends stack upward in the marks' order.
             #[must_use]
             pub fn legend(mut self, title: impl Into<std::sync::Arc<str>>) -> Self {
                 self.style.legend = Some(title.into());
@@ -525,11 +537,12 @@ macro_rules! stroke_methods {
                 self
             }
 
-            /// Comets flowing along each row, CSS pixels per second, or units in a diagram; negative
-            /// flows backward.
+            /// Comets flowing along each row at this speed a second: CSS pixels, units in a diagram, or
+            /// position units where the theme's [`Flow`](crate::Flow) is in units; negative flows
+            /// backward. A speed that changes carries comets on from where they are.
             #[must_use]
-            pub fn flow(mut self, px_per_second: impl Into<$crate::Expr>) -> Self {
-                self.stroke.flow = px_per_second.into();
+            pub fn flow(mut self, speed: impl Into<$crate::Expr>) -> Self {
+                self.stroke.flow = speed.into();
                 self
             }
         }

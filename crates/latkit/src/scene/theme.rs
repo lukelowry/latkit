@@ -51,10 +51,8 @@ pub struct Theme {
     pub hover_scale: f32,
     /// Length of a dash.
     pub dash: f32,
-    /// Comets flowing along edges.
-    pub flow: Color,
-    /// Distance between flowing comets.
-    pub flow_spacing: f32,
+    /// How comets flowing along edges and lines look.
+    pub flow: Flow,
     /// In a diagram, distance between the lanes of edges joining the same two vertices, and between
     /// parallel orthogonal wires, which keep twice it apart.
     pub edge_spacing: f32,
@@ -73,6 +71,24 @@ pub struct Theme {
     pub atmosphere: Color,
     /// How bright the earth's night side stays where it is lit by daylight, 0 to 1.
     pub night: f32,
+}
+
+/// How comets flowing along edges and lines look: each a round head, brightest at its middle, trailing
+/// a tail that thins and fades.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Flow {
+    /// A comet's color; its alpha is how strongly a comet covers its stroke.
+    pub color: Color,
+    /// Distance between comets.
+    pub spacing: f32,
+    /// How far a comet's tail trails its head.
+    pub length: f32,
+    /// How wide a comet's head is, CSS pixels, or units in a diagram; never narrower than its stroke.
+    pub width: f32,
+    /// Whether comets are part of the drawing: their spacing, length, and each row's flow in position
+    /// units, degrees on the earth, so they zoom with the view and stay where they are on their lines.
+    /// Otherwise they keep their size and speed on screen, and slide along their lines as it zooms.
+    pub units: bool,
 }
 
 /// How marks that cast shadows cast them onto the ground and onto faces.
@@ -114,8 +130,13 @@ impl Theme {
             dim: 0.35,
             hover_scale: 1.25,
             dash: 8.0,
-            flow: Color::hex("#ffffff").expect("hex").alpha(0.8),
-            flow_spacing: 40.0,
+            flow: Flow {
+                color: Color::hex("#ffffff").expect("hex").alpha(0.85),
+                spacing: 64.0,
+                length: 24.0,
+                width: 4.0,
+                units: false,
+            },
             edge_spacing: 4.0,
             lane_bow: 0.12,
             arrow: 7.0,
@@ -141,7 +162,7 @@ impl Theme {
             missing: Color::hex("#9aa3ad").expect("hex"),
             hover: Color::hex("#000000").expect("hex").alpha(0.35),
             selected: Some(Color::hex("#e36209").expect("hex").alpha(0.9)),
-            flow: Color::hex("#ffffff").expect("hex").alpha(0.9),
+            flow: Flow { color: Color::hex("#ffffff").expect("hex").alpha(0.9), ..Theme::dark().flow },
             shadow: Shadow { color: Color::BLACK.alpha(0.22), ..Theme::dark().shadow },
             atmosphere: Color::hex("#6cb4ff").expect("hex").alpha(0.45),
             night: 0.55,

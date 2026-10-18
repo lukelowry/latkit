@@ -1,7 +1,7 @@
 //! A scene's title and its marks' legends, written over the marks: the title and subtitle at the top
-//! left, and the legends stacked up from the bottom right, each a bar of its mark's colormap across
-//! the domain, ticked, under its title, or a cell of color for each category. Rebuilt each frame as
-//! overlay sprites, O(legends).
+//! left, and the legends stacked up from the bottom right, each under its title: a bar of its mark's
+//! colormap across the domain, ticked; a cell of color for each category; or, where categories are
+//! named, a swatch beside each name. Rebuilt each frame as overlay sprites, O(legends).
 
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use super::axes::{Align, Writer, label, line, step, ticks};
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
 use crate::gpu::work::Queue;
-use crate::{Axis, Color, ColormapKind, Theme};
+use crate::{Axis, Color, Colormap, ColormapKind, Theme};
 
 /// CSS pixels between the view's edge and what is written there.
 const MARGIN: f64 = 16.0;
@@ -18,8 +18,12 @@ const MARGIN: f64 = 16.0;
 const BAR: [f64; 2] = [220.0, 8.0];
 /// Cells a continuous bar is drawn in.
 const CELLS: usize = 64;
-/// The most categories a legend shows a cell for.
+/// The most categories a legend shows.
 const CATEGORIES: usize = 24;
+/// The most names a column of a legend lists.
+const ROWS: usize = 8;
+/// The size of what a legend writes beside its colors, ticks and names, for the theme's text size.
+const SMALL: f64 = 0.9;
 
 impl View {
     /// The sprites of the scene's title and subtitle, and of its marks' legends.
@@ -49,46 +53,91 @@ impl View {
         }
         let mut base = area[3];
         for (title, color) in legends() {
-            let Some((colormap, Some(domain))) = color.colormap_of() else { continue };
-            let texels = *colormap.texels();
-            let height = legend(
-                &mut sprites,
-                theme,
-                [area[2], base],
-                (colormap.kind(), texels),
-                domain,
-                |s, color, f| {
-                    writer(inner, s, color, f);
-                },
-                title,
-            );
+            let Some((colormap, domain)) = color.colormap_of() else { continue };
+            let write = |s, color, f: &mut dyn FnMut(&mut Writer<'_>)| writer(inner, s, color, f);
+            let height = if !colormap.named_categories().is_empty() {
+                categories(&mut sprites, theme, [area[2], base], colormap, ratio, write, title)
+            } else if let Some(domain) = domain {
+                legend(&mut sprites, theme, [area[2], base], colormap, domain, write, title)
+            } else {
+                continue;
+            };
             base -= height + MARGIN * 0.75;
         }
         sprites
     }
 }
 
-/// Draws a legend whose bar ends at `corner`'s x, its tick labels' bottom at its y: `colors` across
+/// Draws a legend of `colormap`'s named categories ending at `corner`, its right edge at its x and its
+/// bottom at its y: a swatch of each category's color beside its name, in columns of up to
+/// `ROWS`, under `title`, placed whole on pixels of `ratio`. How tall it is.
+fn categories(
+    sprites: &mut Vec<wgsl::Sprite>,
+    theme: &Theme,
+    corner: [f64; 2],
+    colormap: &Colormap,
+    ratio: f64,
+    mut write: impl FnMut(f64, Color, &mut dyn FnMut(&mut Writer<'_>)),
+    title: &Arc<str>,
+) -> f64 {
+    let font = f64::from(theme.font_size);
+    let names = colormap.named_categories();
+    let names = &names[..names.len().min(CATEGORIES)];
+    let [row, swatch] = [font * 1.5, font * 0.8];
+    let rows = names.len().min(ROWS);
+    let top = corner[1] - rows as f64 * row;
+    let start = sprites.len();
+    // Laid out from x = 0, each column clear of the names before it, then moved into place.
+    let mut x = 0.0;
+    for (column, names) in names.chunks(ROWS).enumerate() {
+        let mut right = x;
+        for (r, name) in names.iter().enumerate() {
+            let middle = top + (r as f64 + 0.5) * row;
+            let category = column * ROWS + r;
+            let color = Color::from_bytes(colormap.texels()[category]);
+            sprites.push(fill([x, middle - swatch / 2.0], [x + swatch, middle + swatch / 2.0], color));
+            write(SMALL, theme.text.alpha(0.85), &mut |w| {
+                if let Some(text) = w.text(name, [x + swatch + font * 0.5, middle], Align::Right) {
+                    right = f64::max(right, f64::from(text.b[0]));
+                    sprites.push(text);
+                }
+            });
+        }
+        x = right + font * 1.5;
+    }
+    let mut height = corner[1] - top;
+    if !title.is_empty() {
+        write(1.0, theme.text, &mut |w| sprites.extend(w.text(title, [0.0, top - 5.0], Align::Above)));
+        height += font * 1.4 + 5.0;
+    }
+    let right = sprites[start..].iter().fold(0.0_f32, |right, s| right.max(s.a[0]).max(s.b[0]));
+    let shift = ((corner[0] - f64::from(right)) * ratio).round() / ratio;
+    for sprite in &mut sprites[start..] {
+        sprite.a[0] += shift as f32;
+        sprite.b[0] += shift as f32;
+    }
+    height
+}
+
+/// Draws a legend whose bar ends at `corner`'s x, its tick labels' bottom at its y: `colormap` across
 /// `domain` under `title`. How tall it is.
 fn legend(
     sprites: &mut Vec<wgsl::Sprite>,
     theme: &Theme,
     corner: [f64; 2],
-    (kind, texels): (ColormapKind, [[u8; 4]; 256]),
+    colormap: &Colormap,
     domain: [f64; 2],
     mut write: impl FnMut(f64, Color, &mut dyn FnMut(&mut Writer<'_>)),
     title: &Arc<str>,
 ) -> f64 {
     let font = f64::from(theme.font_size);
-    let tick_scale = 0.9;
-    let tick_height = font * tick_scale * 1.4;
-    let bar_bottom = corner[1] - tick_height - 4.0;
+    let bar_bottom = corner[1] - font * SMALL * 1.4 - 4.0;
     let [left, top] = [corner[0] - BAR[0], bar_bottom - BAR[1]];
-    let color = |t: usize| Color::from_bytes(texels[t.min(255)]);
+    let color = |t: usize| Color::from_bytes(colormap.texels()[t.min(255)]);
     let text = theme.text.alpha(0.85);
     let across = |v: f64| left + (v - domain[0]) / (domain[1] - domain[0]).max(f64::MIN_POSITIVE) * BAR[0];
     let mut labels: Vec<(String, f64)> = Vec::new();
-    if kind == ColormapKind::Categorical {
+    if colormap.kind() == ColormapKind::Categorical {
         let first = domain[0].min(domain[1]).ceil() as i64;
         let last = domain[0].max(domain[1]).floor() as i64;
         let count = (last - first + 1).clamp(1, CATEGORIES as i64) as usize;
@@ -118,7 +167,7 @@ fn legend(
             labels.push((label(v, step, &axis), at));
         }
     }
-    write(tick_scale, text, &mut |w| {
+    write(SMALL, text, &mut |w| {
         for (label, at) in &labels {
             sprites.extend(w.text(label, [*at, bar_bottom + 4.0], Align::Below));
         }
