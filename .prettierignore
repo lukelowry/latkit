@@ -18,3 +18,5 @@ npm/pkg
 npm/dist
 crates/latkit/colormaps
 npm/test/scenes.js
+# Generated with serde_json by the native CLI gallery example.
+examples/cli-gallery/*.json

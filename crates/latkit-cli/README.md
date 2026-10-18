@@ -3,7 +3,7 @@
 Validate scene JSON and render PNG images using the same Rust renderer and data format as the browser package.
 
 ```sh
-cargo install --path crates/latkit-cli --locked
+cargo install --path crates/latkit-cli --locked --profile cli
 latkit validate scene.json --data grid.bin
 latkit render scene.json --data grid.bin --output grid.png
 latkit render scene.json -d grid.bin -d prices.bin -o grid.png --width 2400 --height 1350 --pixel-ratio 2
@@ -16,6 +16,17 @@ The package is `latkit-cli`; the executable is `latkit`. Once published, install
 `cargo install latkit-cli --locked`. Publishing the library must precede publishing the CLI.
 Native executables are OS/architecture specific. Rust applications depend directly on `latkit`
 instead of spawning the CLI. Browser applications use the existing npm/WASM package.
+
+The workspace's `cli` profile optimizes for executable size, strips symbols, and inherits fat LTO
+and one codegen unit from `release`. Build it with `cargo build --locked -p latkit-cli --profile cli`;
+the executable is in `target/cli/`. This profile preserves unwinding for native worker error
+handling. GPU builds include DX12, Metal, Vulkan, and browser WebGPU as applicable to the target;
+the unused OpenGL/GLES backend is disabled. Keep `Cargo.lock` when building distributions: it also
+unifies the font parser versions shared by shaping and rasterization. Compress the executable in
+a platform archive for distribution; PDB files and Cargo build artifacts are not runtime inputs.
+
+See [the CLI gallery](../../examples/cli-gallery/README.md) for rendered images, scene JSON,
+datasets, and commands to reproduce them.
 
 `render` automatically fits the data and settles layout, uploads, labels, and finite transitions.
 It needs a working Vulkan, Metal, or DX12 adapter/driver; no window is opened. `validate` never

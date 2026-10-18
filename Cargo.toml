@@ -17,7 +17,8 @@ thiserror = "2"
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
 rustc-hash = "2"
 
-wgpu = "30"
+# Match Gpu::new: primary native backends and browser WebGPU, without unused GLES.
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl", "webgpu"] }
 bytemuck = { version = "1", features = ["derive"] }
 glam = "0.34"
 web-time = "1"
@@ -66,6 +67,11 @@ struct_excessive_bools = "allow"
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+[profile.cli]
+inherits = "release"
+opt-level = "s"
+strip = true
 
 [profile.wasm]
 inherits = "release"

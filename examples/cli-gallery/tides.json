@@ -1,0 +1,113 @@
+{
+  "ease": 0,
+  "marks": [
+    {
+      "lines": {
+        "color": {
+          "colormap": "level",
+          "domain": [
+            0,
+            1
+          ],
+          "map": "turbo"
+        },
+        "of": [
+          "art",
+          "Contour"
+        ],
+        "width": 1.15
+      }
+    },
+    {
+      "vertices": {
+        "color": "#00000000",
+        "of": [
+          "art",
+          "Frame"
+        ],
+        "pick": false,
+        "position": [
+          "x",
+          "y"
+        ],
+        "radius": 0
+      }
+    },
+    {
+      "vertices": {
+        "color": "#00000000",
+        "label": {
+          "color": "#f1f6ff",
+          "priority": 255,
+          "size": 34,
+          "text": "text"
+        },
+        "of": [
+          "art",
+          "Title"
+        ],
+        "pick": false,
+        "position": [
+          "x",
+          "y"
+        ],
+        "radius": 0
+      }
+    },
+    {
+      "vertices": {
+        "color": "#00000000",
+        "label": {
+          "color": "#8eabc0",
+          "priority": 255,
+          "size": 16,
+          "text": "text"
+        },
+        "of": [
+          "art",
+          "Subtitle"
+        ],
+        "pick": false,
+        "position": [
+          "x",
+          "y"
+        ],
+        "radius": 0
+      }
+    },
+    {
+      "vertices": {
+        "color": "#00000000",
+        "label": {
+          "color": "#6f8ba4",
+          "priority": 255,
+          "size": 12,
+          "text": "text"
+        },
+        "of": [
+          "art",
+          "Footer"
+        ],
+        "pick": false,
+        "position": [
+          "x",
+          "y"
+        ],
+        "radius": 0
+      }
+    }
+  ],
+  "space": {
+    "plane": {
+      "grid": "off"
+    }
+  },
+  "theme": {
+    "background": "#080f1c",
+    "flow": "#d9fff0a0",
+    "flowSpacing": 100,
+    "font": "sans-serif",
+    "halo": 0,
+    "text": "#c7d5e4"
+  }
+}

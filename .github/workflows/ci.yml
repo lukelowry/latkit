@@ -65,6 +65,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
       - run: cargo test --locked --package latkit --features native,serde --lib --test validation
       - run: cargo test --locked --package latkit-cli
+      - name: Build the size-optimized CLI
+        run: cargo build --locked --package latkit-cli --profile cli
       - run: cargo check --locked --package latkit --no-default-features
       - name: Keep native font code out of browser builds
         run: cargo check --locked --package latkit --target wasm32-unknown-unknown --features native,web,serde
