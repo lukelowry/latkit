@@ -1,8 +1,8 @@
-// The overlay: lines, boxes, and runs of text in CSS pixels over every mark, such as a plot's axes,
-// a selection box, and a connection being drawn. Text is the atlas's distance field, its quad
-// reaching over the field's spread.
+// The overlay: lines, boxes, filled rectangles, and runs of text in CSS pixels over every mark, such
+// as a plot's axes, a scene's title and legends, a selection box, and a connection being drawn. Text
+// is the atlas's distance field, its quad reaching over the field's spread.
 
-import package::lib::types::{Sprite, SPRITE_TEXT, SPRITE_BOX, TEXT_SPREAD};
+import package::lib::types::{Sprite, SPRITE_TEXT, SPRITE_BOX, SPRITE_FILL, TEXT_SPREAD};
 import package::lib::bind::{eye, ramp};
 import package::lib::mark::coverage;
 import package::lib::color::output;
@@ -23,6 +23,8 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) sprite: u
     var p = mix(s.a, s.b, quad);
     if s.kind == SPRITE_BOX {
         p = mix(min(s.a, s.b) - 1.0, max(s.a, s.b) + 1.0, quad);
+    } else if s.kind == SPRITE_FILL {
+        p = mix(min(s.a, s.b), max(s.a, s.b), quad);
     } else if s.kind != SPRITE_TEXT {
         let dir = normalize(s.b - s.a + vec2f(1e-6, 0.0));
         let reach = 0.5 * s.width + 1.0;
@@ -52,6 +54,8 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
         let edge = min(min(v.p.x - lo.x, hi.x - v.p.x), min(v.p.y - lo.y, hi.y - v.p.y));
         let line = coverage(abs(edge) - 0.5 * s.width);
         c = max(line, f32(inside) * 0.15);
+    } else if s.kind == SPRITE_FILL {
+        c = 1.0;
     } else {
         let ab = s.b - s.a;
         let t = clamp(dot(v.p - s.a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);

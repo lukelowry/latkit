@@ -701,6 +701,7 @@ dependencies = [
  "web-time",
  "wesl",
  "wgpu",
+ "windows",
 ]
 
 [[package]]
@@ -709,6 +710,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "latkit",
+ "serde",
  "serde_json",
  "tempfile",
 ]

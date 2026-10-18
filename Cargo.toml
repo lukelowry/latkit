@@ -43,6 +43,12 @@ pollster = "0.4"
 cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "fontconfig"] }
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 tempfile = "3"
+windows = { version = "0.62.2", features = [
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
@@ -68,9 +74,9 @@ struct_excessive_bools = "allow"
 lto = "fat"
 codegen-units = 1
 
+# The executable: release speed for its CPU work (JSON, PNG, layout, text), without symbols.
 [profile.cli]
 inherits = "release"
-opt-level = "s"
 strip = true
 
 [profile.wasm]

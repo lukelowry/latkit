@@ -26,7 +26,7 @@ const DELTA: u32 = 0x0101_0000;
 const MATRIX: [u32; 9] = [0x0001_0000, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000];
 
 /// A fragmented MP4 muxer for one H.264 track, taking access units and handing back the bytes to write.
-pub(crate) struct Mp4 {
+pub(crate) struct Muxer {
     size: [u32; 2],
     timescale: u32,
     /// Whether `ftyp` and `moov` were handed out.
@@ -49,10 +49,10 @@ struct Sample {
     size: u32,
 }
 
-impl Mp4 {
+impl Muxer {
     /// A muxer for one H.264 track of `size` pixels whose frame times are `timescale` ticks a second.
-    pub(crate) fn new(size: [u32; 2], timescale: u32) -> Mp4 {
-        Mp4 { size, timescale, headed: false, sequence: 0, run: Vec::new(), data: Vec::new(), last: None }
+    pub(crate) fn new(size: [u32; 2], timescale: u32) -> Muxer {
+        Muxer { size, timescale, headed: false, sequence: 0, run: Vec::new(), data: Vec::new(), last: None }
     }
 
     /// Takes one access unit; returns the bytes ready to write next, in order: `ftyp` and `moov` before
@@ -280,7 +280,7 @@ fn matrix(out: &mut Vec<u8>) {
 
 /// The NAL units of Annex B `bytes`: what lies between start codes, less the zero bytes that lead a 4-byte start code
 /// (a NAL unit never ends in one).
-fn nals(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+pub(crate) fn nals(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut rest = start_code(bytes).map_or(&[][..], |at| &bytes[at + 3..]);
     std::iter::from_fn(move || {
         while !rest.is_empty() {
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn the_header_comes_with_the_first_keyframe_and_a_fragment_with_each_next() {
-        let mut mp4 = Mp4::new([640, 360], 90_000);
+        let mut mp4 = Muxer::new([640, 360], 90_000);
         let mut file = Vec::new();
         let head = mp4.push(&key(0)).unwrap();
         assert_eq!(kinds(&head), ["ftyp", "moov"]);
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn the_sample_entry_holds_the_parameter_sets_and_bt709() {
-        let mut mp4 = Mp4::new([1920, 1080], 90_000);
+        let mut mp4 = Muxer::new([1920, 1080], 90_000);
         let head = mp4.push(&key(0)).unwrap();
         let moov = boxes(&head)[1].1;
         let stbl = [b"trak", b"mdia", b"minf", b"stbl"].into_iter().fold(moov, |body, kind| child(body, 0, *kind));
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn samples_are_timed_sized_and_placed_by_the_fragment() {
-        let mut mp4 = Mp4::new([640, 360], 90_000);
+        let mut mp4 = Muxer::new([640, 360], 90_000);
         let mut file = Vec::new();
         let units = [key(0), delta(1500), delta(3000), key(9000), delta(10_500)];
         for unit in &units {
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn late_times_take_a_tick_and_empty_units_are_dropped() {
-        let mut mp4 = Mp4::new([64, 64], 1000);
+        let mut mp4 = Muxer::new([64, 64], 1000);
         let mut file = mp4.push(&key(100)).unwrap();
         for unit in [delta(100), delta(50), Unit { time: 300, key: false, annex_b: annex_b(&[AUD_NAL]) }, delta(400)] {
             file.extend(mp4.push(&unit).unwrap());
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn frames_before_the_first_keyframe_are_dropped() {
-        let mut mp4 = Mp4::new([64, 64], 1000);
+        let mut mp4 = Muxer::new([64, 64], 1000);
         assert_eq!(mp4.push(&delta(0)).unwrap(), b"");
         assert_eq!(mp4.push(&delta(10)).unwrap(), b"");
         let mut file = mp4.push(&key(20)).unwrap();
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn a_first_keyframe_without_parameter_sets_fails() {
-        let mut mp4 = Mp4::new([64, 64], 1000);
+        let mut mp4 = Muxer::new([64, 64], 1000);
         let bare = Unit { time: 0, key: true, annex_b: annex_b(&[AUD_NAL, IDR]) };
         assert!(mp4.push(&bare).is_err());
         let no_pps = Unit { time: 0, key: true, annex_b: annex_b(&[SPS_NAL, IDR]) };
@@ -543,7 +543,7 @@ mod tests {
         let frames = 107_893_u64;
         let fps = 30_000.0 / 1001.0;
         let times: Vec<u64> = (0..frames).map(|i| (i as f64 * 90_000.0 / fps).round() as u64).collect();
-        let mut mp4 = Mp4::new([16, 16], 90_000);
+        let mut mp4 = Muxer::new([16, 16], 90_000);
         let mut file = Vec::new();
         let tiny = |time, key| Unit {
             time,

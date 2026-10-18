@@ -423,7 +423,7 @@ pub async fn image(shot: &Shot, canvases: &[Canvas]) -> Result<Image> {
 
 /// Draws `video`'s next frame of the views of `canvases`, one per panel. The canvases hold their last
 /// frames until the video is finished or dropped.
-pub async fn frame<W: std::io::Write>(video: &mut Video<W>, canvases: &[Canvas]) -> Result<()> {
+pub async fn frame<S: crate::Sink>(video: &mut Video<S>, canvases: &[Canvas]) -> Result<()> {
     video.frame_of(&mut Canvases::of(canvases)?).await
 }
 

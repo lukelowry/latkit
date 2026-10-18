@@ -11,6 +11,7 @@ mod gestures;
 mod graph;
 mod input;
 mod labels;
+mod legends;
 mod lists;
 mod marks;
 mod passes;
@@ -574,6 +575,14 @@ impl View {
             || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
             || self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME)))
             || self.gpu.0.lock().arena.uploading()
+    }
+
+    /// Whether what the last frame stood in for lands by drawing again once the GPU finished it, with
+    /// nothing to wake the view: pages uploading or tables to build from them, regions or segments to
+    /// lay out, a fit due. Jobs, texts, and readbacks wake it when they land.
+    pub(crate) fn due(&self) -> bool {
+        let Waiting { data, marks, fit, .. } = self.waiting;
+        data || marks || fit
     }
 
     fn wake(&mut self) {

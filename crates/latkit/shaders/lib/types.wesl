@@ -257,6 +257,7 @@ const PROBE_WORDS: u32 = 12u;
 const SPRITE_LINE: u32 = 0u;
 const SPRITE_TEXT: u32 = 1u;
 const SPRITE_BOX: u32 = 2u;
+const SPRITE_FILL: u32 = 3u;
 
 // Spaces.
 const SPACE_EARTH: u32 = 0u;

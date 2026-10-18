@@ -149,11 +149,15 @@ only glow, halo, and pick radius stay pixels. Zooming scales one fixed picture.
   they ease and waits while work is under way, within a deadline, until every view is complete and
   still; `compute/compose.wesl` then writes each panel's part in whole words, and a plain buffer copy
   reads the RGBA back. `Image::png` writes it; the npm package writes it in a worker.
-- **Video** (`src/video/`): a shot's frames at a fixed rate, NV12 composed on the GPU, three frames
-  under way (one drawing, one reading back, one encoding). A frame where nothing moved is neither
-  drawn nor encoded: frames last until the next one's time. `Host::encoder` is the seam, NV12 in and
-  Annex B out with no B-frames; a browser's is WebCodecs, which npm hands the host. `mp4.rs` writes
-  fragmented MP4 as it goes, a fragment per keyframe run, from the first keyframe's parameter sets.
+- **Video** (`src/video/`): a shot's frames at a fixed rate handed in order to a `Sink`, which
+  says the `Pixels` it takes (RGBA or NV12), composed on the GPU; three frames under way (one
+  drawing, one reading back, one in the sink). A frame where nothing moved is neither drawn nor read
+  back: the sink is told it is held. `Mp4` is the sink most videos take: `Host::encoder`, NV12 in and
+  Annex B out with no B-frames (WebCodecs in a browser, which npm hands the host; Media Foundation
+  natively on Windows, hardware where present), and `mp4.rs`, fragmented MP4 written as it goes, a
+  fragment per keyframe run. A frame lasts until the next one's time, so held frames cost nothing.
+- **Titles and legends**: a scene's `title`, `subtitle`, and `legends` (a mark's colormap across
+  its domain, or a cell a category) draw as overlay sprites with a plot's axes, O(legends).
 - **Lending:** views lend themselves to a drawing a step at a time (`shot::Views`), so a canvas's
   view is borrowed only while a step draws it and the page reads it between steps.
 
@@ -172,8 +176,8 @@ crates/latkit/
 │   ├── lib.rs         the only entry point
 │   ├── error.rs, pending.rs, image.rs (PNG), time.rs (bounded waits)
 │   ├── shot.rs        Shot, the drawing that steps views and composes their panels
-│   ├── video/         Video, Encoder, Encoding, Unit; mp4 (fragmented, as it goes)
-│   ├── data/          columns, ids, samples, tables, patches, bytes, inverse references, geometry pages
+│   ├── video/         Video, Sink, Pixels, Mp4, Encoder, Encoding, Unit; mp4 (fragmented, as it goes)
+│   ├── data/          columns, ids, samples, tables, patches, bytes, JSON, inverse references, geometry pages
 │   ├── expr/          compile, decode, color, colormap, cpu: the executor structure reads
 │   ├── scene/         Scene, marks (Vertices, Edges, Faces, Lines, Areas), Label, Port, Marker, Layout, Theme,
 │   │                  Controls, spaces, decode
@@ -181,12 +185,13 @@ crates/latkit/
 │   │                  the camera sees, as tiles), pyramid (each row's level, in jobs), tiled (the rows drawn)
 │   ├── sheet/         a diagram's sizes, places, and boxes (mod), and its wires: a derivation
 │   ├── layout/        layered, stress, overlap, pack, route (groups as soft obstacles)
-│   ├── view/          View; clock, camera, rig, gestures, input, event; probe, focus, query, fit, axes; plan, marks,
+│   ├── view/          View; clock, camera, rig, gestures, input, event; probe, focus, query, fit, axes, legends; plan, marks,
 │   │                  program, sync, rows, transition, lists, labels, graph, shadows, variants, resources,
 │   │                  uniforms, wake, timer, passes, frame
 │   ├── gpu/           Gpu, Budget, work (Work, the counting queue), arena (fixed pages, one pool), pipelines,
 │   │                  atlas (distance fields), readback, colormaps, icons
-│   ├── host/          Host (text, jobs, fetch, encoder), Job, browser (workers, canvas text, fetch, WebCodecs)
+│   ├── host/          Host (text, jobs, fetch, encoder), Job, browser (workers, canvas text, fetch, WebCodecs),
+│   │                  native (fonts, workers, files, Media Foundation)
 │   ├── geo/           geojson, mvt, pmtiles, tiles, shapes, earcut
 │   └── web.rs         Canvas: its surface, frames, input, events; pictures and video frames of canvases
 └── tests/
@@ -209,6 +214,7 @@ grid.apply(
         .set(Table::new("Branch", 2).reference("from", "Bus", [0_u64, 1]).reference("to", "Bus", [1_u64, 2]).field("p", [120.0, -40.0]).field("kv", [345.0, 138.0])),
 )?;
 grid.apply(Patch::new().append(0.5, "Bus", [("vm", [1.01, 0.99, 1.0])]))?; // a sampled frame
+let grid = Data::from_json(&json, |file, bytes| read(file, bytes))?; // any language's JSON; slices of files
 
 // A map: marks name their data; options are expressions. Geometry is a field.
 view.set_data(geo::geojson("states", &bytes)?);
@@ -269,7 +275,7 @@ let Stats { rows, drawn, resident, budget, waiting, .. } = view.stats(); // rows
 // Pictures and video: plain data, drawn once every view is complete.
 let png = Shot::new([3840, 2160]).scale(2.0).image(&mut [&mut view]).await?.png();
 let shot = Shot::new([1920, 1080]).scale(1.5).panel([0.0, 0.0, 1.0, 0.7]).panel([0.0, 0.7, 1.0, 0.3]);
-let mut video = shot.video(&gpu, 60.0, file)?;    // the host's encoder
+let mut video = shot.video(&gpu, 60.0, Mp4::new(file))?; // or any Sink: raw frames, PNGs
 while video.time() < 24.0 {
     map.set_at(video.time() * 3600.0);            // the script is the loop
     video.frame(&mut [&mut map, &mut plot]).await?;
@@ -304,4 +310,5 @@ await video.finish();
 | Scale                | `cargo xtask bench` and budgets; GPU time in `Stats`; fixed pages in one pool within a `Budget`; plans that always fit; tiles for anything large (pyramids in jobs, edges with their ends); `priority`; views that sleep while they wait; lanes as world-space bows; globe occlusion by depth; dashes and comets along paths; focus draws only lit rows; bulk column reads; the 2M-bus grid and Grid operations pages                                            | ✓      |
 | M6                   | time as an input (`Frame`, `input(time)`, the view's clock); `complete`; `Shot` and `Image` (compose pass, PNG in a worker); `Video` (NV12 on the GPU, three frames under way, held frames free, fragmented MP4, `Host::encoder` with WebCodecs); npm `Shot`, `Image`, `Video`                                                                                                                                                                                   | ✓      |
 | Interaction          | `Event` as intents and changes in one ordered queue (picks hold their place, changes keep their latest); `Trigger` (point, keys, `Device`) on every intent and hover; silent setters; `hovered`, `failures`, the `Waiting` event; hover follows the frame, `Controls::hover` only glows; the keys step, open, and select; npm events and view state as JSON, a batch per dispatch; ids checked, never truncated                                                  | ✓      |
+| CLI                  | `latkit-cli`: render, validate, inspect; `Sink`, `Pixels`, `Mp4`; native H.264 (Media Foundation) and files in `Native`; `Data`/`Patch` and `Shot` as JSON; titles and legends; native shots draw again at once when uploads are due                                                                                                                                                                                                                             | ✓      |
 | Retire               | delete `packages/`, `examples/`, `benchmark/`, the old `docs/` and their configs                                                                                                                                                                                                                                                                                                                                                                                 | ○      |

@@ -283,6 +283,20 @@ impl Expr {
             Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::State(_) => self.clone(),
         }
     }
+
+    /// The first colormap a color maps through, and its domain when set: what a legend shows.
+    pub(crate) fn colormap_of(&self) -> Option<(&Colormap, Option<[f64; 2]>)> {
+        match &*self.0 {
+            Node::Colormap { colormap, domain, .. } => {
+                Some((colormap, if let Domain::Fixed(domain) = domain { Some(*domain) } else { None }))
+            }
+            Node::Unary(_, a) | Node::Is(a, _) => a.colormap_of(),
+            Node::Binary(_, a, b) => a.colormap_of().or_else(|| b.colormap_of()),
+            Node::When(c, a, b) => a.colormap_of().or_else(|| b.colormap_of()).or_else(|| c.colormap_of()),
+            Node::Scale { input, .. } => input.colormap_of(),
+            Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::Field(_) | Node::State(_) => None,
+        }
+    }
 }
 
 /// A value mapped through a colormap or onto a range, whose domain can be set.

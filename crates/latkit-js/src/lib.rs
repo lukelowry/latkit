@@ -95,9 +95,9 @@ impl Gpu {
         to_json(&self.0.work())
     }
 
-    /// A video of `shot`'s pictures at `fps` frames a second, encoded by WebCodecs at `bitrate` bits
-    /// a second, or about 0.15 bits a pixel a frame.
-    pub fn video(&self, shot: &JsValue, fps: f64, bitrate: Option<f64>) -> Result<Video, Error> {
+    /// A video of `shot`'s (JSON) pictures at `fps` frames a second, encoded by WebCodecs at
+    /// `bitrate` bits a second, or about 0.15 bits a pixel a frame.
+    pub fn video(&self, shot: &str, fps: f64, bitrate: Option<f64>) -> Result<Video, Error> {
         shot::video(&self.0, shot, fps, bitrate)
     }
 }
@@ -120,6 +120,12 @@ impl Data {
     #[wasm_bindgen(js_name = fromBytes)]
     pub fn from_bytes(bytes: &[u8]) -> Result<Data, Error> {
         Ok(Data(latkit::Data::from_bytes(bytes)?))
+    }
+
+    /// A dataset from its JSON document, its slices read from `files`: names to `Uint8Array`s.
+    #[wasm_bindgen(js_name = fromJson)]
+    pub fn from_json(json: &str, files: &JsValue) -> Result<Data, Error> {
+        Ok(Data(latkit::Data::from_json(json, convert::files(files))?))
     }
 
     #[wasm_bindgen(getter)]
@@ -195,6 +201,12 @@ impl Patch {
     #[wasm_bindgen(js_name = fromBytes)]
     pub fn from_bytes(bytes: &[u8]) -> Result<Patch, Error> {
         Ok(Patch(latkit::Patch::from_bytes(bytes)?))
+    }
+
+    /// A patch from its JSON, its slices read from `files`: names to `Uint8Array`s.
+    #[wasm_bindgen(js_name = fromJson)]
+    pub fn from_json(json: &str, files: &JsValue) -> Result<Patch, Error> {
+        Ok(Patch(latkit::Patch::from_json(json, convert::files(files))?))
     }
 
     pub fn axis(&mut self, name: &str, unit: &str) {

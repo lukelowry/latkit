@@ -11,7 +11,7 @@ include = ["src/**", "build/**", "build.rs", "shaders/**", "colormaps/catalog.tx
 [features]
 default = ["gpu"]
 gpu = ["dep:wgpu", "dep:glam", "dep:web-time", "dep:wesl", "dep:naga"]
-native = ["gpu", "dep:cosmic-text"]
+native = ["gpu", "dep:cosmic-text", "dep:windows"]
 serde = []
 web = ["gpu", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys"]
 
@@ -32,6 +32,10 @@ web-time = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cosmic-text = { workspace = true, optional = true }
+
+# Native video: H.264 from the platform's encoder.
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true, optional = true }

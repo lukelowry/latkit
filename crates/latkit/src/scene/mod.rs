@@ -17,6 +17,7 @@ mod space;
 mod theme;
 mod vertices;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use areas::Areas;
@@ -37,13 +38,15 @@ pub use vertices::Vertices;
 use crate::{Data, Error, Result};
 
 /// What a view draws and how it answers input: a space, marks in drawing order, a layout, a theme,
-/// controls, and how long changes ease.
+/// controls, how long changes ease, and the title and legends written over it.
 ///
 /// ```
-/// # use latkit::{Edges, Earth, Scene, Vertices};
+/// # use latkit::{Colormap, Edges, Earth, Scene, Vertices, field};
 /// let scene = Scene::new(Earth::globe())
 ///     .draw(Edges::of("grid", "Branch").ends("from", "to"))
-///     .draw(Vertices::of("grid", "Bus").position("lon", "lat"));
+///     .draw(Vertices::of("grid", "Bus").position("lon", "lat").color(field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05)))
+///     .title("Voltage")
+///     .legend(1, "Bus voltage · pu");
 /// ```
 #[derive(Clone, PartialEq, Debug)]
 pub struct Scene {
@@ -53,6 +56,10 @@ pub struct Scene {
     pub(crate) theme: Theme,
     pub(crate) controls: Controls,
     pub(crate) ease: Duration,
+    pub(crate) title: Option<Arc<str>>,
+    pub(crate) subtitle: Option<Arc<str>>,
+    /// Each legend's mark, and its title.
+    pub(crate) legends: Vec<(usize, Arc<str>)>,
 }
 
 impl Scene {
@@ -65,6 +72,9 @@ impl Scene {
             theme: Theme::default(),
             controls: Controls::default(),
             ease: Duration::from_millis(300),
+            title: None,
+            subtitle: None,
+            legends: Vec::new(),
         }
     }
 
@@ -100,6 +110,29 @@ impl Scene {
     #[must_use]
     pub fn ease(mut self, over: Duration) -> Scene {
         self.ease = over;
+        self
+    }
+
+    /// Writes `title` at the view's top left, in the theme's text and font, larger.
+    #[must_use]
+    pub fn title(mut self, title: impl Into<Arc<str>>) -> Scene {
+        self.title = Some(title.into());
+        self
+    }
+
+    /// Writes `subtitle` under the title.
+    #[must_use]
+    pub fn subtitle(mut self, subtitle: impl Into<Arc<str>>) -> Scene {
+        self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    /// Draws a legend of mark `mark`'s colors at the view's bottom right, under `title`: its
+    /// colormap across its domain, ticked, or a swatch for each category. The mark's color maps
+    /// through a colormap with a domain. Legends stack upward in order.
+    #[must_use]
+    pub fn legend(mut self, mark: usize, title: impl Into<Arc<str>>) -> Scene {
+        self.legends.push((mark, title.into()));
         self
     }
 
@@ -153,6 +186,15 @@ impl Scene {
             }
             if let Some((option, reason)) = mark.misplaced(diagram) {
                 return Err(Error::invalid(reason).at(option).at(i).at("marks"));
+            }
+        }
+        for (i, (mark, _)) in self.legends.iter().enumerate() {
+            let colors = self.marks.get(*mark).and_then(|m| m.style().color.as_ref()).and_then(|c| c.colormap_of());
+            if !matches!(colors, Some((_, Some(_)))) {
+                let reason = format!(
+                    "a legend shows a mark whose color maps through a colormap with a domain; mark {mark} has none"
+                );
+                return Err(Error::invalid(reason).at("mark").at(i).at("legends"));
             }
         }
         Ok(())

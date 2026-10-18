@@ -70,6 +70,15 @@ export class Patch {
     return new Patch(wasm.Patch.fromBytes(bytes));
   }
 
+  /**
+   * A patch from its JSON: a list of changes, each named by its method with its parameters by name,
+   * such as `[{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}]`. A field naming a
+   * slice of a binary file, `{file, dtype, offset, count}`, reads it from `files`.
+   */
+  static fromJson(json: string, files: Record<string, Uint8Array> = {}): Patch {
+    return new Patch(wasm.Patch.fromJson(json, files));
+  }
+
   /** Names the axis sampled fields are recorded over, such as `('time', 's')`. */
   axis(name: string, unit: string): this {
     this.inner.axis(name, unit);
@@ -141,6 +150,14 @@ export class Data {
   /** A dataset from {@link Data.toBytes}. */
   static fromBytes(bytes: Uint8Array): Data {
     return new Data(wasm.Data.fromBytes(bytes));
+  }
+
+  /**
+   * A dataset from its JSON document, `{"name": ..., "patch": [...]}`: the patch, as
+   * {@link Patch.fromJson} reads it, building the dataset from nothing.
+   */
+  static fromJson(json: string, files: Record<string, Uint8Array> = {}): Data {
+    return new Data(wasm.Data.fromJson(json, files));
   }
 
   get name(): string {
@@ -520,7 +537,7 @@ export class Shot {
       transparent: boolean;
       deadline: number;
       elapsed?: number;
-    }> = { scale: 1, panels: [], transparent: false, deadline: 30_000 },
+    }> = { scale: 1, panels: [], transparent: false, deadline: 30 },
   ) {}
 
   /** Draws `scale` pixels per CSS pixel: a view lays out `size / scale` CSS pixels. */
@@ -538,9 +555,9 @@ export class Shot {
     return new Shot(this.size, { ...this.settings, transparent: true });
   }
 
-  /** The capture deadline in milliseconds, including readback; rejects on timeout. Defaults to 30 seconds. */
-  deadline(ms: number): Shot {
-    return new Shot(this.size, { ...this.settings, deadline: ms });
+  /** The capture deadline in seconds, including readback; rejects on timeout. Defaults to 30. */
+  deadline(seconds: number): Shot {
+    return new Shot(this.size, { ...this.settings, deadline: seconds });
   }
 
   /** Fixes elapsed-time expressions and drawing effects at `seconds` while transitions settle. */
@@ -572,8 +589,9 @@ export class Shot {
     return new Video(gpu.inner.video(this.#config(), fps, options.bitrate), output.getWriter());
   }
 
-  #config() {
-    return { size: [...this.size], ...this.settings };
+  /** The shot as the crate reads it: JSON, times in seconds. */
+  #config(): string {
+    return JSON.stringify({ size: [...this.size], ...this.settings });
   }
 }
 

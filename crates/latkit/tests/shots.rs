@@ -190,3 +190,27 @@ fn native_fonts_draw_visible_glyphs_into_the_export() {
         image.rgba.as_chunks::<4>().0.iter().filter(|pixel| pixel[0] > 180 && pixel[1] > 180 && pixel[2] > 180).count();
     assert!(white > 15, "the image contains real white glyphs, not just the red vertex: {white}");
 }
+
+#[test]
+fn a_legend_draws_its_marks_colormap_across_the_domain() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("graph");
+    data.apply(Table::new("Node", 2).field("x", vec![-1.0, 1.0]).field("y", vec![0.0, 0.0]).field("v", vec![0.0, 1.0]))
+        .expect("valid");
+    let colors = latkit::field("v").colormap(latkit::Colormap::VIRIDIS).domain(0.0..=1.0);
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(colors))
+        .legend(0, "");
+    let mut view = view(&gpu, scene, data);
+    let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
+    // The bar ends 16 px from the right; its middle row sits above the ticks' labels.
+    let y = 200 - 16 - 16 - 4 - 4;
+    let near = |a: [u8; 4], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 24);
+    let low = pixel(&image, 400 - 16 - 218, y);
+    let high = pixel(&image, 400 - 16 - 2, y);
+    assert!(near(low, [68, 1, 84]), "viridis's low end: {low:?}");
+    assert!(near(high, [253, 231, 37]), "viridis's high end: {high:?}");
+    let scene = Scene::new(plane()).draw(Vertices::of("graph", "Node").position("x", "y")).legend(0, "");
+    assert!(View::new(&gpu, scene).is_err(), "a legend needs a colormap with a domain");
+}

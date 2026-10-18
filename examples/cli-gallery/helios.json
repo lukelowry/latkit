@@ -1,54 +1,64 @@
 {
+  "space": {
+    "plane": {
+      "grid": "off"
+    }
+  },
   "ease": 0,
+  "theme": {
+    "background": "#080f1c",
+    "text": "#c7d5e4",
+    "font": "sans-serif",
+    "fontSize": 13,
+    "halo": 0,
+    "flow": "#d9fff0a0",
+    "flowSpacing": 100
+  },
+  "title": "01 / HELIOS",
+  "subtitle": "Flow through a synthetic transmission network",
   "marks": [
     {
       "edges": {
+        "of": [
+          "art",
+          "Branch"
+        ],
         "ends": [
           "from",
           "to"
         ],
-        "flow": 18,
-        "of": [
-          "art",
-          "Link"
-        ],
-        "width": 0.85
+        "width": 0.85,
+        "flow": 18
       }
     },
     {
       "vertices": {
-        "color": {
-          "colormap": "heat",
-          "domain": [
-            0,
-            1
-          ],
-          "map": "viridis"
-        },
-        "label": {
-          "color": "#c0e5dd",
-          "size": 13,
-          "text": "name"
-        },
         "of": [
           "art",
-          "Node"
+          "Bus"
         ],
         "position": [
           "x",
           "y"
         ],
-        "radius": "radius"
+        "radius": "radius",
+        "color": {
+          "colormap": "heat",
+          "map": "viridis",
+          "domain": [
+            0,
+            1
+          ]
+        },
+        "label": {
+          "text": "name",
+          "size": 13,
+          "color": "#c0e5dd"
+        }
       }
     },
     {
       "vertices": {
-        "color": "#00000000",
-        "label": {
-          "color": "#9dcabf",
-          "size": 17,
-          "text": "text"
-        },
         "of": [
           "art",
           "Note"
@@ -57,99 +67,14 @@
           "x",
           "y"
         ],
-        "radius": 0
-      }
-    },
-    {
-      "vertices": {
-        "color": "#00000000",
-        "of": [
-          "art",
-          "Frame"
-        ],
-        "pick": false,
-        "position": [
-          "x",
-          "y"
-        ],
-        "radius": 0
-      }
-    },
-    {
-      "vertices": {
+        "radius": 0,
         "color": "#00000000",
         "label": {
-          "color": "#f1f6ff",
-          "priority": 255,
-          "size": 34,
-          "text": "text"
-        },
-        "of": [
-          "art",
-          "Title"
-        ],
-        "pick": false,
-        "position": [
-          "x",
-          "y"
-        ],
-        "radius": 0
-      }
-    },
-    {
-      "vertices": {
-        "color": "#00000000",
-        "label": {
-          "color": "#8eabc0",
-          "priority": 255,
-          "size": 16,
-          "text": "text"
-        },
-        "of": [
-          "art",
-          "Subtitle"
-        ],
-        "pick": false,
-        "position": [
-          "x",
-          "y"
-        ],
-        "radius": 0
-      }
-    },
-    {
-      "vertices": {
-        "color": "#00000000",
-        "label": {
-          "color": "#6f8ba4",
-          "priority": 255,
-          "size": 12,
-          "text": "text"
-        },
-        "of": [
-          "art",
-          "Footer"
-        ],
-        "pick": false,
-        "position": [
-          "x",
-          "y"
-        ],
-        "radius": 0
+          "text": "text",
+          "size": 17,
+          "color": "#9dcabf"
+        }
       }
     }
-  ],
-  "space": {
-    "plane": {
-      "grid": "off"
-    }
-  },
-  "theme": {
-    "background": "#080f1c",
-    "flow": "#d9fff0a0",
-    "flowSpacing": 100,
-    "font": "sans-serif",
-    "halo": 0,
-    "text": "#c7d5e4"
-  }
+  ]
 }

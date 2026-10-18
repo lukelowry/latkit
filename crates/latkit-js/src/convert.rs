@@ -8,6 +8,21 @@ use wasm_bindgen::{JsCast, JsValue};
 /// The largest whole number a JavaScript number holds exactly: 2âµÂ³ âˆ’ 1.
 const SAFE: f64 = 9_007_199_254_740_991.0;
 
+/// What reads the slices of a JSON document: `files[name]`, a `Uint8Array`, the range of its bytes.
+pub(crate) fn files(files: &JsValue) -> impl FnMut(&str, std::ops::Range<u64>) -> Result<Vec<u8>> + '_ {
+    move |name, range| {
+        let bytes = Reflect::get(files, &name.into())
+            .ok()
+            .and_then(|v| v.dyn_into::<Uint8Array>().ok())
+            .ok_or_else(|| Error::invalid(format!("no file named {name} was given")))?;
+        let length = u64::from(bytes.length());
+        if range.end > length {
+            return Err(Error::invalid(format!("{name}: the slice ends past its {length} bytes")));
+        }
+        Ok(bytes.subarray(range.start as u32, range.end as u32).to_vec())
+    }
+}
+
 /// A parse error as an invalid-input error.
 pub(crate) fn invalid(what: &str, error: &serde_json::Error) -> Error {
     Error::invalid(error.to_string()).at(what)

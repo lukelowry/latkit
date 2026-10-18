@@ -18,7 +18,7 @@ use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::gpu::{FORMAT, Gpu};
 use crate::time::Notify;
 use crate::view::Signal;
-use crate::{Error, Frame, Image, Result, View};
+use crate::{Error, Frame, Image, Pixels, Result, View};
 
 /// Seconds a picture steps its views' clocks while they ease toward where they go.
 pub(crate) const TICK: f64 = 1.0 / 60.0;
@@ -113,7 +113,7 @@ impl Shot {
 
     /// The picture of the views `views` lends.
     pub(crate) async fn image_of(&self, views: &mut impl Views) -> Result<Image> {
-        let mut drawing = Drawing::later(self.clone(), Bytes::Rgba);
+        let mut drawing = Drawing::later(self.clone(), Pixels::Rgba);
         views.lend(|views| drawing.begin(views))?;
         let mut time = 0.0;
         loop {
@@ -131,7 +131,7 @@ impl Shot {
                     return Image::new(self.size, bytes);
                 }
                 Step::Easing => time += TICK,
-                Step::Waiting => drawing.wait().await,
+                Step::Waiting { due } => drawing.wait(due).await,
             }
         }
     }
@@ -159,6 +159,49 @@ impl Shot {
     }
 }
 
+/// A shot as JSON: `{ "size": [w, h], "scale", "panels": [[x, y, w, h]], "transparent", "deadline",
+/// "elapsed" }`, times in seconds. Only `size` is required.
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Shot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Shot, D::Error> {
+        use serde::de::Error as _;
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Form {
+            size: [u32; 2],
+            scale: Option<f32>,
+            #[serde(default)]
+            panels: Vec<[f32; 4]>,
+            #[serde(default)]
+            transparent: bool,
+            deadline: Option<f64>,
+            elapsed: Option<f64>,
+        }
+        let form = Form::deserialize(deserializer)?;
+        let seconds = |value: f64, name: &str| {
+            Duration::try_from_secs_f64(value)
+                .map_err(|_| D::Error::custom(format!("{name} is nonnegative seconds within range")))
+        };
+        let mut shot = Shot::new(form.size);
+        if let Some(scale) = form.scale {
+            shot = shot.scale(scale);
+        }
+        for part in form.panels {
+            shot = shot.panel(part);
+        }
+        if form.transparent {
+            shot = shot.transparent();
+        }
+        if let Some(deadline) = form.deadline {
+            shot = shot.deadline(seconds(deadline, "deadline")?);
+        }
+        if let Some(elapsed) = form.elapsed {
+            shot = shot.elapsed(seconds(elapsed, "elapsed")?);
+        }
+        Ok(shot)
+    }
+}
+
 /// What lends a drawing its views for a step at a time: borrowed views natively; in a browser the
 /// views of canvases, which the page may read between steps.
 pub(crate) trait Views {
@@ -173,15 +216,6 @@ impl Views for Borrowed<'_, '_> {
     fn lend<R>(&mut self, f: impl FnOnce(&mut [&mut View]) -> R) -> R {
         f(self.0)
     }
-}
-
-/// The bytes a picture is composed into.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Bytes {
-    /// RGBA rows, straight alpha: an image.
-    Rgba,
-    /// NV12 planes, BT.709 limited range: what an encoder takes.
-    Nv12,
 }
 
 /// One view's part of a picture: the texture it draws into, its size, and the bind group
@@ -199,13 +233,16 @@ pub(crate) enum Step {
     /// Views still ease toward where they go: draw again a step later.
     Easing,
     /// Views wait for work under way: draw again once it lands.
-    Waiting,
+    Waiting {
+        /// Whether drawing again lands it, as it does uploads, with nothing to wake the drawing.
+        due: bool,
+    },
 }
 
-/// Pictures under way: a shot's, composed into `bytes`, from views it draws once it has them.
+/// Pictures under way: a shot's, composed into `pixels`, from views it draws once it has them.
 pub(crate) struct Drawing {
     shot: Shot,
-    bytes: Bytes,
+    pixels: Pixels,
     /// What the pictures draw into, once the views are known.
     picture: Option<Picture>,
     notify: Arc<Notify>,
@@ -228,11 +265,11 @@ struct Picture {
 }
 
 impl Drawing {
-    /// Pictures of `shot` composed into `bytes`, drawn from the views the first picture is given.
-    pub(crate) fn later(shot: Shot, bytes: Bytes) -> Drawing {
+    /// Pictures of `shot` composed into `pixels`, drawn from the views the first picture is given.
+    pub(crate) fn later(shot: Shot, pixels: Pixels) -> Drawing {
         let notify = Arc::new(Notify::default());
         let waker = Waker::from(notify.clone());
-        Drawing { shot, bytes, picture: None, notify, waker, lent: Vec::new(), started: None }
+        Drawing { shot, pixels, picture: None, notify, waker, lent: Vec::new(), started: None }
     }
 
     /// Begins a picture of `views`, one per panel. The first takes the views: their wakers wake the
@@ -252,7 +289,7 @@ impl Drawing {
                     return Err(Error::invalid("all panels must use the same GPU"));
                 }
             }
-            self.picture = Some(Picture::new(&self.shot, views, self.bytes)?);
+            self.picture = Some(Picture::new(&self.shot, views, self.pixels)?);
             self.lent = views
                 .iter()
                 .map(|view| {
@@ -271,11 +308,11 @@ impl Drawing {
 }
 
 impl Picture {
-    /// What pictures of `shot` from `views`, one per panel, draw into, composed into `bytes`.
-    fn new(shot: &Shot, views: &[&mut View], bytes: Bytes) -> Result<Picture> {
-        let align = match bytes {
-            Bytes::Rgba => [1, 1],
-            Bytes::Nv12 => [4, 2],
+    /// What pictures of `shot` from `views`, one per panel, draw into, composed into `pixels`.
+    fn new(shot: &Shot, views: &[&mut View], pixels: Pixels) -> Result<Picture> {
+        let align = match pixels {
+            Pixels::Rgba => [1, 1],
+            Pixels::Nv12 => [4, 2],
         };
         let parts = shot.parts(align)?;
         if !(shot.scale.is_finite() && shot.scale > 0.0) {
@@ -294,10 +331,10 @@ impl Picture {
                 .into(),
             ));
         }
-        let pixels = u64::from(width) * u64::from(height);
-        let len = match bytes {
-            Bytes::Rgba => pixels * 4,
-            Bytes::Nv12 => pixels * 3 / 2,
+        let area = u64::from(width) * u64::from(height);
+        let len = match pixels {
+            Pixels::Rgba => area * 4,
+            Pixels::Nv12 => area * 3 / 2,
         };
         if len > limits.max_storage_buffer_binding_size.min(limits.max_buffer_size) {
             return Err(Error::Limit(
@@ -318,7 +355,7 @@ impl Picture {
                 origin,
                 size,
                 picture: shot.size,
-                chroma: (pixels / 4) as u32,
+                chroma: (area / 4) as u32,
                 alpha: u32::from(shot.transparent),
                 background,
             };
@@ -362,7 +399,7 @@ impl Picture {
             .collect();
         let covered: u64 = parts.iter().map(|(_, s)| u64::from(s[0]) * u64::from(s[1])).sum();
         let overlap = parts.iter().enumerate().any(|(i, a)| parts[i + 1..].iter().any(|b| overlaps(*a, *b)));
-        let fill = (covered < pixels || overlap).then(|| group(&panels[0].target, &uniform([0, 0], shot.size)));
+        let fill = (covered < area || overlap).then(|| group(&panels[0].target, &uniform([0, 0], shot.size)));
         Ok(Picture { gpu: gpu.clone(), panels, buffer, len, fill })
     }
 }
@@ -385,13 +422,14 @@ impl Drawing {
         }
         let complete = views.iter().all(|v| v.complete());
         let easing = still && views.iter().any(|v| v.easing());
+        let due = views.iter().any(|v| v.due());
         if let Some(error) = views.iter_mut().find_map(|view| view.capture_error()) {
             picture.gpu.queue().submit([encoder.finish()]);
             return Err(error);
         }
         self.check_deadline()?;
         let step = if complete && !easing {
-            picture.compose(&mut encoder, self.bytes, self.shot.size);
+            picture.compose(&mut encoder, self.pixels, self.shot.size);
             let inner = picture.gpu.0.lock();
             let (buffer, len) = (&picture.buffer, picture.len);
             let readback = Readback::new(&inner.readbacks, device, &mut encoder, buffer, 0, len, &self.waker);
@@ -400,7 +438,7 @@ impl Drawing {
         } else if easing {
             Step::Easing
         } else {
-            Step::Waiting
+            Step::Waiting { due }
         };
         picture.gpu.queue().submit([encoder.finish()]);
         Ok(step)
@@ -422,9 +460,12 @@ impl Drawing {
         }
     }
 
-    /// Waits until work a view waits on lands, or a frame's time passes.
-    pub(crate) async fn wait(&self) {
-        self.finish();
+    /// Waits until work a view waits on lands, or a frame's time passes. Natively, work that is `due`
+    /// has landed once the GPU finished what was submitted, so the next step draws at once.
+    pub(crate) async fn wait(&self, due: bool) {
+        if self.finish() && due {
+            return;
+        }
         self.notify.wait(FRAME).await;
     }
 
@@ -435,29 +476,30 @@ impl Drawing {
         Ok(())
     }
 
-    /// Natively, polls what was submitted, so readbacks map and wake the drawing; a browser maps
-    /// them itself.
+    /// Natively, waits for what was submitted, so readbacks map and wake the drawing, and says whether
+    /// the GPU finished it; a browser maps readbacks itself, and never says so.
     #[cfg_attr(target_arch = "wasm32", expect(clippy::unused_self, reason = "a browser maps readbacks itself"))]
-    fn finish(&self) {
+    fn finish(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(picture) = &self.picture {
             let remaining =
                 self.started.map_or(self.shot.deadline, |started| self.shot.deadline.saturating_sub(started.elapsed()));
             let wait = wgpu::PollType::Wait { submission_index: None, timeout: Some(FRAME.min(remaining)) };
-            let _ = picture.gpu.device().poll(wait);
+            return picture.gpu.device().poll(wait).is_ok();
         }
+        false
     }
 }
 
 impl Picture {
-    /// Records the passes composing every panel into the picture's `bytes`, the background first
+    /// Records the passes composing every panel into the picture's `pixels`, the background first
     /// where panels leave gaps.
-    fn compose(&self, encoder: &mut wgpu::CommandEncoder, bytes: Bytes, size: [u32; 2]) {
+    fn compose(&self, encoder: &mut wgpu::CommandEncoder, pixels: Pixels, size: [u32; 2]) {
         let device = self.gpu.device();
         let mut inner = self.gpu.0.lock();
-        let (fill, each, block) = match bytes {
-            Bytes::Rgba => ("fill_rgba", "rgba", [1, 1]),
-            Bytes::Nv12 => ("fill_nv12", "nv12", [4, 2]),
+        let (fill, each, block) = match pixels {
+            Pixels::Rgba => ("fill_rgba", "rgba", [1, 1]),
+            Pixels::Nv12 => ("fill_nv12", "nv12", [4, 2]),
         };
         let groups = |size: [u32; 2]| [0, 1].map(|i| size[i].div_ceil(block[i]).div_ceil(16));
         let mut pass = encoder

@@ -8,6 +8,7 @@ mod column;
 mod data;
 mod geometry;
 mod ids;
+mod json;
 mod name;
 mod patch;
 mod samples;

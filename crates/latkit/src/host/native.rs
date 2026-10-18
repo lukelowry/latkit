@@ -1,16 +1,25 @@
-//! Native text and a small, lazily started worker pool. No window or async runtime is needed.
+//! Native text, a small, lazily started worker pool, local files, and the platform's H.264 encoder.
+//! No window or async runtime is needed.
 
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "Media Foundation is COM: the FFI stays in this module, behind Encoder")]
+mod media_foundation;
+
+use std::io::{Read, Seek, SeekFrom};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap, fontdb};
 
-use super::{Host, Job, Raster, TextRun};
+use super::{Host, Job, Raster, Request, TextRun};
+use crate::video::{Encoder, Encoding};
 use crate::{Error, Pending, Resolver, Result};
 
-/// Native platform services: shaped text and background jobs. System fonts are discovered only on
-/// the first text request; [`from_fonts`](Self::from_fonts) uses only the supplied font bytes.
-/// A pool of at most four workers starts on the first job. This host does not fetch or encode video.
+/// Native platform services: shaped text, background jobs, local files, and video. System fonts are
+/// discovered only on the first text request; [`from_fonts`](Self::from_fonts) uses only the supplied
+/// font bytes. A pool of at most four workers starts on the first job. A fetch reads a file path (or a
+/// `file://` URL) at once. Video encodes with Media Foundation on Windows, hardware where the machine
+/// has it; elsewhere this host encodes none.
 #[derive(Default)]
 pub struct Native {
     text: Mutex<Option<Text>>,
@@ -95,6 +104,48 @@ impl Host for Native {
         }
         pending
     }
+
+    fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
+        Pending::ready(read(request))
+    }
+
+    fn encoder(&self, encoding: &Encoding) -> Result<Box<dyn Encoder>> {
+        #[cfg(windows)]
+        return media_foundation::encoder(encoding);
+        #[cfg(not(windows))]
+        {
+            let _ = encoding;
+            Err(Error::Unsupported(
+                "native H.264 encoding is Windows' (Media Foundation); this platform has none".into(),
+            ))
+        }
+    }
+}
+
+/// The bytes `request` names of a local file: none where there is no file.
+fn read(request: &Request) -> Result<Vec<u8>> {
+    let url = &*request.url;
+    let path = url.strip_prefix("file://").unwrap_or(url);
+    if path.contains("://") {
+        return Err(Error::Unsupported(format!("the native host reads files, not {url}").into()));
+    }
+    let failed = |e: std::io::Error| Error::Load(format!("{path}: {e}").into());
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(failed(e)),
+    };
+    let mut bytes = Vec::new();
+    match &request.range {
+        None => {
+            file.read_to_end(&mut bytes).map_err(failed)?;
+        }
+        Some(range) => {
+            file.seek(SeekFrom::Start(range.start)).map_err(failed)?;
+            file.take(range.end.saturating_sub(range.start)).read_to_end(&mut bytes).map_err(failed)?;
+        }
+    }
+    Ok(bytes)
 }
 
 struct Text {
@@ -236,6 +287,23 @@ mod tests {
         let wrapped = host.rasterize(&run).unwrap();
         assert!(wrapped.size[1] > raster.size[1]);
         assert!(wrapped.size[0] < raster.size[0]);
+    }
+
+    #[test]
+    fn fetches_read_local_files_and_their_ranges() {
+        let dir = std::env::temp_dir().join(format!("latkit-fetch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bytes.bin");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let host = Native::new();
+        let fetch = |request: Request| pollster::block_on(host.fetch(&request));
+        let url = path.to_string_lossy().into_owned();
+        assert_eq!(fetch(Request::new(url.as_str())).unwrap(), b"0123456789");
+        assert_eq!(fetch(Request::range(format!("file://{url}"), 3..6)).unwrap(), b"345");
+        assert_eq!(fetch(Request::range(url.as_str(), 8..20)).unwrap(), b"89", "a range past the end");
+        assert_eq!(fetch(Request::new(dir.join("none").to_string_lossy().into_owned())).unwrap(), b"");
+        assert!(fetch(Request::new("https://example.com/tiles")).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

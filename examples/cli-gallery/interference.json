@@ -1,16 +1,24 @@
 {
+  "space": {
+    "plane": {
+      "grid": "off"
+    }
+  },
   "ease": 0,
+  "theme": {
+    "background": "#080f1c",
+    "text": "#c7d5e4",
+    "font": "sans-serif",
+    "fontSize": 13,
+    "halo": 0,
+    "flow": "#d9fff0a0",
+    "flowSpacing": 100
+  },
+  "title": "02 / INTERFERENCE",
+  "subtitle": "33,600 particles / two wave sources / one interference field",
   "marks": [
     {
       "vertices": {
-        "color": {
-          "colormap": "heat",
-          "domain": [
-            0,
-            1
-          ],
-          "map": "magma"
-        },
         "of": [
           "art",
           "Particle"
@@ -19,99 +27,16 @@
           "x",
           "y"
         ],
-        "radius": "radius"
-      }
-    },
-    {
-      "vertices": {
-        "color": "#00000000",
-        "of": [
-          "art",
-          "Frame"
-        ],
-        "pick": false,
-        "position": [
-          "x",
-          "y"
-        ],
-        "radius": 0
-      }
-    },
-    {
-      "vertices": {
-        "color": "#00000000",
-        "label": {
-          "color": "#f1f6ff",
-          "priority": 255,
-          "size": 34,
-          "text": "text"
-        },
-        "of": [
-          "art",
-          "Title"
-        ],
-        "pick": false,
-        "position": [
-          "x",
-          "y"
-        ],
-        "radius": 0
-      }
-    },
-    {
-      "vertices": {
-        "color": "#00000000",
-        "label": {
-          "color": "#8eabc0",
-          "priority": 255,
-          "size": 16,
-          "text": "text"
-        },
-        "of": [
-          "art",
-          "Subtitle"
-        ],
-        "pick": false,
-        "position": [
-          "x",
-          "y"
-        ],
-        "radius": 0
-      }
-    },
-    {
-      "vertices": {
-        "color": "#00000000",
-        "label": {
-          "color": "#6f8ba4",
-          "priority": 255,
-          "size": 12,
-          "text": "text"
-        },
-        "of": [
-          "art",
-          "Footer"
-        ],
-        "pick": false,
-        "position": [
-          "x",
-          "y"
-        ],
-        "radius": 0
+        "radius": "radius",
+        "color": {
+          "colormap": "heat",
+          "map": "magma",
+          "domain": [
+            0,
+            1
+          ]
+        }
       }
     }
-  ],
-  "space": {
-    "plane": {
-      "grid": "off"
-    }
-  },
-  "theme": {
-    "background": "#080f1c",
-    "flow": "#d9fff0a0",
-    "flowSpacing": 100,
-    "font": "sans-serif",
-    "halo": 0,
-    "text": "#c7d5e4"
-  }
+  ]
 }

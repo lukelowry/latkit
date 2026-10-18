@@ -79,7 +79,7 @@ impl Camera {
     }
 
     /// Whether this camera can look at `space`.
-    pub(crate) fn fits(&self, space: &Space) -> bool {
+    pub fn fits(&self, space: &Space) -> bool {
         matches!(
             (self, space),
             (Camera::Map { .. }, Space::Earth(_) | Space::Plane(_) | Space::Diagram(_))

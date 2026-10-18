@@ -16,13 +16,13 @@ use crate::{Axis, Camera, Color, Format, Plot, Space, Theme};
 pub(crate) fn gutters(plot: &Plot, theme: &Theme) -> [f64; 4] {
     let f = f64::from(theme.font_size);
     let top = if plot.y.label.is_some() && !plot.y.hidden { f * 2.4 } else { f };
-    let bottom = if plot.x.hidden { 8.0 } else { f * 2.4 + if plot.x.label.is_some() { f * 1.6 } else { 0.0 } };
+    let bottom = if plot.x.hidden { 8.0 } else { f * 2.4 + if plot.x.label.is_some() { f * 2.2 } else { 0.0 } };
     let left = if plot.y.hidden { 8.0 } else { f * 6.0 };
     [top, f * 1.5, bottom, left]
 }
 
 /// A round step about `span / count`: 1, 2, 2.5, or 5 times a power of ten.
-fn step(span: f64, count: f64) -> f64 {
+pub(super) fn step(span: f64, count: f64) -> f64 {
     let raw = (span / count.max(1.0)).max(f64::MIN_POSITIVE);
     let power = 10_f64.powf(raw.log10().floor());
     [1.0, 2.0, 2.5, 5.0, 10.0].into_iter().map(|m| m * power).find(|&s| s >= raw).unwrap_or(10.0 * power)
@@ -36,7 +36,7 @@ fn decimals(step: f64) -> usize {
 }
 
 /// `value` written as `axis` says, with as many decimals as `step` needs unless it sets them.
-fn label(value: f64, step: f64, axis: &Axis) -> String {
+pub(super) fn label(value: f64, step: f64, axis: &Axis) -> String {
     let value = if value.abs() < step * 1e-9 { 0.0 } else { value };
     let precision = axis.precision.map(usize::from);
     let significand = precision.unwrap_or(2);
@@ -71,13 +71,13 @@ fn axis_ticks(axis: &Axis, range: [f64; 2], step: f64) -> Vec<(f64, String)> {
 }
 
 /// Values `step` apart within `range`.
-fn ticks(range: [f64; 2], step: f64) -> impl Iterator<Item = f64> {
+pub(super) fn ticks(range: [f64; 2], step: f64) -> impl Iterator<Item = f64> {
     let first = (range[0] / step).ceil() as i64;
     let last = (range[1] / step).floor() as i64;
     (first..=last.min(first + 200)).map(move |i| i as f64 * step)
 }
 
-fn line(a: [f64; 2], b: [f64; 2], width: f32, color: Color) -> wgsl::Sprite {
+pub(super) fn line(a: [f64; 2], b: [f64; 2], width: f32, color: Color) -> wgsl::Sprite {
     let mut sprite: wgsl::Sprite = bytemuck::Zeroable::zeroed();
     sprite.a = [a[0] as f32, a[1] as f32];
     sprite.b = [b[0] as f32, b[1] as f32];
@@ -89,7 +89,7 @@ fn line(a: [f64; 2], b: [f64; 2], width: f32, color: Color) -> wgsl::Sprite {
 
 /// Where a run of text goes: its anchor, and which of its edges meets the anchor.
 #[derive(Clone, Copy)]
-enum Align {
+pub(super) enum Align {
     /// Centered across, top at the anchor.
     Below,
     /// Right edge at the anchor, centered up and down.
@@ -98,19 +98,23 @@ enum Align {
     Above,
     /// Right edge at the anchor, top at the anchor.
     BelowLeft,
+    /// Left edge at the anchor, top at the anchor.
+    BelowRight,
 }
 
-struct Writer<'a> {
-    inner: &'a mut Inner,
-    queue: &'a Queue,
-    font: Arc<str>,
-    size_px: u32,
-    ratio: f64,
-    color: Color,
+/// What sets text for the overlay: the atlas, in one font, size, and color.
+pub(super) struct Writer<'a> {
+    pub(super) inner: &'a mut Inner,
+    pub(super) queue: &'a Queue,
+    pub(super) font: Arc<str>,
+    pub(super) size_px: u32,
+    pub(super) ratio: f64,
+    pub(super) color: Color,
 }
 
 impl Writer<'_> {
-    fn text(&mut self, text: &str, anchor: [f64; 2], align: Align) -> Option<wgsl::Sprite> {
+    /// `text` as a sprite placed by `align` at `anchor`, CSS pixels; `None` while it cannot be set.
+    pub(super) fn text(&mut self, text: &str, anchor: [f64; 2], align: Align) -> Option<wgsl::Sprite> {
         let run = TextRun { text: text.into(), font: self.font.clone(), size_px: self.size_px, max_width: None };
         let host = self.inner.host.clone();
         let glyphs = self.inner.atlas.text(self.queue, host.as_deref(), &run)?;
@@ -121,6 +125,7 @@ impl Writer<'_> {
             Align::Left => [anchor[0] - w, anchor[1] - h / 2.0],
             Align::Above => [anchor[0], anchor[1] - h],
             Align::BelowLeft => [anchor[0] - w, anchor[1]],
+            Align::BelowRight => anchor,
         };
         let snap = |v: f64| (v * self.ratio).round() / self.ratio;
         let (x, y) = (snap(x), snap(y));
@@ -135,9 +140,15 @@ impl Writer<'_> {
 }
 
 impl View {
-    /// The sprites drawn over the marks this frame: a plot's axes, and a box being selected.
+    /// The sprites drawn over the marks this frame: a plot's axes, the scene's title and legends,
+    /// and a box being selected.
     pub(super) fn overlay(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
-        let mut sprites = self.axes_sprites(inner, queue);
+        let evictions = inner.atlas.evictions;
+        let mut sprites = self.written(inner, queue);
+        // The atlas made room while setting this frame's text: set it again on the new packing.
+        if inner.atlas.evictions != evictions {
+            sprites = self.written(inner, queue);
+        }
         let theme = &self.scene.theme;
         let color = theme.selected.unwrap_or(theme.hover);
         let at = |p: [f32; 2]| [f64::from(p[0]), f64::from(p[1])];
@@ -155,15 +166,17 @@ impl View {
         sprites
     }
 
+    /// The sprites of the overlay's text and what goes with it: a plot's axes, the title, and the legends.
+    fn written(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
+        let mut sprites = self.axes_sprites(inner, queue);
+        sprites.extend(self.annotations(inner, queue));
+        sprites
+    }
+
     fn axes_sprites(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
         let Space::Plot(plot) = &self.scene.space else { return Vec::new() };
         let Camera::Plot { x, y: Some(y) } = self.drawn_camera() else { return Vec::new() };
-        let theme = &self.scene.theme;
-        let area = self.area();
-        let evictions = inner.atlas.evictions;
-        let sprites = self.axes(inner, queue, plot, theme, area, x, y);
-        // The atlas made room while setting this frame's text: set it again on the new packing.
-        if inner.atlas.evictions == evictions { sprites } else { self.axes(inner, queue, plot, theme, area, x, y) }
+        self.axes(inner, queue, plot, &self.scene.theme, self.area(), x, y)
     }
 
     #[allow(clippy::too_many_arguments, reason = "one frame's axes")]
