@@ -71,12 +71,13 @@ export class Patch {
   }
 
   /**
-   * A patch from its JSON: a list of changes, each named by its method with its parameters by name,
-   * such as `[{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}]`. A field naming a
-   * slice of a binary file, `{file, dtype, offset, count}`, reads it from `files`.
+   * The patch its JSON makes: a list of changes, each named by its method with its parameters by
+   * name, such as `[{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}]`. Slices of
+   * binary files, `{file, dtype, offset, count}`, are fetched at once, relative to `base`, the
+   * document's own URL.
    */
-  static fromJson(json: string, files: Record<string, Uint8Array> = {}): Patch {
-    return new Patch(wasm.Patch.fromJson(json, files));
+  static async load(json: string, base = ''): Promise<Patch> {
+    return new Patch((await wasm.Patch.load(json, base)) as wasm.Patch);
   }
 
   /** Names the axis sampled fields are recorded over, such as `('time', 's')`. */
@@ -103,8 +104,8 @@ export class Patch {
     return this;
   }
 
-  /** Records one frame at axis coordinate `at`: one value per row of `table` for each field. */
-  append(at: number, table: string, fields: Record<string, Values>): this {
+  /** Records a frame at each axis coordinate of `at`: values per row of `table`, frame-major. */
+  append(at: number | readonly number[], table: string, fields: Record<string, Values>): this {
     this.inner.append(at, table, fields);
     return this;
   }
@@ -153,11 +154,11 @@ export class Data {
   }
 
   /**
-   * A dataset from its JSON document, `{"name": ..., "patch": [...]}`: the patch, as
-   * {@link Patch.fromJson} reads it, building the dataset from nothing.
+   * The dataset its JSON document builds, `{"name": ..., "patch": [...]}`: the patch loading as
+   * {@link Patch.load} loads one.
    */
-  static fromJson(json: string, files: Record<string, Uint8Array> = {}): Data {
-    return new Data(wasm.Data.fromJson(json, files));
+  static async load(json: string, base = ''): Promise<Data> {
+    return new Data((await wasm.Data.load(json, base)) as wasm.Data);
   }
 
   get name(): string {

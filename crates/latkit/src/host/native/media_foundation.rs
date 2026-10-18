@@ -4,40 +4,37 @@
 
 use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount,
     CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate,
-    IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFTransform, METransformDrainComplete, METransformHaveOutput,
-    METransformNeedInput, MF_E_INVALIDMEDIATYPE, MF_E_NO_EVENTS_AVAILABLE, MF_E_NOTACCEPTING,
-    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_FLAG_NO_WAIT, MF_LOW_LATENCY,
-    MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-    MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
-    MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES, MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC,
-    MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
-    MFNominalRange_16_235, MFSTARTUP_FULL, MFShutdown, MFStartup, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG,
-    MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_DRAIN,
-    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING,
-    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
-    MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
-    MFVideoPrimaries_BT709, MFVideoTransFunc_709, MFVideoTransferMatrix_BT709,
-    eAVEncCommonRateControlMode_UnconstrainedVBR, eAVEncH264VProfile_High,
+    IMFAsyncCallback, IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFTransform, METransformDrainComplete,
+    METransformHaveOutput, METransformNeedInput, MF_E_INVALIDMEDIATYPE, MF_E_NOTACCEPTING,
+    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY, MF_MT_AVG_BITRATE,
+    MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
+    MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION,
+    MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES, MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
+    MF_VERSION, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFNominalRange_16_235,
+    MFSTARTUP_FULL, MFShutdown, MFStartup, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_HARDWARE,
+    MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
+    MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoFormat_H264,
+    MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoPrimaries_BT709, MFVideoTransFunc_709,
+    MFVideoTransferMatrix_BT709, eAVEncCommonRateControlMode_UnconstrainedVBR, eAVEncH264VProfile_High,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize};
 use windows::Win32::System::Variant::VARIANT;
 use windows::core::Interface;
 
-use crate::video::{Encoder, Encoding, TIMESCALE, Unit, nals};
-use crate::{Error, Pending, Resolver, Result};
+use crate::host::{Encoder, TIMESCALE, Unit};
+use crate::video::nals;
+use crate::{Encoding, Error, Pending, Resolver, Result};
+use tell::Tell;
 
 /// The longest the transform may take to start, to want a picture, or to drain.
 const STALL: Duration = Duration::from_secs(20);
-/// Pictures handed to the encoder's thread and not yet taken at most: room for one more while one
-/// encodes.
-const QUEUED: usize = 1;
 /// Seconds between the keyframes the encoder places itself; the video asks for its own besides.
 const KEYFRAMES: f64 = 2.0;
 /// 100-nanosecond ticks a second, Media Foundation's clock.
@@ -45,21 +42,14 @@ const HNS: u64 = 10_000_000;
 
 /// An encoder on a thread of its own, where Media Foundation lives.
 struct MediaFoundation {
-    work: Option<SyncSender<Work>>,
-    done: Arc<Mutex<Done>>,
+    work: Option<Sender<Work>>,
 }
 
-/// What the encoder's thread is handed.
+/// What the encoder's thread is handed: a picture, with what tells the encoder it has room for
+/// another; or the end.
 enum Work {
-    Picture { nv12: Vec<u8>, time: u64, key: bool },
+    Picture { nv12: Vec<u8>, time: u64, key: bool, room: Resolver<Vec<Unit>> },
     Finish(Resolver<Vec<Unit>>),
-}
-
-/// What the thread finished and the encoder has not handed out: units, and why it stopped.
-#[derive(Default)]
-struct Done {
-    units: Vec<Unit>,
-    error: Option<Error>,
 }
 
 /// An encoder for pictures as `encoding` says: the machine's hardware encoder where one starts, else
@@ -79,64 +69,45 @@ fn software() -> MFT_ENUM_FLAG {
 /// An encoder from the first transform of `kinds`, in order, that starts.
 fn open(encoding: Encoding, kinds: &[MFT_ENUM_FLAG]) -> Result<MediaFoundation> {
     let (started, ready) = mpsc::channel();
-    let (work, pictures) = mpsc::sync_channel(QUEUED);
-    let done = Arc::new(Mutex::new(Done::default()));
+    let (work, pictures) = mpsc::channel();
     let kinds = kinds.to_vec();
-    let finished = done.clone();
     std::thread::Builder::new()
         .name("latkit encoder".into())
-        .spawn(move || run(encoding, &kinds, &started, &pictures, &finished))
+        .spawn(move || run(encoding, &kinds, &started, &pictures))
         .map_err(|e| Error::Load(format!("the encoder's thread did not start: {e}").into()))?;
     match ready.recv_timeout(STALL) {
-        Ok(Ok(())) => Ok(MediaFoundation { work: Some(work), done }),
+        Ok(Ok(())) => Ok(MediaFoundation { work: Some(work) }),
         Ok(Err(error)) => Err(error),
         Err(_) => Err(Error::Timeout),
     }
 }
 
-impl MediaFoundation {
-    fn done(&self) -> std::sync::MutexGuard<'_, Done> {
-        self.done.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Why the thread stopped, or that it did.
-    fn stopped(&self) -> Error {
-        self.done().error.clone().unwrap_or_else(|| Error::Load("the encoder stopped".into()))
-    }
+fn stopped() -> Error {
+    Error::Unsupported("the Media Foundation encoder stopped".into())
 }
 
 impl Encoder for MediaFoundation {
-    fn encode(&mut self, nv12: &[u8], time: u64, key: bool) -> Pending<Vec<Unit>> {
-        if let Some(error) = self.done().error.clone() {
-            return Pending::ready(Err(error));
+    fn encode(&mut self, nv12: Vec<u8>, time: u64, key: bool) -> Pending<Vec<Unit>> {
+        let (pending, room) = Pending::new();
+        match &self.work {
+            Some(work) if work.send(Work::Picture { nv12, time, key, room }).is_ok() => pending,
+            _ => Pending::ready(Err(stopped())),
         }
-        let Some(work) = &self.work else { return Pending::ready(Err(self.stopped())) };
-        // Waits while a picture is queued behind the one encoding: the encoder's room.
-        if work.send(Work::Picture { nv12: nv12.to_vec(), time, key }).is_err() {
-            return Pending::ready(Err(self.stopped()));
-        }
-        Pending::ready(Ok(std::mem::take(&mut self.done().units)))
     }
 
     fn finish(&mut self) -> Pending<Vec<Unit>> {
         let (pending, resolver) = Pending::new();
-        let Some(work) = self.work.take() else { return Pending::ready(Err(self.stopped())) };
-        if work.send(Work::Finish(resolver)).is_err() {
-            return Pending::ready(Err(self.stopped()));
+        match self.work.take() {
+            Some(work) if work.send(Work::Finish(resolver)).is_ok() => pending,
+            _ => Pending::ready(Err(stopped())),
         }
-        pending
     }
 }
 
 /// The encoder's thread: starts Media Foundation and the transform, then encodes what it is handed
-/// until it finishes, fails, or the encoder is dropped.
-fn run(
-    encoding: Encoding,
-    kinds: &[MFT_ENUM_FLAG],
-    started: &Sender<Result<()>>,
-    work: &Receiver<Work>,
-    done: &Mutex<Done>,
-) {
+/// until it finishes or the encoder is dropped. Taking a picture tells there is room for another,
+/// with the units finished before it; after an error, every picture is answered with it.
+fn run(encoding: Encoding, kinds: &[MFT_ENUM_FLAG], started: &Sender<Result<()>>, work: &Receiver<Work>) {
     let session = match Session::new() {
         Ok(session) => session,
         Err(error) => {
@@ -152,25 +123,29 @@ fn run(
         }
     };
     let _ = started.send(Ok(()));
-    let fail = |error: Error| done.lock().unwrap_or_else(PoisonError::into_inner).error = Some(error);
-    while let Ok(item) = work.recv() {
+    let mut finished = Vec::new();
+    let mut failure: Option<Error> = None;
+    for item in work {
         match item {
-            Work::Picture { nv12, time, key } => match transform.encode(&nv12, time, key) {
-                Ok(units) => done.lock().unwrap_or_else(PoisonError::into_inner).units.extend(units),
-                Err(error) => {
-                    fail(error);
-                    break;
+            Work::Picture { nv12, time, key, room } => {
+                if let Some(error) = &failure {
+                    room.resolve(Err(error.clone()));
+                    continue;
                 }
-            },
+                room.resolve(Ok(std::mem::take(&mut finished)));
+                match transform.encode(&nv12, time, key) {
+                    Ok(units) => finished.extend(units),
+                    Err(error) => failure = Some(error),
+                }
+            }
             Work::Finish(resolver) => {
-                let result = transform.finish().map(|units| {
-                    let mut all = std::mem::take(&mut done.lock().unwrap_or_else(PoisonError::into_inner).units);
-                    all.extend(units);
-                    all
-                });
-                if let Err(error) = &result {
-                    fail(error.clone());
-                }
+                let result = match failure.take() {
+                    Some(error) => Err(error),
+                    None => transform.finish().map(|units| {
+                        finished.extend(units);
+                        std::mem::take(&mut finished)
+                    }),
+                };
                 resolver.resolve(result);
                 break;
             }
@@ -220,7 +195,7 @@ struct Transform {
     mft: IMFTransform,
     codec: Option<ICodecAPI>,
     /// An asynchronous transform's events: hardware encoders are asynchronous.
-    events: Option<IMFMediaEventGenerator>,
+    events: Option<Events>,
     /// Inputs an asynchronous transform asked for and was not given.
     wanted: u32,
     input: u32,
@@ -254,7 +229,7 @@ impl Transform {
 
     fn new(activate: IMFActivate, encoding: &Encoding) -> Result<Transform> {
         let [width, height] = encoding.size;
-        let (num, den) = rational(encoding.fps);
+        let [num, den] = encoding.rate();
         // SAFETY: owned COM handles; every pointer argument borrows a value that outlives its call.
         unsafe {
             let mft: IMFTransform = activate.ActivateObject().map_err(|e| failed("ActivateObject", &e))?;
@@ -276,7 +251,7 @@ impl Transform {
             if let Ok(attributes) = transform.mft.GetAttributes() {
                 if attributes.GetUINT32(&MF_TRANSFORM_ASYNC).unwrap_or(0) != 0 {
                     attributes.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1).map_err(|e| failed("SetUINT32", &e))?;
-                    transform.events = Some(transform.mft.cast().map_err(|e| failed("cast", &e))?);
+                    transform.events = Some(Events::new(transform.mft.cast().map_err(|e| failed("cast", &e))?));
                 }
                 let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
             }
@@ -375,14 +350,13 @@ impl Transform {
         self.times.push_back(time);
         let mut units = Vec::new();
         if self.events.is_some() {
-            let started = Instant::now();
             while self.wanted == 0 {
-                self.event(started, true, &mut units)?;
+                self.event(true, &mut units)?;
             }
             self.wanted -= 1;
             self.input(&sample)?;
-            // Whatever it says without waiting: outputs ready, and inputs wanted.
-            while self.event(started, false, &mut units)? {}
+            // Whatever it told meanwhile: outputs ready, and inputs wanted.
+            while self.event(false, &mut units)? {}
         } else {
             let started = Instant::now();
             loop {
@@ -407,17 +381,12 @@ impl Transform {
             self.mft.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0).map_err(|e| failed("ProcessMessage", &e))?;
         }
         if self.events.is_some() {
-            let started = Instant::now();
-            let drained = loop {
-                match self.next_event(started, true)? {
+            loop {
+                match self.events.as_mut().expect("an asynchronous transform").next(true)? {
                     Some(kind) if kind == METransformHaveOutput.0 as u32 => self.drain_one(&mut units)?,
-                    Some(kind) if kind == METransformDrainComplete.0 as u32 => break true,
-                    Some(_) => {}
-                    None => break false,
+                    Some(kind) if kind == METransformDrainComplete.0 as u32 => break,
+                    _ => {}
                 }
-            };
-            if !drained {
-                return Err(Error::Timeout);
             }
         } else {
             self.drain(&mut units)?;
@@ -433,36 +402,17 @@ impl Transform {
         unsafe { self.mft.ProcessInput(self.input, sample, 0) }.map_err(|e| failed("ProcessInput", &e))
     }
 
-    /// Handles the asynchronous transform's next event, waiting for it when `wait`: an input wanted is
-    /// counted, an output ready is taken into `units`. Whether there was one.
-    fn event(&mut self, started: Instant, wait: bool, units: &mut Vec<Unit>) -> Result<bool> {
-        match self.next_event(started, wait)? {
+    /// Handles the asynchronous transform's next event, waiting for it, up to the stall, when `wait`:
+    /// an input wanted is counted, an output ready is taken into `units`. Whether there was one.
+    fn event(&mut self, wait: bool, units: &mut Vec<Unit>) -> Result<bool> {
+        let events = self.events.as_mut().expect("an asynchronous transform");
+        match events.next(wait)? {
             Some(kind) if kind == METransformNeedInput.0 as u32 => self.wanted += 1,
             Some(kind) if kind == METransformHaveOutput.0 as u32 => self.drain_one(units)?,
             Some(_) => {}
-            None if wait => return Err(Error::Timeout),
             None => return Ok(false),
         }
         Ok(true)
-    }
-
-    /// The type of the asynchronous transform's next event; `None` when it has none, having waited
-    /// up to the stall when `wait`.
-    fn next_event(&self, started: Instant, wait: bool) -> Result<Option<u32>> {
-        let events = self.events.as_ref().expect("an asynchronous transform");
-        loop {
-            // SAFETY: owned COM handles.
-            match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
-                Ok(event) => return unsafe { event.GetType() }.map(Some).map_err(|e| failed("GetType", &e)),
-                Err(e) if e.code() == MF_E_NO_EVENTS_AVAILABLE => {
-                    if !wait || started.elapsed() >= STALL {
-                        return Ok(None);
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => return Err(failed("GetEvent", &e)),
-            }
-        }
     }
 
     /// Takes every output a synchronous transform has ready into `units`.
@@ -632,6 +582,77 @@ fn header(mft: &IMFTransform, output: u32) -> Vec<u8> {
     }
 }
 
+/// An asynchronous transform's events, told as they come to the callback each request names.
+struct Events {
+    generator: IMFMediaEventGenerator,
+    callback: IMFAsyncCallback,
+    told: Receiver<windows::core::Result<u32>>,
+    /// Whether an event was asked for and not yet told.
+    asked: bool,
+}
+
+impl Events {
+    fn new(generator: IMFMediaEventGenerator) -> Events {
+        let (tell, told) = mpsc::channel();
+        let callback = Tell { generator: generator.clone(), tell }.into();
+        Events { generator, callback, told, asked: false }
+    }
+
+    /// The type of the next event: waiting for it up to the stall when `wait`, else `None` while
+    /// none was told.
+    fn next(&mut self, wait: bool) -> Result<Option<u32>> {
+        if !self.asked {
+            // SAFETY: owned COM handles; the callback outlives the request it answers.
+            unsafe { self.generator.BeginGetEvent(&self.callback, None::<&windows::core::IUnknown>) }
+                .map_err(|e| failed("BeginGetEvent", &e))?;
+            self.asked = true;
+        }
+        let told = if wait { self.told.recv_timeout(STALL).ok() } else { self.told.try_recv().ok() };
+        match told {
+            Some(kind) => {
+                self.asked = false;
+                kind.map(Some).map_err(|e| failed("EndGetEvent", &e))
+            }
+            None if wait => Err(Error::Timeout),
+            None => Ok(None),
+        }
+    }
+}
+
+/// What a transform tells its next event to: a COM object of ours, as `windows::core::implement`
+/// writes one.
+#[allow(clippy::ref_as_ptr, clippy::inline_always, reason = "what windows::core::implement writes")]
+mod tell {
+    use std::sync::mpsc::Sender;
+
+    use windows::Win32::Media::MediaFoundation::{
+        IMFAsyncCallback, IMFAsyncCallback_Impl, IMFAsyncResult, IMFMediaEventGenerator,
+    };
+
+    #[windows::core::implement(IMFAsyncCallback)]
+    pub(super) struct Tell {
+        pub(super) generator: IMFMediaEventGenerator,
+        pub(super) tell: Sender<windows::core::Result<u32>>,
+    }
+
+    impl IMFAsyncCallback_Impl for Tell_Impl {
+        fn GetParameters(&self, _: *mut u32, _: *mut u32) -> windows::core::Result<()> {
+            // E_NOTIMPL: the default work queue calls back.
+            Err(windows::core::Error::from_hresult(windows::core::HRESULT(0x8000_4001_u32 as i32)))
+        }
+
+        fn Invoke(&self, result: windows::core::Ref<IMFAsyncResult>) -> windows::core::Result<()> {
+            // SAFETY: the result of the request this callback answers.
+            let kind = result
+                .ok()
+                .and_then(|result| unsafe { self.generator.EndGetEvent(result) })
+                .and_then(|event| unsafe { event.GetType() });
+            let _ = self.tell.send(kind);
+            Ok(())
+        }
+    }
+}
+
 /// The bytes of `sample`'s buffers, in order.
 fn bytes(sample: &IMFSample) -> Result<Vec<u8>> {
     // SAFETY: the mapped bytes are copied out before the buffer unlocks.
@@ -643,17 +664,6 @@ fn bytes(sample: &IMFSample) -> Result<Vec<u8>> {
         buffer.Unlock().map_err(|e| failed("Unlock", &e))?;
         Ok(bytes)
     }
-}
-
-/// `fps` as a ratio of whole numbers: 30000/1001 for 29.97, 60/1 for 60.
-fn rational(fps: f64) -> (u32, u32) {
-    for den in [1_u32, 1001, 1000] {
-        let num = (fps * f64::from(den)).round();
-        if (num / f64::from(den) - fps).abs() < 1e-6 * fps {
-            return (num as u32, den);
-        }
-    }
-    ((fps * 1000.0).round() as u32, 1000)
 }
 
 #[cfg(test)]
@@ -683,7 +693,7 @@ mod tests {
         let mut units = Vec::new();
         for i in 0..12_u32 {
             let time = u64::from(i) * 3000;
-            units.extend(pollster::block_on(encoder.encode(&picture_of(encoding.size, i), time, i % 6 == 0)).unwrap());
+            units.extend(pollster::block_on(encoder.encode(picture_of(encoding.size, i), time, i % 6 == 0)).unwrap());
         }
         units.extend(pollster::block_on(encoder.finish()).unwrap());
         assert_eq!(units.len(), 12, "a unit for every picture");
@@ -702,12 +712,5 @@ mod tests {
     #[test]
     fn the_hardware_encoder_gives_a_unit_a_picture() {
         encodes_a_short_video(&[hardware()]);
-    }
-
-    #[test]
-    fn frame_rates_are_ratios() {
-        assert_eq!(rational(60.0), (60, 1));
-        assert_eq!(rational(30_000.0 / 1001.0), (30_000, 1001));
-        assert_eq!(rational(12.5), (12_500, 1000));
     }
 }

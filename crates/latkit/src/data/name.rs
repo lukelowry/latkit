@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The name of a dataset, table, or field: cheap to clone, compared and ordered by its text.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(transparent))]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct Name(Arc<str>);
 
 impl Name {
@@ -92,8 +92,8 @@ impl fmt::Debug for Name {
 }
 
 /// A row's identity within its table: a number or a text.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(untagged))]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
 pub enum Id {
     /// A numeric id.
     Number(u64),
@@ -193,8 +193,7 @@ impl IdRef<'_> {
 }
 
 /// A row of a table in a dataset. It survives any change that keeps the names and the id.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Row {
     /// The dataset's name.
     pub data: Name,

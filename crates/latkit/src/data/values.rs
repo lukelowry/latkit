@@ -31,8 +31,8 @@ pub(crate) enum Array {
 }
 
 /// What a field holds.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "lowercase"))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// Numbers.
     Number,
@@ -465,6 +465,50 @@ impl From<Vec<Vec<Vec<[f64; 2]>>>> for Values {
 impl From<Vec<Vec<Vec<Vec<[f64; 2]>>>>> for Values {
     fn from(polygons: Vec<Vec<Vec<Vec<[f64; 2]>>>>) -> Values {
         geometries(3, polygons.into_iter().map(Value::Polygons))
+    }
+}
+
+/// A column of values of one kind, `None` missing, as JSON and JavaScript arrays give them: the first
+/// present value decides what the rest are, numbers, booleans, texts, or geometries nesting alike.
+/// A column of nothing present is numbers; a missing point is NaN, a missing path or polygon empty.
+impl TryFrom<Vec<Option<Value>>> for Values {
+    type Error = Error;
+
+    fn try_from(values: Vec<Option<Value>>) -> Result<Values> {
+        fn all<T>(values: Vec<Option<Value>>, of: impl Fn(Value) -> Option<T>) -> Result<Vec<Option<T>>> {
+            let mixed = || {
+                Error::invalid(
+                    "a column holds one kind of value: numbers, booleans, texts, or geometries nesting alike",
+                )
+            };
+            values.into_iter().map(|v| v.map(|v| of(v).ok_or_else(mixed)).transpose()).collect()
+        }
+        let Some(first) = values.iter().flatten().next() else { return Ok(vec![None::<f64>; values.len()].into()) };
+        Ok(match first {
+            Value::Number(_) => all(values, |v| if let Value::Number(n) = v { Some(n) } else { None })?.into(),
+            Value::Bool(_) => all(values, |v| if let Value::Bool(b) = v { Some(b) } else { None })?.into(),
+            Value::Text(_) => {
+                let texts_of = all(values, |v| if let Value::Text(t) = v { Some(t) } else { None })?;
+                texts(texts_of.iter().map(Option::as_deref))
+            }
+            Value::Point(_) => {
+                let points = all(values, |v| if let Value::Point(p) = v { Some(p) } else { None })?;
+                points.into_iter().map(|p| p.unwrap_or([f64::NAN; 2])).collect::<Vec<_>>().into()
+            }
+            Value::Path(_) => {
+                let paths = all(values, |v| if let Value::Path(p) = v { Some(p) } else { None })?;
+                paths.into_iter().map(Option::unwrap_or_default).collect::<Vec<_>>().into()
+            }
+            Value::Parts(_) => {
+                let parts = all(values, |v| if let Value::Parts(p) = v { Some(p) } else { None })?;
+                parts.into_iter().map(Option::unwrap_or_default).collect::<Vec<_>>().into()
+            }
+            Value::Polygons(_) => {
+                let polygons = all(values, |v| if let Value::Polygons(p) = v { Some(p) } else { None })?;
+                polygons.into_iter().map(Option::unwrap_or_default).collect::<Vec<_>>().into()
+            }
+            Value::Row(_) => return Err(Error::invalid("a column names rows as a reference: {reference, ids}")),
+        })
     }
 }
 

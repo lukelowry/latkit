@@ -11,17 +11,20 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap, fontdb};
 
-use super::{Host, Job, Raster, Request, TextRun};
-use crate::video::{Encoder, Encoding};
-use crate::{Error, Pending, Resolver, Result};
+use super::{Encoder, Host, Job, Raster, Request, TextRun};
+use crate::{Encoding, Error, Pending, Resolver, Result};
 
-/// Native platform services: shaped text, background jobs, local files, and video. System fonts are
-/// discovered only on the first text request; [`from_fonts`](Self::from_fonts) uses only the supplied
-/// font bytes. A pool of at most four workers starts on the first job. A fetch reads a file path (or a
-/// `file://` URL) at once. Video encodes with Media Foundation on Windows, hardware where the machine
-/// has it; elsewhere this host encodes none.
+/// Native platform services: shaped text, background jobs, local files, and video. A handle: clones
+/// share its fonts and workers. System fonts are discovered only on the first text request;
+/// [`from_fonts`](Self::from_fonts) uses only the supplied font bytes. A pool of at most four
+/// workers starts on the first job or fetch; a fetch reads a file path, or a `file://` URL, on it.
+/// Video encodes with Media Foundation on Windows, hardware where the machine has it; elsewhere this
+/// host encodes none.
+#[derive(Clone, Default)]
+pub struct Native(Arc<Services>);
+
 #[derive(Default)]
-pub struct Native {
+struct Services {
     text: Mutex<Option<Text>>,
     workers: OnceLock<Result<Workers>>,
 }
@@ -53,16 +56,30 @@ impl Native {
         db.set_serif_family(family.clone());
         db.set_monospace_family(family);
         let fonts = FontSystem::new_with_locale_and_db("en-US".into(), db);
-        Ok(Self { text: Mutex::new(Some(Text { fonts, cache: SwashCache::new() })), workers: OnceLock::new() })
+        let text = Mutex::new(Some(Text { fonts, cache: SwashCache::new() }));
+        Ok(Self(Arc::new(Services { text, workers: OnceLock::new() })))
     }
 
     fn with_text<T>(&self, f: impl FnOnce(&mut Text) -> Result<T>) -> Result<T> {
-        let mut text = self.text.lock().map_err(|_| Error::Load("native text service failed".into()))?;
+        let mut text = self.0.text.lock().map_err(|_| Error::Load("native text service failed".into()))?;
         let text = text.get_or_insert_with(Text::system);
         if text.fonts.db().faces().next().is_none() {
             return Err(Error::Unsupported("no fonts available; supply font bytes with Native::from_fonts".into()));
         }
         f(text)
+    }
+
+    /// Does `work` on a worker, resolving to what it answers.
+    fn work(&self, work: impl FnOnce() -> Result<Vec<u8>> + Send + 'static) -> Pending<Vec<u8>> {
+        let workers = match self.0.workers.get_or_init(Workers::new) {
+            Ok(workers) => workers,
+            Err(error) => return Pending::ready(Err(error.clone())),
+        };
+        let (pending, resolver) = Pending::new();
+        if let Err(error) = workers.0.send((Box::new(work), resolver)) {
+            error.0.1.resolve(Err(Error::Load("native workers stopped".into())));
+        }
+        pending
     }
 }
 
@@ -94,19 +111,12 @@ impl Host for Native {
     }
 
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
-        let workers = match self.workers.get_or_init(Workers::new) {
-            Ok(workers) => workers,
-            Err(error) => return Pending::ready(Err(error.clone())),
-        };
-        let (pending, resolver) = Pending::new();
-        if let Err(error) = workers.0.send((job, resolver)) {
-            error.0.1.resolve(Err(Error::Load("native workers stopped".into())));
-        }
-        pending
+        self.work(move || Ok(job.run()))
     }
 
     fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
-        Pending::ready(read(request))
+        let request = request.clone();
+        self.work(move || read(&request))
     }
 
     fn encoder(&self, encoding: &Encoding) -> Result<Box<dyn Encoder>> {
@@ -216,7 +226,7 @@ impl Text {
     }
 }
 
-type Task = (Job, Resolver<Vec<u8>>);
+type Task = (Box<dyn FnOnce() -> Result<Vec<u8>> + Send>, Resolver<Vec<u8>>);
 struct Workers(mpsc::Sender<Task>);
 
 impl Workers {
@@ -231,12 +241,12 @@ impl Workers {
                 .spawn(move || {
                     loop {
                         let task = receiver.lock().expect("worker queue").recv();
-                        let Ok((job, resolver)) = task else { break };
+                        let Ok((work, resolver)) = task else { break };
                         if resolver.is_cancelled() {
                             continue;
                         }
-                        let result = catch_unwind(AssertUnwindSafe(|| job.run()))
-                            .map_err(|_| Error::Load("native job panicked".into()));
+                        let result = catch_unwind(AssertUnwindSafe(work))
+                            .unwrap_or_else(|_| Err(Error::Load("native work panicked".into())));
                         resolver.resolve(result);
                     }
                 })
@@ -262,8 +272,8 @@ mod tests {
     #[test]
     fn services_are_lazy_and_explicit_fonts_are_validated() {
         let native = Native::new();
-        assert!(native.text.lock().unwrap().is_none());
-        assert!(native.workers.get().is_none());
+        assert!(native.0.text.lock().unwrap().is_none());
+        assert!(native.0.workers.get().is_none());
         assert!(Native::from_fonts([]).is_err());
         assert!(Native::from_fonts([b"not a font".to_vec()]).is_err());
     }
@@ -314,6 +324,8 @@ mod tests {
         for job in jobs {
             assert_eq!(crate::Image::from_png(&pollster::block_on(job).unwrap()).unwrap(), image);
         }
-        assert!(host.text.lock().unwrap().is_none());
+        assert!(host.0.text.lock().unwrap().is_none());
+        let clone = host.clone();
+        assert!(Arc::ptr_eq(&clone.0, &host.0), "clones share the workers and fonts");
     }
 }

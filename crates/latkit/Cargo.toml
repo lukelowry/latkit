@@ -11,8 +11,7 @@ include = ["src/**", "build/**", "build.rs", "shaders/**", "colormaps/catalog.tx
 [features]
 default = ["gpu"]
 gpu = ["dep:wgpu", "dep:glam", "dep:web-time", "dep:wesl", "dep:naga"]
-native = ["gpu", "dep:cosmic-text", "dep:windows"]
-serde = []
+native = ["gpu", "dep:cosmic-text", "dep:windows", "dep:windows-core"]
 web = ["gpu", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys"]
 
 [dependencies]
@@ -20,7 +19,7 @@ thiserror.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true
 bytemuck.workspace = true
-# GeoJSON, tiles' metadata, and gzip-compressed bytes.
+# JSON: scenes, data, shots, and view state; GeoJSON and tiles' metadata. Gzip-compressed bytes.
 serde = { workspace = true }
 serde_json.workspace = true
 flate2.workspace = true
@@ -36,6 +35,7 @@ cosmic-text = { workspace = true, optional = true }
 # Native video: H.264 from the platform's encoder.
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, optional = true }
+windows-core = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true, optional = true }

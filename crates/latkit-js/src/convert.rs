@@ -1,5 +1,6 @@
 //! JavaScript data to latkit's and back: ids and field values. Typed arrays copy once; plain arrays
-//! read their first present element to know what they hold. A view's state crosses as JSON instead.
+//! become values the library's rules make a column of, as JSON's do. A view's state crosses as JSON
+//! instead.
 
 use js_sys::{Array, Float32Array, Float64Array, Int32Array, Object, Reflect, Uint8Array, Uint32Array};
 use latkit::{Error, Result};
@@ -7,21 +8,6 @@ use wasm_bindgen::{JsCast, JsValue};
 
 /// The largest whole number a JavaScript number holds exactly: 2âµÂ³ âˆ’ 1.
 const SAFE: f64 = 9_007_199_254_740_991.0;
-
-/// What reads the slices of a JSON document: `files[name]`, a `Uint8Array`, the range of its bytes.
-pub(crate) fn files(files: &JsValue) -> impl FnMut(&str, std::ops::Range<u64>) -> Result<Vec<u8>> + '_ {
-    move |name, range| {
-        let bytes = Reflect::get(files, &name.into())
-            .ok()
-            .and_then(|v| v.dyn_into::<Uint8Array>().ok())
-            .ok_or_else(|| Error::invalid(format!("no file named {name} was given")))?;
-        let length = u64::from(bytes.length());
-        if range.end > length {
-            return Err(Error::invalid(format!("{name}: the slice ends past its {length} bytes")));
-        }
-        Ok(bytes.subarray(range.start as u32, range.end as u32).to_vec())
-    }
-}
 
 /// A parse error as an invalid-input error.
 pub(crate) fn invalid(what: &str, error: &serde_json::Error) -> Error {
@@ -57,16 +43,11 @@ pub(crate) fn ids(value: &JsValue) -> Result<latkit::Ids> {
         return Ok(latkit::Ids::from(ids.collect::<Result<Vec<u64>>>()?));
     }
     let Some(array) = value.dyn_ref::<Array>() else { return Err(error("ids are a count, numbers, or texts")) };
-    let first = array.iter().find(|v| !v.is_null() && !v.is_undefined());
-    Ok(match first {
-        Some(v) if v.is_string() => {
-            latkit::Ids::from(array.iter().map(|v| v.as_string()).collect::<Vec<Option<String>>>())
-        }
-        _ => {
-            let ids = array.iter().enumerate().map(|(i, v)| v.as_f64().map(number_id).transpose().map_err(|e| e.at(i)));
-            latkit::Ids::from(ids.collect::<Result<Vec<Option<u64>>>>()?)
-        }
-    })
+    let ids = array
+        .iter()
+        .enumerate()
+        .map(|(i, v)| if v.is_null() || v.is_undefined() { Ok(None) } else { id(&v).map(Some).map_err(|e| e.at(i)) });
+    Ok(latkit::Ids::from(ids.collect::<Result<Vec<Option<latkit::Id>>>>()?))
 }
 
 /// One id: a number or a text.
@@ -127,26 +108,33 @@ pub(crate) fn values(value: &JsValue) -> Result<latkit::Values> {
         return Ok(a.to_vec().into());
     }
     let Some(array) = value.dyn_ref::<Array>() else { return Err(error("values are a typed array or an array")) };
-    let first = array.iter().find(|v| !v.is_null() && !v.is_undefined());
-    let Some(first) = first else { return Ok(vec![None::<f64>; array.length() as usize].into()) };
-    if first.as_f64().is_some() {
-        return Ok(array.iter().map(|v| v.as_f64()).collect::<Vec<_>>().into());
+    let values = array.iter().map(|v| element(&v)).collect::<Result<Vec<_>>>()?;
+    latkit::Values::try_from(values)
+}
+
+/// One value of an array: a number, boolean, text, or `[x, y]` geometry; `null`, `undefined`, or an
+/// empty geometry, missing.
+fn element(value: &JsValue) -> Result<Option<latkit::Value>> {
+    if let Some(n) = value.as_f64() {
+        return Ok(Some(latkit::Value::Number(n)));
     }
-    if first.as_bool().is_some() {
-        return Ok(array.iter().map(|v| v.as_bool()).collect::<Vec<_>>().into());
+    if let Some(b) = value.as_bool() {
+        return Ok(Some(latkit::Value::Bool(b)));
     }
-    if first.is_string() {
-        return Ok(array.iter().map(|v| v.as_string()).collect::<Vec<_>>().into());
+    if let Some(t) = value.as_string() {
+        return Ok(Some(latkit::Value::Text(t.into())));
     }
-    let depth = depth(&first);
-    let rows = array.iter();
-    Ok(match depth {
-        0 => rows.map(|v| point(&v)).collect::<Vec<_>>().into(),
-        1 => rows.map(|v| path(&v)).collect::<Vec<_>>().into(),
-        2 => rows.map(|v| list(&v, path)).collect::<Vec<_>>().into(),
-        3 => rows.map(|v| list(&v, |p| list(p, path))).collect::<Vec<_>>().into(),
+    let Some(array) = value.dyn_ref::<Array>() else { return Ok(None) };
+    if array.length() == 0 {
+        return Ok(None);
+    }
+    Ok(Some(match depth(value) {
+        0 => latkit::Value::Point(point(value)),
+        1 => latkit::Value::Path(path(value)),
+        2 => latkit::Value::Parts(list(value, path)),
+        3 => latkit::Value::Polygons(list(value, |p| list(p, path))),
         _ => return Err(error("geometries nest at most polygons of rings of [x, y] points")),
-    })
+    }))
 }
 
 /// How deep a geometry nests below `[x, y]`.
@@ -162,6 +150,15 @@ fn depth(value: &JsValue) -> usize {
         v = first;
     }
     depth
+}
+
+/// Axis coordinates: one number, or an array of them.
+pub(crate) fn coordinates(value: &JsValue) -> Result<Vec<f64>> {
+    if let Some(at) = value.as_f64() {
+        return Ok(vec![at]);
+    }
+    let array = value.dyn_ref::<Array>().ok_or_else(|| error("at is a coordinate or an array of them"))?;
+    array.iter().map(|v| v.as_f64().ok_or_else(|| error("a coordinate is a number"))).collect()
 }
 
 fn point(value: &JsValue) -> [f64; 2] {

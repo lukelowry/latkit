@@ -57,7 +57,7 @@ pub use {
         Theme, Vertices,
     },
     shot::Shot,
-    video::{Encoder, Encoding, Mp4, Pixels, Sink, TIMESCALE, Unit, Video},
+    video::{Encoding, Mp4, Pixels, Sink, Video},
     view::{
         Button, Camera, Cursor, Device, End, Event, Fit, Frame, Hit, Input, Key, Modifiers, Phase, Sample, Stats,
         Trigger, View, Waiting,

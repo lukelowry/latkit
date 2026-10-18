@@ -449,8 +449,8 @@ mod tests {
                 )),
         )
         .expect("valid");
-        data.apply(Patch::new().append(1.0, "Bus", [("vm", vec![1.0, 1.01, 0.99])])).expect("frame");
-        data.apply(Patch::new().append(2.0, "Bus", [("vm", vec![1.02, f64::NAN, 0.98])])).expect("frame");
+        data.apply(Patch::new().append([1.0], "Bus", [("vm", vec![1.0, 1.01, 0.99])])).expect("frame");
+        data.apply(Patch::new().append([2.0], "Bus", [("vm", vec![1.02, f64::NAN, 0.98])])).expect("frame");
         data
     }
 
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn patches_round_trip() {
-        let patch = Patch::new().remove("Bus", vec!["a"]).append(3.0, "Bus", [("vm", vec![1.0, 1.0, 1.0])]);
+        let patch = Patch::new().remove("Bus", vec!["a"]).append([3.0], "Bus", [("vm", vec![1.0, 1.0, 1.0])]);
         let bytes = patch.to_bytes();
         assert_eq!(Patch::from_bytes(&bytes).expect("decodes").to_bytes(), bytes);
         assert!(Data::from_bytes(&bytes).is_err());

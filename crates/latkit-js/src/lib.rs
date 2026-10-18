@@ -122,10 +122,12 @@ impl Data {
         Ok(Data(latkit::Data::from_bytes(bytes)?))
     }
 
-    /// A dataset from its JSON document, its slices read from `files`: names to `Uint8Array`s.
-    #[wasm_bindgen(js_name = fromJson)]
-    pub fn from_json(json: &str, files: &JsValue) -> Result<Data, Error> {
-        Ok(Data(latkit::Data::from_json(json, convert::files(files))?))
+    /// A promise of the dataset its JSON document builds, its slices fetched relative to `base`.
+    pub fn load(json: String, base: String) -> js_sys::Promise {
+        wasm_bindgen_futures::future_to_promise(async move {
+            let data = latkit::Data::load(&json, &base, &latkit::host::Browser).await;
+            data.map(|data| Data(data).into()).map_err(|e| Error::from(e).into())
+        })
     }
 
     #[wasm_bindgen(getter)]
@@ -203,10 +205,12 @@ impl Patch {
         Ok(Patch(latkit::Patch::from_bytes(bytes)?))
     }
 
-    /// A patch from its JSON, its slices read from `files`: names to `Uint8Array`s.
-    #[wasm_bindgen(js_name = fromJson)]
-    pub fn from_json(json: &str, files: &JsValue) -> Result<Patch, Error> {
-        Ok(Patch(latkit::Patch::from_json(json, convert::files(files))?))
+    /// A promise of the patch its JSON makes, its slices fetched relative to `base`.
+    pub fn load(json: String, base: String) -> js_sys::Promise {
+        wasm_bindgen_futures::future_to_promise(async move {
+            let patch = latkit::Patch::load(&json, &base, &latkit::host::Browser).await;
+            patch.map(|patch| Patch(patch).into()).map_err(|e| Error::from(e).into())
+        })
     }
 
     pub fn axis(&mut self, name: &str, unit: &str) {
@@ -233,8 +237,9 @@ impl Patch {
         Ok(())
     }
 
-    /// Records one frame at axis coordinate `at`: a value per row of `table` for each field.
-    pub fn append(&mut self, at: f64, table: &str, fields: &js_sys::Object) -> Result<(), Error> {
+    /// Records a frame at each axis coordinate of `at`, one or an array: values frame-major.
+    pub fn append(&mut self, at: &JsValue, table: &str, fields: &js_sys::Object) -> Result<(), Error> {
+        let at = convert::coordinates(at)?;
         let fields = convert::values_of(fields)?;
         self.take(|p| p.append(at, table, fields));
         Ok(())

@@ -10,10 +10,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use common::{SIZE, camera, gpu, plain_theme, plane};
-use latkit::host::{Host, Raster, TextRun};
-use latkit::{
-    Color, Data, Encoder, Encoding, Label, Mp4, Pending, Pixels, Scene, Shot, Sink, Table, Unit, Vertices, View,
-};
+use latkit::host::{Encoder, Host, Raster, TextRun, Unit};
+use latkit::{Color, Data, Encoding, Label, Mp4, Pending, Pixels, Scene, Shot, Sink, Table, Vertices, View};
 
 /// The pictures an encoder was given: time, whether a keyframe, and the NV12 bytes.
 type Pictures = Arc<Mutex<Vec<(u64, bool, Vec<u8>)>>>;
@@ -37,8 +35,8 @@ impl Host for Keeping {
 struct Kept(Pictures);
 
 impl Encoder for Kept {
-    fn encode(&mut self, nv12: &[u8], time: u64, key: bool) -> Pending<Vec<Unit>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).push((time, key, nv12.to_vec()));
+    fn encode(&mut self, nv12: Vec<u8>, time: u64, key: bool) -> Pending<Vec<Unit>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).push((time, key, nv12));
         let slice: &[u8] = if key { &[0, 0, 0, 1, 0x65, 0x88] } else { &[0, 0, 0, 1, 0x41, 0x9a] };
         let mut annex_b = vec![0, 0, 0, 1, 0x67, 0x64, 0, 0x1f, 0xac, 0, 0, 0, 1, 0x68, 0xee, 0x3c, 0x80];
         annex_b.extend_from_slice(slice);

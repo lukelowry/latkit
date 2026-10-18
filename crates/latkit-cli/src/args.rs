@@ -33,6 +33,9 @@ pub(crate) enum Command {
         /// Dataset files, each [NAME=]FILE; - reads stdin
         #[arg(required = true, value_name = "[NAME=]FILE")]
         data: Vec<Source>,
+        /// The longest a dataset may take to load, in seconds
+        #[arg(long, default_value = "30", value_parser = deadline)]
+        deadline: Duration,
     },
 }
 
@@ -172,7 +175,7 @@ impl Cli {
         let invalid = |message: &str| Self::command().error(ErrorKind::InvalidValue, message);
         let job = match &self.command {
             Command::Render(job) | Command::Validate(job) => job,
-            Command::Inspect { data } => {
+            Command::Inspect { data, .. } => {
                 if data.iter().filter(|s| is_stdio(&s.path)).count() > 1 {
                     return Err(Self::command().error(ErrorKind::ArgumentConflict, "only one input can read stdin"));
                 }

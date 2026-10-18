@@ -77,7 +77,8 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200 
 - Every order the user can see comes from count → scan → write, never from atomic appends.
 - Every shader passes naga at build time and Chrome within its compile budget.
 - Every wait races a deadline; readbacks are taken, never awaited. A view sleeps while it waits:
-  readbacks, jobs, fetches, and uploads wake it.
+  readbacks, jobs, and fetches wake it as they land, and a frame whose work the next one lands
+  (uploads past the budget, a fit or layout due) asks for it. Canvases and shots draw on that alone.
 - Size never fails a draw: the plan always fits the budget, and `priority` decides what draws first,
   on top, and labeled.
 - No public type before it draws. `Stats::gpu_ms` is the median of the last frames the device timed.
@@ -150,14 +151,15 @@ only glow, halo, and pick radius stay pixels. Zooming scales one fixed picture.
   still; `compute/compose.wesl` then writes each panel's part in whole words, and a plain buffer copy
   reads the RGBA back. `Image::png` writes it; the npm package writes it in a worker.
 - **Video** (`src/video/`): a shot's frames at a fixed rate handed in order to a `Sink`, which
-  says the `Pixels` it takes (RGBA or NV12), composed on the GPU; three frames under way (one
-  drawing, one reading back, one in the sink). A frame where nothing moved is neither drawn nor read
-  back: the sink is told it is held. `Mp4` is the sink most videos take: `Host::encoder`, NV12 in and
-  Annex B out with no B-frames (WebCodecs in a browser, which npm hands the host; Media Foundation
-  natively on Windows, hardware where present), and `mp4.rs`, fragmented MP4 written as it goes, a
-  fragment per keyframe run. A frame lasts until the next one's time, so held frames cost nothing.
-- **Titles and legends**: a scene's `title`, `subtitle`, and `legends` (a mark's colormap across
-  its domain, or a cell a category) draw as overlay sprites with a plot's axes, O(legends).
+  says the `Pixels` it takes (RGBA or NV12), composed on the GPU, and begins with the video's
+  `Encoding` and the host; three frames under way (one drawing, one reading back, one in the sink).
+  A frame where nothing moved is neither drawn nor read back: the sink is told it is held. `Mp4` is
+  the sink most videos take: the host's `Encoder` (`host::Encoder`, owned NV12 in, Annex B out, no
+  B-frames: WebCodecs in a browser, which npm hands the host; Media Foundation natively on Windows,
+  hardware where present, on a thread of its own) and `mp4.rs`, fragmented MP4 written as it goes,
+  a fragment per keyframe run. A frame lasts until the next one's time, so held frames cost nothing.
+- **Titles and legends**: a scene's `title` and `subtitle`, and a mark's `legend` (its colormap
+  across the domain, or a cell a category), draw as overlay sprites with a plot's axes, O(legends).
 - **Lending:** views lend themselves to a drawing a step at a time (`shot::Views`), so a canvas's
   view is borrowed only while a step draws it and the page reads it between steps.
 
@@ -213,8 +215,8 @@ grid.apply(
         .set(Table::new("Bus", 3).field("lon", [-97.7, -96.8, -95.4]).field("lat", [30.3, 32.8, 29.8]).field("name", ["A", "B", "C"]).field("kv", [345.0, 138.0, 69.0]))
         .set(Table::new("Branch", 2).reference("from", "Bus", [0_u64, 1]).reference("to", "Bus", [1_u64, 2]).field("p", [120.0, -40.0]).field("kv", [345.0, 138.0])),
 )?;
-grid.apply(Patch::new().append(0.5, "Bus", [("vm", [1.01, 0.99, 1.0])]))?; // a sampled frame
-let grid = Data::from_json(&json, |file, bytes| read(file, bytes))?; // any language's JSON; slices of files
+grid.apply(Patch::new().append([0.5], "Bus", [("vm", [1.01, 0.99, 1.0])]))?; // a sampled frame
+let grid = Data::load(&json, "data/grid.json", &host).await?; // any language's JSON; files' slices fetched
 
 // A map: marks name their data; options are expressions. Geometry is a field.
 view.set_data(geo::geojson("states", &bytes)?);
@@ -310,5 +312,5 @@ await video.finish();
 | Scale                | `cargo xtask bench` and budgets; GPU time in `Stats`; fixed pages in one pool within a `Budget`; plans that always fit; tiles for anything large (pyramids in jobs, edges with their ends); `priority`; views that sleep while they wait; lanes as world-space bows; globe occlusion by depth; dashes and comets along paths; focus draws only lit rows; bulk column reads; the 2M-bus grid and Grid operations pages                                            | ✓      |
 | M6                   | time as an input (`Frame`, `input(time)`, the view's clock); `complete`; `Shot` and `Image` (compose pass, PNG in a worker); `Video` (NV12 on the GPU, three frames under way, held frames free, fragmented MP4, `Host::encoder` with WebCodecs); npm `Shot`, `Image`, `Video`                                                                                                                                                                                   | ✓      |
 | Interaction          | `Event` as intents and changes in one ordered queue (picks hold their place, changes keep their latest); `Trigger` (point, keys, `Device`) on every intent and hover; silent setters; `hovered`, `failures`, the `Waiting` event; hover follows the frame, `Controls::hover` only glows; the keys step, open, and select; npm events and view state as JSON, a batch per dispatch; ids checked, never truncated                                                  | ✓      |
-| CLI                  | `latkit-cli`: render, validate, inspect; `Sink`, `Pixels`, `Mp4`; native H.264 (Media Foundation) and files in `Native`; `Data`/`Patch` and `Shot` as JSON; titles and legends; native shots draw again at once when uploads are due                                                                                                                                                                                                                             | ✓      |
+| CLI                  | `latkit-cli`: render, validate, inspect, frames loaded ahead; `Sink`, `Pixels`, `Mp4`, the encoder seam in `host`; `Native` a shared handle with H.264 (Media Foundation), files, and fetches on its workers; `Data`/`Patch` loaded from JSON through the host, `Values` and `Ids` from loose values by one rule, `Shot` as JSON; titles, mark legends; views ask for the frame their work lands on; no `serde` feature                                          | ✓      |
 | Retire               | delete `packages/`, `examples/`, `benchmark/`, the old `docs/` and their configs                                                                                                                                                                                                                                                                                                                                                                                 | ○      |

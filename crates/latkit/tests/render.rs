@@ -161,7 +161,7 @@ fn sampled_fields_read_at_the_shown_coordinate() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("grid");
     data.apply(Table::new("Bus", 1).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
-    data.apply(Patch::new().append(0.0, "Bus", [("v", vec![0.0])]).append(10.0, "Bus", [("v", vec![1.0])]))
+    data.apply(Patch::new().append([0.0], "Bus", [("v", vec![0.0])]).append([10.0], "Bus", [("v", vec![1.0])]))
         .expect("frames");
     let gray = |v: latkit::Expr| v.colormap(Colormap::GRAYS).domain(0.0..=1.0);
     let scene = Scene::new(plane())
@@ -279,7 +279,7 @@ fn lines_trace_their_samples_across_a_plot() {
     let mut data = Data::new("signals");
     data.apply(Table::new("Signal", 1)).expect("valid");
     for t in 0..=10 {
-        data.apply(Patch::new().append(f64::from(t), "Signal", [("v", vec![0.5])])).expect("frame");
+        data.apply(Patch::new().append([f64::from(t)], "Signal", [("v", vec![0.5])])).expect("frame");
     }
     let axis = Axis { grid: false, hidden: true, ..Axis::default() };
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
@@ -300,7 +300,7 @@ fn a_plot_frames_its_traces_whole_span_wherever_it_shows() {
     let mut data = Data::new("signals");
     data.apply(Table::new("Signal", 1)).expect("valid");
     for t in 0..=10 {
-        data.apply(Patch::new().append(f64::from(t) * 6.0, "Signal", [("v", vec![f64::from(t)])])).expect("frame");
+        data.apply(Patch::new().append([f64::from(t) * 6.0], "Signal", [("v", vec![f64::from(t)])])).expect("frame");
     }
     let scene = Scene::new(Plot::default()).draw(Lines::of("signals", "Signal").trace("v"));
     let mut view = View::new(&gpu, scene).expect("valid scene");
@@ -325,7 +325,7 @@ fn lines_wait_for_the_first_frame_of_the_field_they_trace() {
     frame(&gpu, &mut view);
     assert_eq!(common::errors(&mut view), Vec::new(), "a field not recorded yet is no error");
     for t in 0..3 {
-        data.apply(Patch::new().append(f64::from(t), "Signal", [("v", vec![f64::from(t)])])).expect("valid");
+        data.apply(Patch::new().append([f64::from(t)], "Signal", [("v", vec![f64::from(t)])])).expect("valid");
     }
     view.set_data(data);
     view.set_camera(Camera::Plot { x: [0.0, 2.0], y: Some([0.0, 2.0]) });
@@ -436,7 +436,7 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
                     .reference("b", "Vertex", corner(1))
                     .reference("c", "Vertex", corner(2)),
             )
-            .append(0.0, "Vertex", [("x", column(0)), ("y", column(1)), ("z", column(2))]),
+            .append([0.0], "Vertex", [("x", column(0)), ("y", column(1)), ("z", column(2))]),
     )
     .expect("valid");
     let scene = Scene::new(plane())
@@ -475,7 +475,7 @@ fn long_histories_draw_from_their_levels_of_detail() {
     let mut patch = Patch::new();
     for t in 0..20_000 {
         let v = if t == 10_000 { 0.9 } else { 0.1 };
-        patch = patch.append(f64::from(t), "Signal", [("v", vec![v])]);
+        patch = patch.append([f64::from(t)], "Signal", [("v", vec![v])]);
     }
     data.apply(patch).expect("frames");
     let axis = Axis { grid: false, hidden: true, ..Axis::default() };

@@ -67,7 +67,7 @@ impl Model {
                     (0..self.rows.len()).map(|i| values.first().copied().flatten().map(|v| v + i as f64)).collect();
                 let at = self.frames.len() as f64;
                 self.frames.push(self.rows.iter().zip(&values).map(|(m, v)| (m.0, *v)).collect());
-                Patch::new().append(at, "T", [("s", values)])
+                Patch::new().append([at], "T", [("s", values)])
             }
         }
     }
@@ -129,7 +129,7 @@ fn a_failed_patch_changes_nothing() {
         )
         .expect_err("text into a number field");
     assert!(matches!(&error, Error::Invalid { .. }), "{error}");
-    assert_eq!(error.to_string(), "ops[1].Bus.kv: Text values for a Number field");
+    assert_eq!(error.to_string(), "patch[1].Bus.kv: Text values for a Number field");
     assert_eq!(data.to_bytes(), before);
 }
 
@@ -137,14 +137,14 @@ fn a_failed_patch_changes_nothing() {
 fn field_lengths_must_match_rows() {
     let mut data = Data::new("grid");
     let error = data.apply(Table::new("Bus", 3).field("kv", vec![1.0, 2.0])).expect_err("short field");
-    assert_eq!(error.to_string(), "ops[0].Bus.kv: 2 values for 3 rows");
+    assert_eq!(error.to_string(), "patch[0].Bus.kv: 2 values for 3 rows");
 }
 
 #[test]
 fn repeated_ids_are_refused() {
     let mut data = Data::new("grid");
     let error = data.apply(Table::new("Bus", vec!["a", "a"])).expect_err("repeated id");
-    assert!(error.to_string().starts_with("ops[0].Bus.ids[1]"), "{error}");
+    assert!(error.to_string().starts_with("patch[0].Bus.ids[1]"), "{error}");
 }
 
 #[test]

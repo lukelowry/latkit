@@ -49,6 +49,8 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Ole",
     "Win32_System_Variant",
 ] }
+# What `windows::core::implement` expands to: COM objects of ours, such as callbacks.
+windows-core = "0.62.2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

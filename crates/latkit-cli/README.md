@@ -14,20 +14,21 @@ latkit render scene.json -d grid.json --frames - --format y4m -o - | ffmpeg -i -
 latkit inspect grid.bin
 ```
 
-| Command    | Does                                                                                    |
-| ---------- | --------------------------------------------------------------------------------------- |
-| `render`   | draws the scenes, one per `--panel`, and writes `--output`                              |
-| `validate` | reads and checks everything `render` would, frames and overlays included, without a GPU |
-| `inspect`  | prints datasets as JSON: tables, rows, fields' kinds, the axis and its span             |
+| Command    | Does                                                                               |
+| ---------- | ---------------------------------------------------------------------------------- |
+| `render`   | draws the scenes, one per `--panel`, and writes `--output`                         |
+| `validate` | reads, loads, and checks everything `render` would, frames included, without a GPU |
+| `inspect`  | prints datasets as JSON: tables, rows, fields' kinds, the axis and its span        |
 
 ## Inputs
 
-- **Scenes** are the library's scene JSON ([format](../latkit/src/scene/decode.rs)), with a
-  `title`, `subtitle`, and `legends`. `--camera FILE` gives scenes cameras in order; a view without
-  one frames `--fit` (`all`, or a fit as JSON). `--insets T,R,B,L` keeps room clear.
+- **Scenes** are the library's scene JSON ([format](../latkit/src/scene/decode.rs)): a `title`
+  and `subtitle`, and on any mark a `legend`. `--camera FILE` gives scenes cameras in order; a view
+  without one frames `--fit` (`all`, or a fit as JSON). `--insets T,R,B,L` keeps room clear.
 - **Datasets** (`-d [NAME=]FILE`) are the library's dataset JSON, `{"name", "patch"}`
   ([format](../latkit/src/data/json.rs)), latkit bytes (`Data::to_bytes`), or GeoJSON, which takes
-  a `NAME`. A `NAME` renames any dataset. Slices of binary files are read relative to the document.
+  a `NAME`. A `NAME` renames any dataset. Slices of binary files load relative to the document, on
+  the host's workers.
 - **Tiles** (`--tiles NAME=FILE`) are a PMTiles file, TileJSON, or `{z}/{x}/{y}` template on disk.
 - **Fonts** (`--font FILE`, repeated) replace system fonts; the first is the fallback.
 - Only one input reads stdin (`-`).
@@ -53,31 +54,30 @@ latkit inspect grid.bin
       { "forget": { "before": 1.3 } }
     ]
   },
-  "fly": { "center": [-90, 35], "zoom": 4, "pitch": 40, "bearing": 0 },
-  "overlay": "caption.png"
+  "fly": { "center": [-90, 35], "zoom": 4, "pitch": 40, "bearing": 0 }
 }
 ```
 
-| Key       | Changes                                                                                    |
-| --------- | ------------------------------------------------------------------------------------------ |
-| `at`      | the axis coordinate every view shows: sampled fields read their last frame at or before it |
-| `patch`   | datasets by name, each a patch in the library's JSON                                       |
-| `camera`  | where views look at once; `fly` eases there over twice the scene's `ease`                  |
-| `fit`     | what views frame                                                                           |
-| `insets`  | CSS pixels each view keeps clear                                                           |
-| `orbit`   | degrees a second a map or plane turns                                                      |
-| `overlay` | a transparent PNG of the picture's size drawn over this frame                              |
+| Key      | Changes                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------ |
+| `at`     | the axis coordinate every view shows: sampled fields read their last frame at or before it |
+| `patch`  | datasets by name, in order, each a patch in the library's JSON                             |
+| `camera` | where views look at once; `fly` eases there over twice the scene's `ease`                  |
+| `fit`    | what views frame                                                                           |
+| `insets` | CSS pixels each view keeps clear                                                           |
+| `orbit`  | degrees a second a map or plane turns                                                      |
 
 `camera`, `fly`, and `fit` take one value for every view it fits, or a list with one per view
-(`null` leaves one). Scenes ease as they say; `"ease": 0` shows each frame's data as it is.
-Effects such as flowing comets follow the video's time.
+(`null` leaves one; a camera must look at its view's space). Frames load a couple ahead of the one
+drawing. Scenes ease as they say; `"ease": 0` shows each frame's data as it is. Effects such as
+flowing comets follow the video's time.
 
 ## Outputs
 
 | Output                   | Writes                                                           |
 | ------------------------ | ---------------------------------------------------------------- |
 | `.png`                   | one picture, or a sequence's single frame                        |
-| `frame-%04d.png`         | a PNG a frame (`--frames`)                                       |
+| `frame-%04d.png`         | a PNG a frame, encoded on the host's workers (`--frames`)        |
 | `.rgba`, `--format rgba` | straight-alpha RGBA, frames back to back, no header              |
 | `.y4m`                   | YUV4MPEG2, 4:2:0 BT.709 limited, for any encoder (`--frames`)    |
 | `.mp4`                   | H.264 in fragmented MP4 from the platform's encoder (`--frames`) |

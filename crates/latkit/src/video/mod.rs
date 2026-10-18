@@ -3,9 +3,8 @@
 //! composes one frame while another is read back and the sink takes a third. A frame where nothing
 //! moved is neither drawn nor read back: the sink is told it is held, and shows the frame before.
 //!
-//! [`Mp4`] is the sink most videos take: H.264 from the host's [`Encoder`] (NV12 pictures in, Annex
-//! B units out), written as fragmented MP4. A browser's encoder is WebCodecs; a native one, the
-//! platform's.
+//! [`Mp4`] is the sink most videos take: H.264 from the host's
+//! [`Encoder`](crate::host::Encoder), written as fragmented MP4.
 
 mod mp4;
 
@@ -18,11 +17,10 @@ use mp4::Muxer;
 pub(crate) use mp4::nals;
 
 use crate::gpu::readback::Readback;
+use crate::host::{Encoder, Host, TIMESCALE, Unit};
 use crate::shot::{Borrowed, Drawing, Step, Views};
-use crate::{Error, Gpu, Pending, Result, Shot, View};
+use crate::{Error, Gpu, Result, Shot, View};
 
-/// Ticks of a second a video's times count.
-pub const TIMESCALE: u32 = 90_000;
 /// Frames drawn and not yet taken at once: one drawing, one reading back, one in the sink.
 const IN_FLIGHT: usize = 3;
 /// Seconds of video between keyframes at most.
@@ -46,10 +44,10 @@ pub trait Sink {
     /// The bytes it takes.
     const PIXELS: Pixels;
 
-    /// Readies it for a video of `size` pixels at `fps` frames a second drawn with `gpu`, before the
-    /// first frame: an MP4 asks the GPU's host for its encoder.
-    fn begin(&mut self, gpu: &Gpu, size: [u32; 2], fps: f64) -> Result<()> {
-        let _ = (gpu, size, fps);
+    /// Readies it for the video `encoding` describes, before the first frame, with the services of
+    /// the GPU's `host`: an MP4 asks it for an encoder.
+    fn begin(&mut self, encoding: &Encoding, host: Option<&dyn Host>) -> Result<()> {
+        let _ = (encoding, host);
         Ok(())
     }
 
@@ -61,7 +59,7 @@ pub trait Sink {
     fn finish(&mut self, end: u64) -> impl Future<Output = Result<()>>;
 }
 
-/// What an [`Encoder`] encodes: its pictures' size in pixels, frames a second, and bits a second.
+/// A video: its pictures' size in pixels, frames a second, and the bits a second an encoder spends.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Encoding {
     /// Width and height in pixels.
@@ -72,34 +70,22 @@ pub struct Encoding {
     pub bitrate: u32,
 }
 
-/// One encoded access unit of H.264: Annex B bytes, at `time` ticks of [`TIMESCALE`], decode order
-/// equal to display order.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Unit {
-    /// Ticks at which this frame shows.
-    pub time: u64,
-    /// Whether it is a keyframe, which carries its parameter sets in band.
-    pub key: bool,
-    /// Its NAL units, each after a start code.
-    pub annex_b: Vec<u8>,
-}
-
-/// A platform's H.264 encoder: NV12 pictures (BT.709, limited range) in, Annex B units out, no
-/// B-frames, so every platform's encoder fits and the muxer never reorders.
-pub trait Encoder {
-    /// Encodes one NV12 picture at `time` ticks, a keyframe when `key`; resolves, once it has room
-    /// for another picture, to the units it finished since the last call, in order.
-    fn encode(&mut self, nv12: &[u8], time: u64, key: bool) -> Pending<Vec<Unit>>;
-
-    /// Resolves to the units it still holds once every picture given is encoded.
-    fn finish(&mut self) -> Pending<Vec<Unit>>;
-}
-
 impl Encoding {
-    /// An encoding of pictures of `size` at `fps`, at about 0.15 bits a pixel a frame.
+    /// A video of `size` at `fps`, at about 0.15 bits a pixel a frame.
     pub fn new(size: [u32; 2], fps: f64) -> Encoding {
         let bits = f64::from(size[0]) * f64::from(size[1]) * fps * BITS_PER_PIXEL;
         Encoding { size, fps, bitrate: bits.clamp(1e5, 4e8) as u32 }
+    }
+
+    /// The frame rate as a ratio of whole numbers, as containers write it: 30000/1001 for 29.97.
+    pub fn rate(&self) -> [u32; 2] {
+        for den in [1_u32, 1001, 1000] {
+            let num = (self.fps * f64::from(den)).round();
+            if (num / f64::from(den) - self.fps).abs() < 1e-6 * self.fps {
+                return [num as u32, den];
+            }
+        }
+        [(self.fps * 1000.0).round() as u32, 1000]
     }
 }
 
@@ -161,17 +147,16 @@ impl<W: Write> Mp4<W> {
 impl<W: Write> Sink for Mp4<W> {
     const PIXELS: Pixels = Pixels::Nv12;
 
-    fn begin(&mut self, gpu: &Gpu, size: [u32; 2], fps: f64) -> Result<()> {
-        let mut encoding = Encoding::new(size, fps);
+    fn begin(&mut self, encoding: &Encoding, host: Option<&dyn Host>) -> Result<()> {
+        let mut encoding = *encoding;
         if let Some(bitrate) = self.bitrate {
             if bitrate == 0 {
                 return Err(Error::invalid("an MP4 takes a positive bitrate").at("bitrate"));
             }
             encoding.bitrate = bitrate;
         }
-        let host = gpu.0.lock().host.clone();
         let host = host.ok_or_else(|| Error::Unsupported("an MP4 is encoded by the Gpu's host; it has none".into()))?;
-        self.began = Some((host.encoder(&encoding)?, Muxer::new(size, TIMESCALE), fps));
+        self.began = Some((host.encoder(&encoding)?, Muxer::new(encoding.size, TIMESCALE), encoding.fps));
         Ok(())
     }
 
@@ -183,7 +168,7 @@ impl<W: Write> Sink for Mp4<W> {
         if key {
             self.keyed = Some(time);
         }
-        let units = encoder.encode(&nv12, time, key).await?;
+        let units = encoder.encode(nv12, time, key).await?;
         self.write(units)
     }
 
@@ -222,7 +207,8 @@ impl Shot {
             let reason = format!("an NV12 video's width is a multiple of 4 and its height of 2, not {width}×{height}");
             return Err(Error::invalid(reason).at("size"));
         }
-        sink.begin(gpu, self.size(), fps)?;
+        let host = gpu.0.lock().host.clone();
+        sink.begin(&Encoding::new(self.size(), fps), host.as_deref())?;
         Ok(Video {
             drawing: Drawing::later(self.clone(), S::PIXELS),
             sink,
@@ -267,7 +253,7 @@ impl<S: Sink> Video<S> {
                 match views.lend(|views| self.drawing.step(views, time, false))? {
                     Step::Done(readback) => break readback,
                     Step::Easing => {}
-                    Step::Waiting { due } => self.drawing.wait(due).await,
+                    Step::Waiting => self.drawing.wait().await,
                 }
             };
             self.flight.push_back((self.index, Some(readback)));
@@ -309,4 +295,17 @@ fn ticks(index: u64, fps: f64) -> u64 {
 
 fn written(error: &std::io::Error) -> Error {
     Error::Load(format!("a video could not be written: {error}").into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_rates_are_ratios() {
+        let rate = |fps| Encoding::new([16, 16], fps).rate();
+        assert_eq!(rate(60.0), [60, 1]);
+        assert_eq!(rate(30_000.0 / 1001.0), [30_000, 1001]);
+        assert_eq!(rate(12.5), [12_500, 1000]);
+    }
 }

@@ -1,6 +1,6 @@
 //! The scenes of `npm/test/scenes.js` decode: the JSON form TypeScript checks is the form latkit reads.
 
-#![cfg(feature = "serde")]
+#![cfg(feature = "gpu")]
 
 use latkit::Scene;
 

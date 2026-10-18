@@ -1,28 +1,20 @@
 //! Where pictures go: one output written whole or not at all, and the sinks a video's frames go to
-//! besides the library's MP4: a PNG, a PNG a frame, raw RGBA, and YUV4MPEG2. Overlays are drawn over
-//! frames on their way to any of them, decoded a frame ahead on a thread of their own.
+//! besides the library's MP4: a PNG, a PNG a frame, raw RGBA, and YUV4MPEG2.
 
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::future::{Future, ready};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::thread::JoinHandle;
-use std::time::Duration;
 
-use latkit::{Error, Gpu, Image, Mp4, Pixels, Sink};
+use latkit::host::{Host, Job, Native};
+use latkit::{Encoding, Error, Image, Mp4, Pending, Pixels, Sink};
 
 use crate::Failure;
 use crate::args::{is_stdio, pattern};
 
-/// The longest a frame waits for its overlay to decode.
-const DECODE: Duration = Duration::from_secs(30);
-/// PNG frames waiting to be written at most.
-const QUEUED: usize = 2;
+/// PNG frames encoding at once, on the host's workers.
+const ENCODING: usize = 4;
 
 fn written(error: &io::Error, path: &Path) -> Error {
     Error::Load(format!("{}: {error}", path.display()).into())
@@ -64,6 +56,11 @@ impl Output {
             Output::Stdout(_) => Path::new("-"),
             Output::File { path, .. } => path,
         }
+    }
+
+    /// Writes `bytes`, naming the destination in its error.
+    fn put(&mut self, bytes: &[u8]) -> latkit::Result<()> {
+        self.write_all(bytes).map_err(|e| written(&e, self.path()))
     }
 }
 
@@ -110,8 +107,8 @@ impl Png {
 impl Sink for Png {
     const PIXELS: Pixels = Pixels::Rgba;
 
-    fn begin(&mut self, _: &Gpu, size: [u32; 2], _: f64) -> latkit::Result<()> {
-        self.size = size;
+    fn begin(&mut self, encoding: &Encoding, _: Option<&dyn Host>) -> latkit::Result<()> {
+        self.size = encoding.size;
         Ok(())
     }
 
@@ -136,34 +133,22 @@ impl Commit for Png {
     }
 }
 
-/// A PNG a frame, its path the pattern's with the frame's index; each file is written whole on a
-/// thread of its own, a held frame's bytes the frame before's.
+/// A PNG a frame, its path the pattern's with the frame's index. Frames encode as jobs on the
+/// host's workers, a few at once, and their files are written whole, in order; a held frame's file
+/// is the frame before's.
 pub(crate) struct Pngs {
     pattern: PathBuf,
+    host: Native,
     size: [u32; 2],
-    last: Option<Arc<Image>>,
-    work: Option<SyncSender<(PathBuf, Arc<Image>)>>,
-    writer: Option<JoinHandle<latkit::Result<()>>>,
+    /// Frames under way, oldest first: each file's path, and a drawn frame's PNG.
+    writing: VecDeque<(PathBuf, Option<Pending<Vec<u8>>>)>,
+    /// The last drawn frame's PNG.
+    last: Vec<u8>,
 }
 
 impl Pngs {
-    pub(crate) fn new(pattern: PathBuf) -> Pngs {
-        let (work, files) = mpsc::sync_channel::<(PathBuf, Arc<Image>)>(QUEUED);
-        let writer = std::thread::spawn(move || {
-            let mut encoded: Option<(Arc<Image>, Vec<u8>)> = None;
-            for (path, image) in files {
-                let bytes = match &encoded {
-                    Some((last, bytes)) if Arc::ptr_eq(last, &image) => bytes.clone(),
-                    _ => image.png(),
-                };
-                let mut out = Output::create(&path).map_err(|f| f.error)?;
-                out.write_all(&bytes).map_err(|e| written(&e, &path))?;
-                out.commit().map_err(|f| f.error)?;
-                encoded = Some((image, bytes));
-            }
-            Ok(())
-        });
-        Pngs { pattern, size: [0, 0], last: None, work: Some(work), writer: Some(writer) }
+    pub(crate) fn new(pattern: PathBuf, host: Native) -> Pngs {
+        Pngs { pattern, host, size: [0, 0], writing: VecDeque::new(), last: Vec::new() }
     }
 
     /// The path of frame `index`.
@@ -173,44 +158,43 @@ impl Pngs {
         format!("{}{index:0width$}{}", &text[..range.start], &text[range.end..]).into()
     }
 
-    /// Stops the writer, with why it stopped early.
-    fn stop(&mut self) -> latkit::Result<()> {
-        drop(self.work.take());
-        match self.writer.take().map(JoinHandle::join) {
-            Some(Ok(result)) => result,
-            Some(Err(_)) => Err(Error::Load("the PNG writer panicked".into())),
-            None => Ok(()),
+    /// Writes the oldest frame's file once its PNG is encoded.
+    async fn write_oldest(&mut self) -> latkit::Result<()> {
+        let Some((path, png)) = self.writing.pop_front() else { return Ok(()) };
+        if let Some(png) = png {
+            self.last = png.await?;
         }
+        let mut out = Output::create(&path).map_err(|f| f.error)?;
+        out.put(&self.last)?;
+        out.commit().map_err(|f| f.error)
     }
 }
 
 impl Sink for Pngs {
     const PIXELS: Pixels = Pixels::Rgba;
 
-    fn begin(&mut self, _: &Gpu, size: [u32; 2], _: f64) -> latkit::Result<()> {
-        self.size = size;
+    fn begin(&mut self, encoding: &Encoding, _: Option<&dyn Host>) -> latkit::Result<()> {
+        self.size = encoding.size;
         Ok(())
     }
 
-    fn frame(&mut self, index: u64, pixels: Option<Vec<u8>>) -> impl Future<Output = latkit::Result<()>> {
-        let result = (|| {
-            let image = match pixels {
-                Some(rgba) => Arc::new(Image::new(self.size, rgba)?),
-                None => self.last.clone().ok_or_else(|| Error::invalid("a held frame follows a drawn one"))?,
-            };
-            let path = self.path(index);
-            let sent = self.work.as_ref().is_some_and(|work| work.send((path, image.clone())).is_ok());
-            if !sent {
-                return self.stop().and(Err(Error::Load("the PNG writer stopped".into())));
-            }
-            self.last = Some(image);
-            Ok(())
-        })();
-        ready(result)
+    async fn frame(&mut self, index: u64, pixels: Option<Vec<u8>>) -> latkit::Result<()> {
+        let png = match pixels {
+            Some(rgba) => Some(self.host.spawn(Job::png(&Image::new(self.size, rgba)?))),
+            None => None,
+        };
+        self.writing.push_back((self.path(index), png));
+        while self.writing.len() > ENCODING {
+            self.write_oldest().await?;
+        }
+        Ok(())
     }
 
-    fn finish(&mut self, _: u64) -> impl Future<Output = latkit::Result<()>> {
-        ready(self.stop())
+    async fn finish(&mut self, _: u64) -> latkit::Result<()> {
+        while !self.writing.is_empty() {
+            self.write_oldest().await?;
+        }
+        Ok(())
     }
 }
 
@@ -239,13 +223,11 @@ impl Sink for Raw {
         if let Some(rgba) = pixels {
             self.last = rgba;
         }
-        let path = self.out.path().to_path_buf();
-        ready(self.out.write_all(&self.last).map_err(|e| written(&e, &path)))
+        ready(self.out.put(&self.last))
     }
 
     fn finish(&mut self, _: u64) -> impl Future<Output = latkit::Result<()>> {
-        let path = self.out.path().to_path_buf();
-        ready(self.out.flush().map_err(|e| written(&e, &path)))
+        ready(self.out.flush().map_err(|e| written(&e, self.out.path())))
     }
 }
 
@@ -273,13 +255,12 @@ impl Y4m {
 impl Sink for Y4m {
     const PIXELS: Pixels = Pixels::Nv12;
 
-    fn begin(&mut self, _: &Gpu, size: [u32; 2], fps: f64) -> latkit::Result<()> {
-        self.size = size;
-        let (num, den) = rational(fps);
+    fn begin(&mut self, encoding: &Encoding, _: Option<&dyn Host>) -> latkit::Result<()> {
+        self.size = encoding.size;
+        let ([width, height], [num, den]) = (encoding.size, encoding.rate());
         // The GPU averages each 2×2 block's chroma: centered, as JPEG sites it.
-        let header = format!("YUV4MPEG2 W{} H{} F{num}:{den} Ip A1:1 C420jpeg XCOLORRANGE=LIMITED\n", size[0], size[1]);
-        let path = self.out.path().to_path_buf();
-        self.out.write_all(header.as_bytes()).map_err(|e| written(&e, &path))
+        let header = format!("YUV4MPEG2 W{width} H{height} F{num}:{den} Ip A1:1 C420jpeg XCOLORRANGE=LIMITED\n");
+        self.out.put(header.as_bytes())
     }
 
     fn frame(&mut self, _: u64, pixels: Option<Vec<u8>>) -> impl Future<Output = latkit::Result<()>> {
@@ -292,13 +273,11 @@ impl Sink for Y4m {
             self.last.extend(chroma.iter().step_by(2));
             self.last.extend(chroma.iter().skip(1).step_by(2));
         }
-        let path = self.out.path().to_path_buf();
-        ready(self.out.write_all(&self.last).map_err(|e| written(&e, &path)))
+        ready(self.out.put(&self.last))
     }
 
     fn finish(&mut self, _: u64) -> impl Future<Output = latkit::Result<()>> {
-        let path = self.out.path().to_path_buf();
-        ready(self.out.flush().map_err(|e| written(&e, &path)))
+        ready(self.out.flush().map_err(|e| written(&e, self.out.path())))
     }
 }
 
@@ -308,227 +287,15 @@ impl Commit for Y4m {
     }
 }
 
-/// `fps` as a ratio of whole numbers: 30000/1001 for 29.97.
-fn rational(fps: f64) -> (u32, u32) {
-    for den in [1_u32, 1001, 1000] {
-        let num = (fps * f64::from(den)).round();
-        if (num / f64::from(den) - fps).abs() < 1e-6 * fps {
-            return (num as u32, den);
-        }
-    }
-    ((fps * 1000.0).round() as u32, 1000)
-}
-
-/// Overlays asked for by frame, decoded in order on a thread of their own; one decoded image stands
-/// for every frame in a row that names the same file.
-pub(crate) struct Overlays {
-    asks: Sender<(u64, PathBuf)>,
-    answers: Receiver<(u64, latkit::Result<Arc<Image>>)>,
-    asked: VecDeque<u64>,
-}
-
-impl Overlays {
-    pub(crate) fn new(size: [u32; 2]) -> Overlays {
-        let (asks, wanted) = mpsc::channel::<(u64, PathBuf)>();
-        let (answer, answers) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut last: Option<(PathBuf, Arc<Image>)> = None;
-            for (index, path) in wanted {
-                let image = match &last {
-                    Some((p, image)) if *p == path => Ok(image.clone()),
-                    _ => decode(&path, size).map(Arc::new),
-                };
-                if let Ok(image) = &image {
-                    last = Some((path, image.clone()));
-                }
-                if answer.send((index, image)).is_err() {
-                    break;
-                }
-            }
-        });
-        Overlays { asks, answers, asked: VecDeque::new() }
-    }
-
-    /// Asks for frame `index`'s overlay at `path`.
-    pub(crate) fn ask(&mut self, index: u64, path: PathBuf) {
-        if self.asks.send((index, path)).is_ok() {
-            self.asked.push_back(index);
-        }
-    }
-
-    /// Frame `index`'s overlay, once decoded; `None` where it has none.
-    fn take(&mut self, index: u64) -> latkit::Result<Option<Arc<Image>>> {
-        if self.asked.front() != Some(&index) {
-            return Ok(None);
-        }
-        self.asked.pop_front();
-        let (answered, image) = self.answers.recv_timeout(DECODE).map_err(|_| Error::Timeout)?;
-        debug_assert_eq!(answered, index, "overlays answer in order");
-        image.map(Some)
-    }
-}
-
-/// The overlay at `path`: a PNG of the picture's `size`.
-fn decode(path: &Path, size: [u32; 2]) -> latkit::Result<Image> {
-    let bytes = std::fs::read(path).map_err(|e| written(&e, path))?;
-    let image = Image::from_png(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
-    if image.size != size {
-        let [w, h] = image.size;
-        return Err(Error::invalid(format!("{}: an overlay is the picture's size, not {w}×{h}", path.display())));
-    }
-    Ok(image)
-}
-
-/// A sink whose frames have their overlays drawn over them first. A held frame whose overlay
-/// changed is drawn again from the frame before, under its own.
-pub(crate) struct Overlaid<S> {
-    inner: S,
-    overlays: Rc<RefCell<Overlays>>,
-    /// The last frame's pixels without their overlay.
-    under: Vec<u8>,
-    /// The overlay the last frame shows.
-    shown: Option<Arc<Image>>,
-    size: [u32; 2],
-}
-
-impl<S: Sink> Overlaid<S> {
-    pub(crate) fn new(inner: S, overlays: Rc<RefCell<Overlays>>) -> Overlaid<S> {
-        Overlaid { inner, overlays, under: Vec::new(), shown: None, size: [0, 0] }
-    }
-
-    pub(crate) fn into_inner(self) -> S {
-        self.inner
-    }
-}
-
-impl<S: Sink> Sink for Overlaid<S> {
-    const PIXELS: Pixels = S::PIXELS;
-
-    fn begin(&mut self, gpu: &Gpu, size: [u32; 2], fps: f64) -> latkit::Result<()> {
-        self.size = size;
-        self.inner.begin(gpu, size, fps)
-    }
-
-    async fn frame(&mut self, index: u64, pixels: Option<Vec<u8>>) -> latkit::Result<()> {
-        let overlay = self.overlays.borrow_mut().take(index)?;
-        let changed = match (&overlay, &self.shown) {
-            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
-            (a, b) => a.is_some() != b.is_some(),
-        };
-        let pixels = match pixels {
-            Some(pixels) => {
-                self.under.clone_from(&pixels);
-                Some(pixels)
-            }
-            None if changed => Some(self.under.clone()),
-            None => None,
-        };
-        let pixels = pixels.map(|mut p| {
-            if let Some(overlay) = &overlay {
-                match S::PIXELS {
-                    Pixels::Rgba => over_rgba(&mut p, &overlay.rgba),
-                    Pixels::Nv12 => over_nv12(&mut p, &overlay.rgba, self.size),
-                }
-            }
-            p
-        });
-        self.shown = overlay;
-        self.inner.frame(index, pixels).await
-    }
-
-    fn finish(&mut self, end: u64) -> impl Future<Output = latkit::Result<()>> {
-        self.inner.finish(end)
-    }
-}
-
-/// Straight-alpha `overlay` over straight-alpha RGBA `rgba`, in sRGB as a canvas draws.
-fn over_rgba(rgba: &mut [u8], overlay: &[u8]) {
-    for (to, from) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(overlay.as_chunks::<4>().0) {
-        let a = u32::from(from[3]);
-        if a == 0 {
-            continue;
-        }
-        let b = u32::from(to[3]);
-        let alpha = a * 255 + b * (255 - a);
-        for i in 0..3 {
-            to[i] = ((u32::from(from[i]) * a * 255 + u32::from(to[i]) * b * (255 - a) + alpha / 2) / alpha) as u8;
-        }
-        to[3] = ((alpha + 127) / 255) as u8;
-    }
-}
-
-/// Straight-alpha `overlay` over NV12 `nv12` of `size`: luma pixel by pixel, chroma by 2×2 block,
-/// BT.709 in limited range as the GPU composes it.
-fn over_nv12(nv12: &mut [u8], overlay: &[u8], [width, height]: [u32; 2]) {
-    let (w, h) = (width as usize, height as usize);
-    let (luma, chroma) = nv12.split_at_mut(w * h);
-    let yuv = |p: &[u8; 4]| {
-        let [r, g, b] = [p[0], p[1], p[2]].map(|c| f32::from(c) / 255.0);
-        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        [16.0 + 219.0 * y, 128.0 + 224.0 * (b - y) / 1.8556, 128.0 + 224.0 * (r - y) / 1.5748]
-    };
-    let pixels = overlay.as_chunks::<4>().0;
-    for by in 0..h / 2 {
-        for bx in 0..w / 2 {
-            let mut weight = 0.0;
-            let mut sum = [0.0_f32; 2];
-            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                let (x, y) = (bx * 2 + dx, by * 2 + dy);
-                let p = &pixels[y * w + x];
-                if p[3] == 0 {
-                    continue;
-                }
-                let a = f32::from(p[3]) / 255.0;
-                let [py, pu, pv] = yuv(p);
-                let l = &mut luma[y * w + x];
-                *l = (f32::from(*l) * (1.0 - a) + py * a).round() as u8;
-                weight += a;
-                sum[0] += pu * a;
-                sum[1] += pv * a;
-            }
-            if weight > 0.0 {
-                let at = by * w + bx * 2;
-                let mean = weight / 4.0;
-                for (c, s) in sum.iter().enumerate() {
-                    let old = f32::from(chroma[at + c]);
-                    chroma[at + c] = (old * (1.0 - mean) + s / 4.0).round().clamp(0.0, 255.0) as u8;
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn overlays_compose_in_rgba_and_nv12() {
-        let mut rgba = vec![0, 0, 255, 255];
-        over_rgba(&mut rgba, &[255, 0, 0, 128]);
-        assert_eq!(rgba, [128, 0, 127, 255]);
-        let mut clear = vec![0; 4];
-        over_rgba(&mut clear, &[255, 0, 0, 128]);
-        assert_eq!(clear, [255, 0, 0, 128]);
-        // Black NV12, 2×2, under opaque white: luma 235, chroma neutral.
-        let mut nv12 = vec![16, 16, 16, 16, 128, 128];
-        over_nv12(&mut nv12, &[255; 16], [2, 2]);
-        assert_eq!(nv12, [235, 235, 235, 235, 128, 128]);
-        // Half the block under opaque red: half its chroma red's.
-        let mut nv12 = vec![16, 16, 16, 16, 128, 128];
-        let red = [255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0];
-        over_nv12(&mut nv12, &red, [2, 2]);
-        assert_eq!(&nv12[..4], [63, 63, 16, 16]);
-        assert_eq!(&nv12[4..], [115, 184]);
-    }
-
-    #[test]
-    fn frame_rates_are_ratios_and_patterns_number_files() {
-        assert_eq!(rational(30_000.0 / 1001.0), (30_000, 1001));
-        assert_eq!(rational(60.0), (60, 1));
-        let pngs = Pngs::new(PathBuf::from("out/frame-%04d.png"));
+    fn patterns_number_files() {
+        let pngs = Pngs::new(PathBuf::from("out/frame-%04d.png"), Native::new());
         assert_eq!(pngs.path(7), PathBuf::from("out/frame-0007.png"));
-        let pngs = Pngs::new(PathBuf::from("%d.png"));
+        let pngs = Pngs::new(PathBuf::from("%d.png"), Native::new());
         assert_eq!(pngs.path(12), PathBuf::from("12.png"));
     }
 }

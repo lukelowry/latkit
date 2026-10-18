@@ -22,8 +22,7 @@ use crate::{Error, Frame, Image, Pixels, Result, View};
 
 /// Seconds a picture steps its views' clocks while they ease toward where they go.
 pub(crate) const TICK: f64 = 1.0 / 60.0;
-/// The longest a picture waits for work to land before drawing again: what streams in without
-/// waking it, as uploads do, streams at a display's pace.
+/// The longest a picture waits for work to land before drawing again.
 const FRAME: Duration = Duration::from_millis(16);
 
 /// A picture of views, each drawn into its part of `size` pixels at `scale` pixels per CSS pixel:
@@ -131,7 +130,7 @@ impl Shot {
                     return Image::new(self.size, bytes);
                 }
                 Step::Easing => time += TICK,
-                Step::Waiting { due } => drawing.wait(due).await,
+                Step::Waiting => drawing.wait().await,
             }
         }
     }
@@ -161,7 +160,6 @@ impl Shot {
 
 /// A shot as JSON: `{ "size": [w, h], "scale", "panels": [[x, y, w, h]], "transparent", "deadline",
 /// "elapsed" }`, times in seconds. Only `size` is required.
-#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Shot {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Shot, D::Error> {
         use serde::de::Error as _;
@@ -232,11 +230,8 @@ pub(crate) enum Step {
     Done(Readback),
     /// Views still ease toward where they go: draw again a step later.
     Easing,
-    /// Views wait for work under way: draw again once it lands.
-    Waiting {
-        /// Whether drawing again lands it, as it does uploads, with nothing to wake the drawing.
-        due: bool,
-    },
+    /// Views wait for work under way: draw again once it lands, which wakes the drawing.
+    Waiting,
 }
 
 /// Pictures under way: a shot's, composed into `pixels`, from views it draws once it has them.
@@ -422,7 +417,6 @@ impl Drawing {
         }
         let complete = views.iter().all(|v| v.complete());
         let easing = still && views.iter().any(|v| v.easing());
-        let due = views.iter().any(|v| v.due());
         if let Some(error) = views.iter_mut().find_map(|view| view.capture_error()) {
             picture.gpu.queue().submit([encoder.finish()]);
             return Err(error);
@@ -438,7 +432,7 @@ impl Drawing {
         } else if easing {
             Step::Easing
         } else {
-            Step::Waiting { due }
+            Step::Waiting
         };
         picture.gpu.queue().submit([encoder.finish()]);
         Ok(step)
@@ -460,12 +454,9 @@ impl Drawing {
         }
     }
 
-    /// Waits until work a view waits on lands, or a frame's time passes. Natively, work that is `due`
-    /// has landed once the GPU finished what was submitted, so the next step draws at once.
-    pub(crate) async fn wait(&self, due: bool) {
-        if self.finish() && due {
-            return;
-        }
+    /// Waits until work a view waits on lands, or a frame's time passes.
+    pub(crate) async fn wait(&self) {
+        self.finish();
         self.notify.wait(FRAME).await;
     }
 
@@ -476,18 +467,17 @@ impl Drawing {
         Ok(())
     }
 
-    /// Natively, waits for what was submitted, so readbacks map and wake the drawing, and says whether
-    /// the GPU finished it; a browser maps readbacks itself, and never says so.
+    /// Natively, polls what was submitted, so readbacks map and wake the drawing; a browser maps
+    /// them itself.
     #[cfg_attr(target_arch = "wasm32", expect(clippy::unused_self, reason = "a browser maps readbacks itself"))]
-    fn finish(&self) -> bool {
+    fn finish(&self) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(picture) = &self.picture {
             let remaining =
                 self.started.map_or(self.shot.deadline, |started| self.shot.deadline.saturating_sub(started.elapsed()));
             let wait = wgpu::PollType::Wait { submission_index: None, timeout: Some(FRAME.min(remaining)) };
-            return picture.gpu.device().poll(wait).is_ok();
+            let _ = picture.gpu.device().poll(wait);
         }
-        false
     }
 }
 

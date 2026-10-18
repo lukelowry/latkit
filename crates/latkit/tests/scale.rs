@@ -167,7 +167,7 @@ fn traces_too_large_for_the_budget_thin_in_time() {
     let (rows, frames) = (20_000_usize, 150_u32);
     let mut patch = Patch::new().set(Table::new("Signal", rows));
     for t in 0..frames {
-        patch = patch.append(f64::from(t), "Signal", [("v", vec![0.5; rows])]);
+        patch = patch.append([f64::from(t)], "Signal", [("v", vec![0.5; rows])]);
     }
     let mut data = Data::new("signals");
     data.apply(patch).expect("valid");

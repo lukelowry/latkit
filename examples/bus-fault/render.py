@@ -101,9 +101,9 @@ def prepare(source, job, indices):
                     "elevation": {"op": "mul", "args": ["height", height_scale]},
                     "color": {"colormap": "df", "domain": [-0.05, 0.05],
                               "map": {"kind": "diverging", "colors": PALETTE}},
+                    "legend": "Bus frequency deviation · Hz",
                 }},
             ],
-            "legends": [{"mark": 2, "title": "Bus frequency deviation · Hz"}],
         },
         "plot.json": {
             "space": {"plot": {"x": {"label": "Simulation time · s"}, "y": {"label": "Δf · Hz", "precision": 2}}},

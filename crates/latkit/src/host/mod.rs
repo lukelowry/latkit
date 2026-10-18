@@ -1,9 +1,10 @@
 //! What the platform does for latkit: set and measure text in its fonts, do jobs off the frame, fetch
-//! bytes, and encode video. A [`Gpu`](crate::Gpu) is given its host with
-//! [`Gpu::set_host`](crate::Gpu::set_host); without one, views draw no text, do their jobs at once,
-//! fetch nothing, and encode no video. A browser's host is `Browser`, built with the `web` feature
-//! for `wasm32`. Natively, the `native` feature supplies `Native`: lazy fonts and a worker pool,
-//! without a window, network client, or video encoder.
+//! bytes (tiles, and the files JSON documents name), and encode video with its [`Encoder`]. A
+//! [`Gpu`](crate::Gpu) is given its host with [`Gpu::set_host`](crate::Gpu::set_host); without one,
+//! views draw no text, do their jobs at once, fetch nothing, and encode no video. A browser's host is
+//! `Browser`, built with the `web` feature for `wasm32`. Natively, the `native` feature supplies
+//! `Native`: lazy fonts, a worker pool doing jobs and reading files, and Media Foundation's H.264 on
+//! Windows, without a window or network client.
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod browser;
@@ -21,8 +22,33 @@ pub(crate) use job::{Key, Placement, Shaping, Wiring};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use native::Native;
 
-use crate::video::{Encoder, Encoding};
-use crate::{Error, Pending, Result};
+use crate::{Encoding, Error, Pending, Result};
+
+/// Ticks of a second an encoder's times count.
+pub const TIMESCALE: u32 = 90_000;
+
+/// A platform's H.264 encoder: NV12 pictures (BT.709, limited range) in, Annex B units out, no
+/// B-frames, so every platform's encoder fits and the muxer never reorders.
+pub trait Encoder {
+    /// Encodes one NV12 picture at `time` ticks, a keyframe when `key`; resolves, once it has room
+    /// for another picture, to the units it finished since the last call, in order.
+    fn encode(&mut self, nv12: Vec<u8>, time: u64, key: bool) -> Pending<Vec<Unit>>;
+
+    /// Resolves to the units it still holds once every picture given is encoded.
+    fn finish(&mut self) -> Pending<Vec<Unit>>;
+}
+
+/// One encoded access unit of H.264: Annex B bytes, at `time` ticks of [`TIMESCALE`], decode order
+/// equal to display order.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Unit {
+    /// Ticks at which this frame shows.
+    pub time: u64,
+    /// Whether it is a keyframe, which carries its parameter sets in band.
+    pub key: bool,
+    /// Its NAL units, each after a start code.
+    pub annex_b: Vec<u8>,
+}
 
 /// The platform services a view uses.
 pub trait Host: Send + Sync + 'static {
@@ -47,8 +73,8 @@ pub trait Host: Send + Sync + 'static {
         Pending::ready(Err(Error::Unsupported("this host does not fetch".into())))
     }
 
-    /// An H.264 encoder for pictures as `encoding` says, hardware where the platform has one: what a
-    /// [`Video`](crate::Video) encodes with. By default a host encodes no video.
+    /// An H.264 encoder for pictures as `encoding` says, hardware where the platform has one: what an
+    /// [`Mp4`](crate::Mp4) encodes with. By default a host encodes no video.
     fn encoder(&self, encoding: &Encoding) -> crate::Result<Box<dyn Encoder>> {
         let _ = encoding;
         Err(Error::Unsupported("this host encodes no video".into()))

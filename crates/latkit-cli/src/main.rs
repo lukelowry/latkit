@@ -31,7 +31,7 @@ fn main() -> ExitCode {
     let result = match &cli.command {
         Command::Render(job) => render::render(job, &mut report),
         Command::Validate(job) => render::validate(job),
-        Command::Inspect { data } => inspect(data),
+        Command::Inspect { data, deadline } => inspect(data, *deadline),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -68,10 +68,11 @@ impl From<Error> for Failure {
 }
 
 /// Every dataset as JSON on stdout: its name, axis and span, and each table's rows and fields' kinds.
-fn inspect(sources: &[Source]) -> Result<(), Failure> {
+fn inspect(sources: &[Source], deadline: Duration) -> Result<(), Failure> {
+    let host = latkit::host::Native::new();
     let mut all = Vec::with_capacity(sources.len());
     for source in sources {
-        let data = inputs::dataset(source)?;
+        let data = inputs::dataset(source, &host, deadline)?;
         let tables: serde_json::Map<String, Value> = data
             .tables()
             .map(|table| {

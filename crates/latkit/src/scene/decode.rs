@@ -5,13 +5,12 @@
 //!   "space": "globe",
 //!   "marks": [
 //!     { "edges": { "of": ["grid", "Branch"], "ends": ["from", "to"], "flow": { "op": "div", "args": ["p", 20] } } },
-//!     { "vertices": { "of": ["grid", "Bus"], "position": ["lon", "lat"], "color": { "colormap": "vm", "map": "balance", "domain": [0.95, 1.05] } } }
+//!     { "vertices": { "of": ["grid", "Bus"], "position": ["lon", "lat"], "color": { "colormap": "vm", "map": "balance", "domain": [0.95, 1.05] }, "legend": "Bus voltage · pu" } }
 //!   ],
 //!   "layout": { "layered": { "flow": "right" } },
 //!   "theme": { "base": "light", "vertexRadius": 5 },
 //!   "ease": 0.3,
-//!   "title": "Voltage",
-//!   "legends": [{ "mark": 1, "title": "Bus voltage · pu" }]
+//!   "title": "Voltage"
 //! }
 //! ```
 //!
@@ -50,15 +49,6 @@ impl<'de> Deserialize<'de> for Scene {
             title: Option<String>,
             #[serde(default)]
             subtitle: Option<String>,
-            #[serde(default)]
-            legends: Vec<LegendForm>,
-        }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct LegendForm {
-            mark: usize,
-            #[serde(default)]
-            title: String,
         }
         let form = Form::deserialize(deserializer)?;
         let mut scene = Scene::new(form.space).layout(form.layout);
@@ -67,9 +57,6 @@ impl<'de> Deserialize<'de> for Scene {
         }
         if let Some(subtitle) = form.subtitle {
             scene = scene.subtitle(subtitle);
-        }
-        for legend in form.legends {
-            scene = scene.legend(legend.mark, legend.title);
         }
         if let Some(controls) = form.controls {
             scene = scene.controls(controls);
@@ -284,6 +271,8 @@ macro_rules! form {
             label: Option<Label>,
             #[serde(default)]
             shadow: Option<bool>,
+            #[serde(default)]
+            legend: Option<String>,
         }
     };
 }
@@ -304,7 +293,7 @@ macro_rules! apply {
 /// Applies the options every mark has.
 macro_rules! style {
     ($form:ident, $mark:expr) => {{
-        let mark = apply!($form, $mark; color, visible, priority, pick, select, drag, label, shadow);
+        let mark = apply!($form, $mark; color, visible, priority, pick, select, drag, label, shadow, legend);
         match $form.name {
             Some(name) => mark.named(name),
             None => mark,

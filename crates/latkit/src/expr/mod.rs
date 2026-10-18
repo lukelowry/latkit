@@ -4,7 +4,6 @@ mod color;
 mod colormap;
 pub(crate) mod compile;
 pub(crate) mod cpu;
-#[cfg(feature = "serde")]
 mod decode;
 
 use std::ops::{Add, BitAnd, BitOr, Div, Mul, Neg, Not, RangeInclusive, Rem, Sub};

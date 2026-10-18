@@ -72,7 +72,6 @@ impl Error {
 }
 
 /// The error as `{ code, message, path? }`: the shape the npm package's `LatkitError` takes.
-#[cfg(feature = "serde")]
 impl serde::Serialize for Error {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;

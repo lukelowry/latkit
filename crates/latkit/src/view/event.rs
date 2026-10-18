@@ -12,12 +12,8 @@ use crate::{Error, Name, Pending, Row};
 
 /// What happened in a view, for the application to act on. Drain them with
 /// [`View::events`](crate::View::events).
-#[derive(Clone, PartialEq, Debug)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize),
-    serde(tag = "type", content = "detail", rename_all = "lowercase")
-)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+#[serde(tag = "type", content = "detail", rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum Event {
     /// A row was clicked.
@@ -100,8 +96,7 @@ pub enum Event {
 
 /// Where, with what keys, and with what the user acted. For keys, the point is the row they point
 /// at, else the pointer, else the view's middle.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize)]
 pub struct Trigger {
     /// CSS pixels from the top left.
     pub point: [f32; 2],
@@ -208,19 +203,17 @@ impl Extend<Event> for Events {
 }
 
 /// A vertex a connection ends at, and its port when it has the one the connection meets.
-#[derive(Clone, PartialEq, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Clone, PartialEq, Debug, serde::Serialize)]
 pub struct End {
     /// The vertex.
     pub row: Row,
     /// The port, by the reference field naming its net.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<Name>,
 }
 
 /// A row under a point, as the frame drew it.
-#[derive(Clone, PartialEq, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Clone, PartialEq, Debug, serde::Serialize)]
 pub struct Hit {
     /// The row.
     pub row: Row,
@@ -233,16 +226,15 @@ pub struct Hit {
     /// CSS pixels from the probe to the row.
     pub distance: f32,
     /// The port hit, when a vertex's port was.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<Name>,
     /// The sample hit, when a line tracing a sampled field was.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sample: Option<Sample>,
 }
 
 /// A sample of a traced field: its frame, the axis coordinate it was recorded at, and its value.
-#[derive(Clone, Copy, PartialEq, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize)]
 pub struct Sample {
     /// The frame, numbered from the first ever recorded.
     pub frame: u32,
@@ -253,8 +245,8 @@ pub struct Sample {
 }
 
 /// The phase of a [`Drag`](Event::Drag).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize), serde(rename_all = "lowercase"))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Phase {
     /// The pointer moved far enough to drag.
     Start,
@@ -265,8 +257,8 @@ pub enum Phase {
 }
 
 /// What [`View::fit`](crate::View::fit) frames.
-#[derive(Clone, PartialEq, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize), serde(rename_all = "camelCase"))]
+#[derive(Clone, PartialEq, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Fit {
     /// Everything drawn.
     All,
@@ -300,8 +292,8 @@ pub enum Cursor {
 }
 
 /// What a view does each frame.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize), serde(rename_all = "camelCase"))]
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Stats {
     /// Frames rendered.
     pub frames: u64,
@@ -363,7 +355,6 @@ impl std::fmt::Display for Waiting {
 }
 
 /// The names of what it waits on, as [`Waiting::names`] gives them.
-#[cfg(feature = "serde")]
 impl serde::Serialize for Waiting {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(self.names())

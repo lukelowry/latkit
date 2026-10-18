@@ -200,8 +200,7 @@ fn a_legend_draws_its_marks_colormap_across_the_domain() {
     let colors = latkit::field("v").colormap(latkit::Colormap::VIRIDIS).domain(0.0..=1.0);
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(colors))
-        .legend(0, "");
+        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(colors).legend(""));
     let mut view = view(&gpu, scene, data);
     let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
     // The bar ends 16 px from the right; its middle row sits above the ticks' labels.
@@ -211,6 +210,6 @@ fn a_legend_draws_its_marks_colormap_across_the_domain() {
     let high = pixel(&image, 400 - 16 - 2, y);
     assert!(near(low, [68, 1, 84]), "viridis's low end: {low:?}");
     assert!(near(high, [253, 231, 37]), "viridis's high end: {high:?}");
-    let scene = Scene::new(plane()).draw(Vertices::of("graph", "Node").position("x", "y")).legend(0, "");
+    let scene = Scene::new(plane()).draw(Vertices::of("graph", "Node").position("x", "y").legend(""));
     assert!(View::new(&gpu, scene).is_err(), "a legend needs a colormap with a domain");
 }

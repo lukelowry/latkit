@@ -36,7 +36,6 @@ fn diagrams_allow_positions_to_be_derived_by_layout() {
     assert!(scene.validate(&[data()]).is_ok());
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn huge_durations_are_input_errors_instead_of_panics() {
     assert!(serde_json::from_str::<Scene>(r#"{"space":"plane","ease":1e100}"#).is_err());

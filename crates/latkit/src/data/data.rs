@@ -23,7 +23,7 @@ use crate::{Error, Result};
 ///         .set(Table::new("Bus", vec![1_u64, 2]).field("kv", vec![230.0, 115.0]))
 ///         .set(Table::new("Branch", 1).reference("from", "Bus", vec![1_u64]).reference("to", "Bus", vec![2_u64])),
 /// )?;
-/// grid.apply(Patch::new().append(0.0, "Bus", [("vm", vec![1.01, 0.99])]))?;
+/// grid.apply(Patch::new().append([0.0], "Bus", [("vm", vec![1.01, 0.99])]))?;
 /// # Ok::<(), latkit::Error>(())
 /// ```
 #[derive(Clone)]
@@ -104,7 +104,7 @@ impl Data {
 
     /// Applies every change in `patch`, or none of them when one is invalid.
     ///
-    /// The error's path names the change and part, such as `ops[1].Bus.kv`.
+    /// The error's path names the change and part, such as `patch[1].Bus.kv`.
     pub fn apply(&mut self, patch: impl Into<Patch>) -> Result<()> {
         let patch = patch.into();
         if patch.ops.is_empty() {
@@ -112,7 +112,7 @@ impl Data {
         }
         let mut next = (*self.0).clone();
         for (i, op) in patch.ops.into_iter().enumerate() {
-            op.apply(&mut next).map_err(|e| e.at(i).at("ops"))?;
+            op.apply(&mut next).map_err(|e| e.at(i).at("patch"))?;
         }
         next.resolve()?;
         next.schema = next.signature();

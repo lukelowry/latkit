@@ -6,15 +6,15 @@ use crate::Space;
 use crate::gpu::shaders as wgsl;
 
 /// Where a view looks.
-#[derive(Clone, Copy, PartialEq, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(untagged, deny_unknown_fields))]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum Camera {
     /// On the earth, a plane, or a diagram: the point looked at and turned about, how far in, and how
     /// tilted and turned. A diagram is always seen from straight above, upright.
     Map {
         /// Longitude, latitude, and elevation on the earth; x, y, and elevation on a plane or a
         /// diagram. In JSON, `[x, y]` looks at the ground.
-        #[cfg_attr(feature = "serde", serde(with = "center"))]
+        #[serde(with = "center")]
         center: [f64; 3],
         /// On the earth the web mercator level; elsewhere, log₂ of pixels per unit.
         zoom: f64,
@@ -32,7 +32,6 @@ pub enum Camera {
     },
 }
 
-#[cfg(feature = "serde")]
 mod center {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 

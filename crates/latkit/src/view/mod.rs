@@ -577,12 +577,17 @@ impl View {
             || self.gpu.0.lock().arena.uploading()
     }
 
-    /// Whether what the last frame stood in for lands by drawing again once the GPU finished it, with
-    /// nothing to wake the view: pages uploading or tables to build from them, regions or segments to
-    /// lay out, a fit due. Jobs, texts, and readbacks wake it when they land.
-    pub(crate) fn due(&self) -> bool {
-        let Waiting { data, marks, fit, .. } = self.waiting;
-        data || marks || fit
+    /// Whether the next frame does work this one left: pages to upload past the frame's budget, rows
+    /// to lay out, a fit, probe, or query due, the tiles the camera wants, or a transition to begin.
+    /// Nothing else would wake the view for it: jobs, texts, fetches, and readbacks do as they land.
+    fn due(&self) -> bool {
+        self.gpu.0.lock().arena.uploading()
+            || self.regions_dirty
+            || self.fitting.due()
+            || self.probing.due()
+            || self.queries.due()
+            || self.derived.tiled.due()
+            || self.marks.iter().any(|m| m.begin.is_some())
     }
 
     fn wake(&mut self) {

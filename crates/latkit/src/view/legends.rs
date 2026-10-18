@@ -1,7 +1,7 @@
-//! A scene's title and legends, written over its marks: the title and subtitle at the top left, and
-//! the legends stacked up from the bottom right, each a bar of its mark's colormap across the domain,
-//! ticked, under its title, or a cell of color for each category. Rebuilt each frame as overlay
-//! sprites, O(legends).
+//! A scene's title and its marks' legends, written over the marks: the title and subtitle at the top
+//! left, and the legends stacked up from the bottom right, each a bar of its mark's colormap across
+//! the domain, ticked, under its title, or a cell of color for each category. Rebuilt each frame as
+//! overlay sprites, O(legends).
 
 use std::sync::Arc;
 
@@ -22,10 +22,12 @@ const CELLS: usize = 64;
 const CATEGORIES: usize = 24;
 
 impl View {
-    /// The sprites of the scene's title, subtitle, and legends.
+    /// The sprites of the scene's title and subtitle, and of its marks' legends.
     pub(super) fn annotations(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
         let scene = &self.scene;
-        if scene.title.is_none() && scene.subtitle.is_none() && scene.legends.is_empty() {
+        let legends =
+            || scene.marks.iter().filter_map(|m| Some((m.style().legend.as_ref()?, m.style().color.as_ref()?)));
+        if scene.title.is_none() && scene.subtitle.is_none() && legends().next().is_none() {
             return Vec::new();
         }
         let theme = &scene.theme;
@@ -46,9 +48,8 @@ impl View {
             y += font * scale * 1.35;
         }
         let mut base = area[3];
-        for (mark, title) in &scene.legends {
-            let colors = scene.marks.get(*mark).and_then(|m| m.style().color.as_ref()).and_then(|c| c.colormap_of());
-            let Some((colormap, Some(domain))) = colors else { continue };
+        for (title, color) in legends() {
+            let Some((colormap, Some(domain))) = color.colormap_of() else { continue };
             let texels = *colormap.texels();
             let height = legend(
                 &mut sprites,

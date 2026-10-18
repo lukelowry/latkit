@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{Areas, Edges, Faces, Label, Lines, Vertices};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
@@ -65,6 +67,8 @@ pub(crate) struct Style {
     pub(crate) interaction: Interaction,
     pub(crate) label: Option<Label>,
     pub(crate) shadow: bool,
+    /// A legend of the colors, under this title.
+    pub(crate) legend: Option<Arc<str>>,
 }
 
 /// Options of marks that draw strokes: edges and lines.
@@ -129,6 +133,7 @@ impl Style {
             interaction: Interaction::default(),
             label: None,
             shadow: false,
+            legend: None,
         }
     }
 }
@@ -486,6 +491,15 @@ macro_rules! style_methods {
             #[must_use]
             pub fn shadow(mut self, on: bool) -> Self {
                 self.style.shadow = on;
+                self
+            }
+
+            /// Draws a legend of the colors at the view's bottom right, under `title`: the colormap
+            /// across its domain, ticked, or a cell for each category. The color maps through a
+            /// colormap with a domain. Legends stack upward in the marks' order.
+            #[must_use]
+            pub fn legend(mut self, title: impl Into<std::sync::Arc<str>>) -> Self {
+                self.style.legend = Some(title.into());
                 self
             }
         }

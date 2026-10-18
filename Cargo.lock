@@ -702,6 +702,7 @@ dependencies = [
  "wesl",
  "wgpu",
  "windows",
+ "windows-core",
 ]
 
 [[package]]

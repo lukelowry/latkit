@@ -13,7 +13,7 @@ macro_rules! work {
     ($($(#[$doc:meta])* $field:ident: $count:ident,)*) => {
         /// What a [`Gpu`](crate::Gpu) did since it was made; subtract two for what happened between.
         #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-        #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+        #[derive(serde::Serialize)]
         pub struct Work {
             $($(#[$doc])* pub $field: u64,)*
         }

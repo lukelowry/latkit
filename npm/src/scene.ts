@@ -307,12 +307,6 @@ export interface Scene {
   title?: string;
   /** Written under the title. */
   subtitle?: string;
-  /**
-   * Legends stacked up from the view's bottom right: each a mark's colormap across its domain,
-   * ticked, or a cell for each category, under its title. The mark's color maps through a colormap
-   * with a domain.
-   */
-  legends?: { mark: number; title?: string }[];
 }
 
 /** How a view answers the pointer and keyboard; every option is on by default. */
@@ -473,6 +467,11 @@ interface Style {
   label?: ExprInput | Label;
   /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
   shadow?: boolean;
+  /**
+   * A legend of the colors at the view's bottom right, under this title: the colormap across its
+   * domain, ticked, or a cell for each category. The color maps through a colormap with a domain.
+   */
+  legend?: string;
 }
 
 /** Options of marks that draw strokes: edges and lines. On the earth a line's path bends with the

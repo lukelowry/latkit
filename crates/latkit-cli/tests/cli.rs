@@ -1,5 +1,5 @@
 //! The executable's contracts: files, pipes, exit codes, diagnostics, and every output a render
-//! writes, from a still to a video, overlays included.
+//! writes, from a still to a video.
 
 use std::io::Write;
 use std::path::Path;
@@ -49,14 +49,14 @@ fn ok(output: &Output) {
 }
 
 /// Writes frames: `x` positions of the two buses, as patches of slices of one binary file.
-fn frames(dir: &Path, xs: &[[f32; 2]], extra: &str) {
+fn frames(dir: &Path, xs: &[[f32; 2]]) {
     let bytes: Vec<u8> = xs.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
     std::fs::create_dir_all(dir.join("sequence")).unwrap();
     std::fs::write(dir.join("sequence/x.f32"), bytes).unwrap();
     let lines: Vec<String> = (0..xs.len())
         .map(|i| {
             format!(
-                r#"{{"at":{i},"patch":{{"grid":[{{"set":{{"table":"Bus","ids":[10,20],"fields":{{"x":{{"file":"x.f32","dtype":"f32le","offset":{},"count":2}}}}}}}}]}}{extra}}}"#,
+                r#"{{"at":{i},"patch":{{"grid":[{{"set":{{"table":"Bus","ids":[10,20],"fields":{{"x":{{"file":"x.f32","dtype":"f32le","offset":{},"count":2}}}}}}}}]}}}}"#,
                 i * 8
             )
         })
@@ -107,7 +107,7 @@ fn usage_errors_exit_2_before_reading_or_drawing() {
 #[test]
 fn validation_reads_everything_without_a_gpu_and_is_silent_on_success() {
     let dir = fixture();
-    frames(dir.path(), &[[-4.0, 4.0], [0.0, 8.0]], "");
+    frames(dir.path(), &[[-4.0, 4.0], [0.0, 8.0]]);
     for (args, stdin) in [
         (vec!["validate", "scene.json", "-d", "grid.json"], None),
         (vec!["validate", "-", "-d", "grid.json"], Some(SCENE.as_bytes())),
@@ -128,6 +128,11 @@ fn validation_reads_everything_without_a_gpu_and_is_silent_on_success() {
     assert_eq!(told["type"], "error");
     assert_eq!(told["detail"]["code"], "invalid");
     assert_eq!(told["detail"]["path"], "frames[1].patch.absent");
+    // A camera for each view looks at its own view's space: a plot's cannot look at a plane.
+    std::fs::write(dir.path().join("sequence/bad.jsonl"), r#"{"camera": [{"x": [0, 1]}]}"#).unwrap();
+    let output = run(dir.path(), &args, None);
+    let told: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(told["detail"]["path"], "frames[0].camera[0]");
     assert!(told["detail"]["source"].as_str().unwrap().ends_with("bad.jsonl"));
 }
 
@@ -144,8 +149,12 @@ fn failures_name_the_part_and_the_file_and_keep_the_output() {
     std::fs::write(dir.path().join("out.png"), b"keep this").unwrap();
     assert_eq!(run(dir.path(), &["render", "scene.json", "-o", "out.png"], None).status.code(), Some(1));
     assert_eq!(std::fs::read(dir.path().join("out.png")).unwrap(), b"keep this");
-    let legend = r#"{"space":"plane","marks":[{"vertices":{"of":["grid","Bus"]}}],"legends":[{"mark":0}]}"#;
-    assert_eq!(run(dir.path(), &["validate", "-", "-d", "grid.json"], Some(legend.as_bytes())).status.code(), Some(1));
+    // A legend shows a color mapped through a colormap with a domain.
+    let legend = r#"{"space":"plane","marks":[{"vertices":{"of":["grid","Bus"],"legend":"Buses"}}]}"#;
+    let output =
+        run(dir.path(), &["--diagnostics", "json", "validate", "-", "-d", "grid.json"], Some(legend.as_bytes()));
+    let told: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(told["detail"]["path"], "marks[0].legend");
 }
 
 #[test]
@@ -223,7 +232,7 @@ fn panels_draw_a_scene_each() {
 fn a_frame_stream_writes_every_output_and_holds_still_frames() {
     let dir = fixture();
     // The third frame changes nothing: it is held, and a raw stream repeats the second.
-    frames(dir.path(), &[[-4.0, 4.0], [0.0, 8.0], [0.0, 8.0]], "");
+    frames(dir.path(), &[[-4.0, 4.0], [0.0, 8.0], [0.0, 8.0]]);
     let mut args = COMMON.to_vec();
     args.extend(["--format", "rgba", "-o", "-"]);
     let output = run(dir.path(), &args, None);
@@ -279,36 +288,4 @@ fn a_frame_stream_writes_every_output_and_holds_still_frames() {
         assert_eq!(run(dir.path(), &args, None).status.code(), Some(1));
         assert_eq!(std::fs::read(dir.path().join("out.mp4")).unwrap(), mp4, "a failed video keeps the file before");
     }
-}
-
-#[test]
-fn overlays_draw_over_their_frames() {
-    let dir = fixture();
-    let mut overlay = vec![0_u8; 64 * 64 * 4];
-    overlay[..4].copy_from_slice(&[255, 255, 255, 255]);
-    std::fs::create_dir_all(dir.path().join("sequence")).unwrap();
-    std::fs::write(dir.path().join("sequence/corner.png"), Image::new([64, 64], overlay).unwrap().png()).unwrap();
-    frames(dir.path(), &[[-4.0, 4.0], [-4.0, 4.0]], r#","overlay":"corner.png""#);
-    let lines = std::fs::read_to_string(dir.path().join("sequence/frames.jsonl")).unwrap();
-    let first = lines.lines().next().unwrap().replace(r#","overlay":"corner.png""#, "");
-    std::fs::write(dir.path().join("sequence/frames.jsonl"), format!("{first}\n{}", lines.lines().nth(1).unwrap()))
-        .unwrap();
-    let mut args = COMMON.to_vec();
-    args.extend(["--format", "rgba", "-o", "-"]);
-    let output = run(dir.path(), &args, None);
-    if no_gpu(&output) {
-        return;
-    }
-    ok(&output);
-    let frame = 64 * 64 * 4;
-    assert_eq!(output.stdout.len(), frame * 2);
-    // Nothing moved, but the overlay came: the held frame is drawn again under it.
-    assert_ne!(&output.stdout[..4], [255, 255, 255, 255]);
-    assert_eq!(&output.stdout[frame..frame + 4], [255, 255, 255, 255]);
-    assert_eq!(&output.stdout[4..frame], &output.stdout[frame + 4..], "only the overlay differs");
-    let wrong = Image::new([2, 2], vec![0; 16]).unwrap().png();
-    std::fs::write(dir.path().join("sequence/corner.png"), wrong).unwrap();
-    let mut args = COMMON.to_vec();
-    args[0] = "validate";
-    assert_eq!(run(dir.path(), &args, None).status.code(), Some(1), "an overlay is the picture's size");
 }

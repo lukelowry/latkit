@@ -140,7 +140,7 @@ impl Writer<'_> {
 }
 
 impl View {
-    /// The sprites drawn over the marks this frame: a plot's axes, the scene's title and legends,
+    /// The sprites drawn over the marks this frame: a plot's axes, the title and legends,
     /// and a box being selected.
     pub(super) fn overlay(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
         let evictions = inner.atlas.evictions;

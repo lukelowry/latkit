@@ -117,6 +117,13 @@ impl View {
         }
         self.events.extend(inner.atlas.errors.drain(..).map(Event::Error));
         self.events.extend(self.derived.sheet.errors.drain(..).map(Event::Error));
+        drop(inner);
+        self.end(started);
+    }
+
+    /// Ends a frame begun at `started`: what it stood in for, what it took, and the next frame its
+    /// work asks for, as work landing between frames does.
+    fn end(&mut self, started: Instant) {
         let waiting = self.under_way();
         if waiting != self.waiting {
             self.waiting = waiting;
@@ -125,6 +132,9 @@ impl View {
         self.changed = false;
         self.stats.frames += 1;
         self.stats.cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
+        if self.due() {
+            self.signal.ask();
+        }
     }
 
     /// Lays the frame out: where every mark's rows sit, the transitions starting, the ends edges

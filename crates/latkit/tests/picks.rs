@@ -163,7 +163,7 @@ fn hovering_a_trace_names_its_sample() {
     let mut data = Data::new("signals");
     data.apply(Table::new("Signal", 1)).expect("valid");
     for t in 0..=10 {
-        data.apply(Patch::new().append(f64::from(t), "Signal", [("v", vec![f64::from(t) / 10.0])])).expect("frame");
+        data.apply(Patch::new().append([f64::from(t)], "Signal", [("v", vec![f64::from(t) / 10.0])])).expect("frame");
     }
     let axis = Axis { hidden: true, grid: false, ..Axis::default() };
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })

@@ -8,6 +8,8 @@ mod column;
 mod data;
 mod geometry;
 mod ids;
+// JSON documents fetch their slices through a host.
+#[cfg(feature = "gpu")]
 mod json;
 mod name;
 mod patch;

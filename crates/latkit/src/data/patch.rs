@@ -68,18 +68,24 @@ impl Patch {
         self
     }
 
-    /// Records one frame at axis coordinate `at`: one value per row of `table` for each field.
+    /// Records a frame at each axis coordinate of `at`: for each field, a value per row of `table`
+    /// at every coordinate, frame-major, every row's at the first coordinate, then at the next.
     ///
     /// A field's first frame makes it sampled. Coordinates never decrease; at equal coordinates the
     /// last frame reads.
     #[must_use]
-    pub fn append<F, V>(mut self, at: f64, table: impl Into<Name>, fields: impl IntoIterator<Item = (F, V)>) -> Patch
+    pub fn append<F, V>(
+        mut self,
+        at: impl AsRef<[f64]>,
+        table: impl Into<Name>,
+        fields: impl IntoIterator<Item = (F, V)>,
+    ) -> Patch
     where
         F: Into<Name>,
         V: Into<Values>,
     {
         let fields = fields.into_iter().map(|(name, values)| (name.into(), values.into())).collect();
-        self.ops.push(Op::Append { table: table.into(), at: vec![at], fields });
+        self.ops.push(Op::Append { table: table.into(), at: at.as_ref().to_vec(), fields });
         self
     }
 
