@@ -9,7 +9,7 @@
 //!   benchmark (`npm/bench`) over a release `wasm`: every scenario up its sizes in Chrome while the
 //!   last one fits, each phase's time, GPU time, stalls, and exact work, held to how it may grow with
 //!   size, to the committed work, and to the times taken on this machine; a lost device stops the
-//!   sweep. See `npm/bench/run.ts`.
+//!   sweep. `--quick` runs each scenario once at its smallest size. See `npm/bench/run.ts`.
 //! - `wasm [--dev]`: build `latkit-js`, bind it with the `wasm-bindgen` CLI matching `Cargo.lock`,
 //!   optimize it with the pinned Binaryen tool, and compile the npm wrapper. `--dev` builds faster
 //!   and skips `wasm-opt`.

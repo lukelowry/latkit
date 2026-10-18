@@ -12,7 +12,7 @@ import { deadline, type Cost, type Stage, type Write } from './stage.ts';
 export interface Scenario {
   /** What it stresses. */
   about: string;
-  /** What a size counts, and the sizes swept, smallest first; `--quick` sweeps the two smallest. */
+  /** What a size counts, and the sizes swept, smallest first; `--quick` runs the smallest. */
   unit: string;
   sizes: readonly number[];
   build(size: number): Built;
@@ -54,9 +54,10 @@ export interface Phase {
 }
 
 export const LOAD: Order = { time: 1, bytes: 1 };
-const DECADES = [1e3, 1e4, 1e5, 1e6, 2e6];
-const FRAMES = 120;
-const HISTORY = 1024;
+export const DECADES = [1e3, 1e4, 1e5, 1e6, 2e6];
+/** Frames a steady phase acts in: past its warm-up, enough for a steady median, and no more. */
+export const FRAMES = 40;
+export const HISTORY = 1024;
 type MapCamera = Extract<Camera, { center: unknown }>;
 
 // Scenes.

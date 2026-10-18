@@ -11,15 +11,10 @@ import { createMonitor } from '@latkit/monitor';
 import { createNetwork } from '@latkit/network';
 import type { Patch, Work } from 'latkit';
 import type { Listed, Run } from '../page/main.ts';
-import type { Order } from '../page/scenarios.ts';
-import { LIMIT, deadline, type Cost, type Write } from '../page/stage.ts';
+import { DECADES, FRAMES, HISTORY, type Order } from '../page/scenarios.ts';
+import { IDLE, LIMIT, STILL, WARM, deadline, type Cost, type Write } from '../page/stage.ts';
 import * as make from '../page/data.ts';
 
-const STILL = 300;
-const WARM = 10;
-const FRAMES = 120;
-const HISTORY = 1024;
-const DECADES = [1e3, 1e4, 1e5, 1e6, 2e6];
 const NONE: Work = {
   uploaded: 0,
   written: 0,
@@ -267,7 +262,7 @@ class OldStage {
     try {
       await this.#settled(sampler);
       const before = sampler.frames;
-      await wait(500);
+      await wait(IDLE);
       return sampler.frames - before;
     } finally {
       sampler.stop();

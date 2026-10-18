@@ -25,7 +25,7 @@ export interface Run {
   machine: string;
   /** Every phase in order: `init`, `data`, `load`, then the scenario's. */
   phases: Record<string, Cost>;
-  /** Frames drawn in half a second once everything settled. */
+  /** Frames drawn over `IDLE` ms once everything settled. */
   idle: number;
   /** Bytes the budget lets data take. */
   budget: number;

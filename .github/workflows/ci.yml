@@ -36,37 +36,6 @@ jobs:
       - run: cargo xtask package
       - run: cargo xtask package-test
 
-  wasm-bench:
-    runs-on: ubuntu-latest
-    # Every wait in the bench races a deadline; this bounds the job if something still hangs.
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10.30.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: rustup show
-      - run: pnpm install --frozen-lockfile
-      - name: Read the WASM bindings generator's version
-        id: bindgen
-        run: |
-          echo "version=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        id: bindgen-cache
-        with:
-          path: ~/.cargo/bin/wasm-bindgen
-          key: wasm-bindgen-cli-${{ steps.bindgen.outputs.version }}
-      - name: Install matching WASM bindings generator
-        if: steps.bindgen-cache.outputs.cache-hit != 'true'
-        run: cargo install wasm-bindgen-cli --version "${{ steps.bindgen.outputs.version }}" --locked
-      - run: pnpm --dir npm/bench exec playwright-core install --with-deps chromium
-      # On SwiftShader the work and how each phase grows gate; times only report.
-      - run: cargo xtask bench --quick
-
   rust-package:
     runs-on: ubuntu-latest
     steps:

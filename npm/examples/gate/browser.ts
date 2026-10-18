@@ -67,12 +67,13 @@ export interface Chrome {
 
 /**
  * WebGPU on SwiftShader, which draws on the CPU, so no shader can hang the machine's GPU. These
- * override Chrome's own GPU checks, so a real GPU never gets them.
+ * override Chrome's own GPU checks, so a real GPU never gets them. ANGLE draws on SwiftShader too on
+ * Linux, as its GPU-less CI needs; on Windows that leaves WebGPU no adapter at all.
  */
 const SOFTWARE = [
   '--enable-unsafe-webgpu',
   '--ignore-gpu-blocklist',
-  '--use-angle=swiftshader',
+  ...(process.platform === 'linux' ? ['--use-angle=swiftshader'] : []),
   '--use-vulkan=swiftshader',
   '--use-webgpu-adapter=swiftshader',
   '--enable-unsafe-swiftshader',

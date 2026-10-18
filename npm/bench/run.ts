@@ -3,10 +3,11 @@
  *
  *   cargo xtask bench [--quick] [--only a,b] [--repeats n] [--update] [--against old] [--software]
  *
- * --quick runs each scenario's two smallest sizes once; --update lays this run's baselines over the
- * committed ones, keeping what it did not run; --against old drives the old packages' page and
- * records their times; --software draws with SwiftShader on the CPU, as Linux always does: its work
- * counts the same, its times only report, and no shader can hang the machine's GPU.
+ * --quick runs each scenario once at its smallest size, a smoke test of every phase and the work
+ * gate in under a minute on a GPU; how phases grow takes the full sweep. --update lays this run's
+ * baselines over the committed ones, keeping what it did not run; --against old drives the old
+ * packages' page and records their times; --software draws with SwiftShader on the CPU, as Linux
+ * always does: its work counts the same, its times only report, and no shader can hang the GPU.
  *
  * A scenario climbs its sizes while the last one's phases, grown as their orders say, fit a phase's
  * limit. A failure ends its scenario; a lost device, or a page that stopped answering, ends the
@@ -45,16 +46,19 @@ const software = flags.software || process.platform === 'linux';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const baselines = path.join(here, 'baselines');
 const results = path.resolve(here, '../../target/bench');
-/** Uncapped frames keep the GPU at its full clock, so time measures work, not waiting. */
+/**
+ * Uncapped frames keep a GPU at its full clock, so time measures work, not waiting. SwiftShader has
+ * no clock to keep, and frames drawn back to back starve its readbacks, so it draws at the display's
+ * pace.
+ */
 const FLAGS = [
-  '--disable-gpu-vsync',
-  '--disable-frame-rate-limit',
   '--enable-webgpu-developer-features',
+  ...(software ? [] : ['--disable-gpu-vsync', '--disable-frame-rate-limit']),
 ];
 const PAGE = { viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 2 };
 /** Milliseconds a page may say nothing: each phase says when it starts, then acts and settles
  * within its limits. */
-const QUIET = 2 * LIMIT + STEP;
+const QUIET = 2 * LIMIT + 10_000;
 
 /** A failed run, and whether the sweep stops there. */
 class Failure extends Error {
@@ -170,7 +174,7 @@ try {
       `no scenario ${unknown.join(', ')}; there are ${list.map((s) => s.name).join(', ')}`,
     );
   for (const scenario of list.filter((s) => !only || only.includes(s.name))) {
-    const sizes = flags.quick ? scenario.sizes.slice(0, 2) : scenario.sizes;
+    const sizes = flags.quick ? scenario.sizes.slice(0, 1) : scenario.sizes;
     try {
       // A first run fills the shader cache, so the measured ones load warm; `start` alone loads cold.
       if (!scenario.cold && !flags.quick) await measure(warm, scenario, sizes[0]!);

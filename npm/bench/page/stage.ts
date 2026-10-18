@@ -31,12 +31,14 @@ export interface Cost {
   steady: boolean;
 }
 
-/** Milliseconds without a frame that count as still. */
-const STILL = 300;
+/** Milliseconds without a frame, once every view is complete, that count as still. */
+export const STILL = 100;
+/** Milliseconds idle frames are counted over once everything settled. */
+export const IDLE = 250;
 /** The longest a phase may act, and then take to settle; the runner grows sizes within it. */
-export const LIMIT = 60_000;
+export const LIMIT = 20_000;
 /** Frames a steady phase takes before it measures. */
-const WARM = 10;
+export const WARM = 10;
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const quantile = (xs: number[], q: number) =>
@@ -184,13 +186,13 @@ export class Stage {
     );
   }
 
-  /** Frames drawn in half a second once everything settled: none, for views that sleep. */
+  /** Frames drawn over `IDLE` ms once everything settled: none, for views that sleep. */
   async idle(): Promise<number> {
     const sampler = new Sampler(this.gpu, this.views);
     try {
       await this.#settled(sampler);
       const before = sampler.frames;
-      await wait(500);
+      await wait(IDLE);
       return sampler.frames - before;
     } finally {
       sampler.stop();
