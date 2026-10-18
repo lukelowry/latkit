@@ -11,8 +11,8 @@ use std::task::{Context, Poll, Waker};
 
 use common::{SIZE, camera, errors, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Axis, Button, Camera, Controls, Data, Edges, Event, Input, Lines, Modifiers, Patch, Plot, Scene, Table, Vertices,
-    View,
+    Axis, Button, Camera, Controls, Data, Device, Edges, Event, Input, Lines, Modifiers, Patch, Plot, Scene, Table,
+    Vertices, View,
 };
 
 /// Renders frames until `pending` resolves, within the settle deadline.
@@ -140,16 +140,16 @@ fn a_shift_drag_selects_the_rows_in_its_box() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, Controls { select_box: true, ..Controls::default() });
     let c = SIZE as f32 / 2.0;
-    let shift = Modifiers { shift: true, ..Modifiers::default() };
-    view.input(
-        &Input::Down { pointer: 1, point: [c - 5.0, c - 5.0], button: Button::Primary, modifiers: shift, touch: false },
-        common::now(),
-    );
-    view.input(&Input::Move { pointer: 1, point: [c + 15.0, c + 5.0], modifiers: shift }, common::now());
+    let (shift, device) = (Modifiers { shift: true, ..Modifiers::default() }, Device::Mouse);
+    let down = Input::Down { pointer: 1, point: [c - 5.0, c - 5.0], button: Button::Primary, modifiers: shift, device };
+    view.input(&down, common::now());
+    view.input(&Input::Move { pointer: 1, point: [c + 15.0, c + 5.0], modifiers: shift, device }, common::now());
     view.input(&Input::Up { pointer: 1, point: [c + 15.0, c + 5.0], modifiers: shift }, common::now());
     frame(&gpu, &mut view);
-    let selected: Vec<Vec<latkit::Row>> =
-        view.events().filter_map(|e| if let Event::Select(rows) = e { Some(rows) } else { None }).collect();
+    let selected: Vec<Vec<latkit::Row>> = view
+        .events()
+        .filter_map(|e| if let Event::Select { rows, trigger: Some(_) } = e { Some(rows) } else { None })
+        .collect();
     let rows = selected.last().expect("a selection");
     let mut ids: Vec<String> = rows.iter().map(|r| format!("{}{}", r.table, r.id)).collect();
     ids.sort();

@@ -59,7 +59,7 @@ pub use {
     shot::Shot,
     video::{Encoder, Encoding, TIMESCALE, Unit, Video},
     view::{
-        Button, Camera, Cursor, Drag, End, Event, Fit, Frame, Hit, Input, Key, Modifiers, Phase, Sample, Stats, View,
-        Waiting,
+        Button, Camera, Cursor, Device, End, Event, Fit, Frame, Hit, Input, Key, Modifiers, Phase, Sample, Stats,
+        Trigger, View, Waiting,
     },
 };

@@ -33,7 +33,7 @@ impl View {
             for (at, colormap) in &compiled.program.colormaps {
                 match inner.colormaps.layer(&gpu.0.device, &gpu.0.queue, colormap) {
                     Ok(layer) => shown.code[*at as usize][1] = layer | (colormap.kind() as u32) << 16,
-                    Err(error) => self.events.push(Event::Error(error)),
+                    Err(error) => self.events.tell(Event::Error(error)),
                 }
             }
         }

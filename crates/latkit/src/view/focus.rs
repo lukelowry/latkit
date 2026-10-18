@@ -1,12 +1,13 @@
 //! Selection, hover, and the rows a fit measures, as focus words: one per row of every mark, written
 //! only where they change. The selection keeps only rows a pickable mark shows. The ends of a selected
 //! or hovered edge are lit too. Each mark's lit rows are listed for its focus draw, which draws them
-//! again over everything, glowing.
+//! again over everything, glowing. Hover is state either way, which expressions read; whether it
+//! glows is the controls' to say.
 
 use std::collections::HashMap;
 
 use super::View;
-use super::event::Event;
+use super::event::{Event, Hit};
 use super::sync::{Source, table_of};
 use crate::Row;
 use crate::data::{Field, PAGE_ROWS, Reference};
@@ -21,7 +22,8 @@ const WHOLE: usize = 512;
 #[derive(Default)]
 pub(crate) struct Focus {
     pub(crate) selection: Vec<Row>,
-    pub(crate) hovered: Option<Row>,
+    /// What the user points at, as it was hit.
+    pub(crate) hovered: Option<Hit>,
     /// Rows a fit measures.
     pub(crate) fitting: Vec<Row>,
     /// Words written, by index into the focus buffer.
@@ -58,13 +60,15 @@ impl View {
             return;
         }
         let mut words: HashMap<u32, u32> = HashMap::new();
-        let selection = self.focus_rows(&self.focus.selection, wgsl::SELECTED, true, &mut words);
-        self.focus_rows(self.focus.hovered.as_slice(), wgsl::HOVERED, true, &mut words);
-        self.focus_rows(&self.focus.fitting, wgsl::FIT, false, &mut words);
+        let glows = self.scene.controls.hover;
+        let hovered = self.focus.hovered.as_ref().map(|hit| hit.row.clone());
+        let selection = self.focus_rows(&self.focus.selection, wgsl::SELECTED, true, true, &mut words);
+        self.focus_rows(hovered.as_slice(), wgsl::HOVERED, true, glows, &mut words);
+        self.focus_rows(&self.focus.fitting, wgsl::FIT, false, false, &mut words);
         // Rows the data no longer holds, or no mark shows, leave the selection.
         if selection.len() < self.focus.selection.len() {
             self.focus.selection.clone_from(&selection);
-            self.events.push(Event::Select(selection));
+            self.events.tell(Event::Select { rows: selection, trigger: None });
         }
         let changed = self.focus.written.keys().filter(|w| !words.contains_key(w)).count()
             + words.iter().filter(|(w, b)| self.focus.written.get(w) != Some(b)).count();
@@ -88,14 +92,15 @@ impl View {
                 shown.dirty |= shown.channels_reading(Deps::FOCUS);
             }
         }
-        self.lay_out_lit(&words);
+        // Rows lit only by hover draw no glow when it does not glow.
+        self.lay_out_lit(&words, if glows { wgsl::LIT } else { wgsl::LIT & !wgsl::HOVERED });
         self.focus.written = words;
     }
 
     /// Sets `bit` in the focus words of `rows` in every mark showing them (with `picked`, every
-    /// pickable one), and lights the ends of each edge among them; returns the rows some mark shows.
-    /// A row its data holds stays shown while a table drawn in part does not draw it.
-    fn focus_rows(&self, rows: &[Row], bit: u32, picked: bool, words: &mut HashMap<u32, u32>) -> Vec<Row> {
+    /// pickable one), and with `ends` lights the ends of each edge among them; returns the rows some
+    /// mark shows. A row its data holds stays shown while a table drawn in part does not draw it.
+    fn focus_rows(&self, rows: &[Row], bit: u32, picked: bool, ends: bool, words: &mut HashMap<u32, u32>) -> Vec<Row> {
         let mut kept = Vec::new();
         for row in rows {
             let held = self.data(&row.data).and_then(|d| d.table(&row.table)).and_then(|t| t.row(row.id.as_ref()));
@@ -116,10 +121,7 @@ impl View {
                     *words.entry(shown.region.focus + index as u32).or_default() |= bit;
                 }
                 let crate::Mark::Edges(edges) = &shown.mark else { continue };
-                let Some((from, to)) = edges.ends.as_ref().filter(|_| bit & (wgsl::SELECTED | wgsl::HOVERED) != 0)
-                else {
-                    continue;
-                };
+                let Some((from, to)) = edges.ends.as_ref().filter(|_| ends) else { continue };
                 for end in [from, to] {
                     let Some(Field::Reference(reference)) = table.field_named(end) else { continue };
                     self.light_end(&row.data, reference, index, words);
@@ -147,14 +149,15 @@ impl View {
         }
     }
 
-    /// Lists every mark's lit rows for its focus draw, with the instances each takes.
-    fn lay_out_lit(&mut self, words: &HashMap<u32, u32>) {
+    /// Lists every mark's rows with a bit of `glowing` set for its focus draw, with the instances
+    /// each takes.
+    fn lay_out_lit(&mut self, words: &HashMap<u32, u32>, glowing: u32) {
         let mut all = Vec::new();
         for i in 0..self.marks.len() {
             let (focus, rows) = (self.marks[i].region.focus, self.marks[i].rows);
             let mut lit: Vec<u32> = words
                 .iter()
-                .filter(|&(&w, &bits)| w >= focus && w - focus < rows && bits & wgsl::LIT != 0)
+                .filter(|&(&w, &bits)| w >= focus && w - focus < rows && bits & glowing != 0)
                 .map(|(&w, _)| w - focus)
                 .collect();
             lit.sort_unstable();

@@ -5,15 +5,7 @@
  * or OpenStreetMap's planet as vector tiles. Play a simulated fault and watch the machines' speeds
  * swing; turn the globe at noon or now; hover or click anything to inspect it.
  */
-import {
-  field,
-  type ColormapName,
-  type Fit,
-  type Hit,
-  type Mark,
-  type Row,
-  type Scene,
-} from '../latkit.js';
+import { field, type ColormapName, type Fit, type Mark, type Row, type Scene } from '../latkit.js';
 import type { Stage } from '../ui/stage.js';
 import { LEVELS, loadCase, type Case } from './cases.js';
 import { continent } from './continent.js';
@@ -386,7 +378,7 @@ export default async function page(stage: Stage): Promise<void> {
       if (++shown === 18) break;
     }
   };
-  view.on('hover', (hit: Hit | null) => {
+  view.on('hover', ({ hit }) => {
     hovered = hit?.row ?? null;
     inspect();
   });

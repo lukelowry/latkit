@@ -79,65 +79,63 @@ export interface Modifiers {
   meta: boolean;
 }
 
+/** What the user acts with. A finger's picks reach 8 CSS pixels farther. */
+export type Device = 'mouse' | 'pen' | 'touch' | 'keyboard';
+
+/**
+ * Where, with what keys, and with what the user acted. For keys, the point is the row they point
+ * at, else the pointer, else the view's middle.
+ */
+export interface Trigger {
+  /** CSS pixels from the top left. */
+  point: [number, number];
+  modifiers: Modifiers;
+  device: Device;
+}
+
 /** A vertex a connection ends at, and its port when it has the one the connection meets. */
 export interface End {
   row: Row;
   port?: string;
 }
 
-/** What lies under a secondary click or the menu key's point, for a menu of what to do with it. */
-export interface Menu {
-  /** CSS pixels from the top left: the pointer, or for the key the view's middle. */
-  point: [number, number];
-  /** What lies under it, nearest first. */
-  hits: Hit[];
-  /** Whether the menu key asked. */
-  keyboard: boolean;
-  modifiers: Modifiers;
-}
-
-/** A connection drawn from a port, an Alt-held vertex, or an edge whose end was dragged off it. */
-export interface Connect {
-  /** The end it was drawn from: for an edge, the end that stayed. */
-  from: End;
-  /** The vertex it was released over, if any. */
-  to: End | null;
-  /** The edge whose other end was dragged, which `to` replaces. */
-  edge: Row | null;
-  /** Where it was released, CSS pixels from the top left. */
-  point: [number, number];
-}
-
-/** A row of a draggable mark following the pointer. */
-export interface Drag {
-  phase: 'start' | 'move' | 'end';
-  /** The row dragged, as it was hit. */
-  hit: Hit;
-  /** The pointer, CSS pixels from the top left. */
-  point: [number, number];
-  /** The point under the pointer at the depth the drag started: x, y, and elevation. */
-  position: [number, number, number];
-}
-
-/** What a view tells its listeners, by type. */
+/**
+ * What a view tells its listeners, by type. Intents (`click`, `open`, `menu`, `drag`, `connect`,
+ * `delete`) are told once each, in the order the user acted. Changes (`hover`, `select`, `camera`,
+ * `waiting`) tell only their latest, and their state can always be read. A view tells only what
+ * the application did not do itself: its setters change state silently.
+ */
 export interface ViewEvents {
-  /** The row under the pointer changed; `null` when it left every row. */
-  hover: Hit | null;
-  click: Hit;
-  /** A row was double clicked. */
-  open: Hit;
-  /** The selection changed. */
-  select: Row[];
-  drag: Drag;
-  /** The secondary button clicked, or the menu key pressed. */
-  menu: Menu;
-  /** A connection was drawn, with `controls.connect` on. */
-  connect: Connect;
+  /** A row was clicked. */
+  click: { hit: Hit; trigger: Trigger };
+  /** A row was double clicked, or Enter pressed on the row the keys point at. */
+  open: { hit: Hit; trigger: Trigger };
+  /** The secondary button clicked, or the menu key pressed: what lies under the trigger's point,
+   * nearest first. */
+  menu: { hits: Hit[]; trigger: Trigger };
+  /** A row of a draggable mark follows the pointer: `position` is the point under it at the depth
+   * the drag started, x, y, and elevation. */
+  drag: {
+    phase: 'start' | 'move' | 'end';
+    hit: Hit;
+    position: [number, number, number];
+    trigger: Trigger;
+  };
+  /** A connection was drawn, with `controls.connect` on: from a port, an Alt-held vertex, or an edge
+   * whose end was dragged off it, to the vertex released over; `edge` is the edge `to` replaces. */
+  connect: { from: End; to: End | null; edge: Row | null; trigger: Trigger };
   /** Delete or Backspace with rows selected, with `controls.delete` on. */
-  delete: Row[];
-  /** The camera moved. */
+  delete: { rows: Row[]; trigger: Trigger };
+  /** What the user points at changed: `View.hovered`. */
+  hover: { hit: Hit | null; trigger: Trigger };
+  /** The selection changed: `View.selection`. Without a trigger, the data dropped rows. */
+  select: { rows: Row[]; trigger: Trigger | null };
+  /** The camera moved by a gesture, a fit, a flight, coasting, or an orbit. */
   camera: Camera;
-  /** A mark does not fit its data and draws nothing until a scene or data fixes it. */
+  /** What the last frame stood in for changed; empty once it is complete. */
+  waiting: Waiting[];
+  /** Something failed, told once; a mark its data no longer fits also lists in
+   * `View.failures`. */
   error: LatkitError;
 }
 

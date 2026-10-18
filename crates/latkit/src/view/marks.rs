@@ -81,9 +81,9 @@ pub(crate) struct Shown {
     pub(crate) shape_version: u64,
     /// The rows its focus draw lights.
     pub(crate) lit: super::focus::Lit,
-    /// Why it no longer compiles against data given since the last frame, which that frame reports
-    /// unless a scene shown before then replaced it.
-    pub(crate) failed: Option<Error>,
+    /// Why it no longer compiles against the data, kept until data fits it again, and whether a frame
+    /// told it: the next frame does, unless a scene shown before then replaced the mark.
+    pub(crate) failure: Option<(Error, bool)>,
 }
 
 impl Shown {
@@ -118,7 +118,7 @@ impl Shown {
             version: 0,
             shape_version: 0,
             lit: super::focus::Lit::default(),
-            failed: None,
+            failure: None,
         }
     }
 
@@ -264,7 +264,6 @@ impl Shown {
         self.tables.release(gpu);
         self.compiled = None;
         self.packed = false;
-        self.failed = None;
         let Some(compiled) = compile::compile(&self.mark, all, context)? else { return Ok(()) };
         self.code.clone_from(&compiled.program.code);
         self.constants.clone_from(&compiled.program.constants);

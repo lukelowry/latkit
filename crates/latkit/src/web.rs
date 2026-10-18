@@ -13,7 +13,9 @@ use web_sys::{AddEventListenerOptions, HtmlCanvasElement, KeyboardEvent, Pointer
 
 use crate::gpu::FORMAT;
 use crate::shot::Views;
-use crate::{Button, Cursor, Error, Event, Frame, Gpu, Image, Input, Key, Modifiers, Result, Shot, Video, View};
+use crate::{
+    Button, Cursor, Device, Error, Event, Frame, Gpu, Image, Input, Key, Modifiers, Result, Shot, Video, View,
+};
 
 /// Stops a listener when dropped.
 #[must_use = "the listener stops when this is dropped"]
@@ -35,7 +37,7 @@ impl Drop for Listener {
 }
 
 type FrameListener = Rc<RefCell<dyn FnMut(f64)>>;
-type EventListener = Rc<RefCell<dyn FnMut(&Event)>>;
+type EventListener = Rc<RefCell<dyn FnMut(&[Event])>>;
 
 /// The animation frames of one `Gpu`: its listeners, then every canvas that needs a frame.
 struct Frames {
@@ -211,6 +213,10 @@ impl Canvas {
         let size = [element.width(), element.height()];
         let surface = Surface::new(gpu, element, size)?;
         let _ = element.style().set_property("touch-action", "none");
+        // Keys reach the view without the page's help.
+        if !element.has_attribute("tabindex") {
+            element.set_tab_index(0);
+        }
         let frames = frames_of(gpu);
         let state = Rc::new(RefCell::new(State {
             view,
@@ -255,8 +261,10 @@ impl Canvas {
         f(&self.0.borrow().view)
     }
 
-    /// Calls `listener` with each of the view's events until the returned listener is dropped.
-    pub fn on(&self, listener: impl FnMut(&Event) + 'static) -> Listener {
+    /// Calls `listener` with what the view tells, a batch at a time and in order, until the returned
+    /// listener is dropped. A listener hears what is told while it listens; what lasts is state the
+    /// view reads out.
+    pub fn on(&self, listener: impl FnMut(&[Event]) + 'static) -> Listener {
         let id = {
             let mut s = self.0.borrow_mut();
             s.next += 1;
@@ -419,14 +427,30 @@ pub async fn frame<W: std::io::Write>(video: &mut Video<W>, canvases: &[Canvas])
     video.frame_of(&mut Canvases::of(canvases)?).await
 }
 
-/// Hands the view's events to the canvas's listeners, and shows the cursor it asks for.
+/// Shows the cursor the view asks for, and hands what it tells to the canvas's listeners, one batch.
 fn dispatch(state: &Rc<RefCell<State>>) {
     let (events, listeners) = {
         let mut s = state.borrow_mut();
+        s.show_cursor();
         let events: Vec<Event> = s.view.events().collect();
-        let cursor = s.view.cursor();
-        if cursor != s.cursor {
-            s.cursor = cursor;
+        if events.is_empty() {
+            return;
+        }
+        (events, s.listeners.clone())
+    };
+    for (id, listener) in &listeners {
+        if state.borrow().listeners.iter().any(|(i, _)| i == id) {
+            (listener.borrow_mut())(&events);
+        }
+    }
+}
+
+impl State {
+    /// Sets the element's cursor to the one the view asks for.
+    fn show_cursor(&mut self) {
+        let cursor = self.view.cursor();
+        if cursor != self.cursor {
+            self.cursor = cursor;
             let css = match cursor {
                 Cursor::Default => "",
                 Cursor::Pointer => "pointer",
@@ -434,15 +458,7 @@ fn dispatch(state: &Rc<RefCell<State>>) {
                 Cursor::Grabbing => "grabbing",
                 Cursor::Crosshair => "crosshair",
             };
-            let _ = s.element.style().set_property("cursor", css);
-        }
-        (events, s.listeners.clone())
-    };
-    for event in &events {
-        for (id, listener) in &listeners {
-            if state.borrow().listeners.iter().any(|(i, _)| i == id) {
-                (listener.borrow_mut())(event);
-            }
+            let _ = self.element.style().set_property("cursor", css);
         }
     }
 }
@@ -497,6 +513,7 @@ fn listen(state: &Rc<RefCell<State>>) -> Result<()> {
             pointer: event.pointer_id() as u32,
             point: point(element, event),
             modifiers: modifiers!(event),
+            device: device(event),
         })
     })?;
     add("pointerup", |element, event| {
@@ -574,8 +591,17 @@ fn pressed(element: &HtmlCanvasElement, event: &web_sys::Event) -> Option<Input>
         point: point(element, event),
         button,
         modifiers: modifiers!(event),
-        touch: event.pointer_type() == "touch",
+        device: device(event),
     })
+}
+
+/// What a pointer event's pointer is.
+fn device(event: &PointerEvent) -> Device {
+    match event.pointer_type().as_str() {
+        "touch" => Device::Touch,
+        "pen" => Device::Pen,
+        _ => Device::Mouse,
+    }
 }
 
 /// A key going down or up.

@@ -57,13 +57,22 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200 
     label at its estimated size, no fit due. Every derivation says so of itself, and `Stats::waiting`
     names what a frame stood in for; pictures, video frames, tests, and the benchmark wait on the one
     predicate.
+11. **Events tell what the application did not do itself:** setters are silent. An intent (click,
+    open, menu, drag, connect, delete) is told once, in the order the user acted; one waiting on a
+    pick holds the intents after it. A change (hover, selection, camera, `Waiting`) tells only its
+    latest, and its state can always be read (`hovered`, `selection`, `camera`, `Stats::waiting`,
+    `failures`), so a listener added late reads what it missed. Every intent and hover carries its
+    `Trigger`: point, keys, and device. The keys are a device: Tab and arrows step the hover through
+    rows. Events cross to JavaScript as JSON, a batch per dispatch, like all of a view's state.
 
 ## Rules
 
 - CPU per frame is O(marks), plus O(changed pages) on new data, O(sampled pages) when `at` moves,
   and O(rows drawn) when the tiles the camera wants change.
 - Work superlinear in graph size runs in a host job, never on the frame.
-- Picks probe what the frame drew, through the draws' own geometry.
+- Picks probe what the frame drew, through the draws' own geometry. Hover follows the frame: what
+  the pointer rests on is probed again whenever the frame changes under it, one probe in flight;
+  `Controls::hover` only says whether it glows.
 - A scene's pipelines are made on its first frame; only custom markers compile WGSL at runtime.
 - Every order the user can see comes from count → scan → write, never from atomic appends.
 - Every shader passes naga at build time and Chrome within its compile budget.
@@ -172,7 +181,7 @@ crates/latkit/
 │   │                  the camera sees, as tiles), pyramid (each row's level, in jobs), tiled (the rows drawn)
 │   ├── sheet/         a diagram's sizes, places, and boxes (mod), and its wires: a derivation
 │   ├── layout/        layered, stress, overlap, pack, route (groups as soft obstacles)
-│   ├── view/          View; clock, camera, rig, gestures, input; probe, focus, query, fit, axes; plan, marks,
+│   ├── view/          View; clock, camera, rig, gestures, input, event; probe, focus, query, fit, axes; plan, marks,
 │   │                  program, sync, rows, transition, lists, labels, graph, shadows, variants, resources,
 │   │                  uniforms, wake, timer, passes, frame
 │   ├── gpu/           Gpu, Budget, work (Work, the counting queue), arena (fixed pages, one pool), pipelines,
@@ -244,11 +253,12 @@ view.set_data(plant);                     // cheap: unchanged pages are shared
 view.fit(Fit::All);
 view.render(&mut encoder, &frame);        // each frame, at its time; the caller submits
 view.input(&input, time);
-for event in view.events() {
+for event in view.events() {                       // in the order the user acted
     match event {
-        Event::Drag(drag) => {}                         // patch drag.hit.row's x and y
+        Event::Drag { hit, position, .. } => {}         // patch hit.row's x and y to position
         Event::Connect { from, to: Some(to), .. } => {} // name from's net in to's port
-        Event::Delete(rows) => {}                       // remove the rows
+        Event::Delete { rows, .. } => {}                // remove the rows
+        Event::Menu { hits, trigger } => {}             // a menu at trigger.point, for the keys too
         _ => {}
     }
 }
@@ -293,4 +303,5 @@ await video.finish();
 | M5                   | `src/derive/`: one lifecycle, budget, and pool for the sheet, lanes, shapes, and tiles; geometry as a field (lines along paths and rings); `Areas` (ear clipping in jobs, cached per page and row, earth grid split); `geo::geojson`; `Host::fetch`, PMTiles, TileJSON, MVT decoded in jobs into a view-owned dataset; daylight, atmosphere, exact globe gestures; groups as soft router obstacles; atlas residency by placement; Grid at scale and Colors pages | ✓      |
 | Scale                | `cargo xtask bench` and budgets; GPU time in `Stats`; fixed pages in one pool within a `Budget`; plans that always fit; tiles for anything large (pyramids in jobs, edges with their ends); `priority`; views that sleep while they wait; lanes as world-space bows; globe occlusion by depth; dashes and comets along paths; focus draws only lit rows; bulk column reads; the 2M-bus grid and Grid operations pages                                            | ✓      |
 | M6                   | time as an input (`Frame`, `input(time)`, the view's clock); `complete`; `Shot` and `Image` (compose pass, PNG in a worker); `Video` (NV12 on the GPU, three frames under way, held frames free, fragmented MP4, `Host::encoder` with WebCodecs); npm `Shot`, `Image`, `Video`                                                                                                                                                                                   | ✓      |
+| Interaction          | `Event` as intents and changes in one ordered queue (picks hold their place, changes keep their latest); `Trigger` (point, keys, `Device`) on every intent and hover; silent setters; `hovered`, `failures`, the `Waiting` event; hover follows the frame, `Controls::hover` only glows; the keys step, open, and select; npm events and view state as JSON, a batch per dispatch; ids checked, never truncated                                                  | ✓      |
 | Retire               | delete `packages/`, `examples/`, `benchmark/`, the old `docs/` and their configs                                                                                                                                                                                                                                                                                                                                                                                 | ○      |

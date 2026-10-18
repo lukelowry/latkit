@@ -71,6 +71,21 @@ impl Error {
     }
 }
 
+/// The error as `{ code, message, path? }`: the shape the npm package's `LatkitError` takes.
+#[cfg(feature = "serde")]
+impl serde::Serialize for Error {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("code", self.code())?;
+        map.serialize_entry("message", &self.to_string())?;
+        if let Error::Invalid { path, .. } = self {
+            map.serialize_entry("path", &path.to_string())?;
+        }
+        map.end()
+    }
+}
+
 /// Where in an input an [`Error::Invalid`] occurred.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Path(pub Vec<Step>);

@@ -65,6 +65,11 @@ pub(crate) struct Inner {
 
 /// How much GPU memory latkit uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(rename_all = "camelCase", deny_unknown_fields)
+)]
 pub struct Budget {
     /// Bytes the data every view of the `Gpu` draws may take on the GPU: its pages, and each view's
     /// rows. A view draws a table too large for its share through the tiles the camera asks for, so

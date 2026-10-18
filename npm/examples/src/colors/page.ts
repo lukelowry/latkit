@@ -9,7 +9,6 @@ import {
   colormapCss,
   field,
   type ColormapName,
-  type Hit,
   type Mark,
   type Scene,
 } from '../latkit.js';
@@ -216,7 +215,7 @@ export default function page(stage: Stage): void {
     },
   );
   const reading = shown.note('Hover a cell.');
-  view.on('hover', (hit: Hit | null) => {
+  view.on('hover', ({ hit }) => {
     if (!hit) return void (reading.textContent = 'Hover a cell.');
     const data = view.data('colors');
     const v = data?.get('Cell', hit.row.id, 'value') as number | null;

@@ -6,8 +6,8 @@ mod common;
 
 use common::{SIZE, at, camera, close, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Axis, Button, Camera, Color, Colormap, Data, Earth, Edges, Event, Faces, Input, Lines, Modifiers, Patch, Phase,
-    Plot, Scene, Table, Theme, Vertices, View, field,
+    Axis, Button, Camera, Color, Colormap, Data, Device, Earth, Edges, Event, Faces, Input, Lines, Modifiers, Patch,
+    Phase, Plot, Scene, Table, Theme, Vertices, View, field,
 };
 
 #[test]
@@ -247,25 +247,28 @@ fn presses_click_and_drag_the_rows_they_hit() {
     frame(&gpu, &mut view);
     let center = SIZE as f32 / 2.0;
     let modifiers = Modifiers::default();
+    let device = Device::Mouse;
     let press = |view: &mut View, point: [f32; 2]| {
-        view.input(&Input::Down { pointer: 1, point, button: Button::Primary, modifiers, touch: false }, common::now());
+        view.input(&Input::Down { pointer: 1, point, button: Button::Primary, modifiers, device }, common::now());
     };
     press(&mut view, [center + 40.0, center]);
     view.input(&Input::Up { pointer: 1, point: [center + 40.0, center], modifiers }, common::now());
     frame(&gpu, &mut view);
     let events: Vec<Event> = view.events().collect();
-    let clicked = events.iter().find_map(|e| if let Event::Click(hit) = e { Some(hit) } else { None });
+    let clicked = events.iter().find_map(|e| if let Event::Click { hit, .. } = e { Some(hit) } else { None });
     assert_eq!(clicked.map(|hit| hit.row.id.clone()), Some(8_u64.into()), "{events:?}");
-    assert!(events.iter().any(|e| matches!(e, Event::Select(rows) if rows.len() == 1)));
+    assert!(events.iter().any(|e| matches!(e, Event::Select { rows, trigger: Some(_) } if rows.len() == 1)));
 
     press(&mut view, [center, center]);
     frame(&gpu, &mut view);
-    view.input(&Input::Move { pointer: 1, point: [center + 10.0, center - 20.0], modifiers }, common::now());
+    view.input(&Input::Move { pointer: 1, point: [center + 10.0, center - 20.0], modifiers, device }, common::now());
     view.input(&Input::Up { pointer: 1, point: [center + 10.0, center - 20.0], modifiers }, common::now());
-    let drags: Vec<_> =
-        view.events().filter_map(|e| if let Event::Drag(drag) = e { Some(drag) } else { None }).collect();
-    assert_eq!(drags.iter().map(|d| d.phase).collect::<Vec<_>>(), [Phase::Start, Phase::End]);
-    let end = drags.last().expect("an end").position;
+    let drags: Vec<(Phase, [f64; 3])> = view
+        .events()
+        .filter_map(|e| if let Event::Drag { phase, position, .. } = e { Some((phase, position)) } else { None })
+        .collect();
+    assert_eq!(drags.iter().map(|d| d.0).collect::<Vec<_>>(), [Phase::Start, Phase::End]);
+    let end = drags.last().expect("an end").1;
     assert!((end[0] - 10.0).abs() < 0.5 && (end[1] - 20.0).abs() < 0.5, "the pointer's position: {end:?}");
     assert_eq!(view.camera(), &camera(), "dragging a row does not pan");
 }
@@ -359,11 +362,18 @@ fn new_data_and_the_scene_reading_it_change_together() {
     assert_eq!(common::errors(&mut view), Vec::new());
     let center = SIZE / 2;
     assert!(at(&pixels, center, center)[0] > 200, "the new mark draws: {:?}", at(&pixels, center, center));
-    // Data no mark fits by the frame is reported then.
+    // Data no mark fits by the frame is told then, once, and listed until data fits it again.
     view.set_data(dataset("a"));
     frame(&gpu, &mut view);
     let errors = common::errors(&mut view);
     assert!(errors.len() == 1 && errors[0].to_string().contains("no field b"), "{errors:?}");
+    assert_eq!(view.failures().collect::<Vec<_>>(), errors, "listed as it was told");
+    view.set_camera(Camera::Map { center: [5.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+    frame(&gpu, &mut view);
+    assert_eq!(common::errors(&mut view), Vec::new(), "told once");
+    view.set_data(dataset("b"));
+    frame(&gpu, &mut view);
+    assert_eq!(view.failures().count(), 0, "data that fits clears it");
 }
 
 #[test]
@@ -396,9 +406,10 @@ fn hover_reaches_what_faces_leave_in_view() {
     frame(&gpu, &mut view);
     let center = SIZE as f32 / 2.0;
     let hover = |view: &mut View, point: [f32; 2]| {
-        view.input(&Input::Move { pointer: 1, point, modifiers: Modifiers::default() }, common::now());
+        let modifiers = Modifiers::default();
+        view.input(&Input::Move { pointer: 1, point, modifiers, device: Device::Mouse }, common::now());
         frame(&gpu, view);
-        view.events().filter_map(|e| if let Event::Hover(hit) = e { Some(hit) } else { None }).last()
+        view.events().filter_map(|e| if let Event::Hover { hit, .. } = e { Some(hit) } else { None }).last()
     };
     let above = hover(&mut view, [center + 20.0, center]).expect("a hover event");
     assert_eq!(above.map(|hit| hit.row.id), Some(4_u64.into()), "the vertex above the face");
@@ -438,20 +449,21 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
     view.set_data(data);
     frame(&gpu, &mut view);
     let top = view.point([0.0, 0.0, 2.0]).expect("the top is in view");
-    view.input(&Input::Move { pointer: 1, point: top, modifiers: Modifiers::default() }, common::now());
+    let (modifiers, device) = (Modifiers::default(), Device::Mouse);
+    view.input(&Input::Move { pointer: 1, point: top, modifiers, device }, common::now());
     frame(&gpu, &mut view);
-    let hovered = view.events().find_map(|e| if let Event::Hover(hit) = e { hit } else { None });
+    let hovered = view.events().find_map(|e| if let Event::Hover { hit, .. } = e { hit } else { None });
     assert_eq!(hovered.map(|hit| hit.row.id), Some(5_u64.into()), "the top vertex is hovered");
+    assert_eq!(view.hovered().map(|hit| hit.row.id.clone()), Some(5_u64.into()), "and reads as hovered");
     assert_eq!(view.cursor(), latkit::Cursor::Grab);
-    let modifiers = Modifiers::default();
-    view.input(
-        &Input::Down { pointer: 1, point: top, button: Button::Primary, modifiers, touch: false },
-        common::now(),
-    );
-    view.input(&Input::Move { pointer: 1, point: [top[0], top[1] - 30.0], modifiers }, common::now());
-    let drag = view.events().find_map(|e| if let Event::Drag(drag) = e { Some(drag) } else { None }).expect("a drag");
-    assert_eq!(drag.phase, Phase::Start);
-    assert!(drag.position[2] > 2.0, "dragged up: {:?}", drag.position);
+    view.input(&Input::Down { pointer: 1, point: top, button: Button::Primary, modifiers, device }, common::now());
+    view.input(&Input::Move { pointer: 1, point: [top[0], top[1] - 30.0], modifiers, device }, common::now());
+    let (phase, position) = view
+        .events()
+        .find_map(|e| if let Event::Drag { phase, position, .. } = e { Some((phase, position)) } else { None })
+        .expect("a drag");
+    assert_eq!(phase, Phase::Start);
+    assert!(position[2] > 2.0, "dragged up: {position:?}");
 }
 
 #[test]

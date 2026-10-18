@@ -720,6 +720,7 @@ dependencies = [
  "console_error_panic_hook",
  "js-sys",
  "latkit",
+ "serde",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",

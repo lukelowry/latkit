@@ -457,7 +457,7 @@ export default async function page(stage: Stage): Promise<void> {
         : `${s[from]!.name} → ${s[to]!.name} · ${Math.round(value('mw'))} MW · ${Math.round(value('loading'))}% of ${b.pmax} MW`;
     }
   };
-  view.on('hover', (hit) => ((hovered = hit), inspect()));
+  view.on('hover', ({ hit }) => ((hovered = hit), inspect()));
   view.on('select', inspect);
 
   const meter = stage.meter(view);

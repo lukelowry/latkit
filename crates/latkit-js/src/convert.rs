@@ -1,9 +1,12 @@
-//! JavaScript values to latkit's and back. Typed arrays copy once; plain arrays read their first
-//! present element to know what they hold.
+//! JavaScript data to latkit's and back: ids and field values. Typed arrays copy once; plain arrays
+//! read their first present element to know what they hold. A view's state crosses as JSON instead.
 
 use js_sys::{Array, Float32Array, Float64Array, Int32Array, Object, Reflect, Uint8Array, Uint32Array};
 use latkit::{Error, Result};
 use wasm_bindgen::{JsCast, JsValue};
+
+/// The largest whole number a JavaScript number holds exactly: 2âµÂ³ âˆ’ 1.
+const SAFE: f64 = 9_007_199_254_740_991.0;
 
 /// A parse error as an invalid-input error.
 pub(crate) fn invalid(what: &str, error: &serde_json::Error) -> Error {
@@ -12,6 +15,15 @@ pub(crate) fn invalid(what: &str, error: &serde_json::Error) -> Error {
 
 fn error(reason: &'static str) -> Error {
     Error::invalid(reason)
+}
+
+/// A numeric id: a whole number a JavaScript number holds exactly, never truncated.
+fn number_id(n: f64) -> Result<u64> {
+    if n.fract() == 0.0 && (0.0..=SAFE).contains(&n) {
+        Ok(n as u64)
+    } else {
+        Err(error("a numeric id is a whole number from 0 to 2^53 - 1"))
+    }
 }
 
 /// Row ids: a count, numbers, or texts.
@@ -26,7 +38,8 @@ pub(crate) fn ids(value: &JsValue) -> Result<latkit::Ids> {
         return Ok(latkit::Ids::from(a.to_vec()));
     }
     if let Some(a) = value.dyn_ref::<Float64Array>() {
-        return Ok(latkit::Ids::from(a.to_vec().into_iter().map(|v| v as u64).collect::<Vec<_>>()));
+        let ids = a.to_vec().into_iter().enumerate().map(|(i, n)| number_id(n).map_err(|e| e.at(i)));
+        return Ok(latkit::Ids::from(ids.collect::<Result<Vec<u64>>>()?));
     }
     let Some(array) = value.dyn_ref::<Array>() else { return Err(error("ids are a count, numbers, or texts")) };
     let first = array.iter().find(|v| !v.is_null() && !v.is_undefined());
@@ -34,14 +47,17 @@ pub(crate) fn ids(value: &JsValue) -> Result<latkit::Ids> {
         Some(v) if v.is_string() => {
             latkit::Ids::from(array.iter().map(|v| v.as_string()).collect::<Vec<Option<String>>>())
         }
-        _ => latkit::Ids::from(array.iter().map(|v| v.as_f64().map(|n| n as u64)).collect::<Vec<Option<u64>>>()),
+        _ => {
+            let ids = array.iter().enumerate().map(|(i, v)| v.as_f64().map(number_id).transpose().map_err(|e| e.at(i)));
+            latkit::Ids::from(ids.collect::<Result<Vec<Option<u64>>>>()?)
+        }
     })
 }
 
 /// One id: a number or a text.
 pub(crate) fn id(value: &JsValue) -> Result<latkit::Id> {
     if let Some(n) = value.as_f64() {
-        return Ok(latkit::Id::Number(n as u64));
+        return number_id(n).map(latkit::Id::Number);
     }
     value.as_string().map(latkit::Id::from).ok_or_else(|| error("an id is a number or a text"))
 }
@@ -167,18 +183,6 @@ pub(crate) fn value(value: &latkit::Value) -> JsValue {
     }
 }
 
-pub(crate) fn object(entries: &[(&str, JsValue)]) -> JsValue {
-    let object = Object::new();
-    for (key, value) in entries {
-        let _ = Reflect::set(&object, &(*key).into(), value);
-    }
-    object.into()
-}
-
-fn numbers(values: &[f64]) -> JsValue {
-    values.iter().map(|&v| JsValue::from(v)).collect::<Array>().into()
-}
-
 /// An id as a number or a text.
 pub(crate) fn id_value(id: &latkit::Id) -> JsValue {
     match id {
@@ -187,120 +191,13 @@ pub(crate) fn id_value(id: &latkit::Id) -> JsValue {
     }
 }
 
-/// A row as `{ data, table, id }`.
-pub(crate) fn row(row: &latkit::Row) -> JsValue {
-    object(&[
-        ("data", JsValue::from_str(&row.data)),
-        ("table", JsValue::from_str(&row.table)),
-        ("id", id_value(&row.id)),
-    ])
-}
-
-/// A row from `{ data, table, id }`.
-pub(crate) fn row_of(value: &JsValue) -> Result<latkit::Row> {
-    let text = |key: &str| Reflect::get(value, &key.into()).ok().and_then(|v| v.as_string());
-    let (Some(data), Some(table)) = (text("data"), text("table")) else {
-        return Err(error("a row is { data, table, id }"));
-    };
-    let id = Reflect::get(value, &"id".into()).map_err(|_| error("a row is { data, table, id }"))?;
-    Ok(latkit::Row::new(data, table, self::id(&id)?))
-}
-
-/// A hit as `{ row, mark, point, position, distance, port?, sample? }`.
-pub(crate) fn hit(hit: &latkit::Hit) -> JsValue {
-    let mut entries = vec![
-        ("row", row(&hit.row)),
-        ("mark", (hit.mark as f64).into()),
-        ("point", numbers(&hit.point.map(f64::from))),
-        ("position", numbers(&hit.position)),
-        ("distance", f64::from(hit.distance).into()),
-    ];
-    if let Some(port) = &hit.port {
-        entries.push(("port", JsValue::from_str(port)));
+/// A row a reference field names, as `{ data, table, id }`.
+fn row(row: &latkit::Row) -> JsValue {
+    let object = Object::new();
+    for (key, value) in
+        [("data", JsValue::from_str(&row.data)), ("table", JsValue::from_str(&row.table)), ("id", id_value(&row.id))]
+    {
+        let _ = Reflect::set(&object, &key.into(), &value);
     }
-    if let Some(sample) = &hit.sample {
-        let sample = object(&[
-            ("frame", f64::from(sample.frame).into()),
-            ("at", sample.at.into()),
-            ("value", sample.value.into()),
-        ]);
-        entries.push(("sample", sample));
-    }
-    object(&entries)
-}
-
-/// A connection's end as `{ row, port? }`.
-fn end(end: &latkit::End) -> JsValue {
-    let mut entries = vec![("row", row(&end.row))];
-    if let Some(port) = &end.port {
-        entries.push(("port", JsValue::from_str(port)));
-    }
-    object(&entries)
-}
-
-/// Keys held as `{ shift, control, alt, meta }`.
-fn modifiers(m: latkit::Modifiers) -> JsValue {
-    object(&[("shift", m.shift.into()), ("control", m.control.into()), ("alt", m.alt.into()), ("meta", m.meta.into())])
-}
-
-/// An event as `{ type, detail }`.
-pub(crate) fn event(event: &latkit::Event) -> JsValue {
-    let (kind, detail) = match event {
-        latkit::Event::Hover(found) => ("hover", found.as_ref().map_or(JsValue::NULL, hit)),
-        latkit::Event::Click(found) => ("click", hit(found)),
-        latkit::Event::Open(found) => ("open", hit(found)),
-        latkit::Event::Select(rows) => ("select", rows.iter().map(row).collect::<Array>().into()),
-        latkit::Event::Drag(drag) => {
-            let phase = match drag.phase {
-                latkit::Phase::Start => "start",
-                latkit::Phase::Move => "move",
-                latkit::Phase::End => "end",
-            };
-            let detail = object(&[
-                ("phase", JsValue::from_str(phase)),
-                ("hit", hit(&drag.hit)),
-                ("point", numbers(&drag.point.map(f64::from))),
-                ("position", numbers(&drag.position)),
-            ]);
-            ("drag", detail)
-        }
-        latkit::Event::Menu { point, hits, keyboard, modifiers } => {
-            let detail = object(&[
-                ("point", numbers(&point.map(f64::from))),
-                ("hits", hits.iter().map(hit).collect::<Array>().into()),
-                ("keyboard", (*keyboard).into()),
-                ("modifiers", self::modifiers(*modifiers)),
-            ]);
-            ("menu", detail)
-        }
-        latkit::Event::Connect { from, to, edge, point } => {
-            let detail = object(&[
-                ("from", end(from)),
-                ("to", to.as_ref().map_or(JsValue::NULL, end)),
-                ("edge", edge.as_ref().map_or(JsValue::NULL, row)),
-                ("point", numbers(&point.map(f64::from))),
-            ]);
-            ("connect", detail)
-        }
-        latkit::Event::Delete(rows) => ("delete", rows.iter().map(row).collect::<Array>().into()),
-        latkit::Event::Camera => ("camera", JsValue::UNDEFINED),
-        latkit::Event::Error(e) => ("error", crate::Error::from(e.clone()).into()),
-        _ => ("other", JsValue::UNDEFINED),
-    };
-    object(&[("type", JsValue::from_str(kind)), ("detail", detail)])
-}
-
-/// Stats as `{ frames, rows, drawn, uploading, resident, budget, waiting, cpuMs, gpuMs }`.
-pub(crate) fn stats(stats: &latkit::Stats) -> JsValue {
-    object(&[
-        ("frames", (stats.frames as f64).into()),
-        ("rows", (stats.rows as f64).into()),
-        ("drawn", (stats.drawn as f64).into()),
-        ("uploading", (stats.uploading as f64).into()),
-        ("resident", (stats.resident as f64).into()),
-        ("budget", (stats.budget as f64).into()),
-        ("waiting", stats.waiting.names().map(JsValue::from_str).collect::<Array>().into()),
-        ("cpuMs", f64::from(stats.cpu_ms).into()),
-        ("gpuMs", f64::from(stats.gpu_ms).into()),
-    ])
+    object.into()
 }

@@ -393,7 +393,7 @@ export default async function bunny(stage: Stage): Promise<void> {
     else if (phase === 'move') body.drag(position);
     else body.release();
   });
-  space.on('click', (hit) => act(() => body.poke(hit.row.id as number))());
+  space.on('click', ({ hit }) => act(() => body.poke(hit.row.id as number))());
 
   const canvas = stage.regions.main.querySelector('canvas')!;
   // The JS drag event intentionally combines release and cancellation. Capture cancellation

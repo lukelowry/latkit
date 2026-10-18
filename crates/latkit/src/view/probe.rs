@@ -2,9 +2,10 @@
 //! a frame or two later: the nearest row, and the nearest depth drawn. One probe is in flight at a
 //! time; a newer point waits for it.
 
-use super::View;
 use super::event::{Hit, Sample};
+use super::gestures::Gesture;
 use super::marks::Shown;
+use super::{Device, View};
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
 use crate::{Camera, Row};
@@ -30,8 +31,6 @@ pub(crate) struct Answer {
 pub(crate) struct Probing {
     /// The next point to probe.
     pub(crate) wanted: Option<[f32; 2]>,
-    /// Whether the pointer probing is a finger, which reaches farther.
-    pub(crate) touch: bool,
     reading: Option<([f32; 2], Readback)>,
     /// The latest answer and the point it was asked for.
     pub(crate) latest: Option<([f32; 2], Answer)>,
@@ -59,14 +58,29 @@ pub(crate) fn near(a: [f32; 2], b: [f32; 2], within: f32) -> bool {
 }
 
 impl View {
-    /// The point this frame probes: one waits and none is in flight.
+    /// The point this frame probes: one waits and none is in flight. What the pointer rests on is
+    /// probed again whenever the frame changed under it, so a moving frame costs a probe per readback
+    /// and a still one nothing.
     pub(super) fn probe_point(&mut self) -> Option<[f32; 2]> {
+        if (self.changed || self.easing())
+            && matches!(self.gestures.now, Gesture::Idle)
+            && self.gestures.keys.at.is_none()
+            && let Some(pointer) = self.pointer
+        {
+            self.probing.wanted.get_or_insert(pointer.point);
+        }
         if self.probing.reading.is_some() {
             return None;
         }
         // Where nothing is drawn, there is nothing to probe.
         let point = self.probing.wanted.take();
         point.filter(|_| self.marks.iter().any(Shown::drawable))
+    }
+
+    /// CSS pixels a probe reaches around its point: a finger reaches farther.
+    pub(super) fn probe_radius(&self) -> f32 {
+        let touch = self.pointer.is_some_and(|pointer| pointer.device == Device::Touch);
+        self.scene.controls.pick_radius + if touch { 8.0 } else { 0.0 }
     }
 
     pub(super) fn probing(&mut self, point: [f32; 2], readback: Readback) {

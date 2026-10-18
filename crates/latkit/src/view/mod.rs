@@ -35,13 +35,14 @@ use std::time::Duration;
 
 pub use camera::Camera;
 pub(crate) use camera::Projected;
-pub use event::{Cursor, Drag, End, Event, Fit, Hit, Phase, Sample, Stats, Waiting};
-pub use input::{Button, Input, Key, Modifiers};
+pub use event::{Cursor, End, Event, Fit, Hit, Phase, Sample, Stats, Trigger, Waiting};
+pub use input::{Button, Device, Input, Key, Modifiers};
 pub(crate) use resources::{DEPTH, SHADE};
 pub(crate) use wake::Signal;
 
 use camera::Area;
 use clock::Clock;
+use event::Events;
 use fit::Fitting;
 use focus::Focus;
 use gestures::Gestures;
@@ -113,7 +114,7 @@ pub struct View {
     at: f64,
     clock: Clock,
     effect_time: f64,
-    events: Vec<Event>,
+    events: Events,
     /// What landing work wakes, and the waker it is: readbacks, jobs, and fetches hold it.
     signal: Arc<wake::Signal>,
     waker: Waker,
@@ -142,8 +143,8 @@ pub struct View {
     segment_words: u32,
     labels: labels::Labels,
     gestures: Gestures,
-    /// The pointer over the view, CSS pixels.
-    pointer: Option<[f32; 2]>,
+    /// The pointer over the view: where, with what keys, and with what; `None` once it left.
+    pointer: Option<Trigger>,
     /// The size of the last frame, CSS pixels, and its pixel ratio.
     size: [f64; 2],
     pixel_ratio: f32,
@@ -175,7 +176,7 @@ impl View {
             at: f64::INFINITY,
             clock: Clock::default(),
             effect_time: f64::NAN,
-            events: Vec::new(),
+            events: Events::default(),
             waker: Waker::from(signal.clone()),
             signal,
             resources: None,
@@ -277,6 +278,7 @@ impl View {
         self.scene_version += 1;
         self.pipelines_made = None;
         self.focus.dirty = true;
+        self.gestures.keys.stale();
         self.invalidate();
         Ok(())
     }
@@ -291,8 +293,9 @@ impl View {
         self.take_data(data, &mut inner);
     }
 
-    /// Takes `data` with the GPU's state locked: marks whose schema it changed compile again, and
-    /// those that fail wait for the frame to report it. The frame draws it, as it is or in part.
+    /// Takes `data` with the GPU's state locked: marks whose schema it changed compile again; one that
+    /// fails keeps why until data fits it again, and the frame tells it. The frame draws the data, as
+    /// it is or in part.
     fn take_data(&mut self, data: Data, inner: &mut crate::gpu::Inner) {
         let at = match self.sources.binary_search_by(|d| d.name().cmp(data.name())) {
             Ok(i) => {
@@ -306,14 +309,13 @@ impl View {
         };
         let context = Context { theme: &self.scene.theme, space: &self.scene.space };
         for shown in &mut self.marks {
-            if shown.stale(&self.sources[at])
-                && let Err(e) = shown.compile(&self.sources, context, inner)
-            {
-                shown.failed = Some(e);
+            if shown.stale(&self.sources[at]) {
+                shown.failure = shown.compile(&self.sources, context, inner).err().map(|error| (error, false));
             }
         }
-        // Rows may have moved under the focus.
+        // Rows may have moved under the focus and the keys.
         self.focus.dirty = true;
+        self.gestures.keys.stale();
         self.fitting.plot_due = true;
         self.wake();
     }
@@ -355,6 +357,9 @@ impl View {
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         for shown in &mut self.marks {
+            if shown.mark.style().data == *name {
+                shown.failure = None;
+            }
             if shown.compiled.as_ref().is_some_and(|c| c.schemas.iter().any(|(n, _)| n == name)) {
                 shown.tables.release(&mut inner);
                 shown.compiled = None;
@@ -385,11 +390,11 @@ impl View {
         &self.camera
     }
 
-    /// Looks through `camera` at once.
+    /// Looks through `camera` at once. Like every setter, it tells nothing: the application knows.
     pub fn set_camera(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
             self.rig.hold();
-            self.move_camera(camera);
+            self.place_camera(camera);
         }
     }
 
@@ -466,8 +471,8 @@ impl View {
         &self.focus.selection
     }
 
-    /// Selects `rows`, and no others. Rows the data drops, or no pickable mark shows, leave the
-    /// selection with a [`Select`](Event::Select) event.
+    /// Selects `rows`, and no others, telling nothing. Rows the data drops, or no pickable mark shows,
+    /// leave the selection with a [`Select`](Event::Select) event without a trigger.
     pub fn select(&mut self, rows: impl IntoIterator<Item = Row>) {
         let rows: Vec<Row> = rows.into_iter().collect();
         if rows != self.focus.selection {
@@ -475,6 +480,16 @@ impl View {
             self.focus.dirty = true;
             self.wake();
         }
+    }
+
+    /// What the user points at: the row under the pointer, or the row the keys stepped to.
+    pub fn hovered(&self) -> Option<&Hit> {
+        self.focus.hovered.as_ref()
+    }
+
+    /// Every mark that draws nothing because its data no longer fits it, and why.
+    pub fn failures(&self) -> impl Iterator<Item = crate::Error> + '_ {
+        self.marks.iter().enumerate().filter_map(|(i, shown)| Some(shown.failure.as_ref()?.0.clone().at(i).at("marks")))
     }
 
     /// The pointer the view asks for over what it shows.
@@ -509,9 +524,10 @@ impl View {
         self.waiting.is_empty()
     }
 
-    /// What happened since the last call.
-    pub fn events(&mut self) -> impl Iterator<Item = Event> + '_ {
-        self.events.drain(..)
+    /// What happened since the last call, in order: see [`Event`]. An intent whose detail a pick has
+    /// yet to bring waits for it, and the intents after it wait too.
+    pub fn events(&mut self) -> impl Iterator<Item = Event> + use<> {
+        self.events.drain()
     }
 
     /// Woken when the view needs a frame without being asked: work it waited on lands, data or the
@@ -537,13 +553,10 @@ impl View {
         &self.gpu
     }
 
-    /// Capture preserves events for its owner, but fails on a queued render error.
+    /// The error a capture fails on: the first one still untold, which stays for the view's owner.
     pub(crate) fn capture_error(&mut self) -> Option<crate::Error> {
         self.tell_gpu_errors();
-        self.events.iter().find_map(|event| match event {
-            Event::Error(error) => Some(error.clone()),
-            _ => None,
-        })
+        self.events.error().cloned()
     }
 
     /// Whether a frame would differ from the last one: something changed, moves, or streams in, or

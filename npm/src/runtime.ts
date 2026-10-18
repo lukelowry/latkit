@@ -12,6 +12,7 @@ import type {
   Hit,
   Id,
   Ids,
+  LatkitError,
   Reference,
   Row,
   Stats,
@@ -226,8 +227,9 @@ export class Gpu {
 
   /** A view drawing `scene` into `canvas`; its marks draw once {@link View.setData} gives their data. */
   view(canvas: HTMLCanvasElement, scene: Scene): View {
-    const view = new View(this.inner.view(canvas, JSON.stringify(scene)), () =>
-      this.#views.delete(view),
+    const view: View = new View(
+      (tell) => this.inner.view(canvas, JSON.stringify(scene), tell),
+      () => this.#views.delete(view),
     );
     this.#views.add(view);
     return view;
@@ -253,16 +255,16 @@ export class Gpu {
 
   /** How much GPU memory data takes. */
   get budget(): Budget {
-    return this.inner.budget as Budget;
+    return JSON.parse(this.inner.budget) as Budget;
   }
 
   set budget(budget: Budget) {
-    this.inner.setBudget(budget.bytes, budget.uploadPerFrame);
+    this.inner.setBudget(JSON.stringify(budget));
   }
 
   /** What this GPU did since it was created, counted exactly; see {@link Work}. */
   get work(): Work {
-    return this.inner.work as Work;
+    return JSON.parse(this.inner.work) as Work;
   }
 
   /** Releases this GPU's views and frame listeners. Other GPUs and data handles remain usable. */
@@ -282,15 +284,14 @@ export class Gpu {
 /** A scene drawn into a canvas, from data it is given by name, answering the canvas's input. */
 export class View {
   #listeners = new Map<keyof ViewEvents, Set<(event: never) => void>>();
-  #handle?: wasm.Listener;
   #inner?: wasm.View;
 
-  /** @internal */
+  /** @internal Makes the view with what takes its events, a JSON batch at a time, from the start. */
   constructor(
-    inner: wasm.View,
+    make: (tell: (json: string) => void) => wasm.View,
     private readonly released: () => void,
   ) {
-    this.#inner = inner;
+    this.#inner = make((json) => this.#tell(json));
   }
 
   private get inner(): wasm.View {
@@ -391,12 +392,23 @@ export class View {
 
   /** The rows selected. */
   get selection(): Row[] {
-    return this.inner.selection as Row[];
+    return JSON.parse(this.inner.selection) as Row[];
   }
 
-  /** Selects `rows`, and no others. */
+  /** Selects `rows`, and no others. Like every setter it tells nothing: `select` events tell what
+   * the user and the data changed. */
   select(rows: Row[]): void {
-    this.inner.select(rows);
+    this.inner.select(JSON.stringify(rows));
+  }
+
+  /** What the user points at: the row under the pointer, or the row the keys stepped to. */
+  get hovered(): Hit | null {
+    return JSON.parse(this.inner.hovered) as Hit | null;
+  }
+
+  /** Every mark that draws nothing because its data no longer fits it, and why. */
+  get failures(): LatkitError[] {
+    return (JSON.parse(this.inner.failures) as Failure[]).map(failure);
   }
 
   /** Eases to `camera`. */
@@ -405,18 +417,18 @@ export class View {
   }
 
   /** Every row of a mark that picks within `radius` CSS pixels of `point`, nearest first. */
-  pick(point: [number, number], radius: number): Promise<Hit[]> {
-    return this.inner.pick(Float32Array.from(point), radius) as Promise<Hit[]>;
+  async pick(point: [number, number], radius: number): Promise<Hit[]> {
+    return JSON.parse((await this.inner.pick(Float32Array.from(point), radius)) as string) as Hit[];
   }
 
   /** Where `row` lies on screen, CSS pixels from the top left, or `null` when no mark draws it in view. */
   locate(row: Row): Promise<[number, number] | null> {
-    return this.inner.locate(row) as Promise<[number, number] | null>;
+    return this.inner.locate(JSON.stringify(row)) as Promise<[number, number] | null>;
   }
 
   /** The rows joined to `row`: a vertex's neighbors across edges and nets, or an edge's or a net's vertices. */
   neighbors(row: Row): Row[] {
-    return this.inner.neighbors(row) as Row[];
+    return JSON.parse(this.inner.neighbors(JSON.stringify(row))) as Row[];
   }
 
   /** Frames what `fit` names on the next frame, keeping pitch and bearing. */
@@ -431,32 +443,35 @@ export class View {
   }
 
   get stats(): Stats {
-    return this.inner.stats as Stats;
+    return JSON.parse(this.inner.stats) as Stats;
   }
 
-  /** Calls `listener` with each event of `type`; returns a function that stops it. */
+  /**
+   * Calls `listener` with each event of `type` told while it listens; returns a function that
+   * stops it. What lasts is state to read: `hovered`, `selection`, `camera`, `stats.waiting`, and
+   * `failures`.
+   */
   on<T extends keyof ViewEvents>(type: T, listener: (event: ViewEvents[T]) => void): () => void {
-    this.#handle ??= this.inner.on((event: { type: keyof ViewEvents; detail: unknown }) =>
-      this.#emit(event),
-    );
     let set = this.#listeners.get(type);
     if (!set) this.#listeners.set(type, (set = new Set()));
     set.add(listener);
     return () => set.delete(listener);
   }
 
-  #emit({ type, detail }: { type: keyof ViewEvents; detail: unknown }): void {
-    const listeners = this.#listeners.get(type) as Set<(event: unknown) => void> | undefined;
-    if (!listeners?.size) return;
-    const event = type === 'camera' ? this.camera : detail;
-    for (const listener of listeners) listener(event);
+  /** Hands a batch of the view's events to the listeners of each one's type. */
+  #tell(json: string): void {
+    if (this.#listeners.size === 0) return;
+    for (const told of JSON.parse(json) as Told[]) {
+      const listeners = this.#listeners.get(told.type) as Set<(event: unknown) => void> | undefined;
+      if (!listeners?.size) continue;
+      const event = told.type === 'error' ? failure(told.detail) : told.detail;
+      for (const listener of listeners) listener(event);
+    }
   }
 
   /** Stops drawing and frees the view; the canvas keeps its last frame. */
   destroy(): void {
     if (!this.#inner) return;
-    this.#handle?.free();
-    this.#handle = undefined;
     for (const listeners of this.#listeners.values()) listeners.clear();
     this.#listeners.clear();
     this.#inner.free();
@@ -467,6 +482,23 @@ export class View {
   [Symbol.dispose](): void {
     this.destroy();
   }
+}
+
+/** A view's event as it crosses from WASM: its type, and its detail, an error's as plain data. */
+type Told = {
+  [T in keyof ViewEvents]: { type: T; detail: T extends 'error' ? Failure : ViewEvents[T] };
+}[keyof ViewEvents];
+
+/** An error as it crosses from WASM. */
+interface Failure {
+  code: LatkitError['code'];
+  message: string;
+  path?: string;
+}
+
+/** The error `failure` describes, as latkit throws them. */
+function failure({ code, message, path }: Failure): LatkitError {
+  return Object.assign(new Error(message), path === undefined ? { code } : { code, path });
 }
 
 /**

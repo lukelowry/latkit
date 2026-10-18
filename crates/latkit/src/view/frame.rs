@@ -25,7 +25,7 @@ impl View {
         if self.gpu.lost() {
             if !self.told_lost {
                 self.told_lost = true;
-                self.events.push(Event::Error(Error::DeviceLost));
+                self.events.tell(Event::Error(Error::DeviceLost));
             }
             return;
         }
@@ -77,12 +77,12 @@ impl View {
         if self.signal.transparent() {
             uniform.background[3] = 0.0;
         }
-        uniform.pointer = self.pointer.unwrap_or([-1e9, -1e9]);
+        uniform.pointer = self.pointer.map_or([-1e9, -1e9], |p| p.point);
         uniform.selecting = u32::from(!self.focus.selection.is_empty());
         uniform.fitting = u32::from(measure.as_ref().is_some_and(|m| m.rows));
         if let Some(point) = probe {
             uniform.probe = point;
-            uniform.probe_radius = self.scene.controls.pick_radius + if self.probing.touch { 8.0 } else { 0.0 };
+            uniform.probe_radius = self.probe_radius();
         }
         if let Some((words, _)) = query {
             uniform.query = words;
@@ -117,7 +117,11 @@ impl View {
         }
         self.events.extend(inner.atlas.errors.drain(..).map(Event::Error));
         self.events.extend(self.derived.sheet.errors.drain(..).map(Event::Error));
-        self.waiting = self.under_way();
+        let waiting = self.under_way();
+        if waiting != self.waiting {
+            self.waiting = waiting;
+            self.events.tell(Event::Waiting(waiting));
+        }
         self.changed = false;
         self.stats.frames += 1;
         self.stats.cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
@@ -153,8 +157,8 @@ impl View {
         moved
     }
 
-    /// Takes what landed since the last frame: probes, fits, queries, the events waiting on picks,
-    /// and why marks the data given since no longer fits failed.
+    /// Takes what landed since the last frame: probes, fits, queries, the intents and keys waiting on
+    /// picks; and tells, once, why marks the data given since no longer fits failed.
     fn settle(&mut self) {
         if let Some(ms) = self.timer.as_mut().and_then(timer::Timer::landed) {
             self.stats.gpu_ms = ms;
@@ -162,10 +166,13 @@ impl View {
         self.settle_fit();
         self.settle_probe();
         self.settle_query();
-        self.settle_awaiting();
+        self.settle_gestures();
         for (i, shown) in self.marks.iter_mut().enumerate() {
-            if let Some(error) = shown.failed.take() {
-                self.events.push(Event::Error(error.at(i).at("marks")));
+            if let Some((error, told)) = &mut shown.failure
+                && !*told
+            {
+                *told = true;
+                self.events.tell(Event::Error(error.clone().at(i).at("marks")));
             }
         }
     }

@@ -8,13 +8,17 @@ pub struct Controls {
     pub zoom: bool,
     /// Dragging with the secondary button, or with Shift, turns and tilts a map or plane.
     pub turn: bool,
-    /// Arrows pan, `+` and `-` zoom, Home fits, and Escape clears the selection.
+    /// Tab steps through the rows nearest the view's middle and arrows to the nearest row their way;
+    /// Enter opens the row stepped to and Space selects it. Otherwise arrows pan, `+` and `-` zoom,
+    /// Home fits, and Escape clears the selection.
     pub keyboard: bool,
-    /// Rows under the pointer glow.
+    /// The row the user points at glows. It is hovered either way: events tell it, and `hovered()`
+    /// reads it.
     pub hover: bool,
     /// CSS pixels around the pointer that picks reach; touch reaches 8 more.
     pub pick_radius: f32,
-    /// Dragging the background with Shift selects the rows in a box, instead of turning.
+    /// Dragging with Shift selects the rows in a box, instead of turning; a Shift click still toggles
+    /// its row.
     pub select_box: bool,
     /// Dragging from a port, from a vertex with Alt, or an edge off its end draws a connection,
     /// told as [`Event::Connect`](crate::Event).

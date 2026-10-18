@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 
 use super::View;
-use super::event::Hit;
+use super::event::{Hit, Trigger};
 use super::lists::{List, scan};
 use super::passes::{dispatch, offset};
 use super::resources::EyeSlot;
@@ -20,8 +20,8 @@ use crate::{Pending, Resolver, Row};
 pub(crate) enum Ask {
     /// Every row within `radius` CSS pixels of `point`.
     Hits { point: [f32; 2], radius: f32, reply: Resolver<Vec<Hit>> },
-    /// Every row in the box between two corners; they become the selection.
-    Boxed { corners: [[f32; 2]; 2] },
+    /// Every row in the box between two corners; they become the selection, as `trigger` chose.
+    Boxed { corners: [[f32; 2]; 2], trigger: Trigger },
     /// Where a row lies.
     Locate { row: Row, reply: Resolver<Option<[f32; 2]>> },
 }
@@ -31,7 +31,7 @@ impl Ask {
     fn words(&self, marks: &[usize], view: &View) -> [f32; 4] {
         match self {
             Ask::Hits { point, radius, .. } => [point[0], point[1], *radius, 0.0],
-            Ask::Boxed { corners: [a, b] } => [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])],
+            Ask::Boxed { corners: [a, b], .. } => [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])],
             Ask::Locate { row, .. } => {
                 let index = marks.first().and_then(|&i| view.row_index(i, row)).unwrap_or(u32::MAX);
                 [f32::from_bits(index), 0.0, 0.0, 0.0]
@@ -109,9 +109,9 @@ impl View {
         answer
     }
 
-    /// Selects every row in the box between two screen points.
-    pub(super) fn select_box(&mut self, corners: [[f32; 2]; 2]) {
-        self.queries.waiting.push_back(Ask::Boxed { corners });
+    /// Selects every row in the box between two screen points, as `trigger` chose.
+    pub(super) fn select_box(&mut self, corners: [[f32; 2]; 2], trigger: Trigger) {
+        self.queries.waiting.push_back(Ask::Boxed { corners, trigger });
         self.wake();
     }
 
@@ -265,7 +265,7 @@ impl View {
         };
         match ask {
             Ask::Hits { reply, .. } => reply.resolve(Ok(self.hits(&marks, &words, base))),
-            Ask::Boxed { .. } => {
+            Ask::Boxed { trigger, .. } => {
                 let mut rows = Vec::new();
                 for &(i, list) in &marks {
                     if !self.marks[i].mark.style().interaction.select {
@@ -279,7 +279,7 @@ impl View {
                         }
                     }
                 }
-                self.reselect(rows);
+                self.reselect(rows, Some(trigger));
             }
             Ask::Locate { reply, .. } => {
                 let found = words.get(2).is_some_and(|&w| w != 0);

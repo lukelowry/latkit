@@ -177,7 +177,7 @@ export default function page(stage: Stage): void {
         ? `Picked ${picked}.`
         : 'Hover a trace.';
   };
-  view.on('hover', describe);
+  view.on('hover', ({ hit }) => describe(hit));
   view.on('select', () => describe(null));
   describe(null);
 

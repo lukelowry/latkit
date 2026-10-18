@@ -126,20 +126,26 @@ impl View {
         }
     }
 
-    /// Moves the camera, telling the application once per batch of moves.
+    /// Moves the camera by a gesture, a fit, or a motion over frames, telling the application.
     pub(super) fn move_camera(&mut self, camera: Camera) {
+        if self.place_camera(camera) {
+            self.events.tell(Event::Camera(camera));
+        }
+    }
+
+    /// Moves the camera, evaluating again what reads it; whether it moved.
+    pub(super) fn place_camera(&mut self, camera: Camera) -> bool {
         if camera == self.camera {
-            return;
+            return false;
         }
         self.camera = camera;
         self.fitting.plot_due = true;
+        self.gestures.keys.stale();
         for shown in &mut self.marks {
             shown.dirty |=
                 shown.channels_reading(crate::expr::compile::Deps::CAMERA | crate::expr::compile::Deps::POINTER);
         }
-        if self.events.last() != Some(&Event::Camera) {
-            self.events.push(Event::Camera);
-        }
         self.wake();
+        true
     }
 }

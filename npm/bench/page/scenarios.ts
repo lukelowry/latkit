@@ -210,7 +210,7 @@ const hover = (): Phase => ({
       return await s.once(
         () =>
           new Promise<void>((resolve) => {
-            const stop = s.view.on('hover', (h) => {
+            const stop = s.view.on('hover', ({ hit: h }) => {
               told.push(h?.row ?? null);
               if (!h) return;
               stop();

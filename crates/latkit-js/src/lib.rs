@@ -1,8 +1,9 @@
 //! The latkit npm package: data, patches, and views for the browser, over WebGPU.
 //!
-//! Scenes, cameras, and fits cross as JSON in the forms `latkit`'s serde support reads; field values
-//! cross as typed arrays or arrays and are copied once; events cross as `{ type, detail }` objects.
-//! The npm wrapper adds the expression builders and typed listeners.
+//! A view's state crosses as JSON both ways, in the forms `latkit`'s serde support reads and writes:
+//! scenes, cameras, fits, budgets, and rows in; events, hits, stats, and work out, a view's events a
+//! batch at a time. Field values cross as typed arrays or arrays and are copied once. The npm wrapper
+//! adds the expression builders and typed listeners.
 
 #![cfg(target_arch = "wasm32")]
 #![allow(unsafe_code, reason = "wasm-bindgen's generated glue")]
@@ -23,6 +24,16 @@ fn start() {
     console_error_panic_hook::set_once();
 }
 
+/// What `text` holds, in the JSON form latkit's serde support reads; or why not, at `what`.
+fn json<T: serde::de::DeserializeOwned>(what: &str, text: &str) -> Result<T, Error> {
+    serde_json::from_str(text).map_err(|e| invalid(what, &e).into())
+}
+
+/// `value` in the JSON form the npm package's types describe.
+fn to_json(value: &impl serde::Serialize) -> String {
+    serde_json::to_string(value).expect("view state serializes")
+}
+
 /// The GPU device views draw with.
 #[wasm_bindgen]
 pub struct Gpu(latkit::Gpu);
@@ -34,11 +45,20 @@ impl Gpu {
         Ok(Gpu(latkit::Gpu::new().await?))
     }
 
-    /// A view drawing `scene` (JSON) into `canvas`.
-    pub fn view(&self, canvas: &web_sys::HtmlCanvasElement, scene: &str) -> Result<View, Error> {
-        let scene: latkit::Scene = serde_json::from_str(scene).map_err(|e| invalid("scene", &e))?;
-        let view = latkit::View::new(&self.0, scene)?;
-        Ok(View(latkit::web::Canvas::new(&self.0, canvas, view)?))
+    /// A view drawing `scene` (JSON) into `canvas`, telling `tell` its events from the start: each
+    /// batch a JSON array of `{ type, detail }`.
+    pub fn view(
+        &self,
+        canvas: &web_sys::HtmlCanvasElement,
+        scene: &str,
+        tell: js_sys::Function,
+    ) -> Result<View, Error> {
+        let view = latkit::View::new(&self.0, json("scene", scene)?)?;
+        let canvas = latkit::web::Canvas::new(&self.0, canvas, view)?;
+        let telling = canvas.on(move |events| {
+            let _ = tell.call1(&JsValue::NULL, &JsValue::from_str(&to_json(&events)));
+        });
+        Ok(View { canvas, _telling: telling })
     }
 
     /// Calls `listener` with the frame's timestamp every animation frame, before the views draw.
@@ -55,36 +75,24 @@ impl Gpu {
         self.0.lost()
     }
 
-    /// How much GPU memory data takes, as `{ bytes, uploadPerFrame }`.
+    /// How much GPU memory data takes, as JSON `{ bytes, uploadPerFrame }`.
     #[wasm_bindgen(getter)]
-    pub fn budget(&self) -> JsValue {
-        let budget = self.0.budget();
-        convert::object(&[
-            ("bytes", (budget.bytes as f64).into()),
-            ("uploadPerFrame", (budget.upload_per_frame as f64).into()),
-        ])
+    pub fn budget(&self) -> String {
+        to_json(&self.0.budget())
     }
 
-    /// What the GPU did since it was made, counted exactly: `{ uploaded, written, evaluated, readbacks,
-    /// jobs, texts, pipelines }`.
-    #[wasm_bindgen(getter)]
-    pub fn work(&self) -> JsValue {
-        let work = self.0.work();
-        convert::object(&[
-            ("uploaded", (work.uploaded as f64).into()),
-            ("written", (work.written as f64).into()),
-            ("evaluated", (work.evaluated as f64).into()),
-            ("readbacks", (work.readbacks as f64).into()),
-            ("jobs", (work.jobs as f64).into()),
-            ("texts", (work.texts as f64).into()),
-            ("pipelines", (work.pipelines as f64).into()),
-        ])
-    }
-
-    /// Sets how much GPU memory data takes.
+    /// Sets how much GPU memory data takes, from JSON `{ bytes, uploadPerFrame }`.
     #[wasm_bindgen(js_name = setBudget)]
-    pub fn set_budget(&self, bytes: f64, upload_per_frame: f64) {
-        self.0.set_budget(latkit::Budget { bytes: bytes as u64, upload_per_frame: upload_per_frame as u64 });
+    pub fn set_budget(&self, budget: &str) -> Result<(), Error> {
+        self.0.set_budget(json("budget", budget)?);
+        Ok(())
+    }
+
+    /// What the GPU did since it was made, counted exactly, as JSON `{ uploaded, written, evaluated,
+    /// readbacks, jobs, texts, pipelines }`.
+    #[wasm_bindgen(getter)]
+    pub fn work(&self) -> String {
+        to_json(&self.0.work())
     }
 
     /// A video of `shot`'s pictures at `fps` frames a second, encoded by WebCodecs at `bitrate` bits
@@ -235,174 +243,185 @@ impl Patch {
     }
 }
 
-/// A scene drawn into a canvas.
+/// A scene drawn into a canvas, telling its events from the start.
 #[wasm_bindgen]
-pub struct View(latkit::web::Canvas);
+pub struct View {
+    canvas: latkit::web::Canvas,
+    _telling: latkit::web::Listener,
+}
 
 #[wasm_bindgen]
 impl View {
     /// Draws `scene` (JSON) instead; an invalid scene changes nothing.
     pub fn show(&self, scene: &str) -> Result<(), Error> {
-        let scene: latkit::Scene = serde_json::from_str(scene).map_err(|e| invalid("scene", &e))?;
-        Ok(self.0.with(|v| v.show(scene))?)
+        let scene = json("scene", scene)?;
+        Ok(self.canvas.with(|v| v.show(scene))?)
     }
 
     #[wasm_bindgen(js_name = setData)]
     pub fn set_data(&self, data: &Data) {
-        self.0.with(|v| v.set_data(data.0.clone()));
+        self.canvas.with(|v| v.set_data(data.0.clone()));
     }
 
     #[wasm_bindgen(js_name = removeData)]
     pub fn remove_data(&self, name: &str) {
-        self.0.with(|v| v.remove_data(name));
+        self.canvas.with(|v| v.remove_data(name));
     }
 
     /// The dataset named `name`: one given, or the tiles the view fetched.
     pub fn data(&self, name: &str) -> Option<Data> {
-        self.0.read(|v| v.data(name).cloned()).map(Data)
+        self.canvas.read(|v| v.data(name).cloned()).map(Data)
     }
 
     /// Fetches the vector tiles at `url` as the camera asks for them, drawn as dataset `name`.
     #[wasm_bindgen(js_name = setTiles)]
     pub fn set_tiles(&self, name: &str, url: &str) {
-        self.0.with(|v| v.set_tiles(latkit::geo::Tiles::vector(name, url)));
+        self.canvas.with(|v| v.set_tiles(latkit::geo::Tiles::vector(name, url)));
     }
 
     #[wasm_bindgen(js_name = removeTiles)]
     pub fn remove_tiles(&self, name: &str) {
-        self.0.with(|v| v.remove_tiles(name));
+        self.canvas.with(|v| v.remove_tiles(name));
     }
 
     #[wasm_bindgen(getter)]
     pub fn at(&self) -> f64 {
-        self.0.read(latkit::View::at)
+        self.canvas.read(latkit::View::at)
     }
 
     #[wasm_bindgen(setter)]
     pub fn set_at(&self, at: f64) {
-        self.0.with(|v| v.set_at(at));
+        self.canvas.with(|v| v.set_at(at));
     }
 
     /// The camera as JSON.
     #[wasm_bindgen(getter)]
     pub fn camera(&self) -> String {
-        self.0.read(|v| serde_json::to_string(v.camera()).expect("a camera serializes"))
+        self.canvas.read(|v| to_json(v.camera()))
     }
 
     /// Looks through the camera (JSON) at once.
     #[wasm_bindgen(js_name = setCamera)]
     pub fn set_camera(&self, camera: &str) -> Result<(), Error> {
-        let camera: latkit::Camera = serde_json::from_str(camera).map_err(|e| invalid("camera", &e))?;
-        self.0.with(|v| v.set_camera(camera));
+        let camera = json("camera", camera)?;
+        self.canvas.with(|v| v.set_camera(camera));
         Ok(())
     }
 
     /// Eases to the camera (JSON).
     pub fn fly(&self, camera: &str) -> Result<(), Error> {
-        let camera: latkit::Camera = serde_json::from_str(camera).map_err(|e| invalid("camera", &e))?;
-        self.0.with(|v| v.fly(camera));
+        let camera = json("camera", camera)?;
+        self.canvas.with(|v| v.fly(camera));
         Ok(())
     }
 
     /// Frames what `fit` (JSON) names.
     pub fn fit(&self, fit: &str) -> Result<(), Error> {
-        let fit: latkit::Fit = serde_json::from_str(fit).map_err(|e| invalid("fit", &e))?;
-        self.0.with(|v| v.fit(fit));
+        let fit = json("fit", fit)?;
+        self.canvas.with(|v| v.fit(fit));
         Ok(())
     }
 
     /// Lays every vertex without a position out again by the diagram's layout.
     pub fn arrange(&self) {
-        self.0.with(latkit::View::arrange);
+        self.canvas.with(latkit::View::arrange);
     }
 
     /// Where `position` (x, y, elevation) lands on screen, CSS pixels from the top left.
     pub fn point(&self, position: &[f64]) -> Option<Vec<f32>> {
         let position: [f64; 3] = position.try_into().ok()?;
-        self.0.read(|v| v.point(position)).map(Vec::from)
+        self.canvas.read(|v| v.point(position)).map(Vec::from)
     }
 
     /// The position on the ground under screen point `point`.
     pub fn ground(&self, point: &[f32]) -> Option<Vec<f64>> {
         let point: [f32; 2] = point.try_into().ok()?;
-        self.0.read(|v| v.ground(point)).map(Vec::from)
+        self.canvas.read(|v| v.ground(point)).map(Vec::from)
     }
 
     #[wasm_bindgen(getter)]
     pub fn insets(&self) -> Vec<f32> {
-        self.0.read(|v| v.insets().to_vec())
+        self.canvas.read(|v| v.insets().to_vec())
     }
 
     #[wasm_bindgen(setter)]
     pub fn set_insets(&self, insets: &[f32]) -> Result<(), Error> {
         let insets: [f32; 4] = insets.try_into().map_err(|_| latkit::Error::invalid("four insets").at("insets"))?;
-        self.0.with(|v| v.set_insets(insets));
+        self.canvas.with(|v| v.set_insets(insets));
         Ok(())
     }
 
     #[wasm_bindgen(getter)]
     pub fn orbit(&self) -> f64 {
-        self.0.read(latkit::View::orbit)
+        self.canvas.read(latkit::View::orbit)
     }
 
     #[wasm_bindgen(setter)]
     pub fn set_orbit(&self, degrees_per_second: f64) {
-        self.0.with(|v| v.set_orbit(degrees_per_second));
+        self.canvas.with(|v| v.set_orbit(degrees_per_second));
     }
 
+    /// The rows selected, as JSON.
     #[wasm_bindgen(getter)]
-    pub fn selection(&self) -> js_sys::Array {
-        self.0.read(|v| v.selection().iter().map(convert::row).collect())
+    pub fn selection(&self) -> String {
+        self.canvas.read(|v| to_json(&v.selection()))
     }
 
-    pub fn select(&self, rows: &js_sys::Array) -> Result<(), Error> {
-        let rows = rows.iter().map(|r| convert::row_of(&r)).collect::<latkit::Result<Vec<_>>>()?;
-        self.0.with(|v| v.select(rows));
+    /// Selects the rows (JSON), and no others.
+    pub fn select(&self, rows: &str) -> Result<(), Error> {
+        let rows: Vec<latkit::Row> = json("rows", rows)?;
+        self.canvas.with(|v| v.select(rows));
         Ok(())
     }
 
+    /// What the user points at, as a JSON hit or `null`.
     #[wasm_bindgen(getter)]
-    pub fn stats(&self) -> JsValue {
-        convert::stats(&self.0.read(latkit::View::stats))
+    pub fn hovered(&self) -> String {
+        self.canvas.read(|v| to_json(&v.hovered()))
     }
 
-    /// Every row within `radius` CSS pixels of `point`, nearest first, as `{ row, mark, ... }` hits.
+    /// Every mark that draws nothing because its data no longer fits it, as JSON errors.
+    #[wasm_bindgen(getter)]
+    pub fn failures(&self) -> String {
+        self.canvas.read(|v| to_json(&v.failures().collect::<Vec<_>>()))
+    }
+
+    /// What the view does each frame, as JSON.
+    #[wasm_bindgen(getter)]
+    pub fn stats(&self) -> String {
+        to_json(&self.canvas.read(latkit::View::stats))
+    }
+
+    /// Every row within `radius` CSS pixels of `point`, nearest first, as JSON hits.
     pub fn pick(&self, point: &[f32], radius: f32) -> Result<js_sys::Promise, Error> {
         let point: [f32; 2] = point.try_into().map_err(|_| latkit::Error::invalid("a point is [x, y]").at("point"))?;
-        let pending = self.0.with(|v| v.pick(point, radius));
+        let pending = self.canvas.with(|v| v.pick(point, radius));
         Ok(wasm_bindgen_futures::future_to_promise(async move {
             let hits = pending.await.map_err(|e| JsValue::from(Error::from(e)))?;
-            Ok(hits.iter().map(convert::hit).collect::<js_sys::Array>().into())
+            Ok(JsValue::from_str(&to_json(&hits)))
         }))
     }
 
-    /// Where `row` (`{ data, table, id }`) lies on screen, `[x, y]`, or `null`.
-    pub fn locate(&self, row: &JsValue) -> Result<js_sys::Promise, Error> {
-        let row = convert::row_of(row)?;
-        let pending = self.0.with(|v| v.locate(&row));
+    /// Where the row (JSON) lies on screen, `[x, y]`, or `null`.
+    pub fn locate(&self, row: &str) -> Result<js_sys::Promise, Error> {
+        let row: latkit::Row = json("row", row)?;
+        let pending = self.canvas.with(|v| v.locate(&row));
         Ok(wasm_bindgen_futures::future_to_promise(async move {
             let point = pending.await.map_err(|e| JsValue::from(Error::from(e)))?;
             Ok(point.map_or(JsValue::NULL, |p| js_sys::Array::of2(&p[0].into(), &p[1].into()).into()))
         }))
     }
 
-    /// The rows joined to `row` (`{ data, table, id }`): a vertex's neighbors across edges and nets,
-    /// or an edge's or a net's vertices.
-    pub fn neighbors(&self, row: &JsValue) -> Result<js_sys::Array, Error> {
-        let row = convert::row_of(row)?;
-        Ok(self.0.read(|v| v.neighbors(&row)).iter().map(convert::row).collect())
+    /// The rows joined to the row (JSON), as JSON: a vertex's neighbors across edges and nets, or an
+    /// edge's or a net's vertices.
+    pub fn neighbors(&self, row: &str) -> Result<String, Error> {
+        let row: latkit::Row = json("row", row)?;
+        Ok(self.canvas.read(|v| to_json(&v.neighbors(&row))))
     }
 
     /// The view's canvas, for a shot to draw.
     pub fn handle(&self) -> Handle {
-        Handle(self.0.clone())
-    }
-
-    /// Calls `listener` with each event as `{ type, detail }`.
-    pub fn on(&self, listener: js_sys::Function) -> Listener {
-        Listener(self.0.on(move |event| {
-            let _ = listener.call1(&JsValue::NULL, &convert::event(event));
-        }))
+        Handle(self.canvas.clone())
     }
 }
 

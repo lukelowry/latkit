@@ -13,8 +13,8 @@ pub enum Input {
         button: Button,
         /// Keys held.
         modifiers: Modifiers,
-        /// Whether a finger pressed: picks reach farther.
-        touch: bool,
+        /// What pressed: a finger's picks reach farther.
+        device: Device,
     },
     /// A pointer moved.
     Move {
@@ -24,6 +24,8 @@ pub enum Input {
         point: [f32; 2],
         /// Keys held.
         modifiers: Modifiers,
+        /// What moved.
+        device: Device,
     },
     /// A pointer let go.
     Up {
@@ -72,8 +74,24 @@ pub enum Button {
     Middle,
 }
 
+/// What the user acts with.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize), serde(rename_all = "lowercase"))]
+pub enum Device {
+    /// A mouse or a trackpad.
+    #[default]
+    Mouse,
+    /// A pen.
+    Pen,
+    /// A finger: picks reach 8 CSS pixels farther.
+    Touch,
+    /// The keys.
+    Keyboard,
+}
+
 /// Keys held during an input.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Modifiers {
     /// Shift.
     pub shift: bool,
@@ -83,6 +101,13 @@ pub struct Modifiers {
     pub alt: bool,
     /// Meta: Command or Windows.
     pub meta: bool,
+}
+
+impl Modifiers {
+    /// Whether a click adds its row to the selection or takes it out: Shift, Control, or Meta held.
+    pub fn toggles(self) -> bool {
+        self.shift || self.control || self.meta
+    }
 }
 
 /// The keys a view answers.

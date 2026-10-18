@@ -444,7 +444,7 @@ export default function page(stage: Stage): void {
     edit(patch, `Wired ${name(from.row)} and ${name(to.row)}.`);
   });
 
-  view.on('delete', (rows) => {
+  view.on('delete', ({ rows }) => {
     const byTable = new Map<string, Id[]>();
     for (const row of rows) byTable.set(row.table, [...(byTable.get(row.table) ?? []), row.id]);
     const patch = new Patch();

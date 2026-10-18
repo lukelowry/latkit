@@ -71,7 +71,9 @@ pub(crate) fn frame(
     frame.dash = theme.dash * unit;
     frame.flow_spacing = theme.flow_spacing * unit;
     frame.lane_bow = theme.lane_bow;
-    frame.hover_scale = theme.hover_scale;
+    // Hover is state either way; the controls say only whether it glows.
+    let glows = scene.controls.hover;
+    frame.hover_scale = if glows { theme.hover_scale } else { 1.0 };
     frame.shading = theme.shading;
     frame.arrow = theme.arrow * unit;
     frame.halo = theme.halo;
@@ -79,7 +81,7 @@ pub(crate) fn frame(
     frame.unit = unit;
     frame.zoom = projected.zoom as f32;
     frame.linear = u32::from(linear);
-    frame.hover = theme.hover.to_array();
+    frame.hover = if glows { theme.hover.to_array() } else { [0.0; 4] };
     frame.selected = selected;
     frame.flow = theme.flow.to_array();
     frame.background = theme.background.to_array();

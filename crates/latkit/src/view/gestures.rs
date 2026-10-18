@@ -1,18 +1,25 @@
-//! Gestures: what the pointer and keys mean. A press decides once the pointer moves a few pixels: on
-//! a port, an Alt-held vertex, or an edge it draws a connection when connecting is on; on a row of a
-//! draggable mark it drags the row; elsewhere it pans. A secondary press turns once it moves and asks
-//! for a menu when it does not. Shift drags turn or select in a box, the wheel and pinches zoom, and
-//! keys step. A diagram never turns, and its drags snap to its grid when it says so. Every camera
-//! move is about the point under the pointer and goes through the rig, which carries a released drag
-//! on and keeps the camera within reach.
+//! Gestures: what the pointer and keys mean. A press decides once the pointer moves a few pixels: with
+//! Shift it selects in a box when boxes select, else turns a map or plane; on a port, an Alt-held
+//! vertex, or an edge it draws a connection when connecting is on; on a row of a draggable mark it
+//! drags the row; elsewhere it pans. A press that does not move clicks, Shift, Control, or Meta
+//! toggling its row in the selection. A secondary press turns once it moves and asks for a menu when
+//! it does not. The wheel and pinches zoom, and keys step. A diagram never turns, and its drags snap
+//! to its grid when it says so. Every camera move is about the point under the pointer and goes
+//! through the rig, which carries a released drag on and keeps the camera within reach.
 //!
 //! The point under a press comes from the latest probe when it was taken where the press is,
 //! otherwise from a probe of its own a frame or two later; the press waits for it and catches up.
-//! Menus and connections tell what lies under their point once a pick answers.
+//! Menus and connections tell what lies under their point once a pick answers, in their place among
+//! the intents.
+//!
+//! The keys point too. Tab steps through the rows nearest the view's middle, and past the last one
+//! lets focus move on; an arrow steps to the nearest row its way; Enter opens the row and Space
+//! selects it. The row the keys point at is hovered until the pointer acts.
 
 use super::View;
-use super::event::{Cursor, Drag, End, Event, Fit, Hit, Phase};
-use super::input::{Button, Input, Key, Modifiers};
+use super::event::{Awaited, Cursor, End, Event, Fit, Hit, Phase, Trigger};
+use super::input::{Button, Device, Input, Key, Modifiers};
+use super::marks::Shown;
 use super::probe::{Answer, Probed, near};
 use crate::expr::compile::Deps;
 use crate::scene::mark::MarkKind;
@@ -36,17 +43,17 @@ const STEP_ZOOM: f64 = 0.5;
 pub(crate) enum Gesture {
     #[default]
     Idle,
-    /// A pointer pressed; `answer` is `None` while its probe is in flight. `earlier` is a press
-    /// released here before its own answer came, which clicks first on this one's.
+    /// A pointer pressed at `from`, now at `trigger`; `answer` is `None` while its probe is in
+    /// flight. `earlier` is a press released here before its own answer came, which clicks first on
+    /// this one's.
     Press {
         pointer: u32,
         button: Button,
         from: [f32; 2],
-        to: [f32; 2],
+        trigger: Trigger,
         answer: Option<Answer>,
         released: bool,
-        modifiers: Modifiers,
-        earlier: Option<(Button, [f32; 2], Modifiers)>,
+        earlier: Option<(Button, Trigger)>,
     },
     /// A connection drawn from `from` toward the pointer at `to`; `anchor` is where it starts on
     /// screen, once known.
@@ -75,7 +82,7 @@ pub(crate) enum Gesture {
     Pinch {
         pointers: [(u32, [f32; 2]); 2],
     },
-    /// Shift dragging the background: the rows in the box between the press and the pointer.
+    /// A Shift drag where boxes select: the rows in the box between the press and the pointer.
     Box {
         pointer: u32,
         from: [f32; 2],
@@ -83,17 +90,11 @@ pub(crate) enum Gesture {
     },
 }
 
-/// What a pick's answer is for.
-enum Awaited {
-    Menu { point: [f32; 2], keyboard: bool, modifiers: Modifiers },
-    Connect { from: End, edge: Option<Row>, point: [f32; 2] },
-}
-
 #[derive(Default)]
 pub(crate) struct Gestures {
     pub(crate) now: Gesture,
-    /// Picks whose answers events wait for.
-    awaiting: Vec<(Pending<Vec<Hit>>, Awaited)>,
+    /// The rows the keys step through.
+    pub(crate) keys: Stepping,
     /// The time of the input being taken, on the clock of whatever feeds the view its input.
     time: f64,
     /// The last click: when, where, and on which row.
@@ -101,6 +102,32 @@ pub(crate) struct Gestures {
     /// How fast the pan or turn under way moves, per second, and when it last moved.
     velocity: [f64; 2],
     moved: Option<f64>,
+}
+
+/// The rows the keys step through: what a pick around the view's middle found, nearest first, as
+/// the frame it was taken in drew them; the row stepped to, which holds the hover until the pointer
+/// acts; and keys pressed while the rows were being picked.
+#[derive(Default)]
+pub(crate) struct Stepping {
+    /// The rows last picked; `None` until the keys first step.
+    rows: Option<Vec<Hit>>,
+    picking: Option<Pending<Vec<Hit>>>,
+    /// Whether the rows are where the frame now draws them.
+    fresh: bool,
+    pub(crate) at: Option<usize>,
+    queued: Vec<(Key, Modifiers)>,
+}
+
+impl Stepping {
+    /// The frame changed: the rows are picked again before an arrow steps.
+    pub(crate) fn stale(&mut self) {
+        self.fresh = false;
+    }
+
+    /// The row the keys point at.
+    fn row(&self) -> Option<&Hit> {
+        self.rows.as_ref().zip(self.at).and_then(|(rows, i)| rows.get(i))
+    }
 }
 
 impl Gestures {
@@ -141,7 +168,7 @@ impl View {
     /// Takes one pointer, wheel, or key input at `time`, seconds on the clock its frames give;
     /// events it causes queue for [`events`](View::events). Double clicks and flings measure the
     /// times between inputs. Returns whether the view used it, so a platform stops its default
-    /// handling: scrolling the page, its context menu.
+    /// handling: scrolling the page, its context menu, focus moving on.
     pub fn input(&mut self, input: &Input, time: f64) -> bool {
         if self.size[0] <= 0.0 {
             return false;
@@ -149,26 +176,27 @@ impl View {
         if time.is_finite() {
             self.gestures.time = time;
         }
+        let device = self.pointing().device;
         let used = match *input {
-            Input::Down { pointer, point, button, modifiers, touch } => {
-                self.down(pointer, point, button, modifiers, touch)
+            Input::Down { pointer, point, button, modifiers, device } => {
+                self.follow_pointer(Trigger { point, modifiers, device });
+                self.down(pointer, button)
             }
-            Input::Move { pointer, point, .. } => {
+            Input::Move { pointer, point, modifiers, device } => {
+                self.follow_pointer(Trigger { point, modifiers, device });
                 self.moved(pointer, point);
                 true
             }
-            Input::Up { pointer, point, .. } => self.up(pointer, Some(point)),
+            Input::Up { pointer, point, modifiers } => {
+                self.follow_pointer(Trigger { point, modifiers, device });
+                self.up(pointer, Some(point))
+            }
             Input::Cancel { pointer } => self.up(pointer, None),
             Input::Wheel { point, delta, .. } => self.wheel(point, delta),
             Input::Key { key, down: true, modifiers } => self.key(key, modifiers),
             Input::Key { .. } => false,
             Input::Leave => {
-                self.pointer = None;
-                if matches!(self.gestures.now, Gesture::Idle) {
-                    self.probing.wanted = None;
-                    self.probing.latest = None;
-                    self.hover(None);
-                }
+                self.left();
                 false
             }
         };
@@ -176,33 +204,55 @@ impl View {
         used
     }
 
-    fn down(&mut self, pointer: u32, point: [f32; 2], button: Button, modifiers: Modifiers, touch: bool) -> bool {
-        self.probing.touch = touch;
+    /// The pointer acts at `trigger`: what reads it evaluates again, and it takes the hover back from
+    /// the keys.
+    fn follow_pointer(&mut self, trigger: Trigger) {
+        self.pointer = Some(trigger);
+        self.gestures.keys.at = None;
+        for shown in &mut self.marks {
+            shown.dirty |= shown.channels_reading(Deps::POINTER);
+        }
+    }
+
+    /// Where the pointer last acted, the keys it held, and what it is.
+    fn pointing(&self) -> Trigger {
+        self.pointer.unwrap_or_default()
+    }
+
+    /// The pointer left: nothing it hovered stays hovered.
+    fn left(&mut self) {
+        let trigger = self.pointing();
+        self.pointer = None;
+        if matches!(self.gestures.now, Gesture::Idle) {
+            self.probing.wanted = None;
+            self.probing.latest = None;
+            if self.gestures.keys.at.is_none() {
+                self.hover(None, trigger);
+            }
+        }
+    }
+
+    fn down(&mut self, pointer: u32, button: Button) -> bool {
+        let trigger = self.pointing();
+        let point = trigger.point;
         let controls = self.scene.controls;
         let earlier = match self.gestures.now {
-            Gesture::Press { pointer: first, to: at, .. } | Gesture::Pan { pointer: first, last: at, .. }
+            Gesture::Press { pointer: first, trigger: Trigger { point: at, .. }, .. }
+            | Gesture::Pan { pointer: first, last: at, .. }
                 if first != pointer && controls.zoom =>
             {
                 self.rig.hold();
                 self.gestures.now = Gesture::Pinch { pointers: [(first, at), (pointer, point)] };
                 return true;
             }
-            Gesture::Press { button, to: at, answer: None, released: true, modifiers, .. } => {
-                near(at, point, DOUBLE_REACH).then_some((button, at, modifiers))
+            Gesture::Press { button, trigger: before, answer: None, released: true, .. } => {
+                near(before.point, point, DOUBLE_REACH).then_some((button, before))
             }
             Gesture::Idle => None,
             _ => return true,
         };
         self.rig.hold();
-        let map = matches!(self.camera, Camera::Map { .. });
-        let boxing = button == Button::Primary && modifiers.shift && controls.select_box;
-        let turning = button == Button::Primary && modifiers.shift && !boxing;
-        self.gestures.now = if boxing {
-            Gesture::Box { pointer, from: point, to: point }
-        } else if turning && self.turns() && map {
-            let anchor = self.anchor(point, self.probing.at(point).as_ref());
-            Gesture::Turn { pointer, anchor, last: point }
-        } else if button == Button::Middle && controls.pan {
+        self.gestures.now = if button == Button::Middle && controls.pan {
             let anchor = self.anchor(point, self.probing.at(point).as_ref());
             Gesture::Pan { pointer, anchor, last: point }
         } else if matches!(button, Button::Primary | Button::Secondary) {
@@ -210,7 +260,7 @@ impl View {
             if answer.is_none() {
                 self.probing.wanted = Some(point);
             }
-            Gesture::Press { pointer, button, from: point, to: point, answer, released: false, modifiers, earlier }
+            Gesture::Press { pointer, button, from: point, trigger, answer, released: false, earlier }
         } else {
             Gesture::Idle
         };
@@ -218,17 +268,14 @@ impl View {
     }
 
     fn moved(&mut self, pointer: u32, point: [f32; 2]) {
-        self.pointer = Some(point);
-        for shown in &mut self.marks {
-            shown.dirty |= shown.channels_reading(Deps::POINTER);
-        }
+        let pointing = self.pointing();
         match &mut self.gestures.now {
             Gesture::Idle => self.probing.wanted = Some(point),
-            Gesture::Press { pointer: p, to, .. } if *p == pointer => {
-                *to = point;
+            Gesture::Press { pointer: p, trigger, .. } if *p == pointer => {
+                *trigger = pointing;
                 self.pressed();
             }
-            Gesture::Drag { pointer: p, .. } if *p == pointer => self.drag(Phase::Move, point),
+            Gesture::Drag { pointer: p, .. } if *p == pointer => self.drag(Phase::Move, pointing),
             Gesture::Box { pointer: p, to, .. } if *p == pointer => *to = point,
             Gesture::Connect { pointer: p, to, .. } if *p == pointer => {
                 *to = point;
@@ -270,19 +317,19 @@ impl View {
     }
 
     fn up(&mut self, pointer: u32, point: Option<[f32; 2]>) -> bool {
+        let pointing = self.pointing();
         match &mut self.gestures.now {
-            Gesture::Press { pointer: p, released, to, .. } if *p == pointer => {
-                let Some(point) = point else {
+            Gesture::Press { pointer: p, released, trigger, .. } if *p == pointer => {
+                if point.is_none() {
                     self.gestures.now = Gesture::Idle;
                     return true;
-                };
-                *to = point;
+                }
+                *trigger = pointing;
                 *released = true;
                 self.pressed();
             }
             Gesture::Drag { pointer: p, .. } if *p == pointer => {
-                let at = point.or(self.pointer).unwrap_or_default();
-                self.drag(Phase::End, at);
+                self.drag(Phase::End, pointing);
                 self.gestures.now = Gesture::Idle;
             }
             Gesture::Pan { pointer: p, anchor, .. } if *p == pointer => {
@@ -304,14 +351,14 @@ impl View {
                 let corners = [*from, point.unwrap_or(*to)];
                 self.gestures.now = Gesture::Idle;
                 if point.is_some() {
-                    self.select_box(corners);
+                    self.select_box(corners, pointing);
                 }
             }
             Gesture::Connect { pointer: p, .. } if *p == pointer => {
                 let Gesture::Connect { from, edge, .. } = std::mem::take(&mut self.gestures.now) else { return true };
                 if let Some(point) = point {
                     let hits = self.pick(point, self.scene.controls.pick_radius);
-                    self.gestures.awaiting.push((hits, Awaited::Connect { from, edge, point }));
+                    self.events.tell_after(hits, Awaited::Connect { from, edge, trigger: pointing });
                 }
             }
             _ => return false,
@@ -319,7 +366,8 @@ impl View {
         true
     }
 
-    /// A probe landed: a press waiting for it decides, otherwise it is what is hovered.
+    /// A probe landed: a press waiting for it decides; otherwise it is what the pointer hovers,
+    /// unless the keys point at a row.
     pub(super) fn landed(&mut self, point: [f32; 2], answer: Answer) {
         if let Gesture::Press { from, answer: waiting @ None, .. } = &mut self.gestures.now
             && near(*from, point, 0.5)
@@ -329,47 +377,65 @@ impl View {
             self.pressed();
             return;
         }
-        let hit = answer.hit.clone();
+        let hit = answer.hit.as_ref().map(|probed| probed.hit.clone());
         self.probing.latest = Some((point, answer));
-        if self.scene.controls.hover {
-            self.hover(hit);
+        if self.gestures.keys.at.is_none() {
+            self.hover(hit, Trigger { point, ..self.pointing() });
         }
     }
 
-    fn hover(&mut self, probed: Option<Probed>) {
-        let row = probed.as_ref().map(|p| p.hit.row.clone());
-        if row != self.focus.hovered {
-            self.focus.hovered = row;
+    /// Points at `hit`, telling the application when the row changed.
+    fn hover(&mut self, hit: Option<Hit>, trigger: Trigger) {
+        if hit.as_ref().map(|h| &h.row) != self.focus.hovered.as_ref().map(|h| &h.row) {
             self.focus.dirty = true;
-            self.events.push(Event::Hover(probed.map(|p| p.hit)));
+            self.events.tell(Event::Hover { hit: hit.clone(), trigger });
             self.wake();
         }
+        self.focus.hovered = hit;
     }
 
-    /// Decides a press once what lies under it is known: a release clicks or asks for a menu, a move
+    /// Decides a press: once it moves with Shift and boxes select, a box, whatever lies under it;
+    /// otherwise once what lies under it is known, a release clicks or asks for a menu, and a move
     /// connects, drags, pans, or turns.
     fn pressed(&mut self) {
-        let Gesture::Press { pointer, button, from, to, answer: Some(answer), released, modifiers, earlier } =
-            &mut self.gestures.now
+        let Gesture::Press { pointer, button, from, trigger, answer, released, earlier } = &mut self.gestures.now
         else {
             return;
         };
-        let (pointer, button, from, to, answer, released, modifiers, earlier) =
-            (*pointer, *button, *from, *to, answer.clone(), *released, *modifiers, earlier.take());
-        if let Some((button, at, modifiers)) = earlier {
-            self.tap(button, answer.hit.clone(), at, modifiers);
+        let boxing = *button == Button::Primary
+            && trigger.modifiers.shift
+            && self.scene.controls.select_box
+            && !near(*from, trigger.point, SLOP);
+        if boxing {
+            let (pointer, corners, trigger, released) = (*pointer, [*from, trigger.point], *trigger, *released);
+            if released {
+                self.gestures.now = Gesture::Idle;
+                self.select_box(corners, trigger);
+            } else {
+                self.gestures.now = Gesture::Box { pointer, from: corners[0], to: corners[1] };
+            }
+            return;
+        }
+        let Some(answer) = answer.clone() else { return };
+        let (pointer, button, from, trigger, released, earlier) =
+            (*pointer, *button, *from, *trigger, *released, earlier.take());
+        if let Some((button, trigger)) = earlier {
+            self.tap(button, answer.hit.clone(), trigger);
         }
         if released {
             self.gestures.now = Gesture::Idle;
-            self.tap(button, answer.hit, to, modifiers);
+            self.tap(button, answer.hit, trigger);
             return;
         }
+        let to = trigger.point;
         if near(from, to, SLOP) {
             return;
         }
-        if button == Button::Secondary {
+        // The secondary button turns a map or plane once it moves, and so does Shift.
+        let turns = self.turns() && matches!(self.camera, Camera::Map { .. });
+        if button == Button::Secondary || (trigger.modifiers.shift && turns) {
             self.gestures.now = Gesture::Idle;
-            if self.turns() && matches!(self.camera, Camera::Map { .. }) {
+            if turns {
                 let anchor = self.anchor(from, Some(&answer));
                 self.gestures.now = Gesture::Turn { pointer, anchor, last: from };
                 self.moved(pointer, to);
@@ -378,7 +444,7 @@ impl View {
         }
         if self.scene.controls.connect
             && let Some((from, edge, anchor)) =
-                answer.hit.as_ref().and_then(|probed| self.connect_from(probed, modifiers))
+                answer.hit.as_ref().and_then(|probed| self.connect_from(probed, trigger.modifiers))
         {
             let locating = anchor.is_none().then(|| self.locate(&from.row));
             self.gestures.now = Gesture::Connect { pointer, from, edge, anchor, locating, to };
@@ -388,7 +454,7 @@ impl View {
         match answer.hit {
             Some(probed) if drags(&probed) => {
                 self.gestures.now = Gesture::Drag { pointer, probed };
-                self.drag(Phase::Start, to);
+                self.drag(Phase::Start, trigger);
             }
             _ if self.scene.controls.pan => {
                 let anchor = self.anchor(from, Some(&answer));
@@ -402,63 +468,71 @@ impl View {
     }
 
     /// A press let go where it began: a click, or a menu for the secondary button.
-    fn tap(&mut self, button: Button, hit: Option<Probed>, point: [f32; 2], modifiers: Modifiers) {
+    fn tap(&mut self, button: Button, hit: Option<Probed>, trigger: Trigger) {
         if button == Button::Secondary {
-            self.menu(point, false, modifiers);
+            self.menu(trigger);
         } else {
-            self.click(hit, point, modifiers);
+            self.click(hit, trigger);
         }
     }
 
-    fn click(&mut self, hit: Option<Probed>, point: [f32; 2], modifiers: Modifiers) {
+    fn click(&mut self, hit: Option<Probed>, trigger: Trigger) {
         let now = self.gestures.time;
         let row = hit.as_ref().map(|p| p.hit.row.clone());
         let double = self
             .gestures
             .clicked
             .take()
-            .is_some_and(|(at, p, r)| now - at < DOUBLE && near(p, point, DOUBLE_REACH) && r == row);
+            .is_some_and(|(at, p, r)| now - at < DOUBLE && near(p, trigger.point, DOUBLE_REACH) && r == row);
         if !double {
-            self.gestures.clicked = Some((now, point, row));
+            self.gestures.clicked = Some((now, trigger.point, row));
         }
-        let toggle = modifiers.shift || modifiers.control || modifiers.meta;
+        let toggle = trigger.modifiers.toggles();
         match hit {
-            Some(probed) => {
-                self.events.push(Event::Click(probed.hit.clone()));
+            Some(Probed { hit, .. }) => {
+                self.events.tell(Event::Click { hit: hit.clone(), trigger });
                 if double {
-                    self.events.push(Event::Open(probed.hit.clone()));
+                    self.events.tell(Event::Open { hit: hit.clone(), trigger });
                 }
-                if self.scene.marks.get(probed.hit.mark).is_some_and(|m| m.style().interaction.select) {
-                    let row = probed.hit.row;
-                    let mut selection = if toggle { self.focus.selection.clone() } else { Vec::new() };
-                    match selection.iter().position(|r| *r == row) {
-                        Some(i) if toggle => {
-                            selection.remove(i);
-                        }
-                        Some(_) => {}
-                        None => selection.push(row),
-                    }
-                    self.reselect(selection);
+                if self.selects(hit.mark) {
+                    self.select_row(hit.row, toggle, trigger);
                 }
             }
             None if double => self.fit(Fit::All),
-            None if !toggle => self.reselect(Vec::new()),
+            None if !toggle => self.reselect(Vec::new(), Some(trigger)),
             None => {}
         }
     }
 
-    pub(super) fn reselect(&mut self, selection: Vec<Row>) {
+    /// Selects `row` alone, or with `toggle` adds it to the selection or takes it out.
+    fn select_row(&mut self, row: Row, toggle: bool, trigger: Trigger) {
+        let mut selection = if toggle { self.focus.selection.clone() } else { Vec::new() };
+        match selection.iter().position(|r| *r == row) {
+            Some(i) if toggle => {
+                selection.remove(i);
+            }
+            Some(_) => {}
+            None => selection.push(row),
+        }
+        self.reselect(selection, Some(trigger));
+    }
+
+    /// Selects `selection` for the user, or without a trigger for the data, telling the application
+    /// when it changed.
+    pub(super) fn reselect(&mut self, selection: Vec<Row>, trigger: Option<Trigger>) {
         if selection != self.focus.selection {
             self.focus.selection.clone_from(&selection);
             self.focus.dirty = true;
-            self.events.push(Event::Select(selection));
+            self.events.tell(Event::Select { rows: selection, trigger });
         }
     }
 
-    fn drag(&mut self, phase: Phase, point: [f32; 2]) {
+    /// Tells where the row dragged follows the pointer at `trigger`: the point under it at the depth
+    /// the drag started, snapped to a diagram's dots when it snaps.
+    fn drag(&mut self, phase: Phase, trigger: Trigger) {
         let Gesture::Drag { probed, .. } = &self.gestures.now else { return };
         let view = self.projected();
-        let mut position = view.position(view.unproject(point.map(f64::from), f64::from(probed.depth)));
+        let mut position = view.position(view.unproject(trigger.point.map(f64::from), f64::from(probed.depth)));
         if let Space::Diagram(diagram) = &self.scene.space
             && let Grid::Dots { pitch, snap: true } = diagram.grid
             && pitch > 0.0
@@ -467,7 +541,7 @@ impl View {
                 *v = (*v / pitch).round() * pitch;
             }
         }
-        self.events.push(Event::Drag(Drag { phase, hit: probed.hit.clone(), point, position }));
+        self.events.tell(Event::Drag { phase, hit: probed.hit.clone(), position, trigger });
     }
 
     /// Whether a row is being dragged: what it moves follows at once.
@@ -478,6 +552,11 @@ impl View {
     /// Whether gestures and keys turn the camera: never in a diagram.
     fn turns(&self) -> bool {
         self.scene.controls.turn && !matches!(self.scene.space, Space::Diagram(_))
+    }
+
+    /// Whether the rows of mark `mark` select.
+    fn selects(&self, mark: usize) -> bool {
+        self.scene.marks.get(mark).is_some_and(|m| m.style().interaction.select)
     }
 
     /// Where a connection starts from what a press hit: a port, or a vertex with Alt, starts one
@@ -500,15 +579,15 @@ impl View {
         }
     }
 
-    /// Asks what lies under `point` for a menu.
-    fn menu(&mut self, point: [f32; 2], keyboard: bool, modifiers: Modifiers) {
-        let hits = self.pick(point, self.scene.controls.pick_radius);
-        self.gestures.awaiting.push((hits, Awaited::Menu { point, keyboard, modifiers }));
+    /// Asks what lies under the trigger's point, for a menu told in its place once the pick answers.
+    fn menu(&mut self, trigger: Trigger) {
+        let hits = self.pick(trigger.point, self.scene.controls.pick_radius);
+        self.events.tell_after(hits, Awaited::Menu(trigger));
     }
 
-    /// Tells the menus and connections whose picks answered, and starts a connection being drawn
-    /// where the row it stays at lies.
-    pub(super) fn settle_awaiting(&mut self) {
+    /// Makes the intents whose picks answered, in their places among the intents; takes the keys'
+    /// rows once picked; and starts a connection being drawn where the row it stays at lies.
+    pub(super) fn settle_gestures(&mut self) {
         if let Gesture::Connect { anchor, locating: Some(locating), .. } = &mut self.gestures.now
             && let Some(found) = locating.take()
         {
@@ -517,24 +596,23 @@ impl View {
                 *locating = None;
             }
         }
-        let mut i = 0;
-        while i < self.gestures.awaiting.len() {
-            let Some(hits) = self.gestures.awaiting[i].0.take() else {
-                i += 1;
-                continue;
-            };
-            let (_, awaited) = self.gestures.awaiting.remove(i);
-            let hits = hits.unwrap_or_default();
-            self.events.push(match awaited {
-                Awaited::Menu { point, keyboard, modifiers } => Event::Menu { point, hits, keyboard, modifiers },
-                Awaited::Connect { from, edge, point } => {
-                    let vertex = |h: &&Hit| {
-                        self.marks.get(h.mark).is_some_and(|m| m.kind() == MarkKind::Vertices) && h.row != from.row
-                    };
-                    let to = hits.iter().find(vertex).map(|h| End { row: h.row.clone(), port: h.port.clone() });
-                    Event::Connect { from, to, edge, point }
-                }
-            });
+        let mut events = std::mem::take(&mut self.events);
+        events.settle(|hits, awaited| self.finish(hits, awaited));
+        self.events = events;
+        self.settle_keys();
+    }
+
+    /// The intent `awaited` makes of the hits its pick found.
+    fn finish(&self, hits: Vec<Hit>, awaited: Awaited) -> Event {
+        match awaited {
+            Awaited::Menu(trigger) => Event::Menu { hits, trigger },
+            Awaited::Connect { from, edge, trigger } => {
+                let vertex = |hit: &&Hit| {
+                    self.marks.get(hit.mark).is_some_and(|m| m.kind() == MarkKind::Vertices) && hit.row != from.row
+                };
+                let to = hits.iter().find(vertex).map(|hit| End { row: hit.row.clone(), port: hit.port.clone() });
+                Event::Connect { from, to, edge, trigger }
+            }
         }
     }
 
@@ -550,15 +628,41 @@ impl View {
 
     fn key(&mut self, key: Key, modifiers: Modifiers) -> bool {
         let controls = self.scene.controls;
+        let stepped = self.gestures.keys.row().cloned();
+        let point =
+            stepped.as_ref().map(|hit| hit.point).or(self.pointer.map(|p| p.point)).unwrap_or_else(|| self.middle());
+        let trigger = Trigger { point, modifiers, device: Device::Keyboard };
+        if controls.keyboard {
+            match (key, &stepped) {
+                (Key::Tab, _) => return self.step(key, modifiers),
+                (Key::Left | Key::Right | Key::Up | Key::Down, Some(_)) => {
+                    if self.step(key, modifiers) {
+                        return true;
+                    }
+                }
+                (Key::Enter, Some(hit)) => {
+                    self.events.tell(Event::Open { hit: hit.clone(), trigger });
+                    return true;
+                }
+                (Key::Space, Some(hit)) if self.selects(hit.mark) => {
+                    self.select_row(hit.row.clone(), true, trigger);
+                    return true;
+                }
+                (Key::Escape, Some(_)) => {
+                    self.gestures.keys.at = None;
+                    self.hover(None, trigger);
+                    return true;
+                }
+                _ => {}
+            }
+        }
         match key {
             Key::Delete | Key::Backspace if controls.delete && !self.focus.selection.is_empty() => {
-                self.events.push(Event::Delete(self.focus.selection.clone()));
+                self.events.tell(Event::Delete { rows: self.focus.selection.clone(), trigger });
                 return true;
             }
             Key::Menu => {
-                let [w, h] = self.size.map(|v| v as f32);
-                let point = self.pointer.unwrap_or([w / 2.0, h / 2.0]);
-                self.menu(point, true, modifiers);
+                self.menu(trigger);
                 return true;
             }
             _ => {}
@@ -588,9 +692,99 @@ impl View {
             (Key::Plus, _) if controls.zoom => self.rig.owe(anchor, [0.0; 2], [0.0; 2], STEP_ZOOM),
             (Key::Minus, _) if controls.zoom => self.rig.owe(anchor, [0.0; 2], [0.0; 2], -STEP_ZOOM),
             (Key::Home, _) => self.fit(Fit::All),
-            (Key::Escape, _) => self.reselect(Vec::new()),
+            (Key::Escape, _) => self.reselect(Vec::new(), Some(trigger)),
             _ => return false,
         }
         true
     }
+
+    /// Steps the row the keys point at: Tab to the next row nearest the view's middle, Shift+Tab
+    /// back, an arrow to the nearest row its way. Tab steps through the rows as last picked and waits
+    /// only for the first pick; an arrow waits for rows picked where the frame now draws them. Past
+    /// either end Tab is not used, so focus moves on. Whether the key was used.
+    fn step(&mut self, key: Key, modifiers: Modifiers) -> bool {
+        let tab = key == Key::Tab;
+        if !self.gestures.keys.fresh && self.gestures.keys.picking.is_none() {
+            if !self.marks.iter().any(Shown::probed) {
+                return false;
+            }
+            let [w, h] = self.size.map(|v| v as f32);
+            let picking = self.pick(self.middle(), w.hypot(h) / 2.0);
+            self.gestures.keys.picking = Some(picking);
+        }
+        let keys = &self.gestures.keys;
+        if keys.rows.is_none() || (!tab && !keys.fresh) {
+            self.gestures.keys.queued.push((key, modifiers));
+            return true;
+        }
+        let rows = keys.rows.as_deref().unwrap_or_default();
+        let next = match (key, keys.at) {
+            (Key::Tab, None) => (!rows.is_empty()).then_some(0),
+            (Key::Tab, Some(i)) if modifiers.shift => i.checked_sub(1),
+            (Key::Tab, Some(i)) => Some(i + 1).filter(|&j| j < rows.len()),
+            (arrow, Some(i)) => toward(rows, i, arrow),
+            (_, None) => None,
+        };
+        let Some(next) = next else {
+            if tab && self.gestures.keys.at.take().is_some() {
+                self.hover(None, Trigger { point: self.middle(), modifiers, device: Device::Keyboard });
+            }
+            return false;
+        };
+        let hit = rows[next].clone();
+        self.gestures.keys.at = Some(next);
+        self.hover(Some(hit.clone()), Trigger { point: hit.point, modifiers, device: Device::Keyboard });
+        true
+    }
+
+    /// Takes the keys' rows once their pick answers, and steps the keys that waited for them.
+    fn settle_keys(&mut self) {
+        let keys = &mut self.gestures.keys;
+        let Some(rows) = keys.picking.as_ref().and_then(Pending::take) else { return };
+        let held = keys.row().map(|hit| hit.row.clone());
+        let rows = rows.unwrap_or_default();
+        // The row stepped to keeps its place among the rows as now drawn.
+        keys.at = held.as_ref().and_then(|row| rows.iter().position(|hit| hit.row == *row));
+        keys.rows = Some(rows);
+        keys.picking = None;
+        keys.fresh = true;
+        let queued = std::mem::take(&mut keys.queued);
+        if held.is_some() && self.gestures.keys.at.is_none() {
+            self.hover(None, Trigger { point: self.middle(), device: Device::Keyboard, ..Trigger::default() });
+        }
+        for (key, modifiers) in queued {
+            self.step(key, modifiers);
+        }
+    }
+
+    /// The middle of the view, CSS pixels from the top left.
+    fn middle(&self) -> [f32; 2] {
+        let [w, h] = self.size.map(|v| v as f32);
+        [w / 2.0, h / 2.0]
+    }
+}
+
+/// The row of `rows` nearest row `i` within 45° of the arrow's way from it.
+fn toward(rows: &[Hit], i: usize, arrow: Key) -> Option<usize> {
+    let way = match arrow {
+        Key::Left => [-1.0, 0.0],
+        Key::Right => [1.0, 0.0],
+        Key::Up => [0.0, -1.0],
+        Key::Down => [0.0, 1.0],
+        _ => return None,
+    };
+    let from = rows.get(i)?.point;
+    let offset = |hit: &Hit| [hit.point[0] - from[0], hit.point[1] - from[1]];
+    let distance = |hit: &Hit| {
+        let [dx, dy] = offset(hit);
+        dx.hypot(dy)
+    };
+    rows.iter()
+        .enumerate()
+        .filter(|&(j, hit)| {
+            let [dx, dy] = offset(hit);
+            j != i && dx * way[0] + dy * way[1] > distance(hit) * std::f32::consts::FRAC_1_SQRT_2
+        })
+        .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))
+        .map(|(j, _)| j)
 }
