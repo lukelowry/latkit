@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "examples",
+      "detail": "Build the wasm (--dev), serve the example suite at http://127.0.0.1:5200, and open it",
+      "type": "shell",
+      "command": "cargo xtask examples --open",
+      "problemMatcher": [],
+      "options": {
+        "statusbar": {
+          "label": "$(play) Examples",
+          "detail": "Build and serve npm/examples, then open it in the browser",
+          "running": { "label": "$(sync~spin) Examples" }
+        }
+      }
+    }
+  ]
+}

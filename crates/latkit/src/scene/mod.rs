@@ -1,6 +1,7 @@
 //! Scenes: what a view draws, as plain data. Marks name their data; the view is given the data.
 
 pub(crate) mod areas;
+pub(crate) mod compile;
 mod controls;
 #[cfg(feature = "serde")]
 mod decode;
@@ -33,7 +34,7 @@ pub use space::{Axis, Diagram, Earth, Format, Grid, Plane, Plot, Projection, Spa
 pub use theme::{Shadow, Theme};
 pub use vertices::Vertices;
 
-use crate::{Error, Result};
+use crate::{Data, Error, Result};
 
 /// What a view draws and how it answers input: a space, marks in drawing order, a layout, a theme,
 /// controls, and how long changes ease.
@@ -110,6 +111,32 @@ impl Scene {
     /// The marks in drawing order.
     pub fn marks(&self) -> &[Mark] {
         &self.marks
+    }
+
+    /// Checks the scene against complete datasets without creating a GPU. Uses the same expression
+    /// compiler as a view, but requires every drawn dataset and table to be present.
+    pub fn validate(&self, data: &[Data]) -> Result<()> {
+        self.check()?;
+        for (i, item) in data.iter().enumerate() {
+            if data[..i].iter().any(|other| other.name() == item.name()) {
+                return Err(Error::invalid("duplicate dataset name").at(i).at("data"));
+            }
+        }
+        for (i, mark) in self.marks.iter().enumerate() {
+            let style = mark.style();
+            let dataset = data.iter().find(|d| *d.name() == style.data).ok_or_else(|| {
+                Error::invalid(format!("dataset '{}' was not supplied", style.data)).at("data").at(i).at("marks")
+            })?;
+            if dataset.table(&style.table).is_none() {
+                return Err(Error::invalid(format!("table '{}' is absent from '{}'", style.table, style.data))
+                    .at("table")
+                    .at(i)
+                    .at("marks"));
+            }
+            compile::compile(mark, data, mark::Context { theme: &self.theme, space: &self.space })
+                .map_err(|error| error.at(i).at("marks"))?;
+        }
+        Ok(())
     }
 
     /// Two marks with one key would be indistinguishable across scenes; options a space does not have

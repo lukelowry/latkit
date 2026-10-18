@@ -19,6 +19,7 @@ pub(crate) mod tiles;
 pub(crate) use lanes::{answer as lanes_answer, spread};
 
 use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
 use std::task::Waker;
 
 use rustc_hash::{FxHashMap, FxHasher};
@@ -125,6 +126,7 @@ const FRAME_WORK: u32 = 4000;
 /// The frame's budget of inline work and the host's pool, which every derivation shares. Each job
 /// and fetch wakes the view when it lands.
 pub(crate) struct Jobs<'a> {
+    errors: &'a Arc<Mutex<Vec<crate::Error>>>,
     host: Option<&'a dyn Host>,
     waker: &'a Waker,
     /// What counts the jobs handed out.
@@ -134,8 +136,13 @@ pub(crate) struct Jobs<'a> {
 }
 
 impl<'a> Jobs<'a> {
-    pub(crate) fn new(host: Option<&'a dyn Host>, waker: &'a Waker, counters: &'a Counters) -> Jobs<'a> {
-        Jobs { host, waker, counters, left: FRAME_WORK }
+    pub(crate) fn new(
+        host: Option<&'a dyn Host>,
+        waker: &'a Waker,
+        counters: &'a Counters,
+        errors: &'a Arc<Mutex<Vec<crate::Error>>>,
+    ) -> Jobs<'a> {
+        Jobs { host, waker, counters, errors, left: FRAME_WORK }
     }
 
     /// Whether work of `cost` microseconds fits what is left of the frame's budget, spending it if so.
@@ -164,6 +171,7 @@ impl<'a> Jobs<'a> {
             Some(host) => host.spawn(job),
             None => Pending::ready(Ok(job.run())),
         };
+        pending.report_errors(self.errors);
         pending.notify(self.waker);
         pending
     }

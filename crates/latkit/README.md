@@ -8,7 +8,7 @@ cargo xtask check      # fmt, clippy, tests, docs, TypeScript, browser gate
 cargo xtask browser    # the browser gate: shader compile budgets, then every example page in Chrome
 cargo xtask bench      # every scenario swept over sizes in Chrome: time, work, and how each grows
 cargo xtask wasm       # latkit-js → npm/pkg, the npm wrapper → npm/dist (--dev: no wasm-opt)
-cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200
+cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200 (--open: in the browser)
 ```
 
 ## Foundation

@@ -20,8 +20,9 @@ type Pictures = Arc<Mutex<Vec<(u64, bool, Vec<u8>)>>>;
 struct Keeping(Pictures);
 
 impl Host for Keeping {
-    fn rasterize(&self, _: &TextRun) -> Option<Raster> {
-        None
+    fn rasterize(&self, run: &TextRun) -> latkit::Result<Raster> {
+        let size = [(run.text.chars().count() as u32 * run.size_px / 2).max(1), run.size_px];
+        Ok(Raster { size, coverage: vec![255; (size[0] * size[1]) as usize], baseline: run.size_px as f32 * 0.8 })
     }
 
     fn encoder(&self, encoding: &Encoding) -> latkit::Result<Box<dyn Encoder>> {

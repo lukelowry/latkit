@@ -17,9 +17,9 @@ use latkit::{Camera, Color, Data, Label, Marker, Scene, Table, Vertices, View, f
 struct Boxes;
 
 impl Host for Boxes {
-    fn rasterize(&self, run: &TextRun) -> Option<Raster> {
+    fn rasterize(&self, run: &TextRun) -> latkit::Result<Raster> {
         let size = [(0.6 * (run.text.chars().count() as u32 * run.size_px) as f32) as u32, run.size_px];
-        Some(Raster { size, coverage: vec![255; (size[0] * size[1]) as usize], baseline: size[1] as f32 * 0.8 })
+        Ok(Raster { size, coverage: vec![255; (size[0] * size[1]) as usize], baseline: size[1] as f32 * 0.8 })
     }
 }
 
@@ -27,7 +27,7 @@ impl Host for Boxes {
 struct Counted(Arc<AtomicUsize>);
 
 impl Host for Counted {
-    fn rasterize(&self, run: &TextRun) -> Option<Raster> {
+    fn rasterize(&self, run: &TextRun) -> latkit::Result<Raster> {
         self.0.fetch_add(1, Ordering::Relaxed);
         Boxes.rasterize(run)
     }

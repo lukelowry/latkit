@@ -29,6 +29,7 @@ const MEASURED: usize = 1 << 16;
 /// The sheet of a diagram's view.
 #[derive(Default)]
 pub(crate) struct Sheet {
+    pub(crate) errors: Vec<crate::Error>,
     /// The derived table beside each table it draws.
     tables: Tables,
     /// Places layouts gave rows without positions, kept by row, also after a row leaves, so undo
@@ -317,8 +318,15 @@ impl Sheet {
             return size;
         }
         let base = f64::from(TEXT_BASE);
-        let Some(size) = input.host.and_then(|host| host.measure(&run)) else {
-            return [run.text.chars().count() as f64 * 0.6 * base, 1.25 * base];
+        let measured = input.host.map(|host| host.measure(&run));
+        let size = match measured {
+            Some(Ok(size)) => size,
+            other => {
+                if let Some(Err(error)) = other {
+                    self.errors.push(error);
+                }
+                return [run.text.chars().count() as f64 * 0.6 * base, 1.25 * base];
+            }
         };
         if self.measured.len() >= MEASURED {
             self.measured.clear();

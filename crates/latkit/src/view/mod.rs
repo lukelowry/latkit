@@ -112,6 +112,7 @@ pub struct View {
     plot_y: Option<[f64; 2]>,
     at: f64,
     clock: Clock,
+    effect_time: f64,
     events: Vec<Event>,
     /// What landing work wakes, and the waker it is: readbacks, jobs, and fetches hold it.
     signal: Arc<wake::Signal>,
@@ -173,6 +174,7 @@ impl View {
             plot_y: None,
             at: f64::INFINITY,
             clock: Clock::default(),
+            effect_time: f64::NAN,
             events: Vec::new(),
             waker: Waker::from(signal.clone()),
             signal,
@@ -507,11 +509,6 @@ impl View {
         self.waiting.is_empty()
     }
 
-    /// The work under way the last frame stood in for.
-    pub(crate) fn waiting(&self) -> Waiting {
-        self.waiting
-    }
-
     /// What happened since the last call.
     pub fn events(&mut self) -> impl Iterator<Item = Event> + '_ {
         self.events.drain(..)
@@ -540,9 +537,13 @@ impl View {
         &self.gpu
     }
 
-    /// Tells the application `error` with the next events.
-    pub(crate) fn tell(&mut self, error: crate::Error) {
-        self.events.push(Event::Error(error));
+    /// Capture preserves events for its owner, but fails on a queued render error.
+    pub(crate) fn capture_error(&mut self) -> Option<crate::Error> {
+        self.tell_gpu_errors();
+        self.events.iter().find_map(|event| match event {
+            Event::Error(error) => Some(error.clone()),
+            _ => None,
+        })
     }
 
     /// Whether a frame would differ from the last one: something changed, moves, or streams in, or

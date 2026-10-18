@@ -6,20 +6,13 @@ use super::rows::Region;
 use super::sync::Tables;
 use super::transition::{Begin, Transition};
 use crate::data::Table;
-use crate::expr::compile::{Compiler, Deps, Fields, Program};
+use crate::expr::compile::Deps;
 use crate::gpu::shaders as wgsl;
 use crate::gpu::work::Queue;
 use crate::gpu::{Inner, atlas};
-use crate::scene::mark::{Context, Drawing, Key, MarkKind, Primitive};
-use crate::{Data, Error, Kind, Mark, Name, Port, Result, Shape};
-
-/// A mark's program and how it draws, compiled against one schema of its data.
-pub(crate) struct Compiled {
-    pub(crate) program: Arc<Program>,
-    pub(crate) drawing: Drawing,
-    /// The schemas compiled against: the mark's data, then every dataset a join reads.
-    pub(crate) schemas: Vec<(Name, u64)>,
-}
+use crate::scene::compile::{self, Compiled};
+use crate::scene::mark::{Context, Key, MarkKind, Primitive};
+use crate::{Data, Error, Mark, Port, Result, Shape};
 
 /// Where a mark's parts sit in the program buffer, as absolute word offsets.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -272,28 +265,10 @@ impl Shown {
         self.compiled = None;
         self.packed = false;
         self.failed = None;
-        let style = self.mark.style();
-        let Some(data) = all.iter().find(|d| *d.name() == style.data) else { return Ok(()) };
-        let Some(table) = data.table(&style.table) else { return Ok(()) };
-        let fields = Schema { table, all };
-        let mut compiler = Compiler::new(&fields);
-        let drawing = self.mark.compile(&mut compiler, context)?;
-        let program = compiler.finish();
-        if program.channels.len() > 32 {
-            return Err(Error::invalid("more than 32 options read data"));
-        }
-        let mut schemas = vec![(data.name().clone(), data.schema())];
-        for column in &program.columns {
-            if let Some((name, _)) = &column.of
-                && !schemas.iter().any(|(n, _)| n == name)
-                && let Some(other) = all.iter().find(|d| d.name() == name)
-            {
-                schemas.push((name.clone(), other.schema()));
-            }
-        }
-        self.code.clone_from(&program.code);
-        self.constants.clone_from(&program.constants);
-        self.compiled = Some(Compiled { program: Arc::new(program), drawing, schemas });
+        let Some(compiled) = compile::compile(&self.mark, all, context)? else { return Ok(()) };
+        self.code.clone_from(&compiled.program.code);
+        self.constants.clone_from(&compiled.program.constants);
+        self.compiled = Some(compiled);
         self.all_dirty();
         Ok(())
     }
@@ -380,27 +355,5 @@ fn shape_code(shape: Shape) -> u32 {
         Shape::Rectangle => wgsl::SHAPE_RECTANGLE,
         Shape::Rounded => wgsl::SHAPE_ROUNDED,
         Shape::Diamond => wgsl::SHAPE_DIAMOND,
-    }
-}
-
-/// The fields a mark's expressions read: its own table's, and other datasets' for joins.
-struct Schema<'a> {
-    table: &'a crate::Table,
-    all: &'a [Data],
-}
-
-impl Fields for Schema<'_> {
-    fn kind(&self, of: Option<&(Name, Name)>, name: &str) -> Option<Kind> {
-        match of {
-            None => self.table.kind(name),
-            Some((data, table)) => self.all.iter().find(|d| d.name() == data)?.table(table)?.kind(name),
-        }
-    }
-
-    fn target(&self, name: &str) -> Option<Name> {
-        match self.table.field_named(name)? {
-            crate::data::Field::Reference(reference) => Some(reference.to.clone()),
-            _ => None,
-        }
     }
 }

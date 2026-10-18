@@ -398,7 +398,8 @@ impl View {
     ) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let background = self.scene.theme.background.to_array().map(f64::from);
+        let background =
+            if self.signal.transparent() { [0.0; 4] } else { self.scene.theme.background.to_array().map(f64::from) };
         let plot = matches!(self.scene.space, Space::Plot(_));
         let scissor = scissor(self.area(), frame);
         let samples = super::resources::samples(frame.pixel_ratio);

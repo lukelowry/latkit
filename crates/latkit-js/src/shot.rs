@@ -1,4 +1,4 @@
-//! Pictures and videos of views: a shot crosses as `{ size, scale, panels, transparent, deadline }`
+//! Pictures and videos of views: a shot crosses as `{ size, scale, panels, transparent, deadline, elapsed }`
 //! and draws the views of the canvases given, which hold their last frames meanwhile. An image's
 //! pixels cross once; a video hands back the bytes each frame made, for the page to write.
 
@@ -41,7 +41,14 @@ fn shot(config: &JsValue) -> Result<latkit::Shot, Error> {
         shot = shot.transparent();
     }
     if let Some(ms) = get("deadline").as_f64() {
-        shot = shot.deadline(std::time::Duration::from_secs_f64(ms.max(0.0) / 1000.0));
+        let duration = std::time::Duration::try_from_secs_f64(ms / 1000.0)
+            .map_err(|_| latkit::Error::invalid("deadline is nonnegative milliseconds within range").at("deadline"))?;
+        shot = shot.deadline(duration);
+    }
+    if let Some(seconds) = get("elapsed").as_f64() {
+        let duration = std::time::Duration::try_from_secs_f64(seconds)
+            .map_err(|_| latkit::Error::invalid("elapsed is nonnegative seconds within range").at("elapsed"))?;
+        shot = shot.elapsed(duration);
     }
     Ok(shot)
 }

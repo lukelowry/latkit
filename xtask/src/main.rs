@@ -15,7 +15,8 @@
 //!   and skips `wasm-opt`.
 //! - `package`: build an isolated, optimized npm tarball and report its sizes and hashes.
 //! - `package-test`: install the latest tarball into a consumer and verify it in Chrome.
-//! - `examples`: `wasm --dev`, then serve the example suite at <http://127.0.0.1:5200>.
+//! - `examples [--open]`: `wasm --dev`, then serve the example suite at <http://127.0.0.1:5200>;
+//!   `--open` opens it in the browser once it is ready.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -35,9 +36,17 @@ fn main() -> ExitCode {
         "wasm" => wasm(dev),
         "package" => package(),
         "package-test" => package_test(),
-        "examples" => wasm(true).and_then(|()| pnpm(&["--dir", "npm/examples", "exec", "vite"])),
+        "examples" => wasm(true).and_then(|()| {
+            let mut vite = vec!["--dir", "npm/examples", "exec", "vite"];
+            if std::env::args().any(|a| a == "--open") {
+                vite.push("--open");
+            }
+            pnpm(&vite)
+        }),
         _ => {
-            eprintln!("usage: cargo xtask <check|browser|bench [flags]|wasm [--dev]|package|package-test|examples>");
+            eprintln!(
+                "usage: cargo xtask <check|browser|bench [flags]|wasm [--dev]|package|package-test|examples [--open]>"
+            );
             return ExitCode::FAILURE;
         }
     };

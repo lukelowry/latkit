@@ -69,6 +69,7 @@ struct Shelf {
 }
 
 pub(crate) struct Atlas {
+    pub(crate) errors: Vec<crate::Error>,
     texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
     shelves: Vec<Shelf>,
@@ -95,7 +96,16 @@ impl Atlas {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Atlas { texture, view, shelves: Vec::new(), runs: HashMap::new(), clock: 0, evictions: 0, counters }
+        Atlas {
+            errors: Vec::new(),
+            texture,
+            view,
+            shelves: Vec::new(),
+            runs: HashMap::new(),
+            clock: 0,
+            evictions: 0,
+            counters,
+        }
     }
 
     /// Starts a frame: runs asked for from now on count as used in it.
@@ -112,11 +122,22 @@ impl Atlas {
         }
         let host = host?;
         self.counters.add(Count::Texts, 1);
-        let raster = host.rasterize(run);
+        let raster = match host.rasterize(run) {
+            Ok(raster) => Some(raster),
+            Err(error) => {
+                self.errors.push(error);
+                return None;
+            }
+        };
         let placed = raster.and_then(|raster| {
             let [w, h] = raster.size;
-            let (width, height) = (w + 2 * PAD, h + 2 * PAD);
+            let (width, height) = (w.saturating_add(2 * PAD), h.saturating_add(2 * PAD));
             if w == 0 || h == 0 || width > SIZE || height > SIZE {
+                self.errors.push(crate::Error::Limit("text raster does not fit the atlas".into()));
+                return None;
+            }
+            if raster.coverage.len() != w as usize * h as usize {
+                self.errors.push(crate::Error::invalid("text raster coverage does not match its size"));
                 return None;
             }
             let field = distance_field(&raster.coverage, w as usize, h as usize);
@@ -136,7 +157,9 @@ impl Atlas {
                 Glyphs { rect: [left, top, left + width, top + height], baseline: raster.baseline + PAD as f32 };
             Some((glyphs, shelf))
         });
-        self.runs.insert(run.clone(), placed);
+        if placed.is_some() {
+            self.runs.insert(run.clone(), placed);
+        }
         placed.map(|(glyphs, _)| glyphs)
     }
 

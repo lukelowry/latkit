@@ -24,6 +24,9 @@ pub enum Error {
     /// Fetching or decoding external bytes failed.
     #[error("load: {0}")]
     Load(Cow<'static, str>),
+    /// The operation did not complete before its deadline.
+    #[error("operation timed out")]
+    Timeout,
     /// The GPU device was lost; create a new `Gpu`.
     #[error("GPU device lost")]
     DeviceLost,
@@ -42,7 +45,7 @@ impl Error {
     }
 
     /// A short, stable name for the kind of error: `invalid`, `unsupported`, `limit`, `load`, or
-    /// `device-lost`, or `cancelled`.
+    /// `device-lost`, `cancelled`, or `timeout`.
     pub fn code(&self) -> &'static str {
         match self {
             Error::Invalid { .. } => "invalid",
@@ -51,6 +54,7 @@ impl Error {
             Error::Load(_) => "load",
             Error::DeviceLost => "device-lost",
             Error::Cancelled => "cancelled",
+            Error::Timeout => "timeout",
         }
     }
 

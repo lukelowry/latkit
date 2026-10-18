@@ -2,11 +2,14 @@
 //! bytes, and encode video. A [`Gpu`](crate::Gpu) is given its host with
 //! [`Gpu::set_host`](crate::Gpu::set_host); without one, views draw no text, do their jobs at once,
 //! fetch nothing, and encode no video. A browser's host is `Browser`, built with the `web` feature
-//! for `wasm32`.
+//! for `wasm32`. Natively, the `native` feature supplies `Native`: lazy fonts and a worker pool,
+//! without a window, network client, or video encoder.
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod browser;
 mod job;
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+mod native;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -15,17 +18,19 @@ use std::sync::Arc;
 pub use browser::Browser;
 pub use job::Job;
 pub(crate) use job::{Key, Placement, Shaping, Wiring};
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+pub use native::Native;
 
 use crate::video::{Encoder, Encoding};
-use crate::{Error, Pending};
+use crate::{Error, Pending, Result};
 
 /// The platform services a view uses.
 pub trait Host: Send + Sync + 'static {
-    /// Sets `run` as coverage, or `None` when the platform cannot.
-    fn rasterize(&self, run: &TextRun) -> Option<Raster>;
+    /// Sets `run` as coverage, reporting unavailable fonts or failed rasterization.
+    fn rasterize(&self, run: &TextRun) -> Result<Raster>;
 
     /// The width and height `run` takes once set, in pixels; by default what setting it takes.
-    fn measure(&self, run: &TextRun) -> Option<[f32; 2]> {
+    fn measure(&self, run: &TextRun) -> Result<[f32; 2]> {
         self.rasterize(run).map(|raster| raster.size.map(|v| v as f32))
     }
 

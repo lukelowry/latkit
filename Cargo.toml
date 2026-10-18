@@ -11,7 +11,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/lukelowry/latkit"
 
 [workspace.dependencies]
-latkit = { path = "crates/latkit", default-features = false }
+latkit = { version = "0.1.0", path = "crates/latkit", default-features = false }
 
 thiserror = "2"
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
@@ -39,6 +39,9 @@ console_error_panic_hook = "0.1"
 
 proptest = "1"
 pollster = "0.4"
+cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "fontconfig"] }
+clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

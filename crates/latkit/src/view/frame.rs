@@ -54,7 +54,9 @@ impl View {
         let moved = self.lay_out(encoder, &mut inner);
         // What reads the clock shows anything new only when it moved; a frame drawn again at the same
         // instant, as a shot draws while it waits, evaluates none of it.
-        if self.clock.moved() {
+        let elapsed = self.signal.elapsed().unwrap_or_else(|| self.clock.now());
+        if self.effect_time != elapsed {
+            self.effect_time = elapsed;
             for shown in &mut self.marks {
                 shown.dirty |= shown.channels_reading(Deps::TIME);
             }
@@ -71,7 +73,10 @@ impl View {
         let query = self.lay_out_lists();
         let projected = self.projected();
         let srgb = frame.format.is_srgb();
-        let mut uniform = uniforms::frame(&self.scene, &projected, self.size, srgb, self.clock.now(), self.at);
+        let mut uniform = uniforms::frame(&self.scene, &projected, self.size, srgb, elapsed, self.at);
+        if self.signal.transparent() {
+            uniform.background[3] = 0.0;
+        }
         uniform.pointer = self.pointer.unwrap_or([-1e9, -1e9]);
         uniform.selecting = u32::from(!self.focus.selection.is_empty());
         uniform.fitting = u32::from(measure.as_ref().is_some_and(|m| m.rows));
@@ -110,6 +115,8 @@ impl View {
             shown.held = shown.rows + shown.exits;
             shown.moved = None;
         }
+        self.events.extend(inner.atlas.errors.drain(..).map(Event::Error));
+        self.events.extend(self.derived.sheet.errors.drain(..).map(Event::Error));
         self.waiting = self.under_way();
         self.changed = false;
         self.stats.frames += 1;
@@ -174,7 +181,8 @@ impl View {
         let sight = derive::sight::Sight { projected: &projected, size: self.size, earth };
         // One budget for the frame: the tiles, what is drawn in part, then every other derivation.
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
-        let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters);
+        let errors = self.gpu.0.errors.clone();
+        let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
         tiles.update(&self.derive_input(host.as_deref()), earth.then_some(&sight), &jobs);
         self.events.extend(tiles.take_errors().into_iter().map(Event::Error));
@@ -303,7 +311,7 @@ impl View {
     }
 
     /// Tells errors the device reported outside any scope, once each.
-    fn tell_gpu_errors(&mut self) {
+    pub(super) fn tell_gpu_errors(&mut self) {
         let errors: Vec<Error> =
             std::mem::take(&mut *self.gpu.0.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         self.events.extend(errors.into_iter().map(Event::Error));

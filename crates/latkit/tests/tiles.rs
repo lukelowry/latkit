@@ -78,8 +78,8 @@ struct Served {
 struct Serving(Arc<Served>);
 
 impl Host for Serving {
-    fn rasterize(&self, _: &TextRun) -> Option<Raster> {
-        None
+    fn rasterize(&self, _: &TextRun) -> latkit::Result<Raster> {
+        Err(latkit::Error::Unsupported("no text in this test host".into()))
     }
 
     fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {

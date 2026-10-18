@@ -158,8 +158,9 @@ impl Layout {
 }
 
 impl Host for Browser {
-    fn measure(&self, run: &TextRun) -> Option<[f32; 2]> {
+    fn measure(&self, run: &TextRun) -> crate::Result<[f32; 2]> {
         with_context(|_, context| Some(Layout::of(context, run)?.size().map(|v| v as f32)))
+            .ok_or_else(|| Error::Unsupported("browser text measurement failed".into()))
     }
 
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
@@ -190,7 +191,7 @@ impl Host for Browser {
         pending
     }
 
-    fn rasterize(&self, run: &TextRun) -> Option<Raster> {
+    fn rasterize(&self, run: &TextRun) -> crate::Result<Raster> {
         with_context(|canvas, context| {
             let layout = Layout::of(context, run)?;
             let size = layout.size().map(|v| v.ceil() as u32);
@@ -210,6 +211,7 @@ impl Host for Browser {
             let coverage = rgba.0.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
             Some(Raster { size, coverage, baseline: (PAD + layout.ascent) as f32 })
         })
+        .ok_or_else(|| Error::Unsupported("browser text rasterization failed".into()))
     }
 
     fn encoder(&self, encoding: &Encoding) -> crate::Result<Box<dyn Encoder>> {

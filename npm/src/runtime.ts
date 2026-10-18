@@ -487,6 +487,7 @@ export class Shot {
       panels: readonly (readonly [number, number, number, number])[];
       transparent: boolean;
       deadline: number;
+      elapsed?: number;
     }> = { scale: 1, panels: [], transparent: false, deadline: 30_000 },
   ) {}
 
@@ -505,9 +506,14 @@ export class Shot {
     return new Shot(this.size, { ...this.settings, transparent: true });
   }
 
-  /** The longest, in milliseconds, a picture waits for its views to complete: 30 seconds unless set. */
+  /** The capture deadline in milliseconds, including readback; rejects on timeout. Defaults to 30 seconds. */
   deadline(ms: number): Shot {
     return new Shot(this.size, { ...this.settings, deadline: ms });
+  }
+
+  /** Fixes elapsed-time expressions and drawing effects at `seconds` while transitions settle. */
+  elapsed(seconds: number): Shot {
+    return new Shot(this.size, { ...this.settings, elapsed: seconds });
   }
 
   /** The picture of `views`, one per panel, once every one is complete and still. */

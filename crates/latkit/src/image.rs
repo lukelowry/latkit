@@ -1,7 +1,7 @@
 //! Images: RGBA texels, what an icon marker draws and what a shot reads its picture back as, written
 //! to and read from PNG.
 
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::sync::Arc;
 
 use crate::{Error, Result};
@@ -19,14 +19,9 @@ impl Image {
     /// An image of `size` texels holding `rgba`, four bytes a texel.
     pub fn new(size: [u32; 2], rgba: impl Into<Arc<[u8]>>) -> Result<Image> {
         let rgba = rgba.into();
-        if rgba.len() as u64 != u64::from(size[0]) * u64::from(size[1]) * 4 {
-            return Err(Error::invalid(format!(
-                "an image of {}×{} texels holds {} bytes, not {}",
-                size[0],
-                size[1],
-                u64::from(size[0]) * u64::from(size[1]) * 4,
-                rgba.len()
-            )));
+        let expected = u64::from(size[0]).checked_mul(u64::from(size[1])).and_then(|pixels| pixels.checked_mul(4));
+        if size.contains(&0) || expected != Some(rgba.len() as u64) {
+            return Err(Error::invalid("an image needs positive dimensions and exactly four bytes per pixel"));
         }
         Ok(Image { size, rgba })
     }
@@ -35,16 +30,23 @@ impl Image {
     /// a picture is written far more often than it is stored long.
     pub fn png(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        let mut encoder = png::Encoder::new(&mut out, self.size[0], self.size[1]);
+        self.write_png(&mut out).expect("valid image written to memory");
+        out
+    }
+
+    /// Writes a PNG directly to a file or stream, reporting invalid dimensions and write failures.
+    /// Uses the same encoding as [`png`](Self::png) without allocating a second complete file.
+    pub fn write_png(&self, output: impl Write) -> Result<()> {
+        Self::new(self.size, self.rgba.clone())?;
+        let failed = |error: png::EncodingError| Error::Load(format!("cannot write PNG: {error}").into());
+        let mut encoder = png::Encoder::new(output, self.size[0], self.size[1]);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
         encoder.set_compression(png::Compression::Fast);
-        // Writing to memory fails only on a size PNG cannot hold, which an image never has.
-        let mut writer = encoder.write_header().expect("a PNG header");
-        writer.write_image_data(&self.rgba).expect("PNG image data");
-        writer.finish().expect("a PNG end");
-        out
+        let mut writer = encoder.write_header().map_err(failed)?;
+        writer.write_image_data(&self.rgba).map_err(failed)?;
+        writer.finish().map_err(failed)
     }
 
     /// The image a PNG file holds, any color type and depth made eight bit RGBA.
@@ -87,5 +89,22 @@ mod tests {
     fn an_image_holds_four_bytes_a_texel() {
         assert!(Image::new([2, 2], vec![0; 15]).is_err());
         assert!(Image::from_png(b"not a png").is_err());
+        assert!(Image::new([0, 0], Vec::new()).is_err());
+        assert!(Image::new([u32::MAX, u32::MAX], Vec::new()).is_err());
+    }
+
+    #[test]
+    fn writing_reports_stream_failures() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let image = Image::new([1, 1], vec![0; 4]).unwrap();
+        assert!(image.write_png(Broken).is_err());
     }
 }

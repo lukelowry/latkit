@@ -1,7 +1,8 @@
 //! A view's clock: seconds of motion, moved by the steps between the times its frames give. Every
 //! ease, flight, fade, coast, orbit, and `elapsed()` reads it, never the wall, so whatever draws the
 //! frames decides when they are: an animation frame's timestamp, a video frame's time, a test's
-//! step.
+//! step. A shot may fix the time read by elapsed expressions and drawing effects while this clock
+//! keeps advancing finite transitions.
 
 /// The longest step the clock takes between two frames: a driver that slept, or switched from one
 /// timeline to another, never makes motion jump or run back.

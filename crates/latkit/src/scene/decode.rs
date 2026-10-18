@@ -54,10 +54,9 @@ impl<'de> Deserialize<'de> for Scene {
             scene = scene.theme(theme);
         }
         if let Some(ease) = form.ease {
-            if !(ease >= 0.0 && ease.is_finite()) {
-                return Err(de::Error::custom("ease is seconds, at least 0"));
-            }
-            scene = scene.ease(Duration::from_secs_f64(ease));
+            let ease = Duration::try_from_secs_f64(ease)
+                .map_err(|_| de::Error::custom("ease is nonnegative seconds within range"))?;
+            scene = scene.ease(ease);
         }
         Ok(form.marks.into_iter().fold(scene, Scene::draw))
     }

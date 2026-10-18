@@ -3,7 +3,7 @@
  * as `marks[2].color`.
  */
 export interface LatkitError extends Error {
-  code: 'invalid' | 'unsupported' | 'limit' | 'load' | 'device-lost' | 'cancelled';
+  code: 'invalid' | 'unsupported' | 'limit' | 'load' | 'device-lost' | 'cancelled' | 'timeout';
   path?: string;
 }
 

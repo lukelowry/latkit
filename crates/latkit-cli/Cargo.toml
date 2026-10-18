@@ -1,0 +1,23 @@
+[package]
+name = "latkit-cli"
+description = "Validate latkit scenes and render them to PNG."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+include = ["src/**", "README.md"]
+
+[[bin]]
+name = "latkit"
+path = "src/main.rs"
+
+[dependencies]
+latkit = { workspace = true, features = ["native", "serde"] }
+clap.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

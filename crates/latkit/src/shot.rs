@@ -43,12 +43,20 @@ pub struct Shot {
     panels: Vec<[f32; 4]>,
     transparent: bool,
     deadline: Duration,
+    elapsed: Option<Duration>,
 }
 
 impl Shot {
     /// A picture of `size` pixels, one view filling it at a pixel per CSS pixel.
     pub fn new(size: [u32; 2]) -> Shot {
-        Shot { size, scale: 1.0, panels: Vec::new(), transparent: false, deadline: Duration::from_secs(30) }
+        Shot {
+            size,
+            scale: 1.0,
+            panels: Vec::new(),
+            transparent: false,
+            deadline: Duration::from_secs(30),
+            elapsed: None,
+        }
     }
 
     /// Draws `scale` pixels per CSS pixel: a view lays out `size / scale` CSS pixels, so 2 draws what
@@ -74,11 +82,19 @@ impl Shot {
         self
     }
 
-    /// The longest, in real time, a picture waits for its views to complete before it draws them as
-    /// they are and says why: 30 seconds unless set.
+    /// The longest, in real time, a picture may take, including GPU readback: 30 seconds unless set.
+    /// An incomplete picture returns [`Error::Timeout`].
     #[must_use]
     pub fn deadline(mut self, deadline: Duration) -> Shot {
         self.deadline = deadline;
+        self
+    }
+
+    /// Fixes elapsed-time expressions and animated drawing effects at this time while finite
+    /// transitions still settle. By default they follow the view's clock.
+    #[must_use]
+    pub fn elapsed(mut self, elapsed: Duration) -> Shot {
+        self.elapsed = Some(elapsed);
         self
     }
 
@@ -89,6 +105,8 @@ impl Shot {
 
     /// The picture of `views`, one per panel, once every one is complete and still: transitions,
     /// flights, and label fades run on, a sixtieth of a second a step, until they land.
+    /// Fails on a render error (including errors still queued in [`View::events`]) or deadline;
+    /// events remain available to the caller and views are returned even on cancellation.
     pub async fn image(&self, views: &mut [&mut View]) -> Result<Image> {
         self.image_of(&mut Borrowed(views)).await
     }
@@ -102,6 +120,14 @@ impl Shot {
             match views.lend(|views| drawing.step(views, time, true))? {
                 Step::Done(readback) => {
                     let bytes = drawing.read(&readback).await?;
+                    views.lend(|views| {
+                        for view in views {
+                            if let Some(error) = view.capture_error() {
+                                return Err(error);
+                            }
+                        }
+                        Ok(())
+                    })?;
                     return Image::new(self.size, bytes);
                 }
                 Step::Easing => time += TICK,
@@ -168,7 +194,7 @@ struct Panel {
 
 /// What a step of drawing came to.
 pub(crate) enum Step {
-    /// Every view was complete, or the deadline passed: the picture's bytes, once read back.
+    /// Every view was complete: the picture's bytes, once read back.
     Done(Readback),
     /// Views still ease toward where they go: draw again a step later.
     Easing,
@@ -212,18 +238,30 @@ impl Drawing {
     /// Begins a picture of `views`, one per panel. The first takes the views: their wakers wake the
     /// drawing until it is done, and nothing else draws them.
     pub(crate) fn begin(&mut self, views: &[&mut View]) -> Result<()> {
-        self.started = None;
+        self.started = Some(Instant::now());
         let expected = self.shot.panels.len().max(1);
         if views.len() != expected {
             return Err(Error::invalid(format!("a shot of {expected} panels draws {} views", views.len())));
         }
         if self.picture.is_none() {
+            for (i, view) in views.iter().enumerate() {
+                if view.lent() || views[..i].iter().any(|other| Arc::ptr_eq(other.signal(), view.signal())) {
+                    return Err(Error::invalid("a view is already lent to a picture"));
+                }
+                if !Arc::ptr_eq(&views[0].gpu().0, &view.gpu().0) {
+                    return Err(Error::invalid("all panels must use the same GPU"));
+                }
+            }
             self.picture = Some(Picture::new(&self.shot, views, self.bytes)?);
             self.lent = views
                 .iter()
                 .map(|view| {
                     let signal = view.signal().clone();
-                    let before = signal.lend(self.waker.clone());
+                    let before = signal.lend(
+                        self.waker.clone(),
+                        self.shot.elapsed.map(|elapsed| elapsed.as_secs_f64()),
+                        self.shot.transparent,
+                    );
                     (signal, before)
                 })
                 .collect();
@@ -331,13 +369,13 @@ impl Picture {
 
 impl Drawing {
     /// Draws every view into its panel at `time` once. When every one is complete, and with `still`
-    /// none eases, or the deadline passed, composes them and starts reading the picture back.
+    /// none eases, composes them and starts reading the picture back.
     pub(crate) fn step(&mut self, views: &mut [&mut View], time: f64, still: bool) -> Result<Step> {
         let picture = self.picture.as_ref().ok_or_else(|| Error::invalid("a picture begins before it draws"))?;
         if picture.gpu.lost() {
             return Err(Error::DeviceLost);
         }
-        let started = *self.started.get_or_insert_with(Instant::now);
+        self.check_deadline()?;
         let device = picture.gpu.device();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit shot") });
         let scale = self.shot.scale;
@@ -347,15 +385,12 @@ impl Drawing {
         }
         let complete = views.iter().all(|v| v.complete());
         let easing = still && views.iter().any(|v| v.easing());
-        let overdue = started.elapsed() > self.shot.deadline;
-        let step = if (complete && !easing) || overdue {
-            if !complete {
-                for view in views.iter_mut().filter(|v| !v.complete()) {
-                    let waiting = view.waiting();
-                    let message = format!("a shot's deadline passed while its view waited on {waiting}");
-                    view.tell(Error::Load(message.into()));
-                }
-            }
+        if let Some(error) = views.iter_mut().find_map(|view| view.capture_error()) {
+            picture.gpu.queue().submit([encoder.finish()]);
+            return Err(error);
+        }
+        self.check_deadline()?;
+        let step = if complete && !easing {
             picture.compose(&mut encoder, self.bytes, self.shot.size);
             let inner = picture.gpu.0.lock();
             let (buffer, len) = (&picture.buffer, picture.len);
@@ -374,7 +409,9 @@ impl Drawing {
     /// The bytes `readback` holds, once the GPU has them.
     pub(crate) async fn read(&self, readback: &Readback) -> Result<Vec<u8>> {
         loop {
+            self.check_deadline()?;
             self.finish();
+            self.check_deadline()?;
             if let Some(bytes) = readback.take() {
                 return bytes;
             }
@@ -391,13 +428,22 @@ impl Drawing {
         self.notify.wait(FRAME).await;
     }
 
-    /// Natively, finishes what was submitted, so readbacks map and wake the drawing; a browser maps
+    fn check_deadline(&self) -> Result<()> {
+        if self.started.is_some_and(|started| started.elapsed() >= self.shot.deadline) {
+            return Err(Error::Timeout);
+        }
+        Ok(())
+    }
+
+    /// Natively, polls what was submitted, so readbacks map and wake the drawing; a browser maps
     /// them itself.
     #[cfg_attr(target_arch = "wasm32", expect(clippy::unused_self, reason = "a browser maps readbacks itself"))]
     fn finish(&self) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(picture) = &self.picture {
-            let wait = wgpu::PollType::Wait { submission_index: None, timeout: Some(Duration::from_secs(10)) };
+            let remaining =
+                self.started.map_or(self.shot.deadline, |started| self.shot.deadline.saturating_sub(started.elapsed()));
+            let wait = wgpu::PollType::Wait { submission_index: None, timeout: Some(FRAME.min(remaining)) };
             let _ = picture.gpu.device().poll(wait);
         }
     }

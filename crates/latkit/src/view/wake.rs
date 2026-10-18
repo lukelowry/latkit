@@ -10,6 +10,8 @@ use std::task::{Wake, Waker};
 #[derive(Default)]
 pub(crate) struct Signal {
     landed: AtomicBool,
+    elapsed: Mutex<Option<f64>>,
+    transparent: AtomicBool,
     /// Whether a shot draws the view, so nothing else does.
     lent: AtomicBool,
     /// Whatever draws the view's frames, as `View::set_waker` gave it.
@@ -33,7 +35,9 @@ impl Signal {
 
     /// Lends the view to a shot: `waker` wakes the shot in place of whatever drew the view, which
     /// draws it no more until it is given back; returns the waker it had.
-    pub(crate) fn lend(&self, waker: Waker) -> Option<Waker> {
+    pub(crate) fn lend(&self, waker: Waker, elapsed: Option<f64>, transparent: bool) -> Option<Waker> {
+        *self.elapsed.lock().unwrap_or_else(PoisonError::into_inner) = elapsed;
+        self.transparent.store(transparent, Ordering::Release);
         self.lent.store(true, Ordering::Release);
         self.waker.lock().unwrap_or_else(PoisonError::into_inner).replace(waker)
     }
@@ -41,8 +45,19 @@ impl Signal {
     /// Gives the view back to whatever drew it, `waker` waking it again, and asks it for a frame.
     pub(crate) fn give_back(&self, waker: Option<Waker>) {
         *self.waker.lock().unwrap_or_else(PoisonError::into_inner) = waker;
+        *self.elapsed.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.transparent.store(false, Ordering::Release);
         self.lent.store(false, Ordering::Release);
+        self.landed.store(true, Ordering::Release);
         self.ask();
+    }
+
+    pub(crate) fn elapsed(&self) -> Option<f64> {
+        *self.elapsed.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn transparent(&self) -> bool {
+        self.transparent.load(Ordering::Acquire)
     }
 
     /// Whether a shot draws the view.

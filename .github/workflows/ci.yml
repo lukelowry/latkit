@@ -52,6 +52,23 @@ jobs:
           --target wasm32-unknown-unknown
           --features web,serde
 
+  native-cli:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup show
+      - name: Install fonts for native text tests
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
+      - run: cargo test --locked --package latkit --features native,serde --lib --test validation
+      - run: cargo test --locked --package latkit-cli
+      - run: cargo check --locked --package latkit --no-default-features
+      - name: Keep native font code out of browser builds
+        run: cargo check --locked --package latkit --target wasm32-unknown-unknown --features native,web,serde
+
   quality:
     runs-on: ubuntu-latest
     steps:

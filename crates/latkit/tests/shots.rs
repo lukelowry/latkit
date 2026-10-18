@@ -121,3 +121,72 @@ fn a_frame_tells_whether_anything_stood_in() {
     let waiting = view.stats().waiting;
     assert!(waiting.is_empty(), "waiting on {waiting}");
 }
+
+#[test]
+fn timeouts_and_font_errors_return_the_view_without_a_partial_image() {
+    use latkit::host::{Host, Raster, TextRun};
+    struct BrokenText;
+    impl Host for BrokenText {
+        fn rasterize(&self, _: &TextRun) -> latkit::Result<Raster> {
+            Err(latkit::Error::Unsupported("test font failure".into()))
+        }
+    }
+    let Some(gpu) = gpu() else { return };
+    let (scene, data) = dot(0.0, Color::rgb(1.0, 0.0, 0.0));
+    let mut view = view(&gpu, scene, data);
+    let result = pollster::block_on(Shot::new([33, 35]).deadline(Duration::ZERO).image(&mut [&mut view]));
+    assert_eq!(result.unwrap_err(), latkit::Error::Timeout);
+    assert!(!view.lent());
+    gpu.set_host(BrokenText);
+    let mut data = Data::new("labels");
+    data.apply(Table::new("Node", 1).field("name", vec!["Hello"])).unwrap();
+    let scene =
+        Scene::new(latkit::Diagram::default()).draw(Vertices::of("labels", "Node").label(latkit::Label::new("name")));
+    view.show(scene).unwrap();
+    view.set_data(data);
+    let error = pollster::block_on(Shot::new([128, 128]).image(&mut [&mut view])).unwrap_err();
+    assert!(error.to_string().contains("test font failure"));
+    assert!(!view.lent());
+    assert!(view.events().any(|event| matches!(event, latkit::Event::Error(_))));
+}
+
+#[test]
+fn fixed_effect_time_is_repeatable_and_independent_of_capture_steps() {
+    let Some(gpu) = gpu() else { return };
+    let (_, data) = dot(0.0, Color::rgb(1.0, 0.0, 0.0));
+    let scene = Scene::new(plane()).theme(plain_theme()).ease(Duration::ZERO).draw(
+        Vertices::of("graph", "Node")
+            .position("x", "y")
+            .radius(latkit::elapsed() + 4.0)
+            .color(Color::rgb(1.0, 0.0, 0.0)),
+    );
+    let mut view = view(&gpu, scene, data);
+    let shot = Shot::new([127, 129]).elapsed(Duration::ZERO);
+    let first = pollster::block_on(shot.image(&mut [&mut view])).unwrap();
+    let later = pollster::block_on(shot.clone().elapsed(Duration::from_secs(12)).image(&mut [&mut view])).unwrap();
+    let again = pollster::block_on(shot.image(&mut [&mut view])).unwrap();
+    assert_ne!(first, later);
+    assert_eq!(first, again);
+    assert_eq!(Image::from_png(&first.png()).unwrap(), first);
+}
+
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+#[test]
+fn native_fonts_draw_visible_glyphs_into_the_export() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(latkit::host::Native::new());
+    let mut data = Data::new("graph");
+    data.apply(Table::new("Node", 1).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["Hello"])).unwrap();
+    let scene = Scene::new(plane()).theme(plain_theme()).ease(Duration::ZERO).draw(
+        Vertices::of("graph", "Node")
+            .position("x", "y")
+            .radius(4.0)
+            .color(Color::rgb(1.0, 0.0, 0.0))
+            .label(latkit::Label::new("name").color(Color::WHITE).size(18.0)),
+    );
+    let mut view = view(&gpu, scene, data);
+    let image = pollster::block_on(Shot::new([127, 129]).image(&mut [&mut view])).unwrap();
+    let white =
+        image.rgba.as_chunks::<4>().0.iter().filter(|pixel| pixel[0] > 180 && pixel[1] > 180 && pixel[2] > 180).count();
+    assert!(white > 15, "the image contains real white glyphs, not just the red vertex: {white}");
+}
