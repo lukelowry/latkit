@@ -337,6 +337,17 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Compiles an end storing each row's own vertex slot at `word`: the vertex mark drawing the
+    /// mark's own table, row for row, as a pole stands on.
+    pub(crate) fn own_end(&mut self, table: &Name, word: u32) -> Result<()> {
+        let start = self.begin();
+        let index = self.program.ends.len() as u32;
+        self.program.ends.push(table.clone());
+        self.op(wgsl::OP_STORE_END, word, wgsl::NONE, index, 0, 0)?;
+        self.close("poles", start);
+        Ok(())
+    }
+
     /// Compiles channel `name` storing the code of text field `expr` at `word`, and returns the
     /// program column whose dictionary names the codes.
     pub(crate) fn text(&mut self, name: &str, expr: &Expr, word: u32) -> Result<u32> {

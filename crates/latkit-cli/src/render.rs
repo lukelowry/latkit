@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use latkit::geo::Tiles;
 use latkit::host::Native;
-use latkit::{Camera, Data, Error, Fit, Gpu, Mp4, Patch, Scene, Sink, View};
+use latkit::{Camera, Data, Error, Fit, Gpu, Mp4, Name, Patch, Scene, Sink, View};
 
 use crate::args::{Format, Job, Source};
 use crate::inputs::{self, Ahead, Each, Frame, Frames};
@@ -165,7 +165,7 @@ fn apply(
     data: &mut [Data],
     scenes: &[(PathBuf, Scene)],
     frame: &Frame,
-    patches: Vec<(String, Patch)>,
+    patches: Vec<(Name, Patch)>,
 ) -> latkit::Result<Vec<usize>> {
     // One camera for every view looks through those it fits; one per view must fit its own.
     for (option, each) in [("camera", &frame.camera), ("fly", &frame.fly)] {
@@ -185,7 +185,7 @@ fn apply(
     for (name, patch) in patches {
         let i = data
             .iter()
-            .position(|d| d.name().as_str() == name)
+            .position(|d| *d.name() == name)
             .ok_or_else(|| Error::invalid(format!("no dataset is named {name}")).at(name.as_str()).at("patch"))?;
         data[i].apply(patch).map_err(|e| e.at(name.as_str()).at("patch"))?;
         if !changed.contains(&i) {

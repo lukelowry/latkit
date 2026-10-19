@@ -187,36 +187,192 @@ impl Frame {
         (!parts.is_empty()).then_some(Shape::Lines(parts))
     }
 
-    /// The tile's polygons: each exterior ring, by its positive area, then the holes after it, every
-    /// ring clipped to the tile.
+    /// The tile's polygons: each exterior ring, by its positive area, with the holes after it,
+    /// clipped to the tile as a whole.
     fn polygons(&self, geometry: &[u32]) -> Option<Shape> {
-        let mut polygons: Vec<Vec<Vec<Point>>> = Vec::new();
-        let mut outer_kept = false;
+        let mut groups: Vec<Vec<Vec<[f64; 2]>>> = Vec::new();
         for ring in paths(geometry) {
             let area = surveyor(&ring);
-            if area == 0.0 {
-                continue;
-            }
-            let clipped = clip_ring(&ring, self.extent);
-            let kept = clipped.len() >= 3;
             if area > 0.0 {
-                // An exterior ring wholly outside the tile drops, and its holes with it.
-                outer_kept = kept;
-                if !kept {
-                    continue;
-                }
-                polygons.push(Vec::new());
-            } else if !outer_kept || !kept {
-                continue;
-            }
-            if let Some(polygon) = polygons.last_mut() {
-                let mut ring: Vec<Point> = clipped.into_iter().map(|p| self.degrees(p)).collect();
-                ring.push(ring[0]);
-                polygon.push(ring);
+                groups.push(vec![ring]);
+            } else if let Some(group) = groups.last_mut().filter(|_| area < 0.0) {
+                group.push(ring);
             }
         }
+        let polygons: Vec<Vec<Vec<Point>>> = groups
+            .iter()
+            .flat_map(|group| clip_polygon(group, self.extent))
+            .map(|polygon| {
+                let closed = |ring: Vec<[f64; 2]>| {
+                    let mut ring: Vec<Point> = ring.into_iter().map(|p| self.degrees(p)).collect();
+                    ring.push(ring[0]);
+                    ring
+                };
+                polygon.into_iter().map(closed).collect()
+            })
+            .collect();
         (!polygons.is_empty()).then_some(Shape::Polygons(polygons))
     }
+}
+
+/// A polygon, its exterior then its holes, clipped to the square `0..extent` as a whole: a ring
+/// wholly inside it stays; the runs of the rest inside it join along its edge, where the polygon's
+/// inside lies, into exteriors; and each hole inside goes to the exterior around it. Clipping each
+/// ring alone would leave a hole crossing the edge running along its exterior there, which no
+/// triangulation reads right.
+fn clip_polygon(rings: &[Vec<[f64; 2]>], extent: f64) -> Vec<Vec<Vec<[f64; 2]>>> {
+    let inside = |p: &[f64; 2]| p.iter().all(|&v| (0.0..=extent).contains(&v));
+    let (mut exteriors, mut holes, mut runs) = (Vec::new(), Vec::new(), Vec::new());
+    // Whether the square lies within the polygon, as the rings that miss it say.
+    let mut covered = false;
+    for (k, ring) in rings.iter().enumerate().filter(|(_, r)| r.len() >= 3) {
+        if ring.iter().all(inside) {
+            if k == 0 {
+                exteriors.push(ring.clone());
+            } else {
+                holes.push(ring.clone());
+            }
+            continue;
+        }
+        let crossing = runs_inside(ring, extent);
+        // A ring missing the square holds all of it or none: the exterior first, then a hole within.
+        if crossing.is_empty() && contains(ring, [extent / 2.0; 2]) {
+            covered = k == 0;
+        }
+        runs.extend(crossing);
+    }
+    if !runs.is_empty() {
+        exteriors.extend(join(&runs, extent));
+    } else if covered {
+        exteriors.push(vec![[0.0, 0.0], [extent, 0.0], [extent, extent], [0.0, extent]]);
+    }
+    let mut polygons: Vec<Vec<Vec<[f64; 2]>>> = exteriors.into_iter().map(|e| vec![e]).collect();
+    for hole in holes {
+        let within = |p: &&[f64; 2]| p.iter().all(|&v| v > 0.0 && v < extent);
+        let Some(&point) = hole.iter().find(within) else { continue };
+        let around = match polygons.len() {
+            1 => polygons.first_mut(),
+            _ => polygons.iter_mut().find(|p| contains(&p[0], point)),
+        };
+        if let Some(polygon) = around {
+            polygon.push(hole);
+        }
+    }
+    polygons
+}
+
+/// The runs of closed `ring`, which has a point outside the square `0..extent`, inside it: each from
+/// where it enters to where it leaves, on the edge. A run lying along the edge alone bounds nothing,
+/// and drops.
+fn runs_inside(ring: &[[f64; 2]], extent: f64) -> Vec<Vec<[f64; 2]>> {
+    let outside = |p: &[f64; 2]| p.iter().any(|&v| !(0.0..=extent).contains(&v));
+    let Some(start) = ring.iter().position(outside) else { return Vec::new() };
+    let on_edge = |p: &[f64; 2]| p.iter().any(|&v| v.abs() <= extent * 1e-9 || (v - extent).abs() <= extent * 1e-9);
+    let n = ring.len();
+    let (mut runs, mut run) = (Vec::new(), Vec::new());
+    for k in 0..n {
+        let (a, b) = (ring[(start + k) % n], ring[(start + k + 1) % n]);
+        let Some((p, q)) = clip_segment(a, b, extent) else { continue };
+        if run.is_empty() {
+            run.push(onto_edge(p, extent));
+        }
+        if q == b {
+            run.push(q);
+            continue;
+        }
+        // The segment leaves the square: the run ends.
+        run.push(onto_edge(q, extent));
+        if run.len() >= 2 && !run.iter().all(on_edge) {
+            runs.push(std::mem::take(&mut run));
+        }
+        run.clear();
+    }
+    runs
+}
+
+/// `p`, near the square's edge, moved onto it.
+fn onto_edge(p: [f64; 2], extent: f64) -> [f64; 2] {
+    let gaps = [p[1].abs(), (p[0] - extent).abs(), (p[1] - extent).abs(), p[0].abs()];
+    let edge = (0..4).min_by(|&a, &b| gaps[a].total_cmp(&gaps[b])).unwrap_or(0);
+    let p = p.map(|v| v.clamp(0.0, extent));
+    match edge {
+        0 => [p[0], 0.0],
+        1 => [extent, p[1]],
+        2 => [p[0], extent],
+        _ => [0.0, p[1]],
+    }
+}
+
+/// How far along the square's edge `p` lies, from the corner at 0 the way an exterior winds: along
+/// y = 0, then x = extent, y = extent, and x = 0.
+fn along(p: [f64; 2], extent: f64) -> f64 {
+    let gaps = [p[1].abs(), (p[0] - extent).abs(), (p[1] - extent).abs(), p[0].abs()];
+    match (0..4).min_by(|&a, &b| gaps[a].total_cmp(&gaps[b])).unwrap_or(0) {
+        0 => p[0],
+        1 => extent + p[1],
+        2 => 3.0 * extent - p[0],
+        _ => 4.0 * extent - p[1],
+    }
+}
+
+/// The exteriors `runs` make: from where each leaves the square, along its edge the way the
+/// polygon's inside lies to where the next enters, past the corners between, until the first again.
+fn join(runs: &[Vec<[f64; 2]>], extent: f64) -> Vec<Vec<[f64; 2]>> {
+    let around = 4.0 * extent;
+    let entries: Vec<f64> = runs.iter().map(|r| along(r[0], extent)).collect();
+    let ahead = |from: f64, to: f64| (to - from).rem_euclid(around);
+    let corner = |k: i64| match k.rem_euclid(4) {
+        0 => [0.0, 0.0],
+        1 => [extent, 0.0],
+        2 => [extent, extent],
+        _ => [0.0, extent],
+    };
+    let mut used = vec![false; runs.len()];
+    let mut rings = Vec::new();
+    for first in 0..runs.len() {
+        if used[first] {
+            continue;
+        }
+        let (mut ring, mut run) = (Vec::new(), first);
+        loop {
+            used[run] = true;
+            ring.extend_from_slice(&runs[run]);
+            let exit = along(runs[run][runs[run].len() - 1], extent);
+            let next = (0..runs.len())
+                .filter(|&k| !used[k] || k == first)
+                .min_by(|&a, &b| ahead(exit, entries[a]).total_cmp(&ahead(exit, entries[b])))
+                .unwrap_or(first);
+            let to = exit + ahead(exit, entries[next]);
+            let first_corner = (exit / extent).floor() as i64 + 1;
+            for k in first_corner.. {
+                if k as f64 * extent >= to {
+                    break;
+                }
+                ring.push(corner(k));
+            }
+            if next == first {
+                break;
+            }
+            run = next;
+        }
+        if ring.len() >= 3 {
+            rings.push(ring);
+        }
+    }
+    rings
+}
+
+/// Whether closed `ring` holds `p`, by the crossings of a ray from it.
+fn contains(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
+    let mut inside = false;
+    let mut a = ring[ring.len() - 1];
+    for &b in ring {
+        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]) {
+            inside = !inside;
+        }
+        a = b;
+    }
+    inside
 }
 
 /// The paths a geometry's commands draw, in tile coordinates: each move starts one, a close returns
@@ -267,37 +423,6 @@ fn surveyor(ring: &[[f64; 2]]) -> f64 {
         a = b;
     }
     sum
-}
-
-/// `ring` clipped to the square `0..extent`, edge by edge.
-fn clip_ring(ring: &[[f64; 2]], extent: f64) -> Vec<[f64; 2]> {
-    let mut out = ring.to_vec();
-    if ring.iter().all(|p| p.iter().all(|&v| (0.0..=extent).contains(&v))) {
-        return out;
-    }
-    let mut next = Vec::with_capacity(out.len() + 4);
-    for (axis, at, above) in [(0, 0.0, true), (0, extent, false), (1, 0.0, true), (1, extent, false)] {
-        next.clear();
-        let inside = |p: &[f64; 2]| if above { p[axis] >= at } else { p[axis] <= at };
-        for (k, &p) in out.iter().enumerate() {
-            let q = out[(k + 1) % out.len()];
-            let (p_in, q_in) = (inside(&p), inside(&q));
-            if p_in {
-                next.push(p);
-            }
-            if p_in != q_in {
-                let t = (at - p[axis]) / (q[axis] - p[axis]);
-                let mut c = [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
-                c[axis] = at;
-                next.push(c);
-            }
-        }
-        std::mem::swap(&mut out, &mut next);
-        if out.is_empty() {
-            break;
-        }
-    }
-    out
 }
 
 /// `line` cut to the square `0..extent`: the runs of it inside.
@@ -520,6 +645,40 @@ pub(crate) mod tests {
         assert!((ring[0][0] + 90.0).abs() < 1e-9, "a quarter in: {:?}", ring[0]);
         assert!(ring[0][1] > 60.0 && ring[0][1] < 70.0, "mercator latitude: {:?}", ring[0]);
         assert_eq!(feature.properties, vec![(0, Property::Text("lake".into()))]);
+    }
+
+    #[test]
+    fn a_polygon_clips_as_a_whole() {
+        let square = |x: f64, y: f64, side: f64, exterior: bool| {
+            let ring = vec![[x, y], [x + side, y], [x + side, y + side], [x, y + side]];
+            if exterior { ring } else { ring.into_iter().rev().collect() }
+        };
+        // A sea over the tile and its buffer, with islands across its left edge, across its corner,
+        // inside it, and outside it.
+        let rings = [
+            square(-64.0, -64.0, 4224.0, true),
+            square(-200.0, 1800.0, 500.0, false),
+            square(3900.0, -100.0, 400.0, false),
+            square(1000.0, 1000.0, 200.0, false),
+            square(5000.0, 5000.0, 100.0, false),
+        ];
+        let polygons = clip_polygon(&rings, 4096.0);
+        assert_eq!(polygons.len(), 1);
+        assert_eq!(polygons[0].len(), 2, "islands across the edge notch the sea; the one inside stays a hole");
+        let points: Vec<[f64; 2]> = polygons[0].concat();
+        let triangles = super::super::earcut::earcut(&points, &[polygons[0][0].len()]);
+        let area: f64 = triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| points[i as usize]);
+                ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs() / 2.0
+            })
+            .sum();
+        let sea = 4096.0 * 4096.0 - 300.0 * 500.0 - 196.0 * 300.0 - 200.0 * 200.0;
+        assert!((area - sea).abs() < 1e-6, "{area} drawn of {sea}");
+        // A sea the tile lies wholly in is the tile; one beside it is nothing.
+        assert_eq!(clip_polygon(&[square(-100.0, -100.0, 5000.0, true)], 4096.0)[0][0].len(), 4);
+        assert_eq!(clip_polygon(&[square(5000.0, 0.0, 100.0, true)], 4096.0).len(), 0);
     }
 
     #[test]

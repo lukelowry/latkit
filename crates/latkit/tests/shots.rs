@@ -221,7 +221,8 @@ fn a_legend_lists_named_categories_by_their_colors() {
     let mut data = Data::new("graph");
     data.apply(Table::new("Node", 2).field("x", vec![-1.0, 1.0]).field("y", vec![0.0, 0.0]).field("k", vec![0.0, 1.0]))
         .expect("valid");
-    let map = Colormap::new(ColormapKind::Categorical, &[Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0)]);
+    let map = Colormap::new(ColormapKind::Categorical, [Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0)])
+        .expect("two categories");
     let node = Vertices::of("graph", "Node").position("x", "y").radius(4.0);
     let scene = Scene::new(plane()).theme(plain_theme());
     let unnamed = scene.clone().draw(node.clone().color(field("k").colormap(map.clone())).legend(""));

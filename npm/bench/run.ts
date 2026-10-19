@@ -1,13 +1,14 @@
 /**
  * The benchmark: each scenario up its sizes, each run in a fresh page, judged and reported.
  *
- *   cargo xtask bench [--quick] [--only a,b] [--repeats n] [--update] [--against old] [--software]
+ *   cargo xtask bench [--quick] [--only a,b] [--repeats n] [--update] [--software]
  *
  * --quick runs each scenario once at its smallest size, a smoke test of every phase and the work
  * gate in under a minute on a GPU; how phases grow takes the full sweep. --update lays this run's
- * baselines over the committed ones, keeping what it did not run; --against old drives the old
- * packages' page and records their times; --software draws with SwiftShader on the CPU, as Linux
- * always does: its work counts the same, its times only report, and no shader can hang the GPU.
+ * baselines over the committed ones, keeping what it did not run; --software draws with SwiftShader
+ * on the CPU, as Linux always does: its work counts the same, its times only report, and no shader
+ * can hang the GPU. Reports set times against the old packages', as `baselines/old.json` recorded
+ * them before they were retired.
  *
  * A scenario climbs its sizes while the last one's phases, grown as their orders say, fit a phase's
  * limit. A failure ends its scenario; a lost device, or a page that stopped answering, ends the
@@ -31,16 +32,12 @@ const { values: flags } = parseArgs({
     only: { type: 'string' },
     repeats: { type: 'string' },
     update: { type: 'boolean' },
-    against: { type: 'string' },
     software: { type: 'boolean' },
   },
 });
-if (flags.against !== undefined && flags.against !== 'old')
-  throw new Error(`--against takes old, not ${flags.against}`);
 const repeats = flags.quick ? 1 : Number(flags.repeats ?? 3);
 if (!Number.isInteger(repeats) || repeats < 1)
   throw new Error(`--repeats takes a count, not ${flags.repeats}`);
-const old = flags.against === 'old';
 const only = flags.only?.split(',');
 const software = flags.software || process.platform === 'linux';
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -98,7 +95,7 @@ const server = await createServer({
 await deadline(server.listen(), STEP, 'serve the bench');
 const address = server.resolvedUrls?.local[0];
 if (!address) throw new Error('the bench has no address');
-const url = `${address}${old ? 'old.html' : ''}`;
+const url = address;
 const runs: Run[] = [];
 const failures: string[] = [];
 const notes: string[] = [];
@@ -188,22 +185,13 @@ try {
           );
           break;
         }
-        let failed: Run | undefined;
-        for (let r = 0; r < repeats && !failed; r++) {
+        for (let r = 0; r < repeats; r++) {
           const run = await measure(warm, scenario, size);
           console.log(
             `  ${scenario.name} at ${size}: loaded in ${run.phases.load?.ms.toFixed(0)} ms` +
               (run.errors.length ? `, ${run.errors.length} errors` : ''),
           );
-          // Where the old packages fail, they cannot draw that size: their record ends before it.
-          if (old && run.errors.length) failed = run;
-          else runs.push((last = run));
-        }
-        if (failed) {
-          notes.push(
-            `${scenario.name} stops before ${size}: the old packages failed, ${failed.errors[0]}`,
-          );
-          break;
+          runs.push((last = run));
         }
       }
     } catch (error) {
@@ -240,25 +228,25 @@ const slug = machine
   .replace(/^-|-$/g, '');
 const workFile = path.join(baselines, 'work.json');
 const oldFile = path.join(baselines, 'old.json');
-const timesFile = old ? oldFile : path.join(baselines, `${slug}.json`);
+const timesFile = path.join(baselines, `${slug}.json`);
 const verdict = judge(runs, list, {
-  work: old ? undefined : read<WorkBaseline>(workFile),
-  times: old ? undefined : read<TimeBaseline>(timesFile),
+  work: read<WorkBaseline>(workFile),
+  times: read<TimeBaseline>(timesFile),
 });
 console.log(`\n${machine}`);
-console.log(report(list, verdict, old ? undefined : read<TimeBaseline>(oldFile)));
+console.log(report(list, verdict, read<TimeBaseline>(oldFile)));
 if (runs.length) {
   fs.mkdirSync(results, { recursive: true });
-  write(path.join(results, `${old ? 'old-' : ''}${Date.now()}.json`), { machine, runs });
+  write(path.join(results, `${Date.now()}.json`), { machine, runs });
 }
 // Baselines come only from runs that all completed without errors; what they measured, slower or
 // faster, is what --update accepts.
-if (old || flags.update) {
+if (flags.update) {
   if (failures.length || runs.some((r) => r.errors.length)) {
     failures.push('baselines not written: a run failed or reported errors');
   } else {
     fs.mkdirSync(baselines, { recursive: true });
-    if (!old) write(workFile, work(verdict, read<WorkBaseline>(workFile)));
+    write(workFile, work(verdict, read<WorkBaseline>(workFile)));
     write(timesFile, times(verdict, machine, read<TimeBaseline>(timesFile)));
   }
 }

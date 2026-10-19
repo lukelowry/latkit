@@ -35,11 +35,6 @@ struct Flight {
 }
 
 impl Rig {
-    /// Whether the camera will move without input.
-    pub(crate) fn moving(&self) -> bool {
-        self.flight.is_some() || self.orbit != 0.0 || self.owed()
-    }
-
     /// Whether the camera eases toward where it goes: a flight, or motion owed. An orbit never settles.
     pub(crate) fn easing(&self) -> bool {
         self.flight.is_some() || self.owed()
@@ -103,8 +98,10 @@ impl View {
             return;
         }
         if self.rig.owed() {
-            let coast = 1.0 - (-dt / COAST).exp();
-            let glide = 1.0 - (-dt / GLIDE).exp();
+            // Without motion of its own, what is owed is paid at once.
+            let moves = self.moves();
+            let coast = if moves { 1.0 - (-dt / COAST).exp() } else { 1.0 };
+            let glide = if moves { 1.0 - (-dt / GLIDE).exp() } else { 1.0 };
             let (pan, turn, zoom) =
                 (self.rig.pan.map(|v| v * coast), self.rig.turn.map(|v| v * coast), self.rig.zoom * glide);
             let anchor = self.rig.anchor;
@@ -118,7 +115,7 @@ impl View {
             self.rig.zoom = settle(self.rig.zoom - zoom, 1e-4);
             self.steer(camera);
         }
-        if self.rig.orbit != 0.0 && matches!(self.camera, Camera::Map { .. }) {
+        if self.rig.orbit != 0.0 && matches!(self.camera, Camera::Map { .. }) && self.moves() {
             let Camera::Map { center, .. } = self.camera else { return };
             let view = self.projected();
             let camera = self.camera.turned(&view, center, [self.rig.orbit * dt, 0.0]);

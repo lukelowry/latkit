@@ -145,6 +145,12 @@ impl TileSets {
         self.sets.iter().all(|s| !matches!(s.source, Source::Opening(_) | Source::Root(..)) && !s.standing_in)
     }
 
+    /// The tiles every source draws, and those being fetched or decoded.
+    pub(crate) fn counts(&self) -> [u64; 2] {
+        let count = |each: fn(&TileSet) -> usize| self.sets.iter().map(|s| each(s) as u64).sum();
+        [count(|s| s.drawn.len()), count(|s| s.fetching.len() + s.decoding.len())]
+    }
+
     /// Whether the view owns dataset `name`: tiles fetched as the camera asks, drawn as they are.
     pub(crate) fn owns(&self, name: &str) -> bool {
         self.sets.iter().any(|s| *s.tiles.name == *name)

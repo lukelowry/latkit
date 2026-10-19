@@ -7,7 +7,7 @@
 
 import package::lib::types::{
     NONE, VISIBLE, PLACED, DASH, ENDS_COLOR, GEODESIC, STEP_BEFORE, STEP_AFTER, MARK_EDGES, PATH_ENDS, PATH_TRACE,
-    PATH_GEOMETRY, EDGE_WIDTH, LINE_WIDTH, GEODESIC_STEP, OWN_HEIGHT, TRIANGLES, MAX_PIECES, BOW_PIECES, SPACE_EARTH,
+    PATH_GEOMETRY, PATH_POLES, EDGE_WIDTH, LINE_WIDTH, GEODESIC_STEP, OWN_HEIGHT, TRIANGLES, MAX_PIECES, BOW_PIECES, SPACE_EARTH,
 };
 import package::lib::bind::{frame, eye, mark, focused};
 import package::lib::state::{row_at, edge_at, line_at, vertex_slot, Vertex};
@@ -357,12 +357,28 @@ fn geometry_point(row: u32, i: u32) -> PathPoint {
     return position_point(xy, 0.0, vec4f(1.0));
 }
 
+// Point `i` of a pole: the row's own vertex where it stands, then the ground beneath it.
+fn pole_point(row: u32, i: u32) -> PathPoint {
+    let e = edge_at(row_at(row));
+    if e.a == NONE {
+        return hidden();
+    }
+    var p = vertex_point(e.a);
+    if i > 0u {
+        p.z = 0.0;
+        p.half = vec2f(0.0);
+        p = placed_point(p);
+    }
+    return p;
+}
+
 // Point `i` of row `row`'s path, whatever it runs through, placed in the world.
 fn path_point(row: u32, i: u32) -> PathPoint {
     switch PATH {
         case PATH_ENDS: { return end_point(row, i); }
         case PATH_TRACE: { return placed_point(trace_point(row, i)); }
         case PATH_GEOMETRY: { return placed_point(geometry_point(row, i)); }
+        case PATH_POLES: { return pole_point(row, i); }
         default: { return hidden(); }
     }
 }
@@ -429,7 +445,7 @@ fn stroke_style(row: u32) -> Style {
     var s: Style;
     if mark.kind == MARK_EDGES {
         let e = edge_at(row_at(row));
-        s.width = px(e.width, EDGE_WIDTH) * growth(e.flags);
+        s.width = clamp(px(e.width, EDGE_WIDTH), mark.size_min, mark.size_max) * growth(e.flags);
         // An edge colored by its ends takes their colors where it draws; this only fades it.
         s.color = select(unpack4x8unorm(e.color), vec4f(1.0), ends_colored());
         s.color.a *= faded(row, e.flags);
@@ -439,7 +455,7 @@ fn stroke_style(row: u32) -> Style {
         s.shown = (e.flags & VISIBLE) != 0u;
     } else {
         let l = line_at(row_at(row));
-        s.width = px(l.width, LINE_WIDTH) * growth(l.flags);
+        s.width = clamp(px(l.width, LINE_WIDTH), mark.size_min, mark.size_max) * growth(l.flags);
         s.color = unpack4x8unorm(l.color);
         s.color.a *= faded(row, l.flags);
         s.flow = l.flow;

@@ -10,7 +10,7 @@ import package::lib::state::{vertex_slot, Vertex};
 import package::lib::project::{world, clip_of, shows, to_screen};
 import package::lib::focus::{focus_of, faded, growth};
 import package::lib::read::bits_value;
-import package::lib::mark::{px, fringe};
+import package::lib::mark::{px, fringe, within};
 
 struct Point {
     clip: vec4f,
@@ -40,6 +40,7 @@ fn point(row: u32) -> Point {
     if (mark.flags & SIZED) != 0u {
         half.y = px(v.half.y, VERTEX_HALF + 1u);
     }
+    half = within(half, vec2f(mark.size_min, mark.size_max));
     let focus = focus_of(row);
     let grows = (mark.units & (1u << VERTEX_HALF)) == 0u && (focus & HOVERED) != 0u;
     half *= select(1.0, frame.hover_scale, grows) * growth(v.flags);
@@ -65,7 +66,7 @@ fn vertex_half(v: Vertex) -> vec2f {
     if (v.flags & HALF_UNITS) != 0u {
         half *= eye.px_per_unit.x;
     }
-    return half;
+    return within(half, v.range);
 }
 
 // Where a port sits on a marker of half size `half`, CSS pixels from its center, y down: its side in

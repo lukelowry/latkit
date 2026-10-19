@@ -10,6 +10,10 @@
 // each label in or out. Placement only decides which labels show; draws place them from their
 // anchors every frame. A diagram's labels scale with its sheet, so they need no placement: only
 // `candidates` runs there, to ask for the texts of labels in view.
+//
+// A mark that shows at most `label_max` labels keeps, of those wanting room, the ones of least key,
+// before any claims: keys are unique, so a radix select over three digits of 11, 11, and 10 bits finds
+// the greatest key kept exactly, each digit a pass over the candidates and one over its buckets.
 
 import package::lib::types::{
     NONE, VISIBLE, LABEL_CODE, LABEL_PRIORITY, CANDIDATE_WORDS, CANDIDATE_BOX, CANDIDATE_KEY, CANDIDATE_STATE,
@@ -101,6 +105,103 @@ fn candidates(@builtin(global_invocation_id) id: vec3u) {
     let id_bits = (mark.label_id + row + 1u) & 0x7fffffu;
     put(at + CANDIDATE_KEY, ((255u - level) << 24u) | select(0x800000u, 0u, sticky) | id_bits);
     put(at + CANDIDATE_STATE, next);
+}
+
+// Buckets of a digit of the select capping labels.
+const SELECT_BUCKETS: u32 = 2048u;
+
+// Word `k` of the select's state, past its buckets: the key's digits found, how many of the least
+// keys are still to keep, and the digit next counted (4 once fewer want room than the cap).
+fn select_word(k: u32) -> u32 {
+    return mark.label_select + SELECT_BUCKETS + k;
+}
+
+// Where digit `d` of a key starts, and how many bits it has.
+fn digit(d: u32) -> vec2u {
+    switch d {
+        case 0u: { return vec2u(21u, 11u); }
+        case 1u: { return vec2u(10u, 11u); }
+        default: { return vec2u(0u, 10u); }
+    }
+}
+
+fn wanting(row: u32) -> bool {
+    return (word(candidate(row) + CANDIDATE_STATE) & WANTS) != 0u;
+}
+
+@compute @workgroup_size(256)
+fn select_start(@builtin(global_invocation_id) id: vec3u) {
+    if mark.label_max == NONE {
+        return;
+    }
+    if id.x < SELECT_BUCKETS {
+        put(mark.label_select + id.x, 0u);
+    }
+    if id.x == 0u {
+        put(select_word(0u), 0u);
+        put(select_word(1u), mark.label_max);
+        put(select_word(2u), 0u);
+    }
+}
+
+@compute @workgroup_size(256)
+fn select_count(@builtin(global_invocation_id) id: vec3u) {
+    let row = id.x;
+    let d = word(select_word(2u));
+    if row >= mark.rows || mark.label_max == NONE || d >= 3u || !wanting(row) {
+        return;
+    }
+    let key = word(candidate(row) + CANDIDATE_KEY);
+    let at = digit(d);
+    // Only keys whose higher digits are those found count.
+    let above = at.x + at.y;
+    if above < 32u && (key >> above) != word(select_word(0u)) {
+        return;
+    }
+    atomicAdd(&labels[mark.label_select + ((key >> at.x) & (SELECT_BUCKETS - 1u))], 1u);
+}
+
+// The bucket holding the least key still to keep, clearing the buckets for the next digit.
+@compute @workgroup_size(1)
+fn select_find() {
+    let d = word(select_word(2u));
+    // A cap of none keeps no label: the cut drops them all.
+    if mark.label_max == NONE || mark.label_max == 0u || d >= 3u {
+        return;
+    }
+    var left = word(select_word(1u));
+    var found = SELECT_BUCKETS;
+    for (var b = 0u; b < SELECT_BUCKETS; b++) {
+        let n = word(mark.label_select + b);
+        put(mark.label_select + b, 0u);
+        if found == SELECT_BUCKETS {
+            if n >= left {
+                found = b;
+            } else {
+                left -= n;
+            }
+        }
+    }
+    if found == SELECT_BUCKETS {
+        // Fewer want room than the cap: each keeps its chance.
+        put(select_word(2u), 4u);
+        return;
+    }
+    put(select_word(0u), (word(select_word(0u)) << digit(d).y) | found);
+    put(select_word(1u), left);
+    put(select_word(2u), d + 1u);
+}
+
+@compute @workgroup_size(256)
+fn select_cut(@builtin(global_invocation_id) id: vec3u) {
+    let row = id.x;
+    if row >= mark.rows || mark.label_max == NONE || !wanting(row) || word(select_word(2u)) == 4u {
+        return;
+    }
+    let at = candidate(row) + CANDIDATE_STATE;
+    if mark.label_max == 0u || word(candidate(row) + CANDIDATE_KEY) > word(select_word(0u)) {
+        put(at, word(at) & ~WANTS);
+    }
 }
 
 // The cells row `row`'s label covers: least and greatest column and row.

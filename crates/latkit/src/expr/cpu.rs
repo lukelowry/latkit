@@ -1,6 +1,6 @@
-//! The expression machine on the CPU, for what a diagram's sheet reads: where rows stand, how large
-//! they are, and the texts its blocks fit. The GPU runs the same expressions for everything drawn;
-//! here they read static fields only, which compiling a diagram's marks checks.
+//! The expression machine on the CPU, for what a diagram's sheet reads (where rows stand, how large
+//! they are, and the texts its blocks fit) and what a query keeps, sorts, and selects. The GPU runs
+//! the same expressions for everything drawn; here they read fields, sampled ones at a coordinate.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -15,13 +15,21 @@ use crate::data::{Data, Field, Geometry, Table, Value};
 pub(crate) struct Rows<'a> {
     pub(crate) table: &'a Table,
     pub(crate) all: &'a [Data],
+    /// The axis coordinate sampled fields are read at: their last frame by default.
+    at: f64,
     /// Fitted domains already reduced, by the input they reduce.
     fitted: RefCell<FxHashMap<*const Node, [f64; 2]>>,
 }
 
 impl<'a> Rows<'a> {
     pub(crate) fn new(table: &'a Table, all: &'a [Data]) -> Rows<'a> {
-        Rows { table, all, fitted: RefCell::default() }
+        Rows { table, all, at: f64::INFINITY, fitted: RefCell::default() }
+    }
+
+    /// The rows with sampled fields read at axis coordinate `at`.
+    pub(crate) fn at(mut self, at: f64) -> Rows<'a> {
+        self.at = at;
+        self
     }
 
     /// `expr` for `row` as a number; `None` where it reads missing, or holds no number.
@@ -80,11 +88,11 @@ impl<'a> Rows<'a> {
     /// Field `f`'s value for `row`: of the table, or of a joined one by the row's id.
     fn value(&self, f: &FieldRef, row: usize) -> Option<Value> {
         let value = match &f.of {
-            None => self.table.value(row, &f.name, f64::INFINITY)?,
+            None => self.table.value(row, &f.name, self.at)?,
             Some((data, table)) => {
                 let other = self.all.iter().find(|d| d.name() == data)?.table(table)?;
                 let key = self.table.ids.key(row)?;
-                other.value(other.row(key)?, &f.name, f64::INFINITY)?
+                other.value(other.row(key)?, &f.name, self.at)?
             }
         };
         Some(match (value, f.component) {

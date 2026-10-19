@@ -5,13 +5,14 @@ mod colormap;
 pub(crate) mod compile;
 pub(crate) mod cpu;
 mod decode;
+mod ramp;
 
 use std::ops::{Add, BitAnd, BitOr, Div, Mul, Neg, Not, RangeInclusive, Rem, Sub};
 use std::sync::Arc;
 
 pub use color::Color;
 pub(crate) use colormap::ColormapKey;
-pub use colormap::{Colormap, ColormapKind};
+pub use colormap::{Colormap, ColormapKind, Stop};
 
 use crate::Name;
 
@@ -146,9 +147,10 @@ pub fn zoom() -> Expr {
     node(Node::State(State::Zoom))
 }
 
-/// A size measured in position units, so it scales as the view zooms.
+/// A size measured in position units, so it scales as the view zooms; [`Size::at_least`] and
+/// [`Size::at_most`] keep it within CSS pixels.
 pub fn units(size: impl Into<Expr>) -> Size {
-    Size { expr: size.into(), units: true }
+    Size { expr: size.into(), units: true, px: Size::ANY }
 }
 
 macro_rules! unary {
@@ -285,6 +287,14 @@ impl Expr {
 
     /// The first colormap a color maps through, and its domain when set: what a legend shows. A
     /// conditional's general case, its `otherwise`, comes before the cases it makes exceptions for.
+    /// The field's name, when the expression is a field of its own table read as it is.
+    pub(crate) fn field_name(&self) -> Option<&Name> {
+        match &*self.0 {
+            Node::Field(f) if f.of.is_none() && f.component.is_none() => Some(&f.name),
+            _ => None,
+        }
+    }
+
     pub(crate) fn colormap_of(&self) -> Option<(&Colormap, Option<[f64; 2]>)> {
         match &*self.0 {
             Node::Colormap { colormap, domain, .. } => {
@@ -357,16 +367,38 @@ impl Then {
     }
 }
 
-/// A size: CSS pixels, or position units with [`units`].
+/// A size: CSS pixels, or position units with [`units`], kept within a range of CSS pixels.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Size {
     pub(crate) expr: Expr,
     pub(crate) units: bool,
+    /// The CSS pixels it keeps within, at any zoom.
+    pub(crate) px: [f32; 2],
+}
+
+impl Size {
+    /// Any number of CSS pixels.
+    pub(crate) const ANY: [f32; 2] = [0.0, f32::INFINITY];
+
+    /// Keeps at least `px` CSS pixels however far the view zooms out: `units(field("r")).at_least(2.0)`
+    /// grows with the map and never vanishes. A marker keeps its proportions, its larger side held.
+    #[must_use]
+    pub fn at_least(mut self, px: f32) -> Size {
+        self.px[0] = px.max(0.0);
+        self
+    }
+
+    /// Keeps at most `px` CSS pixels however far the view zooms in.
+    #[must_use]
+    pub fn at_most(mut self, px: f32) -> Size {
+        self.px[1] = px.max(0.0);
+        self
+    }
 }
 
 impl<T: Into<Expr>> From<T> for Size {
     fn from(value: T) -> Size {
-        Size { expr: value.into(), units: false }
+        Size { expr: value.into(), units: false, px: Size::ANY }
     }
 }
 

@@ -16,8 +16,9 @@ path = "src/main.rs"
 [dependencies]
 latkit = { workspace = true, features = ["native"] }
 clap.workspace = true
-serde_json = { workspace = true, features = ["raw_value"] }
+serde_json.workspace = true
 serde.workspace = true
+schemars.workspace = true
 tempfile.workspace = true
 
 [lints]

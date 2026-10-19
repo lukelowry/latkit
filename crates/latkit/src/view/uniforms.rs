@@ -221,7 +221,11 @@ pub(crate) fn mark(
     mark.frozen_geometry = wgsl::NONE;
     mark.lane = wgsl::NONE;
     mark.label = wgsl::NONE;
+    [mark.size_min, mark.size_max] = crate::Size::ANY;
+    mark.label_max = wgsl::NONE;
+    mark.label_select = wgsl::NONE;
     if let Some(slots) = labels {
+        mark.label_select = slots.select;
         mark.candidates = slots.candidates;
         mark.runs = slots.runs;
         mark.wanted = slots.wanted;
@@ -250,9 +254,11 @@ pub(crate) fn mark(
             mark.frozen_geometry = shown.tables.frozen().unwrap_or(wgsl::NONE);
         }
         mark.port_label_size = drawing.port_label_size;
+        [mark.size_min, mark.size_max] = drawing.size_px;
         if let Some(labeling) = &drawing.label {
             mark.label = labeling.extra;
             mark.label_size = labeling.size;
+            mark.label_max = labeling.max.unwrap_or(wgsl::NONE);
         }
         if shown.kind() == MarkKind::Lines {
             mark.per_row = shown.segments_per_row();

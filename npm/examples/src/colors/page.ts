@@ -8,6 +8,7 @@ import {
   Patch,
   colormapCss,
   field,
+  type Colormap,
   type ColormapName,
   type Mark,
   type Scene,
@@ -15,8 +16,22 @@ import {
 import type { Stage } from '../ui/stage.js';
 import { h } from '../ui/dom.js';
 
-/** Every catalog colormap, by kind. */
-const CATALOG: readonly (readonly [string, readonly ColormapName[]])[] = [
+/**
+ * A map of our own: clear to a placed, half-clear blue, then an opaque amber. Over the plane's
+ * grid, its alpha shows as the lines through the cells.
+ */
+const CUSTOM: Colormap = {
+  kind: 'sequential',
+  colors: ['#2a6fdb00', [0.55, '#2a6fdb99'], '#ffb000'],
+};
+/** A colormap of the catalog, or ours. */
+type Choice = ColormapName | 'custom';
+const mapOf = (choice: Choice): Colormap => (choice === 'custom' ? CUSTOM : choice);
+/** A checkerboard under a ramp, so what is clear in it shows. */
+const CHECKS = 'repeating-conic-gradient(#888 0 25%, #ccc 0 50%) 0 0 / 8px 8px';
+
+/** Every catalog colormap by kind, then ours. */
+const CATALOG: readonly (readonly [string, readonly Choice[]])[] = [
   [
     'Sequential',
     [
@@ -65,8 +80,10 @@ const CATALOG: readonly (readonly [string, readonly ColormapName[]])[] = [
   ],
   ['Cyclic', ['phase', 'romao', 'twilight']],
   ['Categorical', ['tab10', 'tab20', 'tableau10', 'set2', 'dark2', 'paired', 'okabeito']],
+  ['Custom', ['custom']],
 ];
-const CATEGORICAL = new Set<ColormapName>(CATALOG[3]![1]);
+const CATEGORICAL = new Set<Choice>(CATALOG.find(([kind]) => kind === 'Categorical')![1]);
+const KINDS = ['All', ...CATALOG.map(([kind]) => kind)] as const;
 
 /** What the cells show, each a value from 0 to 1 at a point; categorical maps read classes. */
 const FIELDS = {
@@ -112,21 +129,28 @@ function hexagons(columns: number, rows: number, value: FieldName): Data {
 }
 
 export default function page(stage: Stage): void {
-  let colormap: ColormapName = 'viridis';
+  let colormap: Choice = 'viridis';
   let value: FieldName = 'peaks';
   let size: [number, number] = [96, 64];
   let outline = false;
   let reversed = false;
+  let light = false;
 
   const scene = (): Scene => {
     const input = CATEGORICAL.has(colormap) ? field('class') : field('value');
-    const mapped = input.colormap(colormap);
+    const mapped = input.colormap(mapOf(colormap));
+    const background = light ? '#f4f1ea' : '#090c11';
     const outlines: Mark[] = outline
-      ? [{ lines: { of: ['colors', 'Cell'], color: '#090c11', width: 0.75, pick: false } }]
+      ? [{ lines: { of: ['colors', 'Cell'], color: background, width: 0.75, pick: false } }]
       : [];
     return {
-      space: { plane: { grid: 'off' } },
-      theme: { base: 'dark', background: '#090c11', hover: '#ffffffaa' },
+      // Lines under the cells show through what a map leaves clear.
+      space: { plane: { grid: colormap === 'custom' ? { lines: 4 } : 'off' } },
+      theme: {
+        base: light ? 'light' : 'dark',
+        background,
+        hover: light ? '#000000aa' : '#ffffffaa',
+      },
       ease: 0.25,
       marks: [
         {
@@ -156,7 +180,7 @@ export default function page(stage: Stage): void {
   const restyle = () => {
     view.show(scene());
     legend.ramp(
-      colormap,
+      mapOf(colormap),
       `${colormap}${CATEGORICAL.has(colormap) ? ', ten classes' : reversed ? ', reversed' : ''}`,
     );
     for (const [name, swatch] of swatches)
@@ -167,7 +191,13 @@ export default function page(stage: Stage): void {
   const choose = palette.choice(
     'Colormap',
     CATALOG.flatMap(([kind, names]) =>
-      names.map((name) => [`${name} · ${kind.toLowerCase()}`, name] as const),
+      names.map(
+        (name) =>
+          [
+            name === 'custom' ? 'ours · alpha, a placed stop' : `${name} · ${kind.toLowerCase()}`,
+            name,
+          ] as const,
+      ),
     ),
     colormap,
     (name) => {
@@ -181,6 +211,10 @@ export default function page(stage: Stage): void {
   });
   palette.toggle('Outlines', 'o', outline, (on) => {
     outline = on;
+    restyle();
+  });
+  palette.toggle('Light', 'l', light, (on) => {
+    light = on;
     restyle();
   });
 
@@ -199,17 +233,18 @@ export default function page(stage: Stage): void {
       rebuild();
     },
   );
+  // By columns: a field three rows for every two columns wide.
   shown.choice(
     'Cells',
     [
-      ['1,500', [48, 32]],
-      ['6,000', [96, 64]],
-      ['24,000', [192, 128]],
-      ['96,000', [384, 256]],
+      ['1,500', 48],
+      ['6,000', 96],
+      ['24,000', 192],
+      ['96,000', 384],
     ] as const,
-    size as readonly [number, number],
-    (next) => {
-      size = [next[0], next[1]];
+    size[0],
+    (columns) => {
+      size = [columns, (columns * 2) / 3];
       rebuild();
       view.fit();
     },
@@ -222,12 +257,25 @@ export default function page(stage: Stage): void {
     reading.textContent = `Cell ${hit.row.id}: ${v?.toFixed(3) ?? '–'}`;
   });
 
-  // The catalog as CSS ramps: the same texels the GPU samples, drawn by the browser.
+  // The catalog as CSS ramps: the colors the GPU draws, drawn by the browser over checks, so
+  // what a map leaves clear shows.
   const catalog = stage.section('Catalog');
-  const swatches = new Map<ColormapName, HTMLButtonElement>();
+  const groups: [string, HTMLElement[]][] = [];
+  catalog.choice(
+    'Kind',
+    KINDS.map((kind) => [kind, kind] as const),
+    'All',
+    (shown) => {
+      for (const [kind, elements] of groups)
+        for (const element of elements) element.hidden = shown !== 'All' && shown !== kind;
+    },
+  );
+  const swatches = new Map<Choice, HTMLButtonElement>();
   for (const [kind, names] of CATALOG) {
-    catalog.element.append(h('p', { class: 'note' }, kind));
+    const title = h('p', { class: 'note' }, kind);
     const grid = h('div', { class: 'swatches' });
+    groups.push([kind, [title, grid]]);
+    catalog.element.append(title);
     for (const name of names) {
       const swatch = h(
         'button',
@@ -235,7 +283,8 @@ export default function page(stage: Stage): void {
         h('span', { class: 'ramp' }),
         name,
       );
-      (swatch.firstChild as HTMLElement).style.background = colormapCss(name);
+      (swatch.firstChild as HTMLElement).style.background =
+        `${colormapCss(mapOf(name))}, ${CHECKS}`;
       swatch.addEventListener(
         'click',
         () => {

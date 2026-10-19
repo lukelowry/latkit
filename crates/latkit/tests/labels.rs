@@ -193,3 +193,38 @@ fn diagram_labels_fade_once_too_small_to_read() {
     let middle = at(&far, c, c);
     assert!(middle[1] > 120 && middle[0] < 60, "only the block: {middle:?}");
 }
+
+#[test]
+fn a_cap_shows_only_the_labels_of_highest_priority() {
+    let Some(gpu) = gpu() else { return };
+    let set = Arc::new(AtomicUsize::new(0));
+    gpu.set_host(Counted(set.clone()));
+    // Four rows one above another, apart enough that none would give way, priorities rising upward.
+    let ys = [-45.0, -15.0, 15.0, 45.0];
+    let mut data = Data::new("d");
+    data.apply(
+        Table::new("V", 4)
+            .field("x", vec![-30.0; 4])
+            .field("y", ys.to_vec())
+            .field("name", vec!["abc", "bcd", "cde", "def"])
+            .field("p", vec![1.0, 2.0, 3.0, 4.0]),
+    )
+    .expect("valid");
+    let label = Label::new("name").size(10.0).priority(field("p")).color(Color::rgb(1.0, 0.0, 0.0)).max(2);
+    let marks = Vertices::of("d", "V").position("x", "y").radius(1.0).color(Color::rgb(0.0, 0.0, 1.0)).pick(false);
+    let scene = Scene::new(plane()).theme(latkit::Theme { halo: 0.0, ..plain_theme() }).draw(marks.label(label));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let c = SIZE / 2;
+    // The plane runs y up; each label starts beside its marker.
+    let labeled = |y: f64| {
+        let row = (f64::from(c) - y) as u32;
+        (c - 30 + 4..c - 30 + 20).any(|x| at(&pixels, x, row)[0] > 200)
+    };
+    assert!(labeled(45.0) && labeled(15.0), "the two of highest priority show");
+    assert!(!labeled(-15.0) && !labeled(-45.0), "the rest give way to the cap");
+    assert_eq!(set.load(Ordering::Relaxed), 2, "only the labels shown have their texts set");
+    assert_eq!(errors(&mut view), Vec::new());
+}

@@ -16,7 +16,7 @@ mod shot;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
-use convert::{invalid, value};
+use convert::value;
 pub use error::Error;
 pub use shot::{Canvas, Handle, Image, Video, image, set_encoder};
 
@@ -27,7 +27,7 @@ fn start() {
 
 /// What `text` holds, in the JSON form latkit's serde support reads; or why not, at `what`.
 fn json<T: serde::de::DeserializeOwned>(what: &str, text: &str) -> Result<T, Error> {
-    serde_json::from_str(text).map_err(|e| invalid(what, &e).into())
+    serde_json::from_str(text).map_err(|e| latkit::Error::invalid(e.to_string()).at(what).into())
 }
 
 /// `value` in the JSON form the npm package's types describe.
@@ -171,8 +171,8 @@ impl Data {
     }
 
     /// The value of `field` for the row with `id` in `table`, at axis coordinate `at` when given.
-    pub fn get(&self, table: &str, id: &JsValue, field: &str, at: Option<f64>) -> Result<JsValue, Error> {
-        let id = convert::id(id)?;
+    pub fn get(&self, table: &str, id: JsValue, field: &str, at: Option<f64>) -> Result<JsValue, Error> {
+        let id: latkit::Id = serde_wasm_bindgen::from_value(id).map_err(convert::invalid)?;
         let row = latkit::Row::new(self.0.name(), table, id);
         Ok(match at {
             Some(at) => self.0.get_at(&row, field, at),
@@ -195,6 +195,37 @@ impl Data {
     pub fn fields(&self, table: &str) -> Vec<String> {
         self.0.table(table).map(|t| t.fields().map(|(name, _)| name.to_string()).collect()).unwrap_or_default()
     }
+
+    /// What the dataset holds, as JSON `{ name, axis, span, tables }`.
+    pub fn describe(&self) -> String {
+        to_json(&self.0.describe())
+    }
+
+    /// The rows `query` (JSON) asks for, as `{ table, ids, fields }` in the forms `put` takes.
+    pub fn query(&self, query: &str) -> Result<JsValue, Error> {
+        Ok(convert::table(&self.0.query(&json("query", query)?)?))
+    }
+
+    /// Each row's least and greatest value of sampled `field` of `table` over `spans` spans of
+    /// `range`: of every row, or of rows `ids`, as `{ at, least, greatest }` typed arrays.
+    pub fn envelope(
+        &self,
+        table: &str,
+        field: &str,
+        range: &[f64],
+        spans: u32,
+        ids: JsValue,
+    ) -> Result<JsValue, Error> {
+        let table = self.0.table(table).ok_or_else(|| latkit::Error::invalid("no such table").at(table))?;
+        let [from, to] = range else { return Err(latkit::Error::invalid("a range is [from, to]").into()) };
+        let ids: Option<latkit::Ids> = serde_wasm_bindgen::from_value(ids).map_err(convert::invalid)?;
+        let envelope = table.envelope(field, [*from, *to], spans as usize, ids.as_ref())?;
+        Ok(convert::object(&[
+            ("at", js_sys::Float64Array::from(&envelope.at[..]).into()),
+            ("least", js_sys::Float32Array::from(&envelope.least[..]).into()),
+            ("greatest", js_sys::Float32Array::from(&envelope.greatest[..]).into()),
+        ]))
+    }
 }
 
 /// Changes to a dataset, applied in order and all at once.
@@ -214,6 +245,15 @@ impl Patch {
         Ok(Patch(latkit::Patch::from_bytes(bytes)?))
     }
 
+    /// The patch at the start of `bytes` and how many bytes it takes, as `{ patch, used }`; `null`
+    /// while `bytes` hold only its start; an error once it would run past `limit` bytes.
+    pub fn decode(bytes: &[u8], limit: f64) -> Result<JsValue, Error> {
+        Ok(match latkit::Patch::decode(bytes, limit as usize)? {
+            Some((patch, used)) => convert::object(&[("patch", Patch(patch).into()), ("used", (used as f64).into())]),
+            None => JsValue::NULL,
+        })
+    }
+
     /// A promise of the patch its JSON makes, its slices fetched relative to `base`.
     pub fn load(json: String, base: String) -> js_sys::Promise {
         wasm_bindgen_futures::future_to_promise(async move {
@@ -222,41 +262,12 @@ impl Patch {
         })
     }
 
-    pub fn axis(&mut self, name: &str, unit: &str) {
-        self.take(|p| p.axis(name, unit));
-    }
-
-    /// Writes `fields` for rows `ids` of `table`, adding rows and the table as needed.
-    pub fn set(&mut self, table: &str, ids: &JsValue, fields: &js_sys::Object) -> Result<(), Error> {
-        let table = convert::fields(latkit::Table::new(table, convert::ids(ids)?), fields)?;
-        self.take(|p| p.set(table));
+    /// Appends the changes `ops` lists, in the JSON form `Patch.load` reads: typed arrays as
+    /// `{ dtype, bytes }`, copied once.
+    pub fn push(&mut self, ops: JsValue) -> Result<(), Error> {
+        let next: latkit::Patch = serde_wasm_bindgen::from_value(ops).map_err(convert::invalid)?;
+        self.take(|p| p.then(next));
         Ok(())
-    }
-
-    /// Replaces `table` with these rows and fields.
-    pub fn put(&mut self, table: &str, ids: &JsValue, fields: &js_sys::Object) -> Result<(), Error> {
-        let table = convert::fields(latkit::Table::new(table, convert::ids(ids)?), fields)?;
-        self.take(|p| p.put(table));
-        Ok(())
-    }
-
-    pub fn remove(&mut self, table: &str, ids: &JsValue) -> Result<(), Error> {
-        let ids = convert::ids(ids)?;
-        self.take(|p| p.remove(table, ids));
-        Ok(())
-    }
-
-    /// Records a frame at each axis coordinate of `at`, one or an array: values frame-major.
-    pub fn append(&mut self, at: &JsValue, table: &str, fields: &js_sys::Object) -> Result<(), Error> {
-        let at = convert::coordinates(at)?;
-        let fields = convert::values_of(fields)?;
-        self.take(|p| p.append(at, table, fields));
-        Ok(())
-    }
-
-    /// Forgets every sampled field's frames before axis coordinate `before`.
-    pub fn forget(&mut self, before: f64) {
-        self.take(|p| p.forget(before));
     }
 
     #[wasm_bindgen(js_name = toBytes)]
@@ -348,9 +359,20 @@ impl View {
         Ok(())
     }
 
-    /// Lays every vertex without a position out again by the diagram's layout.
-    pub fn arrange(&self) {
-        self.view.with(latkit::View::arrange);
+    /// Lays every vertex row without a position out again by the scene's layout: a promise of
+    /// `[dataset, patch]` pairs writing the places into the data.
+    pub fn arrange(&self) -> js_sys::Promise {
+        let pending = self.view.with(latkit::View::arrange);
+        wasm_bindgen_futures::future_to_promise(async move {
+            let patches = pending.await.map_err(|e| JsValue::from(Error::from(e)))?;
+            let pairs: js_sys::Array = patches
+                .into_iter()
+                .map(|(name, patch)| -> JsValue {
+                    js_sys::Array::of2(&name.as_str().into(), &Patch(patch).into()).into()
+                })
+                .collect();
+            Ok(pairs.into())
+        })
     }
 
     /// Where `position` (x, y, elevation) lands on screen, CSS pixels from the top left.
@@ -476,8 +498,26 @@ pub fn module() -> JsValue {
     wasm_bindgen::module()
 }
 
-/// A catalog colormap's 256 RGBA texels, for legends.
-#[wasm_bindgen]
-pub fn colormap(name: &str) -> Option<Vec<u8>> {
-    latkit::Colormap::named(name).map(|map| (0..256).flat_map(|i| map.sample(i as f32 / 255.0).to_rgba8()).collect())
+/// A CSS gradient through `map`, a catalog name or colors of your own, toward `direction`: the
+/// colors the GPU draws, a band each for a categorical map's categories.
+#[wasm_bindgen(js_name = colormapCss)]
+pub fn colormap_css(map: JsValue, direction: &str) -> Result<String, Error> {
+    let map: latkit::Colormap = serde_wasm_bindgen::from_value(map).map_err(convert::invalid)?;
+    let css = |color: latkit::Color| {
+        let [r, g, b, a] = color.to_rgba8();
+        format!("rgba({r}, {g}, {b}, {:.3})", f32::from(a) / 255.0)
+    };
+    let percent = |at: f32| format!("{}%", (at * 1e4).round() / 100.0);
+    let stops: Vec<String> = if map.kind() == latkit::ColormapKind::Categorical {
+        let n = map.count();
+        (0..n)
+            .map(|i| {
+                let span = [i, i + 1].map(|at| percent(at as f32 / n as f32));
+                format!("{} {} {}", css(map.sample(i as f32)), span[0], span[1])
+            })
+            .collect()
+    } else {
+        (0..=32).map(|i| format!("{} {}", css(map.sample(i as f32 / 32.0)), percent(i as f32 / 32.0))).collect()
+    };
+    Ok(format!("linear-gradient({direction}, {})", stops.join(", ")))
 }

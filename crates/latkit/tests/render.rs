@@ -80,7 +80,8 @@ fn edges_join_their_ends_and_colormaps_fit_the_values() {
         at(&pixels, center + 40, center)
     );
     let middle = at(&pixels, center, center);
-    assert!(middle[0] > 100 && middle[0] < 160, "the middle value is grey: {middle:?}");
+    // Grays run evenly in lightness: the middle is OKLab's half lightness, about 100.
+    assert!(middle[0] > 80 && middle[0] < 130, "the middle value is grey: {middle:?}");
 }
 
 #[test]
@@ -171,7 +172,8 @@ fn sampled_fields_read_at_the_shown_coordinate() {
     view.set_camera(camera());
     view.set_data(data);
     let center = SIZE / 2;
-    for (t, want) in [(0.0, 0), (10.0, 255), (5.0, 128), (20.0, 255), (-1.0, 0)] {
+    // Halfway is OKLab's half lightness: about 100.
+    for (t, want) in [(0.0, 0), (10.0, 255), (5.0, 100), (20.0, 255), (-1.0, 0)] {
         view.set_at(t);
         let pixel = at(&frame(&gpu, &mut view), center, center);
         if t < 0.0 {
@@ -519,6 +521,22 @@ fn frames_tell_what_they_cost_the_gpu_where_it_measures() {
 }
 
 #[test]
+fn frames_count_their_draws_and_instances() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("graph");
+    data.apply(Table::new("Node", 3).field("x", vec![-1.0, 0.0, 1.0]).field("y", vec![0.0; 3])).expect("valid");
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    frame(&gpu, &mut view);
+    let stats = view.stats();
+    // The backdrop's one triangle, then the mark's three points.
+    assert_eq!((stats.draws, stats.instances), (2, 4), "{stats:?}");
+    assert_eq!(stats.tiles, 0);
+}
+
+#[test]
 fn dashes_run_on_across_a_paths_segments() {
     let Some(gpu) = gpu() else { return };
     // A path of a hundred segments a pixel long, dashed. Were each segment to start its dashes
@@ -613,6 +631,32 @@ fn comets_carry_on_from_where_they_are_when_their_flow_changes() {
 }
 
 #[test]
+fn comets_follow_their_rows_when_rows_move_without_easing() {
+    let Some(gpu) = gpu() else { return };
+    // Two lines whose comets travel at different speeds, so each row's travel is its own.
+    let mut data = Data::new("d");
+    let paths = vec![vec![[-50.0, 30.0], [50.0, 30.0]], vec![[-50.0, 0.0], [50.0, 0.0]]];
+    data.apply(Table::new("Path", vec!["a", "b"]).field("geometry", paths).field("speed", vec![17.0, 40.0]))
+        .expect("valid");
+    let flow = latkit::Flow { color: Color::rgb(1.0, 0.0, 0.0), spacing: 30.0, length: 8.0, width: 8.0, units: false };
+    let line = Lines::of("d", "Path").width(1.0).color(Color::rgb(0.25, 0.25, 0.25)).flow(field("speed"));
+    let scene = Scene::new(plane()).theme(Theme { flow, ..plain_theme() }).ease(std::time::Duration::ZERO).draw(line);
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data.clone());
+    for _ in 0..40 {
+        step(&gpu, &mut view);
+    }
+    let before = heads(&step(&gpu, &mut view), SIZE / 2 + 2);
+    // Row b moves up to row 0 at once: its comets carry on from where they were, not from a's.
+    data.apply(Patch::new().remove("Path", vec!["a"])).expect("valid");
+    view.set_data(data);
+    let after = heads(&step(&gpu, &mut view), SIZE / 2 + 2);
+    let moved = before.iter().zip(&after).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(99);
+    assert!(!before.is_empty() && before.len() == after.len() && moved <= 2, "{before:?} then {after:?}");
+}
+
+#[test]
 fn comets_in_units_stay_on_their_lines_as_the_view_zooms() {
     let Some(gpu) = gpu() else { return };
     let c = f64::from(SIZE / 2);
@@ -632,4 +676,81 @@ fn comets_in_units_stay_on_their_lines_as_the_view_zooms() {
     assert!(stayed(&drawn), "comets in units stay where they were: {drawn:?}");
     let on_screen = heads_at(false);
     assert!(!stayed(&on_screen), "comets in pixels keep their spacing on screen instead: {on_screen:?}");
+}
+
+#[test]
+fn sizes_in_units_keep_within_their_pixels() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("d");
+    data.apply(Table::new("Node", 1).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
+    // Pixels across a red marker through the middle, at zoom 0: a unit a pixel.
+    let across = |radius: latkit::Size| {
+        let marker = Vertices::of("d", "Node").position("x", "y").radius(radius).color(Color::rgb(1.0, 0.0, 0.0));
+        let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(marker)).expect("valid scene");
+        view.set_camera(camera());
+        view.set_data(data.clone());
+        let pixels = frame(&gpu, &mut view);
+        (0..SIZE).filter(|&x| at(&pixels, x, SIZE / 2)[0] > 128).count()
+    };
+    assert!(across(latkit::units(0.01)) <= 1, "a hundredth of a unit is no pixel at all");
+    let held = across(latkit::units(0.01).at_least(5.0));
+    assert!((9..=11).contains(&held), "a radius of at least 5 pixels: {held} across");
+    let capped = across(latkit::units(1000.0).at_most(6.0));
+    assert!((11..=13).contains(&capped), "a radius of at most 6 pixels: {capped} across");
+}
+
+#[test]
+fn poles_stand_from_each_vertex_down_to_the_ground() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("d");
+    data.apply(Table::new("Node", 1).field("x", vec![0.0]).field("y", vec![0.0]).field("z", vec![40.0]))
+        .expect("valid");
+    let scene = |poles: bool| {
+        let vertices = Vertices::of("d", "Node")
+            .position("x", "y")
+            .elevation(field("z"))
+            .radius(3.0)
+            .color(Color::rgb(0.0, 0.0, 1.0));
+        let pole = Edges::of("d", "Node").poles().width(3.0).color(Color::rgb(1.0, 0.0, 0.0));
+        let scene = Scene::new(plane()).theme(plain_theme()).draw(vertices);
+        if poles { scene.draw(pole) } else { scene }
+    };
+    let red = |poles: bool| {
+        let mut view = View::new(&gpu, scene(poles)).expect("valid scene");
+        // Tilted, so a pole stands up the screen.
+        view.set_camera(Camera::Map { center: [0.0, 0.0, 20.0], zoom: 0.0, pitch: 60.0, bearing: 0.0 });
+        view.set_data(data.clone());
+        let pixels = frame(&gpu, &mut view);
+        (0..SIZE).filter(|&y| (SIZE / 2 - 2..SIZE / 2 + 3).any(|x| at(&pixels, x, y)[0] > 128)).count()
+    };
+    assert_eq!(red(false), 0, "no pole, no red");
+    let tall = red(true);
+    assert!(tall >= 15, "the pole runs up the screen from the ground to its vertex: {tall} rows");
+}
+
+#[test]
+fn nets_off_a_diagram_join_their_members_as_stars() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("d");
+    data.apply(Patch::new().set(Table::new("Net", 1)).set(
+        Table::new("Bus", 3).field("x", vec![-30.0, 30.0, 0.0]).field("y", vec![-15.0, -15.0, 30.0]).reference(
+            "net",
+            "Net",
+            vec![0_u64, 0, 0],
+        ),
+    ))
+    .expect("valid");
+    let buses = Vertices::of("d", "Bus").position("x", "y").radius(2.0).color(Color::rgb(0.0, 0.0, 1.0));
+    let net = Edges::of("d", "Net").joins("Bus", "net").width(2.0).color(Color::rgb(1.0, 0.0, 0.0));
+    let mut view =
+        View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(net).draw(buses)).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let red = |x: u32, y: u32| at(&pixels, x, y)[0] > 128;
+    // The members' middle is the origin: the spokes meet there, and run out to each member.
+    let c = SIZE / 2;
+    assert!(red(c, c), "the star's middle");
+    assert!(red(c, c - 15), "the spoke up to the member at the top (y up)");
+    assert!(!red(c + 20, c - 20), "nothing where no spoke runs");
 }

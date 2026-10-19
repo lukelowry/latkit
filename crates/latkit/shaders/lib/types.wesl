@@ -78,7 +78,7 @@ const POINT_BITS: u32 = 15u;
 const POINT_MASK: u32 = 32767u;
 
 // Vertex state words.
-const VERTEX_WORDS: u32 = 11u;
+const VERTEX_WORDS: u32 = 12u;
 const VERTEX_POSITION: u32 = 0u;
 const VERTEX_COLOR: u32 = 4u;
 const VERTEX_STATUS: u32 = 5u;
@@ -86,7 +86,10 @@ const VERTEX_HALF: u32 = 6u;
 const VERTEX_ELEVATION: u32 = 8u;
 // How many groups hold a group row: containers tint by it.
 const VERTEX_DEPTH: u32 = 9u;
-const VERTEX_FLAGS: u32 = 10u;
+// The CSS pixels its marker's half keeps within at any zoom, as two halves: the mark's, so every
+// mark reading the vertex trims at the outline it draws.
+const VERTEX_RANGE: u32 = 10u;
+const VERTEX_FLAGS: u32 = 11u;
 
 // Edge state words. Every kind's flags are its last word. A stroke's travel is how far its comets
 // moved, which no channel writes.
@@ -214,6 +217,8 @@ const GLYPHS: u32 = 3u;
 const PATH_ENDS: u32 = 0u;
 const PATH_TRACE: u32 = 1u;
 const PATH_GEOMETRY: u32 = 2u;
+// A pole: from each row's own vertex down to the ground under it.
+const PATH_POLES: u32 = 3u;
 
 // Mark flags.
 const SIZED: u32 = 1u;
@@ -498,6 +503,12 @@ struct Mark {
     label_id: u32,
     label_size: f32,
     port_label_size: f32,
+    // The most labels shown, or NONE; and where the labels buffer holds the select that caps them.
+    label_max: u32,
+    label_select: u32,
+    // The CSS pixels the mark's size keeps within at any zoom: a vertex's half, a stroke's width.
+    size_min: f32,
+    size_max: f32,
 }
 
 // A line or a run of text drawn over the marks, in CSS pixels.

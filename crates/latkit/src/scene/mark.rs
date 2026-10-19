@@ -94,6 +94,12 @@ pub(crate) struct StrokeWords {
 }
 
 impl Stroke {
+    /// Compiles the stroke's options; in a diagram its width is in units. The CSS pixels the width
+    /// keeps within are its size's.
+    pub(crate) fn px(&self) -> [f32; 2] {
+        self.width.as_ref().map_or(crate::Size::ANY, |size| size.px)
+    }
+
     /// Compiles the stroke's options; in a diagram its width is in units.
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords, diagram: bool) -> Result<()> {
         c.channel("dash", &self.dash, Store::Flag { word: words.flags, bit: wgsl::DASH })?;
@@ -213,6 +219,10 @@ pub(crate) struct Labeling {
     pub(crate) column: u32,
     pub(crate) size: f32,
     pub(crate) max_width: Option<f32>,
+    /// The font its texts are set in: the label's, else the theme's.
+    pub(crate) font: std::sync::Arc<str>,
+    /// The most labels shown at once, or none.
+    pub(crate) max: Option<u32>,
 }
 
 /// What a mark compiles in: the theme it falls back on, and its space.
@@ -220,6 +230,7 @@ pub(crate) struct Labeling {
 pub(crate) struct Context<'a> {
     pub(crate) theme: &'a super::Theme,
     pub(crate) space: &'a Space,
+    pub(crate) layout: &'a super::Layout,
 }
 
 impl Context<'_> {
@@ -227,6 +238,12 @@ impl Context<'_> {
     /// stand and how wires run.
     pub(crate) fn diagram(&self) -> bool {
         matches!(self.space, Space::Diagram(_))
+    }
+
+    /// Whether, outside a diagram, the view places vertex rows without positions by the scene's
+    /// layout: on a plane or the earth.
+    pub(crate) fn placed(&self) -> bool {
+        matches!(self.space, Space::Plane(_) | Space::Earth(_)) && !matches!(self.layout, super::Layout::None)
     }
 }
 
@@ -257,6 +274,8 @@ pub(crate) struct Drawing {
     pub(crate) ports: Vec<(Name, super::Port, u32)>,
     /// The size a vertex mark's port labels are set at, in length units.
     pub(crate) port_label_size: f32,
+    /// The CSS pixels the mark's size keeps within: a vertex's half, a stroke's width.
+    pub(crate) size_px: [f32; 2],
 }
 
 impl Drawing {
@@ -281,6 +300,7 @@ impl Drawing {
             label: None,
             ports: Vec::new(),
             port_label_size: 0.0,
+            size_px: crate::Size::ANY,
         }
     }
 }
@@ -331,6 +351,8 @@ impl Mark {
     /// its sheet worked out; on a plot a line traces its samples, elsewhere it runs along its path.
     pub(crate) fn path(&self, space: &Space) -> Option<u32> {
         match self {
+            Mark::Edges(e) if e.poles => Some(wgsl::PATH_POLES),
+            Mark::Edges(e) if e.joins.is_some() => Some(wgsl::PATH_GEOMETRY),
             Mark::Edges(_) if matches!(space, Space::Diagram(_)) => Some(wgsl::PATH_GEOMETRY),
             Mark::Edges(_) => Some(wgsl::PATH_ENDS),
             Mark::Lines(_) if matches!(space, Space::Plot(_)) => Some(wgsl::PATH_TRACE),
@@ -353,6 +375,16 @@ impl Mark {
             if style.shadow {
                 return Some(("shadow", "a diagram is flat: nothing casts shadows"));
             }
+            if let Mark::Edges(e) = self
+                && e.poles
+            {
+                return Some(("poles", "a diagram is flat: poles stand on planes and the earth"));
+            }
+            if let Mark::Edges(e) = self
+                && e.joins.is_some()
+            {
+                return Some(("joins", "a diagram's nets join vertex ports"));
+            }
             if let Mark::Vertices(v) = self
                 && v.elevation != Expr::from(0.0)
             {
@@ -363,7 +395,7 @@ impl Mark {
         match self {
             Mark::Vertices(v) if !v.ports.is_empty() => Some(("port", ONLY)),
             Mark::Vertices(v) if v.members.is_some() => Some(("contains", ONLY)),
-            Mark::Edges(e) if e.ends.is_none() => Some(("ends", ONLY)),
+            Mark::Edges(e) if e.ends.is_none() && !e.poles && e.joins.is_none() => Some(("ends", ONLY)),
             Mark::Edges(e) if e.route == Some(super::Route::Orthogonal) => Some(("route", ONLY)),
             _ => None,
         }
@@ -430,8 +462,14 @@ fn compile_label(
     }
     drawing.extras += wgsl::LABEL_WORDS;
     drawing.flags |= wgsl::LABELED;
-    drawing.label =
-        Some(Labeling { extra, column, size: label.size.unwrap_or(theme.font_size), max_width: label.max_width });
+    drawing.label = Some(Labeling {
+        extra,
+        column,
+        size: label.size.unwrap_or(theme.font_size),
+        max_width: label.max_width,
+        font: label.font.clone().unwrap_or_else(|| theme.font.clone()),
+        max: label.max,
+    });
     Ok(())
 }
 

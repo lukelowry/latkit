@@ -7,13 +7,6 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": [
-    "@latkit/colors-example",
-    "@latkit/linked-example",
-    "@latkit/monitor-example",
-    "@latkit/network-example",
-    "@latkit/video-example",
-    "@latkit/diagram-example",
-    "@latkit/benchmark"
-  ]
+  "privatePackages": { "version": false, "tag": false },
+  "ignore": []
 }

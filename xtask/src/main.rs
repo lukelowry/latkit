@@ -1,11 +1,11 @@
 //! Repository tasks, run as `cargo xtask <task>`.
 //!
 //! - `check`: format, lint every feature set and target, test, document, type-check the npm
-//!   package, its examples, and the gate, then run the browser gate.
+//!   package, its examples, and the gate, test the example pages' models, then run the browser gate.
 //! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`: every
 //!   shader variant's pipelines compile in Chrome within budget, and every example page draws and
 //!   answers the pointer without errors or stalls.
-//! - `bench [--quick] [--only a,b] [--repeats n] [--update] [--against old] [--software]`: the
+//! - `bench [--quick] [--only a,b] [--repeats n] [--update] [--software]`: the
 //!   benchmark (`npm/bench`) over a release `wasm`: every scenario up its sizes in Chrome while the
 //!   last one fits, each phase's time, GPU time, stalls, and exact work, held to how it may grow with
 //!   size, to the committed work, and to the times taken on this machine; a lost device stops the
@@ -102,6 +102,7 @@ fn check() -> Result {
     pnpm(&["--dir", "npm/examples", "exec", "tsc", "--noEmit"])?;
     pnpm(&["--dir", "npm/examples", "exec", "tsc", "-p", "gate"])?;
     pnpm(&["--dir", "npm/bench", "exec", "tsc", "-p", "."])?;
+    pnpm(&["exec", "vitest", "run"])?;
     browser_gate()
 }
 

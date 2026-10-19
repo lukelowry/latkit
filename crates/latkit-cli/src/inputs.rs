@@ -8,10 +8,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use latkit::host::Native;
-use latkit::{Camera, Data, Error, Fit, Patch, Scene};
+use latkit::{Camera, Data, Error, Fit, Name, Patch, Patches, Scene};
 use serde::Deserialize;
-use serde::de::{IgnoredAny, MapAccess, Visitor};
-use serde_json::value::RawValue;
+use serde::de::IgnoredAny;
 
 use crate::args::{Source, is_stdio};
 use crate::{Failure, block};
@@ -88,12 +87,12 @@ fn geojson(bytes: &[u8]) -> bool {
 }
 
 /// One output frame's changes, as a line of the frames file says.
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Frame {
     /// The axis coordinate every view shows.
     pub(crate) at: Option<f64>,
-    /// Patches by dataset name, in the order written, as the library reads them.
+    /// Patches by dataset name, in the order written.
     #[serde(default)]
     patch: Patches,
     /// Where views look at once: one camera for every view it fits, or one per view.
@@ -108,36 +107,10 @@ pub(crate) struct Frame {
     pub(crate) orbit: Option<f64>,
 }
 
-/// A frame's patches by dataset name, in the order written.
-#[derive(Default)]
-struct Patches(Vec<(String, Box<RawValue>)>);
-
-impl<'de> Deserialize<'de> for Patches {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Patches, D::Error> {
-        struct Map;
-        impl<'de> Visitor<'de> for Map {
-            type Value = Patches;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("patches by dataset name")
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Patches, A::Error> {
-                let mut patches: Vec<(String, Box<RawValue>)> = Vec::new();
-                while let Some(name) = map.next_key::<String>()? {
-                    if patches.iter().any(|(n, _)| *n == name) {
-                        return Err(serde::de::Error::custom(format!("dataset {name} is patched twice")));
-                    }
-                    patches.push((name, map.next_value()?));
-                }
-                Ok(Patches(patches))
-            }
-        }
-        deserializer.deserialize_map(Map)
-    }
-}
-
 /// One value for every view, or one for each in order, `null` leaving a view as it is.
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
+#[schemars(inline)]
 pub(crate) enum Each<T> {
     Each(Vec<Option<T>>),
     All(T),
@@ -154,7 +127,7 @@ impl<T: Clone> Each<T> {
 }
 
 /// A frame's index, what it changes, and its patches by dataset, loaded.
-pub(crate) type Next = (usize, Frame, Vec<(String, Patch)>);
+pub(crate) type Next = (usize, Frame, Vec<(Name, Patch)>);
 
 /// The lines of a frames file, each a frame, its patches loaded through the host.
 pub(crate) struct Frames {
@@ -191,12 +164,8 @@ impl Frames {
                 return Err(at(Error::invalid("at is finite").at("at")));
             }
             let base = base(&self.path);
-            let mut patches = Vec::with_capacity(frame.patch.0.len());
-            for (name, json) in std::mem::take(&mut frame.patch.0) {
-                let patch = block(self.deadline, Patch::load(json.get(), &base, &self.host))
-                    .map_err(|e| at(e.at(name.as_str()).at("patch")))?;
-                patches.push((name, patch));
-            }
+            let patches = std::mem::take(&mut frame.patch).load(&base, &self.host);
+            let patches = block(self.deadline, patches).map_err(|e| at(e.at("patch")))?;
             return Ok(Some((index, frame, patches)));
         }
     }
@@ -262,7 +231,8 @@ mod tests {
     #[test]
     fn frames_keep_their_patches_order_and_apply_to_every_view_or_each() {
         let frame: Frame = serde_json::from_str(r#"{"patch": {"b": [], "a": []}}"#).unwrap();
-        let names: Vec<&str> = frame.patch.0.iter().map(|(name, _)| name.as_str()).collect();
+        let patches = block(deadline(), frame.patch.load("", &Native::new())).unwrap();
+        let names: Vec<&str> = patches.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["b", "a"]);
         assert!(serde_json::from_str::<Frame>(r#"{"patch": {"a": [], "a": []}}"#).is_err());
         let one: Each<f64> = serde_json::from_str("2").unwrap();

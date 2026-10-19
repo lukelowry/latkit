@@ -307,7 +307,7 @@ export default async function bunny(stage: Stage): Promise<void> {
     {
       space: { plot: { x: { label: 'Time (s)' }, y: { label: 'm · m/s · volume' } } },
       theme: THEME,
-      controls: { pan: false, zoom: false, turn: false },
+      controls: 'inspect',
       marks: SERIES.map((s) => ({
         lines: { of: ['bunny', 'Body'], trace: s.field, color: s.color, width: 2 },
       })),

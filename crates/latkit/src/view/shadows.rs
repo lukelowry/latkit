@@ -60,8 +60,14 @@ impl View {
     }
 
     /// Draws every caster into the map through `light`, then the map's levels, when what the map
-    /// would show changed.
-    pub(super) fn cast(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, light: &wgsl::Eye) {
+    /// would show changed; counted in `drawn`.
+    pub(super) fn cast(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &mut Inner,
+        drawn: &mut super::passes::Drawn,
+        light: &wgsl::Eye,
+    ) {
         let casters = self.casters();
         // What the map is drawn from: the light's eye and each caster's state.
         let versions: Vec<(usize, u64)> = casters.iter().map(|&i| (i, self.marks[i].version)).collect();
@@ -117,7 +123,7 @@ impl View {
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, &groups.mark, &[super::passes::offset(*i)]);
                 pass.set_bind_group(2, group, &[]);
-                self.marks[*i].record(&mut pass, *corners, &lists);
+                self.marks[*i].record(&mut pass, drawn, *corners, &lists);
             }
         }
         let resources = self.resources.as_ref().expect("created");
@@ -141,7 +147,7 @@ impl View {
             pass.set_bind_group(0, &groups.view, &[EyeSlot::Light.offset()]);
             pass.set_bind_group(1, &groups.mark, &[0]);
             pass.set_bind_group(2, &group, &[]);
-            pass.draw(0..3, 0..1);
+            drawn.draw(&mut pass, 3, 1);
         }
     }
 }

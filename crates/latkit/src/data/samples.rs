@@ -42,6 +42,11 @@ impl<T> Default for Log<T> {
 }
 
 impl<T: Clone> Log<T> {
+    /// An empty list whose first item will be absolute index `first`.
+    fn from(first: usize) -> Log<T> {
+        Log { items: Arc::default(), base: first, start: first, end: first }
+    }
+
     pub(crate) fn start(&self) -> usize {
         self.start
     }
@@ -178,6 +183,12 @@ pub(crate) struct Samples {
 }
 
 impl Samples {
+    /// No frames yet, the first to be appended numbered `first`: what samples read back from bytes or
+    /// gathered from others start from, so their frames keep their numbers.
+    pub(crate) fn from_frame(first: u32) -> Samples {
+        Samples { at: Log::from(first as usize), ..Samples::default() }
+    }
+
     /// The first frame this version reads.
     pub(crate) fn start(&self) -> u32 {
         self.at.start() as u32
@@ -301,6 +312,58 @@ impl Samples {
         true
     }
 
+    /// Buckets of each level from 1 written in every row block.
+    pub(crate) fn sealed_levels(&self) -> [u32; LEVELS as usize] {
+        std::array::from_fn(|k| self.sealed(k as u32 + 1))
+    }
+
+    /// The frames from the first at or after `at`, or after it with `past`.
+    pub(crate) fn bound(&self, at: f64, past: bool) -> u32 {
+        self.start() + self.at.read(|c| c.partition_point(|&t| if past { t <= at } else { t < at })) as u32
+    }
+
+    /// What covers frames `frames`, left to right: `(level, index)`, the coarsest written bucket
+    /// that fits at each step, or a frame as level 0.
+    pub(crate) fn pieces(&self, frames: std::ops::Range<u32>, sealed: &[u32; LEVELS as usize]) -> Vec<(u32, u32)> {
+        let mut pieces = Vec::new();
+        let (mut f, end) = (frames.start.max(self.start()), frames.end.min(self.end()));
+        while f < end {
+            let level = (1..=LEVELS)
+                .rev()
+                .find(|&k| {
+                    let span = bucket_frames(k);
+                    f.is_multiple_of(span) && f.saturating_add(span) <= end && f / span < sealed[k as usize - 1]
+                })
+                .unwrap_or(0);
+            pieces.push((level, f / bucket_frames(level)));
+            f += bucket_frames(level);
+        }
+        pieces
+    }
+
+    /// Folds piece `(level, index)` of row block `block` into `extent`, a least and a greatest
+    /// value per row of the block, NaN until one is read.
+    pub(crate) fn fold(&self, block: usize, (level, index): (u32, u32), extent: &mut [[f32; 2]]) {
+        let logs: &[Log<FramePage>] = if level == 0 {
+            self.blocks.get(block).map(std::slice::from_ref).unwrap_or_default()
+        } else {
+            self.levels.get(block).and_then(|l| l.get(level as usize - 1)).map_or(&[], |logs| &logs[..])
+        };
+        for (which, log) in logs.iter().enumerate() {
+            let Some((page, base)) = frame_page(log, index) else { continue };
+            page.read(|values| {
+                for (e, &v) in extent.iter_mut().zip(&values[base as usize..(base + page.rows) as usize]) {
+                    if level == 0 || which == 0 {
+                        e[0] = e[0].min(v);
+                    }
+                    if level == 0 || which == 1 {
+                        e[1] = e[1].max(v);
+                    }
+                }
+            });
+        }
+    }
+
     /// The last frame at or before `at`.
     pub(crate) fn frame_at(&self, at: f64) -> Option<u32> {
         let after = self.at.read(|coordinates| coordinates.partition_point(|&t| t <= at));
@@ -390,10 +453,11 @@ impl Samples {
     /// The samples of rows `rows`, in that order, over those of `frames` this version reads: what a
     /// table drawn in part shows of them about one coordinate.
     pub(crate) fn gather_frames(&self, rows: &[usize], frames: std::ops::Range<u32>) -> Samples {
-        let mut gathered = Samples::default();
+        let frames = frames.start.max(self.start())..frames.end.min(self.end());
+        let mut gathered = Samples::from_frame(frames.start);
         let width = rows.iter().max().map_or(0, |&r| r + 1);
         let mut frame_values = vec![0.0; width];
-        for frame in frames.start.max(self.start())..frames.end.min(self.end()) {
+        for frame in frames {
             self.read_frame(frame, &mut frame_values);
             let picked: Vec<f32> = rows.iter().map(|&r| frame_values[r]).collect();
             gathered.append(&[self.at(frame)], &Values::from(picked), rows.len()).expect("valid frames");

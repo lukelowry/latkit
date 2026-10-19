@@ -64,7 +64,7 @@ pub(crate) struct Inner {
 }
 
 /// How much GPU memory latkit uses.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Budget {
     /// Bytes the data every view of the `Gpu` draws may take on the GPU: its pages, and each view's

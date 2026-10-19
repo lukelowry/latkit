@@ -1,5 +1,5 @@
-//! The command line: what `render`, `validate`, and `inspect` take, and the checks that fail as usage
-//! errors before anything is read.
+//! The command line: what `render`, `validate`, `inspect`, `query`, and `schema` take, and the checks
+//! that fail as usage errors before anything is read.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -35,6 +35,25 @@ pub(crate) enum Command {
         #[arg(required = true, value_name = "[NAME=]FILE")]
         data: Vec<Source>,
         /// The longest a dataset may take to load, in seconds
+        #[arg(long, default_value = "30", value_parser = deadline)]
+        deadline: Duration,
+    },
+    /// Print the JSON Schema of what latkit reads: every input, or one of them
+    Schema {
+        /// One input's schema
+        #[arg(value_enum)]
+        input: Option<Input>,
+    },
+    /// Read rows back as JSON Lines, an object a row: those a query keeps, sorted and paged
+    Query {
+        /// The dataset, [NAME=]FILE; - reads stdin
+        #[arg(value_name = "[NAME=]FILE")]
+        data: Source,
+        /// The query: JSON such as {"of":"Branch","where":{"op":"gt","args":["loading",90]}}, or a
+        /// file of it
+        #[arg(value_name = "QUERY")]
+        query: String,
+        /// The longest the dataset may take to load, in seconds
         #[arg(long, default_value = "30", value_parser = deadline)]
         deadline: Duration,
     },
@@ -103,6 +122,25 @@ pub(crate) struct Job {
     /// MP4 bits a second; about 0.15 bits a pixel a frame otherwise
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     pub(crate) bitrate: Option<u32>,
+}
+
+/// An input `schema` describes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+pub(crate) enum Input {
+    /// A scene
+    Scene,
+    /// A dataset's JSON document
+    Data,
+    /// A patch's JSON
+    Patch,
+    /// A query of `latkit query`
+    Query,
+    /// A camera of `--camera`
+    Camera,
+    /// A fit of `--fit`
+    Fit,
+    /// A line of `--frames`
+    Frames,
 }
 
 /// What an output is.
@@ -213,6 +251,13 @@ impl Cli {
             Command::Render(job) | Command::Validate(job) => job,
             Command::Inspect { data, .. } => {
                 if data.iter().filter(|s| is_stdio(&s.path)).count() > 1 {
+                    return Err(Self::command().error(ErrorKind::ArgumentConflict, "only one input can read stdin"));
+                }
+                return Ok(());
+            }
+            Command::Schema { .. } => return Ok(()),
+            Command::Query { data, query, .. } => {
+                if is_stdio(&data.path) && query == "-" {
                     return Err(Self::command().error(ErrorKind::ArgumentConflict, "only one input can read stdin"));
                 }
                 return Ok(());

@@ -6,7 +6,7 @@ use crate::Space;
 use crate::gpu::shaders as wgsl;
 
 /// Where a view looks.
-#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum Camera {
     /// On the earth, a plane, or a diagram: the point looked at and turned about, how far in, and how
@@ -15,6 +15,7 @@ pub enum Camera {
         /// Longitude, latitude, and elevation on the earth; x, y, and elevation on a plane or a
         /// diagram. In JSON, `[x, y]` looks at the ground.
         #[serde(with = "center")]
+        #[schemars(with = "center::Center")]
         center: [f64; 3],
         /// On the earth the web mercator level; elsewhere, log₂ of pixels per unit.
         zoom: f64,
@@ -23,17 +24,27 @@ pub enum Camera {
         /// Degrees clockwise from north, or from up on a plane; 0 in a diagram.
         bearing: f64,
     },
-    /// On a plot: the axis range across, and the value range up; `None` fits the values in view.
+    /// On a plot: the axis range across, and the value range up, or none to fit the values in view.
     Plot {
         /// The axis range shown.
         x: [f64; 2],
-        /// The value range shown, or `None` to fit what is in view.
+        /// The value range shown, or none to fit what is in view.
         y: Option<[f64; 2]>,
     },
 }
 
 mod center {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+    /// What a center is written as: the ground's `[x, y]`, or `[x, y, elevation]`.
+    #[derive(schemars::JsonSchema)]
+    #[serde(untagged)]
+    #[schemars(inline)]
+    #[allow(dead_code, reason = "its schema only")]
+    pub(super) enum Center {
+        Ground([f64; 2]),
+        Point([f64; 3]),
+    }
 
     pub(super) fn serialize<S: Serializer>(center: &[f64; 3], serializer: S) -> Result<S::Ok, S::Error> {
         if center[2] == 0.0 { [center[0], center[1]].serialize(serializer) } else { center.serialize(serializer) }

@@ -68,7 +68,7 @@ fn unwrapped(polygon: &[Vec<Point>]) -> Vec<Vec<Point>> {
         .map(|ring| {
             let mut ring = unwrap(ring);
             if let Some(start) = ring.first().map(|p| p[0]) {
-                let shift = 360.0 * ((first - start) / 360.0).round();
+                let shift = 360.0 * turns(first - start);
                 if shift != 0.0 {
                     for p in &mut ring {
                         p[0] += shift;
@@ -86,11 +86,17 @@ fn unwrap(line: &[Point]) -> Vec<Point> {
     for &p in line {
         let mut p = p;
         if let Some(prev) = out.last() {
-            p[0] += 360.0 * ((prev[0] - p[0]) / 360.0).round();
+            p[0] += 360.0 * turns(prev[0] - p[0]);
         }
         out.push(p);
     }
     out
+}
+
+/// The whole turns that bring a step of `degrees` within half a turn. A step of exactly half a turn
+/// stays: a tile half the world wide has edges that long, and which way round they run is theirs.
+fn turns(degrees: f64) -> f64 {
+    degrees.signum() * ((degrees.abs() - 180.0) / 360.0).ceil().max(0.0)
 }
 
 /// `line` with points every [`EARTH_STEP`] degrees along its longer segments, straight in longitude
@@ -348,6 +354,19 @@ mod tests {
         assert!((covered(&points) - 100.0).abs() < 1e-9);
         let [x, y] = points[0];
         assert!((x - 5.0).abs() < 0.3 && (y - 5.0).abs() < 0.3, "{:?}", points[0]);
+    }
+
+    #[test]
+    fn a_half_world_tile_stays_where_it_lies_from_any_corner() {
+        // A tile at zoom 1 is half the world wide: its edges run exactly 180 degrees.
+        let corners = [[0.0, 0.0], [180.0, 0.0], [180.0, 80.0], [0.0, 80.0]];
+        for start in 0..4 {
+            let mut ring: Vec<Point> = (0..4).map(|k| corners[(start + k) % 4]).collect();
+            ring.push(ring[0]);
+            let points = triangles(&[vec![ring]], true);
+            assert!((covered(&points) - 180.0 * 80.0).abs() < 1e-6, "from corner {start}");
+            assert!(points[1..].iter().all(|p| (0.0..=180.0).contains(&p[0])), "from corner {start}");
+        }
     }
 
     #[test]

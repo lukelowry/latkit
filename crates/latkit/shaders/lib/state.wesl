@@ -4,7 +4,7 @@
 
 import package::lib::types::{
     NONE, VERTEX_WORDS, VERTEX_POSITION, VERTEX_COLOR, VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION, VERTEX_DEPTH,
-    VERTEX_FLAGS, EDGE_FROM, EDGE_TO, EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_TRAVEL, EDGE_FLAGS, FACE_A, FACE_B,
+    VERTEX_RANGE, VERTEX_FLAGS, EDGE_FROM, EDGE_TO, EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_TRAVEL, EDGE_FLAGS, FACE_A, FACE_B,
     FACE_C, FACE_COLOR, FACE_FLAGS, LINE_COLOR, LINE_WIDTH, LINE_FLOW, LINE_TRAVEL, LINE_FLAGS, AREA_COLOR,
     AREA_FLAGS, MARK_EDGES, MARK_LINES,
 };
@@ -18,6 +18,8 @@ struct Vertex {
     half: vec2f,
     elevation: f32,
     depth: f32,
+    // The CSS pixels its marker's half keeps within.
+    range: vec2f,
     flags: u32,
 }
 
@@ -50,6 +52,20 @@ struct Area {
     flags: u32,
 }
 
+// A range of CSS pixels in one word: each end in sixteenths of a pixel, up to 4095, the top value
+// meaning no end.
+fn pack_range(range: vec2f) -> u32 {
+    let ends = vec2u(round(clamp(range, vec2f(0.0), vec2f(4095.9375)) * 16.0));
+    let top = select(ends.y, 65535u, range.y > 4095.9375);
+    return ends.x | (top << 16u);
+}
+
+fn unpack_range(word: u32) -> vec2f {
+    let ends = vec2f(f32(word & 65535u), f32(word >> 16u)) / 16.0;
+    // The top of what a word holds is no end at all.
+    return vec2f(ends.x, select(ends.y, 3.4e38, (word >> 16u) == 65535u));
+}
+
 fn float_at(at: u32) -> f32 {
     return bitcast<f32>(state[at]);
 }
@@ -74,6 +90,7 @@ fn vertex_at(at: u32) -> Vertex {
         vec2f(float_at(at + VERTEX_HALF), float_at(at + VERTEX_HALF + 1u)),
         float_at(at + VERTEX_ELEVATION),
         float_at(at + VERTEX_DEPTH),
+        unpack_range(state[at + VERTEX_RANGE]),
         state[at + VERTEX_FLAGS],
     );
 }

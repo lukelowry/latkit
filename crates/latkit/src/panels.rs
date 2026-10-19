@@ -13,7 +13,7 @@ use crate::{Error, Result};
 /// assert_eq!(map_over_plot.len(), 2);
 /// assert_eq!(Panels::default().len(), 1);
 /// ```
-#[derive(Clone, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct Panels(Vec<[f32; 4]>);
 

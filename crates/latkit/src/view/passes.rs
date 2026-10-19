@@ -63,6 +63,27 @@ fn main_pass<'e>(
     })
 }
 
+/// The draws a frame recorded, and the instances they draw: at most, for a draw its segment list
+/// counts on the GPU.
+#[derive(Clone, Copy, Default, Debug)]
+pub(super) struct Drawn {
+    pub(super) draws: u64,
+    pub(super) instances: u64,
+}
+
+impl Drawn {
+    /// Draws `instances` of `corners` corners each, counted.
+    pub(super) fn draw(&mut self, pass: &mut wgpu::RenderPass<'_>, corners: u32, instances: u32) {
+        pass.draw(0..corners, 0..instances);
+        self.count(instances);
+    }
+
+    fn count(&mut self, instances: u32) {
+        self.draws += 1;
+        self.instances += u64::from(instances);
+    }
+}
+
 /// What every mark's draw in the main pass shares: the device and target, the bind groups, the
 /// lists buffer, and a plot's axes, which its lines clip to.
 struct Marks<'a> {
@@ -81,6 +102,7 @@ impl Marks<'_> {
     fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
         inner: &mut Inner,
         i: usize,
         shown: &super::marks::Shown,
@@ -118,9 +140,9 @@ impl Marks<'_> {
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(2, group, &[]);
         if lit {
-            pass.draw(0..corners, 0..shown.lit.rows * shown.lit.pieces);
+            drawn.draw(pass, corners, shown.lit.rows * shown.lit.pieces);
         } else {
-            shown.record(pass, corners, self.lists);
+            shown.record(pass, drawn, corners, self.lists);
         }
         if clip.is_some() {
             pass.set_scissor_rect(0, 0, self.size[0], self.size[1]);
@@ -200,10 +222,19 @@ impl super::marks::Shown {
     }
 
     /// Records the draw of its instances: as many as its segment list holds, when it has one.
-    pub(crate) fn record(&self, pass: &mut wgpu::RenderPass<'_>, corners: u32, lists: &wgpu::Buffer) {
+    pub(super) fn record(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        corners: u32,
+        lists: &wgpu::Buffer,
+    ) {
         match &self.segments.list {
-            Some(list) => pass.draw_indirect(lists, u64::from(list.header + wgsl::LIST_DRAW) * 4),
-            None => pass.draw(0..corners, 0..self.instances()),
+            Some(list) => {
+                pass.draw_indirect(lists, u64::from(list.header + wgsl::LIST_DRAW) * 4);
+                drawn.count(list.kept);
+            }
+            None => drawn.draw(pass, corners, self.instances()),
         }
     }
 }
@@ -417,12 +448,13 @@ impl View {
         true
     }
 
-    /// Draws the backdrop, every drawable mark in scene order, then `sprites` overlay sprites. Depth is
-    /// kept when `probing` reads it.
+    /// Draws the backdrop, every drawable mark in scene order, then `sprites` overlay sprites, counted
+    /// in `drawn`. Depth is kept when `probing` reads it.
     pub(super) fn draw(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         inner: &mut Inner,
+        drawn: &mut Drawn,
         frame: &Frame<'_>,
         sprites: u32,
         probing: bool,
@@ -467,7 +499,7 @@ impl View {
         pass.set_bind_group(1, &groups.mark, &[0]);
         pass.set_pipeline(&inner.pipelines.render(device, Shader::Backdrop, frame.format, samples));
         pass.set_bind_group(2, group(Shader::Backdrop), &[]);
-        pass.draw(0..3, 0..1);
+        drawn.draw(&mut pass, 3, 1);
         let marks = Marks {
             device,
             format: frame.format,
@@ -482,26 +514,26 @@ impl View {
             if !shown.drawable() || shown.instances() == 0 {
                 continue;
             }
-            marks.draw(&mut pass, inner, i, shown, false);
+            marks.draw(&mut pass, drawn, inner, i, shown, false);
             let ports = shown.port_count();
             if shown.compiled.as_ref().is_some_and(|c| c.drawing.primitive == Primitive::Points) && ports > 0 {
                 pass.set_pipeline(&inner.pipelines.render(device, Shader::PointsPorts, frame.format, samples));
                 pass.set_bind_group(2, group(Shader::PointsPorts), &[]);
-                pass.draw(0..4, 0..(shown.rows + shown.exits) * ports);
+                drawn.draw(&mut pass, 4, (shown.rows + shown.exits) * ports);
             }
         }
         // The rows focus lights draw again over every mark but labels, glowing: nothing covers them.
         for (i, shown) in self.marks.iter().enumerate() {
             if shown.drawable() && shown.lit.rows > 0 {
-                marks.draw(&mut pass, inner, i, shown, true);
+                marks.draw(&mut pass, drawn, inner, i, shown, true);
             }
         }
         let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(|shader| (shader, group(shader)));
-        self.draw_labels(&mut pass, inner, frame.format, samples, &groups, glyphs);
+        self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, glyphs);
         if sprites > 0 {
             pass.set_pipeline(&inner.pipelines.render(device, Shader::Overlay, frame.format, samples));
             pass.set_bind_group(2, group(Shader::Overlay), &[]);
-            pass.draw(0..4, 0..sprites);
+            drawn.draw(&mut pass, 4, sprites);
         }
     }
 

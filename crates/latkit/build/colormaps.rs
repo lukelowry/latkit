@@ -1,6 +1,7 @@
 //! Bakes `colormaps/catalog.txt` into `OUT_DIR/colormaps.rs`: per map its name, label, kind, color
-//! count, and 256 sRGB texels; continuous maps resample their colors linearly, cyclic ones wrap.
+//! count, and 256 sRGB texels, made by the crate's own `ramp`.
 
+use crate::ramp::{Spread, texels};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -27,15 +28,16 @@ pub(crate) fn generate() {
                 [byte(0), byte(2), byte(4)]
             })
             .collect();
-        let kind = match kind {
-            "sequential" | "multihue" => "Sequential",
-            "diverging" => "Diverging",
-            "cyclic" => "Cyclic",
-            "categorical" => "Categorical",
+        let (kind, spread) = match kind {
+            "sequential" | "multihue" => ("Sequential", Spread::Continuous),
+            "diverging" => ("Diverging", Spread::Continuous),
+            "cyclic" => ("Cyclic", Spread::Cyclic),
+            "categorical" => ("Categorical", Spread::Categorical),
             other => panic!("unknown colormap kind {other}"),
         };
-        let texels = texels(&colors, kind);
-        let texels: Vec<String> = texels.iter().map(|t| format!("[{}, {}, {}, 255]", t[0], t[1], t[2])).collect();
+        let stops: Vec<_> =
+            colors.iter().map(|c| (None, [c[0], c[1], c[2], 255].map(|b| f32::from(b) / 255.0))).collect();
+        let texels: Vec<String> = texels(spread, &stops).iter().map(|t| format!("{t:?}")).collect();
         writeln!(
             entries,
             "    Entry {{ name: {name:?}, label: {label:?}, kind: ColormapKind::{kind}, count: {}, texels: [{}] }},",
@@ -63,29 +65,4 @@ pub(crate) fn generate() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     fs::write(out.join("colormaps.rs"), rust).unwrap();
     println!("cargo::rerun-if-changed={}", Path::new("colormaps").display());
-}
-
-fn texels(colors: &[[u8; 3]], kind: &str) -> Vec<[u8; 3]> {
-    let count = colors.len();
-    let cyclic = kind == "Cyclic";
-    (0..256)
-        .map(|texel| match kind {
-            "Categorical" => colors[texel % count],
-            _ if count == 1 => colors[0],
-            _ => {
-                let at = if cyclic {
-                    texel as f64 / 256.0 * count as f64
-                } else {
-                    texel as f64 / 255.0 * (count - 1) as f64
-                };
-                let left = at.floor() as usize;
-                let weight = at - left as f64;
-                let right = if cyclic { left + 1 } else { (left + 1).min(count - 1) };
-                let (from, to) = (colors[left % count], colors[right % count]);
-                std::array::from_fn(|channel| {
-                    (f64::from(from[channel]) * (1.0 - weight) + f64::from(to[channel]) * weight).round() as u8
-                })
-            }
-        })
-        .collect()
 }

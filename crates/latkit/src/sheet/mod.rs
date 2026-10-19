@@ -10,6 +10,8 @@
 
 mod wires;
 
+pub(crate) use wires::links;
+
 use std::hash::{Hash, Hasher};
 
 use rustc_hash::{FxHashMap, FxHasher};
@@ -48,6 +50,8 @@ pub(crate) struct Sheet {
     /// Whether every row without a position is to be laid out again, standing where it is until
     /// the layout answers.
     arranging: bool,
+    /// What the last arranging laid out, until the view takes it.
+    arranged: Option<Vec<(Row, [f64; 2])>>,
     /// The layout places were made by.
     layout: Option<Layout>,
     placing: Option<Placing>,
@@ -161,6 +165,12 @@ impl Sheet {
         self.stamp = 0;
     }
 
+    /// What the last arranging laid out, once it landed: each row placed, and where, units with y
+    /// down.
+    pub(crate) fn take_arranged(&mut self) -> Option<Vec<(Row, [f64; 2])>> {
+        self.arranged.take()
+    }
+
     /// Row `row`'s box, units with y down, once it has one.
     pub(crate) fn bounds(&self, row: &Row) -> Option<[f64; 4]> {
         self.boxes.get(row).copied()
@@ -171,14 +181,18 @@ impl Sheet {
         if let Some(answer) = self.placing.as_ref().and_then(|p| p.pending.take()) {
             let placing = self.placing.take().expect("a layout under way");
             if placing.generation == self.generation {
-                self.arranging = false;
+                let mut placed = Vec::new();
                 for (key, values) in answer.map(|bytes| answers(&bytes, &["x", "y"])).unwrap_or_default() {
                     if let (Some(row), [Some(Value::Number(x)), Some(Value::Number(y))]) =
                         (placing.rows.get(&key), &values[..])
                     {
                         // Layouts lay out with y up.
                         self.places.insert(row.clone(), [*x, -*y]);
+                        placed.push((row.clone(), [*x, -*y]));
                     }
+                }
+                if std::mem::take(&mut self.arranging) {
+                    self.arranged = Some(placed);
                 }
             }
             self.landed += 1;
@@ -306,7 +320,8 @@ impl Sheet {
         let text = rows.text(&label.text, row)?;
         let theme = &input.scene.theme;
         let size = label.size.unwrap_or(theme.font_size);
-        let run = atlas::run(text, theme.font.clone(), size, label.max_width);
+        let font = label.font.clone().unwrap_or_else(|| theme.font.clone());
+        let run = atlas::run(text, font, size, label.max_width);
         let measured = self.measure(run, input);
         Some((measured.map(|v| v * f64::from(size) / f64::from(TEXT_BASE)), f64::from(size)))
     }
@@ -354,7 +369,14 @@ impl Sheet {
         let arranging = self.arranging;
         let placed = |v: &Vertex| if arranging { v.pin.is_some() } else { v.bounds.is_some() };
         let wanted = |v: &Vertex| !placed(v) && (!v.group || v.members == 0);
-        if matches!(layout, Layout::None) || self.placing.is_some() || !vertices.iter().any(wanted) {
+        if self.placing.is_some() {
+            return;
+        }
+        if matches!(layout, Layout::None) || !vertices.iter().any(wanted) {
+            // Nothing to lay out: the arranging is done as asked.
+            if std::mem::take(&mut self.arranging) {
+                self.arranged = Some(Vec::new());
+            }
             return;
         }
         // Layouts lay out with y up: a group's header is its top.
@@ -395,7 +417,7 @@ fn stamp(input: &Input<'_>, landed: u64, generation: u64) -> u64 {
 
 /// The vertex marks and edge marks of the diagram, one per table: its unnamed mark of the kind, else
 /// its first; each vertex mark with the vertex index of its first row.
-fn marks<'a>(input: &Input<'a>) -> (Vec<VertexMark<'a>>, Vec<EdgeMark<'a>>) {
+pub(crate) fn marks<'a>(input: &Input<'a>) -> (Vec<VertexMark<'a>>, Vec<EdgeMark<'a>>) {
     let (mut vertices, mut edges): (Vec<VertexMark<'a>>, Vec<EdgeMark<'a>>) = (Vec::new(), Vec::new());
     for mark in &input.scene.marks {
         let style = mark.style();
@@ -446,7 +468,7 @@ fn drawing(vertex_marks: &[VertexMark<'_>], data: &Name, table: &Name) -> Option
 }
 
 /// The position row `row`'s data gives it, if any: its position, else its point geometry.
-fn position(mark: &Vertices, rows: &Rows<'_>, row: usize) -> Option<[f64; 2]> {
+pub(crate) fn position(mark: &Vertices, rows: &Rows<'_>, row: usize) -> Option<[f64; 2]> {
     match &mark.position {
         Some([x, y]) => Some([rows.number(x, row)?, rows.number(y, row)?]),
         None => match rows.table.value(row, GEOMETRY, f64::INFINITY)? {
@@ -597,6 +619,6 @@ fn write(
 }
 
 /// A row's key in a job: its table and id.
-fn key_of(row: &Row) -> Key {
+pub(crate) fn key_of(row: &Row) -> Key {
     (row.table.clone(), row.id.clone())
 }

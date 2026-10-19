@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
 import { build, transform } from 'esbuild';
+import { typescript } from './schema.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const output = path.join(root, 'target/npm');
@@ -53,8 +54,18 @@ if (mode === 'prepare') {
     before,
     after: fs.statSync(wasm).size,
   });
+} else if (mode === 'schema') {
+  fs.writeFileSync(
+    path.join(root, 'npm/src/forms.ts'),
+    await typescript(path.join(root, 'npm/schema.json')),
+  );
 } else if (mode === 'compile') {
   const stage = path.resolve(root, directory);
+  assert.equal(
+    fs.readFileSync(path.join(stage, 'src/forms.ts'), 'utf8').replaceAll('\r\n', '\n'),
+    await typescript(path.join(root, 'npm/schema.json')),
+    'src/forms.ts is not what npm/schema.json says: run node npm/build.mjs schema',
+  );
   execFileSync(
     process.execPath,
     [path.join(root, 'node_modules/typescript/bin/tsc'), '-p', stage],

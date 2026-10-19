@@ -4,17 +4,15 @@ import init, * as wasm from '../pkg/latkit.js';
 import { encoder } from './encoder.js';
 import { jobs } from './jobs.js';
 import type { LoadOptions } from './load.js';
-import type { ColormapName, Scene } from './scene.js';
+import type { Budget, Camera, Colormap, Fit, Id, Query, Row, Scene } from './forms.js';
 import type {
-  Budget,
-  Camera,
-  Fit,
+  Description,
+  Envelope,
   Hit,
-  Id,
   Ids,
   LatkitError,
   Reference,
-  Row,
+  Rows,
   Stats,
   Values,
   ViewEvents,
@@ -71,6 +69,54 @@ export class Patch {
   }
 
   /**
+   * The patches arriving back to back in `stream`, each as soon as its last byte does: a response
+   * body, a file, or a socket's messages. A patch longer than `limit` bytes (256 MiB unless given)
+   * throws once its lengths say so, so an untrusted stream never buffers more. Each byte is copied
+   * about twice, however the stream splits them.
+   *
+   * ```ts
+   * for await (const patch of Patch.stream((await fetch('/feed')).body!)) view.setData((data = data.apply(patch)));
+   * ```
+   */
+  static async *stream(
+    stream: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
+    { limit = 1 << 28 }: { limit?: number } = {},
+  ): AsyncGenerator<Patch> {
+    let buffer = new Uint8Array(1 << 16);
+    let [start, end, wanted] = [0, 0, 0];
+    // A patch arriving in many chunks is tried again once its bytes double, so trying stays linear.
+    const take = function* (): Generator<Patch> {
+      while (end > start && end - start >= wanted) {
+        const decoded = wasm.Patch.decode(buffer.subarray(start, end), limit) as {
+          patch: wasm.Patch;
+          used: number;
+        } | null;
+        if (!decoded) {
+          wanted = 2 * (end - start);
+          return;
+        }
+        start += decoded.used;
+        wanted = 0;
+        yield new Patch(decoded.patch);
+      }
+    };
+    for await (const chunk of chunks(stream)) {
+      if (end + chunk.length > buffer.length) {
+        const kept = end - start;
+        const grown = new Uint8Array(Math.max(buffer.length, 2 * (kept + chunk.length)));
+        grown.set(buffer.subarray(start, end));
+        [buffer, start, end] = [grown, 0, kept];
+      }
+      buffer.set(chunk, end);
+      end += chunk.length;
+      yield* take();
+    }
+    wanted = 0;
+    yield* take();
+    if (end > start) throw new Error('the stream ended inside a patch');
+  }
+
+  /**
    * The patch its JSON makes: a list of changes, each named by its method with its parameters by
    * name, such as `[{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}]`. Slices of
    * binary files, `{file, dtype, offset, count}`, are fetched at once, relative to `base`, the
@@ -82,42 +128,89 @@ export class Patch {
 
   /** Names the axis sampled fields are recorded over, such as `('time', 's')`. */
   axis(name: string, unit: string): this {
-    this.inner.axis(name, unit);
-    return this;
+    return this.#push({ axis: { name, unit } });
   }
 
   /** Writes `fields` for rows `ids` of `table`: known ids change, others are added. */
   set(table: string, ids: Ids, fields: Record<string, Values | Reference>): this {
-    this.inner.set(table, ids, fields);
-    return this;
+    return this.#push({ set: { table, ids: bytes(ids), fields: columns(fields) } });
   }
 
   /** Replaces `table` with these rows and fields. */
   put(table: string, ids: Ids, fields: Record<string, Values | Reference>): this {
-    this.inner.put(table, ids, fields);
-    return this;
+    return this.#push({ put: { table, ids: bytes(ids), fields: columns(fields) } });
   }
 
   /** Removes the rows of `table` with `ids`. */
   remove(table: string, ids: Ids): this {
-    this.inner.remove(table, ids);
-    return this;
+    return this.#push({ remove: { table, ids: bytes(ids) } });
   }
 
   /** Records a frame at each axis coordinate of `at`: values per row of `table`, frame-major. */
   append(at: number | readonly number[], table: string, fields: Record<string, Values>): this {
-    this.inner.append(at, table, fields);
-    return this;
+    return this.#push({ append: { at, table, fields: columns(fields) } });
   }
 
   /** Forgets every sampled field's frames before axis coordinate `before`. */
   forget(before: number): this {
-    this.inner.forget(before);
+    return this.#push({ forget: { before } });
+  }
+
+  /** Appends a change in the JSON form {@link Patch.load} reads, decoded by the same code. */
+  #push(op: object): this {
+    this.inner.push([op]);
     return this;
   }
 
   toBytes(): Uint8Array {
     return this.inner.toBytes();
+  }
+}
+
+/** The dtype of each typed array a column or ids can be: little endian, as every browser stores them. */
+const dtypes = new Map<unknown, string>([
+  [Float64Array, 'f64le'],
+  [Float32Array, 'f32le'],
+  [Int32Array, 'i32le'],
+  [Uint32Array, 'u32le'],
+  [Uint8Array, 'u8'],
+]);
+
+/** Values or ids as decoded: a typed array as `{ dtype, bytes }`, which copies once. */
+function bytes<T>(values: T): T | { dtype: string; bytes: Uint8Array } {
+  if (!ArrayBuffer.isView(values)) return values;
+  const dtype = dtypes.get(values.constructor);
+  if (!dtype) throw new TypeError(`${values.constructor.name} is not a column's typed array`);
+  return { dtype, bytes: new Uint8Array(values.buffer, values.byteOffset, values.byteLength) };
+}
+
+/** Fields as decoded: values as {@link bytes}, a reference's ids too. */
+function columns(fields: Record<string, Values | Reference>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, field] of Object.entries(fields)) {
+    out[name] =
+      'reference' in field ? { reference: field.reference, ids: bytes(field.ids) } : bytes(field);
+  }
+  return out;
+}
+
+/** The chunks of a stream, read with a reader where async iteration is missing. */
+async function* chunks(
+  stream: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
+): AsyncGenerator<Uint8Array> {
+  if (!('getReader' in stream)) {
+    yield* stream;
+    return;
+  }
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      yield value;
+    }
+  } finally {
+    reader.releaseLock();
   }
 }
 
@@ -197,6 +290,40 @@ export class Data {
   /** The value of `field` for the row with `id` in `table`, at axis coordinate `at` when given. */
   get(table: string, id: Id, field: string, at?: number): unknown {
     return this.inner.get(table, id, field, at);
+  }
+
+  /** What the dataset holds: tables, rows, fields and their kinds, the axis and its span. */
+  describe(): Description {
+    return JSON.parse(this.inner.describe()) as Description;
+  }
+
+  /**
+   * The rows of a table `query` asks for, in the forms {@link Patch.put} takes, sampled fields read
+   * at its coordinate. Runs on the CPU through the expressions marks draw with.
+   */
+  query(query: Query): Rows {
+    return this.inner.query(JSON.stringify(query)) as Rows;
+  }
+
+  /**
+   * Each row's least and greatest value of sampled `field` of `table` over `spans` equal spans of
+   * `range`, of every row or of rows `ids`: row after row, NaN where a span holds no frame. Reads the
+   * coarsest levels of detail that fit, so a span costs a few reads however many frames it covers.
+   */
+  envelope(
+    table: string,
+    field: string,
+    range: [number, number],
+    spans: number,
+    ids?: Ids,
+  ): Envelope {
+    return this.inner.envelope(
+      table,
+      field,
+      Float64Array.from(range),
+      spans,
+      bytes(ids),
+    ) as Envelope;
   }
 
   toBytes(): Uint8Array {
@@ -512,10 +639,19 @@ export class View {
     this.inner.fit(JSON.stringify(fit));
   }
 
-  /** Lays every vertex without a position out again by the diagram's layout. Places a layout gave
-   * otherwise hold, so rows added later are placed around the rest. */
-  arrange(): void {
-    this.inner.arrange();
+  /**
+   * Lays every vertex row without a position out again by the scene's layout: a diagram's blocks, or
+   * points on a plane or the earth. Places a layout gave otherwise hold, so rows added later are
+   * placed around the rest. Once the layout lands, answers a patch for each dataset writing each row
+   * laid out into its mark's position fields; applied, the places are the data's own.
+   *
+   * ```ts
+   * for (const [name, patch] of await view.arrange()) if (name === data.name) data = data.apply(patch);
+   * ```
+   */
+  async arrange(): Promise<[string, Patch][]> {
+    const pairs = (await this.inner.arrange()) as [string, wasm.Patch][];
+    return pairs.map(([name, patch]) => [name, new Patch(patch)]);
   }
 
   get stats(): Stats {
@@ -796,13 +932,10 @@ export class Video {
   }
 }
 
-/** A CSS gradient through a catalog colormap, for legends. */
-export function colormapCss(name: ColormapName, direction = 'to right'): string {
-  const texels = wasm.colormap(name);
-  if (!texels) throw new Error(`no colormap named ${name}`);
-  const stops = Array.from({ length: 17 }, (_, i) => {
-    const t = Math.min(255, Math.round((i / 16) * 255)) * 4;
-    return `rgba(${texels[t]}, ${texels[t + 1]}, ${texels[t + 2]}, ${(texels[t + 3]! / 255).toFixed(3)}) ${(i / 16) * 100}%`;
-  });
-  return `linear-gradient(${direction}, ${stops.join(', ')})`;
+/**
+ * A CSS gradient through `map`, a catalog name or colors of your own, for legends: the colors the
+ * GPU draws, a band each for a categorical map's categories.
+ */
+export function colormapCss(map: Colormap, direction = 'to right'): string {
+  return wasm.colormapCss(map, direction);
 }

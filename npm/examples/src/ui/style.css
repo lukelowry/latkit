@@ -163,6 +163,37 @@ canvas:focus-visible {
   gap: 10px;
 }
 
+.menu {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px #0009;
+}
+
+.menu button {
+  min-height: 30px;
+  justify-content: start;
+  text-align: left;
+  background: none;
+  border-color: transparent;
+}
+
+.menu button:hover:not(:disabled),
+.menu button:focus-visible {
+  background: var(--raised);
+}
+
+/* Under the meter, clear of a plot's axis titles. */
+.legend.top {
+  top: 32px;
+  bottom: auto;
+}
+
 .credit {
   left: 12px;
   bottom: 10px;
@@ -215,7 +246,8 @@ aside {
 }
 
 button,
-select {
+select,
+input[type='text'] {
   min-height: 34px;
   padding: 6px 10px;
   font: inherit;
@@ -317,6 +349,7 @@ input[type='range'] {
 
 .swatch {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   justify-items: start;
   gap: 4px;
   min-height: 0;
@@ -329,6 +362,34 @@ input[type='range'] {
   height: 6px;
 }
 
+.hot {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hot button {
+  display: grid;
+  grid-template-columns: 2ch minmax(0, 1fr) auto;
+  gap: 3px 10px;
+  width: 100%;
+  min-height: 0;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+}
+
+.hot .bar {
+  grid-column: 1 / -1;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--score), var(--raised) var(--score));
+}
+
+.hot button[aria-pressed='true'],
 .swatch[aria-pressed='true'] {
   color: var(--text);
   background: var(--raised);
@@ -340,8 +401,13 @@ input[type='range'] {
   display: none !important;
 }
 
-select:disabled {
+select:disabled,
+input:disabled {
   opacity: 0.5;
+}
+
+input[type='text'] {
+  width: 100%;
 }
 
 .series span::before {

@@ -232,23 +232,36 @@ async function visit(url: string, id: string): Promise<string[]> {
     });
     const opened = performance.now();
     await deadline(page.goto(`${url}#${id}`), STEP, `open ${id}`);
-    const drew = page.waitForFunction(
-      () => {
-        const views = (window as unknown as { stage?: { views: { stats: { frames: number } }[] } })
-          .stage?.views;
-        return !!views?.length && views.every((view) => view.stats.frames > 0);
-      },
-      undefined,
-      { timeout: FIRST_FRAME_BUDGET, polling: 50 },
-    );
+    /** Waits until every view has drawn more than `frames` frames, for at most `budget` ms. */
+    const drawn = (frames: number, budget: number) =>
+      page.waitForFunction(
+        (frames) => {
+          const views = (
+            window as unknown as { stage?: { views: { stats: { frames: number } }[] } }
+          ).stage?.views;
+          return !!views?.length && views.every((view) => view.stats.frames > frames);
+        },
+        frames,
+        { timeout: budget, polling: 50 },
+      );
     try {
-      await deadline(drew, FIRST_FRAME_BUDGET + 1000, `${id}'s first frame`);
+      await deadline(
+        drawn(0, FIRST_FRAME_BUDGET),
+        FIRST_FRAME_BUDGET + 1000,
+        `${id}'s first frame`,
+      );
     } catch {
       failures.push(`no frame within ${FIRST_FRAME_BUDGET} ms`);
       return failures;
     }
     const first = performance.now() - opened;
-    // Frames go on while the pipelines the first frame made compile; wait them out.
+    // The two frames after a scene's first make the pipelines its input needs; then frames go on
+    // while what they made compiles: wait both out.
+    await deadline(
+      drawn(2, 2 * OPENING_BUDGET),
+      2 * OPENING_BUDGET + 1000,
+      `${id}'s input pipelines`,
+    );
     await deadline(page.waitForTimeout(1500), STEP, 'settle');
     const opening = await page.evaluate(() => (window as unknown as { gap: number }).gap);
     let longest = { gap: 0, step: '' };
@@ -282,6 +295,11 @@ async function visit(url: string, id: string): Promise<string[]> {
         await page.mouse.up();
       });
       await act(`click canvas ${c}`, () => page.mouse.click(cx, cy));
+      // The intents whose picks list what lies under a point, and the keys stepping through rows.
+      await act(`menu on canvas ${c}`, () => page.mouse.click(cx, cy, { button: 'right' }));
+      await act(`step with Tab on canvas ${c}`, () => page.keyboard.press('Tab'));
+      await act(`step with an arrow on canvas ${c}`, () => page.keyboard.press('ArrowRight'));
+      await act(`stop stepping on canvas ${c}`, () => page.keyboard.press('Escape'));
     }
     // Every page exports a picture of its views: a shot draws them and a worker writes the PNG.
     await deadline(page.keyboard.press('x'), STEP, 'ask for a picture');

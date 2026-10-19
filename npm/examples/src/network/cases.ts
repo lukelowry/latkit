@@ -190,16 +190,38 @@ export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.by
   };
 }
 
-/** A file's bytes, inflated where they arrive gzip-compressed, and how many arrived. */
+/** How far a download has come: bytes received, of how many when the response says. */
+export type Progress = (received: number, total: number | undefined) => void;
+
+/** Megabytes received, of how many when known, for a status line. */
+export const megabytes = (received: number, total: number | undefined) =>
+  `${(received / 1e6).toFixed(1)}${total ? ` of ${(total / 1e6).toFixed(1)}` : ''} MB`;
+
+/**
+ * A file's bytes, inflated where they arrive gzip-compressed, and how many arrived; `progress`
+ * hears of each chunk. A total the response gives that counts fewer bytes than arrive, as a
+ * compressed transfer's does, goes untold.
+ */
 export async function download(
   url: string,
   signal: AbortSignal,
+  progress?: Progress,
 ): Promise<{ readonly bytes: Uint8Array; readonly received: number }> {
   const response = await fetch(url, {
     signal: AbortSignal.any([signal, AbortSignal.timeout(180_000)]),
   });
-  if (!response.ok) throw new Error(`${url} answered ${response.status}`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!response.ok || !response.body) throw new Error(`${url} answered ${response.status}`);
+  const total = Number(response.headers.get('content-length')) || undefined;
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  const reader = response.body.getReader();
+  for (let read = await reader.read(); !read.done; read = await reader.read()) {
+    chunks.push(read.value);
+    received += read.value.length;
+    progress?.(received, total !== undefined && total >= received ? total : undefined);
+  }
+  const bytes = new Uint8Array(received);
+  chunks.reduce((at, chunk) => (bytes.set(chunk, at), at + chunk.length), 0);
   if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) return { bytes, received: bytes.length };
   const inflated = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
   return {
@@ -208,7 +230,12 @@ export async function download(
   };
 }
 
-export async function loadCase(id: string, signal: AbortSignal): Promise<Case> {
-  const { bytes, received } = await download(`${import.meta.env.BASE_URL}grids/${id}.bin`, signal);
+export async function loadCase(
+  id: string,
+  signal: AbortSignal,
+  progress?: Progress,
+): Promise<Case> {
+  const url = `${import.meta.env.BASE_URL}grids/${id}.bin`;
+  const { bytes, received } = await download(url, signal, progress);
   return readCase(id, bytes.buffer as ArrayBuffer, received);
 }

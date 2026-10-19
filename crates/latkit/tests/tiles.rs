@@ -106,6 +106,8 @@ fn tiles_the_camera_asks_for_draw_as_a_dataset() {
     let before: Vec<latkit::Id> =
         view.data("base").and_then(|d| d.table("water")).expect("the tiles' dataset").ids().collect();
     assert!(before.len() >= 4, "a row per tile drawn: {}", before.len());
+    let stats = view.stats();
+    assert_eq!((stats.tiles, stats.tiles_loading), (before.len() as u64, 0), "stats count the tiles drawn");
     assert!(at(&pixels, C + 8, C + 8)[0] > 150, "filled: {:?}", at(&pixels, C + 8, C + 8));
     assert_eq!(errors(&mut view), Vec::new());
     // Zooming in asks for finer tiles, which replace their ancestors.

@@ -307,12 +307,13 @@ export default function page(stage: Stage): void {
   let route: 'orthogonal' | 'straight' = 'orthogonal';
   let comets = false;
   let dots = true;
+  let light = false;
   const history = new History();
 
   const scene = (): Scene => {
     const marks: Mark[] = [];
     // Containers take the theme's surface, tinted by how deep they sit; their titles head them.
-    const title = { text: 'name', size: 11, color: '#7f93a8' };
+    const title = { text: 'name', size: 11, color: light ? '#5b6b7d' : '#7f93a8' };
     if (sketch.stations.length) {
       marks.push({
         vertices: { of: ['studio', 'Station'], contains: ['Group', 'station'], label: title },
@@ -340,7 +341,7 @@ export default function page(stage: Stage): void {
           of: ['studio', kind],
           position: ['x', 'y'],
           marker: KINDS[kind].shape,
-          color: '#2c3b4d',
+          color: light ? '#dce3eb' : '#2c3b4d',
           status: when(field('status').gt(0)).then(color('#ff8c42')).otherwise(missing()),
           ports: ports(kind),
           drag: true,
@@ -351,7 +352,9 @@ export default function page(stage: Stage): void {
     return {
       space: { diagram: { grid: dots ? { dots: 20 } : 'off' } },
       layout,
-      theme: { base: 'dark', background: '#0b0f14' },
+      theme: light
+        ? { base: 'light', background: '#f4f6f9' }
+        : { base: 'dark', background: '#0b0f14' },
       controls: { connect: true, delete: true, selectBox: true },
       marks,
     };
@@ -416,9 +419,18 @@ export default function page(stage: Stage): void {
     } else show(data.apply(at));
   });
 
-  // Wiring: an output and an input join on the output's signal, made when it has none.
+  // Wiring: an output and an input join on the output's signal, made when it has none; an input
+  // wired elsewhere leaves the signal it was on. A plugged port let go over nothing is unplugged.
   view.on('connect', ({ from, to }) => {
-    if (!to) return note('Let go over nothing.');
+    if (!to) {
+      const plugged =
+        isBlock(from.row.table) && from.port && data.get(from.row.table, from.row.id, from.port);
+      if (!plugged) return note('Let go over nothing.');
+      const patch = new Patch().set(from.row.table, [from.row.id as number], {
+        [from.port!]: reference('Signal', [null]),
+      });
+      return edit(patch, `Unplugged ${name(from.row)}'s ${from.port}.`);
+    }
     if (!isBlock(from.row.table) || !isBlock(to.row.table)) return note('Wire blocks to blocks.');
     const a: Plug = { kind: from.row.table, id: from.row.id, port: from.port ?? 'out' };
     if (!direction(a.kind, a.port)) a.port = KINDS[a.kind].ports[0]![0];
@@ -444,12 +456,53 @@ export default function page(stage: Stage): void {
     edit(patch, `Wired ${name(from.row)} and ${name(to.row)}.`);
   });
 
-  view.on('delete', ({ rows }) => {
+  /** Removes `rows` as one edit. */
+  const remove = (rows: Row[]) => {
     const byTable = new Map<string, Id[]>();
     for (const row of rows) byTable.set(row.table, [...(byTable.get(row.table) ?? []), row.id]);
     const patch = new Patch();
     for (const [table, ids] of byTable) patch.remove(table, ids as number[]);
     edit(patch, `Removed ${rows.map(name).join(', ')}.`);
+  };
+  view.on('delete', ({ rows }) => remove(rows));
+
+  /** Selects `row` and what it joins, and frames them. */
+  const reveal = (row: Row) => {
+    const near = [row, ...view.neighbors(row)];
+    view.select(near);
+    view.fit({ rows: near });
+    describe();
+    note(`${name(row)} and ${near.length - 1} joined to it.`);
+  };
+  /** Selects `row` and puts its name up for editing. */
+  const rename = (row: Row) => {
+    view.select([row]);
+    describe();
+    input.focus();
+    input.select();
+  };
+  const named = (row: Row) =>
+    isBlock(row.table) || row.table === 'Group' || row.table === 'Station';
+
+  // Opening a row renames it; the menu names what can be done with the row under it.
+  view.on('open', ({ hit }) => named(hit.row) && rename(hit.row));
+  const menu = stage.menu();
+  view.on('menu', ({ hits, trigger }) => {
+    const row = hits[0]?.row;
+    if (row && !view.selection.some((r) => r.table === row.table && r.id === row.id))
+      view.select([row]);
+    describe();
+    const rows = view.selection;
+    menu.open(view, trigger.point, [
+      { label: 'Rename', run: () => row && rename(row), disabled: !row || !named(row) },
+      { label: 'Reveal neighbors', run: () => row && reveal(row), disabled: !row },
+      {
+        label: rows.length > 1 ? `Delete ${rows.length} rows` : 'Delete',
+        run: () => remove(rows),
+        disabled: !rows.length,
+      },
+      { label: 'Fit everything', run: () => view.fit() },
+    ]);
   });
 
   const studio = stage.section('Diagram');
@@ -465,7 +518,9 @@ export default function page(stage: Stage): void {
       key: 'z',
       run: () => {
         const before = history.undo(data);
-        if (before) (show(before), note('Undone.'));
+        if (!before) return;
+        show(before);
+        note('Undone.');
       },
     },
     {
@@ -473,13 +528,16 @@ export default function page(stage: Stage): void {
       key: 'y',
       run: () => {
         const after = history.redo(data);
-        if (after) (show(after), note('Redone.'));
+        if (!after) return;
+        show(after);
+        note('Redone.');
       },
     },
     {
       label: 'Arrange',
       key: 'a',
-      // Every block lets go of its position, and the layout places them all again.
+      // Every block lets go of its position, the layout places them all again, and the places it
+      // answers become the blocks' positions: one edit undo steps back over.
       run: () => {
         const patch = new Patch();
         for (const kind of kinds) {
@@ -487,13 +545,27 @@ export default function page(stage: Stage): void {
           const all = ids.filter((id) => data.get(kind, id, 'name') !== null);
           if (all.length) patch.set(kind, all, { x: all.map(() => null), y: all.map(() => null) });
         }
-        edit(patch, 'Arranged.');
-        view.arrange();
+        history.commit(data);
+        show(data.apply(patch));
         view.fit();
+        void view.arrange().then((patches) => {
+          for (const [name, placed] of patches) {
+            if (name === data.name) show(data.apply(placed));
+            else placed.destroy();
+          }
+          note('Arranged.');
+        });
       },
     },
     { label: 'Fit', key: 'f', run: () => view.fit() },
+    { label: 'Zoom in', key: '=', run: () => zoom(0.5) },
+    { label: 'Zoom out', key: '-', run: () => zoom(-0.5) },
   ]);
+  /** Eases the camera in by `by` steps of doubling. */
+  const zoom = (by: number) => {
+    const camera = view.camera;
+    if ('center' in camera) view.fly({ ...camera, zoom: camera.zoom + by });
+  };
   const add = stage.section('Add');
   add.actions(
     kinds.map((kind, i) => ({
@@ -529,6 +601,8 @@ export default function page(stage: Stage): void {
   const layouts: readonly (readonly [string, Layout])[] = [
     ['In ranks, left to right', layout],
     ['In ranks, top to bottom', { layered: { flow: 'down', gap: 30, rankGap: 60 } }],
+    ['In ranks, right to left', { layered: { flow: 'left', gap: 30, rankGap: 80 } }],
+    ['In ranks, bottom to top', { layered: { flow: 'up', gap: 30, rankGap: 60 } }],
     ['By graph distance', { stress: { gap: 140 } }],
   ];
   look.choice('Place blocks without positions', layouts, layout, (next) => {
@@ -556,6 +630,10 @@ export default function page(stage: Stage): void {
     dots = on;
     view.show(scene());
   });
+  look.toggle('Light', 'l', light, (on) => {
+    light = on;
+    view.show(scene());
+  });
 
   // The selected block's name, editable.
   const selected = stage.section('Selected');
@@ -570,9 +648,9 @@ export default function page(stage: Stage): void {
   const note = (text: string) => (told.textContent = text);
   const describe = () => {
     const [row] = view.selection;
-    const named = row && (isBlock(row.table) || row.table === 'Group' || row.table === 'Station');
-    input.disabled = !named;
-    input.value = named ? name(row) : '';
+    const editable = !!row && named(row);
+    input.disabled = !editable;
+    input.value = editable ? name(row) : '';
   };
   input.addEventListener(
     'change',

@@ -6,13 +6,17 @@
 //! normals, segment counts, label placement) follows the same stamps, its answers read back.
 //!
 //! The derivations: a diagram's sheet (places, sizes, boxes, wires); elsewhere the lanes of edges
-//! sharing their ends; the triangles of every area; and the tiles the camera asks for, which patch
-//! datasets the view owns.
+//! sharing their ends, the stars of nets, and where the scene has a layout the places of vertex rows
+//! without positions;
+//! the triangles of every area; and the tiles the camera asks for, which patch datasets the view
+//! owns.
 
 mod lanes;
+mod places;
 pub(crate) mod pyramid;
 mod shapes;
 pub(crate) mod sight;
+mod stars;
 pub(crate) mod tiled;
 pub(crate) mod tiles;
 
@@ -240,6 +244,10 @@ pub(crate) struct Derivations {
     pub(crate) sheet: Sheet,
     /// Elsewhere, the lanes of edges sharing their ends.
     lanes: lanes::Lanes,
+    /// Elsewhere, where the scene has a layout, the places of vertex rows without positions.
+    places: places::Places,
+    /// Elsewhere, the stars of nets joining vertex rows.
+    stars: stars::Stars,
     shapes: shapes::Shapes,
     /// The tiles the camera asks for, as datasets the view owns.
     pub(crate) tiles: tiles::TileSets,
@@ -254,13 +262,30 @@ impl Derivations {
     /// Brings every derivation up to `input`, spending what the tiles left of the frame's `jobs`;
     /// whether any table changed.
     pub(crate) fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool {
-        let diagram = matches!(input.scene.space, Space::Diagram(_));
-        let (on, off): (&mut dyn Derive, &mut dyn Derive) =
-            if diagram { (&mut self.sheet, &mut self.lanes) } else { (&mut self.lanes, &mut self.sheet) };
-        off.clear();
-        let mut changed = on.update(input, jobs);
+        let mut changed = if matches!(input.scene.space, Space::Diagram(_)) {
+            self.lanes.clear();
+            self.places.clear();
+            self.stars.clear();
+            self.sheet.update(input, jobs)
+        } else {
+            self.sheet.clear();
+            let placed = self.places.update(input, jobs);
+            self.lanes.update(input, jobs) | placed | self.stars.update(input, self.places.tables())
+        };
         changed |= self.shapes.update(input, jobs);
         changed
+    }
+
+    /// Lays every vertex row without a position out again: a diagram's sheet, or elsewhere the
+    /// places.
+    pub(crate) fn arrange(&mut self, diagram: bool) {
+        if diagram { self.sheet.arrange() } else { self.places.arrange() }
+    }
+
+    /// What the last arranging laid out, once it landed: each row placed, and where, in the
+    /// space's coordinates.
+    pub(crate) fn take_arranged(&mut self) -> Option<Vec<(crate::Row, [f64; 2])>> {
+        self.sheet.take_arranged().or_else(|| self.places.take_arranged())
     }
 
     /// Whether everything derived is final: no layout, route, lane, or shape job stands in, no tile
@@ -268,6 +293,7 @@ impl Derivations {
     pub(crate) fn complete(&self) -> bool {
         self.sheet.complete()
             && self.lanes.complete()
+            && self.places.complete()
             && self.shapes.complete()
             && self.tiles.complete()
             && self.tiled.complete()
@@ -281,7 +307,9 @@ impl Derivations {
     /// The derived tables beside table `table` of dataset `data`.
     pub(crate) fn beside(&self, data: &Name, table: &Name) -> Beside<'_> {
         let key = (data.clone(), table.clone());
-        let first = self.sheet.tables().get(&key).or_else(|| self.lanes.tables().get(&key));
+        let first = [self.sheet.tables(), self.places.tables(), self.stars.tables(), self.lanes.tables()]
+            .into_iter()
+            .find_map(|tables| tables.get(&key));
         [first, self.shapes.tables().get(&key)]
     }
 }

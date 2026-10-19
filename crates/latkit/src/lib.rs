@@ -29,6 +29,7 @@ mod panels;
 mod pending;
 #[cfg(feature = "gpu")]
 mod scene;
+mod schema;
 #[cfg(feature = "gpu")]
 mod sheet;
 #[cfg(feature = "gpu")]
@@ -42,22 +43,29 @@ mod view;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub mod web;
 
-pub use data::{Data, Id, Ids, Kind, Name, Patch, Row, Table, Value, Values};
+pub use data::{
+    Data, Description, Envelope, FieldDescription, Id, Ids, Kind, Name, Patch, Row, Table, TableDescription, Value,
+    Values,
+};
 pub use error::{Error, Path, Result, Step};
 pub use image::{Image, ImageFormat};
+pub use schema::schema;
+#[cfg(feature = "gpu")]
+pub use schema::schemas;
 #[cfg(feature = "gpu")]
 pub use {
+    data::{Order, Patches, Query},
     expr::{
-        Color, Colormap, ColormapKind, Expr, Mapped, Size, Then, When, elapsed, field, hovered, pointer, selected,
-        units, when, zoom,
+        Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, hovered, pointer,
+        selected, units, when, zoom,
     },
     gpu::{Budget, Gpu, work::Work},
     panels::Panels,
     pending::{Pending, Resolver},
     scene::{
         Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Flow, Format, Grid, Interpolation, Label,
-        Layered, Layout, Lines, Mark, Marker, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side, Space,
-        Stress, Theme, Vertices,
+        Layered, Layout, Lines, Mark, Marker, Motion, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side,
+        Space, Stress, Theme, Vertices, Zoom,
     },
     shot::Shot,
     video::{Encoding, Mp4, Pixels, Sink, Video},

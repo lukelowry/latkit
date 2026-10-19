@@ -5,7 +5,7 @@
  * and is read in a worker; tiles are fetched as the camera asks for them.
  */
 import { field, geojson, type ColormapName, type Data, type Mark, type View } from '../latkit.js';
-import { download } from './cases.js';
+import { download, megabytes } from './cases.js';
 
 /** The page's colors, as CSS. */
 export const LOOK = {
@@ -42,7 +42,8 @@ export interface MapChoice {
   readonly id: string;
   readonly label: string;
   readonly attribution: string;
-  load(view: View, signal: AbortSignal): Promise<Loaded>;
+  /** Loads the map into `view`, telling `progress` how it goes. */
+  load(view: View, signal: AbortSignal, progress: (status: string) => void): Promise<Loaded>;
 }
 
 const NE = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/';
@@ -93,11 +94,12 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
     id: `states-${scale}`,
     label,
     attribution: NATURAL_EARTH,
-    async load(view, signal) {
+    async load(view, signal, progress) {
       const started = performance.now();
       const { bytes, received } = await download(
         `${NE}ne_${scale}_admin_1_states_provinces.geojson`,
         signal,
+        (got, total) => progress(`downloading ${megabytes(got, total)}`),
       );
       const fetched = performance.now();
       const data = await geojson('states', bytes);

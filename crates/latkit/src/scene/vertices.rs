@@ -61,8 +61,8 @@ impl Vertices {
         self
     }
 
-    /// Each row's position. Without one, a point field named `geometry` places rows, else a
-    /// diagram's layout does.
+    /// Each row's position. Without one, a point field named `geometry` places rows; rows without
+    /// either the scene's layout places, in a diagram or on a plane or the earth.
     #[must_use]
     pub fn position(mut self, x: impl Into<Expr>, y: impl Into<Expr>) -> Vertices {
         self.position = Some([x.into(), y.into()]);
@@ -131,12 +131,18 @@ impl Vertices {
             flags |= wgsl::SIZED;
         } else {
             let at = wgsl::VERTEX_POSITION;
-            match &self.position {
-                Some([x, y]) => c.position(x, y, at),
-                None if c.kind(GEOMETRY) == Some(Kind::Geometry(0)) => {
-                    c.position(&Expr::component(GEOMETRY, 0), &Expr::component(GEOMETRY, 1), at)
+            if context.placed() {
+                // The view places rows without a position by the scene's layout, from the data alone.
+                c.check_structure("position", self.position.iter().flatten())?;
+                c.derived_position(at)
+            } else {
+                match &self.position {
+                    Some([x, y]) => c.position(x, y, at),
+                    None if c.kind(GEOMETRY) == Some(Kind::Geometry(0)) => {
+                        c.position(&Expr::component(GEOMETRY, 0), &Expr::component(GEOMETRY, 1), at)
+                    }
+                    None => c.position(&Expr::missing(), &Expr::missing(), at),
                 }
-                None => c.position(&Expr::missing(), &Expr::missing(), at),
             }
             .map_err(|e| e.at("position"))?;
             let half = |word: u32, size: &Size| Store::Size {
@@ -180,6 +186,12 @@ impl Vertices {
             ports.push((reference.clone(), port.clone(), column));
         }
         let mut drawing = Drawing::new(MarkKind::Vertices, wgsl::VERTEX_WORDS);
+        // A marker's half keeps within its size's pixels, halved where the size is the whole width.
+        drawing.size_px = match (&self.size, &self.radius) {
+            (Some([w, _]), _) => w.px.map(|px| px / 2.0),
+            (None, Some(radius)) => radius.px,
+            (None, None) => crate::Size::ANY,
+        };
         drawing.markers = self.marker.markers(0);
         if group {
             // A container is a box whatever its marker.

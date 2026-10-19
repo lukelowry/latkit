@@ -118,6 +118,27 @@ impl Patch {
     pub fn from_bytes(bytes: &[u8]) -> Result<Patch> {
         super::bytes::decode(bytes).map(|(_, patch)| patch)
     }
+
+    /// The patch at the start of `bytes` and how many bytes it takes, or `None` while `bytes` hold
+    /// only its start: patches back to back, as files, pipes, and sockets carry them, decode one by
+    /// one. A patch its lengths say runs past `limit` bytes is [`Error::Limit`](crate::Error::Limit)
+    /// at once, so a stream of untrusted bytes never waits on more than `limit`.
+    ///
+    /// ```
+    /// # use latkit::{Patch, Table};
+    /// let mut stream = Patch::new().set(Table::new("Bus", 1)).to_bytes();
+    /// stream.extend(Patch::new().remove("Bus", 1).to_bytes());
+    /// let limit = 1 << 20;
+    /// let (first, used) = Patch::decode(&stream, limit)?.expect("a whole patch");
+    /// let (second, rest) = Patch::decode(&stream[used..], limit)?.expect("a whole patch");
+    /// assert_eq!(used + rest, stream.len());
+    /// assert!(Patch::decode(&stream[..used - 1], limit)?.is_none(), "more bytes to come");
+    /// assert!(Patch::decode(&stream, 8).is_err(), "longer than the limit");
+    /// # Ok::<(), latkit::Error>(())
+    /// ```
+    pub fn decode(bytes: &[u8], limit: usize) -> Result<Option<(Patch, usize)>> {
+        Ok(super::bytes::decode_prefix(bytes, limit)?.map(|(_, patch, used)| (patch, used)))
+    }
 }
 
 impl From<Table> for Patch {
@@ -272,23 +293,5 @@ fn remove(existing: &Table, ids: &Ids) -> Result<Table> {
         return Ok(existing.clone());
     }
     let keep: Vec<usize> = (0..existing.len()).filter(|&r| !doomed[r]).collect();
-    let mut table = existing.clone();
-    table.ids = existing.ids.gather(&keep);
-    table.index = Arc::default();
-    let version = Version::next();
-    table.structure = version;
-    table.order = version;
-    for (_, field) in &mut table.fields {
-        *field = match field {
-            Field::Values(column, _) => Field::Values(column.gather(&keep), Version::next()),
-            Field::Reference(reference) => Field::Reference(Reference {
-                ids: reference.ids.gather(&keep),
-                version: Version::next(),
-                inverse: Arc::default(),
-                ..reference.clone()
-            }),
-            Field::Sampled(samples, _) => Field::Sampled(samples.gather(&keep), Version::next()),
-        };
-    }
-    Ok(table)
+    Ok(existing.rows(&keep))
 }

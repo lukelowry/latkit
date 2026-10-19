@@ -2,8 +2,10 @@
 //! Shift it selects in a box when boxes select, else turns a map or plane; on a port, an Alt-held
 //! vertex, or an edge it draws a connection when connecting is on; on a row of a draggable mark it
 //! drags the row; elsewhere it pans. A press that does not move clicks, Shift, Control, or Meta
-//! toggling its row in the selection. A secondary press turns once it moves and asks for a menu when
-//! it does not. The wheel and pinches zoom, and keys step. A diagram never turns, and its drags snap
+//! toggling its row in the selection; with cycling on, a click again where nothing moved selects the
+//! next row under the point. A secondary press turns once it moves and asks for a menu when it does
+//! not, as a touch or a pen held still does. The wheel and pinches zoom, as the controls allow, and
+//! keys step. A diagram never turns, and its drags snap
 //! to its grid when it says so. Every camera move is about the point under the pointer and goes
 //! through the rig, which carries a released drag on and keeps the camera within reach.
 //!
@@ -23,7 +25,7 @@ use super::marks::Shown;
 use super::probe::{Answer, Probed, near};
 use crate::expr::compile::Deps;
 use crate::scene::mark::MarkKind;
-use crate::{Camera, Grid, Pending, Row, Scene, Space};
+use crate::{Camera, Grid, Pending, Row, Scene, Space, Zoom};
 
 /// CSS pixels a press moves before it drags or pans.
 const SLOP: f32 = 4.0;
@@ -54,6 +56,12 @@ pub(crate) enum Gesture {
         answer: Option<Answer>,
         released: bool,
         earlier: Option<(Button, Trigger)>,
+        /// When it began, on the view's clock.
+        since: f64,
+    },
+    /// A touch or pen held still until it asked for a menu: its release does nothing more.
+    Held {
+        pointer: u32,
     },
     /// A connection drawn from `from` toward the pointer at `to`; `anchor` is where it starts on
     /// screen, once known.
@@ -97,8 +105,8 @@ pub(crate) struct Gestures {
     pub(crate) keys: Stepping,
     /// The time of the input being taken, on the clock of whatever feeds the view its input.
     time: f64,
-    /// The last click: when, where, and on which row.
-    clicked: Option<(f64, [f32; 2], Option<Row>)>,
+    /// The last click: when, where, on which row, and where the camera was.
+    clicked: Option<(f64, [f32; 2], Option<Row>, Camera)>,
     /// How fast the pan or turn under way moves, per second, and when it last moved.
     velocity: [f64; 2],
     moved: Option<f64>,
@@ -192,7 +200,7 @@ impl View {
                 self.up(pointer, Some(point))
             }
             Input::Cancel { pointer } => self.up(pointer, None),
-            Input::Wheel { point, delta, .. } => self.wheel(point, delta),
+            Input::Wheel { point, delta, modifiers } => self.wheel(point, delta, modifiers),
             Input::Key { key, down: true, modifiers } => self.key(key, modifiers),
             Input::Key { .. } => false,
             Input::Leave => {
@@ -239,7 +247,7 @@ impl View {
         let earlier = match self.gestures.now {
             Gesture::Press { pointer: first, trigger: Trigger { point: at, .. }, .. }
             | Gesture::Pan { pointer: first, last: at, .. }
-                if first != pointer && controls.zoom =>
+                if first != pointer && controls.zoom != Zoom::Off =>
             {
                 self.rig.hold();
                 self.gestures.now = Gesture::Pinch { pointers: [(first, at), (pointer, point)] };
@@ -260,7 +268,8 @@ impl View {
             if answer.is_none() {
                 self.probing.wanted = Some(point);
             }
-            Gesture::Press { pointer, button, from: point, trigger, answer, released: false, earlier }
+            let since = self.clock.now();
+            Gesture::Press { pointer, button, from: point, trigger, answer, released: false, earlier, since }
         } else {
             Gesture::Idle
         };
@@ -335,15 +344,20 @@ impl View {
             Gesture::Pan { pointer: p, anchor, .. } if *p == pointer => {
                 let anchor = *anchor;
                 let velocity = self.gestures.release();
-                self.rig.fling(anchor, velocity, [0.0; 2]);
+                if self.moves() {
+                    self.rig.fling(anchor, velocity, [0.0; 2]);
+                }
                 self.gestures.now = Gesture::Idle;
             }
             Gesture::Turn { pointer: p, anchor, .. } if *p == pointer => {
                 let anchor = *anchor;
                 let velocity = self.gestures.release();
-                self.rig.fling(anchor, [0.0; 2], velocity);
+                if self.moves() {
+                    self.rig.fling(anchor, [0.0; 2], velocity);
+                }
                 self.gestures.now = Gesture::Idle;
             }
+            Gesture::Held { pointer: p } if *p == pointer => self.gestures.now = Gesture::Idle,
             Gesture::Pinch { pointers } if pointers.iter().any(|(p, _)| *p == pointer) => {
                 self.gestures.now = Gesture::Idle;
             }
@@ -398,7 +412,7 @@ impl View {
     /// otherwise once what lies under it is known, a release clicks or asks for a menu, and a move
     /// connects, drags, pans, or turns.
     fn pressed(&mut self) {
-        let Gesture::Press { pointer, button, from, trigger, answer, released, earlier } = &mut self.gestures.now
+        let Gesture::Press { pointer, button, from, trigger, answer, released, earlier, .. } = &mut self.gestures.now
         else {
             return;
         };
@@ -479,13 +493,13 @@ impl View {
     fn click(&mut self, hit: Option<Probed>, trigger: Trigger) {
         let now = self.gestures.time;
         let row = hit.as_ref().map(|p| p.hit.row.clone());
-        let double = self
-            .gestures
-            .clicked
-            .take()
-            .is_some_and(|(at, p, r)| now - at < DOUBLE && near(p, trigger.point, DOUBLE_REACH) && r == row);
+        let last = self.gestures.clicked.take();
+        let again = last
+            .as_ref()
+            .is_some_and(|(_, p, _, camera)| near(*p, trigger.point, DOUBLE_REACH) && *camera == self.camera);
+        let double = again && last.as_ref().is_some_and(|(at, _, r, _)| now - at < DOUBLE && *r == row);
         if !double {
-            self.gestures.clicked = Some((now, trigger.point, row));
+            self.gestures.clicked = Some((now, trigger.point, row, self.camera));
         }
         let toggle = trigger.modifiers.toggles();
         match hit {
@@ -494,7 +508,12 @@ impl View {
                 if double {
                     self.events.tell(Event::Open { hit: hit.clone(), trigger });
                 }
-                if self.selects(hit.mark) {
+                if again && !double && !toggle && self.scene.controls.cycle {
+                    // The next row under the point, once a pick lists them nearest first.
+                    let hits = self.pick(trigger.point, self.scene.controls.pick_radius);
+                    let after = self.focus.selection.last().cloned();
+                    self.events.tell_after(hits, Awaited::Cycle { after, trigger });
+                } else if self.selects(hit.mark) {
                     self.select_row(hit.row, toggle, trigger);
                 }
             }
@@ -600,11 +619,13 @@ impl View {
         events.settle(|hits, awaited| self.finish(hits, awaited));
         self.events = events;
         self.settle_keys();
+        self.held_long();
     }
 
-    /// The intent `awaited` makes of the hits its pick found.
-    fn finish(&self, hits: Vec<Hit>, awaited: Awaited) -> Event {
-        match awaited {
+    /// The event `awaited` makes of the hits its pick found, if any: an intent, or the selection a
+    /// cycling click moves to.
+    fn finish(&mut self, hits: Vec<Hit>, awaited: Awaited) -> Option<Event> {
+        Some(match awaited {
             Awaited::Menu(trigger) => Event::Menu { hits, trigger },
             Awaited::Connect { from, edge, trigger } => {
                 let vertex = |hit: &&Hit| {
@@ -613,11 +634,51 @@ impl View {
                 let to = hits.iter().find(vertex).map(|hit| End { row: hit.row.clone(), port: hit.port.clone() });
                 Event::Connect { from, to, edge, trigger }
             }
+            Awaited::Cycle { after, trigger } => {
+                let mut rows: Vec<Row> = Vec::new();
+                for hit in hits.into_iter().filter(|hit| self.selects(hit.mark)) {
+                    if !rows.contains(&hit.row) {
+                        rows.push(hit.row);
+                    }
+                }
+                let next = after.and_then(|row| rows.iter().position(|r| *r == row)).map_or(0, |i| i + 1);
+                let selection = vec![rows.get(next % rows.len().max(1))?.clone()];
+                if selection == self.focus.selection {
+                    return None;
+                }
+                self.focus.selection.clone_from(&selection);
+                self.focus.dirty = true;
+                Event::Select { rows: selection, trigger: Some(trigger) }
+            }
+        })
+    }
+
+    /// A touch or a pen held still for the controls' press asks for a menu where it is.
+    fn held_long(&mut self) {
+        let press = self.scene.controls.press.as_secs_f64();
+        let Gesture::Press { pointer, from, trigger, released: false, since, .. } = self.gestures.now else { return };
+        let still = near(from, trigger.point, SLOP) && matches!(trigger.device, Device::Touch | Device::Pen);
+        if still && press > 0.0 && self.clock.now() - since >= press {
+            self.gestures.now = Gesture::Held { pointer };
+            self.menu(trigger);
         }
     }
 
-    fn wheel(&mut self, point: [f32; 2], delta: [f32; 2]) -> bool {
-        if !self.scene.controls.zoom {
+    /// Whether a touch or a pen is held still, toward a menu: frames go on to notice it.
+    pub(super) fn holding(&self) -> bool {
+        matches!(self.gestures.now, Gesture::Press { released: false, trigger, .. }
+            if matches!(trigger.device, Device::Touch | Device::Pen))
+            && !self.scene.controls.press.is_zero()
+    }
+
+    /// The wheel zooms about the point under it, as the controls allow; otherwise the page has it.
+    fn wheel(&mut self, point: [f32; 2], delta: [f32; 2], modifiers: Modifiers) -> bool {
+        let zooms = match self.scene.controls.zoom {
+            Zoom::Wheel => true,
+            Zoom::Modifier => modifiers.control || modifiers.meta,
+            Zoom::Off => false,
+        };
+        if !zooms {
             return false;
         }
         let anchor = self.anchor(point, self.probing.at(point).as_ref());
@@ -689,8 +750,8 @@ impl View {
                 self.rig.owe(anchor, [0.0; 2], [-dx * STEP_TURN, dy * STEP_TURN], 0.0);
             }
             (_, Some([dx, dy])) if controls.pan => self.rig.owe(anchor, [dx * STEP, dy * STEP], [0.0; 2], 0.0),
-            (Key::Plus, _) if controls.zoom => self.rig.owe(anchor, [0.0; 2], [0.0; 2], STEP_ZOOM),
-            (Key::Minus, _) if controls.zoom => self.rig.owe(anchor, [0.0; 2], [0.0; 2], -STEP_ZOOM),
+            (Key::Plus, _) if controls.zoom != Zoom::Off => self.rig.owe(anchor, [0.0; 2], [0.0; 2], STEP_ZOOM),
+            (Key::Minus, _) if controls.zoom != Zoom::Off => self.rig.owe(anchor, [0.0; 2], [0.0; 2], -STEP_ZOOM),
             (Key::Home, _) => self.fit(Fit::All),
             (Key::Escape, _) => self.reselect(Vec::new(), Some(trigger)),
             _ => return false,

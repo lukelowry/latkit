@@ -10,19 +10,17 @@ export default defineConfig([
     ignores: [
       '**/coverage/**',
       '**/dist/**',
-      '**/docs/_build/**',
       '**/node_modules/**',
       '**/*.d.ts.map',
       'pnpm-lock.yaml',
       'output/**',
-      'packages/monitor/tests/browser/generated/**',
-      '.playwright-cli/**',
       '.bench/**',
-      'benchmark/.results/**',
+      '.playwright-cli/**',
       'crates/**',
       'target/**',
       'npm/pkg/**',
       'npm/dist/**',
+      'npm/test/scenes.js',
     ],
   },
   {
@@ -62,7 +60,12 @@ export default defineConfig([
     },
   },
   {
-    files: ['**/tests/**/*.ts', '**/*.unit.test.ts', '**/*.bench.ts', 'benchmark/**/*.ts'],
+    files: [
+      '**/*.test.ts',
+      'npm/examples/test/**/*.ts',
+      'npm/examples/gate/**/*.ts',
+      'npm/bench/**/*.ts',
+    ],
     rules: {
       '@typescript-eslint/no-empty-function': 'off',
       '@typescript-eslint/no-explicit-any': 'off',

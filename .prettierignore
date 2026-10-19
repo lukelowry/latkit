@@ -1,22 +1,19 @@
 node_modules
 dist
 coverage
-docs/_build
-docs/api/reference
 pnpm-lock.yaml
-packages/*/dist
-examples/*/dist
 .impeccable/
-.bench/
-benchmark/.results/
 
 output/
+.bench/
 .playwright-cli/
-packages/monitor/tests/browser/generated
 target
 npm/pkg
 npm/dist
 crates/latkit/colormaps
 npm/test/scenes.js
-# Written by examples/cli-gallery/gallery.py.
-examples/cli-gallery/*.json
+# Written by the CLI examples' scripts, and by the bench.
+crates/latkit-cli/examples/**/*.json
+npm/bench/baselines
+# Written by the schema test: LATKIT_BLESS=1 cargo test -p latkit --test schema.
+npm/schema.json

@@ -10,11 +10,6 @@
     "latkit": "link:.."
   },
   "devDependencies": {
-    "@latkit/diagram": "workspace:*",
-    "@latkit/gpu": "workspace:*",
-    "@latkit/model": "workspace:*",
-    "@latkit/monitor": "workspace:*",
-    "@latkit/network": "workspace:*",
     "@types/node": "^26.1.1",
     "playwright-core": "1.64.0",
     "typescript": "^5.7.0",

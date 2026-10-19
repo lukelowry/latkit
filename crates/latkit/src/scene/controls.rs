@@ -1,11 +1,14 @@
-/// How a view answers the pointer and keyboard. Each mark says whether its rows pick, select, and
-/// drag; these say what the view itself does.
+use std::time::Duration;
+
+/// How a view answers the pointer and keyboard, and how much it moves on its own. Each mark says
+/// whether its rows pick, select, and drag; these say what the view itself does.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Controls {
     /// Dragging the background moves the camera.
     pub pan: bool,
-    /// The wheel and pinching zoom.
-    pub zoom: bool,
+    /// What zooms: the wheel and pinching, or the wheel only with Control or Meta held (as a
+    /// trackpad's pinch sends it), leaving the plain wheel to scroll the page; or nothing.
+    pub zoom: Zoom,
     /// Dragging with the secondary button, or with Shift, turns and tilts a map or plane.
     pub turn: bool,
     /// Tab steps through the rows nearest the view's middle and arrows to the nearest row their way;
@@ -25,13 +28,50 @@ pub struct Controls {
     pub connect: bool,
     /// Delete and Backspace tell [`Event::Delete`](crate::Event) with the selection.
     pub delete: bool,
+    /// Clicking again where nothing moved selects the next row under the point, nearest first, so
+    /// rows drawn over one another can each be selected.
+    pub cycle: bool,
+    /// How long a touch or a pen held still asks for a menu, as the secondary button does; zero
+    /// never does.
+    pub press: Duration,
+    /// How much the view moves on its own: eases, flights, coasting, orbits, label fades, comets, and
+    /// what reads `elapsed()`.
+    pub motion: Motion,
+}
+
+/// What zooms a view.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Zoom {
+    /// The wheel, pinching, and the keys.
+    #[default]
+    Wheel,
+    /// Pinching and the keys, and the wheel only with Control or Meta held, as a trackpad's pinch
+    /// sends it: the plain wheel scrolls the page.
+    Modifier,
+    /// Nothing.
+    Off,
+}
+
+/// How much a view moves on its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Motion {
+    /// As the platform asks: reduced where the user asked their system for less motion.
+    #[default]
+    System,
+    /// Every motion.
+    Full,
+    /// Only what the user moves: changes apply at once, flights jump, nothing coasts or orbits,
+    /// labels show without fading, and comets and what reads `elapsed()` hold still.
+    Reduced,
 }
 
 impl Default for Controls {
     fn default() -> Controls {
         Controls {
             pan: true,
-            zoom: true,
+            zoom: Zoom::Wheel,
             turn: true,
             keyboard: true,
             hover: true,
@@ -39,6 +79,30 @@ impl Default for Controls {
             select_box: false,
             connect: false,
             delete: false,
+            cycle: false,
+            press: Duration::from_millis(500),
+            motion: Motion::System,
         }
+    }
+}
+
+impl Controls {
+    /// A view that answers nothing: a still picture, its camera where the application puts it.
+    pub fn none() -> Controls {
+        Controls {
+            pan: false,
+            zoom: Zoom::Off,
+            turn: false,
+            keyboard: false,
+            hover: false,
+            press: Duration::ZERO,
+            ..Controls::default()
+        }
+    }
+
+    /// A view to inspect rows in: they glow under the pointer, select, and step with the keys, while
+    /// the camera stays where the application puts it.
+    pub fn inspect() -> Controls {
+        Controls { pan: false, zoom: Zoom::Off, turn: false, ..Controls::default() }
     }
 }

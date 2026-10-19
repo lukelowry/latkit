@@ -1,5 +1,6 @@
 //! One byte encoding for patches and datasets: a magic, the dataset's name (empty for a patch), and
-//! the operations of the patch. Little endian throughout.
+//! the operations of the patch. Little endian throughout. Every part counts its own length, so
+//! patches back to back decode one by one.
 //!
 //! | Part     | Layout                                                                              |
 //! | -------- | ----------------------------------------------------------------------------------- |
@@ -10,7 +11,7 @@
 //! | ids      | `u8` 0 and `u32` count, or `u8` 1 and values                                        |
 //! | column   | `u32` page count, values per page                                                   |
 //! | values   | `u8` storage, `u32` len, data, `u8` has-validity, validity words                    |
-//! | samples  | `u32` rows, `u32` frames, `f64` coordinates, `f32` values frame-major (NaN missing) |
+//! | samples  | `u32` rows, `u32` first frame's number, `u32` frames, `f64` coordinates, `f32` values frame-major (NaN missing) |
 //! | `str`    | `u32` byte length, UTF-8                                                            |
 
 use std::sync::Arc;
@@ -97,40 +98,63 @@ pub(crate) fn encode(name: &str, patch: &Patch) -> Vec<u8> {
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<(Name, Patch)> {
-    let mut r = Reader { bytes, at: 0 };
-    if r.take(4)? != MAGIC {
-        return Err(malformed("not latkit bytes"));
-    }
-    let name = r.name()?;
-    let count = r.u32()?;
-    let mut patch = Patch::new();
-    for _ in 0..count {
-        let op = match r.u8()? {
-            OP_AXIS => Op::Axis { name: r.name()?, unit: r.name()? },
-            OP_PUT => Op::Put(r.table()?),
-            OP_SET => Op::Set(r.table()?),
-            OP_REMOVE => Op::Remove { table: r.name()?, ids: r.ids()? },
-            OP_APPEND => {
-                let table = r.name()?;
-                let frames = r.len(8)?;
-                let at = (0..frames).map(|_| r.f64()).collect::<Result<_>>()?;
-                let count = r.len(1)?;
-                let fields = (0..count).map(|_| Ok((r.name()?, r.values()?))).collect::<Result<_>>()?;
-                Op::Append { table, at, fields }
-            }
-            OP_FORGET => Op::Forget { before: r.f64()? },
-            tag => return Err(malformed(format!("unknown operation {tag}"))),
-        };
-        patch.ops.push(op);
-    }
+    let mut r = Reader { bytes, at: 0, limit: usize::MAX, short: false };
+    let decoded = r.message()?;
     if r.at != bytes.len() {
         return Err(malformed("trailing bytes"));
     }
-    Ok((name, patch))
+    Ok(decoded)
+}
+
+/// The patch at the start of `bytes`, its name, and how many bytes it takes; `None` while `bytes`
+/// hold only its start. One its lengths say runs past `limit` bytes is an error at once.
+pub(crate) fn decode_prefix(bytes: &[u8], limit: usize) -> Result<Option<(Name, Patch, usize)>> {
+    let mut r = Reader { bytes, at: 0, limit, short: false };
+    match r.message() {
+        Ok((name, patch)) => Ok(Some((name, patch, r.at))),
+        Err(_) if r.short => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+impl Reader<'_> {
+    fn message(&mut self) -> Result<(Name, Patch)> {
+        let r = self;
+        if r.take(4)? != MAGIC {
+            return Err(malformed("not latkit bytes"));
+        }
+        let name = r.name()?;
+        let count = r.u32()?;
+        let mut patch = Patch::new();
+        for _ in 0..count {
+            let op = match r.u8()? {
+                OP_AXIS => Op::Axis { name: r.name()?, unit: r.name()? },
+                OP_PUT => Op::Put(r.table()?),
+                OP_SET => Op::Set(r.table()?),
+                OP_REMOVE => Op::Remove { table: r.name()?, ids: r.ids()? },
+                OP_APPEND => {
+                    let table = r.name()?;
+                    let frames = r.len(8)?;
+                    let at = (0..frames).map(|_| r.f64()).collect::<Result<_>>()?;
+                    let count = r.len(1)?;
+                    let fields = (0..count).map(|_| Ok((r.name()?, r.values()?))).collect::<Result<_>>()?;
+                    Op::Append { table, at, fields }
+                }
+                OP_FORGET => Op::Forget { before: r.f64()? },
+                tag => return Err(malformed(format!("unknown operation {tag}"))),
+            };
+            patch.ops.push(op);
+        }
+        Ok((name, patch))
+    }
 }
 
 fn malformed(reason: impl Into<std::borrow::Cow<'static, str>>) -> Error {
     Error::invalid(reason).at("bytes")
+}
+
+fn too_long(limit: usize) -> Error {
+    Error::Limit(format!("a patch longer than {limit} bytes").into())
 }
 
 struct Writer(Vec<u8>);
@@ -169,7 +193,7 @@ impl Writer {
             }
             RowIds::Listed(column) => {
                 self.u8(1);
-                self.values(&whole(column));
+                self.values(&column.values());
             }
         }
         self.u32(table.fields.len());
@@ -188,6 +212,7 @@ impl Writer {
                 Field::Sampled(samples, _) => {
                     self.u8(FIELD_SAMPLED);
                     self.u32(table.len());
+                    self.u32(samples.start() as usize);
                     self.u32((samples.end() - samples.start()) as usize);
                     for frame in samples.start()..samples.end() {
                         self.f64(samples.at(frame));
@@ -270,22 +295,32 @@ impl Writer {
     }
 }
 
-/// A column's pages as one values.
-fn whole(column: &Column) -> Values {
-    let sources: Vec<&Values> =
-        std::iter::once(column.like()).chain(column.pages().iter().map(|p| &p.values)).collect();
-    Values::assemble(&sources, column.len(), |i| Some((1 + i / PAGE_ROWS, i % PAGE_ROWS))).expect("one storage")
-}
-
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
+    /// The most bytes the message may take: past it, more bytes are not waited for.
+    limit: usize,
+    /// Whether reading ran out of bytes, which more of a stream may bring.
+    short: bool,
 }
 
 impl Reader<'_> {
+    /// Whether `n` more bytes are there: an error past the limit, short past the bytes held.
+    fn reach(&mut self, n: usize) -> Result<()> {
+        let end = self.at.saturating_add(n);
+        if end > self.limit {
+            return Err(too_long(self.limit));
+        }
+        if end > self.bytes.len() {
+            self.short = true;
+            return Err(malformed("truncated"));
+        }
+        Ok(())
+    }
+
     fn take(&mut self, n: usize) -> Result<&[u8]> {
-        let end =
-            self.at.checked_add(n).filter(|&end| end <= self.bytes.len()).ok_or_else(|| malformed("truncated"))?;
+        self.reach(n)?;
+        let end = self.at + n;
         let slice = &self.bytes[self.at..end];
         self.at = end;
         Ok(slice)
@@ -302,9 +337,7 @@ impl Reader<'_> {
     /// A count of items at least `size` bytes each, checked against the bytes left.
     fn len(&mut self, size: usize) -> Result<usize> {
         let n = self.u32()? as usize;
-        if n.saturating_mul(size) > self.bytes.len() - self.at {
-            return Err(malformed("truncated"));
-        }
+        self.reach(n.saturating_mul(size))?;
         Ok(n)
     }
 
@@ -366,10 +399,11 @@ impl Reader<'_> {
                 }
                 FIELD_SAMPLED => {
                     let rows = self.u32()? as usize;
+                    let first = self.u32()?;
                     let frames = self.len(8)?;
                     let at: Vec<f64> = (0..frames).map(|_| self.f64()).collect::<Result<_>>()?;
                     let values: Vec<f32> = self.vec(frames.checked_mul(rows).ok_or_else(|| malformed("too large"))?)?;
-                    let mut samples = Samples::default();
+                    let mut samples = Samples::from_frame(first);
                     samples.append(&at, &Values::from(values), rows).map_err(|e| e.at(&name))?;
                     Field::Sampled(samples, Version::next())
                 }
@@ -478,6 +512,40 @@ mod tests {
         let bytes = patch.to_bytes();
         assert_eq!(Patch::from_bytes(&bytes).expect("decodes").to_bytes(), bytes);
         assert!(Data::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn patches_back_to_back_decode_one_by_one() {
+        let patches = [grid().to_patch(), Patch::new().forget(1.5), Patch::new().remove("Bus", vec!["a"])];
+        let stream: Vec<u8> = patches.iter().flat_map(Patch::to_bytes).collect();
+        let (mut at, mut read) = (0, Vec::new());
+        // Arriving a few bytes at a time, as from a socket.
+        for end in (0..=stream.len()).step_by(5).chain([stream.len()]) {
+            while let Some((patch, used)) = Patch::decode(&stream[at..end], usize::MAX).expect("valid so far") {
+                read.push(patch.to_bytes());
+                at += used;
+            }
+        }
+        assert_eq!(read, patches.iter().map(Patch::to_bytes).collect::<Vec<_>>());
+        assert!(Patch::decode(b"LATX....", 64).is_err(), "not latkit bytes, however many follow");
+        // A length past the limit fails at once rather than waiting for bytes that may never come.
+        let long = Patch::new().set(Table::new("Bus", 1).field("name", vec!["x".repeat(100)])).to_bytes();
+        assert!(matches!(Patch::decode(&long[..70], 64), Err(Error::Limit(_))));
+        assert!(Patch::decode(&long[..70], 1 << 20).expect("short").is_none());
+    }
+
+    #[test]
+    fn frames_keep_their_numbers_through_bytes_and_gathers() {
+        let mut data = grid();
+        data.apply(Patch::new().forget(1.5)).expect("forget");
+        let first = |data: &Data| match data.table("Bus").and_then(|t| t.field_named("vm")) {
+            Some(Field::Sampled(samples, _)) => samples.start(),
+            _ => panic!("sampled"),
+        };
+        assert_eq!(first(&data), 1);
+        assert_eq!(first(&Data::from_bytes(&data.to_bytes()).expect("decodes")), 1);
+        data.apply(Patch::new().remove("Bus", vec!["b"])).expect("remove");
+        assert_eq!(first(&data), 1, "rows removed keep the frames' numbers");
     }
 
     #[test]

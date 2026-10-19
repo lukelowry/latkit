@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::Expr;
 
 /// A row's text, placed beside, inside, or along what its mark draws, following it every frame.
@@ -16,12 +18,14 @@ pub struct Label {
     pub(crate) color: Option<Expr>,
     pub(crate) priority: Option<Expr>,
     pub(crate) max_width: Option<f32>,
+    pub(crate) font: Option<Arc<str>>,
+    pub(crate) max: Option<u32>,
 }
 
 impl Label {
     /// Labels each row with a text field's value.
     pub fn new(text: impl Into<Expr>) -> Label {
-        Label { text: text.into(), size: None, color: None, priority: None, max_width: None }
+        Label { text: text.into(), size: None, color: None, priority: None, max_width: None, font: None, max: None }
     }
 
     /// Text size, CSS pixels, or units in a diagram; the theme's font size unless set.
@@ -50,6 +54,21 @@ impl Label {
     #[must_use]
     pub fn max_width(mut self, width: f32) -> Label {
         self.max_width = Some(width);
+        self
+    }
+
+    /// The CSS font family list its texts are set in; the theme's font unless set.
+    #[must_use]
+    pub fn font(mut self, font: impl Into<Arc<str>>) -> Label {
+        self.font = Some(font.into());
+        self
+    }
+
+    /// Shows at most `max` labels at once, those of highest priority among the rows in view; where
+    /// they would overlap, fewer.
+    #[must_use]
+    pub fn max(mut self, max: u32) -> Label {
+        self.max = Some(max);
         self
     }
 }

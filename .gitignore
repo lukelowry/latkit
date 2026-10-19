@@ -1,15 +1,11 @@
 node_modules/
 dist/
 coverage/
-docs/_build/
-docs/api/reference/
-.turbo/
 .DS_Store
 *.log
 
 output/
 .bench/
-benchmark/.results/
 .playwright-cli/
 .playwright-mcp/
 

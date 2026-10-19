@@ -7,7 +7,48 @@ on:
       - main
 
 jobs:
-  npm-wasm-package:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup show
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --locked -p latkit --no-default-features --all-targets -- -D warnings
+      - run: cargo clippy --locked -p latkit-js --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo test --locked -p latkit --no-default-features
+      - name: Document the library
+        run: cargo doc --locked -p latkit --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Verify the native package
+        run: cargo package --locked -p latkit
+      - name: Verify the browser-target package
+        run: cargo package --locked -p latkit --target wasm32-unknown-unknown --features web
+
+  native-cli:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup show
+      - name: Install fonts for native text tests
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
+      - run: cargo test --locked --package latkit --features native --lib --test validation
+      - run: cargo test --locked --package latkit-cli
+      - name: Build the CLI
+        run: cargo build --locked --package latkit-cli --profile cli
+      - run: cargo check --locked --package latkit --no-default-features
+      - name: Keep native font code out of browser builds
+        run: cargo check --locked --package latkit --target wasm32-unknown-unknown --features native,web
+
+  # The npm package, its examples, and the bench: built from the crate, checked, tested, packed for
+  # a consumer, and every example page driven in Chrome on SwiftShader.
+  npm:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -29,97 +70,15 @@ jobs:
         with:
           path: ~/.cargo/bin/wasm-bindgen
           key: wasm-bindgen-cli-${{ steps.bindgen.outputs.version }}
-      - name: Install matching WASM bindings generator
+      - name: Install the matching WASM bindings generator
         if: steps.bindgen-cache.outputs.cache-hit != 'true'
         run: cargo install wasm-bindgen-cli --version "${{ steps.bindgen.outputs.version }}" --locked
       - run: pnpm --dir npm/examples exec playwright-core install --with-deps chromium
+      - run: cargo xtask wasm --dev
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: cargo xtask browser
       - run: cargo xtask package
       - run: cargo xtask package-test
-
-  rust-package:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Set up pinned Rust toolchain
-        run: rustup show
-      - name: Test Rust library
-        run: cargo test --locked --package latkit --lib
-      - name: Verify native Rust package
-        run: cargo package --locked --package latkit
-      - name: Verify browser-target Rust package
-        run: >-
-          cargo package --locked --package latkit
-          --target wasm32-unknown-unknown
-          --features web
-
-  native-cli:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-      - run: rustup show
-      - name: Install fonts for native text tests
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
-      - run: cargo test --locked --package latkit --features native --lib --test validation
-      - run: cargo test --locked --package latkit-cli
-      - name: Build the CLI
-        run: cargo build --locked --package latkit-cli --profile cli
-      - run: cargo check --locked --package latkit --no-default-features
-      - name: Keep native font code out of browser builds
-        run: cargo check --locked --package latkit --target wasm32-unknown-unknown --features native,web
-
-  quality:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10.30.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm format:check
-      - run: pnpm build
-      - run: pnpm lint
-      - run: pnpm build:examples
-      - run: pnpm typecheck
-      - run: pnpm test:run
-      - run: pnpm -r --filter "./packages/**" exec npm pack --dry-run
-
-  bench:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10.30.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm bench:gate
-
-  docs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10.30.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.13'
-      - run: pnpm install --frozen-lockfile
-      - run: python -m pip install -r docs/requirements.txt
-      - run: pnpm docs:build

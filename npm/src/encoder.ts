@@ -75,7 +75,10 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
     throw new Error(`this browser encodes no H.264 at ${width}×${height}, ${fps} frames a second`);
   };
   const failed = () => {
-    if (failure) throw failure instanceof Error ? failure : new Error(String(failure));
+    if (failure)
+      throw failure instanceof Error
+        ? failure
+        : new Error('the video encoder failed', { cause: failure });
   };
   return {
     async encode(nv12: Uint8Array, time: number, key: boolean): Promise<Unit[]> {

@@ -1,5 +1,7 @@
-/// How a diagram places vertices without positions. A place, once given, holds: rows added later are
-/// placed around the rest, and [`View::arrange`](crate::View::arrange) lays every row out again.
+/// How the view places vertex rows without positions: a diagram's blocks, sized, or the points of a
+/// plane or the earth, among the rows linked to them, gaps in the space's units. A place, once given,
+/// holds: rows added later are placed around the rest, and [`View::arrange`](crate::View::arrange)
+/// lays every row out again.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum Layout {
     /// Unplaced vertices are not drawn.
@@ -43,7 +45,8 @@ impl Default for Layered {
 }
 
 /// How an edge runs between its ends.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum Route {
     /// Straight across the screen.
     Straight,
@@ -55,7 +58,8 @@ pub enum Route {
 }
 
 /// How a line runs between its samples.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum Interpolation {
     /// Straight from each sample to the next.
     #[default]
@@ -67,7 +71,8 @@ pub enum Interpolation {
 }
 
 /// A direction on screen.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum Direction {
     /// Toward the right.
     #[default]

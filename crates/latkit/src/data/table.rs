@@ -100,6 +100,21 @@ impl Field {
             Field::Reference(r) => r.version,
         }
     }
+
+    /// The field of rows `rows`, in that order: a reference names the same targets by id, resolved
+    /// again once applied; samples keep every frame.
+    pub(crate) fn gather(&self, rows: &[usize]) -> Field {
+        match self {
+            Field::Values(column, _) => Field::Values(column.gather(rows), Version::next()),
+            Field::Reference(reference) => Field::Reference(Reference {
+                ids: reference.ids.gather(rows),
+                version: Version::next(),
+                inverse: Arc::default(),
+                ..reference.clone()
+            }),
+            Field::Sampled(samples, _) => Field::Sampled(samples.gather(rows), Version::next()),
+        }
+    }
 }
 
 impl Reference {
@@ -299,11 +314,38 @@ impl Table {
         self.value(row, field, f64::INFINITY)
     }
 
+    /// Every row's value of `field`, in row order: a reference's as the target ids, a sampled
+    /// field's at its last frame.
+    pub fn values(&self, field: &str) -> Option<Values> {
+        Some(match self.field_named(field)? {
+            Field::Values(column, _) => column.values(),
+            Field::Reference(reference) => reference.ids.values(),
+            Field::Sampled(samples, _) => {
+                let frame = samples.frame_at(f64::INFINITY);
+                Values::from((0..self.len()).map(|row| frame.and_then(|f| samples.value(row, f))).collect::<Vec<_>>())
+            }
+        })
+    }
+
     pub(crate) fn value(&self, row: usize, field: &str, at: f64) -> Option<Value> {
         match self.field_named(field)? {
             Field::Values(column, _) => column.get(row),
             Field::Reference(reference) => reference.ids.get(row),
             Field::Sampled(samples, _) => samples.value(row, samples.frame_at(at)?).map(Value::Number),
+        }
+    }
+
+    /// The table of rows `rows` of this one, in that order, with every field: what removing rows
+    /// keeps, and what a query reads back.
+    pub(crate) fn rows(&self, rows: &[usize]) -> Table {
+        let version = Version::next();
+        Table {
+            name: self.name.clone(),
+            ids: self.ids.gather(rows),
+            index: Arc::default(),
+            fields: self.fields.iter().map(|(name, field)| (name.clone(), field.gather(rows))).collect(),
+            structure: version,
+            order: version,
         }
     }
 

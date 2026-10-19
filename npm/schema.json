@@ -1,0 +1,3735 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "space": {
+          "$ref": "#/$defs/Space"
+        },
+        "marks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Mark"
+          }
+        },
+        "layout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Layout"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the view places vertex rows without positions: a diagram's blocks, or points on a plane\nor the earth, gaps in the space's units."
+        },
+        "theme": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Theme"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "controls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Controls"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ease": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "Seconds that changes ease over."
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Written at the view's top left, larger than the theme's text."
+        },
+        "subtitle": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Written under the title."
+        }
+      },
+      "required": [
+        "space"
+      ],
+      "description": "What a view draws and how it answers input."
+    },
+    "Space": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "plane",
+            "diagram",
+            "earth",
+            "mercator",
+            "globe",
+            "plot"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "object",
+                  "properties": {
+                    "grid": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Grid"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "plane"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "diagram": {
+                  "type": "object",
+                  "properties": {
+                    "grid": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Grid"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "diagram"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "earth": {
+                  "type": "object",
+                  "properties": {
+                    "projection": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Projection"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "surface": {
+                      "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "tsType": "Color"
+                    },
+                    "graticule": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "daylight": {
+                      "description": "Lit by the sun as it stands this many seconds after the Unix epoch, plus the view's axis\ncoordinate: night falls on the ground and what stands on it. Unlit unless set.",
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "format": "double"
+                    },
+                    "atmosphere": {
+                      "description": "Air glowing around the globe, in the theme's atmosphere color.",
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "earth"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "plot": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Axis"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "y": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Axis"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "plot"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      ],
+      "description": "The coordinate space positions are in. A diagram is a flat sheet seen from straight above: y runs\ndown, and every length is a unit, a CSS pixel at zoom 0, except glow, halo, and pick radius. Only a\ndiagram has ports, groups, nets, orthogonal routes, and layouts."
+    },
+    "Grid": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "lines": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "required": [
+            "lines"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dots": {
+              "type": "number",
+              "format": "double"
+            },
+            "snap": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "dots"
+          ]
+        }
+      ],
+      "description": "A plane's or a diagram's grid: lines or dots `pitch` units apart; drags snap to dots when `snap`."
+    },
+    "Projection": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "mercator",
+          "description": "Web mercator."
+        },
+        {
+          "type": "string",
+          "const": "globe",
+          "description": "A sphere."
+        }
+      ],
+      "description": "How the earth is drawn."
+    },
+    "Axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "grid": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "hidden": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ticks": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "anyOf": [
+              {
+                "type": "number",
+                "format": "double"
+              },
+              {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            ]
+          },
+          "description": "Ticks at these values, with these labels or their values written; round values unless given."
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Format"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How tick values are written: `auto` (fixed, scientific when very large or small)."
+        },
+        "precision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "Decimals of fixed values, or of the significand otherwise; as many as the ticks need unless set."
+        }
+      }
+    },
+    "Format": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "auto",
+          "description": "Fixed decimals, scientific past a million or below a ten-thousandth."
+        },
+        {
+          "type": "string",
+          "const": "fixed",
+          "description": "Fixed decimals: `1500.0`."
+        },
+        {
+          "type": "string",
+          "const": "scientific",
+          "description": "A significand and a power of ten: `1.5e3`."
+        },
+        {
+          "type": "string",
+          "const": "engineering",
+          "description": "A significand and a power of ten that is a multiple of three: `1.5e3`, `150e-6`."
+        }
+      ],
+      "description": "How an axis writes its tick values."
+    },
+    "Mark": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "vertices": {
+              "$ref": "#/$defs/Vertices"
+            }
+          },
+          "required": [
+            "vertices"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "edges": {
+              "$ref": "#/$defs/Edges"
+            }
+          },
+          "required": [
+            "edges"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "faces": {
+              "$ref": "#/$defs/Faces"
+            }
+          },
+          "required": [
+            "faces"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "lines": {
+              "$ref": "#/$defs/Lines"
+            }
+          },
+          "required": [
+            "lines"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "areas": {
+              "$ref": "#/$defs/Areas"
+            }
+          },
+          "required": [
+            "areas"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "What a scene draws: rows of a table as vertices, edges, faces, lines, or areas."
+    },
+    "Vertices": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "of": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "The dataset and table drawn.",
+          "tsType": "[data: string, table: string]"
+        },
+        "position": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "$ref": "#/$defs/Expr"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Without one, a point field named `geometry` places rows; rows without either the scene's\nlayout places."
+        },
+        "elevation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Height above the ground; not in a diagram, which is flat."
+        },
+        "radius": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "CSS pixels, or position units with `units`; units in a diagram."
+        },
+        "size": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Width and height: CSS pixels, or position units with `units`; units in a diagram, where a\nblock without a size fits its label and ports."
+        },
+        "marker": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Marker"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A ring around each row's marker in this color."
+        },
+        "ports": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/Port"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "A port on each row for each reference field naming a net, which an `edges` mark of the net\ntable without ends draws. Diagrams only.",
+          "tsType": "[reference: string, port: Port][]"
+        },
+        "contains": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Makes each row a group: it holds the rows of `table` whose reference field names it, and is\ndrawn as a container around them, its label a title in its header. Diagrams only.",
+          "tsType": "[table: string, reference: string]"
+        },
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "visible": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Each row's priority, from its data alone: what matters more draws on top, stays drawn as\na table too large to draw whole thins to the tiles in view, and is labeled first."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Tells two marks of one table apart across scenes."
+        },
+        "pick": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether rows are hovered, clicked, and probed; on by default."
+        },
+        "select": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether a click selects a row; on by default."
+        },
+        "drag": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether pressing a row drags it instead of panning; off by default."
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Label"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Each row's text: a text field, or a label's options."
+        },
+        "shadow": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
+        },
+        "legend": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A legend of the colors at the view's bottom right, under this title: the colormap\nacross its domain, ticked; a cell for each category; or a swatch beside each name of a\nmap's `categories`. The color maps through a colormap with a domain or named\ncategories; a conditional's `otherwise` is read before its cases."
+        }
+      },
+      "required": [
+        "of"
+      ],
+      "description": "Rows drawn as markers where they stand."
+    },
+    "Expr": {
+      "description": "A value for every row of a mark: a constant, a field, view state, or arithmetic of them.",
+      "tsType": "ExprInput",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "description": "A field's name, or a hex color when it starts with `#`."
+        },
+        {
+          "type": "object",
+          "required": [
+            "field"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string"
+            },
+            "of": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "step": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "color"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "color": {
+              "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+              "tsType": "Color",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "enum": [
+                "selected",
+                "hovered",
+                "pointer",
+                "elapsed",
+                "zoom"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "missing"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "missing": {
+              "const": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "neg",
+                "not",
+                "abs",
+                "sqrt",
+                "sin",
+                "cos",
+                "floor",
+                "ln",
+                "exp"
+              ]
+            },
+            "args": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "sub",
+                "mul",
+                "div",
+                "rem",
+                "pow",
+                "min",
+                "max",
+                "lt",
+                "le",
+                "gt",
+                "ge",
+                "eq",
+                "ne",
+                "and",
+                "or"
+              ]
+            },
+            "args": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "is"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "is": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "when",
+            "otherwise"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "when": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "$ref": "#/$defs/Expr"
+                  },
+                  {
+                    "$ref": "#/$defs/Expr"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "otherwise": {
+              "$ref": "#/$defs/Expr"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "colormap",
+            "map"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "colormap": {
+              "$ref": "#/$defs/Expr"
+            },
+            "map": {
+              "$ref": "#/$defs/Colormap"
+            },
+            "domain": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "scale",
+            "range"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "scale": {
+              "$ref": "#/$defs/Expr"
+            },
+            "range": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "domain": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        }
+      ]
+    },
+    "Colormap": {
+      "description": "Colors for a range of values: a catalog name, or your own colors.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ColormapName"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "colors"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "sequential",
+                "diverging",
+                "cyclic"
+              ]
+            },
+            "colors": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+                    "tsType": "Color",
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      {
+                        "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+                        "tsType": "Color",
+                        "type": "string"
+                      }
+                    ],
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                ]
+              },
+              "minItems": 1,
+              "description": "Colors blended in OKLab, each at its `[place, color]` from 0 to 1 or evenly between its neighbors, as in a CSS gradient."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "colors"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "categorical"
+            },
+            "colors": {
+              "type": "array",
+              "items": {
+                "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+                "tsType": "Color",
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 256,
+              "description": "A color per category: category `i` takes color `i`."
+            },
+            "categories": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The categories' names, in order, for a legend."
+            }
+          }
+        }
+      ]
+    },
+    "ColormapKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "sequential",
+          "description": "Low to high."
+        },
+        {
+          "type": "string",
+          "const": "diverging",
+          "description": "Below and above a middle."
+        },
+        {
+          "type": "string",
+          "const": "cyclic",
+          "description": "Around a circle: values wrap."
+        },
+        {
+          "type": "string",
+          "const": "categorical",
+          "description": "Distinct colors for distinct integers."
+        }
+      ],
+      "description": "How a colormap spans values."
+    },
+    "ColormapName": {
+      "description": "A colormap of the catalog.",
+      "type": "string",
+      "enum": [
+        "amber",
+        "amp",
+        "batlow",
+        "cividis",
+        "crest",
+        "deep",
+        "devon",
+        "flare",
+        "grays",
+        "haline",
+        "inferno",
+        "lajolla",
+        "magma",
+        "mako",
+        "oslo",
+        "plasma",
+        "rocket",
+        "thermal",
+        "turku",
+        "viridis",
+        "balance",
+        "berlin",
+        "brbg",
+        "broc",
+        "coolwarm",
+        "cork",
+        "icefire",
+        "managua",
+        "piyg",
+        "puor",
+        "rdbu",
+        "spectral",
+        "vanimo",
+        "vik",
+        "vlag",
+        "phase",
+        "romao",
+        "twilight",
+        "dark2",
+        "okabeito",
+        "paired",
+        "set2",
+        "tab10",
+        "tab20",
+        "tableau10",
+        "turbo"
+      ]
+    },
+    "Size": {
+      "description": "A size: CSS pixels, or position units with `units`.",
+      "tsType": "Size",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Expr"
+        },
+        {
+          "type": "object",
+          "required": [
+            "units"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "units": {
+              "$ref": "#/$defs/Expr"
+            },
+            "atLeast": {
+              "type": "number",
+              "minimum": 0,
+              "description": "CSS pixels it keeps at least, however far the view zooms out."
+            },
+            "atMost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "CSS pixels it keeps at most, however far the view zooms in."
+            }
+          }
+        }
+      ]
+    },
+    "Marker": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "disc",
+            "ellipse",
+            "rectangle",
+            "rounded",
+            "diamond",
+            "block"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "block": {
+                  "type": "object",
+                  "properties": {
+                    "corner": {
+                      "description": "Corner radius, CSS pixels; 4 unless set.",
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "format": "float"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "block"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "gauge": {
+                  "type": "object",
+                  "properties": {
+                    "fill": {
+                      "$ref": "#/$defs/Expr"
+                    },
+                    "shape": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Shape"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "fill"
+                  ]
+                }
+              },
+              "required": [
+                "gauge"
+              ],
+              "additionalProperties": false,
+              "description": "A shape's outline filled to `fill`, from 0 to 1."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "pie": {
+                  "type": "object",
+                  "properties": {
+                    "slices": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/Expr"
+                      }
+                    },
+                    "colors": {
+                      "type": "array",
+                      "items": {
+                        "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+                        "type": "string",
+                        "tsType": "Color"
+                      }
+                    },
+                    "hole": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "format": "float"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "slices",
+                    "colors"
+                  ]
+                }
+              },
+              "required": [
+                "pie"
+              ],
+              "additionalProperties": false,
+              "description": "A circle cut into slices as large as their values."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "icon": {
+                  "type": "object",
+                  "properties": {
+                    "images": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "size": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "format": "uint32",
+                              "minimum": 0
+                            },
+                            "minItems": 2,
+                            "maxItems": 2
+                          },
+                          "rgba": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "format": "uint8",
+                              "minimum": 0,
+                              "maximum": 255
+                            }
+                          }
+                        },
+                        "additionalProperties": false,
+                        "required": [
+                          "size",
+                          "rgba"
+                        ]
+                      }
+                    },
+                    "index": {
+                      "$ref": "#/$defs/Expr"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "images",
+                    "index"
+                  ]
+                }
+              },
+              "required": [
+                "icon"
+              ],
+              "additionalProperties": false,
+              "description": "One of `images` per row, by `index`; npm's `icon` writes it from `ImageData`."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "wgsl": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "inputs": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/Expr"
+                      }
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "source"
+                  ]
+                }
+              },
+              "required": [
+                "wgsl"
+              ],
+              "additionalProperties": false,
+              "description": "WGSL defining `fn marker(f: MarkerFragment) -> MarkerColor`, reading `inputs` as `f.input[i]`."
+            }
+          ]
+        }
+      ],
+      "description": "How a vertex is drawn: a shape, a block, or a marker of its own."
+    },
+    "Shape": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "ellipse",
+          "description": "An ellipse: a circle when its width and height are equal."
+        },
+        {
+          "type": "string",
+          "const": "rectangle",
+          "description": "A rectangle."
+        },
+        {
+          "type": "string",
+          "const": "rounded",
+          "description": "A rectangle with rounded corners."
+        },
+        {
+          "type": "string",
+          "const": "diamond",
+          "description": "A diamond."
+        }
+      ],
+      "description": "A marker's outline."
+    },
+    "Port": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Side"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "side": {
+              "$ref": "#/$defs/Side"
+            },
+            "order": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "Its place among the ports on that side, from the top or the left; in declaration order unless\nset."
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Its name, drawn beside it inside the marker."
+            },
+            "shape": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Shape"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "output": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Whether it drives its net; an input unless set."
+            }
+          },
+          "required": [
+            "side"
+          ]
+        }
+      ],
+      "description": "A vertex's port: where a net its reference field names meets it, on one side of its marker. An\noutput drives its net: layouts rank the net from it, and its wires point away from it."
+    },
+    "Side": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "left",
+          "description": "The left side."
+        },
+        {
+          "type": "string",
+          "const": "right",
+          "description": "The right side."
+        },
+        {
+          "type": "string",
+          "const": "top",
+          "description": "The top."
+        },
+        {
+          "type": "string",
+          "const": "bottom",
+          "description": "The bottom."
+        }
+      ],
+      "description": "A side of a marker."
+    },
+    "Label": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Expr"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "$ref": "#/$defs/Expr",
+              "description": "A text field."
+            },
+            "size": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float",
+              "description": "CSS pixels, or units in a diagram; the theme's font size unless set."
+            },
+            "color": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "priority": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where labels would overlap, the higher shows; the mark's priority unless set."
+            },
+            "maxWidth": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float",
+              "description": "How far a line runs before it wraps: CSS pixels, or units in a diagram."
+            },
+            "font": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The CSS font family list its texts are set in; the theme's font unless set."
+            },
+            "max": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The most labels shown at once, those of highest priority among the rows in view; where they\nwould overlap, fewer."
+            }
+          },
+          "required": [
+            "text"
+          ]
+        }
+      ],
+      "description": "A row's text, placed beside, inside, or along what its mark draws; overlapping labels give way by\npriority, and among equals those already shown keep their place. In a diagram a label scales with\nthe zoom and fades out once too small to read."
+    },
+    "Edges": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "of": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "The dataset and table drawn.",
+          "tsType": "[data: string, table: string]"
+        },
+        "ends": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "tsType": "[from: string, to: string]"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "CSS pixels, or position units with `units`; units in a diagram."
+        },
+        "dash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "flow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Comets flowing along each row at this speed a second: CSS pixels, units in a diagram, or\nposition units where the theme's flow is in units; negative flows backward. A speed that\nchanges carries comets on from where they are."
+        },
+        "bends": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A path field of points each row runs through between its ends."
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Route"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How each row runs between its ends; on the earth geodesic, elsewhere straight, unless set.\nOrthogonal routes run around blocks, bends rounded; diagrams only."
+        },
+        "arrows": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether each row ends in an arrowhead at its second end; a net's at each input it reaches."
+        },
+        "poles": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Draws each row as a pole from its own vertex down to the ground beneath it, on a plane or\nthe earth; it has no ends."
+        },
+        "joins": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Draws each row as a net on a plane or the earth: it joins the vertex rows of `table` whose\nreference field names it, as a star from their middle to each.",
+          "tsType": "[table: string, reference: string]"
+        },
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "visible": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Each row's priority, from its data alone: what matters more draws on top, stays drawn as\na table too large to draw whole thins to the tiles in view, and is labeled first."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Tells two marks of one table apart across scenes."
+        },
+        "pick": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether rows are hovered, clicked, and probed; on by default."
+        },
+        "select": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether a click selects a row; on by default."
+        },
+        "drag": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether pressing a row drags it instead of panning; off by default."
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Label"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Each row's text: a text field, or a label's options."
+        },
+        "shadow": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
+        },
+        "legend": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A legend of the colors at the view's bottom right, under this title: the colormap\nacross its domain, ticked; a cell for each category; or a swatch beside each name of a\nmap's `categories`. The color maps through a colormap with a domain or named\ncategories; a conditional's `otherwise` is read before its cases."
+        }
+      },
+      "required": [
+        "of"
+      ],
+      "description": "Rows drawn as strokes between the vertices two reference fields name; without ends, each row is\na net joining every vertex port whose reference field names it."
+    },
+    "Route": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "straight",
+          "description": "Straight across the screen."
+        },
+        {
+          "type": "string",
+          "const": "geodesic",
+          "description": "Along the great circle, on the earth."
+        },
+        {
+          "type": "string",
+          "const": "orthogonal",
+          "description": "In horizontal and vertical runs around vertices, leaving and entering at their sides, bends\nrounded. Diagrams only."
+        }
+      ],
+      "description": "How an edge runs between its ends."
+    },
+    "Faces": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "of": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "The dataset and table drawn.",
+          "tsType": "[data: string, table: string]"
+        },
+        "corners": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 3,
+          "maxItems": 3,
+          "tsType": "[a: string, b: string, c: string]"
+        },
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "visible": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Each row's priority, from its data alone: what matters more draws on top, stays drawn as\na table too large to draw whole thins to the tiles in view, and is labeled first."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Tells two marks of one table apart across scenes."
+        },
+        "pick": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether rows are hovered, clicked, and probed; on by default."
+        },
+        "select": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether a click selects a row; on by default."
+        },
+        "drag": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether pressing a row drags it instead of panning; off by default."
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Label"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Each row's text: a text field, or a label's options."
+        },
+        "shadow": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
+        },
+        "legend": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A legend of the colors at the view's bottom right, under this title: the colormap\nacross its domain, ticked; a cell for each category; or a swatch beside each name of a\nmap's `categories`. The color maps through a colormap with a domain or named\ncategories; a conditional's `otherwise` is read before its cases."
+        }
+      },
+      "required": [
+        "of"
+      ],
+      "description": "Triangles between three vertices; without a color, each blends its corners' colors."
+    },
+    "Lines": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "of": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "The dataset and table drawn.",
+          "tsType": "[data: string, table: string]"
+        },
+        "trace": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The field each row traces: a path or polygon field, or on a plot a sampled field.\n`geometry` unless set."
+        },
+        "width": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "CSS pixels, or position units with `units`; units in a diagram."
+        },
+        "dash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "flow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Comets flowing along each row at this speed a second, as an edge's flow."
+        },
+        "interpolation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Interpolation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How each row runs between its samples, on a plot."
+        },
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "visible": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Each row's priority, from its data alone: what matters more draws on top, stays drawn as\na table too large to draw whole thins to the tiles in view, and is labeled first."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Tells two marks of one table apart across scenes."
+        },
+        "pick": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether rows are hovered, clicked, and probed; on by default."
+        },
+        "select": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether a click selects a row; on by default."
+        },
+        "drag": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether pressing a row drags it instead of panning; off by default."
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Label"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Each row's text: a text field, or a label's options."
+        },
+        "shadow": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
+        },
+        "legend": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A legend of the colors at the view's bottom right, under this title: the colormap\nacross its domain, ticked; a cell for each category; or a swatch beside each name of a\nmap's `categories`. The color maps through a colormap with a domain or named\ncategories; a conditional's `otherwise` is read before its cases."
+        }
+      },
+      "required": [
+        "of"
+      ],
+      "description": "Rows drawn as lines along the field each traces: a path or polygon field (rings outline their\nareas), or on a plot a sampled field's history. On the earth a line's path bends with the globe."
+    },
+    "Interpolation": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "linear",
+          "description": "Straight from each sample to the next."
+        },
+        {
+          "type": "string",
+          "const": "stepBefore",
+          "description": "Each value holds from the sample before it: steps rise at their samples' ends."
+        },
+        {
+          "type": "string",
+          "const": "stepAfter",
+          "description": "Each value holds until the next sample: steps rise at the next sample."
+        }
+      ],
+      "description": "How a line runs between its samples."
+    },
+    "Areas": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "of": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "The dataset and table drawn.",
+          "tsType": "[data: string, table: string]"
+        },
+        "rings": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The polygon field each row fills: one polygon's rings, or polygons. `geometry` unless set."
+        },
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "visible": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Each row's priority, from its data alone: what matters more draws on top, stays drawn as\na table too large to draw whole thins to the tiles in view, and is labeled first."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Tells two marks of one table apart across scenes."
+        },
+        "pick": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether rows are hovered, clicked, and probed; on by default."
+        },
+        "select": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether a click selects a row; on by default."
+        },
+        "drag": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether pressing a row drags it instead of panning; off by default."
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Label"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Each row's text: a text field, or a label's options."
+        },
+        "shadow": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
+        },
+        "legend": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A legend of the colors at the view's bottom right, under this title: the colormap\nacross its domain, ticked; a cell for each category; or a swatch beside each name of a\nmap's `categories`. The color maps through a colormap with a domain or named\ncategories; a conditional's `otherwise` is read before its cases."
+        }
+      },
+      "required": [
+        "of"
+      ],
+      "description": "Rows drawn as the areas a polygon field covers, cut into triangles off the frame when large; on\nthe earth they bend with the globe. Outline them with a `lines` mark of the same table."
+    },
+    "Layout": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "none",
+            "stress",
+            "layered"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "stress": {
+                  "type": "object",
+                  "properties": {
+                    "gap": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "format": "double"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "stress"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "layered": {
+                  "type": "object",
+                  "properties": {
+                    "flow": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/Direction"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "gap": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "format": "double"
+                    },
+                    "rankGap": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "format": "double"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "layered"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      ],
+      "description": "How the view places vertex rows without positions: a diagram's blocks, or points on a plane or the\nearth, among the rows linked to them. Places hold once given; `arrange` lays out again."
+    },
+    "Direction": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "right",
+          "description": "Toward the right."
+        },
+        {
+          "type": "string",
+          "const": "left",
+          "description": "Toward the left."
+        },
+        {
+          "type": "string",
+          "const": "down",
+          "description": "Toward the bottom."
+        },
+        {
+          "type": "string",
+          "const": "up",
+          "description": "Toward the top."
+        }
+      ],
+      "description": "A direction on screen."
+    },
+    "Theme": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "dark",
+            "light"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "base": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "dark",
+                "light",
+                null
+              ],
+              "description": "The theme these options change; the dark one unless set."
+            },
+            "background": {
+              "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "surface": {
+              "description": "The earth's ground, and a group's container.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "grid": {
+              "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "vertex": {
+              "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "vertexRadius": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "edge": {
+              "description": "`null` draws edges without a theme color in their mark's own.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "edgeWidth": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "line": {
+              "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lineWidth": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "area": {
+              "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "shading": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float",
+              "description": "How much a face turned away from the camera darkens, 0 to 1."
+            },
+            "text": {
+              "description": "Text: labels, axis ticks, and titles.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "font": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A CSS font family list."
+            },
+            "fontSize": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "playhead": {
+              "description": "The line a plot draws at the shown coordinate.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "missing": {
+              "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hover": {
+              "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "selected": {
+              "description": "`null` marks the selection by glow alone.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "glow": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "dim": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "hoverScale": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "dash": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Flow"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How comets flowing along edges and lines look."
+            },
+            "edgeSpacing": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float",
+              "description": "In a diagram, between the lanes of edges joining the same two vertices; orthogonal wires keep\ntwice it apart."
+            },
+            "laneBow": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float",
+              "description": "Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction\nof the edge's length at its middle."
+            },
+            "arrow": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float",
+              "description": "How far an arrowhead reaches past its edge's width."
+            },
+            "halo": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float",
+              "description": "CSS pixels of background around label text."
+            },
+            "groupPadding": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float",
+              "description": "Between a group's members and its outline."
+            },
+            "shadow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Shadow"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How marks that cast shadows cast them."
+            },
+            "atmosphere": {
+              "description": "The air around the globe, where the earth has an atmosphere.",
+              "tsType": "Color",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "night": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float",
+              "description": "How bright the earth's night side stays under daylight, 0 to 1."
+            }
+          }
+        }
+      ],
+      "description": "Colors and sizes marks take unless set: a base theme's name, or options over one. Lengths are CSS\npixels; in a diagram, units, except `glow` and `halo`."
+    },
+    "Flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "description": "A comet's color; its alpha is how strongly a comet covers its stroke.",
+          "tsType": "Color",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "spacing": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float",
+          "description": "Distance between comets."
+        },
+        "length": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float",
+          "description": "How far a comet's tail trails its head."
+        },
+        "width": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float",
+          "description": "How wide a comet's head is, CSS pixels, or units in a diagram; never narrower than its stroke."
+        },
+        "units": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether comets are part of the drawing: their spacing, length, and each row's flow in position\nunits, degrees on the earth, so they zoom with the view and stay where they are on their lines.\nOtherwise they keep their size and speed on screen, and slide along their lines as it zooms."
+        }
+      },
+      "description": "How comets flowing along edges and lines look: each a round head, brightest at its middle,\ntrailing a tail that thins and fades."
+    },
+    "Shadow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "description": "What a shadow darkens toward; its alpha is how dark a shadow at contact gets.",
+          "tsType": "Color",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "light": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number",
+            "format": "float"
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "The direction toward the light, fixed in the world: shadows fall away from it."
+        },
+        "softness": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float",
+          "description": "How much a shadow spreads per unit of a caster's height."
+        },
+        "lift": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float",
+          "description": "CSS pixels flat marks cast from, as if raised."
+        }
+      },
+      "description": "How marks that cast shadows cast them onto the ground and onto faces."
+    },
+    "Controls": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "none",
+              "description": "Answers nothing: a still picture, its camera where the application puts it."
+            },
+            {
+              "type": "string",
+              "const": "inspect",
+              "description": "Rows glow, select, and step with the keys; the camera stays where the application puts it."
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pan": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Dragging the background moves the camera; on unless set."
+            },
+            "zoom": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Zoom"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What zooms: `wheel` (and pinching and the keys, unless set), `modifier` (the wheel only with\nControl or Meta held, as a trackpad's pinch sends it, so the plain wheel scrolls the page), or\n`off`."
+            },
+            "turn": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Dragging with the secondary button, or with Shift, turns and tilts a map or plane; a diagram\nnever turns. On unless set."
+            },
+            "keyboard": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Tab steps through rows and arrows to the nearest row their way, Enter opens and Space selects\nit; otherwise arrows pan, `+` and `-` zoom, Home fits, and Escape clears the selection. On\nunless set."
+            },
+            "hover": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Rows under the pointer glow; on unless set."
+            },
+            "pickRadius": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float",
+              "description": "CSS pixels around the pointer that picks reach, 6 unless set; touch reaches 8 more."
+            },
+            "selectBox": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Dragging the background with Shift selects the rows in a box, instead of turning. Off unless\nset."
+            },
+            "connect": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Dragging from a port, from a vertex with Alt, or an edge off its end draws a connection, told\nas a `connect` event. Off unless set."
+            },
+            "delete": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Delete and Backspace tell a `delete` event with the selection. Off unless set."
+            },
+            "cycle": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Clicking again where nothing moved selects the next row under the point, nearest first, so\nrows drawn over one another can each be selected. Off unless set."
+            },
+            "press": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "description": "Seconds a touch or a pen held still asks for a menu, 0.5 unless set; 0 never does."
+            },
+            "motion": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Motion"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How much the view moves on its own: `system` (as the user's system asks, unless set), `full`,\nor `reduced` (changes apply at once, flights jump, nothing coasts or orbits, labels show\nwithout fading, and comets and what reads `elapsed()` hold still)."
+            }
+          }
+        }
+      ],
+      "description": "How a view answers the pointer and keyboard, and how much it moves on its own: a preset, or\noptions over the defaults."
+    },
+    "Zoom": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "wheel",
+          "description": "The wheel, pinching, and the keys."
+        },
+        {
+          "type": "string",
+          "const": "modifier",
+          "description": "Pinching and the keys, and the wheel only with Control or Meta held, as a trackpad's pinch\nsends it: the plain wheel scrolls the page."
+        },
+        {
+          "type": "string",
+          "const": "off",
+          "description": "Nothing."
+        }
+      ],
+      "description": "What zooms a view."
+    },
+    "Motion": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "system",
+          "description": "As the platform asks: reduced where the user asked their system for less motion."
+        },
+        {
+          "type": "string",
+          "const": "full",
+          "description": "Every motion."
+        },
+        {
+          "type": "string",
+          "const": "reduced",
+          "description": "Only what the user moves: changes apply at once, flights jump, nothing coasts or orbits,\nlabels show without fading, and comets and what reads `elapsed()` hold still."
+        }
+      ],
+      "description": "How much a view moves on its own."
+    },
+    "Data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "patch": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Change"
+          }
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "A dataset: its name and the patch that builds it."
+    },
+    "Change": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "axis": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "unit": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "unit"
+              ]
+            }
+          },
+          "required": [
+            "axis"
+          ],
+          "additionalProperties": false,
+          "description": "Names the axis sampled fields are recorded over, such as `time` in `s`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "put": {
+              "type": "object",
+              "properties": {
+                "table": {
+                  "type": "string"
+                },
+                "ids": {
+                  "$ref": "#/$defs/Ids"
+                },
+                "fields": {
+                  "description": "Fields by name, in the order written.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "description": "A field's values: an array of one kind of value; a reference naming another table's rows by id; a slice of a binary file beside the document; or a typed array's bytes.",
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/$defs/Value"
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "reference": {
+                            "type": "string"
+                          },
+                          "ids": {
+                            "$ref": "#/$defs/Ids"
+                          }
+                        },
+                        "required": [
+                          "reference",
+                          "ids"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "file": {
+                            "type": "string"
+                          },
+                          "dtype": {
+                            "$ref": "#/$defs/Dtype"
+                          },
+                          "offset": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "dtype",
+                          "count"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "dtype": {
+                            "$ref": "#/$defs/Dtype"
+                          },
+                          "bytes": {
+                            "description": "Little-endian bytes: a Uint8Array from JavaScript, an array of numbers in JSON.",
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 255
+                            }
+                          }
+                        },
+                        "required": [
+                          "dtype",
+                          "bytes"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "table",
+                "ids"
+              ]
+            }
+          },
+          "required": [
+            "put"
+          ],
+          "additionalProperties": false,
+          "description": "Replaces a table with these rows and fields, or adds it."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "set": {
+              "type": "object",
+              "properties": {
+                "table": {
+                  "type": "string"
+                },
+                "ids": {
+                  "$ref": "#/$defs/Ids"
+                },
+                "fields": {
+                  "description": "Fields by name, in the order written.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "description": "A field's values: an array of one kind of value; a reference naming another table's rows by id; a slice of a binary file beside the document; or a typed array's bytes.",
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/$defs/Value"
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "reference": {
+                            "type": "string"
+                          },
+                          "ids": {
+                            "$ref": "#/$defs/Ids"
+                          }
+                        },
+                        "required": [
+                          "reference",
+                          "ids"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "file": {
+                            "type": "string"
+                          },
+                          "dtype": {
+                            "$ref": "#/$defs/Dtype"
+                          },
+                          "offset": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "dtype",
+                          "count"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "dtype": {
+                            "$ref": "#/$defs/Dtype"
+                          },
+                          "bytes": {
+                            "description": "Little-endian bytes: a Uint8Array from JavaScript, an array of numbers in JSON.",
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 255
+                            }
+                          }
+                        },
+                        "required": [
+                          "dtype",
+                          "bytes"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "table",
+                "ids"
+              ]
+            }
+          },
+          "required": [
+            "set"
+          ],
+          "additionalProperties": false,
+          "description": "Writes fields for these rows: rows with known ids change, others are added, and fields left\nout keep their values."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "remove": {
+              "type": "object",
+              "properties": {
+                "table": {
+                  "type": "string"
+                },
+                "ids": {
+                  "$ref": "#/$defs/Ids"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "table",
+                "ids"
+              ]
+            }
+          },
+          "required": [
+            "remove"
+          ],
+          "additionalProperties": false,
+          "description": "Removes the rows with these ids."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "append": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "description": "One axis coordinate, or several.",
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "format": "double"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "format": "double"
+                      }
+                    }
+                  ]
+                },
+                "table": {
+                  "type": "string"
+                },
+                "fields": {
+                  "description": "Fields by name, in the order written.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "description": "A field's values: an array of one kind of value; a reference naming another table's rows by id; a slice of a binary file beside the document; or a typed array's bytes.",
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/$defs/Value"
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "reference": {
+                            "type": "string"
+                          },
+                          "ids": {
+                            "$ref": "#/$defs/Ids"
+                          }
+                        },
+                        "required": [
+                          "reference",
+                          "ids"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "file": {
+                            "type": "string"
+                          },
+                          "dtype": {
+                            "$ref": "#/$defs/Dtype"
+                          },
+                          "offset": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "file",
+                          "dtype",
+                          "count"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "dtype": {
+                            "$ref": "#/$defs/Dtype"
+                          },
+                          "bytes": {
+                            "description": "Little-endian bytes: a Uint8Array from JavaScript, an array of numbers in JSON.",
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 255
+                            }
+                          }
+                        },
+                        "required": [
+                          "dtype",
+                          "bytes"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "at",
+                "table",
+                "fields"
+              ]
+            }
+          },
+          "required": [
+            "append"
+          ],
+          "additionalProperties": false,
+          "description": "Records a frame at each axis coordinate of `at`: for each field, a value per row at every\ncoordinate, frame-major."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "forget": {
+              "type": "object",
+              "properties": {
+                "before": {
+                  "type": "number",
+                  "format": "double"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "before"
+              ]
+            }
+          },
+          "required": [
+            "forget"
+          ],
+          "additionalProperties": false,
+          "description": "Forgets every sampled field's frames before axis coordinate `before`."
+        }
+      ],
+      "description": "One change of a patch, named by the method that makes it."
+    },
+    "Ids": {
+      "description": "Row ids: a count naming rows 0..n, numbers or texts (null leaves a reference unwired), or a typed array's bytes.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dtype": {
+              "$ref": "#/$defs/Dtype"
+            },
+            "bytes": {
+              "description": "Little-endian bytes: a Uint8Array from JavaScript, an array of numbers in JSON.",
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              }
+            }
+          },
+          "required": [
+            "dtype",
+            "bytes"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Id": {
+      "description": "A row's id: a whole number from 0, or a text. A number above 2^53 - 1 is written as its decimal text, which names the same row.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "Dtype": {
+      "type": "string",
+      "enum": [
+        "f32le",
+        "f64le",
+        "i32le",
+        "u32le",
+        "u64le",
+        "u8"
+      ],
+      "description": "How a slice's or a typed array's bytes hold values: little endian; `u8` holds booleans, nonzero\ntrue."
+    },
+    "Value": {
+      "description": "One value: a number, boolean, text, or geometry; null, or an empty geometry, is missing.",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/Geometry"
+        }
+      ]
+    },
+    "Geometry": {
+      "description": "A point `[x, y]` (a third coordinate is read past), or a list of geometries one level shallower: a path, its parts, or polygons.",
+      "anyOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 3
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Geometry"
+          }
+        }
+      ]
+    },
+    "Patch": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Change"
+      }
+    },
+    "Query": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "of": {
+          "type": "string",
+          "description": "The table read."
+        },
+        "where": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Keeps the rows it is true for."
+        },
+        "sort": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "$ref": "#/$defs/Expr"
+              },
+              {
+                "$ref": "#/$defs/Order"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Keys to sort by, each after those before it; rows a key reads nothing for come last, and rows\nall keys order alike keep their order."
+        },
+        "offset": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "The kept rows skipped first.",
+          "default": 0
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "The most rows read; a limit picks them in linear time before sorting only those."
+        },
+        "select": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Expr"
+          },
+          "description": "Fields to read by name: a field as it is, anything else as numbers. Every field unless set."
+        },
+        "at": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "The axis coordinate sampled fields are read at; their last frame unless set."
+        }
+      },
+      "required": [
+        "of"
+      ],
+      "description": "The rows of a table to read back, run through the expressions marks draw with."
+    },
+    "Order": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "ascending",
+          "description": "Least first."
+        },
+        {
+          "type": "string",
+          "const": "descending",
+          "description": "Greatest first."
+        }
+      ],
+      "description": "Which way a sort runs; rows a key reads nothing for come last either way."
+    },
+    "Camera": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "center": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                }
+              ],
+              "description": "Longitude, latitude, and elevation on the earth; x, y, and elevation on a plane or a\ndiagram. In JSON, `[x, y]` looks at the ground."
+            },
+            "zoom": {
+              "type": "number",
+              "format": "double",
+              "description": "On the earth the web mercator level; elsewhere, log₂ of pixels per unit."
+            },
+            "pitch": {
+              "type": "number",
+              "format": "double",
+              "description": "Degrees from looking straight down, up to 75; 0 in a diagram."
+            },
+            "bearing": {
+              "type": "number",
+              "format": "double",
+              "description": "Degrees clockwise from north, or from up on a plane; 0 in a diagram."
+            }
+          },
+          "required": [
+            "center",
+            "zoom",
+            "pitch",
+            "bearing"
+          ],
+          "description": "On the earth, a plane, or a diagram: the point looked at and turned about, how far in, and how\ntilted and turned. A diagram is always seen from straight above, upright."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "x": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "The axis range shown."
+            },
+            "y": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "number",
+                "format": "double"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "The value range shown, or none to fit what is in view."
+            }
+          },
+          "required": [
+            "x"
+          ],
+          "description": "On a plot: the axis range across, and the value range up, or none to fit the values in view."
+        }
+      ],
+      "description": "Where a view looks."
+    },
+    "Fit": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "all",
+          "description": "Everything drawn."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "rows": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Row"
+              }
+            }
+          },
+          "required": [
+            "rows"
+          ],
+          "additionalProperties": false,
+          "description": "These rows."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reveal": {
+              "$ref": "#/$defs/Row"
+            }
+          },
+          "required": [
+            "reveal"
+          ],
+          "additionalProperties": false,
+          "description": "Brings this row into view, keeping the zoom."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bounds": {
+              "type": "object",
+              "properties": {
+                "min": {
+                  "description": "The least corner.",
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "max": {
+                  "description": "The greatest corner.",
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                }
+              },
+              "required": [
+                "min",
+                "max"
+              ]
+            }
+          },
+          "required": [
+            "bounds"
+          ],
+          "additionalProperties": false,
+          "description": "The box from `min` to `max`: x, y, and elevation."
+        }
+      ],
+      "description": "What a view's fit frames."
+    },
+    "Row": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string",
+          "description": "The dataset's name."
+        },
+        "table": {
+          "type": "string",
+          "description": "The table's name."
+        },
+        "id": {
+          "$ref": "#/$defs/Id",
+          "description": "The row's id in the table."
+        }
+      },
+      "required": [
+        "data",
+        "table",
+        "id"
+      ],
+      "description": "A row of a table in a dataset. It survives any change that keeps the names and the id."
+    },
+    "Budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Bytes the data every view of the `Gpu` draws may take on the GPU: its pages, and each view's\nrows. A view draws a table too large for its share through the tiles the camera asks for, so\nwhat it draws always fits; pages no view draws stay cached in the room left, the least\nrecently drawn going first. By default half the device's largest storage buffer. The pool of\npages grows as data needs it, and never shrinks: set the budget before data draws."
+        },
+        "uploadPerFrame": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Bytes uploaded per frame at most; larger data streams in over frames."
+        }
+      },
+      "required": [
+        "bytes",
+        "uploadPerFrame"
+      ],
+      "description": "How much GPU memory latkit uses."
+    },
+    "Shot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "size": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Width and height in pixels."
+        },
+        "scale": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float",
+          "description": "Pixels per CSS pixel: views lay out `size / scale` CSS pixels; 1 unless set."
+        },
+        "panels": {
+          "$ref": "#/$defs/Panels",
+          "description": "Each view's part of the picture, `[x, y, width, height]` as fractions; the whole by default.",
+          "default": []
+        },
+        "transparent": {
+          "type": "boolean",
+          "description": "Whether alpha is kept where the themes' backgrounds would be.",
+          "default": false
+        },
+        "deadline": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "Seconds a picture, or a video frame, may go without progress."
+        },
+        "elapsed": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "A still's effect time in seconds, where elapsed time and flowing comets read it."
+        }
+      },
+      "required": [
+        "size"
+      ],
+      "description": "A picture of views: its size, and how they lay out and draw in it."
+    },
+    "Panels": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "number",
+          "format": "float"
+        },
+        "minItems": 4,
+        "maxItems": 4
+      },
+      "description": "Where each of several views draws in a target: x, y, width, and height as fractions of it, a\npart per view, in order; a later part draws over an earlier one. None given is one view filling\nthe target.\n\n```\nuse latkit::Panels;\nlet map_over_plot = Panels::from([[0.0, 0.0, 1.0, 0.8], [0.0, 0.8, 1.0, 0.2]]);\nassert_eq!(map_over_plot.len(), 2);\nassert_eq!(Panels::default().len(), 1);\n```"
+    }
+  }
+}

@@ -10,6 +10,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[serde(transparent)]
 pub struct Name(Arc<str>);
 
+/// A name is a text.
+impl schemars::JsonSchema for Name {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Name".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string" })
+    }
+}
+
 impl Name {
     /// The name's text.
     pub fn as_str(&self) -> &str {
@@ -91,9 +106,9 @@ impl fmt::Debug for Name {
     }
 }
 
-/// A row's identity within its table: a number or a text.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-#[serde(untagged)]
+/// A row's identity within its table: a number or a text. A number above 2^53 − 1 serializes as
+/// decimal text, which names the same row, since JSON readers such as JavaScript's round it.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Id {
     /// A numeric id.
     Number(u64),
@@ -106,6 +121,19 @@ impl Id {
         match self {
             Id::Number(n) => IdRef::Number(*n),
             Id::Text(t) => IdRef::Text(t),
+        }
+    }
+}
+
+/// The largest whole number every JSON reader holds exactly.
+const SAFE: u64 = (1 << 53) - 1;
+
+impl serde::Serialize for Id {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Id::Number(n) if *n <= SAFE => serializer.serialize_u64(*n),
+            Id::Number(n) => serializer.collect_str(n),
+            Id::Text(t) => serializer.serialize_str(t),
         }
     }
 }
@@ -193,7 +221,9 @@ impl IdRef<'_> {
 }
 
 /// A row of a table in a dataset. It survives any change that keeps the names and the id.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct Row {
     /// The dataset's name.
     pub data: Name,

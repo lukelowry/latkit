@@ -34,9 +34,13 @@ function grid(): { data: Data; buses: number; lines: number } {
   }
   const from: number[] = [];
   const to: number[] = [];
+  const link = (a: number, b: number) => {
+    from.push(a);
+    to.push(b);
+  };
   for (let i = 0; i < buses; i++) {
-    if (i % SIDE < SIDE - 1) (from.push(i), to.push(i + 1));
-    if (i + SIDE < buses) (from.push(i), to.push(i + SIDE));
+    if (i % SIDE < SIDE - 1) link(i, i + 1);
+    if (i + SIDE < buses) link(i, i + SIDE);
   }
   let data = new Data('grid').apply(
     new Patch()
@@ -185,7 +189,8 @@ export default function page(stage: Stage): void {
     if (!rows.length) readout.textContent = 'Click a bus, or Shift-drag a box.';
     else if (rows.length === 1) {
       const row = rows[0]!;
-      readout.textContent = `Bus ${row.id}: ${data.get('Bus', row.id, 'kv')} kV, ${vm(row)?.toFixed(3) ?? '–'} pu`;
+      const kv = data.get('Bus', row.id, 'kv') as number | null;
+      readout.textContent = `Bus ${row.id}: ${kv ?? '–'} kV, ${vm(row)?.toFixed(3) ?? '–'} pu`;
     } else {
       const values = rows.map(vm).filter((v): v is number => v !== null);
       readout.textContent = `${rows.length} buses: ${Math.min(...values).toFixed(3)} – ${Math.max(...values).toFixed(3)} pu`;

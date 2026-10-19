@@ -1,7 +1,7 @@
-/** Example-only numerical checks. Bundle with esbuild and run with node --test; no wasm build. */
+/** The body's numerical checks, run by vitest; no wasm build. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import { test } from 'vitest';
 import { Body, ROOM, STEP, type Controls } from './body.js';
 import { fracture } from './fracture.js';
 import { loadMesh } from './mesh.js';
@@ -26,7 +26,7 @@ function bounded(body: Body): void {
   }
 }
 
-await test('fracture makes 24 closed, outward solids with normalized surface bindings', () => {
+test('fracture makes 24 closed, outward solids with normalized surface bindings', () => {
   const pieces = fracture(mesh);
   assert.equal(pieces.length, 24);
   let volume = 0;
@@ -73,7 +73,7 @@ function rest(body: Body, settings = controls, seconds = 10): void {
   for (let steps = 0; !body.asleep && steps < seconds / STEP; steps++) body.advance(STEP, settings);
 }
 
-await test('body rests where it lands, hops at once, and ignores presses in the air', () => {
+test('body rests where it lands, hops at once, and ignores presses in the air', () => {
   const body = new Body(mesh);
   body.drop(true);
   run(body, 6);
@@ -100,7 +100,7 @@ await test('body rests where it lands, hops at once, and ignores presses in the 
   assert.equal(body.state, 'resting', 'it rests again after landing');
 });
 
-await test('stands at any firmness, stays down once toppled, and wakes when poked', () => {
+test('stands at any firmness, stays down once toppled, and wakes when poked', () => {
   // Creeping as fast as before, a body would never count as still, and never rest.
   for (const firmness of [0, 0.45, 1]) {
     const body = new Body(mesh);
@@ -127,7 +127,7 @@ await test('stands at any firmness, stays down once toppled, and wakes when poke
   assert.equal(body.state, 'toppled');
 });
 
-await test('pop gathers under zero, Earth, and high gravity, without a mesh snap', () => {
+test('pop gathers under zero, Earth, and high gravity, without a mesh snap', () => {
   for (const gravity of [0, 9.81, 24.8]) {
     const body = new Body(mesh);
     body.pop();
@@ -162,7 +162,7 @@ await test('pop gathers under zero, Earth, and high gravity, without a mesh snap
   }
 });
 
-await test('pop lifts every piece and visibly separates before gathering', () => {
+test('pop lifts every piece and visibly separates before gathering', () => {
   const body = new Body(mesh);
   run(body, 2);
   body.pop();
@@ -191,7 +191,7 @@ await test('pop lifts every piece and visibly separates before gathering', () =>
   assert.ok(!body.burst.active, 'the early gather request completes after separation');
 });
 
-await test('large grabs, cancellation, and material extremes stay bounded', () => {
+test('large grabs, cancellation, and material extremes stay bounded', () => {
   const body = new Body(mesh);
   run(body, 1);
   let ear = 0;
@@ -210,7 +210,7 @@ await test('large grabs, cancellation, and material extremes stay bounded', () =
     }
 });
 
-await test('held squash releases, and a gentle pop of an inflated body completes', () => {
+test('held squash releases, and a gentle pop of an inflated body completes', () => {
   const body = new Body(mesh);
   run(body, 2);
   body.squash(true);

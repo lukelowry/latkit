@@ -56,6 +56,9 @@ struct Frames {
     next: u64,
     scheduled: Option<i32>,
     tick: Option<Closure<dyn FnMut(f64)>>,
+    /// The page's `prefers-reduced-motion`, which each view is told, and what draws again when it
+    /// changes; none in a worker.
+    reduced: Option<(web_sys::MediaQueryList, Closure<dyn FnMut()>)>,
 }
 
 thread_local! {
@@ -76,6 +79,7 @@ fn frames_of(gpu: &Gpu) -> Rc<RefCell<Frames>> {
             next: 0,
             scheduled: None,
             tick: None,
+            reduced: None,
         }));
         let weak = Rc::downgrade(&frames);
         frames.borrow_mut().tick = Some(Closure::new(move |now: f64| {
@@ -83,6 +87,18 @@ fn frames_of(gpu: &Gpu) -> Rc<RefCell<Frames>> {
                 tick(&frames, now);
             }
         }));
+        if let Some(Scope::Window(window)) = scope()
+            && let Ok(Some(query)) = window.match_media("(prefers-reduced-motion: reduce)")
+        {
+            let weak = Rc::downgrade(&frames);
+            let changed: Closure<dyn FnMut()> = Closure::new(move || {
+                if let Some(frames) = weak.upgrade() {
+                    schedule(&frames);
+                }
+            });
+            query.set_onchange(Some(changed.as_ref().unchecked_ref()));
+            frames.borrow_mut().reduced = Some((query, changed));
+        }
         all.push(frames.clone());
         frames
     })
@@ -131,6 +147,10 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
         let views = f.views.iter().filter_map(|v| v.upgrade().map(PageView)).collect::<Vec<_>>();
         (f.gpu.clone(), canvases, views)
     };
+    let reduced = frames.borrow().reduced.as_ref().is_some_and(|(query, _)| query.matches());
+    for view in &views {
+        view.0.borrow_mut().view.set_reduced_motion(reduced);
+    }
     let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit") });
     let shown: Vec<wgpu::SurfaceTexture> =
         canvases.iter().filter_map(|c| c.borrow_mut().record(&mut encoder, now / 1000.0)).collect();
@@ -299,7 +319,7 @@ impl PageView {
     /// Whether it wants to draw: it changed or moves, and no shot holds it.
     fn wants_frame(&self) -> bool {
         let held = self.0.borrow();
-        !held.view.lent() && (held.due || held.view.needs_render())
+        !held.view.lent() && (held.due || held.view.wants_frame())
     }
 
     /// Whether a shot holds it.
@@ -508,7 +528,7 @@ impl Painted {
                 }
                 let (panel, _) = self.textures[i].as_ref().expect("made");
                 let mut held = self.views[i].0.borrow_mut();
-                if !held.view.lent() && (fresh || self.due || held.due || held.view.needs_render()) {
+                if !held.view.lent() && (fresh || self.due || held.due || held.view.wants_frame()) {
                     let target = panel.create_view(&wgpu::TextureViewDescriptor::default());
                     let frame = Frame { target: &target, format, size: rect.size, pixel_ratio: ratio, time };
                     held.view.render(encoder, &frame);

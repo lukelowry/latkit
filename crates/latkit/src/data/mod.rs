@@ -6,24 +6,36 @@ mod bytes;
 mod column;
 #[allow(clippy::module_inception)]
 mod data;
+mod describe;
+mod forms;
 mod geometry;
 mod ids;
 // JSON documents fetch their slices through a host.
 #[cfg(feature = "gpu")]
 mod json;
 mod name;
+mod ordered;
 mod patch;
+// Queries read rows back through the expressions marks draw with.
+#[cfg(feature = "gpu")]
+mod query;
 mod samples;
 mod table;
 mod text;
 mod values;
 
 pub use data::Data;
+pub use describe::{Description, Envelope, FieldDescription, TableDescription};
 pub use ids::Ids;
 pub use name::{Id, Name, Row};
 pub use patch::Patch;
 pub use table::Table;
 pub use values::{Kind, Value, Values};
+#[cfg(feature = "gpu")]
+pub use {
+    json::Patches,
+    query::{Order, Query},
+};
 
 // What the GPU side reads of the data.
 #[cfg(feature = "gpu")]

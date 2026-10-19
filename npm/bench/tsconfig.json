@@ -13,5 +13,5 @@
     "types": ["node"],
     "lib": ["ES2024", "DOM", "DOM.Iterable", "ESNext.Disposable"]
   },
-  "include": ["*.ts", "page", "old"]
+  "include": ["*.ts", "page"]
 }

@@ -126,6 +126,16 @@ impl Column {
         Ok(Column { len, pages: pages.into(), like: self.like.clone() })
     }
 
+    /// Every value in row order, as one run: a single page's without copying.
+    pub(crate) fn values(&self) -> Values {
+        if let [page] = &self.pages[..] {
+            return page.values.clone();
+        }
+        let sources: Vec<&Values> = std::iter::once(&self.like).chain(self.pages.iter().map(|p| &p.values)).collect();
+        let pick = |i: usize| -> Pick { Some((1 + (i >> PAGE_BITS), i & PAGE_MASK)) };
+        Values::assemble(&sources, self.len, pick).expect("one storage")
+    }
+
     /// The column of rows `rows`, in that order. Leading pages whose rows are unchanged keep their ids.
     pub(crate) fn gather(&self, rows: &[usize]) -> Column {
         let kept = rows.iter().enumerate().take_while(|&(i, &r)| i == r).count();

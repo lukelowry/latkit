@@ -23,7 +23,8 @@ pub struct Port {
 }
 
 /// A side of a marker.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum Side {
     /// The left side.
     Left,

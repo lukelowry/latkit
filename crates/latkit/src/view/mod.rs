@@ -56,7 +56,7 @@ use rig::Rig;
 use crate::derive::{Derivations, Derived};
 use crate::expr::compile::Deps;
 use crate::scene::mark::Context;
-use crate::{Data, Gpu, Result, Row, Scene, Space};
+use crate::{Data, Gpu, Name, Patch, Pending, Result, Row, Scene, Space};
 
 /// A frame to draw: where, a texture view of a format and size in physical pixels at a ratio of
 /// physical pixels to CSS pixels, and when.
@@ -132,6 +132,13 @@ pub struct View {
     waiting: Waiting,
     /// The format and samples per pixel the scene's pipelines were made for.
     pipelines_made: Option<(wgpu::TextureFormat, u32)>,
+    /// Who asked for the arranging under way.
+    arranging: Vec<crate::Resolver<Vec<(Name, Patch)>>>,
+    /// Whether the platform asks for reduced motion, which `Motion::System` follows.
+    reduced_motion: bool,
+    /// What input needs, a stage made on each frame after the scene's first: the hover's, then the
+    /// intents'.
+    input_pipelines: std::collections::VecDeque<Vec<crate::gpu::pipelines::Variant>>,
     /// The shadow map and the face normals, made from what they read.
     shadow_map: Derived<()>,
     normals: Derived<()>,
@@ -187,6 +194,9 @@ impl View {
             told_lost: false,
             waiting: Waiting::default(),
             pipelines_made: None,
+            arranging: Vec::new(),
+            reduced_motion: false,
+            input_pipelines: std::collections::VecDeque::new(),
             shadow_map: Derived::default(),
             normals: Derived::default(),
             timer: timer::Timer::new(&gpu.0.device, &gpu.0.queue),
@@ -221,8 +231,9 @@ impl View {
         let mut inner = gpu.0.lock();
         // A mark compiles again when its theme or space changed.
         let context_changed = scene.theme != self.scene.theme
-            || std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
-        let context = Context { theme: &scene.theme, space: &scene.space };
+            || std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space)
+            || matches!(scene.layout, crate::Layout::None) != matches!(self.scene.layout, crate::Layout::None);
+        let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
         // Compile every new or changed mark before changing anything.
         let mut fresh = Vec::with_capacity(scene.marks.len());
         for (i, mark) in scene.marks.iter().enumerate() {
@@ -236,7 +247,7 @@ impl View {
             fresh.push(Some(shown));
         }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
-        let easing = !scene.ease.is_zero();
+        let easing = !scene.ease.is_zero() && self.moves_with(&scene.controls);
         self.marks = scene
             .marks
             .iter()
@@ -308,7 +319,7 @@ impl View {
                 i
             }
         };
-        let context = Context { theme: &self.scene.theme, space: &self.scene.space };
+        let context = Context { theme: &self.scene.theme, space: &self.scene.space, layout: &self.scene.layout };
         for shown in &mut self.marks {
             if shown.stale(&self.sources[at]) {
                 shown.failure = shown.compile(&self.sources, context, inner).err().map(|error| (error, false));
@@ -399,10 +410,38 @@ impl View {
         }
     }
 
+    /// Tells the view whether the platform asks for reduced motion, as a browser's
+    /// `prefers-reduced-motion` does: `Motion::System` follows it. A canvas tells it itself.
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        if reduced != self.reduced_motion {
+            self.reduced_motion = reduced;
+            self.wake();
+        }
+    }
+
+    /// Whether the view moves on its own: eases, flights, coasting, orbits, label fades, comets, and
+    /// what reads `elapsed()`.
+    pub(super) fn moves(&self) -> bool {
+        self.moves_with(&self.scene.controls)
+    }
+
+    fn moves_with(&self, controls: &crate::Controls) -> bool {
+        match controls.motion {
+            crate::Motion::Full => true,
+            crate::Motion::Reduced => false,
+            crate::Motion::System => !self.reduced_motion,
+        }
+    }
+
+    /// What changes ease over: the scene's ease, or nothing where the view does not move on its own.
+    pub(super) fn ease(&self) -> Duration {
+        if self.moves() { self.scene.ease } else { Duration::ZERO }
+    }
+
     /// Eases to `camera` over twice the scene's ease, on the view's clock.
     pub fn fly(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
-            let seconds = (self.scene.ease.max(Duration::from_millis(1)) * 2).as_secs_f64();
+            let seconds = (self.ease().max(Duration::from_millis(1)) * 2).as_secs_f64();
             self.rig.fly(self.camera, camera, self.clock.now(), seconds);
             self.wake();
         }
@@ -422,11 +461,26 @@ impl View {
         view.surface(point.map(f64::from)).map(|w| view.position(w))
     }
 
-    /// Lays every vertex without a position out again by the diagram's layout. Places a layout gave
-    /// otherwise hold, so rows added later are placed around the rest.
-    pub fn arrange(&mut self) {
-        self.derived.sheet.arrange();
+    /// Lays every vertex row without a position out again by the scene's layout: a diagram's blocks,
+    /// or the points of a plane or the earth. Places a layout gave otherwise hold, so rows added later
+    /// are placed around the rest. Once the layout lands, the answer is a patch for each dataset
+    /// writing each row laid out into its mark's position fields (or its point `geometry`); applied,
+    /// the places are the data's own. A mark whose position is not fields is left out.
+    pub fn arrange(&mut self) -> Pending<Vec<(Name, Patch)>> {
+        let (pending, resolver) = Pending::new();
+        self.arranging.push(resolver);
+        self.derived.arrange(matches!(self.scene.space, Space::Diagram(_)));
         self.wake();
+        pending
+    }
+
+    /// Answers the arranging asked for, once its layout landed.
+    fn answer_arranging(&mut self) {
+        let Some(placed) = self.derived.take_arranged() else { return };
+        let patches = arranged(&self.scene, placed);
+        for resolver in self.arranging.drain(..) {
+            resolver.resolve(Ok(patches.clone()));
+        }
     }
 
     /// Frames what `fit` names on the next frame, keeping pitch and bearing.
@@ -505,9 +559,12 @@ impl View {
             let style = m.mark.style();
             self.source(&style.data).and_then(|d| d.table(&style.table)).map_or(0, |t| t.len() as u64)
         };
+        let [tiles, tiles_loading] = self.derived.tiles.counts();
         Stats {
             rows: self.marks.iter().map(rows).sum(),
             drawn: self.marks.iter().map(|m| u64::from(m.rows)).sum(),
+            tiles,
+            tiles_loading,
             uploading: inner.arena.pending(),
             resident: inner.arena.resident(),
             budget: inner.budget.bytes.min(inner.arena.capacity()),
@@ -563,9 +620,13 @@ impl View {
     /// Whether a frame would differ from the last one: something changed, moves, or streams in, or
     /// work the view waited on landed. While it only waits, it needs none: what it waits on wakes it.
     pub fn needs_render(&self) -> bool {
+        // What moves on its own, only while the view moves on its own: under reduced motion an orbit,
+        // comets, and what reads `elapsed()` hold still.
+        let moves = self.moves();
         self.changed
             || self.signal.landed()
-            || self.rig.moving()
+            || self.rig.easing()
+            || (self.rig.orbit != 0.0 && moves)
             || self.fitting.due()
             || self.probing.due()
             || self.queries.due()
@@ -573,9 +634,17 @@ impl View {
             || self.labels.fading(self.clock.now())
             // A mark evaluates once its columns synced: until then, the pages they wait for wake it.
             || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
-            || self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME)))
-            || self.flowing()
+            || (moves && self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME))))
+            || (moves && self.flowing())
             || self.gpu.0.lock().arena.uploading()
+    }
+
+    /// Whether the view wants a frame: one that would differ ([`needs_render`](View::needs_render)),
+    /// or one that looks the same but goes on with what input needs, making its pipelines or noticing
+    /// a touch held long enough for a menu. A loop drawing on demand draws while this holds, as a
+    /// canvas does; a video holds the frames that only want to go on.
+    pub fn wants_frame(&self) -> bool {
+        self.needs_render() || !self.input_pipelines.is_empty() || self.holding()
     }
 
     /// Whether comets travel along a mark's rows: one that flows draws, and the theme shows them.
@@ -690,4 +759,45 @@ impl std::fmt::Debug for View {
             .field("at", &self.at)
             .finish_non_exhaustive()
     }
+}
+
+/// The patches writing rows laid out into the data, by dataset: each row's place into the position
+/// fields of the vertex mark drawing its table, or its point geometry.
+fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<(Name, Patch)> {
+    /// A table's rows laid out: its dataset and name, their ids, and their places.
+    type Laid = ((Name, Name), Vec<crate::Id>, Vec<[f64; 2]>);
+    let mut tables: Vec<Laid> = Vec::new();
+    for (row, place) in placed {
+        let key = (row.data, row.table);
+        match tables.iter_mut().find(|(k, ..)| *k == key) {
+            Some((_, ids, places)) => {
+                ids.push(row.id);
+                places.push(place);
+            }
+            None => tables.push((key, vec![row.id], vec![place])),
+        }
+    }
+    let mut patches: Vec<(Name, Patch)> = Vec::new();
+    for ((data, table), ids, places) in tables {
+        let mark = scene.marks.iter().find_map(|m| match m {
+            crate::Mark::Vertices(v) if v.style.data == data && v.style.table == table => Some(v),
+            _ => None,
+        });
+        let Some(mark) = mark else { continue };
+        let written = crate::Table::new(table, ids);
+        let written = match &mark.position {
+            None => written.field(crate::scene::mark::GEOMETRY, places),
+            Some([x, y]) => match (x.field_name(), y.field_name()) {
+                (Some(x), Some(y)) => written
+                    .field(x, places.iter().map(|p| p[0]).collect::<Vec<_>>())
+                    .field(y, places.iter().map(|p| p[1]).collect::<Vec<_>>()),
+                _ => continue,
+            },
+        };
+        match patches.iter_mut().find(|(name, _)| *name == data) {
+            Some((_, patch)) => *patch = std::mem::take(patch).set(written),
+            None => patches.push((data, Patch::new().set(written))),
+        }
+    }
+    patches
 }

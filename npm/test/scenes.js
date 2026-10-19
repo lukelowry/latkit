@@ -2,7 +2,7 @@
 // Scenes in their JSON form, checked twice: TypeScript checks them against `Scene`, and latkit's
 // `tests/scenes.rs` decodes each one. The array below must stay JSON.
 
-/** @type {import('../src/scene.js').Scene[]} */
+/** @type {import('../src/forms.js').Scene[]} */
 export default [
   { "space": "plane" },
   { "space": "earth", "ease": 0 },

@@ -64,8 +64,10 @@ const DYNAMIC: &[&str] = &["mark", "eye"];
 
 /// The values each pipeline constant is made with, as constants of `lib/types.wesl`: the primitive a
 /// probe reads, and the path a stroke reads.
-const OVERRIDES: &[(&str, &[&str])] =
-    &[("PROBED", &["POINTS", "STROKES", "TRIANGLES"]), ("PATH", &["PATH_ENDS", "PATH_TRACE", "PATH_GEOMETRY"])];
+const OVERRIDES: &[(&str, &[&str])] = &[
+    ("PROBED", &["POINTS", "STROKES", "TRIANGLES"]),
+    ("PATH", &["PATH_ENDS", "PATH_TRACE", "PATH_GEOMETRY", "PATH_POLES"]),
+];
 
 pub(crate) fn generate() {
     let root = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("shaders");

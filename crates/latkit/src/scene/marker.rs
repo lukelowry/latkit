@@ -48,10 +48,12 @@ pub enum Marker {
 }
 
 /// A marker's outline.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum Shape {
     /// An ellipse: a circle when its width and height are equal.
     #[default]
+    #[serde(alias = "disc")]
     Ellipse,
     /// A rectangle.
     Rectangle,

@@ -38,6 +38,13 @@ export const pages: readonly Page[] = [
     load: () => import('./telemetry/page.js'),
   },
   {
+    id: 'signals',
+    title: 'Signals',
+    summary:
+      'One record in two views on one canvas: a lattice standing on poles as high as its signals, and the signals traced, under one playhead.',
+    load: () => import('./signals/page.js'),
+  },
+  {
     id: 'diagram',
     title: 'Diagram studio',
     summary:

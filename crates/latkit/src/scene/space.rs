@@ -61,7 +61,8 @@ pub struct Earth {
 }
 
 /// How the earth is drawn.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum Projection {
     /// Web mercator.
     #[default]
@@ -152,7 +153,7 @@ impl Default for Plane {
 /// A sheet for diagrams, flat and seen from straight above: the camera pans and zooms. Positions are
 /// units with y down, and every length is a unit, a CSS pixel at zoom 0 (sizes, padding, ports,
 /// strokes, text, and the theme's), except glow, halo, and pick radius. Zooming scales one fixed
-/// picture. Only a diagram has ports, groups, nets, orthogonal routes, and layouts.
+/// picture. Only a diagram has ports, groups, nets, and orthogonal routes; it lays out blocks.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Diagram {
     /// The grid under the marks.
@@ -218,7 +219,8 @@ impl Default for Axis {
 }
 
 /// How an axis writes its tick values.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum Format {
     /// Fixed decimals, scientific past a million or below a ten-thousandth.
     #[default]

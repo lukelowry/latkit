@@ -1,7 +1,8 @@
 //! Layouts place a diagram's vertices its data gives no position: layered in ranks along the flow,
-//! nets running from their outputs, stress at graph distances with boxes parted. Vertices with
-//! positions stay where they are, places hold once given, and rows added later are placed around the
-//! rest until the view arranges every row again.
+//! nets running from their outputs, stress at graph distances with boxes parted; on a plane, points
+//! among their neighbors. Vertices with positions stay where they are, places hold once given, and
+//! rows added later are placed around the rest until the view arranges every row again, answering
+//! with a patch that writes the places into the data.
 
 #![cfg(feature = "gpu")]
 
@@ -206,11 +207,47 @@ fn rows_added_later_move_nothing_else() {
         assert!(apart(before[k], after[k]) < 1e-3, "node {} held: {before:?} → {after:?}", k + 1);
     }
     assert!(after[4][0] > after[2][0], "the new node after the one it follows: {after:?}");
-    // Arranged, every row is laid out again.
-    view.arrange();
+    // Arranged, every row is laid out again, and the answer writes the places into the data.
+    let pending = view.arrange();
+    let patches = answer(&gpu, &mut view, pending);
     frame(&gpu, &mut view);
     let arranged = located(&gpu, &mut view, 5);
     assert!(arranged.iter().all(|p| p[0].is_finite()), "every node placed again: {arranged:?}");
+    let [(name, patch)] = &patches[..] else { panic!("one dataset's patch: {patches:?}") };
+    assert_eq!(name.as_str(), "graph");
+    let mut data = view.data("graph").expect("shown").clone();
+    data.apply(patch.clone()).expect("valid");
+    let node = data.table("Node").expect("nodes");
+    assert!(node.ids().all(|id| node.get(id, "x").is_some()), "every node has its place as data");
+    view.set_data(data);
+    frame(&gpu, &mut view);
+    let pinned = located(&gpu, &mut view, 5);
+    for k in 0..5 {
+        assert!(apart(arranged[k], pinned[k]) < 0.5, "node {} holds its place: {arranged:?} → {pinned:?}", k + 1);
+    }
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn a_plane_places_points_without_positions_by_its_layout() {
+    let Some(gpu) = gpu() else { return };
+    let scene = |layout: Layout| {
+        Scene::new(latkit::Plane::default())
+            .theme(plain_theme())
+            .layout(layout)
+            .draw(Edges::of("graph", "Link").ends("from", "to"))
+            .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0))
+    };
+    let mut view = show(&gpu, scene(Stress { gap: 40.0 }.into()), graph(Some([-100.0, 60.0])));
+    let p = located(&gpu, &mut view, 4);
+    // The plane runs y up: on screen node 1 stands 60 units above the middle.
+    assert!(apart(p[0], [-100.0, -60.0]) < 1.0, "node 1 where its data says: {p:?}");
+    assert!(p.iter().all(|v| v[0].is_finite()), "every node placed: {p:?}");
+    assert!((apart(p[0], p[1]) - 40.0).abs() < 15.0, "node 2 a gap from node 1: {p:?}");
+    // Without a layout, rows without positions are not drawn.
+    view.show(scene(Layout::None)).expect("valid scene");
+    frame(&gpu, &mut view);
+    assert!(located(&gpu, &mut view, 2)[1][0].is_nan(), "unplaced");
     assert_eq!(errors(&mut view), Vec::new());
 }
 

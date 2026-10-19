@@ -1,23 +1,15 @@
-//! Datasets and patches as JSON: the format is documented on [`Patch::load`].
-
-use std::collections::VecDeque;
-use std::fmt;
-use std::sync::Arc;
+//! Datasets and patches as JSON: the format is documented on [`Patch::load`], its forms in
+//! `forms.rs`; slices of binary files are fetched through a host.
 
 use serde::Deserialize;
-use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use super::data::Data;
-use super::ids::Ids;
-use super::name::Id;
-use super::patch::{Op, Patch};
-use super::table::Table;
-use super::values::{Value, Values};
+use super::forms::{Column, DataForm, OpForm, patch};
+use super::name::Name;
+use super::ordered::Ordered;
+use super::patch::Patch;
 use crate::host::{Host, Request};
-use crate::{Error, Pending, Result};
-
-/// The largest whole number a JSON number names an id by when written with a fraction: 2^53 − 1.
-const SAFE: f64 = 9_007_199_254_740_991.0;
+use crate::{Error, Result};
 
 impl Patch {
     /// A patch from its JSON: what any language writes without latkit. The patch is a list of the
@@ -35,7 +27,7 @@ impl Patch {
     /// - `put` and `set` take `{table, ids, fields}`, `remove` `{table, ids}`, `append` `{at, table,
     ///   fields}`, `forget` `{before}`, and `axis` `{name, unit}`.
     /// - `ids` is a count naming rows `0..n`, or numbers or texts; `null` leaves a reference unwired.
-    /// - A field is an array of one kind of value, as [`Values`] takes them; `{"reference": table,
+    /// - A field is an array of one kind of value, as [`Values`](crate::Values) takes them; `{"reference": table,
     ///   "ids": ids}`; or a slice of a binary file, `{"file", "dtype", "offset", "count"}`: `count`
     ///   values from byte `offset` (0 unless given) of dtype `f32le`, `f64le`, `i32le`, `u32le`,
     ///   `u64le`, or `u8` (booleans, nonzero true).
@@ -71,105 +63,57 @@ impl Data {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DataForm {
-    name: String,
-    #[serde(default)]
-    patch: Vec<OpForm>,
+/// Patches by dataset name, in the order written: what one step of a stream of changes carries, as
+/// JSON `{"grid": [...], "weather": [...]}`, each patch in [`Patch::load`]'s form.
+#[derive(Default, Deserialize)]
+pub struct Patches(Ordered<Vec<OpForm>>);
+
+impl schemars::JsonSchema for Patches {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Patches".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = <Ordered<Vec<OpForm>>>::json_schema(generator);
+        schema.insert("description".into(), "Patches by dataset name, in the order written.".into());
+        schema
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase", deny_unknown_fields)]
-enum OpForm {
-    Axis { name: String, unit: String },
-    Put(TableForm),
-    Set(TableForm),
-    Remove { table: String, ids: IdsForm },
-    Append { at: At, table: String, fields: Fields },
-    Forget { before: f64 },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TableForm {
-    table: String,
-    ids: IdsForm,
-    #[serde(default)]
-    fields: Fields,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum At {
-    One(f64),
-    Many(Vec<f64>),
-}
-
-/// The patch `ops` make: their slices fetched through `host` at once, relative to `base`, then each
-/// change built in order.
-async fn build(ops: Vec<OpForm>, base: &str, host: &dyn Host) -> Result<Patch> {
-    let mut fetching = VecDeque::new();
-    for op in &ops {
-        let (OpForm::Put(TableForm { fields, .. })
-        | OpForm::Set(TableForm { fields, .. })
-        | OpForm::Append { fields, .. }) = op
-        else {
-            continue;
-        };
-        for (_, column) in &fields.0 {
-            if let Column::Slice(slice) = column {
-                let url = resolve(base, &slice.file);
-                fetching.push_back(host.fetch(&Request::range(url, slice.offset..slice.end()?)));
-            }
+impl Patches {
+    /// Each dataset's patch, in order, their slices fetched through `host` relative to `base`.
+    pub async fn load(self, base: &str, host: &dyn Host) -> Result<Vec<(Name, Patch)>> {
+        let mut patches = Vec::with_capacity(self.0.0.len());
+        for (name, ops) in self.0.0 {
+            let patch = build(ops, base, host).await.map_err(|e| e.at(name.as_str()))?;
+            patches.push((name, patch));
         }
+        Ok(patches)
     }
-    let mut patch = Patch::new();
-    for (i, op) in ops.into_iter().enumerate() {
-        let op = match op {
-            OpForm::Axis { name, unit } => Op::Axis { name: name.into(), unit: unit.into() },
-            OpForm::Put(form) => Op::Put(table(form, &mut fetching).await.map_err(|e| e.at(i))?),
-            OpForm::Set(form) => Op::Set(table(form, &mut fetching).await.map_err(|e| e.at(i))?),
-            OpForm::Remove { table, ids } => Op::Remove { table: table.into(), ids: ids.0 },
-            OpForm::Append { at, table, fields } => {
-                let at = match at {
-                    At::One(at) => vec![at],
-                    At::Many(at) => at,
-                };
-                let mut columns = Vec::with_capacity(fields.0.len());
-                for (name, column) in fields.0 {
-                    let values = match column {
-                        Column::Reference { .. } => Err(Error::invalid("append records values, not references")),
-                        column => column.values(&mut fetching).await,
-                    };
-                    columns.push((
-                        name.as_str().into(),
-                        values.map_err(|e| e.at(name.as_str()).at(table.as_str()).at(i))?,
-                    ));
-                }
-                Op::Append { table: table.into(), at, fields: columns }
-            }
-            OpForm::Forget { before } => Op::Forget { before },
-        };
-        patch.ops.push(op);
-    }
-    Ok(patch)
 }
 
-/// The table `form` writes, its slices taken in order from `fetching`.
-async fn table(form: TableForm, fetching: &mut VecDeque<Pending<Vec<u8>>>) -> Result<Table> {
-    let name = form.table;
-    let mut table = Table::new(name.as_str(), form.ids.0);
-    for (field, column) in form.fields.0 {
-        table = match column {
-            Column::Reference { to, ids } => table.reference(field, to, ids),
-            column => {
-                let values = column.values(fetching).await.map_err(|e| e.at(field.as_str()).at(name.as_str()))?;
-                table.field(field, values)
-            }
-        };
+/// The patch `ops` make: their slices of files fetched through `host` at once, relative to `base`,
+/// then each change built in order.
+async fn build(mut ops: Vec<OpForm>, base: &str, host: &dyn Host) -> Result<Patch> {
+    let mut slices: Vec<&mut Column> = ops
+        .iter_mut()
+        .flat_map(|op| op.columns().iter_mut().map(|(_, column)| column))
+        .filter(|column| matches!(column, Column::Slice(_)))
+        .collect();
+    let fetching = slices
+        .iter()
+        .map(|column| {
+            let Column::Slice(slice) = &**column else { unreachable!("slices only") };
+            Ok(host.fetch(&Request::range(resolve(base, &slice.file), slice.offset..slice.end()?)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (column, bytes) in slices.iter_mut().zip(fetching) {
+        let Column::Slice(slice) = &**column else { unreachable!("slices only") };
+        let values = slice.read(&bytes.await?)?;
+        **column = Column::Values(values);
     }
-    Ok(table)
+    drop(slices);
+    patch(ops)
 }
 
 /// `file` relative to `base`, a document's path or URL: in its directory unless absolute.
@@ -181,400 +125,13 @@ fn resolve(base: &str, file: &str) -> String {
     }
 }
 
-/// A field's column as written: values, a reference, or a slice of a file.
-enum Column {
-    Values(Values),
-    Reference { to: String, ids: Ids },
-    Slice(Slice),
-}
-
-/// `count` values of `dtype` from byte `offset` of `file`.
-struct Slice {
-    file: String,
-    dtype: Dtype,
-    offset: u64,
-    count: u64,
-}
-
-impl Slice {
-    /// The byte after the slice.
-    fn end(&self) -> Result<u64> {
-        let length =
-            self.count.checked_mul(self.dtype.width()).ok_or_else(|| Error::invalid("the slice is too long"))?;
-        self.offset.checked_add(length).ok_or_else(|| Error::invalid("the slice ends past every file"))
-    }
-}
-
-#[derive(Clone, Copy, Deserialize)]
-enum Dtype {
-    #[serde(rename = "f32le")]
-    F32,
-    #[serde(rename = "f64le")]
-    F64,
-    #[serde(rename = "i32le")]
-    I32,
-    #[serde(rename = "u32le")]
-    U32,
-    #[serde(rename = "u64le")]
-    U64,
-    #[serde(rename = "u8")]
-    U8,
-}
-
-impl Dtype {
-    fn width(self) -> u64 {
-        match self {
-            Dtype::U8 => 1,
-            Dtype::F32 | Dtype::I32 | Dtype::U32 => 4,
-            Dtype::F64 | Dtype::U64 => 8,
-        }
-    }
-}
-
-impl Column {
-    /// The values: a slice's once its fetch, the next in `fetching`, lands.
-    async fn values(self, fetching: &mut VecDeque<Pending<Vec<u8>>>) -> Result<Values> {
-        let slice = match self {
-            Column::Values(values) => return Ok(values),
-            Column::Reference { .. } => unreachable!("references are fields of their own"),
-            Column::Slice(slice) => slice,
-        };
-        let length = slice.end()? - slice.offset;
-        let bytes = fetching.pop_front().expect("a fetch for every slice").await?;
-        if bytes.len() as u64 != length {
-            let file = &slice.file;
-            return Err(Error::Load(format!("{file}: {} bytes of the slice's {length}", bytes.len()).into()));
-        }
-        macro_rules! decode {
-            ($t:ty, $n:literal) => {
-                bytes.as_chunks::<$n>().0.iter().map(|v| <$t>::from_le_bytes(*v)).collect::<Vec<$t>>().into()
-            };
-        }
-        Ok(match slice.dtype {
-            Dtype::F32 => decode!(f32, 4),
-            Dtype::F64 => decode!(f64, 8),
-            Dtype::I32 => decode!(i32, 4),
-            Dtype::U32 => decode!(u32, 4),
-            Dtype::U64 => decode!(u64, 8),
-            Dtype::U8 => bytes.iter().map(|&b| b != 0).collect::<Vec<bool>>().into(),
-        })
-    }
-}
-
-/// A table's fields in the order written.
-#[derive(Default)]
-struct Fields(Vec<(String, Column)>);
-
-impl<'de> Deserialize<'de> for Fields {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Fields, D::Error> {
-        struct Map;
-        impl<'de> Visitor<'de> for Map {
-            type Value = Fields;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("an object of fields")
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<Fields, A::Error> {
-                let mut fields = Vec::new();
-                while let Some(name) = map.next_key::<String>()? {
-                    if fields.iter().any(|(n, _)| *n == name) {
-                        return Err(de::Error::custom(format!("field {name} is written twice")));
-                    }
-                    let column = map.next_value_seed(ColumnSeed(&name))?;
-                    fields.push((name, column));
-                }
-                Ok(Fields(fields))
-            }
-        }
-        deserializer.deserialize_map(Map)
-    }
-}
-
-/// A column, named for its errors.
-struct ColumnSeed<'a>(&'a str);
-
-impl<'de> DeserializeSeed<'de> for ColumnSeed<'_> {
-    type Value = Column;
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> std::result::Result<Column, D::Error> {
-        deserializer.deserialize_any(ColumnVisitor(self.0))
-    }
-}
-
-struct ColumnVisitor<'a>(&'a str);
-
-impl<'de> Visitor<'de> for ColumnVisitor<'_> {
-    type Value = Column;
-    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "field {}: an array of values, a reference, or a slice of a file", self.0)
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Column, A::Error> {
-        let mut values = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-        while let Some(Element(value)) = seq.next_element()? {
-            values.push(value);
-        }
-        Values::try_from(values).map(Column::Values).map_err(|e| {
-            let reason = if let Error::Invalid { reason, .. } = e { reason } else { e.to_string().into() };
-            de::Error::custom(format!("field {}: {reason}", self.0))
-        })
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<Column, A::Error> {
-        let (mut reference, mut ids, mut file, mut dtype, mut offset, mut count) = (None, None, None, None, None, None);
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "reference" => reference = Some(map.next_value::<String>()?),
-                "ids" => ids = Some(map.next_value::<IdsForm>()?.0),
-                "file" => file = Some(map.next_value::<String>()?),
-                "dtype" => dtype = Some(map.next_value::<Dtype>()?),
-                "offset" => offset = Some(map.next_value::<u64>()?),
-                "count" => count = Some(map.next_value::<u64>()?),
-                other => {
-                    map.next_value::<IgnoredAny>()?;
-                    return Err(de::Error::custom(format!("field {}: unknown key {other}", self.0)));
-                }
-            }
-        }
-        let missing = |what: &str| de::Error::custom(format!("field {}: {what}", self.0));
-        match (reference, file) {
-            (Some(to), None) if dtype.is_none() && offset.is_none() && count.is_none() => {
-                Ok(Column::Reference { to, ids: ids.ok_or_else(|| missing("a reference names its ids"))? })
-            }
-            (None, Some(file)) if ids.is_none() => Ok(Column::Slice(Slice {
-                file,
-                dtype: dtype.ok_or_else(|| missing("a slice names its dtype"))?,
-                offset: offset.unwrap_or(0),
-                count: count.ok_or_else(|| missing("a slice names its count"))?,
-            })),
-            _ => Err(missing("an object is {reference, ids} or {file, dtype, offset, count}")),
-        }
-    }
-}
-
-/// One value of an array column: a number, boolean, text, or `[x, y]` geometry; `null`, or an empty
-/// geometry, missing.
-struct Element(Option<Value>);
-
-impl<'de> Deserialize<'de> for Element {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Element, D::Error> {
-        struct One;
-        impl<'de> Visitor<'de> for One {
-            type Value = Element;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a number, boolean, text, [x, y] geometry, or null")
-            }
-            fn visit_unit<E>(self) -> std::result::Result<Element, E> {
-                Ok(Element(None))
-            }
-            fn visit_none<E>(self) -> std::result::Result<Element, E> {
-                Ok(Element(None))
-            }
-            fn visit_f64<E>(self, v: f64) -> std::result::Result<Element, E> {
-                Ok(Element(Some(Value::Number(v))))
-            }
-            fn visit_u64<E>(self, v: u64) -> std::result::Result<Element, E> {
-                Ok(Element(Some(Value::Number(v as f64))))
-            }
-            fn visit_i64<E>(self, v: i64) -> std::result::Result<Element, E> {
-                Ok(Element(Some(Value::Number(v as f64))))
-            }
-            fn visit_bool<E>(self, v: bool) -> std::result::Result<Element, E> {
-                Ok(Element(Some(Value::Bool(v))))
-            }
-            fn visit_str<E>(self, v: &str) -> std::result::Result<Element, E> {
-                Ok(Element(Some(Value::Text(Arc::from(v)))))
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> std::result::Result<Element, A::Error> {
-                GeometryVisitor.visit_seq(seq)?.value().map(Element).map_err(de::Error::custom)
-            }
-        }
-        deserializer.deserialize_any(One)
-    }
-}
-
-/// A geometry as written: a point, or a list of geometries one level shallower.
-enum Geometry {
-    Point([f64; 2]),
-    List(Vec<Geometry>),
-}
-
-impl Geometry {
-    /// How deep it nests below its points: 0 a point, 1 a path, 2 parts, 3 polygons.
-    fn depth(&self) -> usize {
-        match self {
-            Geometry::Point(_) => 0,
-            Geometry::List(items) => 1 + items.first().map_or(0, Geometry::depth),
-        }
-    }
-
-    fn point(self) -> [f64; 2] {
-        match self {
-            Geometry::Point(p) => p,
-            Geometry::List(_) => [f64::NAN; 2],
-        }
-    }
-
-    fn list<T>(self, item: impl Fn(Geometry) -> T) -> Vec<T> {
-        match self {
-            Geometry::Point(_) => Vec::new(),
-            Geometry::List(items) => items.into_iter().map(item).collect(),
-        }
-    }
-
-    /// The value it writes: `None` when it is empty.
-    fn value(self) -> std::result::Result<Option<Value>, &'static str> {
-        if matches!(&self, Geometry::List(items) if items.is_empty()) {
-            return Ok(None);
-        }
-        Ok(Some(match self.depth() {
-            0 => Value::Point(self.point()),
-            1 => Value::Path(self.list(Geometry::point)),
-            2 => Value::Parts(self.list(|path| path.list(Geometry::point))),
-            3 => Value::Polygons(self.list(|parts| parts.list(|path| path.list(Geometry::point)))),
-            _ => return Err("geometries nest at most polygons of rings of [x, y] points"),
-        }))
-    }
-}
-
-struct GeometryVisitor;
-
-impl<'de> Visitor<'de> for GeometryVisitor {
-    type Value = Geometry;
-    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("an [x, y] point or a list of geometries")
-    }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Geometry, A::Error> {
-        let Some(first) = seq.next_element::<Part>()? else { return Ok(Geometry::List(Vec::new())) };
-        match first {
-            Part::Number(x) => {
-                let y: f64 = seq.next_element()?.ok_or_else(|| de::Error::custom("a point is [x, y]"))?;
-                // A third coordinate, elevation in GeoJSON, is read past.
-                while seq.next_element::<IgnoredAny>()?.is_some() {}
-                Ok(Geometry::Point([x, y]))
-            }
-            Part::Geometry(first) => {
-                let mut items = vec![first];
-                while let Some(item) = seq.next_element_seed(GeometrySeed)? {
-                    items.push(item);
-                }
-                Ok(Geometry::List(items))
-            }
-        }
-    }
-}
-
-struct GeometrySeed;
-
-impl<'de> DeserializeSeed<'de> for GeometrySeed {
-    type Value = Geometry;
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> std::result::Result<Geometry, D::Error> {
-        deserializer.deserialize_seq(GeometryVisitor)
-    }
-}
-
-/// The first item of a geometry's list: a coordinate, or a geometry.
-enum Part {
-    Number(f64),
-    Geometry(Geometry),
-}
-
-impl<'de> Deserialize<'de> for Part {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Part, D::Error> {
-        struct One;
-        impl<'de> Visitor<'de> for One {
-            type Value = Part;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a coordinate or a geometry")
-            }
-            fn visit_f64<E>(self, v: f64) -> std::result::Result<Part, E> {
-                Ok(Part::Number(v))
-            }
-            fn visit_u64<E>(self, v: u64) -> std::result::Result<Part, E> {
-                Ok(Part::Number(v as f64))
-            }
-            fn visit_i64<E>(self, v: i64) -> std::result::Result<Part, E> {
-                Ok(Part::Number(v as f64))
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> std::result::Result<Part, A::Error> {
-                GeometryVisitor.visit_seq(seq).map(Part::Geometry)
-            }
-        }
-        deserializer.deserialize_any(One)
-    }
-}
-
-/// Ids as written: a count, or numbers or texts with `null` for none, as [`Ids`] takes them.
-struct IdsForm(Ids);
-
-impl<'de> Deserialize<'de> for IdsForm {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<IdsForm, D::Error> {
-        struct Any;
-        impl<'de> Visitor<'de> for Any {
-            type Value = IdsForm;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("ids: a row count, or numbers or texts")
-            }
-            fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<IdsForm, E> {
-                let count = u32::try_from(v).map_err(|_| E::custom("a row count is at most 2^32 - 1"))?;
-                Ok(IdsForm(count.into()))
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<IdsForm, A::Error> {
-                let mut ids = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-                while let Some(Key(id)) = seq.next_element()? {
-                    ids.push(id);
-                }
-                Ok(IdsForm(Ids::from(ids)))
-            }
-        }
-        deserializer.deserialize_any(Any)
-    }
-}
-
-/// One id as written.
-struct Key(Option<Id>);
-
-impl<'de> Deserialize<'de> for Key {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Key, D::Error> {
-        struct One;
-        impl Visitor<'_> for One {
-            type Value = Key;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("an id: a whole number, a text, or null")
-            }
-            fn visit_unit<E>(self) -> std::result::Result<Key, E> {
-                Ok(Key(None))
-            }
-            fn visit_none<E>(self) -> std::result::Result<Key, E> {
-                Ok(Key(None))
-            }
-            fn visit_u64<E>(self, v: u64) -> std::result::Result<Key, E> {
-                Ok(Key(Some(Id::Number(v))))
-            }
-            fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<Key, E> {
-                let n = u64::try_from(v).map_err(|_| E::custom("a numeric id is a whole number from 0"))?;
-                Ok(Key(Some(Id::Number(n))))
-            }
-            fn visit_f64<E: de::Error>(self, v: f64) -> std::result::Result<Key, E> {
-                if v.fract() == 0.0 && (0.0..=SAFE).contains(&v) {
-                    Ok(Key(Some(Id::Number(v as u64))))
-                } else {
-                    Err(E::custom("a numeric id is a whole number from 0"))
-                }
-            }
-            fn visit_str<E>(self, v: &str) -> std::result::Result<Key, E> {
-                Ok(Key(Some(Id::from(v))))
-            }
-        }
-        deserializer.deserialize_any(One)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use super::*;
     use crate::host::{Raster, TextRun};
-    use crate::{Kind, Row};
+    use crate::{Kind, Pending, Row, Value};
 
     /// A host fetching from files in memory, and counting what it fetched.
     #[derive(Default)]

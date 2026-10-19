@@ -1,3 +1,5 @@
+import type { Camera, Id, Row } from './forms.js';
+
 /**
  * What latkit throws: an `Error` with a `code`, and for invalid input the `path` to the part, such
  * as `marks[2].color`.
@@ -6,9 +8,6 @@ export interface LatkitError extends Error {
   code: 'invalid' | 'unsupported' | 'limit' | 'load' | 'device-lost' | 'cancelled' | 'timeout';
   path?: string;
 }
-
-/** A row's id. */
-export type Id = number | string;
 
 /** Row ids: a count for rows `0..n`, or numbers or texts. */
 export type Ids =
@@ -40,11 +39,46 @@ export function reference(table: string, ids: Ids): Reference {
   return { reference: table, ids };
 }
 
-/** A row of a table in a dataset. */
-export interface Row {
-  data: string;
+/** What a field holds; a geometry's depth is 0 point, 1 path, 2 parts, 3 polygons. */
+export type Kind =
+  'number' | 'bool' | 'text' | { geometry: 0 | 1 | 2 | 3 } | 'reference' | 'sampled';
+
+/** What a dataset holds, from `Data.describe`. */
+export interface Description {
+  name: string;
+  /** The axis's name and unit. */
+  axis: [string, string] | null;
+  /** The first and last coordinates its sampled fields hold. */
+  span: [number, number] | null;
+  tables: { name: string; rows: number; fields: FieldDescription[] }[];
+}
+
+/** A field described: what it holds, the table a reference names, the coordinates samples span. */
+export interface FieldDescription {
+  name: string;
+  kind: Kind;
+  to?: string;
+  span?: [number, number];
+}
+
+/**
+ * Rows read back, in the forms `Patch.put` takes: numbers as a `Float64Array` (missing NaN), other
+ * values as arrays (missing `null`), a reference as its target ids.
+ */
+export interface Rows {
   table: string;
-  id: Id;
+  ids: Id[];
+  fields: Record<
+    string,
+    Float64Array | readonly unknown[] | { reference: string; ids: (Id | null)[] }
+  >;
+}
+
+/** Rows' least and greatest values over spans of the axis: `at` holds one more edge than spans. */
+export interface Envelope {
+  at: Float64Array;
+  least: Float32Array;
+  greatest: Float32Array;
 }
 
 /** A row under a point, as the frame drew it. */
@@ -139,27 +173,6 @@ export interface ViewEvents {
   error: LatkitError;
 }
 
-/**
- * Where a view looks. On the earth, a plane, or a diagram: the point looked at and turned about
- * (`[x, y]` on the ground, or `[x, y, elevation]`), log₂ zoom, and degrees of pitch and bearing, which
- * a diagram keeps at 0. On a plot: the ranges shown, `y: null` fitting the values in view.
- */
-export type Camera =
-  | {
-      center: [number, number] | [number, number, number];
-      zoom: number;
-      pitch: number;
-      bearing: number;
-    }
-  | { x: [number, number]; y: [number, number] | null };
-
-/** What {@link View.fit} frames: everything, some rows, one row kept in view, or a box. */
-export type Fit =
-  | 'all'
-  | { rows: Row[] }
-  | { reveal: Row }
-  | { bounds: { min: [number, number, number]; max: [number, number, number] } };
-
 /** What a view does each frame. */
 export interface Stats {
   frames: number;
@@ -168,6 +181,15 @@ export interface Stats {
   /** Rows every mark draws: every row of a table drawn whole, the rows of the tiles in view of one
    * drawn through tiles. */
   drawn: number;
+  /** Draw calls the last frame recorded, shadows and labels with the marks. */
+  draws: number;
+  /** Instances the last frame's draws drew: points, segments, triangles, glyphs; at most, for
+   * segments the GPU culls. */
+  instances: number;
+  /** Fetched tiles the view draws, of every tile source. */
+  tiles: number;
+  /** Tiles being fetched or decoded, of every tile source. */
+  tilesLoading: number;
   /** Bytes of data waiting to upload. */
   uploading: number;
   /** Bytes of data pages on the GPU, for every view of its GPU. */
@@ -219,15 +241,4 @@ export interface Work {
   texts: number;
   /** Pipelines made. */
   pipelines: number;
-}
-
-/**
- * How much GPU memory data takes. A view draws a table too large for its share of `bytes` through
- * the tiles the camera asks for, so what it draws always fits; pages no view draws stay cached in
- * the room left. By default half the device's largest storage buffer; set it before data draws.
- */
-export interface Budget {
-  bytes: number;
-  /** Bytes uploaded per frame at most; larger data streams in over frames. */
-  uploadPerFrame: number;
 }

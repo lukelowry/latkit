@@ -142,13 +142,25 @@ pub(crate) struct Events(VecDeque<Slot>);
 enum Slot {
     Ready(Event),
     Picking(Pending<Vec<Hit>>, Awaited),
+    /// A pick that made nothing, dropped once settled.
+    Gone,
 }
 
 /// What an intent waits on a pick for.
 #[derive(Clone)]
 pub(crate) enum Awaited {
     Menu(Trigger),
-    Connect { from: End, edge: Option<Row>, trigger: Trigger },
+    Connect {
+        from: End,
+        edge: Option<Row>,
+        trigger: Trigger,
+    },
+    /// A click again where nothing moved: the selection moves to the row under the point after
+    /// `after`.
+    Cycle {
+        after: Option<Row>,
+        trigger: Trigger,
+    },
 }
 
 impl Events {
@@ -163,14 +175,22 @@ impl Events {
         self.0.push_back(Slot::Picking(hits, awaited));
     }
 
-    /// Makes, in place, each intent whose pick answered.
-    pub(crate) fn settle(&mut self, mut make: impl FnMut(Vec<Hit>, Awaited) -> Event) {
+    /// Makes, in place, each event whose pick answered; one that makes nothing leaves no place.
+    pub(crate) fn settle(&mut self, mut make: impl FnMut(Vec<Hit>, Awaited) -> Option<Event>) {
+        let mut made = false;
         for slot in &mut self.0 {
             if let Slot::Picking(hits, awaited) = slot
                 && let Some(hits) = hits.take()
             {
-                *slot = Slot::Ready(make(hits.unwrap_or_default(), awaited.clone()));
+                *slot = match make(hits.unwrap_or_default(), awaited.clone()) {
+                    Some(event) => Slot::Ready(event),
+                    None => Slot::Gone,
+                };
+                made = true;
             }
+        }
+        if made {
+            self.0.retain(|slot| !matches!(slot, Slot::Gone));
         }
     }
 
@@ -257,7 +277,8 @@ pub enum Phase {
 }
 
 /// What [`View::fit`](crate::View::fit) frames.
-#[derive(Clone, PartialEq, Debug, serde::Deserialize)]
+#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[schemars(description = "What a view's fit frames.")]
 #[serde(rename_all = "camelCase")]
 pub enum Fit {
     /// Everything drawn.
@@ -302,6 +323,15 @@ pub struct Stats {
     /// Rows every mark draws: every row of a table drawn whole, the rows of the tiles in view of one
     /// drawn through tiles.
     pub drawn: u64,
+    /// Draw calls the last frame recorded, shadows and labels with the marks.
+    pub draws: u64,
+    /// Instances the last frame's draws drew: points, segments, triangles, glyphs; at most, for
+    /// segments the GPU culls.
+    pub instances: u64,
+    /// Fetched tiles the view draws, of every tile source.
+    pub tiles: u64,
+    /// Tiles being fetched or decoded, of every tile source.
+    pub tiles_loading: u64,
     /// Bytes of data waiting to upload.
     pub uploading: u64,
     /// Bytes of data pages on the GPU, for every view of its `Gpu`.
@@ -392,8 +422,8 @@ mod tests {
         assert_eq!(told(&mut events), vec![Event::Waiting(Waiting::default())], "the click waits for the menu");
         reply.resolve(Ok(Vec::new()));
         events.settle(|hits, awaited| match awaited {
-            Awaited::Menu(trigger) => Event::Menu { hits, trigger },
-            Awaited::Connect { .. } => unreachable!("only a menu waits"),
+            Awaited::Menu(trigger) => Some(Event::Menu { hits, trigger }),
+            Awaited::Connect { .. } | Awaited::Cycle { .. } => unreachable!("only a menu waits"),
         });
         let after = told(&mut events);
         assert!(matches!(after.as_slice(), [Event::Menu { .. }, Event::Click { .. }]), "in the order asked: {after:?}");

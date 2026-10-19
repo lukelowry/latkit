@@ -1,7 +1,9 @@
-//! Interaction events: a secondary click asks for a menu of what lies under it, dragging from a port
-//! draws a connection to the vertex it is released over, an edge's end can be dragged off it, a
-//! double click opens what it hits, and Delete tells the selection. The keys point at rows too;
-//! hover is state whether or not it glows and follows the frame; setters tell nothing.
+//! Interaction events: a secondary click asks for a menu of what lies under it, as a touch held still
+//! does; dragging from a port draws a connection to the vertex it is released over, an edge's end can
+//! be dragged off it, a double click opens what it hits, a click again can cycle through the rows
+//! under it, and Delete tells the selection. The keys point at rows too; hover is state whether or
+//! not it glows and follows the frame; setters tell nothing. The wheel zooms as the controls say, and
+//! reduced motion pays every move at once.
 
 #![cfg(feature = "gpu")]
 
@@ -9,8 +11,8 @@ mod common;
 
 use common::{SIZE, camera, diagram, frame, gpu, plain_theme, step};
 use latkit::{
-    Button, Camera, Controls, Data, Device, Edges, End, Event, Input, Key, Modifiers, Patch, Row, Scene, Side, Table,
-    Vertices, View,
+    Button, Camera, Controls, Data, Device, Edges, End, Event, Input, Key, Modifiers, Motion, Patch, Row, Scene, Side,
+    Table, Vertices, View, Zoom,
 };
 
 const C: f32 = SIZE as f32 / 2.0;
@@ -265,4 +267,102 @@ fn waiting_tells_when_the_frame_is_complete() {
     let mut view = view(&gpu, editing());
     let waiting = after(&gpu, &mut view, &[], |e| if let Event::Waiting(waiting) = e { Some(*waiting) } else { None });
     assert!(waiting.is_empty() && view.complete(), "the last change told is the complete frame: {waiting}");
+}
+
+fn selected(e: &Event) -> Option<Vec<Row>> {
+    if let Event::Select { rows, .. } = e { Some(rows.clone()) } else { None }
+}
+
+#[test]
+fn clicking_again_cycles_through_the_rows_under_the_point() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = view(&gpu, Controls { cycle: true, ..Controls::default() });
+    // Inside node 1, 6 units toward node 3, where the link leaves node 1's outline 2 units away.
+    let s = 6.0 / std::f32::consts::SQRT_2;
+    let at = [C - 40.0 + s, C - s];
+    let (node, link) = (Row::new("graph", "Node", 1_u64), Row::new("graph", "Link", 0_u64));
+    let click = [down(at, Button::Primary), up(at)];
+    assert_eq!(after(&gpu, &mut view, &[&[moved(at)][..], &click].concat(), selected), vec![node.clone()]);
+    // Slower than a double click, where nothing moved: the next row under the point, then back.
+    common::wait(1.0);
+    assert_eq!(after(&gpu, &mut view, &click, selected), vec![link]);
+    common::wait(1.0);
+    assert_eq!(after(&gpu, &mut view, &click, selected), vec![node]);
+}
+
+#[test]
+fn a_touch_held_still_asks_for_a_menu_and_does_not_click() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = view(&gpu, Controls::default());
+    let at = [C - 40.0, C];
+    let touch = Input::Down {
+        pointer: 1,
+        point: at,
+        button: Button::Primary,
+        modifiers: Modifiers::default(),
+        device: Device::Touch,
+    };
+    let (hits, device) = after(&gpu, &mut view, &[touch], |e| {
+        if let Event::Menu { hits, trigger } = e { Some((hits.clone(), trigger.device)) } else { None }
+    });
+    assert_eq!(device, Device::Touch);
+    assert_eq!(hits.first().map(|h| h.row.clone()), Some(Row::new("graph", "Node", 1_u64)));
+    view.input(&up(at), common::now());
+    for _ in 0..10 {
+        step(&gpu, &mut view);
+    }
+    assert!(
+        !view.events().any(|e| matches!(e, Event::Click { .. } | Event::Select { .. })),
+        "the release only lets go"
+    );
+}
+
+#[test]
+fn the_wheel_zooms_as_the_controls_say() {
+    let Some(gpu) = gpu() else { return };
+    let wheel = |control| Input::Wheel {
+        point: [C, C],
+        delta: [0.0, -120.0],
+        modifiers: Modifiers { control, ..Modifiers::default() },
+    };
+    let mut view = view(&gpu, Controls { zoom: Zoom::Modifier, ..Controls::default() });
+    assert!(!view.input(&wheel(false), common::now()), "the plain wheel is the page's to scroll");
+    assert!(view.input(&wheel(true), common::now()), "a trackpad's pinch, the wheel with Control, zooms");
+    let mut view = view_off(&gpu);
+    assert!(!view.input(&wheel(true), common::now()), "nothing zooms");
+}
+
+fn view_off(gpu: &latkit::Gpu) -> View {
+    view(gpu, Controls { zoom: Zoom::Off, ..Controls::default() })
+}
+
+fn zoom(view: &View) -> f64 {
+    let Camera::Map { zoom, .. } = *view.camera() else { panic!("a diagram's camera") };
+    zoom
+}
+
+#[test]
+fn reduced_motion_pays_every_move_at_once() {
+    let Some(gpu) = gpu() else { return };
+    let wheel = Input::Wheel { point: [C, C], delta: [0.0, -120.0], modifiers: Modifiers::default() };
+    // With motion, a wheel notch glides over frames; without, it lands in one.
+    let mut moving = view(&gpu, Controls { motion: Motion::Full, ..Controls::default() });
+    let before = zoom(&moving);
+    moving.input(&wheel, common::now());
+    step(&gpu, &mut moving);
+    let glided = zoom(&moving) - before;
+    assert!(glided > 0.0 && glided < 0.29, "glides: {glided}");
+    let mut still = view(&gpu, Controls { motion: Motion::Reduced, ..Controls::default() });
+    still.input(&wheel, common::now());
+    step(&gpu, &mut still);
+    assert!((zoom(&still) - before - 0.3).abs() < 1e-6, "lands at once: {}", zoom(&still) - before);
+    // The system's preference reduces it too, and a flight jumps.
+    let mut system = view(&gpu, Controls::default());
+    system.set_reduced_motion(true);
+    let to = Camera::Map { center: [-10.0, 5.0, 0.0], zoom: 1.0, pitch: 0.0, bearing: 0.0 };
+    system.fly(to);
+    step(&gpu, &mut system);
+    step(&gpu, &mut system);
+    assert_eq!(*system.camera(), to);
+    assert!(!system.needs_render(), "nothing moves on its own");
 }

@@ -30,6 +30,26 @@ Importing `latkit` only loads scene helpers and the loader. `loadLatkit()` initi
 A failed load can be retried. Later calls can omit options to reuse the runtime; explicitly
 conflicting options reject with an error whose `code` is `load`.
 
+Data reads back without a GPU, through the same expressions marks draw with, and patches stream:
+
+```ts
+const hot = data.query({
+  of: 'Branch',
+  where: field('loading').gt(90),
+  sort: [['loading', 'descending']],
+  limit: 12,
+});
+// hot: { table, ids, fields: { loading: Float64Array, name: string[], ... } }, the forms Patch.put takes
+const { tables, span } = data.describe();
+const { least, greatest } = data.envelope('Bus', 'vm', span!, 600); // per row and span, from levels
+for await (const patch of Patch.stream((await fetch('/feed')).body!))
+  view.setData((data = data.apply(patch)));
+```
+
+Scene, query, camera, and fit types are written from the JSON Schema of what latkit reads
+(`schema.json`; `latkit schema` prints it for other languages). Ids too large for a JavaScript number
+read back as their decimal text, which names the same row.
+
 `Data.apply()` returns a new immutable snapshot and consumes the patch. Destroy an old handle when
 it is no longer needed; views and other snapshots keep their own references to its data. `Data`,
 `Patch`, `Gpu`, and `View` support idempotent `destroy()` and `Symbol.dispose`. Other operations on

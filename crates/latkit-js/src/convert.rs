@@ -1,178 +1,17 @@
-//! JavaScript data to latkit's and back: ids and field values. Typed arrays copy once; plain arrays
-//! become values the library's rules make a column of, as JSON's do. A view's state crosses as JSON
-//! instead.
+//! latkit's data to JavaScript: tables, values, and ids. What JavaScript writes is decoded by the
+//! library's own forms, as JSON is; a view's state crosses as JSON.
 
-use js_sys::{Array, Float32Array, Float64Array, Int32Array, Object, Reflect, Uint8Array, Uint32Array};
-use latkit::{Error, Result};
-use wasm_bindgen::{JsCast, JsValue};
+use js_sys::{Array, Float64Array, Object, Reflect};
+use latkit::Error;
+use wasm_bindgen::JsValue;
 
-/// The largest whole number a JavaScript number holds exactly: 2âµÂ³ âˆ’ 1.
+/// The largest whole number a JavaScript number holds exactly: 2^53 - 1.
 const SAFE: f64 = 9_007_199_254_740_991.0;
 
-/// A parse error as an invalid-input error.
-pub(crate) fn invalid(what: &str, error: &serde_json::Error) -> Error {
-    Error::invalid(error.to_string()).at(what)
-}
-
-fn error(reason: &'static str) -> Error {
-    Error::invalid(reason)
-}
-
-/// A numeric id: a whole number a JavaScript number holds exactly, never truncated.
-fn number_id(n: f64) -> Result<u64> {
-    if n.fract() == 0.0 && (0.0..=SAFE).contains(&n) {
-        Ok(n as u64)
-    } else {
-        Err(error("a numeric id is a whole number from 0 to 2^53 - 1"))
-    }
-}
-
-/// Row ids: a count, numbers, or texts.
-pub(crate) fn ids(value: &JsValue) -> Result<latkit::Ids> {
-    if let Some(n) = value.as_f64() {
-        if n < 0.0 || n.fract() != 0.0 || n > f64::from(u32::MAX) {
-            return Err(error("a row count is a whole number"));
-        }
-        return Ok(latkit::Ids::from(n as u32));
-    }
-    if let Some(a) = value.dyn_ref::<Uint32Array>() {
-        return Ok(latkit::Ids::from(a.to_vec()));
-    }
-    if let Some(a) = value.dyn_ref::<Float64Array>() {
-        let ids = a.to_vec().into_iter().enumerate().map(|(i, n)| number_id(n).map_err(|e| e.at(i)));
-        return Ok(latkit::Ids::from(ids.collect::<Result<Vec<u64>>>()?));
-    }
-    let Some(array) = value.dyn_ref::<Array>() else { return Err(error("ids are a count, numbers, or texts")) };
-    let ids = array
-        .iter()
-        .enumerate()
-        .map(|(i, v)| if v.is_null() || v.is_undefined() { Ok(None) } else { id(&v).map(Some).map_err(|e| e.at(i)) });
-    Ok(latkit::Ids::from(ids.collect::<Result<Vec<Option<latkit::Id>>>>()?))
-}
-
-/// One id: a number or a text.
-pub(crate) fn id(value: &JsValue) -> Result<latkit::Id> {
-    if let Some(n) = value.as_f64() {
-        return number_id(n).map(latkit::Id::Number);
-    }
-    value.as_string().map(latkit::Id::from).ok_or_else(|| error("an id is a number or a text"))
-}
-
-/// `table` with `fields`: each key a field; a value is values, or `{ reference, ids }`.
-pub(crate) fn fields(mut table: latkit::Table, fields: &Object) -> Result<latkit::Table> {
-    for entry in Object::entries(fields).iter() {
-        let entry: Array = entry.unchecked_into();
-        let name = entry.get(0).as_string().unwrap_or_default();
-        let field = entry.get(1);
-        let reference = Reflect::get(&field, &"reference".into()).ok().and_then(|r| r.as_string());
-        table = match reference {
-            Some(to) => {
-                let ids_ = Reflect::get(&field, &"ids".into()).map_err(|_| error("a reference names its ids"))?;
-                table.reference(name.as_str(), to, ids(&ids_).map_err(|e| e.at(name.as_str()))?)
-            }
-            None => table.field(name.as_str(), values(&field).map_err(|e| e.at(name.as_str()))?),
-        };
-    }
-    Ok(table)
-}
-
-/// Every entry of `fields` as values.
-pub(crate) fn values_of(fields: &Object) -> Result<Vec<(String, latkit::Values)>> {
-    Object::entries(fields)
-        .iter()
-        .map(|entry| {
-            let entry: Array = entry.unchecked_into();
-            let name = entry.get(0).as_string().unwrap_or_default();
-            let values = values(&entry.get(1)).map_err(|e| e.at(name.as_str()))?;
-            Ok((name, values))
-        })
-        .collect()
-}
-
-/// Values: a typed array (a `Uint8Array` of booleans, nonzero true), or an array of numbers,
-/// booleans, texts, or `[x, y]` geometries; `null` is missing.
-pub(crate) fn values(value: &JsValue) -> Result<latkit::Values> {
-    if let Some(a) = value.dyn_ref::<Uint8Array>() {
-        return Ok(a.to_vec().iter().map(|&b| b != 0).collect::<Vec<bool>>().into());
-    }
-    if let Some(a) = value.dyn_ref::<Float64Array>() {
-        return Ok(a.to_vec().into());
-    }
-    if let Some(a) = value.dyn_ref::<Float32Array>() {
-        return Ok(a.to_vec().into());
-    }
-    if let Some(a) = value.dyn_ref::<Int32Array>() {
-        return Ok(a.to_vec().into());
-    }
-    if let Some(a) = value.dyn_ref::<Uint32Array>() {
-        return Ok(a.to_vec().into());
-    }
-    let Some(array) = value.dyn_ref::<Array>() else { return Err(error("values are a typed array or an array")) };
-    let values = array.iter().map(|v| element(&v)).collect::<Result<Vec<_>>>()?;
-    latkit::Values::try_from(values)
-}
-
-/// One value of an array: a number, boolean, text, or `[x, y]` geometry; `null`, `undefined`, or an
-/// empty geometry, missing.
-fn element(value: &JsValue) -> Result<Option<latkit::Value>> {
-    if let Some(n) = value.as_f64() {
-        return Ok(Some(latkit::Value::Number(n)));
-    }
-    if let Some(b) = value.as_bool() {
-        return Ok(Some(latkit::Value::Bool(b)));
-    }
-    if let Some(t) = value.as_string() {
-        return Ok(Some(latkit::Value::Text(t.into())));
-    }
-    let Some(array) = value.dyn_ref::<Array>() else { return Ok(None) };
-    if array.length() == 0 {
-        return Ok(None);
-    }
-    Ok(Some(match depth(value) {
-        0 => latkit::Value::Point(point(value)),
-        1 => latkit::Value::Path(path(value)),
-        2 => latkit::Value::Parts(list(value, path)),
-        3 => latkit::Value::Polygons(list(value, |p| list(p, path))),
-        _ => return Err(error("geometries nest at most polygons of rings of [x, y] points")),
-    }))
-}
-
-/// How deep a geometry nests below `[x, y]`.
-fn depth(value: &JsValue) -> usize {
-    let mut depth = 0;
-    let mut v = value.clone();
-    while let Some(array) = v.dyn_ref::<Array>() {
-        let first = array.get(0);
-        if first.as_f64().is_some() {
-            return depth;
-        }
-        depth += 1;
-        v = first;
-    }
-    depth
-}
-
-/// Axis coordinates: one number, or an array of them.
-pub(crate) fn coordinates(value: &JsValue) -> Result<Vec<f64>> {
-    if let Some(at) = value.as_f64() {
-        return Ok(vec![at]);
-    }
-    let array = value.dyn_ref::<Array>().ok_or_else(|| error("at is a coordinate or an array of them"))?;
-    array.iter().map(|v| v.as_f64().ok_or_else(|| error("a coordinate is a number"))).collect()
-}
-
-fn point(value: &JsValue) -> [f64; 2] {
-    value
-        .dyn_ref::<Array>()
-        .map_or([f64::NAN; 2], |a| [a.get(0).as_f64().unwrap_or(f64::NAN), a.get(1).as_f64().unwrap_or(f64::NAN)])
-}
-
-fn path(value: &JsValue) -> Vec<[f64; 2]> {
-    value.dyn_ref::<Array>().map_or_else(Vec::new, |a| a.iter().map(|p| point(&p)).collect())
-}
-
-fn list<T>(value: &JsValue, item: impl Fn(&JsValue) -> T) -> Vec<T> {
-    value.dyn_ref::<Array>().map_or_else(Vec::new, |a| a.iter().map(|v| item(&v)).collect())
+/// A decoding error as an invalid-input error.
+#[allow(clippy::needless_pass_by_value, reason = "map_err hands errors over by value")]
+pub(crate) fn invalid(error: serde_wasm_bindgen::Error) -> Error {
+    Error::invalid(error.to_string())
 }
 
 /// A value for JavaScript: numbers, booleans, texts, nested `[x, y]` arrays, or `{ data, table, id }`.
@@ -195,10 +34,45 @@ pub(crate) fn value(value: &latkit::Value) -> JsValue {
     }
 }
 
-/// An id as a number or a text.
+/// `table` in the forms `Patch.put` takes: `{ table, ids, fields }`, numbers as a `Float64Array`
+/// (missing NaN), other values as arrays (missing `null`), a reference as `{ reference, ids }`.
+pub(crate) fn table(table: &latkit::Table) -> JsValue {
+    let fields = Object::new();
+    for field in table.describe().fields {
+        let values = table.values(&field.name).unwrap_or_else(|| latkit::Values::from(Vec::<f64>::new()));
+        let column: JsValue = match (&field.to, values.numbers()) {
+            (Some(to), _) => object(&[("reference", JsValue::from_str(to)), ("ids", ids_value(&values))]),
+            (None, Some(numbers)) => Float64Array::from(&numbers[..]).into(),
+            (None, None) => {
+                (0..values.len()).map(|i| values.get(i).map_or(JsValue::NULL, |v| value(&v))).collect::<Array>().into()
+            }
+        };
+        let _ = Reflect::set(&fields, &JsValue::from_str(&field.name), &column);
+    }
+    let ids: Array = table.ids().map(|id| id_value(&id)).collect();
+    object(&[("table", JsValue::from_str(table.name())), ("ids", ids.into()), ("fields", fields.into())])
+}
+
+/// Ids held as values, missing `null`.
+fn ids_value(values: &latkit::Values) -> JsValue {
+    (0..values.len()).map(|i| values.id(i).map_or(JsValue::NULL, |id| id_value(&id))).collect::<Array>().into()
+}
+
+/// An object of `entries`.
+pub(crate) fn object(entries: &[(&str, JsValue)]) -> JsValue {
+    let object = Object::new();
+    for (key, value) in entries {
+        let _ = Reflect::set(&object, &JsValue::from_str(key), value);
+    }
+    object.into()
+}
+
+/// An id as a number or a text: a number too large for JavaScript's as its decimal text, which
+/// names the same row.
 pub(crate) fn id_value(id: &latkit::Id) -> JsValue {
     match id {
-        latkit::Id::Number(n) => (*n as f64).into(),
+        latkit::Id::Number(n) if *n as f64 <= SAFE => (*n as f64).into(),
+        latkit::Id::Number(n) => JsValue::from_str(&n.to_string()),
         latkit::Id::Text(t) => JsValue::from_str(t),
     }
 }

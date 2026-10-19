@@ -7,7 +7,7 @@
  */
 import { field, type ColormapName, type Fit, type Mark, type Row, type Scene } from '../latkit.js';
 import type { Stage } from '../ui/stage.js';
-import { LEVELS, loadCase, type Case } from './cases.js';
+import { LEVELS, loadCase, megabytes, type Case } from './cases.js';
 import { continent } from './continent.js';
 import { lattice } from './lattice.js';
 import { LOOK, MAPS, type Loaded, type MapChoice } from './maps.js';
@@ -23,6 +23,7 @@ const GRIDS = [
   ['North America, 2,000,000 buses', 'continent-2m'],
   ['Lattice, 100,000 buses', 'lattice-100k'],
   ['Lattice, 1,000,000 buses', 'lattice-1m'],
+  ['None: the map alone', 'none'],
 ] as const;
 type GridId = (typeof GRIDS)[number][1];
 
@@ -55,8 +56,8 @@ interface Grid {
   readonly summary: string;
   readonly case?: Case;
   readonly peaks: { readonly load: number; readonly generation: number; readonly power: number };
-  /** The box its buses stand in, which framing the grid shows. */
-  readonly bounds: Fit;
+  /** The box its buses stand in, which framing the grid shows; none for the map alone. */
+  readonly bounds?: Fit;
 }
 
 /** The box a case's buses stand in. */
@@ -217,8 +218,10 @@ export default async function page(stage: Stage): Promise<void> {
   const view = stage.view(scene(), {
     label: 'A grid over the earth: drag to pan, Shift-drag to turn, hover or click to inspect',
   });
+  // Fits keep clear of the readout over the view's top and the credit and legend over its foot.
+  view.insets = [32, 16, 32, 16];
   const restyle = () => view.show(scene());
-  /** Frames the grid, whatever the map beneath it spans. */
+  /** Frames the grid, whatever the map beneath it spans; the map alone, all of it. */
   const frame = () => view.fit(grid?.bounds ?? 'all');
   const legend = stage.legend();
   const credit = stage.credit();
@@ -431,7 +434,17 @@ export default async function page(stage: Stage): Promise<void> {
     stage.detail(`${label}: loading…`);
     const started = performance.now();
     let next: Grid;
-    if (id.startsWith('lattice')) {
+    if (id === 'none') {
+      view.removeData('grid');
+      next = {
+        id,
+        label,
+        buses: 0,
+        lines: 0,
+        peaks: { load: 0, generation: 0, power: 0 },
+        summary: 'nothing to draw over the map',
+      };
+    } else if (id.startsWith('lattice')) {
       const built = lattice(id);
       view.setData(built.data);
       next = {
@@ -444,7 +457,11 @@ export default async function page(stage: Stage): Promise<void> {
         summary: `built in ${(performance.now() - started).toFixed(0)} ms`,
       };
     } else {
-      const found = id.startsWith('continent') ? continent(id) : await loadCase(id, load.signal);
+      const found = id.startsWith('continent')
+        ? continent(id)
+        : await loadCase(id, load.signal, (received, total) =>
+            stage.detail(`${label}: downloading ${megabytes(received, total)}`),
+          );
       if (load.signal.aborted) return;
       view.setData(found.data);
       const peak = (values: Float32Array) => values.reduce((top, v) => Math.max(top, v), 0);
@@ -503,7 +520,9 @@ export default async function page(stage: Stage): Promise<void> {
     mapSummary.textContent = choice ? 'loading…' : '';
     restyle();
     if (!choice) return;
-    const loaded = await choice.load(view, load.signal);
+    const loaded = await choice.load(view, load.signal, (status) => {
+      if (!load.signal.aborted) mapSummary.textContent = status;
+    });
     if (load.signal.aborted) return loaded.unload(view);
     map = { choice, loaded };
     credit.textContent = choice.attribution;

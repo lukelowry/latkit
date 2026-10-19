@@ -9,6 +9,9 @@
 //! the transition starts, the mark eases by its progress alone. The frozen buffer mirrors the state
 //! buffer's layout and exists only while a transition does. A stroke's geometry column keeps the
 //! table it had as the transition began, and its paths morph from it point by point.
+//!
+//! Without an ease, a flowing mark whose rows moved still begins a transition, of no length: it
+//! shows the new state at once, and its comets carry their travel over to the rows' new places.
 
 use super::View;
 use super::clock::Clock;
@@ -35,9 +38,9 @@ pub(crate) struct Begin {
 }
 
 impl Transition {
-    /// Eased progress on `clock`, `0..=1`.
+    /// Eased progress on `clock`, `0..=1`; a transition of no length is done as it begins.
     pub(crate) fn motion(&self, clock: &Clock) -> f32 {
-        clock.eased(self.start, self.seconds) as f32
+        if self.seconds <= 0.0 { 1.0 } else { clock.eased(self.start, self.seconds) as f32 }
     }
 
     fn done(&self, clock: &Clock) -> bool {
@@ -118,28 +121,36 @@ impl View {
     /// Freezes every transition starting this frame and advances the running ones; true while any
     /// runs.
     pub(super) fn transitions(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> bool {
-        let seconds = self.scene.ease.as_secs_f64();
-        let starting: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].begin.is_some()).collect();
+        // A drag moves rows at once.
+        let seconds = if self.dragging() { 0.0 } else { self.ease().as_secs_f64() };
+        let mut starting: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].begin.is_some()).collect();
+        if seconds == 0.0 {
+            // Without an ease only a flowing mark whose rows moved begins one, for its comets.
+            starting.retain(|&i| {
+                let shown = &mut self.marks[i];
+                let carries =
+                    shown.mark.flows() && shown.begin.as_ref().is_some_and(|b| b.sources.is_some() && !b.fades);
+                if !carries {
+                    shown.begin = None;
+                    shown.exits = 0;
+                }
+                carries
+            });
+        }
         if !starting.is_empty() {
-            if seconds == 0.0 {
-                for &i in &starting {
-                    self.marks[i].begin = None;
-                    self.marks[i].exits = 0;
-                }
-            } else {
-                let fades: Vec<bool> =
-                    starting.iter().map(|&i| self.marks[i].begin.as_ref().is_some_and(|b| b.fades)).collect();
-                self.freeze(encoder, inner, &starting);
-                let start = self.clock.now();
-                for (&i, fades) in starting.iter().zip(fades) {
-                    self.marks[i].transition = Some(Transition { start, seconds, fades });
-                }
+            let fades: Vec<bool> =
+                starting.iter().map(|&i| self.marks[i].begin.as_ref().is_some_and(|b| b.fades)).collect();
+            self.freeze(encoder, inner, &starting);
+            let start = self.clock.now();
+            for (&i, fades) in starting.iter().zip(fades) {
+                self.marks[i].transition = Some(Transition { start, seconds, fades });
             }
         }
         let mut running = false;
-        for shown in &mut self.marks {
+        for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(transition) = &shown.transition else { continue };
-            if transition.done(&self.clock) {
+            // One that begins this frame runs through it, as one of no length must for its comets.
+            if transition.done(&self.clock) && !starting.contains(&i) {
                 // One more evaluation writes every row's settled state.
                 shown.transition = None;
                 shown.exits = 0;

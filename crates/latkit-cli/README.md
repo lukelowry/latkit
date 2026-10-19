@@ -12,13 +12,17 @@ latkit render map.json plot.json -d grid.json -d states=usa.geojson \
   --panel 0,0,1,0.8 --panel 0,0.8,1,0.2 --frames frames.jsonl --fps 60 -o film.mp4
 latkit render scene.json -d grid.json --frames - --format y4m -o - | ffmpeg -i - film.webm
 latkit inspect grid.bin
+latkit query grid.bin '{"of":"Branch","where":{"op":"gt","args":["loading",90]},"limit":20}'
+latkit schema scene > scene.schema.json   # for editors and other languages
 ```
 
-| Command    | Does                                                                               |
-| ---------- | ---------------------------------------------------------------------------------- |
-| `render`   | draws the scenes, one per `--panel`, and writes `--output`                         |
-| `validate` | reads, loads, and checks everything `render` would, frames included, without a GPU |
-| `inspect`  | prints datasets as JSON: tables, rows, fields' kinds, the axis and its span        |
+| Command    | Does                                                                                                           |
+| ---------- | -------------------------------------------------------------------------------------------------------------- |
+| `render`   | draws the scenes, one per `--panel`, and writes `--output`                                                     |
+| `validate` | reads, loads, and checks everything `render` would, frames included, without a GPU                             |
+| `inspect`  | prints datasets as JSON: tables, rows, fields and their kinds, the axis and its span                           |
+| `query`    | prints the rows a query keeps, sorted and paged, as JSON Lines ([format](../latkit/src/data/query.rs))         |
+| `schema`   | prints the JSON Schema of every input, or of one: `scene`, `data`, `patch`, `query`, `camera`, `fit`, `frames` |
 
 ## Inputs
 

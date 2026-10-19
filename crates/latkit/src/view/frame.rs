@@ -6,6 +6,7 @@
 use web_time::Instant;
 
 use super::marks::Shown;
+use super::passes::Drawn;
 use super::resources::{EyeSlot, MARK_STRIDE, Resources};
 use super::sync::{Source, Synced, Window, table_of};
 use super::transition::{remap, replaced};
@@ -53,20 +54,10 @@ impl View {
         inner.atlas.tick();
         self.settle_labels(&mut inner);
         self.derive(&mut inner);
+        self.answer_arranging();
         self.stream(&mut inner);
         let moved = self.lay_out(encoder, &mut inner);
-        // What reads the clock shows anything new only when it moved; a frame drawn again at the same
-        // instant, as a shot draws while it waits, evaluates none of it.
-        let elapsed = self.signal.elapsed().unwrap_or_else(|| self.clock.now());
-        // Seconds comets travel: the clock's step since the last frame, none at first or back in time,
-        // and never more than a pause's worth.
-        let travel = if self.effect_time.is_nan() { 0.0 } else { (elapsed - self.effect_time).clamp(0.0, TRAVEL) };
-        if self.effect_time != elapsed {
-            self.effect_time = elapsed;
-            for shown in &mut self.marks {
-                shown.dirty |= shown.channels_reading(Deps::TIME);
-            }
-        }
+        let (elapsed, travel) = self.effect_clock();
         let resources = self.resources.as_ref().expect("created");
         let (buffer, capacity) = (resources.focus().clone(), resources.focus_words());
         self.focus.dirty |= moved;
@@ -102,14 +93,17 @@ impl View {
         if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some(), travel > 0.0) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
+        let mut drawn = Drawn::default();
         if let Some(light) = &light {
-            self.cast(encoder, &mut inner, light);
+            self.cast(encoder, &mut inner, &mut drawn, light);
         } else {
             self.shadow_map.mark(0);
         }
         self.place_labels(encoder, &mut inner, &main);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
-        self.draw(encoder, &mut inner, frame, sprites.len() as u32, depth);
+        self.draw(encoder, &mut inner, &mut drawn, frame, sprites.len() as u32, depth);
+        self.stats.draws = drawn.draws;
+        self.stats.instances = drawn.instances;
         if let Some(point) = probe {
             let readback = self.probe(encoder, &mut inner);
             self.probing(point, readback);
@@ -127,6 +121,25 @@ impl View {
         self.events.extend(self.derived.sheet.errors.drain(..).map(Event::Error));
         drop(inner);
         self.end(started);
+    }
+
+    /// The time effects show this frame, and the seconds comets travel to it. What reads the clock
+    /// shows anything new only when it moved; a frame drawn again at the same instant, as a shot
+    /// draws while it waits, evaluates none of it. Under reduced motion the effect clock holds where
+    /// it first stood; a picture's still sets it.
+    fn effect_clock(&mut self) -> (f64, f64) {
+        let held = !self.moves() && !self.effect_time.is_nan();
+        let elapsed = self.signal.elapsed().unwrap_or_else(|| if held { self.effect_time } else { self.clock.now() });
+        // Comets travel the clock's step since the last frame: none at first or back in time, and
+        // never more than a pause's worth.
+        let travel = if self.effect_time.is_nan() { 0.0 } else { (elapsed - self.effect_time).clamp(0.0, TRAVEL) };
+        if self.effect_time != elapsed {
+            self.effect_time = elapsed;
+            for shown in &mut self.marks {
+                shown.dirty |= shown.channels_reading(Deps::TIME);
+            }
+        }
+        (elapsed, travel)
     }
 
     /// Ends a frame begun at `started`: what it stood in for, what it took, and the next frame its
@@ -357,7 +370,7 @@ impl View {
             columns: (((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32).min(self.trace_columns),
         };
         // A drag moves rows at once.
-        let easing = !self.scene.ease.is_zero() && !self.dragging();
+        let easing = !self.ease().is_zero() && !self.dragging();
         let mut waiting = false;
         for shown in &mut self.marks {
             let Some(compiled) = &shown.compiled else { continue };
@@ -383,7 +396,10 @@ impl View {
             if moved.is_some() || shown.rows != table.len() as u32 {
                 shown.all_dirty();
             }
-            if easing && shown.held > 0 && (moved.is_some() || shown.static_columns(columns)) {
+            // Without an ease, a flowing mark whose rows moved still begins, a transition of no length,
+            // so its comets follow the rows.
+            let carries = shown.mark.flows() && moved.is_some();
+            if (easing || carries) && shown.held > 0 && (moved.is_some() || shown.static_columns(columns)) {
                 shown.begin(moved);
             } else if moved.is_some() {
                 shown.exits = 0;

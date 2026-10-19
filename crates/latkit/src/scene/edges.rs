@@ -19,6 +19,8 @@ pub struct Edges {
     pub(crate) bends: Option<Name>,
     pub(crate) route: Option<Route>,
     pub(crate) arrows: bool,
+    pub(crate) poles: bool,
+    pub(crate) joins: Option<(Name, Name)>,
 }
 
 impl Edges {
@@ -31,7 +33,27 @@ impl Edges {
             bends: None,
             route: None,
             arrows: false,
+            poles: false,
+            joins: None,
         }
+    }
+
+    /// Draws each row as a net on a plane or the earth: it joins the vertex rows of `table` whose
+    /// reference field `reference` names it, as a star from their middle to each. In a diagram nets
+    /// join vertex ports instead.
+    #[must_use]
+    pub fn joins(mut self, table: impl Into<Name>, reference: impl Into<Name>) -> Edges {
+        self.joins = Some((table.into(), reference.into()));
+        self
+    }
+
+    /// Draws each row as a pole: a stroke from the row's own vertex, as the vertex mark drawing the
+    /// table places it, down to the ground beneath it, on a plane or the earth. Dashes, comets, picks,
+    /// and labels run along it as along any edge.
+    #[must_use]
+    pub fn poles(mut self) -> Edges {
+        self.poles = true;
+        self
     }
 
     /// A path field of points each row runs through between its ends.
@@ -63,7 +85,20 @@ impl Edges {
     }
 
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
-        if let Some((from, to)) = &self.ends {
+        if self.joins.is_some() {
+            if self.ends.is_some() || self.bends.is_some() || self.poles {
+                return Err(Error::invalid("a net joins its members: it has no ends, bends, or poles").at("joins"));
+            }
+        } else if self.poles {
+            if self.ends.is_some() || self.bends.is_some() {
+                return Err(
+                    Error::invalid("a pole stands on its own row's vertex: it has no ends or bends").at("poles")
+                );
+            }
+            // Both ends are the row's own vertex, which lights as its pole does.
+            c.own_end(&self.style.table, wgsl::EDGE_FROM)?;
+            c.own_end(&self.style.table, wgsl::EDGE_TO)?;
+        } else if let Some((from, to)) = &self.ends {
             c.end(from, wgsl::EDGE_FROM).map_err(|e| e.at("ends"))?;
             c.end(to, wgsl::EDGE_TO).map_err(|e| e.at("ends"))?;
         } else if self.bends.is_some() {
@@ -98,8 +133,15 @@ impl Edges {
         };
         self.stroke.compile(c, &words, context.diagram())?;
         let mut drawing = Drawing::new(MarkKind::Edges, wgsl::EDGE_WORDS);
+        drawing.size_px = self.stroke.px();
         drawing.flags = flags;
-        if context.diagram() {
+        if self.poles {
+            drawing.path = wgsl::PATH_POLES;
+        } else if self.joins.is_some() {
+            // Each net's star runs along the path the view works out from its members.
+            drawing.path = wgsl::PATH_GEOMETRY;
+            drawing.geometry = c.derived_path("route");
+        } else if context.diagram() {
             // Every wire runs along the path its sheet worked out.
             drawing.path = wgsl::PATH_GEOMETRY;
             drawing.geometry = c.derived_path("route");

@@ -154,40 +154,45 @@ impl Shot {
     }
 }
 
-/// A shot as JSON: `{ "size": [w, h], "scale", "panels": [[x, y, w, h]], "transparent", "deadline",
-/// "elapsed" }`, times in seconds. Only `size` is required.
-impl<'de> serde::Deserialize<'de> for Shot {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Shot, D::Error> {
-        use serde::de::Error as _;
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Form {
-            size: [u32; 2],
-            scale: Option<f32>,
-            #[serde(default)]
-            panels: Panels,
-            #[serde(default)]
-            transparent: bool,
-            deadline: Option<f64>,
-            elapsed: Option<f64>,
-        }
-        let form = Form::deserialize(deserializer)?;
+crate::schema::from_form! { Shot => ShotForm }
+
+/// A picture of views: its size, and how they lay out and draw in it.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ShotForm {
+    /// Width and height in pixels.
+    size: [u32; 2],
+    /// Pixels per CSS pixel: views lay out `size / scale` CSS pixels; 1 unless set.
+    scale: Option<f32>,
+    /// Each view's part of the picture, `[x, y, width, height]` as fractions; the whole by default.
+    #[serde(default)]
+    panels: Panels,
+    /// Whether alpha is kept where the themes' backgrounds would be.
+    #[serde(default)]
+    transparent: bool,
+    /// Seconds a picture, or a video frame, may go without progress.
+    deadline: Option<f64>,
+    /// A still's effect time in seconds, where elapsed time and flowing comets read it.
+    elapsed: Option<f64>,
+}
+
+impl ShotForm {
+    fn build<E: serde::de::Error>(self) -> std::result::Result<Shot, E> {
         let seconds = |value: f64, name: &str| {
             Duration::try_from_secs_f64(value)
-                .map_err(|_| D::Error::custom(format!("{name} is nonnegative seconds within range")))
+                .map_err(|_| E::custom(format!("{name} is nonnegative seconds within range")))
         };
-        let mut shot = Shot::new(form.size);
-        if let Some(scale) = form.scale {
+        let mut shot = Shot::new(self.size).panels(self.panels);
+        if let Some(scale) = self.scale {
             shot = shot.scale(scale);
         }
-        shot = shot.panels(form.panels);
-        if form.transparent {
+        if self.transparent {
             shot = shot.transparent();
         }
-        if let Some(deadline) = form.deadline {
+        if let Some(deadline) = self.deadline {
             shot = shot.deadline(seconds(deadline, "deadline")?);
         }
-        if let Some(elapsed) = form.elapsed {
+        if let Some(elapsed) = self.elapsed {
             shot = shot.elapsed(seconds(elapsed, "elapsed")?);
         }
         Ok(shot)

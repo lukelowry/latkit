@@ -1,0 +1,140 @@
+//! Reading data back without moving it: what a dataset holds, and a sampled field's extremes over
+//! spans of its axis.
+
+use super::column::{PAGE_BITS, PAGE_MASK};
+use super::data::Data;
+use super::ids::Ids;
+use super::name::Name;
+use super::table::{Field, Table};
+use super::values::Kind;
+use crate::{Error, Result};
+
+/// What a dataset holds: its tables, their rows and fields, and the axis its sampled fields are
+/// recorded over and span.
+#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+pub struct Description {
+    /// The dataset's name.
+    pub name: Name,
+    /// The axis's name and unit.
+    pub axis: Option<[Name; 2]>,
+    /// The first and last coordinates its sampled fields hold.
+    pub span: Option<[f64; 2]>,
+    /// Its tables, by name.
+    pub tables: Vec<TableDescription>,
+}
+
+/// A table described: its rows, and its fields by name.
+#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+pub struct TableDescription {
+    /// The table's name.
+    pub name: Name,
+    /// How many rows it has.
+    pub rows: usize,
+    /// Its fields, by name.
+    pub fields: Vec<FieldDescription>,
+}
+
+/// A field described: what it holds, the table a reference names, the coordinates samples span.
+#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+pub struct FieldDescription {
+    /// The field's name.
+    pub name: Name,
+    /// What it holds.
+    pub kind: Kind,
+    /// The table a reference names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<Name>,
+    /// The first and last coordinates a sampled field holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<[f64; 2]>,
+}
+
+impl Data {
+    /// What the dataset holds: tables, rows, fields and their kinds, the axis and its span.
+    pub fn describe(&self) -> Description {
+        Description {
+            name: self.name().clone(),
+            axis: self.axis().map(|(name, unit)| [name.into(), unit.into()]),
+            span: self.span(),
+            tables: self.tables().map(Table::describe).collect(),
+        }
+    }
+}
+
+impl Table {
+    /// What the table holds: its rows, and its fields' kinds, targets, and spans.
+    pub fn describe(&self) -> TableDescription {
+        let fields = self.fields.iter().map(|(name, field)| FieldDescription {
+            name: name.clone(),
+            kind: field.kind(),
+            to: match field {
+                Field::Reference(reference) => Some(reference.to.clone()),
+                _ => None,
+            },
+            span: match field {
+                Field::Sampled(samples, _) => samples.span(),
+                _ => None,
+            },
+        });
+        TableDescription { name: self.name.clone(), rows: self.len(), fields: fields.collect() }
+    }
+
+    /// Each row's least and greatest value of sampled field `field` over `spans` equal spans of the
+    /// axis from `range[0]` to `range[1]`: of every row, or of the rows `ids` names, in its order. A
+    /// span reads the coarsest levels of detail the field keeps that fit inside it, so it costs a few
+    /// reads, however many frames it covers.
+    pub fn envelope(&self, field: &str, range: [f64; 2], spans: usize, ids: Option<&Ids>) -> Result<Envelope> {
+        let Some(Field::Sampled(samples, _)) = self.field_named(field) else {
+            return Err(Error::invalid("not a sampled field").at(field));
+        };
+        if !(range[0].is_finite() && range[1].is_finite() && range[0] <= range[1]) || spans == 0 {
+            return Err(Error::invalid("an envelope spans a finite range, in one span or more"));
+        }
+        let rows: Vec<usize> = match ids {
+            None => (0..self.len()).collect(),
+            Some(ids) => (0..ids.len())
+                .map(|i| ids.key(i).and_then(|key| self.row(key)).ok_or_else(|| Error::invalid("no such row").at(i)))
+                .collect::<Result<_>>()?,
+        };
+        let width = (range[1] - range[0]) / spans as f64;
+        let at: Vec<f64> =
+            (0..=spans).map(|s| if s == spans { range[1] } else { range[0] + width * s as f64 }).collect();
+        // A span holds the frames from its start up to the next span's; the last holds its end too.
+        let bounds: Vec<u32> = at.iter().enumerate().map(|(s, &t)| samples.bound(t, s == spans)).collect();
+        let sealed = samples.sealed_levels();
+        let pieces: Vec<Vec<(u32, u32)>> = bounds.windows(2).map(|b| samples.pieces(b[0]..b[1], &sealed)).collect();
+        let mut least = vec![f32::NAN; rows.len() * spans];
+        let mut greatest = least.clone();
+        // Rows by block, so each piece's page is read once for all of a block's rows.
+        let mut by_block: Vec<(usize, usize)> =
+            rows.iter().enumerate().map(|(i, &row)| (row >> PAGE_BITS, i)).collect();
+        by_block.sort_unstable();
+        for run in by_block.chunk_by(|a, b| a.0 == b.0) {
+            let block = run[0].0;
+            let mut extent =
+                vec![[f32::NAN; 2]; run.iter().map(|&(_, i)| (rows[i] & PAGE_MASK) + 1).max().unwrap_or(0)];
+            for (s, pieces) in pieces.iter().enumerate() {
+                extent.fill([f32::NAN; 2]);
+                for &piece in pieces {
+                    samples.fold(block, piece, &mut extent);
+                }
+                for &(_, i) in run {
+                    let [lo, hi] = extent[rows[i] & PAGE_MASK];
+                    (least[i * spans + s], greatest[i * spans + s]) = (lo, hi);
+                }
+            }
+        }
+        Ok(Envelope { at, least, greatest })
+    }
+}
+
+/// Rows' least and greatest values of a sampled field over spans of its axis.
+#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+pub struct Envelope {
+    /// Where each span starts, then where the last ends: one more coordinate than spans.
+    pub at: Vec<f64>,
+    /// Each row's least value in each span, row after row: NaN where it has none.
+    pub least: Vec<f32>,
+    /// Each row's greatest value in each span, row after row: NaN where it has none.
+    pub greatest: Vec<f32>,
+}

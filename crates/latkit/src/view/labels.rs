@@ -29,6 +29,10 @@ use crate::host::TextRun;
 
 /// Rounds of claim and decide each placement runs.
 const ROUNDS: u32 = 6;
+/// Words of the select capping a mark's labels: a digit's buckets, then its state.
+const SELECT_WORDS: u32 = 2048 + 3;
+/// Digits of a key the select finds, one pass each.
+const DIGITS: u32 = 3;
 /// Seconds labels fade in or out over.
 const FADE: f64 = 0.2;
 /// Texts the host sets per frame at most, and the time setting them and making their distance
@@ -44,6 +48,8 @@ pub(crate) struct Slots {
     pub(crate) wanted: u32,
     pub(crate) seen: u32,
     pub(crate) id: u32,
+    /// The select capping the mark's labels, or `NONE` without a cap.
+    pub(crate) select: u32,
     /// Rows and codes the slots hold.
     rows: u32,
     codes: u32,
@@ -103,7 +109,7 @@ impl View {
         let source = Source { data, table: data.table(&style.table)?, derived: [None; 2] };
         let (d, t) = table_of(column, &source, &self.data)?;
         let text = inner.dictionaries.field(d, &t.name, &column.name).text(code)?.clone();
-        Some(atlas::run(text, self.scene.theme.font.clone(), labeling.size, labeling.max_width))
+        Some(atlas::run(text, labeling.font.clone(), labeling.size, labeling.max_width))
     }
 
     /// Codes mark `i`'s label text has so far.
@@ -197,7 +203,16 @@ impl View {
         let mut at = 0;
         let codes: Vec<u32> = labeled.iter().map(|&i| self.codes_of(i, inner).next_power_of_two().max(64)).collect();
         for &i in &labeled {
-            slots[i] = Some(Slots { candidates: 0, runs: 0, wanted: at, seen: 0, id: 0, rows: 0, codes: 0 });
+            slots[i] = Some(Slots {
+                candidates: 0,
+                runs: 0,
+                wanted: at,
+                seen: 0,
+                id: 0,
+                select: wgsl::NONE,
+                rows: 0,
+                codes: 0,
+            });
             at += 1 + wgsl::WANTED;
         }
         for (&i, &codes) in labeled.iter().zip(&codes) {
@@ -221,6 +236,10 @@ impl View {
             at += 2 * s.codes;
             s.id = id;
             id += mark_rows;
+            if self.marks[i].compiled.as_ref().and_then(|c| c.drawing.label.as_ref()).is_some_and(|l| l.max.is_some()) {
+                s.select = at;
+                at += SELECT_WORDS;
+            }
         }
         if slots != self.labels.slots || cells != self.labels.cells {
             let device = self.gpu.0.device.clone();
@@ -288,8 +307,7 @@ impl View {
             let entry = match (written.and_then(|w| w.get(&code)), &texts) {
                 (Some((_, glyphs)), _) => glyphs.corners(),
                 (None, Some((dictionary, labeling))) => dictionary.text(code).map_or([0, 0], |text| {
-                    let font = self.scene.theme.font.clone();
-                    atlas::estimate(&atlas::run(text.clone(), font, labeling.size, labeling.max_width))
+                    atlas::estimate(&atlas::run(text.clone(), labeling.font.clone(), labeling.size, labeling.max_width))
                 }),
                 (None, None) => [0, 0],
             };
@@ -328,7 +346,7 @@ impl View {
         frame.cells = cells;
         frame.cell_columns = columns;
         frame.cell_rows = rows;
-        frame.label_fade = (dt / FADE).min(1.0) as f32;
+        frame.label_fade = if self.moves() { (dt / FADE).min(1.0) as f32 } else { 1.0 };
     }
 
     /// Places labels when what they would show changed, and fades them; reads back the texts
@@ -382,6 +400,12 @@ impl View {
                 labeled.iter().map(|&(i, _)| (i, self.marks[i].rows, self.marks[i].path())).collect();
             let clear = inner.pipelines.compute(device, Shader::Labels, "clear_cells");
             let reset = inner.pipelines.compute(device, Shader::Labels, "reset_cells");
+            let capped: Vec<(usize, u32)> =
+                labeled.iter().filter(|(_, s)| s.select != wgsl::NONE).map(|&(i, _)| (i, self.marks[i].rows)).collect();
+            let selecting = (!capped.is_empty()).then(|| {
+                ["select_start", "select_count", "select_find", "select_cut"]
+                    .map(|entry| inner.pipelines.compute(device, Shader::Labels, entry))
+            });
             let mut each = |pass: &mut wgpu::ComputePass<'_>, entry: &'static str| {
                 for &(i, rows, path) in &marks {
                     let variant = Variant::compute(Shader::Labels, entry).path(path);
@@ -399,6 +423,10 @@ impl View {
                 each(&mut pass, "candidates");
             }
             if due && !diagram {
+                // A capped mark's labels past its cap give up their room before any claims.
+                if let Some(pipelines) = &selecting {
+                    select(&mut pass, pipelines, &groups.mark, &capped);
+                }
                 cells(&mut pass, &clear);
                 for _ in 0..ROUNDS {
                     each(&mut pass, "claim");
@@ -429,12 +457,42 @@ impl View {
             self.labels.asked = labeled;
         }
     }
+}
 
+/// Keeps each `capped` mark's labels to its cap, those of the highest keys: a radix select over the
+/// candidates' keys, a digit at a time, then a cut of those below.
+fn select(
+    pass: &mut wgpu::ComputePass<'_>,
+    [start, count, find, cut]: &[wgpu::ComputePipeline; 4],
+    marks: &wgpu::BindGroup,
+    capped: &[(usize, u32)],
+) {
+    let mut each = |pipeline: &wgpu::ComputePipeline, threads: Option<u32>| {
+        pass.set_pipeline(pipeline);
+        for &(i, rows) in capped {
+            pass.set_bind_group(1, marks, &[offset(i)]);
+            match threads {
+                Some(n) => dispatch(pass, n.max(rows)),
+                None => pass.dispatch_workgroups(1, 1, 1),
+            }
+        }
+    };
+    each(start, Some(SELECT_WORDS));
+    for _ in 0..DIGITS {
+        each(count, Some(0));
+        each(find, None);
+    }
+    each(cut, Some(0));
+}
+
+impl View {
     /// Draws every labeled mark's labels, then every vertex mark's port labels: `glyphs` are the
     /// pass groups of the labels' and the port labels' shaders.
+    #[allow(clippy::too_many_arguments, reason = "the main pass's state, as it draws")]
     pub(super) fn draw_labels(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut super::passes::Drawn,
         inner: &mut Inner,
         format: wgpu::TextureFormat,
         samples: u32,
@@ -452,7 +510,7 @@ impl View {
             pass.set_pipeline(&inner.pipelines.render_pipeline(device, variant));
             pass.set_bind_group(2, labels_group, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-            pass.draw(0..4, 0..shown.rows);
+            drawn.draw(pass, 4, shown.rows);
         }
         for (i, shown) in self.marks.iter().enumerate() {
             let labeled =
@@ -463,7 +521,7 @@ impl View {
             pass.set_pipeline(&inner.pipelines.render(device, ports, format, samples));
             pass.set_bind_group(2, ports_group, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-            pass.draw(0..4, 0..shown.rows * shown.port_count());
+            drawn.draw(pass, 4, shown.rows * shown.port_count());
         }
     }
 }

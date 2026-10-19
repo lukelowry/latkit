@@ -2,7 +2,10 @@ import type { View } from 'latkit';
 import { h } from './dom.js';
 import type { Stage } from './stage.js';
 
-/** A readout over a view: frames per second, the view's frame time, and the page's own measures. */
+/**
+ * A readout over a view: frames per second, the view's frame time, draws, instances, and tiles, and
+ * the page's own measures.
+ */
 export class Meter {
   readonly #line = h('p', { class: 'meter', 'aria-live': 'off' });
   readonly #times = new Map<string, number>();
@@ -16,10 +19,17 @@ export class Meter {
       this.#frames++;
       const now = performance.now();
       if (now - this.#since < 500) return;
+      const stats = view.stats;
       const parts = [
         `${((this.#frames * 1000) / (now - this.#since)).toFixed(0)} fps`,
-        `frame ${view.stats.cpuMs.toFixed(1)} ms`,
+        `frame ${stats.cpuMs.toFixed(1)} ms`,
+        `${stats.draws} draws · ${stats.instances.toLocaleString()} instances`,
       ];
+      if (stats.tiles || stats.tilesLoading) {
+        parts.push(
+          `${stats.tiles} tiles${stats.tilesLoading ? ` (${stats.tilesLoading} loading)` : ''}`,
+        );
+      }
       for (const [label, ms] of this.#times) parts.push(`${label} ${ms.toFixed(1)} ms`);
       this.#line.textContent = [...parts, ...this.#notes.map((note) => note())].join('  ·  ');
       this.#frames = 0;

@@ -1,6 +1,4 @@
 packages:
-  - 'packages/*'
-  - 'examples/*'
-  - 'benchmark'
+  - 'npm'
   - 'npm/examples'
   - 'npm/bench'

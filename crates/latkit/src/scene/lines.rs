@@ -57,6 +57,7 @@ impl Lines {
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
         let field = self.traced();
         let mut drawing = Drawing::new(MarkKind::Lines, wgsl::LINE_WORDS);
+        drawing.size_px = self.stroke.px();
         if matches!(context.space, Space::Plot(_)) {
             drawing.trace = match (c.kind(&field), &self.trace) {
                 (None, None) => return Err(Error::invalid("name the sampled field each row traces").at("trace")),

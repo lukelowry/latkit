@@ -197,6 +197,128 @@ fn inverses_follow_every_change_and_snapshots_keep_theirs() {
     assert_eq!(inverse(&before, 0), vec![0, 2]);
 }
 
+/// A dataset of `rows` rows of `Line` with a `flow` sampled over `frames` frames, one a second.
+fn sampled(rows: usize, frames: usize) -> Data {
+    let mut data = Data::new("grid");
+    let at: Vec<f64> = (0..frames).map(|f| f as f64).collect();
+    let flow: Vec<f64> = (0..frames * rows).map(|i| ((i * 7919) % 1000) as f64 - 500.0).collect();
+    data.apply(
+        Patch::new()
+            .axis("time", "s")
+            .put(Table::new("Line", rows).reference("from", "Bus", vec![0_u32; rows]))
+            .put(Table::new("Bus", 1).field("name", vec!["a"]))
+            .append(at, "Line", [("flow", flow)]),
+    )
+    .expect("valid");
+    data
+}
+
+#[test]
+fn describe_names_tables_fields_and_spans() {
+    let description = sampled(3, 10).describe();
+    assert_eq!(description.axis, Some(["time".into(), "s".into()]));
+    assert_eq!(description.span, Some([0.0, 9.0]));
+    let line = description.tables.iter().find(|t| t.name.as_str() == "Line").expect("Line");
+    assert_eq!(line.rows, 3);
+    let json = serde_json::to_value(line).expect("serializes");
+    assert_eq!(
+        json["fields"],
+        serde_json::json!([
+            { "name": "flow", "kind": "sampled", "span": [0.0, 9.0] },
+            { "name": "from", "kind": "reference", "to": "Bus" },
+        ])
+    );
+}
+
+#[test]
+fn envelopes_read_levels_as_frames_would() {
+    let (rows, frames) = (3, 700);
+    let data = sampled(rows, frames);
+    let line = data.table("Line").expect("Line");
+    let value = |row: usize, frame: usize| (((frame * rows + row) * 7919) % 1000) as f32 - 500.0;
+    for (range, spans) in [([0.0, 699.0], 1), ([0.0, 699.0], 7), ([13.5, 600.0], 5), ([650.0, 2000.0], 3)] {
+        let envelope = line.envelope("flow", range, spans, None).expect("an envelope");
+        assert_eq!(envelope.at.len(), spans + 1);
+        for row in 0..rows {
+            for s in 0..spans {
+                let (lo, hi) = (envelope.at[s], envelope.at[s + 1]);
+                let inside =
+                    (0..frames).filter(|&f| f as f64 >= lo && (f as f64) < hi || s == spans - 1 && f as f64 == hi);
+                let values: Vec<f32> = inside.map(|f| value(row, f)).collect();
+                let least = values.iter().copied().reduce(f32::min).unwrap_or(f32::NAN);
+                let greatest = values.iter().copied().reduce(f32::max).unwrap_or(f32::NAN);
+                let i = row * spans + s;
+                let same = |a: f32, b: f32| a == b || a.is_nan() && b.is_nan();
+                assert!(
+                    same(envelope.least[i], least) && same(envelope.greatest[i], greatest),
+                    "{range:?}/{spans} row {row} span {s}"
+                );
+            }
+        }
+    }
+    let picked = line.envelope("flow", [0.0, 699.0], 2, Some(&vec![2_u32, 0].into())).expect("an envelope");
+    let all = line.envelope("flow", [0.0, 699.0], 2, None).expect("an envelope");
+    assert_eq!(picked.least, [&all.least[4..6], &all.least[0..2]].concat());
+    assert!(line.envelope("from", [0.0, 1.0], 1, None).is_err());
+    assert!(line.envelope("flow", [0.0, 1.0], 1, Some(&vec![9_u32].into())).is_err());
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn queries_filter_sort_page_and_select() {
+    use crate::{Order, Query, field};
+    let mut data = Data::new("grid");
+    let loading = vec![40.0, 95.0, 120.0, 95.0, 10.0];
+    data.apply(Table::new("Branch", 5).field("loading", loading).field("name", vec!["a", "b", "c", "d", "e"]))
+        .expect("valid");
+    let names = |table: &Table| table.ids().map(|id| table.get(id, "name")).collect::<Vec<_>>();
+    let text = |s: &str| Some(Value::Text(s.into()));
+    let hot = Query::of("Branch").filter(field("loading").gt(90.0)).sort(field("loading"), Order::Descending);
+    assert_eq!(names(&data.query(&hot).expect("a query")), [text("c"), text("b"), text("d")], "ties keep their order");
+    let page = data.query(&hot.clone().offset(1).limit(1)).expect("a query");
+    assert_eq!(names(&page), [text("b")]);
+    let least = data.query(&Query::of("Branch").sort(field("loading"), Order::Ascending).limit(2)).expect("a query");
+    assert_eq!(names(&least), [text("e"), text("a")]);
+    let selected = data.query(&Query::of("Branch").limit(1).select("double", field("loading") * 2.0)).expect("a query");
+    assert_eq!(selected.fields().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["double"]);
+    assert_eq!(selected.get(0_u64, "double"), Some(Value::Number(80.0)));
+    let json: Query = serde_json::from_value(serde_json::json!({
+        "of": "Branch", "where": { "op": "lt", "args": ["loading", 100] }, "sort": [["loading", "descending"]], "limit": 2,
+    }))
+    .expect("a query");
+    assert_eq!(names(&data.query(&json).expect("a query")), [text("b"), text("d")]);
+    assert!(data.query(&Query::of("Nope")).is_err());
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn queries_read_sampled_fields_at_a_coordinate() {
+    use crate::{Query, field};
+    let data = sampled(2, 4);
+    let at_two = data.query(&Query::of("Line").at(2.0).select("flow", field("flow"))).expect("a query");
+    let flow = |row: usize, frame: usize| Value::Number(((((frame * 2 + row) * 7919) % 1000) as f64) - 500.0);
+    assert_eq!(at_two.get(1_u64, "flow"), Some(flow(1, 2)));
+    let last = data.query(&Query::of("Line")).expect("a query");
+    assert_eq!(last.kind("flow"), Some(crate::Kind::Number));
+    assert_eq!(last.get(0_u64, "flow"), Some(flow(0, 3)));
+}
+
+#[test]
+fn ids_too_large_for_json_numbers_cross_as_text() {
+    let big = (1_u64 << 53) + 1;
+    let mut data = Data::new("grid");
+    data.apply(Table::new("Bus", vec![big, 7]).field("kv", vec![1.0, 2.0])).expect("valid");
+    assert_eq!(serde_json::to_string(&Id::Number(big)).expect("an id"), format!("\"{big}\""));
+    assert_eq!(serde_json::to_string(&Id::Number(7)).expect("an id"), "7");
+    let bus = data.table("Bus").expect("Bus");
+    assert_eq!(bus.get(Id::from(big.to_string()), "kv"), Some(Value::Number(1.0)), "the text names the row");
+    assert_eq!(bus.get(big, "kv"), Some(Value::Number(1.0)));
+    assert_eq!(bus.values("kv").and_then(|v| v.numbers()), Some(vec![1.0, 2.0]));
+    let counted = Table::new("Count", 3).field("x", vec![0.0, 1.0, 2.0]);
+    data.apply(counted).expect("valid");
+    assert_eq!(data.table("Count").expect("Count").get(Id::from("2"), "x"), Some(Value::Number(2.0)));
+}
+
 #[test]
 fn schema_changes_only_with_fields() {
     let mut data = Data::new("grid");

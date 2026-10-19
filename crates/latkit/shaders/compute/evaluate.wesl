@@ -7,7 +7,7 @@
 
 import package::lib::types::{
     NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING,
-    VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, HALF_UNITS, OWN_HEIGHT, SIZED, MARK_VERTICES,
+    VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, VERTEX_RANGE, HALF_UNITS, OWN_HEIGHT, SIZED, MARK_VERTICES,
     OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME, OP_ZOOM,
     OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP,
     OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MIN, OP_MAX, OP_MOD, OP_POW,
@@ -16,7 +16,7 @@ import package::lib::types::{
     OP_POSITION, OP_STORE_END, OP_STORE_CODE, OP_REDUCE,
 };
 import package::lib::bind::{frame, program, mark, state};
-import package::lib::state::travel_words;
+import package::lib::state::{travel_words, pack_range};
 import package::lib::read::{column_value, bits_value, missing, missing_bits};
 import package::lib::focus::{is_selected, is_hovered};
 import package::lib::color::{scale, colormap};
@@ -271,7 +271,8 @@ fn run(row: u32, start: u32, end: u32, flags: u32) {
                 position(row, a, column_value(b, row), column_value(c, row));
             }
             case OP_STORE_END: {
-                let end_row = bits_value(b, row);
+                // Without a column, the end is the row itself, as a pole's.
+                let end_row = select(bits_value(b, row), row, b == NONE);
                 let first = program[mark.ends + c];
                 state[word_at(row, a)] = select(first + end_row, NONE, end_row == NONE || first == NONE);
             }
@@ -322,6 +323,7 @@ fn evaluate(@builtin(global_invocation_id) id: vec3u) {
         let units = select(0u, HALF_UNITS, (mark.units & (1u << VERTEX_HALF)) != 0u);
         let own = select(0u, OWN_HEIGHT, (mark.flags & SIZED) != 0u);
         state[at] = (state[at] & ~(HALF_UNITS | OWN_HEIGHT)) | units | own;
+        state[word_at(id.x, VERTEX_RANGE)] = pack_range(vec2f(mark.size_min, mark.size_max));
     }
 }
 

@@ -120,6 +120,16 @@ impl Values {
         })
     }
 
+    /// Value `i` as a row id, exactly: `None` when missing, or neither a whole number nor a text.
+    pub fn id(&self, i: usize) -> Option<super::name::Id> {
+        super::ids::key(self, i).map(super::name::IdRef::to_id)
+    }
+
+    /// Every value as a number, missing as NaN: `None` unless the values are numbers.
+    pub fn numbers(&self) -> Option<Vec<f64>> {
+        (self.kind() == Kind::Number).then(|| self.map_numbers(|x| x.unwrap_or(f64::NAN)))
+    }
+
     /// A zero-copy slice.
     #[must_use]
     pub fn slice(&self, range: Range<usize>) -> Values {

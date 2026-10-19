@@ -166,11 +166,51 @@ fn inspect_describes_datasets_and_geojson_takes_a_name() {
     ok(&output);
     let told: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(told[0]["name"], "grid");
-    assert_eq!(told[0]["tables"]["Bus"]["rows"], 2);
-    assert_eq!(told[0]["tables"]["Bus"]["fields"]["name"], "text");
+    let bus = &told[0]["tables"][0];
+    assert_eq!((&bus["name"], &bus["rows"]), (&"Bus".into(), &2.into()));
+    assert_eq!(bus["fields"][0], serde_json::json!({ "name": "name", "kind": "text" }));
     assert_eq!(told[1]["name"], "places");
-    assert_eq!(told[1]["tables"]["points"]["rows"], 1);
+    assert_eq!(told[1]["tables"][0]["rows"], 1);
     assert_eq!(run(dir.path(), &["inspect", "places.geojson"], None).status.code(), Some(1), "GeoJSON needs a name");
+}
+
+#[test]
+fn schema_describes_every_input_and_frames() {
+    let dir = fixture();
+    let output = run(dir.path(), &["schema", "frames"], None);
+    ok(&output);
+    let schema: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(schema["$ref"], "#/$defs/Frame");
+    let frame = &schema["$defs"]["Frame"]["properties"];
+    assert_eq!(frame["patch"]["$ref"], "#/$defs/Patches");
+    assert!(frame["camera"].to_string().contains("#/$defs/Camera"), "{frame}");
+    let all: serde_json::Value = serde_json::from_slice(&run(dir.path(), &["schema"], None).stdout).unwrap();
+    assert!(all.get("$ref").is_none() && all["$defs"]["Scene"].is_object());
+}
+
+#[test]
+fn query_writes_a_json_line_a_row() {
+    let dir = fixture();
+    let query =
+        r#"{"of":"Bus","sort":[["x","descending"]],"select":{"name":"name","twice":{"op":"mul","args":["x",2]}}}"#;
+    let output = run(dir.path(), &["query", "grid.json", query], None);
+    ok(&output);
+    let lines: Vec<serde_json::Value> =
+        String::from_utf8(output.stdout).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(
+        lines,
+        [
+            serde_json::json!({ "id": 20, "name": "Beta", "twice": 20.0 }),
+            serde_json::json!({ "id": 10, "name": "Alpha", "twice": -20.0 }),
+        ]
+    );
+    std::fs::write(dir.path().join("query.json"), r#"{"of":"Bus","where":{"op":"lt","args":["x",0]}}"#).unwrap();
+    let output = run(dir.path(), &["query", "-", "query.json"], Some(DATA.as_bytes()));
+    ok(&output);
+    assert_eq!(String::from_utf8(output.stdout).unwrap().lines().count(), 1);
+    let output = run(dir.path(), &["query", "grid.json", r#"{"of":"Nope"}"#], None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no such table"));
 }
 
 #[test]

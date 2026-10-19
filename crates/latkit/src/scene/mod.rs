@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use areas::Areas;
-pub use controls::Controls;
+pub use controls::{Controls, Motion, Zoom};
 pub use edges::Edges;
 pub use faces::Faces;
 pub use label::Label;
@@ -81,7 +81,7 @@ impl Scene {
         self
     }
 
-    /// Places vertices that have no position. Diagrams only.
+    /// Places vertex rows that have no position: a diagram's blocks, or points on a plane or the earth.
     #[must_use]
     pub fn layout(mut self, layout: impl Into<Layout>) -> Scene {
         self.layout = layout.into();
@@ -153,8 +153,12 @@ impl Scene {
                     .at(i)
                     .at("marks"));
             }
-            compile::compile(mark, data, mark::Context { theme: &self.theme, space: &self.space })
-                .map_err(|error| error.at(i).at("marks"))?;
+            compile::compile(
+                mark,
+                data,
+                mark::Context { theme: &self.theme, space: &self.space, layout: &self.layout },
+            )
+            .map_err(|error| error.at(i).at("marks"))?;
         }
         Ok(())
     }
@@ -163,8 +167,8 @@ impl Scene {
     /// are refused.
     pub(crate) fn check(&self) -> Result<()> {
         let diagram = matches!(self.space, Space::Diagram(_));
-        if !diagram && self.layout != Layout::None {
-            return Err(Error::invalid("only a diagram lays out vertices").at("layout"));
+        if matches!(self.space, Space::Plot(_)) && self.layout != Layout::None {
+            return Err(Error::invalid("a plot lays out no vertices").at("layout"));
         }
         for (i, mark) in self.marks.iter().enumerate() {
             if self.marks[..i].iter().any(|m| m.key() == mark.key()) {

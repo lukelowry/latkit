@@ -45,7 +45,7 @@ impl Ids {
     }
 }
 
-fn key(values: &Values, i: usize) -> Option<IdRef<'_>> {
+pub(crate) fn key(values: &Values, i: usize) -> Option<IdRef<'_>> {
     if !values.is_valid(i) {
         return None;
     }
@@ -320,13 +320,17 @@ impl Index {
         (resolved, dangling)
     }
 
+    /// The row with id `key`. A numbered row is also named by its id in decimal text, as ids too
+    /// large for a JSON or JavaScript number are written.
     pub(crate) fn get(&self, ids: &RowIds, key: IdRef<'_>) -> Option<usize> {
+        let number = |text: &str| text.parse::<u64>().ok().and_then(|n| self.get(ids, IdRef::Number(n)));
         match (self, key) {
             (Index::Identity(n), IdRef::Number(i)) => (i < u64::from(*n)).then_some(i as usize),
-            (Index::Identity(_), IdRef::Text(_)) => None,
-            (Index::Table(table), key) => {
-                table.find(hash(key), |&r| ids.key(r as usize) == Some(key)).map(|&r| r as usize)
-            }
+            (Index::Identity(_), IdRef::Text(text)) => number(text),
+            (Index::Table(table), key) => table
+                .find(hash(key), |&r| ids.key(r as usize) == Some(key))
+                .map(|&r| r as usize)
+                .or_else(|| if let IdRef::Text(text) = key { number(text) } else { None }),
         }
     }
 }
