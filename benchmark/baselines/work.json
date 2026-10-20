@@ -1,0 +1,918 @@
+{
+ "start": {
+  "10000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 200000,
+    "written": 6372,
+    "evaluated": 10000,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 16,
+    "resident": 327680
+   }
+  }
+ },
+ "points": {
+  "1000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 20000,
+    "written": 6372,
+    "evaluated": 1000,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 16,
+    "resident": 20480
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 48640,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 20480
+   },
+   "zoom": {
+    "uploaded": 0,
+    "written": 48640,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 20480
+   },
+   "restyle": {
+    "uploaded": 0,
+    "written": 5156,
+    "evaluated": 1000,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 20480
+   },
+   "one row": {
+    "uploaded": 160000,
+    "written": 62080,
+    "evaluated": 40000,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 184320
+   },
+   "every row": {
+    "uploaded": 4000,
+    "written": 1552,
+    "evaluated": 1000,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 188416
+   },
+   "first pick": {
+    "uploaded": 0,
+    "written": 2480,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 188416
+   },
+   "pick": {
+    "uploaded": 0,
+    "written": 2480,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 188416
+   },
+   "hover": {
+    "uploaded": 0,
+    "written": 3752,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 188416
+   },
+   "select": {
+    "uploaded": 0,
+    "written": 3280,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 188416
+   }
+  }
+ },
+ "grid": {
+  "1000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 36352,
+    "written": 7920,
+    "evaluated": 3008,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 29,
+    "resident": 36864
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 36864
+   },
+   "zoom": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 36864
+   },
+   "one row": {
+    "uploaded": 163840,
+    "written": 84544,
+    "evaluated": 40960,
+    "readbacks": 40,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 200704
+   },
+   "first pick": {
+    "uploaded": 0,
+    "written": 3088,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 200704
+   },
+   "pick": {
+    "uploaded": 0,
+    "written": 3040,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 200704
+   },
+   "hover": {
+    "uploaded": 0,
+    "written": 4536,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 200704
+   }
+  }
+ },
+ "labels": {
+  "100": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 2400,
+    "written": 1790666,
+    "evaluated": 100,
+    "readbacks": 8,
+    "jobs": 0,
+    "texts": 92,
+    "pipelines": 25,
+    "resident": 3072
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 1032036,
+    "evaluated": 0,
+    "readbacks": 6,
+    "jobs": 0,
+    "texts": 4,
+    "pipelines": 0,
+    "resident": 3072
+   },
+   "zoom": {
+    "uploaded": 0,
+    "written": 809508,
+    "evaluated": 0,
+    "readbacks": 6,
+    "jobs": 0,
+    "texts": 4,
+    "pipelines": 0,
+    "resident": 3072
+   }
+  }
+ },
+ "lanes": {
+  "100": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 1456,
+    "written": 8336,
+    "evaluated": 116,
+    "readbacks": 3,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 29,
+    "resident": 2560
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 2560
+   },
+   "first pick": {
+    "uploaded": 0,
+    "written": 3088,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 2560
+   },
+   "pick": {
+    "uploaded": 0,
+    "written": 3040,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 2560
+   }
+  }
+ },
+ "areas": {
+  "100": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 1340368,
+    "written": 6268,
+    "evaluated": 100,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 21,
+    "resident": 1344512
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 48640,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 1344512
+   },
+   "zoom": {
+    "uploaded": 0,
+    "written": 48640,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 1344512
+   },
+   "one row": {
+    "uploaded": 16000,
+    "written": 59200,
+    "evaluated": 4000,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 1364992
+   },
+   "first pick": {
+    "uploaded": 0,
+    "written": 2528,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 1364992
+   },
+   "pick": {
+    "uploaded": 0,
+    "written": 2480,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 1364992
+   }
+  }
+ },
+ "tiles": {
+  "16": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 2387568,
+    "written": 12924,
+    "evaluated": 1120,
+    "readbacks": 0,
+    "jobs": 24,
+    "texts": 0,
+    "pipelines": 21,
+    "resident": 2430464
+   },
+   "pan": {
+    "uploaded": 12111936,
+    "written": 51728,
+    "evaluated": 5200,
+    "readbacks": 0,
+    "jobs": 44,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 15107072
+   },
+   "zoom": {
+    "uploaded": 9403392,
+    "written": 54552,
+    "evaluated": 5472,
+    "readbacks": 0,
+    "jobs": 47,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 25581312
+   }
+  }
+ },
+ "diagram": {
+  "100": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 24240,
+    "written": 1084486,
+    "evaluated": 300,
+    "readbacks": 13,
+    "jobs": 2,
+    "texts": 100,
+    "pipelines": 34,
+    "resident": 33792
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 61824,
+    "evaluated": 0,
+    "readbacks": 6,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 33792
+   },
+   "edit": {
+    "uploaded": 374080,
+    "written": 782380,
+    "evaluated": 4000,
+    "readbacks": 17,
+    "jobs": 0,
+    "texts": 40,
+    "pipelines": 0,
+    "resident": 553984
+   },
+   "arrange": {
+    "uploaded": 19000,
+    "written": 7188,
+    "evaluated": 100,
+    "readbacks": 1,
+    "jobs": 2,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 581120
+   }
+  }
+ },
+ "traces": {
+  "10": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 49152,
+    "written": 213628,
+    "evaluated": 10,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 68,
+    "pipelines": 20,
+    "resident": 524288
+   },
+   "stream": {
+    "uploaded": 0,
+    "written": 407776,
+    "evaluated": 0,
+    "readbacks": 3,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 524288
+   },
+   "scrub": {
+    "uploaded": 0,
+    "written": 378816,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 524288
+   },
+   "narrow": {
+    "uploaded": 1920,
+    "written": 523468,
+    "evaluated": 0,
+    "readbacks": 10,
+    "jobs": 0,
+    "texts": 46,
+    "pipelines": 0,
+    "resident": 524288
+   },
+   "hover": {
+    "uploaded": 0,
+    "written": 23912,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 524288
+   }
+  }
+ },
+ "history": {
+  "1000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 12000,
+    "written": 203446,
+    "evaluated": 1,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 63,
+    "pipelines": 20,
+    "resident": 524288
+   },
+   "scrub": {
+    "uploaded": 0,
+    "written": 378880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 524288
+   },
+   "narrow": {
+    "uploaded": 0,
+    "written": 534414,
+    "evaluated": 0,
+    "readbacks": 11,
+    "jobs": 0,
+    "texts": 47,
+    "pipelines": 0,
+    "resident": 524288
+   }
+  }
+ },
+ "transition": {
+  "1000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 20000,
+    "written": 6372,
+    "evaluated": 1000,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 16,
+    "resident": 20480
+   },
+   "move": {
+    "uploaded": 20000,
+    "written": 3384464,
+    "evaluated": 2783000,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 40960
+   }
+  }
+ },
+ "views": {
+  "1": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 3589760,
+    "written": 9400,
+    "evaluated": 298936,
+    "readbacks": 1,
+    "jobs": 1,
+    "texts": 0,
+    "pipelines": 29,
+    "resident": 4227072
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 4227072
+   }
+  }
+ },
+ "budget": {
+  "100000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 5830848,
+    "written": 12864,
+    "evaluated": 376668,
+    "readbacks": 1,
+    "jobs": 2,
+    "texts": 0,
+    "pipelines": 29,
+    "resident": 7208960
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 7208960
+   },
+   "zoom": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 7208960
+   }
+  }
+ },
+ "shots": {
+  "518400": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 3589760,
+    "written": 17776,
+    "evaluated": 597872,
+    "readbacks": 2,
+    "jobs": 2,
+    "texts": 0,
+    "pipelines": 29,
+    "resident": 4227072
+   },
+   "image": {
+    "uploaded": 0,
+    "written": 11872,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 4,
+    "resident": 4227072
+   },
+   "png": {
+    "uploaded": 0,
+    "written": 8832,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 4227072
+   },
+   "video": {
+    "uploaded": 0,
+    "written": 97248,
+    "evaluated": 0,
+    "readbacks": 30,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 14,
+    "resident": 4227072
+   },
+   "held": {
+    "uploaded": 0,
+    "written": 3040,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "resident": 4227072
+   }
+  }
+ }
+}

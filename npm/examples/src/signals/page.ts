@@ -35,8 +35,12 @@ function record(): Data {
   }
   const patch = new Patch()
     .axis('time', 's')
-    .set('Node', n, { x, y, traced })
-    .set('Link', from.length, { from: reference('Node', from), to: reference('Node', to) });
+    .set('Node', { count: n }, { x, y, traced })
+    .set(
+      'Link',
+      { count: from.length },
+      { from: reference('Node', from), to: reference('Node', to) },
+    );
   // Every frame in one append, frame by frame.
   const times = Array.from({ length: FRAMES }, (_, f) => f * STEP);
   const signal = new Float32Array(FRAMES * n);

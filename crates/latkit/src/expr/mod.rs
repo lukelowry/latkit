@@ -4,7 +4,7 @@ mod color;
 mod colormap;
 pub(crate) mod compile;
 pub(crate) mod cpu;
-mod decode;
+mod form;
 mod ramp;
 
 use std::ops::{Add, BitAnd, BitOr, Div, Mul, Neg, Not, RangeInclusive, Rem, Sub};
@@ -44,6 +44,7 @@ pub(crate) enum Node {
     Binary(Binary, Expr, Expr),
     When(Expr, Expr, Expr),
     Is(Expr, Arc<str>),
+    Contains(Expr, Arc<str>),
     Scale { input: Expr, domain: Domain, range: [f64; 2] },
     Colormap { input: Expr, colormap: Colormap, domain: Domain },
 }
@@ -58,7 +59,9 @@ pub(crate) struct FieldRef {
     pub(crate) component: Option<u8>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// What the view knows of each row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum State {
     Selected,
     Hovered,
@@ -67,7 +70,9 @@ pub(crate) enum State {
     Zoom,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// An operation of one value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum Unary {
     Neg,
     Not,
@@ -80,7 +85,9 @@ pub(crate) enum Unary {
     Exp,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// An operation of two values.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum Binary {
     Add,
     Sub,
@@ -237,6 +244,13 @@ impl Expr {
         node(Node::Is(self, text.into()))
     }
 
+    /// Whether a text field holds `text`, ignoring case. Only a [`Query`](crate::Query) reads it, as
+    /// the GPU holds no texts.
+    #[must_use]
+    pub fn contains(self, text: &str) -> Expr {
+        node(Node::Contains(self, text.into()))
+    }
+
     /// Reads this expression's fields from `table` of dataset `data`, joined by row id.
     #[must_use]
     pub fn of(self, data: impl Into<Name>, table: impl Into<Name>) -> Expr {
@@ -275,6 +289,7 @@ impl Expr {
             Node::Binary(op, a, b) => node(Node::Binary(*op, a.map_fields(f), b.map_fields(f))),
             Node::When(c, a, b) => node(Node::When(c.map_fields(f), a.map_fields(f), b.map_fields(f))),
             Node::Is(a, text) => node(Node::Is(a.map_fields(f), text.clone())),
+            Node::Contains(a, text) => node(Node::Contains(a.map_fields(f), text.clone())),
             Node::Scale { input, domain, range } => {
                 node(Node::Scale { input: input.map_fields(f), domain: *domain, range: *range })
             }
@@ -285,8 +300,28 @@ impl Expr {
         }
     }
 
-    /// The first colormap a color maps through, and its domain when set: what a legend shows. A
-    /// conditional's general case, its `otherwise`, comes before the cases it makes exceptions for.
+    /// Calls `f` with every field the expression reads.
+    pub(crate) fn for_each_field(&self, f: &mut impl FnMut(&FieldRef)) {
+        match &*self.0 {
+            Node::Field(field) => f(field),
+            Node::Unary(_, a)
+            | Node::Is(a, _)
+            | Node::Contains(a, _)
+            | Node::Scale { input: a, .. }
+            | Node::Colormap { input: a, .. } => a.for_each_field(f),
+            Node::Binary(_, a, b) => {
+                a.for_each_field(f);
+                b.for_each_field(f);
+            }
+            Node::When(c, a, b) => {
+                c.for_each_field(f);
+                a.for_each_field(f);
+                b.for_each_field(f);
+            }
+            Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::State(_) => {}
+        }
+    }
+
     /// The field's name, when the expression is a field of its own table read as it is.
     pub(crate) fn field_name(&self) -> Option<&Name> {
         match &*self.0 {
@@ -295,12 +330,14 @@ impl Expr {
         }
     }
 
+    /// The first colormap a color maps through, and its domain when set: what a legend shows. A
+    /// conditional's general case, its `otherwise`, comes before the cases it makes exceptions for.
     pub(crate) fn colormap_of(&self) -> Option<(&Colormap, Option<[f64; 2]>)> {
         match &*self.0 {
             Node::Colormap { colormap, domain, .. } => {
                 Some((colormap, if let Domain::Fixed(domain) = domain { Some(*domain) } else { None }))
             }
-            Node::Unary(_, a) | Node::Is(a, _) => a.colormap_of(),
+            Node::Unary(_, a) | Node::Is(a, _) | Node::Contains(a, _) => a.colormap_of(),
             Node::Binary(_, a, b) => a.colormap_of().or_else(|| b.colormap_of()),
             Node::When(c, a, b) => b.colormap_of().or_else(|| a.colormap_of()).or_else(|| c.colormap_of()),
             Node::Scale { input, .. } => input.colormap_of(),

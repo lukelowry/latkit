@@ -3,9 +3,9 @@
 pub(crate) mod areas;
 pub(crate) mod compile;
 mod controls;
-mod decode;
 mod edges;
 mod faces;
+mod form;
 mod label;
 mod layout;
 pub(crate) mod lines;
@@ -13,6 +13,8 @@ pub(crate) mod mark;
 mod marker;
 mod port;
 mod space;
+#[cfg(test)]
+mod tests;
 mod theme;
 mod vertices;
 
@@ -23,6 +25,7 @@ pub use areas::Areas;
 pub use controls::{Controls, Motion, Zoom};
 pub use edges::Edges;
 pub use faces::Faces;
+pub(crate) use form::seconds;
 pub use label::Label;
 pub use layout::{Direction, Interpolation, Layered, Layout, Route, Stress};
 pub use lines::Lines;
@@ -37,7 +40,8 @@ pub use vertices::Vertices;
 use crate::{Data, Error, Expr, Result};
 
 /// What a view draws and how it answers input: a space, marks in drawing order, a layout, a theme,
-/// controls, how long changes ease, and the title written over it.
+/// controls, how long changes ease, and the title written over it. Plain data: as JSON, each field by
+/// its name in camelCase, each mark `{ vertices | edges | faces | lines | areas: options }`.
 ///
 /// ```
 /// # use latkit::{Colormap, Edges, Earth, Scene, Vertices, field};
@@ -47,16 +51,36 @@ use crate::{Data, Error, Expr, Result};
 ///     .draw(Vertices::of("grid", "Bus").position("lon", "lat").color(voltage).legend("Bus voltage · pu"))
 ///     .title("Voltage");
 /// ```
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Scene {
     pub(crate) space: Space,
+    /// What the view draws, in drawing order.
+    #[serde(default)]
     pub(crate) marks: Vec<Mark>,
+    /// How the view places vertex rows without positions: a diagram's blocks, or points on a plane
+    /// or the earth, gaps in the space's units.
+    #[serde(default)]
     pub(crate) layout: Layout,
+    #[serde(default)]
     pub(crate) theme: Theme,
+    #[serde(default)]
     pub(crate) controls: Controls,
+    /// Seconds that changes ease over; 0.3 unless set.
+    #[serde(default = "ease", deserialize_with = "form::seconds")]
+    #[schemars(with = "f64")]
     pub(crate) ease: Duration,
+    /// Written at the view's top left, larger than the theme's text.
+    #[serde(default)]
     pub(crate) title: Option<Arc<str>>,
+    /// Written under the title.
+    #[serde(default)]
     pub(crate) subtitle: Option<Arc<str>>,
+}
+
+/// How long changes ease unless set.
+fn ease() -> Duration {
+    Duration::from_millis(300)
 }
 
 impl Scene {
@@ -68,7 +92,7 @@ impl Scene {
             layout: Layout::None,
             theme: Theme::default(),
             controls: Controls::default(),
-            ease: Duration::from_millis(300),
+            ease: ease(),
             title: None,
             subtitle: None,
         }
@@ -126,11 +150,6 @@ impl Scene {
     /// The space.
     pub fn space(&self) -> &Space {
         &self.space
-    }
-
-    /// The marks in drawing order.
-    pub fn marks(&self) -> &[Mark] {
-        &self.marks
     }
 
     /// Checks the scene against complete datasets without creating a GPU. Uses the same expression

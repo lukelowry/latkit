@@ -55,17 +55,20 @@ if (mode === 'prepare') {
     after: fs.statSync(wasm).size,
   });
 } else if (mode === 'schema') {
-  fs.writeFileSync(
-    path.join(root, 'npm/src/forms.ts'),
-    await typescript(path.join(root, 'npm/schema.json')),
-  );
+  const types = await typescript(path.join(root, 'npm/schema.json'));
+  for (const [name, source] of Object.entries(types)) {
+    fs.writeFileSync(path.join(root, `npm/src/${name}.ts`), source);
+  }
 } else if (mode === 'compile') {
   const stage = path.resolve(root, directory);
-  assert.equal(
-    fs.readFileSync(path.join(stage, 'src/forms.ts'), 'utf8').replaceAll('\r\n', '\n'),
-    await typescript(path.join(root, 'npm/schema.json')),
-    'src/forms.ts is not what npm/schema.json says: run node npm/build.mjs schema',
-  );
+  const types = await typescript(path.join(root, 'npm/schema.json'));
+  for (const [name, source] of Object.entries(types)) {
+    assert.equal(
+      fs.readFileSync(path.join(stage, `src/${name}.ts`), 'utf8').replaceAll('\r\n', '\n'),
+      source,
+      `src/${name}.ts is not what npm/schema.json says: run node npm/build.mjs schema`,
+    );
+  }
   execFileSync(
     process.execPath,
     [path.join(root, 'node_modules/typescript/bin/tsc'), '-p', stage],

@@ -9,14 +9,14 @@ mod common;
 use std::time::Duration;
 
 use common::{SIZE, at, camera, close, frame, gpu, plain_theme, plane, step};
-use latkit::{Color, Data, Image, Scene, Shot, Table, Theme, Vertices, View};
+use latkit::{Color, Data, Ids, Image, Scene, Shot, Table, Theme, Vertices, View};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 
 fn dot(x: f64, color: Color) -> (Scene, Data) {
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 1).field("x", vec![x]).field("y", vec![0.0])).expect("valid");
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![x]).field("y", vec![0.0])).expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(6.0).color(color));
@@ -99,7 +99,7 @@ fn a_picture_waits_for_what_eases_to_land() {
     let mut view = view(&gpu, scene.ease(Duration::from_secs(2)), data.clone());
     frame(&gpu, &mut view);
     let mut moved = data;
-    moved.apply(Table::new("Node", 1).field("x", vec![40.0])).expect("valid");
+    moved.apply(Table::new("Node", Ids::count(1)).field("x", vec![40.0])).expect("valid");
     view.set_data(moved);
     step(&gpu, &mut view);
     assert!(view.needs_render(), "the dot eases over two seconds");
@@ -139,7 +139,7 @@ fn timeouts_and_font_errors_return_the_view_without_a_partial_image() {
     assert!(!view.lent());
     gpu.set_host(BrokenText);
     let mut data = Data::new("labels");
-    data.apply(Table::new("Node", 1).field("name", vec!["Hello"])).unwrap();
+    data.apply(Table::new("Node", Ids::count(1)).field("name", vec!["Hello"])).unwrap();
     let scene =
         Scene::new(latkit::Diagram::default()).draw(Vertices::of("labels", "Node").label(latkit::Label::new("name")));
     view.show(scene).unwrap();
@@ -176,7 +176,10 @@ fn native_fonts_draw_visible_glyphs_into_the_export() {
     let Some(gpu) = gpu() else { return };
     gpu.set_host(latkit::host::Native::new());
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 1).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["Hello"])).unwrap();
+    data.apply(
+        Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["Hello"]),
+    )
+    .unwrap();
     let scene = Scene::new(plane()).theme(plain_theme()).ease(Duration::ZERO).draw(
         Vertices::of("graph", "Node")
             .position("x", "y")
@@ -195,8 +198,13 @@ fn native_fonts_draw_visible_glyphs_into_the_export() {
 fn a_legend_draws_its_marks_colormap_across_the_domain() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 2).field("x", vec![-1.0, 1.0]).field("y", vec![0.0, 0.0]).field("v", vec![0.0, 1.0]))
-        .expect("valid");
+    data.apply(
+        Table::new("Node", Ids::count(2))
+            .field("x", vec![-1.0, 1.0])
+            .field("y", vec![0.0, 0.0])
+            .field("v", vec![0.0, 1.0]),
+    )
+    .expect("valid");
     let colors = latkit::field("v").colormap(latkit::Colormap::VIRIDIS).domain(0.0..=1.0);
     let scene = Scene::new(plane())
         .theme(plain_theme())
@@ -219,8 +227,13 @@ fn a_legend_lists_named_categories_by_their_colors() {
     use latkit::{Colormap, ColormapKind, field};
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 2).field("x", vec![-1.0, 1.0]).field("y", vec![0.0, 0.0]).field("k", vec![0.0, 1.0]))
-        .expect("valid");
+    data.apply(
+        Table::new("Node", Ids::count(2))
+            .field("x", vec![-1.0, 1.0])
+            .field("y", vec![0.0, 0.0])
+            .field("k", vec![0.0, 1.0]),
+    )
+    .expect("valid");
     let map = Colormap::new(ColormapKind::Categorical, [Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0)])
         .expect("two categories");
     let node = Vertices::of("graph", "Node").position("x", "y").radius(4.0);

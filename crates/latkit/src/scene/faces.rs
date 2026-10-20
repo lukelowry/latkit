@@ -1,8 +1,9 @@
-use super::mark::{Drawing, MarkKind, Style, style_methods};
+use super::mark::{Drawing, MarkKind, Style, mark, style_methods};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Name, Result};
 
+mark!(
 /// Rows drawn as triangles between the vertices three reference fields name: meshes, surfaces, and
 /// fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen from
 /// above shows its exact colors.
@@ -11,11 +12,11 @@ use crate::{Error, Name, Result};
 /// # use latkit::Faces;
 /// let surface = Faces::of("mesh", "Face").corners("a", "b", "c");
 /// ```
-#[derive(Clone, PartialEq, Debug)]
-pub struct Faces {
-    pub(crate) style: Style,
-    pub(crate) corners: Option<[Name; 3]>,
-}
+Faces {
+    /// The reference fields naming each row's three vertices. Without a color, a face blends the
+    /// colors of its corners.
+    corners: Option<[Name; 3]> as "[a: string, b: string, c: string]",
+});
 
 impl Faces {
     /// Draws the rows of `table` in dataset `data`.

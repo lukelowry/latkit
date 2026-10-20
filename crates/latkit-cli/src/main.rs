@@ -59,7 +59,7 @@ impl Failure {
 
     /// An I/O `error` with the file at `path`.
     pub(crate) fn io(error: &io::Error, path: &Path) -> Failure {
-        Failure::at(Error::Load(error.to_string().into()), path)
+        Failure::at(Error::Io(error.to_string().into()), path)
     }
 }
 
@@ -78,7 +78,7 @@ fn inspect(sources: &[Source], deadline: Duration) -> Result<(), Failure> {
         all.push(inputs::dataset(source, &host, deadline)?.describe());
     }
     let mut out = io::stdout().lock();
-    serde_json::to_writer_pretty(&mut out, &all).map_err(|e| Failure::from(Error::Load(e.to_string().into())))?;
+    serde_json::to_writer_pretty(&mut out, &all).map_err(|e| Failure::from(Error::Io(e.to_string().into())))?;
     writeln!(out).map_err(|e| Failure::io(&e, Path::new("-")))
 }
 
@@ -107,7 +107,7 @@ fn schema(input: Option<Input>) -> Result<(), Failure> {
         schemas["$ref"] = json!(format!("#/$defs/{name}"));
     }
     let mut out = io::stdout().lock();
-    serde_json::to_writer_pretty(&mut out, &schemas).map_err(|e| Failure::from(Error::Load(e.to_string().into())))?;
+    serde_json::to_writer_pretty(&mut out, &schemas).map_err(|e| Failure::from(Error::Io(e.to_string().into())))?;
     writeln!(out).map_err(|e| Failure::io(&e, Path::new("-")))
 }
 
@@ -118,7 +118,7 @@ fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure
         if query.trim_start().starts_with('{') { query.as_bytes().to_vec() } else { inputs::read(Path::new(query))? };
     let query: Query =
         serde_json::from_slice(&text).map_err(|e| Failure::from(Error::invalid(e.to_string()).at("query")))?;
-    let rows = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.query(&query)?;
+    let (rows, _) = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.query(&query)?;
     let columns: Vec<(String, Values)> =
         rows.fields().map(|(name, _)| (name.to_string(), rows.values(name).expect("a field the table has"))).collect();
     let mut out = io::BufWriter::new(io::stdout().lock());
@@ -128,28 +128,14 @@ fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure
         for (name, values) in &columns {
             let value = match rows.kind(name) {
                 Some(Kind::Reference) => values.id(row).map_or(Value::Null, |id| json!(id)),
-                _ => values.get(row).map_or(Value::Null, |v| value_json(&v)),
+                _ => values.get(row).map_or(Value::Null, |v| json!(v)),
             };
             line.insert(name.clone(), value);
         }
-        serde_json::to_writer(&mut out, &line).map_err(|e| Failure::from(Error::Load(e.to_string().into())))?;
+        serde_json::to_writer(&mut out, &line).map_err(|e| Failure::from(Error::Io(e.to_string().into())))?;
         writeln!(out).map_err(|e| Failure::io(&e, Path::new("-")))?;
     }
     out.flush().map_err(|e| Failure::io(&e, Path::new("-")))
-}
-
-/// A value as JSON: numbers (NaN as `null`), booleans, texts, and geometries as nested `[x, y]`.
-fn value_json(value: &latkit::Value) -> Value {
-    match value {
-        latkit::Value::Number(n) => serde_json::Number::from_f64(*n).map_or(Value::Null, Value::Number),
-        latkit::Value::Bool(b) => json!(b),
-        latkit::Value::Text(t) => json!(&**t),
-        latkit::Value::Point(p) => json!(p),
-        latkit::Value::Path(p) => json!(p),
-        latkit::Value::Parts(p) => json!(p),
-        latkit::Value::Polygons(p) => json!(p),
-        latkit::Value::Row(row) => json!(row.id),
-    }
 }
 
 /// `future`'s result, driven on this thread and given up at `deadline`.

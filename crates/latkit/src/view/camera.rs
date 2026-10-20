@@ -68,12 +68,24 @@ const MAX_ZOOM: f64 = 24.0;
 /// A rectangle of the view, CSS pixels: left, top, right, bottom.
 pub(crate) type Area = [f64; 4];
 
-/// What a fit framed: the camera stays within reach of it.
+/// What fits framed: everything, and any rows framed since. The camera stays within reach of it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Bounds {
     pub(crate) min: [f64; 3],
     pub(crate) max: [f64; 3],
-    pub(crate) zoom: f64,
+    /// The least and greatest zoom the fits framed at.
+    pub(crate) zoom: [f64; 2],
+}
+
+impl Bounds {
+    /// Reach that holds both.
+    pub(crate) fn with(self, other: Bounds) -> Bounds {
+        Bounds {
+            min: std::array::from_fn(|k| self.min[k].min(other.min[k])),
+            max: std::array::from_fn(|k| self.max[k].max(other.max[k])),
+            zoom: [self.zoom[0].min(other.zoom[0]), self.zoom[1].max(other.zoom[1])],
+        }
+    }
 }
 
 impl Camera {
@@ -223,7 +235,7 @@ impl Camera {
         let across = |k: usize| center[k].clamp(bounds.min[k] - span, bounds.max[k] + span);
         Camera::Map {
             center: [across(0), across(1), center[2].clamp(bounds.min[2], bounds.max[2])],
-            zoom: zoom.clamp(bounds.zoom - 3.0, bounds.zoom + 8.0),
+            zoom: zoom.clamp(bounds.zoom[0] - 3.0, bounds.zoom[1] + 8.0),
             pitch: pitch.clamp(0.0, MAX_PITCH),
             bearing,
         }

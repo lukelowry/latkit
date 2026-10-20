@@ -252,6 +252,28 @@ impl Samples {
         Ok(())
     }
 
+    /// Appends frames of some rows: `values` holds `at.len()` frames of a value per row of `rows`,
+    /// frame-major. The rest of the `total` rows hold their last frame's values, missing before any.
+    pub(crate) fn append_rows(&mut self, at: &[f64], values: &Values, rows: &[usize], total: usize) -> Result<()> {
+        let given = rows.len();
+        if values.len() != at.len() * given {
+            return Err(Error::invalid(format!("{} values for {} frames of {given} rows", values.len(), at.len())));
+        }
+        let mut frame = vec![f32::NAN; total];
+        if self.end() > self.start() {
+            self.read_frame(self.end() - 1, &mut frame);
+        }
+        let mut dense = Vec::with_capacity(at.len() * total);
+        for f in 0..at.len() {
+            for (k, &row) in rows.iter().enumerate() {
+                let i = f * given + k;
+                frame[row] = if values.is_valid(i) { values.number(i) as f32 } else { f32::NAN };
+            }
+            dense.extend_from_slice(&frame);
+        }
+        self.append(at, &Values::from(dense), total)
+    }
+
     /// The pages of `block`'s level `level` holding buckets `buckets`: of least values for `which` 0,
     /// of greatest for 1.
     pub(crate) fn level_pages(

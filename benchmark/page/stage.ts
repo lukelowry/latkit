@@ -5,7 +5,16 @@
  * CPU and GPU time are per frame. Both count what the GPU did until everything settled. A lost
  * device fails the phase at once. Every wait races a deadline.
  */
-import type { Camera, Data, Gpu, Latkit, Patch, Scene, View, Work } from 'latkit';
+import {
+  Patch,
+  type Camera,
+  type Data,
+  type Gpu,
+  type Latkit,
+  type Scene,
+  type View,
+  type Work,
+} from 'latkit';
 
 /** Writes a dataset's rows into a patch, from arrays made beforehand. */
 export type Write = (patch: Patch) => Patch;
@@ -98,7 +107,7 @@ export class Stage {
 
   /** Takes each dataset in: latkit's work alone, the arrays made beforehand. */
   ingest(data: Record<string, Write>): Promise<Cost> {
-    const { Data, Patch } = this.latkit;
+    const { Data } = this.latkit;
     return this.once(() => {
       for (const [name, write] of Object.entries(data))
         this.#data.set(name, new Data(name).apply(write(new Patch())));
@@ -132,8 +141,7 @@ export class Stage {
 
   /** Writes a patch into dataset `name` and gives every view the next version. */
   apply(name: string, write: Write): void {
-    const data = this.#data.get(name)!.apply(write(new this.latkit.Patch()));
-    this.#data.set(name, data);
+    const data = this.#data.get(name)!.apply(write(new Patch()));
     for (const view of this.views) view.setData(data);
   }
 

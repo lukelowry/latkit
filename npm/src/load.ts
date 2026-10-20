@@ -27,7 +27,7 @@ export function loadLatkit(options: LoadOptions = {}): Promise<Latkit> {
     ) {
       return Promise.reject(
         Object.assign(new Error('latkit is already loading or loaded with different options'), {
-          code: 'load',
+          code: 'io',
         }),
       );
     }
@@ -39,7 +39,7 @@ export function loadLatkit(options: LoadOptions = {}): Promise<Latkit> {
     .catch((cause: unknown) => {
       configured = undefined;
       loading = undefined;
-      throw Object.assign(new Error('could not load latkit', { cause }), { code: 'load' });
+      throw Object.assign(new Error('could not load latkit', { cause }), { code: 'io' });
     });
   return loading;
 }

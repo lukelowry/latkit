@@ -47,7 +47,7 @@ impl View {
         match &self.fitting.wanted {
             &Some(Fit::Bounds { min, max }) => {
                 self.fitting.wanted = None;
-                self.frame_box(min, max);
+                self.frame_box(min, max, false);
             }
             Some(Fit::All) if matches!(self.scene.space, Space::Plot(_)) => {
                 if let Some(span) = self.traced_span() {
@@ -115,7 +115,7 @@ impl View {
                 self.fitting.wanted = None;
                 let lo = tiled.iter().fold([f64::INFINITY; 2], |a, b| [a[0].min(b[0]), a[1].min(b[1])]);
                 let hi = tiled.iter().fold([f64::NEG_INFINITY; 2], |a, b| [a[0].max(b[2]), a[1].max(b[3])]);
-                self.frame_box([lo[0], lo[1], 0.0], [hi[0], hi[1], 0.0]);
+                self.frame_box([lo[0], lo[1], 0.0], [hi[0], hi[1], 0.0], true);
                 return None;
             }
             let fit = self.fitting.wanted.take();
@@ -173,11 +173,11 @@ impl View {
                     self.fly(camera);
                 }
             }
-            Some(_) => {
+            Some(fit) => {
                 if let Camera::Plot { y: None, .. } = self.camera {
                     self.plot_y = None;
                 }
-                self.frame_box(lo, hi);
+                self.frame_box(lo, hi, matches!(fit, Fit::All));
             }
         }
     }
@@ -188,13 +188,19 @@ impl View {
         self.derived.tiled.bounds(&style.data, &style.table)
     }
 
-    /// Frames the box `min..max` at once, and keeps the camera within reach of it.
-    fn frame_box(&mut self, min: [f64; 3], max: [f64; 3]) {
+    /// Frames the box `min..max` at once. Framing everything sets how far the camera can go from it;
+    /// framing part of it widens that reach, never narrows it.
+    fn frame_box(&mut self, min: [f64; 3], max: [f64; 3], everything: bool) {
         let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.area());
         self.rig.hold();
-        self.rig.bounds = match camera {
-            Camera::Map { zoom, .. } => Some(Bounds { min, max, zoom }),
+        let framed = match camera {
+            Camera::Map { zoom, .. } => Some(Bounds { min, max, zoom: [zoom; 2] }),
             Camera::Plot { .. } => None,
+        };
+        self.rig.bounds = match (self.rig.bounds, framed) {
+            _ if everything => framed,
+            (Some(reach), Some(framed)) => Some(reach.with(framed)),
+            (reach, _) => reach,
         };
         self.move_camera(camera);
     }

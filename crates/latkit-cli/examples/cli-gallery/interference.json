@@ -29,8 +29,8 @@
         ],
         "radius": "radius",
         "color": {
-          "colormap": "heat",
-          "map": "magma",
+          "colormap": "magma",
+          "value": "heat",
           "domain": [
             0,
             1

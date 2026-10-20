@@ -17,7 +17,7 @@ use crate::args::{is_stdio, pattern};
 const ENCODING: usize = 4;
 
 fn written(error: &io::Error, path: &Path) -> Error {
-    Error::Load(format!("{}: {error}", path.display()).into())
+    Error::Io(format!("{}: {error}", path.display()).into())
 }
 
 /// Bytes to stdout, or to a file that replaces `path` only once every byte is written.

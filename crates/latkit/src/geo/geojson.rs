@@ -21,14 +21,7 @@ type Point = [f64; 2];
 /// and a geometry collection a row per member. Properties become fields: numbers, booleans, and texts,
 /// any other value written as its JSON. Rows take their features' ids where every row of a table has
 /// one and no two share it, and are numbered in order otherwise.
-///
-/// ```
-/// let data = latkit::geo::geojson("city", br#"{"type": "Feature", "properties": {"name": "Hall"},
-///     "geometry": {"type": "Point", "coordinates": [-97.74, 30.27]}}"#)?;
-/// assert_eq!(data.table("points").map(latkit::Table::len), Some(1));
-/// # Ok::<(), latkit::Error>(())
-/// ```
-pub fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Data> {
+pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Data> {
     let bytes = super::gunzipped(bytes)?;
     let top: Top = serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("not GeoJSON: {e}")))?;
     let mut tables = [Rows::default(), Rows::default(), Rows::default()];
@@ -50,7 +43,7 @@ pub fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Data> {
     let mut patch = Patch::new();
     for (rows, name) in tables.into_iter().zip(["points", "lines", "polygons"]) {
         if let Some(table) = rows.table(name) {
-            patch = patch.put(table);
+            patch = patch.replace(table);
         }
     }
     let mut data = Data::new(name);
@@ -148,7 +141,7 @@ impl Rows {
             return None;
         }
         let count = self.shapes.len();
-        let mut table = Table::new(name, ids(&self.ids).unwrap_or_else(|| Ids::from(count)));
+        let mut table = Table::new(name, ids(&self.ids).unwrap_or_else(|| Ids::count(count as u32)));
         let geometry: Values = match &self.shapes[0] {
             Shape::Point(_) => self
                 .shapes
@@ -359,9 +352,9 @@ mod tests {
         assert_eq!(points.get(9_u64, "pop"), None, "null is missing");
         assert_eq!(points.get(7_u64, "capital"), Some(Value::Bool(true)));
         assert_eq!(points.get(9_u64, "tags"), Some(Value::Text("[\"big\"]".into())), "other values as JSON");
-        assert_eq!(data.table("lines").map(|t| t.kind("geometry")), Some(Some(Kind::Geometry(2))));
+        assert_eq!(data.table("lines").map(|t| t.kind("geometry")), Some(Some(Kind::Parts)));
         let polygons = data.table("polygons").expect("polygons");
-        assert_eq!(polygons.kind("geometry"), Some(Kind::Geometry(3)));
+        assert_eq!(polygons.kind("geometry"), Some(Kind::Polygons));
         let Some(Value::Polygons(shapes)) = polygons.get(0_u64, "geometry") else { panic!("polygons") };
         assert_eq!(shapes.len(), 2, "a multipolygon is one row");
         assert_eq!(polygons.get(0_u64, "county"), Some(Value::Text("Travis".into())));

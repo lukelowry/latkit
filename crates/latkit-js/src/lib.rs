@@ -1,9 +1,9 @@
-//! The latkit npm package: data, patches, and views for the browser, over WebGPU.
+//! The latkit npm package: data and views for the browser, over WebGPU.
 //!
-//! A view's state crosses as JSON both ways, in the forms `latkit`'s serde support reads and writes:
-//! scenes, cameras, fits, budgets, and rows in; events, hits, stats, and work out, a view's events a
-//! batch at a time. Field values cross as typed arrays or arrays and are copied once. The npm wrapper
-//! adds the expression builders and typed listeners.
+//! What crosses is bytes or JSON, in the forms `latkit` reads and writes. Patches cross as their byte
+//! frames, which the package's TypeScript writes itself; scenes, cameras, fits, queries, and rows go
+//! in as JSON, and events, hits, stats, and work come out as JSON, a view's events a batch at a time.
+//! A query's columns come out as typed arrays, copied once.
 
 #![cfg(target_arch = "wasm32")]
 #![allow(unsafe_code, reason = "wasm-bindgen's generated glue")]
@@ -16,7 +16,6 @@ mod shot;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
-use convert::value;
 pub use error::Error;
 pub use shot::{Canvas, Handle, Image, Video, image, set_encoder};
 
@@ -33,6 +32,13 @@ fn json<T: serde::de::DeserializeOwned>(what: &str, text: &str) -> Result<T, Err
 /// `value` in the JSON form the npm package's types describe.
 fn to_json(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value).expect("view state serializes")
+}
+
+/// A promise of what `future` answers, its error thrown as latkit's.
+fn promise<T: Into<JsValue>>(future: impl Future<Output = latkit::Result<T>> + 'static) -> js_sys::Promise {
+    wasm_bindgen_futures::future_to_promise(async move {
+        future.await.map(Into::into).map_err(|e| JsValue::from(Error::from(e)))
+    })
 }
 
 /// The GPU device views draw with.
@@ -97,8 +103,7 @@ impl Gpu {
         Ok(())
     }
 
-    /// What the GPU did since it was made, counted exactly, as JSON `{ uploaded, written, evaluated,
-    /// readbacks, jobs, texts, pipelines }`.
+    /// What the GPU did since it was made, counted exactly, as JSON.
     #[wasm_bindgen(getter)]
     pub fn work(&self) -> String {
         to_json(&self.0.work())
@@ -115,7 +120,7 @@ impl Gpu {
 #[wasm_bindgen]
 pub struct Listener(#[allow(dead_code, reason = "kept until freed")] latkit::web::Listener);
 
-/// A named, immutable collection of tables; `apply` makes its next version.
+/// A named collection of tables, changed in place by patches; a snapshot keeps a version.
 #[wasm_bindgen]
 pub struct Data(latkit::Data);
 
@@ -126,17 +131,18 @@ impl Data {
         Data(latkit::Data::new(name))
     }
 
-    #[wasm_bindgen(js_name = fromBytes)]
-    pub fn from_bytes(bytes: &[u8]) -> Result<Data, Error> {
-        Ok(Data(latkit::Data::from_bytes(bytes)?))
+    /// The dataset latkit bytes hold, renamed `name` when given.
+    #[allow(clippy::needless_pass_by_value, reason = "wasm-bindgen hands optional texts over owned")]
+    pub fn read(bytes: &[u8], name: Option<String>) -> Result<Data, Error> {
+        if !bytes.starts_with(b"LATK") {
+            return Err(latkit::Error::invalid("not latkit bytes").at("bytes").into());
+        }
+        Ok(Data(latkit::Data::read(bytes, name.as_deref())?))
     }
 
     /// A promise of the dataset its JSON document builds, its slices fetched relative to `base`.
     pub fn load(json: String, base: String) -> js_sys::Promise {
-        wasm_bindgen_futures::future_to_promise(async move {
-            let data = latkit::Data::load(&json, &base, &latkit::host::Browser).await;
-            data.map(|data| Data(data).into()).map_err(|e| Error::from(e).into())
-        })
+        promise(async move { Ok(Data(latkit::Data::load(&json, &base, &latkit::host::Browser).await?)) })
     }
 
     #[wasm_bindgen(getter)]
@@ -150,19 +156,15 @@ impl Data {
         self.0.span().map(Vec::from)
     }
 
-    /// The next version: this one with every change of `patch`, or none; the patch is spent.
-    pub fn apply(&self, patch: Patch) -> Result<Data, Error> {
-        let mut next = self.0.clone();
-        next.apply(patch.0)?;
-        Ok(Data(next))
+    /// Applies the patch `bytes` hold: every change, or none when one is invalid.
+    pub fn apply(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        Ok(self.0.apply(latkit::Patch::from_bytes(bytes)?)?)
     }
 
-    /// The next version, with a patch received as bytes.
-    #[wasm_bindgen(js_name = applyBytes)]
-    pub fn apply_bytes(&self, bytes: &[u8]) -> Result<Data, Error> {
-        let mut next = self.0.clone();
-        next.apply(latkit::Patch::from_bytes(bytes)?)?;
-        Ok(Data(next))
+    /// This version, kept as `apply` changes this one: O(1), sharing every page.
+    #[must_use]
+    pub fn snapshot(&self) -> Data {
+        Data(self.0.clone())
     }
 
     #[wasm_bindgen(js_name = toBytes)]
@@ -170,15 +172,15 @@ impl Data {
         self.0.to_bytes()
     }
 
-    /// The value of `field` for the row with `id` in `table`, at axis coordinate `at` when given.
-    pub fn get(&self, table: &str, id: JsValue, field: &str, at: Option<f64>) -> Result<JsValue, Error> {
-        let id: latkit::Id = serde_wasm_bindgen::from_value(id).map_err(convert::invalid)?;
-        let row = latkit::Row::new(self.0.name(), table, id);
-        Ok(match at {
+    /// The value of `field` for the row with `id` in `table`, at axis coordinate `at` when given, as
+    /// JSON; `null` when missing.
+    pub fn get(&self, table: &str, id: &JsValue, field: &str, at: Option<f64>) -> Result<String, Error> {
+        let row = latkit::Row::new(self.0.name(), table, convert::id(id)?);
+        let value = match at {
             Some(at) => self.0.get_at(&row, field, at),
             None => self.0.get(&row, field),
-        }
-        .map_or(JsValue::NULL, |v| value(&v)))
+        };
+        Ok(to_json(&value))
     }
 
     /// The names of the tables.
@@ -196,29 +198,31 @@ impl Data {
         self.0.table(table).map(|t| t.fields().map(|(name, _)| name.to_string()).collect()).unwrap_or_default()
     }
 
-    /// What the dataset holds, as JSON `{ name, axis, span, tables }`.
+    /// What the dataset holds, as JSON.
     pub fn describe(&self) -> String {
         to_json(&self.0.describe())
     }
 
-    /// The rows `query` (JSON) asks for, as `{ table, ids, fields }` in the forms `put` takes.
+    /// The rows `query` (JSON) keeps, as `{ table, ids, fields, total }`: fields in the forms a patch
+    /// writes, `total` the rows kept before paging.
     pub fn query(&self, query: &str) -> Result<JsValue, Error> {
-        Ok(convert::table(&self.0.query(&json("query", query)?)?))
+        let (table, total) = self.0.query(&json("query", query)?)?;
+        Ok(convert::table(&table, total))
     }
 
     /// Each row's least and greatest value of sampled `field` of `table` over `spans` spans of
-    /// `range`: of every row, or of rows `ids`, as `{ at, least, greatest }` typed arrays.
+    /// `range`: of every row, or of rows `ids` (JSON), as `{ at, least, greatest }` typed arrays.
     pub fn envelope(
         &self,
         table: &str,
         field: &str,
         range: &[f64],
         spans: u32,
-        ids: JsValue,
+        ids: Option<String>,
     ) -> Result<JsValue, Error> {
         let table = self.0.table(table).ok_or_else(|| latkit::Error::invalid("no such table").at(table))?;
         let [from, to] = range else { return Err(latkit::Error::invalid("a range is [from, to]").into()) };
-        let ids: Option<latkit::Ids> = serde_wasm_bindgen::from_value(ids).map_err(convert::invalid)?;
+        let ids: Option<latkit::Ids> = ids.map(|ids| json("ids", &ids)).transpose()?;
         let envelope = table.envelope(field, [*from, *to], spans as usize, ids.as_ref())?;
         Ok(convert::object(&[
             ("at", js_sys::Float64Array::from(&envelope.at[..]).into()),
@@ -228,56 +232,13 @@ impl Data {
     }
 }
 
-/// Changes to a dataset, applied in order and all at once.
-#[wasm_bindgen]
-#[derive(Default)]
-pub struct Patch(latkit::Patch);
-
-#[wasm_bindgen]
-impl Patch {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Patch {
-        Patch::default()
-    }
-
-    #[wasm_bindgen(js_name = fromBytes)]
-    pub fn from_bytes(bytes: &[u8]) -> Result<Patch, Error> {
-        Ok(Patch(latkit::Patch::from_bytes(bytes)?))
-    }
-
-    /// The patch at the start of `bytes` and how many bytes it takes, as `{ patch, used }`; `null`
-    /// while `bytes` hold only its start; an error once it would run past `limit` bytes.
-    pub fn decode(bytes: &[u8], limit: f64) -> Result<JsValue, Error> {
-        Ok(match latkit::Patch::decode(bytes, limit as usize)? {
-            Some((patch, used)) => convert::object(&[("patch", Patch(patch).into()), ("used", (used as f64).into())]),
-            None => JsValue::NULL,
-        })
-    }
-
-    /// A promise of the patch its JSON makes, its slices fetched relative to `base`.
-    pub fn load(json: String, base: String) -> js_sys::Promise {
-        wasm_bindgen_futures::future_to_promise(async move {
-            let patch = latkit::Patch::load(&json, &base, &latkit::host::Browser).await;
-            patch.map(|patch| Patch(patch).into()).map_err(|e| Error::from(e).into())
-        })
-    }
-
-    /// Appends the changes `ops` lists, in the JSON form `Patch.load` reads: typed arrays as
-    /// `{ dtype, bytes }`, copied once.
-    pub fn push(&mut self, ops: JsValue) -> Result<(), Error> {
-        let next: latkit::Patch = serde_wasm_bindgen::from_value(ops).map_err(convert::invalid)?;
-        self.take(|p| p.then(next));
-        Ok(())
-    }
-
-    #[wasm_bindgen(js_name = toBytes)]
-    pub fn to_bytes(&self) -> Vec<u8> {
-        self.0.to_bytes()
-    }
-
-    fn take(&mut self, f: impl FnOnce(latkit::Patch) -> latkit::Patch) {
-        self.0 = f(std::mem::take(&mut self.0));
-    }
+/// A promise of the bytes of the patch its JSON makes, its slices fetched relative to `base`.
+#[wasm_bindgen(js_name = loadPatch)]
+pub fn load_patch(json: String, base: String) -> js_sys::Promise {
+    promise(async move {
+        let patch = latkit::Patch::load(&json, &base, &latkit::host::Browser).await?;
+        Ok(js_sys::Uint8Array::from(&patch.to_bytes()[..]))
+    })
 }
 
 /// A view of a scene, telling its events from the start.
@@ -300,6 +261,12 @@ impl View {
         self.view.with(|v| v.set_data(data.0.clone()));
     }
 
+    /// Fetches the vector tiles at `url` as the camera asks for them, drawn as dataset `name`.
+    #[wasm_bindgen(js_name = setTiles)]
+    pub fn set_tiles(&self, name: &str, url: &str) {
+        self.view.with(|v| v.set_tiles(latkit::geo::Tiles::vector(name, url)));
+    }
+
     #[wasm_bindgen(js_name = removeData)]
     pub fn remove_data(&self, name: &str) {
         self.view.with(|v| v.remove_data(name));
@@ -308,17 +275,6 @@ impl View {
     /// The dataset named `name`: one given, or the tiles the view fetched.
     pub fn data(&self, name: &str) -> Option<Data> {
         self.view.read(|v| v.data(name).cloned()).map(Data)
-    }
-
-    /// Fetches the vector tiles at `url` as the camera asks for them, drawn as dataset `name`.
-    #[wasm_bindgen(js_name = setTiles)]
-    pub fn set_tiles(&self, name: &str, url: &str) {
-        self.view.with(|v| v.set_tiles(latkit::geo::Tiles::vector(name, url)));
-    }
-
-    #[wasm_bindgen(js_name = removeTiles)]
-    pub fn remove_tiles(&self, name: &str) {
-        self.view.with(|v| v.remove_tiles(name));
     }
 
     #[wasm_bindgen(getter)]
@@ -359,19 +315,13 @@ impl View {
         Ok(())
     }
 
-    /// Lays every vertex row without a position out again by the scene's layout: a promise of
-    /// `[dataset, patch]` pairs writing the places into the data.
+    /// Lays every vertex row without a position out again by the scene's layout: a promise of the
+    /// bytes of a patch to each dataset, writing the places into the data.
     pub fn arrange(&self) -> js_sys::Promise {
         let pending = self.view.with(latkit::View::arrange);
-        wasm_bindgen_futures::future_to_promise(async move {
-            let patches = pending.await.map_err(|e| JsValue::from(Error::from(e)))?;
-            let pairs: js_sys::Array = patches
-                .into_iter()
-                .map(|(name, patch)| -> JsValue {
-                    js_sys::Array::of2(&name.as_str().into(), &Patch(patch).into()).into()
-                })
-                .collect();
-            Ok(pairs.into())
+        promise(async move {
+            let patches = pending.await?;
+            Ok(patches.iter().map(|patch| js_sys::Uint8Array::from(&patch.to_bytes()[..])).collect::<js_sys::Array>())
         })
     }
 
@@ -409,15 +359,15 @@ impl View {
         self.view.with(|v| v.set_orbit(degrees_per_second));
     }
 
-    /// The rows selected, as JSON.
+    /// The rows selected, as JSON sets of rows.
     #[wasm_bindgen(getter)]
     pub fn selection(&self) -> String {
         self.view.read(|v| to_json(&v.selection()))
     }
 
-    /// Selects the rows (JSON), and no others.
+    /// Selects the rows (JSON sets of rows), and no others.
     pub fn select(&self, rows: &str) -> Result<(), Error> {
-        let rows: Vec<latkit::Row> = json("rows", rows)?;
+        let rows: Vec<latkit::Rows> = json("rows", rows)?;
         self.view.with(|v| v.select(rows));
         Ok(())
     }
@@ -428,7 +378,7 @@ impl View {
         self.view.read(|v| to_json(&v.hovered()))
     }
 
-    /// Every mark that draws nothing because its data no longer fits it, as JSON errors.
+    /// Every mark that draws nothing because its data no longer fits it, as JSON failures.
     #[wasm_bindgen(getter)]
     pub fn failures(&self) -> String {
         self.view.read(|v| to_json(&v.failures().collect::<Vec<_>>()))
@@ -444,24 +394,21 @@ impl View {
     pub fn pick(&self, point: &[f32], radius: f32) -> Result<js_sys::Promise, Error> {
         let point: [f32; 2] = point.try_into().map_err(|_| latkit::Error::invalid("a point is [x, y]").at("point"))?;
         let pending = self.view.with(|v| v.pick(point, radius));
-        Ok(wasm_bindgen_futures::future_to_promise(async move {
-            let hits = pending.await.map_err(|e| JsValue::from(Error::from(e)))?;
-            Ok(JsValue::from_str(&to_json(&hits)))
-        }))
+        Ok(promise(async move { Ok(JsValue::from_str(&to_json(&pending.await?))) }))
     }
 
     /// Where the row (JSON) lies on screen, `[x, y]`, or `null`.
     pub fn locate(&self, row: &str) -> Result<js_sys::Promise, Error> {
         let row: latkit::Row = json("row", row)?;
         let pending = self.view.with(|v| v.locate(&row));
-        Ok(wasm_bindgen_futures::future_to_promise(async move {
-            let point = pending.await.map_err(|e| JsValue::from(Error::from(e)))?;
+        Ok(promise(async move {
+            let point = pending.await?;
             Ok(point.map_or(JsValue::NULL, |p| js_sys::Array::of2(&p[0].into(), &p[1].into()).into()))
         }))
     }
 
-    /// The rows joined to the row (JSON), as JSON: a vertex's neighbors across edges and nets, or an
-    /// edge's or a net's vertices.
+    /// The rows joined to the row (JSON), as JSON sets of rows: a vertex's neighbors across edges and
+    /// nets, or an edge's or a net's vertices.
     pub fn neighbors(&self, row: &str) -> Result<String, Error> {
         let row: latkit::Row = json("row", row)?;
         Ok(self.view.read(|v| to_json(&v.neighbors(&row))))
@@ -485,8 +432,8 @@ pub fn job(bytes: &[u8]) -> Vec<u8> {
     latkit::host::Job::from_bytes(bytes.to_vec()).run()
 }
 
-/// The job reading GeoJSON `bytes` as dataset `name`, for a worker to do: it answers the patch that
-/// builds the dataset, or nothing when the bytes are no GeoJSON.
+/// The job reading GeoJSON `bytes`, gzip-compressed or not, as dataset `name`, for a worker to do: it
+/// answers the bytes of the patch building the dataset, or nothing when the bytes are no GeoJSON.
 #[wasm_bindgen(js_name = geojsonJob)]
 pub fn geojson_job(name: &str, bytes: &[u8]) -> Vec<u8> {
     latkit::host::Job::geojson(name, bytes).into_bytes()
@@ -498,11 +445,11 @@ pub fn module() -> JsValue {
     wasm_bindgen::module()
 }
 
-/// A CSS gradient through `map`, a catalog name or colors of your own, toward `direction`: the
+/// A CSS gradient through `map` (JSON), a catalog name or colors of your own, toward `direction`: the
 /// colors the GPU draws, a band each for a categorical map's categories.
 #[wasm_bindgen(js_name = colormapCss)]
-pub fn colormap_css(map: JsValue, direction: &str) -> Result<String, Error> {
-    let map: latkit::Colormap = serde_wasm_bindgen::from_value(map).map_err(convert::invalid)?;
+pub fn colormap_css(map: &str, direction: &str) -> Result<String, Error> {
+    let map: latkit::Colormap = json("colormap", map)?;
     let css = |color: latkit::Color| {
         let [r, g, b, a] = color.to_rgba8();
         format!("rgba({r}, {g}, {b}, {:.3})", f32::from(a) / 255.0)

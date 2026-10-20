@@ -234,7 +234,7 @@ impl Host for Browser {
 /// The bytes `request` asks for: none where there is nothing at its URL, and only the range asked for
 /// where a server sends every byte.
 async fn fetched(request: &Request) -> crate::Result<Vec<u8>> {
-    let failed = |what: &str| Error::Load(format!("{} could not be read: {what}", request.url).into());
+    let failed = |what: &str| Error::Io(format!("{} could not be read: {what}", request.url).into());
     let init = web_sys::RequestInit::new();
     let headers = web_sys::Headers::new().map_err(|e| failed(&format!("{e:?}")))?;
     if let Some(range) = &request.range {

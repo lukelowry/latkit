@@ -1,26 +1,30 @@
 use super::Interpolation;
-use super::mark::{Context, Drawing, GEOMETRY, MarkKind, Stroke, StrokeWords, Style, stroke_methods, style_methods};
+use super::mark::{
+    Context, Drawing, GEOMETRY, MarkKind, Stroke, StrokeWords, Style, mark, stroke_methods, style_methods,
+};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Kind, Name, Result, Space};
 
-/// Rows drawn as lines along the field each traces: roads, rivers, and borders along a path field,
-/// the outlines of a polygon field's rings; on a plot, a sampled field's history across the data's
-/// axis, what a monitor shows. On the earth paths bend with the globe and stay whole across the
-/// antimeridian.
+mark!(
+/// Rows drawn as lines: along a path field (roads, rivers, borders) or a polygon field's rings,
+/// outlining its areas; on a plot, through a sampled field's history across the data's axis, what a
+/// monitor shows. On the earth paths bend with the globe and stay whole across the antimeridian.
 ///
 /// ```
 /// # use latkit::Lines;
 /// let roads = Lines::of("city", "roads").width(2.0);
 /// let height = Lines::of("body", "Body").trace("height");
 /// ```
-#[derive(Clone, PartialEq, Debug)]
-pub struct Lines {
-    pub(crate) style: Style,
-    pub(crate) stroke: Stroke,
-    pub(crate) trace: Option<Name>,
-    pub(crate) interpolation: Interpolation,
-}
+Lines + stroke {
+    /// The path or polygon field each row runs along; `geometry` unless set. Not on a plot.
+    geometry: Option<Name>,
+    /// The sampled field each row traces across the data's axis, on a plot alone. A field not recorded
+    /// yet draws nothing until its first frame.
+    trace: Option<Name>,
+    /// How each row runs between its samples, on a plot.
+    interpolation: Interpolation,
+});
 
 impl Lines {
     /// Draws the rows of `table` in dataset `data`.
@@ -28,14 +32,21 @@ impl Lines {
         Lines {
             style: Style::new(data.into(), table.into()),
             stroke: Stroke::default(),
+            geometry: None,
             trace: None,
             interpolation: Interpolation::Linear,
         }
     }
 
-    /// The field each row traces: a path or polygon field, or on a plot a sampled field across its
-    /// axis. Unless set, the field `geometry`; unless named, the mark takes the field's name. A
-    /// sampled field not recorded yet draws nothing until its first frame.
+    /// The path or polygon field each row runs along; the field `geometry` unless set. Not on a plot.
+    #[must_use]
+    pub fn geometry(mut self, field: impl Into<Name>) -> Lines {
+        self.geometry = Some(field.into());
+        self
+    }
+
+    /// The sampled field each row traces across the data's axis, on a plot. Unless named, the mark
+    /// takes the field's name.
     #[must_use]
     pub fn trace(mut self, field: impl Into<Name>) -> Lines {
         self.trace = Some(field.into());
@@ -49,21 +60,25 @@ impl Lines {
         self
     }
 
-    /// The field each row traces.
+    /// The field each row draws from: the sampled field it traces, else its path field.
     pub(crate) fn traced(&self) -> Name {
-        self.trace.clone().unwrap_or_else(|| GEOMETRY.into())
+        self.trace.clone().or_else(|| self.geometry.clone()).unwrap_or_else(|| GEOMETRY.into())
     }
 
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
-        let field = self.traced();
         let mut drawing = Drawing::new(MarkKind::Lines, wgsl::LINE_WORDS);
         drawing.size_px = self.stroke.px();
         if matches!(context.space, Space::Plot(_)) {
-            drawing.trace = match (c.kind(&field), &self.trace) {
-                (None, None) => return Err(Error::invalid("name the sampled field each row traces").at("trace")),
+            if self.geometry.is_some() {
+                return Err(Error::invalid("a plot traces sampled fields; name one with trace").at("geometry"));
+            }
+            let Some(field) = &self.trace else {
+                return Err(Error::invalid("name the sampled field each row traces").at("trace"));
+            };
+            drawing.trace = match c.kind(field) {
                 // Streamed data appends its first frame later; the mark compiles again then.
-                (None, Some(_)) => wgsl::NONE,
-                _ => c.trace(&field).map_err(|e| e.at("trace"))?,
+                None => wgsl::NONE,
+                _ => c.trace(field).map_err(|e| e.at("trace"))?,
             };
             drawing.flags = match self.interpolation {
                 Interpolation::Linear => 0,
@@ -71,14 +86,17 @@ impl Lines {
                 Interpolation::StepAfter => wgsl::STEP_AFTER,
             };
         } else {
+            if self.trace.is_some() {
+                return Err(Error::invalid("only a plot traces a sampled field; name a path with geometry").at("trace"));
+            }
+            let field = self.geometry.clone().unwrap_or_else(|| GEOMETRY.into());
             match c.kind(&field) {
-                Some(Kind::Geometry(1..=3)) => {}
-                Some(Kind::Sampled) => {
-                    return Err(Error::invalid("only a plot traces a sampled field").at(&field).at("trace"));
+                Some(Kind::Path | Kind::Parts | Kind::Polygons) => {}
+                Some(_) => return Err(Error::invalid("not a path or polygon field").at(&field).at("geometry")),
+                None if self.geometry.is_some() => {
+                    return Err(Error::invalid("no such field").at(&field).at("geometry"));
                 }
-                Some(_) => return Err(Error::invalid("not a path or polygon field").at(&field).at("trace")),
-                None if self.trace.is_some() => return Err(Error::invalid("no such field").at(&field).at("trace")),
-                None => return Err(Error::invalid("name the path field each row traces").at("trace")),
+                None => return Err(Error::invalid("name the path field each row runs along").at("geometry")),
             }
             drawing.path = wgsl::PATH_GEOMETRY;
             // On the earth a line runs along its path as it bends with the globe.

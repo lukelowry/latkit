@@ -79,6 +79,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Hold the benchmark's work to its baseline
+        run: node benchmark/run.ts --quick --software
       - run: cargo xtask browser
       - run: cargo xtask package
       - run: cargo xtask package-test

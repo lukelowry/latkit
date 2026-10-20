@@ -308,7 +308,8 @@ impl View {
             let depth = f64::from(f32::from_bits(entry[5]));
             hits.push(Hit {
                 row,
-                mark: i,
+                mark: self.marks[i].mark.style().name.clone(),
+                index: i,
                 point,
                 position: view.position(view.unproject(point.map(f64::from), depth)),
                 distance: entry[1] as f32 / 64.0,

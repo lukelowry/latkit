@@ -8,9 +8,9 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::{SIZE, at, errors, frame, gpu, plain_theme};
-use latkit::geo::{Tiles, geojson};
+use latkit::geo::Tiles;
 use latkit::host::{Host, Raster, Request, TextRun};
-use latkit::{Areas, Camera, Color, Earth, Lines, Pending, Scene, Vertices, View};
+use latkit::{Areas, Camera, Color, Data, Earth, Lines, Pending, Scene, Vertices, View};
 
 const C: u32 = SIZE / 2;
 
@@ -115,7 +115,7 @@ fn tiles_the_camera_asks_for_draw_as_a_dataset() {
     frame(&gpu, &mut view);
     let after: Vec<latkit::Id> = view.data("base").and_then(|d| d.table("water")).expect("rows").ids().collect();
     assert!(after.iter().all(|id| !before.contains(id)), "finer tiles' rows");
-    view.remove_tiles("base");
+    view.remove_data("base");
     assert!(view.data("base").is_none());
 }
 
@@ -127,7 +127,7 @@ fn geojson_draws_as_lines_and_vertices_on_the_globe() {
          "geometry": {"type": "LineString", "coordinates": [[-60, 0], [60, 0]]}},
         {"type": "Feature", "properties": {"name": "center"},
          "geometry": {"type": "Point", "coordinates": [0, 30]}}]}"#;
-    let data = geojson("map", bytes).expect("GeoJSON");
+    let data = Data::read(bytes, Some("map")).expect("GeoJSON");
     let earth = Earth { graticule: false, ..Earth::globe() };
     let red = Color::hex("#ff0000").expect("hex");
     let scene = Scene::new(earth)

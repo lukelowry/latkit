@@ -1,4 +1,4 @@
-import { loadLatkit, field, type Scene } from 'latkit';
+import { loadLatkit, field, Patch, type Scene } from 'latkit';
 import wasmUrl from 'latkit/wasm?url';
 import workerUrl from 'latkit/worker?url';
 
@@ -73,47 +73,31 @@ async function run(custom: boolean, compiled: boolean) {
   check(conflict, 'conflicting configuration must reject');
   check(createdWorkers === 0, 'loading must not create workers');
 
-  const { Data, Patch, Gpu, Shot } = kit;
+  const { Data, Gpu, Shot } = kit;
+  const data = new Data('grid').apply(
+    Patch.to('grid').replace('Bus', { count: 1 }, { x: [0], y: [0], radius: [12] }),
+  );
   const empty = new Data('grid');
-  const patch = new Patch().put('Bus', 1, { x: [0], y: [0], radius: [12] });
-  const data = empty.apply(patch);
-  patch.destroy();
-  patch.destroy();
   empty.destroy();
   empty.destroy();
   destroyed(() => empty.name);
-  const decoded = Data.fromBytes(data.toBytes());
+  const decoded = await Data.read(data.toBytes());
 
-  // Reading data back, and patches streamed back to back.
+  // Data reads back; patches stream back to back.
   const grid = new Data('grid').apply(
     new Patch()
       .axis('time', 's')
-      .put('Branch', [7, 8, 9], { loading: [40, 120, 95], name: ['a', 'b', 'c'] })
-      .append([0, 1, 2], 'Branch', { flow: [1, 2, 3, 4, 5, 6, 7, 8, 9] }),
-  );
-  const described = grid.describe();
-  check(
-    described.axis?.[0] === 'time' && described.span?.[1] === 2,
-    'describe names the axis and span',
-  );
-  check(
-    described.tables[0]?.fields.some((f) => f.name === 'flow' && f.kind === 'sampled'),
-    'describe names kinds',
+      .replace('Branch', [7, 8, 9], { loading: [40, 120, 95] })
+      .append([0, 1, 2], 'Branch', { flow: Float32Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9) }),
   );
   const hot = grid.query({
     of: 'Branch',
-    where: field('loading').gt(90),
-    sort: [[field('loading'), 'descending']],
-    select: { name: 'name', loading: 'loading', flow: 'flow' },
+    filter: field('loading').gt(90),
+    select: { flow: 'flow' },
     at: 1,
   });
-  check(
-    hot.ids.join() === '8,9' && hot.fields.loading instanceof Float64Array,
-    'a query filters and sorts',
-  );
-  check((hot.fields.flow as Float64Array)[1] === 6, 'a query reads samples at its coordinate');
-  const envelope = grid.envelope('Branch', 'flow', [0, 2], 1, [9]);
-  check(envelope.least[0] === 3 && envelope.greatest[0] === 9, 'an envelope spans the frames');
+  check(hot.ids.join() === '8,9' && hot.total === 2, 'a query filters');
+  check((hot.fields.flow as Float64Array)[0] === 5, 'a query reads samples at its coordinate');
   const sent = [
     new Patch().set('Branch', [7], { loading: [1] }),
     new Patch().remove('Branch', [8]),
@@ -125,12 +109,12 @@ async function run(custom: boolean, compiled: boolean) {
       controller.close();
     },
   });
-  let streamed = grid;
-  for await (const next of Patch.stream(pieces)) streamed = streamed.apply(next);
+  for await (const next of Patch.stream(pieces)) grid.apply(next);
   check(
-    streamed.ids('Branch').join() === '7,9' && streamed.get('Branch', 7, 'loading') === 1,
+    grid.ids('Branch').join() === '7,9' && grid.get('Branch', 7, 'loading') === 1,
     'patches stream',
   );
+  grid.destroy();
   const gpu = await Gpu.create();
   const secondGpu = await Gpu.create();
   const deviceReady = performance.now();
@@ -226,7 +210,7 @@ async function run(custom: boolean, compiled: boolean) {
       ],
     }),
   );
-  const places = await kit.geojson('places', bytes);
+  const places = await Data.read(bytes, 'places');
   check(places.ids('points').length === 1, 'worker must decode GeoJSON');
   if (custom) check(createdWorkers > 0, 'custom worker factory must be used');
   places.destroy();

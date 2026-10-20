@@ -15,21 +15,24 @@ test('installed package imports without WASM, retries failures, and shares initi
       headers: { 'Content-Type': 'application/wasm' },
     });
   });
-  const { loadLatkit, field } = await import(
+  const { loadLatkit, field, Patch } = await import(
     pathToFileURL(path.join(directory, 'dist/index.js')).href
   );
   assert.equal(requests, 0);
   assert.deepEqual(field('x').toJSON(), { field: 'x' });
+  // Patches are written without WASM.
+  const patch = new Patch().replace('Node', { count: 1 }, { x: [42] });
+  assert.equal(requests, 0);
   const first = loadLatkit({ wasm: 'https://example.invalid/latkit.wasm' });
   assert.equal(first, loadLatkit());
-  await assert.rejects(first, { code: 'load' });
+  await assert.rejects(first, { code: 'io' });
   const retry = loadLatkit({ wasm: new URL('https://example.invalid/latkit.wasm') });
   assert.equal(retry, loadLatkit({ wasm: 'https://example.invalid/latkit.wasm' }));
   const kit = await retry;
   assert.equal(kit, await loadLatkit());
   assert.equal(requests, 2);
   await assert.rejects(loadLatkit({ wasm: 'https://example.invalid/other.wasm' }), {
-    code: 'load',
+    code: 'io',
   });
   await assert.rejects(
     loadLatkit({
@@ -37,19 +40,16 @@ test('installed package imports without WASM, retries failures, and shares initi
         throw new Error('unused');
       },
     }),
-    { code: 'load' },
+    { code: 'io' },
   );
-  const data = new kit.Data('test');
-  const patch = new kit.Patch().put('Node', 1, { x: [42] });
-  const next = data.apply(patch);
-  patch.destroy();
-  patch.destroy();
-  assert.throws(() => patch.toBytes(), /applied or destroyed/);
-  assert.equal(next.get('Node', 0, 'x'), 42);
+  const data = new kit.Data('test').apply(patch);
+  const kept = data.snapshot();
+  data.apply(new Patch().set('Node', [0], { x: [7] }));
+  assert.equal(data.get('Node', 0, 'x'), 7);
   data.destroy();
   data.destroy();
   assert.throws(() => data.name, /destroyed/);
-  assert.equal(next.get('Node', 0, 'x'), 42);
-  next.destroy();
-  next.destroy();
+  assert.equal(kept.get('Node', 0, 'x'), 42, 'a snapshot outlives its source');
+  kept.destroy();
+  kept.destroy();
 });

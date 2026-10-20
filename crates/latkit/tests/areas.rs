@@ -11,7 +11,7 @@ use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
 use common::{SIZE, at, camera, errors, frame, gpu, plain_theme, plane, step};
-use latkit::{Areas, Camera, Color, Data, Earth, Fit, Lines, Patch, Scene, Table, View};
+use latkit::{Areas, Camera, Color, Data, Earth, Fit, Ids, Lines, Patch, Scene, Table, View};
 
 const C: u32 = SIZE / 2;
 
@@ -136,8 +136,10 @@ fn large_areas_triangulate_in_a_job_and_then_draw() {
 fn a_polygon_field_is_what_areas_fill() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("map");
-    data.apply(Patch::new().set(Table::new("Zone", 1).field("geometry", vec![vec![[0.0, 0.0], [1.0, 1.0]]])))
-        .expect("valid");
+    data.apply(
+        Patch::new().set(Table::new("Zone", Ids::count(1)).field("geometry", vec![vec![[0.0, 0.0], [1.0, 1.0]]])),
+    )
+    .expect("valid");
     let mut view = show(&gpu, Scene::new(plane()), data);
     let refused = view.show(Scene::new(plane()).draw(Areas::of("map", "Zone")));
     assert!(refused.is_err(), "a path field is no polygon field");

@@ -1,7 +1,16 @@
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer};
+
+use super::form::{Presets, preset_or, presets};
 use crate::Color;
 
-/// The coordinate space a scene's positions are in.
-#[derive(Clone, PartialEq, Debug)]
+/// The coordinate space a scene's positions are in: a name, or `{ plane | diagram | earth | plot:
+/// options }`. A diagram is a flat sheet seen from straight above: y runs down, and every length is a
+/// unit, a CSS pixel at zoom 0, except glow, halo, and pick radius. Only a diagram has ports, groups,
+/// nets, orthogonal routes, and layouts.
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = presets::<Space>)]
 pub enum Space {
     /// Longitude and latitude in degrees, on a map or a globe.
     Earth(Earth),
@@ -11,6 +20,27 @@ pub enum Space {
     Plot(Plot),
     /// A sheet for diagrams: x right and y down in units, every length a unit.
     Diagram(Diagram),
+}
+
+impl Presets for Space {
+    const NAMES: &'static [&'static str] = &["plane", "diagram", "mercator", "globe", "plot"];
+
+    fn preset(name: &str) -> Option<Space> {
+        Some(match name {
+            "plane" => Space::Plane(Plane::default()),
+            "diagram" => Space::Diagram(Diagram::default()),
+            "mercator" => Space::Earth(Earth::mercator()),
+            "globe" => Space::Earth(Earth::globe()),
+            "plot" => Space::Plot(Plot::default()),
+            _ => return None,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Space {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Space, D::Error> {
+        preset_or(deserializer, Space::deserialize)
+    }
 }
 
 impl Default for Space {
@@ -44,24 +74,25 @@ impl From<Plot> for Space {
 }
 
 /// The earth: positions are longitude and latitude in degrees.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Earth {
-    /// A flat map or a globe; changing it between scenes morphs one into the other.
+    /// A flat map or a globe.
     pub projection: Projection,
-    /// The ground's color; `None` takes the theme's.
+    /// The ground's color; the theme's surface unless set.
     pub surface: Option<Color>,
     /// Whether lines of longitude and latitude cross the ground, in the theme's grid color.
     pub graticule: bool,
     /// Lit by the sun as it stands this many seconds after the Unix epoch, plus the view's axis
     /// coordinate when it shows one: night falls on the ground and what stands on it, down to the
-    /// theme's night. `None` lights the earth evenly.
+    /// theme's night. Lit evenly unless set.
     pub daylight: Option<f64>,
     /// Whether air glows around the globe, in the theme's atmosphere color, brighter where it is day.
     pub atmosphere: bool,
 }
 
 /// How the earth is drawn.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Projection {
     /// Web mercator.
@@ -114,23 +145,6 @@ pub(crate) fn sun(seconds: f64) -> [f64; 3] {
     [declination.cos() * longitude.cos(), declination.cos() * longitude.sin(), declination.sin()]
 }
 
-#[cfg(test)]
-mod tests {
-    use super::sun;
-
-    #[test]
-    fn the_sun_stands_where_the_almanac_puts_it() {
-        // Noon UTC at the June solstice of 2026: over the tropic of Cancer, near the prime meridian.
-        let [x, y, z] = sun(1_782_043_200.0);
-        let (declination, longitude) = (z.asin().to_degrees(), y.atan2(x).to_degrees());
-        assert!((declination - 23.44).abs() < 0.05, "{declination}");
-        assert!(longitude.abs() < 1.0, "{longitude}");
-        // Six hours on, it stands a quarter turn west.
-        let [x, y, _] = sun(1_782_043_200.0 + 6.0 * 3600.0);
-        assert!((y.atan2(x).to_degrees() + 90.0).abs() < 1.5);
-    }
-}
-
 impl Default for Earth {
     fn default() -> Earth {
         Earth::mercator()
@@ -138,7 +152,8 @@ impl Default for Earth {
 }
 
 /// A plane: positions are plane units.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Plane {
     /// The grid under the marks.
     pub grid: Grid,
@@ -154,7 +169,8 @@ impl Default for Plane {
 /// units with y down, and every length is a unit, a CSS pixel at zoom 0 (sizes, padding, ports,
 /// strokes, text, and the theme's), except glow, halo, and pick radius. Zooming scales one fixed
 /// picture. Only a diagram has ports, groups, nets, and orthogonal routes; it lays out blocks.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagram {
     /// The grid under the marks.
     pub grid: Grid,
@@ -166,8 +182,9 @@ impl Default for Diagram {
     }
 }
 
-/// A plane's or a diagram's grid.
-#[derive(Clone, Copy, PartialEq, Debug)]
+/// A plane's or a diagram's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch, snap } }`.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum Grid {
     /// No grid.
     Off,
@@ -176,17 +193,19 @@ pub enum Grid {
         /// Units between lines.
         pitch: f64,
     },
-    /// Dots `pitch` units apart; editing snaps to them when `snap`.
+    /// Dots `pitch` units apart; drags snap to them when `snap`.
     Dots {
         /// Units between dots.
         pitch: f64,
         /// Whether moved vertices snap to the dots.
+        #[serde(default)]
         snap: bool,
     },
 }
 
 /// A plot: x is the data's axis, y the values.
-#[derive(Clone, PartialEq, Debug, Default)]
+#[derive(Clone, PartialEq, Debug, Default, Deserialize, JsonSchema)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Plot {
     /// The horizontal axis.
     pub x: Axis,
@@ -195,7 +214,8 @@ pub struct Plot {
 }
 
 /// A plot axis.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Axis {
     /// The axis title.
     pub label: Option<String>,
@@ -203,13 +223,41 @@ pub struct Axis {
     pub grid: bool,
     /// Whether the axis is hidden.
     pub hidden: bool,
-    /// Ticks at these values, with these labels or their values written; `None` steps by round values.
-    pub ticks: Option<Vec<(f64, Option<String>)>>,
+    /// Ticks at these values, each a value or `[value, label]`, their values written unless labeled;
+    /// round values unless set.
+    #[serde(deserialize_with = "ticks")]
+    #[schemars(with = "Option<Vec<Tick>>")]
+    pub ticks: Ticks,
     /// How tick values are written.
     pub format: Format,
-    /// Decimals of fixed values, or of the significand of scientific and engineering ones; `None`
-    /// takes as many as the ticks' step needs.
+    /// Decimals of fixed values, or of the significand of scientific and engineering ones; as many
+    /// as the ticks' step needs unless set.
+    #[schemars(range(max = 15))]
     pub precision: Option<u8>,
+}
+
+/// A tick as written: a value, or `[value, label]`.
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum Tick {
+    At(f64),
+    Labeled(f64, Option<String>),
+}
+
+/// An axis's ticks: each a value, and the label written there unless its value is.
+type Ticks = Option<Vec<(f64, Option<String>)>>;
+
+fn ticks<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Ticks, D::Error> {
+    let ticks = Option::<Vec<Tick>>::deserialize(deserializer)?;
+    Ok(ticks.map(|ticks| {
+        ticks
+            .into_iter()
+            .map(|tick| match tick {
+                Tick::At(v) => (v, None),
+                Tick::Labeled(v, label) => (v, label),
+            })
+            .collect()
+    }))
 }
 
 impl Default for Axis {
@@ -219,7 +267,7 @@ impl Default for Axis {
 }
 
 /// How an axis writes its tick values.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Format {
     /// Fixed decimals, scientific past a million or below a ten-thousandth.
@@ -231,4 +279,21 @@ pub enum Format {
     Scientific,
     /// A significand and a power of ten that is a multiple of three: `1.5e3`, `150e-6`.
     Engineering,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sun;
+
+    #[test]
+    fn the_sun_stands_where_the_almanac_puts_it() {
+        // Noon UTC at the June solstice of 2026: over the tropic of Cancer, near the prime meridian.
+        let [x, y, z] = sun(1_782_043_200.0);
+        let (declination, longitude) = (z.asin().to_degrees(), y.atan2(x).to_degrees());
+        assert!((declination - 23.44).abs() < 0.05, "{declination}");
+        assert!(longitude.abs() < 1.0, "{longitude}");
+        // Six hours on, it stands a quarter turn west.
+        let [x, y, _] = sun(1_782_043_200.0 + 6.0 * 3600.0);
+        assert!((y.atan2(x).to_degrees() + 90.0).abs() < 1.5);
+    }
 }

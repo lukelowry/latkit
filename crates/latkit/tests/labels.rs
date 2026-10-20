@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{SIZE, at, camera, diagram, errors, frame, gpu, plain_theme, plane};
+use latkit::Ids;
 use latkit::host::{Host, Raster, TextRun};
 use latkit::{Camera, Color, Data, Label, Marker, Scene, Table, Vertices, View, field};
 
@@ -42,7 +43,7 @@ fn shown(gpu: &latkit::Gpu, x: Vec<f64>, priority: Vec<f64>, shape: impl Fn(Vert
     let mut data = Data::new("d");
     let n = x.len();
     data.apply(
-        Table::new("V", n)
+        Table::new("V", Ids::count(n as u32))
             .field("x", x)
             .field("y", vec![0.0; n])
             .field("name", vec!["abcdef"; n])
@@ -128,7 +129,7 @@ fn only_labels_that_show_have_their_texts_set() {
     let y: Vec<f64> = (0..n).map(|i| f64::from((i * 53) % 120) - 60.0).collect();
     let names: Vec<String> = (0..n).map(|i| format!("row {i}")).collect();
     let mut data = Data::new("d");
-    data.apply(Table::new("V", n).field("x", x).field("y", y).field("name", names)).expect("valid");
+    data.apply(Table::new("V", Ids::count(n as u32)).field("x", x).field("y", y).field("name", names)).expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(
         Vertices::of("d", "V")
             .position("x", "y")
@@ -152,8 +153,10 @@ fn only_labels_that_show_have_their_texts_set() {
 fn diagram_block(gpu: &latkit::Gpu, zoom: f64) -> Vec<[u8; 4]> {
     gpu.set_host(Boxes);
     let mut data = Data::new("d");
-    data.apply(Table::new("V", 1).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["abcdef"]))
-        .expect("valid");
+    data.apply(
+        Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["abcdef"]),
+    )
+    .expect("valid");
     let label = Label::new("name").size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
     let scene = Scene::new(diagram()).theme(latkit::Theme { halo: 0.0, ..plain_theme() }).draw(
         Vertices::of("d", "V")
@@ -203,7 +206,7 @@ fn a_cap_shows_only_the_labels_of_highest_priority() {
     let ys = [-45.0, -15.0, 15.0, 45.0];
     let mut data = Data::new("d");
     data.apply(
-        Table::new("V", 4)
+        Table::new("V", Ids::count(4))
             .field("x", vec![-30.0; 4])
             .field("y", ys.to_vec())
             .field("name", vec!["abc", "bcd", "cde", "def"])

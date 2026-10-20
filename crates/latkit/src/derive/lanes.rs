@@ -9,7 +9,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use super::{Derive, Derived, Input, Jobs, Tables, beside, kept, stamp_of};
 use crate::Mark;
 use crate::Pending;
-use crate::data::{Field, Name, Patch, Reference, Table, UNWIRED, Values};
+use crate::data::{Field, Ids, Name, Patch, Reference, Table, UNWIRED, Values};
 use crate::host::Job;
 
 /// Microseconds a row takes to find its lane, by estimate.
@@ -153,7 +153,7 @@ pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Option<Vec<f32>> {
 /// Lanes as a job's answer: a table of every row's lane, or one without rows when there are none.
 pub(crate) fn answer(from: &[u32], to: &[u32]) -> Patch {
     let lanes = lanes(from, to).unwrap_or_default();
-    Patch::new().set(Table::new("lanes", lanes.len()).field("lane", lanes))
+    Patch::new().set(Table::new("lanes", Ids::count(lanes.len() as u32)).field("lane", lanes))
 }
 
 /// Each of `rows` rows' lane among the rows joining the same two ends, which `ends` names: the

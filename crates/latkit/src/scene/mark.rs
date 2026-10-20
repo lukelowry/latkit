@@ -5,8 +5,9 @@ use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Expr, Name, Result, Size, Space};
 
-/// One drawn table of a scene.
-#[derive(Clone, PartialEq, Debug)]
+/// One drawn table of a scene: `{ vertices | edges | faces | lines | areas: options }` as JSON.
+#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum Mark {
     /// Rows drawn as markers.
@@ -394,7 +395,7 @@ impl Mark {
         }
         match self {
             Mark::Vertices(v) if !v.ports.is_empty() => Some(("port", ONLY)),
-            Mark::Vertices(v) if v.members.is_some() => Some(("contains", ONLY)),
+            Mark::Vertices(v) if v.contains.is_some() => Some(("contains", ONLY)),
             Mark::Edges(e) if e.ends.is_none() && !e.poles && e.joins.is_none() => Some(("ends", ONLY)),
             Mark::Edges(e) if e.route == Some(super::Route::Orthogonal) => Some(("route", ONLY)),
             _ => None,
@@ -471,6 +472,166 @@ fn compile_label(
         max: label.max,
     });
     Ok(())
+}
+
+/// A mark's documentation as its schema's description: its prose, before its examples.
+pub(crate) fn described(lines: &[&str]) -> String {
+    let prose =
+        lines.iter().map(|line| line.strip_prefix(' ').unwrap_or(line)).take_while(|line| !line.starts_with("```"));
+    let paragraphs: Vec<String> =
+        prose.collect::<Vec<_>>().split(|line| line.is_empty()).map(|p| p.join(" ")).collect();
+    paragraphs.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(
+        "
+
+",
+    )
+}
+
+/// Declares a mark: its struct, holding the options every mark has, those strokes have where it
+/// draws them, and its own; and its JSON form, flat, with `of` naming its dataset and table, from
+/// which it deserializes and its schema derives. Its own options are declared once, here.
+macro_rules! mark {
+    ($(#[doc = $line:literal])* $name:ident $(+ $stroke:ident)? {
+        $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* $(,)?
+    }) => {
+        $(#[doc = $line])*
+        #[derive(Clone, PartialEq, Debug)]
+        pub struct $name {
+            pub(crate) style: $crate::scene::mark::Style,
+            $(pub(crate) $stroke: $crate::scene::mark::Stroke,)?
+            $($(#[$doc])* pub(crate) $field: $ty,)*
+        }
+
+        $crate::scene::mark::mark!(@form $name $(+ $stroke)? { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* });
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<$name, D::Error> {
+                let form = <Form as serde::Deserialize>::deserialize(deserializer)?;
+                Ok($name {
+                    style: form.style(),
+                    $($stroke: form.stroke(),)?
+                    $($field: form.$field,)*
+                })
+            }
+        }
+
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                let mut schema = <Form as schemars::JsonSchema>::json_schema(generator);
+                schema.insert("description".into(), $crate::scene::mark::described(&[$($line),*]).into());
+                schema
+            }
+        }
+    };
+    (@form $name:ident { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
+        $crate::scene::mark::mark!(@struct { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {});
+    };
+    (@form $name:ident + stroke { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
+        $crate::scene::mark::mark!(@struct { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {
+            /// CSS pixels, or position units with `units`; units in a diagram.
+            width: Option<$crate::Size>,
+            /// Whether each row is dashed.
+            #[serde(default = "crate::scene::mark::no")]
+            dash: $crate::Expr,
+            /// Comets flowing along each row at this speed a second: CSS pixels, units in a diagram,
+            /// or position units where the theme's flow is in units; negative flows backward. A speed
+            /// that changes carries comets on from where they are.
+            #[serde(default = "crate::scene::mark::still")]
+            flow: $crate::Expr,
+        });
+
+        impl Form {
+            fn stroke(&self) -> $crate::scene::mark::Stroke {
+                $crate::scene::mark::Stroke { width: self.width.clone(), dash: self.dash.clone(), flow: self.flow.clone() }
+            }
+        }
+    };
+    (@struct { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* } { $($stroke:tt)* }) => {
+        /// The mark as JSON writes it: `of`, its own options, then those of strokes and of every mark.
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Form {
+            /// The dataset and table drawn.
+            #[schemars(extend("tsType" = "[data: string, table: string]"))]
+            of: ($crate::Name, $crate::Name),
+            $($(#[$doc])* $(#[schemars(extend("tsType" = $ts))])? #[serde(default $(= $default)?)] $field: $ty,)*
+            $($stroke)*
+            /// Each row's color; the theme's unless set.
+            color: Option<$crate::Expr>,
+            /// Whether each row is drawn and picked.
+            #[serde(default = "crate::scene::mark::yes")]
+            visible: $crate::Expr,
+            /// Each row's priority, from its data alone: what matters more draws on top, stays drawn as
+            /// a table too large to draw whole thins to the tiles in view, and is labeled first.
+            priority: Option<$crate::Expr>,
+            /// Tells two marks of one table apart across scenes, and names the mark in hits.
+            name: Option<$crate::Name>,
+            /// Whether rows are hovered, clicked, and probed.
+            #[serde(default = "crate::scene::mark::on")]
+            pick: bool,
+            /// Whether a click selects a row.
+            #[serde(default = "crate::scene::mark::on")]
+            select: bool,
+            /// Whether pressing a row drags it instead of panning.
+            #[serde(default)]
+            drag: bool,
+            /// Each row's text: a text field, or a label's options.
+            label: Option<$crate::Label>,
+            /// Whether each row casts a shadow onto the ground and onto faces, away from the theme's
+            /// light.
+            #[serde(default)]
+            shadow: bool,
+            /// A legend of the colors at the view's bottom right, under this title: the colormap across
+            /// its domain, ticked; a cell for each category; or a swatch beside each name of a map's
+            /// `categories`. The color maps through a colormap with a domain or named categories; a
+            /// conditional's `otherwise` is read before its cases.
+            legend: Option<std::sync::Arc<str>>,
+        }
+
+        impl Form {
+            fn style(&self) -> $crate::scene::mark::Style {
+                $crate::scene::mark::Style {
+                    data: self.of.0.clone(),
+                    table: self.of.1.clone(),
+                    color: self.color.clone(),
+                    visible: self.visible.clone(),
+                    priority: self.priority.clone(),
+                    name: self.name.clone(),
+                    interaction: $crate::scene::mark::Interaction { pick: self.pick, select: self.select, drag: self.drag },
+                    label: self.label.clone(),
+                    shadow: self.shadow,
+                    legend: self.legend.clone(),
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use mark;
+
+/// Defaults of the JSON forms.
+pub(crate) fn yes() -> Expr {
+    true.into()
+}
+
+pub(crate) fn no() -> Expr {
+    false.into()
+}
+
+pub(crate) fn still() -> Expr {
+    0.0.into()
+}
+
+pub(crate) fn on() -> bool {
+    true
+}
+
+pub(crate) fn zero() -> Expr {
+    0.0.into()
 }
 
 /// The options every mark has, as inherent methods.

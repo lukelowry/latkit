@@ -105,16 +105,16 @@ def prepare(source, job, frames):
     lower, loaded = bracket(frames[0])
     write(job / "grid.json", {"name": "grid", "patch": [
         {"axis": {"name": "time", "unit": "s"}},
-        {"put": {"table": "Bus", "ids": ids, "fields": {
+        {"replace": {"table": "Bus", "ids": ids, "fields": {
             "lon": lon, "lat": lat,
             "label": [{59757: "Little Rock", 59774: "Newark"}.get(i, "") for i in ids],
         }}},
-        {"put": {"table": "Branch", "ids": [e["id"] for e in branches], "fields": {
+        {"replace": {"table": "Branch", "ids": [e["id"] for e in branches], "fields": {
             "width": widths, "in_service": [not (opened and e["id"] == BRANCH) for e in branches],
             "from": {"reference": "Bus", "ids": [e["bus1"] for e in branches]},
             "to": {"reference": "Bus", "ids": [e["bus2"] for e in branches]},
         }}},
-        {"put": {"table": "Outage", "ids": [BRANCH], "fields": {
+        {"replace": {"table": "Outage", "ids": [BRANCH], "fields": {
             "from": {"reference": "Bus", "ids": [59757]},
             "to": {"reference": "Bus", "ids": [59774]},
             "opened": [opened], "status": ["765 kV / OPEN" if opened else "765 kV / CLOSED"],
@@ -146,8 +146,8 @@ def prepare(source, job, frames):
                            "label": {"text": "status", "size": 13, "priority": 100}}},
                 {"vertices": {"of": ["grid", "Bus"], "position": ["lon", "lat"], "radius": 0.8,
                               "elevation": elevation,
-                              "color": {"colormap": "df", "domain": [-0.2, 0.2],
-                                        "map": {"kind": "diverging", "colors": PALETTE}},
+                              "color": {"colormap": {"kind": "diverging", "colors": PALETTE},
+                                        "value": "df", "domain": [-0.2, 0.2]},
                               "label": {"text": "label", "size": 14, "priority": 101},
                               "legend": "Bus frequency deviation / Hz"}},
             ],

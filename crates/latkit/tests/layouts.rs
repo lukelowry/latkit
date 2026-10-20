@@ -13,7 +13,7 @@ use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
 use common::{diagram, errors, frame, gpu, plain_theme, step};
-use latkit::{Camera, Data, Edges, Layered, Layout, Patch, Port, Row, Scene, Side, Stress, Table, Vertices, View};
+use latkit::{Camera, Data, Edges, Ids, Layered, Layout, Patch, Port, Row, Scene, Side, Stress, Table, Vertices, View};
 
 /// Renders frames until `pending` resolves, within the settle deadline.
 fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
@@ -36,7 +36,11 @@ fn graph(pin: Option<[f64; 2]>) -> Data {
     };
     let mut data = Data::new("graph");
     data.apply(Patch::new().set(Table::new("Node", vec![1_u64, 2, 3, 4]).field("x", x).field("y", y)).set(
-        Table::new("Link", 3).reference("from", "Node", vec![1_u64, 2, 2]).reference("to", "Node", vec![2_u64, 3, 4]),
+        Table::new("Link", Ids::count(3)).reference("from", "Node", vec![1_u64, 2, 2]).reference(
+            "to",
+            "Node",
+            vec![2_u64, 3, 4],
+        ),
     ))
     .expect("valid");
     data
@@ -213,8 +217,8 @@ fn rows_added_later_move_nothing_else() {
     frame(&gpu, &mut view);
     let arranged = located(&gpu, &mut view, 5);
     assert!(arranged.iter().all(|p| p[0].is_finite()), "every node placed again: {arranged:?}");
-    let [(name, patch)] = &patches[..] else { panic!("one dataset's patch: {patches:?}") };
-    assert_eq!(name.as_str(), "graph");
+    let [patch] = &patches[..] else { panic!("one dataset's patch: {patches:?}") };
+    assert_eq!(patch.data().map(latkit::Name::as_str), Some("graph"));
     let mut data = view.data("graph").expect("shown").clone();
     data.apply(patch.clone()).expect("valid");
     let node = data.table("Node").expect("nodes");

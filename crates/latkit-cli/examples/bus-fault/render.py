@@ -61,8 +61,8 @@ def prepare(source, job, indices):
     first = indices[0]
     write(job / "grid.json", {"name": "grid", "patch": [
         {"axis": {"name": "time", "unit": "s"}},
-        {"put": {"table": "Bus", "ids": ids, "fields": {"lon": lon, "lat": lat}}},
-        {"put": {"table": "Branch", "ids": len(edges), "fields": {
+        {"replace": {"table": "Bus", "ids": ids, "fields": {"lon": lon, "lat": lat}}},
+        {"replace": {"table": "Branch", "ids": {"count": len(edges)}, "fields": {
             "width": widths,
             "from": {"reference": "Bus", "ids": [e["bus1"] for e in edges]},
             "to": {"reference": "Bus", "ids": [e["bus2"] for e in edges]},
@@ -81,7 +81,7 @@ def prepare(source, job, indices):
                 values.append(struct.unpack("<f", f.read(4))[0])
     write(job / "trace.json", {"name": "trace", "patch": [
         {"axis": {"name": "time", "unit": "s"}},
-        {"put": {"table": "Bus", "ids": [ids[i] for i in traced], "fields": {"group": list(range(len(traced)))}}},
+        {"replace": {"table": "Bus", "ids": [ids[i] for i in traced], "fields": {"group": list(range(len(traced)))}}},
         {"append": {"at": times, "table": "Bus", "fields": {"df": values}}},
     ]})
 
@@ -99,8 +99,8 @@ def prepare(source, job, indices):
                 {"vertices": {
                     "of": ["grid", "Bus"], "position": ["lon", "lat"], "radius": 0.8,
                     "elevation": {"op": "mul", "args": ["height", height_scale]},
-                    "color": {"colormap": "df", "domain": [-0.05, 0.05],
-                              "map": {"kind": "diverging", "colors": PALETTE}},
+                    "color": {"colormap": {"kind": "diverging", "colors": PALETTE},
+                              "value": "df", "domain": [-0.05, 0.05]},
                     "legend": "Bus frequency deviation · Hz",
                 }},
             ],
@@ -110,7 +110,7 @@ def prepare(source, job, indices):
             "ease": 0,
             "theme": {**theme, "fontSize": 13, "playhead": "#eff5f8"},
             "marks": [{"lines": {"of": ["trace", "Bus"], "trace": "df", "width": 1.4,
-                                 "color": {"colormap": "group", "map": "tableau10"}}}],
+                                 "color": {"colormap": "tableau10", "value": "group"}}}],
         },
         "map-camera.json": {"center": [-87.8, 35], "zoom": math.log2(40), "pitch": 55, "bearing": 8},
         "plot-camera.json": {"x": [times[0], times[-1]], "y": [-0.05, 0.05]},

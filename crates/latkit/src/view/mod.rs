@@ -56,7 +56,7 @@ use rig::Rig;
 use crate::derive::{Derivations, Derived};
 use crate::expr::compile::Deps;
 use crate::scene::mark::Context;
-use crate::{Data, Gpu, Name, Patch, Pending, Result, Row, Scene, Space};
+use crate::{Data, Gpu, Name, Patch, Pending, Result, Row, Rows, Scene, Space};
 
 /// A frame to draw: where, a texture view of a format and size in physical pixels at a ratio of
 /// physical pixels to CSS pixels, and when.
@@ -83,10 +83,10 @@ pub struct Frame<'a> {
 ///
 /// ```no_run
 /// # async fn example() -> latkit::Result<()> {
-/// use latkit::{Data, Gpu, Patch, Plane, Scene, Table, Vertices, View};
+/// use latkit::{Data, Gpu, Ids, Plane, Scene, Table, Vertices, View};
 /// let gpu = Gpu::new().await?;
 /// let mut data = Data::new("graph");
-/// data.apply(Table::new("Node", 3).field("x", vec![0.0, 1.0, 2.0]).field("y", vec![0.0, 1.0, 0.0]))?;
+/// data.apply(Table::new("Node", Ids::count(3)).field("x", vec![0.0, 1.0, 2.0]).field("y", vec![0.0, 1.0, 0.0]))?;
 /// let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(Vertices::of("graph", "Node").position("x", "y")))?;
 /// view.set_data(data);
 /// view.fit(latkit::Fit::All);
@@ -133,7 +133,7 @@ pub struct View {
     /// The format and samples per pixel the scene's pipelines were made for.
     pipelines_made: Option<(wgpu::TextureFormat, u32)>,
     /// Who asked for the arranging under way.
-    arranging: Vec<crate::Resolver<Vec<(Name, Patch)>>>,
+    arranging: Vec<crate::Resolver<Vec<Patch>>>,
     /// Whether the platform asks for reduced motion, which `Motion::System` follows.
     reduced_motion: bool,
     /// What input needs, a stage made on each frame after the scene's first: the hover's, then the
@@ -277,6 +277,9 @@ impl View {
         for mut dropped in old.into_iter().flatten() {
             dropped.tables.release(&mut inner);
         }
+        for shown in self.marks.iter_mut().filter(|s| s.failure.is_none()) {
+            shown.failure = absent(shown, &self.sources, &self.derived.tiles).map(|error| (error, false));
+        }
         self.regions_dirty = true;
         drop(inner);
         if !self.camera.fits(&scene.space) {
@@ -322,7 +325,9 @@ impl View {
         let context = Context { theme: &self.scene.theme, space: &self.scene.space, layout: &self.scene.layout };
         for shown in &mut self.marks {
             if shown.stale(&self.sources[at]) {
-                shown.failure = shown.compile(&self.sources, context, inner).err().map(|error| (error, false));
+                let failed = shown.compile(&self.sources, context, inner).err();
+                let failed = failed.or_else(|| absent(shown, &self.sources, &self.derived.tiles));
+                shown.failure = failed.map(|error| (error, false));
             }
         }
         // Rows may have moved under the focus and the keys.
@@ -348,22 +353,16 @@ impl View {
     }
 
     /// Fetches `tiles` as the camera asks for them, kept as the dataset they name, which the view
-    /// owns: marks draw it like any other, and [`data`](View::data) reads it. Tiles of the same name
-    /// replace these.
+    /// owns: marks draw it like any other, [`data`](View::data) reads it, and
+    /// [`remove_data`](View::remove_data) stops it. Tiles of the same name replace these.
     pub fn set_tiles(&mut self, tiles: crate::geo::Tiles) {
         self.derived.tiles.set(tiles);
         self.wake();
     }
 
-    /// Stops fetching the tiles drawn as dataset `name`, and drawing them.
-    pub fn remove_tiles(&mut self, name: &str) {
-        if self.derived.tiles.remove(name) {
-            self.remove_data(name);
-        }
-    }
-
-    /// Stops drawing the dataset named `name`.
+    /// Stops drawing the dataset named `name`, given or fetched as tiles.
     pub fn remove_data(&mut self, name: &str) {
+        self.derived.tiles.remove(name);
         self.sources.retain(|d| d.name() != name);
         self.data.retain(|d| d.name() != name);
         let gpu = self.gpu.clone();
@@ -463,10 +462,10 @@ impl View {
 
     /// Lays every vertex row without a position out again by the scene's layout: a diagram's blocks,
     /// or the points of a plane or the earth. Places a layout gave otherwise hold, so rows added later
-    /// are placed around the rest. Once the layout lands, the answer is a patch for each dataset
+    /// are placed around the rest. Once the layout lands, the answer is a patch to each dataset
     /// writing each row laid out into its mark's position fields (or its point `geometry`); applied,
     /// the places are the data's own. A mark whose position is not fields is left out.
-    pub fn arrange(&mut self) -> Pending<Vec<(Name, Patch)>> {
+    pub fn arrange(&mut self) -> Pending<Vec<Patch>> {
         let (pending, resolver) = Pending::new();
         self.arranging.push(resolver);
         self.derived.arrange(matches!(self.scene.space, Space::Diagram(_)));
@@ -486,7 +485,7 @@ impl View {
     /// Frames what `fit` names on the next frame, keeping pitch and bearing.
     pub fn fit(&mut self, fit: Fit) {
         self.focus.fitting = match &fit {
-            Fit::Rows(rows) => rows.clone(),
+            Fit::Rows(rows) => Rows::flatten(rows.iter().cloned()),
             Fit::Reveal(row) => vec![row.clone()],
             _ => Vec::new(),
         };
@@ -521,15 +520,15 @@ impl View {
         self.wake();
     }
 
-    /// The rows selected.
-    pub fn selection(&self) -> &[Row] {
-        &self.focus.selection
+    /// The rows selected, a set per table in the order each was first selected.
+    pub fn selection(&self) -> Vec<Rows> {
+        Rows::group(self.focus.selection.iter().cloned())
     }
 
     /// Selects `rows`, and no others, telling nothing. Rows the data drops, or no pickable mark shows,
     /// leave the selection with a [`Select`](Event::Select) event without a trigger.
-    pub fn select(&mut self, rows: impl IntoIterator<Item = Row>) {
-        let rows: Vec<Row> = rows.into_iter().collect();
+    pub fn select(&mut self, rows: impl IntoIterator<Item = Rows>) {
+        let rows = Rows::flatten(rows);
         if rows != self.focus.selection {
             self.focus.selection = rows;
             self.focus.dirty = true;
@@ -671,12 +670,16 @@ impl View {
     }
 
     /// The work under way a frame drawn now stands in for: see [`complete`](View::complete). A mark
-    /// without its data, or that failed, draws nothing however long it waits, and stands in for
-    /// nothing.
+    /// waits for a dataset it names until it is given; one that failed, or that draws tiles the view
+    /// fetches, which may never hold its table, stands in for nothing.
     fn under_way(&self) -> Waiting {
         let marks = || self.marks.iter().filter(|m| m.compiled.is_some());
+        let given = |m: &Shown| {
+            let data = &m.mark.style().data;
+            m.compiled.is_some() || m.failure.is_some() || self.source(data).is_some() || self.derived.tiles.owns(data)
+        };
         Waiting {
-            data: marks().any(|m| !m.tables.synced() || m.tables.waiting()),
+            data: !self.marks.iter().all(given) || marks().any(|m| !m.tables.synced() || m.tables.waiting()),
             derived: !self.derived.complete(),
             labels: !self.labels.complete(),
             fit: self.fitting.due() || self.fitting.reading(),
@@ -763,7 +766,7 @@ impl std::fmt::Debug for View {
 
 /// The patches writing rows laid out into the data, by dataset: each row's place into the position
 /// fields of the vertex mark drawing its table, or its point geometry.
-fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<(Name, Patch)> {
+fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<Patch> {
     /// A table's rows laid out: its dataset and name, their ids, and their places.
     type Laid = ((Name, Name), Vec<crate::Id>, Vec<[f64; 2]>);
     let mut tables: Vec<Laid> = Vec::new();
@@ -777,7 +780,7 @@ fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<(Name, Patch)> {
             None => tables.push((key, vec![row.id], vec![place])),
         }
     }
-    let mut patches: Vec<(Name, Patch)> = Vec::new();
+    let mut patches: Vec<Patch> = Vec::new();
     for ((data, table), ids, places) in tables {
         let mark = scene.marks.iter().find_map(|m| match m {
             crate::Mark::Vertices(v) if v.style.data == data && v.style.table == table => Some(v),
@@ -786,7 +789,7 @@ fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<(Name, Patch)> {
         let Some(mark) = mark else { continue };
         let written = crate::Table::new(table, ids);
         let written = match &mark.position {
-            None => written.field(crate::scene::mark::GEOMETRY, places),
+            None => written.field(mark.point_field(), places),
             Some([x, y]) => match (x.field_name(), y.field_name()) {
                 (Some(x), Some(y)) => written
                     .field(x, places.iter().map(|p| p[0]).collect::<Vec<_>>())
@@ -794,10 +797,19 @@ fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<(Name, Patch)> {
                 _ => continue,
             },
         };
-        match patches.iter_mut().find(|(name, _)| *name == data) {
-            Some((_, patch)) => *patch = std::mem::take(patch).set(written),
-            None => patches.push((data, Patch::new().set(written))),
+        match patches.iter_mut().find(|patch| patch.data() == Some(&data)) {
+            Some(patch) => *patch = std::mem::take(patch).set(written),
+            None => patches.push(Patch::to(data).set(written)),
         }
     }
     patches
+}
+
+/// Why `shown`, whose dataset is given, draws nothing: the table it names is absent. A dataset the
+/// view fetches as tiles fills its tables as they land, so a table it lacks is not missing.
+fn absent(shown: &Shown, sources: &[Data], tiles: &crate::derive::tiles::TileSets) -> Option<crate::Error> {
+    let style = shown.mark.style();
+    let data = sources.iter().find(|d| *d.name() == style.data)?;
+    (shown.compiled.is_none() && data.table(&style.table).is_none() && !tiles.owns(&style.data))
+        .then(|| crate::Error::invalid(format!("dataset '{}' has no table '{}'", style.data, style.table)).at("of"))
 }

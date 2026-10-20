@@ -21,8 +21,8 @@ def rounded(values, digits=3):
     return [round(v, digits) for v in values]
 
 
-def put(table, ids, fields):
-    return {"put": {"table": table, "ids": ids, "fields": fields}}
+def put(table, count, fields):
+    return {"replace": {"table": table, "ids": {"count": count}, "fields": fields}}
 
 
 def scene(title, subtitle, marks):
@@ -63,7 +63,7 @@ def helios():
     marks = [
         {"edges": {"of": ["art", "Branch"], "ends": ["from", "to"], "width": 0.85, "flow": 18}},
         {"vertices": {"of": ["art", "Bus"], "position": ["x", "y"], "radius": "radius",
-                      "color": {"colormap": "heat", "map": "viridis", "domain": [0, 1]},
+                      "color": {"colormap": "viridis", "value": "heat", "domain": [0, 1]},
                       "label": {"text": "name", "size": 13, "color": "#c0e5dd"}}},
         {"vertices": {"of": ["art", "Note"], "position": ["x", "y"], "radius": 0, "color": "#00000000",
                       "label": {"text": "text", "size": 17, "color": "#9dcabf"}}},
@@ -86,7 +86,7 @@ def interference():
             radius.append(0.8 + value * 1.7)
     data = [put("Particle", len(x), {"x": rounded(x, 2), "y": rounded(y, 2), "heat": rounded(heat), "radius": rounded(radius)})]
     marks = [{"vertices": {"of": ["art", "Particle"], "position": ["x", "y"], "radius": "radius",
-                           "color": {"colormap": "heat", "map": "magma", "domain": [0, 1]}}}]
+                           "color": {"colormap": "magma", "value": "heat", "domain": [0, 1]}}}]
     return data, scene("02 / INTERFERENCE", "33,600 particles / two wave sources / one interference field", marks)
 
 
@@ -104,7 +104,7 @@ def tides():
         levels.append(round(level, 4))
     data = [put("Contour", len(paths), {"geometry": paths, "level": levels})]
     marks = [{"lines": {"of": ["art", "Contour"], "width": 1.15,
-                        "color": {"colormap": "level", "map": "turbo", "domain": [0, 1]}}}]
+                        "color": {"colormap": "turbo", "value": "level", "domain": [0, 1]}}}]
     return data, scene("03 / TIDAL FORMS", "100 closed contours / 48,100 coordinates / harmonic geometry", marks)
 
 

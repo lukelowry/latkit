@@ -8,12 +8,13 @@ mod common;
 use std::sync::Arc;
 
 use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane};
-use latkit::{Color, Data, Event, Expr, Image, Marker, Scene, Shape, Table, Vertices, View, field, when};
+use latkit::{Color, Data, Event, Expr, Ids, Image, Marker, Scene, Shape, Table, Vertices, View, field, when};
 
 fn one(marker: Marker) -> (View, latkit::Gpu) {
     let gpu = gpu().expect("a GPU");
     let mut data = Data::new("d");
-    data.apply(Table::new("V", 1).field("x", vec![0.0]).field("y", vec![0.0]).field("v", vec![0.5])).expect("valid");
+    data.apply(Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("v", vec![0.5]))
+        .expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("d", "V").position("x", "y").radius(20.0).color(Color::WHITE).marker(marker));
@@ -95,9 +96,9 @@ fn custom_markers_draw_their_wgsl_and_bad_ones_are_told() {
 fn status_rings_surround_their_markers() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("d");
-    data.apply(Table::new("V", 1).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
+    data.apply(Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(
-        Vertices::of("d", "V").position("x", "y").radius(10.0).color(Color::WHITE).status(Color::rgb(1.0, 0.0, 0.0)),
+        Vertices::of("d", "V").position("x", "y").radius(10.0).color(Color::WHITE).ring(Color::rgb(1.0, 0.0, 0.0)),
     );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
@@ -120,11 +121,11 @@ fn a_missing_status_draws_no_ring_whichever_branch_it_is() {
     ];
     for status in forms {
         let mut data = Data::new("d");
-        let table = Table::new("V", 2).field("x", vec![-30.0, 30.0]).field("y", vec![0.0, 0.0]);
+        let table = Table::new("V", Ids::count(2)).field("x", vec![-30.0, 30.0]).field("y", vec![0.0, 0.0]);
         data.apply(table.field("alarm", vec![1.0, 0.0])).expect("valid");
         let scene = Scene::new(plane())
             .theme(plain_theme())
-            .draw(Vertices::of("d", "V").position("x", "y").radius(10.0).color(Color::WHITE).status(status));
+            .draw(Vertices::of("d", "V").position("x", "y").radius(10.0).color(Color::WHITE).ring(status));
         let mut view = View::new(&gpu, scene).expect("valid scene");
         view.set_camera(camera());
         view.set_data(data);

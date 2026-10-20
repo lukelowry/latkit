@@ -6,7 +6,7 @@
 mod common;
 
 use common::{SIZE, at, errors, frame, gpu, plain_theme};
-use latkit::{Camera, Color, Data, Edges, Patch, Scene, Table, Theme, Vertices, View};
+use latkit::{Camera, Color, Data, Edges, Ids, Patch, Scene, Table, Theme, Vertices, View};
 
 const C: u32 = SIZE / 2;
 
@@ -22,7 +22,7 @@ fn graph() -> Data {
                     .field("y", vec![0.0, 0.0, 40.0])
                     .reference("area", "Area", vec![Some(1_u64), Some(1), None]),
             )
-            .set(Table::new("Link", 2).reference("from", "Node", vec![1_u64, 2]).reference(
+            .set(Table::new("Link", Ids::count(2)).reference("from", "Node", vec![1_u64, 2]).reference(
                 "to",
                 "Node",
                 vec![2_u64, 3],

@@ -8,12 +8,13 @@ use std::collections::VecDeque;
 
 use super::Camera;
 use super::input::{Device, Modifiers};
-use crate::{Error, Name, Pending, Row};
+use crate::{Error, Name, Pending, Row, Rows};
 
 /// What happened in a view, for the application to act on. Drain them with
 /// [`View::events`](crate::View::events).
-#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(tag = "type", content = "detail", rename_all = "lowercase")]
+#[schemars(rename = "ViewEvent")]
 #[non_exhaustive]
 pub enum Event {
     /// A row was clicked.
@@ -65,7 +66,7 @@ pub enum Event {
     /// Delete or Backspace with rows selected and [`Controls::delete`](crate::Controls) on.
     Delete {
         /// The rows selected.
-        rows: Vec<Row>,
+        rows: Vec<Rows>,
         /// The key.
         trigger: Trigger,
     },
@@ -79,7 +80,7 @@ pub enum Event {
     /// The selection changed: [`View::selection`](crate::View::selection).
     Select {
         /// The rows selected now.
-        rows: Vec<Row>,
+        rows: Vec<Rows>,
         /// How the user changed it; `None` when the data dropped rows from it.
         trigger: Option<Trigger>,
     },
@@ -96,7 +97,7 @@ pub enum Event {
 
 /// Where, with what keys, and with what the user acted. For keys, the point is the row they point
 /// at, else the pointer, else the view's middle.
-#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, schemars::JsonSchema)]
 pub struct Trigger {
     /// CSS pixels from the top left.
     pub point: [f32; 2],
@@ -223,7 +224,7 @@ impl Extend<Event> for Events {
 }
 
 /// A vertex a connection ends at, and its port when it has the one the connection meets.
-#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct End {
     /// The vertex.
     pub row: Row,
@@ -233,12 +234,16 @@ pub struct End {
 }
 
 /// A row under a point, as the frame drew it.
-#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct Hit {
     /// The row.
     pub row: Row,
-    /// The index of the scene's mark that drew it.
-    pub mark: usize,
+    /// The name of the mark that drew it, when it has one: what tells two marks of one table apart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mark: Option<Name>,
+    /// The index of the mark in the scene the frame drew.
+    #[serde(skip)]
+    pub(crate) index: usize,
     /// The point of the row nearest the probe, CSS pixels from the top left.
     pub point: [f32; 2],
     /// That point in the space's coordinates: x, y, and elevation.
@@ -254,7 +259,7 @@ pub struct Hit {
 }
 
 /// A sample of a traced field: its frame, the axis coordinate it was recorded at, and its value.
-#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct Sample {
     /// The frame, numbered from the first ever recorded.
     pub frame: u32,
@@ -265,7 +270,7 @@ pub struct Sample {
 }
 
 /// The phase of a [`Drag`](Event::Drag).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
     /// The pointer moved far enough to drag.
@@ -284,7 +289,7 @@ pub enum Fit {
     /// Everything drawn.
     All,
     /// These rows.
-    Rows(Vec<Row>),
+    Rows(Vec<Rows>),
     /// Brings this row into view, keeping the zoom.
     Reveal(Row),
     /// The box from `min` to `max`: x, y, and elevation.
@@ -313,7 +318,7 @@ pub enum Cursor {
 }
 
 /// What a view does each frame.
-#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Stats {
     /// Frames rendered.
@@ -391,6 +396,20 @@ impl serde::Serialize for Waiting {
     }
 }
 
+impl schemars::JsonSchema for Waiting {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Waiting".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "Work under way a frame stands in for: pages uploading or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again, segment counts, or a transition beginning (`marks`). Empty once a frame is complete.",
+            "type": "array",
+            "items": { "enum": ["data", "derived", "labels", "fit", "marks"] },
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,7 +417,8 @@ mod tests {
     fn click(id: u64) -> Event {
         let hit = Hit {
             row: Row::new("d", "t", id),
-            mark: 0,
+            mark: None,
+            index: 0,
             point: [0.0; 2],
             position: [0.0; 3],
             distance: 0.0,

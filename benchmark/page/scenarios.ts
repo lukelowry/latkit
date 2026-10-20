@@ -176,7 +176,7 @@ const every = (data: string, table: string, name: string): Phase => ({
   run: (s) => {
     const n = s.count(data, table);
     const values = Float32Array.from({ length: n }, (_, i) => (i % 7) / 7);
-    return s.once(() => s.apply(data, (p) => p.set(table, n, { [name]: values })));
+    return s.once(() => s.apply(data, (p) => p.set(table, { count: n }, { [name]: values })));
   },
 });
 
@@ -237,7 +237,7 @@ const select = (data: string, table: string): Phase => ({
   name: 'select',
   order: { time: 0 },
   run: (s) =>
-    s.once(() => s.view.select(Array.from({ length: 100 }, (_, id) => ({ data, table, id })))),
+    s.once(() => s.view.select([{ data, table, ids: Array.from({ length: 100 }, (_, id) => id) }])),
 });
 
 /** Moves every row to a new place at once, easing: CPU per frame while they fly. */
@@ -418,7 +418,7 @@ export const scenarios: Record<string, Scenario> = {
           {
             areas: {
               of: ['m', 'Region'],
-              rings: 'rings',
+              geometry: 'rings',
               color: field('v').colormap('viridis').domain(0, 1),
             },
           },

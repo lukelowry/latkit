@@ -12,7 +12,7 @@ latkit render map.json plot.json -d grid.json -d states=usa.geojson \
   --panel 0,0,1,0.8 --panel 0,0.8,1,0.2 --frames frames.jsonl --fps 60 -o film.mp4
 latkit render scene.json -d grid.json --frames - --format y4m -o - | ffmpeg -i - film.webm
 latkit inspect grid.bin
-latkit query grid.bin '{"of":"Branch","where":{"op":"gt","args":["loading",90]},"limit":20}'
+latkit query grid.bin '{"of":"Branch","filter":{"op":"gt","args":["loading",90]},"limit":20}'
 latkit schema scene > scene.schema.json   # for editors and other languages
 ```
 
@@ -26,7 +26,7 @@ latkit schema scene > scene.schema.json   # for editors and other languages
 
 ## Inputs
 
-- **Scenes** are the library's scene JSON ([format](../latkit/src/scene/decode.rs)): a `title`
+- **Scenes** are the library's scene JSON (`latkit schema scene`): a `title`
   and `subtitle`, and on any mark a `legend`. `--camera FILE` gives scenes cameras in order; a view
   without one frames `--fit` (`all`, or a fit as JSON). `--insets T,R,B,L` keeps room clear.
 - **Datasets** (`-d [NAME=]FILE`) are the library's dataset JSON, `{"name", "patch"}`

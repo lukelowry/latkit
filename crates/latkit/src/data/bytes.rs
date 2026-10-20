@@ -1,23 +1,31 @@
-//! One byte encoding for patches and datasets: a magic, the dataset's name (empty for a patch), and
-//! the operations of the patch. Little endian throughout. Every part counts its own length, so
-//! patches back to back decode one by one.
+//! One byte encoding for patches and datasets: a frame of a magic, its length, the name of the
+//! dataset its patch changes (empty when it names none), and the patch's operations. Little endian
+//! throughout. A frame says its length up front, so frames back to back split without decoding, and a
+//! stream knows at once whether it holds a whole one. A dataset's bytes are the patch to it that
+//! builds it.
 //!
-//! | Part     | Layout                                                                              |
-//! | -------- | ----------------------------------------------------------------------------------- |
-//! | header   | `b"LATK"`, name                                                                     |
-//! | ops      | `u32` count; per op a `u8` tag and its payload                                      |
-//! | axis     | name, unit                                                                          |
-//! | table    | name, ids, `u32` field count; per field: name, `u8` tag, payload                    |
-//! | ids      | `u8` 0 and `u32` count, or `u8` 1 and values                                        |
-//! | column   | `u32` page count, values per page                                                   |
-//! | values   | `u8` storage, `u32` len, data, `u8` has-validity, validity words                    |
-//! | samples  | `u32` rows, `u32` first frame's number, `u32` frames, `f64` coordinates, `f32` values frame-major (NaN missing) |
-//! | `str`    | `u32` byte length, UTF-8                                                            |
+//! | Part     | Layout                                                                                |
+//! | -------- | ------------------------------------------------------------------------------------- |
+//! | frame    | `b"LATK"`, `u64` length of the whole frame, name, `u32` op count, ops                 |
+//! | op       | `u8` tag and its payload: axis, replace, set, remove, append, or forget               |
+//! | axis     | name, unit                                                                            |
+//! | replace  | table, as `set`                                                                       |
+//! | remove   | table name, ids                                                                       |
+//! | append   | table name, `u8` 1 and ids or `u8` 0 for every row, `u32` frames, `f64` coordinates,  |
+//! |          | `u32` field count; per field: name, values frame-major                                |
+//! | forget   | `f64` before                                                                          |
+//! | table    | name, ids, `u32` field count; per field: name, `u8` tag, payload                      |
+//! | field    | values; a reference's table and its target ids as values; or samples                  |
+//! | ids      | `u8` 0 and `u32` count, or `u8` 1 and values: `u64`, `u32` read as `u64`, or texts    |
+//! | values   | `u8` storage, `u32` len, data, `u8` has-validity, validity words (`u64`)              |
+//! | samples  | `u32` rows, `u32` first frame's number, `u32` frames, `f64` coordinates, `f32` values |
+//! |          | frame-major (NaN missing)                                                             |
+//! | `str`    | `u32` byte length, UTF-8                                                              |
 
 use std::sync::Arc;
 
 use super::bits::Bits;
-use super::column::{Column, PAGE_ROWS};
+use super::column::Column;
 use super::geometry::Geometry;
 use super::ids::{IdList, Ids, RowIds};
 use super::name::{Name, Version};
@@ -29,9 +37,11 @@ use super::values::{Array, Values};
 use crate::{Error, Result};
 
 const MAGIC: &[u8; 4] = b"LATK";
+/// The magic and the length.
+const HEADER: usize = 12;
 
 const OP_AXIS: u8 = 0;
-const OP_PUT: u8 = 1;
+const OP_REPLACE: u8 = 1;
 const OP_SET: u8 = 2;
 const OP_REMOVE: u8 = 3;
 const OP_APPEND: u8 = 4;
@@ -50,10 +60,11 @@ const STORE_BOOL: u8 = 5;
 const STORE_TEXT: u8 = 6;
 const STORE_GEOMETRY: u8 = 7;
 
-pub(crate) fn encode(name: &str, patch: &Patch) -> Vec<u8> {
+pub(crate) fn encode(patch: &Patch) -> Vec<u8> {
     let mut w = Writer(Vec::new());
     w.0.extend_from_slice(MAGIC);
-    w.str(name);
+    w.0.extend_from_slice(&[0; 8]);
+    w.str(patch.data.as_deref().unwrap_or(""));
     w.u32(patch.ops.len());
     for op in &patch.ops {
         match op {
@@ -62,8 +73,8 @@ pub(crate) fn encode(name: &str, patch: &Patch) -> Vec<u8> {
                 w.str(name);
                 w.str(unit);
             }
-            Op::Put(table) => {
-                w.u8(OP_PUT);
+            Op::Replace(table) => {
+                w.u8(OP_REPLACE);
                 w.table(table);
             }
             Op::Set(table) => {
@@ -75,9 +86,16 @@ pub(crate) fn encode(name: &str, patch: &Patch) -> Vec<u8> {
                 w.str(table);
                 w.ids(ids);
             }
-            Op::Append { table, at, fields } => {
+            Op::Append { table, at, ids, fields } => {
                 w.u8(OP_APPEND);
                 w.str(table);
+                match ids {
+                    Some(ids) => {
+                        w.u8(1);
+                        w.ids(ids);
+                    }
+                    None => w.u8(0),
+                }
                 w.u32(at.len());
                 for &t in at {
                     w.f64(t);
@@ -94,58 +112,76 @@ pub(crate) fn encode(name: &str, patch: &Patch) -> Vec<u8> {
             }
         }
     }
+    let length = w.0.len() as u64;
+    w.0[MAGIC.len()..HEADER].copy_from_slice(&length.to_le_bytes());
     w.0
 }
 
-pub(crate) fn decode(bytes: &[u8]) -> Result<(Name, Patch)> {
-    let mut r = Reader { bytes, at: 0, limit: usize::MAX, short: false };
-    let decoded = r.message()?;
-    if r.at != bytes.len() {
-        return Err(malformed("trailing bytes"));
+/// The patch `bytes` hold, every byte of them.
+pub(crate) fn decode(bytes: &[u8]) -> Result<Patch> {
+    match decode_prefix(bytes, usize::MAX)? {
+        Some((patch, used)) if used == bytes.len() => Ok(patch),
+        Some(_) => Err(malformed("trailing bytes")),
+        None => Err(malformed("truncated")),
     }
-    Ok(decoded)
 }
 
-/// The patch at the start of `bytes`, its name, and how many bytes it takes; `None` while `bytes`
-/// hold only its start. One its lengths say runs past `limit` bytes is an error at once.
-pub(crate) fn decode_prefix(bytes: &[u8], limit: usize) -> Result<Option<(Name, Patch, usize)>> {
-    let mut r = Reader { bytes, at: 0, limit, short: false };
-    match r.message() {
-        Ok((name, patch)) => Ok(Some((name, patch, r.at))),
-        Err(_) if r.short => Ok(None),
-        Err(e) => Err(e),
+/// The patch at the start of `bytes` and how many bytes it takes; `None` while `bytes` hold only
+/// its start. A frame its length says runs past `limit` bytes is an error at once.
+pub(crate) fn decode_prefix(bytes: &[u8], limit: usize) -> Result<Option<(Patch, usize)>> {
+    let held = bytes.len().min(MAGIC.len());
+    if bytes[..held] != MAGIC[..held] {
+        return Err(malformed("not latkit bytes"));
     }
+    let Some(length) = bytes.get(MAGIC.len()..HEADER) else { return Ok(None) };
+    let length = u64::from_le_bytes(length.try_into().expect("eight bytes"));
+    let length = usize::try_from(length).map_err(|_| too_long(limit))?;
+    if length > limit {
+        return Err(too_long(limit));
+    }
+    if length < HEADER {
+        return Err(malformed("a frame shorter than its header"));
+    }
+    let Some(frame) = bytes.get(..length) else { return Ok(None) };
+    let mut r = Reader { bytes: frame, at: HEADER };
+    let patch = r.patch()?;
+    if r.at != frame.len() {
+        return Err(malformed("a frame longer than its patch"));
+    }
+    Ok(Some((patch, length)))
 }
 
 impl Reader<'_> {
-    fn message(&mut self) -> Result<(Name, Patch)> {
+    fn patch(&mut self) -> Result<Patch> {
         let r = self;
-        if r.take(4)? != MAGIC {
-            return Err(malformed("not latkit bytes"));
-        }
         let name = r.name()?;
-        let count = r.u32()?;
-        let mut patch = Patch::new();
+        let count = r.len(1)?;
+        let mut patch = Patch { data: (!name.is_empty()).then_some(name), ops: Vec::with_capacity(count) };
         for _ in 0..count {
             let op = match r.u8()? {
                 OP_AXIS => Op::Axis { name: r.name()?, unit: r.name()? },
-                OP_PUT => Op::Put(r.table()?),
+                OP_REPLACE => Op::Replace(r.table()?),
                 OP_SET => Op::Set(r.table()?),
                 OP_REMOVE => Op::Remove { table: r.name()?, ids: r.ids()? },
                 OP_APPEND => {
                     let table = r.name()?;
+                    let ids = match r.u8()? {
+                        0 => None,
+                        1 => Some(r.ids()?),
+                        _ => return Err(malformed("an append names its rows or none")),
+                    };
                     let frames = r.len(8)?;
                     let at = (0..frames).map(|_| r.f64()).collect::<Result<_>>()?;
                     let count = r.len(1)?;
                     let fields = (0..count).map(|_| Ok((r.name()?, r.values()?))).collect::<Result<_>>()?;
-                    Op::Append { table, at, fields }
+                    Op::Append { table, at, ids, fields }
                 }
                 OP_FORGET => Op::Forget { before: r.f64()? },
                 tag => return Err(malformed(format!("unknown operation {tag}"))),
             };
             patch.ops.push(op);
         }
-        Ok((name, patch))
+        Ok(patch)
     }
 }
 
@@ -237,13 +273,7 @@ impl Writer {
     }
 
     fn column(&mut self, column: &Column) {
-        self.u32(column.pages().len());
-        if column.pages().is_empty() {
-            self.values(column.like());
-        }
-        for page in column.pages() {
-            self.values(&page.values);
-        }
+        self.values(&column.values());
     }
 
     fn values(&mut self, values: &Values) {
@@ -295,24 +325,16 @@ impl Writer {
     }
 }
 
+/// Reads one frame, whose bytes are all there.
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
-    /// The most bytes the message may take: past it, more bytes are not waited for.
-    limit: usize,
-    /// Whether reading ran out of bytes, which more of a stream may bring.
-    short: bool,
 }
 
 impl Reader<'_> {
-    /// Whether `n` more bytes are there: an error past the limit, short past the bytes held.
-    fn reach(&mut self, n: usize) -> Result<()> {
-        let end = self.at.saturating_add(n);
-        if end > self.limit {
-            return Err(too_long(self.limit));
-        }
-        if end > self.bytes.len() {
-            self.short = true;
+    /// Whether `n` more bytes are in the frame.
+    fn reach(&self, n: usize) -> Result<()> {
+        if self.at.saturating_add(n) > self.bytes.len() {
             return Err(malformed("truncated"));
         }
         Ok(())
@@ -359,25 +381,25 @@ impl Reader<'_> {
     fn ids(&mut self) -> Result<Ids> {
         match self.u8()? {
             0 => Ok(Ids(IdList::Count(self.u32()?))),
-            1 => Ok(Ids(IdList::Listed(self.values()?))),
+            1 => Ok(Ids(IdList::Listed(self.id_values()?))),
             tag => Err(malformed(format!("unknown ids {tag}"))),
         }
     }
 
     fn column(&mut self) -> Result<Column> {
-        let pages = self.len(1)?;
-        if pages == 0 {
-            return Ok(Column::missing(&self.values()?, 0));
-        }
-        let pages: Vec<Values> = (0..pages).map(|_| self.values()).collect::<Result<_>>()?;
-        if pages.iter().rev().skip(1).any(|p| p.len() != PAGE_ROWS) {
-            return Err(malformed("a page short of a full page before the last"));
-        }
-        let like = pages[0].clone();
-        if pages.iter().any(|p| p.kind() != like.kind()) {
-            return Err(malformed("pages of different kinds"));
-        }
-        Ok(Column::from_pages(pages, &like))
+        Ok(Column::new(&self.values()?))
+    }
+
+    /// Ids as values: `u32` ids, as writers without 64-bit integers send them, read as the `u64` every
+    /// numbered id is.
+    fn id_values(&mut self) -> Result<Values> {
+        let values = self.values()?;
+        Ok(match values.array {
+            Array::U32(ids) => {
+                Values { array: Array::U64(ids.iter().map(|&id| u64::from(id)).collect::<Vec<_>>().into()), ..values }
+            }
+            _ => values,
+        })
     }
 
     fn table(&mut self) -> Result<Table> {
@@ -395,7 +417,7 @@ impl Reader<'_> {
                 FIELD_VALUES => Field::Values(self.column()?, Version::next()),
                 FIELD_REFERENCE => {
                     let to = self.name()?;
-                    Field::Reference(Reference::new(to, self.column()?))
+                    Field::Reference(Reference::new(to, Column::new(&self.id_values()?)))
                 }
                 FIELD_SAMPLED => {
                     let rows = self.u32()? as usize;
@@ -476,7 +498,7 @@ mod tests {
                         .field("point", vec![[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]])
                         .field("open", vec![true, false, true]),
                 )
-                .set(Table::new("Branch", 2).reference("from", "Bus", vec!["a", "b"]).reference(
+                .set(Table::new("Branch", Ids::count(2)).reference("from", "Bus", vec!["a", "b"]).reference(
                     "to",
                     "Bus",
                     vec!["b", "c"],
@@ -529,7 +551,7 @@ mod tests {
         assert_eq!(read, patches.iter().map(Patch::to_bytes).collect::<Vec<_>>());
         assert!(Patch::decode(b"LATX....", 64).is_err(), "not latkit bytes, however many follow");
         // A length past the limit fails at once rather than waiting for bytes that may never come.
-        let long = Patch::new().set(Table::new("Bus", 1).field("name", vec!["x".repeat(100)])).to_bytes();
+        let long = Patch::new().set(Table::new("Bus", Ids::count(1)).field("name", vec!["x".repeat(100)])).to_bytes();
         assert!(matches!(Patch::decode(&long[..70], 64), Err(Error::Limit(_))));
         assert!(Patch::decode(&long[..70], 1 << 20).expect("short").is_none());
     }

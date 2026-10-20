@@ -88,7 +88,7 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200 
   on top, and labeled.
 - No public type before it draws. `Stats::gpu_ms` is the median of the last frames the device timed.
 - Work is counted exactly (`Gpu::work`: bytes uploaded and written, rows evaluated, readbacks, jobs,
-  texts, pipelines); every write goes through the counting queue. The benchmark (`npm/bench`) climbs
+  texts, pipelines); every write goes through the counting queue. The benchmark (`benchmark/`) climbs
   each scenario's sizes while the last one fits a phase's limit, times each phase from its action to
   the frame where every view is complete, holds it to how it may grow, to the committed work, and to
   this machine's times, and stops the sweep at a lost device.
@@ -214,7 +214,7 @@ crates/latkit/
 │   └── web.rs         Canvas: its surface, frames, input, events; pictures and video frames of canvases
 └── tests/
 
-npm/bench/             the benchmark: one page (scenarios, the stage measuring phases, data), the runner,
+benchmark/             the benchmark: one page (scenarios, the stage measuring phases, data), the runner,
                        the judge (rules, orders, baselines), the report, baselines/ (work, times per machine,
                        the old packages' times)
 ```

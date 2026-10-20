@@ -75,7 +75,7 @@ pub enum Button {
 }
 
 /// What the user acts with.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Device {
     /// A mouse or a trackpad.
@@ -90,7 +90,7 @@ pub enum Device {
 }
 
 /// Keys held during an input.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, schemars::JsonSchema)]
 pub struct Modifiers {
     /// Shift.
     pub shift: bool,

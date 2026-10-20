@@ -1,8 +1,15 @@
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer};
+
+use super::form::{Presets, preset_or, presets};
+
 /// How the view places vertex rows without positions: a diagram's blocks, sized, or the points of a
-/// plane or the earth, among the rows linked to them, gaps in the space's units. A place, once given,
-/// holds: rows added later are placed around the rest, and [`View::arrange`](crate::View::arrange)
-/// lays every row out again.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
+/// plane or the earth, among the rows linked to them, gaps in the space's units: a name, or `{ stress
+/// | layered: options }`. A place, once given, holds: rows added later are placed around the rest,
+/// and [`View::arrange`](crate::View::arrange) lays every row out again.
+#[derive(Clone, Copy, PartialEq, Debug, Default, Deserialize, JsonSchema)]
+#[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = presets::<Layout>)]
 pub enum Layout {
     /// Unplaced vertices are not drawn.
     #[default]
@@ -13,11 +20,32 @@ pub enum Layout {
     Layered(Layered),
 }
 
+impl Presets for Layout {
+    const NAMES: &'static [&'static str] = &["none", "stress", "layered"];
+
+    fn preset(name: &str) -> Option<Layout> {
+        match name {
+            "none" => Some(Layout::None),
+            "stress" => Some(Layout::Stress(Stress::default())),
+            "layered" => Some(Layout::Layered(Layered::default())),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Layout {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Layout, D::Error> {
+        preset_or(deserializer, Layout::deserialize)
+    }
+}
+
 /// Stress majorization: each pair of vertices pulls toward its graph distance; then their boxes
 /// part, keeping a quarter of the gap clear.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Stress {
     /// Units between adjacent vertices' centers.
+    #[schemars(range(min = 0))]
     pub gap: f64,
 }
 
@@ -28,7 +56,8 @@ impl Default for Stress {
 }
 
 /// Layered drawing: vertices in ranks, edges pointing along `flow`, and nets from their outputs.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Layered {
     /// Where edges point.
     pub flow: Direction,
@@ -45,7 +74,7 @@ impl Default for Layered {
 }
 
 /// How an edge runs between its ends.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Route {
     /// Straight across the screen.
@@ -58,7 +87,7 @@ pub enum Route {
 }
 
 /// How a line runs between its samples.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Interpolation {
     /// Straight from each sample to the next.
@@ -71,7 +100,7 @@ pub enum Interpolation {
 }
 
 /// A direction on screen.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Direction {
     /// Toward the right.

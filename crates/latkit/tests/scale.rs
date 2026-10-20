@@ -8,8 +8,8 @@ mod common;
 
 use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane};
 use latkit::{
-    Axis, Budget, Camera, Color, Data, Edges, Fit, Frame, Lines, Patch, Plot, Row, Scene, Table, Vertices, View, field,
-    when,
+    Axis, Budget, Camera, Color, Data, Edges, Fit, Frame, Ids, Lines, Patch, Plot, Row, Scene, Table, Vertices, View,
+    field, when,
 };
 
 /// A grid of `columns` by `rows` vertices a unit apart, from the origin, and an edge from each to
@@ -22,11 +22,9 @@ fn lattice(columns: usize, rows: usize) -> Data {
     let from: Vec<u64> = links.iter().map(|&i| i as u64).collect();
     let to: Vec<u64> = links.iter().map(|&i| i as u64 + 1).collect();
     let mut data = Data::new("grid");
-    data.apply(
-        Patch::new()
-            .set(Table::new("Bus", n).field("x", x).field("y", y))
-            .set(Table::new("Line", links.len()).reference("from", "Bus", from).reference("to", "Bus", to)),
-    )
+    data.apply(Patch::new().set(Table::new("Bus", Ids::count(n as u32)).field("x", x).field("y", y)).set(
+        Table::new("Line", Ids::count(links.len() as u32)).reference("from", "Bus", from).reference("to", "Bus", to),
+    ))
     .expect("valid");
     data
 }
@@ -36,7 +34,7 @@ fn what_matters_more_draws_on_top() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
     data.apply(
-        Table::new("Node", 2)
+        Table::new("Node", Ids::count(2))
             .field("x", vec![0.0, 0.0])
             .field("y", vec![0.0, 0.0])
             .field("p", vec![2.0, 1.0])
@@ -64,7 +62,8 @@ fn what_matters_more_draws_on_top() {
 fn a_table_that_starts_empty_draws_its_rows() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 0).field("x", Vec::<f64>::new()).field("y", Vec::<f64>::new())).expect("valid");
+    data.apply(Table::new("Node", Ids::count(0)).field("x", Vec::<f64>::new()).field("y", Vec::<f64>::new()))
+        .expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(Color::rgb(1.0, 1.0, 1.0)));
@@ -72,7 +71,7 @@ fn a_table_that_starts_empty_draws_its_rows() {
     view.set_camera(camera());
     view.set_data(data.clone());
     frame(&gpu, &mut view);
-    data.apply(Table::new("Node", 1).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     view.set_data(data);
     let pixels = frame(&gpu, &mut view);
     let center = SIZE / 2;
@@ -101,9 +100,9 @@ fn a_dense_table_draws_the_tiles_in_view_and_keeps_what_is_selected() {
     assert!(close(at(&pixels, center + 4, center + 4), [0, 0, 0, 255]), "and none between rows");
     // A row far from the tiles in view stays selected, and draws.
     let far = Row::new("grid", "Bus", 7_u64);
-    view.select([far.clone()]);
+    view.select([far.clone().into()]);
     frame(&gpu, &mut view);
-    assert_eq!(view.selection(), [far]);
+    assert_eq!(view.selection(), [latkit::Rows::from(far)]);
     assert_eq!(view.stats().drawn, stats.drawn + 1, "the selected row draws whatever its tile");
 }
 
@@ -135,7 +134,7 @@ fn a_tiny_budget_never_fails() {
     let n = 200_000_u32;
     let mut data = Data::new("points");
     data.apply(
-        Table::new("Point", n)
+        Table::new("Point", Ids::count(n))
             .field("x", (0..n).map(|i| f64::from(i % 500)).collect::<Vec<_>>())
             .field("y", (0..n).map(|i| f64::from(i / 500)).collect::<Vec<_>>())
             .field("v", (0..n).map(f64::from).collect::<Vec<_>>()),
@@ -165,7 +164,7 @@ fn traces_too_large_for_the_budget_thin_in_time() {
     gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
     // Every frame of every row would take 12 MB: past the budget, so the traces draw coarser.
     let (rows, frames) = (20_000_usize, 150_u32);
-    let mut patch = Patch::new().set(Table::new("Signal", rows));
+    let mut patch = Patch::new().set(Table::new("Signal", Ids::count(rows as u32)));
     for t in 0..frames {
         patch = patch.append([f64::from(t)], "Signal", [("v", vec![0.5; rows])]);
     }
@@ -196,7 +195,7 @@ fn a_path_longer_than_a_chunk_draws_whole() {
     let path: Vec<[f64; 2]> =
         (0..points).map(|i| [-60.0 + 120.0 * f64::from(i) / f64::from(points - 1), 0.0]).collect();
     let mut data = Data::new("roads");
-    data.apply(Table::new("Road", 1).field("geometry", vec![path])).expect("valid");
+    data.apply(Table::new("Road", Ids::count(1)).field("geometry", vec![path])).expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Lines::of("roads", "Road").width(3.0).color(Color::rgb(1.0, 1.0, 0.0)));
@@ -218,7 +217,7 @@ fn a_path_longer_than_a_chunk_draws_whole() {
 fn a_view_sleeps_while_it_waits() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 1).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());

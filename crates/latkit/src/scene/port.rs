@@ -1,29 +1,55 @@
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer};
+
 use super::Shape;
+use super::form::{Presets, preset_or, presets};
 use crate::gpu::shaders as wgsl;
 
-/// A vertex's port: where a net its reference field names meets it, on one side of its marker. An
-/// output drives its net: layouts rank a net from its outputs, and its arrows point away from them.
+/// A vertex's port: where a net its reference field names meets it, on one side of its marker: a
+/// side, or options. An output drives its net: layouts rank a net from its outputs, and its arrows
+/// point away from them.
 ///
 /// ```
 /// # use latkit::{Port, Side, Vertices};
 /// let pumps = Vertices::of("plant", "Pump").port("in", Side::Left).port("out", Port::output(Side::Right));
 /// ```
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = presets::<Port>)]
 pub struct Port {
     /// The side it sits on.
     pub side: Side,
     /// Its place among the ports on that side, from the top or the left; in declaration order unless set.
+    #[serde(default)]
     pub order: Option<u32>,
     /// Its name, drawn beside it inside the marker.
+    #[serde(default)]
     pub label: Option<String>,
     /// Its marker.
+    #[serde(default)]
     pub shape: Shape,
-    /// Whether it drives the net its reference field names.
+    /// Whether it drives the net its reference field names; an input unless set.
+    #[serde(default)]
     pub output: bool,
 }
 
+impl Presets for Port {
+    const NAMES: &'static [&'static str] = &["left", "right", "top", "bottom"];
+
+    fn preset(name: &str) -> Option<Port> {
+        let side = [Side::Left, Side::Right, Side::Top, Side::Bottom];
+        Port::NAMES.iter().position(|n| *n == name).map(|i| Port::new(side[i]))
+    }
+}
+
+impl<'de> Deserialize<'de> for Port {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Port, D::Error> {
+        preset_or(deserializer, Port::deserialize)
+    }
+}
+
 /// A side of a marker.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Side {
     /// The left side.

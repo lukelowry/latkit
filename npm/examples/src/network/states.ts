@@ -46,7 +46,7 @@ function inside(state: State, x: number, y: number): boolean {
   return crossings % 2 === 1;
 }
 
-/** `states` with the grid's figures for every state it reaches. */
+/** A snapshot of `states` with the grid's figures for every state it reaches. */
 export function joinStates(states: Data, grid: Case): Joined {
   const { positions, simulation } = grid;
   const extent = [Infinity, Infinity, -Infinity, -Infinity];
@@ -129,5 +129,5 @@ export function joinStates(states: Data, grid: Case): Joined {
       patch.append(f * simulation.dt, 'polygons', { swing });
     }
   }
-  return { data: states.apply(patch), states: reached.size, peaks };
+  return { data: states.snapshot().apply(patch), states: reached.size, peaks };
 }

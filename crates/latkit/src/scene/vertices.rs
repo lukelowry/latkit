@@ -1,10 +1,11 @@
 use super::Port;
-use super::mark::{Context, Drawing, GEOMETRY, MarkKind, Style, style_methods};
+use super::mark::{Context, Drawing, GEOMETRY, MarkKind, Style, mark, style_methods};
 use super::marker::Marker;
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Expr, Kind, Name, Result, Size};
 
+mark!(
 /// Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
 ///
 /// ```
@@ -14,18 +15,31 @@ use crate::{Expr, Kind, Name, Result, Size};
 ///     .radius(field("kv") / 50.0)
 ///     .color(field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05));
 /// ```
-#[derive(Clone, PartialEq, Debug)]
-pub struct Vertices {
-    pub(crate) style: Style,
-    pub(crate) position: Option<[Expr; 2]>,
-    pub(crate) elevation: Expr,
-    pub(crate) radius: Option<Size>,
-    pub(crate) size: Option<[Size; 2]>,
-    pub(crate) marker: Marker,
-    pub(crate) status: Option<Expr>,
-    pub(crate) ports: Vec<(Name, Port)>,
-    pub(crate) members: Option<(Name, Name)>,
-}
+Vertices {
+    /// Each row's x and y. Without them, the point field `geometry` names places rows; rows without
+    /// either the scene's layout places.
+    position: Option<[Expr; 2]>,
+    /// The point field placing each row where `position` is not given; `geometry` unless set.
+    geometry: Option<Name>,
+    /// Height above the ground: on the earth, a fraction of its radius. Not in a diagram, which is
+    /// flat.
+    elevation: Expr = "crate::scene::mark::zero",
+    /// CSS pixels, or position units with `units`; units in a diagram.
+    radius: Option<Size>,
+    /// Width and height, for markers that are not round: CSS pixels, or position units with `units`;
+    /// units in a diagram, where a block without a size fits its label and ports.
+    size: Option<[Size; 2]>,
+    /// How each row is drawn.
+    marker: Marker,
+    /// A ring around each row's marker in this color; a missing or transparent color draws none.
+    ring: Option<Expr>,
+    /// A port on each row for each reference field naming a net, which an `edges` mark of the net
+    /// table without ends draws. Diagrams only.
+    ports: Vec<(Name, Port)> as "[reference: string, port: Port][]",
+    /// Makes each row a group: it holds the rows of `table` whose reference field names it, and is
+    /// drawn as a container around them, its label a title in its header. Diagrams only.
+    contains: Option<(Name, Name)> as "[table: string, reference: string]",
+});
 
 impl Vertices {
     /// Draws the rows of `table` in dataset `data`.
@@ -33,13 +47,14 @@ impl Vertices {
         Vertices {
             style: Style::new(data.into(), table.into()),
             position: None,
+            geometry: None,
             elevation: 0.0.into(),
             radius: None,
             size: None,
             marker: Marker::default(),
-            status: None,
+            ring: None,
             ports: Vec::new(),
-            members: None,
+            contains: None,
         }
     }
 
@@ -57,8 +72,20 @@ impl Vertices {
     /// it, and draws as a container around them, its label a title in its header. Diagrams only.
     #[must_use]
     pub fn contains(mut self, table: impl Into<Name>, reference: impl Into<Name>) -> Vertices {
-        self.members = Some((table.into(), reference.into()));
+        self.contains = Some((table.into(), reference.into()));
         self
+    }
+
+    /// The point field placing each row where no position is given; `geometry` unless set.
+    #[must_use]
+    pub fn geometry(mut self, field: impl Into<Name>) -> Vertices {
+        self.geometry = Some(field.into());
+        self
+    }
+
+    /// The point field placing rows without a position.
+    pub(crate) fn point_field(&self) -> &str {
+        self.geometry.as_deref().unwrap_or(GEOMETRY)
     }
 
     /// Each row's position. Without one, a point field named `geometry` places rows; rows without
@@ -103,13 +130,13 @@ impl Vertices {
 
     /// A ring around each row's marker in this color; a missing or transparent color draws none.
     #[must_use]
-    pub fn status(mut self, color: impl Into<Expr>) -> Vertices {
-        self.status = Some(color.into());
+    pub fn ring(mut self, color: impl Into<Expr>) -> Vertices {
+        self.ring = Some(color.into());
         self
     }
 
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
-        let group = self.members.is_some();
+        let group = self.contains.is_some();
         let inputs = self.marker.inputs();
         if inputs.len() > 8 {
             return Err(crate::Error::invalid("a marker reads at most eight inputs").at("marker"));
@@ -138,8 +165,9 @@ impl Vertices {
             } else {
                 match &self.position {
                     Some([x, y]) => c.position(x, y, at),
-                    None if c.kind(GEOMETRY) == Some(Kind::Geometry(0)) => {
-                        c.position(&Expr::component(GEOMETRY, 0), &Expr::component(GEOMETRY, 1), at)
+                    None if c.kind(self.point_field()) == Some(Kind::Point) => {
+                        let field = self.point_field();
+                        c.position(&Expr::component(field, 0), &Expr::component(field, 1), at)
                     }
                     None => c.position(&Expr::missing(), &Expr::missing(), at),
                 }
@@ -172,9 +200,9 @@ impl Vertices {
         }
         let visible = Store::Flag { word: wgsl::VERTEX_FLAGS, bit: wgsl::VISIBLE };
         c.channel("visible", &self.style.visible, visible)?;
-        if let Some(status) = &self.status {
+        if let Some(ring) = &self.ring {
             flags |= wgsl::STATUS;
-            c.channel("status", status, Store::Color { word: wgsl::VERTEX_STATUS, fallback: wgsl::THEME_CLEAR })?;
+            c.channel("ring", ring, Store::Color { word: wgsl::VERTEX_STATUS, fallback: wgsl::THEME_CLEAR })?;
         }
         for (i, input) in inputs.iter().enumerate() {
             let store = Store::Number { word: wgsl::VERTEX_WORDS + i as u32, fallback: None };

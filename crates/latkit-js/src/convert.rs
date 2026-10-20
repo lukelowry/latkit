@@ -1,5 +1,5 @@
-//! latkit's data to JavaScript: tables, values, and ids. What JavaScript writes is decoded by the
-//! library's own forms, as JSON is; a view's state crosses as JSON.
+//! latkit's rows and ids to JavaScript, and ids back: a query's columns cross as typed arrays and
+//! arrays, built here once; everything else crosses as bytes or JSON.
 
 use js_sys::{Array, Float64Array, Object, Reflect};
 use latkit::Error;
@@ -8,14 +8,9 @@ use wasm_bindgen::JsValue;
 /// The largest whole number a JavaScript number holds exactly: 2^53 - 1.
 const SAFE: f64 = 9_007_199_254_740_991.0;
 
-/// A decoding error as an invalid-input error.
-#[allow(clippy::needless_pass_by_value, reason = "map_err hands errors over by value")]
-pub(crate) fn invalid(error: serde_wasm_bindgen::Error) -> Error {
-    Error::invalid(error.to_string())
-}
-
-/// A value for JavaScript: numbers, booleans, texts, nested `[x, y]` arrays, or `{ data, table, id }`.
-pub(crate) fn value(value: &latkit::Value) -> JsValue {
+/// A value for JavaScript: a number, boolean, or text; a geometry as nested `[x, y]` arrays; a row a
+/// reference names as its id.
+fn value(value: &latkit::Value) -> JsValue {
     let xy = |p: &[f64; 2]| -> JsValue { Array::of2(&p[0].into(), &p[1].into()).into() };
     let path = |p: &Vec<[f64; 2]>| -> JsValue { p.iter().map(xy).collect::<Array>().into() };
     match value {
@@ -30,13 +25,13 @@ pub(crate) fn value(value: &latkit::Value) -> JsValue {
             .map(|rings| -> JsValue { rings.iter().map(path).collect::<Array>().into() })
             .collect::<Array>()
             .into(),
-        latkit::Value::Row(row) => self::row(row),
+        latkit::Value::Row(row) => id_value(&row.id),
     }
 }
 
-/// `table` in the forms `Patch.put` takes: `{ table, ids, fields }`, numbers as a `Float64Array`
+/// `table` as a query answers it: `{ table, ids, fields, total }`, numbers as a `Float64Array`
 /// (missing NaN), other values as arrays (missing `null`), a reference as `{ reference, ids }`.
-pub(crate) fn table(table: &latkit::Table) -> JsValue {
+pub(crate) fn table(table: &latkit::Table, total: usize) -> JsValue {
     let fields = Object::new();
     for field in table.describe().fields {
         let values = table.values(&field.name).unwrap_or_else(|| latkit::Values::from(Vec::<f64>::new()));
@@ -50,7 +45,12 @@ pub(crate) fn table(table: &latkit::Table) -> JsValue {
         let _ = Reflect::set(&fields, &JsValue::from_str(&field.name), &column);
     }
     let ids: Array = table.ids().map(|id| id_value(&id)).collect();
-    object(&[("table", JsValue::from_str(table.name())), ("ids", ids.into()), ("fields", fields.into())])
+    object(&[
+        ("table", JsValue::from_str(table.name())),
+        ("ids", ids.into()),
+        ("fields", fields.into()),
+        ("total", (total as f64).into()),
+    ])
 }
 
 /// Ids held as values, missing `null`.
@@ -77,13 +77,13 @@ pub(crate) fn id_value(id: &latkit::Id) -> JsValue {
     }
 }
 
-/// A row a reference field names, as `{ data, table, id }`.
-fn row(row: &latkit::Row) -> JsValue {
-    let object = Object::new();
-    for (key, value) in
-        [("data", JsValue::from_str(&row.data)), ("table", JsValue::from_str(&row.table)), ("id", id_value(&row.id))]
-    {
-        let _ = Reflect::set(&object, &key.into(), &value);
+/// The id JavaScript names: a whole number from 0 to 2^53 - 1, or a text.
+pub(crate) fn id(value: &JsValue) -> Result<latkit::Id, Error> {
+    if let Some(text) = value.as_string() {
+        return Ok(latkit::Id::from(text));
     }
-    object.into()
+    match value.as_f64() {
+        Some(n) if n.fract() == 0.0 && (0.0..=SAFE).contains(&n) => Ok(latkit::Id::Number(n as u64)),
+        _ => Err(Error::invalid("an id is a whole number from 0 to 2^53 - 1, or a text").at("id")),
+    }
 }

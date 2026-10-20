@@ -12,7 +12,7 @@ draws them, in the browser through the npm package and natively through the CLI.
 | [npm `latkit`](npm)               | The library in the browser, its scenes as JSON with generated types   |
 | [`latkit-cli`](crates/latkit-cli) | Scenes of JSON or binary data rendered to images and videos           |
 | [Examples](npm/examples)          | Every feature on a page, and the browser gate that drives them        |
-| [Bench](npm/bench)                | Each scenario's phases up its sizes, held to committed work and times |
+| [Bench](benchmark)                | Each scenario's phases up its sizes, held to committed work and times |
 
 ```ts
 import { loadLatkit, type Scene } from 'latkit';

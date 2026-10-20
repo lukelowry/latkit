@@ -43,8 +43,8 @@
         ],
         "radius": "radius",
         "color": {
-          "colormap": "heat",
-          "map": "viridis",
+          "colormap": "viridis",
+          "value": "heat",
           "domain": [
             0,
             1

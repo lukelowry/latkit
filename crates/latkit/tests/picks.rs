@@ -11,8 +11,8 @@ use std::task::{Context, Poll, Waker};
 
 use common::{SIZE, camera, errors, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Axis, Button, Camera, Controls, Data, Device, Edges, Event, Input, Lines, Modifiers, Patch, Plot, Scene, Table,
-    Vertices, View,
+    Axis, Button, Camera, Controls, Data, Device, Edges, Event, Ids, Input, Lines, Modifiers, Patch, Plot, Scene,
+    Table, Vertices, View,
 };
 
 /// Renders frames until `pending` resolves, within the settle deadline.
@@ -37,7 +37,11 @@ fn graph() -> Data {
                     .field("x", vec![0.0, 10.0, -40.0])
                     .field("y", vec![0.0, 0.0, 30.0]),
             )
-            .set(Table::new("Link", 1).reference("from", "Node", vec![1_u64]).reference("to", "Node", vec![3_u64])),
+            .set(Table::new("Link", Ids::count(1)).reference("from", "Node", vec![1_u64]).reference(
+                "to",
+                "Node",
+                vec![3_u64],
+            )),
     )
     .expect("valid");
     data
@@ -94,9 +98,9 @@ fn every_hit_of_geodesic_edges_lies_in_reach() {
     let mut data = Data::new("grid");
     let lines = from.len();
     data.apply(
-        Patch::new()
-            .set(Table::new("Bus", side * side).field("lon", lon).field("lat", lat))
-            .set(Table::new("Line", lines).reference("from", "Bus", from).reference("to", "Bus", to)),
+        Patch::new().set(Table::new("Bus", Ids::count((side * side) as u32)).field("lon", lon).field("lat", lat)).set(
+            Table::new("Line", Ids::count(lines as u32)).reference("from", "Bus", from).reference("to", "Bus", to),
+        ),
     )
     .expect("valid");
     let earth = latkit::Earth { graticule: false, ..latkit::Earth::globe() };
@@ -146,12 +150,13 @@ fn a_shift_drag_selects_the_rows_in_its_box() {
     view.input(&Input::Move { pointer: 1, point: [c + 15.0, c + 5.0], modifiers: shift, device }, common::now());
     view.input(&Input::Up { pointer: 1, point: [c + 15.0, c + 5.0], modifiers: shift }, common::now());
     frame(&gpu, &mut view);
-    let selected: Vec<Vec<latkit::Row>> = view
+    let selected: Vec<Vec<latkit::Rows>> = view
         .events()
         .filter_map(|e| if let Event::Select { rows, trigger: Some(_) } = e { Some(rows) } else { None })
         .collect();
     let rows = selected.last().expect("a selection");
-    let mut ids: Vec<String> = rows.iter().map(|r| format!("{}{}", r.table, r.id)).collect();
+    let mut ids: Vec<String> =
+        rows.iter().flat_map(latkit::Rows::rows).map(|r| format!("{}{}", r.table, r.id)).collect();
     ids.sort();
     assert_eq!(ids, ["Link0", "Node1", "Node2"]);
     assert_eq!(view.camera(), &camera(), "the box does not turn or pan");
@@ -161,7 +166,7 @@ fn a_shift_drag_selects_the_rows_in_its_box() {
 fn hovering_a_trace_names_its_sample() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("signals");
-    data.apply(Table::new("Signal", 1)).expect("valid");
+    data.apply(Table::new("Signal", Ids::count(1))).expect("valid");
     for t in 0..=10 {
         data.apply(Patch::new().append([f64::from(t)], "Signal", [("v", vec![f64::from(t) / 10.0])])).expect("frame");
     }

@@ -11,11 +11,11 @@ use crate::{Error, Result};
 /// A named set of rows with fields: the rows of one type in a dataset, or rows to write into one.
 ///
 /// ```
-/// # use latkit::Table;
+/// # use latkit::{Ids, Table};
 /// let buses = Table::new("Bus", vec![101_u64, 102, 103])
 ///     .field("lon", vec![-97.7, -97.6, -97.5])
 ///     .field("name", vec!["North", "Mid", "South"]);
-/// let branches = Table::new("Branch", 2).reference("from", "Bus", vec![101_u64, 102]);
+/// let branches = Table::new("Branch", Ids::count(2)).reference("from", "Bus", vec![101_u64, 102]);
 /// ```
 #[derive(Clone)]
 pub struct Table {

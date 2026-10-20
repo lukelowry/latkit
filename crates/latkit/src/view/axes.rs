@@ -72,9 +72,10 @@ fn axis_ticks(axis: &Axis, range: [f64; 2], step: f64) -> Vec<(f64, String)> {
 
 /// Values `step` apart within `range`.
 pub(super) fn ticks(range: [f64; 2], step: f64) -> impl Iterator<Item = f64> {
-    let first = (range[0] / step).ceil() as i64;
-    let last = (range[1] / step).floor() as i64;
-    (first..=last.min(first + 200)).map(move |i| i as f64 * step)
+    let first = (range[0] / step).ceil();
+    let last = (range[1] / step).floor().min(first + 200.0);
+    let count = if first.is_finite() && last >= first { (last - first) as u32 + 1 } else { 0 };
+    (0..count).map(move |i| (first + f64::from(i)) * step)
 }
 
 pub(super) fn line(a: [f64; 2], b: [f64; 2], width: f32, color: Color) -> wgsl::Sprite {

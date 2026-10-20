@@ -61,7 +61,7 @@ impl Native {
     }
 
     fn with_text<T>(&self, f: impl FnOnce(&mut Text) -> Result<T>) -> Result<T> {
-        let mut text = self.0.text.lock().map_err(|_| Error::Load("native text service failed".into()))?;
+        let mut text = self.0.text.lock().map_err(|_| Error::Io("native text service failed".into()))?;
         let text = text.get_or_insert_with(Text::system);
         if text.fonts.db().faces().next().is_none() {
             return Err(Error::Unsupported("no fonts available; supply font bytes with Native::from_fonts".into()));
@@ -77,7 +77,7 @@ impl Native {
         };
         let (pending, resolver) = Pending::new();
         if let Err(error) = workers.0.send((Box::new(work), resolver)) {
-            error.0.1.resolve(Err(Error::Load("native workers stopped".into())));
+            error.0.1.resolve(Err(Error::Io("native workers stopped".into())));
         }
         pending
     }
@@ -139,7 +139,7 @@ fn read(request: &Request) -> Result<Vec<u8>> {
     if path.contains("://") {
         return Err(Error::Unsupported(format!("the native host reads files, not {url}").into()));
     }
-    let failed = |e: std::io::Error| Error::Load(format!("{path}: {e}").into());
+    let failed = |e: std::io::Error| Error::Io(format!("{path}: {e}").into());
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -246,11 +246,11 @@ impl Workers {
                             continue;
                         }
                         let result = catch_unwind(AssertUnwindSafe(work))
-                            .unwrap_or_else(|_| Err(Error::Load("native work panicked".into())));
+                            .unwrap_or_else(|_| Err(Error::Io("native work panicked".into())));
                         resolver.resolve(result);
                     }
                 })
-                .map_err(|error| Error::Load(format!("cannot start native worker: {error}").into()))?;
+                .map_err(|error| Error::Io(format!("cannot start native worker: {error}").into()))?;
         }
         Ok(Self(sender))
     }

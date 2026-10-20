@@ -10,7 +10,7 @@ pub(crate) mod tiles;
 use std::borrow::Cow;
 use std::io::Read;
 
-pub use geojson::geojson;
+pub(crate) use geojson::geojson;
 pub use tiles::Tiles;
 
 use crate::{Error, Result};

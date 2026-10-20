@@ -15,13 +15,13 @@ use crate::{Error, Result};
 /// page it does not write stays shared with earlier snapshots.
 ///
 /// ```
-/// # use latkit::{Data, Patch, Table};
+/// # use latkit::{Data, Ids, Patch, Table};
 /// let mut grid = Data::new("grid");
 /// grid.apply(
 ///     Patch::new()
 ///         .axis("time", "s")
-///         .set(Table::new("Bus", vec![1_u64, 2]).field("kv", vec![230.0, 115.0]))
-///         .set(Table::new("Branch", 1).reference("from", "Bus", vec![1_u64]).reference("to", "Bus", vec![2_u64])),
+///         .replace(Table::new("Bus", vec![1_u64, 2]).field("kv", vec![230.0, 115.0]))
+///         .replace(Table::new("Branch", Ids::count(1)).reference("from", "Bus", vec![1_u64]).reference("to", "Bus", vec![2_u64])),
 /// )?;
 /// grid.apply(Patch::new().append([0.0], "Bus", [("vm", vec![1.01, 0.99])]))?;
 /// # Ok::<(), latkit::Error>(())
@@ -102,11 +102,17 @@ impl Data {
         }
     }
 
-    /// Applies every change in `patch`, or none of them when one is invalid.
+    /// Applies every change in `patch`, or none of them when one is invalid. A patch to another
+    /// dataset is an error.
     ///
     /// The error's path names the change and part, such as `patch[1].Bus.kv`.
     pub fn apply(&mut self, patch: impl Into<Patch>) -> Result<()> {
         let patch = patch.into();
+        if let Some(data) = &patch.data
+            && *data != self.0.name
+        {
+            return Err(Error::invalid(format!("a patch to '{data}' applied to '{}'", self.0.name)));
+        }
         if patch.ops.is_empty() {
             return Ok(());
         }
@@ -121,29 +127,60 @@ impl Data {
         Ok(())
     }
 
-    /// The patch that builds this dataset from an empty one.
+    /// The patch to this dataset that builds it from an empty one.
     pub fn to_patch(&self) -> Patch {
-        let mut patch = Patch::new();
+        let mut patch = Patch::to(self.0.name.clone());
         if let Some((name, unit)) = &self.0.axis {
             patch = patch.axis(name, unit);
         }
-        self.0.tables.iter().fold(patch, |patch, table| patch.put(table.clone()))
+        self.0.tables.iter().fold(patch, |patch, table| patch.replace(table.clone()))
     }
 
-    /// The dataset as bytes: its name and the patch that builds it.
+    /// The dataset as bytes: the patch to it that builds it.
     pub fn to_bytes(&self) -> Vec<u8> {
-        super::bytes::encode(&self.0.name, &self.to_patch())
+        self.to_patch().to_bytes()
     }
 
-    /// A dataset from [`to_bytes`](Data::to_bytes).
+    /// A dataset from [`to_bytes`](Data::to_bytes), or any bytes of a patch to a dataset.
     pub fn from_bytes(bytes: &[u8]) -> Result<Data> {
-        let (name, patch) = super::bytes::decode(bytes)?;
-        if name.is_empty() {
-            return Err(Error::invalid("the bytes hold a patch, not a dataset").at("bytes"));
-        }
+        let patch = Patch::from_bytes(bytes)?;
+        let Some(name) = patch.data.clone() else {
+            return Err(Error::invalid("the bytes hold a patch to no dataset").at("bytes"));
+        };
         let mut data = Data::new(name);
         data.apply(patch)?;
         Ok(data)
+    }
+
+    /// A dataset from bytes: latkit's own, as [`to_bytes`](Data::to_bytes) writes them, or GeoJSON,
+    /// gzip-compressed or not. GeoJSON's features become rows of tables `points`, `lines`, and
+    /// `polygons` by their geometry, each with its geometry as field `geometry` and its properties as
+    /// fields. `name` names the dataset, as GeoJSON needs; latkit's bytes name their own unless given
+    /// one.
+    ///
+    /// ```
+    /// let city = latkit::Data::read(br#"{"type": "Feature", "properties": {"name": "Hall"},
+    ///     "geometry": {"type": "Point", "coordinates": [-97.74, 30.27]}}"#, Some("city"))?;
+    /// assert_eq!(city.table("points").map(latkit::Table::len), Some(1));
+    /// # Ok::<(), latkit::Error>(())
+    /// ```
+    pub fn read(bytes: &[u8], name: Option<&str>) -> Result<Data> {
+        if bytes.starts_with(b"LATK") {
+            let data = Data::from_bytes(bytes)?;
+            return Ok(match name {
+                Some(name) if name != data.name().as_str() => data.renamed(name),
+                _ => data,
+            });
+        }
+        let name = name.ok_or_else(|| Error::invalid("GeoJSON names its dataset").at("name"))?;
+        crate::geo::geojson(name, bytes)
+    }
+
+    /// The same tables as dataset `name`: another dataset, which views draw apart from this one.
+    #[must_use]
+    pub fn renamed(&self, name: impl Into<Name>) -> Data {
+        let version = Version::next();
+        Data(Arc::new(Inner { name: name.into(), version, origin: version, ..(*self.0).clone() }))
     }
 
     pub(crate) fn schema(&self) -> u64 {

@@ -4,7 +4,7 @@
  * repository; or OpenStreetMap's planet as OpenFreeMap's vector tiles. GeoJSON downloads as bytes
  * and is read in a worker; tiles are fetched as the camera asks for them.
  */
-import { field, geojson, type ColormapName, type Data, type Mark, type View } from '../latkit.js';
+import { Data, field, type ColormapName, type Mark, type View } from '../latkit.js';
 import { download, megabytes } from './cases.js';
 
 /** The page's colors, as CSS. */
@@ -64,7 +64,7 @@ const borders: MapChoice = {
           `${import.meta.env.BASE_URL}maps/${name}.geojson.gz`,
           signal,
         );
-        return geojson(name, bytes);
+        return Data.read(bytes, name);
       }),
     );
     for (const data of sets) view.setData(data);
@@ -102,7 +102,7 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
         (got, total) => progress(`downloading ${megabytes(got, total)}`),
       );
       const fetched = performance.now();
-      const data = await geojson('states', bytes);
+      const data = await Data.read(bytes, 'states');
       view.setData(data);
       return {
         states: data,
@@ -171,7 +171,7 @@ const planet: MapChoice = {
             ]
           : []),
       ],
-      unload: (view) => view.removeTiles('base'),
+      unload: (view) => view.removeData('base'),
     });
   },
 };

@@ -1,10 +1,17 @@
 {
-  "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["@webgpu/types", "node"],
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "erasableSyntaxOnly": true,
     "allowImportingTsExtensions": true,
-    "noEmit": true
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    "lib": ["ES2024", "DOM", "DOM.Iterable", "ESNext.Disposable"]
   },
-  "include": ["*.ts"]
+  "include": ["*.ts", "page"]
 }

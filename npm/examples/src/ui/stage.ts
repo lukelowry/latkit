@@ -78,7 +78,7 @@ export class Stage {
       this.shown.push({ view, element: canvas, panel: panels[i]! });
       // What could not be fetched only goes undrawn; anything else stops the page.
       view.on('error', (error) =>
-        error.code === 'load' ? this.detail(error.message) : this.fail(error),
+        error.code === 'io' ? this.detail(error.message) : this.fail(error),
       );
       this.#views.add(view);
     });

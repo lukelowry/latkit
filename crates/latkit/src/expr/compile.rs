@@ -311,7 +311,7 @@ impl<'a> Compiler<'a> {
             Node::Field(f) if self.fields.kind(f.of.as_ref(), &f.name) == Some(Kind::Sampled) => {
                 Some("a sampled field")
             }
-            Node::Unary(_, a) | Node::Is(a, _) => self.unstructural(a),
+            Node::Unary(_, a) | Node::Is(a, _) | Node::Contains(a, _) => self.unstructural(a),
             Node::Binary(_, a, b) => self.unstructural(a).or_else(|| self.unstructural(b)),
             Node::When(c, a, b) => {
                 self.unstructural(c).or_else(|| self.unstructural(a)).or_else(|| self.unstructural(b))
@@ -436,8 +436,8 @@ impl<'a> Compiler<'a> {
         }
         let part = match (self.fields.kind(None, &f.name)?, f.component) {
             (Kind::Number, None) => Part::Values,
-            (Kind::Geometry(0), Some(0)) => Part::X,
-            (Kind::Geometry(0), Some(1)) => Part::Y,
+            (Kind::Point, Some(0)) => Part::X,
+            (Kind::Point, Some(1)) => Part::Y,
             _ => return None,
         };
         Some(self.column(ColumnUse { low: true, ..ColumnUse::own(f.name.clone(), part) }))
@@ -516,6 +516,7 @@ impl<'a> Compiler<'a> {
                 self.op(wgsl::OP_SELECT, 0, 0, 0, 3, 1)?;
                 Ok(ty)
             }
+            Node::Contains(..) => Err(invalid("contains reads texts, which only a query holds")),
             Node::Is(a, text) => {
                 let Node::Field(f) = &*a.0 else { return Err(invalid("is compares a text field")) };
                 if self.fields.kind(f.of.as_ref(), &f.name) != Some(Kind::Text) {
@@ -566,8 +567,8 @@ impl<'a> Compiler<'a> {
             (Kind::Bool, None) => (Part::Values, Ty::Bool, false),
             (Kind::Text, None) => (Part::Codes, Ty::Text, false),
             (Kind::Sampled, None) => (Part::Values, Ty::Number, true),
-            (Kind::Geometry(0), Some(0)) => (Part::X, Ty::Number, false),
-            (Kind::Geometry(0), Some(1)) => (Part::Y, Ty::Number, false),
+            (Kind::Point, Some(0)) => (Part::X, Ty::Number, false),
+            (Kind::Point, Some(1)) => (Part::Y, Ty::Number, false),
             (Kind::Reference, _) => return Err(invalid("a reference names rows; read it as an end").at(&f.name)),
             _ => return Err(invalid("not a number, boolean, or text field").at(&f.name)),
         };
@@ -690,7 +691,7 @@ impl<'a> Compiler<'a> {
 fn mentions_pointer(e: &Expr) -> bool {
     match &*e.0 {
         Node::State(State::Pointer) => true,
-        Node::Unary(_, a) | Node::Is(a, _) => mentions_pointer(a),
+        Node::Unary(_, a) | Node::Is(a, _) | Node::Contains(a, _) => mentions_pointer(a),
         Node::Binary(_, a, b) => mentions_pointer(a) || mentions_pointer(b),
         Node::When(c, a, b) => mentions_pointer(c) || mentions_pointer(a) || mentions_pointer(b),
         Node::Scale { input, .. } | Node::Colormap { input, .. } => mentions_pointer(input),

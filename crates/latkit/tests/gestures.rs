@@ -11,8 +11,8 @@ mod common;
 
 use common::{SIZE, camera, diagram, frame, gpu, plain_theme, step};
 use latkit::{
-    Button, Camera, Controls, Data, Device, Edges, End, Event, Input, Key, Modifiers, Motion, Patch, Row, Scene, Side,
-    Table, Vertices, View, Zoom,
+    Button, Camera, Controls, Data, Device, Edges, End, Event, Ids, Input, Key, Modifiers, Motion, Patch, Row, Rows,
+    Scene, Side, Table, Vertices, View, Zoom,
 };
 
 const C: f32 = SIZE as f32 / 2.0;
@@ -28,8 +28,12 @@ fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
                     .field("y", vec![0.0, 0.0, -40.0])
                     .reference("net", "Net", vec![None::<u64>, None, None]),
             )
-            .set(Table::new("Net", 0))
-            .set(Table::new("Link", 1).reference("from", "Node", vec![1_u64]).reference("to", "Node", vec![3_u64])),
+            .set(Table::new("Net", Ids::count(0)))
+            .set(Table::new("Link", Ids::count(1)).reference("from", "Node", vec![1_u64]).reference(
+                "to",
+                "Node",
+                vec![3_u64],
+            )),
     )
     .expect("valid");
     let scene = Scene::new(diagram())
@@ -160,7 +164,7 @@ fn a_double_click_faster_than_its_probe_opens() {
 fn the_selection_lets_go_of_rows_the_data_drops() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, editing());
-    view.select([Row::new("graph", "Node", 2_u64), Row::new("graph", "Node", 3_u64)]);
+    view.select([Rows::new("graph", "Node", [2_u64, 3])]);
     let mut data = view.data("graph").expect("shown").clone();
     data.apply(Patch::new().remove("Node", vec![2_u64])).expect("valid");
     view.set_data(data);
@@ -168,8 +172,9 @@ fn the_selection_lets_go_of_rows_the_data_drops() {
         Event::Select { rows, trigger } => Some((rows.clone(), *trigger)),
         _ => None,
     });
-    assert_eq!(selected, (vec![Row::new("graph", "Node", 3_u64)], None), "the data's doing, no trigger");
-    assert_eq!(view.selection(), &[Row::new("graph", "Node", 3_u64)]);
+    let kept = vec![Rows::new("graph", "Node", [3_u64])];
+    assert_eq!(selected, (kept.clone(), None), "the data's doing, no trigger");
+    assert_eq!(view.selection(), kept);
 }
 
 #[test]
@@ -181,7 +186,7 @@ fn delete_tells_the_selection() {
     let (rows, device) = after(&gpu, &mut view, &inputs, |e| {
         if let Event::Delete { rows, trigger } = e { Some((rows.clone(), trigger.device)) } else { None }
     });
-    assert_eq!(rows, vec![Row::new("graph", "Node", 2_u64)]);
+    assert_eq!(rows, vec![Rows::new("graph", "Node", [2_u64])]);
     assert_eq!(device, Device::Keyboard);
 }
 
@@ -196,7 +201,7 @@ fn a_shift_click_toggles_where_boxes_select() {
         Event::Select { rows, trigger: Some(trigger) } => Some((rows.clone(), trigger.modifiers.shift)),
         _ => None,
     });
-    assert_eq!(toggled, (vec![Row::new("graph", "Node", 2_u64)], true), "a click, not an empty box");
+    assert_eq!(toggled, (vec![Rows::new("graph", "Node", [2_u64])], true), "a click, not an empty box");
 }
 
 #[test]
@@ -220,7 +225,7 @@ fn the_keys_step_open_and_select() {
         Event::Select { rows, .. } => Some(rows.clone()),
         _ => None,
     });
-    assert_eq!(selected, vec![link]);
+    assert_eq!(selected, vec![Rows::from(link)]);
     // Before the first row, Shift+Tab is not used, so focus moves on, and nothing stays pointed at.
     let back = Input::Key { key: Key::Tab, down: true, modifiers: Modifiers { shift: true, ..Modifiers::default() } };
     assert!(!view.input(&back, common::now()), "focus moves on");
@@ -252,7 +257,7 @@ fn setters_tell_nothing_while_motion_tells_the_camera() {
     let mut view = view(&gpu, editing());
     let set = Camera::Map { center: [10.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 };
     view.set_camera(set);
-    view.select([Row::new("graph", "Node", 1_u64)]);
+    view.select([Rows::new("graph", "Node", [1_u64])]);
     frame(&gpu, &mut view);
     let told: Vec<Event> = view.events().filter(|e| matches!(e, Event::Camera(_) | Event::Select { .. })).collect();
     assert_eq!(told, Vec::new(), "setters tell nothing");
@@ -269,7 +274,7 @@ fn waiting_tells_when_the_frame_is_complete() {
     assert!(waiting.is_empty() && view.complete(), "the last change told is the complete frame: {waiting}");
 }
 
-fn selected(e: &Event) -> Option<Vec<Row>> {
+fn selected(e: &Event) -> Option<Vec<Rows>> {
     if let Event::Select { rows, .. } = e { Some(rows.clone()) } else { None }
 }
 
@@ -282,12 +287,12 @@ fn clicking_again_cycles_through_the_rows_under_the_point() {
     let at = [C - 40.0 + s, C - s];
     let (node, link) = (Row::new("graph", "Node", 1_u64), Row::new("graph", "Link", 0_u64));
     let click = [down(at, Button::Primary), up(at)];
-    assert_eq!(after(&gpu, &mut view, &[&[moved(at)][..], &click].concat(), selected), vec![node.clone()]);
+    assert_eq!(after(&gpu, &mut view, &[&[moved(at)][..], &click].concat(), selected), vec![Rows::from(node.clone())]);
     // Slower than a double click, where nothing moved: the next row under the point, then back.
     common::wait(1.0);
-    assert_eq!(after(&gpu, &mut view, &click, selected), vec![link]);
+    assert_eq!(after(&gpu, &mut view, &click, selected), vec![Rows::from(link)]);
     common::wait(1.0);
-    assert_eq!(after(&gpu, &mut view, &click, selected), vec![node]);
+    assert_eq!(after(&gpu, &mut view, &click, selected), vec![Rows::from(node)]);
 }
 
 #[test]

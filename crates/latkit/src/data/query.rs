@@ -5,6 +5,7 @@
 
 use std::cmp::Ordering;
 
+use super::ids::Ids;
 use super::name::Name;
 use super::ordered::Ordered;
 use super::table::{Field, Table};
@@ -14,17 +15,18 @@ use crate::expr::Expr;
 use crate::expr::cpu::Rows;
 use crate::{Error, Result};
 
-/// The rows of a table to read back: those `filter` keeps, sorted by `sort`, a page of them from
-/// `offset` of at most `limit`, with the fields `select` names or computes; sampled fields read at
-/// axis coordinate `at`, their last frame by default. Plain data, like a scene.
+/// The rows of a table to read back: of the rows `ids` names (every row unless set), those `filter`
+/// keeps, sorted by `sort`, a page of them from `offset` of at most `limit`, with the fields `select`
+/// names or computes; sampled fields read at axis coordinate `at`, their last frame by default. Plain
+/// data, like a scene.
 ///
 /// ```
-/// use latkit::{Data, Order, Query, Table, field};
+/// use latkit::{Data, Ids, Order, Query, Table, field};
 /// let mut data = Data::new("grid");
-/// data.apply(Table::new("Branch", 3).field("loading", vec![40.0, 95.0, 120.0]).field("name", vec!["a", "b", "c"]))?;
-/// let hot = data.query(&Query::of("Branch").filter(field("loading").gt(90.0)).sort(field("loading"), Order::Descending))?;
+/// data.apply(Table::new("Branch", Ids::count(3)).field("loading", vec![40.0, 95.0, 120.0]).field("name", vec!["a", "b", "c"]))?;
+/// let (hot, kept) = data.query(&Query::of("Branch").filter(field("loading").gt(90.0)).sort(field("loading"), Order::Descending).limit(1))?;
 /// assert_eq!(hot.get(2_u64, "name"), Some(latkit::Value::Text("c".into())));
-/// assert_eq!(hot.len(), 2);
+/// assert_eq!((hot.len(), kept), (1, 2));
 /// # Ok::<(), latkit::Error>(())
 /// ```
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -33,8 +35,12 @@ use crate::{Error, Result};
 pub struct Query {
     /// The table read.
     of: Name,
+    /// The rows read, in this order unless sorted; every row unless set. Ids that name no row are
+    /// passed over.
+    #[serde(default)]
+    ids: Option<Ids>,
     /// Keeps the rows it is true for.
-    #[serde(default, rename = "where")]
+    #[serde(default)]
     filter: Option<Expr>,
     /// Keys to sort by, each after those before it; rows a key reads nothing for come last, and rows
     /// all keys order alike keep their order.
@@ -68,6 +74,7 @@ impl Query {
     pub fn of(table: impl Into<Name>) -> Query {
         Query {
             of: table.into(),
+            ids: None,
             filter: None,
             sort: Vec::new(),
             offset: 0,
@@ -75,6 +82,13 @@ impl Query {
             select: Ordered::default(),
             at: None,
         }
+    }
+
+    /// Reads only the rows `ids` names, in that order unless sorted.
+    #[must_use]
+    pub fn ids(mut self, ids: impl Into<Ids>) -> Query {
+        self.ids = Some(ids.into());
+        self
     }
 
     /// Keeps the rows `keep` is true for.
@@ -123,19 +137,25 @@ impl Query {
 
 impl Data {
     /// The rows of a table `query` asks for, as a table of their own: their ids, and their fields or
-    /// what the query computes, sampled fields read at its coordinate. A limit picks its rows in
-    /// linear time before sorting only them.
-    pub fn query(&self, query: &Query) -> Result<Table> {
+    /// what the query computes, sampled fields read at its coordinate; and how many rows its filter
+    /// kept, before the page. A limit picks its rows in linear time before sorting only them.
+    pub fn query(&self, query: &Query) -> Result<(Table, usize)> {
         let table = self.table(&query.of).ok_or_else(|| Error::invalid("no such table").at(query.of.as_str()))?;
         let at = query.at.unwrap_or(f64::INFINITY);
         let all = std::slice::from_ref(self);
         let rows = Rows::new(table, all).at(at);
-        let mut picked: Vec<usize> = match &query.filter {
-            Some(keep) => {
-                rows.numbers(keep, |x| x > 0.5).into_iter().enumerate().filter_map(|(r, k)| k.then_some(r)).collect()
-            }
+        let named: Vec<usize> = match &query.ids {
+            Some(ids) => (0..ids.len()).filter_map(|k| table.row(ids.key(k)?)).collect(),
             None => (0..table.len()).collect(),
         };
+        let mut picked: Vec<usize> = match &query.filter {
+            Some(keep) => {
+                let kept = rows.numbers(keep, |x| x > 0.5);
+                named.into_iter().filter(|&r| kept[r]).collect()
+            }
+            None => named,
+        };
+        let total = picked.len();
         let end = query.limit.map_or(picked.len(), |limit| query.offset.saturating_add(limit).min(picked.len()));
         if !query.sort.is_empty() {
             let keys: Vec<(Vec<f64>, Order)> =
@@ -154,31 +174,35 @@ impl Data {
             picked.sort_unstable_by(compare);
         }
         let page = &picked[query.offset.min(end)..end];
-        let read = table.rows(page);
-        let fields: Vec<(Name, Field)> = if query.select.0.is_empty() {
-            read.fields.iter().map(|(name, field)| (name.clone(), plain(field, at, page.len()))).collect()
-        } else {
-            let mut fields = Vec::with_capacity(query.select.0.len());
-            for (name, value) in &query.select.0 {
-                let field = if let Some(f) = value.field_name() {
-                    let Some(field) = read.field_named(f) else {
-                        return Err(Error::invalid(format!("no field {f}")).at(name.as_str()).at("select"));
-                    };
-                    plain(field, at, page.len())
-                } else {
-                    let numbers = rows.numbers(value, |x| x.is_finite().then_some(x));
-                    let values = Values::from(page.iter().map(|&r| numbers[r]).collect::<Vec<_>>());
-                    Field::Values(Column::new(&values), super::name::Version::next())
-                };
-                fields.push((name.clone(), field));
-            }
-            fields
+        let version = super::name::Version::next();
+        let mut out = Table {
+            name: table.name.clone(),
+            ids: table.ids.gather(page),
+            index: std::sync::Arc::default(),
+            fields: Vec::new(),
+            structure: version,
+            order: version,
         };
-        let mut out = Table { fields: Vec::new(), ..read };
-        for (name, field) in fields {
-            out.insert(name, field);
+        if query.select.0.is_empty() {
+            for (name, field) in &table.fields {
+                out.insert(name.clone(), plain(field, at, page));
+            }
+            return Ok((out, total));
         }
-        Ok(out)
+        for (name, value) in &query.select.0 {
+            let field = if let Some(f) = value.field_name() {
+                let Some(field) = table.field_named(f) else {
+                    return Err(Error::invalid(format!("no field {f}")).at(name.as_str()).at("select"));
+                };
+                plain(field, at, page)
+            } else {
+                let numbers = rows.numbers(value, |x| x.is_finite().then_some(x));
+                let values = Values::from(page.iter().map(|&r| numbers[r]).collect::<Vec<_>>());
+                Field::Values(Column::new(&values), super::name::Version::next())
+            };
+            out.insert(name.clone(), field);
+        }
+        Ok((out, total))
     }
 }
 
@@ -193,14 +217,14 @@ fn compare(a: f64, b: f64, order: Order) -> Ordering {
     }
 }
 
-/// `field` of `rows` rows as plain values: a sampled field read at `at`.
-fn plain(field: &Field, at: f64, rows: usize) -> Field {
+/// `field` of rows `rows` as plain values: a sampled field read at `at`, one frame, not its history.
+fn plain(field: &Field, at: f64, rows: &[usize]) -> Field {
     match field {
         Field::Sampled(samples, _) => {
             let frame = samples.frame_at(at);
-            let values: Vec<Option<f64>> = (0..rows).map(|row| frame.and_then(|f| samples.value(row, f))).collect();
+            let values: Vec<Option<f64>> = rows.iter().map(|&row| frame.and_then(|f| samples.value(row, f))).collect();
             Field::Values(Column::new(&Values::from(values)), super::name::Version::next())
         }
-        other => other.clone(),
+        other => other.gather(rows),
     }
 }

@@ -1,17 +1,24 @@
-/** Scene helpers and types are usable without loading WASM. Call loadLatkit() to render. */
-export * from './forms.js';
+/**
+ * Scenes, expressions, and patches are plain data, usable without WebAssembly. Call loadLatkit() to
+ * read data and draw.
+ */
+export * from './inputs.js';
+export * from './outputs.js';
+export * from './patch.js';
 export * from './scene.js';
-export * from './types.js';
 export { loadLatkit, type LoadOptions, type Latkit } from './load.js';
 export type {
   Canvas,
   Data,
-  Patch,
+  Envelope,
   Gpu,
-  View,
-  Shot,
   Image,
   ImageFormat,
+  LatkitError,
   Panel,
+  Shot,
+  Table,
   Video,
+  View,
+  ViewEvents,
 } from './runtime.js';

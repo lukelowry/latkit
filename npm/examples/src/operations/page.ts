@@ -17,6 +17,7 @@ import {
   type Motion,
   type Scene,
 } from '../latkit.js';
+import { each } from '../ui/rows.js';
 import type { Stage } from '../ui/stage.js';
 import { Grid, KINDS } from './grid.js';
 import texas from './texas.json';
@@ -65,22 +66,30 @@ function patchOf(grid: Grid): Patch {
     grid.tripped(i) || (grid.load[i] && grid.fill[i]! < 0.05) ? KINDS.length : k,
   );
   return new Patch()
-    .set('Substation', grid.n, {
-      fill: grid.fill,
-      kind,
-      alarm: Uint8Array.from(kind, (k) => (k === KINDS.length ? 1 : 0)),
-      mw: Float64Array.from(grid.injection, Math.abs),
-    })
-    .set('Branch', grid.m, {
-      out: grid.out,
-      // Overloaded or out.
-      alarm: Uint8Array.from(grid.loading, (l, j) => (grid.out[j] || l > 1 ? 1 : 0)),
-      flow: Float64Array.from(grid.flow, (f, j) =>
-        grid.out[j] ? 0 : Math.max(-1, Math.min(1, f / grid.rating[j]!)),
-      ),
-      mw: Float64Array.from(grid.flow, Math.abs),
-      loading: Float64Array.from(grid.loading, (l) => l * 100),
-    });
+    .set(
+      'Substation',
+      { count: grid.n },
+      {
+        fill: grid.fill,
+        kind,
+        alarm: Uint8Array.from(kind, (k) => (k === KINDS.length ? 1 : 0)),
+        mw: Float64Array.from(grid.injection, Math.abs),
+      },
+    )
+    .set(
+      'Branch',
+      { count: grid.m },
+      {
+        out: grid.out,
+        // Overloaded or out.
+        alarm: Uint8Array.from(grid.loading, (l, j) => (grid.out[j] || l > 1 ? 1 : 0)),
+        flow: Float64Array.from(grid.flow, (f, j) =>
+          grid.out[j] ? 0 : Math.max(-1, Math.min(1, f / grid.rating[j]!)),
+        ),
+        mw: Float64Array.from(grid.flow, Math.abs),
+        loading: Float64Array.from(grid.loading, (l) => l * 100),
+      },
+    );
 }
 
 export default async function page(stage: Stage): Promise<void> {
@@ -93,32 +102,44 @@ export default async function page(stage: Stage): Promise<void> {
 
   const grid = new Grid();
   const s = texas.substations;
-  let data = new Data('grid').apply(
+  const data = new Data('grid').apply(
     new Patch()
-      .set('Substation', grid.n, {
-        name: s.map((x) => x.name),
-        lon: Float64Array.from(s, (x) => x.lon),
-        lat: Float64Array.from(s, (x) => x.lat),
-        load: grid.load,
-        capacity: grid.capacity,
-      })
-      .set('Branch', grid.m, {
-        from: reference(
-          'Substation',
-          Uint32Array.from(texas.branches, (b) => b.from),
-        ),
-        to: reference(
-          'Substation',
-          Uint32Array.from(texas.branches, (b) => b.to),
-        ),
-        rating: grid.rating,
-      }),
+      .set(
+        'Substation',
+        { count: grid.n },
+        {
+          name: s.map((x) => x.name),
+          lon: Float64Array.from(s, (x) => x.lon),
+          lat: Float64Array.from(s, (x) => x.lat),
+          load: grid.load,
+          capacity: grid.capacity,
+        },
+      )
+      .set(
+        'Branch',
+        { count: grid.m },
+        {
+          from: reference(
+            'Substation',
+            Uint32Array.from(texas.branches, (b) => b.from),
+          ),
+          to: reference(
+            'Substation',
+            Uint32Array.from(texas.branches, (b) => b.to),
+          ),
+          rating: grid.rating,
+        },
+      ),
   );
-  data = data.apply(patchOf(grid));
+  data.apply(patchOf(grid));
   const border = new Data('state').apply(
-    new Patch().set('Border', 1, {
-      geometry: [[...texas.border, texas.border[0]!] as [number, number][]],
-    }),
+    new Patch().set(
+      'Border',
+      { count: 1 },
+      {
+        geometry: [[...texas.border, texas.border[0]!] as [number, number][]],
+      },
+    ),
   );
 
   const state = { comets: true, labels: true, playing: true };
@@ -152,7 +173,7 @@ export default async function page(stage: Stage): Promise<void> {
       radius: field('capacity').sqrt().scale(8, 17).domain(11, 46),
       marker: { gauge: { fill: field('fill'), shape } },
       color: kinds,
-      status: when(field('alarm').gt(0.5)).then(pulse).otherwise('#00000000'),
+      ring: when(field('alarm').gt(0.5)).then(pulse).otherwise('#00000000'),
       shadow: true,
       ...(load ? {} : { legend: 'Substations' }),
       ...(state.labels ? { label: { text: 'name', size: 12, priority: 'capacity' } } : {}),
@@ -245,7 +266,7 @@ export default async function page(stage: Stage): Promise<void> {
   const described = inspector.note('Hover or click a substation or branch.');
   let hovered: Hit | null = null;
   const inspect = () => {
-    const row = hovered?.row ?? view.selection[0];
+    const row = hovered?.row ?? each(view.selection)[0];
     if (!row) return void (described.textContent = 'Hover or click a substation or branch.');
     const value = (name: string) => data.get(row.table, row.id, name) as number;
     const i = Number(row.id);
@@ -273,7 +294,7 @@ export default async function page(stage: Stage): Promise<void> {
 
   /** Shows the grid as it stands. */
   function show(): void {
-    data = data.apply(patchOf(grid));
+    data.apply(patchOf(grid));
     view.setData(data);
     const served = grid.injection.reduce((sum, p, i) => sum + (grid.load[i] ? -p : 0), 0);
     const out = grid.out.reduce((a, b) => a + b, 0);

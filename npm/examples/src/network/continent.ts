@@ -494,27 +494,39 @@ export function continent(id: string): Case {
   const load = grid.load.slice(0, buses);
   const generation = grid.generation.slice(0, buses);
   const patch = new Patch()
-    .set('Bus', buses, {
-      lon,
-      lat,
-      kv,
-      level: Float32Array.from(kv, levelOf),
-      load,
-      generation,
-    })
-    .set('Line', lines, {
-      from: reference('Bus', grid.from.subarray(0, lines)),
-      to: reference('Bus', grid.to.subarray(0, lines)),
-      kv: lineKv,
-      level: Float32Array.from(lineKv, levelOf),
-      transformer: grid.transformer.subarray(0, lines),
-    })
-    .set('Machine', machines, {
-      lon: Float64Array.from(machineBus, (b) => lon[b]!),
-      lat: Float64Array.from(machineBus, (b) => lat[b]!),
-      name: grid.machineNames,
-      power: machinePower,
-    });
+    .set(
+      'Bus',
+      { count: buses },
+      {
+        lon,
+        lat,
+        kv,
+        level: Float32Array.from(kv, levelOf),
+        load,
+        generation,
+      },
+    )
+    .set(
+      'Line',
+      { count: lines },
+      {
+        from: reference('Bus', grid.from.subarray(0, lines)),
+        to: reference('Bus', grid.to.subarray(0, lines)),
+        kv: lineKv,
+        level: Float32Array.from(lineKv, levelOf),
+        transformer: grid.transformer.subarray(0, lines),
+      },
+    )
+    .set(
+      'Machine',
+      { count: machines },
+      {
+        lon: Float64Array.from(machineBus, (b) => lon[b]!),
+        lat: Float64Array.from(machineBus, (b) => lat[b]!),
+        name: grid.machineNames,
+        power: machinePower,
+      },
+    );
   return {
     data: new Data('grid').apply(patch),
     name: 'Synthetic North America',

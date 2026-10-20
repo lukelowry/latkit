@@ -119,7 +119,8 @@ impl View {
         let position = view.position(view.unproject(point.map(f64::from), f64::from(depth)));
         let hit = Hit {
             row: Row { data: style.data.clone(), table: style.table.clone(), id },
-            mark,
+            mark: style.name.clone(),
+            index: mark,
             point,
             position,
             distance: (key >> 8) as f32 / 64.0,

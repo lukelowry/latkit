@@ -157,10 +157,8 @@ impl TileSets {
     }
 
     /// Stops fetching the tiles drawn as dataset `name`.
-    pub(crate) fn remove(&mut self, name: &str) -> bool {
-        let before = self.sets.len();
+    pub(crate) fn remove(&mut self, name: &str) {
         self.sets.retain(|s| s.tiles.name != name);
-        self.sets.len() != before
     }
 
     /// The datasets the last update changed.
@@ -184,7 +182,7 @@ impl TileSets {
                 && !set.told
             {
                 set.told = true;
-                self.errors.push(Error::Load(format!("tiles {}: {error}", set.tiles.name).into()));
+                self.errors.push(Error::Io(format!("tiles {}: {error}", set.tiles.name).into()));
             }
             if std::mem::take(&mut set.changed) {
                 self.changed.push(set.data.clone());
@@ -306,7 +304,7 @@ impl TileSet {
                 Source::Opening(jobs.fetch(&Request::new(url.clone())))
             };
         }
-        let failed = |reason: String| Some(Error::Load(reason.into()));
+        let failed = |reason: String| Some(Error::Io(reason.into()));
         match &self.source {
             Source::Opening(pending) => {
                 let bytes = match pending.take()? {
@@ -370,7 +368,7 @@ impl TileSet {
             None
         } else {
             self.source = Source::Failed;
-            Some(Error::Load(format!("the archive at {} has a corrupt directory", self.tiles.url).into()))
+            Some(Error::Io(format!("the archive at {} has a corrupt directory", self.tiles.url).into()))
         }
     }
 
@@ -386,7 +384,7 @@ impl TileSet {
                 Some(leaf) => {
                     self.leaves.insert(at, leaf);
                 }
-                None => failure = Some(Error::Load("a tile directory could not be read".into())),
+                None => failure = Some(Error::Io("a tile directory could not be read".into())),
             }
         }
         let mut fetched = Vec::new();

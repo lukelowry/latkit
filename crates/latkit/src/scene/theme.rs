@@ -1,10 +1,19 @@
 use std::sync::Arc;
 
+use schemars::JsonSchema;
+use serde::de::{self, Deserializer};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::form::{Presets, presets};
 use crate::Color;
 
-/// Colors and sizes marks take where their options read nothing, and the look of focus and motion.
-/// Lengths are CSS pixels; in a diagram they are units, except `glow` and `halo`.
-#[derive(Clone, PartialEq, Debug)]
+/// Colors and sizes marks take where their options read nothing, and the look of focus and motion: a
+/// base theme's name, or options over one (`base`, dark unless set). Lengths are CSS pixels; in a
+/// diagram they are units, except `glow` and `halo`.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(remote = "Self", default, rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = with_base)]
 pub struct Theme {
     /// Behind everything.
     pub background: Color,
@@ -75,7 +84,9 @@ pub struct Theme {
 
 /// How comets flowing along edges and lines look: each a round head, brightest at its middle, trailing
 /// a tail that thins and fades.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
 pub struct Flow {
     /// A comet's color; its alpha is how strongly a comet covers its stroke.
     pub color: Color,
@@ -92,7 +103,9 @@ pub struct Flow {
 }
 
 /// How marks that cast shadows cast them onto the ground and onto faces.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = merged)]
 pub struct Shadow {
     /// What a shadow darkens toward; its alpha is how dark a shadow at contact gets.
     pub color: Color,
@@ -175,4 +188,71 @@ impl Default for Theme {
     fn default() -> Theme {
         Theme::dark()
     }
+}
+
+impl Presets for Theme {
+    const NAMES: &'static [&'static str] = &["dark", "light"];
+
+    fn preset(name: &str) -> Option<Theme> {
+        match name {
+            "dark" => Some(Theme::dark()),
+            "light" => Some(Theme::light()),
+            _ => None,
+        }
+    }
+}
+
+/// A theme reads a base theme's name, or options over one: written over the base as it serializes,
+/// so an option left out keeps the base's and `null` clears a color the base has.
+impl<'de> Deserialize<'de> for Theme {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Theme, D::Error> {
+        let named = |name: &str| {
+            Theme::preset(name).ok_or_else(|| de::Error::custom(format!("no theme {name:?}: dark or light")))
+        };
+        let mut options = match Value::deserialize(deserializer)? {
+            Value::String(name) => return named(&name),
+            Value::Object(options) => options,
+            _ => return Err(de::Error::custom("a theme: \"dark\", \"light\", or options")),
+        };
+        let base = match options.remove("base") {
+            None => Theme::dark(),
+            Some(Value::String(name)) => named(&name)?,
+            Some(_) => return Err(de::Error::custom("base names a theme: dark or light")),
+        };
+        let mut theme = serde_json::to_value(base).map_err(de::Error::custom)?;
+        over(&mut theme, Value::Object(options));
+        Theme::deserialize(theme).map_err(de::Error::custom)
+    }
+}
+
+impl Serialize for Theme {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        Theme::serialize(self, serializer)
+    }
+}
+
+/// Writes `options` over `base`, object by object.
+fn over(base: &mut Value, options: Value) {
+    match (base, options) {
+        (Value::Object(base), Value::Object(options)) => {
+            for (key, value) in options {
+                over(base.entry(key).or_insert(Value::Null), value);
+            }
+        }
+        (slot, value) => *slot = value,
+    }
+}
+
+/// Options a theme merges over its base's, each of them optional.
+fn merged(schema: &mut schemars::Schema) {
+    schema.remove("required");
+}
+
+/// A theme's schema: a base's name, or options over the base `base` names.
+fn with_base(schema: &mut schemars::Schema) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        let base = serde_json::json!({ "description": "The theme these options change; dark unless set.", "enum": Theme::NAMES });
+        properties.insert("base".into(), base);
+    }
+    presets::<Theme>(schema);
 }

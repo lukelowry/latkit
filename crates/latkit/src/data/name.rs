@@ -240,6 +240,52 @@ impl Row {
     }
 }
 
+/// Rows of one table in a dataset, by id: what a view selects, fits, and tells as sets of rows.
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct Rows {
+    /// The dataset's name.
+    pub data: Name,
+    /// The table's name.
+    pub table: Name,
+    /// The rows' ids in the table.
+    pub ids: Vec<Id>,
+}
+
+impl Rows {
+    /// The rows with `ids` in `table` of `data`.
+    pub fn new<I: Into<Id>>(data: impl Into<Name>, table: impl Into<Name>, ids: impl IntoIterator<Item = I>) -> Rows {
+        Rows { data: data.into(), table: table.into(), ids: ids.into_iter().map(Into::into).collect() }
+    }
+
+    /// Each row, in order.
+    pub fn rows(&self) -> impl Iterator<Item = Row> + '_ {
+        self.ids.iter().map(|id| Row { data: self.data.clone(), table: self.table.clone(), id: id.clone() })
+    }
+
+    /// `rows` as sets of rows, a set per table in the order each first appears.
+    pub(crate) fn group(rows: impl IntoIterator<Item = Row>) -> Vec<Rows> {
+        let mut sets: Vec<Rows> = Vec::new();
+        for Row { data, table, id } in rows {
+            match sets.iter_mut().rev().find(|s| s.data == data && s.table == table) {
+                Some(set) => set.ids.push(id),
+                None => sets.push(Rows { data, table, ids: vec![id] }),
+            }
+        }
+        sets
+    }
+
+    /// Every row of `sets`, in order.
+    pub(crate) fn flatten(sets: impl IntoIterator<Item = Rows>) -> Vec<Row> {
+        sets.into_iter().flat_map(|set| set.rows().collect::<Vec<_>>()).collect()
+    }
+}
+
+impl From<Row> for Rows {
+    fn from(row: Row) -> Rows {
+        Rows { data: row.data, table: row.table, ids: vec![row.id] }
+    }
+}
+
 macro_rules! counter {
     ($($(#[$doc:meta])* $t:ident),*) => {$(
         $(#[$doc])*

@@ -250,7 +250,7 @@ impl Job {
         Job(out.0)
     }
 
-    /// Reading GeoJSON `bytes` as dataset `name`, as [`geo::geojson`](crate::geo::geojson) does; it
+    /// Reading GeoJSON `bytes` as dataset `name`, as [`Data::read`](crate::Data::read) does; it
     /// answers the patch that builds the dataset, or nothing when the bytes are no GeoJSON.
     pub fn geojson(name: &str, bytes: &[u8]) -> Job {
         let mut out = Writer::new(Kind::GeoJson);
@@ -442,7 +442,7 @@ fn run_shapes(input: &mut Reader<'_>) -> Option<Patch> {
     let shaping = Shaping::from_code(input.u32()?)?;
     let Op::Set(rows) = Patch::from_bytes(input.rest()).ok()?.ops.into_iter().next()? else { return None };
     let Some(Field::Values(column, _)) = rows.field_named("geometry") else { return None };
-    let crate::Kind::Geometry(depth) = column.kind() else { return None };
+    let depth = column.kind().depth()?;
     let mut shapes = GeometryBuilder::new(shaping.depth(depth));
     for row in 0..rows.len() {
         match column.get(row) {

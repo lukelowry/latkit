@@ -64,7 +64,7 @@ export default defineConfig([
       '**/*.test.ts',
       'npm/examples/test/**/*.ts',
       'npm/examples/gate/**/*.ts',
-      'npm/bench/**/*.ts',
+      'benchmark/**/*.ts',
     ],
     rules: {
       '@typescript-eslint/no-empty-function': 'off',

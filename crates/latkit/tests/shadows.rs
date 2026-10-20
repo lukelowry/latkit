@@ -6,7 +6,7 @@
 mod common;
 
 use common::{SIZE, at, camera, errors, frame, gpu, plane};
-use latkit::{Color, Data, Faces, Patch, Scene, Shadow, Table, Theme, Vertices, View};
+use latkit::{Color, Data, Faces, Ids, Patch, Scene, Shadow, Table, Theme, Vertices, View};
 
 const GROUND: f32 = 0.5;
 
@@ -24,18 +24,23 @@ fn data() -> Data {
     data.apply(
         Patch::new()
             .set(
-                Table::new("Corner", 4)
+                Table::new("Corner", Ids::count(4))
                     .field("x", vec![-10.0, 10.0, 10.0, -10.0])
                     .field("y", vec![-10.0, -10.0, 10.0, 10.0])
                     .field("z", vec![20.0; 4]),
             )
             .set(
-                Table::new("Face", 2)
+                Table::new("Face", Ids::count(2))
                     .reference("a", "Corner", vec![0_u64, 0])
                     .reference("b", "Corner", vec![1_u64, 2])
                     .reference("c", "Corner", vec![2_u64, 3]),
             )
-            .set(Table::new("Ball", 1).field("x", vec![-30.0]).field("y", vec![-40.0]).field("z", vec![20.0])),
+            .set(
+                Table::new("Ball", Ids::count(1))
+                    .field("x", vec![-30.0])
+                    .field("y", vec![-40.0])
+                    .field("z", vec![20.0]),
+            ),
     )
     .expect("valid");
     data

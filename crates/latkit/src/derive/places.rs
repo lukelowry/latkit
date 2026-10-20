@@ -55,12 +55,10 @@ impl Derive for Places {
         // A job its host does at once is taken before the frame draws.
         for _ in 0..4 {
             self.settle();
-            let stamp = super::stamp_of((
-                input.scene_version,
-                self.landed,
-                self.generation,
-                input.data.iter().map(|d| (d.name(), d.0.version)).collect::<Vec<_>>(),
-            ));
+            let mut hasher = rustc_hash::FxHasher::default();
+            std::hash::Hash::hash(&(input.scene_version, self.landed, self.generation), &mut hasher);
+            input.structure(&mut hasher);
+            let stamp = std::hash::Hasher::finish(&hasher).max(1);
             if stamp == self.stamp {
                 break;
             }

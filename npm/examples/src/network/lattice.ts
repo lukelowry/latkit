@@ -82,8 +82,8 @@ export function lattice(id: string): { data: Data; buses: number; lines: number;
   }
   const data = new Data('grid').apply(
     new Patch()
-      .set('Bus', count, { lon, lat, load })
-      .set('Line', lines, { from: reference('Bus', from), to: reference('Bus', to) }),
+      .set('Bus', { count }, { lon, lat, load })
+      .set('Line', { count: lines }, { from: reference('Bus', from), to: reference('Bus', to) }),
   );
   return {
     data,

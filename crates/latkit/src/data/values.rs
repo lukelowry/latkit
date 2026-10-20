@@ -31,7 +31,7 @@ pub(crate) enum Array {
 }
 
 /// What a field holds.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// Numbers.
@@ -40,12 +40,41 @@ pub enum Kind {
     Bool,
     /// Texts.
     Text,
-    /// Geometries of a depth: 0 point, 1 path, 2 parts (rings or paths), 3 polygons.
-    Geometry(u8),
+    /// `[x, y]` points.
+    Point,
+    /// Paths of points.
+    Path,
+    /// Parts: the rings of a polygon, or the paths of a multi-path.
+    Parts,
+    /// Polygons of rings.
+    Polygons,
     /// Rows of another table, by id.
     Reference,
     /// Numbers sampled over the data's axis.
     Sampled,
+}
+
+impl Kind {
+    /// The geometry of `depth` levels below its points: 0 a point, 1 a path, 2 parts, 3 polygons.
+    pub(crate) fn geometry(depth: u8) -> Kind {
+        match depth {
+            0 => Kind::Point,
+            1 => Kind::Path,
+            2 => Kind::Parts,
+            _ => Kind::Polygons,
+        }
+    }
+
+    /// How many levels a geometry nests below its points; `None` for any other kind.
+    pub(crate) fn depth(self) -> Option<u8> {
+        match self {
+            Kind::Point => Some(0),
+            Kind::Path => Some(1),
+            Kind::Parts => Some(2),
+            Kind::Polygons => Some(3),
+            _ => None,
+        }
+    }
 }
 
 /// One value read from a dataset.
@@ -67,6 +96,42 @@ pub enum Value {
     Polygons(Vec<Vec<Vec<[f64; 2]>>>),
     /// The row a reference names.
     Row(Row),
+}
+
+/// A value writes as JSON: a number (`null` when not finite), boolean, or text; a geometry as nested
+/// `[x, y]` points; a reference as the id of the row it names.
+impl serde::Serialize for Value {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Value::Number(n) if n.is_finite() => serializer.serialize_f64(*n),
+            Value::Number(_) => serializer.serialize_none(),
+            Value::Bool(b) => serializer.serialize_bool(*b),
+            Value::Text(t) => serializer.serialize_str(t),
+            Value::Point(p) => p.serialize(serializer),
+            Value::Path(p) => p.serialize(serializer),
+            Value::Parts(p) => p.serialize(serializer),
+            Value::Polygons(p) => p.serialize(serializer),
+            Value::Row(row) => row.id.serialize(serializer),
+        }
+    }
+}
+
+/// A value as JSON writes it.
+impl schemars::JsonSchema for Value {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Value".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "A value read from a dataset: a number (`null` when not finite), boolean, or text; a geometry as nested `[x, y]` points; a reference as the id of the row it names.",
+            "anyOf": [
+                { "type": ["number", "boolean", "string", "null"] },
+                { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                { "type": "array", "items": { "type": "array" } },
+            ],
+        })
+    }
 }
 
 /// Where a value of an assembled column comes from: `(source, row)`, or `None` for missing.
@@ -98,7 +163,7 @@ impl Values {
             Array::F64(_) | Array::F32(_) | Array::I32(_) | Array::U32(_) | Array::U64(_) => Kind::Number,
             Array::Bool(_) => Kind::Bool,
             Array::Text(_) => Kind::Text,
-            Array::Geometry(g) => Kind::Geometry(g.depth()),
+            Array::Geometry(g) => Kind::geometry(g.depth()),
         }
     }
 

@@ -1,6 +1,6 @@
-//! What JSON and JavaScript write for data, decoded once: a patch's changes, a table's fields,
-//! values, and ids. A slice of a file is the one form read later, by [`Patch::load`] through a host;
-//! everything else is decoded as it is read.
+//! What JSON writes for data, decoded once: a patch's changes, a table's fields, values, and ids. A
+//! slice of a file is the one form read later, by [`Patch::load`] through a host; everything else is
+//! decoded as it is read. JavaScript writes the byte frames instead.
 
 use std::fmt;
 use std::sync::Arc;
@@ -40,15 +40,22 @@ pub(crate) enum OpForm {
     /// Names the axis sampled fields are recorded over, such as `time` in `s`.
     Axis { name: String, unit: String },
     /// Replaces a table with these rows and fields, or adds it.
-    Put(TableForm),
+    Replace(TableForm),
     /// Writes fields for these rows: rows with known ids change, others are added, and fields left
     /// out keep their values.
     Set(TableForm),
     /// Removes the rows with these ids.
     Remove { table: String, ids: IdsForm },
     /// Records a frame at each axis coordinate of `at`: for each field, a value per row at every
-    /// coordinate, frame-major.
-    Append { at: At, table: String, fields: Fields },
+    /// coordinate, frame-major; of every row, or of the rows `ids` names, the rest holding their last
+    /// values.
+    Append {
+        at: At,
+        table: String,
+        #[serde(default)]
+        ids: Option<IdsForm>,
+        fields: Fields,
+    },
     /// Forgets every sampled field's frames before axis coordinate `before`.
     Forget { before: f64 },
 }
@@ -73,7 +80,7 @@ pub(crate) enum At {
 }
 
 /// A dataset's JSON document.
-impl JsonSchema for super::data::Data {
+impl JsonSchema for super::dataset::Data {
     fn schema_name() -> Cow<'static, str> {
         "Data".into()
     }
@@ -111,14 +118,16 @@ impl JsonSchema for IdsForm {
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let id = generator.subschema_for::<Option<Id>>();
-        let bytes = Bytes::json_schema(generator);
-        let dtype = generator.subschema_for::<Dtype>();
         json_schema!({
-            "description": "Row ids: a count naming rows 0..n, numbers or texts (null leaves a reference unwired), or a typed array's bytes.",
+            "description": "Row ids: numbers or texts (null leaves a reference unwired), or `{count}` naming rows 0..count.",
             "anyOf": [
-                { "type": "integer", "minimum": 0, "maximum": u32::MAX },
                 { "type": "array", "items": id },
-                { "type": "object", "properties": { "dtype": dtype, "bytes": bytes }, "required": ["dtype", "bytes"], "additionalProperties": false },
+                {
+                    "type": "object",
+                    "properties": { "count": { "type": "integer", "minimum": 0, "maximum": u32::MAX } },
+                    "required": ["count"],
+                    "additionalProperties": false,
+                },
             ],
         })
     }
@@ -148,9 +157,8 @@ impl JsonSchema for Column {
         let element = generator.subschema_for::<Element>();
         let ids = generator.subschema_for::<IdsForm>();
         let dtype = generator.subschema_for::<Dtype>();
-        let bytes = Bytes::json_schema(generator);
         json_schema!({
-            "description": "A field's values: an array of one kind of value; a reference naming another table's rows by id; a slice of a binary file beside the document; or a typed array's bytes.",
+            "description": "A field's values: an array of one kind of value; a reference naming another table's rows by id; or a slice of a binary file beside the document.",
             "anyOf": [
                 { "type": "array", "items": element },
                 { "type": "object", "properties": { "reference": { "type": "string" }, "ids": ids }, "required": ["reference", "ids"], "additionalProperties": false },
@@ -160,7 +168,6 @@ impl JsonSchema for Column {
                     "required": ["file", "dtype", "count"],
                     "additionalProperties": false,
                 },
-                { "type": "object", "properties": { "dtype": dtype, "bytes": bytes }, "required": ["dtype", "bytes"], "additionalProperties": false },
             ],
         })
     }
@@ -197,33 +204,15 @@ impl JsonSchema for Geometry {
     }
 }
 
-impl JsonSchema for Bytes {
-    fn inline_schema() -> bool {
-        true
-    }
-
-    fn schema_name() -> Cow<'static, str> {
-        "Bytes".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "description": "Little-endian bytes: a Uint8Array from JavaScript, an array of numbers in JSON.",
-            "type": "array",
-            "items": { "type": "integer", "minimum": 0, "maximum": 255 },
-        })
-    }
-}
-
-/// A patch deserializes from its JSON, as JavaScript writes it too: every change but a slice of a
-/// file, which [`Patch::load`] reads.
+/// A patch deserializes from its JSON: every change but a slice of a file, which [`Patch::load`]
+/// reads.
 impl<'de> Deserialize<'de> for Patch {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Patch, D::Error> {
         patch(Vec::<OpForm>::deserialize(deserializer)?).map_err(de::Error::custom)
     }
 }
 
-/// Ids deserialize from a count, a list of numbers and texts, or `{dtype, bytes}` of numbers.
+/// Ids deserialize from a list of numbers and texts, or `{count}`.
 impl<'de> Deserialize<'de> for Ids {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Ids, D::Error> {
         IdsForm::deserialize(deserializer).map(|form| form.0)
@@ -255,7 +244,7 @@ impl OpForm {
     /// The columns its fields are written as.
     pub(crate) fn columns(&mut self) -> &mut [(String, Column)] {
         match self {
-            OpForm::Put(TableForm { fields, .. })
+            OpForm::Replace(TableForm { fields, .. })
             | OpForm::Set(TableForm { fields, .. })
             | OpForm::Append { fields, .. } => &mut fields.0,
             _ => &mut [],
@@ -269,10 +258,10 @@ pub(crate) fn patch(ops: Vec<OpForm>) -> Result<Patch> {
     for (i, op) in ops.into_iter().enumerate() {
         let op = match op {
             OpForm::Axis { name, unit } => Op::Axis { name: name.into(), unit: unit.into() },
-            OpForm::Put(form) => Op::Put(form.table().map_err(|e| e.at(i))?),
+            OpForm::Replace(form) => Op::Replace(form.table().map_err(|e| e.at(i))?),
             OpForm::Set(form) => Op::Set(form.table().map_err(|e| e.at(i))?),
             OpForm::Remove { table, ids } => Op::Remove { table: table.into(), ids: ids.0 },
-            OpForm::Append { at, table, fields } => {
+            OpForm::Append { at, table, ids, fields } => {
                 let at = match at {
                     At::One(at) => vec![at],
                     At::Many(at) => at,
@@ -288,7 +277,7 @@ pub(crate) fn patch(ops: Vec<OpForm>) -> Result<Patch> {
                         values.map_err(|e| e.at(name.as_str()).at(table.as_str()).at(i))?,
                     ));
                 }
-                Op::Append { table: table.into(), at, fields: columns }
+                Op::Append { table: table.into(), at, ids: ids.map(|ids| ids.0), fields: columns }
             }
             OpForm::Forget { before } => Op::Forget { before },
         };
@@ -342,14 +331,13 @@ impl Slice {
         let length = self.end()? - self.offset;
         if bytes.len() as u64 != length {
             let file = &self.file;
-            return Err(Error::Load(format!("{file}: {} bytes of the slice's {length}", bytes.len()).into()));
+            return Err(Error::Io(format!("{file}: {} bytes of the slice's {length}", bytes.len()).into()));
         }
         Ok(self.dtype.decode(bytes))
     }
 }
 
-/// How a slice's or a typed array's bytes hold values: little endian; `u8` holds booleans, nonzero
-/// true.
+/// How a slice's bytes hold values: little endian; `bool` a byte each, nonzero true.
 #[derive(Clone, Copy, Deserialize, JsonSchema)]
 enum Dtype {
     #[serde(rename = "f32le")]
@@ -364,18 +352,20 @@ enum Dtype {
     U64,
     #[serde(rename = "u8")]
     U8,
+    #[serde(rename = "bool")]
+    Bool,
 }
 
 impl Dtype {
     fn width(self) -> u64 {
         match self {
-            Dtype::U8 => 1,
+            Dtype::U8 | Dtype::Bool => 1,
             Dtype::F32 | Dtype::I32 | Dtype::U32 => 4,
             Dtype::F64 | Dtype::U64 => 8,
         }
     }
 
-    /// The values little-endian `bytes` hold, whole values only; `u8` holds booleans, nonzero true.
+    /// The values little-endian `bytes` hold, whole values only.
     fn decode(self, bytes: &[u8]) -> Values {
         macro_rules! decode {
             ($t:ty, $n:literal) => {
@@ -388,23 +378,9 @@ impl Dtype {
             Dtype::I32 => decode!(i32, 4),
             Dtype::U32 => decode!(u32, 4),
             Dtype::U64 => decode!(u64, 8),
-            Dtype::U8 => bytes.iter().map(|&b| b != 0).collect::<Vec<bool>>().into(),
+            Dtype::U8 => bytes.iter().map(|&b| u32::from(b)).collect::<Vec<u32>>().into(),
+            Dtype::Bool => bytes.iter().map(|&b| b != 0).collect::<Vec<bool>>().into(),
         }
-    }
-
-    /// The ids little-endian `bytes` hold: whole numbers from 0.
-    fn ids(self, bytes: &[u8]) -> std::result::Result<Ids, &'static str> {
-        let values = self.decode(bytes);
-        Ok(match self {
-            Dtype::U32 => Ids::from(values.u32s().expect("u32 storage").to_vec()),
-            Dtype::U64 => Ids::from(values.u64s().expect("u64 storage").to_vec()),
-            Dtype::U8 => return Err("ids are numbers, not booleans"),
-            Dtype::F32 | Dtype::F64 | Dtype::I32 => {
-                let whole = |n: f64| (n.fract() == 0.0 && (0.0..=SAFE).contains(&n)).then_some(n as u64);
-                let numbers = values.numbers().expect("numbers");
-                Ids::from(numbers.into_iter().map(whole).collect::<Option<Vec<u64>>>().ok_or(NUMERIC_ID)?)
-            }
-        })
     }
 }
 
@@ -478,17 +454,8 @@ impl<'de> Visitor<'de> for ColumnVisitor<'_> {
         })
     }
 
-    fn visit_bytes<E: de::Error>(self, v: &[u8]) -> std::result::Result<Column, E> {
-        Ok(Column::Values(Dtype::U8.decode(v)))
-    }
-
-    fn visit_byte_buf<E: de::Error>(self, v: Vec<u8>) -> std::result::Result<Column, E> {
-        self.visit_bytes(&v)
-    }
-
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<Column, A::Error> {
-        let (mut reference, mut ids, mut file, mut dtype, mut offset, mut count, mut bytes) =
-            (None, None, None, None, None, None, None);
+        let (mut reference, mut ids, mut file, mut dtype, mut offset, mut count) = (None, None, None, None, None, None);
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "reference" => reference = Some(map.next_value::<String>()?),
@@ -497,7 +464,6 @@ impl<'de> Visitor<'de> for ColumnVisitor<'_> {
                 "dtype" => dtype = Some(map.next_value::<Dtype>()?),
                 "offset" => offset = Some(map.next_value::<u64>()?),
                 "count" => count = Some(map.next_value::<u64>()?),
-                "bytes" => bytes = Some(map.next_value::<Bytes>()?.0),
                 other => {
                     map.next_value::<IgnoredAny>()?;
                     return Err(de::Error::custom(format!("field {}: unknown key {other}", self.0)));
@@ -505,54 +471,18 @@ impl<'de> Visitor<'de> for ColumnVisitor<'_> {
             }
         }
         let missing = |what: &str| de::Error::custom(format!("field {}: {what}", self.0));
-        match (reference, file, bytes) {
-            (Some(to), None, None) if dtype.is_none() && offset.is_none() && count.is_none() => {
+        match (reference, file) {
+            (Some(to), None) if dtype.is_none() && offset.is_none() && count.is_none() => {
                 Ok(Column::Reference { to, ids: ids.ok_or_else(|| missing("a reference names its ids"))? })
             }
-            (None, Some(file), None) if ids.is_none() => Ok(Column::Slice(Slice {
+            (None, Some(file)) if ids.is_none() => Ok(Column::Slice(Slice {
                 file,
                 dtype: dtype.ok_or_else(|| missing("a slice names its dtype"))?,
                 offset: offset.unwrap_or(0),
                 count: count.ok_or_else(|| missing("a slice names its count"))?,
             })),
-            (None, None, Some(bytes)) if ids.is_none() && offset.is_none() && count.is_none() => {
-                let dtype = dtype.ok_or_else(|| missing("bytes name their dtype"))?;
-                if !(bytes.len() as u64).is_multiple_of(dtype.width()) {
-                    return Err(missing("bytes hold whole values"));
-                }
-                Ok(Column::Values(dtype.decode(&bytes)))
-            }
-            _ => Err(missing("an object is {reference, ids}, {file, dtype, offset, count}, or {dtype, bytes}")),
+            _ => Err(missing("an object is {reference, ids} or {file, dtype, offset, count}")),
         }
-    }
-}
-
-/// Bytes as given: a JavaScript `Uint8Array`, or in JSON an array of numbers.
-struct Bytes(Vec<u8>);
-
-impl<'de> Deserialize<'de> for Bytes {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Bytes, D::Error> {
-        struct Any;
-        impl<'de> Visitor<'de> for Any {
-            type Value = Bytes;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("bytes")
-            }
-            fn visit_bytes<E>(self, v: &[u8]) -> std::result::Result<Bytes, E> {
-                Ok(Bytes(v.to_vec()))
-            }
-            fn visit_byte_buf<E>(self, v: Vec<u8>) -> std::result::Result<Bytes, E> {
-                Ok(Bytes(v))
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Bytes, A::Error> {
-                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-                while let Some(b) = seq.next_element::<u8>()? {
-                    bytes.push(b);
-                }
-                Ok(Bytes(bytes))
-            }
-        }
-        deserializer.deserialize_byte_buf(Any)
     }
 }
 
@@ -708,8 +638,7 @@ impl<'de> Deserialize<'de> for Part {
     }
 }
 
-/// Ids as written: a count, or numbers or texts with `null` for none, as [`Ids`] takes them, or
-/// `{dtype, bytes}` of numbers.
+/// Ids as written: numbers or texts with `null` for none, as [`Ids`] takes them, or `{count}`.
 pub(crate) struct IdsForm(pub(crate) Ids);
 
 impl<'de> Deserialize<'de> for IdsForm {
@@ -718,31 +647,17 @@ impl<'de> Deserialize<'de> for IdsForm {
         impl<'de> Visitor<'de> for Any {
             type Value = IdsForm;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("ids: a row count, or numbers or texts")
-            }
-            fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<IdsForm, E> {
-                let count = u32::try_from(v).map_err(|_| E::custom("a row count is at most 2^32 - 1"))?;
-                Ok(IdsForm(count.into()))
-            }
-            fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<IdsForm, E> {
-                self.visit_u64(u64::try_from(v).map_err(|_| E::custom("a row count is a whole number from 0"))?)
+                f.write_str("ids: numbers or texts, or {count}")
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<IdsForm, A::Error> {
-                let (mut dtype, mut bytes) = (None, None);
+                let mut count = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
-                        "dtype" => dtype = Some(map.next_value::<Dtype>()?),
-                        "bytes" => bytes = Some(map.next_value::<Bytes>()?.0),
+                        "count" => count = Some(map.next_value::<u32>()?),
                         other => return Err(de::Error::custom(format!("ids: unknown key {other}"))),
                     }
                 }
-                let (Some(dtype), Some(bytes)) = (dtype, bytes) else {
-                    return Err(de::Error::custom("ids as bytes are {dtype, bytes}"));
-                };
-                if !(bytes.len() as u64).is_multiple_of(dtype.width()) {
-                    return Err(de::Error::custom("bytes hold whole values"));
-                }
-                dtype.ids(&bytes).map(IdsForm).map_err(de::Error::custom)
+                count.map(|n| IdsForm(Ids::count(n))).ok_or_else(|| de::Error::custom("ids as a count are {count}"))
             }
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<IdsForm, A::Error> {
                 let mut ids = Vec::with_capacity(seq.size_hint().unwrap_or(0));
@@ -799,19 +714,15 @@ impl<'de> Deserialize<'de> for Key {
 mod tests {
     use crate::{Data, Id, Ids, Patch, Value};
 
-    fn le<T: bytemuck::Pod>(values: &[T]) -> Vec<u8> {
-        bytemuck::cast_slice(values).to_vec()
-    }
-
     #[test]
-    fn patches_decode_as_written_bytes_and_all() {
+    fn patches_decode_as_written() {
         let ops = serde_json::json!([
-            {"put": {"table": "Bus", "ids": {"dtype": "u32le", "bytes": le(&[7_u32, 9])}, "fields": {
-                "kv": {"dtype": "f64le", "bytes": le(&[1.5_f64, 2.5])},
-                "on": {"dtype": "u8", "bytes": [1, 0]},
+            {"replace": {"table": "Bus", "ids": [7, 9], "fields": {
+                "kv": [1.5, 2.5],
+                "on": [true, false],
                 "name": ["a", null],
             }}},
-            {"remove": {"table": "Bus", "ids": {"dtype": "f64le", "bytes": le(&[9.0_f64])}}},
+            {"remove": {"table": "Bus", "ids": [9]}},
         ]);
         let patch: Patch = serde_json::from_value(ops).expect("a patch");
         let mut data = Data::new("grid");
@@ -825,14 +736,12 @@ mod tests {
 
     #[test]
     fn forms_refuse_what_they_cannot_read_now() {
-        let slice = serde_json::json!([{"put": {"table": "Bus", "ids": 1, "fields": {
+        let slice = serde_json::json!([{"replace": {"table": "Bus", "ids": {"count": 1}, "fields": {
             "kv": {"file": "kv.f64", "dtype": "f64le", "count": 1}}}}]);
         let error = serde_json::from_value::<Patch>(slice).expect_err("a slice needs Patch::load").to_string();
         assert!(error.contains("Patch::load"), "{error}");
-        let ragged = serde_json::json!({"dtype": "f64le", "bytes": [0, 0, 0]});
-        assert!(serde_json::from_value::<Ids>(ragged).is_err(), "bytes hold whole values");
-        let fraction = serde_json::json!({"dtype": "f64le", "bytes": le(&[1.5_f64])});
-        assert!(serde_json::from_value::<Ids>(fraction).is_err(), "ids are whole");
+        assert!(serde_json::from_value::<Ids>(serde_json::json!(3)).is_err(), "a bare number is no count");
+        assert_eq!(serde_json::from_value::<Ids>(serde_json::json!({"count": 3})).expect("a count").len(), 3);
         assert_eq!(serde_json::from_value::<Id>(serde_json::json!(3)).expect("an id"), Id::Number(3));
         assert!(serde_json::from_value::<Id>(serde_json::json!(1.5)).is_err());
         assert!(serde_json::from_value::<Id>(serde_json::json!(null)).is_err());

@@ -1,23 +1,12 @@
-/** WASM-backed data and rendering, loaded only by loadLatkit(). */
+/** WebAssembly-backed data and drawing, loaded only by loadLatkit(). */
 
 import init, * as wasm from '../pkg/latkit.js';
 import { encoder } from './encoder.js';
+import type { Budget, Camera, Colormap, Fit, Id, Query, Row, Rows, Scene } from './inputs.js';
 import { jobs } from './jobs.js';
 import type { LoadOptions } from './load.js';
-import type { Budget, Camera, Colormap, Fit, Id, Query, Row, Scene } from './forms.js';
-import type {
-  Description,
-  Envelope,
-  Hit,
-  Ids,
-  LatkitError,
-  Reference,
-  Rows,
-  Stats,
-  Values,
-  ViewEvents,
-  Work,
-} from './types.js';
+import type { Description, Failure, Hit, Stats, Value, ViewEvent, Work } from './outputs.js';
+import { Patch } from './patch.js';
 
 let run: ((bytes: Uint8Array) => Promise<Uint8Array>) | undefined;
 
@@ -29,194 +18,79 @@ export async function initialize(options: LoadOptions) {
     wasm.setJobs(run);
   }
   if (typeof VideoEncoder === 'function') wasm.setEncoder(encoder);
-  return Object.freeze({ Data, Patch, Gpu, Shot, geojson, colormapCss });
+  return Object.freeze({ Data, Gpu, Shot, colormapCss });
 }
 
-/** Changes to a dataset, applied in order and all at once by {@link Data.apply}. */
-export class Patch {
-  #inner?: wasm.Patch;
-
-  /** @internal */
-  get inner(): wasm.Patch {
-    if (!this.#inner) throw new Error('this Patch has been applied or destroyed');
-    return this.#inner;
-  }
-
-  constructor(inner?: wasm.Patch) {
-    this.#inner = inner ?? new wasm.Patch();
-  }
-
-  /** @internal Transfers the patch to Rust, which consumes it even when applying it fails. */
-  take(): wasm.Patch {
-    const inner = this.inner;
-    this.#inner = undefined;
-    return inner;
-  }
-
-  /** Releases an unapplied patch. Safe to call again or after applying it. */
-  destroy(): void {
-    this.#inner?.free();
-    this.#inner = undefined;
-  }
-
-  [Symbol.dispose](): void {
-    this.destroy();
-  }
-
-  /** A patch received as bytes. */
-  static fromBytes(bytes: Uint8Array): Patch {
-    return new Patch(wasm.Patch.fromBytes(bytes));
-  }
-
-  /**
-   * The patches arriving back to back in `stream`, each as soon as its last byte does: a response
-   * body, a file, or a socket's messages. A patch longer than `limit` bytes (256 MiB unless given)
-   * throws once its lengths say so, so an untrusted stream never buffers more. Each byte is copied
-   * about twice, however the stream splits them.
-   *
-   * ```ts
-   * for await (const patch of Patch.stream((await fetch('/feed')).body!)) view.setData((data = data.apply(patch)));
-   * ```
-   */
-  static async *stream(
-    stream: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
-    { limit = 1 << 28 }: { limit?: number } = {},
-  ): AsyncGenerator<Patch> {
-    let buffer = new Uint8Array(1 << 16);
-    let [start, end, wanted] = [0, 0, 0];
-    // A patch arriving in many chunks is tried again once its bytes double, so trying stays linear.
-    const take = function* (): Generator<Patch> {
-      while (end > start && end - start >= wanted) {
-        const decoded = wasm.Patch.decode(buffer.subarray(start, end), limit) as {
-          patch: wasm.Patch;
-          used: number;
-        } | null;
-        if (!decoded) {
-          wanted = 2 * (end - start);
-          return;
-        }
-        start += decoded.used;
-        wanted = 0;
-        yield new Patch(decoded.patch);
-      }
-    };
-    for await (const chunk of chunks(stream)) {
-      if (end + chunk.length > buffer.length) {
-        const kept = end - start;
-        const grown = new Uint8Array(Math.max(buffer.length, 2 * (kept + chunk.length)));
-        grown.set(buffer.subarray(start, end));
-        [buffer, start, end] = [grown, 0, kept];
-      }
-      buffer.set(chunk, end);
-      end += chunk.length;
-      yield* take();
-    }
-    wanted = 0;
-    yield* take();
-    if (end > start) throw new Error('the stream ended inside a patch');
-  }
-
-  /**
-   * The patch its JSON makes: a list of changes, each named by its method with its parameters by
-   * name, such as `[{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}]`. Slices of
-   * binary files, `{file, dtype, offset, count}`, are fetched at once, relative to `base`, the
-   * document's own URL.
-   */
-  static async load(json: string, base = ''): Promise<Patch> {
-    return new Patch((await wasm.Patch.load(json, base)) as wasm.Patch);
-  }
-
-  /** Names the axis sampled fields are recorded over, such as `('time', 's')`. */
-  axis(name: string, unit: string): this {
-    return this.#push({ axis: { name, unit } });
-  }
-
-  /** Writes `fields` for rows `ids` of `table`: known ids change, others are added. */
-  set(table: string, ids: Ids, fields: Record<string, Values | Reference>): this {
-    return this.#push({ set: { table, ids: bytes(ids), fields: columns(fields) } });
-  }
-
-  /** Replaces `table` with these rows and fields. */
-  put(table: string, ids: Ids, fields: Record<string, Values | Reference>): this {
-    return this.#push({ put: { table, ids: bytes(ids), fields: columns(fields) } });
-  }
-
-  /** Removes the rows of `table` with `ids`. */
-  remove(table: string, ids: Ids): this {
-    return this.#push({ remove: { table, ids: bytes(ids) } });
-  }
-
-  /** Records a frame at each axis coordinate of `at`: values per row of `table`, frame-major. */
-  append(at: number | readonly number[], table: string, fields: Record<string, Values>): this {
-    return this.#push({ append: { at, table, fields: columns(fields) } });
-  }
-
-  /** Forgets every sampled field's frames before axis coordinate `before`. */
-  forget(before: number): this {
-    return this.#push({ forget: { before } });
-  }
-
-  /** Appends a change in the JSON form {@link Patch.load} reads, decoded by the same code. */
-  #push(op: object): this {
-    this.inner.push([op]);
-    return this;
-  }
-
-  toBytes(): Uint8Array {
-    return this.inner.toBytes();
-  }
-}
-
-/** The dtype of each typed array a column or ids can be: little endian, as every browser stores them. */
-const dtypes = new Map<unknown, string>([
-  [Float64Array, 'f64le'],
-  [Float32Array, 'f32le'],
-  [Int32Array, 'i32le'],
-  [Uint32Array, 'u32le'],
-  [Uint8Array, 'u8'],
-]);
-
-/** Values or ids as decoded: a typed array as `{ dtype, bytes }`, which copies once. */
-function bytes<T>(values: T): T | { dtype: string; bytes: Uint8Array } {
-  if (!ArrayBuffer.isView(values)) return values;
-  const dtype = dtypes.get(values.constructor);
-  if (!dtype) throw new TypeError(`${values.constructor.name} is not a column's typed array`);
-  return { dtype, bytes: new Uint8Array(values.buffer, values.byteOffset, values.byteLength) };
-}
-
-/** Fields as decoded: values as {@link bytes}, a reference's ids too. */
-function columns(fields: Record<string, Values | Reference>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [name, field] of Object.entries(fields)) {
-    out[name] =
-      'reference' in field ? { reference: field.reference, ids: bytes(field.ids) } : bytes(field);
-  }
-  return out;
-}
-
-/** The chunks of a stream, read with a reader where async iteration is missing. */
-async function* chunks(
-  stream: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
-): AsyncGenerator<Uint8Array> {
-  if (!('getReader' in stream)) {
-    yield* stream;
-    return;
-  }
-  const reader = stream.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      yield value;
-    }
-  } finally {
-    reader.releaseLock();
-  }
+/** @internal The bytes of the patch its JSON makes, for `Patch.load`. */
+export async function readPatch(json: string, base: string): Promise<Uint8Array> {
+  return (await wasm.loadPatch(json, base)) as Uint8Array;
 }
 
 /**
- * A named, immutable collection of tables. `apply` gives its next version and leaves this one as it
- * was, so keeping earlier versions, as an undo history does, costs nothing but the pages they hold.
+ * What latkit throws: an `Error` with a `code`, and for invalid input the `path` to the part, such
+ * as `marks[2].color`.
+ */
+export interface LatkitError extends Error {
+  code: Failure['code'];
+  path?: string;
+}
+
+/**
+ * What a view tells its listeners, by type. Intents (`click`, `open`, `menu`, `drag`, `connect`,
+ * `delete`) are told once each, in the order the user acted. Changes (`hover`, `select`, `camera`,
+ * `waiting`) tell only their latest, and their state can always be read. A view tells only what the
+ * application did not do itself: its setters change state silently.
+ */
+export type ViewEvents = {
+  [E in ViewEvent as E['type']]: E extends { type: 'error' } ? LatkitError : E['detail'];
+};
+
+/** The error `failure` describes, as latkit throws them. */
+function thrown({ code, message, path }: Failure): LatkitError {
+  return Object.assign(new Error(message), path === undefined ? { code } : { code, path });
+}
+
+/** `promise`, or a `timeout` error once `seconds` pass first. */
+function deadline<T>(promise: Promise<T>, seconds: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          thrown({
+            code: 'timeout',
+            message: `${what} took over ${seconds} s: is the view drawn?`,
+          }),
+        ),
+      seconds * 1000,
+    );
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * The rows a query keeps, in the forms a patch writes: numbers as a `Float64Array` (missing NaN),
+ * other values as arrays (missing `null`), a reference as its target ids.
+ */
+export interface Table {
+  table: string;
+  ids: Id[];
+  fields: Record<string, Float64Array | Value[] | { reference: string; ids: (Id | null)[] }>;
+  /** The rows the query kept before paging. */
+  total: number;
+}
+
+/** Rows' least and greatest values over spans of the axis: `at` holds one more edge than spans. */
+export interface Envelope {
+  at: Float64Array;
+  least: Float32Array;
+  greatest: Float32Array;
+}
+
+/**
+ * A named collection of tables, changed in place by patches. A snapshot keeps a version, sharing
+ * every page with it, so keeping earlier versions, as an undo history does, costs only the pages
+ * they hold apart. A view draws the version it was given until it is given another.
  */
 export class Data {
   #inner?: wasm.Data;
@@ -231,7 +105,7 @@ export class Data {
     this.#inner = typeof name === 'string' ? new wasm.Data(name) : name;
   }
 
-  /** Releases this handle. Views and other snapshots keep their independently held data. */
+  /** Releases this handle. Views and snapshots keep the versions they hold. */
   destroy(): void {
     this.#inner?.free();
     this.#inner = undefined;
@@ -241,14 +115,30 @@ export class Data {
     this.destroy();
   }
 
-  /** A dataset from {@link Data.toBytes}. */
-  static fromBytes(bytes: Uint8Array): Data {
-    return new Data(wasm.Data.fromBytes(bytes));
+  /**
+   * The dataset `bytes` hold: latkit's bytes, renamed `name` when given, or GeoJSON, gzip-compressed
+   * or not, read in a worker as dataset `name`: points, line strings, and polygons as tables
+   * `points`, `lines`, and `polygons`, each with its geometry as field `geometry` and its properties
+   * as fields.
+   */
+  static async read(bytes: Uint8Array, name?: string): Promise<Data> {
+    if ([0x4c, 0x41, 0x54, 0x4b].every((b, i) => bytes[i] === b))
+      return new Data(wasm.Data.read(bytes, name));
+    if (name === undefined)
+      throw thrown({ code: 'invalid', message: 'GeoJSON is read as a named dataset' });
+    const job = wasm.geojsonJob(name, bytes);
+    const answer = run ? await run(job) : wasm.job(job);
+    if (answer.length === 0)
+      throw thrown({
+        code: 'invalid',
+        message: `${name}: the bytes are neither latkit's nor GeoJSON`,
+      });
+    return new Data(wasm.Data.read(answer, name));
   }
 
   /**
-   * The dataset its JSON document builds, `{"name": ..., "patch": [...]}`: the patch loading as
-   * {@link Patch.load} loads one.
+   * The dataset its JSON document builds, `{"name": ..., "patch": [...]}`, the patch loading as
+   * `Patch.load` loads one.
    */
   static async load(json: string, base = ''): Promise<Data> {
     return new Data((await wasm.Data.load(json, base)) as wasm.Data);
@@ -279,17 +169,20 @@ export class Data {
     return span ? [span[0]!, span[1]!] : undefined;
   }
 
-  /** The next version: every change of `patch`, or none of them when one is invalid. The patch is
-   * spent. */
-  apply(patch: Patch | Uint8Array): Data {
-    return new Data(
-      patch instanceof Uint8Array ? this.inner.applyBytes(patch) : this.inner.apply(patch.take()),
-    );
+  /** Applies every change of `patch`, or none when one is invalid. */
+  apply(patch: Patch | Uint8Array): this {
+    this.inner.apply(patch instanceof Patch ? patch.frame() : patch);
+    return this;
+  }
+
+  /** This version, kept while `apply` changes this one: O(1). */
+  snapshot(): Data {
+    return new Data(this.inner.snapshot());
   }
 
   /** The value of `field` for the row with `id` in `table`, at axis coordinate `at` when given. */
-  get(table: string, id: Id, field: string, at?: number): unknown {
-    return this.inner.get(table, id, field, at);
+  get(table: string, id: Id, field: string, at?: number): Value {
+    return JSON.parse(this.inner.get(table, id, field, at)) as Value;
   }
 
   /** What the dataset holds: tables, rows, fields and their kinds, the axis and its span. */
@@ -298,11 +191,11 @@ export class Data {
   }
 
   /**
-   * The rows of a table `query` asks for, in the forms {@link Patch.put} takes, sampled fields read
-   * at its coordinate. Runs on the CPU through the expressions marks draw with.
+   * The rows of a table `query` keeps, filtered, sorted, and paged, sampled fields read at its
+   * coordinate, on the CPU through the expressions marks draw with.
    */
-  query(query: Query): Rows {
-    return this.inner.query(JSON.stringify(query)) as Rows;
+  query(query: Query): Table {
+    return this.inner.query(JSON.stringify(query)) as Table;
   }
 
   /**
@@ -315,37 +208,15 @@ export class Data {
     field: string,
     range: [number, number],
     spans: number,
-    ids?: Ids,
+    ids?: readonly Id[],
   ): Envelope {
-    return this.inner.envelope(
-      table,
-      field,
-      Float64Array.from(range),
-      spans,
-      bytes(ids),
-    ) as Envelope;
+    const listed = ids === undefined ? undefined : JSON.stringify(ids);
+    return this.inner.envelope(table, field, Float64Array.from(range), spans, listed) as Envelope;
   }
 
+  /** The dataset as latkit's bytes: the patch that builds it. */
   toBytes(): Uint8Array {
     return this.inner.toBytes();
-  }
-}
-
-/**
- * The features of GeoJSON `bytes`, gzip-compressed or not, as dataset `name`, read in a worker:
- * points, line strings, and polygons as tables `points`, `lines`, and `polygons`, each with its
- * geometry as field `geometry` and its properties as fields.
- */
-export async function geojson(name: string, bytes: Uint8Array): Promise<Data> {
-  const job = wasm.geojsonJob(name, bytes);
-  const answer = run ? await run(job) : wasm.job(job);
-  if (answer.length === 0)
-    throw Object.assign(new Error(`${name}: the bytes are not GeoJSON`), { code: 'invalid' });
-  const empty = new Data(name);
-  try {
-    return empty.apply(answer);
-  } finally {
-    empty.destroy();
   }
 }
 
@@ -434,7 +305,7 @@ export class Gpu {
     return JSON.parse(this.inner.work) as Work;
   }
 
-  /** Releases this GPU's canvases, views, and frame listeners. Other GPUs and data handles remain usable. */
+  /** Releases this GPU's canvases, views, and frame listeners. Other GPUs and data stay usable. */
   destroy(): void {
     if (!this.#inner) return;
     for (const canvas of this.#canvases) canvas.destroy();
@@ -513,21 +384,12 @@ export class View {
   }
 
   /**
-   * Gives the view `data`, replacing the dataset of its name. A mark it no longer fits draws nothing,
-   * and the next frame reports why as an error, unless a scene shown before then replaces the mark.
+   * Gives the view `data` as it is now, replacing the dataset of its name: give it again after
+   * applying patches. A mark it no longer fits draws nothing, and the next frame reports why as an
+   * error, unless a scene shown before then replaces the mark.
    */
   setData(data: Data): void {
     this.inner.setData(data.inner);
-  }
-
-  removeData(name: string): void {
-    this.inner.removeData(name);
-  }
-
-  /** The dataset named `name`: one given, or the tiles the view fetched. */
-  data(name: string): Data | undefined {
-    const data = this.inner.data(name);
-    return data ? new Data(data) : undefined;
   }
 
   /**
@@ -540,9 +402,15 @@ export class View {
     this.inner.setTiles(name, url);
   }
 
-  /** Stops fetching and drawing the tiles of dataset `name`. */
-  removeTiles(name: string): void {
-    this.inner.removeTiles(name);
+  /** Stops drawing the dataset named `name`, given or fetched as tiles. */
+  removeData(name: string): void {
+    this.inner.removeData(name);
+  }
+
+  /** The dataset named `name`, as given or as the view fetched it, as a snapshot. */
+  data(name: string): Data | undefined {
+    const data = this.inner.data(name);
+    return data ? new Data(data) : undefined;
   }
 
   /** The axis coordinate shown: sampled fields read their last frame at or before it. */
@@ -560,6 +428,16 @@ export class View {
 
   set camera(camera: Camera) {
     this.inner.setCamera(JSON.stringify(camera));
+  }
+
+  /** Eases to `camera`. */
+  fly(camera: Camera): void {
+    this.inner.fly(JSON.stringify(camera));
+  }
+
+  /** Frames what `fit` names on the next frame, keeping pitch and bearing. */
+  fit(fit: Fit = 'all'): void {
+    this.inner.fit(JSON.stringify(fit));
   }
 
   /** Where `position` (x, y, elevation) lands on screen, CSS pixels from the top left. */
@@ -593,14 +471,16 @@ export class View {
     this.inner.orbit = degreesPerSecond;
   }
 
-  /** The rows selected. */
-  get selection(): Row[] {
-    return JSON.parse(this.inner.selection) as Row[];
+  /** The rows selected, a set per table. */
+  get selection(): Rows[] {
+    return JSON.parse(this.inner.selection) as Rows[];
   }
 
-  /** Selects `rows`, and no others. Like every setter it tells nothing: `select` events tell what
-   * the user and the data changed. */
-  select(rows: Row[]): void {
+  /**
+   * Selects `rows`, and no others. Like every setter it tells nothing: `select` events tell what
+   * the user and the data changed.
+   */
+  select(rows: readonly Rows[]): void {
     this.inner.select(JSON.stringify(rows));
   }
 
@@ -611,47 +491,51 @@ export class View {
 
   /** Every mark that draws nothing because its data no longer fits it, and why. */
   get failures(): LatkitError[] {
-    return (JSON.parse(this.inner.failures) as Failure[]).map(failure);
+    return (JSON.parse(this.inner.failures) as Failure[]).map(thrown);
   }
 
-  /** Eases to `camera`. */
-  fly(camera: Camera): void {
-    this.inner.fly(JSON.stringify(camera));
+  /**
+   * Every row of a mark that picks within `radius` CSS pixels of `point`, nearest first, once a frame
+   * draws the view: a `timeout` error after `deadline` seconds without one.
+   */
+  async pick(
+    point: [number, number],
+    radius: number,
+    { deadline: seconds = 5 } = {},
+  ): Promise<Hit[]> {
+    const hits = this.inner.pick(Float32Array.from(point), radius) as Promise<string>;
+    return JSON.parse(await deadline(hits, seconds, 'a pick')) as Hit[];
   }
 
-  /** Every row of a mark that picks within `radius` CSS pixels of `point`, nearest first. */
-  async pick(point: [number, number], radius: number): Promise<Hit[]> {
-    return JSON.parse((await this.inner.pick(Float32Array.from(point), radius)) as string) as Hit[];
+  /**
+   * Where `row` lies on screen, CSS pixels from the top left, or `null` when no mark draws it in
+   * view, once a frame draws the view: a `timeout` error after `deadline` seconds without one.
+   */
+  locate(row: Row, { deadline: seconds = 5 } = {}): Promise<[number, number] | null> {
+    const point = this.inner.locate(JSON.stringify(row)) as Promise<[number, number] | null>;
+    return deadline(point, seconds, 'locating a row');
   }
 
-  /** Where `row` lies on screen, CSS pixels from the top left, or `null` when no mark draws it in view. */
-  locate(row: Row): Promise<[number, number] | null> {
-    return this.inner.locate(JSON.stringify(row)) as Promise<[number, number] | null>;
-  }
-
-  /** The rows joined to `row`: a vertex's neighbors across edges and nets, or an edge's or a net's vertices. */
-  neighbors(row: Row): Row[] {
-    return JSON.parse(this.inner.neighbors(JSON.stringify(row))) as Row[];
-  }
-
-  /** Frames what `fit` names on the next frame, keeping pitch and bearing. */
-  fit(fit: Fit = 'all'): void {
-    this.inner.fit(JSON.stringify(fit));
+  /** The rows joined to `row`, a set per table: a vertex's neighbors across edges and nets, or an
+   * edge's or a net's vertices. */
+  neighbors(row: Row): Rows[] {
+    return JSON.parse(this.inner.neighbors(JSON.stringify(row))) as Rows[];
   }
 
   /**
    * Lays every vertex row without a position out again by the scene's layout: a diagram's blocks, or
    * points on a plane or the earth. Places a layout gave otherwise hold, so rows added later are
-   * placed around the rest. Once the layout lands, answers a patch for each dataset writing each row
-   * laid out into its mark's position fields; applied, the places are the data's own.
+   * placed around the rest. Once the layout lands, answers a patch to each dataset writing each row
+   * laid out into its mark's position fields; applied, the places are the data's own. A `timeout`
+   * error after `deadline` seconds without it.
    *
    * ```ts
-   * for (const [name, patch] of await view.arrange()) if (name === data.name) data = data.apply(patch);
+   * for (const patch of await view.arrange()) if (patch.data === data.name) data.apply(patch);
    * ```
    */
-  async arrange(): Promise<[string, Patch][]> {
-    const pairs = (await this.inner.arrange()) as [string, wasm.Patch][];
-    return pairs.map(([name, patch]) => [name, new Patch(patch)]);
+  async arrange({ deadline: seconds = 60 } = {}): Promise<Patch[]> {
+    const frames = (await deadline(this.inner.arrange(), seconds, 'arranging')) as Uint8Array[];
+    return frames.map((frame) => Patch.fromBytes(frame));
   }
 
   get stats(): Stats {
@@ -673,15 +557,16 @@ export class View {
   /** Hands a batch of the view's events to the listeners of each one's type. */
   #tell(json: string): void {
     if (this.#listeners.size === 0) return;
-    for (const told of JSON.parse(json) as Told[]) {
+    for (const told of JSON.parse(json) as ViewEvent[]) {
       const listeners = this.#listeners.get(told.type) as Set<(event: unknown) => void> | undefined;
       if (!listeners?.size) continue;
-      const event = told.type === 'error' ? failure(told.detail) : told.detail;
+      const event = told.type === 'error' ? thrown(told.detail) : told.detail;
       for (const listener of listeners) listener(event);
     }
   }
 
-  /** Frees the view; a canvas showing it keeps its last frame. */
+  /** Frees the view, and rejects what it was asked and has not answered; a canvas showing it keeps
+   * its last frame. */
   destroy(): void {
     if (!this.#inner) return;
     for (const listeners of this.#listeners.values()) listeners.clear();
@@ -694,23 +579,6 @@ export class View {
   [Symbol.dispose](): void {
     this.destroy();
   }
-}
-
-/** A view's event as it crosses from WASM: its type, and its detail, an error's as plain data. */
-type Told = {
-  [T in keyof ViewEvents]: { type: T; detail: T extends 'error' ? Failure : ViewEvents[T] };
-}[keyof ViewEvents];
-
-/** An error as it crosses from WASM. */
-interface Failure {
-  code: LatkitError['code'];
-  message: string;
-  path?: string;
-}
-
-/** The error `failure` describes, as latkit throws them. */
-function failure({ code, message, path }: Failure): LatkitError {
-  return Object.assign(new Error(message), path === undefined ? { code } : { code, path });
 }
 
 /**
@@ -834,9 +702,7 @@ export class Image {
     const job = this.inner.encodeJob(format, options.quality);
     const file = run ? await run(job) : wasm.job(job);
     if (file.length === 0)
-      throw Object.assign(new Error(`the image could not be written as ${format}`), {
-        code: 'invalid',
-      });
+      throw thrown({ code: 'invalid', message: `the image could not be written as ${format}` });
     return file;
   }
 
@@ -869,10 +735,12 @@ export class Video {
 
   private get inner(): wasm.Video {
     if (!this.#inner)
-      throw Object.assign(new Error('this Video was finished or aborted'), {
-        code: 'cancelled',
-        cause: this.#aborted,
-      });
+      throw Object.assign(
+        thrown({ code: 'cancelled', message: 'this Video was finished or aborted' }),
+        {
+          cause: this.#aborted,
+        },
+      );
     return this.#inner;
   }
 
@@ -937,5 +805,5 @@ export class Video {
  * GPU draws, a band each for a categorical map's categories.
  */
 export function colormapCss(map: Colormap, direction = 'to right'): string {
-  return wasm.colormapCss(map, direction);
+  return wasm.colormapCss(JSON.stringify(map), direction);
 }

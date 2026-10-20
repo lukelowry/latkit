@@ -1,8 +1,16 @@
 use std::time::Duration;
 
-/// How a view answers the pointer and keyboard, and how much it moves on its own. Each mark says
-/// whether its rows pick, select, and drag; these say what the view itself does.
-#[derive(Clone, Copy, PartialEq, Debug)]
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer};
+
+use super::form::{Presets, preset_or, presets, seconds};
+
+/// How a view answers the pointer and keyboard, and how much it moves on its own: a preset, or options
+/// over the defaults. Each mark says whether its rows pick, select, and drag; these say what the view
+/// itself does.
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
+#[serde(remote = "Self", default, rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = presets::<Controls>)]
 pub struct Controls {
     /// Dragging the background moves the camera.
     pub pan: bool,
@@ -31,8 +39,10 @@ pub struct Controls {
     /// Clicking again where nothing moved selects the next row under the point, nearest first, so
     /// rows drawn over one another can each be selected.
     pub cycle: bool,
-    /// How long a touch or a pen held still asks for a menu, as the secondary button does; zero
-    /// never does.
+    /// Seconds a touch or a pen held still asks for a menu, as the secondary button does; zero never
+    /// does.
+    #[serde(deserialize_with = "seconds")]
+    #[schemars(with = "f64")]
     pub press: Duration,
     /// How much the view moves on its own: eases, flights, coasting, orbits, label fades, comets, and
     /// what reads `elapsed()`.
@@ -40,7 +50,7 @@ pub struct Controls {
 }
 
 /// What zooms a view.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Zoom {
     /// The wheel, pinching, and the keys.
@@ -54,7 +64,7 @@ pub enum Zoom {
 }
 
 /// How much a view moves on its own.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Motion {
     /// As the platform asks: reduced where the user asked their system for less motion.
@@ -65,6 +75,24 @@ pub enum Motion {
     /// Only what the user moves: changes apply at once, flights jump, nothing coasts or orbits,
     /// labels show without fading, and comets and what reads `elapsed()` hold still.
     Reduced,
+}
+
+impl Presets for Controls {
+    const NAMES: &'static [&'static str] = &["none", "inspect"];
+
+    fn preset(name: &str) -> Option<Controls> {
+        match name {
+            "none" => Some(Controls::none()),
+            "inspect" => Some(Controls::inspect()),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Controls {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Controls, D::Error> {
+        preset_or(deserializer, Controls::deserialize)
+    }
 }
 
 impl Default for Controls {

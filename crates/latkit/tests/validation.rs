@@ -1,12 +1,15 @@
 //! Batch validation uses the rendering compiler without requesting an adapter.
 #![cfg(feature = "gpu")]
 
-use latkit::{Data, Diagram, Error, Label, Plane, Scene, Table, Vertices};
+use latkit::{Data, Diagram, Error, Ids, Label, Plane, Scene, Table, Vertices};
 
 fn data() -> Data {
     let mut data = Data::new("grid");
     data.apply(
-        Table::new("Bus", 2).field("x", vec![0.0, 1.0]).field("y", vec![1.0, 2.0]).field("name", vec!["A", "B"]),
+        Table::new("Bus", Ids::count(2))
+            .field("x", vec![0.0, 1.0])
+            .field("y", vec![1.0, 2.0])
+            .field("name", vec!["A", "B"]),
     )
     .unwrap();
     data

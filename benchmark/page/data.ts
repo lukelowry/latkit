@@ -21,7 +21,7 @@ export function scatter(n: number, seed = 1, named = false): Write {
   for (let i = 0; i < n; i++) [x[i], y[i], v[i]] = [next(), next(), next()];
   const fields: Record<string, Values> = { x, y, v };
   if (named) fields.name = Array.from({ length: n }, (_, i) => `P${i}`);
-  return (p) => p.set('Point', n, fields);
+  return (p) => p.set('Point', { count: n }, fields);
 }
 
 /** About `n` buses in a square lattice over most of the globe, each joined to its right and lower
@@ -54,8 +54,8 @@ export function lattice(n: number): Write {
   }
   return (p) =>
     p
-      .set('Bus', count, { lon, lat, load })
-      .set('Line', lines, { from: reference('Bus', from), to: reference('Bus', to) });
+      .set('Bus', { count }, { lon, lat, load })
+      .set('Line', { count: lines }, { from: reference('Bus', from), to: reference('Bus', to) });
 }
 
 /** `n` edges among 16 vertices on a ring, each joining a vertex to the next: lanes by the thousand. */
@@ -67,8 +67,8 @@ export function lanes(n: number): Write {
   const to = Uint32Array.from({ length: n }, (_, e) => (e + 1) % k);
   return (p) =>
     p
-      .set('Point', k, { x, y, v: new Float32Array(k) })
-      .set('Link', n, { from: reference('Point', from), to: reference('Point', to) });
+      .set('Point', { count: k }, { x, y, v: new Float32Array(k) })
+      .set('Link', { count: n }, { from: reference('Point', from), to: reference('Point', to) });
 }
 
 /** `n` regular 32-gons in a grid over the mercator world, each with a value. */
@@ -87,7 +87,7 @@ export function polygons(n: number, sides = 32): Write {
     rings[i] = [ring];
     v[i] = (i % 97) / 97;
   }
-  return (p) => p.set('Region', n, { rings, v });
+  return (p) => p.set('Region', { count: n }, { rings, v });
 }
 
 /** `n` blocks in trees of 64: each block's output is a net, which its two children's inputs name. */
@@ -101,8 +101,12 @@ export function blocks(n: number): Write {
   }
   return (p) =>
     p
-      .set('Net', n, { k: new Float32Array(n) })
-      .set('Block', n, { name, in: reference('Net', input), out: reference('Net', n) });
+      .set('Net', { count: n }, { k: new Float32Array(n) })
+      .set(
+        'Block',
+        { count: n },
+        { name, in: reference('Net', input), out: reference('Net', { count: n }) },
+      );
 }
 
 const wave = (r: number, f: number) => Math.sin(r * 0.37 + f * 0.05) + (r % 10) * 0.2;
@@ -113,7 +117,7 @@ export function traces(rows: number, frames: number): Write {
   for (let f = 0; f < frames; f++) for (let r = 0; r < rows; r++) all[f * rows + r] = wave(r, f);
   const k = Float32Array.from({ length: rows }, (_, r) => r);
   return (p) => {
-    p.axis('time', 's').set('Signal', rows, { k });
+    p.axis('time', 's').set('Signal', { count: rows }, { k });
     for (let f = 0; f < frames; f++)
       p.append(f / RATE, 'Signal', { v: all.subarray(f * rows, (f + 1) * rows) });
     return p;

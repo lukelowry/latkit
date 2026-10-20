@@ -9,7 +9,7 @@ mod common;
 use std::time::Duration;
 
 use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane, step};
-use latkit::{Color, Data, Edges, Patch, Scene, Table, Theme, Vertices, View};
+use latkit::{Color, Data, Edges, Ids, Patch, Scene, Table, Theme, Vertices, View};
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
@@ -27,7 +27,11 @@ fn graph() -> Data {
     data.apply(
         Patch::new()
             .set(Table::new("Node", vec![1_u64, 2]).field("x", vec![-30.0, 30.0]).field("y", vec![0.0, 0.0]))
-            .set(Table::new("Link", 1).reference("from", "Node", vec![1_u64]).reference("to", "Node", vec![2_u64])),
+            .set(Table::new("Link", Ids::count(1)).reference("from", "Node", vec![1_u64]).reference(
+                "to",
+                "Node",
+                vec![2_u64],
+            )),
     )
     .expect("valid");
     data

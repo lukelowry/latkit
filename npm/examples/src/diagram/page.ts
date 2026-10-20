@@ -11,10 +11,12 @@ import {
   type Mark,
   type Port,
   type Row,
+  type Rows,
   type Scene,
   type Shape,
   type Side,
 } from '../latkit.js';
+import { each, one } from '../ui/rows.js';
 import type { Stage } from '../ui/stage.js';
 
 /** Kinds of block: the shape each draws as, and its ports, each naming the signal it is plugged into. */
@@ -269,18 +271,23 @@ const PRESETS: readonly (readonly [string, () => Sketch])[] = [
   ],
 ];
 
-/** Earlier versions of the data, to step back to and forward again. */
+/**
+ * Earlier versions of the data, to step back to and forward again: snapshots, each held here or
+ * live, never both, and freed once forgotten.
+ */
 class History {
   readonly #undo: Data[] = [];
   #redo: Data[] = [];
 
-  /** Remembers `before`, the version an edit started from. */
+  /** Remembers `before`, a snapshot of the version an edit started from. */
   commit(before: Data): void {
     this.#undo.push(before);
-    if (this.#undo.length > 100) this.#undo.shift();
+    if (this.#undo.length > 100) this.#undo.shift()!.destroy();
+    for (const after of this.#redo) after.destroy();
     this.#redo = [];
   }
 
+  /** The version before `current`, which redo then steps forward to. */
   undo(current: Data): Data | undefined {
     const before = this.#undo.pop();
     if (before) this.#redo.push(current);
@@ -294,6 +301,7 @@ class History {
   }
 
   clear(): void {
+    for (const version of [...this.#undo, ...this.#redo]) version.destroy();
     this.#undo.length = 0;
     this.#redo = [];
   }
@@ -334,7 +342,8 @@ export default function page(stage: Stage): void {
         ...(comets ? { flow: 40 } : {}),
       },
     });
-    for (const kind of kinds) {
+    // A mark for each kind of block the data holds; a table the data lacks would fail.
+    for (const kind of kinds.filter((k) => data.tables.includes(k))) {
       // Without a size, a block fits its label and ports.
       marks.push({
         vertices: {
@@ -342,7 +351,7 @@ export default function page(stage: Stage): void {
           position: ['x', 'y'],
           marker: KINDS[kind].shape,
           color: light ? '#dce3eb' : '#2c3b4d',
-          status: when(field('status').gt(0)).then(color('#ff8c42')).otherwise(missing()),
+          ring: when(field('status').gt(0)).then(color('#ff8c42')).otherwise(missing()),
           ports: ports(kind),
           drag: true,
           label: { text: 'name', size: 12 },
@@ -350,7 +359,7 @@ export default function page(stage: Stage): void {
       });
     }
     return {
-      space: { diagram: { grid: dots ? { dots: 20 } : 'off' } },
+      space: { diagram: { grid: dots ? { dots: { pitch: 20 } } : 'off' } },
       layout,
       theme: light
         ? { base: 'light', background: '#f4f6f9' }
@@ -363,15 +372,20 @@ export default function page(stage: Stage): void {
     label: 'A diagram: drag blocks, drag from a port to wire it, Delete removes',
   });
 
-  /** Shows `next` as the current version. */
-  const show = (next: Data) => {
+  /** Shows the current version: `next`, or the data as it is now, and a mark for each kind it holds. */
+  let kindsShown = data.tables.join();
+  const show = (next = data) => {
     data = next;
     view.setData(data);
+    if (data.tables.join() !== kindsShown) {
+      kindsShown = data.tables.join();
+      view.show(scene());
+    }
     describe();
   };
   /** Applies `patch` as one edit that undo steps back over. */
   const edit = (patch: Patch, said: string) => {
-    history.commit(data);
+    history.commit(data.snapshot());
     show(data.apply(patch));
     note(said);
   };
@@ -380,6 +394,7 @@ export default function page(stage: Stage): void {
     sketch = choice[1]();
     history.clear();
     view.show(scene());
+    data.destroy();
     show(sketch.data());
     view.fit();
     note(`${choice[0]}: drag, wire, rename, delete, undo.`);
@@ -398,7 +413,7 @@ export default function page(stage: Stage): void {
   view.on('drag', ({ phase, hit, position }) => {
     if (!isBlock(hit.row.table)) return;
     if (phase === 'start') {
-      const grab = { before: data, offset: [0, 0] as [number, number] };
+      const grab = { before: data.snapshot(), offset: [0, 0] as [number, number] };
       dragged = grab;
       void view.locate(hit.row).then((at) => {
         const center = at && view.ground(at);
@@ -457,26 +472,25 @@ export default function page(stage: Stage): void {
   });
 
   /** Removes `rows` as one edit. */
-  const remove = (rows: Row[]) => {
-    const byTable = new Map<string, Id[]>();
-    for (const row of rows) byTable.set(row.table, [...(byTable.get(row.table) ?? []), row.id]);
+  const remove = (rows: readonly Rows[]) => {
     const patch = new Patch();
-    for (const [table, ids] of byTable) patch.remove(table, ids as number[]);
-    edit(patch, `Removed ${rows.map(name).join(', ')}.`);
+    for (const { table, ids } of rows) patch.remove(table, ids);
+    edit(patch, `Removed ${each(rows).map(name).join(', ')}.`);
   };
   view.on('delete', ({ rows }) => remove(rows));
 
   /** Selects `row` and what it joins, and frames them. */
   const reveal = (row: Row) => {
-    const near = [row, ...view.neighbors(row)];
+    const joined = view.neighbors(row);
+    const near = [one(row), ...joined];
     view.select(near);
     view.fit({ rows: near });
     describe();
-    note(`${name(row)} and ${near.length - 1} joined to it.`);
+    note(`${name(row)} and ${each(joined).length} joined to it.`);
   };
   /** Selects `row` and puts its name up for editing. */
   const rename = (row: Row) => {
-    view.select([row]);
+    view.select([one(row)]);
     describe();
     input.focus();
     input.select();
@@ -489,17 +503,18 @@ export default function page(stage: Stage): void {
   const menu = stage.menu();
   view.on('menu', ({ hits, trigger }) => {
     const row = hits[0]?.row;
-    if (row && !view.selection.some((r) => r.table === row.table && r.id === row.id))
-      view.select([row]);
+    if (row && !view.selection.some((s) => s.table === row.table && s.ids.includes(row.id)))
+      view.select([one(row)]);
     describe();
     const rows = view.selection;
+    const count = each(rows).length;
     menu.open(view, trigger.point, [
       { label: 'Rename', run: () => row && rename(row), disabled: !row || !named(row) },
       { label: 'Reveal neighbors', run: () => row && reveal(row), disabled: !row },
       {
-        label: rows.length > 1 ? `Delete ${rows.length} rows` : 'Delete',
+        label: count > 1 ? `Delete ${count} rows` : 'Delete',
         run: () => remove(rows),
-        disabled: !rows.length,
+        disabled: !count,
       },
       { label: 'Fit everything', run: () => view.fit() },
     ]);
@@ -545,14 +560,11 @@ export default function page(stage: Stage): void {
           const all = ids.filter((id) => data.get(kind, id, 'name') !== null);
           if (all.length) patch.set(kind, all, { x: all.map(() => null), y: all.map(() => null) });
         }
-        history.commit(data);
+        history.commit(data.snapshot());
         show(data.apply(patch));
         view.fit();
         void view.arrange().then((patches) => {
-          for (const [name, placed] of patches) {
-            if (name === data.name) show(data.apply(placed));
-            else placed.destroy();
-          }
+          for (const placed of patches) if (placed.data === data.name) show(data.apply(placed));
           note('Arranged.');
         });
       },
@@ -647,7 +659,7 @@ export default function page(stage: Stage): void {
   selected.element.append(input, told);
   const note = (text: string) => (told.textContent = text);
   const describe = () => {
-    const [row] = view.selection;
+    const [row] = each(view.selection);
     const editable = !!row && named(row);
     input.disabled = !editable;
     input.value = editable ? name(row) : '';
@@ -655,7 +667,7 @@ export default function page(stage: Stage): void {
   input.addEventListener(
     'change',
     () => {
-      const [row] = view.selection;
+      const [row] = each(view.selection);
       if (row)
         edit(
           new Patch().set(row.table, [row.id as number], { name: [input.value] }),

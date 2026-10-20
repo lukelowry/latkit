@@ -14,7 +14,7 @@ use std::sync::Arc;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::sight::{Domain, Region, Sight, TILE_PX, meets};
-use crate::data::{Field, Op, Patch, Table};
+use crate::data::{Field, Ids, Op, Patch, Table};
 use crate::geo::tiles::TileKey;
 
 /// Cells across a tile's grid, as a shift: a tile holds at most `4^GRID_BITS` rows of its level.
@@ -129,15 +129,15 @@ pub(crate) fn answer(leveling: &Leveling) -> Patch {
                 tiles.into_iter().map(|(k, e, r)| (k, (e, r))).unzip();
             patch = patch
                 .set(
-                    Table::new(format!("tiles{i}"), keys.len())
+                    Table::new(format!("tiles{i}"), Ids::count(keys.len() as u32))
                         .field("key", keys)
                         .field("end", ends)
                         .field("reach", reaches),
                 )
-                .set(Table::new(format!("order{i}"), order.len()).field("row", order));
+                .set(Table::new(format!("order{i}"), Ids::count(order.len() as u32)).field("row", order));
             if leveled {
                 let (u, v): (Vec<u32>, Vec<u32>) = own_anchors.iter().map(|a| (a[0], a[1])).unzip();
-                let mut placed = Table::new(format!("anchors{i}"), n).field("u", u).field("v", v);
+                let mut placed = Table::new(format!("anchors{i}"), Ids::count(n as u32)).field("u", u).field("v", v);
                 if !extents.is_empty() {
                     placed = placed.field("extent", extents.clone());
                 }

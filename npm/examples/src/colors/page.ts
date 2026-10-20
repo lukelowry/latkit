@@ -124,7 +124,7 @@ function hexagons(columns: number, rows: number, value: FieldName): Data {
       classes[r * columns + c] = Math.min(9, Math.floor(v * 10));
     }
   return new Data('colors').apply(
-    new Patch().set('Cell', count, { geometry, value: values, class: classes }),
+    new Patch().set('Cell', { count }, { geometry, value: values, class: classes }),
   );
 }
 
@@ -145,7 +145,7 @@ export default function page(stage: Stage): void {
       : [];
     return {
       // Lines under the cells show through what a map leaves clear.
-      space: { plane: { grid: colormap === 'custom' ? { lines: 4 } : 'off' } },
+      space: { plane: { grid: colormap === 'custom' ? { lines: { pitch: 4 } } : 'off' } },
       theme: {
         base: light ? 'light' : 'dark',
         background,
@@ -174,7 +174,10 @@ export default function page(stage: Stage): void {
 
   const rebuild = () => {
     const [columns, rows] = size;
-    view.setData(hexagons(columns, rows, value));
+    // The view keeps its own version of the data.
+    const data = hexagons(columns, rows, value);
+    view.setData(data);
+    data.destroy();
     stage.detail(`${(columns * rows).toLocaleString()} cells, each an area of six triangles`);
   };
   const restyle = () => {

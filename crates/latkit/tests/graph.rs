@@ -11,7 +11,7 @@ use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
 use common::{SIZE, at, camera, diagram, errors, frame, gpu, plain_theme, plane, step};
-use latkit::{Data, Edges, Patch, Port, Scene, Side, Table, Vertices, View};
+use latkit::{Data, Edges, Ids, Patch, Port, Scene, Side, Table, Vertices, View};
 
 const C: u32 = SIZE / 2;
 
@@ -48,11 +48,13 @@ fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = l
 fn edges_joining_the_same_vertices_bow_into_lanes_in_world_units() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
-    data.apply(
-        Patch::new().set(nodes(vec![-40.0, 40.0], vec![0.0, 0.0])).set(
-            Table::new("Link", 2).reference("from", "Node", vec![1_u64, 2]).reference("to", "Node", vec![2_u64, 1]),
+    data.apply(Patch::new().set(nodes(vec![-40.0, 40.0], vec![0.0, 0.0])).set(
+        Table::new("Link", Ids::count(2)).reference("from", "Node", vec![1_u64, 2]).reference(
+            "to",
+            "Node",
+            vec![2_u64, 1],
         ),
-    )
+    ))
     .expect("valid");
     let scene = Scene::new(plane())
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(latkit::Color::WHITE))
@@ -76,7 +78,7 @@ fn edges_bend_through_their_points_and_pick_there() {
     let bends: Vec<Vec<[f64; 2]>> = vec![vec![[0.0, 30.0]], vec![]];
     data.apply(
         Patch::new().set(nodes(vec![-40.0, 40.0, 40.0], vec![0.0, 0.0, -40.0])).set(
-            Table::new("Link", 2)
+            Table::new("Link", Ids::count(2))
                 .reference("from", "Node", vec![1_u64, 2])
                 .reference("to", "Node", vec![2_u64, 3])
                 .field("bends", bends),
@@ -154,11 +156,13 @@ fn arrows_draw_heads_at_second_ends() {
     let Some(gpu) = gpu() else { return };
     let count = |arrows: bool| {
         let mut data = Data::new("graph");
-        data.apply(
-            Patch::new()
-                .set(nodes(vec![-40.0, 40.0], vec![0.0, 0.0]))
-                .set(Table::new("Link", 1).reference("from", "Node", vec![1_u64]).reference("to", "Node", vec![2_u64])),
-        )
+        data.apply(Patch::new().set(nodes(vec![-40.0, 40.0], vec![0.0, 0.0])).set(
+            Table::new("Link", Ids::count(1)).reference("from", "Node", vec![1_u64]).reference(
+                "to",
+                "Node",
+                vec![2_u64],
+            ),
+        ))
         .expect("valid");
         let scene = Scene::new(plane())
             .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).arrows(arrows).color(latkit::Color::WHITE))
@@ -211,11 +215,9 @@ fn ports_draw_on_their_sides_and_pick_by_name() {
 fn orthogonal_routes_run_around_vertices() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
-    data.apply(
-        Patch::new()
-            .set(nodes(vec![-50.0, 50.0, 0.0], vec![0.0, 0.0, 0.0]))
-            .set(Table::new("Link", 1).reference("from", "Node", vec![1_u64]).reference("to", "Node", vec![2_u64])),
-    )
+    data.apply(Patch::new().set(nodes(vec![-50.0, 50.0, 0.0], vec![0.0, 0.0, 0.0])).set(
+        Table::new("Link", Ids::count(1)).reference("from", "Node", vec![1_u64]).reference("to", "Node", vec![2_u64]),
+    ))
     .expect("valid");
     let scene = Scene::new(diagram())
         .draw(
@@ -247,7 +249,11 @@ fn many_routes_route_in_a_job_and_land() {
     let links = |n: usize| {
         let mut data = Data::new("graph");
         data.apply(Patch::new().set(nodes(vec![-50.0, 50.0, 0.0], vec![0.0, 0.0, 0.0])).set(
-            Table::new("Link", n).reference("from", "Node", vec![1_u64; n]).reference("to", "Node", vec![2_u64; n]),
+            Table::new("Link", Ids::count(n as u32)).reference("from", "Node", vec![1_u64; n]).reference(
+                "to",
+                "Node",
+                vec![2_u64; n],
+            ),
         ))
         .expect("valid");
         data
@@ -274,7 +280,11 @@ fn neighbors_follow_edges_and_nets() {
         Patch::new()
             .set(nodes(vec![-40.0, 0.0, 40.0], vec![0.0, 0.0, 0.0]).reference("net", "Net", vec![1_u64, 1, 2]))
             .set(Table::new("Net", vec![1_u64, 2]))
-            .set(Table::new("Link", 1).reference("from", "Node", vec![2_u64]).reference("to", "Node", vec![3_u64])),
+            .set(Table::new("Link", Ids::count(1)).reference("from", "Node", vec![2_u64]).reference(
+                "to",
+                "Node",
+                vec![3_u64],
+            )),
     )
     .expect("valid");
     let scene = Scene::new(diagram())
@@ -283,9 +293,10 @@ fn neighbors_follow_edges_and_nets() {
         .draw(Vertices::of("graph", "Node").position("x", "y").port("net", Side::Top));
     let mut view = show(&gpu, scene, data);
     frame(&gpu, &mut view);
+    let nodes = |ids: &[u64]| vec![latkit::Rows::new("graph", "Node", ids.iter().copied())];
     let node = |id: u64| latkit::Row::new("graph", "Node", id);
-    assert_eq!(view.neighbors(&node(2)), vec![node(3), node(1)]);
-    assert_eq!(view.neighbors(&node(1)), vec![node(2)]);
-    assert_eq!(view.neighbors(&latkit::Row::new("graph", "Link", 0_u64)), vec![node(2), node(3)]);
-    assert_eq!(view.neighbors(&latkit::Row::new("graph", "Net", 1_u64)), vec![node(1), node(2)]);
+    assert_eq!(view.neighbors(&node(2)), nodes(&[3, 1]));
+    assert_eq!(view.neighbors(&node(1)), nodes(&[2]));
+    assert_eq!(view.neighbors(&latkit::Row::new("graph", "Link", 0_u64)), nodes(&[2, 3]));
+    assert_eq!(view.neighbors(&latkit::Row::new("graph", "Net", 1_u64)), nodes(&[1, 2]));
 }

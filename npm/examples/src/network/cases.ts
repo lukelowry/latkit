@@ -134,22 +134,30 @@ export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.by
       load,
       generation,
     })
-    .set('Line', m, {
-      from: reference('Bus', from),
-      to: reference('Bus', to),
-      kv: lineKv,
-      level: Float32Array.from(lineKv, levelOf),
-      reactance: array('branch.reactance', Float32Array),
-      transformer,
-    })
-    .set('Machine', g, {
-      lon: machineLon,
-      lat: machineLat,
-      name: names('machine.name'),
-      power: machinePower,
-      mva: array('machine.mva', Float32Array),
-    });
-  if (fault) patch.set('Fault', 1, { lon: [lon[fault.bus]!], lat: [lat[fault.bus]!] });
+    .set(
+      'Line',
+      { count: m },
+      {
+        from: reference('Bus', from),
+        to: reference('Bus', to),
+        kv: lineKv,
+        level: Float32Array.from(lineKv, levelOf),
+        reactance: array('branch.reactance', Float32Array),
+        transformer,
+      },
+    )
+    .set(
+      'Machine',
+      { count: g },
+      {
+        lon: machineLon,
+        lat: machineLat,
+        name: names('machine.name'),
+        power: machinePower,
+        mva: array('machine.mva', Float32Array),
+      },
+    );
+  if (fault) patch.set('Fault', { count: 1 }, { lon: [lon[fault.bus]!], lat: [lat[fault.bus]!] });
   let simulation: Simulation | undefined;
   if (simulated) {
     const frames = header.frames!;

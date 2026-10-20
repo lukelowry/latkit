@@ -57,23 +57,16 @@ pub(crate) fn dataset(source: &Source, host: &Native, deadline: Duration) -> Res
     let path = &source.path;
     let bytes = read(path)?;
     let at = |error: Error| Failure::at(error, path);
-    let data = if bytes.starts_with(b"LATK") {
-        Data::from_bytes(&bytes).map_err(at)?
-    } else if bytes.starts_with(&[0x1f, 0x8b]) || geojson(&bytes) {
-        let name = source.name.as_deref().ok_or_else(|| at(Error::invalid("GeoJSON names its dataset: NAME=FILE")))?;
-        return latkit::geo::geojson(name, &bytes).map_err(at);
-    } else {
-        let text = std::str::from_utf8(&bytes).map_err(|_| at(Error::invalid("a dataset is JSON or latkit bytes")))?;
-        block(deadline, Data::load(text, &base(path), host)).map_err(at)?
-    };
-    match &source.name {
-        Some(name) if name != data.name().as_str() => {
-            let mut renamed = Data::new(name.as_str());
-            renamed.apply(data.to_patch()).map_err(at)?;
-            Ok(renamed)
-        }
-        _ => Ok(data),
+    let name = source.name.as_deref();
+    if bytes.starts_with(b"LATK") || bytes.starts_with(&[0x1f, 0x8b]) || geojson(&bytes) {
+        return Data::read(&bytes, name).map_err(|e| at(e.at("NAME=FILE")));
     }
+    let text = std::str::from_utf8(&bytes).map_err(|_| at(Error::invalid("a dataset is JSON or latkit bytes")))?;
+    let data = block(deadline, Data::load(text, &base(path), host)).map_err(at)?;
+    Ok(match name {
+        Some(name) if name != data.name().as_str() => data.renamed(name),
+        _ => data,
+    })
 }
 
 /// Whether JSON `bytes` are GeoJSON: an object with a `type`.
@@ -210,7 +203,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let floats: Vec<u8> = [9_f32, 1.25, -2.5].into_iter().flat_map(f32::to_le_bytes).collect();
         std::fs::write(dir.path().join("x.f32"), floats).unwrap();
-        let doc = r#"{"name": "grid", "patch": [{"put": {"table": "Bus", "ids": ["b", "a"], "fields": {
+        let doc = r#"{"name": "grid", "patch": [{"replace": {"table": "Bus", "ids": ["b", "a"], "fields": {
             "x": {"file": "x.f32", "dtype": "f32le", "offset": 4, "count": 2}}}}]}"#;
         std::fs::write(dir.path().join("grid.json"), doc).unwrap();
         let host = Native::new();

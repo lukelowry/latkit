@@ -290,7 +290,7 @@ fn ticks(index: u64, fps: f64) -> u64 {
 }
 
 fn written(error: &std::io::Error) -> Error {
-    Error::Load(format!("a video could not be written: {error}").into())
+    Error::Io(format!("a video could not be written: {error}").into())
 }
 
 #[cfg(test)]

@@ -2,16 +2,19 @@
 //! spans of its axis.
 
 use super::column::{PAGE_BITS, PAGE_MASK};
-use super::data::Data;
+use super::dataset::Data;
 use super::ids::Ids;
 use super::name::Name;
 use super::table::{Field, Table};
 use super::values::Kind;
 use crate::{Error, Result};
 
+/// The most values an envelope holds, least and greatest each: rows times spans.
+const ENVELOPE_VALUES: usize = 1 << 26;
+
 /// What a dataset holds: its tables, their rows and fields, and the axis its sampled fields are
 /// recorded over and span.
-#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct Description {
     /// The dataset's name.
     pub name: Name,
@@ -24,7 +27,7 @@ pub struct Description {
 }
 
 /// A table described: its rows, and its fields by name.
-#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct TableDescription {
     /// The table's name.
     pub name: Name,
@@ -35,7 +38,7 @@ pub struct TableDescription {
 }
 
 /// A field described: what it holds, the table a reference names, the coordinates samples span.
-#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct FieldDescription {
     /// The field's name.
     pub name: Name,
@@ -96,6 +99,11 @@ impl Table {
                 .map(|i| ids.key(i).and_then(|key| self.row(key)).ok_or_else(|| Error::invalid("no such row").at(i)))
                 .collect::<Result<_>>()?,
         };
+        if rows.len().saturating_mul(spans) > ENVELOPE_VALUES {
+            return Err(Error::Limit(
+                format!("an envelope holds at most {ENVELOPE_VALUES} values: rows times spans").into(),
+            ));
+        }
         let width = (range[1] - range[0]) / spans as f64;
         let at: Vec<f64> =
             (0..=spans).map(|s| if s == spans { range[1] } else { range[0] + width * s as f64 }).collect();

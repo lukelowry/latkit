@@ -2,21 +2,21 @@
 // Scenes in their JSON form, checked twice: TypeScript checks them against `Scene`, and latkit's
 // `tests/scenes.rs` decodes each one. The array below must stay JSON.
 
-/** @type {import('../src/forms.js').Scene[]} */
+/** @type {import('../src/inputs.js').Scene[]} */
 export default [
   { "space": "plane" },
-  { "space": "earth", "ease": 0 },
+  { "space": "mercator", "ease": 0 },
   { "space": "globe", "theme": "light" },
   { "space": "plot" },
   { "space": "diagram", "layout": "stress" },
   { "space": { "plane": { "grid": "off" } } },
-  { "space": { "diagram": { "grid": { "dots": 10, "snap": true } } }, "layout": { "layered": { "flow": "down", "rankGap": 60 } } },
+  { "space": { "diagram": { "grid": { "dots": { "pitch": 10, "snap": true } } } }, "layout": { "layered": { "flow": "down", "rankGap": 60 } } },
   { "space": { "earth": { "projection": "globe", "surface": "#203040", "graticule": false } } },
   {
     "space": { "earth": { "projection": "globe", "daylight": 1782043200, "atmosphere": true } },
     "marks": [
       { "areas": { "of": ["base", "water"], "color": "#1d3557" } },
-      { "areas": { "of": ["city", "polygons"], "rings": "geometry", "color": { "colormap": "use", "map": "tab10" }, "label": "name" } },
+      { "areas": { "of": ["city", "polygons"], "geometry": "geometry", "color": { "colormap": "tab10", "value": "use" }, "label": "name" } },
       { "lines": { "of": ["city", "polygons"], "width": 1, "color": "#ffffff40" } },
       { "lines": { "of": ["base", "transportation"], "width": { "op": "div", "args": ["lanes", 2] } } }
     ],
@@ -33,7 +33,7 @@ export default [
           "width": { "units": 2 },
           "dash": { "op": "gt", "args": ["loading", 0.9] },
           "flow": { "op": "div", "args": ["p", 20] },
-          "color": { "colormap": "loading", "map": "amber", "domain": [0, 1] },
+          "color": { "colormap": "amber", "value": "loading", "domain": [0, 1] },
           "name": "branches"
         }
       },
@@ -46,7 +46,7 @@ export default [
           "marker": "diamond",
           "color": {
             "when": [[{ "state": "selected" }, { "color": "#ffb000" }]],
-            "otherwise": { "colormap": { "field": "vm", "step": true }, "map": "balance", "domain": [0.95, 1.05] }
+            "otherwise": { "colormap": "balance", "value": { "field": "vm", "step": true }, "domain": [0.95, 1.05] }
           },
           "visible": { "op": "and", "args": [{ "op": "ge", "args": ["kv", 115] }, { "is": ["kind", "substation"] }] }
         }
@@ -58,14 +58,14 @@ export default [
           "size": [12, { "units": 4 }],
           "marker": { "block": { "corner": 2 } },
           "shadow": true,
-          "color": { "scale": { "field": "load", "of": ["weather", "Station"] }, "range": [0, 1] }
+          "color": { "scale": [0, 1], "value": { "field": "load", "of": ["weather", "Station"] } }
         }
       }
     ],
     "theme": { "base": "dark", "vertexRadius": 5, "edge": null, "selected": "#ff8800", "shadow": { "color": "#00000055", "lift": 4 } }
   },
   {
-    "space": { "plane": { "grid": { "lines": 1 } } },
+    "space": { "plane": { "grid": { "lines": { "pitch": 1 } } } },
     "controls": { "turn": false, "pickRadius": 14 },
     "marks": [
       { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false, "shadow": true } },
@@ -94,7 +94,7 @@ export default [
         "vertices": {
           "of": ["grid", "Bus"],
           "marker": { "gauge": { "fill": "load", "shape": "rounded" } },
-          "status": { "color": "#ff0000" },
+          "ring": { "color": "#ff0000" },
           "label": "name",
           "radius": { "op": "mul", "args": [{ "state": "zoom" }, 2] }
         }

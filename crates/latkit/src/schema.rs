@@ -1,7 +1,7 @@
-//! What latkit reads, as JSON Schema: scenes, datasets, patches, queries, cameras, fits, budgets, and
-//! shots. Each type deserializes from a form, a plain struct or enum serde reads, and its schema is
-//! that form's, so the decoder and its schema never part. `latkit schema` prints them, and npm's input
-//! types are written from them.
+//! What latkit reads and writes, as JSON Schema: scenes, datasets, patches, queries, cameras, fits,
+//! budgets, and shots in; events, hits, stats, work, and descriptions out. Each type serializes or
+//! deserializes as itself and its schema derives from the same declaration, so the code and its
+//! schema never part. `latkit schema` prints them, and npm's types are written from them.
 
 /// The JSON Schema of what `T` deserializes from, its definitions under `$defs`.
 ///
@@ -15,55 +15,40 @@ pub fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
 
 /// Every input's JSON Schema in one document, each under its name in `$defs` with what it is built
 /// of: `Scene`, `Data` (a dataset's document), `Patch`, `Query`, `Camera`, `Fit`, `Budget`, `Shot`.
+/// What latkit writes is under `outputs`, as it serializes: `ViewEvent`, `Stats`, `Work`,
+/// `Description`, `Rows`, `Camera`, `Budget`, `Value`, and `Failure` (an error).
 ///
 /// ```
 /// let schemas = latkit::schemas();
 /// assert!(schemas["$defs"]["Theme"].is_object());
+/// assert!(schemas["outputs"]["Hit"].is_object());
 /// ```
 #[cfg(feature = "gpu")]
 pub fn schemas() -> serde_json::Value {
-    let mut generator = schemars::SchemaGenerator::default();
-    generator.subschema_for::<crate::Scene>();
-    generator.subschema_for::<crate::Data>();
-    generator.subschema_for::<crate::Patch>();
-    generator.subschema_for::<crate::Query>();
-    generator.subschema_for::<crate::Camera>();
-    generator.subschema_for::<crate::Fit>();
-    generator.subschema_for::<crate::Budget>();
-    generator.subschema_for::<crate::Shot>();
-    let defs = generator.take_definitions(true);
-    serde_json::json!({ "$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": defs })
-}
-
-/// Each type deserializes from its form, built by the form's `build`, and has the form's schema under
-/// the type's own name.
-#[cfg(feature = "gpu")]
-macro_rules! from_form {
-    ($($ty:ident => $form:ty),* $(,)?) => {$(
-        impl<'de> serde::Deserialize<'de> for $ty {
-            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<$ty, D::Error> {
-                <$form as serde::Deserialize>::deserialize(deserializer)?.build()
-            }
-        }
-
-        impl schemars::JsonSchema for $ty {
-            fn schema_name() -> std::borrow::Cow<'static, str> {
-                stringify!($ty).into()
-            }
-
-            fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-                <$form as schemars::JsonSchema>::json_schema(generator)
-            }
-        }
-    )*};
-}
-
-#[cfg(feature = "gpu")]
-pub(crate) use from_form;
-
-/// `name` read as one of the names `T` deserializes from: an unknown name is an error that lists
-/// them. Untagged forms read names as text through it, so their errors stay precise.
-#[cfg(feature = "gpu")]
-pub(crate) fn named<'a, T: serde::Deserialize<'a>, E: serde::de::Error>(name: &'a str) -> Result<T, E> {
-    T::deserialize(serde::de::value::BorrowedStrDeserializer::<E>::new(name))
+    let mut inputs = schemars::SchemaGenerator::default();
+    inputs.subschema_for::<crate::Scene>();
+    inputs.subschema_for::<crate::Data>();
+    inputs.subschema_for::<crate::Patch>();
+    inputs.subschema_for::<crate::Query>();
+    inputs.subschema_for::<crate::Camera>();
+    inputs.subschema_for::<crate::Fit>();
+    inputs.subschema_for::<crate::Budget>();
+    inputs.subschema_for::<crate::Shot>();
+    let mut settings = schemars::generate::SchemaSettings::draft2020_12().for_serialize();
+    settings.definitions_path = "/outputs".into();
+    let mut outputs = settings.into_generator();
+    outputs.subschema_for::<crate::Event>();
+    outputs.subschema_for::<crate::Stats>();
+    outputs.subschema_for::<crate::Work>();
+    outputs.subschema_for::<crate::Description>();
+    outputs.subschema_for::<crate::Rows>();
+    outputs.subschema_for::<crate::Camera>();
+    outputs.subschema_for::<crate::Budget>();
+    outputs.subschema_for::<crate::Value>();
+    outputs.subschema_for::<crate::Error>();
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": inputs.take_definitions(true),
+        "outputs": outputs.take_definitions(true),
+    })
 }

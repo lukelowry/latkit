@@ -7,7 +7,7 @@ use super::View;
 use super::marks::Shown;
 use crate::data::{Field, Reference, Table};
 use crate::scene::mark::MarkKind;
-use crate::{Name, Route, Row, Space};
+use crate::{Name, Route, Row, Rows, Space};
 
 /// The reference field `name` of `table`.
 fn reference<'t>(table: &'t Table, name: &str) -> Option<&'t Reference> {
@@ -19,11 +19,12 @@ fn reference<'t>(table: &'t Table, name: &str) -> Option<&'t Reference> {
 
 impl View {
     /// The rows joined to `row`: a vertex's neighbors across edges and nets, or an edge's or a net's
-    /// vertices. It reads the references' inverses, so it costs what the row's degree does.
-    pub fn neighbors(&self, row: &Row) -> Vec<Row> {
+    /// vertices, a set per table. It reads the references' inverses, so it costs what the row's degree
+    /// does.
+    pub fn neighbors(&self, row: &Row) -> Vec<Rows> {
         let mut found: Vec<Row> = Vec::new();
-        let Some(data) = self.data(&row.data) else { return found };
-        let Some(index) = data.table(&row.table).and_then(|t| t.row(row.id.as_ref())) else { return found };
+        let Some(data) = self.data(&row.data) else { return Vec::new() };
+        let Some(index) = data.table(&row.table).and_then(|t| t.row(row.id.as_ref())) else { return Vec::new() };
         let at = |table: &Name, r: u32| {
             let id = data.table(table)?.ids.id(r as usize)?;
             Some(Row { data: row.data.clone(), table: table.clone(), id })
@@ -68,7 +69,7 @@ impl View {
         }
         let mut seen = FxHashSet::default();
         found.retain(|r| seen.insert(r.clone()));
-        found
+        Rows::group(found)
     }
 
     /// Every vertex mark's port reference field that names rows of net mark `i`'s table.

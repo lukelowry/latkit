@@ -6,8 +6,8 @@ mod common;
 
 use common::{SIZE, at, camera, close, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Axis, Button, Camera, Color, Colormap, Data, Device, Earth, Edges, Event, Faces, Input, Lines, Modifiers, Patch,
-    Phase, Plot, Scene, Table, Theme, Vertices, View, field,
+    Axis, Button, Camera, Color, Colormap, Data, Device, Earth, Edges, Event, Faces, Ids, Input, Lines, Modifiers,
+    Patch, Phase, Plot, Scene, Table, Theme, Vertices, View, field,
 };
 
 #[test]
@@ -15,7 +15,10 @@ fn vertices_draw_at_their_positions_in_their_colors() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
     data.apply(
-        Table::new("Node", 2).field("x", vec![0.0, 30.0]).field("y", vec![0.0, 20.0]).field("kind", vec!["a", "b"]),
+        Table::new("Node", Ids::count(2))
+            .field("x", vec![0.0, 30.0])
+            .field("y", vec![0.0, 20.0])
+            .field("kind", vec!["a", "b"]),
     )
     .expect("valid");
     let red = Color::rgb(1.0, 0.0, 0.0);
@@ -52,7 +55,11 @@ fn edges_join_their_ends_and_colormaps_fit_the_values() {
                     .field("y", vec![0.0, 0.0, 0.0])
                     .field("v", vec![0.0, 0.5, 1.0]),
             )
-            .set(Table::new("Line", 1).reference("from", "Bus", vec![1_u64]).reference("to", "Bus", vec![3_u64])),
+            .set(Table::new("Line", Ids::count(1)).reference("from", "Bus", vec![1_u64]).reference(
+                "to",
+                "Bus",
+                vec![3_u64],
+            )),
     )
     .expect("valid");
     let scene = Scene::new(plane())
@@ -92,7 +99,11 @@ fn great_circles_longer_than_their_list_coarsen_instead_of_stopping_short() {
     data.apply(
         Patch::new()
             .set(Table::new("Bus", vec![1_u64, 2]).field("lon", vec![-60.0, 60.0]).field("lat", vec![0.0, 0.0]))
-            .set(Table::new("Line", 1).reference("from", "Bus", vec![1_u64]).reference("to", "Bus", vec![2_u64])),
+            .set(Table::new("Line", Ids::count(1)).reference("from", "Bus", vec![1_u64]).reference(
+                "to",
+                "Bus",
+                vec![2_u64],
+            )),
     )
     .expect("valid");
     let scene = Scene::new(Earth { surface: Some(Color::BLACK), graticule: false, ..Earth::mercator() })
@@ -123,7 +134,7 @@ fn great_circles_longer_than_their_list_coarsen_instead_of_stopping_short() {
 fn new_data_versions_show_and_fit_frames_them() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 1).field("x", vec![1000.0]).field("y", vec![1000.0])).expect("valid");
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![1000.0]).field("y", vec![1000.0])).expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).color(Color::WHITE));
@@ -133,7 +144,7 @@ fn new_data_versions_show_and_fit_frames_them() {
     let pixels = frame(&gpu, &mut view);
     let center = SIZE / 2;
     assert!(close(at(&pixels, center, center), [255, 255, 255, 255]), "fit centers the only vertex");
-    data.apply(Table::new("Node", 1).field("x", vec![1010.0])).expect("valid");
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![1010.0])).expect("valid");
     view.set_data(data);
     let pixels = frame(&gpu, &mut view);
     assert!(close(at(&pixels, center, center), [0, 0, 0, 255]), "the vertex moved away");
@@ -143,7 +154,7 @@ fn new_data_versions_show_and_fit_frames_them() {
 fn a_fit_frames_data_whatever_its_units_and_its_markers_pixels() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 2).field("x", vec![0.0, 1.0]).field("y", vec![0.0, 1.0])).expect("valid");
+    data.apply(Table::new("Node", Ids::count(2)).field("x", vec![0.0, 1.0]).field("y", vec![0.0, 1.0])).expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_data(data);
@@ -161,7 +172,7 @@ fn a_fit_frames_data_whatever_its_units_and_its_markers_pixels() {
 fn sampled_fields_read_at_the_shown_coordinate() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("grid");
-    data.apply(Table::new("Bus", 1).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
+    data.apply(Table::new("Bus", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     data.apply(Patch::new().append([0.0], "Bus", [("v", vec![0.0])]).append([10.0], "Bus", [("v", vec![1.0])]))
         .expect("frames");
     let gray = |v: latkit::Expr| v.colormap(Colormap::GRAYS).domain(0.0..=1.0);
@@ -201,14 +212,14 @@ fn faces_blend_their_corners_and_hide_what_lies_behind() {
     data.apply(
         Patch::new()
             .set(
-                Table::new("Vertex", 5)
+                Table::new("Vertex", Ids::count(5))
                     .field("x", vec![-40.0, 40.0, 0.0, 0.0, 20.0])
                     .field("y", vec![-30.0, -30.0, 40.0, 0.0, 0.0])
                     .field("z", vec![0.0, 0.0, 0.0, -20.0, 20.0])
                     .field("hue", vec![0.0, 0.0, 0.0, 1.0, 1.0]),
             )
             .set(
-                Table::new("Face", 1)
+                Table::new("Face", Ids::count(1))
                     .reference("a", "Vertex", vec![0_u64])
                     .reference("b", "Vertex", vec![1_u64])
                     .reference("c", "Vertex", vec![2_u64]),
@@ -279,7 +290,7 @@ fn presses_click_and_drag_the_rows_they_hit() {
 fn lines_trace_their_samples_across_a_plot() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("signals");
-    data.apply(Table::new("Signal", 1)).expect("valid");
+    data.apply(Table::new("Signal", Ids::count(1))).expect("valid");
     for t in 0..=10 {
         data.apply(Patch::new().append([f64::from(t)], "Signal", [("v", vec![0.5])])).expect("frame");
     }
@@ -300,7 +311,7 @@ fn lines_trace_their_samples_across_a_plot() {
 fn a_plot_frames_its_traces_whole_span_wherever_it_shows() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("signals");
-    data.apply(Table::new("Signal", 1)).expect("valid");
+    data.apply(Table::new("Signal", Ids::count(1))).expect("valid");
     for t in 0..=10 {
         data.apply(Patch::new().append([f64::from(t) * 6.0], "Signal", [("v", vec![f64::from(t)])])).expect("frame");
     }
@@ -318,7 +329,7 @@ fn a_plot_frames_its_traces_whole_span_wherever_it_shows() {
 fn lines_wait_for_the_first_frame_of_the_field_they_trace() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("signals");
-    data.apply(Patch::new().axis("time", "s").set(Table::new("Signal", 1))).expect("valid");
+    data.apply(Patch::new().axis("time", "s").set(Table::new("Signal", Ids::count(1)))).expect("valid");
     let scene = Scene::new(Plot::default())
         .theme(plain_theme())
         .draw(Lines::of("signals", "Signal").trace("v").color(Color::rgb(1.0, 0.0, 0.0)).width(4.0));
@@ -341,8 +352,10 @@ fn new_data_and_the_scene_reading_it_change_together() {
     let Some(gpu) = gpu() else { return };
     let dataset = |field_name: &str| {
         let mut data = Data::new("d");
-        data.apply(Table::new("T", 1).field("x", vec![0.0]).field("y", vec![0.0]).field(field_name, vec![1.0]))
-            .expect("valid");
+        data.apply(
+            Table::new("T", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field(field_name, vec![1.0]),
+        )
+        .expect("valid");
         data
     };
     let reading = |field_name: &str| {
@@ -379,19 +392,35 @@ fn new_data_and_the_scene_reading_it_change_together() {
 }
 
 #[test]
+fn a_dataset_not_given_is_waited_on_and_a_table_it_lacks_fails() {
+    let Some(gpu) = gpu() else { return };
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("d", "Bus").position("x", "y"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    frame(&gpu, &mut view);
+    assert!(view.stats().waiting.data, "waits for the dataset it names");
+    let mut data = Data::new("d");
+    data.apply(Table::new("Buses", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
+    view.set_data(data);
+    frame(&gpu, &mut view);
+    let errors = common::errors(&mut view);
+    assert!(errors.len() == 1 && errors[0].to_string().contains("no table 'Bus'"), "{errors:?}");
+    assert!(view.complete(), "a mark that failed stands in for nothing");
+}
+
+#[test]
 fn hover_reaches_what_faces_leave_in_view() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("mesh");
     data.apply(
         Patch::new()
             .set(
-                Table::new("Vertex", 5)
+                Table::new("Vertex", Ids::count(5))
                     .field("x", vec![-40.0, 40.0, 0.0, 0.0, 20.0])
                     .field("y", vec![-30.0, -30.0, 40.0, 0.0, 0.0])
                     .field("z", vec![0.0, 0.0, 0.0, -20.0, 20.0]),
             )
             .set(
-                Table::new("Face", 1)
+                Table::new("Face", Ids::count(1))
                     .reference("a", "Vertex", vec![0_u64])
                     .reference("b", "Vertex", vec![1_u64])
                     .reference("c", "Vertex", vec![2_u64]),
@@ -431,9 +460,9 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
     let mut data = Data::new("mesh");
     data.apply(
         Patch::new()
-            .set(Table::new("Vertex", 6))
+            .set(Table::new("Vertex", Ids::count(6)))
             .set(
-                Table::new("Face", 8)
+                Table::new("Face", Ids::count(8))
                     .reference("a", "Vertex", corner(0))
                     .reference("b", "Vertex", corner(1))
                     .reference("c", "Vertex", corner(2)),
@@ -472,7 +501,7 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
 fn long_histories_draw_from_their_levels_of_detail() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("signals");
-    data.apply(Table::new("Signal", 1)).expect("valid");
+    data.apply(Table::new("Signal", Ids::count(1))).expect("valid");
     // Twenty thousand frames on a 128 pixel plot: buckets of 64 frames, with a spike in one.
     let mut patch = Patch::new();
     for t in 0..20_000 {
@@ -504,7 +533,7 @@ fn frames_tell_what_they_cost_the_gpu_where_it_measures() {
         return;
     }
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 1).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
@@ -524,7 +553,8 @@ fn frames_tell_what_they_cost_the_gpu_where_it_measures() {
 fn frames_count_their_draws_and_instances() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 3).field("x", vec![-1.0, 0.0, 1.0]).field("y", vec![0.0; 3])).expect("valid");
+    data.apply(Table::new("Node", Ids::count(3)).field("x", vec![-1.0, 0.0, 1.0]).field("y", vec![0.0; 3]))
+        .expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
@@ -543,7 +573,7 @@ fn dashes_run_on_across_a_paths_segments() {
     // afresh, each would show only the blank first half of a dash, and the path nothing.
     let points: Vec<[f64; 2]> = (0..=100).map(|i| [f64::from(i) - 50.0, 0.0]).collect();
     let mut data = Data::new("d");
-    data.apply(Table::new("Path", 1).field("geometry", vec![points])).expect("valid");
+    data.apply(Table::new("Path", Ids::count(1)).field("geometry", vec![points])).expect("valid");
     let scene =
         Scene::new(plane()).theme(plain_theme()).draw(Lines::of("d", "Path").width(3.0).dash(true).color(Color::WHITE));
     let mut view = View::new(&gpu, scene).expect("valid scene");
@@ -559,7 +589,8 @@ fn dashes_run_on_across_a_paths_segments() {
 /// with tails of 8, in position units when `units`; flowing at `speed`, or not at all.
 fn comets(gpu: &latkit::Gpu, units: bool, speed: Option<f64>) -> View {
     let mut data = Data::new("d");
-    data.apply(Table::new("Path", 1).field("geometry", vec![vec![[-50.0, 0.0], [50.0, 0.0]]])).expect("valid");
+    data.apply(Table::new("Path", Ids::count(1)).field("geometry", vec![vec![[-50.0, 0.0], [50.0, 0.0]]]))
+        .expect("valid");
     let mut view = View::new(gpu, comets_scene(units, speed)).expect("valid scene");
     view.set_camera(camera());
     view.set_data(data);
@@ -682,7 +713,7 @@ fn comets_in_units_stay_on_their_lines_as_the_view_zooms() {
 fn sizes_in_units_keep_within_their_pixels() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("d");
-    data.apply(Table::new("Node", 1).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     // Pixels across a red marker through the middle, at zoom 0: a unit a pixel.
     let across = |radius: latkit::Size| {
         let marker = Vertices::of("d", "Node").position("x", "y").radius(radius).color(Color::rgb(1.0, 0.0, 0.0));
@@ -703,7 +734,7 @@ fn sizes_in_units_keep_within_their_pixels() {
 fn poles_stand_from_each_vertex_down_to_the_ground() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("d");
-    data.apply(Table::new("Node", 1).field("x", vec![0.0]).field("y", vec![0.0]).field("z", vec![40.0]))
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("z", vec![40.0]))
         .expect("valid");
     let scene = |poles: bool| {
         let vertices = Vertices::of("d", "Node")
@@ -732,13 +763,14 @@ fn poles_stand_from_each_vertex_down_to_the_ground() {
 fn nets_off_a_diagram_join_their_members_as_stars() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("d");
-    data.apply(Patch::new().set(Table::new("Net", 1)).set(
-        Table::new("Bus", 3).field("x", vec![-30.0, 30.0, 0.0]).field("y", vec![-15.0, -15.0, 30.0]).reference(
-            "net",
-            "Net",
-            vec![0_u64, 0, 0],
+    data.apply(
+        Patch::new().set(Table::new("Net", Ids::count(1))).set(
+            Table::new("Bus", Ids::count(3))
+                .field("x", vec![-30.0, 30.0, 0.0])
+                .field("y", vec![-15.0, -15.0, 30.0])
+                .reference("net", "Net", vec![0_u64, 0, 0]),
         ),
-    ))
+    )
     .expect("valid");
     let buses = Vertices::of("d", "Bus").position("x", "y").radius(2.0).color(Color::rgb(0.0, 0.0, 1.0));
     let net = Edges::of("d", "Net").joins("Bus", "net").width(2.0).color(Color::rgb(1.0, 0.0, 0.0));

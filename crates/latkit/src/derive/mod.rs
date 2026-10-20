@@ -208,6 +208,56 @@ impl Input<'_> {
     pub(crate) fn data(&self, name: &str) -> Option<&Data> {
         self.data.iter().find(|d| d.name() == name)
     }
+
+    /// Hashes what the structure of the scene's marks reads: of each table drawn, its rows and the
+    /// fields its places, sizes, groups, ports, wires, and nets read. A field only a look reads, such
+    /// as a value streaming in, changes nothing it hashes.
+    pub(crate) fn structure(&self, hasher: &mut impl Hasher) {
+        for mark in &self.scene.marks {
+            let style = mark.style();
+            let Some(table) = self.data(&style.data).and_then(|d| d.table(&style.table)) else { continue };
+            (&style.data, &style.table, table.structure, table.order).hash(hasher);
+            let mut read = |of: Option<&(Name, Name)>, name: &Name| {
+                let (data, table) = of.map_or((&style.data, &style.table), |(d, t)| (d, t));
+                let field = self.data(data).and_then(|d| d.table(table)).and_then(|t| t.field_named(name));
+                (data, table, name, field.map(Field::version)).hash(hasher);
+            };
+            let mut expr = |e: &crate::Expr| e.for_each_field(&mut |f| read(f.of.as_ref(), &f.name));
+            let named = |name: &Name| crate::field(name.clone());
+            match mark {
+                crate::Mark::Vertices(v) => {
+                    match &v.position {
+                        Some([x, y]) => {
+                            expr(x);
+                            expr(y);
+                        }
+                        None => expr(&crate::field(v.point_field())),
+                    }
+                    for size in v.size.iter().flatten().chain(&v.radius) {
+                        expr(&size.expr);
+                    }
+                    if let Some(label) = &style.label {
+                        expr(&label.text);
+                    }
+                    for (reference, _) in &v.ports {
+                        expr(&named(reference));
+                    }
+                    if let Some((members, reference)) = &v.contains {
+                        expr(&named(reference).of(style.data.clone(), members.clone()));
+                    }
+                }
+                crate::Mark::Edges(e) => {
+                    for name in e.ends.iter().flat_map(|(from, to)| [from, to]).chain(&e.bends) {
+                        expr(&named(name));
+                    }
+                    if let Some((members, reference)) = &e.joins {
+                        expr(&named(reference).of(style.data.clone(), members.clone()));
+                    }
+                }
+                crate::Mark::Faces(_) | crate::Mark::Lines(_) | crate::Mark::Areas(_) => {}
+            }
+        }
+    }
 }
 
 /// Derived tables, by the dataset and table each stands beside.

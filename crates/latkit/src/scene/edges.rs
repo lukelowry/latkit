@@ -1,9 +1,10 @@
 use super::Route;
-use super::mark::{Context, Drawing, MarkKind, Stroke, StrokeWords, Style, stroke_methods, style_methods};
+use super::mark::{Context, Drawing, MarkKind, Stroke, StrokeWords, Style, mark, stroke_methods, style_methods};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Kind, Name, Result};
 
+mark!(
 /// Rows drawn as strokes between the vertices two reference fields name: branches, links, wires. In a
 /// diagram, a row without ends is a net: it joins every vertex port whose reference field names it.
 ///
@@ -11,17 +12,23 @@ use crate::{Error, Kind, Name, Result};
 /// # use latkit::{field, Edges};
 /// let branches = Edges::of("grid", "Branch").ends("from", "to").width(field("rating") / 100.0).flow(field("p"));
 /// ```
-#[derive(Clone, PartialEq, Debug)]
-pub struct Edges {
-    pub(crate) style: Style,
-    pub(crate) stroke: Stroke,
-    pub(crate) ends: Option<(Name, Name)>,
-    pub(crate) bends: Option<Name>,
-    pub(crate) route: Option<Route>,
-    pub(crate) arrows: bool,
-    pub(crate) poles: bool,
-    pub(crate) joins: Option<(Name, Name)>,
-}
+Edges + stroke {
+    /// The reference fields naming each row's two vertices.
+    ends: Option<(Name, Name)> as "[from: string, to: string]",
+    /// A path field of points each row runs through between its ends.
+    bends: Option<Name>,
+    /// How each row runs between its ends; on the earth geodesic, elsewhere straight, unless set.
+    /// Orthogonal routes run around blocks, bends rounded; diagrams only.
+    route: Option<Route>,
+    /// Whether each row ends in an arrowhead at its second end; a net's at each input it reaches.
+    arrows: bool,
+    /// Draws each row as a pole from its own vertex down to the ground beneath it, on a plane or the
+    /// earth; it has no ends.
+    poles: bool,
+    /// Draws each row as a net on a plane or the earth: it joins the vertex rows of `table` whose
+    /// reference field names it, as a star from their middle to each.
+    joins: Option<(Name, Name)> as "[table: string, reference: string]",
+});
 
 impl Edges {
     /// Draws the rows of `table` in dataset `data`.
@@ -105,7 +112,7 @@ impl Edges {
             return Err(Error::invalid("bends run between ends; name them").at("bends"));
         }
         if let Some(bends) = &self.bends
-            && !matches!(c.kind(bends), Some(Kind::Geometry(1)))
+            && !matches!(c.kind(bends), Some(Kind::Path))
         {
             return Err(Error::invalid("not a path field").at(bends).at("bends"));
         }

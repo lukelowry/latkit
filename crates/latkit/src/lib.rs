@@ -44,8 +44,8 @@ mod view;
 pub mod web;
 
 pub use data::{
-    Data, Description, Envelope, FieldDescription, Id, Ids, Kind, Name, Patch, Row, Table, TableDescription, Value,
-    Values,
+    Data, Description, Envelope, FieldDescription, Id, Ids, Kind, Name, Patch, Row, Rows, Table, TableDescription,
+    Value, Values,
 };
 pub use error::{Error, Path, Result, Step};
 pub use image::{Image, ImageFormat};

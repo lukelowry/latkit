@@ -1,31 +1,24 @@
-# Benchmarks
+# Benchmark
 
-Each `*.bench.ts` times one package, or several together, through public entry points only, at
-several sizes, such as 10 thousand to a million buses. A null WebGPU device (`device.ts`) does no
-GPU work, so the benchmarks time the JavaScript a frame costs and need no GPU. Real GPU timings come
-from each package's browser check. Text goes through a fixed-metric rasterizer, so the benchmarks
-count rasterizations rather than timing fonts.
+Each scenario's phases, up its sizes, in Chrome: time, GPU time, stalls, and the work the GPU did,
+held to committed baselines.
 
 ```sh
-pnpm bench          # build, then run every benchmark
-pnpm bench:update   # also record each benchmark's work per run in work.json
-pnpm bench:gate     # run, then check against .bench/base.json and work.json
+cargo xtask bench --quick            # each scenario once at its smallest size: a smoke test
+cargo xtask bench                    # every size while the last fits, 3 repeats
+cargo xtask bench --only grid,labels # some scenarios
+cargo xtask bench --software         # SwiftShader on the CPU: work is judged, times only reported
+cargo xtask bench --update           # lay this run's results over the baselines
 ```
 
-## Gate
+A run fails on:
 
-The gate (`gate.ts`) fails when a benchmark does not complete, or when its work per run grows past
-`work.json`. Work is exact on any machine: queries, uploads, and their cache hits; uploaded, staged,
-and copied bytes; allocations, submissions, evictions, rasterizations, and vertices drawn. The null
-device counts each draw's vertices times its instances; indirect draws count none. Commit
-`work.json` with the change that moves it. CI gates every pull request.
+- an error, a frame drawn while nothing changed, or resident data over its budget;
+- a phase growing with size faster than its order;
+- more work than `baselines/work.json`: exactly for what the data sets (`uploaded`, `evaluated`,
+  `jobs`, `pipelines`, `resident`) in a phase that acts once, and within 2× for what moves with how
+  fast readbacks land (`written`, `readbacks`, `texts`, and every count of a phase acting each frame);
+- on the machine `baselines/<machine>.json` was taken on, a phase over 1.25× slower.
 
-Timings vary between runs, even on one machine, so the gate only reports them:
-
-- benchmarks whose fastest and median runs are both more than 25% slower than `.bench/base.json`;
-- time per item that grows more than 3× from the smallest size to the largest: cache misses alone
-  can double it across a 100× range, while quadratic work multiplies it by a hundred.
-
-To record a base, run `pnpm bench --outputJson .bench/base.json` on the base branch. Without it,
-the gate skips that comparison. Compare timings by running the base and the change alternately,
-several times each.
+Reports and results land in `target/bench/`. Scenarios are in `page/scenarios.ts`, the data they
+draw in `page/data.ts`, and how a phase is measured in `page/stage.ts`.

@@ -3,7 +3,7 @@
 //! vertex mark drawing them places them. The star of each net row is a path field beside the net
 //! table, which the mark draws as any geometry; it works again only when the data or scene change.
 
-use super::{Input, Tables, beside, kept, stamp_of};
+use super::{Input, Tables, beside, kept};
 use crate::data::{Field, Name, UNWIRED, Values};
 use crate::expr::cpu::Rows;
 use crate::sheet::{VertexMark, marks, position};
@@ -25,10 +25,12 @@ impl Stars {
             self.clear();
             return had;
         }
-        let versions: Vec<_> = input.data.iter().map(|d| (d.name(), d.0.version)).collect();
         let field = |t: &crate::Table, name: &str| t.field_named(name).map(Field::version);
         let placed: Vec<_> = places.iter().map(|(key, t)| (key, field(t, "x"), field(t, "y"))).collect();
-        let stamp = stamp_of((input.scene_version, versions, placed));
+        let mut hasher = rustc_hash::FxHasher::default();
+        std::hash::Hash::hash(&(input.scene_version, placed), &mut hasher);
+        input.structure(&mut hasher);
+        let stamp = std::hash::Hasher::finish(&hasher).max(1);
         if stamp == self.stamp {
             return false;
         }

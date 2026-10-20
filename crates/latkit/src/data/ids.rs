@@ -12,8 +12,14 @@ use crate::{Error, Result};
 /// Row ids, as given to [`Table::new`](crate::Table::new) or [`Patch::remove`](crate::Patch::remove),
 /// and the target ids of a reference.
 ///
-/// A count `n` names rows `0..n`. Lists convert from vectors and slices of numbers or texts; for a
-/// reference, `None` leaves a row unwired.
+/// [`Ids::count`] names rows `0..n`. Lists convert from vectors, arrays, and slices of numbers or
+/// texts; for a reference, `None` leaves a row unwired. A bare number is never a count.
+///
+/// ```
+/// # use latkit::{Ids, Table};
+/// let buses = Table::new("Bus", Ids::count(3));          // ids 0, 1, 2
+/// let lines = Table::new("Line", [101_u64, 205]);       // ids 101 and 205
+/// ```
 #[derive(Clone, Debug)]
 pub struct Ids(pub(crate) IdList);
 
@@ -23,7 +29,19 @@ pub(crate) enum IdList {
     Listed(Values),
 }
 
+/// Ids are equal when they name the same rows in the same order.
+impl PartialEq for Ids {
+    fn eq(&self, other: &Ids) -> bool {
+        self.len() == other.len() && (0..self.len()).all(|i| self.key(i) == other.key(i))
+    }
+}
+
 impl Ids {
+    /// Ids `0..n`, one per row in row order.
+    pub fn count(n: u32) -> Ids {
+        Ids(IdList::Count(n))
+    }
+
     /// The number of ids.
     pub fn len(&self) -> usize {
         match &self.0 {
@@ -53,24 +71,6 @@ pub(crate) fn key(values: &Values, i: usize) -> Option<IdRef<'_>> {
         Array::U64(v) => Some(IdRef::Number(v[i])),
         Array::Text(v) => Some(IdRef::Text(v.get(i))),
         _ => None,
-    }
-}
-
-impl From<usize> for Ids {
-    fn from(count: usize) -> Ids {
-        Ids(IdList::Count(u32::try_from(count).expect("a table holds at most 2^32 rows")))
-    }
-}
-
-impl From<u32> for Ids {
-    fn from(count: u32) -> Ids {
-        Ids(IdList::Count(count))
-    }
-}
-
-impl From<i32> for Ids {
-    fn from(count: i32) -> Ids {
-        Ids(IdList::Count(u32::try_from(count).expect("a row count is not negative")))
     }
 }
 

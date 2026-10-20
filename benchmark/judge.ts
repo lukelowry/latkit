@@ -1,7 +1,10 @@
 /**
  * What the runs say. Rules that hold on any machine: no errors, nothing drawn idle, resident data
  * within its budget, every phase growing no faster than its order, and no more work than the work
- * baseline. Then, on the machine the times baseline was taken on, no phase much slower.
+ * baseline. Work the data and the frames drawn set (`EXACT`) is held exactly in a phase that acts
+ * once and settles; the rest, and every count of a phase acting each frame, moves with how fast
+ * readbacks land, and is held within `STEADY`. Then, on the machine the times baseline was taken on,
+ * no phase much slower.
  */
 import type { Work } from 'latkit';
 import type { Listed, Run } from './page/main.ts';
@@ -37,6 +40,14 @@ const SLACK = 0.2;
 const FLOOR = { frame: 0.05, action: 2, bytes: 64 * 1024 };
 /** How much slower than the baseline a median may be. */
 const SLOWER = 1.25;
+/** Work the data and the frames drawn alone set, which repeats exactly once a phase settles. */
+const EXACT = new Set(['uploaded', 'evaluated', 'jobs', 'pipelines', 'resident']);
+/** How much more of the rest a phase may do than the baseline: readback timing moves label
+ * placements and fetches by up to about 1.7×, and a per-frame blowup by far more. */
+const STEADY = 2;
+/** Below these, work counts as these when it is held within `STEADY`: bytes, and other counts. */
+const WORK_FLOOR = { bytes: 64 * 1024, count: 8 };
+const BYTES = new Set(['uploaded', 'written', 'resident']);
 
 const median = (xs: number[]) =>
   [...xs].sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)] ?? 0;
@@ -128,9 +139,12 @@ export function judge(
       for (const n of at) {
         const now = bySize[n]![phase]!;
         const where = `${scenario.name} at ${n}, ${phase}`;
-        for (const [k, was] of Object.entries(base.work?.[scenario.name]?.[n]?.[phase] ?? {})) {
-          const is = now.work[k as keyof Summary['work']];
-          if (is > was) failures.push(`${where}: ${k} ${is}, was ${was}`);
+        const baseline: Partial<Summary['work']> = base.work?.[scenario.name]?.[n]?.[phase] ?? {};
+        for (const [k, was] of Object.entries(baseline) as [keyof Summary['work'], number][]) {
+          const is = now.work[k];
+          const floor = BYTES.has(k) ? WORK_FLOOR.bytes : WORK_FLOOR.count;
+          const most = !now.steady && EXACT.has(k) ? was : Math.max(was, floor) * STEADY;
+          if (is > most) failures.push(`${where}: ${k} ${is}, was ${was}`);
           else if (is < was) notes.push(`${where}: ${k} ${is}, was ${was}; --update keeps it`);
         }
         const then = sameMachine ? base.times!.times[scenario.name]?.[n]?.[phase] : undefined;

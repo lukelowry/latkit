@@ -25,7 +25,7 @@ use super::marks::Shown;
 use super::probe::{Answer, Probed, near};
 use crate::expr::compile::Deps;
 use crate::scene::mark::MarkKind;
-use crate::{Camera, Grid, Pending, Row, Scene, Space, Zoom};
+use crate::{Camera, Grid, Pending, Row, Rows, Scene, Space, Zoom};
 
 /// CSS pixels a press moves before it drags or pans.
 const SLOP: f32 = 4.0;
@@ -145,7 +145,7 @@ impl Gestures {
                 Cursor::Grabbing
             }
             Gesture::Box { .. } | Gesture::Connect { .. } => Cursor::Crosshair,
-            _ => match hovered.and_then(|p| scene.marks.get(p.hit.mark)) {
+            _ => match hovered.and_then(|p| scene.marks.get(p.hit.index)) {
                 Some(mark) if mark.style().interaction.drag => Cursor::Grab,
                 Some(mark) if mark.style().interaction.select => Cursor::Pointer,
                 _ => Cursor::Default,
@@ -464,7 +464,8 @@ impl View {
             self.gestures.now = Gesture::Connect { pointer, from, edge, anchor, locating, to };
             return;
         }
-        let drags = |probed: &Probed| self.scene.marks.get(probed.hit.mark).is_some_and(|m| m.style().interaction.drag);
+        let drags =
+            |probed: &Probed| self.scene.marks.get(probed.hit.index).is_some_and(|m| m.style().interaction.drag);
         match answer.hit {
             Some(probed) if drags(&probed) => {
                 self.gestures.now = Gesture::Drag { pointer, probed };
@@ -513,7 +514,7 @@ impl View {
                     let hits = self.pick(trigger.point, self.scene.controls.pick_radius);
                     let after = self.focus.selection.last().cloned();
                     self.events.tell_after(hits, Awaited::Cycle { after, trigger });
-                } else if self.selects(hit.mark) {
+                } else if self.selects(hit.index) {
                     self.select_row(hit.row, toggle, trigger);
                 }
             }
@@ -542,7 +543,7 @@ impl View {
         if selection != self.focus.selection {
             self.focus.selection.clone_from(&selection);
             self.focus.dirty = true;
-            self.events.tell(Event::Select { rows: selection, trigger });
+            self.events.tell(Event::Select { rows: Rows::group(selection), trigger });
         }
     }
 
@@ -582,7 +583,7 @@ impl View {
     /// there; an edge with ends lets go of the end it was pressed nearer, from the one that stays.
     fn connect_from(&self, probed: &Probed, modifiers: Modifiers) -> Option<(End, Option<Row>, Option<[f32; 2]>)> {
         let hit = &probed.hit;
-        let shown = self.marks.get(hit.mark)?;
+        let shown = self.marks.get(hit.index)?;
         match shown.kind() {
             MarkKind::Vertices if hit.port.is_some() || modifiers.alt => {
                 Some((End { row: hit.row.clone(), port: hit.port.clone() }, None, Some(hit.point)))
@@ -629,14 +630,14 @@ impl View {
             Awaited::Menu(trigger) => Event::Menu { hits, trigger },
             Awaited::Connect { from, edge, trigger } => {
                 let vertex = |hit: &&Hit| {
-                    self.marks.get(hit.mark).is_some_and(|m| m.kind() == MarkKind::Vertices) && hit.row != from.row
+                    self.marks.get(hit.index).is_some_and(|m| m.kind() == MarkKind::Vertices) && hit.row != from.row
                 };
                 let to = hits.iter().find(vertex).map(|hit| End { row: hit.row.clone(), port: hit.port.clone() });
                 Event::Connect { from, to, edge, trigger }
             }
             Awaited::Cycle { after, trigger } => {
                 let mut rows: Vec<Row> = Vec::new();
-                for hit in hits.into_iter().filter(|hit| self.selects(hit.mark)) {
+                for hit in hits.into_iter().filter(|hit| self.selects(hit.index)) {
                     if !rows.contains(&hit.row) {
                         rows.push(hit.row);
                     }
@@ -648,7 +649,7 @@ impl View {
                 }
                 self.focus.selection.clone_from(&selection);
                 self.focus.dirty = true;
-                Event::Select { rows: selection, trigger: Some(trigger) }
+                Event::Select { rows: Rows::group(selection), trigger: Some(trigger) }
             }
         })
     }
@@ -705,7 +706,7 @@ impl View {
                     self.events.tell(Event::Open { hit: hit.clone(), trigger });
                     return true;
                 }
-                (Key::Space, Some(hit)) if self.selects(hit.mark) => {
+                (Key::Space, Some(hit)) if self.selects(hit.index) => {
                     self.select_row(hit.row.clone(), true, trigger);
                     return true;
                 }
@@ -719,7 +720,7 @@ impl View {
         }
         match key {
             Key::Delete | Key::Backspace if controls.delete && !self.focus.selection.is_empty() => {
-                self.events.tell(Event::Delete { rows: self.focus.selection.clone(), trigger });
+                self.events.tell(Event::Delete { rows: Rows::group(self.focus.selection.iter().cloned()), trigger });
                 return true;
             }
             Key::Menu => {

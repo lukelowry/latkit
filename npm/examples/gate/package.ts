@@ -25,11 +25,15 @@ execFileSync(
   [path.join(root, 'node_modules/typescript/bin/tsc'), '-p', consumer],
   { stdio: 'inherit' },
 );
-execFileSync(process.execPath, ['--test', 'npm/test/load.test.mjs', 'npm/test/jobs.test.mjs'], {
-  cwd: root,
-  stdio: 'inherit',
-  env: { ...process.env, LATKIT_TEST_PACKAGE: installed },
-});
+execFileSync(
+  process.execPath,
+  ['--test', 'npm/test/load.test.mjs', 'npm/test/jobs.test.mjs', 'npm/test/data.test.mjs'],
+  {
+    cwd: root,
+    stdio: 'inherit',
+    env: { ...process.env, LATKIT_TEST_PACKAGE: installed },
+  },
+);
 await build({
   root: consumer,
   base: '/nested/app/',

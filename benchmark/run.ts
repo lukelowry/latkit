@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createServer } from 'vite';
-import { STEP, deadline, launch, type Chrome } from '../examples/gate/browser.ts';
+import { STEP, deadline, launch, type Chrome } from '../npm/examples/gate/browser.ts';
 import { judge, times, work, type TimeBaseline, type WorkBaseline } from './judge.ts';
 import { report } from './report.ts';
 import type { Listed, Run } from './page/main.ts';
@@ -42,7 +42,7 @@ const only = flags.only?.split(',');
 const software = flags.software || process.platform === 'linux';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const baselines = path.join(here, 'baselines');
-const results = path.resolve(here, '../../target/bench');
+const results = path.resolve(here, '../target/bench');
 /**
  * Uncapped frames keep a GPU at its full clock, so time measures work, not waiting. SwiftShader has
  * no clock to keep, and frames drawn back to back starve its readbacks, so it draws at the display's

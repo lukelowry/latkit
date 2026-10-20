@@ -92,40 +92,56 @@ export default async function bunny(stage: Stage): Promise<void> {
   let recordAt = 0;
 
   // The mesh once; then every step, a frame of every vertex and of the body as a whole.
-  let data = new Data('bunny').apply(
+  const data = new Data('bunny').apply(
     new Patch()
       .axis('time', 's')
-      .set('Vertex', mesh.count, {})
-      .set('Spring', mesh.springs.a.length, {
-        a: reference('Vertex', mesh.springs.a),
-        b: reference('Vertex', mesh.springs.b),
-      })
-      .set('Face', mesh.faces.a.length, {
-        a: reference('Vertex', mesh.faces.a),
-        b: reference('Vertex', mesh.faces.b),
-        c: reference('Vertex', mesh.faces.c),
-      })
-      .set('ChunkVertex', body.burst.count, {})
-      .set('ChunkFace', body.burst.faces.a.length, {
-        a: reference('ChunkVertex', body.burst.faces.a),
-        b: reference('ChunkVertex', body.burst.faces.b),
-        c: reference('ChunkVertex', body.burst.faces.c),
-      })
-      .set('Corner', 4, { x: [-ROOM, ROOM, ROOM, -ROOM], y: [-ROOM, -ROOM, ROOM, ROOM] })
-      .set('Wall', 4, {
-        from: reference('Corner', [0, 1, 2, 3]),
-        to: reference('Corner', [1, 2, 3, 0]),
-      })
-      .set('Body', 1, {}),
+      .set('Vertex', { count: mesh.count }, {})
+      .set(
+        'Spring',
+        { count: mesh.springs.a.length },
+        {
+          a: reference('Vertex', mesh.springs.a),
+          b: reference('Vertex', mesh.springs.b),
+        },
+      )
+      .set(
+        'Face',
+        { count: mesh.faces.a.length },
+        {
+          a: reference('Vertex', mesh.faces.a),
+          b: reference('Vertex', mesh.faces.b),
+          c: reference('Vertex', mesh.faces.c),
+        },
+      )
+      .set('ChunkVertex', { count: body.burst.count }, {})
+      .set(
+        'ChunkFace',
+        { count: body.burst.faces.a.length },
+        {
+          a: reference('ChunkVertex', body.burst.faces.a),
+          b: reference('ChunkVertex', body.burst.faces.b),
+          c: reference('ChunkVertex', body.burst.faces.c),
+        },
+      )
+      .set('Corner', { count: 4 }, { x: [-ROOM, ROOM, ROOM, -ROOM], y: [-ROOM, -ROOM, ROOM, ROOM] })
+      .set(
+        'Wall',
+        { count: 4 },
+        {
+          from: reference('Corner', [0, 1, 2, 3]),
+          to: reference('Corner', [1, 2, 3, 0]),
+        },
+      )
+      .set('Body', { count: 1 }, {}),
   );
 
-  data = data.apply(new Patch().set('Shadow', body.burst.chunks.length + 1, {}));
+  data.apply(new Patch().set('Shadow', { count: body.burst.chunks.length + 1 }, {}));
 
   // Lit faces and soft contact shadows; the vertices remain pickable with inspection dots hidden.
   const room = (live: boolean): Scene => {
     const p = PAINTS[paint]!;
     return {
-      space: { plane: { grid: { lines: 1 } } },
+      space: { plane: { grid: { lines: { pitch: 1 } } } },
       theme: THEME,
       controls: { pickRadius: 14 },
       marks: [
@@ -381,7 +397,7 @@ export default async function bunny(stage: Stage): Promise<void> {
       recordedChunks = true;
     }
     wasBurst = body.burst.active;
-    data = data.apply(patch);
+    data.apply(patch);
     space.setData(data);
     plot.setData(data);
     playback.record(data.span!);

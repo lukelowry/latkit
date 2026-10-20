@@ -36,27 +36,46 @@ const FRAME: Duration = Duration::from_millis(16);
 /// std::fs::write("view.png", image.encode(latkit::ImageFormat::Png)?).expect("written");
 /// # Ok(()) }
 /// ```
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Shot {
+    /// Width and height in pixels.
     size: [u32; 2],
+    /// Pixels per CSS pixel: views lay out `size / scale` CSS pixels; 1 unless set.
+    #[serde(default = "one")]
     scale: f32,
+    /// Each view's part of the picture, `[x, y, width, height]` as fractions; the whole by default.
+    #[serde(default)]
     panels: Panels,
+    /// Whether alpha is kept where the themes' backgrounds would be.
+    #[serde(default)]
     transparent: bool,
+    /// Seconds a picture, or a video frame, may take; 30 unless set.
+    #[serde(default = "thirty", deserialize_with = "crate::scene::seconds")]
+    #[schemars(with = "f64")]
     deadline: Duration,
+    /// A still's effect time in seconds, where elapsed time and flowing comets read it.
+    #[serde(default, deserialize_with = "some_seconds")]
+    #[schemars(with = "Option<f64>")]
     elapsed: Option<Duration>,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+fn thirty() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn some_seconds<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<Duration>, D::Error> {
+    crate::scene::seconds(deserializer).map(Some)
 }
 
 impl Shot {
     /// A picture of `size` pixels, one view filling it at a pixel per CSS pixel.
     pub fn new(size: [u32; 2]) -> Shot {
-        Shot {
-            size,
-            scale: 1.0,
-            panels: Panels::default(),
-            transparent: false,
-            deadline: Duration::from_secs(30),
-            elapsed: None,
-        }
+        Shot { size, scale: 1.0, panels: Panels::default(), transparent: false, deadline: thirty(), elapsed: None }
     }
 
     /// Draws `scale` pixels per CSS pixel: a view lays out `size / scale` CSS pixels, so 2 draws what
@@ -151,51 +170,6 @@ impl Shot {
                 Step::Waiting => drawing.wait().await,
             }
         }
-    }
-}
-
-crate::schema::from_form! { Shot => ShotForm }
-
-/// A picture of views: its size, and how they lay out and draw in it.
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct ShotForm {
-    /// Width and height in pixels.
-    size: [u32; 2],
-    /// Pixels per CSS pixel: views lay out `size / scale` CSS pixels; 1 unless set.
-    scale: Option<f32>,
-    /// Each view's part of the picture, `[x, y, width, height]` as fractions; the whole by default.
-    #[serde(default)]
-    panels: Panels,
-    /// Whether alpha is kept where the themes' backgrounds would be.
-    #[serde(default)]
-    transparent: bool,
-    /// Seconds a picture, or a video frame, may go without progress.
-    deadline: Option<f64>,
-    /// A still's effect time in seconds, where elapsed time and flowing comets read it.
-    elapsed: Option<f64>,
-}
-
-impl ShotForm {
-    fn build<E: serde::de::Error>(self) -> std::result::Result<Shot, E> {
-        let seconds = |value: f64, name: &str| {
-            Duration::try_from_secs_f64(value)
-                .map_err(|_| E::custom(format!("{name} is nonnegative seconds within range")))
-        };
-        let mut shot = Shot::new(self.size).panels(self.panels);
-        if let Some(scale) = self.scale {
-            shot = shot.scale(scale);
-        }
-        if self.transparent {
-            shot = shot.transparent();
-        }
-        if let Some(deadline) = self.deadline {
-            shot = shot.deadline(seconds(deadline, "deadline")?);
-        }
-        if let Some(elapsed) = self.elapsed {
-            shot = shot.elapsed(seconds(elapsed, "elapsed")?);
-        }
-        Ok(shot)
     }
 }
 

@@ -4,8 +4,7 @@ mod bits;
 mod buffer;
 mod bytes;
 mod column;
-#[allow(clippy::module_inception)]
-mod data;
+mod dataset;
 mod describe;
 mod forms;
 mod geometry;
@@ -24,10 +23,10 @@ mod table;
 mod text;
 mod values;
 
-pub use data::Data;
+pub use dataset::Data;
 pub use describe::{Description, Envelope, FieldDescription, TableDescription};
 pub use ids::Ids;
-pub use name::{Id, Name, Row};
+pub use name::{Id, Name, Row, Rows};
 pub use patch::Patch;
 pub use table::Table;
 pub use values::{Kind, Value, Values};

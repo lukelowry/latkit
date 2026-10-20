@@ -74,7 +74,7 @@ fn open(encoding: Encoding, kinds: &[MFT_ENUM_FLAG]) -> Result<MediaFoundation> 
     std::thread::Builder::new()
         .name("latkit encoder".into())
         .spawn(move || run(encoding, &kinds, &started, &pictures))
-        .map_err(|e| Error::Load(format!("the encoder's thread did not start: {e}").into()))?;
+        .map_err(|e| Error::Io(format!("the encoder's thread did not start: {e}").into()))?;
     match ready.recv_timeout(STALL) {
         Ok(Ok(())) => Ok(MediaFoundation { work: Some(work) }),
         Ok(Err(error)) => Err(error),
@@ -462,7 +462,7 @@ impl Transform {
                 }
                 Err(e) => return Err(failed("ProcessOutput", &e)),
             }
-            let Some(sample) = sample else { return Err(Error::Load("the encoder gave no sample".into())) };
+            let Some(sample) = sample else { return Err(Error::Io("the encoder gave no sample".into())) };
             let bytes = bytes(&sample)?;
             let types: Vec<u8> = nals(&bytes).map(|nal| nal[0] & 0x1f).collect();
             if !types.iter().any(|t| (1..=5).contains(t)) {
@@ -476,11 +476,11 @@ impl Transform {
                 annex_b.extend_from_slice(&self.header);
             }
             annex_b.extend_from_slice(&bytes);
-            let time = self.times.pop_front().ok_or_else(|| Error::Load("the encoder gave more than given".into()))?;
+            let time = self.times.pop_front().ok_or_else(|| Error::Io("the encoder gave more than given".into()))?;
             units.push(Unit { time, key, annex_b });
             return Ok(true);
         }
-        Err(Error::Load("the encoder kept changing its output".into()))
+        Err(Error::Io("the encoder kept changing its output".into()))
     }
 
     /// A sample of NV12 `bytes` showing at `time` ticks for a frame's duration.

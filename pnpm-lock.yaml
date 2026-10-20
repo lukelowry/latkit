@@ -48,17 +48,11 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@26.1.1)(jsdom@26.1.0)(yaml@2.9.0)
 
-  npm:
-    devDependencies:
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
-
-  npm/bench:
+  benchmark:
     dependencies:
       latkit:
-        specifier: link:..
-        version: link:..
+        specifier: link:../npm
+        version: link:../npm
     devDependencies:
       '@types/node':
         specifier: ^26.1.1
@@ -72,6 +66,12 @@ importers:
       vite:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
+
+  npm:
+    devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
 
   npm/examples:
     dependencies:

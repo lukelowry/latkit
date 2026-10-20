@@ -9,7 +9,7 @@ use latkit::Image;
 
 const SCENE: &str =
     r#"{"space":"plane","ease":0,"marks":[{"vertices":{"of":["grid","Bus"],"position":["x","y"],"radius":6}}]}"#;
-const DATA: &str = r#"{"name":"grid","patch":[{"put":{"table":"Bus","ids":[10,20],"fields":{"x":[-10,10],"y":[0,0],"name":["Alpha","Beta"]}}}]}"#;
+const DATA: &str = r#"{"name":"grid","patch":[{"replace":{"table":"Bus","ids":[10,20],"fields":{"x":[-10,10],"y":[0,0],"name":["Alpha","Beta"]}}}]}"#;
 const CAMERA: &str = r#"{"center":[0,0],"zoom":2,"pitch":0,"bearing":0}"#;
 
 fn run(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Output {
@@ -204,7 +204,7 @@ fn query_writes_a_json_line_a_row() {
             serde_json::json!({ "id": 10, "name": "Alpha", "twice": -20.0 }),
         ]
     );
-    std::fs::write(dir.path().join("query.json"), r#"{"of":"Bus","where":{"op":"lt","args":["x",0]}}"#).unwrap();
+    std::fs::write(dir.path().join("query.json"), r#"{"of":"Bus","filter":{"op":"lt","args":["x",0]}}"#).unwrap();
     let output = run(dir.path(), &["query", "-", "query.json"], Some(DATA.as_bytes()));
     ok(&output);
     assert_eq!(String::from_utf8(output.stdout).unwrap().lines().count(), 1);

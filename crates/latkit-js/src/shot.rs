@@ -57,10 +57,15 @@ impl Image {
     /// The job writing the image as a `png`, `jpeg` at `quality` from 1 to 100, or `webp` file, for a
     /// worker to do.
     #[wasm_bindgen(js_name = encodeJob)]
-    pub fn encode_job(&self, format: &str, quality: Option<u8>) -> Result<Vec<u8>, Error> {
+    pub fn encode_job(&self, format: &str, quality: Option<f64>) -> Result<Vec<u8>, Error> {
+        let quality = match quality {
+            None => 90,
+            Some(q) if (1.0..=100.0).contains(&q) => q.round() as u8,
+            Some(_) => return Err(latkit::Error::invalid("a quality runs from 1 to 100").at("quality").into()),
+        };
         let format = match format {
             "png" => latkit::ImageFormat::Png,
-            "jpeg" => latkit::ImageFormat::Jpeg { quality: quality.unwrap_or(90) },
+            "jpeg" => latkit::ImageFormat::Jpeg { quality },
             "webp" => latkit::ImageFormat::WebP,
             other => return Err(latkit::Error::invalid(format!("no image format {other:?}")).at("format").into()),
         };

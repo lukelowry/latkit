@@ -153,8 +153,9 @@ impl Tiled {
 }
 
 /// A table's pyramid: the rows it was placed from (the table's structure and order), the square it
-/// tiles, and the bounds of its rows in position units.
+/// tiles, the bounds of its rows in position units, and the version that tells it from any other.
 struct Placed {
+    made: Version,
     rows: (Version, Version),
     domain: Domain,
     pyramid: Pyramid,
@@ -231,7 +232,8 @@ impl Set {
             if let Ok(bytes) = landed
                 && let Some(pyramid) = Pyramid::read(&bytes).remove(&working.answered)
             {
-                self.placed.insert(working.table, Arc::new(Placed { pyramid, ..working.placed }));
+                self.placed
+                    .insert(working.table, Arc::new(Placed { pyramid, made: Version::next(), ..working.placed }));
             }
         }
         let stamp = stamp(source, ask, &placing);
@@ -281,7 +283,9 @@ impl Set {
                 // Placing a row takes about a microsecond; ordering one by priority alone, far less.
                 let per_row = if alone.tables[answered as usize].leveled { PLACE_COST } else { PLACE_COST / 20.0 };
                 let cost = per_row * alone.tables.iter().map(|t| f64::from(t.rows)).sum::<f64>();
-                let placed = Placed { rows, domain, pyramid: Pyramid::default(), bounds: bounds.get(&name).copied() };
+                let made = Version::next();
+                let placed =
+                    Placed { made, rows, domain, pyramid: Pyramid::default(), bounds: bounds.get(&name).copied() };
                 if jobs.fits(cost as u64) {
                     let pyramid = Pyramid::answered(answer(&alone)).remove(&answered).unwrap_or_default();
                     self.placed.insert(name, Arc::new(Placed { pyramid, ..placed }));
@@ -331,7 +335,7 @@ impl Set {
         self.sampling = chosen.iter().any(|(_, choice)| matches!(choice, Choice::Sample(_)));
         let pinned: Vec<&Row> = ask.pinned.iter().filter(|r| r.data == self.name).collect();
         let frames: Vec<Option<u32>> = sampled_frames(source, ask);
-        let pyramids: Vec<usize> = serving.iter().map(|(_, p)| Arc::as_ptr(p) as usize).collect();
+        let pyramids: Vec<Version> = serving.iter().map(|(_, p)| p.made).collect();
         let inputs = stamp_of((source.0.version, pyramids, &chosen, &pinned, frames, reads_of(source, ask)));
         if inputs == self.gathered {
             return None;

@@ -1,5 +1,4 @@
 {
-  "name": "latkit-workspace",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.30.0",
@@ -14,8 +13,9 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,mjs,cjs,json,md,yml,yaml,css,html}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,cjs,json,md,yml,yaml,css,html}\"",
     "lint": "eslint .",
-    "typecheck": "tsc -p npm/test && pnpm --dir npm/examples exec tsc --noEmit && pnpm --dir npm/examples exec tsc -p gate && pnpm --dir npm/bench exec tsc -p .",
+    "typecheck": "tsc -p npm/test && pnpm --dir npm/examples exec tsc --noEmit && pnpm --dir npm/examples exec tsc -p gate && pnpm --dir benchmark exec tsc -p .",
     "test": "vitest run",
+    "version-packages": "changeset version && cargo xtask version",
     "release": "cargo xtask wasm && changeset publish"
   },
   "devDependencies": {

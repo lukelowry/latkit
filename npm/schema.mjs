@@ -1,6 +1,7 @@
 /**
- * npm's input types, written from `schema.json`, the JSON Schema of what latkit reads: each
- * definition reachable from the roots becomes a type, documented as its form is. A schema's
+ * npm's types, written from `schema.json`: what latkit reads (`$defs`) becomes `inputs.ts`, and what
+ * it writes (`outputs`) becomes `outputs.ts`. Each definition reachable from the roots becomes a type,
+ * documented as its form is; an output an input already declares is that input's type. A schema's
  * `tsType` names the hand-written type that stands for it, such as `ExprInput`.
  */
 import fs from 'node:fs';
@@ -8,26 +9,73 @@ import path from 'node:path';
 import prettier from 'prettier';
 
 /** The types npm takes as plain data; everything they are built of comes with them. */
-const ROOTS = ['Scene', 'Query', 'Camera', 'Fit', 'Budget', 'ColormapKind'];
+const INPUTS = ['Scene', 'Query', 'Camera', 'Fit', 'Budget', 'ColormapKind'];
+
+/** The types npm reads back. */
+const OUTPUTS = [
+  'ViewEvent',
+  'Stats',
+  'Work',
+  'Description',
+  'Rows',
+  'Camera',
+  'Budget',
+  'Value',
+  'Failure',
+];
 
 /** The hand-written types a `tsType` names, and the module that declares them. */
-const IMPORTS = { './scene.js': ['Color', 'ExprInput', 'Size'] };
+const IMPORTS = { './scene.js': ['Color', 'ExprInput'] };
 
-/** The TypeScript of `schema.json` at `file`, formatted as the repository's other sources are. */
+/** `inputs.ts` and `outputs.ts` of `schema.json` at `file`, formatted as the repository's sources are. */
 export async function typescript(file) {
-  const { $defs: defs } = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const ref = (schema) => schema.$ref?.replace('#/$defs/', '');
+  const schema = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const inputs = declare(schema.$defs, '#/$defs/', INPUTS, new Set());
+  const outputs = declare(schema.outputs, '#/outputs/', OUTPUTS, new Set(inputs.names));
+  const config = await prettier.resolveConfig(path.join(path.dirname(file), 'src/inputs.ts'));
+  const format = (source) => prettier.format(source, { ...config, parser: 'typescript' });
+  const header = (from) =>
+    `/** Written by \`node npm/build.mjs schema\` from \`npm/schema.json\`, ${from}: do not edit. */`;
+  const imports = (modules) =>
+    Object.entries(modules)
+      .filter(([, names]) => names.length)
+      .map(([module, names]) => `import type { ${names.sort().join(', ')} } from '${module}';`);
+  return {
+    inputs: await format(
+      [header('what latkit reads'), '', ...imports(IMPORTS), '', inputs.source, ''].join('\n'),
+    ),
+    outputs: await format(
+      [
+        header('what latkit writes'),
+        '',
+        ...imports({ './inputs.js': outputs.borrowed }),
+        '',
+        outputs.source,
+        '',
+      ].join('\n'),
+    ),
+  };
+}
+
+/**
+ * The declarations of the definitions `defs` that `roots` reach, refs to them starting `prefix`;
+ * `declared` names those another module declares, which these borrow.
+ */
+function declare(defs, prefix, roots, declared) {
+  const output = prefix === '#/outputs/';
+  const ref = (schema) =>
+    schema.$ref?.startsWith(prefix) ? schema.$ref.slice(prefix.length) : undefined;
   const reached = new Set();
   const reach = (schema) => {
     if (schema === null || typeof schema !== 'object') return;
     const name = ref(schema);
     if (name !== undefined && !reached.has(name)) {
       reached.add(name);
-      reach(defs[name]);
+      if (!declared.has(name)) reach(defs[name]);
     }
     for (const value of Object.values(schema)) reach(value);
   };
-  for (const root of ROOTS) reach({ $ref: `#/$defs/${root}` });
+  for (const root of roots) reach({ $ref: `${prefix}${root}` });
 
   const type = (schema) => {
     if (schema === true || schema === undefined || Object.keys(schema).length === 0)
@@ -36,7 +84,7 @@ export async function typescript(file) {
     if (schema.tsType)
       return [schema.type].flat().includes('null') ? `${schema.tsType} | null` : schema.tsType;
     const name = ref(schema);
-    if (name !== undefined) return defs[name].tsType ?? name;
+    if (name !== undefined) return defs[name]?.tsType ?? name;
     if ('const' in schema) return JSON.stringify(schema.const);
     if (schema.enum) return schema.enum.map((v) => JSON.stringify(v)).join(' | ');
     const union = schema.anyOf ?? schema.oneOf;
@@ -92,38 +140,33 @@ export async function typescript(file) {
     }
     return /[|&]/.test(item) ? `(${item})[]` : `${item}[]`;
   };
+  // What latkit writes leaves an absent value out rather than writing null.
+  const absent = (schema) => {
+    if (Array.isArray(schema.type))
+      return { ...schema, type: schema.type.filter((t) => t !== 'null') };
+    const union = schema.anyOf ?? schema.oneOf;
+    if (union) {
+      const kept = union.filter((s) => s.type !== 'null');
+      return kept.length === 1
+        ? { ...kept[0], description: schema.description }
+        : { ...schema, anyOf: kept, oneOf: undefined };
+    }
+    return schema;
+  };
   const object = (schema) => {
     const required = new Set(schema.required ?? []);
-    const lines = Object.entries(schema.properties ?? {}).map(
-      ([key, value]) =>
-        `${value.description ? doc(value.description) : ''}${key}${required.has(key) ? '' : '?'}: ${type(value)};`,
-    );
+    const lines = Object.entries(schema.properties ?? {}).map(([key, value]) => {
+      const optional = !required.has(key);
+      const shown = output && optional ? absent(value) : value;
+      return `${value.description ? doc(value.description) : ''}${key}${optional ? '?' : ''}: ${type(shown)};`;
+    });
     const rest = schema.additionalProperties;
     if (rest && typeof rest === 'object') lines.push(`[name: string]: ${type(rest)};`);
     return `{ ${lines.join('\n')} }`;
   };
-  // Documentation as the forms write it, wrapped anew: paragraphs kept, lines at most 96 wide.
-  const doc = (text) => {
-    const lines = [];
-    for (const paragraph of text.replace(/\*\//g, '*\\/').split('\n\n')) {
-      if (lines.length) lines.push('');
-      let line = '';
-      for (const word of paragraph.split(/\s+/).filter(Boolean)) {
-        if (line && line.length + word.length + 1 > 96) {
-          lines.push(line);
-          line = word;
-        } else line = line ? `${line} ${word}` : word;
-      }
-      lines.push(line);
-    }
-    return lines.length === 1
-      ? `/** ${lines[0]} */\n`
-      : `/**\n${lines.map((l) => ` * ${l}`.trimEnd()).join('\n')}\n */\n`;
-  };
 
-  const declarations = [...reached]
-    .filter((name) => !defs[name].tsType)
-    .sort()
+  const names = [...reached].filter((name) => !declared.has(name) && !defs[name].tsType).sort();
+  const source = names
     .map((name) => {
       const schema = defs[name];
       const body = type({ ...schema, description: undefined, tsType: undefined });
@@ -131,18 +174,41 @@ export async function typescript(file) {
       return schema.type === 'object' && schema.properties
         ? `${comment}export interface ${name} ${body}`
         : `${comment}export type ${name} = ${body};`;
-    });
-  const imports = Object.entries(IMPORTS).map(
-    ([module, names]) => `import type { ${names.join(', ')} } from '${module}';`,
-  );
-  const source = [
-    '/** Written by `node npm/build.mjs schema` from `npm/schema.json`, the forms latkit reads: do not edit. */',
-    '',
-    ...imports,
-    '',
-    declarations.join('\n\n'),
-    '',
-  ].join('\n');
-  const config = await prettier.resolveConfig(path.join(path.dirname(file), 'src/forms.ts'));
-  return prettier.format(source, { ...config, parser: 'typescript' });
+    })
+    .join('\n\n');
+  const code = source.replace(/\/\*\*[\s\S]*?\*\//g, '');
+  const used = (name) => new RegExp(`\\b${name}\\b`).test(code);
+  return { names, source, borrowed: [...reached].filter((n) => declared.has(n) && used(n)) };
+}
+
+/**
+ * Documentation as the forms write it, wrapped anew: paragraphs kept, lines at most 96 wide, Rust's
+ * links to its own items as plain code, its `None` as the `null` JSON writes, and its examples,
+ * which are Rust, left out.
+ */
+function doc(text) {
+  const lines = [];
+  const plain = text
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/\*\//g, '*\\/')
+    .replace(/\[(`[^`]*`)\]\([^)]*\)/g, '$1')
+    .replaceAll('`None`', '`null`');
+  for (const paragraph of plain.split('\n\n').filter((p) => p.trim())) {
+    if (lines.length) lines.push('');
+    let line = '';
+    // A code span stays on one line, as TSDoc reads them.
+    const words = (paragraph.match(/(?:`[^`]*`|[^\s`])+/g) ?? []).map((w) =>
+      w.replace(/\s+/g, ' '),
+    );
+    for (const word of words) {
+      if (line && line.length + word.length + 1 > 96) {
+        lines.push(line);
+        line = word;
+      } else line = line ? `${line} ${word}` : word;
+    }
+    lines.push(line);
+  }
+  return lines.length === 1
+    ? `/** ${lines[0]} */\n`
+    : `/**\n${lines.map((l) => ` * ${l}`.trimEnd()).join('\n')}\n */\n`;
 }

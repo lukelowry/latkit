@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 
-use super::data::Data;
+use super::dataset::Data;
 use super::forms::{Column, DataForm, OpForm, patch};
 use super::name::Name;
 use super::ordered::Ordered;
@@ -17,8 +17,8 @@ impl Patch {
     ///
     /// ```json
     /// [
-    ///   {"put": {"table": "Bus", "ids": [101, 205], "fields": {"x": [0, 10], "name": ["North", "South"]}}},
-    ///   {"put": {"table": "Branch", "ids": 1, "fields": {"from": {"reference": "Bus", "ids": [101]}}}},
+    ///   {"replace": {"table": "Bus", "ids": [101, 205], "fields": {"x": [0, 10], "name": ["North", "South"]}}},
+    ///   {"replace": {"table": "Branch", "ids": {"count": 1}, "fields": {"from": {"reference": "Bus", "ids": [101]}}}},
     ///   {"axis": {"name": "time", "unit": "s"}},
     ///   {"append": {"at": [0, 0.5], "table": "Bus", "fields": {"vm": {"file": "vm.f32", "dtype": "f32le", "count": 4}}}}
     /// ]
@@ -159,10 +159,10 @@ mod tests {
     #[test]
     fn a_dataset_reads_its_tables_references_and_geometry() {
         let json = r#"{"name": "grid", "patch": [
-            {"put": {"table": "Bus", "ids": ["b", "a"], "fields": {
+            {"replace": {"table": "Bus", "ids": ["b", "a"], "fields": {
                 "x": [1.5, null], "on": [true, false], "name": ["B", null],
                 "at": [[0, 1], [2, 3, 9]], "path": [[[0, 0], [1, 1]], []]}}},
-            {"put": {"table": "Branch", "ids": 1, "fields": {"from": {"reference": "Bus", "ids": ["a"]}}}}
+            {"replace": {"table": "Branch", "ids": {"count": 1}, "fields": {"from": {"reference": "Bus", "ids": ["a"]}}}}
         ]}"#;
         let data = load_data(json, &Files::default()).unwrap();
         let bus = data.table("Bus").unwrap();
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(bus.get("a", "on"), Some(Value::Bool(false)));
         assert_eq!(bus.get("b", "name"), Some(Value::Text("B".into())));
         assert_eq!(bus.get("a", "at"), Some(Value::Point([2.0, 3.0])));
-        assert_eq!(bus.kind("path"), Some(Kind::Geometry(1)));
+        assert_eq!(bus.kind("path"), Some(Kind::Path));
         assert_eq!(bus.get("b", "path"), Some(Value::Path(vec![[0.0, 0.0], [1.0, 1.0]])));
         let row = Row { data: "grid".into(), table: "Branch".into(), id: 0_u64.into() };
         let target = Row { data: "grid".into(), table: "Bus".into(), id: "a".into() };
@@ -183,7 +183,7 @@ mod tests {
         let floats: Vec<u8> = [9_f32, 1.0, 2.0, 3.0, 4.0].into_iter().flat_map(f32::to_le_bytes).collect();
         let host = Files([("docs/v.f32".to_owned(), floats)].into(), std::sync::Mutex::default());
         let json = r#"{"name": "grid", "patch": [
-            {"put": {"table": "Bus", "ids": 2, "fields": {"kv": {"file": "v.f32", "dtype": "f32le", "offset": 4, "count": 2}}}},
+            {"replace": {"table": "Bus", "ids": {"count": 2}, "fields": {"kv": {"file": "v.f32", "dtype": "f32le", "offset": 4, "count": 2}}}},
             {"axis": {"name": "time", "unit": "s"}},
             {"append": {"at": [0, 1], "table": "Bus", "fields": {"vm": {"file": "v.f32", "dtype": "f32le", "offset": 4, "count": 4}}}},
             {"forget": {"before": -1}}
@@ -205,16 +205,23 @@ mod tests {
         let error = |json: &str| {
             pollster::block_on(Patch::load(json, "", &Files::default())).map(|_| ()).unwrap_err().to_string()
         };
-        assert!(error(r#"[{"put": {"table": "Bus", "ids": 2, "fields": {"x": [1, "a"]}}}]"#).contains("field x"));
+        assert!(
+            error(r#"[{"replace": {"table": "Bus", "ids": {"count": 2}, "fields": {"x": [1, "a"]}}}]"#)
+                .contains("field x")
+        );
         assert!(error(r#"[{"bend": {}}]"#).contains("unknown variant"));
         assert!(
-            error(r#"[{"put": {"table": "Bus", "ids": 1, "fields": {"x": {"file": "f", "count": 1}}}}]"#)
-                .contains("dtype")
+            error(
+                r#"[{"replace": {"table": "Bus", "ids": {"count": 1}, "fields": {"x": {"file": "f", "count": 1}}}}]"#
+            )
+            .contains("dtype")
         );
-        let missing = r#"[{"put": {"table": "Bus", "ids": 1, "fields": {"x": {"file": "f.bin", "dtype": "f64le", "count": 1}}}}]"#;
-        assert_eq!(error(missing), "load: f.bin: 0 bytes of the slice's 8");
-        let invalid =
-            load_data(r#"{"name": "grid", "patch": [{"put": {"table": "Bus", "ids": [1, 1]}}]}"#, &Files::default());
+        let missing = r#"[{"replace": {"table": "Bus", "ids": {"count": 1}, "fields": {"x": {"file": "f.bin", "dtype": "f64le", "count": 1}}}}]"#;
+        assert_eq!(error(missing), "io: f.bin: 0 bytes of the slice's 8");
+        let invalid = load_data(
+            r#"{"name": "grid", "patch": [{"replace": {"table": "Bus", "ids": [1, 1]}}]}"#,
+            &Files::default(),
+        );
         assert!(matches!(invalid, Err(Error::Invalid { path, .. }) if path.to_string().starts_with("patch[0]")));
     }
 }

@@ -1,9 +1,18 @@
 /**
- * The expression builders that write scenes' options. A scene is plain data the view decodes, its
- * types written from the forms latkit reads (`forms.ts`); nothing here needs the wasm module.
+ * The expression builders that write scenes' options. A scene is plain data the view reads, its
+ * types written from the forms latkit reads (`inputs.ts`); nothing here needs WebAssembly.
  */
 
-import type { Colormap, Marker } from './forms.js';
+import type {
+  Binary,
+  Colormap,
+  ExprNode,
+  FieldForm,
+  Marker,
+  Size,
+  State,
+  Unary,
+} from './inputs.js';
 
 /** A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. Where an option takes an expression, a
  * string starting with `#` is a hex color and any other string names a field. */
@@ -11,42 +20,6 @@ export type Color = string;
 
 /** What an expression is written as: an {@link Expr}, or its JSON form. */
 export type ExprInput = Expr | ExprNode;
-
-/** An expression as JSON: a constant, a field name, or one of these objects. {@link Expr} writes it. */
-export type ExprNode =
-  | number
-  | boolean
-  | string
-  | FieldNode
-  | { color: Color }
-  | { state: 'selected' | 'hovered' | 'pointer' | 'elapsed' | 'zoom' }
-  | { missing: true }
-  | { op: Unary; args: [ExprNode] }
-  | { op: Binary; args: [ExprNode, ExprNode] }
-  | { is: [ExprNode, string] }
-  | { when: [ExprNode, ExprNode][]; otherwise: ExprNode }
-  | { colormap: ExprNode; map: Colormap; domain?: [number, number] }
-  | { scale: ExprNode; range: [number, number]; domain?: [number, number] };
-
-type FieldNode = { field: string; of?: [data: string, table: string]; step?: boolean };
-type Unary = 'not' | 'neg' | 'abs' | 'sqrt' | 'sin' | 'cos' | 'floor' | 'ln' | 'exp';
-type Binary =
-  | 'add'
-  | 'sub'
-  | 'mul'
-  | 'div'
-  | 'rem'
-  | 'pow'
-  | 'min'
-  | 'max'
-  | 'lt'
-  | 'le'
-  | 'gt'
-  | 'ge'
-  | 'eq'
-  | 'ne'
-  | 'and'
-  | 'or';
 
 const nodeOf = (input: ExprInput): ExprNode => (input instanceof Expr ? input.node : input);
 
@@ -153,14 +126,19 @@ export class Expr {
     return new Expr({ is: [this.node, text] });
   }
 
-  /** The value through a colormap: a catalog name, or your own colors. */
+  /** Whether a text field holds `text`, ignoring case. Queries read it; marks do not. */
+  contains(text: string): Expr {
+    return new Expr({ contains: [this.node, text] });
+  }
+
+  /** The value through `map`: a catalog name, or your own colors. */
   colormap(map: Colormap): Mapped {
-    return new Mapped({ colormap: this.node, map });
+    return new Mapped({ colormap: map, value: this.node });
   }
 
   /** The value mapped linearly onto `[low, high]`, clamped. */
   scale(low: number, high: number): Mapped {
-    return new Mapped({ scale: this.node, range: [low, high] });
+    return new Mapped({ scale: [low, high], value: this.node });
   }
 }
 
@@ -172,17 +150,18 @@ export class Mapped extends Expr {
   }
 }
 
-type MappedNode = Extract<ExprNode, { map: unknown } | { range: unknown }>;
+type MappedNode = Extract<ExprNode, { value: unknown }>;
 
 const unary = (op: Unary, a: ExprInput): Expr => new Expr({ op, args: [nodeOf(a)] });
 const binary = (op: Binary, a: ExprInput, b: ExprInput): Expr =>
   new Expr({ op, args: [nodeOf(a), nodeOf(b)] });
 
-/** `node` with every field read through `f`; texts, colors, and names are not fields. */
-function mapFields(node: ExprNode, f: (field: FieldNode) => ExprNode): ExprNode {
-  if (typeof node === 'string') return f({ field: node });
+/** `node` with every field read through `f`; a string starting with `#` is a color, not a field. */
+function mapFields(input: ExprInput, f: (field: FieldForm) => FieldForm): ExprNode {
+  const node = nodeOf(input);
+  if (typeof node === 'string') return node.startsWith('#') ? node : f({ field: node });
   if (typeof node !== 'object') return node;
-  const map = (child: ExprNode) => mapFields(child, f);
+  const map = (child: ExprInput) => mapFields(child, f);
   if ('field' in node) return f(node);
   if ('op' in node) return { ...node, args: node.args.map(map) } as ExprNode;
   if ('when' in node) {
@@ -190,25 +169,27 @@ function mapFields(node: ExprNode, f: (field: FieldNode) => ExprNode): ExprNode 
     return { when: cases, otherwise: map(node.otherwise) };
   }
   if ('is' in node) return { is: [map(node.is[0]), node.is[1]] };
-  if ('scale' in node) return { ...node, scale: map(node.scale) };
-  if ('colormap' in node) return { ...node, colormap: map(node.colormap) };
+  if ('contains' in node) return { contains: [map(node.contains[0]), node.contains[1]] };
+  if ('value' in node) return { ...node, value: map(node.value) };
   return node;
 }
+
+const state = (name: State): Expr => new Expr({ state: name });
 
 /** The field `name` of each row. */
 export const field = (name: string): Expr => new Expr({ field: name });
 /** A color constant. */
 export const color = (css: Color): Expr => new Expr({ color: css });
 /** Whether the row is selected. */
-export const selected = (): Expr => new Expr({ state: 'selected' });
+export const selected = (): Expr => state('selected');
 /** Whether the pointer is over the row. */
-export const hovered = (): Expr => new Expr({ state: 'hovered' });
+export const hovered = (): Expr => state('hovered');
 /** CSS pixels from a vertex to the pointer. */
-export const pointer = (): Expr => new Expr({ state: 'pointer' });
+export const pointer = (): Expr => state('pointer');
 /** Seconds since the view was created. */
-export const elapsed = (): Expr => new Expr({ state: 'elapsed' });
+export const elapsed = (): Expr => state('elapsed');
 /** The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. */
-export const zoom = (): Expr => new Expr({ state: 'zoom' });
+export const zoom = (): Expr => state('zoom');
 /** A missing value: options that read one take the theme's. */
 export const missing = (): Expr => new Expr({ missing: true });
 /**
@@ -245,9 +226,6 @@ class Then {
     return new Expr({ when: this.cases, otherwise: nodeOf(value) });
   }
 }
-
-/** A size: CSS pixels, or position units with {@link units}, kept within CSS pixels. */
-export type Size = ExprInput | { units: ExprNode; atLeast?: number; atMost?: number };
 
 /** An icon marker showing one of `images` for each row, picked by `index`. */
 export function icon(images: ImageData[], index: ExprInput): Marker {

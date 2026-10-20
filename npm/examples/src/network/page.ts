@@ -6,6 +6,7 @@
  * swing; turn the globe at noon or now; hover or click anything to inspect it.
  */
 import { field, type ColormapName, type Fit, type Mark, type Row, type Scene } from '../latkit.js';
+import { each } from '../ui/rows.js';
 import type { Stage } from '../ui/stage.js';
 import { LEVELS, loadCase, megabytes, type Case } from './cases.js';
 import { continent } from './continent.js';
@@ -360,7 +361,7 @@ export default async function page(stage: Stage): Promise<void> {
   inspector.element.append(list);
   let hovered: Row | null = null;
   const inspect = () => {
-    const row = hovered ?? view.selection[0];
+    const row = hovered ?? each(view.selection)[0];
     list.replaceChildren();
     if (!row) return void (described.textContent = 'Hover or click anything.');
     const data = view.data(row.data);
@@ -415,6 +416,7 @@ export default async function page(stage: Stage): Promise<void> {
 
   /** The grid's figures in the map's states, when it has states, and what they color by. */
   function join(): void {
+    joined?.data.destroy();
     joined = undefined;
     const states = map?.loaded.states;
     if (states && grid?.case && state.statesBy !== 'none') {

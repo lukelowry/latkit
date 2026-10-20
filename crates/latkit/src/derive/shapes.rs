@@ -13,7 +13,7 @@ use crate::data::{Column, Field, GeometryBuilder, Id, Name, PAGE_ROWS, Page, Pag
 use crate::host::{Job, Shaping};
 use crate::scene::areas::triangles_of;
 use crate::scene::lines::path_of;
-use crate::{Kind, Mark, Pending, Space};
+use crate::{Mark, Pending, Space};
 
 /// Microseconds a point takes to triangulate, by estimate.
 const TRIANGULATE: f64 = 0.5;
@@ -144,8 +144,9 @@ impl Shaped {
             self.stamp = 0;
             return had;
         };
-        let ((Kind::Geometry(depth @ (2 | 3)), Shaping::Triangles { .. })
-        | (Kind::Geometry(depth @ 1..), Shaping::Path)) = (column.kind(), want.shaping)
+        let depth = column.kind().depth();
+        let ((Some(depth @ (2 | 3)), Shaping::Triangles { .. }) | (Some(depth @ 1..), Shaping::Path)) =
+            (depth, want.shaping)
         else {
             return self.field.take().is_some();
         };
@@ -280,7 +281,7 @@ fn points_of(column: &Column, row: usize) -> usize {
 /// shapes job reads.
 fn rows_of(source: &Table, column: &Column, rows: &[usize]) -> Table {
     let ids: Vec<Id> = rows.iter().filter_map(|&row| source.ids.id(row)).collect();
-    let crate::Kind::Geometry(depth) = column.kind() else { unreachable!("a geometry column") };
+    let depth = column.kind().depth().expect("a geometry column");
     let mut geometry = GeometryBuilder::new(depth);
     for &row in rows {
         let page = &column.pages()[row / PAGE_ROWS];

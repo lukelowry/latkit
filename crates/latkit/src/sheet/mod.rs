@@ -22,7 +22,7 @@ use crate::expr::cpu::Rows;
 use crate::gpu::atlas;
 use crate::gpu::shaders::{HEADER_BAND, PORT_SIZE, TEXT_BASE};
 use crate::host::{Job, Key, Placement, TextRun};
-use crate::scene::mark::{GEOMETRY, Style};
+use crate::scene::mark::Style;
 use crate::{Edges, Layout, Mark, Marker, Pending, Shape, Side, Theme, Vertices};
 
 /// Texts measured past which the sheet forgets them all.
@@ -242,7 +242,7 @@ impl Sheet {
         let mut vertices = Vec::with_capacity(vertex_marks.iter().map(|vm| vm.table.len()).sum());
         for (m, vm) in vertex_marks.iter().enumerate() {
             let rows = Rows::new(vm.table, input.data);
-            let (shape, group) = (shape_of(vm.mark), vm.mark.members.is_some());
+            let (shape, group) = (shape_of(vm.mark), vm.mark.contains.is_some());
             for row in 0..vm.table.len() {
                 let id = vm.table.ids.id(row).expect("every row has an id");
                 vertices.push(Vertex {
@@ -267,7 +267,7 @@ impl Sheet {
     fn half(&mut self, vm: &VertexMark<'_>, rows: &Rows<'_>, row: usize, input: &Input<'_>) -> [f64; 2] {
         let theme = &input.scene.theme;
         let radius = f64::from(theme.vertex_radius);
-        let group = vm.mark.members.is_some();
+        let group = vm.mark.contains.is_some();
         if !group {
             if let Some([w, h]) = &vm.mark.size {
                 let half = |size: &crate::Size| rows.number(&size.expr, row).map_or(radius, |v| v.max(0.0) / 2.0);
@@ -404,14 +404,12 @@ impl Sheet {
     }
 }
 
-/// What the sheet reads, stamped: the scene, every dataset's version, whether a host measures text,
-/// answers landed, the generation of places, and whether rows are being dragged.
+/// What the sheet reads, stamped: the scene, whether a host measures text, answers landed, the
+/// generation of places, whether rows are being dragged, and what the marks' structure reads.
 fn stamp(input: &Input<'_>, landed: u64, generation: u64) -> u64 {
     let mut hasher = FxHasher::default();
     (input.scene_version, input.host.is_some(), landed, generation, input.dragging).hash(&mut hasher);
-    for data in input.data {
-        (data.name(), data.0.version).hash(&mut hasher);
-    }
+    input.structure(&mut hasher);
     hasher.finish().max(1)
 }
 
@@ -471,7 +469,7 @@ fn drawing(vertex_marks: &[VertexMark<'_>], data: &Name, table: &Name) -> Option
 pub(crate) fn position(mark: &Vertices, rows: &Rows<'_>, row: usize) -> Option<[f64; 2]> {
     match &mark.position {
         Some([x, y]) => Some([rows.number(x, row)?, rows.number(y, row)?]),
-        None => match rows.table.value(row, GEOMETRY, f64::INFINITY)? {
+        None => match rows.table.value(row, mark.point_field(), f64::INFINITY)? {
             Value::Point(p) if p.iter().all(|v| v.is_finite()) => Some(p),
             _ => None,
         },
@@ -480,7 +478,7 @@ pub(crate) fn position(mark: &Vertices, rows: &Rows<'_>, row: usize) -> Option<[
 
 /// The outline a vertex mark's markers draw: groups and blocks are boxes, the rest their shape.
 fn shape_of(mark: &Vertices) -> Shape {
-    if mark.members.is_some() {
+    if mark.contains.is_some() {
         return Shape::Rectangle;
     }
     match &mark.marker {
@@ -493,7 +491,7 @@ fn shape_of(mark: &Vertices) -> Shape {
 /// The band across the top of a group mark's containers its titles sit in, units; none for other
 /// marks, or without titles.
 fn header(mark: &Vertices, theme: &Theme) -> f64 {
-    match (&mark.members, &mark.style.label) {
+    match (&mark.contains, &mark.style.label) {
         (Some(_), Some(label)) => f64::from(label.size.unwrap_or(theme.font_size) * HEADER_BAND),
         _ => 0.0,
     }
@@ -504,7 +502,7 @@ fn header(mark: &Vertices, theme: &Theme) -> f64 {
 /// how many rows each group holds.
 fn hold(vertex_marks: &[VertexMark<'_>], vertices: &mut [Vertex]) {
     for vm in vertex_marks {
-        let Some((table, reference)) = &vm.mark.members else { continue };
+        let Some((table, reference)) = &vm.mark.contains else { continue };
         let Some(m) = drawing(vertex_marks, vm.data.name(), table) else { continue };
         let members = &vertex_marks[m];
         let Some(Field::Reference(r)) = members.table.field_named(reference) else { continue };

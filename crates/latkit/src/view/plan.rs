@@ -181,16 +181,15 @@ fn place_of(mark: &Mark, table: &Table) -> Place {
     match mark {
         Mark::Vertices(v) => match &v.position {
             Some([x, y]) => Place::Points([x.clone(), y.clone()]),
-            None if table.kind(crate::scene::mark::GEOMETRY) == Some(Kind::Geometry(0)) => Place::Points([
-                Expr::component(crate::scene::mark::GEOMETRY, 0),
-                Expr::component(crate::scene::mark::GEOMETRY, 1),
-            ]),
+            None if table.kind(v.point_field()) == Some(Kind::Point) => {
+                Place::Points([Expr::component(v.point_field(), 0), Expr::component(v.point_field(), 1)])
+            }
             None => Place::Nowhere,
         },
         Mark::Edges(e) => e.ends.as_ref().map_or(Place::Nowhere, |(a, b)| Place::Ends(vec![a.clone(), b.clone()])),
         Mark::Faces(f) => f.corners.as_ref().map_or(Place::Nowhere, |c| Place::Ends(c.to_vec())),
         Mark::Lines(_) | Mark::Areas(_) => match geometry_of(mark) {
-            Some(field) if matches!(table.kind(&field), Some(Kind::Geometry(_))) => Place::Geometry(field),
+            Some(field) if table.kind(&field).and_then(Kind::depth).is_some() => Place::Geometry(field),
             _ => Place::Nowhere,
         },
     }

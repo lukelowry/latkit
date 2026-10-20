@@ -21,9 +21,9 @@ pub enum Error {
     /// A budget or device limit would be exceeded.
     #[error("over limit: {0}")]
     Limit(Cow<'static, str>),
-    /// Fetching or decoding external bytes failed.
-    #[error("load: {0}")]
-    Load(Cow<'static, str>),
+    /// Reading or writing external bytes failed: a fetch, a file, a worker, an encoder.
+    #[error("io: {0}")]
+    Io(Cow<'static, str>),
     /// The operation did not complete before its deadline.
     #[error("operation timed out")]
     Timeout,
@@ -44,14 +44,14 @@ impl Error {
         Error::Invalid { path: Path::default(), reason: reason.into() }
     }
 
-    /// A short, stable name for the kind of error: `invalid`, `unsupported`, `limit`, `load`, or
+    /// A short, stable name for the kind of error: `invalid`, `unsupported`, `limit`, `io`,
     /// `device-lost`, `cancelled`, or `timeout`.
     pub fn code(&self) -> &'static str {
         match self {
             Error::Invalid { .. } => "invalid",
             Error::Unsupported(_) => "unsupported",
             Error::Limit(_) => "limit",
-            Error::Load(_) => "load",
+            Error::Io(_) => "io",
             Error::DeviceLost => "device-lost",
             Error::Cancelled => "cancelled",
             Error::Timeout => "timeout",
@@ -82,6 +82,26 @@ impl serde::Serialize for Error {
             map.serialize_entry("path", &path.to_string())?;
         }
         map.end()
+    }
+}
+
+/// The error as it serializes: a failure, as plain data.
+impl schemars::JsonSchema for Error {
+    fn schema_name() -> Cow<'static, str> {
+        "Failure".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "What failed: its `code`, the message, and for invalid input the `path` to the part, such as `marks[2].color`.",
+            "type": "object",
+            "properties": {
+                "code": { "enum": ["invalid", "unsupported", "limit", "io", "device-lost", "cancelled", "timeout"] },
+                "message": { "type": "string" },
+                "path": { "type": "string" },
+            },
+            "required": ["code", "message"],
+        })
     }
 }
 

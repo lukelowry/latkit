@@ -56,7 +56,7 @@ impl<'a> Rows<'a> {
                             pages.for_each(|v| v.each_number(|x| out.push(make(x.unwrap_or(f64::NAN)))));
                             return out;
                         }
-                        (Kind::Geometry(0), Some(k)) => {
+                        (Kind::Point, Some(k)) => {
                             let k = usize::from(k.min(1));
                             for v in pages {
                                 let coords = v.geometry().map_or(&[][..], Geometry::coords);
@@ -123,6 +123,11 @@ impl<'a> Rows<'a> {
             Node::Is(a, text) => {
                 let Node::Field(f) = &*a.0 else { return f64::NAN };
                 f64::from(u8::from(matches!(self.value(f, row), Some(Value::Text(t)) if *t == **text)))
+            }
+            Node::Contains(a, text) => {
+                let Node::Field(f) = &*a.0 else { return f64::NAN };
+                let held = |t: &str| t.to_lowercase().contains(&text.to_lowercase());
+                f64::from(u8::from(matches!(self.value(f, row), Some(Value::Text(t)) if held(&t))))
             }
             Node::Scale { input, domain, range } => {
                 let x = self.eval(input, row);
@@ -201,12 +206,13 @@ fn binary(op: Binary, a: f64, b: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Table, field, when};
+    use crate::{Ids, Table, field, when};
 
     #[test]
     fn numbers_follow_the_gpu() {
-        let table =
-            Table::new("T", 3).field("w", vec![Some(10.0), None, Some(30.0)]).field("on", vec![true, false, true]);
+        let table = Table::new("T", Ids::count(3))
+            .field("w", vec![Some(10.0), None, Some(30.0)])
+            .field("on", vec![true, false, true]);
         let rows = Rows::new(&table, &[]);
         let size = field("w") * 2.0 + 4.0;
         assert_eq!(rows.number(&size, 0), Some(24.0));

@@ -9,12 +9,12 @@ use std::collections::HashMap;
 use super::View;
 use super::event::{Event, Hit};
 use super::sync::{Source, table_of};
-use crate::Row;
 use crate::data::{Field, PAGE_ROWS, Reference};
 use crate::expr::compile::Deps;
 use crate::gpu::shaders as wgsl;
 use crate::gpu::work::Queue;
 use crate::scene::mark::Primitive;
+use crate::{Row, Rows};
 
 /// Changed words past which the whole buffer is written at once.
 const WHOLE: usize = 512;
@@ -68,7 +68,7 @@ impl View {
         // Rows the data no longer holds, or no mark shows, leave the selection.
         if selection.len() < self.focus.selection.len() {
             self.focus.selection.clone_from(&selection);
-            self.events.tell(Event::Select { rows: selection, trigger: None });
+            self.events.tell(Event::Select { rows: Rows::group(selection), trigger: None });
         }
         let changed = self.focus.written.keys().filter(|w| !words.contains_key(w)).count()
             + words.iter().filter(|(w, b)| self.focus.written.get(w) != Some(b)).count();

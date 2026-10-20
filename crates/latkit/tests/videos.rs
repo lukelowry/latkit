@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use common::{SIZE, camera, gpu, plain_theme, plane};
+use latkit::Ids;
 use latkit::host::{Encoder, Host, Raster, TextRun, Unit};
 use latkit::{Color, Data, Encoding, Label, Mp4, Pending, Pixels, Scene, Shot, Sink, Table, Vertices, View};
 
@@ -50,7 +51,7 @@ impl Encoder for Kept {
 
 fn dot(x: f64) -> Data {
     let mut data = Data::new("graph");
-    data.apply(Table::new("Node", 1).field("x", vec![x]).field("y", vec![0.0])).expect("valid");
+    data.apply(Table::new("Node", Ids::count(1)).field("x", vec![x]).field("y", vec![0.0])).expect("valid");
     data
 }
 
@@ -123,7 +124,7 @@ fn labeled_marks_easing_between_frames_complete_every_frame() {
     view.set_camera(camera());
     let named = |x: f64| {
         let mut data = dot(x);
-        data.apply(Table::new("Node", 1).field("name", vec!["a"])).expect("valid");
+        data.apply(Table::new("Node", Ids::count(1)).field("name", vec!["a"])).expect("valid");
         data
     };
     view.set_data(named(0.0));

@@ -9,6 +9,7 @@ import {
   type Scene,
 } from '../latkit.js';
 import { h } from '../ui/dom.js';
+import { each } from '../ui/rows.js';
 import type { Stage } from '../ui/stage.js';
 
 /** The areas signals belong to, in the colors tab10 gives them. */
@@ -182,10 +183,11 @@ export default function page(stage: Stage): void {
     carry = 0;
     // The record starts with its first frame, so the value field is there from the start.
     signals.sample(0, values);
+    data.destroy();
     data = new Data('scada').apply(
       new Patch()
         .axis('time', 's')
-        .set('Signal', n, { name: signals.name, area: signals.area })
+        .set('Signal', { count: n }, { name: signals.name, area: signals.area })
         .append(0, 'Signal', { value: values }),
     );
     view.select([]);
@@ -221,7 +223,7 @@ export default function page(stage: Stage): void {
         signals.sample(t, values);
         patch.append(t, 'Signal', { value: values });
       }
-      data = data.apply(patch.forget(t - HISTORY));
+      data.apply(patch.forget(t - HISTORY));
       view.setData(data);
       playback.record(data.span!);
     });
@@ -236,7 +238,9 @@ export default function page(stage: Stage): void {
     return `${value.toFixed(digits)} ${unit}`;
   };
   const describe = (hit: Hit | null) => {
-    const picked = view.selection.map((row) => name(row.id)).join(', ');
+    const picked = each(view.selection)
+      .map((row) => name(row.id))
+      .join(', ');
     const sample = hit?.sample;
     reading.textContent = sample
       ? `${name(hit.row.id)} at ${sample.at.toFixed(2)} s: ${format(sample.value)}`
@@ -268,7 +272,7 @@ export default function page(stage: Stage): void {
     });
     const names = rows.fields.name as readonly string[];
     const read = rows.fields.value as Float64Array;
-    const picked = new Set(view.selection.map((row) => String(row.id)));
+    const picked = new Set(each(view.selection).map((row) => String(row.id)));
     hot.replaceChildren(
       ...rows.ids.map((id, k) => {
         const value = read[k]!;
@@ -283,7 +287,7 @@ export default function page(stage: Stage): void {
           h('span', { class: 'bar', style: `--score: ${(score * 100).toFixed(0)}%` }),
         );
         button.addEventListener('click', () => {
-          view.select([{ data: 'scada', table: 'Signal', id }]);
+          view.select([{ data: 'scada', table: 'Signal', ids: [id] }]);
           describe(null);
           list();
         });

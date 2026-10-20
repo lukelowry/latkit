@@ -7,12 +7,22 @@ use std::sync::Arc;
 use crate::{Error, Result};
 
 /// RGBA texels, straight alpha, sRGB, rows top to bottom.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(remote = "Self", deny_unknown_fields)]
+#[schemars(rename = "Bitmap")]
 pub struct Image {
     /// Width and height in texels.
     pub size: [u32; 2],
     /// `size[0] * size[1] * 4` bytes.
     pub rgba: Arc<[u8]>,
+}
+
+/// An image reads as `{ size, rgba }`, four bytes a texel.
+impl<'de> serde::Deserialize<'de> for Image {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Image, D::Error> {
+        let Image { size, rgba } = Image::deserialize(deserializer)?;
+        Image::new(size, rgba).map_err(serde::de::Error::custom)
+    }
 }
 
 impl Image {
@@ -37,7 +47,7 @@ impl Image {
     pub fn write(&self, format: ImageFormat, mut output: impl Write) -> Result<()> {
         Self::new(self.size, self.rgba.clone())?;
         let [width, height] = self.size;
-        let failed = |error: &dyn std::fmt::Display| Error::Load(format!("cannot write {format}: {error}").into());
+        let failed = |error: &dyn std::fmt::Display| Error::Io(format!("cannot write {format}: {error}").into());
         match format {
             ImageFormat::Png => {
                 let mut encoder = png::Encoder::new(output, width, height);
@@ -51,9 +61,12 @@ impl Image {
                 writer.finish().map_err(|e| failed(&e))
             }
             ImageFormat::Jpeg { quality } => {
+                if !(1..=100).contains(&quality) {
+                    return Err(Error::invalid("a JPEG's quality runs from 1 to 100").at("quality"));
+                }
                 let side = |v: u32| u16::try_from(v).map_err(|_| failed(&"a JPEG is at most 65535 pixels a side"));
                 let mut bytes = Vec::new();
-                jpeg_encoder::Encoder::new(&mut bytes, quality.clamp(1, 100))
+                jpeg_encoder::Encoder::new(&mut bytes, quality)
                     .encode(&self.rgba, side(width)?, side(height)?, jpeg_encoder::ColorType::Rgba)
                     .map_err(|e| failed(&e))?;
                 output.write_all(&bytes).map_err(|e| failed(&e))

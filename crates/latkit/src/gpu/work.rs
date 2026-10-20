@@ -12,8 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 macro_rules! work {
     ($($(#[$doc:meta])* $field:ident: $count:ident,)*) => {
         /// What a [`Gpu`](crate::Gpu) did since it was made; subtract two for what happened between.
-        #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-        #[derive(serde::Serialize)]
+        #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, schemars::JsonSchema)]
         pub struct Work {
             $($(#[$doc])* pub $field: u64,)*
         }

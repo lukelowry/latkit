@@ -7,6 +7,7 @@ import {
   reference,
   when,
   type ColormapName,
+  type Id,
   type Mark,
   type Scene,
 } from '../latkit.js';
@@ -42,11 +43,15 @@ function grid(): { data: Data; buses: number; lines: number } {
     if (i % SIDE < SIDE - 1) link(i, i + 1);
     if (i + SIDE < buses) link(i, i + SIDE);
   }
-  let data = new Data('grid').apply(
+  const data = new Data('grid').apply(
     new Patch()
       .axis('time', 's')
-      .set('Bus', buses, { lon, lat, kv, name })
-      .set('Line', from.length, { from: reference('Bus', from), to: reference('Bus', to) }),
+      .set('Bus', { count: buses }, { lon, lat, kv, name })
+      .set(
+        'Line',
+        { count: from.length },
+        { from: reference('Bus', from), to: reference('Bus', to) },
+      ),
   );
   const vm = new Float32Array(buses);
   for (let t = 0; t <= SECONDS; t++) {
@@ -55,7 +60,7 @@ function grid(): { data: Data; buses: number; lines: number } {
       const y = Math.floor(i / SIDE) / SIDE;
       vm[i] = 1 + 0.04 * Math.sin(6 * x + t / 6) * Math.cos(5 * y - t / 9);
     }
-    data = data.apply(new Patch().append(t, 'Bus', { vm }));
+    data.apply(new Patch().append(t, 'Bus', { vm }));
   }
   return { data, buses, lines: from.length };
 }
@@ -63,7 +68,7 @@ function grid(): { data: Data; buses: number; lines: number } {
 export default function page(stage: Stage): void {
   const { data, buses, lines } = grid();
   const look = {
-    space: 'earth' as Scene['space'],
+    space: 'mercator' as Scene['space'],
     colormap: 'balance' as ColormapName,
     /** How far from 1 pu the colormap's ends lie. */
     spread: 0.04,
@@ -87,7 +92,7 @@ export default function page(stage: Stage): void {
         // Buses past the colormap's ends ring, so they stand out at any zoom.
         ...(look.outliers
           ? {
-              status: when(field('vm').sub(1).abs().gt(look.spread))
+              ring: when(field('vm').sub(1).abs().gt(look.spread))
                 .then(color('#ffd166'))
                 .otherwise(missing()),
             }
@@ -120,11 +125,11 @@ export default function page(stage: Stage): void {
   space.choice(
     'Draw on',
     [
-      ['Map', 'earth'],
+      ['Map', 'mercator'],
       ['Globe', 'globe'],
       ['Plane', 'plane'],
     ] as const,
-    'earth',
+    'mercator',
     (next) => {
       look.space = next;
       restyle();
@@ -183,17 +188,16 @@ export default function page(stage: Stage): void {
   const selected = stage.section('Selection');
   const readout = selected.note();
   const describe = () => {
-    const rows = view.selection;
-    const vm = (row: (typeof rows)[number]) =>
-      data.get('Bus', row.id, 'vm', view.at) as number | null;
-    if (!rows.length) readout.textContent = 'Click a bus, or Shift-drag a box.';
-    else if (rows.length === 1) {
-      const row = rows[0]!;
-      const kv = data.get('Bus', row.id, 'kv') as number | null;
-      readout.textContent = `Bus ${row.id}: ${kv ?? '–'} kV, ${vm(row)?.toFixed(3) ?? '–'} pu`;
+    const ids = view.selection.filter((rows) => rows.table === 'Bus').flatMap((rows) => rows.ids);
+    const vm = (id: Id) => data.get('Bus', id, 'vm', view.at) as number | null;
+    if (!ids.length) readout.textContent = 'Click a bus, or Shift-drag a box.';
+    else if (ids.length === 1) {
+      const id = ids[0]!;
+      const kv = data.get('Bus', id, 'kv') as number | null;
+      readout.textContent = `Bus ${id}: ${kv ?? '–'} kV, ${vm(id)?.toFixed(3) ?? '–'} pu`;
     } else {
-      const values = rows.map(vm).filter((v): v is number => v !== null);
-      readout.textContent = `${rows.length} buses: ${Math.min(...values).toFixed(3)} – ${Math.max(...values).toFixed(3)} pu`;
+      const values = ids.map(vm).filter((v): v is number => v !== null);
+      readout.textContent = `${ids.length} buses: ${Math.min(...values).toFixed(3)} – ${Math.max(...values).toFixed(3)} pu`;
     }
   };
   view.on('select', describe);
