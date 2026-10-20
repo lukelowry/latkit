@@ -26,6 +26,16 @@ impl View {
     /// Uploads stream within the GPU's budget per frame. A mark shows a new data version once all of
     /// its changed pages are on the GPU, and keeps drawing the previous one until then.
     pub fn render(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>) {
+        self.record(encoder, frame, true);
+    }
+
+    /// Records `frame` for a picture, which takes no input: it makes what it draws with, and leaves
+    /// the pipelines input needs to the frames that take it.
+    pub(crate) fn render_picture(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>) {
+        self.record(encoder, frame, false);
+    }
+
+    fn record(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>, input: bool) {
         if self.gpu.lost() {
             if !self.told_lost {
                 self.told_lost = true;
@@ -50,7 +60,7 @@ impl View {
         self.settle();
         self.advance(dt);
         let mut inner = gpu.0.lock();
-        self.make_pipelines(&mut inner, frame.format, super::resources::samples(frame.pixel_ratio));
+        self.make_pipelines(&mut inner, frame.format, super::resources::samples(frame.pixel_ratio), input);
         inner.atlas.tick();
         self.settle_labels(&mut inner);
         self.derive(&mut inner);

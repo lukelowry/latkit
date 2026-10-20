@@ -80,6 +80,13 @@ const SOFTWARE = [
   '--enable-features=Vulkan,WebGPU',
 ];
 
+/**
+ * A machine with two GPUs draws on its fast one, every launch: Chrome ignores WebGPU's
+ * `powerPreference` on Windows, and picks either otherwise, so times and limit-bound work would
+ * compare two devices.
+ */
+const HARDWARE = ['--force_high_performance_gpu'];
+
 /** Chrome, headless, with `args` besides: on SwiftShader when `software`, as Linux always is. */
 export async function launch(
   args: readonly string[] = [],
@@ -89,7 +96,7 @@ export async function launch(
     chromium.launchServer({
       executablePath: chrome(),
       headless: true,
-      args: [...(software ? SOFTWARE : []), ...args],
+      args: [...(software ? SOFTWARE : HARDWARE), ...args],
     }),
     STEP,
     'launch Chrome',

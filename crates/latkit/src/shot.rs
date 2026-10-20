@@ -380,7 +380,7 @@ impl Drawing {
         let scale = self.shot.scale;
         for (view, panel) in views.iter_mut().zip(&picture.panels) {
             let frame = Frame { target: &panel.target, format: FORMAT, size: panel.size, pixel_ratio: scale, time };
-            view.render(&mut encoder, &frame);
+            view.render_picture(&mut encoder, &frame);
         }
         let complete = views.iter().all(|v| v.complete());
         let easing = still && views.iter().any(|v| v.easing());

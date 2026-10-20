@@ -6,8 +6,8 @@
 /// The JSON Schema of what `T` deserializes from, its definitions under `$defs`.
 ///
 /// ```
-/// let scene = latkit::schema::<latkit::Scene>();
-/// assert!(scene["properties"]["marks"].is_object());
+/// let data = latkit::schema::<latkit::Data>();
+/// assert!(data["properties"]["patch"].is_object());
 /// ```
 pub fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
     schemars::SchemaGenerator::default().into_root_schema_for::<T>().to_value()

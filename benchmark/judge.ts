@@ -38,6 +38,9 @@ export interface Verdict {
 const SLACK = 0.2;
 /** Below these a cost counts as these: too small to fit an exponent to, or to call slower. */
 const FLOOR = { frame: 0.05, action: 2, bytes: 64 * 1024 };
+/** Milliseconds a phase acting once may land later than its baseline by: a timer tick, which is
+ * 15.6 ms on Windows, so readbacks answer one tick or the next. */
+const TICK = 16;
 /** How much slower than the baseline a median may be. */
 const SLOWER = 1.25;
 /** Work the data and the frames drawn alone set, which repeats exactly once a phase settles. */
@@ -148,7 +151,7 @@ export function judge(
           else if (is < was) notes.push(`${where}: ${k} ${is}, was ${was}; --update keeps it`);
         }
         const then = sameMachine ? base.times!.times[scenario.name]?.[n]?.[phase] : undefined;
-        const floor = now.steady ? FLOOR.frame : FLOOR.action;
+        const floor = now.steady ? FLOOR.frame : TICK;
         if (then && now.time > then.time * SLOWER + floor)
           failures.push(`${where}: ${now.time.toFixed(2)} ms, was ${then.time.toFixed(2)}`);
         else if (then && now.time < then.time / SLOWER)

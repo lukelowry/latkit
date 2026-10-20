@@ -50,6 +50,19 @@ fn a_picture_draws_what_the_view_shows() {
 }
 
 #[test]
+fn pictures_make_only_what_they_draw_with() {
+    let Some(gpu) = gpu() else { return };
+    let (scene, data) = dot(20.0, Color::rgb(1.0, 0.0, 0.0));
+    let mut view = view(&gpu, scene, data);
+    let shot = Shot::new([SIZE, SIZE]);
+    pollster::block_on(shot.image(&mut [&mut view])).expect("a picture");
+    let made = gpu.work().pipelines;
+    pollster::block_on(shot.image(&mut [&mut view])).expect("a picture");
+    // A picture takes no input, so it never makes the probes and lit draws a pointer would need.
+    assert_eq!(gpu.work().pipelines, made, "another picture makes nothing");
+}
+
+#[test]
 fn a_scaled_picture_draws_the_same_view_sharper() {
     let Some(gpu) = gpu() else { return };
     let (scene, data) = dot(20.0, Color::rgb(1.0, 0.0, 0.0));

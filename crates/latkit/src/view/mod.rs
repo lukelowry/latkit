@@ -132,6 +132,8 @@ pub struct View {
     waiting: Waiting,
     /// The format and samples per pixel the scene's pipelines were made for.
     pipelines_made: Option<(wgpu::TextureFormat, u32)>,
+    /// The target pictures last drew into, whose pipelines are made.
+    picture_pipelines: Option<(wgpu::TextureFormat, u32)>,
     /// Who asked for the arranging under way.
     arranging: Vec<crate::Resolver<Vec<Patch>>>,
     /// Whether the platform asks for reduced motion, which `Motion::System` follows.
@@ -194,6 +196,7 @@ impl View {
             told_lost: false,
             waiting: Waiting::default(),
             pipelines_made: None,
+            picture_pipelines: None,
             arranging: Vec::new(),
             reduced_motion: false,
             input_pipelines: std::collections::VecDeque::new(),
@@ -292,6 +295,7 @@ impl View {
         self.scene = scene;
         self.scene_version += 1;
         self.pipelines_made = None;
+        self.picture_pipelines = None;
         self.focus.dirty = true;
         self.gestures.keys.stale();
         self.invalidate();

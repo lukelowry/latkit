@@ -136,7 +136,7 @@ only glow, halo, and pick radius stay pixels. Zooming scales one fixed picture.
 
 ## Geography
 
-- **Data:** `geo::geojson(name, bytes)` reads GeoJSON (gzip-compressed or not) into tables
+- **Data:** `Data::read(bytes, Some(name))` reads GeoJSON (gzip-compressed or not) into tables
   `points`, `lines`, and `polygons`, properties as fields; npm reads it in a worker.
 - **Tiles:** `View::set_tiles(Tiles::vector(name, url))` takes a PMTiles archive, TileJSON, or a
   `{z}/{x}/{y}` template. The camera picks tiles that draw at most their size, nearest first; the host
@@ -228,8 +228,8 @@ use latkit::*;
 let mut grid = Data::new("grid");
 grid.apply(
     Patch::new()
-        .set(Table::new("Bus", 3).field("lon", [-97.7, -96.8, -95.4]).field("lat", [30.3, 32.8, 29.8]).field("name", ["A", "B", "C"]).field("kv", [345.0, 138.0, 69.0]))
-        .set(Table::new("Branch", 2).reference("from", "Bus", [0_u64, 1]).reference("to", "Bus", [1_u64, 2]).field("p", [120.0, -40.0]).field("kv", [345.0, 138.0])),
+        .replace(Table::new("Bus", Ids::count(3)).field("lon", [-97.7, -96.8, -95.4]).field("lat", [30.3, 32.8, 29.8]).field("name", ["A", "B", "C"]).field("kv", [345.0, 138.0, 69.0]))
+        .replace(Table::new("Branch", Ids::count(2)).reference("from", "Bus", [0_u64, 1]).reference("to", "Bus", [1_u64, 2]).field("p", [120.0, -40.0]).field("kv", [345.0, 138.0])),
 )?;
 grid.apply(Patch::new().append([0.5], "Bus", [("vm", [1.01, 0.99, 1.0])]))?; // a sampled frame
 let grid = Data::load(&json, "data/grid.json", &host).await?; // any language's JSON; files' slices fetched
@@ -244,7 +244,7 @@ while let Some((patch, used)) = Patch::decode(&buffer, 1 << 28)? {    // patches
 }
 
 // A map: marks name their data; options are expressions. Geometry is a field.
-view.set_data(geo::geojson("states", &bytes)?);
+view.set_data(Data::read(&bytes, Some("states"))?);
 view.set_tiles(geo::Tiles::vector("base", "https://tiles.openfreemap.org/planet"));
 let map = Scene::new(Earth::globe().daylight(1_782_043_200.0).atmosphere(true))
     .draw(Areas::of("base", "water").color(Color::hex("#1d3557")?))

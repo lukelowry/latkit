@@ -1,6 +1,7 @@
 # latkit
 
 Columnar data drawn as vertices, edges, lines, and areas with WebGPU.
+[Documentation](https://latkit.readthedocs.io).
 
 ```ts
 import { loadLatkit, Patch, field, type Scene } from 'latkit';

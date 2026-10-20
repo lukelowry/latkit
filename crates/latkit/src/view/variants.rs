@@ -5,7 +5,8 @@
 //! the queries behind the intents the controls allow (the hits a menu or the keys list, boxes,
 //! locating where a connection starts). Chrome compiles a pipeline where it is made, so the opening
 //! costs its longest frame rather than their sum, and no first gesture compiles; what the scene
-//! never uses is never made.
+//! never uses is never made. A picture takes no input: it makes what it draws with alone, and the
+//! frames that take input go on with their stages.
 
 use super::{SHADE, View};
 use crate::gpu::Inner;
@@ -27,19 +28,20 @@ const LABELS: [&str; 6] = ["candidates", "claim", "decide", "occupy", "ask", "fa
 
 impl View {
     /// Makes the pipelines the scene draws with, for frames into `format` with `samples` per pixel;
-    /// on each frame after, the next stage of those its input needs.
-    pub(super) fn make_pipelines(&mut self, inner: &mut Inner, format: wgpu::TextureFormat, samples: u32) {
+    /// on each frame after that takes `input`, the next stage of those its input needs.
+    pub(super) fn make_pipelines(&mut self, inner: &mut Inner, format: wgpu::TextureFormat, samples: u32, input: bool) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        if self.pipelines_made == Some((format, samples)) {
-            if let Some(stage) = self.input_pipelines.pop_front() {
+        let made = if input { &mut self.pipelines_made } else { &mut self.picture_pipelines };
+        if *made == Some((format, samples)) {
+            if input && let Some(stage) = self.input_pipelines.pop_front() {
                 inner.pipelines.make(device, stage);
             }
             return;
         }
-        self.pipelines_made = Some((format, samples));
+        *made = Some((format, samples));
         let scene = &self.scene;
-        let lights = scene.marks.iter().any(|m| m.style().interaction.pick);
+        let lights = input && scene.marks.iter().any(|m| m.style().interaction.pick);
         for mark in &scene.marks {
             let Mark::Vertices(vertices) = mark else { continue };
             let Marker::Wgsl { source, .. } = &vertices.marker else { continue };
@@ -53,7 +55,9 @@ impl View {
         }
         let Stages { draw, hover, intents } = stages(scene, format, samples);
         inner.pipelines.make(device, draw);
-        self.input_pipelines = [hover, intents].into_iter().filter(|stage| !stage.is_empty()).collect();
+        if input {
+            self.input_pipelines = [hover, intents].into_iter().filter(|stage| !stage.is_empty()).collect();
+        }
     }
 }
 

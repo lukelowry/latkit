@@ -90,7 +90,11 @@ test('patches carry every kind of value through the bytes', () => {
   assert.equal(get(103, 'load'), 3.5);
   assert.equal(get(101, 'rank'), -1);
   assert.equal(get(102, 'zone'), 8);
-  assert.deepEqual([get(101, 'flag'), get(102, 'flag'), get(103, 'flag')], [true, false, true], 'a Uint8Array holds booleans');
+  assert.deepEqual(
+    [get(101, 'flag'), get(102, 'flag'), get(103, 'flag')],
+    [true, false, true],
+    'a Uint8Array holds booleans',
+  );
   assert.deepEqual([get(101, 'open'), get(102, 'open'), get(103, 'open')], [true, null, false]);
   assert.deepEqual([get(101, 'name'), get(102, 'name'), get(103, 'name')], ['North', null, 'Sü∂']);
   assert.deepEqual(get(103, 'point'), [4, 5]);
