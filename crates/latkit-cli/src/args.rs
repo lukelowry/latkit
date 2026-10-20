@@ -1,5 +1,5 @@
-//! The command line: what `render`, `validate`, `inspect`, `query`, and `schema` take, and the checks
-//! that fail as usage errors before anything is read.
+//! The command line: what `render`, `validate`, `inspect`, `query`, `tile`, and `schema` take, and the
+//! checks that fail as usage errors before anything is read.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -57,6 +57,22 @@ pub(crate) enum Command {
         #[arg(long, default_value = "30", value_parser = deadline)]
         deadline: Duration,
     },
+    /// Write a dataset as time tiles: frames.json, which --tiles opens, the dataset without its
+    /// sampled fields' histories, and their spans at every level of detail
+    Tile {
+        /// The dataset, [NAME=]FILE; - reads stdin
+        #[arg(value_name = "[NAME=]FILE")]
+        data: Source,
+        /// The directory the tiles go in
+        #[arg(short, long, value_name = "DIR")]
+        output: PathBuf,
+        /// Entries a span holds: frames, or buckets of a level of detail; a multiple of 8
+        #[arg(long, default_value = "256")]
+        chunk: u32,
+        /// The longest the dataset may take to load, in seconds
+        #[arg(long, default_value = "30", value_parser = deadline)]
+        deadline: Duration,
+    },
 }
 
 /// What a render draws and where it goes.
@@ -68,7 +84,8 @@ pub(crate) struct Job {
     /// A dataset: JSON document, latkit bytes, or GeoJSON (which needs a NAME); NAME= renames it
     #[arg(short, long, value_name = "[NAME=]FILE")]
     pub(crate) data: Vec<Source>,
-    /// Vector tiles every view fetches as dataset NAME: a PMTiles file, TileJSON, or {z}/{x}/{y} template
+    /// Tiles every view fetches as dataset NAME: time tiles' frames.json, or vector tiles' PMTiles
+    /// file, TileJSON, or {z}/{x}/{y} template
     #[arg(long, value_name = "NAME=FILE")]
     pub(crate) tiles: Vec<Source>,
     /// Image file, %d pattern for an image sequence, or - for stdout
@@ -255,7 +272,7 @@ impl Cli {
                 }
                 return Ok(());
             }
-            Command::Schema { .. } => return Ok(()),
+            Command::Schema { .. } | Command::Tile { .. } => return Ok(()),
             Command::Query { data, query, .. } => {
                 if is_stdio(&data.path) && query == "-" {
                     return Err(Self::command().error(ErrorKind::ArgumentConflict, "only one input can read stdin"));

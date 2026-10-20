@@ -10,12 +10,13 @@ use std::hash::{Hash, Hasher};
 
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
-use super::{EdgeMark, Vertex, VertexMark, drawing, key_of};
-use crate::data::{Field, Inverse, Reference, Row, Table, Value};
+use super::Vertex;
+use crate::data::{Row, Table, Value};
+use crate::derive::graph::{EdgeMark, Joins, VertexMark, key_of, port_codes};
 use crate::derive::{Input, Jobs, answers, spread};
 use crate::host::{Job, Key, Wiring};
 use crate::layout::route::{Net, Terminal, finish, route, simplify};
-use crate::{Pending, Port, Route, Shape, Side, Vertices};
+use crate::{Pending, Route, Shape, Side};
 
 /// Microseconds a wire takes to route, by estimate: what it spends of the frame's budget. A batch
 /// that does not fit routes in a host job.
@@ -121,27 +122,6 @@ pub(crate) fn moved(before: &FxHashMap<Row, Rect>, vertices: &[Vertex]) -> Vec<R
     }
     moved.extend(before.iter().filter(|(row, _)| !now.contains(row)).map(|(_, b)| *b));
     moved
-}
-
-/// What a layout links: each edge's two ends, and each net from its outputs to its inputs, by vertex.
-pub(crate) fn links(marks: &[VertexMark<'_>], edge_marks: &[EdgeMark<'_>]) -> Vec<[u32; 2]> {
-    let codes: Vec<Vec<u32>> = marks.iter().map(|vm| port_codes(vm.mark)).collect();
-    let mut links = Vec::new();
-    for em in edge_marks {
-        let joins = Joins::new(marks, &codes, em);
-        for row in 0..em.table.len() {
-            if let Some([a, b]) = joins.ends(row) {
-                if a != b {
-                    links.push([a as u32, b as u32]);
-                }
-                continue;
-            }
-            let terminals: Vec<(u32, bool)> =
-                joins.terminals(marks, row).into_iter().map(|(v, _, output)| (v as u32, output)).collect();
-            links.extend(net_links(&terminals));
-        }
-    }
-    links
 }
 
 /// Each edge mark's rows' paths, y down: worked out at once where straight or bent, routed where
@@ -310,70 +290,6 @@ fn wire(
         }
         out[ask.mark][ask.row] = parts;
     }
-}
-
-/// Where an edge mark's rows meet vertices: the references naming each row's two ends, with the
-/// first vertex of the table each names; or, for nets, every port reference naming its rows.
-struct Joins<'a> {
-    ends: Option<[(&'a Reference, usize); 2]>,
-    ports: Vec<Naming<'a>>,
-}
-
-/// A port reference naming a net table's rows: the vertex mark, the port's code and whether it is an
-/// output, and the rows naming each net.
-struct Naming<'a> {
-    mark: usize,
-    code: u32,
-    output: bool,
-    inverse: &'a Inverse,
-}
-
-impl<'a> Joins<'a> {
-    fn new(marks: &[VertexMark<'a>], codes: &[Vec<u32>], em: &EdgeMark<'a>) -> Joins<'a> {
-        let table: &'a Table = em.table;
-        let end = |field: &str| {
-            let Some(Field::Reference(r)) = table.field_named(field) else { return None };
-            let m = drawing(marks, em.data.name(), &r.to)?;
-            Some((r, marks[m].first))
-        };
-        if let Some((from, to)) = &em.mark.ends {
-            return Joins { ends: end(from).zip(end(to)).map(|(a, b)| [a, b]), ports: Vec::new() };
-        }
-        let mut ports = Vec::new();
-        for (m, vm) in marks.iter().enumerate().filter(|(_, vm)| vm.data.name() == em.data.name()) {
-            let vertices: &'a Table = vm.table;
-            for (k, (name, port)) in vm.mark.ports.iter().enumerate() {
-                if let Some(Field::Reference(r)) = vertices.field_named(name)
-                    && r.to == *table.name()
-                {
-                    ports.push(Naming { mark: m, code: codes[m][k], output: port.output, inverse: r.inverse() });
-                }
-            }
-        }
-        Joins { ends: None, ports }
-    }
-
-    /// Row `row`'s two ends, by vertex.
-    fn ends(&self, row: usize) -> Option<[usize; 2]> {
-        let [(a, first_a), (b, first_b)] = self.ends?;
-        Some([first_a + a.target(row)? as usize, first_b + b.target(row)? as usize])
-    }
-
-    /// Net row `row`'s terminals: each vertex naming it at a port, the port's code, and whether it is
-    /// an output.
-    fn terminals(&self, marks: &[VertexMark<'_>], row: usize) -> Vec<(usize, u32, bool)> {
-        let mut terminals = Vec::new();
-        for naming in &self.ports {
-            let first = marks[naming.mark].first;
-            terminals.extend(naming.inverse.of(row).iter().map(|&v| (first + v as usize, naming.code, naming.output)));
-        }
-        terminals
-    }
-}
-
-/// Each port's code on a vertex mark's rows.
-fn port_codes(mark: &Vertices) -> Vec<u32> {
-    Port::codes(&mark.ports.iter().map(|(_, port)| port).collect::<Vec<_>>())
 }
 
 /// Where a port of code `code` sits on box `b`, y down: on its side, spread by its place among the
@@ -581,24 +497,7 @@ fn bends(table: &Table, field: &str, row: usize) -> Vec<Point> {
     }
 }
 
-/// The links of a net whose terminals are `ends`, each a vertex and whether it drives the net: every
-/// driver to its first reader, and its first driver to every reader, so a wide net adds as many links
-/// as it has terminals. A net without both drivers and readers runs from its first terminal.
-fn net_links(ends: &[(u32, bool)]) -> Vec<[u32; 2]> {
-    let (mut drivers, mut readers): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
-    for &(vertex, drives) in ends {
-        if drives { drivers.push(vertex) } else { readers.push(vertex) }
-    }
-    if drivers.is_empty() || readers.is_empty() {
-        drivers = ends.iter().take(1).map(|e| e.0).collect();
-        readers = ends.iter().skip(1).map(|e| e.0).collect();
-    }
-    let (Some(&driver), Some(&reader)) = (drivers.first(), readers.first()) else { return Vec::new() };
-    let links = drivers.iter().map(|&d| [d, reader]).chain(readers.iter().skip(1).map(|&r| [driver, r]));
-    links.filter(|[a, b]| a != b).collect()
-}
-
-/// Lines with y up as y down, or back.
+// Lines with y up as y down, or back.
 fn flipped(lines: &[Vec<Point>]) -> Parts {
     lines.iter().map(|line| line.iter().map(|p| [p[0], -p[1]]).collect()).collect()
 }
@@ -674,11 +573,5 @@ mod tests {
         let parts = star(&ends, 1);
         assert_eq!(parts[0], vec![[0.0, 0.0], [20.0, 10.0], [20.0, 10.0]], "into the middle, a junction");
         assert_eq!(parts[2], vec![[20.0, 10.0], [30.0, 30.0]], "out to an input, an arrowhead");
-    }
-
-    #[test]
-    fn nets_link_their_drivers_to_their_readers() {
-        assert_eq!(net_links(&[(0, false), (1, true), (2, false)]), vec![[1, 0], [1, 2]]);
-        assert_eq!(net_links(&[(4, false), (5, false)]), vec![[4, 5]], "without a driver, the first drives");
     }
 }

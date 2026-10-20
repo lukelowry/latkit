@@ -1,7 +1,7 @@
 // Vertex normals for faces: each face adds its unit normal to its three corners in fixed point, so the
 // sums are exact in any order.
 
-import package::lib::types::NONE;
+import package::lib::types::{NONE, item};
 import package::lib::bind::mark;
 import package::lib::triangles::triangle_corner;
 
@@ -9,12 +9,13 @@ import package::lib::triangles::triangle_corner;
 
 @compute @workgroup_size(256)
 fn accumulate(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= mark.rows {
+    let i = item(id);
+    if i >= mark.rows {
         return;
     }
-    let a = triangle_corner(id.x, 0u);
-    let b = triangle_corner(id.x, 1u);
-    let c = triangle_corner(id.x, 2u);
+    let a = triangle_corner(i, 0u);
+    let b = triangle_corner(i, 1u);
+    let c = triangle_corner(i, 2u);
     if !(a.shown && b.shown && c.shown) || a.slot == NONE {
         return;
     }

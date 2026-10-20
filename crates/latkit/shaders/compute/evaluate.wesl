@@ -1,12 +1,16 @@
 // The expression machine: every row of a mark runs the mark's channels, which store into its state.
-// All rows run the same instructions, so control flow stays uniform across a workgroup.
+// All rows run the same instructions, so control flow stays uniform across a workgroup. A dispatch
+// covers the row blocks the mark lists, only those whose rows changed when only those did.
 //
-// While the mark eases (`mark.frozen` set), every store blends from the row's frozen state by the
-// mark's progress: numbers and colors mix, positions move by their offset, references snap, and a
-// row whose visibility flips fades. Rows past `mark.rows` left; they only fade.
+// While the mark eases (`mark.frozen` set), a row whose visibility flips fades, and rows past
+// `mark.rows` left, fading out. While it eases toward what changed (`mark.settled` set), channels
+// store into the settled mirror instead, once per change, and each frame `ease` writes what every
+// row shows from its frozen and settled state by the mark's progress: numbers and colors mix, positions
+// move by their offset, and the rest show as evaluated. No channel runs to ease.
 
 import package::lib::types::{
-    NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING,
+    NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING, BLOCK_ROWS, item,
+    BLEND_KEEP, BLEND_NUMBER, BLEND_COLOR, BLEND_POSITION,
     VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, VERTEX_RANGE, HALF_UNITS, OWN_HEIGHT, SIZED, MARK_VERTICES,
     OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME, OP_ZOOM,
     OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP,
@@ -27,6 +31,16 @@ import package::lib::reduce::{ordered, unordered};
 @group(2) @binding(1) var<storage, read> frozen: array<u32>;
 // Per fitted domain: the order-preserving bits of its least and greatest value.
 @group(2) @binding(4) var<storage, read_write> domains: array<atomic<u32>>;
+// Each row's state as its channels evaluated it, where it settles once the mark's transition ends:
+// the state's mirror, written while the mark eases toward it.
+@group(2) @binding(14) var<storage, read_write> settled: array<u32>;
+// Each mark's row blocks a dispatch covers: at `mark.block`, `mark.blocks` of them.
+@group(2) @binding(16) var<storage, read> blocks: array<u32>;
+
+// The row invocation `id` evaluates: row `id.x` of the mark's `id.y`th listed block.
+fn row_of(id: vec3u) -> u32 {
+    return blocks[mark.block + id.y] * BLOCK_ROWS + id.x;
+}
 
 fn constant(i: u32) -> u32 {
     return program[mark.constants + i];
@@ -63,6 +77,28 @@ fn word_at(row: u32, word: u32) -> u32 {
 
 fn easing() -> bool {
     return mark.frozen != NONE;
+}
+
+// Whether channels store into the settled mirror: the mark eases toward what they evaluate.
+fn settling() -> bool {
+    return mark.settled != NONE;
+}
+
+// Word `word` of `row` where channels store it: the settled state while the mark eases toward it,
+// else the state. The settled state mirrors the state, word for word.
+fn load(row: u32, word: u32) -> u32 {
+    if settling() {
+        return settled[word_at(row, word)];
+    }
+    return state[word_at(row, word)];
+}
+
+fn store(row: u32, word: u32, value: u32) {
+    if settling() {
+        settled[word_at(row, word)] = value;
+    } else {
+        state[word_at(row, word)] = value;
+    }
 }
 
 // Word `word` of `row` as it was drawn when the transition began.
@@ -160,26 +196,22 @@ fn ease_color(row: u32, w: u32, now: u32, flags: u32) -> u32 {
     return pack4x8unorm(mix(unpack4x8unorm(was(row, w)), unpack4x8unorm(now), mark.motion));
 }
 
-// Stores position `now` (high and low parts of x and y) at word `w`, eased by its offset from what
-// the row showed so the destination keeps its precision.
-fn store_position(row: u32, w: u32, now: vec4f, flags: u32) {
-    var hi = now.xy;
-    if easing() && !entering(row, flags) && (was(row, flags) & PLACED) != 0u {
-        let from_hi = vec2f(number(was(row, w)), number(was(row, w + 1u)));
-        let from_lo = vec2f(number(was(row, w + 2u)), number(was(row, w + 3u)));
-        hi += ((from_hi - now.xy) + (from_lo - now.zw)) * (1.0 - mark.motion);
+// A position's high word `w` (x or y) eased by its offset from what the row showed, so the
+// destination keeps its precision; its low word, two after it, shows as evaluated.
+fn ease_position(row: u32, w: u32, now: u32, flags: u32) -> u32 {
+    if !easing() || entering(row, flags) || (was(row, flags) & PLACED) == 0u {
+        return now;
     }
-    state[word_at(row, w)] = word(hi.x);
-    state[word_at(row, w + 1u)] = word(hi.y);
-    state[word_at(row, w + 2u)] = word(now.z);
-    state[word_at(row, w + 3u)] = word(now.w);
+    let now_lo = number(settled[word_at(row, w + 2u)]);
+    let offset = (number(was(row, w)) - number(now)) + (number(was(row, w + 2u)) - now_lo);
+    return word(number(now) + offset * (1.0 - mark.motion));
 }
 
 // Sets or clears `bit` of the flags at word `w`. While easing, a row whose visibility flips stays
 // drawn and fades.
 fn store_flag(row: u32, w: u32, bit: u32, on: bool) {
-    let at = word_at(row, w);
-    var flags = select(state[at] & ~bit, state[at] | bit, on);
+    let stored = load(row, w);
+    var flags = select(stored & ~bit, stored | bit, on);
     if bit == VISIBLE {
         flags &= ~(FADE_IN | FADE_OUT);
         if easing() {
@@ -192,22 +224,25 @@ fn store_flag(row: u32, w: u32, bit: u32, on: bool) {
             }
         }
     }
-    state[at] = flags & ~ENTERING;
+    store(row, w, flags & ~ENTERING);
 }
 
-// A position, from data or in a diagram from its sheet; a row without one is not placed.
+// A position, from data or in a diagram from its sheet, as high and low parts of x and y; a row
+// without one is not placed.
 fn position(row: u32, w: u32, x: vec2u, y: vec2u) {
     let flags = w + VERTEX_FLAGS - VERTEX_POSITION;
-    let at = word_at(row, flags);
     if missing_bits(x.x) || missing_bits(y.x) {
-        state[at] &= ~PLACED;
+        store(row, flags, load(row, flags) & ~PLACED);
         return;
     }
-    store_position(row, w, vec4f(number(x.x), number(y.x), number(x.y), number(y.y)), flags);
-    state[at] |= PLACED;
+    store(row, w, x.x);
+    store(row, w + 1u, y.x);
+    store(row, w + 2u, x.y);
+    store(row, w + 3u, y.y);
+    store(row, flags, load(row, flags) | PLACED);
 }
 
-fn run(row: u32, start: u32, end: u32, flags: u32) {
+fn run(row: u32, start: u32, end: u32) {
     var stack: array<u32, STACK>;
     var sp = 0u;
     for (var pc = start; pc < end; pc++) {
@@ -247,17 +282,15 @@ fn run(row: u32, start: u32, end: u32, flags: u32) {
             }
             case OP_STORE: {
                 sp--;
-                let now = fallback(stack[sp], b);
-                state[word_at(row, a)] = ease_number(row, a, now, flags);
+                store(row, a, fallback(stack[sp], b));
             }
             case OP_STORE_COLOR: {
                 sp--;
-                let now = select(stack[sp], theme_word(b), stack[sp] == MISSING_COLOR);
-                state[word_at(row, a)] = ease_color(row, a, now, flags);
+                store(row, a, select(stack[sp], theme_word(b), stack[sp] == MISSING_COLOR));
             }
             case OP_STORE_CODE: {
                 sp--;
-                state[word_at(row, a)] = stack[sp];
+                store(row, a, stack[sp]);
             }
             case OP_STORE_FLAG: {
                 sp--;
@@ -274,7 +307,7 @@ fn run(row: u32, start: u32, end: u32, flags: u32) {
                 // Without a column, the end is the row itself, as a pole's.
                 let end_row = select(bits_value(b, row), row, b == NONE);
                 let first = program[mark.ends + c];
-                state[word_at(row, a)] = select(first + end_row, NONE, end_row == NONE || first == NONE);
+                store(row, a, select(first + end_row, NONE, end_row == NONE || first == NONE));
             }
             case OP_REDUCE: {
                 sp--;
@@ -304,26 +337,57 @@ fn fade_exit(row: u32, flags: u32) {
 
 @compute @workgroup_size(256)
 fn evaluate(@builtin(global_invocation_id) id: vec3u) {
+    let row = row_of(id);
     // The flags word is the last kind word of every mark's rows.
     let flags = mark.stride - 1u;
-    if id.x >= mark.rows {
-        if id.x < mark.rows + mark.exits && easing() {
-            fade_exit(id.x, flags);
+    if row >= mark.rows {
+        // Rows that left fade out; while the mark eases toward its settled state, `ease` writes them.
+        if row < mark.rows + mark.exits && easing() && !settling() {
+            fade_exit(row, flags);
         }
         return;
     }
     for (var k = 0u; k < mark.channels; k++) {
         if (mark.mask & (1u << k)) != 0u {
             let range = mark.ranges + 2u * k;
-            run(id.x, program[range], program[range + 1u], flags);
+            run(row, program[range], program[range + 1u]);
         }
     }
     if mark.kind == MARK_VERTICES {
-        let at = word_at(id.x, flags);
         let units = select(0u, HALF_UNITS, (mark.units & (1u << VERTEX_HALF)) != 0u);
         let own = select(0u, OWN_HEIGHT, (mark.flags & SIZED) != 0u);
-        state[at] = (state[at] & ~(HALF_UNITS | OWN_HEIGHT)) | units | own;
-        state[word_at(id.x, VERTEX_RANGE)] = pack_range(vec2f(mark.size_min, mark.size_max));
+        store(row, flags, (load(row, flags) & ~(HALF_UNITS | OWN_HEIGHT)) | units | own);
+        store(row, VERTEX_RANGE, pack_range(vec2f(mark.size_min, mark.size_max)));
+    }
+}
+
+// Each frame a mark eases toward its settled state: every word a channel stores shows the frozen
+// state moved toward the settled one by the mark's progress, as the program says each eases; rows that left
+// fade out. No channel runs.
+@compute @workgroup_size(256)
+fn ease(@builtin(global_invocation_id) id: vec3u) {
+    let row = item(id);
+    let flags = mark.stride - 1u;
+    if row >= mark.rows {
+        if row < mark.rows + mark.exits {
+            fade_exit(row, flags);
+        }
+        return;
+    }
+    for (var w = 0u; w < mark.stride + mark.extras; w++) {
+        let blend = program[mark.blends + w];
+        if blend == BLEND_KEEP {
+            continue;
+        }
+        let now = settled[word_at(row, w)];
+        var shown = now;
+        switch blend {
+            case BLEND_NUMBER: { shown = ease_number(row, w, now, flags); }
+            case BLEND_COLOR: { shown = ease_color(row, w, now, flags); }
+            case BLEND_POSITION: { shown = ease_position(row, w, now, flags); }
+            default: {}
+        }
+        state[word_at(row, w)] = shown;
     }
 }
 
@@ -332,12 +396,13 @@ fn evaluate(@builtin(global_invocation_id) id: vec3u) {
 // they run.
 @compute @workgroup_size(256)
 fn travel(@builtin(global_invocation_id) id: vec3u) {
+    let row = item(id);
     let words = travel_words();
-    if id.x >= mark.rows + mark.exits || words.x == NONE {
+    if row >= mark.rows + mark.exits || words.x == NONE {
         return;
     }
-    let at = word_at(id.x, words.x);
-    let flow = number(state[word_at(id.x, words.y)]);
+    let at = word_at(row, words.x);
+    let flow = number(state[word_at(row, words.y)]);
     let spacing = max(frame.flow_spacing, 1e-6);
     var moved = number(state[at]) + select(flow, 0.0, missing(flow)) * frame.flow_step;
     moved -= spacing * floor(moved / spacing);
@@ -349,21 +414,22 @@ fn travel(@builtin(global_invocation_id) id: vec3u) {
 // travel its frozen state holds.
 @compute @workgroup_size(256)
 fn carry(@builtin(global_invocation_id) id: vec3u) {
+    let row = item(id);
     let travel = travel_words().x;
-    if id.x >= mark.rows + mark.exits || travel == NONE || !easing() {
+    if row >= mark.rows + mark.exits || travel == NONE || !easing() {
         return;
     }
-    state[word_at(id.x, travel)] = was(id.x, travel);
+    state[word_at(row, travel)] = was(row, travel);
 }
 
 @compute @workgroup_size(256)
 fn reduce(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= mark.rows {
+    let row = item(id);
+    if row >= mark.rows {
         return;
     }
-    let flags = mark.stride - 1u;
     for (var k = mark.channels; k < mark.channels + mark.reductions; k++) {
         let range = mark.ranges + 2u * k;
-        run(id.x, program[range], program[range + 1u], flags);
+        run(row, program[range], program[range + 1u]);
     }
 }

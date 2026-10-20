@@ -10,6 +10,7 @@ latkit validate scene.json -d grid.json
 latkit render scene.json -d grid.json -o grid.png --size 2400x1350 --scale 2
 latkit render scene.json -d grid.json --frames frames.jsonl --fps 60 -o film.mp4
 latkit query grid.bin '{"of":"Branch","filter":{"op":"gt","args":["loading",90]},"limit":20}'
+latkit tile history.bin -o history/   # time tiles a view fetches in spans: --tiles grid=history/frames.json
 latkit schema scene > scene.schema.json
 ```
 

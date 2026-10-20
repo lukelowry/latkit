@@ -7,19 +7,23 @@
 //! | Part     | Layout                                                                                |
 //! | -------- | ------------------------------------------------------------------------------------- |
 //! | frame    | `b"LATK"`, `u64` length of the whole frame, name, `u32` op count, ops                 |
-//! | op       | `u8` tag and its payload: axis, replace, set, remove, append, or forget               |
+//! | op       | `u8` tag and its payload: axis, replace, set, remove, append, forget, or frames       |
 //! | axis     | name, unit                                                                            |
 //! | replace  | table, as `set`                                                                       |
 //! | remove   | table name, ids                                                                       |
 //! | append   | table name, `u8` 1 and ids or `u8` 0 for every row, `u32` frames, `f64` coordinates,  |
 //! |          | `u32` field count; per field: name, values frame-major                                |
 //! | forget   | `f64` before                                                                          |
+//! | frames   | table name, field name, `u32` rows, run                                               |
 //! | table    | name, ids, `u32` field count; per field: name, `u8` tag, payload                      |
 //! | field    | values; a reference's table and its target ids as values; or samples                  |
 //! | ids      | `u8` 0 and `u32` count, or `u8` 1 and values: `u64`, `u32` read as `u64`, or texts    |
 //! | values   | `u8` storage, `u32` len, data, `u8` has-validity, validity words (`u64`)              |
-//! | samples  | `u32` rows, `u32` first frame's number, `u32` frames, `f64` coordinates, `f32` values |
-//! |          | frame-major (NaN missing)                                                             |
+//! | samples  | `u32` rows, `u32` first frame read, `u32` frames read, `u32` run count, runs; buckets |
+//! |          | whose eight entries a level below are held are left out, as they follow from those    |
+//! | run      | `u8` level, `u32` first entry, `u32` entries, `f64` coordinates (a frame's own; a     |
+//! |          | bucket's first and last frame's), `f32` values entry-major: a frame's per row, or a   |
+//! |          | bucket's least per row and, after every bucket's, its greatest (NaN missing)          |
 //! | `str`    | `u32` byte length, UTF-8                                                              |
 
 use std::sync::Arc;
@@ -30,7 +34,7 @@ use super::geometry::Geometry;
 use super::ids::{IdList, Ids, RowIds};
 use super::name::{Name, Version};
 use super::patch::{Op, Patch};
-use super::samples::Samples;
+use super::samples::{self, LEVELS, Run, Samples};
 use super::table::{Field, Reference, Table};
 use super::text::Text;
 use super::values::{Array, Values};
@@ -46,6 +50,7 @@ const OP_SET: u8 = 2;
 const OP_REMOVE: u8 = 3;
 const OP_APPEND: u8 = 4;
 const OP_FORGET: u8 = 5;
+const OP_FRAMES: u8 = 6;
 
 const FIELD_VALUES: u8 = 0;
 const FIELD_REFERENCE: u8 = 1;
@@ -109,6 +114,14 @@ pub(crate) fn encode(patch: &Patch) -> Vec<u8> {
             Op::Forget { before } => {
                 w.u8(OP_FORGET);
                 w.f64(*before);
+            }
+            Op::Frames { table, field, run, at, values } => {
+                w.u8(OP_FRAMES);
+                w.str(table);
+                w.str(field);
+                let per_row = run.entries.len() * samples::sides(run.level);
+                w.u32(values.len().checked_div(per_row).unwrap_or(0));
+                w.run(run, at, values);
             }
         }
     }
@@ -177,6 +190,12 @@ impl Reader<'_> {
                     Op::Append { table, at, ids, fields }
                 }
                 OP_FORGET => Op::Forget { before: r.f64()? },
+                OP_FRAMES => {
+                    let (table, field) = (r.name()?, r.name()?);
+                    let rows = r.u32()? as usize;
+                    let (run, at, values) = r.run(rows)?;
+                    Op::Frames { table, field, run, at, values }
+                }
                 tag => return Err(malformed(format!("unknown operation {tag}"))),
             };
             patch.ops.push(op);
@@ -250,13 +269,25 @@ impl Writer {
                     self.u32(table.len());
                     self.u32(samples.start() as usize);
                     self.u32((samples.end() - samples.start()) as usize);
-                    for frame in samples.start()..samples.end() {
-                        self.f64(samples.at(frame));
+                    let runs = samples.stored_runs();
+                    self.u32(runs.len());
+                    let rows: Vec<usize> = (0..table.len()).collect();
+                    for run in &runs {
+                        let (at, values) = samples.read(run, &rows);
+                        self.run(run, &at, &values);
                     }
-                    self.slice(&samples.frames_of(table.len()));
                 }
             }
         }
+    }
+
+    /// `run`: its level, first entry, and entries, its coordinates `at`, and its `values`.
+    fn run(&mut self, run: &Run, at: &[f64], values: &[f32]) {
+        self.u8(run.level as u8);
+        self.u32(run.entries.start as usize);
+        self.u32(run.entries.len());
+        self.slice(at);
+        self.slice(values);
     }
 
     fn ids(&mut self, ids: &Ids) {
@@ -419,21 +450,52 @@ impl Reader<'_> {
                     let to = self.name()?;
                     Field::Reference(Reference::new(to, Column::new(&self.id_values()?)))
                 }
-                FIELD_SAMPLED => {
-                    let rows = self.u32()? as usize;
-                    let first = self.u32()?;
-                    let frames = self.len(8)?;
-                    let at: Vec<f64> = (0..frames).map(|_| self.f64()).collect::<Result<_>>()?;
-                    let values: Vec<f32> = self.vec(frames.checked_mul(rows).ok_or_else(|| malformed("too large"))?)?;
-                    let mut samples = Samples::from_frame(first);
-                    samples.append(&at, &Values::from(values), rows).map_err(|e| e.at(&name))?;
-                    Field::Sampled(samples, Version::next())
-                }
+                FIELD_SAMPLED => Field::Sampled(self.samples().map_err(|e| e.at(&name))?, Version::next()),
                 tag => return Err(malformed(format!("unknown field {tag}"))),
             };
             table.insert(name, field);
         }
         Ok(table)
+    }
+
+    /// A sampled field: its runs put in level by level, each level's buckets that follow from the
+    /// level below written before its own runs.
+    fn samples(&mut self) -> Result<Samples> {
+        let rows = self.u32()? as usize;
+        let first = self.u32()?;
+        let frames = self.u32()?;
+        let end = first.checked_add(frames).ok_or_else(|| malformed("too many frames"))?;
+        let count = self.len(9)?;
+        let runs = (0..count).map(|_| self.run(rows)).collect::<Result<Vec<_>>>()?;
+        let mut samples = Samples::from_frame(first);
+        for level in 0..=LEVELS {
+            if level > 0 {
+                samples.derive(level);
+            }
+            for (run, at, values) in runs.iter().filter(|(run, ..)| run.level == level) {
+                samples.insert(run, at, values, rows)?;
+            }
+        }
+        samples.reads(first..end);
+        Ok(samples)
+    }
+
+    /// A run of entries of `rows` rows: what it holds, its coordinates, and its values.
+    fn run(&mut self, rows: usize) -> Result<(Run, Vec<f64>, Vec<f32>)> {
+        let level = u32::from(self.u8()?);
+        if level > LEVELS {
+            return Err(malformed(format!("no level {level}")));
+        }
+        let first = self.u32()?;
+        let n = self.u32()?;
+        let run = Run { level, entries: first..first.checked_add(n).ok_or_else(|| malformed("too many entries"))? };
+        let n = n as usize;
+        let coordinates = n.checked_mul(samples::coordinates(level));
+        let values = n.checked_mul(rows).and_then(|v| v.checked_mul(samples::sides(level)));
+        let (Some(coordinates), Some(values)) = (coordinates, values) else { return Err(malformed("too large")) };
+        let at = self.vec(coordinates)?;
+        let values = self.vec(values)?;
+        Ok((run, at, values))
     }
 
     fn values(&mut self) -> Result<Values> {
@@ -568,6 +630,24 @@ mod tests {
         assert_eq!(first(&Data::from_bytes(&data.to_bytes()).expect("decodes")), 1);
         data.apply(Patch::new().remove("Bus", vec!["b"])).expect("remove");
         assert_eq!(first(&data), 1, "rows removed keep the frames' numbers");
+    }
+
+    #[test]
+    fn time_tiles_round_trip_with_their_holes() {
+        let mut data = grid();
+        // The bucket of frames 64..72, and frames 200 and 201, past a hole.
+        let bucket = Patch::new().frames("Bus", "vm", 1, 8, [64.0, 71.0], [0.9, 0.95, 0.97, 1.1, 1.05, 1.0]);
+        let tile = bucket.frames("Bus", "vm", 0, 200, [200.0, 201.0], [1.0, 1.0, 1.0, 0.5, 0.5, 0.5]);
+        let bytes = tile.to_bytes();
+        assert_eq!(Patch::from_bytes(&bytes).expect("decodes").to_bytes(), bytes);
+        data.apply(tile.clone()).expect("tiles");
+        assert!(data.apply(tile).is_err(), "entries held already");
+        let back = Data::from_bytes(&data.to_bytes()).expect("decodes");
+        assert_eq!(back.to_bytes(), data.to_bytes());
+        let bus = |id: &str| Row::new("grid", "Bus", id);
+        assert_eq!(back.get_at(&bus("c"), "vm", 201.5), Some(Value::Number(0.5)));
+        assert_eq!(back.get_at(&bus("a"), "vm", 100.0), None, "a hole holds no frame");
+        assert_eq!(back.describe().span, Some([1.0, 201.0]));
     }
 
     #[test]

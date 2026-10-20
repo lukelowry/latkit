@@ -214,6 +214,42 @@ fn query_writes_a_json_line_a_row() {
 }
 
 #[test]
+fn a_history_tiles_and_draws_from_its_spans_as_from_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let at: Vec<String> = (0..2000).map(|t| t.to_string()).collect();
+    let v: Vec<String> = (0..2000).map(|t| format!("{:.4}", 0.5 + 0.4 * (f64::from(t) / 40.0).sin())).collect();
+    let data = format!(
+        r#"{{"name":"signals","patch":[{{"axis":{{"name":"time","unit":"s"}}}},{{"replace":{{"table":"Signal","ids":{{"count":1}}}}}},{{"append":{{"at":[{}],"table":"Signal","fields":{{"v":[{}]}}}}}}]}}"#,
+        at.join(","),
+        v.join(",")
+    );
+    std::fs::write(dir.path().join("signals.json"), data).unwrap();
+    let scene = r##"{"space":"plot","ease":0,"marks":[{"lines":{"of":["signals","Signal"],"trace":"v","color":"#ff0000","width":2}}]}"##;
+    std::fs::write(dir.path().join("plot.json"), scene).unwrap();
+    std::fs::write(dir.path().join("camera.json"), r#"{"x":[100,300],"y":[0,1]}"#).unwrap();
+    ok(&run(dir.path(), &["tile", "signals.json", "-o", "tiles", "--chunk", "64"], None));
+    for file in ["tiles/frames.json", "tiles/base.latk", "tiles/0/0/0.latk", "tiles/0/1/3.latk"] {
+        assert!(dir.path().join(file).is_file(), "{file}");
+    }
+    assert_eq!(run(dir.path(), &["tile", "signals.json", "-o", "tiles", "--chunk", "12"], None).status.code(), Some(1));
+    let render = |source: [&str; 2]| {
+        let args = ["render", "plot.json", source[0], source[1], "--camera", "camera.json", "--size", "96x64"];
+        run(dir.path(), &[&args[..], &["--format", "rgba", "-o", "-"]].concat(), None)
+    };
+    let whole = render(["-d", "signals.json"]);
+    if no_gpu(&whole) {
+        return;
+    }
+    ok(&whole);
+    let tiled = render(["--tiles", "signals=tiles/frames.json"]);
+    ok(&tiled);
+    let pixels = |o: &Output| o.stdout.as_chunks::<4>().0.to_vec();
+    let differing = pixels(&whole).iter().zip(pixels(&tiled)).filter(|(a, b)| a[0].abs_diff(b[0]) > 8).count();
+    assert!(differing < 32, "{differing} pixels differ");
+    assert!(pixels(&tiled).iter().any(|p| p[0] > 200 && p[1] < 60), "the trace draws");
+}
+
+#[test]
 fn a_labeled_still_renders_to_a_file_and_to_stdout() {
     let dir = fixture();
     let scene = r#"{"space":"diagram","layout":{"layered":{}},"title":"Grid","marks":[{"vertices":{"of":["grid","Bus"],"label":"name"}}]}"#;

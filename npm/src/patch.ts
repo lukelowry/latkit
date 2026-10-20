@@ -45,7 +45,9 @@ export type Fields = Readonly<Record<string, Values | Reference>>;
 const MAGIC = [0x4c, 0x41, 0x54, 0x4b]; // LATK
 /** The magic and the frame's length. */
 const HEADER = 12;
-const OP = { axis: 0, replace: 1, set: 2, remove: 3, append: 4, forget: 5 } as const;
+const OP = { axis: 0, replace: 1, set: 2, remove: 3, append: 4, forget: 5, frames: 6 } as const;
+/** Levels of detail kept above frames. */
+const LEVELS = 6;
 const FIELD_VALUES = 0;
 const FIELD_REFERENCE = 1;
 const STORE = { f64: 0, f32: 1, i32: 2, u32: 3, u64: 4, bool: 5, text: 6, geometry: 7 } as const;
@@ -218,6 +220,46 @@ export class Patch {
   /** Forgets every sampled field's frames before axis coordinate `before`. */
   forget(before: number): this {
     return this.#op(OP.forget, (w) => w.f64(before));
+  }
+
+  /**
+   * Holds a run of sampled field `field`'s entries of level `level`, numbered from `first`: what a
+   * time tile holds, as `latkit tile` writes them. At level 0 the entries are frames, each a
+   * coordinate in `at` and a value per row of `table` in `values`. At level `k` they are buckets of
+   * `8^k` frames, each its first and last frame's coordinates in `at`, and in `values` each row's
+   * least value over each bucket, then each row's greatest. NaN is missing. No entry may be held
+   * already; frames past the field's widen it.
+   */
+  frames(
+    table: string,
+    field: string,
+    { level = 0, first }: { level?: number; first: number },
+    at: Float64Array | readonly number[],
+    values: Float32Array | readonly number[],
+  ): this {
+    const path = `${table}.${field}`;
+    if (!Number.isInteger(level) || level < 0 || level > LEVELS)
+      throw invalid(path, `levels run from 0 to ${LEVELS}`);
+    const per = level === 0 ? 1 : 2;
+    const coordinates = Float64Array.from(at);
+    const numbers = values instanceof Float32Array ? values : Float32Array.from(values);
+    const entries = coordinates.length / per;
+    const rows = entries === 0 ? 0 : numbers.length / (entries * per);
+    if (!Number.isInteger(entries) || !Number.isInteger(rows))
+      throw invalid(
+        path,
+        `${coordinates.length} coordinates and ${numbers.length} values make no run`,
+      );
+    return this.#op(OP.frames, (w) => {
+      w.str(table);
+      w.str(field);
+      w.u32(rows);
+      w.u8(level);
+      w.u32(first);
+      w.u32(entries);
+      w.bytes(new Uint8Array(coordinates.buffer));
+      w.bytes(new Uint8Array(numbers.buffer, numbers.byteOffset, numbers.byteLength));
+    });
   }
 
   /** Appends `next`'s changes, to this patch's dataset. */

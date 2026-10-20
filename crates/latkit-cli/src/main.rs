@@ -33,6 +33,7 @@ fn main() -> ExitCode {
         Command::Validate(job) => render::validate(job),
         Command::Inspect { data, deadline } => inspect(data, *deadline),
         Command::Query { data, query, deadline } => self::query(data, query, *deadline),
+        Command::Tile { data, output, chunk, deadline } => tile(data, output, *chunk, *deadline),
         Command::Schema { input } => schema(*input),
     };
     match result {
@@ -116,8 +117,8 @@ fn schema(input: Option<Input>) -> Result<(), Failure> {
 fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure> {
     let text =
         if query.trim_start().starts_with('{') { query.as_bytes().to_vec() } else { inputs::read(Path::new(query))? };
-    let query: Query =
-        serde_json::from_slice(&text).map_err(|e| Failure::from(Error::invalid(e.to_string()).at("query")))?;
+    let text = std::str::from_utf8(&text).map_err(|_| Failure::from(Error::invalid("not UTF-8 text").at("query")))?;
+    let query: Query = latkit::from_json(text).map_err(|e| Failure::from(e.at("query")))?;
     let (rows, _) = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.query(&query)?;
     let columns: Vec<(String, Values)> =
         rows.fields().map(|(name, _)| (name.to_string(), rows.values(name).expect("a field the table has"))).collect();
@@ -136,6 +137,26 @@ fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure
         writeln!(out).map_err(|e| Failure::io(&e, Path::new("-")))?;
     }
     out.flush().map_err(|e| Failure::io(&e, Path::new("-")))
+}
+
+/// The dataset as time tiles in directory `output`: its manifest, the dataset without its sampled
+/// fields' histories, and their spans of `chunk` entries.
+fn tile(source: &Source, output: &Path, chunk: u32, deadline: Duration) -> Result<(), Failure> {
+    let data = inputs::dataset(source, &latkit::host::Native::new(), deadline)?;
+    let mut failure = None;
+    let written = data.to_tiles(chunk, |path, bytes| {
+        let file = output.join(path);
+        let wrote = file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&file, bytes));
+        wrote.map_err(|e| {
+            failure = Some(Failure::io(&e, &file));
+            Error::Io(e.to_string().into())
+        })
+    });
+    match (written, failure) {
+        (Ok(()), _) => Ok(()),
+        (Err(_), Some(failure)) => Err(failure),
+        (Err(error), None) => Err(Failure::from(error)),
+    }
 }
 
 /// `future`'s result, driven on this thread and given up at `deadline`.

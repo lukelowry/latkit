@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::name::PageId;
-use super::values::{Kind, Pick, Value, Values};
+use super::values::{Kind, Picks, Value, Values};
 use crate::Result;
 
 /// Rows per page: pages are the unit of sharing between versions and of upload to the GPU.
@@ -83,8 +83,9 @@ impl Column {
 
     /// The column with `len` rows (at least the current count) and `writes` applied.
     ///
-    /// `writes` are `(row, row of source)` sorted by row with no row twice. Pages that no write
-    /// touches and whose length does not change keep their ids; new rows not written are missing.
+    /// `writes` are `(row, row of source)` sorted by row with no row twice; a [`HOLE`](super::values::HOLE)
+    /// for the row of source writes a missing value. Pages that no write touches and whose length does
+    /// not change keep their ids; new rows not written are missing.
     pub(crate) fn write(&self, len: usize, writes: &[(usize, usize)], source: &Column) -> Result<Column> {
         debug_assert!(len >= self.len);
         debug_assert!(writes.windows(2).all(|w| w[0].0 < w[1].0));
@@ -115,28 +116,25 @@ impl Column {
                 from[row - start] = Some(k);
             }
             sources[0] = old.map_or(&self.like, |o| &o.values);
-            let old_len = sources[0].len();
-            let values = Values::assemble(&sources, page_len, |i| match from[i] {
-                Some(k) => Some((1 + (k >> PAGE_BITS), k & PAGE_MASK)),
-                None if i < old_len => Some((0, i)),
-                None => None,
-            })?;
+            let kept = sources[0].len();
+            let values = Values::assemble(&sources, Picks::Writes { from: &from, kept })?;
             pages.push(Page::new(values));
         }
         Ok(Column { len, pages: pages.into(), like: self.like.clone() })
     }
 
-    /// Every value in row order, as one run: a single page's without copying.
+    /// Every value in row order, as one run: a single page's without copying, else the pages copied
+    /// one after another.
     pub(crate) fn values(&self) -> Values {
-        if let [page] = &self.pages[..] {
-            return page.values.clone();
+        match &self.pages[..] {
+            [] => self.like.clone(),
+            [page] => page.values.clone(),
+            pages => Values::concat(&pages.iter().map(|p| &p.values).collect::<Vec<_>>()),
         }
-        let sources: Vec<&Values> = std::iter::once(&self.like).chain(self.pages.iter().map(|p| &p.values)).collect();
-        let pick = |i: usize| -> Pick { Some((1 + (i >> PAGE_BITS), i & PAGE_MASK)) };
-        Values::assemble(&sources, self.len, pick).expect("one storage")
     }
 
-    /// The column of rows `rows`, in that order. Leading pages whose rows are unchanged keep their ids.
+    /// The column of rows `rows`, in that order, missing for a [`HOLE`](super::values::HOLE). Leading
+    /// pages whose rows are unchanged keep their ids.
     pub(crate) fn gather(&self, rows: &[usize]) -> Column {
         let kept = rows.iter().enumerate().take_while(|&(i, &r)| i == r).count();
         let kept_pages = (kept / PAGE_ROWS).min(rows.len() / PAGE_ROWS);
@@ -144,8 +142,7 @@ impl Column {
         let mut pages: Vec<Page> = self.pages[..kept_pages].to_vec();
         for p in kept_pages..rows.len().div_ceil(PAGE_ROWS) {
             let chunk = &rows[p * PAGE_ROWS..rows.len().min((p + 1) * PAGE_ROWS)];
-            let pick = |i: usize| -> Pick { Some((1 + (chunk[i] >> PAGE_BITS), chunk[i] & PAGE_MASK)) };
-            pages.push(Page::new(Values::assemble(&sources, chunk.len(), pick).expect("one storage")));
+            pages.push(Page::new(Values::assemble(&sources, Picks::Rows(chunk)).expect("one storage")));
         }
         Column { len: rows.len(), pages: pages.into(), like: self.like.clone() }
     }
@@ -169,6 +166,19 @@ mod tests {
         assert_eq!(written.pages()[2].id, column.pages()[2].id);
         assert_eq!(written.get(PAGE_ROWS + 3), Some(Value::Number(-1.0)));
         assert_eq!(written.get(PAGE_ROWS + 4), Some(Value::Number((PAGE_ROWS + 4) as f64)));
+    }
+
+    #[test]
+    fn holes_write_and_gather_missing() {
+        let column = Column::new(&numbers(4));
+        let source = Column::new(&Values::from(vec![7.0_f64]));
+        let written = column.write(5, &[(1, super::super::values::HOLE), (4, 0)], &source).expect("numbers");
+        assert_eq!(
+            (written.get(0), written.get(1), written.get(4)),
+            (Some(Value::Number(0.0)), None, Some(Value::Number(7.0)))
+        );
+        let gathered = column.gather(&[3, super::super::values::HOLE, 0]);
+        assert_eq!((gathered.get(0), gathered.get(1)), (Some(Value::Number(3.0)), None));
     }
 
     #[test]

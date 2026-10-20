@@ -13,9 +13,7 @@ import package::lib::bind::{frame, eye, mark, focused};
 import package::lib::state::{row_at, edge_at, line_at, vertex_slot, Vertex};
 import package::lib::project::{PI, world, clip_of, shows, to_screen};
 import package::lib::read::{missing_bits, column_value, points_of, point_bits};
-import package::lib::trace::{
-    trace_first, trace_axis, trace_value, trace_level, trace_bucket_first, trace_buckets, trace_bucket,
-};
+import package::lib::trace::{trace_run, trace_level, trace_axis, trace_entry};
 import package::lib::focus::{faded, growth};
 import package::lib::mark::px;
 import package::lib::points::vertex_half;
@@ -293,35 +291,43 @@ fn end_point(row: u32, i: u32) -> PathPoint {
     return placed_point(p);
 }
 
-// Point `i` of a trace: each bucket's least and greatest value at its middle, then the samples after
-// the buckets, or with steps the corners between them.
+// Point `k` of a trace: in a run of buckets, each bucket's least and greatest value at its middle; in
+// a run of frames, each frame's value, or with steps the corners between them. A point past its run's
+// own breaks the line before the next run.
 fn trace_point(row: u32, k: u32) -> PathPoint {
-    let buckets = 2u * trace_buckets();
+    let run = trace_run(k);
+    let local = k - run.point;
     var value = 0u;
-    var frame_index = 0u;
-    if k < buckets {
-        let span = 1u << (3u * trace_level());
-        let bucket = trace_bucket_first() + k / 2u;
-        value = trace_bucket(row, bucket, k % 2u);
-        frame_index = bucket * span + span / 2u;
-    } else {
-        var across = k - buckets;
-        var up = k - buckets;
-        if buckets == 0u && (mark.flags & STEP_AFTER) != 0u {
-            across = (k + 1u) / 2u;
-            up = k / 2u;
-        } else if buckets == 0u && (mark.flags & STEP_BEFORE) != 0u {
-            across = k / 2u;
-            up = (k + 1u) / 2u;
+    var entry = 0u;
+    if trace_level(run.slot) > 0u {
+        if local >= 2u * run.entries {
+            return hidden();
         }
-        let first = trace_first();
-        value = trace_value(row, first + up);
-        frame_index = first + across;
+        entry = run.first + local / 2u;
+        value = trace_entry(row, run.slot, entry, local % 2u);
+    } else {
+        var across = local;
+        var up = local;
+        var count = run.entries;
+        if (mark.flags & STEP_AFTER) != 0u {
+            across = (local + 1u) / 2u;
+            up = local / 2u;
+            count = 2u * run.entries - 1u;
+        } else if (mark.flags & STEP_BEFORE) != 0u {
+            across = local / 2u;
+            up = (local + 1u) / 2u;
+            count = 2u * run.entries - 1u;
+        }
+        if local >= count {
+            return hidden();
+        }
+        entry = run.first + across;
+        value = trace_entry(row, run.slot, run.first + up, 0u);
     }
     if missing_bits(value) {
         return hidden();
     }
-    let x = trace_axis(frame_index);
+    let x = trace_axis(run.slot, entry);
     var p: PathPoint;
     p.hi = vec2f(x.x, bitcast<f32>(value));
     p.lo = vec2f(x.y, 0.0);

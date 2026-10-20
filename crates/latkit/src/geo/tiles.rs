@@ -1,77 +1,9 @@
 //! Vector tiles as data: where tiles come from, and a tile decoded into the rows of the tables marks
 //! draw from it.
 
-use std::sync::Arc;
-
 use super::mvt::{self, Kind, Property, Shape};
 use crate::data::{Ids, Name, Patch, Table, Values};
-
-/// Vector tiles a view fetches as its camera asks for them, kept as a dataset the view owns: a
-/// PMTiles archive, a TileJSON document, or a URL template with `{z}`, `{x}`, and `{y}`. Give them
-/// to a view with [`View::set_tiles`](crate::View::set_tiles).
-///
-/// Each layer is a table of its features of the kind marks draw it as: polygons for
-/// [`Areas`](crate::Areas), lines for [`Lines`](crate::Lines), points for
-/// [`Vertices`](crate::Vertices), polygons first where marks of several kinds draw one layer. A table
-/// named `layer:polygons`, `layer:lines`, or `layer:points` holds that kind whatever draws it. Every
-/// feature's properties are fields, and its row's id is stable, made from its tile and its place in
-/// it, so a tile fetched again finds its rows selected as they were.
-///
-/// ```
-/// # use latkit::geo::Tiles;
-/// let base = Tiles::vector("base", "https://tiles.openfreemap.org/planet");
-/// ```
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Tiles {
-    pub(crate) name: Name,
-    pub(crate) url: Arc<str>,
-}
-
-impl Tiles {
-    /// The vector tiles at `url`, drawn as dataset `name`.
-    pub fn vector(name: impl Into<Name>, url: impl Into<Arc<str>>) -> Tiles {
-        Tiles { name: name.into(), url: url.into() }
-    }
-
-    /// The dataset the tiles are drawn as.
-    pub fn name(&self) -> &Name {
-        &self.name
-    }
-
-    /// Where the tiles come from.
-    pub fn url(&self) -> &str {
-        &self.url
-    }
-}
-
-/// A tile: its zoom, column, and row, rows counting from the north.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
-pub(crate) struct TileKey {
-    pub(crate) z: u8,
-    pub(crate) x: u32,
-    pub(crate) y: u32,
-}
-
-impl TileKey {
-    /// West, south, east, and north, in degrees.
-    pub(crate) fn bounds(self) -> [f64; 4] {
-        let n = f64::from(1_u32 << self.z);
-        let latitude = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t)).sinh().atan().to_degrees();
-        let (x, y) = (f64::from(self.x), f64::from(self.y));
-        [x / n * 360.0 - 180.0, latitude((y + 1.0) / n), (x + 1.0) / n * 360.0 - 180.0, latitude(y / n)]
-    }
-
-    /// The tile `levels` zooms up that holds this one.
-    pub(crate) fn ancestor(self, levels: u8) -> TileKey {
-        TileKey { z: self.z - levels, x: self.x >> levels, y: self.y >> levels }
-    }
-
-    /// Its four children.
-    pub(crate) fn children(self) -> [TileKey; 4] {
-        let (z, x, y) = (self.z + 1, self.x * 2, self.y * 2);
-        [TileKey { z, x, y }, TileKey { z, x: x + 1, y }, TileKey { z, x, y: y + 1 }, TileKey { z, x: x + 1, y: y + 1 }]
-    }
-}
+use crate::tiles::TileKey;
 
 /// Tiles fetched from a URL template, from a TileJSON document or given as one.
 #[derive(Clone, PartialEq, Debug)]
@@ -111,7 +43,7 @@ impl Template {
             .and_then(|b| Some([b[0].as_f64()?, b[1].as_f64()?, b[2].as_f64()?, b[3].as_f64()?]))
             .unwrap_or(WORLD);
         Ok(Template {
-            url: resolve(template, base),
+            url: crate::url::resolve(base, template),
             min_zoom: zoom("minzoom", 0),
             max_zoom: zoom("maxzoom", 14),
             bounds,
@@ -124,21 +56,6 @@ impl Template {
         let y = if self.tms { (1_u32 << key.z) - 1 - key.y } else { key.y };
         self.url.replace("{z}", &key.z.to_string()).replace("{x}", &key.x.to_string()).replace("{y}", &y.to_string())
     }
-}
-
-/// `url` resolved against `base`: as it is when absolute.
-fn resolve(url: &str, base: &str) -> String {
-    if url.contains("://") || url.starts_with("data:") {
-        return url.to_owned();
-    }
-    if let Some(rest) = url.strip_prefix('/') {
-        // From the base's origin.
-        let origin_end = base.find("://").map_or(0, |s| s + 3);
-        let origin = base[origin_end..].find('/').map_or(base.len(), |k| origin_end + k);
-        return format!("{}/{rest}", &base[..origin]);
-    }
-    let dir = base.rfind('/').map_or("", |k| &base[..=k]);
-    format!("{dir}{url}")
 }
 
 /// A table a tile decodes into: its layer's features of one kind, as table `table`.
@@ -279,7 +196,6 @@ mod tests {
         let json = br#"{"tiles": ["/planet/{z}/{x}/{y}.pbf"], "minzoom": 0, "maxzoom": 14, "scheme": "xyz"}"#;
         let template = Template::tilejson(json, "https://tiles.example/planet").expect("TileJSON");
         assert_eq!(template.url_of(TileKey { z: 2, x: 1, y: 3 }), "https://tiles.example/planet/2/1/3.pbf");
-        assert_eq!(resolve("t/{z}.pbf", "https://a.b/c/d.json"), "https://a.b/c/t/{z}.pbf");
         let tms = Template { tms: true, ..Template::of("{z}/{x}/{y}") };
         assert_eq!(tms.url_of(TileKey { z: 1, x: 0, y: 0 }), "1/0/1");
     }

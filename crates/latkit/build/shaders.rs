@@ -3,13 +3,18 @@
 //! - every constant and struct of `lib/types.wesl`, as Rust constants and `#[repr(C)]` mirrors whose
 //!   size is checked against WGSL;
 //! - the shared bind group layouts of `lib/bind.wesl` (group 0 per view, group 1 per mark);
-//! - per shader and variant: its WGSL text, entry points, the layout of its pass group (group 2), and
-//!   whether it reads the shared groups at all.
+//! - per shader and variant: its declarations, entry points, the layout of its pass group (group 2),
+//!   and whether it reads the shared groups at all.
 //!
-//! It also writes `OUT_DIR/shaders.json`, every variant's file, entry points, and the pipeline
-//! constants it is made with, from which the browser gate times each pipeline in Chrome.
+//! Variants share most of what they link, so each distinct top-level declaration is stored once, in
+//! `OUT_DIR/shaders.wgsl`, and a variant is the list of its declarations, which join back into exactly
+//! the module it linked.
+//!
+//! It also writes each variant's whole module and `OUT_DIR/shaders.json`, every variant's file, entry
+//! points, and the pipeline constants it is made with, from which the browser gate times each
+//! pipeline in Chrome.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -89,6 +94,7 @@ pub(crate) fn generate() {
     let mut shaders = String::new();
     let mut sources = String::new();
     let mut manifest = Vec::new();
+    let mut pieces = Pieces::default();
     for entry in ENTRIES {
         for &(variant, features) in entry.variants {
             let source = link(&root, entry.module, features, false);
@@ -107,18 +113,61 @@ pub(crate) fn generate() {
             let shared = module.global_variables.iter().any(|(_, g)| g.binding.as_ref().is_some_and(|b| b.group < 2));
             writeln!(
                 sources,
-                "        Shader::{name} => &ShaderSource {{ label: {label:?}, wgsl: include_str!(concat!(env!(\"OUT_DIR\"), \"/{file}\")), pass: &[{pass}], overrides: &{overrides:?}, shared: {shared} }},",
+                "        Shader::{name} => &ShaderSource {{ label: {label:?}, pieces: &{refs:?}, pass: &[{pass}], overrides: &{overrides:?}, shared: {shared} }},",
                 label = format!("latkit {}.{variant}", entry.module),
+                refs = pieces.add(&source),
                 pass = pass.join(", "),
             )
             .unwrap();
         }
     }
+    fs::write(out.join("shaders.wgsl"), &pieces.text).unwrap();
+    writeln!(
+        rust,
+        "/// Where each declaration lies in `shaders.wgsl`.\npub(crate) static PIECES: &[(u32, u32)] = &{:?};\n",
+        pieces.ranges
+    )
+    .unwrap();
     writeln!(rust, "/// Every linked shader and variant.\n#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]\npub(crate) enum Shader {{\n{shaders}}}\n").unwrap();
     writeln!(rust, "impl Shader {{\n    pub(crate) fn source(self) -> &'static ShaderSource {{\n        match self {{\n{sources}        }}\n    }}\n}}").unwrap();
     fs::write(out.join("shaders.rs"), rust).unwrap();
     fs::write(out.join("shaders.json"), format!("[\n{}\n]\n", manifest.join(",\n"))).unwrap();
 }
+
+/// Top-level declarations, each stored once: their text back to back, and where each lies.
+#[derive(Default)]
+struct Pieces {
+    text: String,
+    ranges: Vec<(u32, u32)>,
+    index: HashMap<String, u16>,
+}
+
+impl Pieces {
+    /// The declarations of `source`, as indices, storing those not stored yet; they join back into
+    /// `source` exactly.
+    fn add(&mut self, source: &str) -> Vec<u16> {
+        let refs: Vec<u16> = source
+            .split(SEPARATOR)
+            .map(|piece| {
+                *self.index.entry(piece.to_owned()).or_insert_with(|| {
+                    let start = self.text.len() as u32;
+                    self.text.push_str(piece);
+                    self.ranges.push((start, self.text.len() as u32));
+                    u16::try_from(self.ranges.len() - 1).expect("fewer than 65536 declarations")
+                })
+            })
+            .collect();
+        let joined: Vec<&str> = refs
+            .iter()
+            .map(|&r| &self.text[self.ranges[r as usize].0 as usize..self.ranges[r as usize].1 as usize])
+            .collect();
+        assert_eq!(joined.join(SEPARATOR), source, "a variant's declarations join back into the module it linked");
+        refs
+    }
+}
+
+/// What separates top-level declarations in a linked module, and joins them back.
+const SEPARATOR: &str = "\n\n";
 
 /// A variant as JSON: its file, whether it draws, its compute entry points, every combination of the
 /// pipeline constants it declares, and the WGSL appended to make it whole (a custom marker's stand-in).

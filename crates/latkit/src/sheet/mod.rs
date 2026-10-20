@@ -10,20 +10,18 @@
 
 mod wires;
 
-pub(crate) use wires::links;
-
 use std::hash::{Hash, Hasher};
 
 use rustc_hash::{FxHashMap, FxHasher};
 
-use crate::data::{Data, Field, Name, Row, Table, Value, Values};
+use crate::data::{Field, Name, Row, Table, Value, Values};
+use crate::derive::graph::{EdgeMark, VertexMark, drawing, key_of, links, marks, position};
 use crate::derive::{Derive, Input, Jobs, Tables, answers, beside, kept};
 use crate::expr::cpu::Rows;
 use crate::gpu::atlas;
 use crate::gpu::shaders::{HEADER_BAND, PORT_SIZE, TEXT_BASE};
 use crate::host::{Job, Key, Placement, TextRun};
-use crate::scene::mark::Style;
-use crate::{Edges, Layout, Mark, Marker, Pending, Shape, Side, Theme, Vertices};
+use crate::{Layout, Marker, Pending, Shape, Side, Theme, Vertices};
 
 /// Texts measured past which the sheet forgets them all.
 const MEASURED: usize = 1 << 16;
@@ -31,7 +29,8 @@ const MEASURED: usize = 1 << 16;
 /// The sheet of a diagram's view.
 #[derive(Default)]
 pub(crate) struct Sheet {
-    pub(crate) errors: Vec<crate::Error>,
+    /// Failures to tell: texts its host could not measure.
+    errors: Vec<crate::Error>,
     /// The derived table beside each table it draws.
     tables: Tables,
     /// Places layouts gave rows without positions, kept by row, also after a row leaves, so undo
@@ -68,22 +67,7 @@ struct Placing {
     rows: FxHashMap<Key, Row>,
 }
 
-/// The vertex mark a table's rows take their places from, and the vertex index of its first row.
-pub(crate) struct VertexMark<'a> {
-    pub(crate) mark: &'a Vertices,
-    pub(crate) data: &'a Data,
-    pub(crate) table: &'a Table,
-    pub(crate) first: usize,
-}
-
-/// The edge mark a table's rows take their paths from.
-pub(crate) struct EdgeMark<'a> {
-    pub(crate) mark: &'a Edges,
-    pub(crate) data: &'a Data,
-    pub(crate) table: &'a Table,
-}
-
-/// A vertex row of the diagram.
+// A vertex row of the diagram.
 pub(crate) struct Vertex {
     /// The vertex mark drawing it.
     pub(crate) mark: usize,
@@ -147,6 +131,10 @@ impl Derive for Sheet {
     fn clear(&mut self) {
         self.tables.clear();
         self.stamp = 0;
+    }
+
+    fn take_errors(&mut self) -> Vec<crate::Error> {
+        std::mem::take(&mut self.errors)
     }
 }
 
@@ -388,7 +376,7 @@ impl Sheet {
         let groups: Vec<Option<u32>> = vertices.iter().map(|v| v.parent.map(|p| p as u32)).collect();
         let pads: Vec<[f64; 4]> =
             vertices.iter().map(|v| [padding, padding, padding, padding + header[v.mark]]).collect();
-        let links = wires::links(vertex_marks, edge_marks);
+        let links = links(vertex_marks, edge_marks);
         let mut rows = FxHashMap::default();
         let keys: Vec<Option<Key>> = vertices
             .iter()
@@ -411,69 +399,6 @@ fn stamp(input: &Input<'_>, landed: u64, generation: u64) -> u64 {
     (input.scene_version, input.host.is_some(), landed, generation, input.dragging).hash(&mut hasher);
     input.structure(&mut hasher);
     hasher.finish().max(1)
-}
-
-/// The vertex marks and edge marks of the diagram, one per table: its unnamed mark of the kind, else
-/// its first; each vertex mark with the vertex index of its first row.
-pub(crate) fn marks<'a>(input: &Input<'a>) -> (Vec<VertexMark<'a>>, Vec<EdgeMark<'a>>) {
-    let (mut vertices, mut edges): (Vec<VertexMark<'a>>, Vec<EdgeMark<'a>>) = (Vec::new(), Vec::new());
-    for mark in &input.scene.marks {
-        let style = mark.style();
-        let Some(data) = input.data.iter().find(|d| *d.name() == style.data) else { continue };
-        let Some(table) = data.table(&style.table) else { continue };
-        match mark {
-            Mark::Vertices(v) => {
-                let shown = VertexMark { mark: v, data, table, first: 0 };
-                match taken(vertices.iter().map(|vm| &vm.mark.style), style) {
-                    None => vertices.push(shown),
-                    Some(at) if replaces(&vertices[at].mark.style, style) => vertices[at] = shown,
-                    Some(_) => {}
-                }
-            }
-            Mark::Edges(e) => {
-                let shown = EdgeMark { mark: e, data, table };
-                match taken(edges.iter().map(|em| &em.mark.style), style) {
-                    None => edges.push(shown),
-                    Some(at) if replaces(&edges[at].mark.style, style) => edges[at] = shown,
-                    Some(_) => {}
-                }
-            }
-            Mark::Faces(_) | Mark::Lines(_) | Mark::Areas(_) => {}
-        }
-    }
-    let mut first = 0;
-    for vm in &mut vertices {
-        vm.first = first;
-        first += vm.table.len();
-    }
-    (vertices, edges)
-}
-
-/// Which of the marks taken, by their styles, draws `style`'s table already.
-fn taken<'s>(mut styles: impl Iterator<Item = &'s Style>, style: &Style) -> Option<usize> {
-    styles.position(|s| s.data == style.data && s.table == style.table)
-}
-
-/// Whether the mark of `style` takes its table from the one of `before`: an unnamed mark from a
-/// named one.
-fn replaces(before: &Style, style: &Style) -> bool {
-    before.name.is_some() && style.name.is_none()
-}
-
-/// The vertex mark drawing `table` of dataset `data`, which ends and members attach to.
-fn drawing(vertex_marks: &[VertexMark<'_>], data: &Name, table: &Name) -> Option<usize> {
-    vertex_marks.iter().position(|vm| vm.data.name() == data && vm.table.name() == table)
-}
-
-/// The position row `row`'s data gives it, if any: its position, else its point geometry.
-pub(crate) fn position(mark: &Vertices, rows: &Rows<'_>, row: usize) -> Option<[f64; 2]> {
-    match &mark.position {
-        Some([x, y]) => Some([rows.number(x, row)?, rows.number(y, row)?]),
-        None => match rows.table.value(row, mark.point_field(), f64::INFINITY)? {
-            Value::Point(p) if p.iter().all(|v| v.is_finite()) => Some(p),
-            _ => None,
-        },
-    }
 }
 
 /// The outline a vertex mark's markers draw: groups and blocks are boxes, the rest their shape.
@@ -614,9 +539,4 @@ fn write(
             fields.into_iter().map(|(name, values)| (name.into(), kept(name, &values, source, before))).collect();
         derived.insert(key, beside(source, fields));
     }
-}
-
-/// A row's key in a job: its table and id.
-pub(crate) fn key_of(row: &Row) -> Key {
-    (row.table.clone(), row.id.clone())
 }

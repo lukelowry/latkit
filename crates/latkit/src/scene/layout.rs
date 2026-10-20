@@ -31,11 +31,15 @@ impl Presets for Layout {
             _ => None,
         }
     }
+
+    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Layout, D::Error> {
+        Layout::deserialize(deserializer)
+    }
 }
 
 impl<'de> Deserialize<'de> for Layout {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Layout, D::Error> {
-        preset_or(deserializer, Layout::deserialize)
+        preset_or(deserializer)
     }
 }
 

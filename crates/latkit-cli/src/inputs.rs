@@ -10,6 +10,7 @@ use std::time::Duration;
 use latkit::host::Native;
 use latkit::{Camera, Data, Error, Fit, Name, Patch, Patches, Scene};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde::de::IgnoredAny;
 
 use crate::args::{Source, is_stdio};
@@ -35,20 +36,27 @@ fn base(path: &Path) -> String {
     if is_stdio(path) { String::new() } else { path.to_string_lossy().into_owned() }
 }
 
+/// What the JSON document at `path` holds, read as a `T`.
+pub(crate) fn document<T: DeserializeOwned>(path: &Path) -> Result<T, Failure> {
+    let bytes = read(path)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| Failure::at(Error::invalid("not UTF-8 text"), path))?;
+    latkit::from_json(text).map_err(|e| Failure::at(e, path))
+}
+
 /// A scene from its JSON.
 pub(crate) fn scene(path: &Path) -> Result<Scene, Failure> {
-    serde_json::from_slice(&read(path)?).map_err(|e| Failure::at(Error::invalid(e.to_string()), path))
+    document(path)
 }
 
 /// A camera from its JSON.
 pub(crate) fn camera(path: &Path) -> Result<Camera, Failure> {
-    serde_json::from_slice(&read(path)?).map_err(|e| Failure::at(Error::invalid(e.to_string()), path))
+    document(path)
 }
 
 /// A fit: `all`, or one as JSON.
 pub(crate) fn fit(text: &str) -> Result<Fit, Failure> {
     let json = if text.trim_start().starts_with(['{', '"', '[']) { text.to_owned() } else { format!("\"{text}\"") };
-    serde_json::from_str(&json).map_err(|e| Failure::from(Error::invalid(format!("--fit: {e}"))))
+    latkit::from_json(&json).map_err(|e| Failure::from(e.at("--fit")))
 }
 
 /// The dataset `source` names: a JSON document loaded through `host`, latkit bytes, or GeoJSON,
@@ -152,7 +160,7 @@ impl Frames {
             let index = self.index;
             self.index += 1;
             let at = |error: Error| Failure::at(error.at(index).at("frames"), &self.path);
-            let mut frame: Frame = serde_json::from_str(&line).map_err(|e| at(Error::invalid(e.to_string())))?;
+            let mut frame: Frame = latkit::from_json(&line).map_err(at)?;
             if frame.at.is_some_and(|a| !a.is_finite()) {
                 return Err(at(Error::invalid("at is finite").at("at")));
             }
@@ -223,13 +231,15 @@ mod tests {
 
     #[test]
     fn frames_keep_their_patches_order_and_apply_to_every_view_or_each() {
-        let frame: Frame = serde_json::from_str(r#"{"patch": {"b": [], "a": []}}"#).unwrap();
+        let frame: Frame = latkit::from_json(r#"{"patch": {"b": [], "a": []}}"#).unwrap();
         let patches = block(deadline(), frame.patch.load("", &Native::new())).unwrap();
         let names: Vec<&str> = patches.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["b", "a"]);
-        assert!(serde_json::from_str::<Frame>(r#"{"patch": {"a": [], "a": []}}"#).is_err());
-        let one: Each<f64> = serde_json::from_str("2").unwrap();
-        let each: Each<f64> = serde_json::from_str("[null, 3]").unwrap();
+        assert!(latkit::from_json::<Frame>(r#"{"patch": {"a": [], "a": []}}"#).is_err(), "a dataset patched twice");
+        let error = latkit::from_json::<Frame>(r#"{"patch": {"a": [[]]}}"#).map(drop).unwrap_err();
+        assert!(error.to_string().starts_with("patch.a[0]"), "{error}");
+        let one: Each<f64> = latkit::from_json("2").unwrap();
+        let each: Each<f64> = latkit::from_json("[null, 3]").unwrap();
         assert_eq!((one.of(0), one.of(5)), (Some(2.0), Some(2.0)));
         assert_eq!((each.of(0), each.of(1), each.of(2)), (None, Some(3.0), None));
         assert!(fit("all").is_ok() && fit(r#"{"bounds": {"min": [0, 0, 0], "max": [1, 1, 0]}}"#).is_ok());

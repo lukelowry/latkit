@@ -125,3 +125,49 @@ fn sampled_fields_and_zero_ease_change_at_once() {
     let pixels = step(&gpu, &mut view);
     assert!(close(at(&pixels, c - 30, c - 40), WHITE), "without ease the vertex moves at once");
 }
+
+#[test]
+fn a_transition_evaluates_once_and_eases_without_evaluating() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = View::new(&gpu, scene()).expect("valid scene");
+    view.set_camera(camera());
+    let mut data = graph();
+    view.set_data(data.clone());
+    let c = SIZE / 2;
+    frame(&gpu, &mut view);
+    data.apply(Table::new("Node", vec![1_u64]).field("y", vec![40.0])).expect("valid");
+    view.set_data(data);
+    step(&gpu, &mut view);
+    let evaluated = gpu.work().evaluated;
+    // A second into a transition of two.
+    let mut pixels = Vec::new();
+    for _ in 0..60 {
+        pixels = step(&gpu, &mut view);
+    }
+    assert_eq!(gpu.work().evaluated, evaluated, "easing evaluates no channel");
+    assert!(view.needs_render(), "the transition still runs");
+    let halfway = (0..40).find(|&dy| close(at(&pixels, c - 30, c - dy), WHITE));
+    assert!(halfway.is_some_and(|dy| dy > 4 && dy < 36), "the vertex is on its way: {halfway:?}");
+}
+
+#[test]
+fn a_change_to_one_page_evaluates_its_rows_alone() {
+    let Some(gpu) = gpu() else { return };
+    let rows = (1 << 16) + 16;
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .ease(Duration::ZERO)
+        .draw(Vertices::of("points", "P").position("x", "y").radius(1.0).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    let xs: Vec<f64> = (0..rows).map(|r| f64::from(r % 100) - 50.0).collect();
+    let mut data = Data::new("points");
+    data.apply(Table::new("P", Ids::count(rows)).field("x", xs).field("y", vec![0.0; rows as usize])).expect("valid");
+    view.set_data(data.clone());
+    frame(&gpu, &mut view);
+    let before = gpu.work().evaluated;
+    data.apply(Table::new("P", vec![u64::from(rows - 1)]).field("y", vec![10.0])).expect("valid");
+    view.set_data(data);
+    frame(&gpu, &mut view);
+    assert_eq!(gpu.work().evaluated - before, 16, "only the last page's rows evaluate");
+}

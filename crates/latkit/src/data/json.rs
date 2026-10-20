@@ -104,7 +104,7 @@ async fn build(mut ops: Vec<OpForm>, base: &str, host: &dyn Host) -> Result<Patc
         .iter()
         .map(|column| {
             let Column::Slice(slice) = &**column else { unreachable!("slices only") };
-            Ok(host.fetch(&Request::range(resolve(base, &slice.file), slice.offset..slice.end()?)))
+            Ok(host.fetch(&Request::range(crate::url::resolve(base, &slice.file), slice.offset..slice.end()?)))
         })
         .collect::<Result<Vec<_>>>()?;
     for (column, bytes) in slices.iter_mut().zip(fetching) {
@@ -114,15 +114,6 @@ async fn build(mut ops: Vec<OpForm>, base: &str, host: &dyn Host) -> Result<Patc
     }
     drop(slices);
     patch(ops)
-}
-
-/// `file` relative to `base`, a document's path or URL: in its directory unless absolute.
-fn resolve(base: &str, file: &str) -> String {
-    let absolute = file.contains("://") || file.starts_with(['/', '\\']) || file.as_bytes().get(1) == Some(&b':');
-    match base.rfind(['/', '\\']) {
-        Some(at) if !absolute => format!("{}{file}", &base[..=at]),
-        _ => file.to_owned(),
-    }
 }
 
 #[cfg(test)]
@@ -195,9 +186,6 @@ mod tests {
         let row = |id: u64| Row { data: "grid".into(), table: "Bus".into(), id: id.into() };
         assert_eq!(data.get(&row(1), "kv"), Some(Value::Number(2.0)));
         assert_eq!(data.get_at(&row(1), "vm", 1.0), Some(Value::Number(4.0)));
-        assert_eq!(resolve("https://x/data/grid.json", "v.f32"), "https://x/data/v.f32");
-        assert_eq!(resolve("C:\\data\\grid.json", "D:\\v.f32"), "D:\\v.f32");
-        assert_eq!(resolve("", "v.f32"), "v.f32");
     }
 
     #[test]

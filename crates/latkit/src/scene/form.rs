@@ -2,11 +2,14 @@
 //! type a name can stand for also reads one of its presets' names, such as `"inspect"`, `"globe"`, or
 //! `"stress"`.
 
+use std::fmt;
+use std::marker::PhantomData;
 use std::time::Duration;
 
 use schemars::{Schema, json_schema};
 use serde::Deserialize;
-use serde::de::{self, Deserializer};
+use serde::de::value::MapAccessDeserializer;
+use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 
 /// A type a name can stand for.
@@ -16,19 +19,34 @@ pub(crate) trait Presets: Sized {
 
     /// The value `name` stands for.
     fn preset(name: &str) -> Option<Self>;
+
+    /// The value its options, written out, make: what its derive reads.
+    fn options<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>;
 }
 
-/// `T` read from one of its presets' names, or by `object` from anything else.
-pub(crate) fn preset_or<'de, D: Deserializer<'de>, T: Presets>(
-    deserializer: D,
-    object: fn(Value) -> Result<T, serde_json::Error>,
-) -> Result<T, D::Error> {
-    match Value::deserialize(deserializer)? {
-        Value::String(name) => T::preset(&name).ok_or_else(|| {
-            de::Error::custom(format!("unknown name {name:?}, expected one of {}", T::NAMES.join(", ")))
-        }),
-        value => object(value).map_err(de::Error::custom),
+/// `T` read from one of its presets' names, or from its options, read where they are written so an
+/// error names the path to the option it could not read.
+pub(crate) fn preset_or<'de, D: Deserializer<'de>, T: Presets>(deserializer: D) -> Result<T, D::Error> {
+    struct Named<T>(PhantomData<T>);
+
+    impl<'de, T: Presets> Visitor<'de> for Named<T> {
+        type Value = T;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "one of {}, or options", T::NAMES.join(", "))
+        }
+
+        fn visit_str<E: de::Error>(self, name: &str) -> Result<T, E> {
+            T::preset(name)
+                .ok_or_else(|| E::custom(format!("unknown name {name:?}, expected one of {}", T::NAMES.join(", "))))
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+            T::options(MapAccessDeserializer::new(map))
+        }
     }
+
+    deserializer.deserialize_any(Named(PhantomData))
 }
 
 /// `T`'s schema as one of its presets' names or what it derived, its description kept on the whole.

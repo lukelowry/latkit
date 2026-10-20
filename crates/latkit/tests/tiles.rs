@@ -1,16 +1,17 @@
-//! Tiles: the vector tiles the camera asks for, fetched from the host, decoded, and drawn as a dataset
-//! the view owns; GeoJSON read as data.
+//! Tiles: the vector tiles the camera asks for and the time tiles a plot window asks for, fetched from
+//! the host, decoded, and drawn as a dataset the view owns; GeoJSON read as data.
 
 #![cfg(feature = "gpu")]
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use common::{SIZE, at, errors, frame, gpu, plain_theme};
-use latkit::geo::Tiles;
+use latkit::Tiles;
 use latkit::host::{Host, Raster, Request, TextRun};
-use latkit::{Areas, Camera, Color, Data, Earth, Lines, Pending, Scene, Vertices, View};
+use latkit::{Areas, Axis, Camera, Color, Data, Earth, Ids, Lines, Patch, Pending, Plot, Scene, Table, Vertices, View};
 
 const C: u32 = SIZE / 2;
 
@@ -99,7 +100,7 @@ fn tiles_the_camera_asks_for_draw_as_a_dataset() {
         .theme(plain_theme());
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0, 0.0, 0.0], zoom: 2.0, pitch: 0.0, bearing: 0.0 });
-    view.set_tiles(Tiles::vector("base", "tiles/{z}/{x}/{y}.pbf"));
+    view.set_tiles(Tiles::new("base", "tiles/{z}/{x}/{y}.pbf"));
     let pixels = frame(&gpu, &mut view);
     let fetched = served.fetched.lock().expect("unpoisoned").clone();
     assert!(!fetched.is_empty() && fetched.iter().all(|url| url.starts_with("tiles/")), "{fetched:?}");
@@ -117,6 +118,79 @@ fn tiles_the_camera_asks_for_draw_as_a_dataset() {
     assert!(after.iter().all(|id| !before.contains(id)), "finer tiles' rows");
     view.remove_data("base");
     assert!(view.data("base").is_none());
+}
+
+/// A host serving files by path, keeping the paths asked for.
+struct Files {
+    files: BTreeMap<String, Vec<u8>>,
+    asked: Mutex<Vec<String>>,
+}
+
+/// What the GPU is given as its host: the files, shared with the test.
+struct ServingFiles(Arc<Files>);
+
+impl Host for ServingFiles {
+    fn rasterize(&self, _: &TextRun) -> latkit::Result<Raster> {
+        Err(latkit::Error::Unsupported("no text in this test host".into()))
+    }
+
+    fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
+        self.0.asked.lock().expect("unpoisoned").push(request.url.to_string());
+        Pending::ready(self.0.files.get(&*request.url).cloned().ok_or_else(|| latkit::Error::Io("no such file".into())))
+    }
+}
+
+#[test]
+fn time_tiles_draw_the_spans_a_plot_window_asks_for() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("signals");
+    data.apply(Patch::new().axis("time", "s").set(Table::new("Signal", Ids::count(1)))).expect("valid");
+    let times: Vec<f64> = (0..20_000).map(f64::from).collect();
+    let values: Vec<f64> = times.iter().map(|t| 0.5 + 0.4 * (t / 50.0).sin()).collect();
+    data.apply(Patch::new().append(&times, "Signal", [("v", values)])).expect("frames");
+    let mut files = BTreeMap::new();
+    data.to_tiles(256, |path, bytes| {
+        files.insert(format!("history/{path}"), bytes.to_vec());
+        Ok(())
+    })
+    .expect("tiles");
+    let written = files.len();
+    let served = Arc::new(Files { files, asked: Mutex::default() });
+    gpu.set_host(ServingFiles(served.clone()));
+    let axis = Axis { grid: false, hidden: true, ..Axis::default() };
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    let scene = Scene::new(Plot { x: axis.clone(), y: axis })
+        .theme(plain_theme())
+        .draw(Lines::of("signals", "Signal").trace("v").color(red).width(2.0));
+    let camera = Camera::Plot { x: [1000.0, 1400.0], y: Some([0.0, 1.0]) };
+    let mut whole = View::new(&gpu, scene.clone()).expect("valid scene");
+    whole.set_data(data);
+    whole.set_camera(camera);
+    let expected = frame(&gpu, &mut whole);
+    let mut tiled = View::new(&gpu, scene).expect("valid scene");
+    tiled.set_tiles(Tiles::new("signals", "history/frames.json"));
+    tiled.set_camera(camera);
+    let pixels = frame(&gpu, &mut tiled);
+    assert_eq!(errors(&mut tiled), Vec::new());
+    let stats = tiled.stats();
+    assert_eq!(stats.tiles_loading, 0, "every span asked for landed");
+    let differing = pixels.iter().zip(&expected).filter(|(a, b)| !common::close(**a, **b)).count();
+    if differing > SIZE as usize {
+        let ascii = |p: &[[u8; 4]]| {
+            (0..SIZE / 4)
+                .map(|y| {
+                    (0..SIZE / 2).map(|x| if at(p, x * 2, y * 4)[0] > 100 { '#' } else { '.' }).collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        eprintln!("whole:\n{}\ntiled:\n{}", ascii(&expected), ascii(&pixels));
+        eprintln!("asked: {:?}", served.asked.lock().expect("unpoisoned"));
+    }
+    assert!(differing <= SIZE as usize, "the window draws as the whole history does: {differing} pixels differ");
+    assert!(pixels.iter().any(|p| p[0] > 200), "the trace draws");
+    let asked = served.asked.lock().expect("unpoisoned").clone();
+    assert!(asked.len() * 8 < written, "only the spans the window draws: {asked:?} of {written}");
 }
 
 #[test]

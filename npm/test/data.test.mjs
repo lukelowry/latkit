@@ -152,6 +152,28 @@ test('changes apply in place, a snapshot keeps a version, and a patch names its 
   before.destroy();
 });
 
+test('time tiles hold runs of a sampled field, holes between them', () => {
+  const data = new Data('grid').apply(new Patch().replace('Bus', [1, 2], { x: [1, 2] }));
+  data.apply(
+    new Patch()
+      .frames('Bus', 'v', { first: 100 }, [100, 101], Float32Array.of(1, 2, 3, 4))
+      .frames('Bus', 'v', { level: 1, first: 0 }, [0, 7], [0.5, 0.25, 1.5, 1.25]),
+  );
+  assert.deepEqual(data.span, [0, 101]);
+  assert.equal(data.get('Bus', 2, 'v', 101), 4);
+  assert.equal(data.get('Bus', 1, 'v', 50), null, 'a hole holds no frame');
+  const again = new Patch().frames('Bus', 'v', { first: 100 }, [100], [1, 2]);
+  assert.throws(() => data.apply(again), { code: 'invalid' }, 'frames held already');
+  assert.throws(() => new Patch().frames('Bus', 'v', { level: 1, first: 0 }, [0, 7, 9], [1]), {
+    code: 'invalid',
+  });
+  const back = new Data('grid').apply(Patch.fromBytes(data.toBytes()));
+  assert.deepEqual(back.describe(), data.describe());
+  assert.equal(back.get('Bus', 1, 'v', 100.5), 1);
+  data.destroy();
+  back.destroy();
+});
+
 test('a failed change leaves the patch as it was', () => {
   const patch = new Patch().set('Bus', [1], { x: [1] });
   const bytes = patch.toBytes();

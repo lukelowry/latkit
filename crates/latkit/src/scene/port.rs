@@ -40,11 +40,15 @@ impl Presets for Port {
         let side = [Side::Left, Side::Right, Side::Top, Side::Bottom];
         Port::NAMES.iter().position(|n| *n == name).map(|i| Port::new(side[i]))
     }
+
+    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Port, D::Error> {
+        Port::deserialize(deserializer)
+    }
 }
 
 impl<'de> Deserialize<'de> for Port {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Port, D::Error> {
-        preset_or(deserializer, Port::deserialize)
+        preset_or(deserializer)
     }
 }
 

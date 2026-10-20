@@ -58,6 +58,19 @@ pub(crate) enum OpForm {
     },
     /// Forgets every sampled field's frames before axis coordinate `before`.
     Forget { before: f64 },
+    /// Holds a run of sampled field `field`'s entries of level `level`, numbered from `first`: at
+    /// level 0 frames, each a coordinate in `at` and a value per row in `values`; at level `k` buckets
+    /// of `8^k` frames, each its first and last frame's coordinates, and each row's least value over
+    /// each bucket, then each row's greatest. Null is missing.
+    Frames {
+        table: String,
+        field: String,
+        #[serde(default)]
+        level: u32,
+        first: u32,
+        at: Vec<f64>,
+        values: Vec<Option<f64>>,
+    },
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -280,6 +293,10 @@ pub(crate) fn patch(ops: Vec<OpForm>) -> Result<Patch> {
                 Op::Append { table: table.into(), at, ids: ids.map(|ids| ids.0), fields: columns }
             }
             OpForm::Forget { before } => Op::Forget { before },
+            OpForm::Frames { table, field, level, first, at, values } => {
+                let values = values.iter().map(|v| v.map_or(f32::NAN, |v| v as f32)).collect();
+                Op::frames(table.into(), field.into(), level, first, at, values)
+            }
         };
         patch.ops.push(op);
     }

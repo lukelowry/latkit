@@ -3,7 +3,7 @@
 //!
 //! Every shader's pass group (group 2) binds by one convention: 0 state, 1 frozen state, 2 extents,
 //! 3 normals, 4 domains, 5 probe, 6 depth, 7 sprites, 8 the text atlas, 9 lists, 10 the shadow map,
-//! 11 a level of it, 12 remap words, 13 labels, 15 icons.
+//! 11 a level of it, 12 remap words, 13 labels, 14 the settled state, 15 icons, 16 row blocks.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -15,6 +15,7 @@ use crate::gpu::{Inner, Shared};
 
 /// Bytes between marks' uniforms and between eyes: the dynamic offset alignment every device supports.
 pub(crate) const MARK_STRIDE: u64 = 256;
+const _: () = assert!(size_of::<wgsl::Mark>() as u64 <= MARK_STRIDE, "a mark's uniform fits its stride");
 /// The depth format; depth is reversed, nearer is greater.
 pub(crate) const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// The shadow map's format.
@@ -126,6 +127,7 @@ impl ShadowMap {
 pub(crate) struct OldRows {
     pub(crate) state: wgpu::Buffer,
     pub(crate) frozen: Option<wgpu::Buffer>,
+    pub(crate) settled: Option<wgpu::Buffer>,
 }
 
 pub(crate) struct Resources {
@@ -138,7 +140,12 @@ pub(crate) struct Resources {
     lit: Grown,
     state: wgpu::Buffer,
     frozen: Option<wgpu::Buffer>,
+    /// The state's mirror that channels of marks easing toward a change store into, while one does:
+    /// where their rows settle.
+    settled: Option<wgpu::Buffer>,
     retired: Option<OldRows>,
+    /// The row blocks each mark's evaluation covers this frame.
+    blocks: Grown,
     remap: Grown,
     domains: Grown,
     extents: Grown,
@@ -148,6 +155,9 @@ pub(crate) struct Resources {
     lists: Grown,
     labels: wgpu::Buffer,
     empty: wgpu::Buffer,
+    /// What the settled state binds without one: writable, so it never shares a buffer bound
+    /// read-only.
+    scratch: wgpu::Buffer,
     pub(crate) shadows: ShadowMap,
     /// Changes whenever one of the buffers or textures above is replaced; and whenever the lists
     /// buffer is, emptied.
@@ -175,7 +185,9 @@ impl Resources {
             lit: Grown::new(device, "latkit lit", storage),
             state: create(device, "latkit state", ROWS, 256),
             frozen: None,
+            settled: None,
             retired: None,
+            blocks: Grown::new(device, "latkit blocks", storage),
             remap: Grown::new(device, "latkit remap", storage),
             domains: Grown::new(device, "latkit domains", storage),
             extents: Grown::new(device, "latkit extents", storage | wgpu::BufferUsages::COPY_SRC),
@@ -189,6 +201,7 @@ impl Resources {
             ),
             labels: create(device, "latkit labels", ROWS, 256),
             empty: create(device, "latkit empty", ROWS, 256),
+            scratch: create(device, "latkit scratch", ROWS, 256),
             shadows: ShadowMap::new(device, 1),
             generation: 0,
             lists_generation: 0,
@@ -206,9 +219,11 @@ impl Resources {
         let state = create(device, "latkit state", ROWS, words(sizes.state));
         self.focus = create(device, "latkit focus", wgpu::BufferUsages::STORAGE, words(sizes.focus));
         let frozen = self.frozen.as_ref().map(|_| create(device, "latkit frozen", ROWS, words(sizes.state)));
+        let settled = self.settled.as_ref().map(|_| create(device, "latkit settled", ROWS, words(sizes.state)));
         let old = OldRows {
             state: std::mem::replace(&mut self.state, state),
             frozen: std::mem::replace(&mut self.frozen, frozen),
+            settled: std::mem::replace(&mut self.settled, settled),
         };
         self.generation += 1;
         old
@@ -244,6 +259,34 @@ impl Resources {
 
     pub(crate) fn frozen(&self) -> Option<&wgpu::Buffer> {
         self.frozen.as_ref()
+    }
+
+    /// Makes the settled mirror of the state buffer exist.
+    pub(crate) fn ensure_settled(&mut self, device: &wgpu::Device) {
+        if self.settled.is_none() {
+            self.settled = Some(create(device, "latkit settled", ROWS, self.state.size()));
+            self.generation += 1;
+        }
+    }
+
+    pub(crate) fn drop_settled(&mut self) {
+        if self.settled.take().is_some() {
+            self.generation += 1;
+        }
+    }
+
+    pub(crate) fn settled(&self) -> Option<&wgpu::Buffer> {
+        self.settled.as_ref()
+    }
+
+    /// Writes the row blocks every mark's evaluation covers this frame.
+    pub(crate) fn write_blocks(&mut self, device: &wgpu::Device, queue: &Queue, blocks: &[u32]) {
+        if self.blocks.ensure(device, (blocks.len() as u64 + 1) * 4) {
+            self.generation += 1;
+        }
+        if !blocks.is_empty() {
+            queue.write_buffer(&self.blocks.buffer, 0, bytemuck::cast_slice(blocks));
+        }
     }
 
     /// Copies `rows` rows of a region's kind and extra words from `source` (the state buffer when
@@ -501,7 +544,9 @@ impl Resources {
                     10 => wgpu::BindingResource::TextureView(&self.shadows.view),
                     12 => self.remap.buffer.as_entire_binding(),
                     13 => self.labels.as_entire_binding(),
+                    14 => self.settled.as_ref().unwrap_or(&self.scratch).as_entire_binding(),
                     15 => wgpu::BindingResource::TextureView(&inner.icons.view),
+                    16 => self.blocks.buffer.as_entire_binding(),
                     other => unreachable!("no resource for pass binding {other}"),
                 };
                 wgpu::BindGroupEntry { binding: binding.slot, resource }

@@ -19,10 +19,11 @@ thiserror.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true
 bytemuck.workspace = true
-# JSON: scenes, data, shots, and view state, with the schema of what is read; GeoJSON and tiles'
-# metadata. Gzip-compressed bytes.
+# JSON: scenes, data, shots, and view state, with the schema of what is read and the path to what
+# could not be; GeoJSON and tiles' metadata. Gzip-compressed bytes.
 serde = { workspace = true }
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 schemars.workspace = true
 flate2.workspace = true
 # Images: icons read from PNG; pictures written as PNG, JPEG, or lossless WebP.

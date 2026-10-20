@@ -20,7 +20,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::pyramid::{Leveling, Places, Placing, Pyramid, Wanted, answer, reaches};
 use super::sight::{Domain, Sight};
 use super::{Jobs, stamp_of};
-use crate::data::{Column, Data, Field, Name, RowIds, Table, UNWIRED, Version};
+use crate::data::{Data, Field, Name, RowIds, Table, UNWIRED, Version};
 use crate::expr::cpu::Rows;
 use crate::expr::{Expr, Node};
 use crate::host::Job;
@@ -128,15 +128,16 @@ impl Tiled {
         (changed, gone)
     }
 
-    /// Whether every table drawn in part draws from its pyramid: none draws its first sample while
-    /// its pyramid is worked out.
+    /// Whether every table drawn in part draws from its pyramid, its rows in drawing order: none draws
+    /// its first sample while its pyramid is worked out, nor waits to be laid out again.
     pub(crate) fn complete(&self) -> bool {
-        self.sets.iter().all(|s| s.working.is_empty() && !s.deferred && !s.sampling)
+        self.sets.iter().all(|s| s.working.is_empty() && !s.deferred && !s.sampling && s.settled())
     }
 
-    /// Whether a dataset waits for a frame to ask for its pyramids.
+    /// Whether a dataset waits for a frame: to ask for its pyramids, or to lay its rows out again in
+    /// drawing order once the camera rests.
     pub(crate) fn due(&self) -> bool {
-        self.sets.iter().any(|s| s.deferred)
+        self.sets.iter().any(|s| s.deferred || !s.settled())
     }
 
     /// Whether dataset `name` draws in part.
@@ -171,20 +172,23 @@ struct Working {
     placed: Placed,
 }
 
-/// One table's rows drawn last time, the versions of the table drawn while they hold, its fields as
-/// gathered with what each was gathered from, and each source row's row drawn.
+/// One table's rows drawn last time and where each lies, the versions of the table drawn while they
+/// hold, and its fields as gathered with what each was gathered from.
 #[derive(Default)]
 struct Gathered {
+    /// Each row drawn: its source row, or a [`HOLE`].
     rows: Option<Arc<[u32]>>,
+    slots: Slots,
+    /// The rows written since the ids and fields kept were gathered, `(row, source row or HOLE)` by
+    /// row; `None` where every row was laid out afresh, and they gather again.
+    writes: Option<Vec<(usize, usize)>>,
     versions: Option<(Version, Version)>,
     ids: Option<RowIds>,
     fields: FxHashMap<Name, (u64, Field)>,
-    /// Each reference field's ids as gathered, and every row's target by it, as of a version of it.
-    references: FxHashMap<Name, (u64, Column)>,
+    /// Each reference field's ids as gathered and resolved, and every row's target by it, as of a
+    /// version of it.
+    references: FxHashMap<Name, (u64, Field)>,
     targets: FxHashMap<Name, (Version, Arc<[u32]>)>,
-    /// Each source row's row drawn, `UNWIRED` where none, and the rows it was written for.
-    map: Vec<u32>,
-    mapped: Arc<[u32]>,
 }
 
 /// One dataset drawn in part.
@@ -199,6 +203,8 @@ struct Set {
     deferred: bool,
     /// What the dataset drawn was gathered from.
     gathered: u64,
+    /// Updates since it changed.
+    quiet: u32,
     tables: FxHashMap<Name, Gathered>,
     /// Whether a table draws an even sample of its rows until its pyramid lands.
     sampling: bool,
@@ -213,9 +219,15 @@ impl Set {
             working: Vec::new(),
             deferred: false,
             gathered: 0,
+            quiet: 0,
             tables: FxHashMap::default(),
             sampling: false,
         }
+    }
+
+    /// Whether every table's rows lie in drawing order: none waits to be laid out again.
+    fn settled(&self) -> bool {
+        self.tables.values().all(|g| g.slots.ordered || g.slots.rows.is_empty())
     }
 
     /// Brings the pyramids and the rows drawn up to `ask`; the dataset drawn, when it changed.
@@ -338,15 +350,22 @@ impl Set {
         let pyramids: Vec<Version> = serving.iter().map(|(_, p)| p.made).collect();
         let inputs = stamp_of((source.0.version, pyramids, &chosen, &pinned, frames, reads_of(source, ask)));
         if inputs == self.gathered {
-            return None;
+            // Once the camera rests, rows laid out of drawing order are laid out again in it.
+            self.quiet += 1;
+            if self.settled() || self.quiet < SETTLE {
+                return None;
+            }
+        } else {
+            self.quiet = 0;
         }
         self.gathered = inputs;
         let serving: FxHashMap<Name, Arc<Placed>> = serving.into_iter().collect();
-        Some(self.build(source, ask, &serving, &chosen, &pinned))
+        let afresh = self.quiet >= SETTLE;
+        Some(self.build(source, ask, &serving, &chosen, &pinned, afresh))
     }
 
-    /// The dataset drawn: every table's rows drawn, pinned rows kept, the ends of edges drawn
-    /// carried along, each table gathered.
+    /// The dataset drawn: every table's rows drawn, pinned rows kept, the ends of edges drawn carried
+    /// along, each table's rows laid out, afresh where `afresh` says so, and gathered.
     fn build(
         &mut self,
         source: &Data,
@@ -354,8 +373,9 @@ impl Set {
         serving: &FxHashMap<Name, Arc<Placed>>,
         chosen: &[(Name, Choice)],
         pinned: &[&Row],
+        afresh: bool,
     ) -> Data {
-        let mut rows: FxHashMap<Name, Vec<u32>> = chosen
+        let mut wanted: FxHashMap<Name, Vec<u32>> = chosen
             .iter()
             .filter_map(|(name, choice)| {
                 let len = source.table(name).map_or(0, Table::len) as u32;
@@ -363,12 +383,12 @@ impl Set {
             })
             .collect();
         // Rows pinned, and the rows the edges drawn end at, draw whatever their tiles.
-        let mut drawn: FxHashMap<Name, Bitset> = rows
+        let mut drawn: FxHashMap<Name, Bitset> = wanted
             .iter()
             .map(|(name, list)| (name.clone(), Bitset::of(list, source.table(name).map_or(0, Table::len))))
             .collect();
         for row in pinned {
-            let (Some(list), Some(table)) = (rows.get_mut(&row.table), source.table(&row.table)) else { continue };
+            let (Some(list), Some(table)) = (wanted.get_mut(&row.table), source.table(&row.table)) else { continue };
             if let Some(r) = table.row(row.id.as_ref())
                 && drawn.get_mut(&row.table).is_some_and(|set| set.insert(r as u32))
             {
@@ -384,11 +404,11 @@ impl Set {
             };
             for (name, field) in &table.fields {
                 let Field::Reference(reference) = field else { continue };
-                if !rows.contains_key(&reference.to) || !ends.contains(name) {
+                if !wanted.contains_key(&reference.to) || !ends.contains(name) {
                     continue;
                 }
                 let targets = self.targets(&table.name, name, field);
-                let ends: Vec<u32> = match rows.get(&table.name) {
+                let ends: Vec<u32> = match wanted.get(&table.name) {
                     Some(list) => list.iter().map(|&r| targets[r as usize]).collect(),
                     None => targets.to_vec(),
                 };
@@ -396,44 +416,46 @@ impl Set {
             }
         }
         for (to, ends) in carried {
-            let (Some(list), Some(set)) = (rows.get_mut(&to), drawn.get_mut(&to)) else { continue };
+            let (Some(list), Some(set)) = (wanted.get_mut(&to), drawn.get_mut(&to)) else { continue };
             for t in ends {
                 if t != UNWIRED && set.insert(t) {
                     list.push(t);
                 }
             }
         }
-        // Each table drawn in part: the versions it holds while its rows do, and where each source
-        // row is drawn.
+        // Each table drawn in part: its rows laid out, and the versions it holds while they do.
+        let mut rows: FxHashMap<Name, Arc<[u32]>> = FxHashMap::default();
         let mut versions: FxHashMap<Name, (Version, Version)> = FxHashMap::default();
-        for (name, list) in &rows {
+        for (name, list) in &wanted {
             let gathered = self.tables.entry(name.clone()).or_default();
-            let same = gathered.rows.as_deref() == Some(list.as_slice());
-            let held = gathered.versions.filter(|_| same).unwrap_or_else(|| {
-                let v = Version::next();
-                (v, v)
-            });
+            let len = source.table(name).map_or(0, Table::len);
+            let writes = gathered.slots.lay(list, len, afresh);
+            let laid: Arc<[u32]> = match (&writes, &gathered.rows) {
+                (Some(writes), Some(before)) if writes.is_empty() => before.clone(),
+                _ => gathered.slots.rows.as_slice().into(),
+            };
+            // Rows written in place keep the order the table's rows are drawn in, as every row still
+            // drawn keeps its place; rows laid out afresh draw in another.
+            let held = match (&writes, gathered.versions) {
+                (Some(writes), Some(held)) if writes.is_empty() => held,
+                (Some(_), Some((order, _))) => (order, Version::next()),
+                _ => {
+                    let v = Version::next();
+                    (v, v)
+                }
+            };
             gathered.versions = Some(held);
             versions.insert(name.clone(), held);
-            let len = source.table(name).map_or(0, Table::len);
-            gathered.map.resize(len, UNWIRED);
-            for &r in gathered.mapped.iter() {
-                if let Some(m) = gathered.map.get_mut(r as usize) {
-                    *m = UNWIRED;
-                }
-            }
-            for (i, &r) in list.iter().enumerate() {
-                if let Some(m) = gathered.map.get_mut(r as usize) {
-                    *m = i as u32;
-                }
-            }
-            gathered.mapped = list.as_slice().into();
-            if !same {
-                gathered.rows = Some(list.as_slice().into());
+            if writes.is_none() {
                 gathered.ids = None;
                 gathered.fields.clear();
                 gathered.references.clear();
             }
+            gathered.writes = writes.map(|w| {
+                w.iter().map(|&(at, r)| (at as usize, if r == HOLE { crate::data::HOLE } else { r as usize })).collect()
+            });
+            gathered.rows = Some(laid.clone());
+            rows.insert(name.clone(), laid);
         }
         let mut tables = Vec::with_capacity(source.tables().count());
         for table in source.tables() {
@@ -457,13 +479,14 @@ impl Set {
     }
 
     /// Table `table` as drawn: as it is, its references naming the rows drawn; or its rows drawn
-    /// in part, with the fields marks read.
+    /// in part, with the fields marks read. Rows written in place write the ids and fields kept,
+    /// touching only their pages; rows laid out afresh gather them again.
     fn drawn(
         &mut self,
         source: &Data,
         table: &Table,
         ask: &Ask<'_>,
-        rows: &FxHashMap<Name, Vec<u32>>,
+        rows: &FxHashMap<Name, Arc<[u32]>>,
         versions: &FxHashMap<Name, (Version, Version)>,
     ) -> Table {
         // A table no mark draws stays as it is: only joins read it, by id.
@@ -479,34 +502,51 @@ impl Set {
                 let Field::Reference(reference) = field else { continue };
                 let Some(&(order, structure)) = versions.get(&reference.to) else { continue };
                 let targets = self.targets(&table.name, name, field);
-                let map = &self.tables[&reference.to].map;
+                let map = &self.tables[&reference.to].slots.at;
                 let mapped: Vec<u32> = targets.iter().map(|&t| remap(map, t)).collect();
-                let remapped = reference.resolved_to(reference.ids.clone(), &mapped, order, structure);
-                out.insert(name.clone(), Field::Reference(remapped));
+                let kept = self.tables.get(&table.name).and_then(|g| g.references.get(name)).map(|(_, f)| f.clone());
+                let kept = kept.as_ref().and_then(|f| if let Field::Reference(r) = f { Some(r) } else { None });
+                let remapped = reference.resolved_to(reference.ids.clone(), &mapped, order, structure, kept);
+                let field = Field::Reference(remapped);
+                self.tables.entry(table.name.clone()).or_default().references.insert(name.clone(), (0, field.clone()));
+                out.insert(name.clone(), field);
             }
             return out;
         };
         let reads = ask.plans.get(&(source.name().clone(), table.name.clone())).and_then(|p| p.reads.as_ref());
-        let picked: Vec<usize> = list.iter().map(|&r| r as usize).collect();
+        let picked: Vec<usize> = list.iter().map(|&r| if r == HOLE { crate::data::HOLE } else { r as usize }).collect();
         let (order, structure) = versions[&table.name];
-        let ids = {
-            let gathered = self.tables.get_mut(&table.name).expect("made with its rows");
-            gathered.ids.get_or_insert_with(|| table.ids.gather(&picked)).clone()
+        let gathered = self.tables.get_mut(&table.name).expect("made with its rows");
+        let writes = gathered.writes.take();
+        let len = list.len();
+        let ids = match (&gathered.ids, &writes) {
+            (Some(ids), Some(writes)) => ids.write(len, writes, &table.ids).expect("ids of one kind"),
+            _ => table.ids.gather(&picked),
         };
+        gathered.ids = Some(ids.clone());
         let mut out =
             Table { name: table.name.clone(), ids, index: Arc::default(), fields: Vec::new(), structure, order };
+        // Fields not read now miss the rows written: gathered again once read.
+        if writes.as_ref().is_some_and(|w| !w.is_empty()) {
+            gathered.fields.retain(|name, _| reads.is_none_or(|r| r.contains(name)));
+        }
         let frames = |samples: &crate::data::Samples| samples.frame_at(ask.at);
         for (name, field) in &table.fields {
             let read = reads.is_none_or(|r| r.contains(name));
             let made = match field {
                 Field::Values(column, version) if read => {
                     let stamp = stamp_of(version);
-                    self.cached(&table.name, name, stamp, || Field::Values(column.gather(&picked), Version::next()))
+                    self.cached(&table.name, name, stamp, writes.as_deref(), |kept| match (kept, writes.as_deref()) {
+                        (Some(Field::Values(kept, _)), Some(writes)) => {
+                            Field::Values(kept.write(len, writes, column).expect("one storage"), Version::next())
+                        }
+                        _ => Field::Values(column.gather(&picked), Version::next()),
+                    })
                 }
                 Field::Sampled(samples, version) if read => {
                     let frame = frames(samples);
                     let stamp = stamp_of((version, frame));
-                    self.cached(&table.name, name, stamp, || {
+                    self.cached(&table.name, name, stamp, writes.as_deref(), |_| {
                         let span = frame.map_or(0..0, |f| f..f + 2);
                         Field::Sampled(samples.gather_frames(&picked, span), Version::next())
                     })
@@ -515,24 +555,32 @@ impl Set {
                     let targets = self.targets(&table.name, name, field);
                     let stamp = stamp_of(reference.version);
                     let gathered = self.tables.entry(table.name.clone()).or_default();
-                    let ids = match gathered.references.get(name) {
-                        Some((s, ids)) if *s == stamp => ids.clone(),
-                        _ => {
-                            let ids = reference.ids.gather(&picked);
-                            gathered.references.insert(name.clone(), (stamp, ids.clone()));
-                            ids
+                    let kept = gathered.references.get(name).filter(|(s, _)| *s == stamp).map(|(_, f)| f.clone());
+                    let kept = kept.as_ref().and_then(|f| if let Field::Reference(r) = f { Some(r) } else { None });
+                    let ids = match (kept, &writes) {
+                        (Some(kept), Some(writes)) => {
+                            kept.ids.write(len, writes, &reference.ids).expect("ids of one kind")
                         }
+                        (Some(kept), None) if kept.ids.len() == len => kept.ids.clone(),
+                        _ => reference.ids.gather(&picked),
                     };
-                    let mapped: Vec<u32> =
-                        match self.tables.get(&reference.to).filter(|_| rows.contains_key(&reference.to)) {
-                            Some(target) => list.iter().map(|&r| remap(&target.map, targets[r as usize])).collect(),
-                            None => list.iter().map(|&r| targets[r as usize]).collect(),
-                        };
+                    let target = self.tables.get(&reference.to).filter(|_| rows.contains_key(&reference.to));
+                    let mapped: Vec<u32> = list
+                        .iter()
+                        .map(|&r| match (r, target) {
+                            (HOLE, _) => UNWIRED,
+                            (r, Some(target)) => remap(&target.slots.at, targets[r as usize]),
+                            (r, None) => targets[r as usize],
+                        })
+                        .collect();
                     let (order, structure) = match versions.get(&reference.to) {
                         Some(&held) => held,
                         None => source.table(&reference.to).map_or((order, structure), |t| (t.order, t.structure)),
                     };
-                    Field::Reference(reference.resolved_to(ids, &mapped, order, structure))
+                    let resolved = Field::Reference(reference.resolved_to(ids, &mapped, order, structure, kept));
+                    let gathered = self.tables.entry(table.name.clone()).or_default();
+                    gathered.references.insert(name.clone(), (stamp, resolved.clone()));
+                    resolved
                 }
                 _ => continue,
             };
@@ -541,18 +589,27 @@ impl Set {
         out
     }
 
-    /// Field `field` of table `table` as gathered from what `stamp` stamps for the rows drawn,
-    /// gathered again by `make` when that changed.
-    fn cached(&mut self, table: &Name, field: &Name, stamp: u64, make: impl FnOnce() -> Field) -> Field {
+    /// Field `field` of table `table` for the rows drawn, as gathered from what `stamp` stamps: the
+    /// field kept where that holds and no row was written; else made by `make` from the field kept
+    /// where that holds and rows were written, or from nothing.
+    fn cached(
+        &mut self,
+        table: &Name,
+        field: &Name,
+        stamp: u64,
+        writes: Option<&[(usize, usize)]>,
+        make: impl FnOnce(Option<&Field>) -> Field,
+    ) -> Field {
         let gathered = self.tables.entry(table.clone()).or_default();
-        match gathered.fields.get(field) {
-            Some((s, made)) if *s == stamp => made.clone(),
-            _ => {
-                let made = make();
-                gathered.fields.insert(field.clone(), (stamp, made.clone()));
-                made
-            }
+        let kept = gathered.fields.get(field).filter(|(s, _)| *s == stamp).map(|(_, f)| f);
+        if let Some(kept) = kept
+            && writes.is_none_or(<[_]>::is_empty)
+        {
+            return kept.clone();
         }
+        let made = make(kept);
+        gathered.fields.insert(field.clone(), (stamp, made.clone()));
+        made
     }
 }
 
@@ -561,12 +618,17 @@ struct Bitset(Vec<u64>);
 
 impl Bitset {
     /// The rows of `list`, of a table of `len` rows.
-    fn of(list: &[u32], len: usize) -> Bitset {
+    fn of<'a>(list: impl IntoIterator<Item = &'a u32>, len: usize) -> Bitset {
         let mut set = Bitset(vec![0; len.div_ceil(64)]);
         for &r in list {
             set.insert(r);
         }
         set
+    }
+
+    /// Whether row `r` is there.
+    fn contains(&self, r: u32) -> bool {
+        self.0.get(r as usize / 64).is_some_and(|word| word >> (r % 64) & 1 == 1)
     }
 
     /// Adds row `r`; whether it was not there before.
@@ -624,6 +686,108 @@ impl Choice {
             (Choice::Sample(step), _) => (0..len).step_by(*step as usize).collect(),
             (_, None) => Vec::new(),
         })
+    }
+}
+
+/// A row drawn that no source row fills: a hole a row no longer drawn left.
+const HOLE: u32 = u32::MAX;
+/// Updates without change after which rows laid out of drawing order are laid out again in order.
+const SETTLE: u32 = 8;
+
+/// Where a table drawn in part draws each row: a row still drawn keeps its place while the camera
+/// moves, so only arriving rows are gathered and evaluated. A row no longer drawn leaves a hole, which
+/// a row arriving later takes, the first hole first, else a row past the last. The rows are laid out
+/// afresh, in drawing order, when holes pass a quarter of them, and once the camera rests while they
+/// lie out of that order.
+#[derive(Default)]
+struct Slots {
+    /// Each row drawn: its source row, or a [`HOLE`].
+    rows: Vec<u32>,
+    /// Where each source row is drawn, `UNWIRED` where it is not.
+    at: Vec<u32>,
+    /// Holes, by row.
+    holes: Vec<u32>,
+    /// Whether the rows lie in drawing order with no hole, as laying out afresh lays them.
+    ordered: bool,
+}
+
+impl Slots {
+    /// Lays out `wanted`, rows of a table of `len` rows, in drawing order: each still drawn keeps its
+    /// place, each no longer drawn leaves a hole, and each arriving takes the first hole, else a row
+    /// past the last. Every row is laid out afresh where `afresh` says so or holes would pass a quarter
+    /// of the rows. The rows written, `(row, source row or HOLE)` by row; `None` where every row was
+    /// laid out afresh.
+    fn lay(&mut self, wanted: &[u32], len: usize, afresh: bool) -> Option<Vec<(u32, u32)>> {
+        self.at.resize(len, UNWIRED);
+        if afresh || self.rows.is_empty() {
+            return self.afresh(wanted);
+        }
+        let keep = Bitset::of(wanted, len);
+        let mut writes: Vec<(u32, u32)> = Vec::new();
+        let mut freed: Vec<u32> = Vec::new();
+        for (i, slot) in self.rows.iter_mut().enumerate() {
+            if *slot != HOLE && !keep.contains(*slot) {
+                if let Some(at) = self.at.get_mut(*slot as usize) {
+                    *at = UNWIRED;
+                }
+                *slot = HOLE;
+                freed.push(i as u32);
+                writes.push((i as u32, HOLE));
+            }
+        }
+        if !freed.is_empty() {
+            self.holes.extend(freed);
+            self.holes.sort_unstable();
+        }
+        let mut taken = 0;
+        for &source in wanted {
+            if self.at.get(source as usize).is_none_or(|&at| at != UNWIRED) {
+                continue;
+            }
+            let row = if let Some(&hole) = self.holes.get(taken) {
+                taken += 1;
+                hole
+            } else {
+                self.rows.push(HOLE);
+                self.rows.len() as u32 - 1
+            };
+            self.rows[row as usize] = source;
+            self.at[source as usize] = row;
+            writes.push((row, source));
+        }
+        self.holes.drain(..taken);
+        if 4 * self.holes.len() > self.rows.len() {
+            return self.afresh(wanted);
+        }
+        // A row left and taken again writes what takes it.
+        writes.sort_by_key(|w| w.0);
+        writes.dedup_by(|later, earlier| {
+            let same = later.0 == earlier.0;
+            if same {
+                earlier.1 = later.1;
+            }
+            same
+        });
+        self.ordered = self.holes.is_empty() && self.rows == wanted;
+        Some(writes)
+    }
+
+    /// Lays every row out afresh, in drawing order, with no hole.
+    fn afresh(&mut self, wanted: &[u32]) -> Option<Vec<(u32, u32)>> {
+        for &old in self.rows.iter().filter(|&&r| r != HOLE) {
+            if let Some(at) = self.at.get_mut(old as usize) {
+                *at = UNWIRED;
+            }
+        }
+        for (row, &source) in wanted.iter().enumerate() {
+            if let Some(at) = self.at.get_mut(source as usize) {
+                *at = row as u32;
+            }
+        }
+        self.rows = wanted.to_vec();
+        self.holes.clear();
+        self.ordered = true;
+        None
     }
 }
 
@@ -826,4 +990,35 @@ fn leveling(ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> (Leveling, FxHashMa
         }
     }
     (Leveling { domain, tables }, bounds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_still_drawn_keep_their_places_and_arriving_ones_fill_holes() {
+        let mut slots = Slots::default();
+        let first: Vec<u32> = (0..20).collect();
+        assert_eq!(slots.lay(&first, 100, false), None, "laid out afresh");
+        assert!(slots.ordered);
+        // Rows 4..8 go: their places are holes, every other row stays.
+        let kept: Vec<u32> = (0..4).chain(8..20).collect();
+        let writes = slots.lay(&kept, 100, false).expect("in place");
+        assert_eq!(writes, (4..8).map(|r| (r, HOLE)).collect::<Vec<_>>());
+        assert_eq!((slots.rows[3], slots.rows[8], slots.at[9]), (3, 8, 9));
+        assert!(!slots.ordered, "holes lie among the rows");
+        // Rows 50..55 arrive: four take the holes, the fifth goes past the last row.
+        let more: Vec<u32> = kept.iter().copied().chain(50..55).collect();
+        let writes = slots.lay(&more, 100, false).expect("in place");
+        assert_eq!(writes, [(4, 50), (5, 51), (6, 52), (7, 53), (20, 54)]);
+        assert_eq!(slots.lay(&more, 100, false), Some(vec![]), "nothing changed, nothing written");
+        // A row leaving and another arriving in one go: the place left is taken at once.
+        let swapped: Vec<u32> = more.iter().copied().filter(|&r| r != 10).chain([60]).collect();
+        assert_eq!(slots.lay(&swapped, 100, false), Some(vec![(10, 60)]));
+        // Holes past a quarter of the rows lay every row out afresh, in order.
+        assert_eq!(slots.lay(&[60, 61], 100, false), None);
+        assert_eq!((slots.rows.as_slice(), slots.ordered, slots.at[10]), (&[60, 61][..], true, UNWIRED));
+        assert_eq!(slots.lay(&[60, 61], 100, true), None, "and so does asking for it");
+    }
 }

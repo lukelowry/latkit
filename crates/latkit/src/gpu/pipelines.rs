@@ -207,7 +207,7 @@ impl Pipelines {
                 let source = shader.source();
                 device.create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some(source.label),
-                    source: wgpu::ShaderSource::Wgsl(source.wgsl.into()),
+                    source: wgpu::ShaderSource::Wgsl(source.wgsl().into()),
                 })
             })
             .clone()
@@ -249,7 +249,7 @@ impl Pipelines {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("latkit custom marker"),
-            source: wgpu::ShaderSource::Wgsl(format!("{}\n{source}", shader.source().wgsl).into()),
+            source: wgpu::ShaderSource::Wgsl(format!("{}\n{source}", shader.source().wgsl()).into()),
         });
         let pipeline = self.pipeline(device, Variant::draw(shader, format, samples), &module);
         let check: Check = Box::pin(scope.pop());

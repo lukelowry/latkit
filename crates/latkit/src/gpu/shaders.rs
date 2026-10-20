@@ -26,10 +26,30 @@ const VERTEX: u32 = 1;
 const FRAGMENT: u32 = 2;
 const COMPUTE: u32 = 4;
 
-/// One linked shader: its WGSL, entry points, and the bindings of its pass group.
+impl ShaderSource {
+    /// The shader's WGSL: its declarations, each stored once for every shader, joined in order.
+    pub(crate) fn wgsl(&self) -> String {
+        let mut out = String::new();
+        for (i, &piece) in self.pieces.iter().enumerate() {
+            if i > 0 {
+                out.push_str("\n\n");
+            }
+            let (start, end) = PIECES[piece as usize];
+            out.push_str(&WGSL[start as usize..end as usize]);
+        }
+        out
+    }
+}
+
+/// Every distinct top-level declaration of every linked shader, each once; [`PIECES`] says where each
+/// lies.
+static WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/shaders.wgsl"));
+
+/// One linked shader: its declarations, entry points, and the bindings of its pass group.
 pub(crate) struct ShaderSource {
     pub(crate) label: &'static str,
-    pub(crate) wgsl: &'static str,
+    /// Its declarations, as indices into [`PIECES`], in order.
+    pieces: &'static [u16],
     pub(crate) pass: &'static [Binding],
     /// The pipeline constants it declares.
     pub(crate) overrides: &'static [&'static str],

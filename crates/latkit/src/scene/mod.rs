@@ -153,8 +153,9 @@ impl Scene {
     }
 
     /// Checks the scene against complete datasets without creating a GPU. Uses the same expression
-    /// compiler as a view, but requires every drawn dataset and table to be present.
-    pub fn validate(&self, data: &[Data]) -> Result<()> {
+    /// compiler as a view, but requires every drawn dataset and table to be present, but for the
+    /// datasets `tiles` make, which a view fetches as it draws: their marks are checked once they do.
+    pub fn validate(&self, data: &[Data], tiles: &[crate::Tiles]) -> Result<()> {
         self.check()?;
         for (i, item) in data.iter().enumerate() {
             if data[..i].iter().any(|other| other.name() == item.name()) {
@@ -163,6 +164,9 @@ impl Scene {
         }
         for (i, mark) in self.marks.iter().enumerate() {
             let style = mark.style();
+            if tiles.iter().any(|t| *t.name() == style.data) {
+                continue;
+            }
             let dataset = data.iter().find(|d| *d.name() == style.data).ok_or_else(|| {
                 Error::invalid(format!("dataset '{}' was not supplied", style.data)).at("data").at(i).at("marks")
             })?;

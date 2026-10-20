@@ -61,6 +61,65 @@ pub(crate) struct Inner {
     pub(crate) readbacks: Readbacks,
     pub(crate) host: Option<Arc<dyn Host>>,
     pub(crate) budget: Budget,
+    /// What each view plans within: its share of the budget.
+    pub(crate) ledger: Ledger,
+}
+
+/// The share of the budget the views of a GPU plan what they draw within, between them; the rest holds
+/// pages a new version uploads while the one it replaces is still drawn, and pages cached.
+const PLANNED: f64 = 0.5;
+
+/// What each view of a GPU plans what it draws within: shares of one part of the budget, granted
+/// max-min fair, so views together never plan past it however many there are. Pages several views
+/// draw are on the GPU once, so they count once, split between those views.
+#[derive(Default)]
+pub(crate) struct Ledger {
+    /// What each view would draw whole, by view.
+    asks: rustc_hash::FxHashMap<u64, Ask>,
+}
+
+/// What a view would draw whole: bytes of its own, and the pages it reads that any view drawing the
+/// same data shares.
+#[derive(Clone, Default, PartialEq, Debug)]
+pub(crate) struct Ask {
+    /// Bytes no other view holds: its marks' state, focus, labels, traces, and derived columns.
+    pub(crate) own: f64,
+    /// Each piece any view drawing it shares, by what it holds, and its bytes.
+    pub(crate) shared: Vec<(u64, f64)>,
+}
+
+impl Ledger {
+    /// Records what view `view` would draw whole, `whole` bytes as it counts them, and grants it its
+    /// share of what `budget` plans, as a part of `whole`. Each view asks its own bytes and a split of
+    /// each piece it shares between the views drawing it; each gets all it asks while an even split
+    /// of what is left covers it, else that split, views asking less having what they ask first.
+    pub(crate) fn grant(&mut self, view: u64, whole: f64, ask: Ask, budget: u64) -> f64 {
+        self.asks.insert(view, ask);
+        let mut sharing: rustc_hash::FxHashMap<u64, f64> = rustc_hash::FxHashMap::default();
+        for ask in self.asks.values() {
+            for (piece, _) in &ask.shared {
+                *sharing.entry(*piece).or_default() += 1.0;
+            }
+        }
+        let split = |ask: &Ask| ask.own + ask.shared.iter().map(|(piece, bytes)| bytes / sharing[piece]).sum::<f64>();
+        let mine = split(&self.asks[&view]);
+        let mut asks: Vec<f64> = self.asks.values().map(split).collect();
+        asks.sort_by(f64::total_cmp);
+        let mut left = budget as f64 * PLANNED;
+        for (i, &each) in asks.iter().enumerate() {
+            let even = left / (asks.len() - i) as f64;
+            if each > even {
+                return if mine > even { whole * even / mine } else { whole };
+            }
+            left -= each;
+        }
+        whole
+    }
+
+    /// Forgets view `view`, which no longer draws.
+    pub(crate) fn leave(&mut self, view: u64) {
+        self.asks.remove(&view);
+    }
 }
 
 /// How much GPU memory latkit uses.
@@ -164,6 +223,7 @@ impl Gpu {
             readbacks: Readbacks::counted(counters.clone()),
             host: None,
             budget,
+            ledger: Ledger::default(),
         };
         let queue = Queue::new(queue, counters.clone());
         #[cfg_attr(
@@ -243,5 +303,38 @@ impl Shared {
 impl std::fmt::Debug for Gpu {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Gpu").field("budget", &self.budget()).field("lost", &self.lost()).finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Ask, Ledger};
+
+    fn own(bytes: f64) -> Ask {
+        Ask { own: bytes, shared: Vec::new() }
+    }
+
+    #[test]
+    fn views_share_the_planned_budget_max_min_fair() {
+        let mut ledger = Ledger::default();
+        let grant = |ledger: &mut Ledger, view, bytes| ledger.grant(view, bytes, own(bytes), 1000);
+        assert_eq!(grant(&mut ledger, 1, 100.0), 100.0, "a view asking less than half the budget has all it asks");
+        assert_eq!(grant(&mut ledger, 2, 900.0), 400.0, "the next has what is left");
+        assert_eq!(grant(&mut ledger, 3, 900.0), 200.0, "two large views split what the small one leaves");
+        ledger.leave(2);
+        assert_eq!(grant(&mut ledger, 3, 900.0), 400.0, "a view that leaves gives its share back");
+    }
+
+    #[test]
+    fn pages_views_share_count_once() {
+        let mut ledger = Ledger::default();
+        // Eight views of one dataset: 300 bytes of shared pages each reads, and 20 of its own.
+        let ask = Ask { own: 20.0, shared: vec![(7, 300.0)] };
+        let shares: Vec<f64> = (0..8).map(|view| ledger.grant(view, 320.0, ask.clone(), 1000)).collect();
+        assert_eq!(shares[7], 320.0, "300 + 8 × 20 fits the 500 planned: every view draws whole");
+        // Two views of other data each, too large together: each has the same part of what it asks.
+        let mut ledger = Ledger::default();
+        ledger.grant(1, 400.0, Ask { own: 0.0, shared: vec![(1, 400.0)] }, 1000);
+        assert_eq!(ledger.grant(2, 400.0, Ask { own: 0.0, shared: vec![(2, 400.0)] }, 1000), 250.0);
     }
 }

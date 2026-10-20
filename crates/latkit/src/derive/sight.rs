@@ -5,7 +5,7 @@
 
 use glam::DVec3;
 
-use crate::geo::tiles::TileKey;
+use crate::tiles::TileKey;
 use crate::view::Projected;
 
 /// CSS pixels a tile spans drawn at its own level.

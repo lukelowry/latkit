@@ -3,8 +3,10 @@ use std::cell::RefCell;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
-use super::{Encoder, Host, Job, Raster, Request, TextRun, Unit};
-use crate::{Encoding, Error, Pending};
+use super::{Encoder, Unit};
+use super::{Host, Job, Raster, Request, TextRun};
+use crate::Encoding;
+use crate::{Error, Pending};
 
 /// The browser: text set with a 2D canvas in the page's fonts, jobs done by the page's workers once
 /// [`set_jobs`](Browser::set_jobs) names them, else at once, bytes fetched with `fetch`, and video

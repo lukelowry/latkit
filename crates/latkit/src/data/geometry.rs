@@ -52,6 +52,31 @@ impl Geometry {
         &self.coords
     }
 
+    /// Whether row `row` holds exactly what `other`'s row `other_row` does: the same parts of the same
+    /// coordinates, compared by their bits.
+    pub(crate) fn same_row(&self, row: usize, other: &Geometry, other_row: usize) -> bool {
+        fn same(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
+            a.len() == b.len() && a.iter().zip(b).all(|(p, q)| p.map(f64::to_bits) == q.map(f64::to_bits))
+        }
+        fn walk(a: &Geometry, b: &Geometry, level: usize, i: usize, j: usize) -> bool {
+            let (span, other) = (a.span(level, i), b.span(level, j));
+            if span.len() != other.len() {
+                return false;
+            }
+            if level + 1 == a.levels.len() {
+                return same(&a.coords[span], &b.coords[other]);
+            }
+            span.zip(other).all(|(i, j)| walk(a, b, level + 1, i, j))
+        }
+        if self.depth != other.depth {
+            return false;
+        }
+        if self.depth == 0 {
+            return same(&self.coords[row..=row], &other.coords[other_row..=other_row]);
+        }
+        walk(self, other, 0, row, other_row)
+    }
+
     /// Row `row`'s coordinates, every part's in order.
     pub(crate) fn row_coords(&self, row: usize) -> &[[f64; 2]] {
         if self.depth == 0 {

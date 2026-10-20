@@ -4,7 +4,7 @@ use super::column::Column;
 use super::dataset::Inner;
 use super::ids::Ids;
 use super::name::{Name, Version};
-use super::samples::Samples;
+use super::samples::{Run, Samples};
 use super::table::{Field, Reference, Table};
 use super::values::Values;
 use crate::{Error, Result};
@@ -35,6 +35,8 @@ pub(crate) enum Op {
     Append { table: Name, at: Vec<f64>, ids: Option<Ids>, fields: Vec<(Name, Values)> },
     /// Forgets every sampled field's frames before a coordinate.
     Forget { before: f64 },
+    /// Holds a run of a sampled field's entries: their coordinates, and their values entry-major.
+    Frames { table: Name, field: Name, run: Run, at: Vec<f64>, values: Vec<f32> },
 }
 
 impl Patch {
@@ -131,6 +133,38 @@ impl Patch {
         self
     }
 
+    /// Holds a run of sampled field `field`'s entries of level `level`, numbered from `first`: what a
+    /// time tile holds, as `latkit tile` writes them. At level 0 the entries are frames, each a
+    /// coordinate in `at` and a value per row of `table` in `values`. At level `k` they are buckets of
+    /// `8^k` frames, each its first and last frame's coordinates in `at`, and in `values` each row's
+    /// least value over each bucket, then each row's greatest. NaN is missing.
+    ///
+    /// No entry may be held already; frames past the field's widen it, and those it skips stay missing.
+    ///
+    /// ```
+    /// # use latkit::{Data, Ids, Patch, Table};
+    /// let mut grid = Data::new("grid");
+    /// grid.apply(Patch::new().replace(Table::new("Bus", Ids::count(2))))?;
+    /// // Frames 100 and 101, then the bucket of frames 0..8.
+    /// grid.apply(Patch::new().frames("Bus", "vm", 0, 100, [100.0, 101.0], [1.0, 0.9, 1.02, 0.98]))?;
+    /// grid.apply(Patch::new().frames("Bus", "vm", 1, 0, [0.0, 7.0], [0.95, 0.9, 1.05, 1.0]))?;
+    /// assert_eq!(grid.describe().span, Some([0.0, 101.0]));
+    /// # Ok::<(), latkit::Error>(())
+    /// ```
+    #[must_use]
+    pub fn frames(
+        mut self,
+        table: impl Into<Name>,
+        field: impl Into<Name>,
+        level: u32,
+        first: u32,
+        at: impl Into<Vec<f64>>,
+        values: impl Into<Vec<f32>>,
+    ) -> Patch {
+        self.ops.push(Op::frames(table.into(), field.into(), level, first, at.into(), values.into()));
+        self
+    }
+
     /// This patch followed by `next`'s changes, to this patch's dataset.
     #[must_use]
     pub fn extend(mut self, next: Patch) -> Patch {
@@ -184,6 +218,13 @@ impl From<Table> for Patch {
 }
 
 impl Op {
+    /// Holds entries of `level` from `first`, as many as `at` holds coordinates of.
+    pub(crate) fn frames(table: Name, field: Name, level: u32, first: u32, at: Vec<f64>, values: Vec<f32>) -> Op {
+        let entries = (at.len() / super::samples::coordinates(level)) as u32;
+        let run = Run { level, entries: first..first.saturating_add(entries) };
+        Op::Frames { table, field, run, at, values }
+    }
+
     pub(crate) fn apply(self, data: &mut Inner) -> Result<()> {
         match self {
             Op::Axis { name, unit } => {
@@ -249,6 +290,25 @@ impl Op {
                         }
                     }
                 }
+                Ok(())
+            }
+            Op::Frames { table, field, run, at, values } => {
+                let i = data.position(&table).map_err(|_| Error::invalid("no such table").at(&table))?;
+                let target = &mut data.tables[i];
+                let per_row = run.entries.len() * super::samples::sides(run.level);
+                let rows = values.len().checked_div(per_row).unwrap_or(0);
+                if rows > target.len() {
+                    return Err(Error::invalid(format!("values for {rows} rows of {}", target.len()))
+                        .at(&field)
+                        .at(&table));
+                }
+                let mut samples = match target.field_named(&field) {
+                    None => Samples::default(),
+                    Some(Field::Sampled(samples, _)) => samples.clone(),
+                    Some(_) => return Err(Error::invalid("not a sampled field").at(&field).at(&table)),
+                };
+                samples.insert(&run, &at, &values, rows).map_err(|e| e.at(&field).at(&table))?;
+                target.insert(field, Field::Sampled(samples, Version::next()));
                 Ok(())
             }
         }

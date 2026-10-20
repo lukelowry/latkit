@@ -167,6 +167,29 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
+/// What `mark` evaluates and how it eases by `clock`: the row blocks this frame's evaluation covers,
+/// and while it eases, where its frozen and settled rows start, its progress, and how each word eases.
+fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
+    let region = &shown.region;
+    mark.block = shown.block;
+    mark.blocks = shown.block_count;
+    mark.blends = shown.offsets.blends;
+    mark.frozen = wgsl::NONE;
+    mark.frozen_extra = wgsl::NONE;
+    mark.settled = wgsl::NONE;
+    mark.settled_extra = wgsl::NONE;
+    mark.motion = 1.0;
+    if let Some(transition) = &shown.transition {
+        mark.frozen = region.state;
+        mark.frozen_extra = region.extra;
+        mark.motion = transition.motion(clock);
+        if transition.settles() {
+            mark.settled = region.state;
+            mark.settled_extra = region.extra;
+        }
+    }
+}
+
 /// The uniform of mark `index`, easing by `clock`.
 pub(crate) fn mark(
     index: usize,
@@ -190,14 +213,7 @@ pub(crate) fn mark(
     mark.stride = shown.stride();
     mark.extra = region.extra;
     mark.extras = shown.extras();
-    mark.frozen = wgsl::NONE;
-    mark.frozen_extra = wgsl::NONE;
-    mark.motion = 1.0;
-    if let Some(transition) = &shown.transition {
-        mark.frozen = region.state;
-        mark.frozen_extra = region.extra;
-        mark.motion = transition.motion(clock);
-    }
+    ease(&mut mark, shown, clock);
     mark.focus = region.focus;
     mark.domains = shown.domains;
     mark.columns = shown.offsets.columns;

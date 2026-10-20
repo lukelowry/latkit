@@ -200,6 +200,10 @@ impl Presets for Theme {
             _ => None,
         }
     }
+
+    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Theme, D::Error> {
+        Theme::deserialize(deserializer)
+    }
 }
 
 /// A theme reads a base theme's name, or options over one: written over the base as it serializes,

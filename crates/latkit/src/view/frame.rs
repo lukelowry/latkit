@@ -9,7 +9,7 @@ use super::marks::Shown;
 use super::passes::Drawn;
 use super::resources::{EyeSlot, MARK_STRIDE, Resources};
 use super::sync::{Source, Synced, Window, table_of};
-use super::transition::{remap, replaced};
+use super::transition::{remap, replaced, rewritten};
 use super::{Camera, Event, Frame, View, timer, uniforms};
 use crate::expr::compile::Deps;
 use crate::gpu::Inner;
@@ -99,6 +99,7 @@ impl View {
         let main = uniforms::eye(&projected, self.size, self.pixel_ratio);
         let light = self.shade(&mut uniform, &main);
         let sprites = self.overlay(&mut inner, queue);
+        self.lay_out_blocks();
         self.write_uniforms(&uniform, &main, light.as_ref(), &sprites);
         if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some(), travel > 0.0) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
@@ -128,7 +129,7 @@ impl View {
             shown.carry = false;
         }
         self.events.extend(inner.atlas.errors.drain(..).map(Event::Error));
-        self.events.extend(self.derived.sheet.errors.drain(..).map(Event::Error));
+        self.events.extend(self.derived.take_errors().into_iter().map(Event::Error));
         drop(inner);
         self.end(started);
     }
@@ -146,7 +147,7 @@ impl View {
         if self.effect_time != elapsed {
             self.effect_time = elapsed;
             for shown in &mut self.marks {
-                shown.dirty |= shown.channels_reading(Deps::TIME);
+                shown.dirty_rows(shown.channels_reading(Deps::TIME), None);
             }
         }
         (elapsed, travel)
@@ -219,8 +220,9 @@ impl View {
     }
 
     /// Derives what marks read beside their data, from the data and the scene alone, handing the
-    /// host what the frame cannot afford. First the tiles the camera asks for: the datasets vector
-    /// tiles make, then what each dataset drawn in part draws, which the rest derive from.
+    /// host what the frame cannot afford. First the tiles the camera and the plot window ask for:
+    /// the datasets tiles make, then what each dataset drawn in part draws, which the rest derive
+    /// from.
     fn derive(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let projected = self.projected();
@@ -232,18 +234,20 @@ impl View {
         let errors = self.gpu.0.errors.clone();
         let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
-        tiles.update(&self.derive_input(host.as_deref()), earth.then_some(&sight), &jobs);
-        self.events.extend(tiles.take_errors().into_iter().map(Event::Error));
+        let reading = self.reading();
+        let asked = derive::tiles::Asked { sight: earth.then_some(&sight), reading: &reading };
+        tiles.update(&self.derive_input(host.as_deref()), &asked, &jobs);
         for data in tiles.take_changed() {
             self.take_data(data, inner);
         }
         self.derived.tiles = tiles;
-        let (plans, trace_columns) = self.plan(inner.budget.bytes);
-        self.trace_columns = trace_columns;
+        let budget = inner.budget.bytes;
+        self.update_plan(&mut inner.ledger, budget);
+        self.trace_columns = self.planning.trace_columns();
         let pinned: Vec<crate::Row> = self.focus.selection.iter().chain(&self.focus.fitting).cloned().collect();
         let ask = derive::tiled::Ask {
             sources: &self.sources,
-            plans: &plans,
+            plans: self.planning.plans(),
             sight: placing.then_some(&sight),
             earth,
             pinned: &pinned,
@@ -367,18 +371,39 @@ impl View {
         self.events.extend(custom.into_iter().map(Event::Error));
     }
 
+    /// The plot window lines trace across, and the pixel columns it spans within what the plan
+    /// affords.
+    fn trace_window(&self) -> (Option<[f64; 2]>, u32) {
+        let across = match self.camera {
+            Camera::Plot { x, .. } => Some(x),
+            Camera::Map { .. } => None,
+        };
+        let area = self.area();
+        (across, (((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32).min(self.trace_columns))
+    }
+
+    /// What marks read of sampled fields, for time tiles to fetch: the plot window, the coordinate
+    /// shown, and each field a mark's program reads, with whether a line traces it.
+    fn reading(&self) -> derive::tiles::Reading {
+        let (across, columns) = self.trace_window();
+        let mut fields = Vec::new();
+        for shown in &self.marks {
+            let Some(compiled) = &shown.compiled else { continue };
+            let style = shown.mark.style();
+            for column in compiled.program.columns.iter().filter(|c| !c.derived) {
+                let (data, table) = column.of.clone().unwrap_or_else(|| (style.data.clone(), style.table.clone()));
+                fields.push((data, table, column.name.clone(), column.trace));
+            }
+        }
+        derive::tiles::Reading { across, columns, at: self.at, fields }
+    }
+
     /// Syncs every mark's columns; changed columns dirty the channels reading them, and changed
     /// static values or rows start a transition. True when a mark waits for uploads.
     fn sync(&mut self, inner: &mut Inner) -> bool {
         let at = self.at;
-        let area = self.area();
-        let window = Window {
-            across: match self.camera {
-                Camera::Plot { x, .. } => Some(x),
-                Camera::Map { .. } => None,
-            },
-            columns: (((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32).min(self.trace_columns),
-        };
+        let (across, columns) = self.trace_window();
+        let window = Window { across, columns, steps: 0 };
         // A drag moves rows at once.
         let easing = !self.ease().is_zero() && !self.dragging();
         let mut waiting = false;
@@ -386,6 +411,7 @@ impl View {
             let Some(compiled) = &shown.compiled else { continue };
             let program = compiled.program.clone();
             let geometry = compiled.drawing.geometry;
+            let window = Window { steps: compiled.drawing.flags & (wgsl::STEP_BEFORE | wgsl::STEP_AFTER), ..window };
             let style = shown.mark.style();
             let Some(data) = self.data.iter().find(|d| *d.name() == style.data) else { continue };
             let Some(table) = data.table(&style.table) else { continue };
@@ -393,7 +419,7 @@ impl View {
             let source = Source { data, table, derived };
             let synced = shown.tables.sync(&program, &source, &self.data, at, window, geometry, inner);
             waiting |= matches!(synced, Synced::Waiting);
-            let Synced::Changed { columns } = synced else { continue };
+            let Synced::Changed { columns, blocks } = synced else { continue };
             let moved = shown.drawn.as_ref().and_then(|(origin, old)| {
                 if *origin == data.origin() { remap(old, table) } else { Some(replaced(old, table)) }
             });
@@ -402,9 +428,17 @@ impl View {
             let kept = moved.as_ref().is_none_or(|(sources, exits)| {
                 exits.is_empty() && sources.iter().enumerate().all(|(r, &s)| s == r as u32 || s == wgsl::NONE)
             });
-            // Rows that came, went, or moved evaluate every channel, constants included.
+            // Rows that came, went, or moved evaluate every channel, constants included: where every row
+            // kept its place, as a table drawn through tiles keeps those of the tiles still drawn, over
+            // the row blocks rewritten; else over every row.
+            let in_place = moved
+                .as_ref()
+                .is_some_and(|(sources, _)| sources.iter().enumerate().all(|(r, &s)| s == r as u32 || s == wgsl::NONE));
             if moved.is_some() || shown.rows != table.len() as u32 {
-                shown.all_dirty();
+                match shown.drawn.as_ref().filter(|_| in_place).and_then(|(_, old)| rewritten(old, table)) {
+                    Some(blocks) => shown.rows_rewritten(&blocks),
+                    None => shown.all_dirty(),
+                }
             }
             // Without an ease, a flowing mark whose rows moved still begins, a transition of no length,
             // so its comets follow the rows.
@@ -419,7 +453,7 @@ impl View {
             }
             shown.rows = table.len() as u32;
             shown.drawn = Some((data.origin(), table.clone()));
-            shown.columns_changed(columns);
+            shown.columns_changed(columns, blocks.as_deref());
             if shown.kind() == MarkKind::Lines {
                 self.fitting.plot_due = true;
             }

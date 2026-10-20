@@ -7,6 +7,7 @@ mod column;
 mod dataset;
 mod describe;
 mod forms;
+mod frames;
 mod geometry;
 mod ids;
 // JSON documents fetch their slices through a host.
@@ -40,12 +41,14 @@ pub use {
 #[cfg(feature = "gpu")]
 pub(crate) use {
     column::{Column, PAGE_ROWS, Page},
+    frames::{Listed, Manifest},
     geometry::{Geometry, GeometryBuilder},
     ids::RowIds,
     name::{PageId, Version},
     patch::Op,
-    samples::{AxisPage, FramePage, LEVELS, Samples, bucket_frames},
+    samples::{AxisPage, FramePage, LEVELS, Run, Samples, bucket_frames, detail, sides},
     table::{Field, Inverse, Reference, UNWIRED},
+    values::HOLE,
 };
 
 #[cfg(test)]

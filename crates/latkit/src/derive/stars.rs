@@ -3,10 +3,10 @@
 //! vertex mark drawing them places them. The star of each net row is a path field beside the net
 //! table, which the mark draws as any geometry; it works again only when the data or scene change.
 
+use super::graph::{VertexMark, marks, position};
 use super::{Input, Tables, beside, kept};
 use crate::data::{Field, Name, UNWIRED, Values};
 use crate::expr::cpu::Rows;
-use crate::sheet::{VertexMark, marks, position};
 use crate::{Mark, Space};
 
 #[derive(Default)]

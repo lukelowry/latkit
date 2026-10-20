@@ -98,14 +98,15 @@ impl View {
             if was.extras == new.extras {
                 copy(encoder, &old.state, resources.state(), was.extra, new.extra, kept * new.extras);
             }
-            // A running transition's frozen rows move with its rows.
-            if let (Some(from), Some(to)) = (&old.frozen, resources.frozen())
-                && shown.transition.is_some()
-                && (was.stride, was.extras) == (new.stride, new.extras)
-            {
+            // A running transition's frozen and settled rows move with its rows.
+            if shown.transition.is_some() && (was.stride, was.extras) == (new.stride, new.extras) {
                 let rows = was.capacity.min(new.capacity).min(shown.rows + shown.exits);
-                copy(encoder, from, to, was.state, new.state, rows * new.stride);
-                copy(encoder, from, to, was.extra, new.extra, rows * new.extras);
+                for (from, to) in [(&old.frozen, resources.frozen()), (&old.settled, resources.settled())] {
+                    if let (Some(from), Some(to)) = (from, to) {
+                        copy(encoder, from, to, was.state, new.state, rows * new.stride);
+                        copy(encoder, from, to, was.extra, new.extra, rows * new.extras);
+                    }
+                }
             }
             shown.moved = Some(was);
             shown.region = new;

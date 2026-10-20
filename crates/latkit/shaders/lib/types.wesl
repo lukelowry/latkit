@@ -73,6 +73,24 @@ const BITS: u32 = 4u;
 // Rows per data page, as a shift.
 const PAGE_BITS: u32 = 16u;
 const PAGE_MASK: u32 = 65535u;
+// Rows a block holds: a page of every column. A dispatch over more items than one dimension holds
+// steps a block at a time in its second, 256 workgroups of 256 wide.
+const BLOCK_ROWS: u32 = 65536u;
+
+// The item invocation `id` of a dispatch over items covers: blocks of BLOCK_ROWS along the second
+// dimension, when the first holds too few.
+fn item(id: vec3u) -> u32 {
+    return id.y * BLOCK_ROWS + id.x;
+}
+
+// How a word of a row eases while its mark does: kept as it is (no channel stores it), shown as
+// evaluated at once, a number or a color mixed, or a position's high word moved by its offset.
+const BLEND_KEEP: u32 = 0u;
+const BLEND_SNAP: u32 = 1u;
+const BLEND_NUMBER: u32 = 2u;
+const BLEND_COLOR: u32 = 3u;
+const BLEND_POSITION: u32 = 4u;
+
 // Points per block of a geometry's points, as a shift: a block of x and y words is a chunk.
 const POINT_BITS: u32 = 15u;
 const POINT_MASK: u32 = 32767u;
@@ -447,6 +465,16 @@ struct Mark {
     frozen: u32,
     frozen_extra: u32,
     motion: f32,
+    // While the mark eases toward what its channels evaluated, where row 0's settled kind and extra
+    // words start in the settled mirror; NONE otherwise. Where the program holds how each word of a
+    // row eases, a word each.
+    settled: u32,
+    settled_extra: u32,
+    blends: u32,
+    // The row blocks a dispatch over the mark's rows covers: at `block` in the blocks buffer,
+    // `blocks` of them.
+    block: u32,
+    blocks: u32,
     focus: u32,
     domains: u32,
     columns: u32,

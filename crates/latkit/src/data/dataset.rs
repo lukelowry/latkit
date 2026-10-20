@@ -5,11 +5,12 @@ use rustc_hash::FxHasher;
 
 use super::name::{Name, Row, Version};
 use super::patch::Patch;
+use super::samples::Samples;
 use super::table::{Field, Table};
 use super::values::Value;
 use crate::{Error, Result};
 
-/// A named, immutable collection of tables.
+/// A named collection of tables, changed in place by patches.
 ///
 /// Cloning is O(1) and a clone is a snapshot: [`apply`](Data::apply) changes only `self`, and every
 /// page it does not write stays shared with earlier snapshots.
@@ -190,6 +191,27 @@ impl Data {
     /// The version the dataset began at; see [`Inner::origin`].
     pub(crate) fn origin(&self) -> Version {
         self.0.origin
+    }
+
+    /// Changes sampled field `field` of table `table` with `change`, starting it empty where the table
+    /// has no field of its name: what time tiles put in and let go of. Whether anything changed: not
+    /// where `change` says so, or where there is no such table or the field holds no samples.
+    pub(crate) fn sampled(&mut self, table: &str, field: &str, change: impl FnOnce(&mut Samples) -> bool) -> bool {
+        let Ok(i) = self.0.position(table) else { return false };
+        let mut samples = match self.0.tables[i].field_named(field) {
+            None => Samples::default(),
+            Some(Field::Sampled(samples, _)) => samples.clone(),
+            Some(_) => return false,
+        };
+        if !change(&mut samples) {
+            return false;
+        }
+        let mut next = (*self.0).clone();
+        next.tables[i].insert(field.into(), Field::Sampled(samples, Version::next()));
+        next.schema = next.signature();
+        next.version = Version::next();
+        self.0 = Arc::new(next);
+        true
     }
 
     /// A version of `self` holding `tables` instead, its name, axis, schema, and origin kept: what a

@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use latkit::geo::Tiles;
+use latkit::Tiles;
 use latkit::host::Native;
 use latkit::{Camera, Data, Error, Fit, Gpu, Mp4, Name, Patch, Scene, Sink, View};
 
@@ -18,6 +18,8 @@ use crate::{Failure, block};
 struct Inputs {
     scenes: Vec<(PathBuf, Scene)>,
     data: Vec<Data>,
+    /// What every view fetches as it draws.
+    tiles: Vec<Tiles>,
     cameras: Vec<Camera>,
     fit: Fit,
     host: Native,
@@ -30,8 +32,15 @@ impl Inputs {
         let scenes =
             job.scenes.iter().map(|p| inputs::scene(p).map(|s| (p.clone(), s))).collect::<Result<Vec<_>, _>>()?;
         let data = job.data.iter().map(|s| inputs::dataset(s, &host, job.deadline)).collect::<Result<Vec<_>, _>>()?;
+        let tiles: Vec<Tiles> = job
+            .tiles
+            .iter()
+            .map(|Source { name, path }| {
+                Tiles::new(name.as_deref().unwrap_or_default(), path.to_string_lossy().as_ref())
+            })
+            .collect();
         for (path, scene) in &scenes {
-            scene.validate(&data).map_err(|e| Failure::at(e, path))?;
+            scene.validate(&data, &tiles).map_err(|e| Failure::at(e, path))?;
         }
         let cameras = job.camera.iter().map(|p| inputs::camera(p)).collect::<Result<Vec<_>, _>>()?;
         for (i, camera) in cameras.iter().enumerate() {
@@ -42,7 +51,7 @@ impl Inputs {
                 ));
             }
         }
-        Ok(Inputs { scenes, data, cameras, fit: inputs::fit(&job.fit)?, host })
+        Ok(Inputs { scenes, data, tiles, cameras, fit: inputs::fit(&job.fit)?, host })
     }
 
     /// A view of each scene, given every dataset and the tiles, looking where the job says.
@@ -53,8 +62,8 @@ impl Inputs {
             for data in &self.data {
                 view.set_data(data.clone());
             }
-            for Source { name, path } in &job.tiles {
-                view.set_tiles(Tiles::vector(name.as_deref().unwrap_or_default(), path.to_string_lossy().as_ref()));
+            for tiles in &self.tiles {
+                view.set_tiles(tiles.clone());
             }
             if let Some(insets) = job.insets {
                 view.set_insets(insets);
@@ -231,7 +240,7 @@ pub(crate) fn validate(job: &Job) -> Result<(), Failure> {
         let at = |error: Error| Failure::at(error.at(index).at("frames"), path);
         if !apply(&mut inputs.data, &inputs.scenes, &frame, patches).map_err(at)?.is_empty() {
             for (_, scene) in &inputs.scenes {
-                scene.validate(&inputs.data).map_err(at)?;
+                scene.validate(&inputs.data, &inputs.tiles).map_err(at)?;
             }
         }
     }

@@ -9,6 +9,7 @@
 #![allow(unsafe_code, reason = "wasm-bindgen's generated glue")]
 #![allow(missing_docs, reason = "documented in the npm package's TypeScript")]
 
+mod canvas;
 mod convert;
 mod error;
 mod shot;
@@ -16,17 +17,18 @@ mod shot;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
+pub use canvas::{Canvas, Handle};
 pub use error::Error;
-pub use shot::{Canvas, Handle, Image, Video, image, set_encoder};
+pub use shot::{Image, Video, image, set_encoder};
 
 #[wasm_bindgen(start)]
 fn start() {
     console_error_panic_hook::set_once();
 }
 
-/// What `text` holds, in the JSON form latkit's serde support reads; or why not, at `what`.
+/// What `text` holds, in the JSON form latkit reads; or why not, at the path from `what`.
 fn json<T: serde::de::DeserializeOwned>(what: &str, text: &str) -> Result<T, Error> {
-    serde_json::from_str(text).map_err(|e| latkit::Error::invalid(e.to_string()).at(what).into())
+    latkit::from_json(text).map_err(|e| e.at(what).into())
 }
 
 /// `value` in the JSON form the npm package's types describe.
@@ -108,7 +110,10 @@ impl Gpu {
     pub fn work(&self) -> String {
         to_json(&self.0.work())
     }
+}
 
+#[wasm_bindgen]
+impl Gpu {
     /// A video of `shot`'s (JSON) pictures at `fps` frames a second, encoded by WebCodecs at
     /// `bitrate` bits a second, or about 0.15 bits a pixel a frame.
     pub fn video(&self, shot: &str, fps: f64, bitrate: Option<f64>) -> Result<Video, Error> {
@@ -264,7 +269,7 @@ impl View {
     /// Fetches the vector tiles at `url` as the camera asks for them, drawn as dataset `name`.
     #[wasm_bindgen(js_name = setTiles)]
     pub fn set_tiles(&self, name: &str, url: &str) {
-        self.view.with(|v| v.set_tiles(latkit::geo::Tiles::vector(name, url)));
+        self.view.with(|v| v.set_tiles(latkit::Tiles::new(name, url)));
     }
 
     #[wasm_bindgen(js_name = removeData)]

@@ -477,6 +477,9 @@ export const scenarios: Record<string, Scenario> = {
     unit: 'views',
     sizes: [1, 2, 4, 8],
     views: (n) => n,
+    // Room for eight views' own rows, which the views' shares of a budget hold together, so the
+    // bytes that grow would be pages copied.
+    budget: { bytes: 1024 * 2 ** 20, uploadPerFrame: 32 * 2 ** 20 },
     load: { time: 1, bytes: 0 },
     build: () => ({ scene: grid('plane'), data: { g: make.lattice(1e5) } }),
     phases: [pan({ time: 1, bytes: 0 })],

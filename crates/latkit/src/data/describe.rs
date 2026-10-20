@@ -84,8 +84,9 @@ impl Table {
 
     /// Each row's least and greatest value of sampled field `field` over `spans` equal spans of the
     /// axis from `range[0]` to `range[1]`: of every row, or of the rows `ids` names, in its order. A
-    /// span reads the coarsest levels of detail the field keeps that fit inside it, so it costs a few
-    /// reads, however many frames it covers.
+    /// span reads the coarsest levels of detail the field holds that fit inside it, so it costs a few
+    /// reads, however many frames it covers; where the field holds only coarser ones, as time tiles
+    /// still loading leave it, those stand in.
     pub fn envelope(&self, field: &str, range: [f64; 2], spans: usize, ids: Option<&Ids>) -> Result<Envelope> {
         let Some(Field::Sampled(samples, _)) = self.field_named(field) else {
             return Err(Error::invalid("not a sampled field").at(field));
@@ -109,8 +110,7 @@ impl Table {
             (0..=spans).map(|s| if s == spans { range[1] } else { range[0] + width * s as f64 }).collect();
         // A span holds the frames from its start up to the next span's; the last holds its end too.
         let bounds: Vec<u32> = at.iter().enumerate().map(|(s, &t)| samples.bound(t, s == spans)).collect();
-        let sealed = samples.sealed_levels();
-        let pieces: Vec<Vec<(u32, u32)>> = bounds.windows(2).map(|b| samples.pieces(b[0]..b[1], &sealed)).collect();
+        let pieces: Vec<Vec<(u32, u32)>> = bounds.windows(2).map(|b| samples.pieces(b[0]..b[1])).collect();
         let mut least = vec![f32::NAN; rows.len() * spans];
         let mut greatest = least.clone();
         // Rows by block, so each piece's page is read once for all of a block's rows.

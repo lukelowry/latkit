@@ -1,12 +1,10 @@
 //! PMTiles archives, version 3: a header, directories of tile entries along the Hilbert curve, and
 //! the tiles, each found by range requests.
 
-use super::tiles::TileKey;
+use crate::tiles::TileKey;
 
 /// Bytes a header takes.
 pub(crate) const HEADER: usize = 127;
-/// Bytes to read first: the header, and in most archives the root directory after it.
-pub(crate) const FIRST: u64 = 16_384;
 const MAGIC: &[u8] = b"PMTiles";
 /// How deep directories nest at most.
 pub(crate) const DEPTH: usize = 4;

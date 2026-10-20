@@ -8,11 +8,11 @@
 
 use rustc_hash::FxHashMap;
 
+use super::graph::{key_of, links, marks, position};
 use super::{Derive, Input, Jobs, Tables, answers, beside, kept};
 use crate::data::{Name, Row, Value, Values};
 use crate::expr::cpu::Rows;
 use crate::host::{Job, Key, Placement};
-use crate::sheet::{key_of, links, marks, position};
 use crate::{Layout, Pending};
 
 #[derive(Default)]

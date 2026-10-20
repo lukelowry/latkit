@@ -15,7 +15,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::sight::{Domain, Region, Sight, TILE_PX, meets};
 use crate::data::{Field, Ids, Op, Patch, Table};
-use crate::geo::tiles::TileKey;
+use crate::tiles::TileKey;
 
 /// Cells across a tile's grid, as a shift: a tile holds at most `4^GRID_BITS` rows of its level.
 pub(crate) const GRID_BITS: u32 = 7;

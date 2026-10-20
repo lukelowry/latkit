@@ -1,4 +1,5 @@
-//! Geography: GeoJSON and vector tiles as data, and what their shapes become to draw.
+//! Geography: GeoJSON and vector tiles as data, and what shapes become to draw: an
+//! area's triangles, and lines bent along the globe.
 
 mod earcut;
 mod geojson;
@@ -11,7 +12,6 @@ use std::borrow::Cow;
 use std::io::Read;
 
 pub(crate) use geojson::geojson;
-pub use tiles::Tiles;
 
 use crate::{Error, Result};
 

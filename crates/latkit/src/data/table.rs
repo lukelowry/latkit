@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use super::bits::Bits;
-use super::column::Column;
+use super::column::{Column, Page};
 use super::ids::{Ids, Index, RowIds};
 use super::name::{Id, IdRef, Name, PageId, Version};
 use super::samples::Samples;
@@ -177,23 +177,40 @@ impl Reference {
 
     /// This reference for ids `ids`, naming rows `targets` of a target table of `order` and
     /// `structure`, [`UNWIRED`] where none: resolved already, as a table drawn in part holds it.
-    /// `targets` holds a row for each id.
-    pub(crate) fn resolved_to(&self, ids: Column, targets: &[u32], order: Version, structure: Version) -> Reference {
+    /// `targets` holds a row for each id. A page of `kept`, as it was resolved before, whose ids and
+    /// targets are those of the same page now, keeps its id, so it does not upload again.
+    pub(crate) fn resolved_to(
+        &self,
+        ids: Column,
+        targets: &[u32],
+        order: Version,
+        structure: Version,
+        kept: Option<&Reference>,
+    ) -> Reference {
         let mut pages = Vec::with_capacity(ids.pages().len());
         let mut resolved = Vec::with_capacity(ids.pages().len());
         let mut start = 0;
-        for page in ids.pages() {
+        for (p, page) in ids.pages().iter().enumerate() {
             let rows = &targets[start..start + page.values.len()];
             start += rows.len();
-            let valid = Bits::from_fn(rows.len(), |i| rows[i] != UNWIRED);
             let dangling = (0..rows.len()).any(|i| rows[i] == UNWIRED && page.values.is_valid(i));
-            pages.push(Values { array: Array::U32(rows.to_vec().into()), valid: (!valid.all()).then_some(valid) });
+            let same =
+                kept.and_then(|k| Some((k.rows.pages().get(p)?, k.ids.pages().get(p)?))).filter(|(old, old_ids)| {
+                    old_ids.id == page.id && matches!(&old.values.array, Array::U32(old) if old[..] == *rows)
+                });
+            if let Some((old, _)) = same {
+                pages.push(old.clone());
+            } else {
+                let valid = Bits::from_fn(rows.len(), |i| rows[i] != UNWIRED);
+                let values = Values { array: Array::U32(rows.to_vec().into()), valid: (!valid.all()).then_some(valid) };
+                pages.push(Page::new(values));
+            }
             resolved.push(Resolved { ids: page.id, order, structure, dangling });
         }
         Reference {
             to: self.to.clone(),
             ids,
-            rows: Column::from_pages(pages, &Values::from(Vec::<u32>::new())),
+            rows: Column::of_pages(pages, &Values::from(Vec::<u32>::new())),
             resolved: resolved.into(),
             version: Version::next(),
             inverse: Arc::default(),
@@ -378,6 +395,9 @@ impl Table {
     pub(crate) fn check(&self) -> Result<()> {
         if self.name.is_empty() {
             return Err(Error::invalid("a table needs a name"));
+        }
+        if let Some(row) = self.ids.hole() {
+            return Err(Error::invalid("a row needs an id").at(row).at("ids"));
         }
         self.index().map_err(|e| e.at("ids"))?;
         for (name, field) in &self.fields {

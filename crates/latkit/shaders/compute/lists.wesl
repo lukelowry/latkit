@@ -7,6 +7,7 @@
 import package::lib::bind::mark;
 import package::lib::types::{
     LIST_ITEMS, LIST_COUNTS, LIST_SUMS, LIST_ENTRIES, LIST_DRAW, LIST_DISPATCH, LIST_KEPT, PATH_TRACE, TRIANGLES,
+    BLOCK_ROWS, item,
 };
 import package::lib::lists::{lists, list_start};
 import package::lib::path::{row_segments, path_point, path_length, PATH};
@@ -40,7 +41,9 @@ fn scan_blocks(@builtin(local_invocation_id) l: vec3u, @builtin(workgroup_id) g:
     let h = header();
     let n = lists[h + LIST_ITEMS];
     let counts = lists[h + LIST_COUNTS];
-    let i = g.x * 256u + l.x;
+    // Past one dimension's workgroups, blocks of BLOCK_ROWS items step along the second.
+    let block = g.y * (BLOCK_ROWS / 256u) + g.x;
+    let i = block * 256u + l.x;
     // Whatever the counts, the starts climb, so every item's writes end.
     let share = 0xffffffffu / max(n, 1u);
     let own = select(0u, min(lists[counts + min(i, max(n, 1u) - 1u)], share), i < n);
@@ -51,7 +54,7 @@ fn scan_blocks(@builtin(local_invocation_id) l: vec3u, @builtin(workgroup_id) g:
         lists[counts + i] = tile[l.x] - own;
     }
     if l.x == 255u {
-        lists[lists[h + LIST_SUMS] + g.x] = tile[255];
+        lists[lists[h + LIST_SUMS] + block] = tile[255];
     }
 }
 
@@ -87,10 +90,11 @@ fn scan_sums(@builtin(local_invocation_id) l: vec3u) {
 
 @compute @workgroup_size(256)
 fn add_sums(@builtin(global_invocation_id) id: vec3u) {
+    let i = item(id);
     let h = header();
-    if id.x < lists[h + LIST_ITEMS] {
+    if i < lists[h + LIST_ITEMS] {
         let counts = lists[h + LIST_COUNTS];
-        lists[counts + id.x] += lists[lists[h + LIST_SUMS] + id.x / 256u];
+        lists[counts + i] += lists[lists[h + LIST_SUMS] + i / 256u];
     }
 }
 
@@ -100,29 +104,31 @@ fn add_sums(@builtin(global_invocation_id) id: vec3u) {
 @if(!query)
 @compute @workgroup_size(256)
 fn count_segments(@builtin(global_invocation_id) id: vec3u) {
-    if id.x < lists[mark.list + LIST_ITEMS] {
-        lists[lists[mark.list + LIST_COUNTS] + id.x] = row_segments(id.x);
+    let i = item(id);
+    if i < lists[mark.list + LIST_ITEMS] {
+        lists[lists[mark.list + LIST_COUNTS] + i] = row_segments(i);
     }
 }
 
 @if(!query)
 @compute @workgroup_size(256)
 fn write_segments(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= lists[mark.list + LIST_ITEMS] {
+    let i = item(id);
+    if i >= lists[mark.list + LIST_ITEMS] {
         return;
     }
-    let at = list_start(mark.list, id.x);
-    let end = list_start(mark.list, id.x + 1u);
+    let at = list_start(mark.list, i);
+    let end = list_start(mark.list, i + 1u);
     let entries = lists[mark.list + LIST_ENTRIES];
     // An area's triangles have no distance along.
     let measured = mark.primitive != TRIANGLES && PATH != PATH_TRACE;
     var along = 0.0;
-    var last = path_point(id.x, 0u);
+    var last = path_point(i, 0u);
     for (var k = at; k < end; k++) {
-        lists[entries + 2u * k] = id.x;
+        lists[entries + 2u * k] = i;
         lists[entries + 2u * k + 1u] = bitcast<u32>(along);
         if measured {
-            let next = path_point(id.x, k - at + 1u);
+            let next = path_point(i, k - at + 1u);
             along += select(0.0, path_length(last, next), last.shown && next.shown);
             last = next;
         }

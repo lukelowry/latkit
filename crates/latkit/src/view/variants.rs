@@ -80,6 +80,7 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         draw: vec![
             draw(Shader::Backdrop),
             compute(Shader::Evaluate, "evaluate"),
+            compute(Shader::Evaluate, "ease"),
             compute(Shader::Evaluate, "reduce"),
             compute(Shader::Freeze, "gather"),
         ],

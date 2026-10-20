@@ -218,7 +218,7 @@ impl View {
         self.pointer = Some(trigger);
         self.gestures.keys.at = None;
         for shown in &mut self.marks {
-            shown.dirty |= shown.channels_reading(Deps::POINTER);
+            shown.dirty_rows(shown.channels_reading(Deps::POINTER), None);
         }
     }
 

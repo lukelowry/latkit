@@ -1,4 +1,4 @@
-//! Canvases, pictures, and videos of views: a canvas shows views in panels; a shot crosses as JSON,
+//! Pictures and videos of views: a shot crosses as JSON,
 //! `{ size, scale, panels, transparent, deadline, elapsed }` with times in seconds, and draws the views
 //! given, whose canvases hold their last frames meanwhile. An image's pixels cross once and its files
 //! are written in workers; a video hands back the bytes each frame made, for the page to write.
@@ -7,30 +7,10 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
-use latkit::web::PageView;
 use wasm_bindgen::prelude::*;
 
 use crate::Error;
-
-/// A view, for a canvas to show or a shot to draw: what `view.handle()` gives.
-#[wasm_bindgen]
-pub struct Handle(pub(crate) PageView);
-
-fn views_of(handles: Vec<Handle>) -> Vec<PageView> {
-    handles.into_iter().map(|h| h.0).collect()
-}
-
-/// Views shown in the panels of a `<canvas>` or an `OffscreenCanvas`; freeing it stops drawing them.
-#[wasm_bindgen]
-pub struct Canvas(pub(crate) latkit::web::Canvas);
-
-#[wasm_bindgen]
-impl Canvas {
-    /// Shows `views`, one per panel, in place of those it showed.
-    pub fn show(&self, views: Vec<Handle>) -> Result<(), Error> {
-        Ok(self.0.show(&views_of(views))?)
-    }
-}
+use crate::canvas::{Handle, views_of};
 
 /// RGBA pixels, straight alpha, rows top to bottom.
 #[wasm_bindgen]

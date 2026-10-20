@@ -52,9 +52,9 @@ impl PageKey {
 pub(crate) enum Content {
     /// Static values, converted to words for `part`.
     Values { values: Values, part: Part, low: bool },
-    /// A page of samples; it may grow, and only its new tail uploads.
+    /// A page of samples; one an append opened grows, and only its new tail uploads.
     Frames(FramePage),
-    /// A page of axis coordinates; it grows like a page of samples.
+    /// A page of where a level's entries draw along the axis; it grows like a page of samples.
     Axis(AxisPage),
     /// Words computed on the CPU: text codes, join rows, a geometry's pieces.
     Words(Vec<u32>),
@@ -66,7 +66,7 @@ impl Content {
         let len = match self {
             Content::Values { values, .. } => values.len(),
             Content::Frames(page) => page.read(<[f32]>::len),
-            Content::Axis(page) => page.read(<[u32]>::len),
+            Content::Axis(page) => page.words_len(),
             Content::Words(words) => words.len(),
         };
         debug_assert!(len <= CHUNK_WORDS as usize, "no page is larger than a chunk");
@@ -80,7 +80,7 @@ impl Content {
             Content::Frames(page) => {
                 page.read(|values| values[from.min(values.len())..].iter().map(|v| v.to_bits()).collect())
             }
-            Content::Axis(page) => page.read(|words| words[from.min(words.len())..].to_vec()),
+            Content::Axis(page) => page.words(from),
             Content::Words(words) => words[from.min(words.len())..].to_vec(),
         }
     }
@@ -88,7 +88,8 @@ impl Content {
     /// The class of the block it takes: a growing page takes a whole chunk to grow into.
     fn class(&self, words: u32) -> usize {
         match self {
-            Content::Frames(_) | Content::Axis(_) => CLASSES - 1,
+            Content::Frames(page) if page.grows() => CLASSES - 1,
+            Content::Axis(page) if page.grows() => CLASSES - 1,
             _ => class_of(words),
         }
     }

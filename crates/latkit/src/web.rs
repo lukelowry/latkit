@@ -20,9 +20,8 @@ use web_sys::{
 use crate::gpu::FORMAT;
 use crate::panels::Rect;
 use crate::shot::Views;
-use crate::{
-    Button, Cursor, Device, Error, Event, Frame, Gpu, Image, Input, Key, Modifiers, Panels, Result, Shot, Video, View,
-};
+use crate::{Button, Cursor, Device, Error, Event, Frame, Gpu, Input, Key, Modifiers, Panels, Result, View};
+use crate::{Image, Shot, Video};
 
 /// Stops a listener when dropped.
 #[must_use = "the listener stops when this is dropped"]

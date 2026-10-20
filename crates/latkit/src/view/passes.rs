@@ -1,4 +1,5 @@
-//! A frame's passes: compute evaluates dirty channels, reduces fitted domains, numbers segments, sums
+//! A frame's passes: compute evaluates dirty channels over the row blocks that changed, eases what
+//! marks show toward what changed, reduces fitted domains, numbers segments, sums
 //! face normals when their corners moved, and measures extents when asked; render draws the
 //! backdrop, every mark's primitive and ports in scene order with depth, the labels, and the
 //! overlay; a probe, when one waits, reads what the frame drew through the same geometry.
@@ -15,6 +16,8 @@ use crate::gpu::work::Count;
 use crate::scene::mark::{MarkKind, Primitive};
 
 const WORKGROUP: u32 = 256;
+/// Workgroups one dimension of a dispatch holds on every device.
+const MAX_GROUPS: u32 = 65_535;
 
 /// The target pixels of `area`: a plot's lines draw only inside its axes.
 fn scissor(area: super::camera::Area, frame: &Frame<'_>) -> [u32; 4] {
@@ -153,6 +156,8 @@ impl Marks<'_> {
 /// What a frame's compute pass does.
 struct Work {
     evaluated: Vec<usize>,
+    /// Marks whose ease pass writes what they show from their frozen and settled state.
+    eased: Vec<usize>,
     segments: Vec<usize>,
     faces: Vec<usize>,
     measured: Vec<usize>,
@@ -161,10 +166,22 @@ struct Work {
     travelled: Vec<usize>,
 }
 
-/// Dispatches a workgroup for every `WORKGROUP` of `items`, if there are any.
+/// Dispatches a workgroup for every `WORKGROUP` of `items`, if there are any; past one dimension's
+/// workgroups, blocks of `BLOCK_ROWS` items along the second, as `item` in `lib/types.wesl` reads them.
 pub(super) fn dispatch(pass: &mut wgpu::ComputePass<'_>, items: u32) {
-    if items > 0 {
-        pass.dispatch_workgroups(items.div_ceil(WORKGROUP), 1, 1);
+    let groups = items.div_ceil(WORKGROUP);
+    if groups > MAX_GROUPS {
+        pass.dispatch_workgroups(wgsl::BLOCK_ROWS / WORKGROUP, items.div_ceil(wgsl::BLOCK_ROWS), 1);
+    } else if groups > 0 {
+        pass.dispatch_workgroups(groups, 1, 1);
+    }
+}
+
+/// Dispatches over `blocks` listed row blocks of a mark of `rows` rows: a block's rows wide.
+fn dispatch_blocks(pass: &mut wgpu::ComputePass<'_>, rows: u32, blocks: u32) {
+    let wide = rows.min(wgsl::BLOCK_ROWS).div_ceil(WORKGROUP);
+    if wide > 0 && blocks > 0 {
+        pass.dispatch_workgroups(wide, blocks, 1);
     }
 }
 
@@ -176,15 +193,12 @@ pub(super) fn offset(index: usize) -> u32 {
 impl super::marks::Shown {
     /// Segments of each row's path, for strokes whose rows all have as many.
     pub(crate) fn segments_per_row(&self) -> u32 {
-        let Some(compiled) = &self.compiled else { return 0 };
+        if self.compiled.is_none() {
+            return 0;
+        }
         match self.kind() {
-            MarkKind::Lines => {
-                let segments = self.tables.traced().saturating_sub(1);
-                // Steps turn each segment between samples into two, where a trace draws only samples.
-                let steps = compiled.drawing.flags & (wgsl::STEP_BEFORE | wgsl::STEP_AFTER) != 0;
-                let levels = self.tables.plan().is_some_and(|p| p.level > 0);
-                if steps && !levels { 2 * segments } else { segments }
-            }
+            // A trace's points count the corners steps make.
+            MarkKind::Lines => self.tables.traced().saturating_sub(1),
             _ => 1,
         }
     }
@@ -240,6 +254,40 @@ impl super::marks::Shown {
 }
 
 impl View {
+    /// Evaluates the dirty channels of marks `work`, each over its dirty row blocks, its fitted
+    /// domains reduced first where they changed.
+    fn evaluate(
+        &mut self,
+        pass: &mut wgpu::ComputePass<'_>,
+        inner: &mut Inner,
+        group: &wgpu::BindGroup,
+        work: &[usize],
+    ) {
+        if work.is_empty() {
+            return;
+        }
+        let device = &self.gpu.0.device;
+        let evaluate = inner.pipelines.compute(device, Shader::Evaluate, "evaluate");
+        let reduce = inner.pipelines.compute(device, Shader::Evaluate, "reduce");
+        for &i in work {
+            let shown = &mut self.marks[i];
+            pass.set_bind_group(1, group, &[offset(i)]);
+            if shown.reduce && shown.rows > 0 {
+                pass.set_pipeline(&reduce);
+                dispatch(pass, shown.rows);
+            }
+            pass.set_pipeline(&evaluate);
+            let rows = shown.rows + shown.exits;
+            dispatch_blocks(pass, rows, shown.block_count);
+            let blocks = shown.blocks.of(rows);
+            let evaluated = blocks.iter().map(|&b| u64::from((rows - b * wgsl::BLOCK_ROWS).min(wgsl::BLOCK_ROWS)));
+            self.gpu.0.counters.add(Count::Evaluated, evaluated.sum());
+            shown.dirty = 0;
+            shown.blocks = super::marks::Blocks::default();
+            shown.reduce = false;
+        }
+    }
+
     /// Evaluates dirty channels, and sums face normals when what they rest on changed; with
     /// `measure`, also measures every measured mark's extents and reads them back. With `travel`,
     /// comets travel on by the frame's step.
@@ -252,8 +300,8 @@ impl View {
     ) -> Option<Readback> {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let Work { evaluated: work, segments, faces, measured, carried, travelled } = self.work(measure, travel);
-        if [&work, &segments, &faces, &measured, &carried, &travelled].iter().all(|marks| marks.is_empty()) {
+        let Work { evaluated: work, eased, segments, faces, measured, carried, travelled } = self.work(measure, travel);
+        if [&work, &eased, &segments, &faces, &measured, &carried, &travelled].iter().all(|marks| marks.is_empty()) {
             return None;
         }
         let resources = self.resources.as_mut().expect("created before passes");
@@ -292,23 +340,9 @@ impl View {
             pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
             pass.set_bind_group(2, &evaluate_group, &[]);
             self.every_row(&mut pass, inner, &groups.mark, "carry", &carried);
-            if !work.is_empty() {
-                let evaluate = inner.pipelines.compute(device, Shader::Evaluate, "evaluate");
-                let reduce = inner.pipelines.compute(device, Shader::Evaluate, "reduce");
-                for &i in &work {
-                    let shown = &mut self.marks[i];
-                    pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-                    if shown.reduce && shown.rows > 0 {
-                        pass.set_pipeline(&reduce);
-                        dispatch(&mut pass, shown.rows);
-                    }
-                    pass.set_pipeline(&evaluate);
-                    dispatch(&mut pass, shown.rows + shown.exits);
-                    gpu.0.counters.add(Count::Evaluated, u64::from(shown.rows + shown.exits));
-                    shown.dirty = 0;
-                    shown.reduce = false;
-                }
-            }
+            self.evaluate(&mut pass, inner, &groups.mark, &work);
+            // After evaluating, so what a mark shows eases toward what it evaluated this frame.
+            self.every_row(&mut pass, inner, &groups.mark, "ease", &eased);
             // After evaluating, so comets travel at the flow this frame shows.
             self.every_row(&mut pass, inner, &groups.mark, "travel", &travelled);
             if let Some(group) = &lists_group {
@@ -366,6 +400,20 @@ impl View {
                 shown.place_version += 1;
             }
         }
+        // A mark easing toward a change writes what it shows as the clock moves, and as it evaluates.
+        let eased: Vec<usize> = (0..self.marks.len())
+            .filter(|&i| {
+                let shown = &self.marks[i];
+                let settles = shown.transition.as_ref().is_some_and(super::transition::Transition::settles);
+                shown.drawable() && settles && (shown.easing || work.contains(&i))
+            })
+            .collect();
+        for shown in &mut self.marks {
+            if shown.easing {
+                shown.version += 1;
+                shown.easing = false;
+            }
+        }
         let segments = self.segments_due();
         let faces = if self.normals_due() {
             (0..self.marks.len()).filter(|&i| self.marks[i].drawable() && self.marks[i].faces()).collect()
@@ -378,7 +426,23 @@ impl View {
         let flowing = |i: &usize| self.marks[*i].drawable() && self.marks[*i].mark.flows();
         let carried = (0..self.marks.len()).filter(|i| self.marks[*i].carry && flowing(i)).collect();
         let travelled = (0..self.marks.len()).filter(|i| travel && flowing(i)).collect();
-        Work { evaluated: work, segments, faces, measured, carried, travelled }
+        Work { evaluated: work, eased, segments, faces, measured, carried, travelled }
+    }
+
+    /// Lists the row blocks each mark evaluates this frame where its uniform finds them: every block of
+    /// a mark some channel of which changed for every row, else the blocks of the pages that changed.
+    pub(super) fn lay_out_blocks(&mut self) {
+        let mut words = Vec::new();
+        for shown in &mut self.marks {
+            let evaluates = shown.drawable() && (shown.dirty != 0 || shown.reduce);
+            let blocks = if evaluates { shown.blocks.of(shown.rows + shown.exits) } else { Vec::new() };
+            shown.block = words.len() as u32;
+            shown.block_count = blocks.len() as u32;
+            words.extend(blocks);
+        }
+        let gpu = self.gpu.clone();
+        let resources = self.resources.as_mut().expect("created before passes");
+        resources.write_blocks(&gpu.0.device, &gpu.0.queue, &words);
     }
 
     /// Runs the expression machine's entry point `entry` over every row and exit of each of `marks`.

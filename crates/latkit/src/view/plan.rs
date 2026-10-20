@@ -1,26 +1,31 @@
 //! The plan: how each table drawn fits the budget. A table draws whole, in priority order when a mark
 //! drawing it gives one, unless it is too large to: denser than a screen shows, or more than the
-//! view's share of the budget holds with the rest. Then a table a mark places on a map or a plane
+//! view's share of the budget holds with the rest. The GPU's ledger grants each view its share, by
+//! what it would draw whole. What the tables cost is worked out again only when the scene or a drawn
+//! table's rows or geometry change, and the plan only when those costs or the share do. Then a table a mark places on a map or a plane
 //! draws through tiles, the rows of the tiles the camera asks for, as many as its share holds, and
 //! edges ending at it draw through tiles too, so they show with their ends; a table a mark traces
 //! draws whole, its traces spanning as few pixel columns as fit; any other table draws the rows that
 //! matter most, as many as fit. What a view draws always fits.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use std::hash::{Hash, Hasher};
+
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use super::View;
 use super::marks::Shown;
 use crate::data::{Field, Geometry, Name, Table};
 use crate::derive::tiled::{Draw, Place, Planned, Plans};
+use crate::derive::{Derived, stamp_of};
 use crate::expr::compile::Part;
 use crate::gpu::shaders as wgsl;
+use crate::gpu::{Ask, Ledger};
 use crate::{Expr, Kind, Mark, Space};
 
 /// Rows past which a table a mark places draws through tiles: more than a screen shows one to a cell.
 pub(crate) const DENSE: usize = 1 << 18;
-/// The share of the budget a view plans what it draws within; the rest holds other views and pages
-/// cached.
-const SHARE: f64 = 0.5;
+/// Pixel columns a view asks its traces' room for: a wide screen's.
+const ASKED_COLUMNS: f64 = 4096.0;
 /// Rows a table drawn through tiles draws at least: a tile's.
 const LEAST: u32 = 1 << 14;
 /// Bytes a row's trace takes for each pixel column it spans: the least and greatest values of two
@@ -44,12 +49,81 @@ impl Cost {
     }
 }
 
+/// Each table the scene draws, drawn whole, and what it costs.
+#[derive(Default)]
+struct Costs {
+    whole: Plans,
+    tables: FxHashMap<(Name, Name), Cost>,
+    /// The pages the costs count that any view drawing the same data shares: each field's by its
+    /// version and how it is read, the bytes the costs count of it, and its bytes once.
+    shared: FxHashMap<u64, (f64, f64)>,
+}
+
+/// The plan, and the costs it weighs, each worked out again only when what it reads changes.
+#[derive(Default)]
+pub(crate) struct Planning {
+    costs: Derived<Costs>,
+    /// How each table draws, and the pixel columns a trace spans at most.
+    plan: Derived<(Plans, u32)>,
+}
+
+impl Planning {
+    /// How each table draws.
+    pub(crate) fn plans(&self) -> &Plans {
+        &self.plan.value.0
+    }
+
+    /// The pixel columns a trace spans at most.
+    pub(crate) fn trace_columns(&self) -> u32 {
+        self.plan.value.1
+    }
+}
+
 impl View {
-    /// How each table the scene draws draws, within `budget` bytes, and the pixel columns a trace
-    /// spans at most.
-    pub(super) fn plan(&self, budget: u64) -> (Plans, u32) {
-        let (mut plans, costs) = self.costs();
-        let share = budget as f64 * SHARE;
+    /// Brings the plan up to the scene, the data, and the share of `budget` the GPU's `ledger`
+    /// grants the view by what it would draw whole.
+    pub(super) fn update_plan(&mut self, ledger: &mut Ledger, budget: u64) {
+        let stamp = self.costs_stamp();
+        if self.planning.costs.due(stamp) {
+            let costs = self.costs();
+            self.planning.costs.make(stamp, costs);
+        }
+        let costs = &self.planning.costs.value;
+        let traced: f64 = costs.tables.values().map(|c| c.traced).sum();
+        let whole = costs.tables.values().map(Cost::bytes).sum::<f64>() + traced * ASKED_COLUMNS;
+        let counted: f64 = costs.shared.values().map(|(counted, _)| counted).sum();
+        let ask = Ask {
+            own: (whole - counted).max(0.0),
+            shared: costs.shared.iter().map(|(piece, (_, bytes))| (*piece, *bytes)).collect(),
+        };
+        let share = ledger.grant(self.id, whole, ask, budget);
+        let stamp = stamp_of((self.planning.costs.stamp(), share.to_bits()));
+        if self.planning.plan.due(stamp) {
+            let planned = self.plan(costs, share);
+            self.planning.plan.make(stamp, planned);
+        }
+    }
+
+    /// What the costs read, stamped: the scene, and of each table a mark draws, its dataset's
+    /// schema, its rows, its geometry, and whether the view fetches it as tiles.
+    fn costs_stamp(&self) -> u64 {
+        let mut hasher = FxHasher::default();
+        self.scene_version.hash(&mut hasher);
+        for shown in &self.marks {
+            let style = shown.mark.style();
+            let data = self.source(&style.data);
+            let table = data.and_then(|d| d.table(&style.table));
+            let geometry = geometry_of(&shown.mark).and_then(|f| table?.field_named(&f)).map(Field::version);
+            let owned = self.derived.tiles.owns(&style.data);
+            (data.map(crate::Data::schema), table.map(|t| t.structure), geometry, owned).hash(&mut hasher);
+        }
+        hasher.finish().max(1)
+    }
+
+    /// How each table the scene draws draws, within `share` bytes, from what `costs` says each
+    /// costs, and the pixel columns a trace spans at most.
+    fn plan(&self, costs: &Costs, share: f64) -> (Plans, u32) {
+        let (mut plans, costs) = (costs.whole.clone(), &costs.tables);
         let tileable =
             |key: &(Name, Name), planned: &Planned| planned.place != Place::Nowhere && !self.derived.tiles.owns(&key.0);
         let mut whole: f64 = costs.values().map(Cost::bytes).sum();
@@ -115,11 +189,12 @@ impl View {
 
     /// Each table the scene draws, drawn whole, placed and ordered by the first mark drawing it to
     /// give a place or a priority, with the fields its marks read; and what it costs.
-    fn costs(&self) -> (Plans, FxHashMap<(Name, Name), Cost>) {
+    fn costs(&self) -> Costs {
         let space = &self.scene.space;
         let placing = matches!(space, Space::Earth(_) | Space::Plane(_));
         let mut plans: Plans = FxHashMap::default();
         let mut costs: FxHashMap<(Name, Name), Cost> = FxHashMap::default();
+        let mut shared: FxHashMap<u64, (f64, f64)> = FxHashMap::default();
         let mut joined: Vec<((Name, Name), Name)> = Vec::new();
         for shown in &self.marks {
             let style = shown.mark.style();
@@ -155,13 +230,44 @@ impl View {
             cost.per_row += row_bytes(shown);
             cost.geometry += geometry_bytes(shown, table);
             cost.traced += traced_bytes(shown, table);
+            for (piece, bytes) in self.shared_pages(shown, table) {
+                let (counted, once) = shared.entry(piece).or_insert((0.0, 0.0));
+                *counted += bytes;
+                *once = bytes;
+            }
         }
         for (key, field) in joined {
             if let Some(reads) = plans.get_mut(&key).and_then(|p| p.reads.as_mut()) {
                 reads.insert(field);
             }
         }
-        (plans, costs)
+        Costs { whole: plans, tables: costs, shared }
+    }
+
+    /// The pages `shown` reads of `table`, and of the tables it joins, that every view drawing the
+    /// same data shares, as `row_bytes` and `geometry_bytes` count them: each field's, by its version
+    /// and how it is read.
+    fn shared_pages(&self, shown: &Shown, table: &Table) -> Vec<(u64, f64)> {
+        let Some(compiled) = &shown.compiled else { return Vec::new() };
+        let mut pieces: Vec<(u64, f64)> = compiled
+            .program
+            .columns
+            .iter()
+            .filter(|c| c.part != Part::Path && !c.derived)
+            .filter_map(|c| {
+                let read = match &c.of {
+                    None => table.field_named(&c.name),
+                    Some((data, joined)) => self.source(data)?.table(joined)?.field_named(&c.name),
+                };
+                let width = if c.low { 8.0 } else { 4.0 };
+                Some((stamp_of((read?.version(), c.low)), table.len() as f64 * width))
+            })
+            .collect();
+        if let Some(field) = geometry_of(&shown.mark).and_then(|f| table.field_named(&f)) {
+            let areas = matches!(shown.mark, Mark::Areas(_));
+            pieces.push((stamp_of((field.version(), areas)), geometry_bytes(shown, table)));
+        }
+        pieces
     }
 
     /// Whether the table `key` names is edges or faces whose ends lie in a table drawn through tiles.

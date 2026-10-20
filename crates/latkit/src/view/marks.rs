@@ -6,7 +6,7 @@ use super::rows::Region;
 use super::sync::Tables;
 use super::transition::{Begin, Transition};
 use crate::data::Table;
-use crate::expr::compile::Deps;
+use crate::expr::compile::{Deps, Reads};
 use crate::gpu::shaders as wgsl;
 use crate::gpu::work::Queue;
 use crate::gpu::{Inner, atlas};
@@ -24,11 +24,12 @@ pub(crate) struct Offsets {
     pub(crate) ends: u32,
     pub(crate) palette: u32,
     pub(crate) port_info: u32,
+    pub(crate) blends: u32,
 }
 
 impl Default for Offsets {
     fn default() -> Offsets {
-        Offsets { columns: 0, ranges: 0, code: 0, constants: 0, ends: 0, palette: 0, port_info: wgsl::NONE }
+        Offsets { columns: 0, ranges: 0, code: 0, constants: 0, ends: 0, palette: 0, port_info: wgsl::NONE, blends: 0 }
     }
 }
 
@@ -50,9 +51,16 @@ pub(crate) struct Shown {
     pub(crate) moved: Option<Region>,
     /// First fitted domain.
     pub(crate) domains: u32,
-    /// Channels to evaluate, and whether fitted domains reduce, next frame.
+    /// Channels to evaluate, the row blocks they evaluate over, and whether fitted domains reduce,
+    /// next frame. Set through `dirty_rows` and `all_dirty`, so every channel made dirty names its rows.
     pub(crate) dirty: u32,
+    pub(crate) blocks: Blocks,
     pub(crate) reduce: bool,
+    /// Where this frame's evaluation lists the row blocks it covers, and how many.
+    pub(crate) block: u32,
+    pub(crate) block_count: u32,
+    /// Whether this frame's ease pass writes what the mark shows from its frozen and settled state.
+    pub(crate) easing: bool,
     /// The program's code and constants with colormap layers and text codes written in.
     pub(crate) code: Vec<[u32; 4]>,
     pub(crate) constants: Vec<u32>,
@@ -104,7 +112,11 @@ impl Shown {
             moved: None,
             domains: 0,
             dirty: 0,
+            blocks: Blocks::default(),
             reduce: false,
+            block: 0,
+            block_count: 0,
+            easing: false,
             code: Vec::new(),
             constants: Vec::new(),
             ends: Vec::new(),
@@ -229,18 +241,33 @@ impl Shown {
             .fold(0, |mask, (k, c)| if c.reads.deps.intersects(deps) { mask | 1 << k } else { mask })
     }
 
-    /// Channels and domains reading any column of `columns` become dirty.
-    pub(crate) fn columns_changed(&mut self, columns: u64) {
+    /// Channels and domains reading any column of `columns` become dirty: over the row blocks
+    /// `blocks` names, the pages that changed, while the channels read only their own rows; else over
+    /// every row.
+    pub(crate) fn columns_changed(&mut self, columns: u64, blocks: Option<&[u32]>) {
         let Some(compiled) = &self.compiled else { return };
         let program = &compiled.program;
         let reduce = program.domains.iter().any(|d| d.columns & columns != 0);
+        let mut channels = 0;
         for (k, channel) in program.channels.iter().enumerate() {
             if channel.reads.columns & columns != 0 || (reduce && channel.reads.deps.intersects(Deps::DOMAIN)) {
-                self.dirty |= 1 << k;
+                channels |= 1 << k;
             }
         }
+        // A fitted domain, or a table read through a join, reaches past a row's own block.
+        let joined = program.columns.iter().enumerate().any(|(i, c)| c.of.is_some() && columns & Reads::column(i) != 0);
+        self.dirty_rows(channels, blocks.filter(|_| !reduce && !joined));
         self.reduce |= reduce;
         self.packed = false;
+    }
+
+    /// Channels `channels` evaluate again on the next frame, over the row blocks `blocks` names, or
+    /// over every row for `None`.
+    pub(crate) fn dirty_rows(&mut self, channels: u32, blocks: Option<&[u32]>) {
+        if channels != 0 {
+            self.dirty |= channels;
+            self.blocks.add(blocks);
+        }
     }
 
     /// Whether any column of `columns` holds static values that show eased: values a channel reads,
@@ -255,10 +282,23 @@ impl Shown {
         program.columns.iter().enumerate().any(|(i, c)| !c.sampled && columns & eased & (1 << i.min(63)) != 0)
     }
 
+    /// Rows rewritten in place in row blocks `blocks`, every other row where it was: those blocks
+    /// evaluate every channel, constants included. A fitted domain reads every row, so with one every
+    /// row does.
+    pub(crate) fn rows_rewritten(&mut self, blocks: &[u32]) {
+        let Some(compiled) = &self.compiled else { return };
+        if !compiled.program.domains.is_empty() {
+            return self.all_dirty();
+        }
+        let n = compiled.program.channels.len();
+        self.dirty_rows(if n >= 32 { u32::MAX } else { (1 << n) - 1 }, Some(blocks));
+    }
+
     pub(crate) fn all_dirty(&mut self) {
         if let Some(compiled) = &self.compiled {
             let n = compiled.program.channels.len();
             self.dirty = if n >= 32 { u32::MAX } else { (1 << n) - 1 };
+            self.blocks = Blocks::All;
             self.reduce = !compiled.program.domains.is_empty();
         }
     }
@@ -306,7 +346,7 @@ impl Shown {
     }
 
     /// Words the mark's program region needs: descriptors and tables, ranges, code, constants, ends,
-    /// its markers' palette, and its ports.
+    /// its markers' palette, its ports, and how each word of its rows eases.
     pub(crate) fn packed_len(&self) -> u32 {
         let Some(compiled) = &self.compiled else { return 0 };
         (self.tables.len()
@@ -316,6 +356,41 @@ impl Shown {
             + self.ends.len()
             + compiled.drawing.markers.palette.len()
             + self.ports.len()) as u32
+            + self.stride()
+            + self.extras()
+    }
+
+    /// How each word of a row eases while the mark eases toward what its channels evaluate: a number
+    /// or a color its channels store mixes, a position's high words move by their offset, and what
+    /// else they store shows as evaluated; a word no channel stores keeps what it holds.
+    fn blends(&self) -> Vec<u32> {
+        let mut blends = vec![wgsl::BLEND_KEEP; (self.stride() + self.extras()) as usize];
+        let mut set = |word: u32, blend: u32| {
+            if let Some(b) = blends.get_mut(word as usize) {
+                *b = blend;
+            }
+        };
+        for &[op, word, ..] in &self.code {
+            match op {
+                wgsl::OP_STORE => set(word, wgsl::BLEND_NUMBER),
+                wgsl::OP_STORE_COLOR => set(word, wgsl::BLEND_COLOR),
+                wgsl::OP_STORE_POSITION | wgsl::OP_POSITION => {
+                    set(word, wgsl::BLEND_POSITION);
+                    set(word + 1, wgsl::BLEND_POSITION);
+                    set(word + 2, wgsl::BLEND_SNAP);
+                    set(word + 3, wgsl::BLEND_SNAP);
+                    set(word + wgsl::VERTEX_FLAGS - wgsl::VERTEX_POSITION, wgsl::BLEND_SNAP);
+                }
+                wgsl::OP_STORE_FLAG | wgsl::OP_STORE_CODE | wgsl::OP_STORE_END => set(word, wgsl::BLEND_SNAP),
+                _ => {}
+            }
+        }
+        // What evaluation writes of every vertex row: its flags' units, and its size's range.
+        if self.kind() == MarkKind::Vertices {
+            set(wgsl::VERTEX_FLAGS, wgsl::BLEND_SNAP);
+            set(wgsl::VERTEX_RANGE, wgsl::BLEND_SNAP);
+        }
+        blends
     }
 
     /// Appends the mark's words, which start at word `base` of the program buffer, and records where
@@ -338,7 +413,48 @@ impl Shown {
         out.extend(&compiled.drawing.markers.palette);
         let port_info = if self.ports.is_empty() { wgsl::NONE } else { at(out) };
         out.extend(&self.ports);
-        self.offsets = Offsets { columns, ranges, code, constants, ends, palette, port_info };
+        let blends = at(out);
+        out.extend(self.blends());
+        self.offsets = Offsets { columns, ranges, code, constants, ends, palette, port_info, blends };
+    }
+}
+
+/// The row blocks of a mark whose rows evaluate next: every block, or those listed, the blocks of the
+/// pages that changed. A block is the `BLOCK_ROWS` rows a page of every column holds.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) enum Blocks {
+    All,
+    Listed(Vec<u32>),
+}
+
+impl Default for Blocks {
+    fn default() -> Blocks {
+        Blocks::Listed(Vec::new())
+    }
+}
+
+impl Blocks {
+    /// Adds the blocks `blocks` names, or every block for `None`.
+    fn add(&mut self, blocks: Option<&[u32]>) {
+        match (&mut *self, blocks) {
+            (Blocks::All, _) => {}
+            (Blocks::Listed(listed), Some(more)) => listed.extend_from_slice(more),
+            (Blocks::Listed(_), None) => *self = Blocks::All,
+        }
+    }
+
+    /// The blocks of a mark of `rows` rows to evaluate, in order, each once.
+    pub(crate) fn of(&self, rows: u32) -> Vec<u32> {
+        let count = rows.div_ceil(wgsl::BLOCK_ROWS);
+        match self {
+            Blocks::All => (0..count).collect(),
+            Blocks::Listed(listed) => {
+                let mut blocks: Vec<u32> = listed.iter().copied().filter(|&b| b < count).collect();
+                blocks.sort_unstable();
+                blocks.dedup();
+                blocks
+            }
+        }
     }
 }
 

@@ -87,11 +87,15 @@ impl Presets for Controls {
             _ => None,
         }
     }
+
+    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Controls, D::Error> {
+        Controls::deserialize(deserializer)
+    }
 }
 
 impl<'de> Deserialize<'de> for Controls {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Controls, D::Error> {
-        preset_or(deserializer, Controls::deserialize)
+        preset_or(deserializer)
     }
 }
 

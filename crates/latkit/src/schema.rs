@@ -3,6 +3,17 @@
 //! deserializes as itself and its schema derives from the same declaration, so the code and its
 //! schema never part. `latkit schema` prints them, and npm's types are written from them.
 
+use schemars::generate::SchemaSettings;
+use schemars::transform::RecursiveTransform;
+
+/// The settings every schema is made with: draft 2020-12, saying what is read or written and not
+/// latkit's defaults, which descriptions say.
+fn settings() -> SchemaSettings {
+    SchemaSettings::draft2020_12().with_transform(RecursiveTransform(|schema: &mut schemars::Schema| {
+        schema.remove("default");
+    }))
+}
+
 /// The JSON Schema of what `T` deserializes from, its definitions under `$defs`.
 ///
 /// ```
@@ -10,7 +21,7 @@
 /// assert!(data["properties"]["patch"].is_object());
 /// ```
 pub fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
-    schemars::SchemaGenerator::default().into_root_schema_for::<T>().to_value()
+    settings().into_generator().into_root_schema_for::<T>().to_value()
 }
 
 /// Every input's JSON Schema in one document, each under its name in `$defs` with what it is built
@@ -25,7 +36,7 @@ pub fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
 /// ```
 #[cfg(feature = "gpu")]
 pub fn schemas() -> serde_json::Value {
-    let mut inputs = schemars::SchemaGenerator::default();
+    let mut inputs = settings().into_generator();
     inputs.subschema_for::<crate::Scene>();
     inputs.subschema_for::<crate::Data>();
     inputs.subschema_for::<crate::Patch>();
@@ -34,7 +45,7 @@ pub fn schemas() -> serde_json::Value {
     inputs.subschema_for::<crate::Fit>();
     inputs.subschema_for::<crate::Budget>();
     inputs.subschema_for::<crate::Shot>();
-    let mut settings = schemars::generate::SchemaSettings::draft2020_12().for_serialize();
+    let mut settings = settings().for_serialize();
     settings.definitions_path = "/outputs".into();
     let mut outputs = settings.into_generator();
     outputs.subschema_for::<crate::Event>();

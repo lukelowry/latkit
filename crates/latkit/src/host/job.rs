@@ -7,17 +7,17 @@
 
 use std::sync::Arc;
 
+use crate::Side;
 use crate::data::{Field, GeometryBuilder, Id, Name, Op, Patch, Table, Value, Values, Version};
 use crate::derive::pyramid::{Leveling, Places, Placing};
 use crate::derive::sight::Domain;
 use crate::geo::mvt::Kind as Geometry;
 use crate::geo::shapes::{earth_parts, triangles};
-use crate::geo::tiles::{Decoded, TileKey, decode};
-use crate::layout::layered::layered;
-use crate::layout::levels::Graph;
+use crate::geo::tiles::{Decoded, decode};
 use crate::layout::route::{Net, Terminal, route};
-use crate::layout::stress::stress;
-use crate::{Direction, Layered, Layout, Side};
+use crate::layout::{layered::layered, levels::Graph, stress::stress};
+use crate::tiles::TileKey;
+use crate::{Direction, Layered, Layout};
 
 /// Work latkit hands its [`Host`](super::Host) to do off the frame: bytes in, bytes out.
 ///

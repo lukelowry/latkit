@@ -13,6 +13,8 @@ latkit render map.json plot.json -d grid.json -d states=usa.geojson \
 latkit render scene.json -d grid.json --frames - --format y4m -o - | ffmpeg -i - film.webm
 latkit inspect grid.bin
 latkit query grid.bin '{"of":"Branch","filter":{"op":"gt","args":["loading",90]},"limit":20}'
+latkit tile history.bin -o history/
+latkit render plot.json --tiles grid=history/frames.json -o year.png
 latkit schema scene > scene.schema.json
 ```
 
@@ -22,6 +24,7 @@ latkit schema scene > scene.schema.json
 | `validate` | reads and checks everything `render` would, frames included, without a GPU                                |
 | `inspect`  | prints datasets as JSON: tables, rows, fields and their kinds, the axis and its span                      |
 | `query`    | prints the rows a query keeps, sorted and paged, as JSON Lines                                            |
+| `tile`     | writes a dataset as [time tiles](data.md#fetch-long-histories-in-spans) in `--output`                     |
 | `schema`   | prints the JSON Schema of every input, or of `scene`, `data`, `patch`, `query`, `camera`, `fit`, `frames` |
 
 ## Inputs
@@ -32,7 +35,8 @@ latkit schema scene > scene.schema.json
 - **Datasets** (`-d [NAME=]FILE`) are a [JSON document](formats.md#json), latkit's
   [bytes](formats.md#bytes), or GeoJSON, which takes a `NAME`. A `NAME` renames any dataset.
   Slices of binary files load relative to the document.
-- **Tiles** (`--tiles NAME=FILE`) are a PMTiles file, TileJSON, or a `{z}/{x}/{y}` template on disk.
+- **Tiles** (`--tiles NAME=FILE`) are time tiles' `frames.json`, as `tile` writes it, or a PMTiles
+  file, TileJSON, or a `{z}/{x}/{y}` template on disk.
 - **Fonts** (`--font FILE`, repeated) replace system fonts; the first is the fallback.
 - One input at most reads stdin (`-`).
 

@@ -11,14 +11,16 @@
 //! the triangles of every area; and the tiles the camera asks for, which patch datasets the view
 //! owns.
 
+pub(crate) mod graph;
 mod lanes;
-mod places;
+pub(crate) mod places;
 pub(crate) mod pyramid;
 mod shapes;
 pub(crate) mod sight;
 mod stars;
 pub(crate) mod tiled;
 pub(crate) mod tiles;
+mod tiling;
 
 pub(crate) use lanes::{answer as lanes_answer, spread};
 
@@ -28,12 +30,14 @@ use std::task::Waker;
 
 use rustc_hash::{FxHashMap, FxHasher};
 
-use crate::data::{Column, Data, Field, Name, Op, Patch, Table, Value, Values, Version};
+use crate::data::{Column, Data, Field, Name, Op, Page, Patch, Table, Value, Values, Version};
 use crate::gpu::readback::Readback;
 use crate::gpu::work::{Count, Counters};
 use crate::host::{Host, Job, Key, Request};
 use crate::sheet::Sheet;
 use crate::{Pending, Result, Scene, Space};
+use places::Places;
+use tiles::TileSets;
 
 /// A stamp of `inputs`: never 0, which no value is made from.
 pub(crate) fn stamp_of(inputs: impl Hash) -> u64 {
@@ -285,6 +289,11 @@ pub(crate) trait Derive {
 
     /// Forgets what it derived: its space no longer asks for it.
     fn clear(&mut self);
+
+    /// Failures to tell since last asked, such as texts its host could not measure.
+    fn take_errors(&mut self) -> Vec<crate::Error> {
+        Vec::new()
+    }
 }
 
 /// Every derivation of a view, run in order each frame with one budget.
@@ -295,12 +304,12 @@ pub(crate) struct Derivations {
     /// Elsewhere, the lanes of edges sharing their ends.
     lanes: lanes::Lanes,
     /// Elsewhere, where the scene has a layout, the places of vertex rows without positions.
-    places: places::Places,
+    places: Places,
     /// Elsewhere, the stars of nets joining vertex rows.
     stars: stars::Stars,
     shapes: shapes::Shapes,
     /// The tiles the camera asks for, as datasets the view owns.
-    pub(crate) tiles: tiles::TileSets,
+    pub(crate) tiles: TileSets,
     /// What the view draws of each dataset it draws in part.
     pub(crate) tiled: tiled::Tiled,
 }
@@ -354,6 +363,14 @@ impl Derivations {
         self.shapes.busy()
     }
 
+    /// Failures every derivation has to tell since last asked.
+    pub(crate) fn take_errors(&mut self) -> Vec<crate::Error> {
+        let mut errors = self.sheet.take_errors();
+        errors.extend(self.places.take_errors());
+        errors.extend(self.tiles.take_errors());
+        errors
+    }
+
     /// The derived tables beside table `table` of dataset `data`.
     pub(crate) fn beside(&self, data: &Name, table: &Name) -> Beside<'_> {
         let key = (data.clone(), table.clone());
@@ -381,18 +398,25 @@ pub(crate) fn beside(source: &Table, fields: impl IntoIterator<Item = (Name, Fie
 }
 
 /// Field `name` of a table beside `source`, holding `values`: `before`'s own while it holds exactly
-/// them, so nothing uploads again.
+/// them, so nothing uploads again; else a column keeping each of `before`'s pages that holds what its
+/// page would, so only the pages that changed upload and evaluate again.
 pub(crate) fn kept(name: &str, values: &Values, source: &Table, before: Option<&Table>) -> Field {
+    let fresh = Column::new(values);
     let old = before.filter(|b| b.structure == source.structure).and_then(|b| match b.field_named(name) {
-        Some(field @ Field::Values(column, _)) if same(column, values) => Some(field.clone()),
+        Some(Field::Values(column, version)) if column.len() == fresh.len() => Some((column, *version)),
         _ => None,
     });
-    old.unwrap_or_else(|| Field::Values(Column::new(values), Version::next()))
-}
-
-/// Whether `column` holds exactly `values`.
-fn same(column: &Column, values: &Values) -> bool {
-    column.len() == values.len() && (0..values.len()).all(|i| column.get(i) == values.get(i))
+    let Some((column, version)) = old else { return Field::Values(fresh, Version::next()) };
+    let pages: Vec<Page> = fresh
+        .pages()
+        .iter()
+        .zip(column.pages())
+        .map(|(new, old)| if new.values.same(&old.values) { old.clone() } else { new.clone() })
+        .collect();
+    if pages.iter().zip(column.pages()).all(|(page, old)| page.id == old.id) {
+        return Field::Values(column.clone(), version);
+    }
+    Field::Values(Column::of_pages(pages, column.like()), Version::next())
 }
 
 /// The values `fields` an answer's patch writes for each row it names, by its key.
@@ -408,4 +432,26 @@ pub(crate) fn answers(bytes: &[u8], fields: &[&str]) -> Vec<(Key, Vec<Option<Val
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::PAGE_ROWS;
+
+    #[test]
+    fn kept_keeps_the_pages_that_hold_the_same() {
+        let rows = PAGE_ROWS + 10;
+        let source = Table::new("T", crate::Ids::count(rows as u32));
+        let numbers = |changed: f64| {
+            Values::from((0..rows).map(|r| if r == rows - 1 { changed } else { 1.0 }).collect::<Vec<f64>>())
+        };
+        let first = beside(&source, [(Name::from("x"), kept("x", &numbers(1.0), &source, None))]);
+        let same = kept("x", &numbers(1.0), &source, Some(&first));
+        assert_eq!(same.version(), first.field_named("x").expect("x").version(), "nothing changed");
+        let Field::Values(before, _) = first.field_named("x").expect("x") else { panic!("values") };
+        let Field::Values(after, _) = kept("x", &numbers(2.0), &source, Some(&first)) else { panic!("values") };
+        assert_eq!(after.pages()[0].id, before.pages()[0].id, "the first page held the same");
+        assert_ne!(after.pages()[1].id, before.pages()[1].id, "the last page changed");
+    }
 }

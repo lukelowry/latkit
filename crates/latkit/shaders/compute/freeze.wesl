@@ -3,7 +3,7 @@
 // entered), then the rows that left, which fade out past `mark.rows`. Slot words of a mark whose
 // ends point at vertices follow them to their new slots.
 
-import package::lib::types::{NONE, ENTERING};
+import package::lib::types::{NONE, ENTERING, item};
 import package::lib::bind::{mark, state};
 
 @group(2) @binding(1) var<storage, read_write> frozen: array<u32>;
@@ -13,14 +13,15 @@ import package::lib::bind::{mark, state};
 
 @compute @workgroup_size(256)
 fn gather(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= mark.rows + mark.exits {
+    let i = item(id);
+    if i >= mark.rows + mark.exits {
         return;
     }
     let old_state = remap[mark.remap];
     let old_extra = remap[mark.remap + 1u];
     let slots = remap[mark.remap + 2u];
     let table = remap[mark.remap + 3u];
-    let source = remap[mark.remap + 4u + id.x];
+    let source = remap[mark.remap + 4u + i];
     let flags = mark.stride - 1u;
     for (var w = 0u; w < mark.stride; w++) {
         var word = 0u;
@@ -32,13 +33,13 @@ fn gather(@builtin(global_invocation_id) id: vec3u) {
                 word = remap[table + word];
             }
         }
-        frozen[mark.frozen + id.x * mark.stride + w] = word;
+        frozen[mark.frozen + i * mark.stride + w] = word;
     }
     for (var w = 0u; w < mark.extras; w++) {
         var word = 0u;
         if source != NONE {
             word = state[old_extra + source * mark.extras + w];
         }
-        frozen[mark.frozen_extra + id.x * mark.extras + w] = word;
+        frozen[mark.frozen_extra + i * mark.extras + w] = word;
     }
 }

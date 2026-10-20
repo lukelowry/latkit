@@ -107,6 +107,55 @@ fn a_dense_table_draws_the_tiles_in_view_and_keeps_what_is_selected() {
 }
 
 #[test]
+fn panning_a_dense_table_draws_every_row_in_view_as_tiles_come_and_go() {
+    let Some(gpu) = gpu() else { return };
+    let (columns, rows) = (600, 500);
+    // Without an ease, rows arriving draw at once.
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .ease(std::time::Duration::ZERO)
+        .draw(Edges::of("grid", "Line").ends("from", "to").width(2.0).color(Color::rgb(0.0, 1.0, 0.0)))
+        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_data(lattice(columns, rows));
+    let center = SIZE / 2;
+    let camera = |x: f64| Camera::Map { center: [x, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 };
+    let mut in_place = 0;
+    for step in 0..6 {
+        view.set_camera(camera(100.0 + 60.0 * f64::from(step)));
+        // While the rows still drawn stay where they were, those arriving in holes and past the last
+        // row, every row in view draws.
+        for _ in 0..4 {
+            let pixels = common::step(&gpu, &mut view);
+            let waiting = view.stats().waiting;
+            if step > 0 && !waiting.data && !waiting.marks && !view.complete() {
+                let pixel = |dx: u32, dy: u32| at(&pixels, center + dx, center + dy);
+                assert!(close(pixel(0, 0), [255, 255, 255, 255]), "step {step}, in place: {:?}", pixel(0, 0));
+                assert!(close(pixel(4, 0), [0, 255, 0, 255]), "step {step}, in place: {:?}", pixel(4, 0));
+                in_place += 1;
+            }
+        }
+        let pixels = frame(&gpu, &mut view);
+        assert_eq!(errors(&mut view), []);
+        assert!(view.complete(), "every row laid out in drawing order once the camera rests");
+        let stats = view.stats();
+        assert!(stats.drawn > 0 && stats.drawn < stats.rows / 4, "step {step}: {} of {}", stats.drawn, stats.rows);
+        let pixel = |dx: u32, dy: u32| at(&pixels, center + dx, center + dy);
+        assert!(close(pixel(0, 0), [255, 255, 255, 255]), "step {step}: a row at the middle: {:?}", pixel(0, 0));
+        assert!(close(pixel(4, 4), [0, 0, 0, 255]), "step {step}: none between rows: {:?}", pixel(4, 4));
+        assert!(close(pixel(4, 0), [0, 255, 0, 255]), "step {step}: an edge between two: {:?}", pixel(4, 0));
+    }
+    assert!(in_place > 0, "rows were written in place");
+    // A row picked by id is found among the rows drawn, holes and all.
+    let selected = Row::new("grid", "Bus", (250 * columns + 400) as u64);
+    view.select([selected.clone().into()]);
+    view.set_camera(camera(380.0));
+    frame(&gpu, &mut view);
+    assert_eq!(view.selection(), [latkit::Rows::from(selected)], "what is selected stays so");
+    assert_eq!(errors(&mut view), []);
+}
+
+#[test]
 fn edges_drawn_through_tiles_show_with_their_ends() {
     let Some(gpu) = gpu() else { return };
     let data = lattice(600, 500);

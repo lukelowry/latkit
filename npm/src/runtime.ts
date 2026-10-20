@@ -393,10 +393,17 @@ export class View {
   }
 
   /**
-   * Fetches the vector tiles at `url` as the camera asks for them, kept as dataset `name`, which the
-   * view owns: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` template. Each layer is a
-   * table of its features of the kind marks draw it as (areas polygons, lines lines, vertices points),
-   * or named `layer:polygons`, `layer:lines`, or `layer:points`.
+   * Fetches the data at `url` in pieces as the view asks for them, kept as dataset `name`, which the
+   * view owns; the source's first bytes say what it is.
+   *
+   * - Time tiles, a `frames.json` manifest as `latkit tile` writes it: a dataset whose sampled
+   *   fields' histories are fetched in spans. A line tracing a field fetches the detail its plot
+   *   window draws, a mark showing one the frames about the view's coordinate, and a span still
+   *   loading draws the coarser span above it.
+   * - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` template, fetched as
+   *   the camera asks. Each layer is a table of its features of the kind marks draw it as (areas
+   *   polygons, lines lines, vertices points), or named `layer:polygons`, `layer:lines`, or
+   *   `layer:points`.
    */
   setTiles(name: string, url: string): void {
     this.inner.setTiles(name, url);

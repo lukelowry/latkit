@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use super::bits::{Bits, BitsBuilder};
 use super::buffer::Buffer;
+use super::column::{PAGE_BITS, PAGE_MASK};
 use super::geometry::{Geometry, GeometryBuilder};
 use super::name::Row;
 use super::text::{Text, TextBuilder};
@@ -134,8 +135,43 @@ impl schemars::JsonSchema for Value {
     }
 }
 
-/// Where a value of an assembled column comes from: `(source, row)`, or `None` for missing.
-pub(crate) type Pick = Option<(usize, usize)>;
+/// A row picked that names none: the value made of it is missing, as a hole among the rows drawn
+/// of a table drawn through tiles is.
+pub(crate) const HOLE: usize = usize::MAX;
+
+/// Where each value an assembly makes comes from, among its sources: the first, then pages of
+/// [`PAGE_ROWS`](super::column::PAGE_ROWS) rows each. A concrete type rather than a closure, so
+/// [`Values::assemble`] is compiled once.
+#[derive(Clone, Copy)]
+pub(crate) enum Picks<'a> {
+    /// Value `i` is row `rows[i]` of the pages, missing for a [`HOLE`].
+    Rows(&'a [usize]),
+    /// Value `i` is row `from[i]` of the pages where it is written, missing for a [`HOLE`], else row
+    /// `i` of the first source while `i < kept`, else missing.
+    Writes { from: &'a [Option<usize>], kept: usize },
+}
+
+impl Picks<'_> {
+    fn len(self) -> usize {
+        match self {
+            Picks::Rows(rows) => rows.len(),
+            Picks::Writes { from, .. } => from.len(),
+        }
+    }
+
+    /// The source and row of value `i`, or `None` where it is missing.
+    #[inline]
+    fn get(self, i: usize) -> Option<(usize, usize)> {
+        let paged = |row: usize| (row != HOLE).then_some((1 + (row >> PAGE_BITS), row & PAGE_MASK));
+        match self {
+            Picks::Rows(rows) => paged(rows[i]),
+            Picks::Writes { from, kept } => match from[i] {
+                Some(row) => paged(row),
+                None => (i < kept).then_some((0, i)),
+            },
+        }
+    }
+}
 
 impl Values {
     /// The number of values.
@@ -301,11 +337,12 @@ impl Values {
         Values { array: Array::Geometry(geometry), valid: None }
     }
 
-    /// `len` values whose `i`th is row `pick(i).1` of source `pick(i).0`, or missing for `None`.
+    /// The values `picks` names among `sources`, missing where it names none.
     ///
     /// The result keeps the first source's storage; numbers from other sources convert to it. A
     /// source of another kind is an error.
-    pub(crate) fn assemble(sources: &[&Values], len: usize, pick: impl Fn(usize) -> Pick) -> Result<Values> {
+    pub(crate) fn assemble(sources: &[&Values], picks: Picks<'_>) -> Result<Values> {
+        let (len, pick) = (picks.len(), |i: usize| picks.get(i));
         let like = sources.first().expect("a source");
         let kind = like.kind();
         if let Some(other) = sources.iter().find(|s| s.kind() != kind) {
@@ -361,6 +398,85 @@ impl Values {
             bits.push(valid);
         }
         Ok(Values { array, valid: (!all).then(|| bits.finish()) })
+    }
+
+    /// Whether `other` holds exactly these values in the same storage, compared where they are stored:
+    /// floats by their bits, so a NaN equals itself, and no value is made to compare it.
+    pub(crate) fn same(&self, other: &Values) -> bool {
+        let len = self.len();
+        if other.len() != len || (0..len).any(|i| self.is_valid(i) != other.is_valid(i)) {
+            return false;
+        }
+        let bits = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
+        match (&self.array, &other.array) {
+            (Array::F64(a), Array::F64(b)) => bits(a, b),
+            (Array::F32(a), Array::F32(b)) => a.iter().zip(b.iter()).all(|(x, y)| x.to_bits() == y.to_bits()),
+            (Array::I32(a), Array::I32(b)) => a[..] == b[..],
+            (Array::U32(a), Array::U32(b)) => a[..] == b[..],
+            (Array::U64(a), Array::U64(b)) => a[..] == b[..],
+            (Array::Bool(a), Array::Bool(b)) => (0..len).all(|i| a.get(i) == b.get(i)),
+            (Array::Text(a), Array::Text(b)) => a.iter().eq(b.iter()),
+            (Array::Geometry(a), Array::Geometry(b)) => (0..len).all(|i| a.same_row(i, b, i)),
+            _ => false,
+        }
+    }
+
+    /// `parts` one after another, in the first part's storage: what a column's pages make, a copy per
+    /// part with nothing picked. Every part holds the first's kind.
+    pub(crate) fn concat(parts: &[&Values]) -> Values {
+        let first = parts.first().expect("a part");
+        debug_assert!(parts.iter().all(|p| p.kind() == first.kind()));
+        let len = parts.iter().map(|p| p.len()).sum();
+        macro_rules! numbers {
+            ($variant:ident, $t:ty, $store:expr) => {{
+                let mut out: Vec<$t> = Vec::with_capacity(len);
+                for part in parts {
+                    match &part.cast(|x| x as $t, $store).array {
+                        Array::$variant(v) => out.extend_from_slice(v),
+                        _ => unreachable!("cast to the first part's storage"),
+                    }
+                }
+                Array::$variant(Buffer::from(out))
+            }};
+        }
+        let array = match &first.array {
+            Array::F64(_) => numbers!(F64, f64, Store::F64),
+            Array::F32(_) => numbers!(F32, f32, Store::F32),
+            Array::I32(_) => numbers!(I32, i32, Store::I32),
+            Array::U32(_) => numbers!(U32, u32, Store::U32),
+            Array::U64(_) => numbers!(U64, u64, Store::U64),
+            Array::Bool(_) => {
+                let mut bits = BitsBuilder::with_capacity(len);
+                for part in parts {
+                    if let Array::Bool(v) = &part.array {
+                        (0..v.len()).for_each(|i| bits.push(v.get(i)));
+                    }
+                }
+                Array::Bool(bits.finish())
+            }
+            Array::Text(_) => {
+                let mut builder = TextBuilder::with_capacity(len);
+                for text in parts.iter().filter_map(|p| p.text()) {
+                    (0..text.len()).for_each(|i| builder.push(text.get(i)));
+                }
+                Array::Text(builder.finish())
+            }
+            Array::Geometry(g) => {
+                let mut builder = GeometryBuilder::new(g.depth());
+                for geometry in parts.iter().filter_map(|p| p.geometry()) {
+                    (0..geometry.len()).for_each(|i| builder.push_from(geometry, i));
+                }
+                Array::Geometry(builder.finish())
+            }
+        };
+        let valid = parts.iter().any(|p| p.valid.is_some()).then(|| {
+            let mut bits = BitsBuilder::with_capacity(len);
+            for part in parts {
+                (0..part.len()).for_each(|i| bits.push(part.is_valid(i)));
+            }
+            bits.finish()
+        });
+        Values { array, valid }
     }
 
     /// Numbers converted to `store`; other kinds unchanged.
@@ -607,8 +723,8 @@ mod tests {
     fn assemble_scatters_and_converts() {
         let base = Values::from(vec![1.0_f64, 2.0, 3.0]);
         let source = Values::from(vec![10_i32, 20]);
-        let picks = [Some((0, 0)), Some((1, 1)), None, Some((1, 0))];
-        let out = Values::assemble(&[&base, &source], 4, |i| picks[i]).expect("numbers");
+        let from = [None, Some(1), None, Some(0)];
+        let out = Values::assemble(&[&base, &source], Picks::Writes { from: &from, kept: 1 }).expect("numbers");
         assert_eq!(
             Vec::<Option<Value>>::from(out),
             vec![Some(Value::Number(1.0)), Some(Value::Number(20.0)), None, Some(Value::Number(10.0))]
@@ -619,7 +735,29 @@ mod tests {
     fn assemble_refuses_another_kind() {
         let base = Values::from(vec![1.0_f64]);
         let source = Values::from(vec!["a"]);
-        assert!(Values::assemble(&[&base, &source], 1, |_| Some((1, 0))).is_err());
+        assert!(Values::assemble(&[&base, &source], Picks::Rows(&[0])).is_err());
+    }
+
+    #[test]
+    fn same_compares_what_is_stored() {
+        let a = Values::from(vec![Some(1.0_f64), None, Some(f64::NAN)]);
+        assert!(a.same(&a.slice(0..3)), "a NaN equals itself");
+        assert!(!a.same(&Values::from(vec![Some(1.0_f64), Some(0.0), Some(f64::NAN)])), "missing differs");
+        assert!(!a.same(&Values::from(vec![1.0_f32, 0.0, 0.0])), "another storage differs");
+        let path = |x: f64| Values::from(vec![vec![[0.0, 0.0], [x, 1.0]]]);
+        assert!(path(2.0).same(&path(2.0)));
+        assert!(!path(2.0).same(&path(3.0)));
+    }
+
+    #[test]
+    fn concat_joins_parts_in_the_first_storage() {
+        let a = Values::from(vec![Some(1.0_f64), None]);
+        let b = Values::from(vec![3_i32]);
+        let joined = Values::concat(&[&a, &b]);
+        assert_eq!(Vec::<Option<Value>>::from(joined), vec![Some(Value::Number(1.0)), None, Some(Value::Number(3.0))]);
+        let texts = Values::concat(&[&Values::from(vec!["x"]), &Values::from(vec![Some("y"), None])]);
+        assert_eq!(texts.get(1), Some(Value::Text("y".into())));
+        assert_eq!(texts.get(2), None);
     }
 
     #[test]
@@ -633,7 +771,8 @@ mod tests {
     fn assemble_gathers_across_sources() {
         let a = Values::from(vec!["x", "y"]);
         let b = Values::from(vec!["z"]);
-        let joined = Values::assemble(&[&a, &b], 3, |i| Some(if i < 2 { (0, i) } else { (1, 0) })).expect("texts");
+        let from = [None, None, Some(0)];
+        let joined = Values::assemble(&[&a, &b], Picks::Writes { from: &from, kept: 2 }).expect("texts");
         assert_eq!(joined.len(), 3);
         assert_eq!(joined.get(2), Some(Value::Text("z".into())));
     }

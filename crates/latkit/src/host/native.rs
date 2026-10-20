@@ -11,8 +11,10 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap, fontdb};
 
-use super::{Encoder, Host, Job, Raster, Request, TextRun};
-use crate::{Encoding, Error, Pending, Resolver, Result};
+use super::Encoder;
+use super::{Host, Job, Raster, Request, TextRun};
+use crate::Encoding;
+use crate::{Error, Pending, Resolver, Result};
 
 /// Native platform services: shaped text, background jobs, local files, and video. A handle: clones
 /// share its fonts and workers. System fonts are discovered only on the first text request;

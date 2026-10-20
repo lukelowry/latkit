@@ -202,6 +202,24 @@ impl RowIds {
         Ok(RowIds::Listed(column.write(len, &writes, &Column::new(&source))?))
     }
 
+    /// The ids with `len` rows (at least the current count) and `writes` applied, `(row, row of
+    /// source)` by row, a hole where the row of source is a [`HOLE`](super::values::HOLE). Pages no
+    /// write touches keep their ids.
+    pub(crate) fn write(&self, len: usize, writes: &[(usize, usize)], source: &RowIds) -> Result<RowIds> {
+        // The ids written, gathered first, so a count's ids are made only for those.
+        let from: Vec<usize> = writes.iter().map(|&(_, s)| s).collect();
+        let written = match source {
+            RowIds::Count(_) => {
+                let ids: Vec<Option<u64>> =
+                    from.iter().map(|&s| (s != super::values::HOLE).then_some(s as u64)).collect();
+                Column::new(&Values::from(ids))
+            }
+            RowIds::Listed(column) => column.gather(&from),
+        };
+        let at: Vec<(usize, usize)> = writes.iter().enumerate().map(|(k, &(row, _))| (row, k)).collect();
+        Ok(RowIds::Listed(self.listed().write(len, &at, &written)?))
+    }
+
     /// The ids of `rows`, in that order.
     pub(crate) fn gather(&self, rows: &[usize]) -> RowIds {
         if rows.iter().enumerate().all(|(i, &r)| i == r) {
@@ -234,7 +252,29 @@ impl RowIds {
             .collect()
     }
 
-    /// The id → row index; an error names a missing or repeated id.
+    /// The first row without an id: a hole, which only the rows a view draws of a table drawn through
+    /// tiles have.
+    pub(crate) fn hole(&self) -> Option<usize> {
+        let RowIds::Listed(column) = self else { return None };
+        let mut start = 0;
+        for page in column.pages() {
+            if let Some(valid) = &page.values.valid
+                && let Some(i) = (0..page.values.len()).find(|&i| !valid.get(i))
+            {
+                return Some(start + i);
+            }
+            start += page.values.len();
+        }
+        None
+    }
+
+    /// How many rows are holes, without an id.
+    pub(crate) fn holes(&self) -> usize {
+        let RowIds::Listed(column) = self else { return 0 };
+        column.pages().iter().filter_map(|p| p.values.valid.as_ref().map(|v| p.values.len() - v.count())).sum()
+    }
+
+    /// The id → row index, past holes; an error names a repeated id.
     pub(crate) fn index(&self) -> Result<Index> {
         let RowIds::Listed(_) = self else { return Ok(Index::Identity(self.len() as u32)) };
         if let Some(pages) = self.numbers() {
@@ -242,7 +282,7 @@ impl RowIds {
         }
         let mut table = HashTable::with_capacity(self.len());
         for row in 0..self.len() {
-            let key = self.key(row).ok_or_else(|| Error::invalid("a row needs an id").at(row))?;
+            let Some(key) = self.key(row) else { continue };
             let eq = |&r: &u32| self.key(r as usize) == Some(key);
             let rehash = |&r: &u32| hash(self.key(r as usize).expect("indexed rows have ids"));
             match table.entry(hash(key), eq, rehash) {
@@ -363,5 +403,15 @@ mod tests {
         let ids = RowIds::new(&Ids::from(vec!["a", "b", "c"])).gather(&[2, 0]);
         assert_eq!(ids.id(0), Some(Id::from("c")));
         assert_eq!(RowIds::Count(4).gather(&[0, 2]).id(1), Some(Id::Number(2)));
+    }
+
+    #[test]
+    fn holes_have_no_id_and_index_past() {
+        let ids = RowIds::new(&Ids::from(vec!["a", "b", "c"])).gather(&[2, super::super::values::HOLE, 0]);
+        assert_eq!((ids.id(1), ids.hole()), (None, Some(1)));
+        let index = ids.index().expect("unique past the hole");
+        assert_eq!(index.get(&ids, IdRef::Text("a")), Some(2));
+        let numbered = RowIds::Count(3).gather(&[1, super::super::values::HOLE]);
+        assert_eq!(numbered.index().expect("unique").get(&numbered, IdRef::Number(1)), Some(0));
     }
 }

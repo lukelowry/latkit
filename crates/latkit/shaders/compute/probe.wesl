@@ -11,7 +11,7 @@
 import package::lib::types::{
     NONE, FADE_OUT, POINTS, STROKES, TRIANGLES, MARK_EDGES, PATH_GEOMETRY, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH,
     PROBE_X, PROBE_Y, PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED,
-    LIST_KEPT, LIST_ITEMS,
+    LIST_KEPT, LIST_ITEMS, item,
 };
 import package::lib::bind::{frame, eye, mark, state};
 import package::lib::state::row_at;
@@ -180,7 +180,8 @@ fn key(instance: u32) -> u32 {
 
 @compute @workgroup_size(256)
 fn nearest(@builtin(global_invocation_id) id: vec3u) {
-    let k = key(id.x);
+    let i = item(id);
+    let k = key(i);
     if k != NONE {
         atomicMin(&probe[PROBE_KEY], k);
     }
@@ -188,8 +189,9 @@ fn nearest(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn topmost(@builtin(global_invocation_id) id: vec3u) {
-    if key(id.x) == atomicLoad(&probe[PROBE_KEY]) && atomicLoad(&probe[PROBE_KEY]) != NONE {
-        atomicMax(&probe[PROBE_INSTANCE], id.x + 1u);
+    let i = item(id);
+    if key(i) == atomicLoad(&probe[PROBE_KEY]) && atomicLoad(&probe[PROBE_KEY]) != NONE {
+        atomicMax(&probe[PROBE_INSTANCE], i + 1u);
     }
 }
 
@@ -233,18 +235,20 @@ fn query_items() -> u32 {
 
 @compute @workgroup_size(256)
 fn count_hits(@builtin(global_invocation_id) id: vec3u) {
-    if id.x < query_items() {
-        lists[list_counts(mark.query) + id.x] = u32(query_hit(id.x).row != NONE);
+    let i = item(id);
+    if i < query_items() {
+        lists[list_counts(mark.query) + i] = u32(query_hit(i).row != NONE);
     }
 }
 
 @compute @workgroup_size(256)
 fn write_hits(@builtin(global_invocation_id) id: vec3u) {
-    let r = query_hit(id.x);
+    let i = item(id);
+    let r = query_hit(i);
     if r.row == NONE {
         return;
     }
-    let at = lists[list_counts(mark.query) + id.x];
+    let at = lists[list_counts(mark.query) + i];
     if at < kept() {
         let e = list_entry(mark.query, 6u * at);
         lists[e] = r.row;
@@ -315,18 +319,20 @@ fn boxed_row(i: u32) -> u32 {
 
 @compute @workgroup_size(256)
 fn count_boxed(@builtin(global_invocation_id) id: vec3u) {
-    if id.x < query_items() {
-        lists[list_counts(mark.query) + id.x] = u32(boxed_row(id.x) != NONE);
+    let i = item(id);
+    if i < query_items() {
+        lists[list_counts(mark.query) + i] = u32(boxed_row(i) != NONE);
     }
 }
 
 @compute @workgroup_size(256)
 fn write_boxed(@builtin(global_invocation_id) id: vec3u) {
-    let row = boxed_row(id.x);
+    let i = item(id);
+    let row = boxed_row(i);
     if row == NONE {
         return;
     }
-    let at = lists[list_counts(mark.query) + id.x];
+    let at = lists[list_counts(mark.query) + i];
     if at < kept() {
         lists[list_entry(mark.query, at)] = row;
     }

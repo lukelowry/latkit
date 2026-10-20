@@ -1,7 +1,7 @@
 //! Mapbox vector tiles: a tile's layers, their features' geometry in longitude and latitude, clipped
 //! to the tile so neighbors never overlap, and their properties.
 
-use super::tiles::TileKey;
+use crate::tiles::TileKey;
 
 type Point = [f64; 2];
 

@@ -4,7 +4,7 @@
 //! again over everything, glowing. Hover is state either way, which expressions read; whether it
 //! glows is the controls' to say.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use super::View;
 use super::event::{Event, Hit};
@@ -27,7 +27,7 @@ pub(crate) struct Focus {
     /// Rows a fit measures.
     pub(crate) fitting: Vec<Row>,
     /// Words written, by index into the focus buffer.
-    written: HashMap<u32, u32>,
+    written: FxHashMap<u32, u32>,
     pub(crate) dirty: bool,
     /// Every mark's lit rows, laid out since they were last written.
     lit: Option<Vec<u32>>,
@@ -59,7 +59,7 @@ impl View {
         if !std::mem::take(&mut self.focus.dirty) {
             return;
         }
-        let mut words: HashMap<u32, u32> = HashMap::new();
+        let mut words: FxHashMap<u32, u32> = FxHashMap::default();
         let glows = self.scene.controls.hover;
         let hovered = self.focus.hovered.as_ref().map(|hit| hit.row.clone());
         let selection = self.focus_rows(&self.focus.selection, wgsl::SELECTED, true, true, &mut words);
@@ -70,9 +70,10 @@ impl View {
             self.focus.selection.clone_from(&selection);
             self.events.tell(Event::Select { rows: Rows::group(selection), trigger: None });
         }
-        let changed = self.focus.written.keys().filter(|w| !words.contains_key(w)).count()
-            + words.iter().filter(|(w, b)| self.focus.written.get(w) != Some(b)).count();
-        if changed > WHOLE {
+        let cleared = self.focus.written.keys().filter(|w| !words.contains_key(w)).map(|&w| (w, 0));
+        let set = words.iter().filter(|(w, b)| self.focus.written.get(w) != Some(b)).map(|(&w, &b)| (w, b));
+        let changes: Vec<(u32, u32)> = cleared.chain(set).filter(|&(w, _)| u64::from(w) < capacity).collect();
+        if changes.len() > WHOLE {
             let mut all = vec![0_u32; capacity as usize];
             for (&w, &b) in &words {
                 if let Some(word) = all.get_mut(w as usize) {
@@ -80,16 +81,22 @@ impl View {
                 }
             }
             queue.write_buffer(buffer, 0, bytemuck::cast_slice(&all));
-        } else if changed > 0 {
-            let cleared = self.focus.written.keys().filter(|w| !words.contains_key(w)).map(|&w| (w, 0));
-            let set = words.iter().filter(|(w, b)| self.focus.written.get(w) != Some(b)).map(|(&w, &b)| (w, b));
-            for (w, b) in cleared.chain(set).filter(|&(w, _)| u64::from(w) < capacity).collect::<Vec<_>>() {
+        } else {
+            for &(w, b) in &changes {
                 queue.write_buffer(buffer, u64::from(w) * 4, &b.to_le_bytes());
             }
         }
-        if changed > 0 {
+        if !changes.is_empty() {
+            // Channels reading focus evaluate the blocks of the rows whose words changed; every row
+            // after the words were laid out again.
             for shown in &mut self.marks {
-                shown.dirty |= shown.channels_reading(Deps::FOCUS);
+                let (focus, rows) = (shown.region.focus, shown.rows + shown.exits);
+                let blocks: Vec<u32> = changes
+                    .iter()
+                    .filter(|&&(w, _)| w >= focus && w - focus < rows)
+                    .map(|&(w, _)| (w - focus) / wgsl::BLOCK_ROWS)
+                    .collect();
+                shown.dirty_rows(shown.channels_reading(Deps::FOCUS), (!fresh).then_some(&blocks[..]));
             }
         }
         // Rows lit only by hover draw no glow when it does not glow.
@@ -100,7 +107,14 @@ impl View {
     /// Sets `bit` in the focus words of `rows` in every mark showing them (with `picked`, every
     /// pickable one), and with `ends` lights the ends of each edge among them; returns the rows some
     /// mark shows. A row its data holds stays shown while a table drawn in part does not draw it.
-    fn focus_rows(&self, rows: &[Row], bit: u32, picked: bool, ends: bool, words: &mut HashMap<u32, u32>) -> Vec<Row> {
+    fn focus_rows(
+        &self,
+        rows: &[Row],
+        bit: u32,
+        picked: bool,
+        ends: bool,
+        words: &mut FxHashMap<u32, u32>,
+    ) -> Vec<Row> {
         let mut kept = Vec::new();
         for row in rows {
             let held = self.data(&row.data).and_then(|d| d.table(&row.table)).and_then(|t| t.row(row.id.as_ref()));
@@ -135,7 +149,7 @@ impl View {
     }
 
     /// Lights the row `reference` names for row `index` in every vertex mark drawing its table.
-    fn light_end(&self, data: &crate::Name, reference: &Reference, index: usize, words: &mut HashMap<u32, u32>) {
+    fn light_end(&self, data: &crate::Name, reference: &Reference, index: usize, words: &mut FxHashMap<u32, u32>) {
         let Some(target) = reference.target(index) else { return };
         for shown in &self.marks {
             let style = shown.mark.style();
@@ -151,7 +165,7 @@ impl View {
 
     /// Lists every mark's rows with a bit of `glowing` set for its focus draw, with the instances
     /// each takes.
-    fn lay_out_lit(&mut self, words: &HashMap<u32, u32>, glowing: u32) {
+    fn lay_out_lit(&mut self, words: &FxHashMap<u32, u32>, glowing: u32) {
         let mut all = Vec::new();
         for i in 0..self.marks.len() {
             let (focus, rows) = (self.marks[i].region.focus, self.marks[i].rows);

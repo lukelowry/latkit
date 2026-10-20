@@ -3,7 +3,7 @@
 // as its box, a stroke as its points, an area as its triangles' corners. While a fit measures chosen
 // rows, only rows marked FIT count.
 
-import package::lib::types::{NONE, FIT, PATH_ENDS, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION, HALF_UNITS};
+import package::lib::types::{NONE, FIT, PATH_ENDS, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION, HALF_UNITS, item};
 import package::lib::bind::{frame, eye, mark, state};
 import package::lib::focus::focus_of;
 import package::lib::reduce::ordered;
@@ -30,10 +30,11 @@ fn counted(row: u32) -> bool {
 
 @compute @workgroup_size(256)
 fn points(@builtin(global_invocation_id) id: vec3u) {
-    if id.x >= mark.rows || !counted(id.x) {
+    let i = item(id);
+    if i >= mark.rows || !counted(i) {
         return;
     }
-    let v = vertex_at(row_at(id.x));
+    let v = vertex_at(row_at(i));
     if (v.flags & 1u) == 0u || !placed(v) {
         return;
     }
@@ -49,10 +50,11 @@ fn points(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn strokes(@builtin(global_invocation_id) id: vec3u) {
-    if PATH == PATH_ENDS || id.x >= stroke_instances() {
+    let i = item(id);
+    if PATH == PATH_ENDS || i >= stroke_instances() {
         return;
     }
-    let s = segment(id.x);
+    let s = segment(i);
     if s.row >= mark.rows || !counted(s.row) || !stroke_style(s.row).shown {
         return;
     }
@@ -66,15 +68,16 @@ fn strokes(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn areas(@builtin(global_invocation_id) id: vec3u) {
-    if PATH != PATH_GEOMETRY || id.x >= triangle_instances() {
+    let i = item(id);
+    if PATH != PATH_GEOMETRY || i >= triangle_instances() {
         return;
     }
-    let row = triangle_row(id.x);
+    let row = triangle_row(i);
     if row >= mark.rows || !counted(row) {
         return;
     }
     for (var k = 0u; k < 3u; k++) {
-        let c = triangle_corner(id.x, k);
+        let c = triangle_corner(i, k);
         if c.shown {
             extend(c.position);
         }

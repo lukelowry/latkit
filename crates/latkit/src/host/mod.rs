@@ -18,11 +18,14 @@ use std::sync::Arc;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub use browser::Browser;
 pub use job::Job;
-pub(crate) use job::{Key, Placement, Shaping, Wiring};
+pub(crate) use job::Placement;
+pub(crate) use job::Wiring;
+pub(crate) use job::{Key, Shaping};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use native::Native;
 
-use crate::{Encoding, Error, Pending, Result};
+use crate::Encoding;
+use crate::{Error, Pending, Result};
 
 /// Ticks of a second an encoder's times count.
 pub const TIMESCALE: u32 = 90_000;

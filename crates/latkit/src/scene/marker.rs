@@ -86,11 +86,15 @@ impl Presets for Marker {
             _ => return None,
         })
     }
+
+    fn options<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Marker, D::Error> {
+        Marker::deserialize(deserializer)
+    }
 }
 
 impl<'de> Deserialize<'de> for Marker {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Marker, D::Error> {
-        preset_or(deserializer, Marker::deserialize)
+        preset_or(deserializer)
     }
 }
 

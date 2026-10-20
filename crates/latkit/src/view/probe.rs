@@ -144,27 +144,15 @@ impl View {
     pub(super) fn sample(&self, mark: usize, row: u32, point: u32) -> Option<Sample> {
         let shown = self.marks.get(mark)?;
         let crate::Mark::Lines(lines) = &shown.mark else { return None };
-        let compiled = shown.compiled.as_ref()?;
-        let plan = shown.tables.plan()?;
-        let buckets = 2 * plan.buckets.len() as u32;
-        // A bucket's points stand for its middle frame.
-        let frame = if point < buckets {
-            let span = crate::data::bucket_frames(plan.level);
-            ((plan.buckets.start + point / 2) * span + span / 2).min(plan.frames.end.saturating_sub(1))
-        } else {
-            let steps = compiled.drawing.flags & (wgsl::STEP_BEFORE | wgsl::STEP_AFTER);
-            let up = match steps {
-                wgsl::STEP_AFTER => point / 2,
-                wgsl::STEP_BEFORE => point.div_ceil(2),
-                _ => point - buckets,
-            };
-            plan.frames.start + up
-        };
+        let (level, index, side) = shown.tables.plan()?.entry(point)?;
         let style = shown.mark.style();
         let table = self.drawn(&style.data)?.table(&style.table)?;
         let crate::data::Field::Sampled(samples, _) = table.field_named(&lines.traced())? else { return None };
-        let value = samples.value(row as usize, frame)?;
-        Some(Sample { frame, at: samples.at(frame), value })
+        // A bucket's points stand for its middle frame, its least or greatest value.
+        let span = crate::data::bucket_frames(level);
+        let frame = index * span + span / 2;
+        let value = samples.entry(row as usize, level, side, index)?;
+        Some(Sample { frame, at: samples.drawn_at(level, index)?, value })
     }
 
     /// The point gestures move about under `point`: what the frame drew there, else the level the

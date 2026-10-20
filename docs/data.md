@@ -34,14 +34,15 @@ const grid = new Data('grid').apply(
   pieces), or polygons.
 - **References** name rows of another table by id: `reference(table, ids)`.
 
-| Change                            | Does                                                                 |
-| --------------------------------- | -------------------------------------------------------------------- |
-| `replace(table, ids, fields)`     | replaces the table, or adds it                                       |
-| `set(table, ids, fields)`         | writes fields for those rows: known ids change, others are added     |
-| `remove(table, ids)`              | removes the rows                                                     |
-| `axis(name, unit)`                | names the axis sampled fields are recorded over                      |
-| `append(at, table, fields, ids?)` | records a frame at each coordinate of `at`, of every row or of `ids` |
-| `forget(before)`                  | forgets the frames before a coordinate                               |
+| Change                                  | Does                                                                 |
+| --------------------------------------- | -------------------------------------------------------------------- |
+| `replace(table, ids, fields)`           | replaces the table, or adds it                                       |
+| `set(table, ids, fields)`               | writes fields for those rows: known ids change, others are added     |
+| `remove(table, ids)`                    | removes the rows                                                     |
+| `axis(name, unit)`                      | names the axis sampled fields are recorded over                      |
+| `append(at, table, fields, ids?)`       | records a frame at each coordinate of `at`, of every row or of `ids` |
+| `forget(before)`                        | forgets the frames before a coordinate                               |
+| `frames(table, field, run, at, values)` | holds a run of a sampled field's entries, as a time tile does        |
 
 ## Change it
 
@@ -69,6 +70,28 @@ grid.apply(new Patch().append(2, 'Bus', { vm: [1.02] }, [101])); // one row; the
 grid.apply(new Patch().forget(1)); // a rolling window
 view.at = 1.2;
 ```
+
+Each sampled field keeps levels of detail as it records: at level `k`, each row's least and
+greatest value over buckets of `8^k` frames. A line tracing a field across a plot reads the level
+that gives each pixel column a bucket or two, so a long history draws as fast as a short one.
+
+## Fetch long histories in spans
+
+A history too large to load whole is written as time tiles, and a view fetches only what it draws:
+
+```sh
+latkit tile history.bin -o history/
+```
+
+```ts
+view.setTiles('grid', 'history/frames.json');
+```
+
+`tile` writes `frames.json`, `base.latk` (the dataset with every sampled field's frames left out),
+and each field's history in spans of `--chunk` entries, at every level of detail (`Data::to_tiles`
+in Rust). A line tracing a field fetches the spans its plot window draws, at the detail it draws
+them, and a mark showing a field fetches the frames about `view.at`. A span still loading draws the
+coarser span above it, as a map tile still loading draws the tile a zoom out.
 
 ## Stream
 

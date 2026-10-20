@@ -94,6 +94,8 @@ pub struct Frame<'a> {
 /// ```
 pub struct View {
     gpu: Gpu,
+    /// Which of its GPU's views it is: what the GPU's ledger grants its share to.
+    id: u64,
     scene: Scene,
     /// Bumps whenever the scene changes.
     scene_version: u64,
@@ -158,10 +160,15 @@ pub struct View {
     /// The size of the last frame, CSS pixels, and its pixel ratio.
     size: [f64; 2],
     pixel_ratio: f32,
+    /// How each table draws within the view's share of the budget, and what that weighs.
+    planning: plan::Planning,
     /// Pixel columns a trace spans at most: as many as the plan holds.
     trace_columns: u32,
     stats: Stats,
 }
+
+/// Views made so far, which numbers each.
+static VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl View {
     /// A view drawing `scene` with `gpu`. Its marks draw once [`set_data`](View::set_data) gives them
@@ -172,6 +179,7 @@ impl View {
         let signal = Arc::new(wake::Signal::default());
         let mut view = View {
             gpu: gpu.clone(),
+            id: VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             scene: Scene::new(scene.space.clone()),
             scene_version: 0,
             sources: Vec::new(),
@@ -212,6 +220,7 @@ impl View {
             pointer: None,
             size: [0.0; 2],
             pixel_ratio: 1.0,
+            planning: plan::Planning::default(),
             trace_columns: u32::MAX,
             stats: Stats::default(),
         };
@@ -359,7 +368,7 @@ impl View {
     /// Fetches `tiles` as the camera asks for them, kept as the dataset they name, which the view
     /// owns: marks draw it like any other, [`data`](View::data) reads it, and
     /// [`remove_data`](View::remove_data) stops it. Tiles of the same name replace these.
-    pub fn set_tiles(&mut self, tiles: crate::geo::Tiles) {
+    pub fn set_tiles(&mut self, tiles: crate::Tiles) {
         self.derived.tiles.set(tiles);
         self.wake();
     }
@@ -563,9 +572,14 @@ impl View {
             self.source(&style.data).and_then(|d| d.table(&style.table)).map_or(0, |t| t.len() as u64)
         };
         let [tiles, tiles_loading] = self.derived.tiles.counts();
+        // A table drawn through tiles leaves holes where tiles drawn before were: they draw nothing.
+        let drawn = |m: &Shown| match &m.drawn {
+            Some((_, table)) => (table.len() - table.ids.holes()) as u64,
+            None => u64::from(m.rows),
+        };
         Stats {
             rows: self.marks.iter().map(rows).sum(),
-            drawn: self.marks.iter().map(|m| u64::from(m.rows)).sum(),
+            drawn: self.marks.iter().map(drawn).sum(),
             tiles,
             tiles_loading,
             uploading: inner.arena.pending(),
@@ -755,6 +769,7 @@ impl Drop for View {
         for shown in &mut self.marks {
             shown.tables.release(&mut inner);
         }
+        inner.ledger.leave(self.id);
     }
 }
 

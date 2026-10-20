@@ -2,12 +2,15 @@
 //!
 //! When one starts, what each row shows is frozen into the frozen buffer at the row's new place:
 //! copied when the rows are the same, gathered by id when rows were added, removed, or reordered.
-//! Rows that left are frozen past the new rows and fade out there. While the mark eases, `evaluate`
-//! blends every store from the frozen state by the mark's progress, so draws, probes, bounds, and
-//! shadows read eased state without knowing a transition runs. Where no row is the same as one shown
-//! before, as when another dataset replaces the one drawn, every row only fades: evaluated once as
-//! the transition starts, the mark eases by its progress alone. The frozen buffer mirrors the state
-//! buffer's layout and exists only while a transition does. A stroke's geometry column keeps the
+//! Rows that left are frozen past the new rows and fade out there. While the mark eases, its channels
+//! store into the settled state, a second mirror of the state, once per change; each frame the clock
+//! moves, the ease pass writes what every row shows from its frozen and settled state by the mark's
+//! progress,
+//! so draws, probes, bounds, and shadows read eased state without knowing a transition runs, and no
+//! channel runs to ease. Where no row is the same as one shown before, as when another dataset
+//! replaces the one drawn, every row only fades: evaluated once into the state as the transition
+//! starts, the mark eases by its progress alone. The frozen and settled buffers mirror the state
+//! buffer's layout and exist only while a transition does. A stroke's geometry column keeps the
 //! table it had as the transition began, and its paths morph from it point by point.
 //!
 //! Without an ease, a flowing mark whose rows moved still begins a transition, of no length: it
@@ -16,7 +19,7 @@
 use super::View;
 use super::clock::Clock;
 use super::marks::Shown;
-use crate::data::Table;
+use crate::data::{PAGE_ROWS, RowIds, Table};
 use crate::gpu::Inner;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::MarkKind;
@@ -46,6 +49,12 @@ impl Transition {
     fn done(&self, clock: &Clock) -> bool {
         clock.done(self.start, self.seconds)
     }
+
+    /// Whether the mark's channels evaluate into its settled state, toward which the ease pass eases
+    /// what it shows; one whose rows only fade evaluates into the state.
+    pub(crate) fn settles(&self) -> bool {
+        !self.fades
+    }
 }
 
 /// How rows moved from `old` to `new`: each new row's old row (`NONE` if it entered), and the old
@@ -55,8 +64,21 @@ pub(crate) fn remap(old: &Table, new: &Table) -> Option<(Vec<u32>, Vec<u32>)> {
         return None;
     }
     if old.order == new.order && new.len() >= old.len() {
-        let sources = (0..new.len()).map(|r| if r < old.len() { r as u32 } else { wgsl::NONE }).collect();
-        return Some((sources, Vec::new()));
+        // Rows kept in place, those of pages rewritten aside: there a row whose id changed enters, as
+        // one a table drawn through tiles writes where a tile drawn before was, and the row it
+        // replaces leaves.
+        let mut sources: Vec<u32> = (0..new.len()).map(|r| if r < old.len() { r as u32 } else { wgsl::NONE }).collect();
+        let mut exits = Vec::new();
+        for block in rewritten(old, new).unwrap_or_default() {
+            let rows = block as usize * PAGE_ROWS..((block as usize + 1) * PAGE_ROWS).min(old.len());
+            for r in rows.filter(|&r| old.ids.key(r) != new.ids.key(r)) {
+                sources[r] = wgsl::NONE;
+                if old.ids.key(r).is_some() {
+                    exits.push(r as u32);
+                }
+            }
+        }
+        return Some((sources, exits));
     }
     // Each row is looked up by id in the other table, from the smaller side.
     let mut sources = vec![wgsl::NONE; new.len()];
@@ -79,6 +101,23 @@ pub(crate) fn remap(old: &Table, new: &Table) -> Option<(Vec<u32>, Vec<u32>)> {
         exits.extend((0..old.len()).filter(|&o| !kept[o]).map(|o| o as u32));
     }
     Some((sources, exits))
+}
+
+/// The row blocks of `new` whose rows `old` did not hold where `new` does, every other row kept in
+/// place: those whose ids' pages changed, and those past `old`'s rows. `None` where that does not
+/// tell, as between ids counted and ids listed.
+pub(crate) fn rewritten(old: &Table, new: &Table) -> Option<Vec<u32>> {
+    let blocks = |len: usize| len.div_ceil(PAGE_ROWS) as u32;
+    match (&old.ids, &new.ids) {
+        (RowIds::Count(a), RowIds::Count(b)) if b >= a => {
+            Some(((*a as usize / PAGE_ROWS) as u32..blocks(*b as usize)).collect())
+        }
+        (RowIds::Listed(a), RowIds::Listed(b)) if b.len() >= a.len() => {
+            let (a, b) = (a.pages(), b.pages());
+            Some((0..b.len()).filter(|&p| a.get(p).is_none_or(|page| page.id != b[p].id)).map(|p| p as u32).collect())
+        }
+        _ => None,
+    }
 }
 
 /// The rows of `new` replacing every row of `old`, as when another dataset of the same name replaces
@@ -162,14 +201,14 @@ impl View {
             } else {
                 running = true;
                 // Rows that only fade were written once; their fade follows the mark's progress. The
-                // rest evaluate as the clock moves, and only then.
-                if !transition.fades && self.clock.moved() {
-                    shown.all_dirty();
-                }
+                // rest ease as the clock moves, and only then: their channels evaluated once.
+                shown.easing = transition.settles() && self.clock.moved();
             }
         }
         if !running && self.marks.iter().all(|m| m.transition.is_none()) {
-            self.resources.as_mut().expect("created").drop_frozen();
+            let resources = self.resources.as_mut().expect("created");
+            resources.drop_frozen();
+            resources.drop_settled();
         }
         running
     }
@@ -181,6 +220,9 @@ impl View {
         let slots = self.slot_table(starting);
         let resources = self.resources.as_mut().expect("created before transitions");
         resources.ensure_frozen(device);
+        if self.marks.iter().any(|m| m.begin.as_ref().is_some_and(|b| !b.fades)) {
+            resources.ensure_settled(device);
+        }
         let mut words: Vec<u32> = Vec::new();
         let table = slots.map(|table| {
             words.extend(table);

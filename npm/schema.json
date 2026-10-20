@@ -20,55 +20,7 @@
           "description": "How the view places vertex rows without positions: a diagram's blocks, or points on a plane\nor the earth, gaps in the space's units."
         },
         "theme": {
-          "$ref": "#/$defs/Theme",
-          "default": {
-            "background": "rgba(15, 20, 26, 1)",
-            "surface": "rgba(24, 33, 43, 1)",
-            "grid": "rgba(255, 255, 255, 0.07)",
-            "vertex": "rgba(124, 196, 255, 1)",
-            "vertexRadius": 4.0,
-            "edge": null,
-            "edgeWidth": 1.5,
-            "line": "rgba(124, 196, 255, 1)",
-            "lineWidth": 1.5,
-            "area": "rgba(43, 61, 80, 1)",
-            "shading": 0.6000000238418579,
-            "text": "rgba(168, 178, 194, 1)",
-            "font": "ui-monospace, Menlo, Consolas, monospace",
-            "fontSize": 11.0,
-            "playhead": "rgba(255, 229, 212, 0.8)",
-            "missing": "rgba(107, 116, 128, 1)",
-            "hover": "rgba(255, 255, 255, 0.6)",
-            "selected": "rgba(255, 176, 0, 0.9)",
-            "glow": 6.0,
-            "dim": 0.3499999940395355,
-            "hoverScale": 1.25,
-            "dash": 8.0,
-            "flow": {
-              "color": "rgba(255, 255, 255, 0.85)",
-              "spacing": 64.0,
-              "length": 24.0,
-              "width": 4.0,
-              "units": false
-            },
-            "edgeSpacing": 4.0,
-            "laneBow": 0.11999999731779099,
-            "arrow": 7.0,
-            "halo": 2.0,
-            "groupPadding": 16.0,
-            "shadow": {
-              "color": "rgba(0, 0, 0, 0.45)",
-              "light": [
-                -0.3499999940395355,
-                0.44999998807907104,
-                1.0
-              ],
-              "softness": 0.15000000596046448,
-              "lift": 3.0
-            },
-            "atmosphere": "rgba(90, 169, 255, 0.55)",
-            "night": 0.30000001192092896
-          }
+          "$ref": "#/$defs/Theme"
         },
         "controls": {
           "$ref": "#/$defs/Controls"
@@ -76,27 +28,21 @@
         "ease": {
           "type": "number",
           "format": "double",
-          "description": "Seconds that changes ease over; 0.3 unless set.",
-          "default": {
-            "secs": 0,
-            "nanos": 300000000
-          }
+          "description": "Seconds that changes ease over; 0.3 unless set."
         },
         "title": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Written at the view's top left, larger than the theme's text.",
-          "default": null
+          "description": "Written at the view's top left, larger than the theme's text."
         },
         "subtitle": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Written under the title.",
-          "default": null
+          "description": "Written under the title."
         }
       },
       "required": [
@@ -189,13 +135,11 @@
           "type": [
             "string",
             "null"
-          ],
-          "default": null
+          ]
         },
         "graticule": {
           "type": "boolean",
-          "description": "Whether lines of longitude and latitude cross the ground, in the theme's grid color.",
-          "default": true
+          "description": "Whether lines of longitude and latitude cross the ground, in the theme's grid color."
         },
         "daylight": {
           "type": [
@@ -203,13 +147,11 @@
             "null"
           ],
           "format": "double",
-          "description": "Lit by the sun as it stands this many seconds after the Unix epoch, plus the view's axis\ncoordinate when it shows one: night falls on the ground and what stands on it, down to the\ntheme's night. Lit evenly unless set.",
-          "default": null
+          "description": "Lit by the sun as it stands this many seconds after the Unix epoch, plus the view's axis\ncoordinate when it shows one: night falls on the ground and what stands on it, down to the\ntheme's night. Lit evenly unless set."
         },
         "atmosphere": {
           "type": "boolean",
-          "description": "Whether air glows around the globe, in the theme's atmosphere color, brighter where it is day.",
-          "default": false
+          "description": "Whether air glows around the globe, in the theme's atmosphere color, brighter where it is day."
         }
       },
       "description": "The earth: positions are longitude and latitude in degrees."
@@ -284,8 +226,7 @@
                 },
                 "snap": {
                   "description": "Whether moved vertices snap to the dots.",
-                  "type": "boolean",
-                  "default": false
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false,
@@ -327,18 +268,15 @@
             "string",
             "null"
           ],
-          "description": "The axis title.",
-          "default": null
+          "description": "The axis title."
         },
         "grid": {
           "type": "boolean",
-          "description": "Whether grid lines cross the plot at the ticks.",
-          "default": true
+          "description": "Whether grid lines cross the plot at the ticks."
         },
         "hidden": {
           "type": "boolean",
-          "description": "Whether the axis is hidden.",
-          "default": false
+          "description": "Whether the axis is hidden."
         },
         "ticks": {
           "type": [
@@ -348,8 +286,7 @@
           "items": {
             "$ref": "#/$defs/Tick"
           },
-          "description": "Ticks at these values, each a value or `[value, label]`, their values written unless labeled;\nround values unless set.",
-          "default": null
+          "description": "Ticks at these values, each a value or `[value, label]`, their values written unless labeled;\nround values unless set."
         },
         "format": {
           "$ref": "#/$defs/Format",
@@ -363,8 +300,7 @@
           "format": "uint8",
           "minimum": 0,
           "maximum": 15,
-          "description": "Decimals of fixed values, or of the significand of scientific and engineering ones; as many\nas the ticks' step needs unless set.",
-          "default": null
+          "description": "Decimals of fixed values, or of the significand of scientific and engineering ones; as many\nas the ticks' step needs unless set."
         }
       },
       "description": "A plot axis."
@@ -537,8 +473,7 @@
             "string",
             "null"
           ],
-          "description": "The point field placing each row where `position` is not given; `geometry` unless set.",
-          "default": null
+          "description": "The point field placing each row where `position` is not given; `geometry` unless set."
         },
         "elevation": {
           "$ref": "#/$defs/Expr",
@@ -616,7 +551,6 @@
           "minItems": 2,
           "maxItems": 2,
           "description": "Makes each row a group: it holds the rows of `table` whose reference field names it, and is\ndrawn as a container around them, its label a title in its header. Diagrams only.",
-          "default": null,
           "tsType": "[table: string, reference: string]"
         },
         "color": {
@@ -654,18 +588,15 @@
         },
         "pick": {
           "type": "boolean",
-          "description": "Whether rows are hovered, clicked, and probed.",
-          "default": true
+          "description": "Whether rows are hovered, clicked, and probed."
         },
         "select": {
           "type": "boolean",
-          "description": "Whether a click selects a row.",
-          "default": true
+          "description": "Whether a click selects a row."
         },
         "drag": {
           "type": "boolean",
-          "description": "Whether pressing a row drags it instead of panning.",
-          "default": false
+          "description": "Whether pressing a row drags it instead of panning."
         },
         "label": {
           "anyOf": [
@@ -680,8 +611,7 @@
         },
         "shadow": {
           "type": "boolean",
-          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight.",
-          "default": false
+          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
         },
         "legend": {
           "type": [
@@ -771,13 +701,11 @@
           "minItems": 2,
           "maxItems": 2,
           "description": "The dataset and table the field is read from, joined by row id.",
-          "default": null,
           "tsType": "[data: string, table: string]"
         },
         "step": {
           "type": "boolean",
-          "description": "Reads a sampled field at its last frame without interpolating.",
-          "default": false
+          "description": "Reads a sampled field at its last frame without interpolating."
         }
       },
       "required": [
@@ -1023,7 +951,6 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "default": null,
           "tsType": "[low: number, high: number]"
         }
       },
@@ -1054,7 +981,6 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "default": null,
           "tsType": "[low: number, high: number]"
         }
       },
@@ -1169,8 +1095,7 @@
           "items": {
             "type": "string"
           },
-          "description": "The categories' names, in order, for a legend: a categorical map's alone.",
-          "default": []
+          "description": "The categories' names, in order, for a legend: a categorical map's alone."
         }
       },
       "required": [
@@ -1229,8 +1154,7 @@
           ],
           "format": "float",
           "description": "CSS pixels it keeps at least, however far the view zooms out.",
-          "minimum": 0,
-          "default": null
+          "minimum": 0
         },
         "atMost": {
           "type": [
@@ -1239,8 +1163,7 @@
           ],
           "format": "float",
           "description": "CSS pixels it keeps at most, however far the view zooms in.",
-          "minimum": 0,
-          "default": null
+          "minimum": 0
         }
       },
       "required": [
@@ -1285,8 +1208,7 @@
                     "corner": {
                       "description": "Corner radius, CSS pixels; 4 unless set.",
                       "type": "number",
-                      "format": "float",
-                      "default": 4.0
+                      "format": "float"
                     }
                   },
                   "additionalProperties": false
@@ -1350,8 +1272,7 @@
                     "hole": {
                       "description": "The hole in the middle, as a fraction of the radius.",
                       "type": "number",
-                      "format": "float",
-                      "default": 0.0
+                      "format": "float"
                     }
                   },
                   "additionalProperties": false,
@@ -1514,16 +1435,14 @@
                 "null"
               ],
               "format": "uint32",
-              "minimum": 0,
-              "default": null
+              "minimum": 0
             },
             "label": {
               "description": "Its name, drawn beside it inside the marker.",
               "type": [
                 "string",
                 "null"
-              ],
-              "default": null
+              ]
             },
             "shape": {
               "description": "Its marker.",
@@ -1531,8 +1450,7 @@
             },
             "output": {
               "description": "Whether it drives the net its reference field names; an input unless set.",
-              "type": "boolean",
-              "default": false
+              "type": "boolean"
             }
           },
           "additionalProperties": false,
@@ -1587,8 +1505,7 @@
                 "number",
                 "null"
               ],
-              "format": "float",
-              "default": null
+              "format": "float"
             },
             "color": {
               "description": "Each row's text color; the theme's text color unless set.",
@@ -1618,16 +1535,14 @@
                 "number",
                 "null"
               ],
-              "format": "float",
-              "default": null
+              "format": "float"
             },
             "font": {
               "description": "The CSS font family list its texts are set in; the theme's font unless set.",
               "type": [
                 "string",
                 "null"
-              ],
-              "default": null
+              ]
             },
             "max": {
               "description": "The most labels shown at once, those of highest priority among the rows in view; where they\nwould overlap, fewer.",
@@ -1636,8 +1551,7 @@
                 "null"
               ],
               "format": "uint32",
-              "minimum": 0,
-              "default": null
+              "minimum": 0
             }
           },
           "additionalProperties": false,
@@ -1682,7 +1596,6 @@
           "minItems": 2,
           "maxItems": 2,
           "description": "The reference fields naming each row's two vertices.",
-          "default": null,
           "tsType": "[from: string, to: string]"
         },
         "bends": {
@@ -1690,8 +1603,7 @@
             "string",
             "null"
           ],
-          "description": "A path field of points each row runs through between its ends.",
-          "default": null
+          "description": "A path field of points each row runs through between its ends."
         },
         "route": {
           "anyOf": [
@@ -1706,13 +1618,11 @@
         },
         "arrows": {
           "type": "boolean",
-          "description": "Whether each row ends in an arrowhead at its second end; a net's at each input it reaches.",
-          "default": false
+          "description": "Whether each row ends in an arrowhead at its second end; a net's at each input it reaches."
         },
         "poles": {
           "type": "boolean",
-          "description": "Draws each row as a pole from its own vertex down to the ground beneath it, on a plane or the\nearth; it has no ends.",
-          "default": false
+          "description": "Draws each row as a pole from its own vertex down to the ground beneath it, on a plane or the\nearth; it has no ends."
         },
         "joins": {
           "type": [
@@ -1730,7 +1640,6 @@
           "minItems": 2,
           "maxItems": 2,
           "description": "Draws each row as a net on a plane or the earth: it joins the vertex rows of `table` whose\nreference field names it, as a star from their middle to each.",
-          "default": null,
           "tsType": "[table: string, reference: string]"
         },
         "width": {
@@ -1787,18 +1696,15 @@
         },
         "pick": {
           "type": "boolean",
-          "description": "Whether rows are hovered, clicked, and probed.",
-          "default": true
+          "description": "Whether rows are hovered, clicked, and probed."
         },
         "select": {
           "type": "boolean",
-          "description": "Whether a click selects a row.",
-          "default": true
+          "description": "Whether a click selects a row."
         },
         "drag": {
           "type": "boolean",
-          "description": "Whether pressing a row drags it instead of panning.",
-          "default": false
+          "description": "Whether pressing a row drags it instead of panning."
         },
         "label": {
           "anyOf": [
@@ -1813,8 +1719,7 @@
         },
         "shadow": {
           "type": "boolean",
-          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight.",
-          "default": false
+          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
         },
         "legend": {
           "type": [
@@ -1879,7 +1784,6 @@
           "minItems": 3,
           "maxItems": 3,
           "description": "The reference fields naming each row's three vertices. Without a color, a face blends the\ncolors of its corners.",
-          "default": null,
           "tsType": "[a: string, b: string, c: string]"
         },
         "color": {
@@ -1917,18 +1821,15 @@
         },
         "pick": {
           "type": "boolean",
-          "description": "Whether rows are hovered, clicked, and probed.",
-          "default": true
+          "description": "Whether rows are hovered, clicked, and probed."
         },
         "select": {
           "type": "boolean",
-          "description": "Whether a click selects a row.",
-          "default": true
+          "description": "Whether a click selects a row."
         },
         "drag": {
           "type": "boolean",
-          "description": "Whether pressing a row drags it instead of panning.",
-          "default": false
+          "description": "Whether pressing a row drags it instead of panning."
         },
         "label": {
           "anyOf": [
@@ -1943,8 +1844,7 @@
         },
         "shadow": {
           "type": "boolean",
-          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight.",
-          "default": false
+          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
         },
         "legend": {
           "type": [
@@ -1983,16 +1883,14 @@
             "string",
             "null"
           ],
-          "description": "The path or polygon field each row runs along; `geometry` unless set. Not on a plot.",
-          "default": null
+          "description": "The path or polygon field each row runs along; `geometry` unless set. Not on a plot."
         },
         "trace": {
           "type": [
             "string",
             "null"
           ],
-          "description": "The sampled field each row traces across the data's axis, on a plot alone. A field not recorded\nyet draws nothing until its first frame.",
-          "default": null
+          "description": "The sampled field each row traces across the data's axis, on a plot alone. A field not recorded\nyet draws nothing until its first frame."
         },
         "interpolation": {
           "$ref": "#/$defs/Interpolation",
@@ -2052,18 +1950,15 @@
         },
         "pick": {
           "type": "boolean",
-          "description": "Whether rows are hovered, clicked, and probed.",
-          "default": true
+          "description": "Whether rows are hovered, clicked, and probed."
         },
         "select": {
           "type": "boolean",
-          "description": "Whether a click selects a row.",
-          "default": true
+          "description": "Whether a click selects a row."
         },
         "drag": {
           "type": "boolean",
-          "description": "Whether pressing a row drags it instead of panning.",
-          "default": false
+          "description": "Whether pressing a row drags it instead of panning."
         },
         "label": {
           "anyOf": [
@@ -2078,8 +1973,7 @@
         },
         "shadow": {
           "type": "boolean",
-          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight.",
-          "default": false
+          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
         },
         "legend": {
           "type": [
@@ -2138,8 +2032,7 @@
             "string",
             "null"
           ],
-          "description": "The polygon field each row fills: one polygon's rings, or polygons. `geometry` unless set.",
-          "default": null
+          "description": "The polygon field each row fills: one polygon's rings, or polygons. `geometry` unless set."
         },
         "color": {
           "anyOf": [
@@ -2176,18 +2069,15 @@
         },
         "pick": {
           "type": "boolean",
-          "description": "Whether rows are hovered, clicked, and probed.",
-          "default": true
+          "description": "Whether rows are hovered, clicked, and probed."
         },
         "select": {
           "type": "boolean",
-          "description": "Whether a click selects a row.",
-          "default": true
+          "description": "Whether a click selects a row."
         },
         "drag": {
           "type": "boolean",
-          "description": "Whether pressing a row drags it instead of panning.",
-          "default": false
+          "description": "Whether pressing a row drags it instead of panning."
         },
         "label": {
           "anyOf": [
@@ -2202,8 +2092,7 @@
         },
         "shadow": {
           "type": "boolean",
-          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight.",
-          "default": false
+          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
         },
         "legend": {
           "type": [
@@ -2269,8 +2158,7 @@
           "type": "number",
           "format": "double",
           "description": "Units between adjacent vertices' centers.",
-          "minimum": 0,
-          "default": 40.0
+          "minimum": 0
         }
       },
       "description": "Stress majorization: each pair of vertices pulls toward its graph distance; then their boxes\npart, keeping a quarter of the gap clear."
@@ -2286,14 +2174,12 @@
         "gap": {
           "type": "number",
           "format": "double",
-          "description": "Units between vertices of a rank.",
-          "default": 30.0
+          "description": "Units between vertices of a rank."
         },
         "rankGap": {
           "type": "number",
           "format": "double",
-          "description": "Units between ranks.",
-          "default": 80.0
+          "description": "Units between ranks."
         }
       },
       "description": "Layered drawing: vertices in ranks, edges pointing along `flow`, and nets from their outputs."
@@ -2338,32 +2224,27 @@
             "background": {
               "description": "Behind everything.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(15, 20, 26, 1)"
+              "tsType": "Color"
             },
             "surface": {
               "description": "The earth's ground, and a group's container.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(24, 33, 43, 1)"
+              "tsType": "Color"
             },
             "grid": {
               "description": "A plane's or a diagram's grid.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(255, 255, 255, 0.07)"
+              "tsType": "Color"
             },
             "vertex": {
               "description": "Vertex color.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(124, 196, 255, 1)"
+              "tsType": "Color"
             },
             "vertexRadius": {
               "description": "Vertex radius.",
               "type": "number",
-              "format": "float",
-              "default": 4.0
+              "format": "float"
             },
             "edge": {
               "description": "Edge color; `None` blends the colors of each edge's two vertices, and in a diagram takes the\ntext color.",
@@ -2371,73 +2252,61 @@
                 "string",
                 "null"
               ],
-              "tsType": "Color",
-              "default": null
+              "tsType": "Color"
             },
             "edgeWidth": {
               "description": "Edge width.",
               "type": "number",
-              "format": "float",
-              "default": 1.5
+              "format": "float"
             },
             "line": {
               "description": "Line color.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(124, 196, 255, 1)"
+              "tsType": "Color"
             },
             "lineWidth": {
               "description": "Line width.",
               "type": "number",
-              "format": "float",
-              "default": 1.5
+              "format": "float"
             },
             "area": {
               "description": "Area color.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(43, 61, 80, 1)"
+              "tsType": "Color"
             },
             "shading": {
               "description": "How much a face turned away from the camera darkens, 0 to 1.",
               "type": "number",
-              "format": "float",
-              "default": 0.6000000238418579
+              "format": "float"
             },
             "text": {
               "description": "Text: labels, axis ticks, and titles.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(168, 178, 194, 1)"
+              "tsType": "Color"
             },
             "font": {
               "description": "The CSS font family text is set in.",
-              "type": "string",
-              "default": "ui-monospace, Menlo, Consolas, monospace"
+              "type": "string"
             },
             "fontSize": {
               "description": "Text size.",
               "type": "number",
-              "format": "float",
-              "default": 11.0
+              "format": "float"
             },
             "playhead": {
               "description": "The line a plot draws at the shown coordinate.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(255, 229, 212, 0.8)"
+              "tsType": "Color"
             },
             "missing": {
               "description": "What a missing color reads as.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(107, 116, 128, 1)"
+              "tsType": "Color"
             },
             "hover": {
               "description": "The glow around hovered rows.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(255, 255, 255, 0.6)"
+              "tsType": "Color"
             },
             "selected": {
               "description": "The glow around selected rows; `None` glows in each row's own color.",
@@ -2445,99 +2314,70 @@
                 "string",
                 "null"
               ],
-              "tsType": "Color",
-              "default": "rgba(255, 176, 0, 0.9)"
+              "tsType": "Color"
             },
             "glow": {
               "description": "How far focus glows reach, CSS pixels.",
               "type": "number",
-              "format": "float",
-              "default": 6.0
+              "format": "float"
             },
             "dim": {
               "description": "The opacity of rows outside a selection.",
               "type": "number",
-              "format": "float",
-              "default": 0.3499999940395355
+              "format": "float"
             },
             "hoverScale": {
               "description": "How much a hovered vertex sized in CSS pixels grows.",
               "type": "number",
-              "format": "float",
-              "default": 1.25
+              "format": "float"
             },
             "dash": {
               "description": "Length of a dash.",
               "type": "number",
-              "format": "float",
-              "default": 8.0
+              "format": "float"
             },
             "flow": {
               "description": "How comets flowing along edges and lines look.",
-              "$ref": "#/$defs/Flow",
-              "default": {
-                "color": "rgba(255, 255, 255, 0.85)",
-                "spacing": 64.0,
-                "length": 24.0,
-                "width": 4.0,
-                "units": false
-              }
+              "$ref": "#/$defs/Flow"
             },
             "edgeSpacing": {
               "description": "In a diagram, distance between the lanes of edges joining the same two vertices, and between\nparallel orthogonal wires, which keep twice it apart.",
               "type": "number",
-              "format": "float",
-              "default": 4.0
+              "format": "float"
             },
             "laneBow": {
               "description": "Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction\nof the edge's length at its middle. A bow is part of the drawing, so zooming never moves it.",
               "type": "number",
-              "format": "float",
-              "default": 0.11999999731779099
+              "format": "float"
             },
             "arrow": {
               "description": "How far an arrowhead reaches past its edge's width.",
               "type": "number",
-              "format": "float",
-              "default": 7.0
+              "format": "float"
             },
             "halo": {
               "description": "CSS pixels of background around label text.",
               "type": "number",
-              "format": "float",
-              "default": 2.0
+              "format": "float"
             },
             "groupPadding": {
               "description": "Distance between a group's members and its outline.",
               "type": "number",
-              "format": "float",
-              "default": 16.0
+              "format": "float"
             },
             "shadow": {
               "description": "How marks that cast shadows cast them.",
-              "$ref": "#/$defs/Shadow",
-              "default": {
-                "color": "rgba(0, 0, 0, 0.45)",
-                "light": [
-                  -0.3499999940395355,
-                  0.44999998807907104,
-                  1.0
-                ],
-                "softness": 0.15000000596046448,
-                "lift": 3.0
-              }
+              "$ref": "#/$defs/Shadow"
             },
             "atmosphere": {
               "description": "The air glowing around the globe, where the earth has an atmosphere.",
               "type": "string",
-              "tsType": "Color",
-              "default": "rgba(90, 169, 255, 0.55)"
+              "tsType": "Color"
             },
             "night": {
               "description": "How bright the earth's night side stays where it is lit by daylight, 0 to 1.",
               "type": "number",
-              "format": "float",
-              "default": 0.30000001192092896
+              "format": "float"
             },
             "base": {
               "description": "The theme these options change; dark unless set.",
@@ -2629,8 +2469,7 @@
           "properties": {
             "pan": {
               "description": "Dragging the background moves the camera.",
-              "type": "boolean",
-              "default": true
+              "type": "boolean"
             },
             "zoom": {
               "description": "What zooms: the wheel and pinching, or the wheel only with Control or Meta held (as a\ntrackpad's pinch sends it), leaving the plain wheel to scroll the page; or nothing.",
@@ -2638,53 +2477,41 @@
             },
             "turn": {
               "description": "Dragging with the secondary button, or with Shift, turns and tilts a map or plane.",
-              "type": "boolean",
-              "default": true
+              "type": "boolean"
             },
             "keyboard": {
               "description": "Tab steps through the rows nearest the view's middle and arrows to the nearest row their way;\nEnter opens the row stepped to and Space selects it. Otherwise arrows pan, `+` and `-` zoom,\nHome fits, and Escape clears the selection.",
-              "type": "boolean",
-              "default": true
+              "type": "boolean"
             },
             "hover": {
               "description": "The row the user points at glows. It is hovered either way: events tell it, and `hovered()`\nreads it.",
-              "type": "boolean",
-              "default": true
+              "type": "boolean"
             },
             "pickRadius": {
               "description": "CSS pixels around the pointer that picks reach; touch reaches 8 more.",
               "type": "number",
-              "format": "float",
-              "default": 6.0
+              "format": "float"
             },
             "selectBox": {
               "description": "Dragging with Shift selects the rows in a box, instead of turning; a Shift click still toggles\nits row.",
-              "type": "boolean",
-              "default": false
+              "type": "boolean"
             },
             "connect": {
               "description": "Dragging from a port, from a vertex with Alt, or an edge off its end draws a connection,\ntold as [`Event::Connect`](crate::Event).",
-              "type": "boolean",
-              "default": false
+              "type": "boolean"
             },
             "delete": {
               "description": "Delete and Backspace tell [`Event::Delete`](crate::Event) with the selection.",
-              "type": "boolean",
-              "default": false
+              "type": "boolean"
             },
             "cycle": {
               "description": "Clicking again where nothing moved selects the next row under the point, nearest first, so\nrows drawn over one another can each be selected.",
-              "type": "boolean",
-              "default": false
+              "type": "boolean"
             },
             "press": {
               "description": "Seconds a touch or a pen held still asks for a menu, as the secondary button does; zero never\ndoes.",
               "type": "number",
-              "format": "double",
-              "default": {
-                "secs": 0,
-                "nanos": 500000000
-              }
+              "format": "double"
             },
             "motion": {
               "description": "How much the view moves on its own: eases, flights, coasting, orbits, label fades, comets, and\nwhat reads `elapsed()`.",
@@ -3101,6 +2928,62 @@
           ],
           "additionalProperties": false,
           "description": "Forgets every sampled field's frames before axis coordinate `before`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "frames": {
+              "type": "object",
+              "properties": {
+                "table": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "level": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "first": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "at": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "format": "double"
+                  }
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "format": "double"
+                  }
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "table",
+                "field",
+                "first",
+                "at",
+                "values"
+              ]
+            }
+          },
+          "required": [
+            "frames"
+          ],
+          "additionalProperties": false,
+          "description": "Holds a run of sampled field `field`'s entries of level `level`, numbered from `first`: at\nlevel 0 frames, each a coordinate in `at` and a value per row in `values`; at level `k` buckets\nof `8^k` frames, each its first and last frame's coordinates, and each row's least value over\neach bucket, then each row's greatest. Null is missing."
         }
       ],
       "description": "One change of a patch, named by the method that makes it."
@@ -3266,8 +3149,7 @@
           "type": "integer",
           "format": "uint",
           "minimum": 0,
-          "description": "The kept rows skipped first.",
-          "default": 0
+          "description": "The kept rows skipped first."
         },
         "limit": {
           "type": [
@@ -3571,27 +3453,20 @@
         "scale": {
           "type": "number",
           "format": "float",
-          "description": "Pixels per CSS pixel: views lay out `size / scale` CSS pixels; 1 unless set.",
-          "default": 1.0
+          "description": "Pixels per CSS pixel: views lay out `size / scale` CSS pixels; 1 unless set."
         },
         "panels": {
           "$ref": "#/$defs/Panels",
-          "description": "Each view's part of the picture, `[x, y, width, height]` as fractions; the whole by default.",
-          "default": []
+          "description": "Each view's part of the picture, `[x, y, width, height]` as fractions; the whole by default."
         },
         "transparent": {
           "type": "boolean",
-          "description": "Whether alpha is kept where the themes' backgrounds would be.",
-          "default": false
+          "description": "Whether alpha is kept where the themes' backgrounds would be."
         },
         "deadline": {
           "type": "number",
           "format": "double",
-          "description": "Seconds a picture, or a video frame, may take; 30 unless set.",
-          "default": {
-            "secs": 30,
-            "nanos": 0
-          }
+          "description": "Seconds a picture, or a video frame, may take; 30 unless set."
         },
         "elapsed": {
           "type": [
@@ -3599,8 +3474,7 @@
             "null"
           ],
           "format": "double",
-          "description": "A still's effect time in seconds, where elapsed time and flowing comets read it.",
-          "default": null
+          "description": "A still's effect time in seconds, where elapsed time and flowing comets read it."
         }
       },
       "required": [
