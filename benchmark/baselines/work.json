@@ -25,12 +25,12 @@
    },
    "load": {
     "uploaded": 200000,
-    "written": 6436,
+    "written": 4004,
     "evaluated": 10000,
     "readbacks": 1,
     "jobs": 0,
     "texts": 0,
-    "pipelines": 18,
+    "pipelines": 9,
     "late": 0,
     "resident": 327680
    }
@@ -62,12 +62,12 @@
    },
    "load": {
     "uploaded": 20000,
-    "written": 6436,
+    "written": 4004,
     "evaluated": 1000,
     "readbacks": 1,
     "jobs": 0,
     "texts": 0,
-    "pipelines": 18,
+    "pipelines": 9,
     "late": 0,
     "resident": 20480
    },
@@ -128,7 +128,7 @@
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2480,
+    "written": 2440,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -139,7 +139,7 @@
    },
    "pick": {
     "uploaded": 0,
-    "written": 2480,
+    "written": 2440,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -196,12 +196,12 @@
    },
    "load": {
     "uploaded": 200000,
-    "written": 6436,
+    "written": 4004,
     "evaluated": 10000,
     "readbacks": 1,
     "jobs": 0,
     "texts": 0,
-    "pipelines": 18,
+    "pipelines": 9,
     "late": 0,
     "resident": 327680
    },
@@ -262,7 +262,7 @@
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2480,
+    "written": 2440,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -273,7 +273,7 @@
    },
    "pick": {
     "uploaded": 0,
-    "written": 2480,
+    "written": 2440,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -330,12 +330,12 @@
    },
    "load": {
     "uploaded": 2000000,
-    "written": 6464,
+    "written": 4032,
     "evaluated": 100000,
     "readbacks": 1,
     "jobs": 0,
     "texts": 0,
-    "pipelines": 18,
+    "pipelines": 9,
     "late": 0,
     "resident": 2621440
    },
@@ -396,7 +396,7 @@
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2480,
+    "written": 2440,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -407,7 +407,7 @@
    },
    "pick": {
     "uploaded": 0,
-    "written": 2480,
+    "written": 2440,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -464,12 +464,12 @@
    },
    "load": {
     "uploaded": 1567520,
-    "written": 8040,
+    "written": 5608,
     "evaluated": 78376,
     "readbacks": 1,
     "jobs": 1,
     "texts": 0,
-    "pipelines": 18,
+    "pipelines": 9,
     "late": 0,
     "resident": 1638400
    },
@@ -530,7 +530,7 @@
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2480,
+    "written": 2440,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -541,7 +541,7 @@
    },
    "pick": {
     "uploaded": 0,
-    "written": 2480,
+    "written": 2440,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -598,12 +598,12 @@
    },
    "load": {
     "uploaded": 1607860,
-    "written": 8040,
+    "written": 5608,
     "evaluated": 80393,
     "readbacks": 1,
     "jobs": 1,
     "texts": 0,
-    "pipelines": 18,
+    "pipelines": 9,
     "late": 0,
     "resident": 1638400
    },
@@ -664,7 +664,7 @@
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2480,
+    "written": 2440,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -675,7 +675,7 @@
    },
    "pick": {
     "uploaded": 0,
-    "written": 2480,
+    "written": 2440,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -734,12 +734,12 @@
    },
    "load": {
     "uploaded": 36352,
-    "written": 10968,
+    "written": 5080,
     "evaluated": 3008,
     "readbacks": 2,
     "jobs": 0,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
     "resident": 36864
    },
@@ -778,9 +778,9 @@
    },
    "first pick": {
     "uploaded": 0,
-    "written": 3088,
+    "written": 2960,
     "evaluated": 0,
-    "readbacks": 2,
+    "readbacks": 1,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
@@ -789,7 +789,7 @@
    },
    "pick": {
     "uploaded": 0,
-    "written": 3040,
+    "written": 2960,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -835,12 +835,12 @@
    },
    "load": {
     "uploaded": 358400,
-    "written": 10968,
+    "written": 5080,
     "evaluated": 29800,
     "readbacks": 2,
     "jobs": 0,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
     "resident": 589824
    },
@@ -879,9 +879,9 @@
    },
    "first pick": {
     "uploaded": 0,
-    "written": 3088,
+    "written": 2960,
     "evaluated": 0,
-    "readbacks": 2,
+    "readbacks": 1,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
@@ -890,7 +890,7 @@
    },
    "pick": {
     "uploaded": 0,
-    "written": 3040,
+    "written": 2960,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -909,6 +909,309 @@
     "pipelines": 0,
     "late": 0,
     "resident": 3211264
+   }
+  },
+  "100000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 3589760,
+    "written": 5152,
+    "evaluated": 298936,
+    "readbacks": 2,
+    "jobs": 1,
+    "texts": 0,
+    "pipelines": 18,
+    "late": 0,
+    "resident": 4227072
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 4227072
+   },
+   "zoom": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 4227072
+   },
+   "one row": {
+    "uploaded": 10485760,
+    "written": 75200,
+    "evaluated": 2621440,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 14712832
+   },
+   "first pick": {
+    "uploaded": 0,
+    "written": 2960,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 14712832
+   },
+   "pick": {
+    "uploaded": 0,
+    "written": 2960,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 14712832
+   },
+   "hover": {
+    "uploaded": 0,
+    "written": 4520,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 14712832
+   }
+  },
+  "1000000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 16751128,
+    "written": 37956,
+    "evaluated": 983822,
+    "readbacks": 6,
+    "jobs": 2,
+    "texts": 0,
+    "pipelines": 18,
+    "late": 0,
+    "resident": 18153472
+   },
+   "pan": {
+    "uploaded": 14622728,
+    "written": 77120,
+    "evaluated": 864442,
+    "readbacks": 6,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 33619968
+   },
+   "zoom": {
+    "uploaded": 31139892,
+    "written": 63588,
+    "evaluated": 1990386,
+    "readbacks": 5,
+    "jobs": 4,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 65830912
+   },
+   "one row": {
+    "uploaded": 4775696,
+    "written": 75916,
+    "evaluated": 1193924,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 70615040
+   },
+   "first pick": {
+    "uploaded": 0,
+    "written": 2960,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 70615040
+   },
+   "pick": {
+    "uploaded": 0,
+    "written": 2960,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 70615040
+   },
+   "hover": {
+    "uploaded": 0,
+    "written": 4520,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 70615040
+   }
+  },
+  "2000000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 17197752,
+    "written": 37956,
+    "evaluated": 1008054,
+    "readbacks": 6,
+    "jobs": 2,
+    "texts": 0,
+    "pipelines": 18,
+    "late": 0,
+    "resident": 18481152
+   },
+   "pan": {
+    "uploaded": 14841448,
+    "written": 77120,
+    "evaluated": 875378,
+    "readbacks": 6,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 35258368
+   },
+   "zoom": {
+    "uploaded": 39083136,
+    "written": 64504,
+    "evaluated": 2388039,
+    "readbacks": 5,
+    "jobs": 4,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 76023040
+   },
+   "one row": {
+    "uploaded": 2883584,
+    "written": 75884,
+    "evaluated": 720896,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 78906624
+   },
+   "first pick": {
+    "uploaded": 0,
+    "written": 2960,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 78906624
+   },
+   "pick": {
+    "uploaded": 0,
+    "written": 2960,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 78906624
+   },
+   "hover": {
+    "uploaded": 0,
+    "written": 4520,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 78906624
    }
   }
  },
@@ -938,33 +1241,33 @@
    },
    "load": {
     "uploaded": 240000,
-    "written": 1149151,
+    "written": 722428,
     "evaluated": 10000,
-    "readbacks": 14,
+    "readbacks": 8,
     "jobs": 0,
     "texts": 207,
-    "pipelines": 27,
+    "pipelines": 20,
     "late": 0,
     "resident": 393216
    },
    "pan": {
     "uploaded": 0,
-    "written": 2833585,
+    "written": 2131648,
     "evaluated": 0,
     "readbacks": 40,
     "jobs": 0,
-    "texts": 487,
+    "texts": 586,
     "pipelines": 0,
     "late": 0,
     "resident": 393216
    },
    "zoom": {
     "uploaded": 0,
-    "written": 3427569,
+    "written": 4825740,
     "evaluated": 0,
     "readbacks": 41,
     "jobs": 0,
-    "texts": 578,
+    "texts": 1297,
     "pipelines": 0,
     "late": 0,
     "resident": 393216
@@ -995,33 +1298,33 @@
    },
    "load": {
     "uploaded": 2400000,
-    "written": 1943340,
+    "written": 1487188,
     "evaluated": 100000,
-    "readbacks": 16,
+    "readbacks": 8,
     "jobs": 0,
     "texts": 216,
-    "pipelines": 27,
+    "pipelines": 20,
     "late": 0,
     "resident": 3145728
    },
    "pan": {
     "uploaded": 0,
-    "written": 3126372,
+    "written": 2831152,
     "evaluated": 0,
     "readbacks": 40,
     "jobs": 0,
-    "texts": 527,
+    "texts": 739,
     "pipelines": 0,
     "late": 0,
     "resident": 3145728
    },
    "zoom": {
     "uploaded": 0,
-    "written": 3808638,
+    "written": 6473928,
     "evaluated": 0,
-    "readbacks": 42,
+    "readbacks": 41,
     "jobs": 0,
-    "texts": 638,
+    "texts": 1641,
     "pipelines": 0,
     "late": 0,
     "resident": 3145728
@@ -1052,33 +1355,33 @@
    },
    "load": {
     "uploaded": 1881024,
-    "written": 3972035,
+    "written": 2977136,
     "evaluated": 78376,
-    "readbacks": 36,
+    "readbacks": 18,
     "jobs": 1,
-    "texts": 382,
-    "pipelines": 27,
+    "texts": 392,
+    "pipelines": 20,
     "late": 0,
     "resident": 1966080
    },
    "pan": {
     "uploaded": 0,
-    "written": 2768670,
+    "written": 4540644,
     "evaluated": 0,
-    "readbacks": 44,
+    "readbacks": 40,
     "jobs": 0,
-    "texts": 335,
+    "texts": 867,
     "pipelines": 0,
     "late": 0,
     "resident": 1966080
    },
    "zoom": {
     "uploaded": 15971184,
-    "written": 6664180,
+    "written": 11933216,
     "evaluated": 927610,
-    "readbacks": 51,
+    "readbacks": 45,
     "jobs": 0,
-    "texts": 410,
+    "texts": 1659,
     "pipelines": 0,
     "late": 0,
     "resident": 18382848
@@ -1111,12 +1414,12 @@
    },
    "load": {
     "uploaded": 1456,
-    "written": 9912,
+    "written": 5496,
     "evaluated": 116,
     "readbacks": 3,
     "jobs": 0,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
     "resident": 2560
    },
@@ -1133,9 +1436,9 @@
    },
    "first pick": {
     "uploaded": 0,
-    "written": 3088,
+    "written": 2960,
     "evaluated": 0,
-    "readbacks": 2,
+    "readbacks": 1,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
@@ -1144,7 +1447,7 @@
    },
    "pick": {
     "uploaded": 0,
-    "written": 3040,
+    "written": 2960,
     "evaluated": 0,
     "readbacks": 1,
     "jobs": 0,
@@ -1152,6 +1455,210 @@
     "pipelines": 0,
     "late": 0,
     "resident": 2560
+   }
+  },
+  "1000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 12256,
+    "written": 5496,
+    "evaluated": 1016,
+    "readbacks": 3,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 18,
+    "late": 0,
+    "resident": 13312
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 13312
+   },
+   "first pick": {
+    "uploaded": 0,
+    "written": 2960,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 13312
+   },
+   "pick": {
+    "uploaded": 0,
+    "written": 2960,
+    "evaluated": 0,
+    "readbacks": 1,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 13312
+   }
+  },
+  "10000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 120256,
+    "written": 5496,
+    "evaluated": 10016,
+    "readbacks": 3,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 18,
+    "late": 0,
+    "resident": 197632
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 197632
+   },
+   "first pick": {
+    "uploaded": 0,
+    "written": 4448,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 197632
+   },
+   "pick": {
+    "uploaded": 0,
+    "written": 4448,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 197632
+   }
+  },
+  "100000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 1200256,
+    "written": 7348,
+    "evaluated": 100016,
+    "readbacks": 3,
+    "jobs": 1,
+    "texts": 0,
+    "pipelines": 18,
+    "late": 0,
+    "resident": 1573888
+   },
+   "pan": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 1573888
+   },
+   "first pick": {
+    "uploaded": 0,
+    "written": 4448,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 1573888
+   },
+   "pick": {
+    "uploaded": 0,
+    "written": 4448,
+    "evaluated": 0,
+    "readbacks": 2,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 1573888
    }
   }
  },
@@ -1361,7 +1868,7 @@
    },
    "load": {
     "uploaded": 18104720,
-    "written": 26412,
+    "written": 5740,
     "evaluated": 10000,
     "readbacks": 1,
     "jobs": 1,
@@ -1451,7 +1958,7 @@
    },
    "load": {
     "uploaded": 40370040,
-    "written": 85200,
+    "written": 60880,
     "evaluated": 30000,
     "readbacks": 1,
     "jobs": 1,
@@ -1564,15 +2071,15 @@
     "resident": 2771968
    },
    "zoom": {
-    "uploaded": 1951680,
-    "written": 50808,
-    "evaluated": 992,
+    "uploaded": 2119824,
+    "written": 51004,
+    "evaluated": 1088,
     "readbacks": 0,
     "jobs": 23,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5284096
+    "resident": 5546752
    }
   },
   "256": {
@@ -1599,7 +2106,7 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 801120,
+    "uploaded": 788640,
     "written": 5264,
     "evaluated": 1280,
     "readbacks": 0,
@@ -1621,15 +2128,15 @@
     "resident": 6333440
    },
    "zoom": {
-    "uploaded": 5964336,
-    "written": 51244,
-    "evaluated": 17920,
+    "uploaded": 5673696,
+    "written": 51048,
+    "evaluated": 17152,
     "readbacks": 0,
     "jobs": 22,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 12786688
+    "resident": 13184000
    }
   },
   "4096": {
@@ -1656,7 +2163,7 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 3382048,
+    "uploaded": 3344464,
     "written": 6704,
     "evaluated": 20480,
     "readbacks": 0,
@@ -1664,29 +2171,29 @@
     "texts": 0,
     "pipelines": 14,
     "late": 0,
-    "resident": 3555328
+    "resident": 3424256
    },
    "pan": {
-    "uploaded": 19818144,
-    "written": 51048,
+    "uploaded": 21165184,
+    "written": 52928,
     "evaluated": 172032,
     "readbacks": 0,
     "jobs": 12,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 24199168
+    "resident": 25509888
    },
    "zoom": {
-    "uploaded": 22448816,
-    "written": 55960,
-    "evaluated": 221184,
+    "uploaded": 20321088,
+    "written": 55384,
+    "evaluated": 225280,
     "readbacks": 0,
     "jobs": 19,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 52232192
+    "resident": 46465024
    }
   }
  },
@@ -1716,12 +2223,12 @@
    },
    "load": {
     "uploaded": 24240,
-    "written": 12524,
+    "written": 8108,
     "evaluated": 300,
     "readbacks": 1,
     "jobs": 2,
     "texts": 0,
-    "pipelines": 35,
+    "pipelines": 23,
     "late": 0,
     "resident": 33792
    },
@@ -1784,12 +2291,12 @@
    },
    "load": {
     "uploaded": 242960,
-    "written": 19724,
+    "written": 15308,
     "evaluated": 3000,
     "readbacks": 1,
     "jobs": 2,
     "texts": 0,
-    "pipelines": 35,
+    "pipelines": 23,
     "late": 0,
     "resident": 335872
    },
@@ -1852,12 +2359,12 @@
    },
    "load": {
     "uploaded": 2429800,
-    "written": 91744,
+    "written": 88800,
     "evaluated": 30000,
     "readbacks": 1,
     "jobs": 2,
     "texts": 0,
-    "pipelines": 35,
+    "pipelines": 23,
     "late": 0,
     "resident": 3014656
    },
@@ -1922,12 +2429,12 @@
    },
    "load": {
     "uploaded": 49152,
-    "written": 79524,
+    "written": 44096,
     "evaluated": 10,
     "readbacks": 1,
     "jobs": 0,
     "texts": 22,
-    "pipelines": 22,
+    "pipelines": 15,
     "late": 0,
     "resident": 524288
    },
@@ -1955,7 +2462,7 @@
    },
    "narrow": {
     "uploaded": 1872,
-    "written": 234266,
+    "written": 210040,
     "evaluated": 0,
     "readbacks": 40,
     "jobs": 0,
@@ -2001,12 +2508,12 @@
    },
    "load": {
     "uploaded": 417792,
-    "written": 79536,
+    "written": 44108,
     "evaluated": 100,
     "readbacks": 1,
     "jobs": 0,
     "texts": 22,
-    "pipelines": 22,
+    "pipelines": 15,
     "late": 0,
     "resident": 786432
    },
@@ -2034,7 +2541,7 @@
    },
    "narrow": {
     "uploaded": 15912,
-    "written": 234590,
+    "written": 210364,
     "evaluated": 0,
     "readbacks": 40,
     "jobs": 0,
@@ -2080,12 +2587,12 @@
    },
    "load": {
     "uploaded": 4104192,
-    "written": 79896,
+    "written": 44468,
     "evaluated": 1000,
     "readbacks": 1,
     "jobs": 0,
     "texts": 22,
-    "pipelines": 22,
+    "pipelines": 15,
     "late": 0,
     "resident": 4456448
    },
@@ -2113,7 +2620,7 @@
    },
    "narrow": {
     "uploaded": 156312,
-    "written": 238550,
+    "written": 214324,
     "evaluated": 0,
     "readbacks": 40,
     "jobs": 0,
@@ -2159,12 +2666,12 @@
    },
    "load": {
     "uploaded": 40968192,
-    "written": 82760,
+    "written": 51748,
     "evaluated": 10000,
     "readbacks": 1,
     "jobs": 0,
     "texts": 22,
-    "pipelines": 22,
+    "pipelines": 15,
     "late": 0,
     "resident": 45088768
    },
@@ -2192,7 +2699,7 @@
    },
    "narrow": {
     "uploaded": 1560312,
-    "written": 280094,
+    "written": 255868,
     "evaluated": 0,
     "readbacks": 40,
     "jobs": 0,
@@ -2240,12 +2747,12 @@
    },
    "load": {
     "uploaded": 12000,
-    "written": 96084,
+    "written": 53080,
     "evaluated": 1,
     "readbacks": 1,
     "jobs": 0,
     "texts": 26,
-    "pipelines": 22,
+    "pipelines": 15,
     "late": 0,
     "resident": 524288
    },
@@ -2262,7 +2769,7 @@
    },
    "narrow": {
     "uploaded": 0,
-    "written": 235250,
+    "written": 211216,
     "evaluated": 0,
     "readbacks": 39,
     "jobs": 0,
@@ -2297,12 +2804,12 @@
    },
    "load": {
     "uploaded": 140000,
-    "written": 99408,
+    "written": 55252,
     "evaluated": 1,
     "readbacks": 1,
     "jobs": 0,
     "texts": 26,
-    "pipelines": 22,
+    "pipelines": 15,
     "late": 0,
     "resident": 1310720
    },
@@ -2319,7 +2826,7 @@
    },
    "narrow": {
     "uploaded": 0,
-    "written": 230516,
+    "written": 209620,
     "evaluated": 0,
     "readbacks": 39,
     "jobs": 0,
@@ -2354,12 +2861,12 @@
    },
    "load": {
     "uploaded": 749280,
-    "written": 102800,
+    "written": 57492,
     "evaluated": 1,
     "readbacks": 1,
     "jobs": 0,
     "texts": 26,
-    "pipelines": 22,
+    "pipelines": 15,
     "late": 0,
     "resident": 2097152
    },
@@ -2376,7 +2883,7 @@
    },
    "narrow": {
     "uploaded": 0,
-    "written": 242164,
+    "written": 218196,
     "evaluated": 0,
     "readbacks": 39,
     "jobs": 0,
@@ -2411,12 +2918,12 @@
    },
    "load": {
     "uploaded": 805536,
-    "written": 106112,
+    "written": 59652,
     "evaluated": 1,
     "readbacks": 1,
     "jobs": 0,
     "texts": 26,
-    "pipelines": 22,
+    "pipelines": 15,
     "late": 0,
     "resident": 2097152
    },
@@ -2433,7 +2940,7 @@
    },
    "narrow": {
     "uploaded": 0,
-    "written": 251156,
+    "written": 224116,
     "evaluated": 0,
     "readbacks": 39,
     "jobs": 0,
@@ -2470,12 +2977,12 @@
    },
    "load": {
     "uploaded": 20000,
-    "written": 6436,
+    "written": 4004,
     "evaluated": 1000,
     "readbacks": 1,
     "jobs": 0,
     "texts": 0,
-    "pipelines": 18,
+    "pipelines": 9,
     "late": 0,
     "resident": 20480
    },
@@ -2516,12 +3023,12 @@
    },
    "load": {
     "uploaded": 200000,
-    "written": 6436,
+    "written": 4004,
     "evaluated": 10000,
     "readbacks": 1,
     "jobs": 0,
     "texts": 0,
-    "pipelines": 18,
+    "pipelines": 9,
     "late": 0,
     "resident": 327680
    },
@@ -2562,12 +3069,12 @@
    },
    "load": {
     "uploaded": 2000000,
-    "written": 6464,
+    "written": 4032,
     "evaluated": 100000,
     "readbacks": 1,
     "jobs": 0,
     "texts": 0,
-    "pipelines": 18,
+    "pipelines": 9,
     "late": 0,
     "resident": 2621440
    },
@@ -2608,18 +3115,18 @@
    },
    "load": {
     "uploaded": 1567520,
-    "written": 390728,
+    "written": 388296,
     "evaluated": 155802,
     "readbacks": 1,
     "jobs": 1,
     "texts": 0,
-    "pipelines": 18,
+    "pipelines": 9,
     "late": 0,
     "resident": 1638400
    },
    "move": {
     "uploaded": 952560,
-    "written": 302336,
+    "written": 298688,
     "evaluated": 71468,
     "readbacks": 0,
     "jobs": 1,
@@ -2656,12 +3163,12 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 10992,
+    "written": 5104,
     "evaluated": 298936,
     "readbacks": 1,
     "jobs": 1,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
     "resident": 4227072
    },
@@ -2702,12 +3209,12 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 20960,
+    "written": 9184,
     "evaluated": 597872,
     "readbacks": 2,
     "jobs": 2,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
     "resident": 4227072
    },
@@ -2748,12 +3255,12 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 40896,
+    "written": 17344,
     "evaluated": 1195744,
     "readbacks": 4,
     "jobs": 4,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
     "resident": 4227072
    },
@@ -2794,12 +3301,12 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 80768,
+    "written": 33664,
     "evaluated": 2391488,
     "readbacks": 8,
     "jobs": 8,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
     "resident": 4227072
    },
@@ -2841,15 +3348,15 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 3453740,
-    "written": 11700,
-    "evaluated": 223717,
+    "uploaded": 4764460,
+    "written": 12468,
+    "evaluated": 289253,
     "readbacks": 1,
     "jobs": 2,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
-    "resident": 4325376
+    "resident": 5636096
    },
    "pan": {
     "uploaded": 6457376,
@@ -2860,7 +3367,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13107200
+    "resident": 14417920
    },
    "zoom": {
     "uploaded": 0,
@@ -2871,7 +3378,121 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13107200
+    "resident": 14417920
+   }
+  },
+  "1000000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 9351656,
+    "written": 22148,
+    "evaluated": 557254,
+    "readbacks": 1,
+    "jobs": 2,
+    "texts": 0,
+    "pipelines": 18,
+    "late": 0,
+    "resident": 10092544
+   },
+   "pan": {
+    "uploaded": 8253296,
+    "written": 72320,
+    "evaluated": 505804,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 16646144
+   },
+   "zoom": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 16646144
+   }
+  },
+  "2000000": {
+   "init": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "data": {
+    "uploaded": 0,
+    "written": 0,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 0
+   },
+   "load": {
+    "uploaded": 9480488,
+    "written": 22148,
+    "evaluated": 564688,
+    "readbacks": 1,
+    "jobs": 2,
+    "texts": 0,
+    "pipelines": 18,
+    "late": 0,
+    "resident": 10420224
+   },
+   "pan": {
+    "uploaded": 8270536,
+    "written": 72320,
+    "evaluated": 506666,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 16187392
+   },
+   "zoom": {
+    "uploaded": 0,
+    "written": 58880,
+    "evaluated": 0,
+    "readbacks": 0,
+    "jobs": 0,
+    "texts": 0,
+    "pipelines": 0,
+    "late": 0,
+    "resident": 16187392
    }
   }
  },
@@ -2901,12 +3522,12 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 20960,
+    "written": 9184,
     "evaluated": 597872,
     "readbacks": 2,
     "jobs": 2,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
     "resident": 4227072
    },
@@ -2980,12 +3601,12 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 20960,
+    "written": 9184,
     "evaluated": 597872,
     "readbacks": 2,
     "jobs": 2,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
     "resident": 4227072
    },
@@ -3059,12 +3680,12 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 20960,
+    "written": 9184,
     "evaluated": 597872,
     "readbacks": 2,
     "jobs": 2,
     "texts": 0,
-    "pipelines": 32,
+    "pipelines": 18,
     "late": 0,
     "resident": 4227072
    },

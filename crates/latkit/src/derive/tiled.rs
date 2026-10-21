@@ -605,7 +605,13 @@ impl Set {
                             Some(Kept { stamp: was, source: Field::Values(before, _), drawn: Field::Values(drawn, _) }),
                             Some(laid),
                         ) if before.kind() == column.kind() => {
-                            let changed = if *was == stamp { Vec::new() } else { column.changed_since(before) };
+                            // What the pages remember was written, else what differs: a row written
+                            // the value it held is written again, cheaper than comparing every row.
+                            let changed = if *was == stamp {
+                                Vec::new()
+                            } else {
+                                column.rows_since(before).unwrap_or_else(|| column.differing(before))
+                            };
                             let at = &gathered.slots.at;
                             let mut written: Vec<(usize, usize)> = changed
                                 .into_iter()
