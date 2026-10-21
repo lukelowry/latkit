@@ -3,7 +3,7 @@
 
 use js_sys::{Array, Float64Array, Object, Reflect};
 use latkit::Error;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 
 /// The largest whole number a JavaScript number holds exactly: 2^53 - 1.
 const SAFE: f64 = 9_007_199_254_740_991.0;
@@ -32,7 +32,7 @@ fn value(value: &latkit::Value) -> JsValue {
 /// `table` as a query answers it: `{ table, ids, fields, total }`, numbers as a `Float64Array`
 /// (missing NaN), other values as arrays (missing `null`), a reference as `{ reference, ids }`.
 pub(crate) fn table(table: &latkit::Table, total: usize) -> JsValue {
-    let fields = Object::new();
+    let fields = Object::create(JsValue::NULL.unchecked_ref::<Object>());
     for field in table.describe().fields {
         let values = table.values(&field.name).unwrap_or_else(|| latkit::Values::from(Vec::<f64>::new()));
         let column: JsValue = match (&field.to, values.numbers()) {

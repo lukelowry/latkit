@@ -8,18 +8,16 @@ fn main() {
     #[cfg(feature = "gpu")]
     {
         shaders::generate();
-        colormaps::generate();
     }
+    colormaps::generate();
 }
 
 #[cfg(feature = "gpu")]
 #[path = "build/shaders.rs"]
 mod shaders;
 
-#[cfg(feature = "gpu")]
 #[path = "build/colormaps.rs"]
 mod colormaps;
 
-#[cfg(feature = "gpu")]
 #[path = "src/expr/ramp.rs"]
 mod ramp;

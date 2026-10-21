@@ -27,7 +27,22 @@ execFileSync(
 );
 execFileSync(
   process.execPath,
-  ['--test', 'npm/test/load.test.mjs', 'npm/test/jobs.test.mjs', 'npm/test/data.test.mjs'],
+  [
+    path.join(root, 'node_modules/typescript/bin/tsc'),
+    '-p',
+    path.join(consumer, 'tsconfig.core.json'),
+  ],
+  { stdio: 'inherit' },
+);
+execFileSync(
+  process.execPath,
+  [
+    '--test',
+    'npm/test/load.test.mjs',
+    'npm/test/jobs.test.mjs',
+    'npm/test/data.test.mjs',
+    'npm/test/video.test.mjs',
+  ],
   {
     cwd: root,
     stdio: 'inherit',

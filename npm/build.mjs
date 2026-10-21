@@ -1,6 +1,6 @@
 /** Builds from pinned workspace tools; all release and consumer outputs stay below target/npm. */
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,12 +19,27 @@ if (mode === 'prepare') {
   assert.equal(path.dirname(stage), output);
   assert(!fs.existsSync(stage), 'release staging must be fresh');
   const manifest = read(path.join(root, 'npm/package.json'));
+  for (const crate of ['latkit', 'latkit-cli']) {
+    assert.equal(
+      fs.readFileSync(path.join(root, `crates/${crate}/LICENSE`), 'utf8'),
+      fs.readFileSync(path.join(root, 'LICENSE'), 'utf8'),
+      'Cargo licenses must match the repository license',
+    );
+  }
   assert.equal(manifest.version, version, 'Rust and npm versions must match');
   fs.mkdirSync(stage, { recursive: true });
   fs.cpSync(path.join(root, 'npm/src'), path.join(stage, 'src'), { recursive: true });
   fs.copyFileSync(path.join(root, 'npm/tsconfig.json'), path.join(stage, 'tsconfig.json'));
   fs.copyFileSync(path.join(root, 'LICENSE'), path.join(stage, 'LICENSE'));
   fs.copyFileSync(path.join(root, 'npm/README.md'), path.join(stage, 'README.md'));
+  fs.copyFileSync(
+    path.join(root, 'crates/latkit/colormaps/NOTICES.md'),
+    path.join(stage, 'NOTICES.md'),
+  );
+  fs.copyFileSync(
+    path.join(root, 'crates/latkit/THIRD_PARTY.md'),
+    path.join(stage, 'THIRD_PARTY.md'),
+  );
   delete manifest.scripts;
   delete manifest.devDependencies;
   write(path.join(stage, 'package.json'), manifest);
@@ -51,6 +66,8 @@ if (mode === 'prepare') {
     },
   );
   const dist = path.join(stage, 'dist');
+  for (const name of ['inputs', 'outputs'])
+    fs.rmSync(path.join(dist, `${name}.js`), { force: true });
   for (const file of fs.readdirSync(dist).filter((file) => file.endsWith('.js'))) {
     const source = path.join(dist, file);
     const result = await transform(fs.readFileSync(source, 'utf8'), {
@@ -94,6 +111,9 @@ if (mode === 'prepare') {
   }
   const report = {
     version: manifest.version,
+    commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
+    dirty:
+      execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim() !== '',
     tarball,
     tools: {
       node: process.version,
@@ -124,25 +144,13 @@ if (mode === 'prepare') {
     type: 'module',
   });
   write(path.join(output, 'package.json'), { ...report, consumer });
-} else if (mode === 'publish') {
-  // The tarball `package` built, published once per version; `changeset tag` then tags it.
+} else if (mode === 'verified') {
   const report = read(path.join(output, 'package.json'));
-  const { name, version } = read(path.join(root, 'npm/package.json'));
-  assert.equal(report.version, version, 'the tarball must be of the version being released');
   assert.equal(
     createHash('sha256').update(fs.readFileSync(report.tarball)).digest('hex'),
     report.sha256,
   );
-  const seen = spawnSync('npm', ['view', `${name}@${version}`, 'version'], { encoding: 'utf8' });
-  if (seen.status !== 0 && !seen.stderr?.includes('E404'))
-    throw new Error(`npm view ${name}@${version}: ${seen.stderr || seen.error}`);
-  if (seen.stdout.trim() === version) {
-    console.log(`${name}@${version} is already published`);
-  } else {
-    execFileSync('npm', ['publish', report.tarball, '--provenance', '--access', 'public'], {
-      stdio: 'inherit',
-    });
-  }
+  write(path.join(output, 'verified.json'), { sha256: report.sha256 });
 } else {
   throw new Error(`unknown build step: ${mode}`);
 }

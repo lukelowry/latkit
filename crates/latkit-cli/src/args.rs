@@ -371,6 +371,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cli_reference_matches_help() {
+        use std::fmt::Write as _;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        // This checks repository documentation, which is not part of the published CLI crate.
+        if !root.join(".readthedocs.yaml").exists() {
+            return;
+        }
+        let mut cli = Cli::command();
+        let mut text = format!(
+            "# Command reference\n\nGenerated from Clap. See the [CLI guide](../cli.md) for examples.\n\n## latkit\n\n```text\n{}```\n",
+            cli.render_long_help()
+        );
+        for command in cli.get_subcommands_mut() {
+            let name = command.get_name().to_owned();
+            let command = command.clone().bin_name(format!("latkit {name}"));
+            let mut command = command;
+            write!(text, "\n## {name}\n\n```text\n{}```\n", command.render_long_help()).unwrap();
+        }
+        let text = text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n") + "\n";
+        let path = root.join("docs/reference/cli.md");
+        if std::env::var_os("LATKIT_BLESS").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &text).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(path).unwrap().replace("\r\n", "\n"), text);
+    }
+
+    #[test]
     fn sources_patterns_and_sizes_parse() {
         let named: Source = "states=data/usa.geojson".parse().unwrap();
         assert_eq!((named.name.as_deref(), named.path), (Some("states"), PathBuf::from("data/usa.geojson")));

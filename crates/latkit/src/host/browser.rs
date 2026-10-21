@@ -28,7 +28,7 @@ impl Browser {
     }
 
     /// Has videos encoded by what `create` makes of `(width, height, fps, bitrate)`: an object whose
-    /// `encode(nv12, time, key)` and `finish()` return promises of the units finished since, each
+    /// `close()` releases resources; `encode(nv12, time, key)` and `finish()` return promises of the units finished since, each
     /// `[time, key, bytes]`, in order. The npm package makes one with WebCodecs.
     pub fn set_encoder(create: js_sys::Function) {
         ENCODERS.with(|encoders| *encoders.borrow_mut() = Some(create));
@@ -76,6 +76,15 @@ fn units(answer: JsValue) -> crate::Result<Vec<Unit>> {
             Ok(Unit { time: time as u64, key: unit.get(1).is_truthy(), annex_b: bytes.to_vec() })
         })
         .collect()
+}
+
+impl Drop for Script {
+    fn drop(&mut self) {
+        if let Ok(close) = js_sys::Reflect::get(&self.0, &"close".into()).and_then(JsCast::dyn_into::<js_sys::Function>)
+        {
+            let _ = close.call0(&self.0);
+        }
+    }
 }
 
 impl Encoder for Script {

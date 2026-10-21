@@ -6,7 +6,7 @@
 //!
 //! | Part     | Layout                                                                                |
 //! | -------- | ------------------------------------------------------------------------------------- |
-//! | frame    | `b"LATK"`, `u64` length of the whole frame, name, `u32` op count, ops                 |
+//! | frame    | `b"LATK"`, `u16` version (1), `u16` flags (0), `u64` length of the whole frame, name, `u32` op count, ops                 |
 //! | op       | `u8` tag and its payload: axis, replace, set, remove, append, forget, or frames       |
 //! | axis     | name, unit                                                                            |
 //! | replace  | table, as `set`                                                                       |
@@ -19,9 +19,9 @@
 //! | field    | values; a reference's table and its target ids as values; or samples                  |
 //! | ids      | `u8` 0 and `u32` count, or `u8` 1 and values: `u64`, `u32` read as `u64`, or texts    |
 //! | values   | `u8` storage, `u32` len, data, `u8` has-validity, validity words (`u64`)              |
-//! | samples  | `u32` rows, `u32` first frame read, `u32` frames read, `u32` run count, runs; buckets |
+//! | samples  | `u32` rows, `u64` first frame read, `u64` frames read, `u8` highest level, `u32` run count, runs; buckets |
 //! |          | whose eight entries a level below are held are left out, as they follow from those    |
-//! | run      | `u8` level, `u32` first entry, `u32` entries, `f64` coordinates (a frame's own; a     |
+//! | run      | `u8` level, `u64` first entry, `u32` entries, `f64` coordinates (a frame's own; a     |
 //! |          | bucket's first and last frame's), `f32` values entry-major: a frame's per row, or a   |
 //! |          | bucket's least per row and, after every bucket's, its greatest (NaN missing)          |
 //! | `str`    | `u32` byte length, UTF-8                                                              |
@@ -34,15 +34,32 @@ use super::geometry::Geometry;
 use super::ids::{IdList, Ids, RowIds};
 use super::name::{Name, Version};
 use super::patch::{Op, Patch};
-use super::samples::{self, LEVELS, Run, Samples};
+use super::samples::{self, MAX_LEVEL, Run, Samples};
 use super::table::{Field, Reference, Table};
 use super::text::Text;
 use super::values::{Array, Values};
 use crate::{Error, Result};
 
 const MAGIC: &[u8; 4] = b"LATK";
-/// The magic and the length.
-const HEADER: usize = 12;
+/// Magic, version, flags, and total frame length.
+const HEADER: usize = 16;
+const VERSION: u16 = 1;
+
+/// Limits for one binary frame. These bound encoded bytes and conservative decoded storage
+/// accounting; applying a patch and retaining datasets have separate memory costs.
+#[derive(Clone, Copy, Debug)]
+pub struct DecodeLimits {
+    /// Maximum encoded frame size; checked as soon as the header arrives.
+    pub frame_bytes: usize,
+    /// Budget for decoded vectors, names, operations, pages, and derived sample buckets.
+    pub decoded_bytes: usize,
+}
+
+impl Default for DecodeLimits {
+    fn default() -> Self {
+        Self { frame_bytes: 256 << 20, decoded_bytes: 512 << 20 }
+    }
+}
 
 const OP_AXIS: u8 = 0;
 const OP_REPLACE: u8 = 1;
@@ -68,6 +85,8 @@ const STORE_GEOMETRY: u8 = 7;
 pub(crate) fn encode(patch: &Patch) -> Vec<u8> {
     let mut w = Writer(Vec::new());
     w.0.extend_from_slice(MAGIC);
+    w.0.extend_from_slice(&VERSION.to_le_bytes());
+    w.0.extend_from_slice(&0_u16.to_le_bytes());
     w.0.extend_from_slice(&[0; 8]);
     w.str(patch.data.as_deref().unwrap_or(""));
     w.u32(patch.ops.len());
@@ -119,20 +138,20 @@ pub(crate) fn encode(patch: &Patch) -> Vec<u8> {
                 w.u8(OP_FRAMES);
                 w.str(table);
                 w.str(field);
-                let per_row = run.entries.len() * samples::sides(run.level);
+                let per_row = run.len() * samples::sides(run.level);
                 w.u32(values.len().checked_div(per_row).unwrap_or(0));
                 w.run(run, at, values);
             }
         }
     }
     let length = w.0.len() as u64;
-    w.0[MAGIC.len()..HEADER].copy_from_slice(&length.to_le_bytes());
+    w.0[8..HEADER].copy_from_slice(&length.to_le_bytes());
     w.0
 }
 
 /// The patch `bytes` hold, every byte of them.
 pub(crate) fn decode(bytes: &[u8]) -> Result<Patch> {
-    match decode_prefix(bytes, usize::MAX)? {
+    match decode_with_limits(bytes, DecodeLimits::default())? {
         Some((patch, used)) if used == bytes.len() => Ok(patch),
         Some(_) => Err(malformed("trailing bytes")),
         None => Err(malformed("truncated")),
@@ -142,11 +161,26 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Patch> {
 /// The patch at the start of `bytes` and how many bytes it takes; `None` while `bytes` hold only
 /// its start. A frame its length says runs past `limit` bytes is an error at once.
 pub(crate) fn decode_prefix(bytes: &[u8], limit: usize) -> Result<Option<(Patch, usize)>> {
+    decode_with_limits(bytes, DecodeLimits { frame_bytes: limit, ..DecodeLimits::default() })
+}
+
+pub(crate) fn decode_with_limits(bytes: &[u8], limits: DecodeLimits) -> Result<Option<(Patch, usize)>> {
+    let limit = limits.frame_bytes;
     let held = bytes.len().min(MAGIC.len());
     if bytes[..held] != MAGIC[..held] {
         return Err(malformed("not latkit bytes"));
     }
-    let Some(length) = bytes.get(MAGIC.len()..HEADER) else { return Ok(None) };
+    if let Some(version) = bytes.get(4..6)
+        && version != VERSION.to_le_bytes()
+    {
+        return Err(malformed("unsupported LATK version"));
+    }
+    if let Some(flags) = bytes.get(6..8)
+        && flags != [0, 0]
+    {
+        return Err(malformed("unsupported LATK flags"));
+    }
+    let Some(length) = bytes.get(8..HEADER) else { return Ok(None) };
     let length = u64::from_le_bytes(length.try_into().expect("eight bytes"));
     let length = usize::try_from(length).map_err(|_| too_long(limit))?;
     if length > limit {
@@ -156,7 +190,7 @@ pub(crate) fn decode_prefix(bytes: &[u8], limit: usize) -> Result<Option<(Patch,
         return Err(malformed("a frame shorter than its header"));
     }
     let Some(frame) = bytes.get(..length) else { return Ok(None) };
-    let mut r = Reader { bytes: frame, at: HEADER };
+    let mut r = Reader { bytes: frame, at: HEADER, remaining: limits.decoded_bytes };
     let patch = r.patch()?;
     if r.at != frame.len() {
         return Err(malformed("a frame longer than its patch"));
@@ -169,6 +203,7 @@ impl Reader<'_> {
         let r = self;
         let name = r.name()?;
         let count = r.len(1)?;
+        r.charge(count, size_of::<Op>())?;
         let mut patch = Patch { data: (!name.is_empty()).then_some(name), ops: Vec::with_capacity(count) };
         for _ in 0..count {
             let op = match r.u8()? {
@@ -184,8 +219,9 @@ impl Reader<'_> {
                         _ => return Err(malformed("an append names its rows or none")),
                     };
                     let frames = r.len(8)?;
-                    let at = (0..frames).map(|_| r.f64()).collect::<Result<_>>()?;
+                    let at = r.vec(frames)?;
                     let count = r.len(1)?;
+                    r.charge(count, size_of::<(Name, Values)>())?;
                     let fields = (0..count).map(|_| Ok((r.name()?, r.values()?))).collect::<Result<_>>()?;
                     Op::Append { table, at, ids, fields }
                 }
@@ -221,6 +257,10 @@ impl Writer {
 
     fn u32(&mut self, v: usize) {
         self.0.extend_from_slice(&u32::try_from(v).expect("counts fit in u32").to_le_bytes());
+    }
+
+    fn u64(&mut self, v: u64) {
+        self.0.extend_from_slice(&v.to_le_bytes());
     }
 
     fn f64(&mut self, v: f64) {
@@ -267,8 +307,9 @@ impl Writer {
                 Field::Sampled(samples, _) => {
                     self.u8(FIELD_SAMPLED);
                     self.u32(table.len());
-                    self.u32(samples.start() as usize);
-                    self.u32((samples.end() - samples.start()) as usize);
+                    self.u64(samples.start());
+                    self.u64(samples.end() - samples.start());
+                    self.u8(samples.levels() as u8);
                     let runs = samples.stored_runs();
                     self.u32(runs.len());
                     let rows: Vec<usize> = (0..table.len()).collect();
@@ -284,8 +325,8 @@ impl Writer {
     /// `run`: its level, first entry, and entries, its coordinates `at`, and its `values`.
     fn run(&mut self, run: &Run, at: &[f64], values: &[f32]) {
         self.u8(run.level as u8);
-        self.u32(run.entries.start as usize);
-        self.u32(run.entries.len());
+        self.u64(run.entries.start);
+        self.u32(run.len());
         self.slice(at);
         self.slice(values);
     }
@@ -360,9 +401,19 @@ impl Writer {
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
+    remaining: usize,
 }
 
 impl Reader<'_> {
+    fn charge(&mut self, count: usize, size: usize) -> Result<()> {
+        let bytes = count.checked_mul(size).ok_or_else(|| malformed("decoded size overflow"))?;
+        self.remaining = self
+            .remaining
+            .checked_sub(bytes)
+            .ok_or_else(|| Error::Limit("decoded patch exceeds its storage budget".into()))?;
+        Ok(())
+    }
+
     /// Whether `n` more bytes are in the frame.
     fn reach(&self, n: usize) -> Result<()> {
         if self.at.saturating_add(n) > self.bytes.len() {
@@ -394,17 +445,25 @@ impl Reader<'_> {
         Ok(n)
     }
 
+    fn u64(&mut self) -> Result<u64> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().expect("eight bytes")))
+    }
+
     fn f64(&mut self) -> Result<f64> {
         Ok(f64::from_le_bytes(self.take(8)?.try_into().expect("eight bytes")))
     }
 
     fn name(&mut self) -> Result<Name> {
         let n = self.len(1)?;
+        self.charge(n, 1)?;
+        self.charge(1, size_of::<Name>())?;
         let bytes = self.take(n)?;
         std::str::from_utf8(bytes).map(Name::from).map_err(|_| malformed("text is not UTF-8"))
     }
 
     fn vec<T: bytemuck::Pod>(&mut self, n: usize) -> Result<Vec<T>> {
+        // Includes conversion into column pages and the sampled levels derived from runs.
+        self.charge(n, 4 * size_of::<T>())?;
         let bytes = self.take(n.checked_mul(size_of::<T>()).ok_or_else(|| malformed("too large"))?)?;
         Ok(bytes.chunks_exact(size_of::<T>()).map(bytemuck::pod_read_unaligned).collect())
     }
@@ -442,6 +501,7 @@ impl Reader<'_> {
         let structure = Version::next();
         let mut table = Table { name, ids, index: Arc::default(), fields: Vec::new(), structure, order: structure };
         let fields = self.len(1)?;
+        self.charge(fields, size_of::<(Name, Field)>())?;
         for _ in 0..fields {
             let name = self.name()?;
             let field = match self.u8()? {
@@ -462,13 +522,21 @@ impl Reader<'_> {
     /// level below written before its own runs.
     fn samples(&mut self) -> Result<Samples> {
         let rows = self.u32()? as usize;
-        let first = self.u32()?;
-        let frames = self.u32()?;
+        let first = self.u64()?;
+        let frames = self.u64()?;
         let end = first.checked_add(frames).ok_or_else(|| malformed("too many frames"))?;
-        let count = self.len(9)?;
+        let levels = u32::from(self.u8()?);
+        if levels > MAX_LEVEL {
+            return Err(malformed("unsupported sample level"));
+        }
+        let count = self.len(13)?;
+        self.charge(count, size_of::<(Run, Vec<f64>, Vec<f32>)>())?;
         let runs = (0..count).map(|_| self.run(rows)).collect::<Result<Vec<_>>>()?;
         let mut samples = Samples::from_frame(first);
-        for level in 0..=LEVELS {
+        if runs.iter().any(|(run, ..)| run.level > levels) {
+            return Err(malformed("run above sample levels"));
+        }
+        for level in 0..=levels {
             if level > 0 {
                 samples.derive(level);
             }
@@ -483,12 +551,15 @@ impl Reader<'_> {
     /// A run of entries of `rows` rows: what it holds, its coordinates, and its values.
     fn run(&mut self, rows: usize) -> Result<(Run, Vec<f64>, Vec<f32>)> {
         let level = u32::from(self.u8()?);
-        if level > LEVELS {
+        if level > MAX_LEVEL {
             return Err(malformed(format!("no level {level}")));
         }
-        let first = self.u32()?;
+        let first = self.u64()?;
         let n = self.u32()?;
-        let run = Run { level, entries: first..first.checked_add(n).ok_or_else(|| malformed("too many entries"))? };
+        let run = Run {
+            level,
+            entries: first..first.checked_add(u64::from(n)).ok_or_else(|| malformed("too many entries"))?,
+        };
         let n = n as usize;
         let coordinates = n.checked_mul(samples::coordinates(level));
         let values = n.checked_mul(rows).and_then(|v| v.checked_mul(samples::sides(level)));
@@ -509,8 +580,9 @@ impl Reader<'_> {
             STORE_U64 => Array::U64(self.vec::<u64>(len)?.into()),
             STORE_BOOL => Array::Bool(Bits::from_words(self.vec(len.div_ceil(64))?, len)),
             STORE_TEXT => {
-                let offsets = self.vec::<u32>(len + 1)?;
+                let offsets = self.vec::<u32>(len.checked_add(1).ok_or_else(|| malformed("too many text values"))?)?;
                 let n = self.len(1)?;
+                self.charge(n, 2)?;
                 let bytes = String::from_utf8(self.take(n)?.to_vec()).map_err(|_| malformed("text is not UTF-8"))?;
                 Array::Text(Text::from_parts(offsets, bytes).ok_or_else(|| malformed("text offsets"))?)
             }
@@ -547,6 +619,66 @@ impl Reader<'_> {
 mod tests {
     use super::*;
     use crate::{Data, Row, Value};
+
+    #[test]
+    fn v1_fixture_and_large_indexes_are_stable() {
+        let hex = include_str!("../../tests/fixtures/latk-v1.hex").trim();
+        let bytes: Vec<u8> =
+            (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+        let patch = Patch::new().frames("T", "v", 0, (1_u64 << 32) + 3, [0.0, 1.0], [1.0, 2.0]);
+        assert_eq!(patch.to_bytes(), bytes);
+        assert_eq!(Patch::from_bytes(&bytes).unwrap().to_bytes(), bytes);
+        let mut data = Data::new("test");
+        data.apply(Patch::new().replace(Table::new("T", Ids::count(1))).extend(patch)).unwrap();
+        data.apply(Patch::new().append([2.0], "T", [("v", vec![3.0_f32])])).unwrap();
+        assert_eq!(data.span(), Some([0.0, 2.0]));
+        assert_eq!(Data::from_bytes(&data.to_bytes()).unwrap().to_bytes(), data.to_bytes());
+        let mut files = std::collections::HashMap::new();
+        data.to_tiles(8, |path, bytes| {
+            files.insert(path.to_owned(), bytes.to_vec());
+            Ok(())
+        })
+        .unwrap();
+        assert!(files.keys().any(|p| p.contains("536870912")));
+        let mut version = bytes.clone();
+        version[4] = 2;
+        assert!(Patch::from_bytes(&version).is_err());
+        let mut flags = bytes.clone();
+        flags[6] = 1;
+        assert!(Patch::from_bytes(&flags).is_err());
+        assert!(matches!(
+            Patch::decode_with_limits(&bytes, DecodeLimits { frame_bytes: 1024, decoded_bytes: 1 }),
+            Err(Error::Limit(_))
+        ));
+    }
+
+    #[test]
+    fn frame_overflow_is_atomic_and_high_levels_round_trip() {
+        let mut data = Data::new("test");
+        data.apply(Patch::new().replace(Table::new("T", Ids::count(1))).frames(
+            "T",
+            "v",
+            0,
+            u64::MAX - 1,
+            [0.0],
+            [1.0],
+        ))
+        .unwrap();
+        let before = data.to_bytes();
+        assert!(data.apply(Patch::new().append([1.0], "T", [("v", vec![2.0_f32])])).is_err());
+        assert_eq!(data.to_bytes(), before);
+        let mut data = Data::new("test");
+        data.apply(Patch::new().replace(Table::new("T", Ids::count(1))).frames(
+            "T",
+            "v",
+            12,
+            0,
+            [0.0, 1.0],
+            [1.0, 2.0],
+        ))
+        .unwrap();
+        assert_eq!(Data::from_bytes(&data.to_bytes()).unwrap().to_bytes(), data.to_bytes());
+    }
 
     fn grid() -> Data {
         let mut data = Data::new("grid");

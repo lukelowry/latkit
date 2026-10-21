@@ -12,7 +12,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::super::Jobs;
 use super::super::tiling::{Decoding, Requested, Source, Tiling};
 use super::Reading;
-use crate::data::{Data, Field, LEVELS, Listed, Manifest, Name, Op, Patch, Run, Samples, bucket_frames, detail, sides};
+use crate::data::{
+    Data, Field, Listed, MAX_LEVEL, Manifest, Name, Op, Patch, Run, Samples, bucket_frames, detail, sides,
+};
 use crate::host::Request;
 use crate::tiles::Span;
 use crate::{Error, Pending};
@@ -96,8 +98,9 @@ impl Frames {
             // Spans drawn may tell more finely where the window lies, which may want finer spans: ask
             // again until what is wanted settles, so what stands in is never taken for what draws.
             let (mut asked, mut standing) = (Vec::new(), false);
-            for _ in 0..=LEVELS {
-                let wanted = wanted(&listed.frames, sampled(data, listed), reads, reading, self.manifest.chunk);
+            for _ in 0..=MAX_LEVEL {
+                let wanted =
+                    wanted(&listed.frames, sampled(data, listed), reads, reading, self.manifest.chunk, listed.levels);
                 if wanted == asked {
                     break;
                 }
@@ -154,7 +157,7 @@ fn held(tile: &Patch, table: &Name, field: &Name, samples: &mut Samples) -> Vec<
         if t != table || f != field {
             continue;
         }
-        let per_row = run.entries.len() * sides(run.level);
+        let per_row = run.len() * sides(run.level);
         let rows = values.len().checked_div(per_row).unwrap_or(0);
         if samples.insert(run, at, values, rows).is_ok() {
             runs.push(run.clone());
@@ -176,37 +179,46 @@ fn sampled<'a>(data: &'a Data, listed: &Listed) -> Option<&'a Samples> {
 /// where a line traces it, `(true, _)`, those of the level of detail the plot window draws at, middle
 /// first. Where the window lies among the frames, what is held tells, as finely as it is held.
 fn wanted(
-    frames: &Range<u32>,
+    frames: &Range<u64>,
     samples: Option<&Samples>,
     (traced, shown): (bool, bool),
     reading: &Reading,
     chunk: u32,
+    levels: u32,
 ) -> Vec<Span> {
     // The entries of each level a history of `frames` holds: whole buckets only.
+    let chunk = u64::from(chunk);
     let entries = |level: u32| frames.start >> (3 * level)..frames.end >> (3 * level);
     // The spans of `level` holding its entries over frames `window`.
-    let spans = |level: u32, window: &Range<u32>| {
+    let spans = |level: u32, window: &Range<u64>| {
         let (held, span) = (entries(level), bucket_frames(level));
         let first = (window.start / span).max(held.start);
         let end = window.end.div_ceil(span).min(held.end);
         (first / chunk..end.div_ceil(chunk)).map(move |index| Span { level: level as u8, index })
     };
-    let top = (0..=LEVELS).rev().find(|&level| !entries(level).is_empty()).unwrap_or(0);
-    let mut wanted: Vec<Span> = spans(top, frames).collect();
+    let top = (0..=levels).rev().find(|&level| !entries(level).is_empty()).unwrap_or(0);
+    let mut wanted: Vec<Span> = spans(top, frames).take(MAX_SPANS).collect();
     let held = samples.filter(|s| !s.is_empty());
     if shown && let Some(samples) = held {
         let frame = samples.bound(reading.at, true).saturating_sub(1);
-        wanted.extend(spans(0, &(frame..frame + 2)));
+        wanted.extend(spans(0, &(frame..frame.saturating_add(2))));
     }
     if traced {
         let window = match (held, reading.across) {
             (Some(samples), Some(across)) => samples.across(across),
             _ => frames.clone(),
         };
-        let mut traced: Vec<Span> = spans(detail(window.len() as u32, reading.columns).min(top), &window).collect();
-        let middle = traced.first().zip(traced.last()).map_or(0, |(a, b)| u32::midpoint(a.index, b.index));
-        traced.sort_by_key(|s| s.index.abs_diff(middle));
-        wanted.extend(traced.into_iter().take(MAX_SPANS));
+        let level = detail(window.end - window.start, reading.columns).min(top);
+        let (held, span) = (entries(level), bucket_frames(level));
+        let first = (window.start / span).max(held.start) / chunk;
+        let end = window.end.div_ceil(span).min(held.end).div_ceil(chunk);
+        // Choose nearest spans before allocating: an absolute-index range may be enormous and sparse.
+        let count = end.saturating_sub(first);
+        let middle = first + count.saturating_sub(1) / 2;
+        wanted.extend((0..count.min(MAX_SPANS as u64)).map(|offset| {
+            let index = if offset % 2 == 0 { middle - offset / 2 } else { middle + offset.div_ceil(2) };
+            Span { level: level as u8, index }
+        }));
     }
     let mut seen = FxHashSet::default();
     wanted.retain(|span| seen.insert(*span));

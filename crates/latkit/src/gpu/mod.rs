@@ -34,6 +34,28 @@ pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 #[derive(Clone)]
 pub struct Gpu(pub(crate) Arc<Shared>);
 
+/// Receives events from an application-owned wgpu device without taking over its callbacks.
+#[derive(Clone)]
+pub struct DeviceEvents {
+    lost: Arc<AtomicBool>,
+    errors: Arc<Mutex<Vec<Error>>>,
+}
+
+impl DeviceEvents {
+    /// Reports device loss to every view sharing this GPU.
+    pub fn lost(&self) {
+        self.lost.store(true, Ordering::Release);
+    }
+
+    /// Reports an uncaptured device error to latkit's views.
+    pub fn error(&self, error: &wgpu::Error) {
+        self.errors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Error::Unsupported(format!("the GPU refused: {error}").into()));
+    }
+}
+
 pub(crate) struct Shared {
     /// The instance and adapter `Gpu::new` created the device from, for surfaces.
     pub(crate) instance: Option<wgpu::Instance>,
@@ -180,9 +202,19 @@ impl Gpu {
         Ok(Gpu::create(Some(instance), Some(adapter), device, queue))
     }
 
-    /// Draws with a device the application created, sharing its queue.
-    pub fn from_wgpu(device: wgpu::Device, queue: wgpu::Queue) -> Gpu {
-        Gpu::create(None, None, device, queue)
+    /// Draws with an application-owned device and queue without replacing their callbacks.
+    /// Forward device loss and uncaptured errors through [`Gpu::device_events`]. Clone this
+    /// `Gpu` to share its caches and budget between views.
+    pub fn from_wgpu(device: wgpu::Device, queue: wgpu::Queue) -> Result<Gpu> {
+        if !wgpu::Limits::default().check_limits(&device.limits()) {
+            return Err(Error::Unsupported("the device does not meet WebGPU's default limits".into()));
+        }
+        Ok(Gpu::create(None, None, device, queue))
+    }
+
+    /// A lightweight sink for the application's existing device callbacks; it does not own the GPU.
+    pub fn device_events(&self) -> DeviceEvents {
+        DeviceEvents { lost: self.0.lost.clone(), errors: self.0.errors.clone() }
     }
 
     fn create(
@@ -192,18 +224,13 @@ impl Gpu {
         queue: wgpu::Queue,
     ) -> Gpu {
         let lost = Arc::new(AtomicBool::new(false));
-        device.set_device_lost_callback({
-            let lost = lost.clone();
-            move |_, _| lost.store(true, Ordering::Release)
-        });
         let errors: Arc<Mutex<Vec<Error>>> = Arc::default();
-        device.on_uncaptured_error({
-            let errors = errors.clone();
-            Arc::new(move |error: wgpu::Error| {
-                let error = Error::Unsupported(format!("the GPU refused: {error}").into());
-                errors.lock().unwrap_or_else(PoisonError::into_inner).push(error);
-            })
-        });
+        if instance.is_some() {
+            let events = DeviceEvents { lost: lost.clone(), errors: errors.clone() };
+            let loss = events.clone();
+            device.set_device_lost_callback(move |_, _| loss.lost());
+            device.on_uncaptured_error(Arc::new(move |error| events.error(&error)));
+        }
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("latkit ramp"),
             mag_filter: wgpu::FilterMode::Linear,

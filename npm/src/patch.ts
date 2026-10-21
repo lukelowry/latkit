@@ -5,7 +5,6 @@
  */
 
 import type { Id, Ids } from './inputs.js';
-import { loadLatkit } from './load.js';
 
 /** Row ids as a patch takes them: listed, `{ count }` for rows `0..count`, or a typed array. */
 export type RowIds = Ids | readonly (Id | null)[] | Uint32Array | Float64Array;
@@ -42,12 +41,22 @@ export function reference(table: string, ids: RowIds): Reference {
 /** A table's fields by name. */
 export type Fields = Readonly<Record<string, Values | Reference>>;
 
+/** A byte stream, structurally compatible with the browser and Node ReadableStream. */
+export interface ReadableBytes {
+  getReader(): {
+    read(): Promise<{ done: boolean; value?: Uint8Array }>;
+    cancel(reason?: unknown): Promise<void>;
+    releaseLock(): void;
+  };
+}
+
 const MAGIC = [0x4c, 0x41, 0x54, 0x4b]; // LATK
 /** The magic and the frame's length. */
-const HEADER = 12;
+const HEADER = 16;
+const VERSION = 1;
 const OP = { axis: 0, replace: 1, set: 2, remove: 3, append: 4, forget: 5, frames: 6 } as const;
 /** Levels of detail kept above frames. */
-const LEVELS = 6;
+const LEVELS = 21;
 const FIELD_VALUES = 0;
 const FIELD_REFERENCE = 1;
 const STORE = { f64: 0, f32: 1, i32: 2, u32: 3, u64: 4, bool: 5, text: 6, geometry: 7 } as const;
@@ -68,7 +77,7 @@ const utf8 = new TextEncoder();
 export class Patch {
   /** The dataset the patch changes, when it names one; `Data.apply` refuses it for another. */
   readonly data: string | undefined;
-  #writer = new Writer();
+  #writer: Writer;
   #count = 0;
   /** Where the operations start: after the header, the name, and their count. */
   #ops: number;
@@ -77,9 +86,19 @@ export class Patch {
   #run: Appends | undefined;
 
   /** An empty patch, for whichever dataset it is applied to. */
-  constructor(data?: string) {
+  constructor(data?: string);
+  /** @internal */
+  constructor(data: string, owned: Uint8Array);
+  constructor(data?: string, owned?: Uint8Array) {
     this.data = data || undefined;
+    this.#writer = new Writer(owned);
+    if (owned) {
+      this.#ops = 0;
+      return;
+    }
     this.#writer.bytes(MAGIC);
+    this.#writer.u16(VERSION);
+    this.#writer.u16(0);
     this.#writer.zeros(8);
     this.#writer.str(this.data ?? '');
     this.#writer.u32(0);
@@ -93,6 +112,10 @@ export class Patch {
 
   /** The patch `bytes` hold: one frame, as `toBytes` or a stream writes it. */
   static fromBytes(bytes: Uint8Array): Patch {
+    return Patch.#fromOwnedFrame(bytes.slice());
+  }
+
+  static #fromOwnedFrame(bytes: Uint8Array): Patch {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const length = frameLength(bytes, Infinity);
     if (length === undefined || length !== bytes.length) throw malformed('not one whole frame');
@@ -107,45 +130,54 @@ export class Patch {
     } catch {
       throw malformed('text is not UTF-8');
     }
-    const patch = new Patch(name);
+    const patch = new Patch(name, bytes);
     patch.#count = view.getUint32(start - 4, true);
-    patch.#writer.bytes(bytes.subarray(start));
+    patch.#ops = start;
     return patch;
   }
 
   /**
    * The patches arriving back to back in `stream`, each as soon as its last byte does: a response
    * body, a file, or a socket's messages. Each frame says its length up front, so a patch longer
-   * than `limit` bytes (256 MiB unless given) throws at once, and an untrusted stream never buffers
-   * more.
+   * than `limit` bytes (256 MiB unless given) throws before allocating its body. The parser holds at most one frame, in addition to
+   * the input chunk and patches the caller retains. Breaking iteration cancels the reader.
    *
    * ```ts
    * for await (const patch of Patch.stream((await fetch('/feed')).body!)) data.apply(patch);
    * ```
    */
   static async *stream(
-    stream: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
+    stream: ReadableBytes | AsyncIterable<Uint8Array>,
     { limit = 1 << 28 }: { limit?: number } = {},
   ): AsyncGenerator<Patch> {
-    let buffer = new Uint8Array(1 << 16);
-    let [start, end] = [0, 0];
+    if (!Number.isSafeInteger(limit) || limit < HEADER)
+      throw new RangeError(`limit must be a safe integer of at least ${HEADER} bytes`);
+    let buffer = new Uint8Array(HEADER);
+    let used = 0;
+    let length: number | undefined;
     for await (const chunk of chunks(stream)) {
-      if (end + chunk.length > buffer.length) {
-        const kept = end - start;
-        const grown = new Uint8Array(Math.max(buffer.length, 2 * (kept + chunk.length)));
-        grown.set(buffer.subarray(start, end));
-        [buffer, start, end] = [grown, 0, kept];
-      }
-      buffer.set(chunk, end);
-      end += chunk.length;
-      for (;;) {
-        const length = frameLength(buffer.subarray(start, end), limit);
-        if (length === undefined || end - start < length) break;
-        yield Patch.fromBytes(buffer.subarray(start, start + length));
-        start += length;
+      for (let offset = 0; offset < chunk.length;) {
+        const n = Math.min(buffer.length - used, chunk.length - offset);
+        buffer.set(chunk.subarray(offset, offset + n), used);
+        used += n;
+        offset += n;
+        if (length === undefined) {
+          length = frameLength(buffer.subarray(0, used), limit);
+          if (length === undefined) continue;
+          const frame = new Uint8Array(length);
+          frame.set(buffer);
+          buffer = frame;
+        }
+        if (used === length) {
+          const patch = Patch.#fromOwnedFrame(buffer);
+          buffer = new Uint8Array(HEADER);
+          used = 0;
+          length = undefined;
+          yield patch;
+        }
       }
     }
-    if (end > start) throw malformed('the stream ended inside a patch');
+    if (used !== 0) throw malformed('the stream ended inside a patch');
   }
 
   /**
@@ -156,6 +188,7 @@ export class Patch {
    * `loadLatkit()` does.
    */
   static async load(json: string, base = ''): Promise<Patch> {
+    const { loadLatkit } = await import('./load.js');
     await loadLatkit();
     const { readPatch } = await import('./runtime.js');
     return Patch.fromBytes(await readPatch(json, base));
@@ -266,12 +299,18 @@ export class Patch {
         path,
         `${coordinates.length} coordinates and ${numbers.length} values make no run`,
       );
+    if (
+      !Number.isSafeInteger(first) ||
+      first < 0 ||
+      !Number.isSafeInteger((first + entries) * 8 ** level)
+    )
+      throw invalid(path, 'frame indexes must be nonnegative safe integers');
     return this.#op(OP.frames, (w) => {
       w.str(table);
       w.str(field);
       w.u32(rows);
       w.u8(level);
-      w.u32(first);
+      w.u64(first);
       w.u32(entries);
       w.bytes(new Uint8Array(coordinates.buffer));
       w.bytes(new Uint8Array(numbers.buffer, numbers.byteOffset, numbers.byteLength));
@@ -297,7 +336,7 @@ export class Patch {
     this.#flush();
     const view = this.#writer.view();
     const data = new DataView(view.buffer, view.byteOffset, view.byteLength);
-    data.setBigUint64(4, BigInt(view.length), true);
+    data.setBigUint64(8, BigInt(view.length), true);
     data.setUint32(this.#ops - 4, this.#count, true);
     return view;
   }
@@ -406,7 +445,12 @@ function frameLength(bytes: Uint8Array, limit: number): number | undefined {
     if (bytes[i] !== MAGIC[i]) throw malformed('not latkit bytes');
   if (bytes.length < HEADER) return undefined;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const length = Number(view.getBigUint64(4, true));
+  if (view.getUint16(4, true) !== VERSION) throw malformed('unsupported LATK version');
+  if (view.getUint16(6, true) !== 0) throw malformed('unsupported LATK flags');
+  const encoded = view.getBigUint64(8, true);
+  if (encoded > BigInt(Number.MAX_SAFE_INTEGER))
+    throw malformed('frame length is not a safe integer');
+  const length = Number(encoded);
   if (length > limit)
     throw Object.assign(new Error(`a patch longer than ${limit} bytes`), { code: 'limit' });
   if (length < HEADER) throw malformed('a frame shorter than its header');
@@ -631,9 +675,19 @@ function writeValidity(w: Writer, n: number, valid: ((i: number) => boolean) | n
 
 /** Bytes written little endian into a buffer that doubles as it fills. */
 class Writer {
-  #buffer = new Uint8Array(1 << 12);
-  #data = new DataView(this.#buffer.buffer);
-  length = 0;
+  #buffer: Uint8Array;
+  #data: DataView;
+  length: number;
+
+  constructor(owned?: Uint8Array) {
+    this.#buffer = owned ?? new Uint8Array(1 << 12);
+    this.#data = new DataView(
+      this.#buffer.buffer,
+      this.#buffer.byteOffset,
+      this.#buffer.byteLength,
+    );
+    this.length = owned?.length ?? 0;
+  }
 
   /** Room for `n` more bytes past the end. */
   room(n: number): void {
@@ -673,6 +727,19 @@ class Writer {
     this.length += 4;
   }
 
+  u16(v: number): void {
+    this.room(2);
+    this.#data.setUint16(this.length, v, true);
+    this.length += 2;
+  }
+
+  u64(v: number): void {
+    if (!Number.isSafeInteger(v) || v < 0) throw new RangeError(`${v} is no safe unsigned integer`);
+    this.room(8);
+    this.#data.setBigUint64(this.length, BigInt(v), true);
+    this.length += 8;
+  }
+
   f64(v: number): void {
     this.room(8);
     this.#data.setFloat64(this.length, v, true);
@@ -688,20 +755,26 @@ class Writer {
 
 /** The chunks of a stream, read with a reader where async iteration is missing. */
 async function* chunks(
-  stream: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
+  stream: ReadableBytes | AsyncIterable<Uint8Array>,
 ): AsyncGenerator<Uint8Array> {
   if (!('getReader' in stream)) {
     yield* stream;
     return;
   }
   const reader = stream.getReader();
+  let completed = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) return;
+      if (done) {
+        completed = true;
+        return;
+      }
+      if (!value) throw malformed('a stream chunk is missing');
       yield value;
     }
   } finally {
+    if (!completed) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

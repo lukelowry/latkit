@@ -1,3 +1,4 @@
+/// <reference lib="esnext.disposable" preserve="true" />
 /** WebAssembly-backed data and drawing, loaded only by loadLatkit(). */
 
 import init, * as wasm from '../pkg/latkit.js';
@@ -101,6 +102,9 @@ export class Data {
     return this.#inner;
   }
 
+  constructor(name: string);
+  /** @internal */
+  constructor(name: wasm.Data);
   constructor(name: string | wasm.Data) {
     this.#inner = typeof name === 'string' ? new wasm.Data(name) : name;
   }
@@ -620,6 +624,14 @@ export class View {
   }
 }
 
+type ShotSettings = Readonly<{
+  scale: number;
+  panels: readonly Panel[];
+  transparent: boolean;
+  deadline: number;
+  elapsed?: number;
+}>;
+
 /**
  * A picture of views, each drawn into its panel of `size` pixels at `scale` pixels per CSS pixel:
  * plain data, like a scene. A view a shot draws holds its canvas's last frame meanwhile.
@@ -629,17 +641,14 @@ export class View {
  * ```
  */
 export class Shot {
+  /** A picture with width and height in pixels. */
+  constructor(size: readonly [number, number]);
   /** @internal */
+  constructor(size: readonly [number, number], settings: ShotSettings);
   constructor(
     readonly size: readonly [number, number],
     /** @internal */
-    readonly settings: Readonly<{
-      scale: number;
-      panels: readonly Panel[];
-      transparent: boolean;
-      deadline: number;
-      elapsed?: number;
-    }> = { scale: 1, panels: [], transparent: false, deadline: 30 },
+    readonly settings: ShotSettings = { scale: 1, panels: [], transparent: false, deadline: 30 },
   ) {}
 
   /** Draws `scale` pixels per CSS pixel: a view lays out `size / scale` CSS pixels. */
@@ -689,15 +698,18 @@ export class Shot {
     options: { bitrate?: number; signal?: AbortSignal } = {},
   ): Video {
     options.signal?.throwIfAborted();
-    const video = new Video(
-      gpu.inner.video(this.#config(), fps, options.bitrate),
-      output.getWriter(),
-      fps,
-    );
-    options.signal?.addEventListener('abort', () => void video.abort(options.signal?.reason), {
-      once: true,
-    });
-    return video;
+    const writer = output.getWriter();
+    try {
+      return new Video(
+        gpu.inner.video(this.#config(), fps, options.bitrate),
+        writer,
+        fps,
+        options.signal,
+      );
+    } catch (error) {
+      writer.releaseLock();
+      throw error;
+    }
   }
 
   /** The shot as the crate reads it: JSON, times in seconds. */
@@ -761,84 +773,139 @@ export type ImageFormat = 'png' | 'jpeg' | 'webp';
 /** A video being drawn, encoded, and written. */
 export class Video {
   #inner?: wasm.Video;
-  #aborted: unknown;
+  #state: 'open' | 'finishing' | 'aborting' | 'closed' = 'open';
+  #operation?: Promise<void>;
+  #finished?: Promise<void>;
+  #aborted?: Promise<void>;
+  #reason: unknown;
+  #frames = 0;
+  #removeAbort?: () => void;
 
   /** @internal */
   constructor(
     inner: wasm.Video,
     private readonly writer: WritableStreamDefaultWriter<Uint8Array>,
     private readonly fps: number,
+    signal?: AbortSignal,
   ) {
     this.#inner = inner;
+    if (signal) {
+      const abort = () => {
+        void this.abort(signal.reason);
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      this.#removeAbort = () => signal.removeEventListener('abort', abort);
+      if (signal.aborted) abort();
+    }
   }
 
-  private get inner(): wasm.Video {
-    if (!this.#inner)
+  #check(): wasm.Video {
+    if (!this.#inner || this.#state === 'aborting' || this.#state === 'closed')
       throw Object.assign(
         thrown({ code: 'cancelled', message: 'this Video was finished or aborted' }),
-        {
-          cause: this.#aborted,
-        },
+        { cause: this.#reason },
       );
     return this.#inner;
   }
 
-  /** Seconds into the video the next frame shows at. */
+  /** Seconds into the video the next frame shows at; retained after completion. */
   get time(): number {
-    return this.#inner?.time ?? 0;
+    return this.frames / this.fps;
   }
 
-  /** Frames drawn or held so far. */
+  /** Frames drawn or held so far; retained after completion. */
   get frames(): number {
-    return this.#inner?.frames ?? 0;
+    return this.#inner?.frames ?? this.#frames;
   }
 
-  /**
-   * Draws the next frame of `views`, one per panel, at its time once they are complete, and writes
-   * what is encoded. It resolves once there is room for another frame; a frame where nothing moved
-   * is held, not drawn.
-   */
-  async frame(views: readonly View[]): Promise<void> {
-    const bytes = (await this.inner.frame(views.map((v) => v.handle()))) as Uint8Array;
-    if (bytes.length) await this.writer.write(bytes);
+  /** Draws and writes one frame, waiting for output backpressure. Only one frame may run at a time. */
+  frame(views: readonly View[]): Promise<void> {
+    if (this.#state !== 'open' || this.#operation)
+      return Promise.reject(new Error('a Video draws one frame at a time, before finish'));
+    const operation = (async () => {
+      const bytes = (await this.#check().frame(views.map((v) => v.handle()))) as Uint8Array;
+      this.#frames = this.#check().frames;
+      if (bytes.length) await this.writer.write(bytes);
+    })();
+    this.#operation = operation;
+    return operation
+      .catch(async (error: unknown) => {
+        await this.abort(error);
+        throw error;
+      })
+      .finally(() => {
+        if (this.#operation === operation) this.#operation = undefined;
+      });
   }
 
-  /**
-   * Records `views` frame after frame: before each, `step` moves them to the frame's time, in
-   * seconds, and says whether to draw it, waiting first if it needs to; once it says no, the video
-   * is finished. `onProgress` hears the frames written and the time reached after each.
-   */
+  /** Records until `step(time)` returns false; any step, drawing, output, or progress error aborts it. */
   async record(
     views: readonly View[],
     step: (time: number) => boolean | Promise<boolean>,
     onProgress?: (progress: { frames: number; time: number }) => void,
   ): Promise<void> {
-    while (await step(this.frames / this.fps)) {
-      await this.frame(views);
-      onProgress?.({ frames: this.frames, time: this.time });
+    try {
+      while (await step(this.time)) {
+        await this.frame(views);
+        onProgress?.({ frames: this.frames, time: this.time });
+      }
+      await this.finish();
+    } catch (error) {
+      await this.abort(error);
+      throw error;
     }
-    await this.finish();
   }
 
-  /** Encodes every frame under way, writes the end of the file, closes the output, and gives the views back. */
-  async finish(): Promise<void> {
-    const bytes = (await this.inner.finish()) as Uint8Array;
+  /** Finishes pending work, writes the end of the file, and closes and unlocks the output. Idempotent. */
+  finish(): Promise<void> {
+    if (this.#finished) return this.#finished;
+    if (this.#state !== 'open') return Promise.reject(new Error('this Video was aborted'));
+    this.#state = 'finishing';
+    const frame = this.#operation;
+    const operation = (async () => {
+      await frame;
+      const bytes = (await this.#check().finish()) as Uint8Array;
+      this.#check();
+      if (bytes.length) await this.writer.write(bytes);
+      this.#check();
+      await this.writer.close();
+    })();
+    this.#operation = operation;
+    this.#finished = operation
+      .then(() => {
+        if (this.#state === 'finishing') this.#release();
+      })
+      .catch(async (error: unknown) => {
+        await this.abort(error);
+        throw error;
+      });
+    return this.#finished;
+  }
+
+  /** Cancels drawing and encoding, aborts the output, and unlocks it after pending writes settle. Idempotent. */
+  abort(reason?: unknown): Promise<void> {
+    if (this.#aborted) return this.#aborted;
+    if (this.#state === 'closed') return Promise.resolve();
+    this.#state = 'aborting';
+    this.#reason = reason;
+    this.#frames = this.frames;
+    this.#inner?.cancel();
+    this.#aborted = Promise.allSettled([this.#operation, this.writer.abort(reason)]).then(() =>
+      this.#release(),
+    );
+    return this.#aborted;
+  }
+
+  #release(): void {
+    this.#frames = this.frames;
     this.#inner?.free();
     this.#inner = undefined;
-    if (bytes.length) await this.writer.write(bytes);
-    await this.writer.close();
-  }
-
-  /** Stops the video: drops what was not written, aborts the output, and gives the views back. */
-  async abort(reason?: unknown): Promise<void> {
-    if (!this.#inner) return;
-    this.#aborted = reason;
-    this.#inner.free();
-    this.#inner = undefined;
-    await this.writer.abort(reason).catch(() => {});
+    this.#removeAbort?.();
+    this.#removeAbort = undefined;
+    this.writer.releaseLock();
+    this.#state = 'closed';
   }
 }
-
 /**
  * A CSS gradient through `map`, a catalog name or colors of your own, for legends: the colors the
  * GPU draws, a band each for a categorical map's categories.

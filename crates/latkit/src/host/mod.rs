@@ -12,7 +12,6 @@ mod job;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod native;
 
-use std::ops::Range;
 use std::sync::Arc;
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
@@ -25,6 +24,7 @@ pub(crate) use job::{Key, Shaping};
 pub use native::Native;
 
 use crate::Encoding;
+pub use crate::resource::Request;
 use crate::{Error, Pending, Result};
 
 /// Ticks of a second an encoder's times count.
@@ -81,27 +81,6 @@ pub trait Host: Send + Sync + 'static {
     fn encoder(&self, encoding: &Encoding) -> crate::Result<Box<dyn Encoder>> {
         let _ = encoding;
         Err(Error::Unsupported("this host encodes no video".into()))
-    }
-}
-
-/// Bytes to fetch: a URL, and the range of its bytes, or all of them.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Request {
-    /// The URL.
-    pub url: Arc<str>,
-    /// Bytes `start..end`; `None` fetches every byte.
-    pub range: Option<Range<u64>>,
-}
-
-impl Request {
-    /// Every byte at `url`.
-    pub fn new(url: impl Into<Arc<str>>) -> Request {
-        Request { url: url.into(), range: None }
-    }
-
-    /// Bytes `range` at `url`.
-    pub fn range(url: impl Into<Arc<str>>, range: Range<u64>) -> Request {
-        Request { url: url.into(), range: Some(range) }
     }
 }
 

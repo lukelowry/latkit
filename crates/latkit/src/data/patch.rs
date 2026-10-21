@@ -157,7 +157,7 @@ impl Patch {
         table: impl Into<Name>,
         field: impl Into<Name>,
         level: u32,
-        first: u32,
+        first: u64,
         at: impl Into<Vec<f64>>,
         values: impl Into<Vec<f32>>,
     ) -> Patch {
@@ -206,6 +206,11 @@ impl Patch {
     /// assert!(Patch::decode(&stream, 8).is_err(), "longer than the limit");
     /// # Ok::<(), latkit::Error>(())
     /// ```
+    pub fn decode_with_limits(bytes: &[u8], limits: super::bytes::DecodeLimits) -> Result<Option<(Patch, usize)>> {
+        super::bytes::decode_with_limits(bytes, limits)
+    }
+
+    /// Decodes one frame with an encoded byte limit and the default decoded storage budget.
     pub fn decode(bytes: &[u8], limit: usize) -> Result<Option<(Patch, usize)>> {
         super::bytes::decode_prefix(bytes, limit)
     }
@@ -273,8 +278,8 @@ impl Appends {
 
 impl Op {
     /// Holds entries of `level` from `first`, as many as `at` holds coordinates of.
-    pub(crate) fn frames(table: Name, field: Name, level: u32, first: u32, at: Vec<f64>, values: Vec<f32>) -> Op {
-        let entries = (at.len() / super::samples::coordinates(level)) as u32;
+    pub(crate) fn frames(table: Name, field: Name, level: u32, first: u64, at: Vec<f64>, values: Vec<f32>) -> Op {
+        let entries = (at.len() / super::samples::coordinates(level)) as u64;
         let run = Run { level, entries: first..first.saturating_add(entries) };
         Op::Frames { table, field, run, at, values }
     }
@@ -349,7 +354,7 @@ impl Op {
             Op::Frames { table, field, run, at, values } => {
                 let i = data.position(&table).map_err(|_| Error::invalid("no such table").at(&table))?;
                 let target = &mut data.tables[i];
-                let per_row = run.entries.len() * super::samples::sides(run.level);
+                let per_row = run.len() * super::samples::sides(run.level);
                 let rows = values.len().checked_div(per_row).unwrap_or(0);
                 if rows > target.len() {
                     return Err(Error::invalid(format!("values for {rows} rows of {}", target.len()))

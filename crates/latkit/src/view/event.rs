@@ -264,8 +264,10 @@ pub struct Hit {
 /// A sample of a traced field: its frame, the axis coordinate it was recorded at, and its value.
 #[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct Sample {
-    /// The frame, numbered from the first ever recorded.
-    pub frame: u32,
+    /// The frame, numbered from the first ever recorded. JSON uses a decimal string above 2^53 - 1.
+    #[serde(serialize_with = "sample_index")]
+    #[schemars(with = "crate::Id")]
+    pub frame: u64,
     /// The axis coordinate.
     pub at: f64,
     /// The value.
@@ -420,6 +422,11 @@ impl schemars::JsonSchema for Waiting {
             "items": { "enum": ["compiling", "data", "derived", "labels", "fit", "marks"] },
         })
     }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde serialize_with takes a reference")]
+fn sample_index<S: serde::Serializer>(index: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(&crate::Id::Number(*index), serializer)
 }
 
 #[cfg(test)]

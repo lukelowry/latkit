@@ -6,7 +6,7 @@ Patches change datasets all at once: every change of a patch, or none.
 ## Write a dataset
 
 ```ts
-import { loadLatkit, Patch, reference } from 'latkit';
+import { loadLatkit, Patch, reference, field } from 'latkit';
 
 const { Data } = await loadLatkit();
 const grid = new Data('grid').apply(
@@ -22,12 +22,14 @@ const grid = new Data('grid').apply(
       {
         from: reference('Bus', [101, 102]),
         to: reference('Bus', [102, 103]),
+        name: ['North-Mid', 'Mid-South'],
+        loading: [95, 70],
       },
     ),
 );
 ```
 
-- **Ids** are numbers or texts, listed, or `{ count: n }` for rows `0` to `n - 1`.
+- **Ids** are nonnegative safe integers (`0..2^53 - 1`) or texts, listed, or `{ count: n }` for rows `0` to `n - 1`.
 - **Values** are a column per field: typed arrays of numbers (a `Uint8Array` holds booleans), or
   arrays of numbers, booleans, texts, or geometries. `null` is missing.
 - **Geometries** are `[x, y]` points, paths of points, parts (a polygon's rings, or a path's
@@ -59,7 +61,9 @@ view.setData(before); // and the version before it
 
 ## Record over time
 
-A field's first frame makes it sampled. A view shows the axis coordinate `view.at`: each sampled
+Sampled values are stored as `f32`, including values supplied as `Float64Array`; coordinates
+remain `f64`. NaN means missing in sampled values and numeric query results. Static columns retain
+their original numeric storage. A field's first frame makes it sampled. A view shows the axis coordinate `view.at`: each sampled
 field reads its last frame at or before it.
 
 ```ts
@@ -96,7 +100,8 @@ coarser span above it, as a map tile still loading draws the tile a zoom out.
 ## Stream
 
 Patches are bytes: `patch.toBytes()` writes one frame, and frames back to back stream. Each frame
-says its length up front, so a stream never holds more than `limit` bytes (256 MiB unless given). A
+says its length up front. The parser holds at most one frame of `limit` bytes (256 MiB by default),
+in addition to the input chunk and patches you retain. Breaking iteration cancels the reader. A
 server in any language writes the same frames ([format](formats.md#bytes)).
 
 ```ts
@@ -124,7 +129,7 @@ GeoJSON becomes tables `points`, `lines`, and `polygons`, each with its geometry
 Reading needs no GPU. Queries run the expressions marks draw with:
 
 ```ts
-grid.get('Bus', 101, 'name'); // 'North'
+grid.get('Bus', 101, 'name'); // 'Northgate'
 const hot = grid.query({
   of: 'Branch',
   filter: field('loading').gt(90),
@@ -140,3 +145,8 @@ queries. `describe()` lists tables, rows, fields and their kinds, and the axis a
 `envelope(table, field, range, spans)` gives each row's least and greatest value of a sampled field
 over equal spans of the axis, read from levels of detail, so a span costs a few reads however many
 frames it covers.
+
+`Patch.fromBytes(bytes)` copies one frame; `patch.extend(next)` appends its operations.
+`Uint8Array` means booleans in JavaScript patches; JSON binary slices with dtype `u8` mean numbers.
+Use `Uint32Array` for unsigned numeric bytes in a JavaScript patch. For all method signatures,
+see the [API reference](reference/api.md).

@@ -185,3 +185,34 @@ fn hovering_a_trace_names_its_sample() {
     assert_eq!(sample.frame, 7);
     assert!((sample.at - 7.0).abs() < 1e-9 && (sample.value - 0.7).abs() < 1e-6, "{sample:?}");
 }
+
+#[test]
+fn a_trace_keeps_large_absolute_indexes_on_the_gpu() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("signals");
+    data.apply(Table::new("Signal", Ids::count(1))).expect("valid");
+    let first = (1_u64 << 32) + 123;
+    data.apply(Patch::new().frames(
+        "Signal",
+        "v",
+        0,
+        first,
+        (0..=10).map(f64::from).collect::<Vec<_>>(),
+        (0..=10).map(|t| t as f32 / 10.0).collect::<Vec<_>>(),
+    ))
+    .unwrap();
+    let axis = Axis { hidden: true, grid: false, ..Axis::default() };
+    let scene = Scene::new(Plot { x: axis.clone(), y: axis })
+        .theme(plain_theme())
+        .draw(Lines::of("signals", "Signal").trace("v").width(3.0));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
+    view.set_data(data);
+    frame(&gpu, &mut view);
+    let at = view.point([7.0, 0.7, 0.0]).expect("on the plot");
+    let pending = view.pick(at, 6.0);
+    let hits = answer(&gpu, &mut view, pending);
+    let sample = hits.first().and_then(|h| h.sample).expect("a sample");
+    assert_eq!(sample.frame, first + 7);
+    assert!((sample.at - 7.0).abs() < 1e-9 && (sample.value - 0.7).abs() < 1e-6, "{sample:?}");
+}

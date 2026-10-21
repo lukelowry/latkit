@@ -18,7 +18,7 @@ image.destroy();
 | `deadline(s)`   | rejects with `timeout` after `s` seconds, readback included (30) |
 | `elapsed(s)`    | fixes time-reading expressions and effects at `s` seconds        |
 
-Files are encoded in a worker.
+Files are encoded in a worker when workers are available; otherwise encoding runs on the calling thread.
 
 ## Video
 
@@ -37,3 +37,11 @@ await video.record([view], (time) => {
 
 Width and height are multiples of 4 and 2. A frame where nothing moved is held rather than drawn.
 `{ signal }` aborts a video: its output is aborted and its views are given back.
+
+For manual control, call `await video.frame([view])` one frame at a time, then
+`await video.finish()`. Finish and abort are idempotent; both release the output's writer lock,
+encoder, and abort listener. Frame/time counters remain readable after completion. A failed
+step, frame, write, or progress callback aborts `record`. Cancellation interrupts pending rendering
+and encoding; an arbitrary writable sink must still settle its own in-flight write before its
+lock can be released. Browser output uses Constrained Baseline H.264, with output timestamps
+checked against input order.

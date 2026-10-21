@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
+use futures_util::future::{AbortHandle, Abortable};
 use wasm_bindgen::prelude::*;
 
 use crate::Error;
@@ -88,6 +89,7 @@ pub struct Video {
     written: Written,
     fps: f64,
     frames: Rc<RefCell<u64>>,
+    active: Rc<RefCell<Option<AbortHandle>>>,
 }
 
 #[wasm_bindgen]
@@ -109,7 +111,7 @@ impl Video {
     pub fn frame(&self, views: Vec<Handle>) -> js_sys::Promise {
         let (inner, written, frames) = (self.inner.clone(), self.written.clone(), self.frames.clone());
         let views = views_of(views);
-        wasm_bindgen_futures::future_to_promise(async move {
+        self.cancellable(async move {
             let taken = inner.borrow_mut().take();
             let error = || latkit::Error::invalid("a video draws one frame at a time, until it is finished");
             let mut video = taken.ok_or_else(|| JsValue::from(Error::from(error())))?;
@@ -121,15 +123,51 @@ impl Video {
         })
     }
 
+    /// Cancels an in-flight operation, releasing its views and encoder when the future is dropped.
+    pub fn cancel(&self) {
+        if let Some(active) = self.active.borrow_mut().take() {
+            active.abort();
+        }
+        self.inner.borrow_mut().take();
+    }
+
     /// Encodes every frame under way and ends the video; resolves to the file's last bytes.
     pub fn finish(&self) -> js_sys::Promise {
         let (inner, written) = (self.inner.clone(), self.written.clone());
-        wasm_bindgen_futures::future_to_promise(async move {
+        self.cancellable(async move {
             let taken = inner.borrow_mut().take();
             let video = taken.ok_or_else(|| JsValue::from(Error::from(latkit::Error::Cancelled)))?;
             video.finish().await.map_err(|e| JsValue::from(Error::from(e)))?;
             Ok(js_sys::Uint8Array::from(&std::mem::take(&mut *written.0.borrow_mut())[..]).into())
         })
+    }
+}
+
+impl Video {
+    fn cancellable(
+        &self,
+        future: impl std::future::Future<Output = Result<JsValue, JsValue>> + 'static,
+    ) -> js_sys::Promise {
+        let mut active = self.active.borrow_mut();
+        if active.is_some() {
+            return js_sys::Promise::reject(&JsValue::from(Error::from(latkit::Error::invalid(
+                "a video runs one operation at a time",
+            ))));
+        }
+        let (abort, registration) = AbortHandle::new_pair();
+        *active = Some(abort);
+        let active = self.active.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let result = Abortable::new(future, registration).await;
+            active.borrow_mut().take();
+            result.unwrap_or_else(|_| Err(JsValue::from(Error::from(latkit::Error::Cancelled))))
+        })
+    }
+}
+
+impl Drop for Video {
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 
@@ -143,7 +181,7 @@ pub(crate) fn video(gpu: &latkit::Gpu, shot: &str, fps: f64, bitrate: Option<f64
         mp4 = mp4.bitrate(bitrate as u32);
     }
     let video = shot.video(gpu, fps, mp4)?;
-    Ok(Video { inner: Rc::new(RefCell::new(Some(video))), written, fps, frames: Rc::default() })
+    Ok(Video { inner: Rc::new(RefCell::new(Some(video))), written, fps, frames: Rc::default(), active: Rc::default() })
 }
 
 /// Has videos encoded by what `create` makes of `(width, height, fps, bitrate)`: the npm package's

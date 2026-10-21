@@ -109,8 +109,8 @@ impl Table {
         let at: Vec<f64> =
             (0..=spans).map(|s| if s == spans { range[1] } else { range[0] + width * s as f64 }).collect();
         // A span holds the frames from its start up to the next span's; the last holds its end too.
-        let bounds: Vec<u32> = at.iter().enumerate().map(|(s, &t)| samples.bound(t, s == spans)).collect();
-        let pieces: Vec<Vec<(u32, u32)>> = bounds.windows(2).map(|b| samples.pieces(b[0]..b[1])).collect();
+        let bounds: Vec<u64> = at.iter().enumerate().map(|(s, &t)| samples.bound(t, s == spans)).collect();
+        let pieces: Vec<Vec<(u32, u64)>> = bounds.windows(2).map(|b| samples.pieces(b[0]..b[1])).collect();
         let mut least = vec![f32::NAN; rows.len() * spans];
         let mut greatest = least.clone();
         // Rows by block, so each piece's page is read once for all of a block's rows.

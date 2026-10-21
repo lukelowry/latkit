@@ -16,6 +16,7 @@ export default defineConfig([
       '.playwright-cli/**',
       'crates/**',
       'target/**',
+      '.impeccable/**',
       'npm/pkg/**',
       'npm/dist/**',
       'npm/test/scenes.js',

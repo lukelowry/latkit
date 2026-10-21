@@ -25,7 +25,7 @@ const nodeOf = (input: ExprInput): ExprNode => (input instanceof Expr ? input.no
 
 /** A value for every row of a mark: a constant, a field, view state, or arithmetic of them. */
 export class Expr {
-  /** @internal */
+  /** An expression from its JSON form; use the builders for common operations. */
   constructor(readonly node: ExprNode) {}
 
   toJSON(): ExprNode {
@@ -227,8 +227,15 @@ class Then {
   }
 }
 
+/** Straight-alpha RGBA pixels, compatible with browser ImageData and server-produced pixels. */
+export interface RgbaImage {
+  width: number;
+  height: number;
+  data: Uint8ClampedArray;
+}
+
 /** An icon marker showing one of `images` for each row, picked by `index`. */
-export function icon(images: ImageData[], index: ExprInput): Marker {
+export function icon(images: readonly RgbaImage[], index: ExprInput): Marker {
   return {
     icon: {
       images: images.map((image) => ({

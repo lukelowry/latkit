@@ -31,7 +31,7 @@ const WORDS: usize = wgsl::COLUMN_WORDS as usize;
 enum Stamp {
     Missing,
     Field(Version),
-    Sampled(Version, Option<u32>, u32),
+    Sampled(Version, Option<u64>, u32),
     Trace(Version, Plan),
     Join(Version, Version),
 }
@@ -58,19 +58,19 @@ pub(crate) struct Plan {
 impl Plan {
     /// The entry point `point` draws: its level, its index, and its side, a bucket's least (0) or
     /// greatest (1); `None` for a point that breaks the line.
-    pub(crate) fn entry(&self, point: u32) -> Option<(u32, u32, usize)> {
+    pub(crate) fn entry(&self, point: u32) -> Option<(u32, u64, usize)> {
         let i = self.runs.partition_point(|(_, first)| *first <= point).checked_sub(1)?;
         let (run, first) = &self.runs[i];
-        let (k, n) = (point - first, run.entries.len() as u32);
+        let (k, n) = (point - first, run.len() as u32);
         if run.level > 0 {
-            return (k < 2 * n).then(|| (run.level, run.entries.start + k / 2, (k % 2) as usize));
+            return (k < 2 * n).then(|| (run.level, run.entries.start + u64::from(k / 2), (k % 2) as usize));
         }
         let (up, count) = match self.steps {
             wgsl::STEP_AFTER => (k / 2, 2 * n - 1),
             wgsl::STEP_BEFORE => (k.div_ceil(2), 2 * n - 1),
             _ => (k, n),
         };
-        (k < count).then(|| (0, run.entries.start + up, 0))
+        (k < count).then(|| (0, run.entries.start + u64::from(up), 0))
     }
 }
 
@@ -421,14 +421,14 @@ fn joined<'a>((data, table): &(Name, Name), all: &'a [Data]) -> Option<&'a Table
 /// point left out between runs that do not meet.
 fn plan(samples: &Samples, window: Window) -> Plan {
     let frames = window.across.map_or(samples.start()..samples.end(), |across| samples.across(across));
-    let level = detail(frames.len() as u32, window.columns);
+    let level = detail(frames.end - frames.start, window.columns);
     let (mut runs, mut point, mut last) = (Vec::new(), 0, None);
     for run in samples.cover(frames, level) {
         let spanned = run.frames();
         if last.is_some_and(|end| end != spanned.start) {
             point += 1;
         }
-        let n = run.entries.len() as u32;
+        let n = run.len() as u32;
         let points = match (run.level, window.steps) {
             (0, 0) => n,
             (0, _) => 2 * n - 1,
@@ -439,25 +439,6 @@ fn plan(samples: &Samples, window: Window) -> Plan {
         point += points;
     }
     Plan { level, runs, points: point, steps: window.steps }
-}
-
-/// The pages `of` lists for each of `runs`, in order, each listed once with the entries it holds of
-/// them.
-fn listed<P>(
-    runs: &[Range<u32>],
-    of: impl Fn(Range<u32>) -> Vec<(P, Range<u32>)>,
-    id: impl Fn(&P) -> PageId,
-) -> Vec<(P, Range<u32>)> {
-    let mut out: Vec<(P, Range<u32>)> = Vec::new();
-    for entries in runs {
-        for (page, held) in of(entries.clone()) {
-            match out.last_mut() {
-                Some((last, listed)) if id(last) == id(&page) => listed.end = held.end,
-                _ => out.push((page, held)),
-            }
-        }
-    }
-    out
 }
 
 fn stamp(column: &ColumnUse, source: &Source<'_>, all: &[Data], at: f64, window: Window) -> Stamp {
@@ -618,41 +599,41 @@ impl Builder<'_> {
     /// relative to it.
     fn trace(&mut self, samples: &Samples, plan: Plan, rows: usize) {
         let blocks = rows.div_ceil(PAGE_ROWS);
-        // Each level drawn, with the entries of each of its runs.
-        let mut levels: Vec<(u32, Vec<Range<u32>>)> = Vec::new();
-        for (run, _) in &plan.runs {
-            match levels.iter_mut().find(|(level, _)| *level == run.level) {
-                Some((_, runs)) => runs.push(run.entries.clone()),
-                None => levels.push((run.level, vec![run.entries.clone()])),
-            }
-        }
-        self.words.extend([plan.runs.len() as u32, blocks as u32, levels.len() as u32, plan.points]);
-        for (run, point) in &plan.runs {
-            let slot = levels.iter().position(|(level, _)| *level == run.level).expect("listed") as u32;
-            self.words.extend([slot, run.entries.start, run.entries.len() as u32, *point]);
+        // Each run has its own local origin. Even sparse runs billions of frames apart use
+        // compact GPU offsets, while CPU plans retain their absolute 64-bit indexes.
+        self.words.extend([plan.runs.len() as u32, blocks as u32, plan.runs.len() as u32, plan.points]);
+        let origins: Vec<u64> = plan
+            .runs
+            .iter()
+            .map(|(r, _)| r.entries.start.saturating_sub(crate::data::FRAME_PAGE_WORDS as u64))
+            .collect();
+        for (i, (run, point)) in plan.runs.iter().enumerate() {
+            self.words.extend([i as u32, (run.entries.start - origins[i]) as u32, run.len() as u32, *point]);
         }
         let at = self.words.len();
-        self.words.resize(at + 4 * levels.len(), 0);
-        for (i, (level, runs)) in levels.iter().enumerate() {
-            let axis = listed(runs, |entries| samples.axis_pages(*level, entries), |page| page.id);
+        self.words.resize(at + 4 * plan.runs.len(), 0);
+        for (i, (run, _)) in plan.runs.iter().enumerate() {
+            let origin = origins[i];
+            let axis = samples.axis_pages(run.level, run.entries.clone());
             let listed_at = self.words.len() as u32;
-            self.words[at + 4 * i..at + 4 * i + 3].copy_from_slice(&[*level, axis.len() as u32, listed_at]);
+            self.words[at + 4 * i..at + 4 * i + 3].copy_from_slice(&[run.level, axis.len() as u32, listed_at]);
             for (page, held) in &axis {
                 let key = PageKey::of(page.id, Words::Values, false);
-                let offset = self.gpu.arena.get(key, (held.end - page.first) * 2, || Content::Axis(page.clone()));
+                let offset =
+                    self.gpu.arena.get(key, ((held.end - page.first) * 2) as u32, || Content::Axis(page.clone()));
                 self.pins.push(key);
                 self.ready &= offset.is_some();
-                self.words.extend([offset.unwrap_or(wgsl::NONE), page.first]);
+                self.words.extend([offset.unwrap_or(wgsl::NONE), (page.first - origin) as u32]);
             }
             let lists = self.words.len();
             self.words[at + 4 * i + 3] = lists as u32;
             self.words.resize(lists + 4 * blocks, 0);
             for block in 0..blocks {
-                for side in 0..crate::data::sides(*level) {
-                    let pages = listed(runs, |entries| samples.pages(block, *level, side, entries), |page| page.id);
+                for side in 0..crate::data::sides(run.level) {
+                    let pages = samples.pages(block, run.level, side, run.entries.clone());
                     self.words[lists + 4 * block + 2 * side] = pages.len() as u32;
                     self.words[lists + 4 * block + 2 * side + 1] = self.words.len() as u32;
-                    self.sample_pages(&pages);
+                    self.sample_pages(&pages, origin);
                 }
             }
         }
@@ -660,19 +641,19 @@ impl Builder<'_> {
     }
 
     /// Appends `pages` as (offset, first entry, words per entry), each with the entries it holds.
-    fn sample_pages(&mut self, pages: &[(FramePage, Range<u32>)]) {
+    fn sample_pages(&mut self, pages: &[(FramePage, Range<u64>)], origin: u64) {
         for (page, held) in pages {
             let key = PageKey::of(page.id, Words::Values, false);
-            let need = (held.end - page.first) * page.per;
+            let need = ((held.end - page.first) * u64::from(page.per)) as u32;
             let offset = self.gpu.arena.get(key, need, || Content::Frames(page.clone()));
             self.pins.push(key);
             self.ready &= offset.is_some();
-            self.words.extend([offset.unwrap_or(wgsl::NONE), page.first, page.per]);
+            self.words.extend([offset.unwrap_or(wgsl::NONE), (page.first - origin) as u32, page.per]);
         }
     }
 
     /// Six words per row block: this frame's block and word, the next frame's, and their row counts.
-    fn cursors(&mut self, samples: &Samples, frame: Option<u32>, rows: usize) {
+    fn cursors(&mut self, samples: &Samples, frame: Option<u64>, rows: usize) {
         for block in 0..rows.div_ceil(PAGE_ROWS) {
             let mut cursor = [wgsl::NONE, 0, wgsl::NONE, 0, 0, 0];
             for (i, f) in [frame, frame.map(|f| f + 1)].into_iter().enumerate() {

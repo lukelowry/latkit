@@ -86,13 +86,13 @@ impl Key for TileKey {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub(crate) struct Span {
     pub(crate) level: u8,
-    pub(crate) index: u32,
+    pub(crate) index: u64,
 }
 
 #[cfg(feature = "gpu")]
 impl Key for Span {
     fn parent(self) -> Option<Span> {
-        (u32::from(self.level) < crate::data::LEVELS).then(|| Span { level: self.level + 1, index: self.index / 8 })
+        (u32::from(self.level) < crate::data::MAX_LEVEL).then(|| Span { level: self.level + 1, index: self.index / 8 })
     }
 }
 

@@ -2963,7 +2963,7 @@
                 },
                 "first": {
                   "type": "integer",
-                  "format": "uint32",
+                  "format": "uint64",
                   "minimum": 0
                 },
                 "at": {
@@ -3984,10 +3984,8 @@
       "type": "object",
       "properties": {
         "frame": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0,
-          "description": "The frame, numbered from the first ever recorded."
+          "$ref": "#/outputs/Id",
+          "description": "The frame, numbered from the first ever recorded. JSON uses a decimal string above 2^53 - 1."
         },
         "at": {
           "type": "number",

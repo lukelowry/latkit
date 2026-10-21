@@ -6,7 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-include = ["src/**", "build/**", "build.rs", "shaders/**", "colormaps/catalog.txt"]
+include = ["LICENSE", "src/**", "tests/fixtures/**", "build/**", "build.rs", "shaders/**", "colormaps/catalog.txt", "colormaps/NOTICES.md", "THIRD_PARTY.md", "README.md"]
 
 [features]
 default = ["gpu"]
@@ -15,6 +15,7 @@ native = ["gpu", "dep:cosmic-text", "dep:windows", "dep:windows-core"]
 web = ["gpu", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys"]
 
 [dependencies]
+url.workspace = true
 thiserror.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true

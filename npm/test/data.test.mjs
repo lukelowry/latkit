@@ -162,7 +162,7 @@ test('appends one after another write as one change, each frame copied at its ca
   const bytes = patch.toBytes();
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // After the header and the empty name: the count of changes.
-  assert.equal(view.getUint32(16, true), 2, 'the replace, and one append of every frame');
+  assert.equal(view.getUint32(20, true), 2, 'the replace, and one append of every frame');
   const data = new Data('grid').apply(patch);
   const v = (t) => data.get('Bus', 2, 'v', t);
   assert.deepEqual([v(0), v(1), v(2), v(3)], [0, 10, 20, 30], 'each frame as it was at its call');
@@ -278,4 +278,76 @@ test('queries filter, sort, page, and count', () => {
   assert.deepEqual(named.ids, [9], 'contains ignores case');
   assert.deepEqual(data.query({ of: 'Branch', ids: [9, 7] }).ids, [9, 7], 'ids keep their order');
   data.destroy();
+});
+
+test('LATK v1 fixture and long-running sample indexes agree with Rust', () => {
+  const fixture = Buffer.from(
+    fs
+      .readFileSync(
+        new URL('../../crates/latkit/tests/fixtures/latk-v1.hex', import.meta.url),
+        'utf8',
+      )
+      .trim(),
+    'hex',
+  );
+  const patch = new Patch().frames('T', 'v', { first: 2 ** 32 + 3 }, [0, 1], [1, 2]);
+  assert.deepEqual(Buffer.from(patch.toBytes()), fixture);
+  const data = new Data('test').apply(new Patch().replace('T', { count: 1 }).extend(patch));
+  data.apply(new Patch().append(2, 'T', { v: [3] }));
+  assert.equal(data.get('T', 0, 'v'), 3);
+  assert.deepEqual(data.span, [0, 2]);
+  data.destroy();
+  const version = Uint8Array.from(fixture);
+  version[4] = 2;
+  assert.throws(() => Patch.fromBytes(version), /version/);
+  assert.throws(
+    () => new Patch().frames('T', 'v', { first: Number.MAX_SAFE_INTEGER }, [0], [1]),
+    /safe/,
+  );
+});
+
+test('query fields preserve arbitrary names as own properties', () => {
+  const data = new Data('test').apply(
+    new Patch().replace('T', [1], { ['__proto__']: [42], constructor: [7] }),
+  );
+  const fields = data.query({ of: 'T' }).fields;
+  assert.equal(Object.getPrototypeOf(fields), null);
+  assert.deepEqual(Object.keys(fields), ['__proto__', 'constructor']);
+  assert.equal(fields.__proto__[0], 42);
+  data.destroy();
+});
+
+test('stream rejects oversized headers and cancels owned readers on early termination', async () => {
+  let cancelled = 0;
+  const frame = new Patch().axis('t', 's').toBytes();
+  const oversized = new Uint8Array(2 << 20);
+  oversized.set(frame);
+  new DataView(oversized.buffer).setBigUint64(8, BigInt(oversized.length), true);
+  const stream = new ReadableStream({
+    start(c) {
+      c.enqueue(oversized);
+    },
+    cancel() {
+      cancelled++;
+    },
+  });
+  await assert.rejects(async () => {
+    for await (const patch of Patch.stream(stream, { limit: 1024 })) void patch;
+  }, /longer/);
+  assert.equal(cancelled, 1);
+  assert.equal(stream.locked, false);
+  const many = new ReadableStream({
+    start(c) {
+      c.enqueue(new Uint8Array([...frame, ...frame]));
+    },
+    cancel() {
+      cancelled++;
+    },
+  });
+  for await (const patch of Patch.stream(many)) {
+    assert.equal(patch.toBytes().length, frame.length);
+    break;
+  }
+  assert.equal(cancelled, 2);
+  assert.equal(many.locked, false);
 });

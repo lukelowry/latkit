@@ -2,6 +2,7 @@ name: Release
 
 # Once CI passes on main, releases the commit it tested.
 on:
+  workflow_dispatch:
   workflow_run:
     workflows:
       - CI
@@ -13,6 +14,7 @@ on:
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
+  actions: read
   contents: write
   id-token: write
   pull-requests: write
@@ -26,13 +28,19 @@ jobs:
   release:
     name: Version or publish
     # A push's run only: a pull request's run can come from a fork's branch named main.
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
+      - name: Verify manual recovery uses a commit that passed CI
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run list --workflow ci.yml --branch main --commit "$(git rev-parse HEAD)" --json conclusion --jq 'any(.[]; .conclusion == "success")' | grep -qx true
       - uses: pnpm/action-setup@v6
         with:
           version: 10.30.0
@@ -59,9 +67,8 @@ jobs:
       # The tarball a consumer installs, checked in Chrome; `pnpm release` publishes this file.
       - run: cargo xtask package
       - run: cargo xtask package-test
-      # `published` is true only when `pnpm release` printed `changeset tag`'s "New tag:" lines; the
-      # action pushes those tags.
-      - name: Open a version pull request, or publish the npm package
+      # One retryable release verifies npm and both crates before creating tags.
+      - name: Open a version pull request, or publish all distributions
         id: changesets
         uses: changesets/action@v1
         with:
@@ -71,8 +78,4 @@ jobs:
           title: 'chore: version packages'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the crates with it
-        if: steps.changesets.outputs.published == 'true'
-        run: cargo publish --locked -p latkit && cargo publish --locked -p latkit-cli
-        env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

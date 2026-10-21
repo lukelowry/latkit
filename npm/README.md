@@ -31,7 +31,7 @@ view.setData(data);
 view.fit();
 ```
 
-- **Plain data needs no WebAssembly.** Scenes, expressions, and patches are built without loading
+- **Plain data needs no WebAssembly.** Node/server code can import `latkit/core` without DOM types. Scenes, expressions, and patches are built without loading
   anything, so a worker or a Node server writes patches as well as a page. `loadLatkit()` loads the
   WebAssembly once per page; `Gpu.create()` requests a WebGPU device.
 - **Data changes in place.** `data.apply(patch)` makes every change or none. `data.snapshot()` keeps a
@@ -65,3 +65,7 @@ Serve WebAssembly as `application/wasm`, in a secure context for WebGPU.
 
 From the repository: `cargo xtask wasm --dev` builds the package for development, and
 `cargo xtask package` builds an optimized tarball under `target/npm`.
+
+LATK v1 uses 64-bit frame indexes. Sample values use `f32` and axis coordinates use `f64`.
+`Video.record()` cleans up on failure; manual recordings must finish or abort.
+See [deployment and platform support](https://latkit.readthedocs.io/en/latest/deployment.html).

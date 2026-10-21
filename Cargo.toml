@@ -7,10 +7,13 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/lukelowry/latkit"
 
 [workspace.dependencies]
+url = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+toml_edit = "0.25"
 latkit = { version = "0.1.0", path = "crates/latkit", default-features = false }
 
 thiserror = "2"

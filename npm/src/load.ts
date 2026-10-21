@@ -7,7 +7,12 @@ export interface LoadOptions {
 }
 
 /** The initialized data and rendering API. GPU devices are requested separately by `Gpu.create()`. */
-export type Latkit = Awaited<ReturnType<typeof import('./runtime.js').initialize>>;
+export interface Latkit {
+  Data: typeof import('./runtime.js').Data;
+  Gpu: typeof import('./runtime.js').Gpu;
+  Shot: typeof import('./runtime.js').Shot;
+  colormapCss: typeof import('./runtime.js').colormapCss;
+}
 
 let configured: LoadOptions | undefined;
 let loading: Promise<Latkit> | undefined;

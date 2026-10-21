@@ -84,6 +84,7 @@ jobs:
       - run: cargo xtask wasm --dev
       - run: pnpm format:check
       - run: pnpm lint
+      - run: node npm/docs.mjs --check
       - run: pnpm typecheck
       - run: pnpm test
       - name: Hold the benchmark's work to its baseline

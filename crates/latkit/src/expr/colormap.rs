@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use super::Color;
 use super::ramp::{self, Spread};
+#[cfg(feature = "gpu")]
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Result};
 
@@ -51,6 +52,7 @@ impl ColormapKind {
     }
 
     /// The code shaders read it by.
+    #[cfg(feature = "gpu")]
     pub(crate) fn code(self) -> u32 {
         match self {
             ColormapKind::Sequential => wgsl::COLORMAP_SEQUENTIAL,

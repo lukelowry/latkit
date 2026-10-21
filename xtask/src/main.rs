@@ -39,6 +39,7 @@ fn main() -> ExitCode {
         "version" => version(),
         "package" => package(),
         "package-test" => package_test(),
+        "release" => run("node", &["npm/release.mjs"]),
         "examples" => wasm(true).and_then(|()| {
             let mut vite = vec!["--dir", "npm/examples", "exec", "vite"];
             if std::env::args().any(|a| a == "--open") {
@@ -48,7 +49,7 @@ fn main() -> ExitCode {
         }),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|browser|bench [flags]|wasm [--dev]|version|package|package-test|examples [--open]>"
+                "usage: cargo xtask <check|browser|bench [flags]|wasm [--dev]|version|package|package-test|release|examples [--open]>"
             );
             return ExitCode::FAILURE;
         }
@@ -137,9 +138,9 @@ fn browser_gate() -> Result {
 
 /// The directory `latkit`'s build script wrote the linked shaders and `shaders.json` to.
 fn shaders_dir() -> Result<String> {
-    eprintln!("$ cargo check --locked -p latkit --message-format=json");
+    eprintln!("$ cargo check --locked -p latkit --message-format=json-render-diagnostics");
     let output = Command::new(env!("CARGO"))
-        .args(["check", "--locked", "-p", "latkit", "--message-format=json"])
+        .args(["check", "--locked", "-p", "latkit", "--message-format=json-render-diagnostics"])
         .current_dir(root())
         .stderr(Stdio::inherit())
         .output()
@@ -217,7 +218,8 @@ fn package_test() -> Result {
             tarball,
         ],
     )?;
-    run("node", &["npm/examples/gate/package.ts"])
+    run("node", &["npm/examples/gate/package.ts"])?;
+    run("node", &["npm/build.mjs", "verified"])
 }
 
 /// Gives the crates the npm package's version, which changesets sets: one version for everything
@@ -228,25 +230,10 @@ fn version() -> Result {
     let version = manifest["version"].as_str().ok_or("npm/package.json has no version")?;
     let path = root().join("Cargo.toml");
     let toml = std::fs::read_to_string(&path).map_err(|e| format!("Cargo.toml: {e}"))?;
-    let current = env!("CARGO_PKG_VERSION");
-    let mut replaced = 0;
-    let updated: Vec<String> = toml
-        .lines()
-        .map(|line| {
-            let workspace = line == format!("version = \"{current}\"");
-            let dependency = line.starts_with("latkit = { version = \"");
-            if workspace || dependency {
-                replaced += 1;
-                line.replacen(current, version, 1)
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect();
-    if replaced != 2 {
-        return Err(format!("Cargo.toml: expected the workspace's and latkit's versions, found {replaced}"));
-    }
-    std::fs::write(&path, updated.join("\n") + "\n").map_err(|e| format!("Cargo.toml: {e}"))?;
+    let mut manifest = toml.parse::<toml_edit::DocumentMut>().map_err(|e| format!("Cargo.toml: {e}"))?;
+    manifest["workspace"]["package"]["version"] = toml_edit::value(version);
+    manifest["workspace"]["dependencies"]["latkit"]["version"] = toml_edit::value(version);
+    std::fs::write(&path, manifest.to_string()).map_err(|e| format!("Cargo.toml: {e}"))?;
     cargo(&["update", "--workspace", "--offline"])
 }
 

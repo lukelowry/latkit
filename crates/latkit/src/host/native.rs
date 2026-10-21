@@ -137,12 +137,19 @@ impl Host for Native {
 /// The bytes `request` names of a local file: none where there is no file.
 fn read(request: &Request) -> Result<Vec<u8>> {
     let url = &*request.url;
-    let path = url.strip_prefix("file://").unwrap_or(url);
-    if path.contains("://") {
-        return Err(Error::Unsupported(format!("the native host reads files, not {url}").into()));
-    }
-    let failed = |e: std::io::Error| Error::Io(format!("{path}: {e}").into());
-    let mut file = match std::fs::File::open(path) {
+    let path = if url.starts_with("file:") {
+        url::Url::parse(url)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .ok_or_else(|| Error::invalid(format!("invalid file URL: {url}")))?
+    } else {
+        if url.contains("://") {
+            return Err(Error::Unsupported(format!("the native host reads files, not {url}").into()));
+        }
+        std::path::PathBuf::from(url)
+    };
+    let failed = |e: std::io::Error| Error::Io(format!("{}: {e}", path.display()).into());
+    let mut file = match std::fs::File::open(&path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(failed(e)),

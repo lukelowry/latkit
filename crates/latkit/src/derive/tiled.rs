@@ -364,7 +364,7 @@ impl Set {
         }
         self.sampling = chosen.iter().any(|(_, choice)| matches!(choice, Choice::Sample(_)));
         let pinned: Vec<&Row> = ask.pinned.iter().filter(|r| r.data == self.name).collect();
-        let frames: Vec<Option<u32>> = sampled_frames(source, ask);
+        let frames: Vec<Option<u64>> = sampled_frames(source, ask);
         let pyramids: Vec<Version> = serving.iter().map(|(_, p)| p.made).collect();
         // Where rows draw, apart from what they hold: a patch writing values lays nothing out again.
         let laid = stamp_of((pyramids, &chosen, &pinned, rows_of(source)));
@@ -963,7 +963,7 @@ fn fields_of(expr: &Expr, out: &mut Vec<Name>) {
 }
 
 /// The frame shown of each sampled field marks read of a table drawn in part.
-fn sampled_frames(source: &Data, ask: &Ask<'_>) -> Vec<Option<u32>> {
+fn sampled_frames(source: &Data, ask: &Ask<'_>) -> Vec<Option<u64>> {
     let mut frames = Vec::new();
     for table in source.tables() {
         let Some(planned) = ask.plans.get(&(source.name().clone(), table.name.clone())) else { continue };

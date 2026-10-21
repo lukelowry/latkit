@@ -2,6 +2,7 @@
 
 mod color;
 mod colormap;
+#[cfg(feature = "gpu")]
 pub(crate) mod compile;
 pub(crate) mod cpu;
 mod form;
@@ -11,6 +12,7 @@ use std::ops::{Add, BitAnd, BitOr, Div, Mul, Neg, Not, RangeInclusive, Rem, Sub}
 use std::sync::Arc;
 
 pub use color::Color;
+#[cfg(feature = "gpu")]
 pub(crate) use colormap::ColormapKey;
 pub use colormap::{Colormap, ColormapKind, Stop};
 

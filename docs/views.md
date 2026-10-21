@@ -92,5 +92,14 @@ A frame does the work of what changed: a patch evaluates only the pages it wrote
 domain or a join reads them; a transition evaluates once and blends each frame; and rows drawn
 through tiles keep their places while the camera moves, so only arriving rows upload.
 
-Every handle has an idempotent `destroy()` and `Symbol.dispose`; destroying a `Gpu` destroys its
+`Data`, `Gpu`, `View`, `Canvas`, and `Image` have an idempotent `destroy()` and `Symbol.dispose`; destroying a `Gpu` destroys its
 canvases, views, and frame listeners.
+
+Videos are asynchronous resources: finish them with `await video.finish()` or cancel with
+`await video.abort(reason)`. `record` cleans up on errors automatically.
+
+`gpu.lost` tells whether the device is gone. Create a new GPU, views, and canvases to recover,
+then supply retained scenes and datasets. `view.failures` contains input/loading failures;
+`view.wantsFrame` is useful for custom scheduling. For manual rendering use `gpu.step(now)`;
+`gpu.done()` waits for drawing to settle, and `gpu.landed()` waits for pending work to arrive.
+`view.ground([x, y])` converts a canvas point to the scene's ground plane when it intersects.

@@ -8,33 +8,11 @@ video with the command line.
 npm install latkit
 ```
 
-```ts
-import { loadLatkit, Patch, field, type Scene } from 'latkit';
+Call `quickstart(canvas)` with your canvas element. Destroy the returned `gpu` and `data` when
+unmounting the application. This example is type-checked and rendered in the package consumer test.
 
-const { Data, Gpu } = await loadLatkit();
-const data = new Data('grid').apply(
-  new Patch().replace('Bus', [101, 102], { x: [0, 30], y: [0, 20], kv: [230, 115] }),
-);
-
-const scene: Scene = {
-  space: 'plane',
-  marks: [
-    {
-      vertices: {
-        of: ['grid', 'Bus'],
-        position: ['x', 'y'],
-        radius: 6,
-        color: field('kv').colormap('viridis'),
-      },
-    },
-  ],
-};
-
-const gpu = await Gpu.create();
-const view = gpu.view(scene);
-gpu.canvas(document.querySelector('canvas')!).show([view]);
-view.setData(data);
-view.fit();
+```{literalinclude} ../npm/test/consumer/quickstart.ts
+:language: typescript
 ```
 
 A **dataset** is named tables of columns, changed by **patches**. A **scene** says what to draw:
@@ -51,4 +29,10 @@ views
 pictures
 cli
 formats
+deployment
+rust
+reference/api
+reference/types
+reference/cli
+releasing
 ```

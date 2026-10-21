@@ -14,7 +14,7 @@ mod data;
 #[cfg(feature = "gpu")]
 mod derive;
 mod error;
-#[cfg(feature = "gpu")]
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 mod expr;
 mod geo;
 #[cfg(feature = "gpu")]
@@ -27,8 +27,8 @@ mod json;
 mod layout;
 #[cfg(feature = "gpu")]
 mod panels;
-#[cfg(feature = "gpu")]
 mod pending;
+pub mod resource;
 #[cfg(feature = "gpu")]
 mod scene;
 mod schema;
@@ -40,7 +40,6 @@ mod shot;
 mod tiles;
 #[cfg(feature = "gpu")]
 mod time;
-#[cfg(feature = "gpu")]
 mod url;
 #[cfg(feature = "gpu")]
 mod video;
@@ -50,25 +49,25 @@ mod view;
 pub mod web;
 
 pub use data::{
-    Data, Description, Envelope, FieldDescription, Id, Ids, Kind, Name, Patch, Row, Rows, Table, TableDescription,
-    Value, Values,
+    Data, DecodeLimits, Description, Envelope, FieldDescription, Id, Ids, Kind, Name, Patch, Row, Rows, Table,
+    TableDescription, Value, Values,
 };
+pub use data::{Order, Patches, Query};
 pub use error::{Error, Path, Result, Step};
+pub use expr::{
+    Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, hovered, pointer, selected,
+    units, when, zoom,
+};
 pub use image::{Image, ImageFormat};
 pub use json::from_json;
+pub use pending::{Pending, Resolver};
 pub use schema::schema;
 #[cfg(feature = "gpu")]
 pub use schema::schemas;
 #[cfg(feature = "gpu")]
 pub use {
-    data::{Order, Patches, Query},
-    expr::{
-        Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, hovered, pointer,
-        selected, units, when, zoom,
-    },
-    gpu::{Budget, Gpu, work::Work},
+    gpu::{Budget, DeviceEvents, Gpu, work::Work},
     panels::Panels,
-    pending::{Pending, Resolver},
     scene::{
         Areas, Axis, Controls, Diagram, Direction, Earth, Edges, Faces, Flow, Format, Grid, Interpolation, Label,
         Layered, Layout, Lines, Mark, Marker, Motion, Plane, Plot, Port, Projection, Route, Scene, Shadow, Shape, Side,

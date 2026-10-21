@@ -1,4 +1,5 @@
 import { loadLatkit, field, Patch, type Scene } from 'latkit';
+import { quickstart } from './quickstart';
 import wasmUrl from 'latkit/wasm?url';
 import workerUrl from 'latkit/worker?url';
 
@@ -148,6 +149,45 @@ async function run(custom: boolean, compiled: boolean) {
     'pictures write as PNG, JPEG, and WebP',
   );
   picture.destroy();
+  let videoTested = false;
+  if (
+    typeof VideoEncoder === 'function' &&
+    (
+      await VideoEncoder.isConfigSupported({
+        codec: 'avc1.42e01f',
+        width: 64,
+        height: 64,
+        framerate: 30,
+        bitrate: 100_000,
+        avc: { format: 'annexb' },
+      })
+    ).supported
+  ) {
+    videoTested = true;
+    const chunks: Uint8Array[] = [];
+    const output = new WritableStream<Uint8Array>({
+      write(bytes) {
+        chunks.push(bytes);
+      },
+    });
+    const video = new Shot([64, 64]).video(gpu, 30, output);
+    await video.record([headless], (time) => time < 0.1);
+    check(video.frames === 3 && !output.locked, 'video retains counters and releases its output');
+    check(
+      chunks.some((bytes) => new TextDecoder().decode(bytes).includes('ftyp')),
+      'video writes an MP4 header',
+    );
+    const cancelledOutput = new WritableStream<Uint8Array>();
+    const cancelled = new Shot([64, 64]).video(gpu, 30, cancelledOutput);
+    const pending = cancelled.frame([headless]);
+    const settled = Promise.allSettled([pending]);
+    await Promise.resolve();
+    await cancelled.abort('consumer cancellation');
+    check((await settled)[0].status === 'rejected', 'cancellation interrupts the WASM frame');
+    check(!cancelledOutput.locked, 'cancelled video releases the writer');
+    const restored = await new Shot([64, 64]).image([headless]);
+    restored.destroy();
+  }
   headless.destroy();
   check(
     (() => {
@@ -216,6 +256,14 @@ async function run(custom: boolean, compiled: boolean) {
   places.destroy();
   secondGpu.destroy();
   data.destroy();
+  const exampleCanvas = document.createElement('canvas');
+  exampleCanvas.width = exampleCanvas.height = 128;
+  document.body.append(exampleCanvas);
+  const example = await quickstart(exampleCanvas);
+  await until(() => example.view.stats.drawn === 2);
+  example.gpu.destroy();
+  example.data.destroy();
+  exampleCanvas.remove();
   const transient = await Gpu.create();
   await new Promise<void>((resolve) => {
     transient.on('frame', () => {
@@ -226,6 +274,7 @@ async function run(custom: boolean, compiled: boolean) {
   if (blob) URL.revokeObjectURL(blob);
   await new Promise<void>((resolve) => setTimeout(resolve, 50));
   return {
+    videoTested,
     initializationMs: initialized - started,
     gpuMs: deviceReady - initialized,
     firstFrameMs: firstFrame - started,

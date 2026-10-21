@@ -67,7 +67,7 @@ pub(crate) enum OpForm {
         field: String,
         #[serde(default)]
         level: u32,
-        first: u32,
+        first: u64,
         at: Vec<f64>,
         values: Vec<Option<f64>>,
     },

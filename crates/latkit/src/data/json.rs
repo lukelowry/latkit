@@ -8,7 +8,7 @@ use super::forms::{Column, DataForm, OpForm, patch};
 use super::name::Name;
 use super::ordered::Ordered;
 use super::patch::Patch;
-use crate::host::{Host, Request};
+use crate::resource::{Fetch, Request};
 use crate::{Error, Result};
 
 impl Patch {
@@ -39,12 +39,12 @@ impl Patch {
     /// document's own, or as it is when `base` is empty or the file's is absolute.
     ///
     /// ```no_run
-    /// # async fn example(host: &dyn latkit::host::Host) -> latkit::Result<()> {
+    /// # async fn example(host: &impl latkit::resource::Fetch) -> latkit::Result<()> {
     /// let json = r#"[{"append": {"at": 0.5, "table": "Bus", "fields": {"vm": {"file": "vm.f32", "dtype": "f32le", "count": 3}}}}]"#;
     /// let patch = latkit::Patch::load(json, "data/grid.json", host).await?; // reads data/vm.f32
     /// # Ok(()) }
     /// ```
-    pub async fn load(json: &str, base: &str, host: &dyn Host) -> Result<Patch> {
+    pub async fn load(json: &str, base: &str, host: &(impl Fetch + ?Sized)) -> Result<Patch> {
         let ops: Vec<OpForm> = crate::from_json(json)?;
         build(ops, base, host).await
     }
@@ -53,7 +53,7 @@ impl Patch {
 impl Data {
     /// A dataset from its JSON, `{"name": ..., "patch": [...]}`: its name and the patch that builds it,
     /// as its bytes are. The patch loads as [`Patch::load`] loads one.
-    pub async fn load(json: &str, base: &str, host: &dyn Host) -> Result<Data> {
+    pub async fn load(json: &str, base: &str, host: &(impl Fetch + ?Sized)) -> Result<Data> {
         let form: DataForm = crate::from_json(json)?;
         if form.name.is_empty() {
             return Err(Error::invalid("a dataset is named").at("name"));
@@ -84,7 +84,7 @@ impl schemars::JsonSchema for Patches {
 
 impl Patches {
     /// Each dataset's patch, in order, their slices fetched through `host` relative to `base`.
-    pub async fn load(self, base: &str, host: &dyn Host) -> Result<Vec<(Name, Patch)>> {
+    pub async fn load(self, base: &str, host: &(impl Fetch + ?Sized)) -> Result<Vec<(Name, Patch)>> {
         let mut patches = Vec::with_capacity(self.0.0.len());
         for (name, ops) in self.0.0 {
             let patch = build(ops, base, host).await.map_err(|e| e.at(name.as_str()))?;
@@ -96,7 +96,7 @@ impl Patches {
 
 /// The patch `ops` make: their slices of files fetched through `host` at once, relative to `base`,
 /// then each change built in order.
-async fn build(mut ops: Vec<OpForm>, base: &str, host: &dyn Host) -> Result<Patch> {
+async fn build(mut ops: Vec<OpForm>, base: &str, host: &(impl Fetch + ?Sized)) -> Result<Patch> {
     let mut slices: Vec<&mut Column> = ops
         .iter_mut()
         .flat_map(|op| op.columns().iter_mut().map(|(_, column)| column))
@@ -123,18 +123,13 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::host::{Raster, TextRun};
     use crate::{Kind, Pending, Row, Value};
 
     /// A host fetching from files in memory, and counting what it fetched.
     #[derive(Default)]
     struct Files(HashMap<String, Vec<u8>>, std::sync::Mutex<Vec<Request>>);
 
-    impl Host for Files {
-        fn rasterize(&self, _: &TextRun) -> Result<Raster> {
-            Err(Error::Unsupported("no text".into()))
-        }
-
+    impl Fetch for Files {
         fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
             self.1.lock().unwrap().push(request.clone());
             let bytes = self.0.get(&*request.url).map_or_else(Vec::new, |bytes| {

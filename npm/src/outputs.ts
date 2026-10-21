@@ -1,6 +1,6 @@
 /** Written by `node npm/build.mjs schema` from `npm/schema.json`, what latkit writes: do not edit. */
 
-import type { Camera, Row, Rows } from './inputs.js';
+import type { Camera, Id, Row, Rows } from './inputs.js';
 
 /**
  * What a dataset holds: its tables, their rows and fields, and the axis its sampled fields are
@@ -92,8 +92,8 @@ export type Phase = 'start' | 'move' | 'end';
 
 /** A sample of a traced field: its frame, the axis coordinate it was recorded at, and its value. */
 export interface Sample {
-  /** The frame, numbered from the first ever recorded. */
-  frame: number;
+  /** The frame, numbered from the first ever recorded. JSON uses a decimal string above 2^53 - 1. */
+  frame: Id;
   /** The axis coordinate. */
   at: number;
   /** The value. */

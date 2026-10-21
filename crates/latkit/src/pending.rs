@@ -38,6 +38,7 @@ impl<T> Pending<T> {
     }
 
     /// Wakes `waker` once the value is resolved: at once when it already is.
+    #[cfg(feature = "gpu")]
     pub(crate) fn notify(&self, waker: &Waker) {
         let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         match &mut *slot {
@@ -52,6 +53,7 @@ impl<T> Pending<T> {
 
     /// Reports a host job's failure even if its derivation keeps an earlier result. Called once
     /// before handing the pending value to a derivation; superseded/dropped consumers report nothing.
+    #[cfg(any(feature = "gpu", test))]
     pub(crate) fn report_errors(&self, errors: &Arc<Mutex<Vec<Error>>>) {
         let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         match &mut *slot {

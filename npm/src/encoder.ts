@@ -19,8 +19,8 @@ const LEVELS: readonly [level: number, perSecond: number, perFrame: number][] = 
   [0x3e, 16_711_680, 139_264],
 ];
 
-/** Profiles to try, best first: High, Main, Constrained Baseline. */
-const PROFILES = ['6400', '4d00', '42e0'];
+/** Constrained Baseline forbids B pictures; the MP4 writer uses equal decode and presentation times. */
+const PROFILES = ['42e0'];
 
 /** The codec configurations to try for `width`×`height` at `fps`, best first. */
 function configurations(
@@ -54,19 +54,36 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
   if (typeof VideoEncoder !== 'function')
     throw new Error('this browser has no WebCodecs VideoEncoder');
   const units: Unit[] = [];
-  // Units come out in the order pictures went in, with no B-frames, so each takes the next time.
-  const times: number[] = [];
+  const times: { timestamp: number; time: number }[] = [];
   let failure: unknown;
+  const waiters = new Set<() => void>();
+  const wake = () => {
+    for (const resolve of waiters) resolve();
+    waiters.clear();
+  };
   const video = new VideoEncoder({
     output(chunk) {
+      const expected = times.shift();
+      if (!expected || chunk.timestamp !== expected.timestamp) {
+        failure = new Error('the encoder reordered or omitted a frame');
+        close();
+        return;
+      }
       const bytes = new Uint8Array(chunk.byteLength);
       chunk.copyTo(bytes);
-      units.push([times.shift() ?? 0, chunk.type === 'key', bytes]);
+      units.push([expected.time, chunk.type === 'key', bytes]);
     },
     error(error) {
       failure = error;
+      wake();
     },
   });
+  video.addEventListener('dequeue', wake);
+  function close() {
+    if (video.state !== 'closed') video.close();
+    video.removeEventListener('dequeue', wake);
+    wake();
+  }
   let configured: Promise<void> | undefined;
   const configure = async () => {
     for (const config of configurations(width, height, fps, bitrate)) {
@@ -75,7 +92,7 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
     throw new Error(`this browser encodes no H.264 at ${width}×${height}, ${fps} frames a second`);
   };
   const failed = () => {
-    if (failure)
+    if (failure || video.state === 'closed')
       throw failure instanceof Error
         ? failure
         : new Error('the video encoder failed', { cause: failure });
@@ -84,12 +101,13 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
     async encode(nv12: Uint8Array, time: number, key: boolean): Promise<Unit[]> {
       await (configured ??= configure());
       failed();
-      times.push(time);
+      const timestamp = Math.round((time * 100) / 9);
+      times.push({ timestamp, time });
       const frame = new VideoFrame(nv12, {
         format: 'NV12',
         codedWidth: width,
         codedHeight: height,
-        timestamp: Math.round((time * 100) / 9),
+        timestamp,
         colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false },
       });
       try {
@@ -99,17 +117,24 @@ export function encoder(width: number, height: number, fps: number, bitrate: num
       }
       // The encoder sets the pace: a frame waits while two others are still being encoded.
       while (video.encodeQueueSize > 2) {
-        await new Promise((resolve) => video.addEventListener('dequeue', resolve, { once: true }));
+        await new Promise<void>((resolve) => waiters.add(resolve));
+        failed();
       }
       failed();
       return units.splice(0);
     },
     async finish(): Promise<Unit[]> {
-      await (configured ??= configure());
-      await video.flush();
-      video.close();
-      failed();
-      return units.splice(0);
+      try {
+        await (configured ??= configure());
+        failed();
+        await video.flush();
+        failed();
+        if (times.length) throw new Error('the encoder omitted a frame');
+        return units.splice(0);
+      } finally {
+        close();
+      }
     },
+    close,
   };
 }

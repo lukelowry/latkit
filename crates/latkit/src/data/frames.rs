@@ -32,8 +32,9 @@ const URL: &str = "{field}/{level}/{index}.latk";
 pub(crate) struct Listed {
     pub(crate) table: Name,
     pub(crate) field: Name,
+    pub(crate) levels: u32,
     #[serde(with = "range")]
-    pub(crate) frames: Range<u32>,
+    pub(crate) frames: Range<u64>,
 }
 
 /// What a manifest says: where the dataset without its sampled fields' entries lies, the entries a
@@ -53,12 +54,12 @@ mod range {
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-    pub(super) fn serialize<S: Serializer>(frames: &Range<u32>, s: S) -> Result<S::Ok, S::Error> {
+    pub(super) fn serialize<S: Serializer>(frames: &Range<u64>, s: S) -> Result<S::Ok, S::Error> {
         [frames.start, frames.end].serialize(s)
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Range<u32>, D::Error> {
-        match <[u32; 2]>::deserialize(d)? {
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Range<u64>, D::Error> {
+        match <[u64; 2]>::deserialize(d)? {
             [first, end] if first <= end => Ok(first..end),
             _ => Err(de::Error::custom("frames are [first, end], the first at most the end")),
         }
@@ -71,17 +72,21 @@ impl Manifest {
         let json: serde_json::Value = serde_json::from_slice(bytes).ok()?;
         json.get("frames")?.as_array()?;
         let manifest = crate::json::read::<Manifest, _>(&json).and_then(|m| {
-            if chunks(m.chunk) {
-                Ok(m)
-            } else {
-                Err(Error::invalid("a span holds a multiple of 8 entries, 8 to 2^20").at("chunk"))
+            if !chunks(m.chunk) {
+                return Err(Error::invalid("a span holds a multiple of 8 entries, 8 to 2^20").at("chunk"));
             }
+            for (i, field) in m.fields.iter().enumerate() {
+                if field.levels > super::samples::MAX_LEVEL {
+                    return Err(Error::invalid("sample levels run from 0 to 21").at("levels").at(i).at("frames"));
+                }
+            }
+            Ok(m)
         });
         Some(manifest.map_err(|e| e.at(MANIFEST)))
     }
 
     /// Where span `index` of `level` of the field listed `field`th lies, `url` its template.
-    pub(crate) fn span(url: &str, field: usize, level: u32, index: u32) -> String {
+    pub(crate) fn span(url: &str, field: usize, level: u32, index: u64) -> String {
         url.replace("{field}", &field.to_string())
             .replace("{level}", &level.to_string())
             .replace("{index}", &index.to_string())
@@ -107,6 +112,7 @@ impl Data {
         if !chunks(chunk) {
             return Err(Error::invalid("a span holds a multiple of 8 entries, 8 to 2^20").at("chunk"));
         }
+        let entries_per_span = u64::from(chunk);
         let mut base = self.clone();
         let mut fields = Vec::new();
         for table in self.tables() {
@@ -117,13 +123,15 @@ impl Data {
                 fields.push(Listed {
                     table: table.name.clone(),
                     field: name.clone(),
+                    levels: samples.levels(),
                     frames: samples.start()..samples.end(),
                 });
                 // Runs come level by level, in order, so each span is whole once the next begins.
-                let mut span: Option<((u32, u32), Patch)> = None;
+                let mut span: Option<((u32, u64), Patch)> = None;
                 for run in samples.runs() {
-                    for index in run.entries.start / chunk..run.entries.end.div_ceil(chunk) {
-                        let entries = run.entries.start.max(index * chunk)..run.entries.end.min((index + 1) * chunk);
+                    for index in run.entries.start / entries_per_span..run.entries.end.div_ceil(entries_per_span) {
+                        let entries = run.entries.start.max(index * entries_per_span)
+                            ..run.entries.end.min((index + 1).saturating_mul(entries_per_span));
                         let part = Run { level: run.level, entries };
                         let (at, values) = samples.read(&part, &rows);
                         let op =
@@ -179,7 +187,7 @@ mod tests {
         })
         .expect("tiles");
         let manifest = Manifest::from_bytes(&files[MANIFEST]).expect("a manifest").expect("valid");
-        assert_eq!(manifest.fields, [Listed { table: "Bus".into(), field: "vm".into(), frames: 0..100 }]);
+        assert_eq!(manifest.fields, [Listed { table: "Bus".into(), field: "vm".into(), levels: 2, frames: 0..100 }]);
         // 100 frames: 7 spans of 16 at level 0; 12 buckets of 8 in 1 span at level 1; 1 of 64 at level 2.
         let spans: Vec<&str> = files
             .keys()
@@ -195,7 +203,7 @@ mod tests {
         assert_eq!(back.to_bytes(), data.to_bytes(), "every span put back makes the history again");
         assert!(Manifest::from_bytes(br#"{"tiles": []}"#).is_none(), "TileJSON is no manifest");
         let backwards =
-            br#"{"data": "b", "chunk": 16, "url": "u", "frames": [{"table": "t", "field": "f", "frames": [3, 1]}]}"#;
+            br#"{"data": "b", "chunk": 16, "url": "u", "frames": [{"table": "t", "field": "f", "levels": 0, "frames": [3, 1]}]}"#;
         let error = Manifest::from_bytes(backwards).expect("a manifest").unwrap_err();
         assert!(error.to_string().starts_with("frames.json.frames[0].frames"), "{error}");
         assert!(data.to_tiles(12, |_, _| Ok(())).is_err());
