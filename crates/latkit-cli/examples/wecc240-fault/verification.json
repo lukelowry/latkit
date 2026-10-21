@@ -1,0 +1,22 @@
+{
+  "file": "animation.mp4",
+  "sha256": "cafe2f8bfbeb7187b22cdd7a35af136cad7d53a2f43aa5f877b86cabde7d987c",
+  "decoder": "7.1-essentials_build-www.gyan.dev built with gcc 14.2.0 (Rev1, Built by MSYS2 project)",
+  "codec": "h264",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "fps": 60.0,
+  "decoded_frames": 1561,
+  "duration_seconds": 26.016666666666666,
+  "decode_errors": 0,
+  "inspected_frame_indices": [
+    0,
+    250,
+    329,
+    340,
+    960,
+    1560
+  ]
+}

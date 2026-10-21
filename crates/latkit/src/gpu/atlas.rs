@@ -229,7 +229,7 @@ impl Atlas {
         let (buffer, group) = self.fit_work(device, pipelines, u64::from(at) * 4);
         let mut upload: Vec<u8> = bytemuck::cast_slice(&runs).to_vec();
         upload.extend_from_slice(&coverage);
-        queue.write_buffer(&buffer, 0, &upload);
+        queue.write_buffer_in(device, encoder, &buffer, 0, &upload);
         let most = laid.iter().map(size).fold([0, 0], |m, s| [m[0].max(s[0]), m[1].max(s[1])]);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -403,6 +403,10 @@ mod tests {
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let crate::gpu::Inner { atlas, pipelines, .. } = &mut *inner;
+        atlas.lay(device, queue, &mut encoder, pipelines);
+        // Another view can lay a smaller batch into the same scratch buffer before submission.
+        // Its upload must not replace the first batch's inputs before that batch has executed.
+        atlas.hold(Raster { size: [9, 7], coverage: vec![255; 63], baseline: 5.0 }).expect("second batch");
         atlas.lay(device, queue, &mut encoder, pipelines);
         let [l, t, r, b] = glyphs.rect;
         let (w, h) = (r - l, b - t);

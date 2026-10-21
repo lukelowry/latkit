@@ -94,6 +94,25 @@ impl Queue {
         self.raw.write_buffer(buffer, offset, bytes);
     }
 
+    /// Writes in command order, so a reused scratch buffer keeps earlier passes' inputs intact.
+    pub(crate) fn write_buffer_in(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        buffer: &wgpu::Buffer,
+        offset: u64,
+        bytes: &[u8],
+    ) {
+        use wgpu::util::DeviceExt;
+        self.counters.add(Count::Written, bytes.len() as u64);
+        let upload = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("latkit ordered upload"),
+            contents: bytes,
+            usage: wgpu::BufferUsages::COPY_SRC,
+        });
+        encoder.copy_buffer_to_buffer(&upload, 0, buffer, offset, bytes.len() as u64);
+    }
+
     /// Writes a data page's words into `buffer` at `offset`, counted as uploaded.
     #[expect(clippy::disallowed_methods, reason = "the counted upload")]
     pub(crate) fn upload(&self, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]) {

@@ -1,0 +1,97 @@
+{
+  "bus_count": 243,
+  "branch_count": 447,
+  "machine_count": 103,
+  "traced_machines": [
+    "4039_G"
+  ],
+  "traced_bus_ids": [
+    4005
+  ],
+  "events": [
+    {
+      "time": 1.0,
+      "type": "fault_on",
+      "bus": 4005,
+      "R": 0.0,
+      "X": 0.01
+    },
+    {
+      "time": 1.15,
+      "type": "fault_off",
+      "bus": 4005
+    }
+  ],
+  "gridkit_image_id": "sha256:befba9e16edce341888e73c05b9d2c35aedf1357fa18b54c56114dbe25ccd565",
+  "recording_hashes": {
+    "frequency.f32": {
+      "bytes": 2335716,
+      "sha256": "b7246f9a31c11fbaf71cf2096b56f17eff38d3a95b548e361ebdd7f8dbc5d4f3"
+    },
+    "voltage.f32": {
+      "bytes": 2335716,
+      "sha256": "dd22306b958667941a4c81885ba43304105f00cad92db2140132278aac664bf8"
+    },
+    "rotor.f32": {
+      "bytes": 990036,
+      "sha256": "53a6ec1b32450176ec3362feb64ca76544f88f3c6ec6bb6811395cd4ec348a39"
+    }
+  },
+  "frames": 1561,
+  "fps": 60,
+  "resolution": [
+    1920,
+    1080
+  ],
+  "seconds": 26.016666666666666,
+  "simulation_start_s": 0.0,
+  "simulation_end_s": 10.0,
+  "playback": "0.5x before 0.75 s; 0.1x from 0.75 to 1.5 s; 0.5x thereafter",
+  "color_domain_hz": [
+    -0.1,
+    0.1
+  ],
+  "height": "1.4 * asinh(df / 0.01) / asinh(0.1 / 0.01); exaggerated visual displacement",
+  "render_seconds": 7.429454600031022,
+  "output_bytes": 45918877,
+  "command": [
+    "<repo>/target/cli/latkit.exe",
+    "render",
+    "<repo>/target/wecc240-fault/render/map.json",
+    "<repo>/target/wecc240-fault/render/rotor.json",
+    "<repo>/target/wecc240-fault/render/voltage.json",
+    "--data",
+    "<repo>/target/wecc240-fault/render/grid.json",
+    "--data",
+    "states=<repo>/crates/latkit-cli/examples/branch-opening/states.geojson",
+    "--panel",
+    "0,0,0.68,1",
+    "--panel",
+    "0.68,0,0.32,0.5",
+    "--panel",
+    "0.68,0.5,0.32,0.5",
+    "--camera",
+    "<repo>/target/wecc240-fault/render/map-camera.json",
+    "--camera",
+    "<repo>/target/wecc240-fault/render/rotor-camera.json",
+    "--camera",
+    "<repo>/target/wecc240-fault/render/voltage-camera.json",
+    "--frames",
+    "<repo>/target/wecc240-fault/render/frames.jsonl",
+    "--deadline",
+    "120",
+    "--insets",
+    "20,12,12,8",
+    "--font",
+    "C:/Windows/Fonts/segoeui.ttf",
+    "--size",
+    "1920x1080",
+    "--fps",
+    "60",
+    "--bitrate",
+    "14000000",
+    "--output",
+    "<repo>/crates/latkit-cli/examples/wecc240-fault/animation.mp4"
+  ],
+  "sha256": "cafe2f8bfbeb7187b22cdd7a35af136cad7d53a2f43aa5f877b86cabde7d987c"
+}
