@@ -1,6 +1,7 @@
 # WECC240 fault — GridKit + Latkit CLI
 
-[Video](animation.mp4) · [Preview](preview.png)
+[Preview](preview.png) · The video is not in Git: [reproduce it](#reproduce) to write
+`animation.mp4` here.
 
 The reference WECC240 fault is applied at **John Day, bus 4005**, at 1.00 s and
 cleared at 1.15 s, with fault impedance R = 0, X = 0.01 p.u. The model contains
@@ -9,8 +10,8 @@ GridKit simulates 0–10 s; Latkit renders **1920 × 1080, 60 fps, 1,561 frames*
 into a 26.017-second H.264 MP4. Playback slows to 0.1× around the fault and runs
 at 0.5× elsewhere.
 
-The video, preview, case, compact recordings, and reproduction scripts are
-included in Git. Intermediate CSV and generated CLI inputs stay in `target/`.
+The preview, case, compact recordings, and reproduction scripts are included in
+Git. Intermediate CSV and generated CLI inputs stay in `target/`.
 
 ## Reproduce
 

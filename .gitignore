@@ -10,3 +10,6 @@ coverage/
 .impeccable/
 target/
 /npm/pkg/
+
+# The CLI examples' videos: each example's README says how to render its own.
+/crates/latkit-cli/examples/*/*.mp4
