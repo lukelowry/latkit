@@ -9,6 +9,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "MIT"
 repository = "https://github.com/lukelowry/latkit"
+homepage = "https://latkit.readthedocs.io"
 
 [workspace.dependencies]
 url = "2"

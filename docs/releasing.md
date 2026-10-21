@@ -11,7 +11,8 @@ workspace and dependency versions structurally.
    both Cargo crates. It publishes or verifies npm, the core crate, and the CLI in order.
 4. Tags are created only after all registry artifacts match the build. A retry skips identical
    artifacts and completes any missing publication. Different content at an existing version
-   stops the release; registry errors are never treated as absence.
+   stops the release; registry errors are never treated as absence. Once a version is tagged,
+   later commits at that version publish nothing.
 
 For recovery, rerun the failed workflow, or dispatch **Release** on `main`; manual recovery
 requires a successful CI run for the exact commit. Do not bump versions just to recover a partial

@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords = ["visualization", "rendering", "video", "graph", "cli"]
+categories = ["command-line-utilities", "visualization", "multimedia::video"]
 readme = "README.md"
 include = ["LICENSE", "src/**", "README.md"]
 

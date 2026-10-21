@@ -3,9 +3,8 @@
 Columnar data, queries, and scenes rendered with WebGPU, Vulkan, Metal, or DX12.
 [Guides](https://latkit.readthedocs.io) | [Rust API](https://docs.rs/latkit)
 
-```toml
-[dependencies]
-latkit = "0.1"
+```sh
+cargo add latkit
 ```
 
 ```rust

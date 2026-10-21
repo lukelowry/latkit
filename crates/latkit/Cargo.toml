@@ -6,7 +6,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords = ["visualization", "webgpu", "graph", "map", "plot"]
+categories = ["visualization", "rendering", "graphics", "wasm"]
 include = ["LICENSE", "src/**", "tests/fixtures/**", "build/**", "build.rs", "shaders/**", "colormaps/catalog.txt", "colormaps/NOTICES.md", "THIRD_PARTY.md", "README.md"]
+
+# Every feature's API, as CI documents it; target-gated code (Windows video, browser glue) compiles
+# out of this one target.
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = ["gpu"]

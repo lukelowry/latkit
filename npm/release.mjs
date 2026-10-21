@@ -58,6 +58,11 @@ async function release() {
   const report = read('target/npm/package.json');
   const { name, version } = read('npm/package.json');
   const git = (args) => run('git', args, { stdio: 'pipe', encoding: 'utf8' }).trim();
+  // Tags follow a complete release, so later commits at the same version have nothing to publish.
+  if (git(['tag', '--list', `${name}@${version}`]) !== '') {
+    console.log(`${name}@${version}: released`);
+    return;
+  }
   assert.equal(git(['status', '--porcelain']), '', 'release requires a clean, committed tree');
   assert.equal(
     report.commit,

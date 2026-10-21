@@ -15,6 +15,9 @@ draws them, in the browser through the npm package and natively through the CLI.
 | [Benchmark](benchmark)            | Each scenario's phases up its sizes, held to committed work and times                      |
 | [Docs](docs)                      | How-tos for the npm package and the CLI, on [Read the Docs](https://latkit.readthedocs.io) |
 
+The `@latkit/*` TypeScript packages, a lighter alternative without WebAssembly, are maintained on
+the [`npm/js`](https://github.com/lukelowry/latkit/tree/npm/js) branch.
+
 ```ts
 import { loadLatkit, Patch, type Scene } from 'latkit';
 
