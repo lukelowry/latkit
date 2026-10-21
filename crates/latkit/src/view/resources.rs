@@ -2,8 +2,9 @@
 //! the generation, and bind groups are rebuilt when a generation they were built from changes.
 //!
 //! Every shader's pass group (group 2) binds by one convention: 0 state, 1 frozen state, 2 extents,
-//! 3 normals, 4 domains, 5 probe, 6 depth, 7 sprites, 8 the text atlas, 9 lists, 10 the shadow map,
-//! 11 a level of it, 12 remap words, 13 labels, 14 the settled state, 15 icons, 16 row blocks.
+//! 3 normals, 4 domains, 5 probe words and what queries find, 6 depth, 7 sprites, 8 the text atlas,
+//! 9 lists, 10 the shadow map, 11 a level of it, 12 remap words, 13 labels, 14 the settled state,
+//! 15 icons, 16 row blocks, 17 the probe's step.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -34,6 +35,26 @@ impl EyeSlot {
     pub(crate) fn offset(self) -> u32 {
         (self as u64 * MARK_STRIDE) as u32
     }
+}
+
+/// The dynamic offset of the probe's step `step`, one of the `STEP_` codes.
+pub(crate) fn step(step: u32) -> u32 {
+    (u64::from(step) * MARK_STRIDE) as u32
+}
+
+/// The probe's steps, each at its own dynamic offset: a dispatch binds the one it takes.
+fn steps(device: &wgpu::Device) -> wgpu::Buffer {
+    use wgpu::util::DeviceExt as _;
+    let mut contents = vec![0_u8; step(wgsl::STEPS) as usize];
+    for code in 0..wgsl::STEPS {
+        let at = step(code) as usize;
+        contents[at..at + 4].copy_from_slice(&code.to_le_bytes());
+    }
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("latkit steps"),
+        contents: &contents,
+        usage: wgpu::BufferUsages::UNIFORM,
+    })
 }
 
 /// Samples per pixel: shader-drawn marks antialias themselves, so dense screens skip multisampling.
@@ -150,7 +171,9 @@ pub(crate) struct Resources {
     domains: Grown,
     extents: Grown,
     normals: Grown,
-    probe: wgpu::Buffer,
+    /// The probe's words, then what the running query finds.
+    probe: Grown,
+    steps: wgpu::Buffer,
     sprites: Grown,
     lists: Grown,
     labels: wgpu::Buffer,
@@ -174,7 +197,6 @@ pub(crate) struct Resources {
 impl Resources {
     pub(crate) fn new(device: &wgpu::Device) -> Resources {
         let storage = wgpu::BufferUsages::STORAGE;
-        let probe_bytes = u64::from(wgsl::PROBE_WORDS) * 4;
         let uniform = wgpu::BufferUsages::UNIFORM;
         Resources {
             frame: create(device, "latkit frame", uniform, size_of::<wgsl::Frame>() as u64),
@@ -192,7 +214,8 @@ impl Resources {
             domains: Grown::new(device, "latkit domains", storage),
             extents: Grown::new(device, "latkit extents", storage | wgpu::BufferUsages::COPY_SRC),
             normals: Grown::new(device, "latkit normals", storage),
-            probe: create(device, "latkit probe", storage | wgpu::BufferUsages::COPY_SRC, probe_bytes),
+            probe: Grown::new(device, "latkit probe", storage | wgpu::BufferUsages::COPY_SRC),
+            steps: steps(device),
             sprites: Grown::new(device, "latkit sprites", storage),
             lists: Grown::new(
                 device,
@@ -353,6 +376,13 @@ impl Resources {
         replaced
     }
 
+    /// Makes room for `words` probe words, what the running query finds included.
+    pub(crate) fn fit_probe(&mut self, device: &wgpu::Device, words: u32) {
+        if self.probe.ensure(device, u64::from(words.max(wgsl::PROBE_WORDS)) * 4) {
+            self.generation += 1;
+        }
+    }
+
     /// Makes room for `count` sprites.
     pub(crate) fn fit_sprites(&mut self, device: &wgpu::Device, count: usize) {
         if self.sprites.ensure(device, (count as u64 + 1) * size_of::<wgsl::Sprite>() as u64) {
@@ -428,7 +458,7 @@ impl Resources {
     }
 
     pub(crate) fn probe(&self) -> &wgpu::Buffer {
-        &self.probe
+        &self.probe.buffer
     }
 
     pub(crate) fn sprites(&self) -> &wgpu::Buffer {
@@ -534,7 +564,7 @@ impl Resources {
                     2 => self.extents.buffer.as_entire_binding(),
                     3 => self.normals.buffer.as_entire_binding(),
                     4 => self.domains.buffer.as_entire_binding(),
-                    5 => self.probe.as_entire_binding(),
+                    5 => self.probe.buffer.as_entire_binding(),
                     6 => wgpu::BindingResource::TextureView(
                         &self.targets.as_ref().expect("a frame drew before probing").depth,
                     ),
@@ -547,6 +577,11 @@ impl Resources {
                     14 => self.settled.as_ref().unwrap_or(&self.scratch).as_entire_binding(),
                     15 => wgpu::BindingResource::TextureView(&inner.icons.view),
                     16 => self.blocks.buffer.as_entire_binding(),
+                    17 => wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.steps,
+                        offset: 0,
+                        size: NonZeroU64::new(4),
+                    }),
                     other => unreachable!("no resource for pass binding {other}"),
                 };
                 wgpu::BindGroupEntry { binding: binding.slot, resource }

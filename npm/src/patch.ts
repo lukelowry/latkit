@@ -72,6 +72,9 @@ export class Patch {
   #count = 0;
   /** Where the operations start: after the header, the name, and their count. */
   #ops: number;
+  /** Appends of float frames to the same fields of every row of one table, waiting to be written as
+   * one: a field records its frames in one write, however many calls made them. */
+  #run: Appends | undefined;
 
   /** An empty patch, for whichever dataset it is applied to. */
   constructor(data?: string) {
@@ -190,7 +193,8 @@ export class Patch {
   /**
    * Records a frame at each axis coordinate of `at`: for each field, a value per row at every
    * coordinate, frame-major; of every row of `table`, or of rows `ids`, the rest holding their last
-   * values. A field's first frame makes it sampled.
+   * values. A field's first frame makes it sampled. Appends of float arrays to the same fields of
+   * every row, one after another, write as one change, so a frame a call costs no more than one call.
    */
   append(
     at: number | readonly number[],
@@ -198,23 +202,35 @@ export class Patch {
     fields: Readonly<Record<string, Values>>,
     ids?: RowIds,
   ): this {
-    return this.#op(OP.append, (w) => {
-      w.str(table);
-      if (ids === undefined) w.u8(0);
-      else {
-        w.u8(1);
-        writeIds(w, ids, table);
-      }
-      const frames = typeof at === 'number' ? [at] : at;
-      w.u32(frames.length);
-      for (const t of frames) w.f64(t);
-      const entries = Object.entries(fields);
-      w.u32(entries.length);
-      for (const [name, values] of entries) {
-        w.str(name);
-        writeValues(w, values, `${table}.${name}`);
-      }
-    });
+    const frames = typeof at === 'number' ? [at] : at;
+    const entries = Object.entries(fields);
+    const floats =
+      ids === undefined &&
+      entries.every(([, v]) => v instanceof Float64Array || v instanceof Float32Array);
+    const run = this.#run;
+    if (
+      floats &&
+      run?.table === table &&
+      run.fields.length === entries.length &&
+      entries.every(
+        ([name, v], i) =>
+          run.fields[i]!.name === name && run.fields[i]!.parts[0]!.constructor === v.constructor,
+      )
+    ) {
+      for (const t of frames) run.at.push(t);
+      entries.forEach(([, v], i) => run.fields[i]!.parts.push((v as Floats).slice()));
+      return this;
+    }
+    this.#flush();
+    if (floats) {
+      this.#run = {
+        table,
+        at: [...frames],
+        fields: entries.map(([name, v]) => ({ name, parts: [(v as Floats).slice()] })),
+      };
+      return this;
+    }
+    return this.#op(OP.append, (w) => writeAppend(w, table, ids, frames, entries));
   }
 
   /** Forgets every sampled field's frames before axis coordinate `before`. */
@@ -264,6 +280,8 @@ export class Patch {
 
   /** Appends `next`'s changes, to this patch's dataset. */
   extend(next: Patch): this {
+    this.#flush();
+    next.#flush();
     this.#writer.bytes(next.#writer.view().subarray(next.#ops));
     this.#count += next.#count;
     return this;
@@ -276,6 +294,7 @@ export class Patch {
 
   /** @internal The frame, without copying it: read at once, before the patch changes. */
   frame(): Uint8Array {
+    this.#flush();
     const view = this.#writer.view();
     const data = new DataView(view.buffer, view.byteOffset, view.byteLength);
     data.setBigUint64(4, BigInt(view.length), true);
@@ -283,8 +302,18 @@ export class Patch {
     return view;
   }
 
+  /** Writes the appends waiting as one, before anything after them. */
+  #flush(): void {
+    const run = this.#run;
+    if (!run) return;
+    this.#run = undefined;
+    const entries = run.fields.map(({ name, parts }): [string, Values] => [name, joined(parts)]);
+    this.#op(OP.append, (w) => writeAppend(w, run.table, undefined, run.at, entries));
+  }
+
   /** Writes an operation, or nothing when `body` throws. */
   #op(tag: number, body: (w: Writer) => void): this {
+    this.#flush();
     const mark = this.#writer.length;
     try {
       this.#writer.u8(tag);
@@ -295,6 +324,52 @@ export class Patch {
     }
     this.#count++;
     return this;
+  }
+}
+
+type Floats = Float64Array | Float32Array;
+
+/** Frames of the same fields of every row of a table: coordinates, and each field's values. */
+interface Appends {
+  table: string;
+  at: number[];
+  fields: { name: string; parts: Floats[] }[];
+}
+
+/** `parts` one after another, in the first's storage. */
+function joined(parts: readonly Floats[]): Floats {
+  if (parts.length === 1) return parts[0]!;
+  const length = parts.reduce((n, p) => n + p.length, 0);
+  const out =
+    parts[0] instanceof Float32Array ? new Float32Array(length) : new Float64Array(length);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+
+/** An append: its table, its rows or every row, its frames' coordinates, and its fields' values. */
+function writeAppend(
+  w: Writer,
+  table: string,
+  ids: RowIds | undefined,
+  frames: readonly number[],
+  entries: readonly (readonly [string, Values])[],
+): void {
+  w.str(table);
+  if (ids === undefined) w.u8(0);
+  else {
+    w.u8(1);
+    writeIds(w, ids, table);
+  }
+  w.u32(frames.length);
+  for (const t of frames) w.f64(t);
+  w.u32(entries.length);
+  for (const [name, values] of entries) {
+    w.str(name);
+    writeValues(w, values, `${table}.${name}`);
   }
 }
 

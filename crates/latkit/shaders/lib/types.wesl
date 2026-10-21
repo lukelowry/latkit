@@ -191,6 +191,17 @@ const PLACED_LABEL: u32 = 2u;
 const DROPPED: u32 = 4u;
 const STICKY: u32 = 8u;
 const ESTIMATED: u32 = 16u;
+// A text run whose distance field the GPU makes, as words at the start of the fields buffer: where its
+// coverage starts, its coverage's width and height, where its columns' least distances start, and
+// where its field starts and the words between the starts of its rows.
+const FIELD_COVERAGE: u32 = 0u;
+const FIELD_WIDTH: u32 = 1u;
+const FIELD_HEIGHT: u32 = 2u;
+const FIELD_COLUMNS: u32 = 3u;
+const FIELD_AT: u32 = 4u;
+const FIELD_ROW: u32 = 5u;
+const FIELD_WORDS: u32 = 6u;
+
 // A run table entry whose text is not set yet holds this flag as its first corner and the run's
 // estimated size as its second, so its label can be placed before it is set.
 const TEXT_ESTIMATE: u32 = 0x80000000u;
@@ -272,11 +283,25 @@ const PROBE_Y: u32 = 4u;
 const PROBE_UNDER: u32 = 5u;
 const PROBE_ROW: u32 = 6u;
 const PROBE_SEGMENT: u32 = 7u;
-// Where a located row lies on screen, and whether it shows.
+// Where a located row lies on screen, and whether it shows. What queries find follows the probe's words.
 const PROBE_LOCATE_X: u32 = 8u;
 const PROBE_LOCATE_Y: u32 = 9u;
 const PROBE_LOCATED: u32 = 10u;
 const PROBE_WORDS: u32 = 12u;
+
+// The steps of the probe program, as its step uniform names them: the hover's three, then the
+// queries', then the depth under the probe.
+const STEP_NEAREST: u32 = 0u;
+const STEP_TOPMOST: u32 = 1u;
+const STEP_DESCRIBE: u32 = 2u;
+const STEP_HITS: u32 = 3u;
+const STEP_BOXED: u32 = 4u;
+const STEP_LOCATE: u32 = 5u;
+const STEP_UNDER: u32 = 6u;
+const STEPS: u32 = 7u;
+// Words of a hit a query finds: its row, distance in sixty-fourths of a pixel, part, screen x and y,
+// and depth.
+const HIT_WORDS: u32 = 6u;
 
 // Overlay sprites.
 const SPRITE_LINE: u32 = 0u;
@@ -498,8 +523,8 @@ struct Mark {
     trace: u32,
     // Segments of each row when every row has as many; NONE when the mark's list numbers them.
     per_row: u32,
-    // Where the header of the mark's list of segments starts in the lists buffer, and of the list
-    // a query builds over its instances.
+    // Where the header of the mark's list of segments starts in the lists buffer, and where what the
+    // running query finds of it starts among the probe's words.
     list: u32,
     query: u32,
     // Where the mark's remap words start, while its transition is being frozen.

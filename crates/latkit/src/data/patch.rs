@@ -217,6 +217,60 @@ impl From<Table> for Patch {
     }
 }
 
+/// Appends to the same fields of every row of one table, one after another: recorded as one, so a
+/// field takes its frames in one write however many changes carried them.
+pub(crate) struct Appends {
+    table: Name,
+    at: Vec<f64>,
+    fields: Vec<(Name, Vec<Values>)>,
+}
+
+impl Appends {
+    pub(crate) fn new(table: Name, at: Vec<f64>, fields: Vec<(Name, Values)>) -> Appends {
+        Appends { table, at, fields: fields.into_iter().map(|(name, values)| (name, vec![values])).collect() }
+    }
+
+    /// Whether an append of `fields` at `at` to `table`, which has `rows` rows, carries the run on: the
+    /// same fields of the same kinds, a value for every row at each coordinate, coordinates that never
+    /// decrease. One that does not records on its own, so its error names it.
+    pub(crate) fn continues(&self, table: &Name, at: &[f64], fields: &[(Name, Values)], rows: Option<usize>) -> bool {
+        let Some(rows) = rows else { return false };
+        let last = self.at.last().copied().unwrap_or(f64::NEG_INFINITY);
+        *table == self.table
+            && fields.len() == self.fields.len()
+            && fields.iter().zip(&self.fields).all(|((name, values), (run, parts))| {
+                name == run && values.kind() == parts[0].kind() && values.len() == at.len() * rows
+            })
+            && at.iter().all(|t| t.is_finite())
+            && at.first().is_none_or(|&first| first >= last)
+            && at.windows(2).all(|w| w[0] <= w[1])
+    }
+
+    pub(crate) fn push(&mut self, at: Vec<f64>, fields: Vec<(Name, Values)>) {
+        self.at.extend(at);
+        for ((_, parts), (_, values)) in self.fields.iter_mut().zip(fields) {
+            parts.push(values);
+        }
+    }
+
+    /// The run as one append.
+    pub(crate) fn op(self) -> Op {
+        let fields = self
+            .fields
+            .into_iter()
+            .map(|(name, mut parts)| {
+                let values = if parts.len() == 1 {
+                    parts.pop().expect("a part")
+                } else {
+                    Values::concat(&parts.iter().collect::<Vec<_>>())
+                };
+                (name, values)
+            })
+            .collect();
+        Op::Append { table: self.table, at: self.at, ids: None, fields }
+    }
+}
+
 impl Op {
     /// Holds entries of `level` from `first`, as many as `at` holds coordinates of.
     pub(crate) fn frames(table: Name, field: Name, level: u32, first: u32, at: Vec<f64>, values: Vec<f32>) -> Op {

@@ -132,7 +132,6 @@ impl View {
         let Some((_, bytes)) = self.labels.placed.landed() else { return };
         let asked = std::mem::take(&mut self.labels.asked);
         let words: &[u32] = bytemuck::cast_slice(&bytes);
-        let gpu = self.gpu.clone();
         let started = Instant::now();
         let (mut set, mut left) = (0, false);
         'marks: for (i, slots) in asked {
@@ -168,7 +167,7 @@ impl View {
                 }
                 let Some(run) = self.run_of(i, code, inner) else { continue };
                 let host = inner.host.clone();
-                let Some(glyphs) = inner.atlas.text(&gpu.0.queue, host.as_deref(), &run) else { continue };
+                let Some(glyphs) = inner.atlas.text(host.as_deref(), &run) else { continue };
                 set += 1;
                 self.write_run(i, slots, code, run, glyphs);
             }

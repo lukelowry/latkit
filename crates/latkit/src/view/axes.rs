@@ -8,7 +8,6 @@ use super::View;
 use super::camera::Area;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
-use crate::gpu::work::Queue;
 use crate::host::TextRun;
 use crate::{Axis, Camera, Color, Format, Plot, Space, Theme};
 
@@ -108,7 +107,6 @@ pub(super) enum Align {
 /// What sets text for the overlay: the atlas, in one font, size, and color.
 pub(super) struct Writer<'a> {
     pub(super) inner: &'a mut Inner,
-    pub(super) queue: &'a Queue,
     pub(super) font: Arc<str>,
     pub(super) size_px: u32,
     pub(super) ratio: f64,
@@ -120,7 +118,7 @@ impl Writer<'_> {
     pub(super) fn text(&mut self, text: &str, anchor: [f64; 2], align: Align) -> Option<wgsl::Sprite> {
         let run = TextRun { text: text.into(), font: self.font.clone(), size_px: self.size_px, max_width: None };
         let host = self.inner.host.clone();
-        let glyphs = self.inner.atlas.text(self.queue, host.as_deref(), &run)?;
+        let glyphs = self.inner.atlas.text(host.as_deref(), &run)?;
         let [l, t, r, b] = glyphs.rect.map(f64::from);
         let (w, h) = ((r - l) / self.ratio, (b - t) / self.ratio);
         let [x, y] = match align {
@@ -146,12 +144,12 @@ impl Writer<'_> {
 impl View {
     /// The sprites drawn over the marks this frame: a plot's axes, the title and legends,
     /// and a box being selected.
-    pub(super) fn overlay(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
+    pub(super) fn overlay(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
         let evictions = inner.atlas.evictions;
-        let mut sprites = self.written(inner, queue);
+        let mut sprites = self.written(inner);
         // The atlas made room while setting this frame's text: set it again on the new packing.
         if inner.atlas.evictions != evictions {
-            sprites = self.written(inner, queue);
+            sprites = self.written(inner);
         }
         let theme = &self.scene.theme;
         let color = theme.selected.unwrap_or(theme.hover);
@@ -171,23 +169,21 @@ impl View {
     }
 
     /// The sprites of the overlay's text and what goes with it: a plot's axes, the title, and the legends.
-    fn written(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
-        let mut sprites = self.axes_sprites(inner, queue);
-        sprites.extend(self.annotations(inner, queue));
+    fn written(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
+        let mut sprites = self.axes_sprites(inner);
+        sprites.extend(self.annotations(inner));
         sprites
     }
 
-    fn axes_sprites(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
+    fn axes_sprites(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
         let Space::Plot(plot) = &self.scene.space else { return Vec::new() };
         let Camera::Plot { x, y: Some(y) } = self.drawn_camera() else { return Vec::new() };
-        self.axes(inner, queue, plot, &self.scene.theme, self.area(), x, y)
+        self.axes(inner, plot, &self.scene.theme, self.area(), x, y)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one frame's axes")]
     fn axes(
         &self,
         inner: &mut Inner,
-        queue: &Queue,
         plot: &Plot,
         theme: &Theme,
         area: Area,
@@ -201,7 +197,6 @@ impl View {
         let ratio = f64::from(self.pixel_ratio);
         let mut writer = Writer {
             inner,
-            queue,
             font: theme.font.clone(),
             size_px: (font * ratio).round().max(1.0) as u32,
             ratio,

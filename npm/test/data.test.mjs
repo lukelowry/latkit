@@ -152,6 +152,23 @@ test('changes apply in place, a snapshot keeps a version, and a patch names its 
   before.destroy();
 });
 
+test('appends one after another write as one change, each frame copied at its call', () => {
+  const frame = new Float32Array(2);
+  const patch = new Patch().replace('Bus', [1, 2], { x: [1, 2] });
+  for (let f = 0; f < 4; f++) {
+    frame.set([f, 10 * f]);
+    patch.append(f, 'Bus', { v: frame });
+  }
+  const bytes = patch.toBytes();
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // After the header and the empty name: the count of changes.
+  assert.equal(view.getUint32(16, true), 2, 'the replace, and one append of every frame');
+  const data = new Data('grid').apply(patch);
+  const v = (t) => data.get('Bus', 2, 'v', t);
+  assert.deepEqual([v(0), v(1), v(2), v(3)], [0, 10, 20, 30], 'each frame as it was at its call');
+  data.destroy();
+});
+
 test('time tiles hold runs of a sampled field, holes between them', () => {
   const data = new Data('grid').apply(new Patch().replace('Bus', [1, 2], { x: [1, 2] }));
   data.apply(

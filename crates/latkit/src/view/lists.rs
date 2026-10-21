@@ -157,19 +157,17 @@ impl Shown {
     }
 }
 
-/// Records the scan of the list the bound mark's uniform names: `query` scans its query's list.
+/// Records the scan of the list the bound mark's uniform names.
 pub(super) fn scan(
     pass: &mut wgpu::ComputePass<'_>,
     pipelines: &mut crate::gpu::pipelines::Pipelines,
     device: &wgpu::Device,
     items: u32,
-    query: bool,
 ) {
-    let shader = if query { Shader::ListsQuery } else { Shader::Lists };
-    pass.set_pipeline(&pipelines.compute(device, shader, "scan_blocks"));
+    pass.set_pipeline(&pipelines.compute(device, Shader::Lists, "scan_blocks"));
     dispatch(pass, items.max(1));
-    pass.set_pipeline(&pipelines.compute(device, shader, "scan_sums"));
+    pass.set_pipeline(&pipelines.compute(device, Shader::Lists, "scan_sums"));
     pass.dispatch_workgroups(1, 1, 1);
-    pass.set_pipeline(&pipelines.compute(device, shader, "add_sums"));
+    pass.set_pipeline(&pipelines.compute(device, Shader::Lists, "add_sums"));
     dispatch(pass, items);
 }

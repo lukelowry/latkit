@@ -105,7 +105,7 @@ impl View {
         self.label_words(&mut uniform, dt);
         let main = uniforms::eye(&projected, self.size, self.pixel_ratio);
         let light = self.shade(&mut uniform, &main);
-        let sprites = self.overlay(&mut inner, queue);
+        let sprites = self.overlay(&mut inner);
         self.lay_out_blocks();
         self.write_uniforms(&uniform, &main, light.as_ref(), &sprites);
         if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some(), travel > 0.0) {
@@ -308,16 +308,14 @@ impl View {
         }
     }
 
-    /// Lays out the lists buffer: the marks' segment lists, then the lists of this frame's query,
-    /// when it `answers` them, whose words and depth use it returns. A buffer replaced empty counts
+    /// Lays out the lists buffer, the marks' segment lists, and takes this frame's query when it
+    /// `answers` them, returning its words and whether it reads depth. A buffer replaced empty counts
     /// every segment again.
     fn lay_out_lists(&mut self, answers: bool) -> Option<([f32; 4], bool)> {
         self.lay_out_segments();
-        let query = if answers { self.next_query() } else { None };
-        let words = self.queries.words().max(self.segment_words);
         let device = &self.gpu.0.device;
-        self.resources.as_mut().expect("created").fit_lists(device, u64::from(words));
-        query
+        self.resources.as_mut().expect("created").fit_lists(device, u64::from(self.segment_words));
+        if answers { self.next_query() } else { None }
     }
 
     /// Writes the frame's uniform, its eyes, every mark's uniform, and the overlay's sprites.
@@ -469,8 +467,9 @@ impl View {
             }
             for text in &program.texts {
                 let column = &program.columns[text.column as usize];
-                let code = table_of(column, &source, &self.data)
-                    .map_or(wgsl::NONE, |(d, t)| inner.dictionaries.field(d, &t.name, &column.name).code(&text.text));
+                let code = table_of(column, &source, &self.data).map_or(wgsl::NONE, |(d, t)| {
+                    inner.dictionaries.field(d, &t.name, &column.name).code_of(&text.text)
+                });
                 shown.constants[text.constant as usize] = code;
             }
         }

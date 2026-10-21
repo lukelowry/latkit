@@ -9,7 +9,6 @@ use super::View;
 use super::axes::{Align, Writer, label, line, step, ticks};
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
-use crate::gpu::work::Queue;
 use crate::{Axis, Color, Colormap, ColormapKind, Theme};
 
 /// CSS pixels between the view's edge and what is written there.
@@ -27,7 +26,7 @@ const SMALL: f64 = 0.9;
 
 impl View {
     /// The sprites of the scene's title and subtitle, and of its marks' legends.
-    pub(super) fn annotations(&self, inner: &mut Inner, queue: &Queue) -> Vec<wgsl::Sprite> {
+    pub(super) fn annotations(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
         let scene = &self.scene;
         let legends =
             || scene.marks.iter().filter_map(|m| Some((m.style().legend.as_ref()?, m.style().color.as_ref()?)));
@@ -42,7 +41,7 @@ impl View {
         let font = f64::from(theme.font_size);
         let writer = |inner: &mut Inner, scale: f64, color: Color, f: &mut dyn FnMut(&mut Writer<'_>)| {
             let size_px = (font * scale * ratio).round().max(1.0) as u32;
-            f(&mut Writer { inner, queue, font: theme.font.clone(), size_px, ratio, color });
+            f(&mut Writer { inner, font: theme.font.clone(), size_px, ratio, color });
         };
         let mut sprites = Vec::new();
         let mut y = area[1];

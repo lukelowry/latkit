@@ -15,13 +15,7 @@ import package::lib::path::{row_segments, path_point, path_length, PATH};
 var<workgroup> tile: array<u32, 256>;
 var<workgroup> shared_items: u32;
 
-// The list this dispatch scans: the one the mark's query builds, or the mark's own.
-@if(query)
-fn header() -> u32 {
-    return mark.query;
-}
-
-@if(!query)
+// The list this dispatch scans: the mark's.
 fn header() -> u32 {
     return mark.list;
 }
@@ -101,7 +95,6 @@ fn add_sums(@builtin(global_invocation_id) id: vec3u) {
 // A mark's segments, numbered by its list: each row counts the segments of its path, then writes
 // its row at each of their places, with how far along its path each starts, so a segment's instance
 // finds its row, its index in it, and where dashes and comets stand at its start.
-@if(!query)
 @compute @workgroup_size(256)
 fn count_segments(@builtin(global_invocation_id) id: vec3u) {
     let i = item(id);
@@ -110,7 +103,6 @@ fn count_segments(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
-@if(!query)
 @compute @workgroup_size(256)
 fn write_segments(@builtin(global_invocation_id) id: vec3u) {
     let i = item(id);

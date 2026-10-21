@@ -1,20 +1,23 @@
 //! Queries: every row within reach of a point, every row in a box, and where a row lies on screen,
-//! answered on the GPU through the geometry the frame drew and read back a frame or two later. Each
-//! queried mark lists what it finds by count → scan → write. One query runs at a time; the rest
+//! answered on the GPU by each mark's probe program through the geometry the frame drew, and read back
+//! a frame or two later. What a query finds of each mark follows the probe's words: the hits it keeps,
+//! after how many it found and how many it keeps, or a bit per row. One query runs at a time; the rest
 //! wait their turn.
 
 use std::collections::VecDeque;
 
+use rustc_hash::FxHashSet;
+
 use super::View;
 use super::event::{Hit, Trigger};
-use super::lists::{List, scan};
-use super::passes::{dispatch, offset};
-use super::resources::EyeSlot;
+use super::resources::{EyeSlot, step};
 use crate::gpu::Inner;
-use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
-use crate::gpu::shaders::{self as wgsl, Shader};
+use crate::gpu::shaders as wgsl;
 use crate::{Pending, Resolver, Row};
+
+/// Hits a mark keeps: past them, a query counts hits but keeps none.
+const HITS: u32 = 1024;
 
 /// A question for the GPU.
 pub(crate) enum Ask {
@@ -39,29 +42,49 @@ impl Ask {
         }
     }
 
-    /// Entries a mark keeps, and words per entry.
-    fn entries(&self, instances: u32) -> (u32, u32) {
+    /// The probe program's step answering it.
+    fn step(&self) -> u32 {
         match self {
-            Ask::Hits { .. } => (instances.min(1024), 6),
-            Ask::Boxed { .. } => (instances, 1),
+            Ask::Hits { .. } => wgsl::STEP_HITS,
+            Ask::Boxed { .. } => wgsl::STEP_BOXED,
+            Ask::Locate { .. } => wgsl::STEP_LOCATE,
+        }
+    }
+
+    /// What it keeps of a mark of `instances` instances and `rows` rows, hits or rows, and the words
+    /// that takes.
+    fn room(&self, instances: u32, rows: u32) -> (u32, u32) {
+        match self {
+            Ask::Hits { .. } => {
+                let kept = instances.min(HITS);
+                (kept, 2 + kept * wgsl::HIT_WORDS)
+            }
+            Ask::Boxed { .. } => (rows, rows.div_ceil(32)),
             Ask::Locate { .. } => (0, 0),
         }
     }
 }
 
-/// A query this frame runs: what it asks, the marks it asks, their lists, and the words of the
-/// lists buffer where those start and end.
-struct Running {
-    ask: Ask,
-    marks: Vec<(usize, List)>,
-    words: [u32; 2],
+/// What a query finds of mark `mark`: from word `at` of the probe's, `room` hits or rows.
+#[derive(Clone, Copy)]
+struct Found {
+    mark: usize,
+    at: u32,
+    room: u32,
 }
 
-/// A query whose answer the GPU is copying back, from word `base` of the lists buffer.
+/// A query this frame runs: what it asks, what it finds of each mark it asks, and the words that
+/// takes past the probe's.
+struct Running {
+    ask: Ask,
+    found: Vec<Found>,
+    words: u32,
+}
+
+/// A query whose answer the GPU is copying back.
 struct Reading {
     ask: Ask,
-    marks: Vec<(usize, List)>,
-    base: u32,
+    found: Vec<Found>,
     readback: Readback,
 }
 
@@ -76,11 +99,6 @@ impl Queries {
     /// Whether a query waits to run.
     pub(crate) fn due(&self) -> bool {
         !self.waiting.is_empty() || self.running.is_some()
-    }
-
-    /// Where the running query's lists end in the lists buffer, in words.
-    pub(crate) fn words(&self) -> u32 {
-        self.running.as_ref().map_or(0, |r| r.words[1])
     }
 }
 
@@ -132,8 +150,8 @@ impl View {
         Some(Row { data: style.data.clone(), table: style.table.clone(), id })
     }
 
-    /// Takes the next query for this frame when none runs, lays out its lists, and returns its
-    /// query words and whether it reads depth.
+    /// Takes the next query for this frame when none runs, makes room for what it finds past the
+    /// probe's words, and returns its query words and whether it reads depth.
     pub(super) fn next_query(&mut self) -> Option<([f32; 4], bool)> {
         if self.queries.running.is_some() || self.queries.reading.is_some() {
             return None;
@@ -154,104 +172,66 @@ impl View {
             return self.next_query();
         }
         let words = ask.words(&marks, self);
-        // The query's lists follow the marks' segment lists.
-        let base = self.segment_words;
-        let mut front = base;
-        let sizes: Vec<(usize, u32, u32, u32)> = marks
-            .iter()
-            .map(|&i| {
-                let items = self.marks[i].live_instances();
-                let (kept, stride) = ask.entries(items);
-                (i, items, kept, stride)
-            })
-            .collect();
-        let front_total: u32 = sizes.iter().map(|&(_, _, kept, stride)| List::front_words(kept, stride)).sum();
-        let mut back = base + front_total;
-        let mut lists = Vec::new();
-        for (i, items, kept, stride) in sizes {
-            let list = List::at(front, back, items, kept, stride);
-            front += List::front_words(kept, stride);
-            back += List::back_words(items);
-            self.marks[i].query = list.header;
-            lists.push((i, list));
+        let mut at = wgsl::PROBE_WORDS;
+        let mut found = Vec::with_capacity(marks.len());
+        for i in marks {
+            let (room, taken) = ask.room(self.marks[i].live_instances(), self.marks[i].rows);
+            self.marks[i].query = at;
+            found.push(Found { mark: i, at, room });
+            at += taken;
         }
-        let depth = !matches!(ask, Ask::Boxed { .. });
-        self.queries.running = Some(Running { ask, marks: lists, words: [base, back] });
+        let device = &self.gpu.0.device;
+        self.resources.as_mut().expect("created").fit_probe(device, at);
+        let depth = matches!(ask, Ask::Hits { .. });
+        self.queries.running = Some(Running { ask, found, words: at - wgsl::PROBE_WORDS });
         Some((words, depth))
     }
 
-    /// Records the running query's passes and the copy of its answer.
+    /// Records the running query's step over every mark it asks, and the copy of what it found.
     pub(super) fn run_query(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) {
-        let Some(running) = self.queries.running.take() else { return };
+        let Some(Running { ask, found, words }) = self.queries.running.take() else { return };
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         let resources = self.resources.as_mut().expect("created before queries");
-        for (_, list) in &running.marks {
-            queue.write_buffer(
-                resources.lists(),
-                u64::from(list.header) * 4,
-                bytemuck::cast_slice(&list.header_words(0)),
-            );
+        let probe = resources.probe().clone();
+        let start = u64::from(wgsl::PROBE_WORDS) * 4;
+        // What it finds starts out empty: no hits, with room for those each mark keeps; no rows.
+        match &ask {
+            Ask::Hits { .. } => {
+                for f in &found {
+                    queue.write_buffer(&probe, u64::from(f.at) * 4, bytemuck::cast_slice(&[0, f.room]));
+                }
+            }
+            Ask::Boxed { .. } if words > 0 => encoder.clear_buffer(&probe, start, Some(u64::from(words) * 4)),
+            Ask::Boxed { .. } | Ask::Locate { .. } => {}
         }
         let shader = crate::gpu::pipelines::probe(resources.samples());
         let groups = resources.groups(&gpu.0, inner);
-        let probe_group = resources.pass(device, inner, shader);
-        let lists_group = resources.pass(device, inner, Shader::ListsQuery);
-        let (count, write) = match &running.ask {
-            Ask::Hits { .. } => ("count_hits", "write_hits"),
-            Ask::Boxed { .. } => ("count_boxed", "write_boxed"),
-            Ask::Locate { .. } => ("locate", ""),
-        };
+        let group = resources.pass(device, inner, shader);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("latkit query"),
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
-            for (i, list) in &running.marks {
-                let probing =
-                    |entry| Variant::probe(shader, entry, self.marks[*i].primitive()).path(self.marks[*i].path());
-                pass.set_bind_group(1, &groups.mark, &[offset(*i)]);
-                pass.set_bind_group(2, &probe_group, &[]);
-                pass.set_pipeline(&inner.pipelines.compute_pipeline(device, probing(count)));
-                if write.is_empty() {
-                    pass.dispatch_workgroups(1, 1, 1);
-                    continue;
-                }
-                dispatch(&mut pass, list.items);
-                pass.set_bind_group(2, &lists_group, &[]);
-                scan(&mut pass, &mut inner.pipelines, device, list.items, true);
-                pass.set_bind_group(2, &probe_group, &[]);
-                pass.set_pipeline(&inner.pipelines.compute_pipeline(device, probing(write)));
-                dispatch(&mut pass, list.items);
+            pass.set_bind_group(2, &group, &[step(ask.step())]);
+            for f in &found {
+                self.probe_step(&mut pass, inner, shader, &groups.mark, f.mark, ask.step());
             }
         }
-        let resources = self.resources.as_ref().expect("created");
-        let readback = if let Ask::Locate { .. } = &running.ask {
-            let at = u64::from(wgsl::PROBE_LOCATE_X) * 4;
-            Readback::new(&inner.readbacks, device, encoder, resources.probe(), at, 16, &self.waker)
-        } else {
-            let front: u32 = running.marks.iter().map(|(_, l)| List::front_words(l.kept, l.stride)).sum();
-            let base = u64::from(running.words[0]) * 4;
-            Readback::new(
-                &inner.readbacks,
-                device,
-                encoder,
-                resources.lists(),
-                base,
-                u64::from(front.max(1)) * 4,
-                &self.waker,
-            )
+        let (at, bytes) = match &ask {
+            Ask::Locate { .. } => (u64::from(wgsl::PROBE_LOCATE_X) * 4, 16),
+            _ => (start, u64::from(words.max(1)) * 4),
         };
-        let base = running.words[0];
-        self.queries.reading = Some(Reading { ask: running.ask, marks: running.marks, base, readback });
+        let readback = Readback::new(&inner.readbacks, device, encoder, &probe, at, bytes, &self.waker);
+        self.queries.reading = Some(Reading { ask, found, readback });
     }
 
     /// Answers a query whose readback landed.
     pub(super) fn settle_query(&mut self) {
         let Some(reading) = &self.queries.reading else { return };
         let Some(bytes) = reading.readback.take() else { return };
-        let Reading { ask, marks, base, .. } = self.queries.reading.take().expect("reading");
+        let Reading { ask, found, .. } = self.queries.reading.take().expect("reading");
         let words: Vec<u32> = match bytes {
             Ok(bytes) => bytemuck::cast_slice(&bytes).to_vec(),
             Err(error) => {
@@ -264,42 +244,51 @@ impl View {
             }
         };
         match ask {
-            Ask::Hits { reply, .. } => reply.resolve(Ok(self.hits(&marks, &words, base))),
+            Ask::Hits { reply, .. } => reply.resolve(Ok(self.hits(&found, &words))),
             Ask::Boxed { trigger, .. } => {
                 let mut rows = Vec::new();
-                for &(i, list) in &marks {
-                    if !self.marks[i].mark.style().interaction.select {
-                        continue;
-                    }
-                    for index in entries(&words, list, base) {
-                        if let Some(row) = self.row_at(i, index[0])
-                            && !rows.contains(&row)
-                        {
-                            rows.push(row);
+                let mut seen = FxHashSet::default();
+                for f in found.iter().filter(|f| self.marks[f.mark].mark.style().interaction.select) {
+                    for (k, &bits) in words_at(&words, f.at, f.room.div_ceil(32)).iter().enumerate() {
+                        let mut bits = bits;
+                        while bits != 0 {
+                            let index = k as u32 * 32 + bits.trailing_zeros();
+                            bits &= bits - 1;
+                            if let Some(row) = self.row_at(f.mark, index)
+                                && seen.insert(row.clone())
+                            {
+                                rows.push(row);
+                            }
                         }
                     }
                 }
                 self.reselect(rows, Some(trigger));
             }
             Ask::Locate { reply, .. } => {
-                let found = words.get(2).is_some_and(|&w| w != 0);
-                let point = found.then(|| [f32::from_bits(words[0]), f32::from_bits(words[1])]);
+                let shown = words.get(2).is_some_and(|&w| w != 0);
+                let point = shown.then(|| [f32::from_bits(words[0]), f32::from_bits(words[1])]);
                 reply.resolve(Ok(point));
             }
         }
         self.wake();
     }
 
-    fn hits(&self, marks: &[(usize, List)], words: &[u32], base: u32) -> Vec<Hit> {
+    fn hits(&self, found: &[Found], words: &[u32]) -> Vec<Hit> {
         let view = self.projected();
         // Nearest first, the mark drawn last first among equals, and a port before its marker; each
         // row answers once, where it is nearest.
-        let mut found: Vec<(usize, &[u32])> =
-            marks.iter().flat_map(|&(i, list)| entries(words, list, base).map(move |entry| (i, entry))).collect();
-        found.sort_by_key(|&(i, entry)| (entry[1], std::cmp::Reverse(i), std::cmp::Reverse(entry[2])));
-        let mut seen = rustc_hash::FxHashSet::default();
+        let mut kept: Vec<(usize, &[u32; wgsl::HIT_WORDS as usize])> = found
+            .iter()
+            .flat_map(|f| {
+                let count = words_at(words, f.at, 1).first().map_or(0, |&n| n.min(f.room));
+                let entries = words_at(words, f.at + 2, count * wgsl::HIT_WORDS);
+                entries.as_chunks().0.iter().map(move |entry| (f.mark, entry))
+            })
+            .collect();
+        kept.sort_by_key(|&(i, entry)| (entry[1], std::cmp::Reverse(i), std::cmp::Reverse(entry[2])));
+        let mut seen = FxHashSet::default();
         let mut hits = Vec::new();
-        for (i, entry) in found {
+        for (i, entry) in kept {
             if !seen.insert((i, entry[0])) {
                 continue;
             }
@@ -321,11 +310,8 @@ impl View {
     }
 }
 
-/// The entries of `list` in the answer's words, read from word `base`, each `stride` words.
-fn entries(words: &[u32], list: List, base: u32) -> impl Iterator<Item = &[u32]> {
-    let header = (list.header - base) as usize;
-    let total = words.get(header + wgsl::LIST_DRAW as usize + 1).copied().unwrap_or(0).min(list.kept) as usize;
-    let start = (list.entries - base) as usize;
-    let stride = list.stride.max(1) as usize;
-    words.get(start..start + total * stride).unwrap_or(&[]).chunks_exact(stride)
+/// `len` words from word `at` of the probe's, in a query's answer read from past the probe's words.
+fn words_at(words: &[u32], at: u32, len: u32) -> &[u32] {
+    let start = (at - wgsl::PROBE_WORDS) as usize;
+    words.get(start..start + len as usize).unwrap_or(&[])
 }

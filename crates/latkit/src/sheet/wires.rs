@@ -4,7 +4,8 @@
 //! through a net's middle; bends run through the points of a path field; an orthogonal wire routes
 //! around every block. A route holds until its terminals move or a box near it changes. Then it
 //! routes again on the frame when few do or rows are being dragged, else in a host job, keeping its
-//! old path while its terminals hold, or an elbow while they moved, until the job answers.
+//! old path while its terminals hold, or an elbow while they moved, until the job answers. After an
+//! edit of a few vertices, only the wires meeting them and those it makes route again are worked out.
 
 use std::hash::{Hash, Hasher};
 
@@ -46,6 +47,27 @@ impl Routed {
         let reach = lines.iter().flatten().fold(EMPTY, |reach, &p| union(reach, dot(p)));
         Routed { lines, terminals, reach, stale: false }
     }
+
+    /// A wire waiting for its first route: due until it has one, and in nothing's way.
+    fn waiting() -> Routed {
+        Routed { lines: Vec::new(), terminals: 0, reach: EMPTY, stale: true }
+    }
+}
+
+/// What wiring keeps between updates, so an edit works out only the wires it reaches: each edge mark's
+/// rows' parts, the edge and net rows meeting each vertex, and each edge mark's lanes.
+#[derive(Default)]
+pub(crate) struct Wired {
+    pub(crate) parts: Vec<Vec<Parts>>,
+    meeting: Vec<Vec<[u32; 2]>>,
+    lanes: Vec<Option<Vec<f64>>>,
+}
+
+/// What changed since wires were last worked out: the boxes that moved, added, or went, and after an
+/// edit of a few rows the vertices it touched; with none, every row is worked out.
+pub(crate) struct Change<'a> {
+    pub(crate) moved: &'a [Rect],
+    pub(crate) touched: Option<&'a [usize]>,
 }
 
 /// Routes a host job works out: each row it answers for by its key, with the stamp of its terminals
@@ -58,11 +80,12 @@ pub(crate) struct Routing {
     clearance: f64,
 }
 
-/// What wires are worked out from: the diagram's vertices and vertex marks, and how far apart parallel
-/// wires run, units, which is also how round their bends are.
+/// What wires are worked out from: the diagram's vertices, vertex marks, and edge marks, and how far
+/// apart parallel wires run, units, which is also how round their bends are.
 pub(crate) struct Context<'a> {
     pub(crate) vertices: &'a [Vertex],
     pub(crate) marks: &'a [VertexMark<'a>],
+    pub(crate) edges: &'a [EdgeMark<'a>],
     pub(crate) spacing: f64,
 }
 
@@ -122,31 +145,52 @@ pub(crate) fn moved(before: &FxHashMap<Row, Rect>, vertices: &[Vertex]) -> Vec<R
     moved
 }
 
-/// Each edge mark's rows' paths, y down: worked out at once where straight or bent, routed where
-/// orthogonal: on the frame while the budget lasts, else in a job, `routes` holding what was routed
-/// and the job under way.
+/// Each edge mark's rows' paths, y down, into `wired`: worked out at once where straight or bent,
+/// routed where orthogonal: on the frame while the budget lasts, else in a job, `routes` holding what
+/// was routed and the job under way. After an edit, only the rows it reaches; the rows worked out.
 pub(crate) fn paths(
     context: &Context<'_>,
-    edge_marks: &[EdgeMark<'_>],
     input: &Input<'_>,
     jobs: &mut Jobs<'_>,
-    moved: &[Rect],
+    change: &Change<'_>,
+    wired: &mut Wired,
     (routes, routing): (&mut FxHashMap<Row, Routed>, &mut Option<Routing>),
-) -> Vec<Vec<Parts>> {
-    let vertices = context.vertices;
+) -> Vec<Vec<usize>> {
+    let (vertices, edge_marks) = (context.vertices, context.edges);
     let codes: Vec<Vec<u32>> = context.marks.iter().map(|vm| port_codes(vm.mark)).collect();
-    let mut out: Vec<Vec<Parts>> = edge_marks.iter().map(|em| vec![Vec::new(); em.table.len()]).collect();
+    let joins: Vec<Joins<'_>> = edge_marks.iter().map(|em| Joins::new(context.marks, &codes, em)).collect();
+    let orthogonal = |e: usize| edge_marks[e].mark.route == Some(Route::Orthogonal);
+    let rows = if let Some(touched) = change.touched {
+        reached(context, touched, change.moved, wired, routes, routing.as_ref())
+    } else {
+        wired.parts = edge_marks.iter().map(|em| vec![Vec::new(); em.table.len()]).collect();
+        wired.meeting = vec![Vec::new(); vertices.len()];
+        wired.lanes = (0..edge_marks.len())
+            .map(|e| {
+                let em = &edge_marks[e];
+                let spaced = !orthogonal(e) && em.mark.bends.is_none();
+                if spaced { spread(em.table.len(), |r| joins[e].ends(r)) } else { None }
+            })
+            .collect();
+        edge_marks.iter().map(|em| (0..em.table.len()).collect()).collect()
+    };
+    // Which vertices each row meets is told once, as every row is worked out.
+    let telling = change.touched.is_none();
     let mut asks: Vec<Ask> = Vec::new();
     let mut edges: Vec<(usize, [usize; 2])> = Vec::new();
     for (e, em) in edge_marks.iter().enumerate() {
-        let joins = Joins::new(context.marks, &codes, em);
-        let orthogonal = em.mark.route == Some(Route::Orthogonal);
-        let lanes =
-            if orthogonal || em.mark.bends.is_some() { None } else { spread(em.table.len(), |r| joins.ends(r)) };
-        for row in 0..em.table.len() {
+        let joins = &joins[e];
+        let orthogonal = orthogonal(e);
+        for &row in &rows[e] {
+            wired.parts[e][row] = Vec::new();
             let Some(id) = em.table.ids.id(row) else { continue };
             let key = Row { data: em.data.name().clone(), table: em.table.name().clone(), id };
+            let meeting = [e as u32, row as u32];
             if let Some([a, b]) = joins.ends(row) {
+                if telling {
+                    wired.meeting[a].push(meeting);
+                    wired.meeting[b].push(meeting);
+                }
                 let (va, vb) = (&vertices[a], &vertices[b]);
                 if a == b || va.bounds.is_none() || vb.bounds.is_none() {
                     continue;
@@ -156,14 +200,19 @@ pub(crate) fn paths(
                     asks.push(Ask { mark: e, row, key, ends: Vec::new(), outputs: 1 });
                 } else {
                     let through = em.mark.bends.as_ref().map(|field| bends(em.table, field, row)).unwrap_or_default();
-                    let shift = lanes.as_ref().map_or(0.0, |lanes| lanes[row] * context.spacing);
-                    out[e][row] = straight(va, vb, &through, shift).into_iter().collect();
+                    let shift = wired.lanes[e].as_ref().map_or(0.0, |lanes| lanes[row] * context.spacing);
+                    wired.parts[e][row] = straight(va, vb, &through, shift).into_iter().collect();
                 }
                 continue;
             }
+            let terminals = joins.terminals(context.marks, row);
+            if telling {
+                for &(v, ..) in &terminals {
+                    wired.meeting[v].push(meeting);
+                }
+            }
             // A net: its ends at the ports naming it, outputs first.
-            let mut ends: Vec<(End, bool)> = joins
-                .terminals(context.marks, row)
+            let mut ends: Vec<(End, bool)> = terminals
                 .into_iter()
                 .filter_map(|(v, code, output)| {
                     let b = vertices[v].bounds?;
@@ -181,31 +230,73 @@ pub(crate) fn paths(
             if orthogonal {
                 asks.push(Ask { mark: e, row, key, ends, outputs });
             } else {
-                out[e][row] = star(&ends, outputs);
+                wired.parts[e][row] = star(&ends, outputs);
             }
         }
     }
     face(&mut asks, &edges, vertices);
-    wire(context, input, jobs, &asks, moved, (routes, routing), &mut out);
-    out
+    wire(context, input, jobs, &asks, change, (routes, routing), &mut wired.parts);
+    rows
 }
 
-/// Routes the orthogonal wires that are due, and writes every orthogonal wire's parts: its route,
-/// bends rounded; an elbow while its terminals moved and a job routes it.
+/// The rows an edit of vertices `touched` reaches, by edge mark, in order: those meeting them; where
+/// one is an orthogonal edge with ends, every such edge, as they share the sides they leave by; and the
+/// orthogonal wires due to route again: stale, asked of the job under way, or near a box that `moved`.
+fn reached(
+    context: &Context<'_>,
+    touched: &[usize],
+    moved: &[Rect],
+    wired: &Wired,
+    routes: &FxHashMap<Row, Routed>,
+    routing: Option<&Routing>,
+) -> Vec<Vec<usize>> {
+    let edge_marks = context.edges;
+    let mut rows: Vec<Vec<usize>> = vec![Vec::new(); edge_marks.len()];
+    for &[e, row] in touched.iter().flat_map(|&v| &wired.meeting[v]) {
+        rows[e as usize].push(row as usize);
+    }
+    let sided = |e: usize| edge_marks[e].mark.route == Some(Route::Orthogonal) && edge_marks[e].mark.ends.is_some();
+    if (0..edge_marks.len()).any(|e| sided(e) && !rows[e].is_empty()) {
+        for e in (0..edge_marks.len()).filter(|&e| sided(e)) {
+            rows[e] = (0..edge_marks[e].table.len()).collect();
+        }
+    }
+    let clearance = CLEARANCE * 2.0 * context.spacing;
+    let due = routes.iter().filter(|(_, r)| r.stale || moved.iter().any(|m| meets(&grow(r.reach, clearance), m)));
+    let asked = routing.into_iter().flat_map(|r| r.rows.values().map(|(row, _)| row));
+    for (e, row) in due.map(|(row, _)| row).chain(asked).filter_map(|row| drawing(context, row)) {
+        rows[e].push(row);
+    }
+    for rows in &mut rows {
+        rows.sort_unstable();
+        rows.dedup();
+    }
+    rows
+}
+
+/// The edge mark and row drawing edge row `row`.
+fn drawing(context: &Context<'_>, row: &Row) -> Option<(usize, usize)> {
+    let e = context.edges.iter().position(|em| *em.data.name() == row.data && *em.table.name() == row.table)?;
+    Some((e, context.edges[e].table.row(row.id.as_ref())?))
+}
+
+/// Routes the orthogonal wires that are due, and writes the parts of every orthogonal wire `asks`
+/// holds: its route, bends rounded; an elbow while its terminals moved and a job routes it.
 fn wire(
     context: &Context<'_>,
     input: &Input<'_>,
     jobs: &mut Jobs<'_>,
     asks: &[Ask],
-    moved: &[Rect],
+    change: &Change<'_>,
     (routes, routing): (&mut FxHashMap<Row, Routed>, &mut Option<Routing>),
     out: &mut [Vec<Parts>],
 ) {
+    let moved = change.moved;
     if let Some(routing) = routing.as_mut() {
         routing.moved.extend_from_slice(moved);
     }
-    // Routes of rows no longer drawn are forgotten.
-    if routes.len() > asks.len() {
+    // Routes of rows no longer drawn are forgotten, once every row is worked out.
+    if change.touched.is_none() {
         let drawn: FxHashSet<&Row> = asks.iter().map(|ask| &ask.key).collect();
         routes.retain(|row, _| drawn.contains(row));
     }
@@ -240,7 +331,7 @@ fn wire(
         if inline {
             let routed = &due[..due.len().min(DRAGGED)];
             let nets: Vec<Net> = routed.iter().map(|&k| net(&asks[k], &owners)).collect();
-            let fixed = fixed(asks, routed, routes, 4.0 * clearance);
+            let fixed = fixed(context, asks, routed, routes, 4.0 * clearance);
             for (&k, lines) in routed.iter().zip(route(&obstacles, &groups, &nets, &fixed, tracks)) {
                 routes.insert(asks[k].key.clone(), Routed::new(flipped(&lines), stamps[k]));
             }
@@ -251,7 +342,7 @@ fn wire(
             due.drain(..routed.len());
         } else if routing.is_none() {
             let nets: Vec<Net> = due.iter().map(|&k| net(&asks[k], &owners)).collect();
-            let fixed = fixed(asks, &due, routes, 4.0 * clearance);
+            let fixed = fixed(context, asks, &due, routes, 4.0 * clearance);
             let keys: Vec<Key> = due.iter().map(|&k| key_of(&asks[k].key)).collect();
             let wiring = Wiring {
                 obstacles: &obstacles,
@@ -267,9 +358,7 @@ fn wire(
         }
         // Wires still due route later; until then they keep their routes while their terminals hold.
         for &k in &due {
-            if let Some(r) = routes.get_mut(&asks[k].key) {
-                r.stale = true;
-            }
+            routes.entry(asks[k].key.clone()).or_insert_with(Routed::waiting).stale = true;
         }
     }
     for (k, ask) in asks.iter().enumerate() {
@@ -399,17 +488,18 @@ fn net(ask: &Ask, owners: &[Option<u32>]) -> Net {
 }
 
 /// The routes of the wires near those about to route, which keep their tracks, y up: within `reach`
-/// of the ends of the wires `routed`.
-fn fixed(asks: &[Ask], routed: &[usize], routes: &FxHashMap<Row, Routed>, reach: f64) -> Parts {
+/// of the ends of the wires `routed`, in the order the edge marks draw them.
+fn fixed(context: &Context<'_>, asks: &[Ask], routed: &[usize], routes: &FxHashMap<Row, Routed>, reach: f64) -> Parts {
     let region = routed.iter().flat_map(|&k| &asks[k].ends).fold(EMPTY, |region, end| union(region, dot(end.at)));
     let region = grow(region, reach);
     let routing: FxHashSet<&Row> = routed.iter().map(|&k| &asks[k].key).collect();
-    asks.iter()
-        .filter(|ask| !routing.contains(&ask.key))
-        .filter_map(|ask| routes.get(&ask.key))
-        .filter(|r| meets(&r.reach, &region))
-        .flat_map(|r| flipped(&r.lines))
-        .collect()
+    let mut near: Vec<((usize, usize), &Routed)> = routes
+        .iter()
+        .filter(|(row, r)| !routing.contains(row) && meets(&r.reach, &region))
+        .filter_map(|(row, r)| Some((drawing(context, row)?, r)))
+        .collect();
+    near.sort_unstable_by_key(|&(at, _)| at);
+    near.into_iter().flat_map(|(_, r)| flipped(&r.lines)).collect()
 }
 
 /// An orthogonal path from `a` to `b` that leaves and enters along their sides, `stub` out from each.

@@ -1,17 +1,22 @@
-// Probes: what lies under a point, through the same geometry the draws use. `nearest` keeps the
-// least key over every primitive instance (the distance in sixty-fourths of a pixel, then the mark
-// drawn last); `topmost` keeps the last instance of that mark at that key; `describe` writes where
-// the hit lies. Rows behind what the frame drew are not reached. `under` writes the nearest depth
-// drawn around the point, which gestures turn and zoom about.
+// Probes and queries: what a frame drew, asked about through the same geometry the draws use. One
+// program, made for one primitive's geometry, answers every question a step at a time, the step a
+// dispatch's uniform names; each step that reads instances puts each on screen once (`seen`) and asks
+// of it what the step needs.
 //
-// Queries list what they find through the mark's query list: `hits` every instance within reach of
-// a point, `boxed` every instance in a box, each counted and then written at its scanned place.
-// `locate` writes where one row lies on screen.
+// The hover takes three steps over every mark it reaches: `nearest` keeps the least key over every
+// instance within reach of the probe (the distance in sixty-fourths of a pixel, then the mark drawn
+// last), `topmost` keeps the last instance of that mark at that key, and `describe` writes where that
+// hit lies. Rows behind what the frame drew are not reached. `under` writes the nearest depth drawn
+// around the probe, which gestures turn and zoom about.
+//
+// Queries write past the probe's words, each mark from the word its `query` names: `hits` appends every
+// instance within reach of the query's point while the mark has room; `boxed` sets a bit for every row
+// with an instance in the query's box, hidden or not. `locate` writes where one row lies on screen.
 
 import package::lib::types::{
     NONE, FADE_OUT, POINTS, STROKES, TRIANGLES, MARK_EDGES, PATH_GEOMETRY, PROBE_KEY, PROBE_INSTANCE, PROBE_DEPTH,
     PROBE_X, PROBE_Y, PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED,
-    LIST_KEPT, LIST_ITEMS, item,
+    STEP_NEAREST, STEP_TOPMOST, STEP_DESCRIBE, STEP_HITS, STEP_BOXED, STEP_LOCATE, STEP_UNDER, HIT_WORDS, item,
 };
 import package::lib::bind::{frame, eye, mark, state};
 import package::lib::state::row_at;
@@ -20,17 +25,22 @@ import package::lib::points::{point, port_at};
 import package::lib::path::{PATH, Segment, segment, segment_screen, stroke_style, stroke_instances, path_count};
 import package::lib::triangles::{triangle_corner, triangle_row, triangle_instances, area_anchor};
 import package::lib::marker::outline_distance;
-import package::lib::lists::{lists, list_counts, list_entry};
 
 // The primitive this pipeline probes: each pipeline is made for one, so it holds only that one's
 // geometry and compiles quickly.
 override PROBED: u32 = 0u;
+
+// Which step a dispatch takes.
+struct Step {
+    step: u32,
+}
 
 @group(2) @binding(5) var<storage, read_write> probe: array<atomic<u32>>;
 @if(multisampled)
 @group(2) @binding(6) var depth: texture_depth_multisampled_2d;
 @else
 @group(2) @binding(6) var depth: texture_depth_2d;
+@group(2) @binding(17) var<uniform> step: Step;
 
 struct Reach {
     distance: f32,
@@ -42,6 +52,26 @@ struct Reach {
 
 fn unreached() -> Reach {
     return Reach(1e30, 0.0, vec2f(0.0), NONE, 0u);
+}
+
+// An instance as the frame drew it, on screen, depths as z: a point's center and, for a port, the
+// port's center as `b`; a segment's ends; a triangle's corners, with whether each is shown, ahead of
+// the eye, and in front of it. `part` is a port's number from 1, or a segment's index along its path.
+struct Seen {
+    row: u32,
+    part: u32,
+    // The row is the mark's and not fading out.
+    kept: bool,
+    // A point is shown; a stroke's style is shown and its segment on screen.
+    shown: bool,
+    a: vec3f,
+    b: vec3f,
+    c: vec3f,
+    corners: vec3<bool>,
+    ahead: vec3<bool>,
+    front: vec3<bool>,
+    // A point's half size, a port's radius as x, a stroke's width as x.
+    half: vec2f,
 }
 
 // A clip position on screen, with its depth as z.
@@ -61,50 +91,61 @@ fn leaving(row: u32) -> bool {
     return (state[row_at(row) + mark.stride - 1u] & FADE_OUT) != 0u;
 }
 
-// A point's marker, or past the rows one of their ports: its segment is the port's number from 1.
-fn point_reach(instance: u32, p: vec2f) -> Reach {
+// A point's marker, or past the rows one of their ports.
+fn seen_point(instance: u32) -> Seen {
+    var s: Seen;
     let port = select(0u, instance - mark.rows, instance >= mark.rows);
     let row = select(instance, port / max(mark.ports, 1u), instance >= mark.rows);
     let pt = point(row);
-    if !pt.shown || leaving(row) {
-        return unreached();
-    }
-    let s = screen(pt.clip);
+    s.row = row;
+    s.kept = row < mark.rows && !leaving(row);
+    s.shown = pt.shown;
+    s.a = screen(pt.clip);
+    s.front = vec3<bool>(pt.clip.w > 0.0);
+    s.half = max(pt.half, vec2f(0.5));
     if instance >= mark.rows {
         let k = port % max(mark.ports, 1u);
-        let port = port_at(pt, k);
-        return Reach(max(length(p - port.center) - port.half, 0.0), s.z, port.center, row, k + 1u);
+        let at = port_at(pt, k);
+        s.part = k + 1u;
+        s.b = vec3f(at.center, s.a.z);
+        s.half = vec2f(at.half, 0.0);
     }
-    let d = outline_distance((p - s.xy) * vec2f(1.0, -1.0), max(pt.half, vec2f(0.5)));
-    return Reach(max(d, 0.0), s.z, s.xy, row, 0u);
+    return s;
 }
 
-fn segment_reach(instance: u32, p: vec2f) -> Reach {
-    let s = segment(instance);
-    if s.row >= mark.rows || leaving(s.row) {
-        return unreached();
+// A segment of a stroke: the instance's, or, locating, the middle one of row `instance`'s path.
+fn seen_segment(instance: u32, locating: bool) -> Seen {
+    var s: Seen;
+    var g = Segment(instance, 0u, 0.0);
+    if locating {
+        g.index = path_count(instance) / 2u;
+    } else {
+        g = segment(instance);
     }
-    let style = stroke_style(s.row);
-    let on = segment_screen(s);
-    if !style.shown || !on.shown {
-        return unreached();
+    s.row = g.row;
+    s.part = g.index;
+    s.kept = g.row < mark.rows && !leaving(g.row);
+    if !s.kept && !locating {
+        return s;
     }
-    let q = nearest_on(p, vec3f(on.a, on.ca.z / on.ca.w), vec3f(on.b, on.cb.z / on.cb.w));
-    let a = on.a;
-    let b = on.b;
-    // The nearer end names the sample a trace's hit lies at; for an edge, which of its ends.
-    var end = select(s.index, s.index + 1u, length(q.xy - b) < length(q.xy - a));
-    if mark.kind == MARK_EDGES {
-        end = u32(2u * end >= path_count(s.row));
-    }
-    return Reach(max(length(p - q.xy) - 0.5 * style.width, 0.0), q.z, q.xy, s.row, end);
+    let style = stroke_style(g.row);
+    let on = segment_screen(g);
+    s.shown = style.shown && on.shown;
+    s.front = vec3<bool>(on.shown);
+    s.a = vec3f(on.a, on.ca.z / on.ca.w);
+    s.b = vec3f(on.b, on.cb.z / on.cb.w);
+    s.half = vec2f(style.width, 0.0);
+    return s;
 }
 
 // A triangle: a face, or one of an area's.
-fn triangle_reach(instance: u32, p: vec2f) -> Reach {
-    let row = triangle_row(instance);
-    if row >= mark.rows || leaving(row) {
-        return unreached();
+fn seen_triangle(instance: u32, locating: bool) -> Seen {
+    var s: Seen;
+    let row = select(triangle_row(instance), instance, locating);
+    s.row = row;
+    s.kept = row < mark.rows && !leaving(row);
+    if !s.kept && !locating {
+        return s;
     }
     let ka = triangle_corner(instance, 0u);
     let kb = triangle_corner(instance, 1u);
@@ -112,36 +153,118 @@ fn triangle_reach(instance: u32, p: vec2f) -> Reach {
     let ca = clip_of(ka.world);
     let cb = clip_of(kb.world);
     let cc = clip_of(kc.world);
-    let ahead = ka.ahead || kb.ahead || kc.ahead;
-    if !ka.shown || !kb.shown || !kc.shown || !ahead || ca.w <= 0.0 || cb.w <= 0.0 || cc.w <= 0.0 {
-        return unreached();
-    }
-    let a = screen(ca);
-    let b = screen(cb);
-    let c = screen(cc);
-    let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    if abs(area) > 1e-9 {
-        let wb = ((p.x - a.x) * (c.y - a.y) - (p.y - a.y) * (c.x - a.x)) / area;
-        let wc = ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / area;
-        if wb >= 0.0 && wc >= 0.0 && wb + wc <= 1.0 {
-            return Reach(0.0, a.z + (b.z - a.z) * wb + (c.z - a.z) * wc, p, row, 0u);
-        }
-    }
-    var q = nearest_on(p, a, b);
-    let q2 = nearest_on(p, b, c);
-    let q3 = nearest_on(p, c, a);
-    q = select(q, q2, length(p - q2.xy) < length(p - q.xy));
-    q = select(q, q3, length(p - q3.xy) < length(p - q.xy));
-    return Reach(length(p - q.xy), q.z, q.xy, row, 0u);
+    s.corners = vec3<bool>(ka.shown, kb.shown, kc.shown);
+    s.ahead = vec3<bool>(ka.ahead, kb.ahead, kc.ahead);
+    s.front = vec3<bool>(ca.w > 0.0, cb.w > 0.0, cc.w > 0.0);
+    s.shown = all(s.corners) && any(s.ahead) && all(s.front);
+    s.a = screen(ca);
+    s.b = screen(cb);
+    s.c = screen(cc);
+    return s;
 }
 
-// Instance `instance` of the mark's primitive, measured from `p`.
-fn reach(instance: u32, p: vec2f) -> Reach {
+// Instance `instance` of the mark's primitive on screen; locating, row `instance`'s place.
+fn seen(instance: u32, locating: bool) -> Seen {
     switch PROBED {
-        case POINTS: { return point_reach(instance, p); }
-        case STROKES: { return segment_reach(instance, p); }
-        case TRIANGLES: { return triangle_reach(instance, p); }
-        default: { return unreached(); }
+        case POINTS: { return seen_point(instance); }
+        case STROKES: { return seen_segment(instance, locating); }
+        default: { return seen_triangle(instance, locating); }
+    }
+}
+
+// How far `p` lies from what the instance drew, and the nearest of it on screen with its depth.
+fn reach(s: Seen, p: vec2f) -> Reach {
+    if !s.kept || !s.shown {
+        return unreached();
+    }
+    switch PROBED {
+        case POINTS: {
+            if s.part > 0u {
+                return Reach(max(length(p - s.b.xy) - s.half.x, 0.0), s.a.z, s.b.xy, s.row, s.part);
+            }
+            let d = outline_distance((p - s.a.xy) * vec2f(1.0, -1.0), s.half);
+            return Reach(max(d, 0.0), s.a.z, s.a.xy, s.row, 0u);
+        }
+        case STROKES: {
+            let q = nearest_on(p, s.a, s.b);
+            // The nearer end names the sample a trace's hit lies at; for an edge, which of its ends.
+            var end = select(s.part, s.part + 1u, length(q.xy - s.b.xy) < length(q.xy - s.a.xy));
+            if mark.kind == MARK_EDGES {
+                end = u32(2u * end >= path_count(s.row));
+            }
+            return Reach(max(length(p - q.xy) - 0.5 * s.half.x, 0.0), q.z, q.xy, s.row, end);
+        }
+        default: {
+            let a = s.a;
+            let b = s.b;
+            let c = s.c;
+            let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            if abs(area) > 1e-9 {
+                let wb = ((p.x - a.x) * (c.y - a.y) - (p.y - a.y) * (c.x - a.x)) / area;
+                let wc = ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / area;
+                if wb >= 0.0 && wc >= 0.0 && wb + wc <= 1.0 {
+                    return Reach(0.0, a.z + (b.z - a.z) * wb + (c.z - a.z) * wc, p, s.row, 0u);
+                }
+            }
+            var q = nearest_on(p, a, b);
+            let q2 = nearest_on(p, b, c);
+            let q3 = nearest_on(p, c, a);
+            q = select(q, q2, length(p - q2.xy) < length(p - q.xy));
+            q = select(q, q3, length(p - q3.xy) < length(p - q.xy));
+            return Reach(length(p - q.xy), q.z, q.xy, s.row, 0u);
+        }
+    }
+}
+
+fn in_box(p: vec2f) -> bool {
+    return all(p >= frame.query.xy) && all(p <= frame.query.zw);
+}
+
+// Whether the instance lies in the query's box: a point's center, any part of a segment, or a
+// triangle's corner.
+fn boxed(s: Seen) -> bool {
+    if !s.kept {
+        return false;
+    }
+    switch PROBED {
+        case POINTS: {
+            return s.part == 0u && s.shown && s.front.x && in_box(s.a.xy);
+        }
+        case STROKES: {
+            if !s.shown {
+                return false;
+            }
+            // The segment crosses the box when its ends do, or it passes through it.
+            for (var k = 0u; k <= 8u; k++) {
+                if in_box(mix(s.a.xy, s.b.xy, f32(k) / 8.0)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        default: {
+            let corner = s.corners & s.ahead & s.front;
+            return (corner.x && in_box(s.a.xy)) || (corner.y && in_box(s.b.xy)) || (corner.z && in_box(s.c.xy));
+        }
+    }
+}
+
+// Where row `row` lies on screen, and 1 as z where it shows: a point's center, a path's middle
+// segment's middle, a face's middle; an area lies where its label hangs.
+fn located(row: u32) -> vec3f {
+    if row >= mark.rows {
+        return vec3f(0.0);
+    }
+    if PROBED == TRIANGLES && PATH == PATH_GEOMETRY {
+        let anchor = area_anchor(row);
+        let clip = clip_of(anchor.world);
+        return vec3f(to_screen(clip), f32(anchor.shown && anchor.ahead && clip.w > 0.0));
+    }
+    let s = seen(row, true);
+    switch PROBED {
+        case POINTS: { return vec3f(s.a.xy, f32(s.shown && s.front.x)); }
+        case STROKES: { return vec3f(0.5 * (s.a.xy + s.b.xy), f32(s.front.x)); }
+        default: { return vec3f((s.a.xy + s.b.xy + s.c.xy) / 3.0, f32(all(s.front))); }
     }
 }
 
@@ -156,6 +279,19 @@ fn shown(r: Reach) -> bool {
     return drawn_depth(texel) <= r.depth * 1.01 + 1e-7;
 }
 
+// The nearest depth drawn around the probe.
+fn under() -> f32 {
+    let size = vec2i(textureDimensions(depth));
+    let at = vec2i(frame.probe * eye.pixel_ratio);
+    var nearest = 0.0;
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            nearest = max(nearest, drawn_depth(clamp(at + vec2i(dx, dy), vec2i(0), size - 1)));
+        }
+    }
+    return nearest;
+}
+
 // Instances of the mark's primitive: rows and their ports, a stroke's segments, or triangles.
 fn instances() -> u32 {
     if PROBED == STROKES {
@@ -167,237 +303,85 @@ fn instances() -> u32 {
     return triangle_instances();
 }
 
-fn key(instance: u32) -> u32 {
-    if instance >= instances() {
-        return NONE;
-    }
-    let r = reach(instance, frame.probe);
-    if !(r.distance <= frame.probe_radius) || !shown(r) {
-        return NONE;
-    }
-    return (min(u32(r.distance * 64.0), 0xffffffu) << 8u) | (255u - min(mark.index, 255u));
-}
-
-@compute @workgroup_size(256)
-fn nearest(@builtin(global_invocation_id) id: vec3u) {
-    let i = item(id);
-    let k = key(i);
-    if k != NONE {
-        atomicMin(&probe[PROBE_KEY], k);
-    }
-}
-
-@compute @workgroup_size(256)
-fn topmost(@builtin(global_invocation_id) id: vec3u) {
-    let i = item(id);
-    if key(i) == atomicLoad(&probe[PROBE_KEY]) && atomicLoad(&probe[PROBE_KEY]) != NONE {
-        atomicMax(&probe[PROBE_INSTANCE], i + 1u);
-    }
-}
-
-@compute @workgroup_size(1)
-fn describe() {
-    let k = atomicLoad(&probe[PROBE_KEY]);
-    let instance = atomicLoad(&probe[PROBE_INSTANCE]);
-    if k == NONE || instance == 0u || 255u - (k & 255u) != min(mark.index, 255u) {
+// Appends hit `r` to the mark's, while it has room: they follow how many it found and how many it
+// keeps, `HIT_WORDS` each.
+fn append(r: Reach) {
+    let at = atomicAdd(&probe[mark.query], 1u);
+    if at >= atomicLoad(&probe[mark.query + 1u]) {
         return;
     }
-    let r = reach(instance - 1u, frame.probe);
-    atomicStore(&probe[PROBE_DEPTH], bitcast<u32>(r.depth));
-    atomicStore(&probe[PROBE_X], bitcast<u32>(r.point.x));
-    atomicStore(&probe[PROBE_Y], bitcast<u32>(r.point.y));
-    atomicStore(&probe[PROBE_ROW], r.row);
-    atomicStore(&probe[PROBE_SEGMENT], r.segment);
-}
-
-// Entries a query keeps per mark: more are counted but not written.
-fn kept() -> u32 {
-    return lists[mark.query + LIST_KEPT];
-}
-
-// Instance `i` as the query's point reaches it, unreached when out of reach.
-fn query_hit(i: u32) -> Reach {
-    if i >= instances() {
-        return unreached();
-    }
-    let r = reach(i, frame.query.xy);
-    if !(r.distance <= frame.query.z) || !shown(r) {
-        return unreached();
-    }
-    return r;
-}
-
-// Items the query's list counts: as many as the CPU sized it for, which a stroke's segment list may
-// draw fewer of. Every one is counted, 0 past what draws, so no word left from before is summed.
-fn query_items() -> u32 {
-    return lists[mark.query + LIST_ITEMS];
+    let entry = mark.query + 2u + HIT_WORDS * at;
+    atomicStore(&probe[entry], r.row);
+    atomicStore(&probe[entry + 1u], min(u32(r.distance * 64.0), 0xffffffu));
+    atomicStore(&probe[entry + 2u], r.segment);
+    atomicStore(&probe[entry + 3u], bitcast<u32>(r.point.x));
+    atomicStore(&probe[entry + 4u], bitcast<u32>(r.point.y));
+    atomicStore(&probe[entry + 5u], bitcast<u32>(r.depth));
 }
 
 @compute @workgroup_size(256)
-fn count_hits(@builtin(global_invocation_id) id: vec3u) {
-    let i = item(id);
-    if i < query_items() {
-        lists[list_counts(mark.query) + i] = u32(query_hit(i).row != NONE);
-    }
-}
-
-@compute @workgroup_size(256)
-fn write_hits(@builtin(global_invocation_id) id: vec3u) {
-    let i = item(id);
-    let r = query_hit(i);
-    if r.row == NONE {
-        return;
-    }
-    let at = lists[list_counts(mark.query) + i];
-    if at < kept() {
-        let e = list_entry(mark.query, 6u * at);
-        lists[e] = r.row;
-        lists[e + 1u] = min(u32(r.distance * 64.0), 0xffffffu);
-        lists[e + 2u] = r.segment;
-        lists[e + 3u] = bitcast<u32>(r.point.x);
-        lists[e + 4u] = bitcast<u32>(r.point.y);
-        lists[e + 5u] = bitcast<u32>(r.depth);
-    }
-}
-
-fn in_box(p: vec2f) -> bool {
-    return all(p >= frame.query.xy) && all(p <= frame.query.zw);
-}
-
-// Whether instance `i` lies in the query's box: a point's center, any part of a segment, or a
-// triangle's corner.
-fn boxed_row(i: u32) -> u32 {
-    if i >= instances() {
-        return NONE;
-    }
-    switch PROBED {
-        case POINTS: {
-            if i >= mark.rows {
-                return NONE;
-            }
-            let pt = point(i);
-            if !pt.shown || leaving(i) || pt.clip.w <= 0.0 || !in_box(to_screen(pt.clip)) {
-                return NONE;
-            }
-            return i;
+fn answer(@builtin(global_invocation_id) id: vec3u) {
+    let s = step.step;
+    // Steps that read one thing take one invocation.
+    if s == STEP_UNDER || s == STEP_LOCATE || s == STEP_DESCRIBE {
+        if any(id != vec3u(0u)) {
+            return;
         }
-        case STROKES: {
-            let s = segment(i);
-            if s.row >= mark.rows || leaving(s.row) || !stroke_style(s.row).shown {
-                return NONE;
+    }
+    if s == STEP_UNDER {
+        atomicStore(&probe[PROBE_UNDER], bitcast<u32>(under()));
+        return;
+    }
+    if s == STEP_LOCATE {
+        let at = located(bitcast<u32>(frame.query.x));
+        atomicStore(&probe[PROBE_LOCATE_X], bitcast<u32>(at.x));
+        atomicStore(&probe[PROBE_LOCATE_Y], bitcast<u32>(at.y));
+        atomicStore(&probe[PROBE_LOCATED], u32(at.z));
+        return;
+    }
+    // Describing reads the topmost instance the hover found, when it is this mark's.
+    var i = item(id);
+    if s == STEP_DESCRIBE {
+        let key = atomicLoad(&probe[PROBE_KEY]);
+        let instance = atomicLoad(&probe[PROBE_INSTANCE]);
+        if key == NONE || instance == 0u || 255u - (key & 255u) != min(mark.index, 255u) {
+            return;
+        }
+        i = instance - 1u;
+    } else if i >= instances() {
+        return;
+    }
+    let drawn = seen(i, false);
+    if s == STEP_BOXED {
+        if boxed(drawn) {
+            atomicOr(&probe[mark.query + drawn.row / 32u], 1u << (drawn.row % 32u));
+        }
+        return;
+    }
+    let hits = s == STEP_HITS;
+    let r = reach(drawn, select(frame.probe, frame.query.xy, hits));
+    if !(r.distance <= select(frame.probe_radius, frame.query.z, hits)) || !shown(r) {
+        return;
+    }
+    let key = (min(u32(r.distance * 64.0), 0xffffffu) << 8u) | (255u - min(mark.index, 255u));
+    switch s {
+        case STEP_NEAREST: {
+            atomicMin(&probe[PROBE_KEY], key);
+        }
+        case STEP_TOPMOST: {
+            if key == atomicLoad(&probe[PROBE_KEY]) {
+                atomicMax(&probe[PROBE_INSTANCE], i + 1u);
             }
-            let on = segment_screen(s);
-            if !on.shown {
-                return NONE;
-            }
-            let a = on.a;
-            let b = on.b;
-            // The segment crosses the box when its ends do, or it passes through it.
-            for (var k = 0u; k <= 8u; k++) {
-                if in_box(mix(a, b, f32(k) / 8.0)) {
-                    return s.row;
-                }
-            }
-            return NONE;
+        }
+        case STEP_DESCRIBE: {
+            atomicStore(&probe[PROBE_DEPTH], bitcast<u32>(r.depth));
+            atomicStore(&probe[PROBE_X], bitcast<u32>(r.point.x));
+            atomicStore(&probe[PROBE_Y], bitcast<u32>(r.point.y));
+            atomicStore(&probe[PROBE_ROW], r.row);
+            atomicStore(&probe[PROBE_SEGMENT], r.segment);
         }
         default: {
-            let row = triangle_row(i);
-            if row >= mark.rows || leaving(row) {
-                return NONE;
-            }
-            for (var k = 0u; k < 3u; k++) {
-                let c = triangle_corner(i, k);
-                let clip = clip_of(c.world);
-                if c.shown && c.ahead && clip.w > 0.0 && in_box(to_screen(clip)) {
-                    return row;
-                }
-            }
-            return NONE;
+            append(r);
         }
     }
-}
-
-@compute @workgroup_size(256)
-fn count_boxed(@builtin(global_invocation_id) id: vec3u) {
-    let i = item(id);
-    if i < query_items() {
-        lists[list_counts(mark.query) + i] = u32(boxed_row(i) != NONE);
-    }
-}
-
-@compute @workgroup_size(256)
-fn write_boxed(@builtin(global_invocation_id) id: vec3u) {
-    let i = item(id);
-    let row = boxed_row(i);
-    if row == NONE {
-        return;
-    }
-    let at = lists[list_counts(mark.query) + i];
-    if at < kept() {
-        lists[list_entry(mark.query, at)] = row;
-    }
-}
-
-// Where the row the query names lies on screen, if it shows.
-@compute @workgroup_size(1)
-fn locate() {
-    let row = bitcast<u32>(frame.query.x);
-    if row >= mark.rows {
-        return;
-    }
-    var at = vec4f(0.0);
-    switch PROBED {
-        case POINTS: {
-            let pt = point(row);
-            if pt.shown && pt.clip.w > 0.0 {
-                at = vec4f(to_screen(pt.clip), 1.0, 0.0);
-            }
-        }
-        case TRIANGLES: {
-            if PATH == PATH_GEOMETRY {
-                // An area lies where its label hangs.
-                let anchor = area_anchor(row);
-                let clip = clip_of(anchor.world);
-                if anchor.shown && anchor.ahead && clip.w > 0.0 {
-                    at = vec4f(to_screen(clip), 1.0, 0.0);
-                }
-            } else {
-                var sum = vec2f(0.0);
-                var shown = 0.0;
-                for (var k = 0u; k < 3u; k++) {
-                    let clip = clip_of(triangle_corner(row, k).world);
-                    if clip.w > 0.0 {
-                        sum += to_screen(clip);
-                        shown += 1.0;
-                    }
-                }
-                if shown == 3.0 {
-                    at = vec4f(sum / 3.0, 1.0, 0.0);
-                }
-            }
-        }
-        default: {
-            // A path lies where its middle segment's middle is.
-            let on = segment_screen(Segment(row, path_count(row) / 2u, 0.0));
-            if on.shown {
-                at = vec4f(0.5 * (on.a + on.b), 1.0, 0.0);
-            }
-        }
-    }
-    atomicStore(&probe[PROBE_LOCATE_X], bitcast<u32>(at.x));
-    atomicStore(&probe[PROBE_LOCATE_Y], bitcast<u32>(at.y));
-    atomicStore(&probe[PROBE_LOCATED], u32(at.z));
-}
-
-@compute @workgroup_size(1)
-fn under() {
-    let size = vec2i(textureDimensions(depth));
-    let at = vec2i(frame.probe * eye.pixel_ratio);
-    var nearest = 0.0;
-    for (var dy = -1; dy <= 1; dy++) {
-        for (var dx = -1; dx <= 1; dx++) {
-            nearest = max(nearest, drawn_depth(clamp(at + vec2i(dx, dy), vec2i(0), size - 1)));
-        }
-    }
-    atomicStore(&probe[PROBE_UNDER], bitcast<u32>(nearest));
 }

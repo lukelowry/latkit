@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rustc_hash::FxHasher;
 
 use super::name::{Name, Row, Version};
-use super::patch::Patch;
+use super::patch::{Appends, Op, Patch};
 use super::samples::Samples;
 use super::table::{Field, Table};
 use super::values::Value;
@@ -118,7 +118,23 @@ impl Data {
             return Ok(());
         }
         let mut next = (*self.0).clone();
-        for (i, op) in patch.ops.into_iter().enumerate() {
+        let mut ops = patch.ops.into_iter().enumerate().peekable();
+        while let Some((i, op)) = ops.next() {
+            let op = match op {
+                // A run of appends to the same fields of every row of a table records as one.
+                Op::Append { table, at, ids: None, fields } => {
+                    let rows = next.table(&table).map(Table::len);
+                    let mut run = Appends::new(table, at, fields);
+                    while let Some((_, Op::Append { table, at, ids: None, fields })) = ops.peek()
+                        && run.continues(table, at, fields, rows)
+                    {
+                        let Some((_, Op::Append { at, fields, .. })) = ops.next() else { break };
+                        run.push(at, fields);
+                    }
+                    run.op()
+                }
+                op => op,
+            };
             op.apply(&mut next).map_err(|e| e.at(i).at("patch"))?;
         }
         next.resolve()?;

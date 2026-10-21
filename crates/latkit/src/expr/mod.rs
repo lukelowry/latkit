@@ -301,7 +301,7 @@ impl Expr {
     }
 
     /// Calls `f` with every field the expression reads.
-    pub(crate) fn for_each_field(&self, f: &mut impl FnMut(&FieldRef)) {
+    pub(crate) fn for_each_field<'e>(&'e self, f: &mut impl FnMut(&'e FieldRef)) {
         match &*self.0 {
             Node::Field(field) => f(field),
             Node::Unary(_, a)
@@ -319,6 +319,21 @@ impl Expr {
                 b.for_each_field(f);
             }
             Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::State(_) => {}
+        }
+    }
+
+    /// Whether a domain fits the values of every row: each row's value then reads them all.
+    pub(crate) fn fits(&self) -> bool {
+        match &*self.0 {
+            Node::Scale { domain: Domain::Fit, .. } | Node::Colormap { domain: Domain::Fit, .. } => true,
+            Node::Unary(_, a)
+            | Node::Is(a, _)
+            | Node::Contains(a, _)
+            | Node::Scale { input: a, .. }
+            | Node::Colormap { input: a, .. } => a.fits(),
+            Node::Binary(_, a, b) => a.fits() || b.fits(),
+            Node::When(c, a, b) => c.fits() || a.fits() || b.fits(),
+            Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::Field(_) | Node::State(_) => false,
         }
     }
 

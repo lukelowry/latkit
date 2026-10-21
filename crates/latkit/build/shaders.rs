@@ -34,8 +34,8 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "compute::freeze", variants: &[("main", &[])] },
     Entry { module: "compute::bounds", variants: &[("main", &[])] },
     Entry { module: "compute::normals", variants: &[("main", &[])] },
-    Entry { module: "compute::probe", variants: &[("main", &["lists"]), ("multisampled", &["multisampled", "lists"])] },
-    Entry { module: "compute::lists", variants: &[("main", &["lists"]), ("query", &["lists", "query"])] },
+    Entry { module: "compute::probe", variants: &[("main", &[]), ("multisampled", &["multisampled"])] },
+    Entry { module: "compute::lists", variants: &[("main", &["lists"])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
     Entry {
         module: "draw::points",
@@ -57,15 +57,16 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "compute::labels", variants: &[("main", &[])] },
     Entry { module: "draw::overlay", variants: &[("main", &[])] },
     Entry { module: "compute::compose", variants: &[("main", &[])] },
+    Entry { module: "compute::fields", variants: &[("main", &[])] },
 ];
 
-const FEATURES: &[&str] = &["writes", "casts", "custom", "multisampled", "lists", "query", "ports", "focused"];
+const FEATURES: &[&str] = &["writes", "casts", "custom", "multisampled", "lists", "ports", "focused"];
 
 /// What a custom marker supplies, for validating its variant.
 const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";
 
-/// Uniforms bound at a dynamic offset: each mark's, and each pass's eye.
-const DYNAMIC: &[&str] = &["mark", "eye"];
+/// Uniforms bound at a dynamic offset: each mark's, each pass's eye, and each probe dispatch's step.
+const DYNAMIC: &[&str] = &["mark", "eye", "step"];
 
 /// The values each pipeline constant is made with, as constants of `lib/types.wesl`: the primitive a
 /// probe reads, and the path a stroke reads.

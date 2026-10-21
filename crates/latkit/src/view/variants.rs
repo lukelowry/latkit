@@ -3,27 +3,21 @@
 //! needs, a stroke mark's for the path it runs along, shadows when something casts, labels, the
 //! overlay where it writes) and what changes need (the passes transitions ease with, the reduction of
 //! fitted domains, comets carried on); once those landed, what lights rows (the lit rows' draws) and,
-//! for frames that take input, what the hover and the intents need (the probes for what picks, the
-//! hits a menu or the keys list, boxes, locating a row). In a browser they compile off the GPU's
-//! thread, the first wave side by side with the browser's compilers to itself, the second a few at a
-//! time while frames draw, each the largest first, and the WGSL of both is read with the first, since
-//! a browser reads it on its GPU thread: the view draws once the first landed, and lights rows,
-//! probes, and answers queries once the second did, so no frame waits on a compile and nothing
-//! compiles where it is first used; what the scene never uses is never asked for. A picture takes no
-//! input: it asks for what it draws, changes, and lights rows with at once, and draws once all of it
-//! landed.
+//! for frames that take input, what the hover and the intents need (each kind of mark's probe
+//! program, which answers the hover, picks, boxes, and where a row lies). In a browser they compile
+//! off the GPU's thread, the first wave side by side with the browser's compilers to itself, the
+//! second a few at a time while frames draw, each the largest first, and the WGSL of both is read with
+//! the first, since a browser reads it on its GPU thread: the view draws once the first landed, and
+//! lights rows, probes, and answers queries once the second did, so no frame waits on a compile and
+//! nothing compiles where it is first used; what the scene never uses is never asked for. A picture
+//! takes no input: it asks for what it draws, changes, and lights rows with at once, and draws once
+//! all of it landed.
 
 use super::{SHADE, View};
 use crate::gpu::Inner;
 use crate::gpu::pipelines::{self, Asked, Variant};
 use crate::gpu::shaders::{PATH_ENDS, PATH_GEOMETRY, Shader};
 use crate::{Mark, Marker, Scene, Space};
-
-/// The probe's entry points the hover reads every probed mark with.
-const HOVER: [&str; 3] = ["nearest", "topmost", "describe"];
-
-/// The probe's entry points behind the hits a menu, the keys, or a connection's end list.
-const HITS: [&str; 2] = ["count_hits", "write_hits"];
 
 /// The passes of the select capping a mark's labels.
 const SELECT: [&str; 4] = ["select_start", "select_count", "select_find", "select_cut"];
@@ -67,9 +61,11 @@ impl View {
             draw.extend(changes);
             let (mut drawing, mut answering) =
                 if input { (draw, [lit, inputs].concat()) } else { ([draw, lit].concat(), Vec::new()) };
-            // A browser compiles a few at once, in the order asked: the largest first, so the last
-            // lands soonest.
+            // Marks alike share pipelines, each asked for once. A browser compiles a few at once, in
+            // the order asked: the largest first, so the last lands soonest.
             for asked in [&mut drawing, &mut answering] {
+                let mut seen = rustc_hash::FxHashSet::default();
+                asked.retain(|need| seen.insert(need.clone()));
                 asked.sort_by_key(|need| std::cmp::Reverse(need.size()));
             }
             inner.pipelines.ask(&self.gpu.0.device, &drawing, &self.waker);
@@ -143,6 +139,14 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     if written || controls.select_box || controls.connect {
         stages.draw.push(draw(Shader::Overlay));
     }
+    // The distance fields of the text frames set are made before they draw.
+    let labeled = any(|m| {
+        m.style().label.is_some()
+            || matches!(m, Mark::Vertices(v) if v.ports.iter().any(|(_, port)| port.label.is_some()))
+    });
+    if written || labeled {
+        stages.draw.extend(["columns", "rows"].map(|e| compute(Shader::Fields, e)));
+    }
     if any(|m| m.style().label.is_some()) && !diagram {
         stages.draw.extend([compute(Shader::Labels, "clear_cells"), compute(Shader::Labels, "reset_cells")]);
     }
@@ -152,10 +156,6 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     if any(Mark::flows) {
         stages.draw.push(compute(Shader::Evaluate, "travel"));
         stages.changes.push(compute(Shader::Evaluate, "carry"));
-    }
-    if any(Mark::picks) {
-        stages.input.push(compute(pipelines::probe(samples), "under"));
-        stages.input.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| compute(Shader::ListsQuery, e)));
     }
     if any(|m| matches!(m, Mark::Edges(_) | Mark::Lines(_) | Mark::Areas(_))) {
         stages.draw.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| compute(Shader::Lists, e)));
@@ -215,16 +215,9 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
             ["count_segments", "write_segments"].map(|e| Asked::Shader(Variant::compute(Shader::Lists, e).path(path))),
         );
     }
-    let probing = |entry| Asked::Shader(Variant::probe(pipelines::probe(samples), entry, primitive).path(path));
-    // Any row drawn can be located, whether or not it picks.
-    stages.input.push(probing("locate"));
-    if mark.picks() {
-        stages.input.extend(HOVER.map(probing));
-        stages.input.extend(HITS.map(probing));
-        if scene.controls.select_box {
-            stages.input.extend(["count_boxed", "write_boxed"].map(probing));
-        }
-    }
+    // One program answers the hover, the queries, and the depth under the pointer for the mark's
+    // geometry: any row drawn can be located, whether or not it picks.
+    stages.input.push(Asked::Shader(Variant::probe(pipelines::probe(samples), primitive).path(path)));
     if style.label.is_some() {
         // In a diagram, only the first label pass runs.
         let labels = if matches!(scene.space, Space::Diagram(_)) { &LABELS[..1] } else { &LABELS[..] };

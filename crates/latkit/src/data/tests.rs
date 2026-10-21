@@ -134,6 +134,35 @@ fn a_failed_patch_changes_nothing() {
 }
 
 #[test]
+fn appends_one_after_another_record_as_one_and_name_their_own_errors() {
+    let table = || Table::new("Bus", vec![1_u64, 2]).field("kv", vec![230.0, 115.0]);
+    let mut one = Data::new("grid");
+    one.apply(Patch::new().replace(table()).append(
+        [0.0, 1.0, 2.0],
+        "Bus",
+        [("vm", vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0])],
+    ))
+    .expect("valid");
+    let mut each = Data::new("grid");
+    let mut patch = Patch::new().replace(table());
+    for f in 0..3 {
+        let v = 2.0 * f as f32;
+        patch = patch.append([f64::from(f)], "Bus", [("vm", vec![v + 1.0, v + 2.0])]);
+    }
+    each.apply(patch).expect("valid");
+    assert_eq!(each.to_bytes(), one.to_bytes(), "a frame a change records as the frames in one");
+    let error = each
+        .apply(
+            Patch::new()
+                .append([3.0], "Bus", [("vm", vec![1.0_f32, 1.0])])
+                .append([4.0], "Bus", [("vm", vec![1.0_f32])])
+                .append([5.0], "Bus", [("vm", vec![1.0_f32, 1.0])]),
+        )
+        .expect_err("a frame short of a row");
+    assert!(error.to_string().starts_with("patch[1].Bus.vm"), "{error}");
+}
+
+#[test]
 fn field_lengths_must_match_rows() {
     let mut data = Data::new("grid");
     let error = data.apply(Table::new("Bus", Ids::count(3)).field("kv", vec![1.0, 2.0])).expect_err("short field");

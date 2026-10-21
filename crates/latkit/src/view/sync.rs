@@ -511,12 +511,10 @@ impl Builder<'_> {
                 self.listed(values);
                 for page in values.pages() {
                     let key = PageKey::of(page.id, Words::Codes, false);
-                    let dictionary = self.gpu.dictionaries.field(field.0, field.1, field.2);
-                    dictionary.scan(page);
-                    let codes = &mut self.gpu.dictionaries;
-                    let offset = self.gpu.arena.get(key, page.values.len() as u32, || {
-                        Content::Computed(codes.field(field.0, field.1, field.2).codes(page))
-                    });
+                    // Coded once, whether or not the page is on the GPU, so the dictionary holds its texts.
+                    let codes = self.gpu.dictionaries.field(field.0, field.1, field.2).codes(page);
+                    let offset =
+                        self.gpu.arena.get(key, page.values.len() as u32, || Content::Computed(codes.to_vec()));
                     self.push(key, offset);
                 }
             }

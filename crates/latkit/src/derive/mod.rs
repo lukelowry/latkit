@@ -217,51 +217,86 @@ impl Input<'_> {
     /// fields its places, sizes, groups, ports, wires, and nets read. A field only a look reads, such
     /// as a value streaming in, changes nothing it hashes.
     pub(crate) fn structure(&self, hasher: &mut impl Hasher) {
+        self.reads(&mut |read| match read {
+            Read::Rows { data, table, rows } => (data, table, rows.structure, rows.order).hash(hasher),
+            Read::Field { data, table, name, field, .. } => (data, table, name, field.map(Field::version)).hash(hasher),
+        });
+    }
+
+    /// Hands `read` what the structure of the scene's marks reads, in order: each table drawn, then
+    /// each field its places, sizes, groups, ports, wires, and nets read.
+    pub(crate) fn reads<'a>(&'a self, read: &mut impl FnMut(Read<'a>)) {
         for mark in &self.scene.marks {
             let style = mark.style();
-            let Some(table) = self.data(&style.data).and_then(|d| d.table(&style.table)) else { continue };
-            (&style.data, &style.table, table.structure, table.order).hash(hasher);
-            let mut read = |of: Option<&(Name, Name)>, name: &Name| {
-                let (data, table) = of.map_or((&style.data, &style.table), |(d, t)| (d, t));
-                let field = self.data(data).and_then(|d| d.table(table)).and_then(|t| t.field_named(name));
-                (data, table, name, field.map(Field::version)).hash(hasher);
-            };
-            let mut expr = |e: &crate::Expr| e.for_each_field(&mut |f| read(f.of.as_ref(), &f.name));
-            let named = |name: &Name| crate::field(name.clone());
+            let Some(rows) = self.data(&style.data).and_then(|d| d.table(&style.table)) else { continue };
+            read(Read::Rows { data: &style.data, table: &style.table, rows });
+            let own = (&style.data, &style.table);
             match mark {
                 crate::Mark::Vertices(v) => {
                     match &v.position {
                         Some([x, y]) => {
-                            expr(x);
-                            expr(y);
+                            self.read_expr(own, x, true, read);
+                            self.read_expr(own, y, true, read);
                         }
-                        None => expr(&crate::field(v.point_field())),
+                        None => self.read_field(own, v.point_field(), read),
                     }
                     for size in v.size.iter().flatten().chain(&v.radius) {
-                        expr(&size.expr);
+                        self.read_expr(own, &size.expr, true, read);
                     }
                     if let Some(label) = &style.label {
-                        expr(&label.text);
+                        self.read_expr(own, &label.text, true, read);
                     }
                     for (reference, _) in &v.ports {
-                        expr(&named(reference));
+                        self.read_field(own, reference, read);
                     }
                     if let Some((members, reference)) = &v.contains {
-                        expr(&named(reference).of(style.data.clone(), members.clone()));
+                        self.read_field((&style.data, members), reference, read);
                     }
                 }
                 crate::Mark::Edges(e) => {
                     for name in e.ends.iter().flat_map(|(from, to)| [from, to]).chain(&e.bends) {
-                        expr(&named(name));
+                        self.read_field(own, name, read);
                     }
                     if let Some((members, reference)) = &e.joins {
-                        expr(&named(reference).of(style.data.clone(), members.clone()));
+                        self.read_field((&style.data, members), reference, read);
                     }
                 }
                 crate::Mark::Faces(_) | crate::Mark::Lines(_) | crate::Mark::Areas(_) => {}
             }
         }
     }
+
+    /// Hands `read` every field `expr` of a mark drawing `table` reads: a field of the table itself is
+    /// one it sizes or places each row by, `own`, unless a domain fits it to every row's.
+    fn read_expr<'a>(
+        &'a self,
+        table: (&'a Name, &'a Name),
+        expr: &'a crate::Expr,
+        own: bool,
+        read: &mut impl FnMut(Read<'a>),
+    ) {
+        let own = own && !expr.fits();
+        expr.for_each_field(&mut |f| {
+            let (data, of) = f.of.as_ref().map_or(table, |(d, t)| (d, t));
+            let field = self.data(data).and_then(|d| d.table(of)).and_then(|t| t.field_named(&f.name));
+            read(Read::Field { data, table: of, name: f.name.as_str(), field, own: own && f.of.is_none() });
+        });
+    }
+
+    /// Hands `read` field `name` of `table`.
+    fn read_field<'a>(&'a self, (data, table): (&'a Name, &'a Name), name: &'a str, read: &mut impl FnMut(Read<'a>)) {
+        let field = self.data(data).and_then(|d| d.table(table)).and_then(|t| t.field_named(name));
+        read(Read::Field { data, table, name, field, own: false });
+    }
+}
+
+/// What the structure of the scene's marks reads.
+pub(crate) enum Read<'a> {
+    /// A table a mark draws: its rows.
+    Rows { data: &'a Name, table: &'a Name, rows: &'a Table },
+    /// A field: whether it exists, and as what; and whether it is `own`, a value of a vertex mark's
+    /// own table that sizes or places each row by that row's value alone.
+    Field { data: &'a Name, table: &'a Name, name: &'a str, field: Option<&'a Field>, own: bool },
 }
 
 /// Derived tables, by the dataset and table each stands beside.

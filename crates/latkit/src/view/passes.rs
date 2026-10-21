@@ -502,7 +502,7 @@ impl View {
             let count = Variant::compute(Shader::Lists, "count_segments").path(path);
             pass.set_pipeline(&inner.pipelines.compute_pipeline(device, count));
             dispatch(pass, items);
-            super::lists::scan(pass, &mut inner.pipelines, device, items, false);
+            super::lists::scan(pass, &mut inner.pipelines, device, items);
             let write = Variant::compute(Shader::Lists, "write_segments").path(path);
             pass.set_pipeline(&inner.pipelines.compute_pipeline(device, write));
             dispatch(pass, items);
@@ -535,7 +535,7 @@ impl View {
     }
 
     /// Draws the backdrop, every drawable mark in scene order, then `sprites` overlay sprites, counted
-    /// in `drawn`. Depth is kept when `probing` reads it.
+    /// in `drawn`, once the text set this frame has its fields. Depth is kept when `probing` reads it.
     pub(super) fn draw(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -547,6 +547,8 @@ impl View {
     ) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
+        let Inner { atlas, pipelines, .. } = &mut *inner;
+        atlas.lay(device, &gpu.0.queue, encoder, pipelines);
         let background =
             if self.signal.transparent() { [0.0; 4] } else { self.scene.theme.background.to_array().map(f64::from) };
         let plot = matches!(self.scene.space, Space::Plot(_));
@@ -626,6 +628,8 @@ impl View {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let probed: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].probed()).collect();
+        // Every mark drawn has its probe program, which reads the depth under the probe as well as any.
+        let under = self.marks.iter().position(super::marks::Shown::drawable);
         let resources = self.resources.as_mut().expect("created before passes");
         let shader = crate::gpu::pipelines::probe(resources.samples());
         let mut reset = [0_u32; wgsl::PROBE_WORDS as usize];
@@ -639,22 +643,18 @@ impl View {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
-            pass.set_bind_group(2, &group, &[]);
-            for entry in ["nearest", "topmost", "describe"] {
+            // Each step over every mark before the next: the nearest key, then its topmost instance,
+            // then where that lies.
+            for step in [wgsl::STEP_NEAREST, wgsl::STEP_TOPMOST, wgsl::STEP_DESCRIBE] {
+                pass.set_bind_group(2, &group, &[super::resources::step(step)]);
                 for &i in &probed {
-                    let variant = Variant::probe(shader, entry, self.marks[i].primitive()).path(self.marks[i].path());
-                    pass.set_pipeline(&inner.pipelines.compute_pipeline(device, variant));
-                    pass.set_bind_group(1, &groups.mark, &[offset(i)]);
-                    if entry == "describe" {
-                        pass.dispatch_workgroups(1, 1, 1);
-                    } else {
-                        dispatch(&mut pass, self.marks[i].live_instances());
-                    }
+                    self.probe_step(&mut pass, inner, shader, &groups.mark, i, step);
                 }
             }
-            pass.set_pipeline(&inner.pipelines.compute(device, shader, "under"));
-            pass.set_bind_group(1, &groups.mark, &[0]);
-            pass.dispatch_workgroups(1, 1, 1);
+            if let Some(i) = under {
+                pass.set_bind_group(2, &group, &[super::resources::step(wgsl::STEP_UNDER)]);
+                self.probe_step(&mut pass, inner, shader, &groups.mark, i, wgsl::STEP_UNDER);
+            }
         }
         let resources = self.resources.as_ref().expect("created before passes");
         Readback::new(
@@ -666,5 +666,27 @@ impl View {
             u64::from(wgsl::PROBE_WORDS) * 4,
             &self.waker,
         )
+    }
+
+    /// Records step `step` of mark `i`'s probe program, `shader`, the step's pass group bound: over
+    /// every instance it reaches, or once for a step that reads one thing.
+    pub(super) fn probe_step(
+        &self,
+        pass: &mut wgpu::ComputePass<'_>,
+        inner: &mut Inner,
+        shader: Shader,
+        mark: &wgpu::BindGroup,
+        i: usize,
+        step: u32,
+    ) {
+        let shown = &self.marks[i];
+        let variant = Variant::probe(shader, shown.primitive()).path(shown.path());
+        pass.set_pipeline(&inner.pipelines.compute_pipeline(&self.gpu.0.device, variant));
+        pass.set_bind_group(1, mark, &[offset(i)]);
+        if matches!(step, wgsl::STEP_DESCRIBE | wgsl::STEP_LOCATE | wgsl::STEP_UNDER) {
+            pass.dispatch_workgroups(1, 1, 1);
+        } else {
+            dispatch(pass, shown.live_instances());
+        }
     }
 }

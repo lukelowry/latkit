@@ -9,16 +9,59 @@ pub(crate) const PAGE_BITS: u32 = 16;
 pub(crate) const PAGE_ROWS: usize = 1 << PAGE_BITS;
 pub(crate) const PAGE_MASK: usize = PAGE_ROWS - 1;
 
-/// One page of a column: up to [`PAGE_ROWS`] values and the id of exactly these contents.
+/// Writes a page remembers back: past them, it reads as written whole.
+const REMEMBERED: u8 = 8;
+
+/// One page of a column: up to [`PAGE_ROWS`] values, the id of exactly these contents, and, when it
+/// was written over another page, which page and which rows.
 #[derive(Clone, Debug)]
 pub(crate) struct Page {
     pub(crate) id: PageId,
     pub(crate) values: Values,
+    pub(crate) written: Option<Arc<Written>>,
+}
+
+/// What a page was written from: the page it copied, the rows written over it there, offsets into
+/// the page, and how that page was written in turn.
+#[derive(Debug)]
+pub(crate) struct Written {
+    pub(crate) from: PageId,
+    pub(crate) rows: Box<[u32]>,
+    pub(crate) before: Option<Arc<Written>>,
+    depth: u8,
 }
 
 impl Page {
     pub(crate) fn new(values: Values) -> Page {
-        Page { id: PageId::next(), values }
+        Page { id: PageId::next(), values, written: None }
+    }
+
+    /// `values`: page `old` with `rows` written over it, offsets into the page.
+    fn over(values: Values, old: &Page, rows: Vec<u32>) -> Page {
+        let before = old.written.clone().filter(|w| w.depth < REMEMBERED);
+        let depth = before.as_ref().map_or(1, |w| w.depth + 1);
+        let written = Written { from: old.id, rows: rows.into(), before, depth };
+        Page { id: PageId::next(), values, written: Some(Arc::new(written)) }
+    }
+
+    /// The rows written since page `before`, offsets into the page, in order: `None` unless this page
+    /// was written over it, a few writes back at most.
+    pub(crate) fn rows_since(&self, before: PageId) -> Option<Vec<u32>> {
+        if self.id == before {
+            return Some(Vec::new());
+        }
+        let mut rows = Vec::new();
+        let mut at = self.written.as_deref();
+        while let Some(written) = at {
+            rows.extend_from_slice(&written.rows);
+            if written.from == before {
+                rows.sort_unstable();
+                rows.dedup();
+                return Some(rows);
+            }
+            at = written.before.as_deref();
+        }
+        None
     }
 }
 
@@ -118,9 +161,33 @@ impl Column {
             sources[0] = old.map_or(&self.like, |o| &o.values);
             let kept = sources[0].len();
             let values = Values::assemble(&sources, Picks::Writes { from: &from, kept })?;
-            pages.push(Page::new(values));
+            pages.push(match old {
+                // The page remembers what it was written over: the rows written, and those past its end.
+                Some(old) => {
+                    let mut rows: Vec<u32> = page_writes.iter().map(|&(row, _)| (row - start) as u32).collect();
+                    rows.extend(kept as u32..page_len as u32);
+                    Page::over(values, old, rows)
+                }
+                None => Page::new(values),
+            });
         }
         Ok(Column { len, pages: pages.into(), like: self.like.clone() })
+    }
+
+    /// The rows written since `before`, which this column was written from a few writes back at most,
+    /// in order: `None` where a page of it was not, or the number of rows changed. A row written the
+    /// value it held counts.
+    pub(crate) fn rows_since(&self, before: &Column) -> Option<Vec<usize>> {
+        if self.len != before.len {
+            return None;
+        }
+        let mut rows = Vec::new();
+        for (p, (now, then)) in self.pages.iter().zip(before.pages.iter()).enumerate() {
+            if now.id != then.id {
+                rows.extend(now.rows_since(then.id)?.into_iter().map(|r| p * PAGE_ROWS + r as usize));
+            }
+        }
+        Some(rows)
     }
 
     /// Every value in row order, as one run: a single page's without copying, else the pages copied
@@ -220,6 +287,30 @@ mod tests {
         assert_eq!(column.differing(&column), Vec::<usize>::new(), "a column holds what it holds");
         let longer = column.write(column.len() + 2, &[], &source).expect("numbers");
         assert_eq!(longer.differing(&column), [PAGE_ROWS * 2 + 10, PAGE_ROWS * 2 + 11], "rows past it differ");
+    }
+
+    #[test]
+    fn written_pages_remember_the_rows_written_since() {
+        let column = Column::new(&numbers(PAGE_ROWS + 10));
+        let source = Column::new(&Values::from(vec![-1.0_f64, -2.0]));
+        let once = column.write(column.len(), &[(3, 0), (PAGE_ROWS + 4, 1)], &source).expect("numbers");
+        let twice = once.write(once.len(), &[(5, 0)], &source).expect("numbers");
+        assert_eq!(twice.rows_since(&column), Some(vec![3, 5, PAGE_ROWS + 4]), "every write since, in order");
+        assert_eq!(twice.rows_since(&once), Some(vec![5]));
+        assert_eq!(twice.rows_since(&twice), Some(Vec::new()));
+        assert_eq!(column.rows_since(&twice), None, "nothing is written backward");
+        assert_eq!(Column::new(&numbers(PAGE_ROWS + 10)).rows_since(&column), None, "nor from another column");
+        let grown = column.write(column.len() + 2, &[], &source).expect("numbers");
+        assert_eq!(grown.rows_since(&column), None, "rows added change the rows themselves");
+        // A page remembers a few writes back; past them, it reads as written whole.
+        let mut near = once.clone();
+        for _ in 1..REMEMBERED {
+            near = near.write(near.len(), &[(7, 0)], &source).expect("numbers");
+        }
+        assert_eq!(near.rows_since(&column), Some(vec![3, 7, PAGE_ROWS + 4]));
+        let far = near.write(near.len(), &[(7, 0)], &source).expect("numbers");
+        assert_eq!(far.rows_since(&column), None);
+        assert_eq!(far.rows_since(&near), Some(vec![7]));
     }
 
     #[test]

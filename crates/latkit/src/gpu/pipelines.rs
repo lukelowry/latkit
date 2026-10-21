@@ -53,10 +53,10 @@ impl Variant {
         Variant { shader, entry, primitive: 0, path: PATH_ENDS, target: None }
     }
 
-    /// A probe's entry point `entry`, made for marks of `primitive` (a `POINTS`, `STROKES`, or
-    /// `TRIANGLES` code).
-    pub(crate) fn probe(shader: Shader, entry: &'static str, primitive: u32) -> Variant {
-        Variant { shader, entry, primitive, path: PATH_ENDS, target: None }
+    /// The probe program made for marks of `primitive` (a `POINTS`, `STROKES`, or `TRIANGLES` code),
+    /// which answers every question a step at a time.
+    pub(crate) fn probe(shader: Shader, primitive: u32) -> Variant {
+        Variant { shader, entry: "answer", primitive, path: PATH_ENDS, target: None }
     }
 
     /// The variant whose strokes read `path`, one of the `PATH_` codes.

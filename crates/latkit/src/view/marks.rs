@@ -8,7 +8,6 @@ use super::transition::{Begin, Transition};
 use crate::data::Table;
 use crate::expr::compile::{Deps, Reads};
 use crate::gpu::shaders as wgsl;
-use crate::gpu::work::Queue;
 use crate::gpu::{Inner, atlas};
 use crate::scene::compile::{self, Compiled};
 use crate::scene::mark::{Context, Key, MarkKind, Primitive};
@@ -335,7 +334,7 @@ impl Shown {
 
     /// Writes its ports' words: each one's code, shape, and reference column, and where the atlas
     /// holds its label, set in `font` by the host the first time.
-    pub(crate) fn write_ports(&mut self, font: &Arc<str>, queue: &Queue, gpu: &mut Inner) {
+    pub(crate) fn write_ports(&mut self, font: &Arc<str>, gpu: &mut Inner) {
         self.ports.clear();
         let Some(compiled) = &self.compiled else { return };
         let ports = &compiled.drawing.ports;
@@ -344,7 +343,7 @@ impl Shown {
         for ((_, port, column), code) in ports.iter().zip(codes) {
             let corners = port.label.as_deref().and_then(|label| {
                 let run = atlas::run(label.into(), font.clone(), compiled.drawing.port_label_size, None);
-                gpu.atlas.text(queue, host.as_deref(), &run)
+                gpu.atlas.text(host.as_deref(), &run)
             });
             let [uv0, uv1] = corners.map_or([0, 0], |glyphs| glyphs.corners());
             self.ports.extend([code, shape_code(port.shape), *column, uv0, uv1]);

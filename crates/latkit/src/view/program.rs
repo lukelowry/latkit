@@ -23,7 +23,7 @@ impl View {
         let gpu = self.gpu.clone();
         let font = self.scene.theme.font.clone();
         for shown in self.marks.iter_mut().filter(|m| !m.packed) {
-            shown.write_ports(&font, &gpu.0.queue, inner);
+            shown.write_ports(&font, inner);
             let Some(compiled) = &mut shown.compiled else { continue };
             let markers = &mut compiled.drawing.markers;
             if !markers.icons.is_empty() {
