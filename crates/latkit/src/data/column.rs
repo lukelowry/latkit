@@ -200,6 +200,22 @@ impl Column {
         }
     }
 
+    /// The rows whose values differ from `before`'s, in order: of the rows written since, while the
+    /// pages remember them, those that now hold another value; else every row of the pages that
+    /// changed, compared.
+    pub(crate) fn changed_since(&self, before: &Column) -> Vec<usize> {
+        let Some(written) = self.rows_since(before) else { return self.differing(before) };
+        written
+            .into_iter()
+            .filter(|&row| !self.holds(row, &before.pages[row / PAGE_ROWS].values, row % PAGE_ROWS))
+            .collect()
+    }
+
+    /// Whether row `row` holds what row `at` of `values` does.
+    pub(crate) fn holds(&self, row: usize, values: &Values, at: usize) -> bool {
+        self.pages[row / PAGE_ROWS].values.same_row(row % PAGE_ROWS, values, at)
+    }
+
     /// The rows whose values differ from `before`'s, in order. A page both share holds the same values,
     /// so only the pages that changed are compared, row by row; rows past the shorter column differ.
     pub(crate) fn differing(&self, before: &Column) -> Vec<usize> {
@@ -311,6 +327,18 @@ mod tests {
         let far = near.write(near.len(), &[(7, 0)], &source).expect("numbers");
         assert_eq!(far.rows_since(&column), None);
         assert_eq!(far.rows_since(&near), Some(vec![7]));
+    }
+
+    #[test]
+    fn rows_written_the_value_they_held_have_not_changed() {
+        let column = Column::new(&numbers(PAGE_ROWS + 10));
+        // Row 4 holds 4.
+        let source = Column::new(&Values::from(vec![-1.0_f64, 4.0]));
+        let written = column.write(column.len(), &[(3, 0), (4, 1), (PAGE_ROWS + 4, 0)], &source).expect("numbers");
+        assert_eq!(written.rows_since(&column), Some(vec![3, 4, PAGE_ROWS + 4]), "every row written");
+        assert_eq!(written.changed_since(&column), vec![3, PAGE_ROWS + 4], "the rows whose values changed");
+        let far = (0..REMEMBERED).fold(written, |c, _| c.write(c.len(), &[(3, 0)], &source).expect("numbers"));
+        assert_eq!(far.changed_since(&column), vec![3, PAGE_ROWS + 4], "compared where the pages forgot");
     }
 
     #[test]

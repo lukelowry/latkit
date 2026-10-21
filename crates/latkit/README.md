@@ -34,7 +34,8 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200 
    pipeline: ends (straight, geodesic, lanes), trace (samples), or geometry (any written polyline);
    a triangle's corners come from ends (faces) or geometry (areas). Geometry is a field: vertices
    read points, lines paths and rings, areas polygons, from `geometry` unless told otherwise. A text
-   run is rasterized once as a distance field: any size, halo from the field.
+   run is rasterized once by the host and made a distance field on the GPU: any size, halo from the
+   field.
 6. **Lists:** count → scan → write. Capacity is a CPU-known bound; a list past it coarsens every
    item instead of dropping the last.
 7. **Eyes:** every pass draws through an `Eye` (projection, size, pixel ratio): the view or the shadow
@@ -70,8 +71,9 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200 
 - CPU per frame is O(marks), plus O(changed pages) on new data, O(sampled pages) when `at` moves,
   and O(rows drawn) when the tiles the camera wants change.
 - Work superlinear in graph size runs in a host job, never on the frame.
-- Picks probe what the frame drew, through the draws' own geometry. Hover follows the frame: what
-  the pointer rests on is probed again whenever the frame changes under it, one probe in flight;
+- Picks probe what the frame drew, through the draws' own geometry: one probe program per kind of
+  mark answers the hover, picks, boxes, and `locate`, a step at a time. Hover follows the frame:
+  what the pointer rests on is probed again whenever the frame changes under it, one probe in flight;
   `Controls::hover` only says whether it glows.
 - A scene asks for every pipeline it can use the first time it draws into a target: what it draws
   and changes with, all at once, then what lights rows, probes, and answers queries, a few at a time
@@ -85,7 +87,8 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200 
 - Motion is the view's own only where the user's system allows it (`Controls::motion`): under
   reduced motion changes apply at once, flights jump, nothing coasts or orbits, labels show without
   fading, and comets and what reads `elapsed()` hold still, so a still view needs no frames.
-- Every order the user can see comes from count → scan → write, never from atomic appends.
+- Every order the user can see comes from count → scan → write or a sort on the CPU, never from
+  the order atomic appends land in.
 - Every shader passes naga at build time and Chrome within its compile budget.
 - Every wait races a deadline; readbacks are taken, never awaited. A view sleeps while it waits:
   readbacks, jobs, and fetches wake it as they land, and a frame whose work the next one lands
@@ -200,7 +203,7 @@ crates/latkit/
 │   ├── lib/           types, bind, read, trace, project, state, color, focus, points, path, triangles,
 │   │                  stroke, marker, label, shade, lists, mark, reduce
 │   ├── compute/       evaluate, freeze, bounds, normals, probe, lists, labels (map label collisions),
-│   │                  compose (a shot's panels into RGBA or NV12)
+│   │                  compose (a shot's panels into RGBA or NV12), fields (text's distance fields)
 │   └── draw/          backdrop (daylight, atmosphere), points, strokes, triangles, areas, glyphs, shade, overlay
 ├── src/
 │   ├── lib.rs         the only entry point

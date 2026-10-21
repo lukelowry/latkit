@@ -567,8 +567,8 @@ fn edited(drawn: &Drawn, input: &Input<'_>, vertex_marks: &[VertexMark<'_>]) -> 
                         (Some(now), Some(then)) if now.version() == then.version() => true,
                         (Some(Field::Values(now, _)), Some(Field::Values(then, _))) if own => {
                             drawing(vertex_marks, data, table).is_some_and(|m| {
-                                let written = now.rows_since(then).unwrap_or_else(|| now.differing(then));
-                                rows.extend(written.into_iter().map(|row| vertex_marks[m].first + row));
+                                let changed = now.changed_since(then);
+                                rows.extend(changed.into_iter().map(|row| vertex_marks[m].first + row));
                                 true
                             })
                         }
@@ -775,10 +775,15 @@ fn write_rows(
     true
 }
 
-/// Writes `values` over rows `rows` of field `name` of `table`; false where it holds no such column.
+/// Writes `values` over rows `rows` of field `name` of `table`, but where a row holds its value already,
+/// so a page changes only when a value on it does; false where it holds no such column.
 fn write_field(table: &mut Table, name: &str, rows: &[usize], values: &Values) -> bool {
     let Some(Field::Values(column, _)) = table.field_named(name) else { return false };
-    let writes: Vec<(usize, usize)> = rows.iter().copied().zip(0..).collect();
+    let writes: Vec<(usize, usize)> =
+        rows.iter().copied().zip(0..).filter(|&(row, at)| !column.holds(row, values, at)).collect();
+    if writes.is_empty() {
+        return true;
+    }
     let Ok(column) = column.write(column.len(), &writes, &Column::new(values)) else { return false };
     table.insert(name.into(), Field::Values(column, Version::next()));
     true

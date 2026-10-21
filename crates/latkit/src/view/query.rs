@@ -1,8 +1,9 @@
 //! Queries: every row within reach of a point, every row in a box, and where a row lies on screen,
 //! answered on the GPU by each mark's probe program through the geometry the frame drew, and read back
 //! a frame or two later. What a query finds of each mark follows the probe's words: the hits it keeps,
-//! after how many it found and how many it keeps, or a bit per row. One query runs at a time; the rest
-//! wait their turn.
+//! after how many it found and how many it keeps, or a bit per row. Hits land in any order; they are
+//! told in one, and a mark that found more than it kept asks again with room for them all. One query
+//! runs at a time; the rest wait their turn.
 
 use std::collections::VecDeque;
 
@@ -16,13 +17,13 @@ use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
 use crate::{Pending, Resolver, Row};
 
-/// Hits a mark keeps: past them, a query counts hits but keeps none.
+/// Hits a mark keeps at first: past them, a query counts hits but keeps none, and asks again.
 const HITS: u32 = 1024;
 
 /// A question for the GPU.
 pub(crate) enum Ask {
-    /// Every row within `radius` CSS pixels of `point`.
-    Hits { point: [f32; 2], radius: f32, reply: Resolver<Vec<Hit>> },
+    /// Every row within `radius` CSS pixels of `point`, keeping up to `room` hits of each mark.
+    Hits { point: [f32; 2], radius: f32, room: u32, reply: Resolver<Vec<Hit>> },
     /// Every row in the box between two corners; they become the selection, as `trigger` chose.
     Boxed { corners: [[f32; 2]; 2], trigger: Trigger },
     /// Where a row lies.
@@ -55,8 +56,8 @@ impl Ask {
     /// that takes.
     fn room(&self, instances: u32, rows: u32) -> (u32, u32) {
         match self {
-            Ask::Hits { .. } => {
-                let kept = instances.min(HITS);
+            Ask::Hits { room, .. } => {
+                let kept = instances.min(*room);
                 (kept, 2 + kept * wgsl::HIT_WORDS)
             }
             Ask::Boxed { .. } => (rows, rows.div_ceil(32)),
@@ -107,7 +108,7 @@ impl View {
     /// next frames draw them.
     pub fn pick(&mut self, point: [f32; 2], radius: f32) -> Pending<Vec<Hit>> {
         let (answer, reply) = Pending::new();
-        self.queries.waiting.push_back(Ask::Hits { point, radius: radius.max(0.0), reply });
+        self.queries.waiting.push_back(Ask::Hits { point, radius: radius.max(0.0), room: HITS, reply });
         self.wake();
         answer
     }
@@ -244,7 +245,14 @@ impl View {
             }
         };
         match ask {
-            Ask::Hits { reply, .. } => reply.resolve(Ok(self.hits(&found, &words))),
+            Ask::Hits { point, radius, room, reply } => {
+                // A mark that found more than it kept asks again, with room for every hit it found.
+                let most = found.iter().map(|f| words_at(&words, f.at, 1).first().copied().unwrap_or(0)).max();
+                match most.filter(|&most| most > room) {
+                    Some(room) => self.queries.waiting.push_front(Ask::Hits { point, radius, room, reply }),
+                    None => reply.resolve(Ok(self.hits(&found, &words))),
+                }
+            }
             Ask::Boxed { trigger, .. } => {
                 let mut rows = Vec::new();
                 let mut seen = FxHashSet::default();
@@ -275,8 +283,9 @@ impl View {
 
     fn hits(&self, found: &[Found], words: &[u32]) -> Vec<Hit> {
         let view = self.projected();
-        // Nearest first, the mark drawn last first among equals, and a port before its marker; each
-        // row answers once, where it is nearest.
+        // Nearest first, the mark drawn last first among equals, and a port before its marker; then
+        // by row and where it lies, so the order never depends on which hit landed first. Each row
+        // answers once, where it is nearest.
         let mut kept: Vec<(usize, &[u32; wgsl::HIT_WORDS as usize])> = found
             .iter()
             .flat_map(|f| {
@@ -285,7 +294,9 @@ impl View {
                 entries.as_chunks().0.iter().map(move |entry| (f.mark, entry))
             })
             .collect();
-        kept.sort_by_key(|&(i, entry)| (entry[1], std::cmp::Reverse(i), std::cmp::Reverse(entry[2])));
+        kept.sort_unstable_by_key(|&(i, entry)| {
+            (entry[1], std::cmp::Reverse(i), std::cmp::Reverse(entry[2]), entry[0], entry[3], entry[4], entry[5])
+        });
         let mut seen = FxHashSet::default();
         let mut hits = Vec::new();
         for (i, entry) in kept {
