@@ -113,15 +113,15 @@ latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --outpu
 
 <p align="center">
   <a href="npm/examples/src/examples/power-flow"><img src="docs/images/power-flow.webp" width="49%" alt="Texas substations as pie markers on a map, lines colored by loading, power flowing along them"></a>
-  <a href="npm/examples/src/examples/linked-views"><img src="docs/images/linked-views.webp" width="49%" alt="A surface of sensors in 3D beside a plot of their signals over time"></a>
+  <a href="npm/examples/src/examples/linked-views"><img src="docs/images/linked-views.webp" width="49%" alt="A surface of 400 sensors in 3D beside three selected signal traces over ten seconds"></a>
   <a href="npm/examples/src/examples/diagram"><img src="docs/images/diagram.webp" width="98.5%" alt="A block diagram of a water plant: grouped blocks, ports, and routed wires"></a>
   <a href="crates/latkit-cli/examples/cli-gallery"><img src="docs/images/helios.webp" width="32%" alt="A synthetic transmission network in five concentric rings"></a>
-  <a href="crates/latkit-cli/examples/cli-gallery"><img src="docs/images/interference.webp" width="32%" alt="33,600 particles colored by the interference of two waves"></a>
-  <a href="crates/latkit-cli/examples/cli-gallery"><img src="docs/images/tides.webp" width="32%" alt="A hundred closed contours in a rainbow colormap"></a>
+  <a href="docs/images/torus-silk.png"><img src="docs/images/torus-silk.png" width="32%" alt="Torus Silk: 64 cyan, amber, and coral filaments woven into a three-dimensional torus knot, rendered with latkit-cli"></a>
+  <a href="docs/images/golden-bloom.png"><img src="docs/images/golden-bloom.png" width="32%" alt="Golden Bloom: 32,000 golden-angle seeds forming a spiral of sapphire, rose, and amber, rendered with npm latkit's WASM renderer"></a>
 </p>
 
 <p align="center">
-  <sub>From the <a href="npm/examples">example pages</a> and the <a href="crates/latkit-cli/examples">command-line examples</a>.</sub>
+  <sub>From the <a href="npm/examples">example pages</a> and the <a href="crates/latkit-cli/examples">command-line examples</a>, with Torus Silk and Golden Bloom rendered using the published latkit-cli and npm latkit 0.2.0 releases.</sub>
 </p>
 
 ## Repository
