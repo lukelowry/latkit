@@ -5,7 +5,8 @@
 //!   test the npm workspace over a fresh `wasm --dev`; then the browser gate.
 //! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`: every
 //!   shader variant's pipelines compile in Chrome within budget, and every example page draws and
-//!   answers the pointer without errors or stalls.
+//!   answers the pointer without errors or stalls. On `SwiftShader`, as Linux always is, only that
+//!   every pipeline compiles: pages and times need a GPU.
 //! - `bench [--quick] [--only a,b] [--repeats n] [--update] [--software]`: the
 //!   benchmark (`benchmark/`) over a release `wasm`: every scenario up its sizes in Chrome while the
 //!   last one fits, each phase's time, GPU time, stalls, and exact work, held to how it may grow with
@@ -120,6 +121,7 @@ fn check() -> Result {
     wasm(true)?;
     pnpm(&["format:check"])?;
     pnpm(&["lint"])?;
+    run("node", &["npm/docs.mjs", "--check"])?;
     pnpm(&["typecheck"])?;
     pnpm(&["test"])?;
     browser_gate()

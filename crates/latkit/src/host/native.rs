@@ -178,6 +178,7 @@ impl Text {
         // fixed Linux family names, which may be absent on Windows and macOS.
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
+        installed_generics(&mut db);
         Self { fonts: FontSystem::new_with_locale_and_db("en-US".into(), db), cache: SwashCache::new() }
     }
 
@@ -235,6 +236,44 @@ impl Text {
     }
 }
 
+/// Points each generic family at an installed one. fontdb names a generic after fontconfig's last
+/// alias for it, installed or not: stock Ubuntu's last `sans-serif` alias prefers `FreeSans`, which
+/// it does not ship. A generic naming nothing installed takes the first installed of its common
+/// families, else any installed family.
+fn installed_generics(db: &mut fontdb::Database) {
+    fn has(db: &fontdb::Database, family: Family<'_>) -> bool {
+        db.query(&fontdb::Query { families: &[family], ..Default::default() }).is_some()
+    }
+    type Set = fn(&mut fontdb::Database, String);
+    let generics: [(Family<'_>, &[&str], Set); 3] = [
+        (
+            Family::SansSerif,
+            &["DejaVu Sans", "Noto Sans", "Liberation Sans", "Arial", "Helvetica"],
+            fontdb::Database::set_sans_serif_family::<String>,
+        ),
+        (
+            Family::Serif,
+            &["DejaVu Serif", "Noto Serif", "Liberation Serif", "Times New Roman", "Times"],
+            fontdb::Database::set_serif_family::<String>,
+        ),
+        (
+            Family::Monospace,
+            &["DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono", "Courier New", "Menlo"],
+            fontdb::Database::set_monospace_family::<String>,
+        ),
+    ];
+    let any = db.faces().find_map(|face| face.families.first()).map(|(name, _)| name.clone());
+    for (generic, common, set) in generics {
+        if has(db, generic) {
+            continue;
+        }
+        let name = common.iter().find(|name| has(db, Family::Name(name))).map(ToString::to_string);
+        if let Some(name) = name.or_else(|| any.clone()) {
+            set(db, name);
+        }
+    }
+}
+
 type Task = (Box<dyn FnOnce() -> Result<Vec<u8>> + Send>, Resolver<Vec<u8>>);
 struct Workers(mpsc::Sender<Task>);
 
@@ -276,6 +315,18 @@ mod tests {
             .query(&fontdb::Query { families: &[Family::SansSerif], ..Default::default() })
             .expect("native text tests require a system sans-serif font");
         fonts.db().with_face_data(id, |bytes, _| bytes.to_vec()).expect("font bytes")
+    }
+
+    #[test]
+    fn generic_families_name_installed_fonts() {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        db.set_sans_serif_family("Not Installed Sans");
+        db.set_monospace_family("Not Installed Mono");
+        installed_generics(&mut db);
+        for generic in [Family::SansSerif, Family::Monospace] {
+            assert!(db.query(&fontdb::Query { families: &[generic], ..Default::default() }).is_some());
+        }
     }
 
     #[test]

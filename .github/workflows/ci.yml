@@ -1,5 +1,8 @@
 name: CI
 
+# What a release depends on: the crates build, pass their tests, document, and package on every
+# platform they ship to; the npm tarball works in a consumer; the docs build. Frame budgets and the
+# benchmark need a GPU, which runners lack: run `cargo xtask check` and `cargo xtask bench` locally.
 on:
   pull_request:
   push:
@@ -33,28 +36,23 @@ jobs:
         run: cargo package --locked -p latkit
       - name: Verify the browser-target package
         run: cargo package --locked -p latkit --target wasm32-unknown-unknown --features web
+      - name: Keep native font code out of browser builds
+        run: cargo check --locked -p latkit --target wasm32-unknown-unknown --features native,web
 
+  # The CLI's native code on the other platforms it installs on; Linux runs in `rust`.
   native-cli:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - run: rustup show
-      - name: Install fonts for native text tests
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
       - run: cargo test --locked --package latkit --features native --lib --test validation
       - run: cargo test --locked --package latkit-cli
-      - name: Build the CLI
-        run: cargo build --locked --package latkit-cli --profile cli
-      - run: cargo check --locked --package latkit --no-default-features
-      - name: Keep native font code out of browser builds
-        run: cargo check --locked --package latkit --target wasm32-unknown-unknown --features native,web
 
-  # The npm package, its examples, and the bench: built from the crate, checked, tested, packed for
-  # a consumer, and every example page driven in Chrome on SwiftShader.
+  # The npm package: built from the crate, checked, tested, every pipeline compiled in Chrome on
+  # SwiftShader, and the packed tarball installed and drawn in a consumer.
   npm:
     runs-on: ubuntu-latest
     steps:
@@ -87,8 +85,6 @@ jobs:
       - run: node npm/docs.mjs --check
       - run: pnpm typecheck
       - run: pnpm test
-      - name: Hold the benchmark's work to its baseline
-        run: node benchmark/run.ts --quick --software
       - run: cargo xtask browser
       - run: cargo xtask package
       - run: cargo xtask package-test

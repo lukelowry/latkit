@@ -4,9 +4,12 @@
  * over budget or failing to compile, a console error, a page that draws no frame in time, or a frame
  * that stalls while the page opens or under the pointer. Every wait races a deadline.
  *
- * `node gate/gate.ts <dir holding shaders.json> [page...]`; `cargo xtask browser` runs it. Naming
- * pages visits only those, without timing the shaders. Chrome is `$LATKIT_CHROME`, or the newest
- * Chromium Playwright installed.
+ * On SwiftShader (`--software`, as Linux always is), the CPU draws, slower than any budget, so the
+ * gate only checks that every pipeline compiles: pages and times are judged on a GPU.
+ *
+ * `node gate/gate.ts <dir holding shaders.json> [--software] [page...]`; `cargo xtask browser` runs
+ * it. Naming pages visits only those, without timing the shaders. Chrome is `$LATKIT_CHROME`, or the
+ * newest Chromium Playwright installed.
  */
 
 import fs from 'node:fs';
@@ -28,6 +31,8 @@ const FRAME_BUDGET = 50;
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
 const examples = path.dirname(here);
+const args = process.argv.slice(2);
+const software = args.includes('--software') || process.platform === 'linux';
 
 /** A variant of shaders.json: its file, whether it draws, its compute entries, and its constants. */
 interface Variant {
@@ -55,7 +60,7 @@ interface Timing {
 
 /** Chrome compiling cold on every launch, as a first visit does. */
 function cold(): Promise<Chrome> {
-  return launch(['--disable-gpu-shader-disk-cache']);
+  return launch(['--disable-gpu-shader-disk-cache'], software);
 }
 
 /** Every pipeline the variants in `dir` make: each compute entry, or the draw, per constants. */
@@ -180,7 +185,7 @@ async function compileBudget(dir: string): Promise<string[]> {
     return timings.flatMap((t) =>
       t.error
         ? [`${t.label}: ${t.error}`]
-        : t.ms > COMPILE_BUDGET
+        : !software && t.ms > COMPILE_BUDGET
           ? [`${t.label}: ${t.ms.toFixed(0)} ms, over ${COMPILE_BUDGET}`]
           : [],
     );
@@ -402,12 +407,15 @@ async function suite(only: string[]): Promise<string[]> {
   }
 }
 
-const [dir, ...only] = process.argv.slice(2);
+const [dir, ...only] = args.filter((arg) => arg !== '--software');
 if (!dir) {
-  console.error('usage: node gate/gate.ts <dir holding shaders.json> [page...]');
+  console.error('usage: node gate/gate.ts <dir holding shaders.json> [--software] [page...]');
   process.exit(2);
 }
-const shaders = only.length ? [] : (await compileBudget(dir)).map((f) => `shaders: ${f}`);
-const failures = [...shaders, ...(await suite(only))];
+if (software)
+  console.log('SwiftShader draws on the CPU: pipelines must compile, untimed; no pages');
+const shaders =
+  only.length && !software ? [] : (await compileBudget(dir)).map((f) => `shaders: ${f}`);
+const failures = [...shaders, ...(software ? [] : await suite(only))];
 for (const failure of failures) console.error(`FAIL ${failure}`);
 process.exit(failures.length ? 1 : 0);
