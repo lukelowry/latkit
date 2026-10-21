@@ -4,7 +4,7 @@
 use crate::{Error, Result};
 
 /// Where each of several views draws in a target: x, y, width, and height as fractions of it, a
-/// part per view, in order; a later part draws over an earlier one. None given is one view filling
+/// panel per view, in order; a later panel draws over an earlier one. None given is one view filling
 /// the target.
 ///
 /// ```
@@ -62,7 +62,7 @@ impl<const N: usize> From<[[f32; 4]; N]> for Panels {
     }
 }
 
-/// A view's part of a target in pixels: its top left corner and its size.
+/// A view's panel of a target in pixels: its top left corner and its size.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Rect {
     pub(crate) origin: [u32; 2],

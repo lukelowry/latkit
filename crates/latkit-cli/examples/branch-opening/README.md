@@ -1,6 +1,7 @@
 # ACTIVSg70k line opening — Python + Latkit CLI
 
-[Watch the video](animation.mp4) · [Preview](preview.png)
+[Preview](preview.png) · The video is not in Git: [render the saved study](#render-the-saved-study)
+to write `animation.mp4` here.
 
 The synthetic 70,000-bus network responds to the Little Rock–Newark 765 kV line
 (`branch_59757_59774_1`) opening at 1 s. It stays open. The video shows simulation
@@ -50,7 +51,7 @@ dimensions, and render timing. Native MP4 output currently requires Windows.
 
 The study used `ghcr.io/lukelowry/gridkit:develop-perf`, image ID
 `sha256:befba9e16edce341888e73c05b9d2c35aedf1357fa18b54c56114dbe25ccd565`,
-and the original ACTIVSg70k case from GridKit Studio, SHA-256
+and the original ACTIVSg70k case, SHA-256
 `8c3d1edd9deaf409436b1f38e55f41c963d08eae7709474bcfb2c1dffadbdb15`.
 The full simulation manifest remains beside the recording.
 

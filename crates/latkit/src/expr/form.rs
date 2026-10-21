@@ -38,13 +38,13 @@ fn read<T: DeserializeOwned>(value: Value) -> Result<T, String> {
 
 impl<'de> Deserialize<'de> for Expr {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Expr, D::Error> {
-        Expr::from_json(Value::deserialize(deserializer)?).map_err(de::Error::custom)
+        Expr::from_value(Value::deserialize(deserializer)?).map_err(de::Error::custom)
     }
 }
 
 impl Expr {
     /// The expression JSON `value` writes.
-    pub(crate) fn from_json(value: Value) -> Result<Expr, String> {
+    pub(crate) fn from_value(value: Value) -> Result<Expr, String> {
         match value {
             Value::Number(n) => n.as_f64().map(Expr::from).ok_or_else(|| "a number within range".to_owned()),
             Value::Bool(b) => Ok(b.into()),
@@ -69,7 +69,7 @@ fn object(map: Map<String, Value>) -> Result<Expr, String> {
     let value = Value::Object(map);
     Ok(match kind {
         "field" => {
-            let FieldForm { field, of, step } = read(value)?;
+            let FieldNode { field, of, step } = read(value)?;
             let expr = super::field(field);
             let expr = match of {
                 Some((data, table)) => expr.of(data, table),
@@ -77,40 +77,40 @@ fn object(map: Map<String, Value>) -> Result<Expr, String> {
             };
             if step { expr.step() } else { expr }
         }
-        "color" => read::<ColorForm>(value)?.color.into(),
-        "state" => node(Node::State(read::<StateForm>(value)?.state)),
+        "color" => read::<ColorNode>(value)?.color.into(),
+        "state" => node(Node::State(read::<StateNode>(value)?.state)),
         "missing" => {
-            if !read::<MissingForm>(value)?.missing {
+            if !read::<MissingNode>(value)?.missing {
                 return Err("missing is true".to_owned());
             }
             Expr::missing()
         }
         "op" if op.as_deref().is_some_and(|op| named::<Unary>(op).is_ok()) => {
-            let UnaryForm { op, args: [a] } = read(value)?;
+            let UnaryNode { op, args: [a] } = read(value)?;
             node(Node::Unary(op, a))
         }
         "op" => {
-            let BinaryForm { op, args: [a, b] } = read(value)?;
+            let BinaryNode { op, args: [a, b] } = read(value)?;
             node(Node::Binary(op, a, b))
         }
         "when" => {
-            let WhenForm { when, otherwise } = read(value)?;
+            let WhenNode { when, otherwise } = read(value)?;
             when.into_iter().rev().fold(otherwise, |rest, (c, v)| node(Node::When(c, v, rest)))
         }
         "is" => {
-            let IsForm { is: (a, text) } = read(value)?;
+            let IsNode { is: (a, text) } = read(value)?;
             a.is(&text)
         }
         "contains" => {
-            let ContainsForm { contains: (a, text) } = read(value)?;
+            let ContainsNode { contains: (a, text) } = read(value)?;
             a.contains(&text)
         }
         "scale" => {
-            let ScaleForm { scale: [lo, hi], value, domain } = read(value)?;
+            let ScaleNode { scale: [lo, hi], value, domain } = read(value)?;
             domained(value.scale(lo..=hi), domain)
         }
         _ => {
-            let ColormapForm { colormap, value, domain } = read(value)?;
+            let ColormapNode { colormap, value, domain } = read(value)?;
             domained(value.colormap(colormap), domain)
         }
     })
@@ -132,7 +132,7 @@ fn named<T: DeserializeOwned>(name: &str) -> Result<T, String> {
 /// A field of each row: of the mark's own table, or of another dataset's table joined by row id.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct FieldForm {
+struct FieldNode {
     field: Name,
     /// The dataset and table the field is read from, joined by row id.
     #[serde(default)]
@@ -145,35 +145,35 @@ struct FieldForm {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ColorForm {
+struct ColorNode {
     color: Color,
 }
 
 /// What the view knows of each row.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct StateForm {
+struct StateNode {
     state: State,
 }
 
 /// A missing value: options that read one take the theme's.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct MissingForm {
+struct MissingNode {
     #[schemars(extend("const" = true))]
     missing: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct UnaryForm {
+struct UnaryNode {
     op: Unary,
     args: [Expr; 1],
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct BinaryForm {
+struct BinaryNode {
     op: Binary,
     args: [Expr; 2],
 }
@@ -181,7 +181,7 @@ struct BinaryForm {
 /// The value of the first case whose condition holds, else `otherwise`.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct WhenForm {
+struct WhenNode {
     #[schemars(extend("tsType" = "[condition: ExprInput, value: ExprInput][]"))]
     when: Vec<(Expr, Expr)>,
     otherwise: Expr,
@@ -190,7 +190,7 @@ struct WhenForm {
 /// Whether a text field equals the text.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct IsForm {
+struct IsNode {
     #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
     is: (Expr, String),
 }
@@ -198,7 +198,7 @@ struct IsForm {
 /// Whether a text field holds the text, ignoring case: read by queries, which hold texts.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ContainsForm {
+struct ContainsNode {
     #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
     contains: (Expr, String),
 }
@@ -207,7 +207,7 @@ struct ContainsForm {
 /// the values shown.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ScaleForm {
+struct ScaleNode {
     #[schemars(extend("tsType" = "[low: number, high: number]"))]
     scale: [f64; 2],
     value: Expr,
@@ -219,7 +219,7 @@ struct ScaleForm {
 /// `value` through `colormap`: from its `domain`, else from the extent of the values shown.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ColormapForm {
+struct ColormapNode {
     colormap: Colormap,
     value: Expr,
     #[serde(default)]
@@ -230,7 +230,8 @@ struct ColormapForm {
 /// A size in position units, so it scales as the view zooms, kept within CSS pixels when given.
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct UnitsForm {
+#[allow(clippy::struct_field_names, reason = "its JSON is `{units, atLeast, atMost}`")]
+struct Units {
     units: Expr,
     /// CSS pixels it keeps at least, however far the view zooms out.
     #[serde(default)]
@@ -265,17 +266,17 @@ impl JsonSchema for ExprNode {
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let forms = [
-            generator.subschema_for::<FieldForm>(),
-            generator.subschema_for::<ColorForm>(),
-            generator.subschema_for::<StateForm>(),
-            generator.subschema_for::<MissingForm>(),
-            generator.subschema_for::<UnaryForm>(),
-            generator.subschema_for::<BinaryForm>(),
-            generator.subschema_for::<WhenForm>(),
-            generator.subschema_for::<IsForm>(),
-            generator.subschema_for::<ContainsForm>(),
-            generator.subschema_for::<ScaleForm>(),
-            generator.subschema_for::<ColormapForm>(),
+            generator.subschema_for::<FieldNode>(),
+            generator.subschema_for::<ColorNode>(),
+            generator.subschema_for::<StateNode>(),
+            generator.subschema_for::<MissingNode>(),
+            generator.subschema_for::<UnaryNode>(),
+            generator.subschema_for::<BinaryNode>(),
+            generator.subschema_for::<WhenNode>(),
+            generator.subschema_for::<IsNode>(),
+            generator.subschema_for::<ContainsNode>(),
+            generator.subschema_for::<ScaleNode>(),
+            generator.subschema_for::<ColormapNode>(),
         ];
         let mut any = vec![
             json_schema!({ "type": "number" }),
@@ -294,9 +295,9 @@ impl<'de> Deserialize<'de> for Size {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Size, D::Error> {
         let value = Value::deserialize(deserializer)?;
         if !value.as_object().is_some_and(|map| map.contains_key("units")) {
-            return Expr::from_json(value).map(Size::from).map_err(de::Error::custom);
+            return Expr::from_value(value).map(Size::from).map_err(de::Error::custom);
         }
-        let UnitsForm { units, at_least, at_most } = read(value).map_err(de::Error::custom)?;
+        let Units { units, at_least, at_most } = read(value).map_err(de::Error::custom)?;
         Ok(Size { expr: units, units: true, px: [at_least.unwrap_or(0.0).max(0.0), at_most.unwrap_or(f32::INFINITY)] })
     }
 }
@@ -308,7 +309,7 @@ impl JsonSchema for Size {
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let expr = generator.subschema_for::<Expr>();
-        let units = generator.subschema_for::<UnitsForm>();
+        let units = generator.subschema_for::<Units>();
         json_schema!({
             "description": "A size: CSS pixels, or position units with `units`.",
             "anyOf": [expr, units],
@@ -356,7 +357,7 @@ impl JsonSchema for Color {
 /// Your own colormap: its kind, its colors, and for a categorical map its categories' names.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ColorsForm {
+struct CustomColormap {
     kind: ColormapKind,
     /// Colors blended in OKLab, each at its `[place, color]` from 0 to 1 or evenly between its
     /// neighbors, as in a CSS gradient; a categorical map's, one per category.
@@ -372,7 +373,7 @@ impl<'de> Deserialize<'de> for Colormap {
         if let Value::String(name) = &value {
             return Colormap::named(name).ok_or_else(|| de::Error::custom(format!("no colormap named {name:?}")));
         }
-        let ColorsForm { kind, colors, categories } = read(value).map_err(de::Error::custom)?;
+        let CustomColormap { kind, colors, categories } = read(value).map_err(de::Error::custom)?;
         if kind != ColormapKind::Categorical && !categories.is_empty() {
             return Err(de::Error::custom("only a categorical map has categories"));
         }
@@ -395,7 +396,7 @@ impl JsonSchema for Colormap {
             "ColormapName".into(),
             serde_json::json!({ "description": "A colormap of the catalog.", "type": "string", "enum": names }),
         );
-        let colors = generator.subschema_for::<ColorsForm>();
+        let colors = generator.subschema_for::<CustomColormap>();
         json_schema!({
             "description": "Colors for a range of values: a catalog name, or your own colors.",
             "anyOf": [{ "$ref": "#/$defs/ColormapName" }, colors],

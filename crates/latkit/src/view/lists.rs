@@ -3,6 +3,7 @@
 //! indirect draw and dispatch arguments, so nothing waits on a readback to know it.
 
 use super::View;
+use super::marks::Shown;
 use super::passes::dispatch;
 use crate::derive::{Derived, stamp_of};
 use crate::gpu::Inner;
@@ -11,12 +12,14 @@ use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::MarkKind;
 
 /// A stroke mark's segment list, when its rows' paths have different numbers of segments: where it
-/// lies, and its count, made from a stamp of the list, the paths, and for great circles the
-/// vertices. Each entry is a segment's row and how far along its path it starts. A curved mark's
-/// count is read back, and its list makes room for what it found.
+/// lies, a stamp of what it was last built from (the list, the paths, and for great circles where
+/// the vertices are drawn), and its count. Each entry is a segment's row and how far along its path it
+/// starts. A curved mark's count is read back, one at a time, and its list makes room for what it
+/// found.
 #[derive(Default)]
 pub(crate) struct Segments {
     pub(crate) list: Option<List>,
+    pub(crate) built: u64,
     pub(crate) found: Derived<u32>,
 }
 
@@ -106,38 +109,51 @@ impl View {
         self.segment_words = at;
     }
 
-    /// The marks whose segments must be counted this frame: their list, the lists buffer, or their
-    /// paths changed, or, on great circles, the vertices their rows join moved.
+    /// The marks whose segment lists build again this frame: their list, the lists buffer, or their
+    /// paths changed, or, on great circles, where the vertices their rows join are drawn. A color
+    /// changing every frame builds none.
     pub(super) fn segments_due(&mut self) -> Vec<usize> {
-        let vertices: u64 = self.marks.iter().filter(|m| m.kind() == MarkKind::Vertices).map(|m| m.version).sum();
+        let vertices: Vec<(bool, u64)> =
+            self.marks.iter().filter(|m| m.kind() == MarkKind::Vertices).map(Shown::places_drawn).collect();
         let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(list) = shown.segments.list.filter(|_| shown.drawable()) else { continue };
-            let arcs = if shown.geodesic { vertices.wrapping_add(shown.version) } else { 0 };
+            let arcs = shown.geodesic.then(|| (&vertices, shown.places_drawn()));
             let tables = shown.tables.generation();
             let stamp = stamp_of((list.header, list.items, list.kept, tables, generation, arcs));
-            if shown.segments.found.due(stamp) {
-                shown.segments.found.mark(stamp);
+            if stamp != shown.segments.built {
+                shown.segments.built = stamp;
                 due.push(i);
             }
         }
         due
     }
 
-    /// Reads back how many segments each curved mark of `counted` found, so a list too small grows.
-    pub(super) fn count_found(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &Inner, counted: &[usize]) {
+    /// Reads back how many segments each curved mark's list holds, so a list too small grows: one
+    /// count at a time, never dropped for a newer list, which is counted once it lands.
+    pub(super) fn count_found(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &Inner) {
         let gpu = self.gpu.clone();
         let Some(resources) = &self.resources else { return };
-        for &i in counted {
-            let shown = &mut self.marks[i];
-            let Some(list) = shown.segments.list.filter(|_| shown.curved()) else { continue };
+        for shown in &mut self.marks {
+            let Some(list) = shown.segments.list.filter(|_| shown.curved() && shown.drawable()) else { continue };
+            let built = shown.segments.built;
+            if shown.segments.found.busy() || !shown.segments.found.due(built) {
+                continue;
+            }
             let at = u64::from(list.total()) * 4;
             let readback =
                 Readback::new(&inner.readbacks, &gpu.0.device, encoder, resources.lists(), at, 4, &self.waker);
-            let stamp = shown.segments.found.stamp();
-            shown.segments.found.start(stamp, readback);
+            shown.segments.found.start(built, readback);
         }
+    }
+}
+
+impl Shown {
+    /// Whether how many segments its list holds is being read back, or is due to be.
+    pub(crate) fn counting(&self) -> bool {
+        let found = &self.segments.found;
+        found.busy() || (self.curved() && self.drawable() && found.due(self.segments.built))
     }
 }
 

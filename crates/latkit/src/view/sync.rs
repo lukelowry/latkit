@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::data::{Column, Field, FramePage, PAGE_ROWS, PageId, Run, Samples, Version, detail};
 use crate::derive::Beside;
-use crate::expr::compile::{ColumnUse, Part, Program, Reads};
+use crate::expr::compile::{ColumnUse, Program, Reads, Words};
 use crate::gpu::Inner;
 use crate::gpu::arena::{Content, PIECE_POINTS, PageKey, path_pieces, path_points};
 use crate::gpu::shaders as wgsl;
@@ -497,7 +497,7 @@ impl Builder<'_> {
     ) -> [u32; WORDS] {
         let mut d = [0; WORDS];
         d[wgsl::COLUMN_LOW as usize] = wgsl::NONE;
-        if column.part == Part::Bits {
+        if column.words == Words::Bits {
             d[wgsl::COLUMN_FLAGS as usize] = wgsl::BITS;
         }
         let Some((data, table)) = table_of(column, source, all) else {
@@ -506,32 +506,32 @@ impl Builder<'_> {
         };
         d[wgsl::COLUMN_ROWS as usize] = table.len() as u32;
         match table.field_named(&column.name) {
-            Some(Field::Values(values, _)) if column.part == Part::Codes => {
+            Some(Field::Values(values, _)) if column.words == Words::Codes => {
                 let field = (data, &table.name, &column.name);
                 self.listed(values);
                 for page in values.pages() {
-                    let key = PageKey::of(page.id, Part::Codes, false);
+                    let key = PageKey::of(page.id, Words::Codes, false);
                     let dictionary = self.gpu.dictionaries.field(field.0, field.1, field.2);
                     dictionary.scan(page);
                     let codes = &mut self.gpu.dictionaries;
                     let offset = self.gpu.arena.get(key, page.values.len() as u32, || {
-                        Content::Words(codes.field(field.0, field.1, field.2).codes(page))
+                        Content::Computed(codes.field(field.0, field.1, field.2).codes(page))
                     });
                     self.push(key, offset);
                 }
             }
-            Some(Field::Values(values, _)) if column.part == Part::Path => self.path(values),
+            Some(Field::Values(values, _)) if column.words == Words::Path => self.path(values),
             Some(Field::Values(values, _)) => {
                 self.listed(values);
-                self.pages(values, column.part, false);
+                self.pages(values, column.words, false);
                 if column.low {
                     d[wgsl::COLUMN_LOW as usize] = self.words.len() as u32;
-                    self.pages(values, column.part, true);
+                    self.pages(values, column.words, true);
                 }
             }
             Some(Field::Reference(reference)) => {
                 self.listed(&reference.rows);
-                self.pages(&reference.rows, Part::Bits, false);
+                self.pages(&reference.rows, Words::Bits, false);
             }
             Some(Field::Sampled(samples, _)) if column.trace => {
                 self.pages = None;
@@ -560,8 +560,8 @@ impl Builder<'_> {
         d[wgsl::COLUMN_LOW as usize] = wgsl::NONE;
         d[wgsl::COLUMN_JOIN as usize] = wgsl::NONE;
         for (id, words) in &join.pages {
-            let key = PageKey::of(*id, Part::Bits, false);
-            let offset = self.gpu.arena.get(key, words.len() as u32, || Content::Words(words.to_vec()));
+            let key = PageKey::of(*id, Words::Bits, false);
+            let offset = self.gpu.arena.get(key, words.len() as u32, || Content::Computed(words.to_vec()));
             self.push(key, offset);
         }
         d
@@ -574,11 +574,11 @@ impl Builder<'_> {
         }
     }
 
-    fn pages(&mut self, column: &Column, part: Part, low: bool) {
+    fn pages(&mut self, column: &Column, words: Words, low: bool) {
         for page in column.pages() {
-            let key = PageKey::of(page.id, part, low);
+            let key = PageKey::of(page.id, words, low);
             let values = page.values.clone();
-            let offset = self.gpu.arena.get(key, values.len() as u32, || Content::Values { values, part, low });
+            let offset = self.gpu.arena.get(key, values.len() as u32, || Content::Values { values, words, low });
             self.push(key, offset);
         }
     }
@@ -596,10 +596,10 @@ impl Builder<'_> {
             let mut made: Option<Vec<Vec<u32>>> = None;
             let mut blocks = Vec::with_capacity(1 + points.div_ceil(PIECE_POINTS));
             for piece in 0..=points.div_ceil(PIECE_POINTS) {
-                let key = PageKey { page: page.id, part: Part::Path, low: false, piece: piece as u32 };
+                let key = PageKey { page: page.id, words: Words::Path, low: false, piece: piece as u32 };
                 let offset = self.gpu.arena.get(key, 1, || {
                     let pieces = made.get_or_insert_with(|| path_pieces(&page.values));
-                    Content::Words(std::mem::take(&mut pieces[piece]))
+                    Content::Computed(std::mem::take(&mut pieces[piece]))
                 });
                 self.pins.push(key);
                 self.ready &= offset.is_some();
@@ -640,7 +640,7 @@ impl Builder<'_> {
             let listed_at = self.words.len() as u32;
             self.words[at + 4 * i..at + 4 * i + 3].copy_from_slice(&[*level, axis.len() as u32, listed_at]);
             for (page, held) in &axis {
-                let key = PageKey::of(page.id, Part::Values, false);
+                let key = PageKey::of(page.id, Words::Values, false);
                 let offset = self.gpu.arena.get(key, (held.end - page.first) * 2, || Content::Axis(page.clone()));
                 self.pins.push(key);
                 self.ready &= offset.is_some();
@@ -664,7 +664,7 @@ impl Builder<'_> {
     /// Appends `pages` as (offset, first entry, words per entry), each with the entries it holds.
     fn sample_pages(&mut self, pages: &[(FramePage, Range<u32>)]) {
         for (page, held) in pages {
-            let key = PageKey::of(page.id, Part::Values, false);
+            let key = PageKey::of(page.id, Words::Values, false);
             let need = (held.end - page.first) * page.per;
             let offset = self.gpu.arena.get(key, need, || Content::Frames(page.clone()));
             self.pins.push(key);
@@ -679,7 +679,7 @@ impl Builder<'_> {
             let mut cursor = [wgsl::NONE, 0, wgsl::NONE, 0, 0, 0];
             for (i, f) in [frame, frame.map(|f| f + 1)].into_iter().enumerate() {
                 let Some((page, base)) = f.and_then(|f| samples.cursor(block, f)) else { continue };
-                let key = PageKey::of(page.id, Part::Values, false);
+                let key = PageKey::of(page.id, Words::Values, false);
                 let rows_in_page = page.per;
                 let offset = self.gpu.arena.get(key, base + rows_in_page, || Content::Frames(page.clone()));
                 self.pins.push(key);

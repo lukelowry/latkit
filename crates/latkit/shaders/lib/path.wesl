@@ -477,7 +477,3 @@ fn stroke_style(row: u32) -> Style {
 fn ends_colored() -> bool {
     return mark.kind == MARK_EDGES && (mark.flags & ENDS_COLOR) != 0u;
 }
-
-fn segment_clip(p: PathPoint) -> vec4f {
-    return clip_of(p.world);
-}

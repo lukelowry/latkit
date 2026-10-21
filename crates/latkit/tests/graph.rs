@@ -1,6 +1,7 @@
 //! The graph: edges joining the same two vertices bow into lanes, edges bend through the points of
-//! a path field, and edges end in arrowheads; in a diagram, nets join the ports of the vertices
-//! naming them, and orthogonal wires route around blocks.
+//! a path field, edges end in arrowheads, and great circles settle while their vertices animate; in a
+//! diagram, nets join the ports of the vertices naming them, a block makes room for its ports, and
+//! orthogonal wires route around blocks.
 
 #![cfg(feature = "gpu")]
 
@@ -148,6 +149,59 @@ fn nets_of_more_than_two_meet_at_a_junction() {
     assert!(lit(at(&pixels, C - 2, C + 15)), "at the junction");
     assert!(lit(at(&pixels, C - 2, C + 30)), "to the third terminal");
     assert!(!lit(at(&pixels, C, C - 20)), "nothing above");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn an_unlabeled_block_makes_room_for_its_ports() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("graph");
+    let mut node = nodes(vec![0.0], vec![0.0]);
+    for port in ["a", "b", "c", "d"] {
+        node = node.reference(port, "Net", vec![None::<u64>]);
+    }
+    data.apply(Patch::new().set(node).set(Table::new("Net", Ids::count(0)))).expect("valid");
+    let block = ["a", "b", "c", "d"]
+        .into_iter()
+        .fold(Vertices::of("graph", "Node").position("x", "y"), |v, port| v.port(port, Side::Left));
+    let mut view = show(&gpu, Scene::new(diagram()).draw(block), data);
+    let pixels = frame(&gpu, &mut view);
+    // Four ports a pitch apart down its left side, a pitch to spare: about 77 units tall.
+    assert!(lit(at(&pixels, C, C + 30)) && lit(at(&pixels, C, C - 30)), "tall enough for its ports");
+    assert!(!lit(at(&pixels, C, C + 45)), "and no taller");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn edges_along_great_circles_settle_while_their_vertices_pulse() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("graph");
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Node", Ids::count(3))
+                    .field("lon", vec![-60.0, 60.0, 0.0])
+                    .field("lat", vec![0.0, 0.0, 50.0]),
+            )
+            .set(Table::new("Link", Ids::count(2)).reference("from", "Node", vec![0_u64, 1]).reference(
+                "to",
+                "Node",
+                vec![1_u64, 2],
+            )),
+    )
+    .expect("valid");
+    // The vertices' color reads the clock, so they evaluate every frame; nothing their arcs bend by moves.
+    let pulse = latkit::elapsed().sin().colormap(latkit::Colormap::VIRIDIS).domain(-1.0..=1.0);
+    let scene = Scene::new(latkit::Earth { graticule: false, ..latkit::Earth::globe() })
+        .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0))
+        .draw(Vertices::of("graph", "Node").position("lon", "lat").color(pulse));
+    let mut view = View::new(&gpu, scene.theme(plain_theme())).expect("valid scene");
+    view.set_data(data);
+    view.fit(latkit::Fit::All);
+    for _ in 0..60 {
+        step(&gpu, &mut view);
+    }
+    assert!(view.complete(), "waiting on {}", view.stats().waiting);
     assert_eq!(errors(&mut view), Vec::new());
 }
 

@@ -315,10 +315,24 @@ impl PageView {
         }
     }
 
-    /// Whether it wants to draw: it changed or moves, and no shot holds it.
+    /// Whether it wants a frame, to draw or to go on, and no shot holds it.
     fn wants_frame(&self) -> bool {
         let held = self.0.borrow();
         !held.view.lent() && (held.due || held.view.wants_frame())
+    }
+
+    /// Whether it draws in the next frame: it changed, or a frame would differ, and no shot holds it.
+    fn draws(&self) -> bool {
+        let held = self.0.borrow();
+        !held.view.lent() && (held.due || held.view.needs_render())
+    }
+
+    /// Goes on to `time` without drawing, when it wants a frame.
+    fn go_on(&self, time: f64) {
+        let mut held = self.0.borrow_mut();
+        if !held.view.lent() && held.view.wants_frame() {
+            held.view.go_on(time);
+        }
     }
 
     /// Whether a shot holds it.
@@ -490,11 +504,18 @@ impl Painted {
     }
 
     /// Records a frame when one is needed, sizing the canvas to its box first: each view that needs
-    /// to draws into its panel, straight into the canvas when one view fills it.
+    /// to draws into its panel, straight into the canvas when one view fills it, and the rest go on.
+    /// A frame where every view would look as it did draws nothing: the canvas keeps what it shows.
     fn record(&mut self, encoder: &mut wgpu::CommandEncoder, time: f64) -> Option<wgpu::SurfaceTexture> {
         let (size, ratio) = self.measure();
         let resized = size != self.surface.size();
         if self.views.is_empty() || !(resized || self.wants_frame()) {
+            return None;
+        }
+        if !(resized || self.due || self.views.iter().any(PageView::draws)) {
+            for view in &self.views {
+                view.go_on(time);
+            }
             return None;
         }
         let rects = self.panels.rects(size, [1, 1]).ok()?;
@@ -527,11 +548,15 @@ impl Painted {
                 }
                 let (panel, _) = self.textures[i].as_ref().expect("made");
                 let mut held = self.views[i].0.borrow_mut();
-                if !held.view.lent() && (fresh || self.due || held.due || held.view.wants_frame()) {
-                    let target = panel.create_view(&wgpu::TextureViewDescriptor::default());
-                    let frame = Frame { target: &target, format, size: rect.size, pixel_ratio: ratio, time };
-                    held.view.render(encoder, &frame);
-                    held.due = false;
+                if !held.view.lent() {
+                    if fresh || self.due || held.due || held.view.needs_render() {
+                        let target = panel.create_view(&wgpu::TextureViewDescriptor::default());
+                        let frame = Frame { target: &target, format, size: rect.size, pixel_ratio: ratio, time };
+                        held.view.render(encoder, &frame);
+                        held.due = false;
+                    } else if held.view.wants_frame() {
+                        held.view.go_on(time);
+                    }
                 }
                 encoder.copy_texture_to_texture(
                     panel.as_image_copy(),

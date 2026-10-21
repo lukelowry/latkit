@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use super::Color;
 use super::ramp::{self, Spread};
+use crate::gpu::shaders as wgsl;
 use crate::{Error, Result};
 
 /// Colors for a range of values: one of the catalog's, or one of your own.
@@ -46,6 +47,16 @@ impl ColormapKind {
             ColormapKind::Sequential | ColormapKind::Diverging => Spread::Continuous,
             ColormapKind::Cyclic => Spread::Cyclic,
             ColormapKind::Categorical => Spread::Categorical,
+        }
+    }
+
+    /// The code shaders read it by.
+    pub(crate) fn code(self) -> u32 {
+        match self {
+            ColormapKind::Sequential => wgsl::COLORMAP_SEQUENTIAL,
+            ColormapKind::Diverging => wgsl::COLORMAP_DIVERGING,
+            ColormapKind::Cyclic => wgsl::COLORMAP_CYCLIC,
+            ColormapKind::Categorical => wgsl::COLORMAP_CATEGORICAL,
         }
     }
 }

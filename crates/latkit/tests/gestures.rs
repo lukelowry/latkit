@@ -1,9 +1,10 @@
 //! Interaction events: a secondary click asks for a menu of what lies under it, as a touch held still
 //! does; dragging from a port draws a connection to the vertex it is released over, an edge's end can
-//! be dragged off it, a double click opens what it hits, a click again can cycle through the rows
-//! under it, and Delete tells the selection. The keys point at rows too; hover is state whether or
-//! not it glows and follows the frame; setters tell nothing. The wheel zooms as the controls say, and
-//! reduced motion pays every move at once.
+//! be dragged off it, a dragged row keeps where it was grabbed, a double click opens what it hits, a
+//! click again can cycle through the rows under it, and Delete tells the selection. The keys point at
+//! rows too; hover is state whether or not it glows and follows the frame, and a lit row keeps its
+//! ports on top; setters tell nothing. What input needs is made once the opening is over. The wheel
+//! zooms as the controls say, and reduced motion pays every move at once.
 
 #![cfg(feature = "gpu")]
 
@@ -11,14 +12,14 @@ mod common;
 
 use common::{SIZE, camera, diagram, frame, gpu, plain_theme, step};
 use latkit::{
-    Button, Camera, Controls, Data, Device, Edges, End, Event, Ids, Input, Key, Modifiers, Motion, Patch, Row, Rows,
-    Scene, Side, Table, Vertices, View, Zoom,
+    Button, Camera, Controls, Data, Device, Edges, End, Event, Ids, Input, Key, Modifiers, Motion, Patch, Phase, Row,
+    Rows, Scene, Side, Table, Vertices, View, Zoom,
 };
 
 const C: f32 = SIZE as f32 / 2.0;
 
-/// Three nodes, a link from node 1 to node 3, and a port on each node's right, in a diagram.
-fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
+/// Three nodes, a link from node 1 to node 3, and a port on each node's right.
+fn graph() -> Data {
     let mut data = Data::new("graph");
     data.apply(
         Patch::new()
@@ -36,14 +37,22 @@ fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
             )),
     )
     .expect("valid");
-    let scene = Scene::new(diagram())
+    data
+}
+
+/// The graph in a diagram, its nodes 16 units across.
+fn scene(controls: Controls) -> Scene {
+    Scene::new(diagram())
         .theme(plain_theme())
         .controls(controls)
         .draw(Edges::of("graph", "Link").ends("from", "to").width(3.0))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).port("net", Side::Right));
-    let mut view = View::new(gpu, scene).expect("valid scene");
+        .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).port("net", Side::Right))
+}
+
+fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
+    let mut view = View::new(gpu, scene(controls)).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_data(graph());
     frame(gpu, &mut view);
     view
 }
@@ -123,6 +132,101 @@ fn dragging_from_a_port_connects() {
     assert_eq!(from, End { row: Row::new("graph", "Node", 1_u64), port: Some("net".into()) });
     assert_eq!(to.map(|t| t.row), Some(Row::new("graph", "Node", 2_u64)));
     assert_eq!(edge, None);
+}
+
+#[test]
+fn a_dragged_row_keeps_where_it_was_grabbed() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("graph");
+    data.apply(Table::new("Node", vec![1_u64]).field("x", vec![-40.0]).field("y", vec![0.0])).expect("valid");
+    let scene = Scene::new(diagram())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).drag(true));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    frame(&gpu, &mut view);
+    // Grabbed five units right of its middle, then moved 30 right and 20 down: y runs down.
+    let grab = [C - 35.0, C];
+    let inputs = [moved(grab), down(grab, Button::Primary), moved([C - 25.0, C + 10.0]), moved([C - 5.0, C + 20.0])];
+    let dragged =
+        |e: &Event| if let Event::Drag { phase: Phase::Move, position, .. } = e { Some(*position) } else { None };
+    let position = after(&gpu, &mut view, &inputs, dragged);
+    let off = (position[0] + 10.0).hypot(position[1] - 20.0);
+    assert!(off < 0.5, "the row goes where the pointer took the point it was grabbed by: {position:?}");
+}
+
+#[test]
+fn a_lit_block_keeps_its_ports_on_top() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = view(&gpu, Controls::default());
+    // Node 1's port is hollow, on its right side 8 units from its middle; a unit inside the block, the
+    // ground shows through it, lit or not.
+    let port = |pixels: &[[u8; 4]]| common::at(pixels, C as u32 - 33, C as u32);
+    let before = port(&step(&gpu, &mut view));
+    view.input(&moved([C - 40.0, C]), common::now());
+    let mut pixels = Vec::new();
+    for _ in 0..30 {
+        pixels = step(&gpu, &mut view);
+    }
+    assert_eq!(view.hovered().map(|hit| hit.row.clone()), Some(Row::new("graph", "Node", 1_u64)), "lit");
+    assert!(common::close(port(&pixels), before), "{:?}, where unlit it was {before:?}", port(&pixels));
+}
+
+#[test]
+fn what_input_needs_is_made_once_the_view_is_complete() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = View::new(&gpu, scene(editing())).expect("valid scene");
+    view.set_camera(camera());
+    // Its data not yet given, the view waits: its first frame makes what it draws with, and nothing more.
+    step(&gpu, &mut view);
+    let drawing = gpu.work().pipelines;
+    for _ in 0..5 {
+        step(&gpu, &mut view);
+    }
+    assert_eq!(gpu.work().pipelines, drawing, "nothing input needs while the view waits");
+    view.set_data(graph());
+    frame(&gpu, &mut view);
+    assert!(view.complete(), "waiting on {}", view.stats().waiting);
+    let (opened, drawn) = (gpu.work().pipelines, view.stats().frames);
+    for _ in 0..common::SETTLE {
+        if !view.wants_frame() {
+            break;
+        }
+        assert!(!view.needs_render(), "nothing changes");
+        common::wait(common::TICK);
+        view.go_on(common::now());
+    }
+    assert!(gpu.work().pipelines > opened, "what the hover and intents need, made once complete");
+    assert_eq!(view.stats().frames, drawn, "in frames that draw nothing");
+    assert!(!view.wants_frame(), "and then nothing more");
+}
+
+#[test]
+fn a_live_plot_makes_what_input_needs_once_it_has_a_value_range() {
+    let Some(gpu) = gpu() else { return };
+    // A trace growing every frame has its value range measured again every frame, so the view is
+    // never complete; its opening is over once it has a range.
+    let axis = latkit::Axis { grid: false, hidden: true, ..latkit::Axis::default() };
+    let scene = Scene::new(latkit::Plot { x: axis.clone(), y: axis })
+        .theme(plain_theme())
+        .draw(latkit::Lines::of("signals", "Signal").trace("v").width(2.0));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    let mut data = Data::new("signals");
+    data.apply(Patch::new().set(Table::new("Signal", Ids::count(1))).append([0.0], "Signal", [("v", vec![0.0])]))
+        .expect("valid");
+    view.set_data(data.clone());
+    step(&gpu, &mut view);
+    let drawing = gpu.work().pipelines;
+    for t in 1..60 {
+        let t = f64::from(t);
+        data.apply(Patch::new().append([t], "Signal", [("v", vec![t.sin()])])).expect("valid");
+        view.set_data(data.clone());
+        view.set_camera(Camera::Plot { x: [0.0, t], y: None });
+        step(&gpu, &mut view);
+    }
+    assert!(!view.complete(), "a value range measured again every frame");
+    assert!(gpu.work().pipelines > drawing, "what the hover and intents need, made without a pointer");
 }
 
 #[test]

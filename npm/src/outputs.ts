@@ -30,7 +30,7 @@ export interface End {
 
 /**
  * What failed: its `code`, the message, and for invalid input the `path` to the part, such as
- * `marks[2].color`.
+ * `marks[2].vertices.color`.
  */
 export interface Failure {
   code: 'invalid' | 'unsupported' | 'limit' | 'io' | 'device-lost' | 'cancelled' | 'timeout';
@@ -56,7 +56,10 @@ export interface Hit {
   row: Row;
   /** The name of the mark that drew it, when it has one: what tells two marks of one table apart. */
   mark?: string;
-  /** The point of the row nearest the probe, CSS pixels from the top left. */
+  /**
+   * The point of the row nearest the probe, CSS pixels from the top left: a vertex's or a port's
+   * middle, the nearest point of a stroke or a triangle.
+   */
   point: [number, number];
   /** That point in the space's coordinates: x, y, and elevation. */
   position: [number, number, number];
@@ -204,7 +207,11 @@ export type ViewEvent =
         phase: Phase;
         /** The row dragged, as it was hit. */
         hit: Hit;
-        /** The point under the pointer at the depth the drag started, in the space's coordinates. */
+        /**
+         * Where the row goes, in the space's coordinates: where it was hit, moved as the pointer moved
+         * since the press, at the depth the drag started; a vertex keeps where it was grabbed. On a
+         * diagram's dots when its grid snaps.
+         */
         position: [number, number, number];
         /** The pointer. */
         trigger: Trigger;

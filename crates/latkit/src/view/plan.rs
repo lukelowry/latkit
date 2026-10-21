@@ -17,7 +17,7 @@ use super::marks::Shown;
 use crate::data::{Field, Geometry, Name, Table};
 use crate::derive::tiled::{Draw, Place, Planned, Plans};
 use crate::derive::{Derived, stamp_of};
-use crate::expr::compile::Part;
+use crate::expr::compile::Words;
 use crate::gpu::shaders as wgsl;
 use crate::gpu::{Ask, Ledger};
 use crate::{Expr, Kind, Mark, Space};
@@ -253,7 +253,7 @@ impl View {
             .program
             .columns
             .iter()
-            .filter(|c| c.part != Part::Path && !c.derived)
+            .filter(|c| c.words != Words::Path && !c.derived)
             .filter_map(|c| {
                 let read = match &c.of {
                     None => table.field_named(&c.name),
@@ -316,7 +316,7 @@ fn row_bytes(shown: &Shown) -> f64 {
     let Some(compiled) = &shown.compiled else { return 0.0 };
     let state = f64::from(compiled.drawing.stride + compiled.drawing.extras) * 8.0;
     let columns: f64 =
-        compiled.program.columns.iter().filter(|c| c.part != Part::Path).map(|c| if c.low { 8.0 } else { 4.0 }).sum();
+        compiled.program.columns.iter().filter(|c| c.words != Words::Path).map(|c| if c.low { 8.0 } else { 4.0 }).sum();
     let label = if compiled.drawing.label.is_some() { f64::from(wgsl::CANDIDATE_WORDS) * 4.0 } else { 0.0 };
     state + 4.0 + columns + label
 }

@@ -1,7 +1,8 @@
 use rustc_hash::FxHashMap;
 
-use super::levels::{Graph, Level, Runs, bounds, frame, nested, union};
+use super::levels::{Graph, Level, Runs, bounds, frame, nested};
 use super::pack;
+use super::rect::union;
 use crate::scene::{Direction, Layered};
 
 /// Width over height of the rows that parts nothing pins pack into.

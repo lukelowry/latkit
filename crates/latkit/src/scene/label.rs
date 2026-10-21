@@ -50,7 +50,7 @@ impl<'de> Deserialize<'de> for Label {
         if value.as_object().is_some_and(|map| map.contains_key("text")) {
             return Label::deserialize(value).map_err(de::Error::custom);
         }
-        Expr::from_json(value).map(Label::new).map_err(de::Error::custom)
+        Expr::from_value(value).map(Label::new).map_err(de::Error::custom)
     }
 }
 

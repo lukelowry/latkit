@@ -1,6 +1,7 @@
 # Line-opening orbit
 
-[Watch the video](animation.mp4) · [Preview](preview.png)
+[Preview](preview.png) · The video is not in Git: [reproduce it](#reproduce) to write
+`animation.mp4` here.
 
 A close 108° orbit around the network, starting farther toward the East Coast
 and stopping before the far-western viewpoint. Magnification stays nearly

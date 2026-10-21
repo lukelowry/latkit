@@ -199,6 +199,53 @@ function frames(page: Page): Promise<void> {
   return deadline(two, STEP, 'animation frames');
 }
 
+/** Waits, for at most `budget` ms, until every view of `page` has opened, then until it has made and
+ * Chrome has compiled every pipeline its input needs. A view has opened once it was complete, or
+ * once it drew 30 frames waiting on nothing but its fit, as a plot of streaming data measuring its
+ * value range again does every frame; a frame Chrome holds back while it compiles is no frame drawn.
+ * A pick of every view comes back only once Chrome compiled every pipeline made before it, and a view
+ * with more to make makes some on each of the next frames: once neither a pick nor two frames make
+ * any, there is none left. */
+async function settled(page: Page, budget: number): Promise<void> {
+  await page.waitForFunction(
+    () => {
+      const w = window as unknown as {
+        stage?: { views: { stats: { frames: number; waiting: string[] } }[] };
+        opened?: Set<number>;
+        refitting?: Map<number, number>;
+      };
+      const views = w.stage?.views ?? [];
+      w.opened ??= new Set();
+      w.refitting ??= new Map();
+      views.forEach(({ stats: { frames, waiting } }, i) => {
+        if (!waiting.length) w.opened!.add(i);
+        if (waiting.join() !== 'fit') w.refitting!.delete(i);
+        else if (!w.refitting!.has(i)) w.refitting!.set(i, frames);
+        else if (frames - w.refitting!.get(i)! >= 30) w.opened!.add(i);
+      });
+      return views.length > 0 && w.opened.size === views.length;
+    },
+    undefined,
+    { timeout: budget, polling: 50 },
+  );
+  const made = () =>
+    page.evaluate(
+      () =>
+        (window as unknown as { stage: { gpu: { work: { pipelines: number } } } }).stage.gpu.work
+          .pipelines,
+    );
+  for (;;) {
+    const before = await made();
+    await page.evaluate(() => {
+      type Picking = { pick(point: [number, number], radius: number): Promise<unknown> };
+      const views = (window as unknown as { stage: { views: Picking[] } }).stage.views;
+      return Promise.all(views.map((view) => view.pick([0, 0], 1)));
+    });
+    await frames(page);
+    if ((await made()) === before) return;
+  }
+}
+
 /** Opens page `id` in a fresh browser, waits for its first frames, then moves the pointer over
  * every view: hovering a grid of points, zooming, panning, and clicking. Returns the failures. */
 async function visit(url: string, id: string): Promise<string[]> {
@@ -255,14 +302,14 @@ async function visit(url: string, id: string): Promise<string[]> {
       return failures;
     }
     const first = performance.now() - opened;
-    // The two frames after a scene's first make the pipelines its input needs; then frames go on
-    // while what they made compiles: wait both out.
+    // Once a view is complete, the frames after make the pipelines its input needs, and Chrome
+    // compiles them ahead of what the GPU does next: wait both out.
     await deadline(
-      drawn(2, 2 * OPENING_BUDGET),
-      2 * OPENING_BUDGET + 1000,
+      settled(page, 4 * OPENING_BUDGET),
+      4 * OPENING_BUDGET + 1000,
       `${id}'s input pipelines`,
     );
-    await deadline(page.waitForTimeout(1500), STEP, 'settle');
+    await deadline(page.waitForTimeout(500), STEP, 'settle');
     const opening = await page.evaluate(() => (window as unknown as { gap: number }).gap);
     let longest = { gap: 0, step: '' };
     /** Does `step` and waits two frames; keeps the longest gap between frames and its step. */

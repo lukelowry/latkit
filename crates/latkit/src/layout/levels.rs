@@ -192,14 +192,9 @@ pub(crate) fn frame(center: [f64; 2], size: [f64; 2]) -> [f64; 4] {
     [center[0] - half[0], center[1] - half[1], center[0] + half[0], center[1] + half[1]]
 }
 
-/// The box holding two boxes.
-pub(crate) fn union(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
-    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
-}
-
 /// The box holding `boxes`; a point at the origin for none.
 pub(crate) fn bounds(boxes: impl Iterator<Item = [f64; 4]>) -> [f64; 4] {
-    boxes.reduce(union).unwrap_or([0.0; 4])
+    boxes.reduce(super::rect::union).unwrap_or([0.0; 4])
 }
 
 /// Items bucketed by key, each bucket's in the order given: bucket `k` is `items[offsets[k]..offsets[k + 1]]`.

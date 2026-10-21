@@ -1,12 +1,17 @@
 //! The pipelines a scene uses, made before they are needed. The first frame drawing a scene makes
 //! what it draws with: for each kind of mark, its draw and the compute passes it needs, a stroke
-//! mark's for the path it runs along, shadows when something casts, labels. The frame after it makes
-//! what the hover needs, the probes and the lit rows' draws for what picks; the frame after that,
-//! the queries behind the intents the controls allow (the hits a menu or the keys list, boxes,
-//! locating where a connection starts). Chrome compiles a pipeline where it is made, so the opening
-//! costs its longest frame rather than their sum, and no first gesture compiles; what the scene
-//! never uses is never made. A picture takes no input: it makes what it draws with alone, and the
-//! frames that take input go on with their stages.
+//! mark's for the path it runs along, shadows when something casts, labels, the overlay where it
+//! writes. What comes later waits until the opening is over (a frame stood in for nothing, but for a
+//! plot measuring again a value range it has, as streaming data has it do every frame), or a pointer
+//! is over the view: Chrome compiles a pipeline where it is made, ahead of the readbacks the opening
+//! waits on, so making it sooner only delays the opening. Then the frames after make the rest a few
+//! at a time, so Chrome holds back no frame long, and a frame that would look as the last one did
+//! [goes on](View::go_on) without drawing: what the hover needs (the probes and the lit rows'
+//! draws for what picks), what changes need (the passes transitions ease with, the reduction of
+//! fitted domains, the overlay of a gesture), then the queries behind the intents the controls allow
+//! (the hits a menu or the keys list, boxes, locating where a connection starts). What is needed
+//! before its turn is made where it is first used; what the scene never uses is never made. A
+//! picture takes no input: it makes what it draws with alone, and the frames that take input go on.
 
 use super::{SHADE, View};
 use crate::gpu::Inner;
@@ -26,15 +31,23 @@ const SELECT: [&str; 4] = ["select_start", "select_count", "select_find", "selec
 /// The label passes run for each labeled mark; in a diagram, only the first.
 const LABELS: [&str; 6] = ["candidates", "claim", "decide", "occupy", "ask", "fade"];
 
+/// Pipelines a frame after the opening makes at most: few enough that Chrome, compiling them where
+/// they are made, holds back no frame long.
+const BATCH: usize = 4;
+
 impl View {
     /// Makes the pipelines the scene draws with, for frames into `format` with `samples` per pixel;
     /// on each frame after that takes `input`, the next stage of those its input needs.
     pub(super) fn make_pipelines(&mut self, inner: &mut Inner, format: wgpu::TextureFormat, samples: u32, input: bool) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
+        let ahead = self.making_ahead();
         let made = if input { &mut self.pipelines_made } else { &mut self.picture_pipelines };
         if *made == Some((format, samples)) {
-            if input && let Some(stage) = self.input_pipelines.pop_front() {
+            if input
+                && ahead
+                && let Some(stage) = self.input_pipelines.pop_front()
+            {
                 inner.pipelines.make(device, stage);
             }
             return;
@@ -53,20 +66,28 @@ impl View {
                 inner.pipelines.custom(device, source, Shader::PointsCustomCast, SHADE, 1);
             }
         }
-        let Stages { draw, hover, intents } = stages(scene, format, samples);
+        let Stages { draw, hover, changes, intents } = stages(scene, format, samples);
         inner.pipelines.make(device, draw);
         if input {
-            self.input_pipelines = [hover, intents].into_iter().filter(|stage| !stage.is_empty()).collect();
+            let later = [hover, changes, intents];
+            self.input_pipelines = later.iter().flat_map(|stage| stage.chunks(BATCH).map(<[_]>::to_vec)).collect();
         }
+    }
+
+    /// Whether a stage after the first waits to be made now: once the scene's opening is over, or as
+    /// soon as a pointer is over the view.
+    pub(super) fn making_ahead(&self) -> bool {
+        !self.input_pipelines.is_empty() && (self.opened || self.pointer.is_some())
     }
 }
 
-/// What a scene's frames make: what the first draws with, then what the hover needs, then what the
-/// intents the controls allow need.
+/// What a scene's frames make: what the first draws with, then what the hover needs, what changes
+/// need, and what the intents the controls allow need.
 #[derive(Default)]
 struct Stages {
     draw: Vec<Variant>,
     hover: Vec<Variant>,
+    changes: Vec<Variant>,
     intents: Vec<Variant>,
 }
 
@@ -76,10 +97,11 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     let any = |test: fn(&Mark) -> bool| scene.marks.iter().any(test);
     let draw = |shader| Variant::draw(shader, format, samples);
     let compute = Variant::compute;
+    // Transitions begin only once rows drawn change, and fitted domains reduce only where a mark has
+    // them: neither on the first frame of most scenes.
     let mut stages = Stages {
-        draw: vec![
-            draw(Shader::Backdrop),
-            compute(Shader::Evaluate, "evaluate"),
+        draw: vec![draw(Shader::Backdrop), compute(Shader::Evaluate, "evaluate")],
+        changes: vec![
             compute(Shader::Evaluate, "ease"),
             compute(Shader::Evaluate, "reduce"),
             compute(Shader::Freeze, "gather"),
@@ -88,8 +110,14 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     };
     let controls = scene.controls;
     let diagram = matches!(scene.space, Space::Diagram(_));
-    if matches!(scene.space, Space::Plot(_)) || controls.select_box || controls.connect {
+    // The overlay writes a plot's axes, the title, and the legends from the first frame; the box and
+    // the connection a gesture draws, only once one starts.
+    let legends = any(|m| m.style().legend.is_some() && m.style().color.is_some());
+    let written = matches!(scene.space, Space::Plot(_)) || scene.title.is_some() || scene.subtitle.is_some() || legends;
+    if written {
         stages.draw.push(draw(Shader::Overlay));
+    } else if controls.select_box || controls.connect {
+        stages.changes.push(draw(Shader::Overlay));
     }
     if any(|m| m.style().label.is_some()) && !diagram {
         stages.draw.extend([compute(Shader::Labels, "clear_cells"), compute(Shader::Labels, "reset_cells")]);
@@ -98,7 +126,8 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
         stages.draw.push(Variant::draw(Shader::Shade, SHADE, 1));
     }
     if any(Mark::flows) {
-        stages.draw.extend([compute(Shader::Evaluate, "travel"), compute(Shader::Evaluate, "carry")]);
+        stages.draw.push(compute(Shader::Evaluate, "travel"));
+        stages.changes.push(compute(Shader::Evaluate, "carry"));
     }
     if any(|m| m.style().interaction.pick) {
         stages.hover.push(compute(pipelines::probe(samples), "under"));

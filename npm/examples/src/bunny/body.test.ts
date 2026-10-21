@@ -6,7 +6,7 @@ import { Body, ROOM, STEP, type Controls } from './body.js';
 import { fracture } from './fracture.js';
 import { loadMesh } from './mesh.js';
 
-const bytes = readFileSync('npm/examples/src/bunny/stanford-bunny.bin');
+const bytes = readFileSync(new URL('./stanford-bunny.bin', import.meta.url));
 const mesh = await loadMesh(
   new URL(`data:application/octet-stream;base64,${bytes.toString('base64')}`),
 );

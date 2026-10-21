@@ -1,6 +1,6 @@
 // A shot's panels composed into the bytes a consumer takes, so no pixel is touched on the CPU: RGBA
 // rows with straight alpha for an image, or NV12 planes (BT.709, limited range) for an encoder. One
-// dispatch per panel writes its part of the picture in whole words; a fill writes the background
+// dispatch per panel writes its panel of the picture in whole words; a fill writes the background
 // where no panel draws.
 
 import package::lib::types::Compose;

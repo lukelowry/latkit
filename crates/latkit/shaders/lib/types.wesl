@@ -227,7 +227,6 @@ const MARK_AREAS: u32 = 4u;
 const POINTS: u32 = 0u;
 const STROKES: u32 = 1u;
 const TRIANGLES: u32 = 2u;
-const GLYPHS: u32 = 3u;
 
 // What a stroke's segments run between: two vertices (straight, along a great circle, or through
 // bends), samples across the axis, or a geometry column's points. A triangle's corners come from

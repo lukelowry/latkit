@@ -142,7 +142,7 @@ fn failures_name_the_part_and_the_file_and_keep_the_output() {
     let output = run(dir.path(), &["--diagnostics", "json", "validate", "scene.json"], None);
     assert_eq!(output.status.code(), Some(1));
     let told: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(told["detail"]["path"], "marks[0].data");
+    assert_eq!(told["detail"]["path"], "marks[0].vertices.of");
     assert_eq!(told["detail"]["source"], "scene.json");
     let twice = run(dir.path(), &["validate", "scene.json", "-d", "grid.json", "-d", "grid.json"], None);
     assert!(String::from_utf8_lossy(&twice.stderr).contains("duplicate"));
@@ -154,7 +154,7 @@ fn failures_name_the_part_and_the_file_and_keep_the_output() {
     let output =
         run(dir.path(), &["--diagnostics", "json", "validate", "-", "-d", "grid.json"], Some(legend.as_bytes()));
     let told: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(told["detail"]["path"], "marks[0].legend");
+    assert_eq!(told["detail"]["path"], "marks[0].vertices.legend");
 }
 
 #[test]

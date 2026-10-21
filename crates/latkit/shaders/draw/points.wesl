@@ -1,9 +1,10 @@
 // Points: one instanced quad per vertex row, shaded by its marker; a group's rows draw as
 // containers. A quad covers its marker and a pixel of edge, no more, and a small one a later one
 // covers in a crowded cell is left out. The focus variant draws the rows the mark's focus lights
-// again, over everything, reaching out to their glow. The cast variant draws the same quads through
-// the light's eye into the shadow map; the ports variant draws one quad per port of every row, on its
-// side of the row's marker.
+// again, over everything, reaching out to their glow; a group only glows about its border, so what
+// it holds still shows. The cast variant draws the same quads through the light's eye into the
+// shadow map; the ports variant draws one quad per port of every row, on its side of the row's
+// marker.
 
 import package::lib::types::{STATUS, MARKER_ICON, GROUP};
 import package::lib::bind::{frame, mark, state, ramp, program, focused};
@@ -12,7 +13,7 @@ import package::lib::project::{to_screen, to_clip, nearer, culled};
 import package::lib::points::{Point, point, reach, port_at};
 import package::lib::marker::{
     MarkerColor, MarkerFragment, builtin_marker, container, outline_distance, shape_distance, filled, over,
-    status_ring, glow, premultiplied,
+    status_ring, glow, premultiplied, theme_text,
 };
 import package::lib::shade::{caster, daylight};
 import package::lib::mark::fringe;
@@ -115,16 +116,18 @@ fn marker(f: MarkerFragment) -> MarkerColor {
     return builtin_marker(f);
 }
 
-// A port: its shape in its row's color, ringed by the background so it reads apart from the marker;
-// hollow while no net plugs into it.
+// A port: its shape in its row's color mixed toward the theme's text, so it reads on the marker in
+// either theme, ringed by the background so it reads apart from the marker; hollow while no net plugs
+// into it.
 @if(ports)
 fn shaded(v: Varyings) -> MarkerColor {
     let d = shape_distance(v.shape, v.p, v.half);
+    let ink = vec4f(mix(v.color.rgb, theme_text(), 0.55), v.color.a);
     let ring = filled(vec4f(frame.background.rgb, v.color.a), d - 1.5);
     if v.extra > 0.5 {
-        return over(filled(v.color, d), ring);
+        return over(filled(ink, d), ring);
     }
-    let hollow = over(filled(v.color, abs(d + 0.75) - 0.75), filled(vec4f(frame.background.rgb, v.color.a), d));
+    let hollow = over(filled(ink, abs(d + 0.75) - 0.75), filled(vec4f(frame.background.rgb, v.color.a), d));
     return over(hollow, ring);
 }
 
@@ -150,7 +153,12 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
 @if(focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    return output(glow(shaded(v), v.focus));
+    let m = shaded(v);
+    if (mark.flags & GROUP) != 0u {
+        // Drawn over what it holds, a group's body would hide it: it glows on both sides of its border.
+        return output(glow(MarkerColor(vec4f(0.0), abs(m.distance)), v.focus));
+    }
+    return output(glow(m, v.focus));
 }
 
 @if(casts)

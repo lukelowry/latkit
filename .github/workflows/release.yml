@@ -1,7 +1,12 @@
 name: Release
 
+# Once CI passes on main, releases the commit it tested.
 on:
-  push:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
     branches:
       - main
 
@@ -20,10 +25,13 @@ env:
 jobs:
   release:
     name: Version or publish
+    # A push's run only: a pull request's run can come from a fork's branch named main.
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
       - uses: pnpm/action-setup@v6
         with:
@@ -48,9 +56,11 @@ jobs:
         if: steps.bindgen-cache.outputs.cache-hit != 'true'
         run: cargo install wasm-bindgen-cli --version "${{ steps.bindgen.outputs.version }}" --locked
       - run: pnpm --dir npm/examples exec playwright-core install --with-deps chromium
-      # The tarball a consumer installs, checked in Chrome before anything publishes.
+      # The tarball a consumer installs, checked in Chrome; `pnpm release` publishes this file.
       - run: cargo xtask package
       - run: cargo xtask package-test
+      # `published` is true only when `pnpm release` printed `changeset tag`'s "New tag:" lines; the
+      # action pushes those tags.
       - name: Open a version pull request, or publish the npm package
         id: changesets
         uses: changesets/action@v1

@@ -151,6 +151,34 @@ fn new_data_versions_show_and_fit_frames_them() {
 }
 
 #[test]
+fn a_fit_frames_what_draws_while_another_mark_has_no_rows() {
+    let Some(gpu) = gpu() else { return };
+    // The links table is empty: it has nothing to frame, and holds no fit back.
+    let mut data = Data::new("graph");
+    data.apply(
+        Patch::new().set(Table::new("Node", Ids::count(1)).field("x", vec![1000.0]).field("y", vec![1000.0])).set(
+            Table::new("Link", Ids::count(0)).reference("from", "Node", Vec::<u64>::new()).reference(
+                "to",
+                "Node",
+                Vec::<u64>::new(),
+            ),
+        ),
+    )
+    .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0))
+        .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_data(data);
+    view.fit(latkit::Fit::All);
+    let pixels = frame(&gpu, &mut view);
+    let center = SIZE / 2;
+    assert!(close(at(&pixels, center, center), [255, 255, 255, 255]), "fit centers the only vertex");
+    assert!(view.complete(), "waiting on {}", view.stats().waiting);
+}
+
+#[test]
 fn a_fit_frames_data_whatever_its_units_and_its_markers_pixels() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("graph");

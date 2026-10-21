@@ -73,9 +73,12 @@ pub(crate) enum Gesture {
         locating: Option<Pending<Option<[f32; 2]>>>,
         to: [f32; 2],
     },
+    /// A row dragged by `pointer`: `grab` is where the row was hit less where the press was, CSS
+    /// pixels, so the row keeps where it was grabbed.
     Drag {
         pointer: u32,
         probed: Probed,
+        grab: [f32; 2],
     },
     Pan {
         pointer: u32,
@@ -468,7 +471,8 @@ impl View {
             |probed: &Probed| self.scene.marks.get(probed.hit.index).is_some_and(|m| m.style().interaction.drag);
         match answer.hit {
             Some(probed) if drags(&probed) => {
-                self.gestures.now = Gesture::Drag { pointer, probed };
+                let grab = [probed.hit.point[0] - from[0], probed.hit.point[1] - from[1]];
+                self.gestures.now = Gesture::Drag { pointer, probed, grab };
                 self.drag(Phase::Start, trigger);
             }
             _ if self.scene.controls.pan => {
@@ -547,12 +551,13 @@ impl View {
         }
     }
 
-    /// Tells where the row dragged follows the pointer at `trigger`: the point under it at the depth
-    /// the drag started, snapped to a diagram's dots when it snaps.
+    /// Tells where the row dragged goes with the pointer at `trigger`: where it was hit, moved as the
+    /// pointer moved since the press, at the depth the drag started; on a diagram's dots when it snaps.
     fn drag(&mut self, phase: Phase, trigger: Trigger) {
-        let Gesture::Drag { probed, .. } = &self.gestures.now else { return };
+        let Gesture::Drag { probed, grab, .. } = &self.gestures.now else { return };
         let view = self.projected();
-        let mut position = view.position(view.unproject(trigger.point.map(f64::from), f64::from(probed.depth)));
+        let at = [trigger.point[0] + grab[0], trigger.point[1] + grab[1]];
+        let mut position = view.position(view.unproject(at.map(f64::from), f64::from(probed.depth)));
         if let Space::Diagram(diagram) = &self.scene.space
             && let Grid::Dots { pitch, snap: true } = diagram.grid
             && pitch > 0.0
@@ -655,7 +660,7 @@ impl View {
     }
 
     /// A touch or a pen held still for the controls' press asks for a menu where it is.
-    fn held_long(&mut self) {
+    pub(super) fn held_long(&mut self) {
         let press = self.scene.controls.press.as_secs_f64();
         let Gesture::Press { pointer, from, trigger, released: false, since, .. } = self.gestures.now else { return };
         let still = near(from, trigger.point, SLOP) && matches!(trigger.device, Device::Touch | Device::Pen);

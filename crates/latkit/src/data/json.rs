@@ -24,14 +24,16 @@ impl Patch {
     /// ]
     /// ```
     ///
-    /// - `put` and `set` take `{table, ids, fields}`, `remove` `{table, ids}`, `append` `{at, table,
-    ///   fields}`, `forget` `{before}`, and `axis` `{name, unit}`.
+    /// - `replace` and `set` take `{table, ids, fields}`, `remove` `{table, ids}`, `append` `{at, table,
+    ///   ids?, fields}`, `forget` `{before}`, `axis` `{name, unit}`, and `frames` `{table, field,
+    ///   level?, first, at, values}`, as [`Patch::frames`] takes them.
     /// - `ids` is a count naming rows `0..n`, or numbers or texts; `null` leaves a reference unwired.
     /// - A field is an array of one kind of value, as [`Values`](crate::Values) takes them; `{"reference": table,
     ///   "ids": ids}`; or a slice of a binary file, `{"file", "dtype", "offset", "count"}`: `count`
     ///   values from byte `offset` (0 unless given) of dtype `f32le`, `f64le`, `i32le`, `u32le`,
-    ///   `u64le`, or `u8` (booleans, nonzero true).
+    ///   `u64le`, `u8` (numbers), or `bool` (a byte each, nonzero true).
     /// - `append`'s `at` is one axis coordinate or several, as [`Patch::append`] takes them.
+    /// - An error names the path to what could not be read, such as `[2].set.fields.x`.
     ///
     /// Slices are fetched through `host`, all at once: a file's path or URL relative to `base`, the
     /// document's own, or as it is when `base` is empty or the file's is absolute.
@@ -43,7 +45,7 @@ impl Patch {
     /// # Ok(()) }
     /// ```
     pub async fn load(json: &str, base: &str, host: &dyn Host) -> Result<Patch> {
-        let ops: Vec<OpForm> = serde_json::from_str(json).map_err(|e| Error::invalid(e.to_string()))?;
+        let ops: Vec<OpForm> = crate::from_json(json)?;
         build(ops, base, host).await
     }
 }
@@ -52,7 +54,7 @@ impl Data {
     /// A dataset from its JSON, `{"name": ..., "patch": [...]}`: its name and the patch that builds it,
     /// as its bytes are. The patch loads as [`Patch::load`] loads one.
     pub async fn load(json: &str, base: &str, host: &dyn Host) -> Result<Data> {
-        let form: DataForm = serde_json::from_str(json).map_err(|e| Error::invalid(e.to_string()))?;
+        let form: DataForm = crate::from_json(json)?;
         if form.name.is_empty() {
             return Err(Error::invalid("a dataset is named").at("name"));
         }
@@ -198,6 +200,8 @@ mod tests {
                 .contains("field x")
         );
         assert!(error(r#"[{"bend": {}}]"#).contains("unknown variant"));
+        let named = error(r#"[{"axis": {"name": "t", "unit": "s"}}, {"remove": {"table": 3, "ids": []}}]"#);
+        assert!(named.starts_with("[1].remove.table"), "{named}");
         assert!(
             error(
                 r#"[{"replace": {"table": "Bus", "ids": {"count": 1}, "fields": {"x": {"file": "f", "count": 1}}}}]"#

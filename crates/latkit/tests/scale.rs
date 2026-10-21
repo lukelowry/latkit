@@ -156,6 +156,86 @@ fn panning_a_dense_table_draws_every_row_in_view_as_tiles_come_and_go() {
 }
 
 #[test]
+fn a_change_to_one_row_drawn_in_part_writes_that_row_alone() {
+    let Some(gpu) = gpu() else { return };
+    // Four pages of rows drawn whole in priority order, so each is drawn far from its place in the
+    // table; every row lies off view but one, at the middle.
+    let (rows, middle) = (200_000_u32, 12_345_u32);
+    let n = rows as usize;
+    let off = |r: usize| if r == middle as usize { 0.0 } else { 1000.0 };
+    let mut data = Data::new("points");
+    data.apply(
+        Table::new("P", Ids::count(rows))
+            .field("x", (0..n).map(off).collect::<Vec<_>>())
+            .field("y", vec![0.0; n])
+            .field("p", (0..n).map(|r| ((r * 7919) % n) as f64).collect::<Vec<_>>())
+            .field("v", vec![0.0; n]),
+    )
+    .expect("valid");
+    let scene = Scene::new(plane()).theme(plain_theme()).ease(std::time::Duration::ZERO).draw(
+        Vertices::of("points", "P")
+            .position("x", "y")
+            .radius(4.0)
+            .priority(field("p"))
+            .color(field("v").colormap(latkit::Colormap::GRAYS).domain(0.0..=1.0)),
+    );
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data.clone());
+    frame(&gpu, &mut view);
+    assert_eq!(errors(&mut view), []);
+    assert_eq!(view.stats().drawn, u64::from(rows), "every row draws, in priority order");
+    let before = gpu.work();
+    data.apply(Table::new("P", vec![u64::from(middle)]).field("v", vec![1.0])).expect("valid");
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let work = gpu.work() - before;
+    let center = SIZE / 2;
+    assert!(close(at(&pixels, center, center), [255, 255, 255, 255]), "{:?}", at(&pixels, center, center));
+    assert!(work.evaluated <= 1 << 16, "one page of the rows drawn evaluates: {}", work.evaluated);
+    assert!(work.uploaded <= 8 << 16, "one page of the field drawn uploads: {} bytes", work.uploaded);
+}
+
+#[test]
+fn a_field_drawn_in_part_that_changes_kind_gathers_afresh() {
+    let Some(gpu) = gpu() else { return };
+    // Two marks of one table drawn in part: one reads `v` as a number, the other as a text, so `v` is
+    // read before and after it changes kind.
+    let n = 1000_usize;
+    let table = |v: latkit::Values| {
+        Table::new("P", Ids::count(n as u32))
+            .field("x", vec![0.0; n])
+            .field("y", vec![0.0; n])
+            .field("p", (0..n).map(|r| r as f64).collect::<Vec<_>>())
+            .field("v", v)
+    };
+    let mut data = Data::new("points");
+    data.apply(table(vec![0.5; n].into())).expect("valid");
+    let number = Vertices::of("points", "P")
+        .position("x", "y")
+        .priority(field("p"))
+        .color(field("v").colormap(latkit::Colormap::GRAYS));
+    let text = Vertices::of("points", "P")
+        .named("text")
+        .position("x", "y")
+        .color(when(field("v").is("a")).then(Color::WHITE).otherwise(Color::BLACK));
+    let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(number).draw(text)).expect("valid");
+    view.set_camera(camera());
+    view.set_data(data.clone());
+    frame(&gpu, &mut view);
+    assert_eq!(view.failures().count(), 1, "the text mark fails while `v` holds numbers");
+    data.apply(Patch::new().replace(table(vec!["a"; n].into()))).expect("valid");
+    view.set_data(data);
+    for _ in 0..10 {
+        common::step(&gpu, &mut view);
+    }
+    frame(&gpu, &mut view);
+    let failed: Vec<String> = view.failures().map(|e| e.to_string()).collect();
+    assert_eq!(failed.len(), 1, "now the number mark fails: {failed:?}");
+    assert!(failed[0].starts_with("marks[0]"), "{failed:?}");
+}
+
+#[test]
 fn edges_drawn_through_tiles_show_with_their_ends() {
     let Some(gpu) = gpu() else { return };
     let data = lattice(600, 500);

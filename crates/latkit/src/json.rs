@@ -1,5 +1,5 @@
 //! JSON as latkit reads it: any input from its text, an error naming the path to what it could not
-//! read, such as `marks[2].color`.
+//! read, such as `marks[2].vertices.color`.
 
 use std::fmt::Display;
 

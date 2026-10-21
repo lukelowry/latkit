@@ -10,7 +10,7 @@ use super::passes::Drawn;
 use super::resources::{EyeSlot, MARK_STRIDE, Resources};
 use super::sync::{Source, Synced, Window, table_of};
 use super::transition::{remap, replaced, rewritten};
-use super::{Camera, Event, Frame, View, timer, uniforms};
+use super::{Camera, Event, Frame, View, Waiting, timer, uniforms};
 use crate::expr::compile::Deps;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
@@ -33,6 +33,24 @@ impl View {
     /// the pipelines input needs to the frames that take it.
     pub(crate) fn render_picture(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>) {
         self.record(encoder, frame, false);
+    }
+
+    /// Goes on to `time` without drawing, on a frame the view wants that would look as the last one
+    /// did ([`wants_frame`](View::wants_frame) but not [`needs_render`](View::needs_render)): a touch
+    /// held long enough asks for its menu, and the next few pipelines input needs are made. It records
+    /// nothing, so the target keeps the last frame.
+    pub fn go_on(&mut self, time: f64) {
+        if self.gpu.lost() {
+            return;
+        }
+        let gpu = self.gpu.clone();
+        let _ = gpu.0.device.poll(wgpu::PollType::Poll);
+        self.tell_gpu_errors();
+        self.clock.tick(time);
+        self.held_long();
+        if let Some((format, samples)) = self.pipelines_made {
+            self.make_pipelines(&mut gpu.0.lock(), format, samples, true);
+        }
     }
 
     fn record(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>, input: bool) {
@@ -104,6 +122,7 @@ impl View {
         if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some(), travel > 0.0) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
+        self.count_found(encoder, &inner);
         let mut drawn = Drawn::default();
         if let Some(light) = &light {
             self.cast(encoder, &mut inner, &mut drawn, light);
@@ -157,6 +176,8 @@ impl View {
     /// work asks for, as work landing between frames does.
     fn end(&mut self, started: Instant) {
         let waiting = self.under_way();
+        let opening = Waiting { fit: waiting.fit && !self.refitting(), ..waiting };
+        self.opened |= opening.is_empty();
         if waiting != self.waiting {
             self.waiting = waiting;
             self.events.tell(Event::Waiting(waiting));
@@ -214,7 +235,7 @@ impl View {
                 && !*told
             {
                 *told = true;
-                self.events.tell(Event::Error(error.clone().at(i).at("marks")));
+                self.events.tell(Event::Error(shown.mark.within(i, error.clone())));
             }
         }
     }

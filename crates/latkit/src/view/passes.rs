@@ -151,6 +151,27 @@ impl Marks<'_> {
             pass.set_scissor_rect(0, 0, self.size[0], self.size[1]);
         }
     }
+
+    /// Draws the ports of every row of mark `i`, `shown`, where its rows have them: after its rows, and
+    /// again after the rows its focus lights, which they sit on.
+    fn ports(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        drawn: &mut Drawn,
+        inner: &mut Inner,
+        i: usize,
+        shown: &super::marks::Shown,
+    ) {
+        let ports = shown.port_count();
+        if ports == 0 || !shown.compiled.as_ref().is_some_and(|c| c.drawing.primitive == Primitive::Points) {
+            return;
+        }
+        let group = &self.passes.iter().find(|(s, _)| *s == Shader::PointsPorts).expect("listed").1;
+        pass.set_bind_group(1, &self.groups.mark, &[offset(i)]);
+        pass.set_pipeline(&inner.pipelines.render(self.device, Shader::PointsPorts, self.format, self.samples));
+        pass.set_bind_group(2, group, &[]);
+        drawn.draw(pass, 4, (shown.rows + shown.exits) * ports);
+    }
 }
 
 /// What a frame's compute pass does.
@@ -268,12 +289,14 @@ impl View {
         }
         let device = &self.gpu.0.device;
         let evaluate = inner.pipelines.compute(device, Shader::Evaluate, "evaluate");
-        let reduce = inner.pipelines.compute(device, Shader::Evaluate, "reduce");
+        // Only marks fitting domains reduce.
+        let reducing = work.iter().any(|&i| self.marks[i].reduce && self.marks[i].rows > 0);
+        let reduce = reducing.then(|| inner.pipelines.compute(device, Shader::Evaluate, "reduce"));
         for &i in work {
             let shown = &mut self.marks[i];
             pass.set_bind_group(1, group, &[offset(i)]);
-            if shown.reduce && shown.rows > 0 {
-                pass.set_pipeline(&reduce);
+            if let Some(reduce) = reduce.as_ref().filter(|_| shown.reduce && shown.rows > 0) {
+                pass.set_pipeline(reduce);
                 dispatch(pass, shown.rows);
             }
             pass.set_pipeline(&evaluate);
@@ -372,7 +395,6 @@ impl View {
                 }
             }
         }
-        self.count_found(encoder, inner, &segments);
         let resources = self.resources.as_ref().expect("created before passes");
         (!measured.is_empty()).then(|| {
             Readback::new(&inner.readbacks, device, encoder, resources.extents(), 0, extent_bytes, &self.waker)
@@ -579,17 +601,14 @@ impl View {
                 continue;
             }
             marks.draw(&mut pass, drawn, inner, i, shown, false);
-            let ports = shown.port_count();
-            if shown.compiled.as_ref().is_some_and(|c| c.drawing.primitive == Primitive::Points) && ports > 0 {
-                pass.set_pipeline(&inner.pipelines.render(device, Shader::PointsPorts, frame.format, samples));
-                pass.set_bind_group(2, group(Shader::PointsPorts), &[]);
-                drawn.draw(&mut pass, 4, (shown.rows + shown.exits) * ports);
-            }
+            marks.ports(&mut pass, drawn, inner, i, shown);
         }
-        // The rows focus lights draw again over every mark but labels, glowing: nothing covers them.
+        // The rows focus lights draw again over every mark but labels, glowing: nothing covers them but
+        // the ports they carry.
         for (i, shown) in self.marks.iter().enumerate() {
             if shown.drawable() && shown.lit.rows > 0 {
                 marks.draw(&mut pass, drawn, inner, i, shown, true);
+                marks.ports(&mut pass, drawn, inner, i, shown);
             }
         }
         let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(|shader| (shader, group(shader)));

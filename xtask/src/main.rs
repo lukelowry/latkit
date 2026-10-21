@@ -1,7 +1,8 @@
 //! Repository tasks, run as `cargo xtask <task>`.
 //!
-//! - `check`: format, lint every feature set and target, test, document, type-check the npm
-//!   package, its examples, and the gate, test the example pages' models, then run the browser gate.
+//! - `check`: CI's checks in its order, GPU tests required: format, lint, test, document, and package
+//!   the crates, check that `native` stays out of browser builds, then format, lint, type-check, and
+//!   test the npm workspace over a fresh `wasm --dev`; then the browser gate.
 //! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`: every
 //!   shader variant's pipelines compile in Chrome within budget, and every example page draws and
 //!   answers the pointer without errors or stalls.
@@ -14,7 +15,8 @@
 //!   optimize it with the pinned Binaryen tool, and compile the npm wrapper. `--dev` builds faster
 //!   and skips `wasm-opt`.
 //! - `version`: give the crates the npm package's version, as changesets set it.
-//! - `package`: build an isolated, optimized npm tarball and report its sizes and hashes.
+//! - `package`: build an isolated, optimized npm tarball, the one `pnpm release` publishes, and
+//!   report its sizes and hashes.
 //! - `package-test`: install the latest tarball into a consumer and verify it in Chrome.
 //! - `examples [--open]`: `wasm --dev`, then serve the example suite at <http://127.0.0.1:5200>;
 //!   `--open` opens it in the browser once it is ready.
@@ -87,24 +89,39 @@ fn pnpm(args: &[&str]) -> Result {
     run(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" }, args)
 }
 
+/// What `.github/workflows/ci.yml` checks, in its order, then the browser gate.
 fn check() -> Result {
+    let gpu = [("LATKIT_REQUIRE_GPU", "1")];
     cargo(&["fmt", "--all", "--check"])?;
-    cargo(&["clippy", "-p", "latkit", "--no-default-features", "--all-targets", "--", "-D", "warnings"])?;
-    cargo(&["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"])?;
-    cargo(&["clippy", "-p", "latkit-js", "--target", "wasm32-unknown-unknown", "--", "-D", "warnings"])?;
-    cargo(&["test", "--workspace", "--all-features"])?;
-    cargo(&["test", "-p", "latkit", "--no-default-features"])?;
+    cargo(&["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"])?;
+    cargo(&["clippy", "--locked", "-p", "latkit", "--no-default-features", "--all-targets", "--", "-D", "warnings"])?;
+    cargo(&["clippy", "--locked", "-p", "latkit-js", "--target", "wasm32-unknown-unknown", "--", "-D", "warnings"])?;
+    run_with(env!("CARGO"), &["test", "--locked", "--workspace"], &gpu)?;
+    run_with(env!("CARGO"), &["test", "--locked", "-p", "latkit", "--no-default-features"], &gpu)?;
     run_with(
         env!("CARGO"),
-        &["doc", "-p", "latkit", "--no-deps", "--all-features"],
+        &["doc", "--locked", "-p", "latkit", "--no-deps", "--all-features"],
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
+    // CI's tree is clean; here uncommitted work is packaged as it stands.
+    cargo(&["package", "--locked", "--allow-dirty", "-p", "latkit"])?;
+    cargo(&[
+        "package",
+        "--locked",
+        "--allow-dirty",
+        "-p",
+        "latkit",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--features",
+        "web",
+    ])?;
+    cargo(&["check", "--locked", "-p", "latkit", "--target", "wasm32-unknown-unknown", "--features", "native,web"])?;
     wasm(true)?;
-    pnpm(&["exec", "tsc", "-p", "npm/test"])?;
-    pnpm(&["--dir", "npm/examples", "exec", "tsc", "--noEmit"])?;
-    pnpm(&["--dir", "npm/examples", "exec", "tsc", "-p", "gate"])?;
-    pnpm(&["--dir", "benchmark", "exec", "tsc", "-p", "."])?;
-    pnpm(&["exec", "vitest", "run"])?;
+    pnpm(&["format:check"])?;
+    pnpm(&["lint"])?;
+    pnpm(&["typecheck"])?;
+    pnpm(&["test"])?;
     browser_gate()
 }
 
@@ -121,9 +138,9 @@ fn browser_gate() -> Result {
 
 /// The directory `latkit`'s build script wrote the linked shaders and `shaders.json` to.
 fn shaders_dir() -> Result<String> {
-    eprintln!("$ cargo check -p latkit --message-format=json");
+    eprintln!("$ cargo check --locked -p latkit --message-format=json");
     let output = Command::new(env!("CARGO"))
-        .args(["check", "-p", "latkit", "--message-format=json"])
+        .args(["check", "--locked", "-p", "latkit", "--message-format=json"])
         .current_dir(root())
         .stderr(Stdio::inherit())
         .output()

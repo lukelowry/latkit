@@ -1,4 +1,4 @@
-//! Shots: pictures of views at a size of their own. A shot draws each view into its part of the
+//! Shots: pictures of views at a size of their own. A shot draws each view into its panel of the
 //! picture through frames of its own, on a clock of its own, until every view is complete; then one
 //! compute pass composes the parts into exactly the bytes its consumer takes, RGBA rows for an image
 //! or NV12 planes for a video's encoder, and a plain buffer copy reads them back. No pixel is touched
@@ -26,7 +26,7 @@ pub(crate) const TICK: f64 = 1.0 / 60.0;
 /// The longest a picture waits for work to land before drawing again.
 const FRAME: Duration = Duration::from_millis(16);
 
-/// A picture of views, each drawn into its part of `size` pixels at `scale` pixels per CSS pixel:
+/// A picture of views, each drawn into its panel of `size` pixels at `scale` pixels per CSS pixel:
 /// plain data, like a scene.
 ///
 /// ```no_run
@@ -44,7 +44,7 @@ pub struct Shot {
     /// Pixels per CSS pixel: views lay out `size / scale` CSS pixels; 1 unless set.
     #[serde(default = "one")]
     scale: f32,
-    /// Each view's part of the picture, `[x, y, width, height]` as fractions; the whole by default.
+    /// Each view's panel of the picture, `[x, y, width, height]` as fractions; the whole by default.
     #[serde(default)]
     panels: Panels,
     /// Whether alpha is kept where the themes' backgrounds would be.
@@ -86,7 +86,7 @@ impl Shot {
         self
     }
 
-    /// Where each view draws in the picture, one part per view in order; by default one view fills it.
+    /// Where each view draws in the picture, one panel per view in order; by default one view fills it.
     #[must_use]
     pub fn panels(mut self, panels: impl Into<Panels>) -> Shot {
         self.panels = panels.into();
@@ -158,7 +158,7 @@ impl Shot {
                     let bytes = drawing.read(&readback).await?;
                     views.lend(|views| {
                         for view in views {
-                            if let Some(error) = view.capture_error() {
+                            if let Some(error) = view.shot_error() {
                                 return Err(error);
                             }
                         }
@@ -189,7 +189,7 @@ impl Views for Borrowed<'_, '_> {
     }
 }
 
-/// One view's part of a picture: the texture it draws into, its size, and the bind group
+/// One view's panel of a picture: the texture it draws into, its size, and the bind group
 /// composing it.
 struct Panel {
     target: wgpu::TextureView,
@@ -384,7 +384,7 @@ impl Drawing {
         }
         let complete = views.iter().all(|v| v.complete());
         let easing = still && views.iter().any(|v| v.easing());
-        if let Some(error) = views.iter_mut().find_map(|view| view.capture_error()) {
+        if let Some(error) = views.iter_mut().find_map(|view| view.shot_error()) {
             picture.gpu.queue().submit([encoder.finish()]);
             return Err(error);
         }

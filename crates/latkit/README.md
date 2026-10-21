@@ -73,9 +73,14 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200 
 - Picks probe what the frame drew, through the draws' own geometry. Hover follows the frame: what
   the pointer rests on is probed again whenever the frame changes under it, one probe in flight;
   `Controls::hover` only says whether it glows.
-- A scene's pipelines are made before they are needed: the first frame makes what it draws with, the
-  next what the hover needs, the next what the intents its controls allow need, so the opening costs
-  its longest frame and no first gesture compiles; only custom markers compile WGSL at runtime.
+- A scene's pipelines are made before they are needed: the first frame makes what it draws with; once
+  the opening is over, or a pointer is over the view, the frames after make, a few at a time, what the
+  hover needs, what changes need, and what the intents its controls allow need. Chrome compiles a
+  pipeline where it is made, ahead of the readbacks the opening waits on, so nothing input needs
+  delays the opening and no frame waits long; only custom markers compile WGSL at runtime.
+- Nothing is read back that the CPU knows: a diagram's sheet and tiles' pyramids frame a fit at once,
+  labels place once a fit has moved the camera, and a segment list's count is read back one at a time
+  only when the places its paths bend by change.
 - Motion is the view's own only where the user's system allows it (`Controls::motion`): under
   reduced motion changes apply at once, flights jump, nothing coasts or orbits, labels show without
   fading, and comets and what reads `elapsed()` hold still, so a still view needs no frames.
@@ -99,8 +104,10 @@ cargo xtask examples   # wasm --dev, then the examples at http://127.0.0.1:5200 
   through the same forms, and npm's types are written from them (`npm/schema.json` →
   `npm/src/inputs.ts`, `outputs.ts`); a test fails when either drifts. Data documents stream their
   values, never made a JSON value first.
-- One build holds everything: `gpu` (on by default) is the only choice, leaving out drawing for a
-  build of data, bytes, and JSON alone. Shaders store each distinct declaration once; a variant
+- One build holds every part. Features choose only drawing and a host: `gpu` (on by default;
+  without it, a build of data, bytes, and JSON alone), `native` (`host::Native`: system fonts,
+  workers, files, and Media Foundation's H.264 on Windows), and `web` (`host::Browser`, and `web`'s
+  `Canvas` and `PageView`, for `wasm32`). Shaders store each distinct declaration once; a variant
   joins its own.
 - A picture composes on the GPU into exactly the bytes its consumer takes, RGBA for an image and
   NV12 for an encoder; the CPU touches no pixel. A view draws at one size at a time: while a shot
@@ -158,10 +165,10 @@ only glow, halo, and pick radius stay pixels. Zooming scales one fixed picture.
 
 ## Pictures and video
 
-- **Shot** (`src/shot.rs`): plain data, a picture of views each drawn into its part of `size` pixels
+- **Shot** (`src/shot.rs`): plain data, a picture of views each drawn into its panel of `size` pixels
   at `scale` pixels per CSS pixel. `image(views)` steps the views' clocks a sixtieth of a second while
   they ease and waits while work is under way, within a deadline, until every view is complete and
-  still; `compute/compose.wesl` then writes each panel's part in whole words, and a plain buffer copy
+  still; `compute/compose.wesl` then writes each panel in whole words, and a plain buffer copy
   reads the RGBA back. `Image::encode` writes it as PNG, JPEG, or lossless WebP; jobs do the same
   on the host's workers, as npm's `Image.encode` does. `Panels` lay views out in a picture, a
   video, and a browser canvas alike.
@@ -203,9 +210,9 @@ crates/latkit/
 │   ├── video/         Video, Sink, Pixels, Mp4, Encoder, Encoding, Unit; mp4 (fragmented, as it goes)
 │   ├── data/          columns, ids, samples, tables, patches, bytes (streamed), forms (what JSON and
 │   │                  JavaScript write), JSON loads, query, describe and envelope, inverse references
-│   ├── expr/          compile, decode, color, colormap, ramp (the build's too), cpu: the executor structure reads
+│   ├── expr/          compile, form, color, colormap, ramp (the build's too), cpu: the executor structure reads
 │   ├── scene/         Scene, marks (Vertices, Edges, Faces, Lines, Areas), Label, Port, Marker, Layout, Theme,
-│   │                  Controls, spaces, decode
+│   │                  Controls, spaces, form
 │   ├── derive/        Derive, Jobs (one budget, one pool), Derivations: graph (marks, joins, links), lanes,
 │   │                  places, stars, shapes, tiles; sight (what
 │   │                  the camera sees, as tiles), pyramid (each row's level, in jobs), tiled (the rows drawn)
@@ -223,8 +230,7 @@ crates/latkit/
 └── tests/
 
 benchmark/             the benchmark: one page (scenarios, the stage measuring phases, data), the runner,
-                       the judge (rules, orders, baselines), the report, baselines/ (work, times per machine,
-                       the old packages' times)
+                       the judge (rules, orders, baselines), the report, baselines/ (work, times per machine)
 ```
 
 ## API
@@ -232,7 +238,7 @@ benchmark/             the benchmark: one page (scenarios, the stage measuring p
 ```rust
 use latkit::*;
 
-// Data: named, immutable tables, changed only by patches. A reference names rows of another table.
+// Data: named tables, changed in place by patches; a clone is an O(1) snapshot. A reference names rows of another table.
 let mut grid = Data::new("grid");
 grid.apply(
     Patch::new()
@@ -318,8 +324,9 @@ while video.time() < 24.0 {
 video.finish().await?;
 ```
 
-npm `latkit` mirrors the crate with scenes as JSON; its `Data.apply` returns the next version,
-`geojson` and `Image.encode` run in a worker, and `Shot.video` encodes with WebCodecs:
+npm `latkit` mirrors the crate with scenes as JSON; its `Data.apply` changes data in place and
+`snapshot()` keeps a version, GeoJSON (`Data.read`) and `Image.encode` run in a worker, and
+`Shot.video` encodes with WebCodecs:
 
 ```ts
 const panels = [
@@ -356,4 +363,5 @@ await video.record(
 | Controls             | `Zoom` (wheel, modifier as a trackpad's pinch sends it, off), click cycling, long press for touch and pen menus, `Motion` with `prefers-reduced-motion`, `Controls::none`/`inspect`; pipelines staged over the opening frames for the hover and the controls' intents; transitions of no length so comets follow rows moved without easing; `arrange` answers patches of the places; layouts place points on planes and the earth                                                                                                                                                                                                                                                                   | ✓      |
 | Drawing              | sizes in units kept within CSS pixels (`at_least`, `at_most`); `Edges::poles`; nets outside diagrams as stars (`Edges::joins`); label `font` and `max` (a radix select on the GPU); one ramp for the catalog and your own maps, blended in OKLab with placed stops; `colormapCss` for any map, a band per category; `Stats::draws`, `instances`, `tiles`, `tiles_loading`                                                                                                                                                                                                                                                                                                                           | ✓      |
 | Retire               | pages ported: Telemetry's quantities, ranges, colormaps, and hot list by `query`; the diagram's menu, rename on open, neighbors, unplugging, layouts four ways, light theme, zoom; Grid at scale's map alone, download progress, insets; Colors' light field, kinds, and a map with alpha; Signals, two views on one canvas under one playhead; a motion choice; models tested with vitest; vector tiles clipped whole and earcut as of 3.2, so holes across a tile's edge no longer fill it; `packages/`, `examples/`, `benchmark/`, `docs/` deleted; one pnpm workspace of `npm/`, CI, and a release of the crates and the npm package together                                                   | ✓      |
-| Foundation           | one build of every part, `gpu` the only feature; WGSL stored once per declaration; picks as data, so `assemble` compiles once; evaluation by row block (only the pages a patch wrote) and transitions as a blend pass; one budget per `Gpu`, shares granted max-min fair with pages several views draw counted once, and the plan a stamped derivation; samples a sparse pyramid of runs, any level held anywhere, `cover` drawing coarser stand-ins; `Tiling<K>` for map tiles and time spans; time tiles (`Data::to_tiles`, `latkit tile`, `frames.json`, `Patch::frames`, op 6); rows drawn through tiles keep their places, arrivals filling holes; JSON errors naming their path (`from_json`) | ✓      |
+| Foundation           | one build of every part (part features removed); WGSL stored once per declaration; picks as data, so `assemble` compiles once; evaluation by row block (only the pages a patch wrote) and transitions as a blend pass; one budget per `Gpu`, shares granted max-min fair with pages several views draw counted once, and the plan a stamped derivation; samples a sparse pyramid of runs, any level held anywhere, `cover` drawing coarser stand-ins; `Tiling<K>` for map tiles and time spans; time tiles (`Data::to_tiles`, `latkit tile`, `frames.json`, `Patch::frames`, op 6); rows drawn through tiles keep their places, arrivals filling holes; JSON errors naming their path (`from_json`) | ✓      |
+| Opening              | what input needs made once the opening is over; the first frame makes only what it records; fits framed from the sheet and tiles without a readback, labels placed once a fit moved the camera, one segment count in flight keyed by places; a patch of values writes only the rows that changed in tables drawn in part; a lit group glows about its border, lit rows keep their ports on top, wires stop at port rims, no repeated points in rounded wires, drags keep where a row was grabbed, unlabeled blocks make room for their ports; error paths through the mark's kind (`marks[2].vertices.color`)                                                                                       | ✓      |

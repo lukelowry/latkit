@@ -133,6 +133,24 @@ impl Column {
         }
     }
 
+    /// The rows whose values differ from `before`'s, in order. A page both share holds the same values,
+    /// so only the pages that changed are compared, row by row; rows past the shorter column differ.
+    pub(crate) fn differing(&self, before: &Column) -> Vec<usize> {
+        let mut rows = Vec::new();
+        for p in 0..self.pages.len().max(before.pages.len()) {
+            let (now, then) = (self.pages.get(p), before.pages.get(p));
+            if let (Some(a), Some(b)) = (now, then)
+                && a.id == b.id
+            {
+                continue;
+            }
+            let (a, b) = (now.map_or(&self.like, |a| &a.values), then.map_or(&before.like, |b| &b.values));
+            let (start, both) = (p * PAGE_ROWS, a.len().min(b.len()));
+            rows.extend((0..a.len().max(b.len())).filter(|&i| i >= both || !a.same_row(i, b, i)).map(|i| start + i));
+        }
+        rows
+    }
+
     /// The column of rows `rows`, in that order, missing for a [`HOLE`](super::values::HOLE). Leading
     /// pages whose rows are unchanged keep their ids.
     pub(crate) fn gather(&self, rows: &[usize]) -> Column {
@@ -189,6 +207,19 @@ mod tests {
         assert_eq!(grown.get(3), None);
         assert_eq!(grown.get(4), Some(Value::Number(9.0)));
         assert_eq!(Column::missing(&numbers(0), 4).get(2), None);
+    }
+
+    #[test]
+    fn differing_rows_are_found_in_the_pages_that_changed() {
+        let column = Column::new(&numbers(PAGE_ROWS * 2 + 10));
+        let source = Column::new(&Values::from(vec![-1.0_f64, (PAGE_ROWS + 4) as f64]));
+        // Row 3 of the second page changes; its row 4 is written the value it already held.
+        let written = column.write(column.len(), &[(PAGE_ROWS + 3, 0), (PAGE_ROWS + 4, 1)], &source);
+        let written = written.expect("numbers");
+        assert_eq!(written.differing(&column), [PAGE_ROWS + 3]);
+        assert_eq!(column.differing(&column), Vec::<usize>::new(), "a column holds what it holds");
+        let longer = column.write(column.len() + 2, &[], &source).expect("numbers");
+        assert_eq!(longer.differing(&column), [PAGE_ROWS * 2 + 10, PAGE_ROWS * 2 + 11], "rows past it differ");
     }
 
     #[test]

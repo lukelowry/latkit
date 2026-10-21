@@ -13,8 +13,6 @@ export default defineConfig([
       '**/node_modules/**',
       '**/*.d.ts.map',
       'pnpm-lock.yaml',
-      'output/**',
-      '.bench/**',
       '.playwright-cli/**',
       'crates/**',
       'target/**',
@@ -55,8 +53,6 @@ export default defineConfig([
         },
       ],
       '@typescript-eslint/unbound-method': 'off',
-      // A class's types live under it in a type-only `declare namespace`: `Document.Operation`.
-      '@typescript-eslint/no-namespace': ['error', { allowDeclarations: true }],
     },
   },
   {

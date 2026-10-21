@@ -103,7 +103,7 @@ pub(crate) struct Job {
     /// Pixels per CSS pixel: views lay out size / scale CSS pixels, so 2 draws twice as sharp
     #[arg(long, default_value = "1", value_parser = positive)]
     pub(crate) scale: f32,
-    /// A scene's part of the picture, X,Y,WIDTH,HEIGHT as fractions; one per scene, in order
+    /// A scene's panel of the picture, X,Y,WIDTH,HEIGHT as fractions; one per scene, in order
     #[arg(long, value_name = "X,Y,W,H", value_parser = panel)]
     pub(crate) panel: Vec<[f32; 4]>,
     /// Keep alpha where the themes' backgrounds would be

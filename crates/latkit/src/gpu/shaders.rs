@@ -1,7 +1,7 @@
 //! The GPU contract generated from the WESL shaders by `build/shaders.rs`: constants, `#[repr(C)]`
 //! mirrors of shared structs, bind group layouts, and each shader's text.
 
-#![allow(clippy::unreadable_literal, clippy::pub_underscore_fields)]
+#![allow(clippy::unreadable_literal)]
 
 /// How a binding is read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -101,3 +101,6 @@ impl Binding {
 }
 
 include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
+
+// A block of rows the GPU evaluates is a page of every column.
+const _: () = assert!(BLOCK_ROWS as usize == crate::data::PAGE_ROWS && 1 << PAGE_BITS == BLOCK_ROWS);

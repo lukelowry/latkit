@@ -644,41 +644,41 @@
           "type": "string"
         },
         {
-          "$ref": "#/$defs/FieldForm"
+          "$ref": "#/$defs/FieldNode"
         },
         {
-          "$ref": "#/$defs/ColorForm"
+          "$ref": "#/$defs/ColorNode"
         },
         {
-          "$ref": "#/$defs/StateForm"
+          "$ref": "#/$defs/StateNode"
         },
         {
-          "$ref": "#/$defs/MissingForm"
+          "$ref": "#/$defs/MissingNode"
         },
         {
-          "$ref": "#/$defs/UnaryForm"
+          "$ref": "#/$defs/UnaryNode"
         },
         {
-          "$ref": "#/$defs/BinaryForm"
+          "$ref": "#/$defs/BinaryNode"
         },
         {
-          "$ref": "#/$defs/WhenForm"
+          "$ref": "#/$defs/WhenNode"
         },
         {
-          "$ref": "#/$defs/IsForm"
+          "$ref": "#/$defs/IsNode"
         },
         {
-          "$ref": "#/$defs/ContainsForm"
+          "$ref": "#/$defs/ContainsNode"
         },
         {
-          "$ref": "#/$defs/ScaleForm"
+          "$ref": "#/$defs/ScaleNode"
         },
         {
-          "$ref": "#/$defs/ColormapForm"
+          "$ref": "#/$defs/ColormapNode"
         }
       ]
     },
-    "FieldForm": {
+    "FieldNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -713,7 +713,7 @@
       ],
       "description": "A field of each row: of the mark's own table, or of another dataset's table joined by row id."
     },
-    "ColorForm": {
+    "ColorNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -727,7 +727,7 @@
         "color"
       ]
     },
-    "StateForm": {
+    "StateNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -751,7 +751,7 @@
       ],
       "description": "What the view knows of each row."
     },
-    "MissingForm": {
+    "MissingNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -765,7 +765,7 @@
       ],
       "description": "A missing value: options that read one take the theme's."
     },
-    "UnaryForm": {
+    "UnaryNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -801,7 +801,7 @@
       ],
       "description": "An operation of one value."
     },
-    "BinaryForm": {
+    "BinaryNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -844,7 +844,7 @@
       ],
       "description": "An operation of two values."
     },
-    "WhenForm": {
+    "WhenNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -875,7 +875,7 @@
       ],
       "description": "The value of the first case whose condition holds, else `otherwise`."
     },
-    "IsForm": {
+    "IsNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -899,7 +899,7 @@
       ],
       "description": "Whether a text field equals the text."
     },
-    "ContainsForm": {
+    "ContainsNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -923,7 +923,7 @@
       ],
       "description": "Whether a text field holds the text, ignoring case: read by queries, which hold texts."
     },
-    "ScaleForm": {
+    "ScaleNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -960,7 +960,7 @@
       ],
       "description": "`value` mapped linearly onto the range `scale`, clamped: from its `domain`, else from the extent of\nthe values shown."
     },
-    "ColormapForm": {
+    "ColormapNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -997,7 +997,7 @@
           "$ref": "#/$defs/ColormapName"
         },
         {
-          "$ref": "#/$defs/ColorsForm"
+          "$ref": "#/$defs/CustomColormap"
         }
       ]
     },
@@ -1053,7 +1053,7 @@
         "turbo"
       ]
     },
-    "ColorsForm": {
+    "CustomColormap": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -1136,11 +1136,11 @@
           "$ref": "#/$defs/Expr"
         },
         {
-          "$ref": "#/$defs/UnitsForm"
+          "$ref": "#/$defs/Units"
         }
       ]
     },
-    "UnitsForm": {
+    "Units": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -3457,7 +3457,7 @@
         },
         "panels": {
           "$ref": "#/$defs/Panels",
-          "description": "Each view's part of the picture, `[x, y, width, height]` as fractions; the whole by default."
+          "description": "Each view's panel of the picture, `[x, y, width, height]` as fractions; the whole by default."
         },
         "transparent": {
           "type": "boolean",
@@ -3480,7 +3480,7 @@
       "required": [
         "size"
       ],
-      "description": "A picture of views, each drawn into its part of `size` pixels at `scale` pixels per CSS pixel:\nplain data, like a scene.\n\n```no_run\n# async fn example(view: &mut latkit::View) -> latkit::Result<()> {\nuse latkit::Shot;\nlet image = Shot::new([3840, 2160]).scale(2.0).image(&mut [view]).await?;\nstd::fs::write(\"view.png\", image.encode(latkit::ImageFormat::Png)?).expect(\"written\");\n# Ok(()) }\n```"
+      "description": "A picture of views, each drawn into its panel of `size` pixels at `scale` pixels per CSS pixel:\nplain data, like a scene.\n\n```no_run\n# async fn example(view: &mut latkit::View) -> latkit::Result<()> {\nuse latkit::Shot;\nlet image = Shot::new([3840, 2160]).scale(2.0).image(&mut [view]).await?;\nstd::fs::write(\"view.png\", image.encode(latkit::ImageFormat::Png)?).expect(\"written\");\n# Ok(()) }\n```"
     },
     "Panels": {
       "type": "array",
@@ -3493,7 +3493,7 @@
         "minItems": 4,
         "maxItems": 4
       },
-      "description": "Where each of several views draws in a target: x, y, width, and height as fractions of it, a\npart per view, in order; a later part draws over an earlier one. None given is one view filling\nthe target.\n\n```\nuse latkit::Panels;\nlet map_over_plot = Panels::from([[0.0, 0.0, 1.0, 0.8], [0.0, 0.8, 1.0, 0.2]]);\nassert_eq!(map_over_plot.len(), 2);\nassert_eq!(Panels::default().len(), 1);\n```"
+      "description": "Where each of several views draws in a target: x, y, width, and height as fractions of it, a\npanel per view, in order; a later panel draws over an earlier one. None given is one view filling\nthe target.\n\n```\nuse latkit::Panels;\nlet map_over_plot = Panels::from([[0.0, 0.0, 1.0, 0.8], [0.0, 0.8, 1.0, 0.2]]);\nassert_eq!(map_over_plot.len(), 2);\nassert_eq!(Panels::default().len(), 1);\n```"
     }
   },
   "outputs": {
@@ -3614,7 +3614,7 @@
                   "$ref": "#/outputs/Hit"
                 },
                 "position": {
-                  "description": "The point under the pointer at the depth the drag started, in the space's coordinates.",
+                  "description": "Where the row goes, in the space's coordinates: where it was hit, moved as the pointer moved\nsince the press, at the depth the drag started; a vertex keeps where it was grabbed. On a\ndiagram's dots when its grid snaps.",
                   "type": "array",
                   "items": {
                     "type": "number",
@@ -3886,7 +3886,7 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "description": "The point of the row nearest the probe, CSS pixels from the top left."
+          "description": "The point of the row nearest the probe, CSS pixels from the top left: a vertex's or a port's\nmiddle, the nearest point of a stroke or a triangle."
         },
         "position": {
           "type": "array",
@@ -4244,7 +4244,7 @@
       }
     },
     "Failure": {
-      "description": "What failed: its `code`, the message, and for invalid input the `path` to the part, such as `marks[2].color`.",
+      "description": "What failed: its `code`, the message, and for invalid input the `path` to the part, such as `marks[2].vertices.color`.",
       "type": "object",
       "properties": {
         "code": {

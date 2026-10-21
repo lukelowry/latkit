@@ -14,7 +14,9 @@ use super::Vertex;
 use crate::data::{Row, Table, Value};
 use crate::derive::graph::{EdgeMark, Joins, VertexMark, key_of, port_codes};
 use crate::derive::{Input, Jobs, answers, spread};
+use crate::gpu::shaders::PORT_SIZE;
 use crate::host::{Job, Key, Wiring};
+use crate::layout::rect::{EMPTY, Point, Rect, dot, grow, meets, union};
 use crate::layout::route::{Net, Terminal, finish, route, simplify};
 use crate::{Pending, Route, Shape, Side};
 
@@ -27,13 +29,8 @@ const DRAGGED: usize = 256;
 /// How far wires keep from blocks, in tracks: as far as routes keep.
 const CLEARANCE: f64 = 2.0;
 
-type Point = [f64; 2];
-type Rect = [f64; 4];
 /// A wire's parts.
 pub(crate) type Parts = Vec<Vec<Point>>;
-
-/// A box holding nothing, which any union replaces.
-const EMPTY: Rect = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
 
 /// A route: its polylines, y down, before bends round; a stamp of the terminals it joins; the box it
 /// spans; and whether it is to route again, a box having moved near it while it waited.
@@ -61,21 +58,22 @@ pub(crate) struct Routing {
     clearance: f64,
 }
 
-/// What wires are worked out from: the diagram's vertices and vertex marks, how far apart parallel
-/// wires run, and how round their bends are, units.
+/// What wires are worked out from: the diagram's vertices and vertex marks, and how far apart parallel
+/// wires run, units, which is also how round their bends are.
 pub(crate) struct Context<'a> {
     pub(crate) vertices: &'a [Vertex],
     pub(crate) marks: &'a [VertexMark<'a>],
     pub(crate) spacing: f64,
-    pub(crate) radius: f64,
 }
 
-/// Where a wire meets a vertex: the point, y down, the side it leaves by, and the vertex.
+/// Where a wire meets a vertex: the point, y down, the side it leaves by, the vertex, and how far out
+/// the port there reaches, 0 where none is: a wire stops at a port's rim, so its arrowhead shows.
 #[derive(Clone, Copy)]
 struct End {
     at: Point,
     side: Option<Side>,
     vertex: usize,
+    rim: f64,
 }
 
 /// An orthogonal wire to route: its edge mark and row, the row, its ends with the root first, and how
@@ -169,7 +167,9 @@ pub(crate) fn paths(
                 .into_iter()
                 .filter_map(|(v, code, output)| {
                     let b = vertices[v].bounds?;
-                    Some((End { at: port_point(b, code), side: Side::from_code(code & 3), vertex: v }, output))
+                    let end =
+                        End { at: port_point(b, code), side: Side::from_code(code & 3), vertex: v, rim: port_reach(b) };
+                    Some((end, output))
                 })
                 .collect();
             if ends.len() < 2 {
@@ -278,7 +278,7 @@ fn wire(
             Some(r) if r.terminals == stamps[k] => r.lines.clone(),
             _ => rest.iter().map(|end| elbow(root, end, clearance)).collect(),
         };
-        let mut parts = finish(&lines, context.radius);
+        let mut parts = finish(&lines, context.spacing);
         // A part reaching another output ends there without an arrowhead.
         let outputs = &rest[..(ask.outputs - 1).min(rest.len())];
         for part in &mut parts {
@@ -287,6 +287,7 @@ fn wire(
             {
                 part.push(end);
             }
+            stop_at_rims(part, &ask.ends);
         }
         out[ask.mark][ask.row] = parts;
     }
@@ -304,6 +305,12 @@ fn port_point(b: Rect, code: u32) -> Point {
         Some(Side::Top) => [x + along * w, y - h],
         Some(Side::Bottom) | None => [x + along * w, y + h],
     }
+}
+
+/// How far a port of box `b` reaches from its middle: a port draws `PORT_SIZE` across, at most half
+/// the box's smaller side.
+fn port_reach(b: Rect) -> f64 {
+    (f64::from(PORT_SIZE) / 2.0).min((b[2] - b[0]).min(b[3] - b[1]) / 4.0)
 }
 
 /// An end leaving by a side: where its other end lies along the side, its edge, and which end.
@@ -332,7 +339,7 @@ fn face(asks: &mut [Ask], edges: &[(usize, [usize; 2])], vertices: &[Vertex]) {
         let count = (placed.len() as u32).min(255);
         for (place, (_, k, end)) in placed.into_iter().enumerate() {
             let code = side.code() | ((place as u32).min(255) << 2) | (count << 10);
-            ends[k][end] = Some(End { at: port_point(bounds(v), code), side: Some(side), vertex: v });
+            ends[k][end] = Some(End { at: port_point(bounds(v), code), side: Some(side), vertex: v, rim: 0.0 });
         }
     }
     for (k, &(ask, _)) in edges.iter().enumerate() {
@@ -474,19 +481,47 @@ fn outline(v: &Vertex, d: Point) -> f64 {
 }
 
 /// A straight net: two ends joined, or more joined through their middle, outputs into it and from
-/// it out to inputs. Parts into the middle end doubled there, a junction without an arrowhead.
+/// it out to inputs. Parts into the middle end doubled there, a junction without an arrowhead; parts
+/// stop at the rims of the ports they join.
 fn star(ends: &[End], outputs: usize) -> Parts {
     if let [a, b] = ends {
-        let mut part = vec![a.at, b.at];
+        let mut part = vec![rim_point(a, b.at), rim_point(b, a.at)];
         if outputs > 1 {
-            part.push(b.at);
+            part.push(part[1]);
         }
         return vec![part];
     }
     let n = ends.len() as f64;
     let middle = [ends.iter().map(|e| e.at[0]).sum::<f64>() / n, ends.iter().map(|e| e.at[1]).sum::<f64>() / n];
-    let part = |(k, end): (usize, &End)| if k < outputs { vec![end.at, middle, middle] } else { vec![middle, end.at] };
+    let part = |(k, end): (usize, &End)| {
+        if k < outputs { vec![rim_point(end, middle), middle, middle] } else { vec![middle, rim_point(end, middle)] }
+    };
     ends.iter().enumerate().map(part).collect()
+}
+
+/// Moves a routed part's ends at ports back to the ports' rims, as a straight net's stop: its first
+/// point toward the next, and its last, doubled where it reaches an output, toward the one before.
+/// The router joins the ports themselves, on their boxes' sides.
+fn stop_at_rims(part: &mut [Point], ends: &[End]) {
+    let port = |p: Point| ends.iter().find(|end| end.rim > 0.0 && end.at == p);
+    let last = part.len().saturating_sub(1);
+    let copies = part.iter().rev().take_while(|&&p| p == part[last]).count();
+    if copies > last {
+        return;
+    }
+    let first = port(part[0]).map(|end| rim_point(end, part[1]));
+    let end = port(part[last]).map(|end| rim_point(end, part[last - copies]));
+    if let Some(p) = first {
+        part[0] = p;
+    }
+    if let Some(p) = end {
+        part[last + 1 - copies..].fill(p);
+    }
+}
+
+/// `end`'s point on the way to `toward`: its port's rim, at most halfway there.
+fn rim_point(end: &End, toward: Point) -> Point {
+    unit(end.at, toward).map_or(end.at, |(d, length)| add(end.at, d, end.rim.min(length / 2.0)))
 }
 
 /// The points of row `row`'s path field `field`, y down.
@@ -518,28 +553,12 @@ fn add(p: Point, d: Point, by: f64) -> Point {
     [p[0] + d[0] * by, p[1] + d[1] * by]
 }
 
-fn dot(p: Point) -> Rect {
-    [p[0], p[1], p[0], p[1]]
-}
-
-fn union(a: Rect, b: Rect) -> Rect {
-    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
-}
-
-fn grow(r: Rect, by: f64) -> Rect {
-    [r[0] - by, r[1] - by, r[2] + by, r[3] + by]
-}
-
-fn meets(a: &Rect, b: &Rect) -> bool {
-    a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn end(at: Point, side: Side) -> End {
-        End { at, side: Some(side), vertex: 0 }
+        End { at, side: Some(side), vertex: 0, rim: 0.0 }
     }
 
     #[test]
@@ -573,5 +592,29 @@ mod tests {
         let parts = star(&ends, 1);
         assert_eq!(parts[0], vec![[0.0, 0.0], [20.0, 10.0], [20.0, 10.0]], "into the middle, a junction");
         assert_eq!(parts[2], vec![[20.0, 10.0], [30.0, 30.0]], "out to an input, an arrowhead");
+    }
+
+    #[test]
+    fn wires_stop_at_the_rims_of_ports() {
+        let port = |at: Point| End { rim: 4.0, ..end(at, Side::Top) };
+        assert_eq!(star(&[port([0.0, 0.0]), port([40.0, 0.0])], 1), [vec![[4.0, 0.0], [36.0, 0.0]]], "short of each");
+        // A port reaches no further than halfway to the other end.
+        assert_eq!(star(&[port([0.0, 0.0]), port([6.0, 0.0])], 1), [vec![[3.0, 0.0], [3.0, 0.0]]]);
+        let b = [0.0, 0.0, 40.0, 40.0];
+        assert_eq!(port_reach(b), f64::from(PORT_SIZE) / 2.0);
+        assert_eq!(port_reach([0.0, 0.0, 8.0, 40.0]), 2.0, "at most half the box's smaller side");
+    }
+
+    #[test]
+    fn routed_parts_stop_at_the_rims_of_ports() {
+        let ends =
+            [End { rim: 4.0, ..end([0.0, 0.0], Side::Right) }, End { rim: 4.0, ..end([40.0, 20.0], Side::Left) }];
+        let mut part = vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [40.0, 20.0]];
+        stop_at_rims(&mut part, &ends);
+        assert_eq!(part, [[4.0, 0.0], [20.0, 0.0], [20.0, 20.0], [36.0, 20.0]], "routed between the ports");
+        // A branch from a junction into an output, doubled there: the junction stays.
+        let mut part = vec![[20.0, 0.0], [20.0, 20.0], [40.0, 20.0], [40.0, 20.0]];
+        stop_at_rims(&mut part, &ends);
+        assert_eq!(part, [[20.0, 0.0], [20.0, 20.0], [36.0, 20.0], [36.0, 20.0]]);
     }
 }

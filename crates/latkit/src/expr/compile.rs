@@ -44,7 +44,7 @@ impl std::ops::BitOrAssign for Deps {
 
 /// Which words of a column's pages a program reads.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) enum Part {
+pub(crate) enum Words {
     /// Numbers as `f32`, booleans as 0 or 1.
     Values,
     /// Text as dictionary codes.
@@ -67,7 +67,7 @@ pub(crate) struct ColumnUse {
     pub(crate) of: Option<(Name, Name)>,
     pub(crate) derived: bool,
     pub(crate) name: Name,
-    pub(crate) part: Part,
+    pub(crate) words: Words,
     pub(crate) sampled: bool,
     pub(crate) step: bool,
     /// Also read the part `f32` drops of an `f64`, for positions.
@@ -77,13 +77,13 @@ pub(crate) struct ColumnUse {
 }
 
 impl ColumnUse {
-    /// The mark's own field `name`, read as `part`.
-    fn own(name: impl Into<Name>, part: Part) -> ColumnUse {
+    /// The mark's own field `name`, read as `words`.
+    fn own(name: impl Into<Name>, words: Words) -> ColumnUse {
         ColumnUse {
             of: None,
             derived: false,
             name: name.into(),
-            part,
+            words,
             sampled: false,
             step: false,
             low: false,
@@ -91,9 +91,9 @@ impl ColumnUse {
         }
     }
 
-    /// The derived field `name`, read as `part`.
-    fn derived(name: impl Into<Name>, part: Part) -> ColumnUse {
-        ColumnUse { derived: true, ..ColumnUse::own(name, part) }
+    /// The derived field `name`, read as `words`.
+    fn derived(name: impl Into<Name>, words: Words) -> ColumnUse {
+        ColumnUse { derived: true, ..ColumnUse::own(name, words) }
     }
 }
 
@@ -240,7 +240,7 @@ impl<'a> Compiler<'a> {
     pub(crate) fn derived_position(&mut self, word: u32) -> Result<()> {
         let start = self.begin();
         let [x, y] =
-            ["x", "y"].map(|name| self.column(ColumnUse { low: true, ..ColumnUse::derived(name, Part::Values) }));
+            ["x", "y"].map(|name| self.column(ColumnUse { low: true, ..ColumnUse::derived(name, Words::Values) }));
         self.deps |= Deps::DATA;
         self.op(wgsl::OP_POSITION, word, x, y, 0, 0)?;
         self.close("position", start);
@@ -250,7 +250,7 @@ impl<'a> Compiler<'a> {
     /// Compiles channel `name` storing the number the view derives as field `field`.
     pub(crate) fn derived(&mut self, name: &str, field: &str, store: Store) -> Result<()> {
         let start = self.begin();
-        let column = self.column(ColumnUse::derived(field, Part::Values));
+        let column = self.column(ColumnUse::derived(field, Words::Values));
         self.deps |= Deps::DATA;
         self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
         self.store_op(store)?;
@@ -260,17 +260,17 @@ impl<'a> Compiler<'a> {
 
     /// The program column of the derived number field `field`, which shaders read directly.
     pub(crate) fn derived_number(&mut self, field: &str) -> u32 {
-        self.column(ColumnUse::derived(field, Part::Values))
+        self.column(ColumnUse::derived(field, Words::Values))
     }
 
     /// The program column of the derived geometry field `field`, read as points per row.
     pub(crate) fn derived_path(&mut self, field: &str) -> u32 {
-        self.column(ColumnUse::derived(field, Part::Path))
+        self.column(ColumnUse::derived(field, Words::Path))
     }
 
     /// The program column of the mark's geometry field `field`, read as points per row.
     pub(crate) fn path(&mut self, field: &str) -> u32 {
-        self.column(ColumnUse::own(field, Part::Path))
+        self.column(ColumnUse::own(field, Words::Path))
     }
 
     /// The program column of the mark's reference field `name`, read as the rows it names.
@@ -278,7 +278,7 @@ impl<'a> Compiler<'a> {
         if self.fields.kind(None, name) != Some(Kind::Reference) {
             return Err(invalid("not a reference field"));
         }
-        Ok(self.column(ColumnUse::own(name, Part::Bits)))
+        Ok(self.column(ColumnUse::own(name, Words::Bits)))
     }
 
     /// Refuses `expr` for option `name` when it reads anything but static fields: the CPU works it
@@ -328,7 +328,7 @@ impl<'a> Compiler<'a> {
             return Err(invalid("not a reference field").at(name));
         }
         let target = self.fields.target(name).ok_or_else(|| invalid("not a reference field").at(name))?;
-        let column = self.column(ColumnUse::own(name, Part::Bits));
+        let column = self.column(ColumnUse::own(name, Words::Bits));
         let index = self.program.ends.len() as u32;
         self.program.ends.push(target);
         self.deps |= Deps::DATA;
@@ -356,7 +356,7 @@ impl<'a> Compiler<'a> {
             return Err(invalid("not a text field").at(&f.name).at(name));
         }
         let start = self.begin();
-        let column = self.field_column(f, Part::Codes, false);
+        let column = self.field_column(f, Words::Codes, false);
         self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
         self.op(wgsl::OP_STORE_CODE, word, 0, 0, 1, 0)?;
         self.close(name, start);
@@ -368,7 +368,7 @@ impl<'a> Compiler<'a> {
         if self.fields.kind(None, name) != Some(Kind::Sampled) {
             return Err(invalid("not a sampled field").at(name));
         }
-        let use_ = ColumnUse { sampled: true, trace: true, ..ColumnUse::own(name, Part::Values) };
+        let use_ = ColumnUse { sampled: true, trace: true, ..ColumnUse::own(name, Words::Values) };
         self.deps |= Deps::SAMPLES;
         Ok(self.column(use_))
     }
@@ -434,13 +434,13 @@ impl<'a> Compiler<'a> {
         if f.of.is_some() || f.step {
             return None;
         }
-        let part = match (self.fields.kind(None, &f.name)?, f.component) {
-            (Kind::Number, None) => Part::Values,
-            (Kind::Point, Some(0)) => Part::X,
-            (Kind::Point, Some(1)) => Part::Y,
+        let words = match (self.fields.kind(None, &f.name)?, f.component) {
+            (Kind::Number, None) => Words::Values,
+            (Kind::Point, Some(0)) => Words::X,
+            (Kind::Point, Some(1)) => Words::Y,
             _ => return None,
         };
-        Some(self.column(ColumnUse { low: true, ..ColumnUse::own(f.name.clone(), part) }))
+        Some(self.column(ColumnUse { low: true, ..ColumnUse::own(f.name.clone(), words) }))
     }
 
     fn coordinate(&mut self, e: &Expr) -> Result<()> {
@@ -522,7 +522,7 @@ impl<'a> Compiler<'a> {
                 if self.fields.kind(f.of.as_ref(), &f.name) != Some(Kind::Text) {
                     return Err(invalid("is compares a text field").at(&f.name));
                 }
-                let column = self.field_column(f, Part::Codes, false);
+                let column = self.field_column(f, Words::Codes, false);
                 self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
                 let constant = self.program.constants.len() as u32;
                 self.program.constants.push(NONE);
@@ -551,7 +551,7 @@ impl<'a> Compiler<'a> {
                 let d = self.domain(input, domain)?;
                 let at = self.program.code.len() as u32;
                 self.program.colormaps.push((at, colormap.clone()));
-                self.op(wgsl::OP_COLORMAP, (colormap.kind() as u32) << 16, d, colormap.count(), 1, 1)?;
+                self.op(wgsl::OP_COLORMAP, colormap.kind().code() << 16, d, colormap.count(), 1, 1)?;
                 Ok(Ty::Color)
             }
         }
@@ -562,26 +562,26 @@ impl<'a> Compiler<'a> {
             Some((data, table)) => invalid(format!("no field {} in {data}.{table}", f.name)),
             None => invalid(format!("no field {}", f.name)),
         })?;
-        let (part, ty, sampled) = match (kind, f.component) {
-            (Kind::Number, None) => (Part::Values, Ty::Number, false),
-            (Kind::Bool, None) => (Part::Values, Ty::Bool, false),
-            (Kind::Text, None) => (Part::Codes, Ty::Text, false),
-            (Kind::Sampled, None) => (Part::Values, Ty::Number, true),
-            (Kind::Point, Some(0)) => (Part::X, Ty::Number, false),
-            (Kind::Point, Some(1)) => (Part::Y, Ty::Number, false),
+        let (words, ty, sampled) = match (kind, f.component) {
+            (Kind::Number, None) => (Words::Values, Ty::Number, false),
+            (Kind::Bool, None) => (Words::Values, Ty::Bool, false),
+            (Kind::Text, None) => (Words::Codes, Ty::Text, false),
+            (Kind::Sampled, None) => (Words::Values, Ty::Number, true),
+            (Kind::Point, Some(0)) => (Words::X, Ty::Number, false),
+            (Kind::Point, Some(1)) => (Words::Y, Ty::Number, false),
             (Kind::Reference, _) => return Err(invalid("a reference names rows; read it as an end").at(&f.name)),
             _ => return Err(invalid("not a number, boolean, or text field").at(&f.name)),
         };
-        let column = self.field_column(f, part, sampled);
+        let column = self.field_column(f, words, sampled);
         self.deps |= if sampled { Deps::SAMPLES } else { Deps::DATA };
         self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
         Ok(ty)
     }
 
-    fn field_column(&mut self, f: &FieldRef, part: Part, sampled: bool) -> u32 {
+    fn field_column(&mut self, f: &FieldRef, words: Words, sampled: bool) -> u32 {
         self.deps |= if sampled { Deps::SAMPLES } else { Deps::DATA };
         let step = f.step && sampled;
-        self.column(ColumnUse { of: f.of.clone(), sampled, step, ..ColumnUse::own(f.name.clone(), part) })
+        self.column(ColumnUse { of: f.of.clone(), sampled, step, ..ColumnUse::own(f.name.clone(), words) })
     }
 
     fn column(&mut self, use_: ColumnUse) -> u32 {

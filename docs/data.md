@@ -6,7 +6,7 @@ Patches change datasets all at once: every change of a patch, or none.
 ## Write a dataset
 
 ```ts
-import { Patch, reference } from 'latkit';
+import { loadLatkit, Patch, reference } from 'latkit';
 
 const { Data } = await loadLatkit();
 const grid = new Data('grid').apply(

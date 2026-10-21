@@ -9,9 +9,10 @@
 //! Each table's pyramid is worked out from where its rows lie and their priority: on the frame while
 //! that fits its budget, else in a job of its own, so a dataset's tables are placed side by side and
 //! each draws once its own lands; until then a table draws an even sample of its rows, as many as a
-//! first look needs. A pyramid serves while the rows it was placed from hold. The rows
-//! drawn are gathered again when the tiles asked for or the data change, each field only when it
-//! changed, and only the fields marks read.
+//! first look needs. A pyramid serves while the rows it was placed from hold. The rows drawn are laid
+//! out again when the tiles asked for, the rows pinned, or the rows a table holds change; when only
+//! values change, every row stays where it is drawn and each field writes only the rows whose values
+//! changed, so a patch of one row costs one row. Only the fields marks read are gathered.
 
 use std::sync::Arc;
 
@@ -184,11 +185,20 @@ struct Gathered {
     writes: Option<Vec<(usize, usize)>>,
     versions: Option<(Version, Version)>,
     ids: Option<RowIds>,
-    fields: FxHashMap<Name, (u64, Field)>,
-    /// Each reference field's ids as gathered and resolved, and every row's target by it, as of a
-    /// version of it.
-    references: FxHashMap<Name, (u64, Field)>,
+    fields: FxHashMap<Name, Kept>,
+    /// Each reference field's ids as gathered and resolved, as of a version of it, and of that version
+    /// and the versions the rows it names hold where they are drawn; and every row's target by it, as
+    /// of a version of it.
+    references: FxHashMap<Name, (u64, u64, Field)>,
     targets: FxHashMap<Name, (Version, Arc<[u32]>)>,
+}
+
+/// A field as gathered: a stamp of what it was gathered from, that field of the table, and the field
+/// drawn.
+struct Kept {
+    stamp: u64,
+    source: Field,
+    drawn: Field,
 }
 
 /// One dataset drawn in part.
@@ -201,11 +211,16 @@ struct Set {
     working: Vec<Working>,
     /// Whether asking for its pyramids waits for a frame that gathers nothing.
     deferred: bool,
-    /// What the dataset drawn was gathered from.
-    gathered: u64,
-    /// Updates since it changed.
+    /// What decides which rows draw and where, and what they hold, as last gathered.
+    laid: u64,
+    held: u64,
+    /// Updates since its rows were laid out.
     quiet: u32,
     tables: FxHashMap<Name, Gathered>,
+    /// Each table drawn in part as last laid out: its rows drawn, and the versions it holds while they
+    /// do.
+    rows: FxHashMap<Name, Arc<[u32]>>,
+    versions: FxHashMap<Name, (Version, Version)>,
     /// Whether a table draws an even sample of its rows until its pyramid lands.
     sampling: bool,
 }
@@ -218,9 +233,12 @@ impl Set {
             placed: FxHashMap::default(),
             working: Vec::new(),
             deferred: false,
-            gathered: 0,
+            laid: 0,
+            held: 0,
             quiet: 0,
             tables: FxHashMap::default(),
+            rows: FxHashMap::default(),
+            versions: FxHashMap::default(),
             sampling: false,
         }
     }
@@ -348,20 +366,41 @@ impl Set {
         let pinned: Vec<&Row> = ask.pinned.iter().filter(|r| r.data == self.name).collect();
         let frames: Vec<Option<u32>> = sampled_frames(source, ask);
         let pyramids: Vec<Version> = serving.iter().map(|(_, p)| p.made).collect();
-        let inputs = stamp_of((source.0.version, pyramids, &chosen, &pinned, frames, reads_of(source, ask)));
-        if inputs == self.gathered {
+        // Where rows draw, apart from what they hold: a patch writing values lays nothing out again.
+        let laid = stamp_of((pyramids, &chosen, &pinned, rows_of(source)));
+        let held = stamp_of((source.0.version, frames, reads_of(source, ask)));
+        if laid == self.laid {
             // Once the camera rests, rows laid out of drawing order are laid out again in it.
-            self.quiet += 1;
-            if self.settled() || self.quiet < SETTLE {
+            self.quiet = self.quiet.saturating_add(1);
+            if held == self.held && (self.settled() || self.quiet < SETTLE) {
                 return None;
             }
         } else {
             self.quiet = 0;
         }
-        self.gathered = inputs;
+        let afresh = self.quiet >= SETTLE && !self.settled();
+        let relaid = laid != self.laid || afresh;
+        (self.laid, self.held) = (laid, held);
+        if !relaid {
+            return Some(self.rewrite(source, ask));
+        }
         let serving: FxHashMap<Name, Arc<Placed>> = serving.into_iter().collect();
-        let afresh = self.quiet >= SETTLE;
         Some(self.build(source, ask, &serving, &chosen, &pinned, afresh))
+    }
+
+    /// The dataset drawn when only what its rows hold changed: every row stays where it is drawn, and
+    /// each field writes only the rows whose values changed.
+    fn rewrite(&mut self, source: &Data, ask: &Ask<'_>) -> Data {
+        let (rows, versions) = (std::mem::take(&mut self.rows), std::mem::take(&mut self.versions));
+        for name in rows.keys() {
+            if let Some(gathered) = self.tables.get_mut(name) {
+                gathered.writes = Some(Vec::new());
+            }
+        }
+        let tables: Vec<Table> =
+            source.tables().map(|table| self.drawn(source, table, ask, &rows, &versions)).collect();
+        (self.rows, self.versions) = (rows, versions);
+        source.drawn(tables)
     }
 
     /// The dataset drawn: every table's rows drawn, pinned rows kept, the ends of edges drawn carried
@@ -461,6 +500,7 @@ impl Set {
         for table in source.tables() {
             tables.push(self.drawn(source, table, ask, &rows, &versions));
         }
+        (self.rows, self.versions) = (rows, versions);
         source.drawn(tables)
     }
 
@@ -478,9 +518,38 @@ impl Set {
         targets
     }
 
+    /// Table `table` as it is, its references naming the rows drawn of the tables drawn in part, each
+    /// holding `versions` while they do: resolved again only when the reference or where the rows it
+    /// names are drawn changed.
+    fn remapped(&mut self, table: &Table, versions: &FxHashMap<Name, (Version, Version)>) -> Table {
+        let mut out = table.clone();
+        for (name, field) in &table.fields {
+            let Field::Reference(reference) = field else { continue };
+            let Some(&(order, structure)) = versions.get(&reference.to) else { continue };
+            let whole = stamp_of((reference.version, order, structure));
+            let kept = self.tables.get(&table.name).and_then(|g| g.references.get(name));
+            if let Some((_, _, field)) = kept.filter(|(_, w, _)| *w == whole) {
+                out.insert(name.clone(), field.clone());
+                continue;
+            }
+            let targets = self.targets(&table.name, name, field);
+            let map = &self.tables[&reference.to].slots.at;
+            let mapped: Vec<u32> = targets.iter().map(|&t| remap(map, t)).collect();
+            let kept = self.tables.get(&table.name).and_then(|g| g.references.get(name)).map(|(_, _, f)| f.clone());
+            let kept = kept.as_ref().and_then(|f| if let Field::Reference(r) = f { Some(r) } else { None });
+            let remapped = reference.resolved_to(reference.ids.clone(), &mapped, order, structure, kept);
+            let field = Field::Reference(remapped);
+            let gathered = self.tables.entry(table.name.clone()).or_default();
+            gathered.references.insert(name.clone(), (stamp_of(reference.version), whole, field.clone()));
+            out.insert(name.clone(), field);
+        }
+        out
+    }
+
     /// Table `table` as drawn: as it is, its references naming the rows drawn; or its rows drawn
     /// in part, with the fields marks read. Rows written in place write the ids and fields kept,
-    /// touching only their pages; rows laid out afresh gather them again.
+    /// touching only their pages, and so do rows whose values changed; rows laid out afresh gather
+    /// them again. What nothing changed under is kept as it is.
     fn drawn(
         &mut self,
         source: &Data,
@@ -493,35 +562,24 @@ impl Set {
         let planned = ask.plans.contains_key(&(source.name().clone(), table.name.clone()));
         let remaps = table.fields.iter().any(|(_, f)| matches!(f, Field::Reference(r) if rows.contains_key(&r.to)));
         let Some(list) = rows.get(&table.name) else {
-            if !remaps || !planned {
-                return table.clone();
-            }
-            // As it is, its references naming rows drawn.
-            let mut out = table.clone();
-            for (name, field) in &table.fields {
-                let Field::Reference(reference) = field else { continue };
-                let Some(&(order, structure)) = versions.get(&reference.to) else { continue };
-                let targets = self.targets(&table.name, name, field);
-                let map = &self.tables[&reference.to].slots.at;
-                let mapped: Vec<u32> = targets.iter().map(|&t| remap(map, t)).collect();
-                let kept = self.tables.get(&table.name).and_then(|g| g.references.get(name)).map(|(_, f)| f.clone());
-                let kept = kept.as_ref().and_then(|f| if let Field::Reference(r) = f { Some(r) } else { None });
-                let remapped = reference.resolved_to(reference.ids.clone(), &mapped, order, structure, kept);
-                let field = Field::Reference(remapped);
-                self.tables.entry(table.name.clone()).or_default().references.insert(name.clone(), (0, field.clone()));
-                out.insert(name.clone(), field);
-            }
-            return out;
+            return if remaps && planned { self.remapped(table, versions) } else { table.clone() };
         };
         let reads = ask.plans.get(&(source.name().clone(), table.name.clone())).and_then(|p| p.reads.as_ref());
-        let picked: Vec<usize> = list.iter().map(|&r| if r == HOLE { crate::data::HOLE } else { r as usize }).collect();
+        // The source row of each row drawn, picked only where something gathers afresh.
+        let picks = std::cell::OnceCell::new();
+        let picked = || {
+            picks.get_or_init(|| {
+                list.iter().map(|&r| if r == HOLE { crate::data::HOLE } else { r as usize }).collect::<Vec<usize>>()
+            })
+        };
         let (order, structure) = versions[&table.name];
         let gathered = self.tables.get_mut(&table.name).expect("made with its rows");
         let writes = gathered.writes.take();
         let len = list.len();
-        let ids = match (&gathered.ids, &writes) {
+        let ids = match (&gathered.ids, writes.as_deref()) {
+            (Some(ids), Some([])) => ids.clone(),
             (Some(ids), Some(writes)) => ids.write(len, writes, &table.ids).expect("ids of one kind"),
-            _ => table.ids.gather(&picked),
+            _ => table.ids.gather(picked()),
         };
         gathered.ids = Some(ids.clone());
         let mut out =
@@ -533,83 +591,116 @@ impl Set {
         let frames = |samples: &crate::data::Samples| samples.frame_at(ask.at);
         for (name, field) in &table.fields {
             let read = reads.is_none_or(|r| r.contains(name));
-            let made = match field {
+            let gathered = self.tables.get_mut(&table.name).expect("made with its rows");
+            let kept = gathered.fields.get(name);
+            let (stamp, made) = match field {
                 Field::Values(column, version) if read => {
                     let stamp = stamp_of(version);
-                    self.cached(&table.name, name, stamp, writes.as_deref(), |kept| match (kept, writes.as_deref()) {
-                        (Some(Field::Values(kept, _)), Some(writes)) => {
-                            Field::Values(kept.write(len, writes, column).expect("one storage"), Version::next())
+                    let made = match (kept, writes.as_deref()) {
+                        (Some(kept), Some([])) if kept.stamp == stamp => kept.drawn.clone(),
+                        // The rows laid out in place, and the rows whose values changed since the field
+                        // kept was gathered, wherever they are drawn; a field now of another kind
+                        // gathers afresh.
+                        (
+                            Some(Kept { stamp: was, source: Field::Values(before, _), drawn: Field::Values(drawn, _) }),
+                            Some(laid),
+                        ) if before.kind() == column.kind() => {
+                            let changed = if *was == stamp { Vec::new() } else { column.differing(before) };
+                            let at = &gathered.slots.at;
+                            let mut written: Vec<(usize, usize)> = changed
+                                .into_iter()
+                                .filter_map(|r| at.get(r).filter(|&&a| a != UNWIRED).map(|&a| (a as usize, r)))
+                                .collect();
+                            written.extend_from_slice(laid);
+                            written.sort_unstable_by_key(|w| w.0);
+                            written.dedup_by_key(|w| w.0);
+                            Field::Values(drawn.write(len, &written, column).expect("one storage"), Version::next())
                         }
-                        _ => Field::Values(column.gather(&picked), Version::next()),
-                    })
+                        _ => Field::Values(column.gather(picked()), Version::next()),
+                    };
+                    (stamp, made)
                 }
                 Field::Sampled(samples, version) if read => {
                     let frame = frames(samples);
                     let stamp = stamp_of((version, frame));
-                    self.cached(&table.name, name, stamp, writes.as_deref(), |_| {
-                        let span = frame.map_or(0..0, |f| f..f + 2);
-                        Field::Sampled(samples.gather_frames(&picked, span), Version::next())
-                    })
+                    let made = match (kept, writes.as_deref()) {
+                        (Some(kept), Some([])) if kept.stamp == stamp => kept.drawn.clone(),
+                        _ => {
+                            let span = frame.map_or(0..0, |f| f..f + 2);
+                            Field::Sampled(samples.gather_frames(picked(), span), Version::next())
+                        }
+                    };
+                    (stamp, made)
                 }
                 Field::Reference(reference) => {
-                    let targets = self.targets(&table.name, name, field);
-                    let stamp = stamp_of(reference.version);
-                    let gathered = self.tables.entry(table.name.clone()).or_default();
-                    let kept = gathered.references.get(name).filter(|(s, _)| *s == stamp).map(|(_, f)| f.clone());
-                    let kept = kept.as_ref().and_then(|f| if let Field::Reference(r) = f { Some(r) } else { None });
-                    let ids = match (kept, &writes) {
-                        (Some(kept), Some(writes)) => {
-                            kept.ids.write(len, writes, &reference.ids).expect("ids of one kind")
-                        }
-                        (Some(kept), None) if kept.ids.len() == len => kept.ids.clone(),
-                        _ => reference.ids.gather(&picked),
-                    };
-                    let target = self.tables.get(&reference.to).filter(|_| rows.contains_key(&reference.to));
-                    let mapped: Vec<u32> = list
-                        .iter()
-                        .map(|&r| match (r, target) {
-                            (HOLE, _) => UNWIRED,
-                            (r, Some(target)) => remap(&target.slots.at, targets[r as usize]),
-                            (r, None) => targets[r as usize],
-                        })
-                        .collect();
-                    let (order, structure) = match versions.get(&reference.to) {
-                        Some(&held) => held,
-                        None => source.table(&reference.to).map_or((order, structure), |t| (t.order, t.structure)),
-                    };
-                    let resolved = Field::Reference(reference.resolved_to(ids, &mapped, order, structure, kept));
-                    let gathered = self.tables.entry(table.name.clone()).or_default();
-                    gathered.references.insert(name.clone(), (stamp, resolved.clone()));
-                    resolved
+                    // Where the rows it names are drawn: as laid out where drawn in part, else as they are.
+                    let held = versions.get(&reference.to).copied();
+                    let named = held.unwrap_or_else(|| {
+                        source.table(&reference.to).map_or((order, structure), |t| (t.order, t.structure))
+                    });
+                    let resolved =
+                        self.reference(&table.name, name, field, list, writes.as_deref(), (held.is_some(), named));
+                    out.insert(name.clone(), resolved);
+                    continue;
                 }
                 _ => continue,
             };
+            let gathered = self.tables.get_mut(&table.name).expect("made with its rows");
+            gathered.fields.insert(name.clone(), Kept { stamp, source: field.clone(), drawn: made.clone() });
             out.insert(name.clone(), made);
         }
         out
     }
 
-    /// Field `field` of table `table` for the rows drawn, as gathered from what `stamp` stamps: the
-    /// field kept where that holds and no row was written; else made by `make` from the field kept
-    /// where that holds and rows were written, or from nothing.
-    fn cached(
+    /// Reference field `name` of table `table`, `field`, for the rows `list` drawn, resolved to where
+    /// the rows it names are drawn: `named` says whether those are drawn in part, and the versions they
+    /// hold. Kept as it is where no row was written here, the reference is the same, and the rows it
+    /// names hold; else its ids are written where rows were written in place.
+    fn reference(
         &mut self,
         table: &Name,
-        field: &Name,
-        stamp: u64,
+        name: &Name,
+        field: &Field,
+        list: &[u32],
         writes: Option<&[(usize, usize)]>,
-        make: impl FnOnce(Option<&Field>) -> Field,
+        (in_part, (order, structure)): (bool, (Version, Version)),
     ) -> Field {
+        let Field::Reference(reference) = field else { return field.clone() };
+        let stamp = stamp_of(reference.version);
+        let whole = stamp_of((reference.version, order, structure));
         let gathered = self.tables.entry(table.clone()).or_default();
-        let kept = gathered.fields.get(field).filter(|(s, _)| *s == stamp).map(|(_, f)| f);
-        if let Some(kept) = kept
-            && writes.is_none_or(<[_]>::is_empty)
+        if let Some((_, _, field)) = gathered.references.get(name).filter(|(_, w, _)| *w == whole)
+            && writes.is_some_and(<[_]>::is_empty)
         {
-            return kept.clone();
+            return field.clone();
         }
-        let made = make(kept);
-        gathered.fields.insert(field.clone(), (stamp, made.clone()));
-        made
+        let targets = self.targets(table, name, field);
+        let gathered = self.tables.entry(table.clone()).or_default();
+        let kept = gathered.references.get(name).filter(|(s, _, _)| *s == stamp).map(|(_, _, f)| f.clone());
+        let kept = kept.as_ref().and_then(|f| if let Field::Reference(r) = f { Some(r) } else { None });
+        let len = list.len();
+        let ids = match (kept, writes) {
+            (Some(kept), Some(writes)) => kept.ids.write(len, writes, &reference.ids).expect("ids of one kind"),
+            (Some(kept), None) if kept.ids.len() == len => kept.ids.clone(),
+            _ => {
+                let picked: Vec<usize> =
+                    list.iter().map(|&r| if r == HOLE { crate::data::HOLE } else { r as usize }).collect();
+                reference.ids.gather(&picked)
+            }
+        };
+        let target = self.tables.get(&reference.to).filter(|_| in_part);
+        let mapped: Vec<u32> = list
+            .iter()
+            .map(|&r| match (r, target) {
+                (HOLE, _) => UNWIRED,
+                (r, Some(target)) => remap(&target.slots.at, targets[r as usize]),
+                (r, None) => targets[r as usize],
+            })
+            .collect();
+        let resolved = Field::Reference(reference.resolved_to(ids, &mapped, order, structure, kept));
+        let gathered = self.tables.entry(table.clone()).or_default();
+        gathered.references.insert(name.clone(), (stamp, whole, resolved.clone()));
+        resolved
     }
 }
 
@@ -882,6 +973,18 @@ fn sampled_frames(source: &Data, ask: &Ask<'_>) -> Vec<Option<u32>> {
         }
     }
     frames
+}
+
+/// What decides which of `source`'s rows draw and where, beside the tiles and the rows pinned: each
+/// table's rows and their order, and the rows its references name.
+fn rows_of(source: &Data) -> Vec<(Version, Version, Vec<Version>)> {
+    source
+        .tables()
+        .map(|table| {
+            let references = table.fields.iter().filter(|(_, f)| matches!(f, Field::Reference(_)));
+            (table.structure, table.order, references.map(|(_, f)| f.version()).collect())
+        })
+        .collect()
 }
 
 /// The fields read of each table drawn in part, in a stable order; `None` for every field.

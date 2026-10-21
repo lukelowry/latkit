@@ -6,7 +6,7 @@ Everything latkit reads and writes as JSON has a JSON Schema, derived from the s
 that read and write it: `latkit schema` prints it, and the npm package's types are written from it.
 Its `$defs` are the inputs (`Scene`, `Data`, `Patch`, `Query`, `Camera`, `Fit`, `Budget`, `Shot`)
 and its `outputs` what latkit writes back (`ViewEvent`, `Stats`, `Work`, `Description`, `Rows`,
-`Value`, `Failure`).
+`Camera`, `Budget`, `Value`, `Failure`).
 
 (json)=
 

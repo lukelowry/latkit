@@ -220,6 +220,12 @@ impl Shown {
             .fold(0, |mask, (k, c)| if shaping.contains(&&*c.name) { mask | 1 << k } else { mask })
     }
 
+    /// A version of where its rows are drawn: their places, and while a transition runs, every frame
+    /// that eases them.
+    pub(crate) fn places_drawn(&self) -> (bool, u64) {
+        if self.transition.is_some() { (true, self.version) } else { (false, self.place_version) }
+    }
+
     /// Ports each row has.
     pub(crate) fn port_count(&self) -> u32 {
         self.compiled.as_ref().map_or(0, |c| c.drawing.ports.len() as u32)

@@ -21,6 +21,7 @@ use crate::expr::cpu::Rows;
 use crate::gpu::atlas;
 use crate::gpu::shaders::{HEADER_BAND, PORT_SIZE, TEXT_BASE};
 use crate::host::{Job, Key, Placement, TextRun};
+use crate::layout::rect::{around, union};
 use crate::{Layout, Marker, Pending, Shape, Side, Theme, Vertices};
 
 /// Texts measured past which the sheet forgets them all.
@@ -42,6 +43,8 @@ pub(crate) struct Sheet {
     measured: FxHashMap<TextRun, [f64; 2]>,
     /// The box of every placed vertex row the last update made: what a change moved.
     boxes: FxHashMap<Row, [f64; 4]>,
+    /// The box holding every placed vertex and every wire the last update made.
+    extent: Option<[f64; 4]>,
     /// What the derived tables were last made from.
     stamp: u64,
     /// Bumps when places start over, so layouts asked before are dropped.
@@ -164,6 +167,11 @@ impl Sheet {
         self.boxes.get(row).copied()
     }
 
+    /// The box holding every placed vertex and every wire, units with y down, once anything is placed.
+    pub(crate) fn extent(&self) -> Option<[f64; 4]> {
+        self.extent
+    }
+
     /// Takes the answers that landed: places asked in the current generation, and routes.
     fn settle(&mut self) {
         if let Some(answer) = self.placing.as_ref().and_then(|p| p.pending.take()) {
@@ -217,11 +225,13 @@ impl Sheet {
         stand_groups(&mut vertices, &self.places, &header, padding);
         self.place(&vertices, &vertex_marks, &edge_marks, &header, padding, input, jobs);
         let spacing = f64::from(theme.edge_spacing);
-        let context = wires::Context { vertices: &vertices, marks: &vertex_marks, spacing, radius: spacing };
+        let context = wires::Context { vertices: &vertices, marks: &vertex_marks, spacing };
         let moved = wires::moved(&self.boxes, &vertices);
         let routes = (&mut self.routes, &mut self.routing);
         let paths = wires::paths(&context, &edge_marks, input, jobs, &moved, routes);
         self.boxes = vertices.iter().filter_map(|v| Some((v.key.clone(), v.bounds?))).collect();
+        let points = paths.iter().flatten().flatten().flatten().map(|&[x, y]| [x, y, x, y]);
+        self.extent = vertices.iter().filter_map(|v| v.bounds).chain(points).reduce(union);
         write(&vertex_marks, &vertices, &edge_marks, paths, &mut self.tables);
     }
 
@@ -272,16 +282,25 @@ impl Sheet {
             let title = text.map_or(0.0, |([w, _], _)| w);
             return [title / 2.0 + padding, header(vm.mark, theme) / 2.0 + padding];
         }
-        let Some(([w, h], size)) = text else { return [radius, radius] };
+        let ports = &vm.mark.ports;
+        // A row with neither a label nor ports is a dot.
+        if text.is_none() && ports.is_empty() {
+            return [radius, radius];
+        }
+        let size = text.map_or(f64::from(theme.font_size), |(_, size)| size);
+        let [w, h] = text.map_or([0.0; 2], |(box_, _)| box_);
         // A round or pointed outline holds its text's box inside it.
         let fit = match shape_of(vm.mark) {
             Shape::Ellipse => std::f64::consts::SQRT_2,
             Shape::Diamond => 2.0,
             Shape::Rectangle | Shape::Rounded => 1.0,
         };
-        let (mut width, mut height) = ((w + 1.6 * size) * fit, (h + 1.2 * size) * fit);
+        let (mut width, mut height) = if text.is_some() {
+            ((w + 1.6 * size) * fit, (h + 1.2 * size) * fit)
+        } else {
+            (2.0 * radius, 2.0 * radius)
+        };
         // Room for its ports: a pitch apiece along each side, and their labels across from each other.
-        let ports = &vm.mark.ports;
         let pitch = (2.0 * f64::from(PORT_SIZE)).max(1.4 * size);
         let count = |side: Side| ports.iter().filter(|(_, p)| p.side == side).count() as f64;
         height = height.max((count(Side::Left).max(count(Side::Right)) + 1.0) * pitch);
@@ -470,7 +489,7 @@ fn stand_groups(vertices: &mut [Vertex], places: &FxHashMap<Row, [f64; 2]>, head
     let mut held: Vec<Option<[f64; 4]>> = vec![None; vertices.len()];
     for v in vertices.iter().filter(|v| !v.group) {
         if let (Some(p), Some(b)) = (v.parent, v.bounds) {
-            held[p] = Some(union(held[p], b));
+            held[p] = Some(held[p].map_or(b, |h| union(h, b)));
         }
     }
     for g in order {
@@ -483,19 +502,9 @@ fn stand_groups(vertices: &mut [Vertex], places: &FxHashMap<Row, [f64; 2]>, head
         };
         vertices[g].bounds = own;
         if let (Some(p), Some(b)) = (vertices[g].parent, own) {
-            held[p] = Some(union(held[p], b));
+            held[p] = Some(held[p].map_or(b, |h| union(h, b)));
         }
     }
-}
-
-/// The box of half size `half` around `center`.
-fn around(center: [f64; 2], half: [f64; 2]) -> [f64; 4] {
-    [center[0] - half[0], center[1] - half[1], center[0] + half[0], center[1] + half[1]]
-}
-
-/// The box holding `a` and `b`.
-fn union(a: Option<[f64; 4]>, b: [f64; 4]) -> [f64; 4] {
-    a.map_or(b, |a| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])])
 }
 
 /// A derived table to write: its dataset and table, the table it stands beside, and its fields.

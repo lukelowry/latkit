@@ -28,10 +28,12 @@ pub fn wait(seconds: f64) {
 pub const SIZE: u32 = 128;
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// A device, or `None` where the machine has no adapter at all.
+/// A device, or `None` where the machine has no adapter at all, which only `LATKIT_REQUIRE_GPU`
+/// makes a failure.
 pub fn gpu() -> Option<Gpu> {
     match pollster::block_on(Gpu::new()) {
         Ok(gpu) => Some(gpu),
+        Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
         Err(error) => {
             eprintln!("skipping GPU test: {error}");
             None

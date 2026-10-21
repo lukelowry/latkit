@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::{Areas, Edges, Faces, Label, Lines, Vertices};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Expr, Name, Result, Size, Space};
+use crate::{Error, Expr, Name, Result, Size, Space};
 
 /// One drawn table of a scene: `{ vertices | edges | faces | lines | areas: options }` as JSON.
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -162,6 +162,17 @@ impl MarkKind {
             MarkKind::Vertices => Primitive::Points,
             MarkKind::Edges | MarkKind::Lines => Primitive::Strokes,
             MarkKind::Faces | MarkKind::Areas => Primitive::Triangles,
+        }
+    }
+
+    /// What a mark of this kind is written under in JSON.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            MarkKind::Vertices => "vertices",
+            MarkKind::Edges => "edges",
+            MarkKind::Faces => "faces",
+            MarkKind::Lines => "lines",
+            MarkKind::Areas => "areas",
         }
     }
 }
@@ -335,6 +346,20 @@ impl Mark {
             Mark::Lines(_) => MarkKind::Lines,
             Mark::Areas(_) => MarkKind::Areas,
         }
+    }
+
+    /// `error`, met in this mark's options, as the `i`th mark of its scene: its path runs through the
+    /// mark as its JSON does, `marks[i].vertices`.
+    pub(crate) fn within(&self, i: usize, error: Error) -> Error {
+        error.at(self.kind().name()).at(i).at("marks")
+    }
+
+    /// Why `data`, the dataset it names, cannot draw it: the table it names is absent.
+    pub(crate) fn absent_from(&self, data: &crate::Data) -> Option<Error> {
+        let style = self.style();
+        data.table(&style.table)
+            .is_none()
+            .then(|| Error::invalid(format!("dataset '{}' has no table '{}'", style.data, style.table)).at("of"))
     }
 
     /// Whether its rows can carry comets: a stroke mark flowing at more than a constant 0.

@@ -11,6 +11,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+use super::rect::{EMPTY, Point, Rect, dot, grow, meets, union};
 use crate::scene::Side;
 
 /// Where a wire meets a vertex: the point on its boundary, the side it leaves by (None: any), and the
@@ -64,7 +65,8 @@ const ARC: usize = 3;
 
 /// A net's polylines as drawn: each bend between perpendicular runs rounded by up to `radius`, and
 /// each part ending where another starts doubled at its end, so that point draws as a junction and
-/// takes no arrowhead.
+/// takes no arrowhead. No point repeats anywhere else, as where two bends' arcs meet on a short run:
+/// it would draw as a junction too.
 pub(crate) fn finish(lines: &[Vec<Point>], radius: f64) -> Vec<Vec<Point>> {
     lines
         .iter()
@@ -76,7 +78,7 @@ pub(crate) fn finish(lines: &[Vec<Point>], radius: f64) -> Vec<Vec<Point>> {
                 let (u, v) = (direction(a, p), direction(p, b));
                 let r = radius.min(manhattan(a, p) / 2.0).min(manhattan(p, b) / 2.0);
                 if u[0] * v[0] + u[1] * v[1] != 0.0 || r <= SAME || (u == [0.0; 2]) || (v == [0.0; 2]) {
-                    out.push(p);
+                    push_new(&mut out, p);
                     continue;
                 }
                 // A quarter circle from `p - u r` to `p + v r` about `p - u r + v r`.
@@ -84,14 +86,12 @@ pub(crate) fn finish(lines: &[Vec<Point>], radius: f64) -> Vec<Vec<Point>> {
                 for i in 0..=ARC + 1 {
                     let t = i as f64 / (ARC + 1) as f64 * std::f64::consts::FRAC_PI_2;
                     let (cos, sin) = (t.cos(), t.sin());
-                    out.push([
-                        center[0] - v[0] * r * cos + u[0] * r * sin,
-                        center[1] - v[1] * r * cos + u[1] * r * sin,
-                    ]);
+                    let at = [center[0] - v[0] * r * cos + u[0] * r * sin, center[1] - v[1] * r * cos + u[1] * r * sin];
+                    push_new(&mut out, at);
                 }
             }
-            if line.len() > 1 {
-                out.extend(line.last());
+            if let Some(&last) = line.last().filter(|_| line.len() > 1) {
+                push_new(&mut out, last);
             }
             let end = *out.last().expect("a polyline has points");
             if lines.iter().any(|other| other.first() == Some(&end)) {
@@ -102,11 +102,12 @@ pub(crate) fn finish(lines: &[Vec<Point>], radius: f64) -> Vec<Vec<Point>> {
         .collect()
 }
 
-/// A point on the plane.
-type Point = [f64; 2];
-
-/// A box: min x, min y, max x, max y.
-type Rect = [f64; 4];
+/// Pushes `p` onto `out` unless it is the last point there again.
+fn push_new(out: &mut Vec<Point>, p: Point) {
+    if out.last().is_none_or(|&q| manhattan(q, p) > EPSILON) {
+        out.push(p);
+    }
+}
 
 /// How far wires keep from obstacles, in spacings.
 const CLEARANCE: f64 = 2.0;
@@ -146,9 +147,6 @@ const NONE: usize = usize::MAX;
 
 /// No state: where a search starts.
 const NOWHERE: u32 = u32::MAX;
-
-/// A box holding nothing, which any union replaces.
-const EMPTY: Rect = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
 
 impl Side {
     /// The unit normal out of this side.
@@ -1215,26 +1213,6 @@ fn valid(r: &Rect) -> bool {
     r.iter().all(|v| v.is_finite()) && r[0] <= r[2] && r[1] <= r[3]
 }
 
-/// The box holding both.
-fn union(a: Rect, b: Rect) -> Rect {
-    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
-}
-
-/// A box grown by `by` on every side.
-fn grow(r: Rect, by: f64) -> Rect {
-    [r[0] - by, r[1] - by, r[2] + by, r[3] + by]
-}
-
-/// The box holding only `p`.
-fn dot(p: Point) -> Rect {
-    [p[0], p[1], p[0], p[1]]
-}
-
-/// Whether two boxes meet, touching included.
-fn meets(a: &Rect, b: &Rect) -> bool {
-    a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1]
-}
-
 /// Whether box `a` lies within box `b`.
 fn within(a: &Rect, b: &Rect) -> bool {
     a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3]
@@ -1480,6 +1458,18 @@ mod tests {
         let around = &route(&boxes, &[group], &nets, &[], SPACING)[0];
         assert!(outside(around, &[group]), "with it, around: {around:?}");
         assert!(orthogonal(around) && one_tree(around, &nets[0].terminals), "{around:?}");
+    }
+
+    #[test]
+    fn bends_meeting_on_a_short_run_repeat_no_point() {
+        // An S-bend whose middle run is shorter than two radii: the arcs of its bends meet halfway.
+        let wire = finish(&[vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [40.0, 10.0]]], 8.0);
+        let line = &wire[0];
+        assert!(line.windows(2).all(|w| manhattan(w[0], w[1]) > EPSILON), "no point twice: {line:?}");
+        assert_eq!((line[0], line[line.len() - 1]), ([0.0, 0.0], [40.0, 10.0]));
+        // A part ending where another starts still doubles its end: a junction.
+        let tree = finish(&[vec![[0.0, 0.0], [10.0, 0.0]], vec![[10.0, 0.0], [10.0, 10.0]]], 8.0);
+        assert_eq!(tree[0], [[0.0, 0.0], [10.0, 0.0], [10.0, 0.0]]);
     }
 
     #[test]

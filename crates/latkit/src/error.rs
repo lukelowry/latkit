@@ -7,7 +7,7 @@ use crate::Name;
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// An input does not fit what it describes; `path` names the part, such as `marks[2].color`.
+    /// An input does not fit what it describes; `path` names the part, such as `marks[2].vertices.color`.
     #[error("{path}: {reason}")]
     Invalid {
         /// Where in the input the problem is.
@@ -93,7 +93,7 @@ impl schemars::JsonSchema for Error {
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "What failed: its `code`, the message, and for invalid input the `path` to the part, such as `marks[2].color`.",
+            "description": "What failed: its `code`, the message, and for invalid input the `path` to the part, such as `marks[2].vertices.color`.",
             "type": "object",
             "properties": {
                 "code": { "enum": ["invalid", "unsupported", "limit", "io", "device-lost", "cancelled", "timeout"] },

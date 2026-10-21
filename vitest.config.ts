@@ -8,5 +8,7 @@ export default defineConfig({
   test: {
     include: ['npm/examples/src/**/*.test.ts'],
     setupFiles: ['npm/examples/test/setup.ts'],
+    // The bunny's simulations take seconds alone, and longer beside the other suites.
+    testTimeout: 30_000,
   },
 });

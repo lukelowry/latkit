@@ -46,7 +46,9 @@ pub enum Event {
         phase: Phase,
         /// The row dragged, as it was hit.
         hit: Hit,
-        /// The point under the pointer at the depth the drag started, in the space's coordinates.
+        /// Where the row goes, in the space's coordinates: where it was hit, moved as the pointer moved
+        /// since the press, at the depth the drag started; a vertex keeps where it was grabbed. On a
+        /// diagram's dots when its grid snaps.
         position: [f64; 3],
         /// The pointer.
         trigger: Trigger,
@@ -244,7 +246,8 @@ pub struct Hit {
     /// The index of the mark in the scene the frame drew.
     #[serde(skip)]
     pub(crate) index: usize,
-    /// The point of the row nearest the probe, CSS pixels from the top left.
+    /// The point of the row nearest the probe, CSS pixels from the top left: a vertex's or a port's
+    /// middle, the nearest point of a stroke or a triangle.
     pub point: [f32; 2],
     /// That point in the space's coordinates: x, y, and elevation.
     pub position: [f64; 3],

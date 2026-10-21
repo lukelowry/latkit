@@ -720,54 +720,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "a timing, run by hand in release"]
-    fn time_two_million() {
-        // Two million vertices in a thousand clusters, and an edge from each to the next.
-        let n = 2_000_000_u32;
-        let places: Arc<[[f32; 2]]> = (0..n)
-            .map(|i| {
-                let city = tie(i % 1000);
-                let spread = tie(i) >> 20;
-                let u = f64::from(city.wrapping_add(spread)) / 4_294_967_296.0;
-                let v = f64::from(tie(city).wrapping_add(tie(spread))) / 4_294_967_296.0;
-                [(u * 360.0 - 180.0) as f32, ((v - 0.5) * 120.0) as f32]
-            })
-            .collect();
-        let priority: Arc<[f32]> = (0..n).map(|i| (tie(i) % 6) as f32).collect();
-        let to: Arc<[u32]> = (0..n).map(|i| (i + 1) % n).collect();
-        let leveling = Leveling {
-            domain: Domain::Earth,
-            tables: vec![
-                Placing {
-                    rows: n,
-                    leveled: true,
-                    answered: true,
-                    places: Places::Points(places),
-                    priority: priority.clone(),
-                    ..Placing::default()
-                },
-                Placing {
-                    rows: n,
-                    leveled: true,
-                    answered: true,
-                    priority,
-                    ends: Some((0, vec![(0..n).collect(), to])),
-                    ..Placing::default()
-                },
-            ],
-        };
-        let started = std::time::Instant::now();
-        let patch = answer(&leveling);
-        eprintln!("answer {:?}", started.elapsed());
-        let started = std::time::Instant::now();
-        let bytes = patch.to_bytes();
-        eprintln!("encode {:?} {} MB", started.elapsed(), bytes.len() >> 20);
-        let started = std::time::Instant::now();
-        let read = Pyramid::read(&bytes);
-        eprintln!("read {:?} {} tiles", started.elapsed(), read[&0].tiles.len() + read[&1].tiles.len());
-    }
-
-    #[test]
     fn whole_tables_order_rows_by_priority() {
         let leveling = Leveling {
             domain: Domain::Earth,

@@ -7,8 +7,7 @@
  * gate in under a minute on a GPU; how phases grow takes the full sweep. --update lays this run's
  * baselines over the committed ones, keeping what it did not run; --software draws with SwiftShader
  * on the CPU, as Linux always does: its work counts the same, its times only report, and no shader
- * can hang the GPU. Reports set times against the old packages', as `baselines/old.json` recorded
- * them before they were retired.
+ * can hang the GPU.
  *
  * A scenario climbs its sizes while the last one's phases, grown as their orders say, fit a phase's
  * limit. A failure ends its scenario; a lost device, or a page that stopped answering, ends the
@@ -227,14 +226,13 @@ const slug = machine
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/^-|-$/g, '');
 const workFile = path.join(baselines, 'work.json');
-const oldFile = path.join(baselines, 'old.json');
 const timesFile = path.join(baselines, `${slug}.json`);
 const verdict = judge(runs, list, {
   work: read<WorkBaseline>(workFile),
   times: read<TimeBaseline>(timesFile),
 });
 console.log(`\n${machine}`);
-console.log(report(list, verdict, read<TimeBaseline>(oldFile)));
+console.log(report(list, verdict));
 if (runs.length) {
   fs.mkdirSync(results, { recursive: true });
   write(path.join(results, `${Date.now()}.json`), { machine, runs });

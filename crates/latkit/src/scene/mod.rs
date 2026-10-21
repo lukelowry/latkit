@@ -168,20 +168,17 @@ impl Scene {
                 continue;
             }
             let dataset = data.iter().find(|d| *d.name() == style.data).ok_or_else(|| {
-                Error::invalid(format!("dataset '{}' was not supplied", style.data)).at("data").at(i).at("marks")
+                mark.within(i, Error::invalid(format!("dataset '{}' was not supplied", style.data)).at("of"))
             })?;
-            if dataset.table(&style.table).is_none() {
-                return Err(Error::invalid(format!("table '{}' is absent from '{}'", style.table, style.data))
-                    .at("table")
-                    .at(i)
-                    .at("marks"));
+            if let Some(error) = mark.absent_from(dataset) {
+                return Err(mark.within(i, error));
             }
             compile::compile(
                 mark,
                 data,
                 mark::Context { theme: &self.theme, space: &self.space, layout: &self.layout },
             )
-            .map_err(|error| error.at(i).at("marks"))?;
+            .map_err(|error| mark.within(i, error))?;
         }
         Ok(())
     }
@@ -199,7 +196,7 @@ impl Scene {
                 return Err(Error::invalid(reason).at(i).at("marks"));
             }
             if let Some((option, reason)) = mark.misplaced(diagram) {
-                return Err(Error::invalid(reason).at(option).at(i).at("marks"));
+                return Err(mark.within(i, Error::invalid(reason).at(option)));
             }
             let style = mark.style();
             let shown = match style.color.as_ref().and_then(Expr::colormap_of) {
@@ -208,7 +205,7 @@ impl Scene {
             };
             if style.legend.is_some() && !shown {
                 let reason = "a legend shows a color mapped through a colormap with a domain or named categories";
-                return Err(Error::invalid(reason).at("legend").at(i).at("marks"));
+                return Err(mark.within(i, Error::invalid(reason).at("legend")));
             }
         }
         Ok(())

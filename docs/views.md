@@ -48,6 +48,7 @@ application did not do: its setters change state silently.
 
 ```ts
 view.on('click', ({ hit }) => console.log(hit.row, hit.point));
+view.on('drag', ({ hit, position }) => move(hit.row, position)); // where the row goes, as grabbed
 view.on('select', ({ rows }) => inspect(rows));
 view.on('error', (error) => console.error(error.code, error.path, error.message));
 ```

@@ -7,7 +7,7 @@ import type {
   Binary,
   Colormap,
   ExprNode,
-  FieldForm,
+  FieldNode,
   Marker,
   Size,
   State,
@@ -157,7 +157,7 @@ const binary = (op: Binary, a: ExprInput, b: ExprInput): Expr =>
   new Expr({ op, args: [nodeOf(a), nodeOf(b)] });
 
 /** `node` with every field read through `f`; a string starting with `#` is a color, not a field. */
-function mapFields(input: ExprInput, f: (field: FieldForm) => FieldForm): ExprNode {
+function mapFields(input: ExprInput, f: (field: FieldNode) => FieldNode): ExprNode {
   const node = nodeOf(input);
   if (typeof node === 'string') return node.startsWith('#') ? node : f({ field: node });
   if (typeof node !== 'object') return node;

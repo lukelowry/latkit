@@ -28,7 +28,7 @@ export async function readPatch(json: string, base: string): Promise<Uint8Array>
 
 /**
  * What latkit throws: an `Error` with a `code`, and for invalid input the `path` to the part, such
- * as `marks[2].color`.
+ * as `marks[2].vertices.color`.
  */
 export interface LatkitError extends Error {
   code: Failure['code'];
@@ -320,7 +320,7 @@ export class Gpu {
   }
 }
 
-/** A view's part of a canvas or a picture: `[x, y, width, height]` as fractions of it. */
+/** A view's panel of a canvas or a picture: `[x, y, width, height]` as fractions of it. */
 export type Panel = readonly [number, number, number, number];
 
 /** Views shown in the panels of a `<canvas>` or an `OffscreenCanvas`. */
@@ -589,7 +589,7 @@ export class View {
 }
 
 /**
- * A picture of views, each drawn into its part of `size` pixels at `scale` pixels per CSS pixel:
+ * A picture of views, each drawn into its panel of `size` pixels at `scale` pixels per CSS pixel:
  * plain data, like a scene. A view a shot draws holds its canvas's last frame meanwhile.
  *
  * ```ts
@@ -625,7 +625,7 @@ export class Shot {
     return new Shot(this.size, { ...this.settings, transparent: true });
   }
 
-  /** The capture deadline in seconds, including readback; rejects on timeout. Defaults to 30. */
+  /** The shot's deadline in seconds, including readback; rejects on timeout. Defaults to 30. */
   deadline(seconds: number): Shot {
     return new Shot(this.size, { ...this.settings, deadline: seconds });
   }

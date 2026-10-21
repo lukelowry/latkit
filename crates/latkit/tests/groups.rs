@@ -1,5 +1,6 @@
 //! Groups: a diagram's vertex mark whose rows contain rows draws each as a container around its
-//! members, padded and with its title's header on top, the same at every zoom.
+//! members, padded and with its title's header on top, the same at every zoom; lit, it glows about
+//! its border and hides nothing it holds.
 
 #![cfg(feature = "gpu")]
 
@@ -59,6 +60,25 @@ fn groups_stand_around_their_members() {
     assert!(blue(&pixels, C - 27, C) && blue(&pixels, C + 27, C) && blue(&pixels, C, C - 12), "around the members");
     assert!(!blue(&pixels, C - 31, C) && !blue(&pixels, C + 31, C) && !blue(&pixels, C, C + 16), "and no further");
     assert!(at(&pixels, C - 15, C)[0] > 120, "members draw over it");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn a_lit_group_glows_about_its_border_and_hides_nothing() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = view(&gpu, 0.0);
+    frame(&gpu, &mut view);
+    // The pointer over the group's padding, away from its members: the group lights.
+    let point = [C as f32 - 26.0, C as f32 + 12.0];
+    let device = latkit::Device::Mouse;
+    view.input(&latkit::Input::Move { pointer: 1, point, modifiers: latkit::Modifiers::default(), device }, 0.0);
+    let mut pixels = Vec::new();
+    for _ in 0..30 {
+        pixels = common::step(&gpu, &mut view);
+    }
+    assert_eq!(view.hovered().map(|hit| hit.row.table.to_string()), Some("Area".into()), "the group is lit");
+    assert!(at(&pixels, C - 15, C)[0] > 120, "its members still draw over it");
+    assert!(blue(&pixels, C, C + 7), "its body shows away from its border");
     assert_eq!(errors(&mut view), Vec::new());
 }
 

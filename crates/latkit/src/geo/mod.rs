@@ -1,11 +1,16 @@
 //! Geography: GeoJSON and vector tiles as data, and what shapes become to draw: an
 //! area's triangles, and lines bent along the globe.
 
+#[cfg(feature = "gpu")]
 mod earcut;
 mod geojson;
+#[cfg(feature = "gpu")]
 pub(crate) mod mvt;
+#[cfg(feature = "gpu")]
 pub(crate) mod pmtiles;
+#[cfg(feature = "gpu")]
 pub(crate) mod shapes;
+#[cfg(feature = "gpu")]
 pub(crate) mod tiles;
 
 use std::borrow::Cow;

@@ -4,8 +4,6 @@ coverage/
 .DS_Store
 *.log
 
-output/
-.bench/
 .playwright-cli/
 .playwright-mcp/
 

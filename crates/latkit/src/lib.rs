@@ -16,8 +16,6 @@ mod derive;
 mod error;
 #[cfg(feature = "gpu")]
 mod expr;
-// Without `gpu`, only GeoJSON and tiles' decoding have readers.
-#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 mod geo;
 #[cfg(feature = "gpu")]
 mod gpu;
@@ -38,10 +36,11 @@ mod schema;
 mod sheet;
 #[cfg(feature = "gpu")]
 mod shot;
-#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+#[cfg(feature = "gpu")]
 mod tiles;
 #[cfg(feature = "gpu")]
 mod time;
+#[cfg(feature = "gpu")]
 mod url;
 #[cfg(feature = "gpu")]
 mod video;

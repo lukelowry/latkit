@@ -84,7 +84,7 @@ export type Binary =
   | 'and'
   | 'or';
 
-export interface BinaryForm {
+export interface BinaryNode {
   op: Binary;
   args: [ExprInput, ExprInput];
 }
@@ -133,20 +133,13 @@ export type Camera =
       y?: [number, number] | null;
     };
 
-export interface ColorForm {
+export interface ColorNode {
   /** A CSS color, such as `#ffb000` or `rebeccapurple`. */
   color: Color;
 }
 
 /** Colors for a range of values: a catalog name, or your own colors. */
-export type Colormap = ColormapName | ColorsForm;
-
-/** `value` through `colormap`: from its `domain`, else from the extent of the values shown. */
-export interface ColormapForm {
-  colormap: Colormap;
-  value: ExprInput;
-  domain?: [low: number, high: number] | null;
-}
+export type Colormap = ColormapName | CustomColormap;
 
 /** How a colormap spans values. */
 export type ColormapKind = 'sequential' | 'diverging' | 'cyclic' | 'categorical';
@@ -200,20 +193,15 @@ export type ColormapName =
   | 'tableau10'
   | 'turbo';
 
-/** Your own colormap: its kind, its colors, and for a categorical map its categories' names. */
-export interface ColorsForm {
-  kind: ColormapKind;
-  /**
-   * Colors blended in OKLab, each at its `[place, color]` from 0 to 1 or evenly between its
-   * neighbors, as in a CSS gradient; a categorical map's, one per category.
-   */
-  colors: (Color | [number, Color])[];
-  /** The categories' names, in order, for a legend: a categorical map's alone. */
-  categories?: string[];
+/** `value` through `colormap`: from its `domain`, else from the extent of the values shown. */
+export interface ColormapNode {
+  colormap: Colormap;
+  value: ExprInput;
+  domain?: [low: number, high: number] | null;
 }
 
 /** Whether a text field holds the text, ignoring case: read by queries, which hold texts. */
-export interface ContainsForm {
+export interface ContainsNode {
   contains: [field: ExprInput, text: string];
 }
 
@@ -276,6 +264,18 @@ export type Controls =
        */
       motion?: Motion;
     };
+
+/** Your own colormap: its kind, its colors, and for a categorical map its categories' names. */
+export interface CustomColormap {
+  kind: ColormapKind;
+  /**
+   * Colors blended in OKLab, each at its `[place, color]` from 0 to 1 or evenly between its
+   * neighbors, as in a CSS gradient; a categorical map's, one per category.
+   */
+  colors: (Color | [number, Color])[];
+  /** The categories' names, in order, for a legend: a categorical map's alone. */
+  categories?: string[];
+}
 
 /**
  * A sheet for diagrams, flat and seen from straight above: the camera pans and zooms. Positions
@@ -383,17 +383,17 @@ export type ExprNode =
   | number
   | boolean
   | string
-  | FieldForm
-  | ColorForm
-  | StateForm
-  | MissingForm
-  | UnaryForm
-  | BinaryForm
-  | WhenForm
-  | IsForm
-  | ContainsForm
-  | ScaleForm
-  | ColormapForm;
+  | FieldNode
+  | ColorNode
+  | StateNode
+  | MissingNode
+  | UnaryNode
+  | BinaryNode
+  | WhenNode
+  | IsNode
+  | ContainsNode
+  | ScaleNode
+  | ColormapNode;
 
 /**
  * Rows drawn as triangles between the vertices three reference fields name: meshes, surfaces, and
@@ -439,7 +439,7 @@ export interface Faces {
 }
 
 /** A field of each row: of the mark's own table, or of another dataset's table joined by row id. */
-export interface FieldForm {
+export interface FieldNode {
   field: string;
   /** The dataset and table the field is read from, joined by row id. */
   of?: [data: string, table: string] | null;
@@ -525,7 +525,7 @@ export type Ids = (Id | null)[] | { count: number };
 export type Interpolation = 'linear' | 'stepBefore' | 'stepAfter';
 
 /** Whether a text field equals the text. */
-export interface IsForm {
+export interface IsNode {
   is: [field: ExprInput, text: string];
 }
 
@@ -724,7 +724,7 @@ export type Marker =
     };
 
 /** A missing value: options that read one take the theme's. */
-export interface MissingForm {
+export interface MissingNode {
   missing: true;
 }
 
@@ -830,7 +830,7 @@ export interface Rows {
  * `value` mapped linearly onto the range `scale`, clamped: from its `domain`, else from the extent
  * of the values shown.
  */
-export interface ScaleForm {
+export interface ScaleNode {
   scale: [low: number, high: number];
   value: ExprInput;
   domain?: [low: number, high: number] | null;
@@ -879,7 +879,7 @@ export type Shape = 'ellipse' | 'rectangle' | 'rounded' | 'diamond';
 export type Side = 'left' | 'right' | 'top' | 'bottom';
 
 /** A size: CSS pixels, or position units with `units`. */
-export type Size = ExprInput | UnitsForm;
+export type Size = ExprInput | Units;
 
 /**
  * The coordinate space a scene's positions are in: a name, or
@@ -914,7 +914,7 @@ export type Space =
 export type State = 'selected' | 'hovered' | 'pointer' | 'elapsed' | 'zoom';
 
 /** What the view knows of each row. */
-export interface StateForm {
+export interface StateNode {
   state: State;
 }
 
@@ -1017,13 +1017,13 @@ export type Tick = number | [number, string | null];
 /** An operation of one value. */
 export type Unary = 'neg' | 'not' | 'abs' | 'sqrt' | 'sin' | 'cos' | 'floor' | 'ln' | 'exp';
 
-export interface UnaryForm {
+export interface UnaryNode {
   op: Unary;
   args: [ExprInput];
 }
 
 /** A size in position units, so it scales as the view zooms, kept within CSS pixels when given. */
-export interface UnitsForm {
+export interface Units {
   units: ExprInput;
   /** CSS pixels it keeps at least, however far the view zooms out. */
   atLeast?: number | null;
@@ -1099,7 +1099,7 @@ export interface Vertices {
 }
 
 /** The value of the first case whose condition holds, else `otherwise`. */
-export interface WhenForm {
+export interface WhenNode {
   when: [condition: ExprInput, value: ExprInput][];
   otherwise: ExprInput;
 }

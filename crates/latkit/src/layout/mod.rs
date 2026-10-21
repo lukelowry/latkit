@@ -4,5 +4,6 @@ pub(crate) mod layered;
 pub(crate) mod levels;
 pub(crate) mod overlap;
 pub(crate) mod pack;
+pub(crate) mod rect;
 pub(crate) mod route;
 pub(crate) mod stress;

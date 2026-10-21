@@ -44,6 +44,11 @@ fn outline_distance(p: vec2f, half: vec2f) -> f32 {
     return shape_distance(mark.shape, p, half);
 }
 
+// The theme's text color: what borders and ports mix toward, so they read on light and dark grounds.
+fn theme_text() -> vec3f {
+    return unpack4x8unorm(frame.theme[THEME_TEXT / 4u][THEME_TEXT % 4u]).rgb;
+}
+
 // `color` covering where `distance` is negative, antialiased over a pixel.
 fn filled(color: vec4f, distance: f32) -> MarkerColor {
     return MarkerColor(vec4f(color.rgb, color.a * coverage(distance)), distance);
@@ -98,7 +103,7 @@ fn builtin_marker(f: MarkerFragment) -> MarkerColor {
 // A group's container: a rounded box filled in its color, tinted a step toward the text color for
 // each group holding it; a header band across its top where its title sits; and a hairline border.
 fn container(f: MarkerFragment, depth: f32) -> MarkerColor {
-    let text = unpack4x8unorm(frame.theme[THEME_TEXT / 4u][THEME_TEXT % 4u]).rgb;
+    let text = theme_text();
     let fill = mix(f.color.rgb, text, min(0.06 * depth, 0.3));
     let d = box_distance(f.p, f.half, min(6.0 * frame.unit, 0.2 * min(f.half.x, f.half.y)));
     var body = filled(vec4f(fill, f.color.a), d);
@@ -109,7 +114,7 @@ fn container(f: MarkerFragment, depth: f32) -> MarkerColor {
         body = over(filled(vec4f(mix(fill, text, 0.07), f.color.a), band), body);
     }
     let hairline = 0.5 / eye.pixel_ratio;
-    let border = filled(vec4f(mix(fill, text, 0.28), f.color.a), abs(d + hairline) - hairline);
+    let border = filled(vec4f(mix(fill, text, 0.4), f.color.a), abs(d + hairline) - hairline);
     return MarkerColor(over(border, body).color, d);
 }
 

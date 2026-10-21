@@ -421,6 +421,30 @@ impl Values {
         }
     }
 
+    /// Whether value `i` and `other`'s value `j` are the same, compared where they are stored: floats by
+    /// their bits, so a NaN equals itself, and missing values alike; values in different storages
+    /// differ.
+    pub(crate) fn same_row(&self, i: usize, other: &Values, j: usize) -> bool {
+        let valid = self.is_valid(i);
+        if valid != other.is_valid(j) {
+            return false;
+        }
+        if !valid {
+            return true;
+        }
+        match (&self.array, &other.array) {
+            (Array::F64(a), Array::F64(b)) => a[i].to_bits() == b[j].to_bits(),
+            (Array::F32(a), Array::F32(b)) => a[i].to_bits() == b[j].to_bits(),
+            (Array::I32(a), Array::I32(b)) => a[i] == b[j],
+            (Array::U32(a), Array::U32(b)) => a[i] == b[j],
+            (Array::U64(a), Array::U64(b)) => a[i] == b[j],
+            (Array::Bool(a), Array::Bool(b)) => a.get(i) == b.get(j),
+            (Array::Text(a), Array::Text(b)) => a.get(i) == b.get(j),
+            (Array::Geometry(a), Array::Geometry(b)) => a.same_row(i, b, j),
+            _ => false,
+        }
+    }
+
     /// `parts` one after another, in the first part's storage: what a column's pages make, a copy per
     /// part with nothing picked. Every part holds the first's kind.
     pub(crate) fn concat(parts: &[&Values]) -> Values {

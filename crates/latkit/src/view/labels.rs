@@ -360,10 +360,11 @@ impl View {
         // A diagram's labels follow the camera without placement; the camera only says which texts
         // they ask for.
         let diagram = matches!(self.scene.space, Space::Diagram(_));
-        // What places labels: a color changing every frame moves none.
+        // What places labels: a color changing every frame moves none, and a fit about to move the
+        // camera places them once it did.
         let versions: Vec<u64> = labeled.iter().map(|&(i, _)| self.marks[i].place_version).collect();
         let stamp = stamp_of((bytemuck::bytes_of(eye), self.labels.changes, versions));
-        let due = self.labels.placed.due(stamp) && !self.labels.placed.busy();
+        let due = self.labels.placed.due(stamp) && !self.labels.placed.busy() && !self.fitting.framing();
         let now = self.clock.now();
         let fading = !diagram && self.labels.fading(now);
         if !due && !fading {
@@ -398,11 +399,13 @@ impl View {
             pass.set_bind_group(2, &group, &[]);
             let marks: Vec<(usize, u32, u32)> =
                 labeled.iter().map(|&(i, _)| (i, self.marks[i].rows, self.marks[i].path())).collect();
-            let clear = inner.pipelines.compute(device, Shader::Labels, "clear_cells");
-            let reset = inner.pipelines.compute(device, Shader::Labels, "reset_cells");
+            // A diagram's labels claim no cells.
+            let cleared = (!diagram).then(|| {
+                ["clear_cells", "reset_cells"].map(|entry| inner.pipelines.compute(device, Shader::Labels, entry))
+            });
             let capped: Vec<(usize, u32)> =
                 labeled.iter().filter(|(_, s)| s.select != wgsl::NONE).map(|&(i, _)| (i, self.marks[i].rows)).collect();
-            let selecting = (!capped.is_empty()).then(|| {
+            let selecting = (!capped.is_empty() && !diagram).then(|| {
                 ["select_start", "select_count", "select_find", "select_cut"]
                     .map(|entry| inner.pipelines.compute(device, Shader::Labels, entry))
             });
@@ -422,17 +425,17 @@ impl View {
             if due {
                 each(&mut pass, "candidates");
             }
-            if due && !diagram {
+            if due && let Some([clear, reset]) = &cleared {
                 // A capped mark's labels past its cap give up their room before any claims.
                 if let Some(pipelines) = &selecting {
                     select(&mut pass, pipelines, &groups.mark, &capped);
                 }
-                cells(&mut pass, &clear);
+                cells(&mut pass, clear);
                 for _ in 0..ROUNDS {
                     each(&mut pass, "claim");
                     each(&mut pass, "decide");
                     each(&mut pass, "occupy");
-                    cells(&mut pass, &reset);
+                    cells(&mut pass, reset);
                 }
                 each(&mut pass, "ask");
             }
@@ -441,21 +444,26 @@ impl View {
             }
         }
         if due {
-            let first = labeled.iter().map(|(_, s)| s.wanted).min().unwrap_or(0);
-            let seen: u64 = labeled.iter().map(|(_, s)| u64::from(s.codes / 32)).sum();
-            let words = labeled.len() as u64 * u64::from(1 + wgsl::WANTED) + seen;
-            let readback = Readback::new(
-                &inner.readbacks,
-                device,
-                encoder,
-                resources.labels(),
-                u64::from(first) * 4,
-                words * 4,
-                &self.waker,
-            );
-            self.labels.placed.start(stamp, readback);
-            self.labels.asked = labeled;
+            self.read_placed(encoder, inner, labeled, stamp);
         }
+    }
+
+    /// Reads back the texts the placement of `labeled`, from `stamp`, asked for.
+    fn read_placed(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        inner: &Inner,
+        labeled: Vec<(usize, Slots)>,
+        stamp: u64,
+    ) {
+        let labels = self.resources.as_ref().expect("created before labels").labels();
+        let first = labeled.iter().map(|(_, s)| s.wanted).min().unwrap_or(0);
+        let seen: u64 = labeled.iter().map(|(_, s)| u64::from(s.codes / 32)).sum();
+        let words = labeled.len() as u64 * u64::from(1 + wgsl::WANTED) + seen;
+        let (device, offset) = (&self.gpu.0.device, u64::from(first) * 4);
+        let readback = Readback::new(&inner.readbacks, device, encoder, labels, offset, words * 4, &self.waker);
+        self.labels.placed.start(stamp, readback);
+        self.labels.asked = labeled;
     }
 }
 

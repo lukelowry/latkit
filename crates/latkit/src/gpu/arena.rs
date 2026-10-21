@@ -3,7 +3,7 @@
 //! larger than a chunk: a geometry's points split into pieces of a chunk each. So the room any page
 //! leaves serves any other: a chunk whose blocks all come back is carved again for another size.
 //!
-//! A page is identified by its id, the part of it a program reads, and its piece. Page tables pin
+//! A page is identified by its id, the words of it a program reads, and its piece. Page tables pin
 //! the pages they reference, so a page in use is never evicted; unpinned pages stay cached, the least
 //! recently used going first when a page needs their room. Uploads stream within a per-frame byte
 //! budget. A page that finds no room waits until pins let room go: views plan what they draw to fit
@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use rustc_hash::FxBuildHasher;
 
 use crate::data::{AxisPage, FramePage, PageId, Value, Values};
-use crate::expr::compile::Part;
+use crate::expr::compile::Words;
 use crate::gpu::shaders::{MISSING, NONE, POINT_BITS};
 use crate::gpu::work::Queue;
 
@@ -33,7 +33,7 @@ pub(crate) const PIECE_POINTS: usize = 1 << POINT_BITS;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct PageKey {
     pub(crate) page: PageId,
-    pub(crate) part: Part,
+    pub(crate) words: Words,
     /// The part `f32` drops of an `f64`, rather than the value.
     pub(crate) low: bool,
     /// Which piece of the page: a geometry's first points, then its points a chunk at a time; 0
@@ -43,21 +43,21 @@ pub(crate) struct PageKey {
 
 impl PageKey {
     /// The one piece of a page that is not a geometry's.
-    pub(crate) fn of(page: PageId, part: Part, low: bool) -> PageKey {
-        PageKey { page, part, low, piece: 0 }
+    pub(crate) fn of(page: PageId, words: Words, low: bool) -> PageKey {
+        PageKey { page, words, low, piece: 0 }
     }
 }
 
 /// What to upload for a page.
 pub(crate) enum Content {
-    /// Static values, converted to words for `part`.
-    Values { values: Values, part: Part, low: bool },
+    /// Static values, converted to words for `words`.
+    Values { values: Values, words: Words, low: bool },
     /// A page of samples; one an append opened grows, and only its new tail uploads.
     Frames(FramePage),
     /// A page of where a level's entries draw along the axis; it grows like a page of samples.
     Axis(AxisPage),
     /// Words computed on the CPU: text codes, join rows, a geometry's pieces.
-    Words(Vec<u32>),
+    Computed(Vec<u32>),
 }
 
 impl Content {
@@ -67,7 +67,7 @@ impl Content {
             Content::Values { values, .. } => values.len(),
             Content::Frames(page) => page.read(<[f32]>::len),
             Content::Axis(page) => page.words_len(),
-            Content::Words(words) => words.len(),
+            Content::Computed(words) => words.len(),
         };
         debug_assert!(len <= CHUNK_WORDS as usize, "no page is larger than a chunk");
         len as u32
@@ -76,12 +76,12 @@ impl Content {
     /// The page's words from word `from` on: a growing page uploads only its new tail.
     fn words(&self, from: usize) -> Vec<u32> {
         match self {
-            Content::Values { values, part, low } => page_words(values, *part, *low).split_off(from),
+            Content::Values { values, words, low } => page_words(values, *words, *low).split_off(from),
             Content::Frames(page) => {
                 page.read(|values| values[from.min(values.len())..].iter().map(|v| v.to_bits()).collect())
             }
             Content::Axis(page) => page.words(from),
-            Content::Words(words) => words[from.min(words.len())..].to_vec(),
+            Content::Computed(words) => words[from.min(words.len())..].to_vec(),
         }
     }
 
@@ -110,19 +110,19 @@ fn slots(class: usize) -> u32 {
     CHUNK_WORDS / class_words(class)
 }
 
-/// The words a page uploads for `part`: numbers as `f32`, the low part of `f64`s, point components,
-/// or reference rows as `u32`. Missing values are `MISSING`, or `NONE` for rows.
-pub(crate) fn page_words(values: &Values, part: Part, low: bool) -> Vec<u32> {
+/// What a page uploads as `words` reads it: numbers as `f32`, the low part of `f64`s, point
+/// components, or reference rows as `u32`. Missing values are `MISSING`, or `NONE` for rows.
+pub(crate) fn page_words(values: &Values, words: Words, low: bool) -> Vec<u32> {
     let n = values.len();
     let word = |x: f64| {
         let hi = x as f32;
         if low { (x - f64::from(hi)) as f32 } else { hi }.to_bits()
     };
-    match part {
-        Part::Values => values.map_numbers(|x| x.map_or(MISSING, word)),
-        Part::Bits => values.map_numbers(|x| x.map_or(NONE, |x| x as u32)),
-        Part::X | Part::Y => {
-            let component = usize::from(part == Part::Y);
+    match words {
+        Words::Values => values.map_numbers(|x| x.map_or(MISSING, word)),
+        Words::Bits => values.map_numbers(|x| x.map_or(NONE, |x| x as u32)),
+        Words::X | Words::Y => {
+            let component = usize::from(words == Words::Y);
             let coords = values.geometry().map(crate::data::Geometry::coords);
             (0..n)
                 .map(|i| match coords {
@@ -133,8 +133,8 @@ pub(crate) fn page_words(values: &Values, part: Part, low: bool) -> Vec<u32> {
                 })
                 .collect()
         }
-        Part::Path => unreachable!("a geometry uploads in pieces"),
-        Part::Codes => unreachable!("text codes upload as words"),
+        Words::Path => unreachable!("a geometry uploads in pieces"),
+        Words::Codes => unreachable!("text codes upload as words"),
     }
 }
 
@@ -493,8 +493,8 @@ mod tests {
     #[test]
     fn page_words_split_doubles() {
         let values = Values::from(vec![Some(1.0_f64 + 1e-9), None]);
-        let hi = page_words(&values, Part::Values, false);
-        let lo = page_words(&values, Part::Values, true);
+        let hi = page_words(&values, Words::Values, false);
+        let lo = page_words(&values, Words::Values, true);
         assert_eq!(hi[1], MISSING);
         let back = f64::from(f32::from_bits(hi[0])) + f64::from(f32::from_bits(lo[0]));
         assert!((back - (1.0 + 1e-9)).abs() < 1e-15);

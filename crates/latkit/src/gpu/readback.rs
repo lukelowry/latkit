@@ -64,7 +64,6 @@ pub(crate) struct Readback {
 impl Readback {
     /// Copies `size` bytes of `source` from `offset`, to read once `encoder` is submitted; `waker`
     /// wakes once they can be read.
-    #[allow(clippy::too_many_arguments, reason = "where to copy from, and what to wake")]
     pub(crate) fn new(
         pool: &Readbacks,
         device: &wgpu::Device,

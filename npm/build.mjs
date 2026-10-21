@@ -1,6 +1,6 @@
 /** Builds from pinned workspace tools; all release and consumer outputs stay below target/npm. */
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -151,6 +151,25 @@ if (mode === 'prepare') {
     type: 'module',
   });
   write(path.join(output, 'package.json'), { ...report, consumer });
+} else if (mode === 'publish') {
+  // The tarball `package` built, published once per version; `changeset tag` then tags it.
+  const report = read(path.join(output, 'package.json'));
+  const { name, version } = read(path.join(root, 'npm/package.json'));
+  assert.equal(report.version, version, 'the tarball must be of the version being released');
+  assert.equal(
+    createHash('sha256').update(fs.readFileSync(report.tarball)).digest('hex'),
+    report.sha256,
+  );
+  const seen = spawnSync('npm', ['view', `${name}@${version}`, 'version'], { encoding: 'utf8' });
+  if (seen.status !== 0 && !seen.stderr?.includes('E404'))
+    throw new Error(`npm view ${name}@${version}: ${seen.stderr || seen.error}`);
+  if (seen.stdout.trim() === version) {
+    console.log(`${name}@${version} is already published`);
+  } else {
+    execFileSync('npm', ['publish', report.tarball, '--provenance', '--access', 'public'], {
+      stdio: 'inherit',
+    });
+  }
 } else {
   throw new Error(`unknown build step: ${mode}`);
 }

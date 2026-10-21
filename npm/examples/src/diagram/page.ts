@@ -350,7 +350,7 @@ export default function page(stage: Stage): void {
           of: ['studio', kind],
           position: ['x', 'y'],
           marker: KINDS[kind].shape,
-          color: light ? '#dce3eb' : '#2c3b4d',
+          color: light ? '#ffffff' : '#2c3b4d',
           ring: when(field('status').gt(0)).then(color('#ff8c42')).otherwise(missing()),
           ports: ports(kind),
           drag: true,
@@ -408,27 +408,21 @@ export default function page(stage: Stage): void {
     (data.get(row.table, row.id, 'name') as string | null) ?? `${row.table} ${row.id}`;
   const isBlock = (table: string): table is Kind => table in KINDS;
 
-  // Moving: a block keeps where it was grabbed, moves at once, and lands as one edit.
-  let dragged: { before: Data; offset: [number, number] } | undefined;
+  // Moving: a block goes where the drag says, moves at once, and lands as one edit.
+  let before: Data | undefined;
   view.on('drag', ({ phase, hit, position }) => {
     if (!isBlock(hit.row.table)) return;
     if (phase === 'start') {
-      const grab = { before: data.snapshot(), offset: [0, 0] as [number, number] };
-      dragged = grab;
-      void view.locate(hit.row).then((at) => {
-        const center = at && view.ground(at);
-        if (center) grab.offset = [center[0] - position[0], center[1] - position[1]];
-      });
+      before = data.snapshot();
       return;
     }
-    const offset = dragged?.offset ?? [0, 0];
     const at = new Patch().set(hit.row.table, [hit.row.id as number], {
-      x: [position[0] + offset[0]],
-      y: [position[1] + offset[1]],
+      x: [position[0]],
+      y: [position[1]],
     });
     if (phase === 'end') {
-      if (dragged) history.commit(dragged.before);
-      dragged = undefined;
+      if (before) history.commit(before);
+      before = undefined;
       show(data.apply(at));
       note(`Moved ${name(hit.row)}.`);
     } else show(data.apply(at));

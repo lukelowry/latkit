@@ -140,9 +140,12 @@ pub struct View {
     arranging: Vec<crate::Resolver<Vec<Patch>>>,
     /// Whether the platform asks for reduced motion, which `Motion::System` follows.
     reduced_motion: bool,
-    /// What input needs, a stage made on each frame after the scene's first: the hover's, then the
-    /// intents'.
+    /// What input needs, a few made on each frame once the scene has opened: the hover's, the
+    /// changes', then the intents'.
     input_pipelines: std::collections::VecDeque<Vec<crate::gpu::pipelines::Variant>>,
+    /// Whether the scene's opening is over: a frame stood in for nothing, but for a plot measuring a
+    /// value range it has again, as streaming data has it do every frame.
+    opened: bool,
     /// The shadow map and the face normals, made from what they read.
     shadow_map: Derived<()>,
     normals: Derived<()>,
@@ -208,6 +211,7 @@ impl View {
             arranging: Vec::new(),
             reduced_motion: false,
             input_pipelines: std::collections::VecDeque::new(),
+            opened: false,
             shadow_map: Derived::default(),
             normals: Derived::default(),
             timer: timer::Timer::new(&gpu.0.device, &gpu.0.queue),
@@ -255,7 +259,7 @@ impl View {
                 continue;
             }
             let mut shown = Shown::new(mark.clone());
-            shown.compile(&self.sources, context, &mut inner).map_err(|e| e.at(i).at("marks"))?;
+            shown.compile(&self.sources, context, &mut inner).map_err(|e| mark.within(i, e))?;
             fresh.push(Some(shown));
         }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
@@ -305,6 +309,7 @@ impl View {
         self.scene_version += 1;
         self.pipelines_made = None;
         self.picture_pipelines = None;
+        self.opened = false;
         self.focus.dirty = true;
         self.gestures.keys.stale();
         self.invalidate();
@@ -556,7 +561,10 @@ impl View {
 
     /// Every mark that draws nothing because its data no longer fits it, and why.
     pub fn failures(&self) -> impl Iterator<Item = crate::Error> + '_ {
-        self.marks.iter().enumerate().filter_map(|(i, shown)| Some(shown.failure.as_ref()?.0.clone().at(i).at("marks")))
+        self.marks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, shown)| Some(shown.mark.within(i, shown.failure.as_ref()?.0.clone())))
     }
 
     /// The pointer the view asks for over what it shows.
@@ -593,8 +601,8 @@ impl View {
     /// Whether the last frame drew everything as the data, scene, and camera say, with nothing
     /// standing in for work under way: no changed page waited to upload, no tile drew its ancestor,
     /// no table its first sample, no row stood where it was until a layout landed, no wire drew its
-    /// elbows, no area its earlier triangles, no label its estimate, and no fit was due. Whatever
-    /// captures frames waits for it; [`Stats::waiting`] says what it waits on.
+    /// elbows, no area its earlier triangles, no label its estimate, and no fit was due. A shot or a
+    /// video waits for it; [`Stats::waiting`] says what it waits on.
     pub fn complete(&self) -> bool {
         self.waiting.is_empty()
     }
@@ -628,8 +636,9 @@ impl View {
         &self.gpu
     }
 
-    /// The error a capture fails on: the first one still untold, which stays for the view's owner.
-    pub(crate) fn capture_error(&mut self) -> Option<crate::Error> {
+    /// The error a shot or a video fails on: the first one still untold, which stays for the view's
+    /// owner.
+    pub(crate) fn shot_error(&mut self) -> Option<crate::Error> {
         self.tell_gpu_errors();
         self.events.error().cloned()
     }
@@ -657,11 +666,13 @@ impl View {
     }
 
     /// Whether the view wants a frame: one that would differ ([`needs_render`](View::needs_render)),
-    /// or one that looks the same but goes on with what input needs, making its pipelines or noticing
-    /// a touch held long enough for a menu. A loop drawing on demand draws while this holds, as a
-    /// canvas does; a video holds the frames that only want to go on.
+    /// or one that would look the same but goes on with what input needs, making its pipelines once
+    /// its opening is over or a pointer is over it, or noticing a touch held long enough for a menu. A
+    /// loop drawing on demand, as a canvas does, draws while `needs_render` holds and, while only
+    /// this does, [goes on](View::go_on) without drawing; a video holds the frames that only want to
+    /// go on.
     pub fn wants_frame(&self) -> bool {
-        self.needs_render() || !self.input_pipelines.is_empty() || self.holding()
+        self.needs_render() || self.making_ahead() || self.holding()
     }
 
     /// Whether comets travel along a mark's rows: one that flows draws, and the theme shows them.
@@ -701,7 +712,7 @@ impl View {
             derived: !self.derived.complete(),
             labels: !self.labels.complete(),
             fit: self.fitting.due() || self.fitting.reading(),
-            marks: self.regions_dirty || marks().any(|m| m.segments.found.busy() || m.begin.is_some()),
+            marks: self.regions_dirty || marks().any(|m| m.counting() || m.begin.is_some()),
         }
     }
 
@@ -829,6 +840,5 @@ fn arranged(scene: &Scene, placed: Vec<(Row, [f64; 2])>) -> Vec<Patch> {
 fn absent(shown: &Shown, sources: &[Data], tiles: &crate::derive::tiles::TileSets) -> Option<crate::Error> {
     let style = shown.mark.style();
     let data = sources.iter().find(|d| *d.name() == style.data)?;
-    (shown.compiled.is_none() && data.table(&style.table).is_none() && !tiles.owns(&style.data))
-        .then(|| crate::Error::invalid(format!("dataset '{}' has no table '{}'", style.data, style.table)).at("of"))
+    (shown.compiled.is_none() && !tiles.owns(&style.data)).then(|| shown.mark.absent_from(data)).flatten()
 }
