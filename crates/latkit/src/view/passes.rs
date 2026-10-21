@@ -604,9 +604,9 @@ impl View {
             marks.ports(&mut pass, drawn, inner, i, shown);
         }
         // The rows focus lights draw again over every mark but labels, glowing: nothing covers them but
-        // the ports they carry.
+        // the ports they carry. They draw once what draws them compiled.
         for (i, shown) in self.marks.iter().enumerate() {
-            if shown.drawable() && shown.lit.rows > 0 {
+            if self.answers() && shown.drawable() && shown.lit.rows > 0 {
                 marks.draw(&mut pass, drawn, inner, i, shown, true);
                 marks.ports(&mut pass, drawn, inner, i, shown);
             }

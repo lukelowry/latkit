@@ -24,8 +24,12 @@ export interface Areas {
   priority?: ExprInput | null;
   /** Tells two marks of one table apart across scenes, and names the mark in hits. */
   name?: string | null;
-  /** Whether rows are hovered, clicked, and probed. */
-  pick?: boolean;
+  /**
+   * Whether rows are hovered, clicked, and probed. Unless set, rows that are things are (vertices,
+   * edges, faces, a plot's traces) and geometry is not (areas, and lines along paths: coasts,
+   * borders, roads).
+   */
+  pick?: boolean | null;
   /** Whether a click selects a row. */
   select?: boolean;
   /** Whether pressing a row drags it instead of panning. */
@@ -359,8 +363,12 @@ export interface Edges {
   priority?: ExprInput | null;
   /** Tells two marks of one table apart across scenes, and names the mark in hits. */
   name?: string | null;
-  /** Whether rows are hovered, clicked, and probed. */
-  pick?: boolean;
+  /**
+   * Whether rows are hovered, clicked, and probed. Unless set, rows that are things are (vertices,
+   * edges, faces, a plot's traces) and geometry is not (areas, and lines along paths: coasts,
+   * borders, roads).
+   */
+  pick?: boolean | null;
   /** Whether a click selects a row. */
   select?: boolean;
   /** Whether pressing a row drags it instead of panning. */
@@ -419,8 +427,12 @@ export interface Faces {
   priority?: ExprInput | null;
   /** Tells two marks of one table apart across scenes, and names the mark in hits. */
   name?: string | null;
-  /** Whether rows are hovered, clicked, and probed. */
-  pick?: boolean;
+  /**
+   * Whether rows are hovered, clicked, and probed. Unless set, rows that are things are (vertices,
+   * edges, faces, a plot's traces) and geometry is not (areas, and lines along paths: coasts,
+   * borders, roads).
+   */
+  pick?: boolean | null;
   /** Whether a click selects a row. */
   select?: boolean;
   /** Whether pressing a row drags it instead of panning. */
@@ -618,8 +630,12 @@ export interface Lines {
   priority?: ExprInput | null;
   /** Tells two marks of one table apart across scenes, and names the mark in hits. */
   name?: string | null;
-  /** Whether rows are hovered, clicked, and probed. */
-  pick?: boolean;
+  /**
+   * Whether rows are hovered, clicked, and probed. Unless set, rows that are things are (vertices,
+   * edges, faces, a plot's traces) and geometry is not (areas, and lines along paths: coasts,
+   * borders, roads).
+   */
+  pick?: boolean | null;
   /** Whether a click selects a row. */
   select?: boolean;
   /** Whether pressing a row drags it instead of panning. */
@@ -1079,8 +1095,12 @@ export interface Vertices {
   priority?: ExprInput | null;
   /** Tells two marks of one table apart across scenes, and names the mark in hits. */
   name?: string | null;
-  /** Whether rows are hovered, clicked, and probed. */
-  pick?: boolean;
+  /**
+   * Whether rows are hovered, clicked, and probed. Unless set, rows that are things are (vertices,
+   * edges, faces, a plot's traces) and geometry is not (areas, and lines along paths: coasts,
+   * borders, roads).
+   */
+  pick?: boolean | null;
   /** Whether a click selects a row. */
   select?: boolean;
   /** Whether pressing a row drags it instead of panning. */

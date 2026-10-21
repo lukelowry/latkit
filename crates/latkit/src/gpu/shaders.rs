@@ -39,6 +39,18 @@ impl ShaderSource {
         }
         out
     }
+
+    /// Bytes of its WGSL: what a browser compiles for each of its pipelines, and so about how long
+    /// one takes.
+    pub(crate) fn size(&self) -> usize {
+        self.pieces
+            .iter()
+            .map(|&piece| {
+                let (start, end) = PIECES[piece as usize];
+                (end - start) as usize
+            })
+            .sum()
+    }
 }
 
 /// Every distinct top-level declaration of every linked shader, each once; [`PIECES`] says where each

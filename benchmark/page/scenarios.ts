@@ -25,6 +25,8 @@ export interface Scenario {
   budget?: Budget;
   /** Run in a fresh browser without a shader cache: what a first visit costs. */
   cold?: boolean;
+  /** Its data is fetched as the camera asks, so what it uploads moves with the frame a fetch lands in. */
+  fetches?: boolean;
 }
 
 export interface Built {
@@ -200,7 +202,7 @@ const hover = (): Phase => ({
   name: 'hover',
   order: { time: 0, bytes: 0 },
   run: async (s) => {
-    const [hit] = await deadline(s.view.pick(s.middle, 40), 10_000, 'a row to hover');
+    const [hit] = await deadline(s.until(s.view.pick(s.middle, 40)), 10_000, 'a row to hover');
     if (!hit) {
       const seen = { middle: s.middle, camera: s.view.camera, stats: s.view.stats };
       throw new Error(`nothing near the middle to hover: ${JSON.stringify(seen)}`);
@@ -272,10 +274,11 @@ const scrub = (): Phase => ({
   },
 });
 
-/** Narrows the window shown from everything to its last tenth: levels of detail give way. */
-const narrow = (): Phase => ({
+/** Narrows the window shown from everything to its last tenth: levels of detail give way, each
+ * trace's finer one uploading as it first draws. */
+const narrow = (order: Order = { time: 0, bytes: 0 }): Phase => ({
   name: 'narrow',
-  order: { time: 0, bytes: 0 },
+  order,
   run: (s) => {
     const [a, b] = s.span('t');
     return s.steady(FRAMES, (i) => {
@@ -382,7 +385,9 @@ export const scenarios: Record<string, Scenario> = {
   labels: {
     about: 'every vertex labeled: placement, collisions, and the texts set',
     unit: 'rows',
-    sizes: [1e2, 1e3, 1e4, 1e5, 1e6],
+    // From ten thousand rows on, more labels show than a frame sets texts for, so a frame's CPU
+    // holds at the text budget however many rows are labeled.
+    sizes: [1e4, 1e5, 1e6],
     build: (n) => ({
       scene: dots('plane', 'viridis', 'name'),
       data: { d: make.scatter(n, 1, true) },
@@ -432,6 +437,7 @@ export const scenarios: Record<string, Scenario> = {
     about: 'vector tiles fetched as the camera asks for them, from a local server',
     unit: 'squares a tile',
     sizes: [16, 256, 4096],
+    fetches: true,
     build: (n) => ({
       scene: {
         space: 'mercator',
@@ -456,7 +462,8 @@ export const scenarios: Record<string, Scenario> = {
     unit: 'traces',
     sizes: [10, 1e2, 1e3, 1e4],
     build: (n) => ({ scene: plot, data: { t: make.traces(n, HISTORY) } }),
-    phases: [stream(), scrub(), narrow(), hover()],
+    // Every trace narrowed uploads its finer level.
+    phases: [stream(), scrub(), narrow({ time: 0, bytes: 1 }), hover()],
   },
   history: {
     about: 'one trace with a long history: levels of detail',

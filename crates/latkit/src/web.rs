@@ -54,6 +54,12 @@ struct Frames {
     listeners: Vec<(u64, FrameListener)>,
     next: u64,
     scheduled: Option<i32>,
+    /// Whether a harness steps the frames itself ([`step`]): no animation frame is asked for.
+    stepped: bool,
+    /// What waits for work a view waits on to land ([`landed`]), woken as it asks for a frame, and
+    /// how many times that was.
+    landing: Vec<std::task::Waker>,
+    wakes: u64,
     tick: Option<Closure<dyn FnMut(f64)>>,
     /// The page's `prefers-reduced-motion`, which each view is told, and what draws again when it
     /// changes; none in a worker.
@@ -77,6 +83,9 @@ fn frames_of(gpu: &Gpu) -> Rc<RefCell<Frames>> {
             listeners: Vec::new(),
             next: 0,
             scheduled: None,
+            stepped: false,
+            landing: Vec::new(),
+            wakes: 0,
             tick: None,
             reduced: None,
         }));
@@ -117,17 +126,25 @@ fn scope() -> Option<Scope> {
     global.dyn_ref::<web_sys::DedicatedWorkerGlobalScope>().map(|worker| Scope::Worker(worker.clone()))
 }
 
+/// Asks for an animation frame, unless one is asked for or a harness steps the frames, and wakes what
+/// waits for work to land.
 fn schedule(frames: &Rc<RefCell<Frames>>) {
-    let mut f = frames.borrow_mut();
-    if f.scheduled.is_some() {
-        return;
-    }
-    let (Some(scope), Some(tick)) = (scope(), f.tick.as_ref()) else { return };
-    let tick = tick.as_ref().unchecked_ref();
-    f.scheduled = match scope {
-        Scope::Window(window) => window.request_animation_frame(tick).ok(),
-        Scope::Worker(worker) => worker.request_animation_frame(tick).ok(),
+    let landing = {
+        let mut f = frames.borrow_mut();
+        if !f.stepped
+            && f.scheduled.is_none()
+            && let (Some(scope), Some(tick)) = (scope(), f.tick.as_ref())
+        {
+            let tick = tick.as_ref().unchecked_ref();
+            f.scheduled = match scope {
+                Scope::Window(window) => window.request_animation_frame(tick).ok(),
+                Scope::Worker(worker) => worker.request_animation_frame(tick).ok(),
+            };
+        }
+        f.wakes += 1;
+        std::mem::take(&mut f.landing)
     };
+    landing.into_iter().for_each(std::task::Waker::wake);
 }
 
 fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
@@ -234,6 +251,61 @@ pub fn on_frame(gpu: &Gpu, listener: impl FnMut(f64) + 'static) -> Listener {
     })))
 }
 
+/// Draws one frame of `gpu` now, at `now`, milliseconds as an animation frame's timestamp: its
+/// listeners, then every canvas that needs a frame, then what its views told. From the first step
+/// `gpu` asks for no animation frames: a harness steps every frame itself, so a run draws the same
+/// frames however fast the device is, and work landing wakes [`landed`] alone.
+pub fn step(gpu: &Gpu, now: f64) {
+    let frames = frames_of(gpu);
+    let scheduled = {
+        let mut f = frames.borrow_mut();
+        f.stepped = true;
+        f.scheduled.take()
+    };
+    if let Some(id) = scheduled {
+        match scope() {
+            Some(Scope::Window(window)) => drop(window.cancel_animation_frame(id)),
+            Some(Scope::Worker(worker)) => drop(worker.cancel_animation_frame(id)),
+            None => {}
+        }
+    }
+    tick(&frames, now);
+}
+
+/// Waits until work a view of `gpu` waits on lands after this call: a readback, a compile, a job, a
+/// text, a fetch; or until a view asks for a frame. What lands between the call and the first wait
+/// counts, as a view a harness changes right after asking does.
+pub fn landed(gpu: &Gpu) -> impl Future<Output = ()> + 'static {
+    let frames = frames_of(gpu);
+    let seen = frames.borrow().wakes;
+    std::future::poll_fn(move |context| {
+        let mut f = frames.borrow_mut();
+        if f.wakes != seen {
+            return std::task::Poll::Ready(());
+        }
+        f.landing.push(context.waker().clone());
+        std::task::Poll::Pending
+    })
+}
+
+/// Waits until `gpu` finished the work submitted to it, every readback of it mapped, and every
+/// pipeline asked of it compiled: a frame stepped then draws all that landed.
+pub async fn done(gpu: &Gpu) {
+    let (submitted, finished) = crate::Pending::new();
+    gpu.queue().on_submitted_work_done(move || finished.resolve(Ok(())));
+    let _ = submitted.await;
+    loop {
+        let under_way = {
+            let inner = gpu.0.lock();
+            inner.readbacks.mapping() + inner.pipelines.compiling()
+        };
+        if under_way == 0 {
+            return;
+        }
+        landed(gpu).await;
+    }
+}
+
 /// A view the page holds: it reads and changes the view, hears what it tells, shows it in a canvas,
 /// and lends it to shots. Changing it asks its canvas for a frame.
 #[derive(Clone)]
@@ -315,24 +387,16 @@ impl PageView {
         }
     }
 
-    /// Whether it wants a frame, to draw or to go on, and no shot holds it.
-    fn wants_frame(&self) -> bool {
+    /// Whether it wants a frame and no shot holds it: it changed, or its view wants one. While what
+    /// it draws with compiles, only a compile landing does.
+    pub fn wants_frame(&self) -> bool {
         let held = self.0.borrow();
-        !held.view.lent() && (held.due || held.view.wants_frame())
+        !held.view.lent() && (held.view.wants_frame() || (held.due && !held.view.compiling()))
     }
 
-    /// Whether it draws in the next frame: it changed, or a frame would differ, and no shot holds it.
-    fn draws(&self) -> bool {
-        let held = self.0.borrow();
-        !held.view.lent() && (held.due || held.view.needs_render())
-    }
-
-    /// Goes on to `time` without drawing, when it wants a frame.
-    fn go_on(&self, time: f64) {
-        let mut held = self.0.borrow_mut();
-        if !held.view.lent() && held.view.wants_frame() {
-            held.view.go_on(time);
-        }
+    /// Whether it can draw into `format` at `pixel_ratio`: see [`View::ready`].
+    fn ready(&self, format: wgpu::TextureFormat, pixel_ratio: f32) -> bool {
+        self.0.borrow_mut().view.ready(format, pixel_ratio)
     }
 
     /// Whether a shot holds it.
@@ -504,26 +568,22 @@ impl Painted {
     }
 
     /// Records a frame when one is needed, sizing the canvas to its box first: each view that needs
-    /// to draws into its panel, straight into the canvas when one view fills it, and the rest go on.
-    /// A frame where every view would look as it did draws nothing: the canvas keeps what it shows.
+    /// to draws into its panel, straight into the canvas when one view fills it. A view a shot holds,
+    /// or whose scene's pipelines still compile, draws nothing new and keeps its panel; while no view
+    /// it shows can draw, the canvas keeps the frame it shows.
     fn record(&mut self, encoder: &mut wgpu::CommandEncoder, time: f64) -> Option<wgpu::SurfaceTexture> {
         let (size, ratio) = self.measure();
         let resized = size != self.surface.size();
         if self.views.is_empty() || !(resized || self.wants_frame()) {
             return None;
         }
-        if !(resized || self.due || self.views.iter().any(PageView::draws)) {
-            for view in &self.views {
-                view.go_on(time);
-            }
+        let format = self.surface.config.format;
+        let ready: Vec<bool> = self.views.iter().map(|v| !v.lent() && v.ready(format, ratio)).collect();
+        if !ready.contains(&true) {
             return None;
         }
         let rects = self.panels.rects(size, [1, 1]).ok()?;
         let direct = rects.len() == 1 && rects[0].size == size;
-        // A view a shot holds keeps its last frame: when it fills the canvas, so does the canvas.
-        if direct && self.views[0].0.borrow().view.lent() {
-            return None;
-        }
         if resized {
             self.due = true;
             if let Target::Element(element) = &self.target {
@@ -533,7 +593,6 @@ impl Painted {
         }
         self.rects = rects.iter().map(|r| css(*r, ratio)).collect();
         let texture = self.surface.texture(size)?;
-        let format = self.surface.config.format;
         let target = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         if direct {
             let mut held = self.views[0].0.borrow_mut();
@@ -548,15 +607,11 @@ impl Painted {
                 }
                 let (panel, _) = self.textures[i].as_ref().expect("made");
                 let mut held = self.views[i].0.borrow_mut();
-                if !held.view.lent() {
-                    if fresh || self.due || held.due || held.view.needs_render() {
-                        let target = panel.create_view(&wgpu::TextureViewDescriptor::default());
-                        let frame = Frame { target: &target, format, size: rect.size, pixel_ratio: ratio, time };
-                        held.view.render(encoder, &frame);
-                        held.due = false;
-                    } else if held.view.wants_frame() {
-                        held.view.go_on(time);
-                    }
+                if ready[i] && (fresh || self.due || held.due || held.view.needs_render()) {
+                    let target = panel.create_view(&wgpu::TextureViewDescriptor::default());
+                    let frame = Frame { target: &target, format, size: rect.size, pixel_ratio: ratio, time };
+                    held.view.render(encoder, &frame);
+                    held.due = false;
                 }
                 encoder.copy_texture_to_texture(
                     panel.as_image_copy(),

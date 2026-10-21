@@ -139,12 +139,6 @@ impl View {
         None
     }
 
-    /// Whether the only fit under way is a plot measuring its traces again for a value range it has,
-    /// as streaming data has it do every frame: what no opening waits for.
-    pub(super) fn refitting(&self) -> bool {
-        self.plot_y.is_some() && !self.fitting.framing()
-    }
-
     pub(super) fn measuring_started(&mut self, readback: Readback, fit: Option<Fit>) {
         self.fitting.reading = Some((readback, fit));
     }

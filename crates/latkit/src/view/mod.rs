@@ -132,20 +132,18 @@ pub struct View {
     told_lost: bool,
     /// The work under way the last frame stood in for.
     waiting: Waiting,
-    /// The format and samples per pixel the scene's pipelines were made for.
-    pipelines_made: Option<(wgpu::TextureFormat, u32)>,
-    /// The target pictures last drew into, whose pipelines are made.
-    picture_pipelines: Option<(wgpu::TextureFormat, u32)>,
+    /// What the scene asked the GPU to compile, by the targets its frames draw into.
+    asked: Vec<variants::Asking>,
+    /// While what its frames draw with compiles, how many compiles had landed when it last looked:
+    /// it draws nothing new until they all have, and sleeps until the next lands.
+    compiling: Option<u64>,
+    /// Likewise while what lights rows, probes, and answers queries compiles: its frames draw without
+    /// lit rows, and probes and queries wait.
+    answering: Option<u64>,
     /// Who asked for the arranging under way.
     arranging: Vec<crate::Resolver<Vec<Patch>>>,
     /// Whether the platform asks for reduced motion, which `Motion::System` follows.
     reduced_motion: bool,
-    /// What input needs, a few made on each frame once the scene has opened: the hover's, the
-    /// changes', then the intents'.
-    input_pipelines: std::collections::VecDeque<Vec<crate::gpu::pipelines::Variant>>,
-    /// Whether the scene's opening is over: a frame stood in for nothing, but for a plot measuring a
-    /// value range it has again, as streaming data has it do every frame.
-    opened: bool,
     /// The shadow map and the face normals, made from what they read.
     shadow_map: Derived<()>,
     normals: Derived<()>,
@@ -206,12 +204,11 @@ impl View {
             changed: true,
             told_lost: false,
             waiting: Waiting::default(),
-            pipelines_made: None,
-            picture_pipelines: None,
+            asked: Vec::new(),
+            compiling: None,
+            answering: None,
             arranging: Vec::new(),
             reduced_motion: false,
-            input_pipelines: std::collections::VecDeque::new(),
-            opened: false,
             shadow_map: Derived::default(),
             normals: Derived::default(),
             timer: timer::Timer::new(&gpu.0.device, &gpu.0.queue),
@@ -307,9 +304,10 @@ impl View {
         }
         self.scene = scene;
         self.scene_version += 1;
-        self.pipelines_made = None;
-        self.picture_pipelines = None;
-        self.opened = false;
+        // What the new scene uses is asked for as it next draws; what it shares landed already.
+        self.asked.clear();
+        self.compiling = None;
+        self.answering = None;
         self.focus.dirty = true;
         self.gestures.keys.stale();
         self.invalidate();
@@ -599,7 +597,8 @@ impl View {
     }
 
     /// Whether the last frame drew everything as the data, scene, and camera say, with nothing
-    /// standing in for work under way: no changed page waited to upload, no tile drew its ancestor,
+    /// standing in for work under way: no pipeline it draws with was compiling, no changed page
+    /// waited to upload, no tile drew its ancestor,
     /// no table its first sample, no row stood where it was until a layout landed, no wire drew its
     /// elbows, no area its earlier triangles, no label its estimate, and no fit was due. A shot or a
     /// video waits for it; [`Stats::waiting`] says what it waits on.
@@ -643,9 +642,56 @@ impl View {
         self.events.error().cloned()
     }
 
+    /// Whether the view can draw frames into `format` at `pixel_ratio` now: every pipeline its scene
+    /// draws with compiled. The first call for a target asks for every pipeline the scene uses, all at
+    /// once, what it draws with first; in a browser they compile side by side off the GPU's thread,
+    /// and each that lands wakes the view. Until what it draws with has, it draws nothing new, so
+    /// whatever shows its frames keeps the last, as a canvas does; until the rest has, it draws
+    /// without lit rows, and probes and queries wait. Natively it can always draw.
+    /// [`render`](View::render) asks for itself, drawing nothing until then.
+    pub fn ready(&mut self, format: wgpu::TextureFormat, pixel_ratio: f32) -> bool {
+        self.ready_for(format, pixel_ratio, true)
+    }
+
+    /// Whether frames into `format` at `pixel_ratio`, taking `input` or not, can draw now: see
+    /// [`ready`](View::ready).
+    pub(crate) fn ready_for(&mut self, format: wgpu::TextureFormat, pixel_ratio: f32, input: bool) -> bool {
+        let gpu = self.gpu.clone();
+        let mut inner = gpu.0.lock();
+        let draws = self.pipelines_ready(&mut inner, format, resources::samples(pixel_ratio), input);
+        let answers = self.answers_ready(&mut inner);
+        let landed = inner.pipelines.landed();
+        drop(inner);
+        self.compiling = (!draws).then_some(landed);
+        self.answering = (!answers).then_some(landed);
+        let compiling = self.compiling.is_some() || self.answering.is_some();
+        if self.waiting.compiling != compiling {
+            self.waiting.compiling = compiling;
+            self.events.tell(Event::Waiting(self.waiting));
+        }
+        draws
+    }
+
+    /// Whether probes and queries can run: what they and the lit rows' draws use compiled.
+    fn answers(&self) -> bool {
+        self.answering.is_none()
+    }
+
+    /// Whether what its frames draw with is still compiling: it draws nothing new until all of it
+    /// landed.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    pub(crate) fn compiling(&self) -> bool {
+        self.compiling.is_some()
+    }
+
     /// Whether a frame would differ from the last one: something changed, moves, or streams in, or
     /// work the view waited on landed. While it only waits, it needs none: what it waits on wakes it.
     pub fn needs_render(&self) -> bool {
+        let landed = || self.gpu.0.lock().pipelines.landed();
+        // While what it draws with compiles, it draws nothing new: each compile landing wakes it.
+        if let Some(seen) = self.compiling {
+            return landed() != seen;
+        }
         // What moves on its own, only while the view moves on its own: under reduced motion an orbit,
         // comets, and what reads `elapsed()` hold still.
         let moves = self.moves();
@@ -654,8 +700,9 @@ impl View {
             || self.rig.easing()
             || (self.rig.orbit != 0.0 && moves)
             || self.fitting.due()
-            || self.probing.due()
-            || self.queries.due()
+            // Probes and queries wait for what answers them to compile, which wakes the view as it lands.
+            || (self.answers() && (self.probing.due() || self.queries.due()))
+            || self.answering.is_some_and(|seen| landed() != seen)
             || self.derived.tiled.due()
             || self.labels.fading(self.clock.now())
             // A mark evaluates once its columns synced: until then, the pages they wait for wake it.
@@ -666,13 +713,10 @@ impl View {
     }
 
     /// Whether the view wants a frame: one that would differ ([`needs_render`](View::needs_render)),
-    /// or one that would look the same but goes on with what input needs, making its pipelines once
-    /// its opening is over or a pointer is over it, or noticing a touch held long enough for a menu. A
-    /// loop drawing on demand, as a canvas does, draws while `needs_render` holds and, while only
-    /// this does, [goes on](View::go_on) without drawing; a video holds the frames that only want to
-    /// go on.
+    /// or one noticing a touch held long enough for a menu. A loop drawing on demand draws while this
+    /// holds, as a canvas does; a video holds the frames that only notice.
     pub fn wants_frame(&self) -> bool {
-        self.needs_render() || self.making_ahead() || self.holding()
+        self.needs_render() || (self.compiling.is_none() && self.holding())
     }
 
     /// Whether comets travel along a mark's rows: one that flows draws, and the theme shows them.
@@ -680,15 +724,15 @@ impl View {
         self.scene.theme.flow.color.a > 0.0 && self.marks.iter().any(|m| m.drawable() && m.mark.flows())
     }
 
-    /// Whether the next frame does work this one left: pages to upload past the frame's budget, rows
-    /// to lay out, a fit, probe, or query due, the tiles the camera wants, or a transition to begin.
-    /// Nothing else would wake the view for it: jobs, texts, fetches, and readbacks do as they land.
-    fn due(&self) -> bool {
+    /// Whether the next frame, taking `input` or not, does work this one left: pages to upload past
+    /// the frame's budget, rows to lay out, a fit, probe, or query due, the tiles the camera wants, or
+    /// a transition to begin. Nothing else would wake the view for it: jobs, texts, fetches, and
+    /// readbacks do as they land.
+    fn due(&self, input: bool) -> bool {
         self.gpu.0.lock().arena.uploading()
             || self.regions_dirty
             || self.fitting.due()
-            || self.probing.due()
-            || self.queries.due()
+            || (input && self.answers() && (self.probing.due() || self.queries.due()))
             || self.derived.tiled.due()
             || self.marks.iter().any(|m| m.begin.is_some())
     }
@@ -708,6 +752,7 @@ impl View {
             m.compiled.is_some() || m.failure.is_some() || self.source(data).is_some() || self.derived.tiles.owns(data)
         };
         Waiting {
+            compiling: self.asked.is_empty() || self.compiling.is_some() || self.answering.is_some(),
             data: !self.marks.iter().all(given) || marks().any(|m| !m.tables.synced() || m.tables.waiting()),
             derived: !self.derived.complete(),
             labels: !self.labels.complete(),

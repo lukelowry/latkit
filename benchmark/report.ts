@@ -31,7 +31,6 @@ export function report(list: Listed[], { summaries, exponents }: Verdict): strin
       const rows: Row[] = [
         [steady ? 'cpu ms/frame' : 'ms', (s) => s.time, ms, e?.time],
         ['gpu ms/frame', (s) => s.gpu, ms, e?.gpu],
-        ['longest gap ms', (s) => s.gap, ms, undefined],
         ['uploaded', (s) => s.work.uploaded, bytes, e?.uploaded],
         ...(phase === 'load'
           ? [['resident', (s: Summary) => s.work.resident, bytes, e?.resident] as Row]

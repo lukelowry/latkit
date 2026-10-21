@@ -21,7 +21,9 @@ import package::lib::color::output;
 
 struct Varyings {
     @builtin(position) clip: vec4f,
-    @location(0) p: vec2f,
+    // The pixel in CSS pixels, a screen position: interpolated linearly, as a quad whose ends lie at
+    // different depths would otherwise skew it off the stroke.
+    @location(0) @interpolate(linear) p: vec2f,
     @location(1) @interpolate(flat) a: vec2f,
     @location(2) @interpolate(flat) b: vec2f,
     @location(3) @interpolate(flat) row: u32,
@@ -78,11 +80,13 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     out.p = screen;
     out.a = a;
     out.b = b;
+    // How far along the whole segment this corner lies, of the part drawn.
+    let f = mix(on.kept.x, on.kept.y, t);
     var color = style.color;
     if ends_colored() {
-        color *= mix(ends[0].color, ends[1].color, t);
+        color *= mix(ends[0].color, ends[1].color, f);
     }
-    let light = daylight(mix(ends[0].position.xy, ends[1].position.xy, t));
+    let light = daylight(mix(ends[0].position.xy, ends[1].position.xy, f));
     out.color = vec4f(color.rgb * light, color.a);
     // In length units, a path runs from its start, a listed one's segment from where its list says it
     // starts, its ends stopping short where the stroke does. On screen, a trace runs along x, a
@@ -97,7 +101,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     out.style = vec4f(width, phase, style.flow);
     out.comet = vec3f(along, style.travel);
-    out.height = mix(ends[0].world.z, ends[1].world.z, t);
+    out.height = mix(ends[0].world.z, ends[1].world.z, f);
     out.arrow = u32(arrow) | (u32(style.dash && !junction) << 1u);
     out.focus = focus_of(s.row);
     return out;

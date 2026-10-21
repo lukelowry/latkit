@@ -199,7 +199,7 @@ export default async function page(stage: Stage): Promise<void> {
     // Easing, pulses, and comets hold still where the system asks for reduced motion, unless set.
     controls: { motion },
     marks: [
-      { lines: { of: ['state', 'Border'], width: 1.25, color: LOOK.border, pick: false } },
+      { lines: { of: ['state', 'Border'], width: 1.25, color: LOOK.border } },
       {
         edges: {
           of: ['grid', 'Branch'],

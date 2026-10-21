@@ -660,7 +660,7 @@ impl View {
     }
 
     /// A touch or a pen held still for the controls' press asks for a menu where it is.
-    pub(super) fn held_long(&mut self) {
+    fn held_long(&mut self) {
         let press = self.scene.controls.press.as_secs_f64();
         let Gesture::Press { pointer, from, trigger, released: false, since, .. } = self.gestures.now else { return };
         let still = near(from, trigger.point, SLOP) && matches!(trigger.device, Device::Touch | Device::Pen);

@@ -58,8 +58,10 @@ fn pictures_make_only_what_they_draw_with() {
     pollster::block_on(shot.image(&mut [&mut view])).expect("a picture");
     let made = gpu.work().pipelines;
     pollster::block_on(shot.image(&mut [&mut view])).expect("a picture");
-    // A picture takes no input, so it never makes the probes and lit draws a pointer would need.
+    // A picture takes no input, so it never makes the probes a pointer would need, and what it makes
+    // it asked for first.
     assert_eq!(gpu.work().pipelines, made, "another picture makes nothing");
+    assert_eq!(gpu.work().late, 0, "nothing made where it was first used");
 }
 
 #[test]
@@ -88,6 +90,7 @@ fn panels_compose_side_by_side() {
     assert!(close(pixel(&image, SIZE / 2, SIZE / 2), RED), "{:?}", pixel(&image, SIZE / 2, SIZE / 2));
     assert!(close(pixel(&image, SIZE + SIZE / 2, SIZE / 2), [0, 0, 255, 255]));
     assert!(close(pixel(&image, SIZE, SIZE / 2), BLACK), "each panel's own background between");
+    assert_eq!(gpu.work().late, 0, "what composes the panels was asked for first");
     let wrong = pollster::block_on(shot.image(&mut [&mut left]));
     assert!(wrong.is_err(), "a view per panel");
 }

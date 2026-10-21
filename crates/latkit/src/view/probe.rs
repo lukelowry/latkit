@@ -58,10 +58,10 @@ pub(crate) fn near(a: [f32; 2], b: [f32; 2], within: f32) -> bool {
 }
 
 impl View {
-    /// The point this frame probes: one waits and none is in flight. What the pointer rests on is
-    /// probed again whenever the frame changed under it, so a moving frame costs a probe per readback
-    /// and a still one nothing.
-    pub(super) fn probe_point(&mut self) -> Option<[f32; 2]> {
+    /// The point this frame probes, when it `answers` probes: one waits and none is in flight. What
+    /// the pointer rests on is probed again whenever the frame changed under it, so a moving frame
+    /// costs a probe per readback and a still one nothing.
+    pub(super) fn probe_point(&mut self, answers: bool) -> Option<[f32; 2]> {
         if (self.changed || self.easing())
             && matches!(self.gestures.now, Gesture::Idle)
             && self.gestures.keys.at.is_none()
@@ -69,7 +69,7 @@ impl View {
         {
             self.probing.wanted.get_or_insert(pointer.point);
         }
-        if self.probing.reading.is_some() {
+        if self.probing.reading.is_some() || !answers {
             return None;
         }
         // Where nothing is drawn, there is nothing to probe.
@@ -181,6 +181,6 @@ impl View {
 impl super::marks::Shown {
     /// Whether probes reach this mark's rows.
     pub(crate) fn probed(&self) -> bool {
-        self.drawable() && self.mark.style().interaction.pick && self.rows > 0
+        self.drawable() && self.mark.picks() && self.rows > 0
     }
 }

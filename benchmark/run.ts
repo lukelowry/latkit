@@ -4,7 +4,7 @@
  *   cargo xtask bench [--quick] [--only a,b] [--repeats n] [--update] [--software]
  *
  * --quick runs each scenario once at its smallest size, a smoke test of every phase and the work
- * gate in under a minute on a GPU; how phases grow takes the full sweep. --update lays this run's
+ * gate in under a minute on a GPU; how phases grow, and their times, take the full sweep. --update lays this run's
  * baselines over the committed ones, keeping what it did not run; --software draws with SwiftShader
  * on the CPU, as Linux always does: its work counts the same, its times only report, and no shader
  * can hang the GPU.
@@ -42,19 +42,15 @@ const software = flags.software || process.platform === 'linux';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const baselines = path.join(here, 'baselines');
 const results = path.resolve(here, '../target/bench');
-/**
- * Uncapped frames keep a GPU at its full clock, so time measures work, not waiting. SwiftShader has
- * no clock to keep, and frames drawn back to back starve its readbacks, so it draws at the display's
- * pace.
- */
-const FLAGS = [
-  '--enable-webgpu-developer-features',
-  ...(software ? [] : ['--disable-gpu-vsync', '--disable-frame-rate-limit']),
-];
-const PAGE = { viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 2 };
+/** Timestamps, for what a frame costs the GPU. The page steps its frames, each as soon as the GPU
+ * finished the last, so the display's pace never enters a run. */
+const FLAGS = ['--enable-webgpu-developer-features'];
+/** The same page on every machine, so what it counts compares, and small enough that SwiftShader
+ * draws a frame quickly. */
+const PAGE = { viewport: { width: 800, height: 500 }, deviceScaleFactor: 2 };
 /** Milliseconds a page may say nothing: each phase says when it starts, then acts and settles
  * within its limits. */
-const QUIET = 2 * LIMIT + 10_000;
+const QUIET = 2 * LIMIT + 20_000;
 
 /** A failed run, and whether the sweep stops there. */
 class Failure extends Error {
@@ -227,9 +223,10 @@ const slug = machine
   .replace(/^-|-$/g, '');
 const workFile = path.join(baselines, 'work.json');
 const timesFile = path.join(baselines, `${slug}.json`);
+// A quick run, once each without a warm-up, holds no times to the baselines its warm repeats took.
 const verdict = judge(runs, list, {
   work: read<WorkBaseline>(workFile),
-  times: read<TimeBaseline>(timesFile),
+  times: flags.quick ? undefined : read<TimeBaseline>(timesFile),
 });
 console.log(`\n${machine}`);
 console.log(report(list, verdict));

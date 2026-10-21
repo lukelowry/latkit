@@ -3,8 +3,8 @@
 //! be dragged off it, a dragged row keeps where it was grabbed, a double click opens what it hits, a
 //! click again can cycle through the rows under it, and Delete tells the selection. The keys point at
 //! rows too; hover is state whether or not it glows and follows the frame, and a lit row keeps its
-//! ports on top; setters tell nothing. What input needs is made once the opening is over. The wheel
-//! zooms as the controls say, and reduced motion pays every move at once.
+//! ports on top; setters tell nothing. A scene's first frame asks for every pipeline its input uses.
+//! The wheel zooms as the controls say, and reduced motion pays every move at once.
 
 #![cfg(feature = "gpu")]
 
@@ -174,59 +174,35 @@ fn a_lit_block_keeps_its_ports_on_top() {
 }
 
 #[test]
-fn what_input_needs_is_made_once_the_view_is_complete() {
+fn a_scene_asks_for_all_it_uses_at_its_first_frame() {
     let Some(gpu) = gpu() else { return };
-    let mut view = View::new(&gpu, scene(editing())).expect("valid scene");
+    // Its first frame asks for every pipeline the scene can use: a menu, a connection, a selection,
+    // the keys, and a transition after them make none where it is first used.
+    let scene = scene(editing()).ease(std::time::Duration::from_millis(200));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    // Its data not yet given, the view waits: its first frame makes what it draws with, and nothing more.
-    step(&gpu, &mut view);
-    let drawing = gpu.work().pipelines;
-    for _ in 0..5 {
-        step(&gpu, &mut view);
-    }
-    assert_eq!(gpu.work().pipelines, drawing, "nothing input needs while the view waits");
     view.set_data(graph());
     frame(&gpu, &mut view);
-    assert!(view.complete(), "waiting on {}", view.stats().waiting);
-    let (opened, drawn) = (gpu.work().pipelines, view.stats().frames);
-    for _ in 0..common::SETTLE {
-        if !view.wants_frame() {
-            break;
-        }
-        assert!(!view.needs_render(), "nothing changes");
-        common::wait(common::TICK);
-        view.go_on(common::now());
-    }
-    assert!(gpu.work().pipelines > opened, "what the hover and intents need, made once complete");
-    assert_eq!(view.stats().frames, drawn, "in frames that draw nothing");
-    assert!(!view.wants_frame(), "and then nothing more");
-}
-
-#[test]
-fn a_live_plot_makes_what_input_needs_once_it_has_a_value_range() {
-    let Some(gpu) = gpu() else { return };
-    // A trace growing every frame has its value range measured again every frame, so the view is
-    // never complete; its opening is over once it has a range.
-    let axis = latkit::Axis { grid: false, hidden: true, ..latkit::Axis::default() };
-    let scene = Scene::new(latkit::Plot { x: axis.clone(), y: axis })
-        .theme(plain_theme())
-        .draw(latkit::Lines::of("signals", "Signal").trace("v").width(2.0));
-    let mut view = View::new(&gpu, scene).expect("valid scene");
-    let mut data = Data::new("signals");
-    data.apply(Patch::new().set(Table::new("Signal", Ids::count(1))).append([0.0], "Signal", [("v", vec![0.0])]))
+    let at = [C - 40.0, C];
+    let menu = |e: &Event| matches!(e, Event::Menu { .. }).then_some(());
+    after(&gpu, &mut view, &[moved(at), down(at, Button::Secondary), up(at)], menu);
+    let (port, target) = ([C - 32.0, C], [C + 40.0, C]);
+    after(
+        &gpu,
+        &mut view,
+        &[moved(port), down(port, Button::Primary), moved([C, C]), moved(target), up(target)],
+        connected,
+    );
+    let selected = |e: &Event| matches!(e, Event::Select { .. }).then_some(());
+    after(&gpu, &mut view, &[moved(at), down(at, Button::Primary), up(at)], selected);
+    after(&gpu, &mut view, &[key(Key::Menu)], menu);
+    let mut moved_graph = graph();
+    moved_graph
+        .apply(Patch::new().set(Table::new("Node", vec![1_u64, 2, 3]).field("x", vec![-20.0, 20.0, 0.0])))
         .expect("valid");
-    view.set_data(data.clone());
-    step(&gpu, &mut view);
-    let drawing = gpu.work().pipelines;
-    for t in 1..60 {
-        let t = f64::from(t);
-        data.apply(Patch::new().append([t], "Signal", [("v", vec![t.sin()])])).expect("valid");
-        view.set_data(data.clone());
-        view.set_camera(Camera::Plot { x: [0.0, t], y: None });
-        step(&gpu, &mut view);
-    }
-    assert!(!view.complete(), "a value range measured again every frame");
-    assert!(gpu.work().pipelines > drawing, "what the hover and intents need, made without a pointer");
+    view.set_data(moved_graph);
+    frame(&gpu, &mut view);
+    assert_eq!(gpu.work().late, 0, "every pipeline was asked for at the first frame");
 }
 
 #[test]

@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use web_time::Instant;
 
+use crate::gpu::pipelines::{Asked, Variant};
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::gpu::{FORMAT, Gpu};
@@ -368,16 +369,24 @@ impl Picture {
 
 impl Drawing {
     /// Draws every view into its panel at `time` once. When every one is complete, and with `still`
-    /// none eases, composes them and starts reading the picture back.
+    /// none eases, composes them and starts reading the picture back. Until what the views draw with
+    /// compiled, it draws nothing and waits for that to land, eased or not.
     pub(crate) fn step(&mut self, views: &mut [&mut View], time: f64, still: bool) -> Result<Step> {
         let picture = self.picture.as_ref().ok_or_else(|| Error::invalid("a picture begins before it draws"))?;
         if picture.gpu.lost() {
             return Err(Error::DeviceLost);
         }
         self.check_deadline()?;
+        let scale = self.shot.scale;
+        let mut ready = true;
+        for view in views.iter_mut() {
+            ready &= view.ready_for(FORMAT, scale, false);
+        }
+        if !ready {
+            return Ok(Step::Waiting);
+        }
         let device = picture.gpu.device();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit shot") });
-        let scale = self.shot.scale;
         for (view, panel) in views.iter_mut().zip(&picture.panels) {
             let frame = Frame { target: &panel.target, format: FORMAT, size: panel.size, pixel_ratio: scale, time };
             view.render_picture(&mut encoder, &frame);
@@ -389,7 +398,8 @@ impl Drawing {
             return Err(error);
         }
         self.check_deadline()?;
-        let step = if complete && !easing {
+        let composes = picture.composes(self.pixels, &self.waker);
+        let step = if complete && !easing && composes {
             picture.compose(&mut encoder, self.pixels, self.shot.size);
             let inner = picture.gpu.0.lock();
             let (buffer, len) = (&picture.buffer, picture.len);
@@ -448,16 +458,39 @@ impl Drawing {
     }
 }
 
+/// The compose passes of a picture of `pixels`: the background's, each panel's, and the blocks each
+/// thread writes.
+fn composing(pixels: Pixels) -> (&'static str, &'static str, [u32; 2]) {
+    match pixels {
+        Pixels::Rgba => ("fill_rgba", "rgba", [1, 1]),
+        Pixels::Nv12 => ("fill_nv12", "nv12", [4, 2]),
+    }
+}
+
 impl Picture {
+    /// Whether what composes it into `pixels` compiled: asked for as its first picture composes, all
+    /// at once, `waker` waking as it lands.
+    fn composes(&self, pixels: Pixels, waker: &Waker) -> bool {
+        let (fill, each, _) = composing(pixels);
+        let needs: Vec<Asked> = self
+            .fill
+            .as_ref()
+            .map(|_| fill)
+            .into_iter()
+            .chain([each])
+            .map(|entry| Asked::Shader(Variant::compute(Shader::Compose, entry)))
+            .collect();
+        let mut inner = self.gpu.0.lock();
+        inner.pipelines.ask(self.gpu.device(), &needs, waker);
+        inner.pipelines.ready(&needs)
+    }
+
     /// Records the passes composing every panel into the picture's `pixels`, the background first
     /// where panels leave gaps.
     fn compose(&self, encoder: &mut wgpu::CommandEncoder, pixels: Pixels, size: [u32; 2]) {
         let device = self.gpu.device();
         let mut inner = self.gpu.0.lock();
-        let (fill, each, block) = match pixels {
-            Pixels::Rgba => ("fill_rgba", "rgba", [1, 1]),
-            Pixels::Nv12 => ("fill_nv12", "nv12", [4, 2]),
-        };
+        let (fill, each, block) = composing(pixels);
         let groups = |size: [u32; 2]| [0, 1].map(|i| size[i].div_ceil(block[i]).div_ceil(16));
         let mut pass = encoder
             .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("latkit compose"), timestamp_writes: None });

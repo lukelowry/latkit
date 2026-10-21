@@ -359,6 +359,8 @@ pub struct Stats {
 /// The work under way a frame stood in for, by kind; nothing when the frame was complete.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Waiting {
+    /// Pipelines the scene draws with still compiling: until they land the view draws nothing new.
+    pub compiling: bool,
     /// Pages its marks draw still uploading, or tables not yet built from them.
     pub data: bool,
     /// Layouts, routes, lanes, shapes, tiles, or pyramids under way.
@@ -379,10 +381,17 @@ impl Waiting {
 
     /// The names of what it waits on, as its fields are named.
     pub fn names(&self) -> impl Iterator<Item = &'static str> {
-        let Waiting { data, derived, labels, fit, marks } = *self;
-        [("data", data), ("derived", derived), ("labels", labels), ("fit", fit), ("marks", marks)]
-            .into_iter()
-            .filter_map(|(name, waiting)| waiting.then_some(name))
+        let Waiting { compiling, data, derived, labels, fit, marks } = *self;
+        [
+            ("compiling", compiling),
+            ("data", data),
+            ("derived", derived),
+            ("labels", labels),
+            ("fit", fit),
+            ("marks", marks),
+        ]
+        .into_iter()
+        .filter_map(|(name, waiting)| waiting.then_some(name))
     }
 }
 
@@ -406,9 +415,9 @@ impl schemars::JsonSchema for Waiting {
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "Work under way a frame stands in for: pages uploading or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again, segment counts, or a transition beginning (`marks`). Empty once a frame is complete.",
+            "description": "Work under way a frame stands in for: pipelines the scene draws with compiling, until which the view draws nothing new (`compiling`); pages uploading or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again, segment counts, or a transition beginning (`marks`). Empty once a frame is complete.",
             "type": "array",
-            "items": { "enum": ["data", "derived", "labels", "fit", "marks"] },
+            "items": { "enum": ["compiling", "data", "derived", "labels", "fit", "marks"] },
         })
     }
 }

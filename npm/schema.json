@@ -587,8 +587,11 @@
           "description": "Tells two marks of one table apart across scenes, and names the mark in hits."
         },
         "pick": {
-          "type": "boolean",
-          "description": "Whether rows are hovered, clicked, and probed."
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether rows are hovered, clicked, and probed. Unless set, rows that are things are\n(vertices, edges, faces, a plot's traces) and geometry is not (areas, and lines along\npaths: coasts, borders, roads)."
         },
         "select": {
           "type": "boolean",
@@ -1695,8 +1698,11 @@
           "description": "Tells two marks of one table apart across scenes, and names the mark in hits."
         },
         "pick": {
-          "type": "boolean",
-          "description": "Whether rows are hovered, clicked, and probed."
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether rows are hovered, clicked, and probed. Unless set, rows that are things are\n(vertices, edges, faces, a plot's traces) and geometry is not (areas, and lines along\npaths: coasts, borders, roads)."
         },
         "select": {
           "type": "boolean",
@@ -1820,8 +1826,11 @@
           "description": "Tells two marks of one table apart across scenes, and names the mark in hits."
         },
         "pick": {
-          "type": "boolean",
-          "description": "Whether rows are hovered, clicked, and probed."
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether rows are hovered, clicked, and probed. Unless set, rows that are things are\n(vertices, edges, faces, a plot's traces) and geometry is not (areas, and lines along\npaths: coasts, borders, roads)."
         },
         "select": {
           "type": "boolean",
@@ -1949,8 +1958,11 @@
           "description": "Tells two marks of one table apart across scenes, and names the mark in hits."
         },
         "pick": {
-          "type": "boolean",
-          "description": "Whether rows are hovered, clicked, and probed."
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether rows are hovered, clicked, and probed. Unless set, rows that are things are\n(vertices, edges, faces, a plot's traces) and geometry is not (areas, and lines along\npaths: coasts, borders, roads)."
         },
         "select": {
           "type": "boolean",
@@ -2068,8 +2080,11 @@
           "description": "Tells two marks of one table apart across scenes, and names the mark in hits."
         },
         "pick": {
-          "type": "boolean",
-          "description": "Whether rows are hovered, clicked, and probed."
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether rows are hovered, clicked, and probed. Unless set, rows that are things are\n(vertices, edges, faces, a plot's traces) and geometry is not (areas, and lines along\npaths: coasts, borders, roads)."
         },
         "select": {
           "type": "boolean",
@@ -4231,10 +4246,11 @@
       "description": "Where a view looks."
     },
     "Waiting": {
-      "description": "Work under way a frame stands in for: pages uploading or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again, segment counts, or a transition beginning (`marks`). Empty once a frame is complete.",
+      "description": "Work under way a frame stands in for: pipelines the scene draws with compiling, until which the view draws nothing new (`compiling`); pages uploading or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again, segment counts, or a transition beginning (`marks`). Empty once a frame is complete.",
       "type": "array",
       "items": {
         "enum": [
+          "compiling",
           "data",
           "derived",
           "labels",
@@ -4408,7 +4424,13 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Pipelines made."
+          "description": "Pipelines compiled: in a browser, each as a view or a shot asks for it ahead, off the GPU's\nthread; natively, where it is first made."
+        },
+        "late": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Pipelines made without being asked for ahead, each compiled where it is first used: in a\nbrowser on the GPU's thread, holding frames back. None, unless a scene uses what it did not\nask for."
         }
       },
       "required": [
@@ -4418,7 +4440,8 @@
         "readbacks",
         "jobs",
         "texts",
-        "pipelines"
+        "pipelines",
+        "late"
       ],
       "description": "What a [`Gpu`](crate::Gpu) did since it was made; subtract two for what happened between."
     },

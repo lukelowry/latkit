@@ -2,29 +2,37 @@
 //! so reading never stalls a frame and never submits on its own; once mapped, it wakes what waits on
 //! it. Map buffers come from a pool and go back to it once read, so hovering allocates nothing.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::Waker;
 
 use super::work::{Count, Counters};
 use crate::{Error, Result};
 
-/// Map buffers no readback holds, by size, and what counts the readbacks made from them. Every pool
-/// says whether it counts, so none stops counting by default.
+/// Map buffers no readback holds, by size, what counts the readbacks made from them, and how many
+/// are still mapping. Every pool says whether it counts, so none stops counting by default.
 #[derive(Clone)]
 pub(crate) struct Readbacks {
     free: Arc<Mutex<Vec<wgpu::Buffer>>>,
     counters: Option<Arc<Counters>>,
+    mapping: Arc<AtomicU64>,
 }
 
 impl Readbacks {
     /// A pool whose readbacks `counters` counts: the `Gpu`'s.
     pub(crate) fn counted(counters: Arc<Counters>) -> Readbacks {
-        Readbacks { free: Arc::default(), counters: Some(counters) }
+        Readbacks { free: Arc::default(), counters: Some(counters), mapping: Arc::default() }
     }
 
     /// A pool whose readbacks count as no work: the frame timer's, which only some devices have.
     pub(crate) fn uncounted() -> Readbacks {
-        Readbacks { free: Arc::default(), counters: None }
+        Readbacks { free: Arc::default(), counters: None, mapping: Arc::default() }
+    }
+
+    /// Readbacks of this pool the GPU has yet to map.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    pub(crate) fn mapping(&self) -> u64 {
+        self.mapping.load(Ordering::Acquire)
     }
 
     fn take(&self, device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -78,9 +86,12 @@ impl Readback {
         let mapping = Arc::new(Mutex::new(Mapping::Waiting));
         let done = mapping.clone();
         let waker = waker.clone();
+        let pending = pool.mapping.clone();
+        pending.fetch_add(1, Ordering::AcqRel);
         encoder.map_buffer_on_submit(&buffer, wgpu::MapMode::Read, ..size, move |result| {
             *done.lock().unwrap_or_else(PoisonError::into_inner) =
                 if result.is_ok() { Mapping::Ready } else { Mapping::Failed };
+            pending.fetch_sub(1, Ordering::AcqRel);
             waker.wake();
         });
         Readback { buffer: Some(buffer), size, pool: pool.clone(), mapping }

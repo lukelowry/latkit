@@ -16,16 +16,15 @@ import type { Page } from 'playwright-core';
 import { createServer } from 'vite';
 import { STEP, deadline, launch, type Chrome } from './browser.ts';
 
-/** Milliseconds Chrome may take to make any one pipeline, cold: the slowest takes about 0.35 s. */
+/** Milliseconds Chrome may take to compile any one pipeline, cold: the slowest takes about 0.35 s,
+ * and a view opens no sooner than the slowest it uses, the rest compiling beside it. */
 const COMPILE_BUDGET = 800;
-/** Milliseconds from opening a page to its views' first frames: about 0.5 s, now and then 1.2 s. */
-const FIRST_FRAME_BUDGET = 2000;
-/** Milliseconds between two animation frames while a page opens. Chrome holds frames back while its
- * GPU process compiles the pipelines a first frame makes, up to about 1.3 s. */
-const OPENING_BUDGET = 2500;
-/** Milliseconds between two animation frames while the pointer moves over a page: nothing compiles
- * then, so the longest takes 20–50 ms. */
-const STALL_BUDGET = 80;
+/** Milliseconds from opening a page, cold, to its views' first frames, which draw everything their
+ * scenes use: every pipeline compiles side by side, off Chrome's GPU thread. */
+const FIRST_FRAME_BUDGET = 1000;
+/** Milliseconds between two animation frames, while a page opens or the pointer moves over it:
+ * nothing compiles on Chrome's GPU thread, so no frame waits. */
+const FRAME_BUDGET = 50;
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
 const examples = path.dirname(here);
@@ -199,13 +198,10 @@ function frames(page: Page): Promise<void> {
   return deadline(two, STEP, 'animation frames');
 }
 
-/** Waits, for at most `budget` ms, until every view of `page` has opened, then until it has made and
- * Chrome has compiled every pipeline its input needs. A view has opened once it was complete, or
- * once it drew 30 frames waiting on nothing but its fit, as a plot of streaming data measuring its
- * value range again does every frame; a frame Chrome holds back while it compiles is no frame drawn.
- * A pick of every view comes back only once Chrome compiled every pipeline made before it, and a view
- * with more to make makes some on each of the next frames: once neither a pick nor two frames make
- * any, there is none left. */
+/** Waits, for at most `budget` ms, until every view of `page` has opened: it was complete, or it drew
+ * 30 frames waiting on nothing but its fit, as a plot of streaming data measuring its value range
+ * again does every frame. A view draws once every pipeline its scene uses compiled, so then nothing
+ * is left to compile. */
 async function settled(page: Page, budget: number): Promise<void> {
   await page.waitForFunction(
     () => {
@@ -228,22 +224,6 @@ async function settled(page: Page, budget: number): Promise<void> {
     undefined,
     { timeout: budget, polling: 50 },
   );
-  const made = () =>
-    page.evaluate(
-      () =>
-        (window as unknown as { stage: { gpu: { work: { pipelines: number } } } }).stage.gpu.work
-          .pipelines,
-    );
-  for (;;) {
-    const before = await made();
-    await page.evaluate(() => {
-      type Picking = { pick(point: [number, number], radius: number): Promise<unknown> };
-      const views = (window as unknown as { stage: { views: Picking[] } }).stage.views;
-      return Promise.all(views.map((view) => view.pick([0, 0], 1)));
-    });
-    await frames(page);
-    if ((await made()) === before) return;
-  }
 }
 
 /** Opens page `id` in a fresh browser, waits for its first frames, then moves the pointer over
@@ -302,13 +282,10 @@ async function visit(url: string, id: string): Promise<string[]> {
       return failures;
     }
     const first = performance.now() - opened;
-    // Once a view is complete, the frames after make the pipelines its input needs, and Chrome
-    // compiles them ahead of what the GPU does next: wait both out.
-    await deadline(
-      settled(page, 4 * OPENING_BUDGET),
-      4 * OPENING_BUDGET + 1000,
-      `${id}'s input pipelines`,
-    );
+    // What stalls while the views open, from their first frames: what the page did loading before
+    // them shows nothing to stall.
+    await page.evaluate(() => (window as unknown as { resetGap(): void }).resetGap());
+    await deadline(settled(page, STEP), STEP + 1000, `${id}'s opening`);
     await deadline(page.waitForTimeout(500), STEP, 'settle');
     const opening = await page.evaluate(() => (window as unknown as { gap: number }).gap);
     let longest = { gap: 0, step: '' };
@@ -362,17 +339,28 @@ async function visit(url: string, id: string): Promise<string[]> {
     try {
       await deadline(saved, STEP + 1000, `${id}'s picture`);
     } catch {
-      failures.push('no picture exported');
+      // What the views waited on, and what the page said, name why.
+      const said = await page.evaluate(() => {
+        const views = (
+          window as unknown as { stage?: { views: { stats: { waiting: string[] } }[] } }
+        ).stage?.views;
+        const waiting = (views ?? []).map((view) => view.stats.waiting.join('+') || 'nothing');
+        const status = [...document.querySelectorAll('.status, [role=status], output')]
+          .map((element) => element.textContent?.trim())
+          .filter(Boolean);
+        return `views waiting on ${waiting.join(', ')}; the page said ${status.join(' | ') || 'nothing'}`;
+      });
+      failures.push(`no picture exported: ${said}`);
     }
     const { gap, step } = longest;
     console.log(
       `${id}: first frame ${first.toFixed(0)} ms, longest while opening ${opening.toFixed(0)} ms; ` +
         `longest under the pointer ${gap.toFixed(0)} ms, on ${step || 'nothing'}`,
     );
-    if (opening > OPENING_BUDGET)
-      failures.push(`a frame took ${opening.toFixed(0)} ms opening, over ${OPENING_BUDGET}`);
-    if (gap > STALL_BUDGET)
-      failures.push(`a frame took ${gap.toFixed(0)} ms on ${step}, over ${STALL_BUDGET}`);
+    if (opening > FRAME_BUDGET)
+      failures.push(`a frame took ${opening.toFixed(0)} ms opening, over ${FRAME_BUDGET}`);
+    if (gap > FRAME_BUDGET)
+      failures.push(`a frame took ${gap.toFixed(0)} ms on ${step}, over ${FRAME_BUDGET}`);
   } finally {
     await chrome.close();
   }

@@ -305,6 +305,33 @@ export class Gpu {
     return JSON.parse(this.inner.work) as Work;
   }
 
+  /**
+   * Draws one frame now at `now`, milliseconds on the clock animation frames give: the frame
+   * listeners, then every canvas that needs a frame. From the first step no animation frames are
+   * asked for: a harness, as tests and benchmarks are, steps every frame itself, so a run draws the
+   * same frames however fast the device is.
+   */
+  step(now: number): void {
+    this.inner.step(now);
+  }
+
+  /**
+   * Resolves once the GPU finished the work submitted to it, every readback landed, and every
+   * pipeline a view or shot asked for compiled: a frame stepped then draws all of it. A `timeout`
+   * error after `deadline` seconds.
+   */
+  async done({ deadline: seconds = 30 } = {}): Promise<void> {
+    await deadline(this.inner.done() as Promise<void>, seconds, 'the GPU');
+  }
+
+  /**
+   * Resolves when work a view waits on lands after this call (a readback, a compile, a job, a text,
+   * a fetch), or a view asks for a frame. A `timeout` error after `deadline` seconds.
+   */
+  async landed({ deadline: seconds = 30 } = {}): Promise<void> {
+    await deadline(this.inner.landed() as Promise<void>, seconds, 'work landing');
+  }
+
   /** Releases this GPU's canvases, views, and frame listeners. Other GPUs and data stay usable. */
   destroy(): void {
     if (!this.#inner) return;
@@ -547,6 +574,11 @@ export class View {
 
   get stats(): Stats {
     return JSON.parse(this.inner.stats) as Stats;
+  }
+
+  /** Whether the view wants a frame: it changed, or work it waited on landed. */
+  get wantsFrame(): boolean {
+    return this.inner.wantsFrame;
   }
 
   /**

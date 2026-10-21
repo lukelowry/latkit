@@ -12,8 +12,7 @@
 //!   size, to the committed work, and to the times taken on this machine; a lost device stops the
 //!   sweep. `--quick` runs each scenario once at its smallest size. See `benchmark/run.ts`.
 //! - `wasm [--dev]`: build `latkit-js`, bind it with the `wasm-bindgen` CLI matching `Cargo.lock`,
-//!   optimize it with the pinned Binaryen tool, and compile the npm wrapper. `--dev` builds faster
-//!   and skips `wasm-opt`.
+//!   and compile the npm wrapper. `--dev` builds faster, without link-time optimization.
 //! - `version`: give the crates the npm package's version, as changesets set it.
 //! - `package`: build an isolated, optimized npm tarball, the one `pnpm release` publishes, and
 //!   report its sizes and hashes.
@@ -181,12 +180,6 @@ fn build_wasm(dev: bool, output: &str) -> Result {
     let pkg = format!("{output}/pkg");
     let bind = [wasm.as_str(), "--target", "web", "--weak-refs", "--out-dir", &pkg, "--out-name", "latkit"];
     run("wasm-bindgen", &bind)?;
-    let optimized = format!("{pkg}/latkit_bg.wasm");
-    if dev {
-        eprintln!("--dev: the wasm is not size-optimized");
-    } else {
-        run("node", &["npm/build.mjs", "optimize", &optimized])?;
-    }
     run("node", &["npm/build.mjs", "compile", output])
 }
 

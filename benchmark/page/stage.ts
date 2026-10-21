@@ -1,9 +1,12 @@
 /**
- * Where a run happens, and the one way anything in it is measured. A phase is an action, timed from
- * when it starts to the frame where every view is complete and still; a steady phase acts in each of
- * a number of frames, through the GPU's frame listener, so each act shows in its own frame, and its
- * CPU and GPU time are per frame. Both count what the GPU did until everything settled. A lost
- * device fails the phase at once. Every wait races a deadline.
+ * Where a run happens, and the one way anything in it is measured. The stage steps every frame
+ * itself, a sixtieth of a second apart on its own clock, and each frame waits for the GPU (its work
+ * done, its readbacks landed, the pipelines asked for compiled), never for time: a run draws the same
+ * frames however fast the device is, so what it counts repeats. A phase is an action, timed from when
+ * it starts until everything settled: no view wants a frame, every view is complete, and no tile is
+ * loading; work under way that wakes no frame is waited for as it lands. A steady phase acts before
+ * each of a number of frames, so each act shows in its own frame, and its CPU and GPU time are per
+ * frame. A lost device fails the phase at once, and every wait races a deadline.
  */
 import {
   Patch,
@@ -21,7 +24,7 @@ export type Write = (patch: Patch) => Patch;
 
 /** What a phase cost. */
 export interface Cost {
-  /** Milliseconds from the action to the frame where every view was complete. */
+  /** Milliseconds from the action until everything settled. */
   ms: number;
   /** Frames drawn meanwhile. */
   frames: number;
@@ -30,8 +33,6 @@ export interface Cost {
   cpu95: number;
   /** Milliseconds a frame took on the GPU, median; 0 where the device cannot measure. */
   gpu: number;
-  /** The longest wait between animation frames: what a person sees as a stall. */
-  gap: number;
   /** What the GPU did until everything settled. */
   work: Work;
   /** Bytes of data pages on the GPU afterwards. */
@@ -40,19 +41,19 @@ export interface Cost {
   steady: boolean;
 }
 
-/** Milliseconds without a frame, once every view is complete, that count as still. */
-export const STILL = 100;
-/** Frames without a pipeline made, once everything settled: a view with more to make makes some on
- * each frame. */
-const QUIET = 10;
-/** Milliseconds idle frames are counted over once everything settled. */
-export const IDLE = 250;
-/** The longest a phase may act, and then take to settle; the runner grows sizes within it. */
-export const LIMIT = 20_000;
+/** Milliseconds between stepped frames: a display's sixtieth of a second. */
+const FRAME = 1000 / 60;
+/** The most frames a phase may take to settle: ten seconds of a display's frames. */
+const MOST = 600;
+/** Frames stepped once everything settled, in which nothing should draw. */
+const IDLE = 10;
+/** Milliseconds a frame, or work landing, may take: past it, something hangs. */
+const DEADLINE = 30_000;
+/** The longest a phase may take; the runner grows sizes within it. */
+export const LIMIT = 10_000;
 /** Frames a steady phase takes before it measures. */
 export const WARM = 10;
 
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const quantile = (xs: number[], q: number) =>
   xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(q * (xs.length - 1))]! : 0;
 
@@ -63,6 +64,13 @@ export function deadline<T>(work: Promise<T>, ms: number, what: string): Promise
     timer = setTimeout(() => reject(new Error(`${what} took over ${ms} ms`)), ms);
   });
   return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
+/** What the frames a phase stepped drew. */
+interface Drawn {
+  frames: number;
+  cpu: number[];
+  gpu: number[];
 }
 
 export class Stage {
@@ -76,6 +84,8 @@ export class Stage {
   readonly errors: string[] = [];
   scene!: Scene;
   readonly #data = new Map<string, Data>();
+  /** The stepped frames' clock, milliseconds. */
+  #now = performance.now();
 
   constructor(latkit: Latkit, gpu: Gpu, canvases: readonly HTMLCanvasElement[], size: number) {
     [this.latkit, this.gpu, this.canvases, this.size] = [latkit, gpu, canvases, size];
@@ -167,172 +177,125 @@ export class Stage {
 
   /** Acts once, and measures until everything settled. */
   once(act: () => unknown): Promise<Cost> {
-    return this.#phase(false, async (sampler) => {
-      sampler.measuring = true;
-      await act();
+    return this.#phase(false, async (drawn) => {
+      await this.until(Promise.resolve().then(act), drawn, true);
+      await this.#settle(drawn, true);
     });
   }
 
-  /** Calls `act(i)` in each of `count` frames, before the views draw, and measures until everything
-   * settled. */
+  /** `answer`, stepping frames until it comes: what waits on a frame, as a pick or a hover told
+   * does, gets one, and what waits on work landing is waited for. */
+  async until<T>(
+    answer: Promise<T>,
+    drawn: Drawn = { frames: 0, cpu: [], gpu: [] },
+    measuring = false,
+  ): Promise<T> {
+    let came = false;
+    const coming = answer.then(
+      () => (came = true),
+      () => (came = true),
+    );
+    const late = performance.now() + DEADLINE;
+    for (let frames = 0; !came;) {
+      if (this.gpu.lost) throw new Error('the GPU device was lost');
+      if (frames > MOST || performance.now() > late)
+        throw new Error(
+          `no answer after ${frames} frames: waiting on ${this.#waiting() || 'nothing'}`,
+        );
+      if (this.views.some((v) => v.wantsFrame)) {
+        await this.#frame(drawn, measuring);
+        frames++;
+      } else await Promise.race([coming, this.gpu.landed().catch(() => {})]);
+    }
+    return answer;
+  }
+
+  /** Calls `act(i)` before each of `count` frames, and measures until everything settled. */
   steady(count: number, act: (i: number) => void): Promise<Cost> {
-    return this.#phase(
-      true,
-      (sampler) =>
-        new Promise<void>((resolve, reject) => {
-          let i = 0;
-          sampler.act = () => {
-            if (i === count) {
-              [sampler.act, sampler.measuring] = [undefined, false];
-              return resolve();
-            }
-            sampler.measuring = i >= WARM;
-            try {
-              act(i++);
-            } catch (error) {
-              sampler.act = undefined;
-              reject(error instanceof Error ? error : new Error(String(error)));
-            }
-          };
-        }),
+    return this.#phase(true, async (drawn) => {
+      for (let i = 0; i < count; i++) {
+        act(i);
+        await this.#frame(drawn, i >= WARM);
+      }
+      await this.#settle(drawn, false);
+    });
+  }
+
+  /** Frames drawn over `IDLE` frames stepped once everything settled: none, for views that sleep. */
+  async idle(): Promise<number> {
+    const drawn: Drawn = { frames: 0, cpu: [], gpu: [] };
+    await this.#settle(drawn, false);
+    const before = drawn.frames;
+    for (let i = 0; i < IDLE; i++) await this.#frame(drawn, false);
+    return drawn.frames - before;
+  }
+
+  async #phase(steady: boolean, drive: (drawn: Drawn) => Promise<void>): Promise<Cost> {
+    const before = this.gpu.work;
+    const drawn: Drawn = { frames: 0, cpu: [], gpu: [] };
+    const begun = performance.now();
+    await drive(drawn);
+    const ms = performance.now() - begun;
+    const after = this.gpu.work;
+    const work = Object.fromEntries(
+      Object.entries(after).map(([k, v]) => [k, v - before[k as keyof Work]]),
+    ) as unknown as Work;
+    return {
+      ms,
+      frames: drawn.frames,
+      cpu: quantile(drawn.cpu, 0.5),
+      cpu95: quantile(drawn.cpu, 0.95),
+      gpu: quantile(drawn.gpu, 0.5),
+      work,
+      resident: this.views[0]?.stats.resident ?? 0,
+      steady,
+    };
+  }
+
+  /** Steps one frame, once the GPU is done with the last, and counts what the views drew in it:
+   * their CPU and GPU time, when `measuring`. */
+  async #frame(drawn: Drawn, measuring: boolean): Promise<void> {
+    if (this.gpu.lost) throw new Error('the GPU device was lost');
+    const before = this.views.map((v) => v.stats.frames);
+    this.gpu.step((this.#now += FRAME));
+    await deadline(this.gpu.done(), DEADLINE, 'a frame');
+    let [drew, cpu, gpu] = [false, 0, 0];
+    this.views.forEach((view, i) => {
+      const stats = view.stats;
+      if (stats.frames === before[i]) return;
+      [drew, cpu, gpu] = [true, cpu + stats.cpuMs, gpu + stats.gpuMs];
+    });
+    if (!drew) return;
+    drawn.frames++;
+    if (measuring) {
+      drawn.cpu.push(cpu);
+      if (gpu) drawn.gpu.push(gpu);
+    }
+  }
+
+  /** Steps frames until everything settled: no view wants a frame, every view is complete, and no
+   * tile is loading. Work under way that wakes no frame, as a layout or a fetch, is waited for as it
+   * lands. What a once phase draws is `measuring`. */
+  async #settle(drawn: Drawn, measuring: boolean): Promise<void> {
+    await deadline(this.gpu.done(), DEADLINE, 'the GPU');
+    for (let frames = 0; frames < MOST;) {
+      if (this.gpu.lost) throw new Error('the GPU device was lost');
+      if (this.views.some((v) => v.wantsFrame)) {
+        await this.#frame(drawn, measuring);
+        frames++;
+        continue;
+      }
+      if (this.views.every((v) => !v.stats.waiting.length && !v.stats.tilesLoading)) return;
+      await deadline(this.gpu.landed(), DEADLINE, `${this.#waiting()} landing`);
+    }
+    throw new Error(
+      `still drawing after ${MOST} frames: waiting on ${this.#waiting() || 'nothing'}`,
     );
   }
 
-  /** Frames drawn over `IDLE` ms once everything settled: none, for views that sleep. */
-  async idle(): Promise<number> {
-    const sampler = new Sampler(this.gpu, this.views);
-    try {
-      await this.#settled(sampler, this.gpu.work.pipelines);
-      const before = sampler.frames;
-      await wait(IDLE);
-      return sampler.frames - before;
-    } finally {
-      sampler.stop();
-    }
-  }
-
-  async #phase(steady: boolean, drive: (sampler: Sampler) => Promise<void>): Promise<Cost> {
-    const before = this.gpu.work;
-    const sampler = new Sampler(this.gpu, this.views);
-    const begun = performance.now();
-    try {
-      await deadline(drive(sampler), LIMIT, 'the action');
-      const acted = performance.now();
-      await this.#settled(sampler, before.pipelines);
-      const after = this.gpu.work;
-      const work = Object.fromEntries(
-        Object.entries(after).map(([k, v]) => [k, v - before[k as keyof Work]]),
-      ) as unknown as Work;
-      return {
-        ms: Math.max(acted, sampler.drew) - begun,
-        frames: sampler.frames,
-        cpu: quantile(sampler.cpu, 0.5),
-        cpu95: quantile(sampler.cpu, 0.95),
-        gpu: quantile(sampler.gpu, 0.5),
-        gap: sampler.gap,
-        work,
-        resident: this.views[0]?.stats.resident ?? 0,
-        steady,
-      };
-    } finally {
-      sampler.stop();
-    }
-  }
-
-  /** Waits until every view is complete, none drew for `STILL` ms, and `QUIET` frames came without a
-   * pipeline made, with nothing drawn or made since the last; then, while the GPU made pipelines
-   * since it had made `made`, until a pick of every view came back and all settled again. Once its
-   * opening is over, a view makes what its input needs a few a frame without drawing, and Chrome
-   * compiles a pipeline where it is made: a frame it holds back meanwhile comes late, not never, and
-   * a readback comes back only once it compiled every pipeline made before, so the phase that made
-   * them pays for them. Fails at once if the device was lost, and past `LIMIT` names what the views
-   * still waited on. */
-  async #settled(sampler: Sampler, made: number): Promise<void> {
-    const until = performance.now() + LIMIT;
-    const waiting = () => [...new Set(this.views.flatMap((v) => v.stats.waiting))];
-    const still = () =>
-      performance.now() - sampler.drew >= STILL && sampler.quiet >= QUIET && sampler.caught;
-    for (;;) {
-      while (!(waiting().length === 0 && still())) {
-        if (this.gpu.lost) throw new Error('the GPU device was lost');
-        if (performance.now() > until) {
-          const on = waiting();
-          throw new Error(
-            `not settled within ${LIMIT} ms: ${on.length ? `waiting on ${on.join(', ')}` : 'still drawing'}`,
-          );
-        }
-        await wait(20);
-      }
-      if (this.gpu.work.pipelines === made) return;
-      made = this.gpu.work.pipelines;
-      const picks = Promise.all(this.views.map((view) => view.pick([0, 0], 1)));
-      await deadline(picks, Math.max(until - performance.now(), 0), 'a pick');
-    }
-  }
-}
-
-/**
- * Watches every frame through the GPU's frame listener, which runs before the views draw: when it
- * came, and what the views drew since the last. A steady phase acts in the same listener, after the
- * sample, so each act shows in its own frame and two acts never share one.
- */
-class Sampler {
-  measuring = false;
-  /** When a view last drew. */
-  drew = performance.now();
-  frames = 0;
-  gap = 0;
-  /** Frames since the GPU last made a pipeline. */
-  quiet = 0;
-  readonly cpu: number[] = [];
-  readonly gpu: number[] = [];
-  /** What a steady phase does in each frame. */
-  act?: () => void;
-  readonly stop: () => void;
-  readonly #views: readonly View[];
-  readonly #drawn: Map<View, number>;
-  readonly #gpu: Gpu;
-  /** The pipelines the GPU had made by the last frame. */
-  #made: number;
-  #last = performance.now();
-
-  constructor(gpu: Gpu, views: readonly View[]) {
-    this.#views = views;
-    this.#drawn = new Map(views.map((v) => [v, v.stats.frames]));
-    this.#gpu = gpu;
-    this.#made = gpu.work.pipelines;
-    this.stop = gpu.on('frame', (now) => {
-      this.#sample(now);
-      this.act?.();
-    });
-  }
-
-  /** Whether the last frame saw everything: no view drew, and the GPU made no pipeline, since. */
-  get caught(): boolean {
-    const drawn = (v: View) => v.stats.frames === (this.#drawn.get(v) ?? 0);
-    return this.#gpu.work.pipelines === this.#made && this.#views.every(drawn);
-  }
-
-  /** What the views drew since the last frame: the frame the last act showed in. Views opened since
-   * the sampler began, as loading opens them, start from no frames. */
-  #sample(now: number): void {
-    this.gap = Math.max(this.gap, now - this.#last);
-    this.#last = now;
-    const made = this.#gpu.work.pipelines;
-    [this.#made, this.quiet] = made === this.#made ? [made, this.quiet + 1] : [made, 0];
-    let [drew, cpu, gpu] = [false, 0, 0];
-    for (const view of this.#views) {
-      const stats = view.stats;
-      if (stats.frames === (this.#drawn.get(view) ?? 0)) continue;
-      this.#drawn.set(view, stats.frames);
-      [drew, cpu, gpu] = [true, cpu + stats.cpuMs, gpu + stats.gpuMs];
-    }
-    if (!drew) return;
-    this.frames++;
-    this.drew = now;
-    if (this.measuring) {
-      this.cpu.push(cpu);
-      if (gpu) this.gpu.push(gpu);
-    }
+  /** What the views wait on. */
+  #waiting(): string {
+    const tiles = this.views.some((v) => v.stats.tilesLoading) ? ['tiles'] : [];
+    return [...new Set(this.views.flatMap((v) => v.stats.waiting)), ...tiles].join(', ');
   }
 }

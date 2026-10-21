@@ -71,10 +71,12 @@ fn areas_fill_their_polygons_and_leave_their_holes() {
 }
 
 #[test]
-fn areas_pick_their_rows_and_frame_a_fit() {
+fn areas_asked_to_pick_pick_their_rows_and_frame_a_fit() {
     let Some(gpu) = gpu() else { return };
     let data = polygons(vec![vec![square(100.0, 100.0, 40.0)], vec![square(300.0, 100.0, 40.0)]]);
-    let scene = Scene::new(plane()).draw(Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")));
+    // Areas are geometry: they answer the pointer only when asked to.
+    let areas = Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")).pick(true);
+    let scene = Scene::new(plane()).draw(areas);
     let mut view = show(&gpu, scene, data);
     view.fit(Fit::All);
     frame(&gpu, &mut view);

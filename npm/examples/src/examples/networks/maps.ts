@@ -72,16 +72,10 @@ const borders: MapChoice = {
       summary: `coasts and borders in ${seconds(started)}`,
       marks: () => [
         {
-          lines: {
-            of: ['provinces', 'lines'],
-            color: LOOK.line,
-            width: 0.6,
-            dash: true,
-            pick: false,
-          },
+          lines: { of: ['provinces', 'lines'], color: LOOK.line, width: 0.6, dash: true },
         },
-        { lines: { of: ['countries', 'lines'], color: LOOK.line, width: 1, pick: false } },
-        { lines: { of: ['coastline', 'lines'], color: LOOK.coast, width: 1, pick: false } },
+        { lines: { of: ['countries', 'lines'], color: LOOK.line, width: 1 } },
+        { lines: { of: ['coastline', 'lines'], color: LOOK.coast, width: 1 } },
       ],
       unload: (view) => files.forEach((name) => view.removeData(name)),
     };
@@ -109,15 +103,17 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
         summary: `${(received / 1e6).toFixed(1)} MB in ${seconds(started)}, read in ${seconds(fetched)}`,
         marks: ({ labels, states }) => [
           {
+            // Each state holds the grid's figures: hovering one inspects them.
             areas: {
               of: ['states', 'polygons'],
               color: states
                 ? field(states.by).colormap(states.colormap).domain(0, Math.max(states.peak, 1e-6))
                 : LOOK.fill,
               ...(labels ? { label: { text: 'name', size: 10, color: '#8e99aa' } } : {}),
+              pick: true,
             },
           },
-          { lines: { of: ['states', 'polygons'], color: LOOK.line, width: 0.7, pick: false } },
+          { lines: { of: ['states', 'polygons'], color: LOOK.line, width: 0.7 } },
         ],
         unload: (view) => view.removeData('states'),
       };
@@ -135,23 +131,13 @@ const planet: MapChoice = {
     return Promise.resolve({
       summary: 'tiles fetch as the camera asks for them',
       marks: ({ labels }) => [
-        { areas: { of: ['base', 'landcover'], color: LOOK.landcover, pick: false } },
+        { areas: { of: ['base', 'landcover'], color: LOOK.landcover } },
         { areas: { of: ['base', 'park'], color: LOOK.park } },
-        { areas: { of: ['base', 'water'], color: LOOK.water, pick: false } },
+        { areas: { of: ['base', 'water'], color: LOOK.water } },
         // Rivers carry comets downstream, as their ways run.
-        {
-          lines: {
-            of: ['base', 'waterway'],
-            color: LOOK.waterway,
-            width: 0.8,
-            flow: 10,
-            pick: false,
-          },
-        },
+        { lines: { of: ['base', 'waterway'], color: LOOK.waterway, width: 0.8, flow: 10 } },
         { lines: { of: ['base', 'transportation'], color: LOOK.road, width: 0.7 } },
-        {
-          lines: { of: ['base', 'boundary'], color: LOOK.line, width: 1, dash: true, pick: false },
-        },
+        { lines: { of: ['base', 'boundary'], color: LOOK.line, width: 1, dash: true } },
         // Places by rank, 1 the most important; a tile holds only the points inside it, so none repeat.
         ...(labels
           ? [

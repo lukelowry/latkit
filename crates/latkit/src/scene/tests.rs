@@ -35,6 +35,21 @@ fn scenes_match_builders() {
 }
 
 #[test]
+fn things_pick_and_geometry_does_not_unless_asked() {
+    let picks = |mark: Mark| mark.picks();
+    assert!(picks(Vertices::of("d", "t").into()) && picks(Edges::of("d", "t").into()), "rows that are things");
+    assert!(picks(Lines::of("d", "t").trace("v").into()), "a plot's traces");
+    assert!(!picks(Lines::of("d", "t").into()) && !picks(Areas::of("d", "t").into()), "geometry");
+    assert!(picks(Areas::of("d", "t").pick(true).into()) && !picks(Vertices::of("d", "t").pick(false).into()));
+    let marks = scene(
+        r#"{ "space": "mercator", "marks": [ { "areas": { "of": ["m", "states"] } },
+        { "areas": { "of": ["m", "states"], "pick": true } } ] }"#,
+    )
+    .marks;
+    assert_eq!(marks.iter().map(Mark::picks).collect::<Vec<_>>(), [false, true], "JSON says the same");
+}
+
+#[test]
 fn faces_lines_and_controls_match_builders() {
     let json = r##"{
         "space": "plane",

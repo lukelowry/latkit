@@ -262,12 +262,13 @@ export type ViewEvent =
   | { type: 'error'; detail: Failure };
 
 /**
- * Work under way a frame stands in for: pages uploading or tables not yet built from them
+ * Work under way a frame stands in for: pipelines the scene draws with compiling, until which the
+ * view draws nothing new (`compiling`); pages uploading or tables not yet built from them
  * (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or
  * texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again,
  * segment counts, or a transition beginning (`marks`). Empty once a frame is complete.
  */
-export type Waiting = ('data' | 'derived' | 'labels' | 'fit' | 'marks')[];
+export type Waiting = ('compiling' | 'data' | 'derived' | 'labels' | 'fit' | 'marks')[];
 
 /** What a `Gpu` did since it was made; subtract two for what happened between. */
 export interface Work {
@@ -289,6 +290,14 @@ export interface Work {
   jobs: number;
   /** Label texts the host was asked to set. */
   texts: number;
-  /** Pipelines made. */
+  /**
+   * Pipelines compiled: in a browser, each as a view or a shot asks for it ahead, off the GPU's
+   * thread; natively, where it is first made.
+   */
   pipelines: number;
+  /**
+   * Pipelines made without being asked for ahead, each compiled where it is first used: in a browser
+   * on the GPU's thread, holding frames back. None, unless a scene uses what it did not ask for.
+   */
+  late: number;
 }

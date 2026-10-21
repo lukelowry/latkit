@@ -60,7 +60,8 @@ struct Style {
 }
 
 // A segment on screen: its ends as points, in CSS pixels, and in clip space, whether it shows, and
-// how far along it its ends stop short of the vertices they meet, as fractions of it.
+// the part of it drawn, as fractions of it: cut at the near plane, and stopping short of the vertices
+// its ends meet.
 struct OnScreen {
     ends: array<PathPoint, 2>,
     a: vec2f,
@@ -418,29 +419,45 @@ fn lane(row: u32) -> f32 {
     return select(bitcast<f32>(bits), 0.0, missing_bits(bits));
 }
 
-// Segment `s` on screen.
+// The part of the segment from clip position `ca` to `cb` in front of the near plane, as fractions
+// along it. Depth is reversed, so a position lies in front where z <= w, and w - z runs linearly along
+// the segment: one reaching behind the eye is cut where it crosses, not dropped. Empty where both ends
+// lie behind.
+fn in_front(ca: vec4f, cb: vec4f) -> vec2f {
+    let da = ca.w - ca.z;
+    let db = cb.w - cb.z;
+    let t = da / (da - db);
+    return vec2f(select(0.0, t, da < 0.0), select(1.0, t, db < 0.0));
+}
+
+// Segment `s` on screen: the part in front of the near plane, `kept` saying which part of it shows.
 fn segment_screen(s: Segment) -> OnScreen {
     let ends = segment_ends(s);
     var out: OnScreen;
     out.ends = ends;
-    out.ca = clip_of(ends[0].world);
-    out.cb = clip_of(ends[1].world);
+    let ca = clip_of(ends[0].world);
+    let cb = clip_of(ends[1].world);
+    let cut = in_front(ca, cb);
     // A segment reaching past the globe's edge draws, and the globe's depth cuts it there.
     let ahead = ends[0].ahead || ends[1].ahead;
-    out.shown = ends[0].shown && ends[1].shown && ahead && out.ca.w > 0.0 && out.cb.w > 0.0;
+    out.shown = ends[0].shown && ends[1].shown && ahead && cut.x < cut.y;
+    out.ca = mix(ca, cb, cut.x);
+    out.cb = mix(ca, cb, cut.y);
     out.a = to_screen(out.ca);
     out.b = to_screen(out.cb);
-    out.kept = vec2f(0.0, 1.0);
-    // Strokes stop at the outlines of the vertices they end at, without passing each other.
+    out.kept = cut;
+    // Strokes stop at the outlines of the vertices they end at, without passing each other; an end
+    // cut at the near plane has no vertex there.
     let along = out.b - out.a;
     let length_along = length(along);
     if length_along > 1e-3 {
         let dir = along / length_along;
         let room = 0.5 * length_along;
-        let short = vec2f(min(outline(ends[0], dir), room), min(outline(ends[1], dir), room));
+        let outlines = vec2f(select(outline(ends[0], dir), 0.0, cut.x > 0.0), select(outline(ends[1], dir), 0.0, cut.y < 1.0));
+        let short = min(outlines, vec2f(room));
         out.a += dir * short.x;
         out.b -= dir * short.y;
-        out.kept = vec2f(short.x, length_along - short.y) / length_along;
+        out.kept = mix(vec2f(cut.x), vec2f(cut.y), vec2f(short.x, length_along - short.y) / length_along);
     }
     return out;
 }

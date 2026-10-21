@@ -67,8 +67,13 @@ work! {
     jobs: Jobs,
     /// Label texts the host was asked to set.
     texts: Texts,
-    /// Pipelines made.
+    /// Pipelines compiled: in a browser, each as a view or a shot asks for it ahead, off the GPU's
+    /// thread; natively, where it is first made.
     pipelines: Pipelines,
+    /// Pipelines made without being asked for ahead, each compiled where it is first used: in a
+    /// browser on the GPU's thread, holding frames back. None, unless a scene uses what it did not
+    /// ask for.
+    late: Late,
 }
 
 /// The device's queue, counting what is written through it; everything else it does as the queue.

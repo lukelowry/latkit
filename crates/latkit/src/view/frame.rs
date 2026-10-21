@@ -10,7 +10,7 @@ use super::passes::Drawn;
 use super::resources::{EyeSlot, MARK_STRIDE, Resources};
 use super::sync::{Source, Synced, Window, table_of};
 use super::transition::{remap, replaced, rewritten};
-use super::{Camera, Event, Frame, View, Waiting, timer, uniforms};
+use super::{Camera, Event, Frame, View, timer, uniforms};
 use crate::expr::compile::Deps;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
@@ -21,7 +21,9 @@ use crate::{Error, derive};
 const TRAVEL: f64 = 0.1;
 
 impl View {
-    /// Records `frame` of the scene into `encoder`; the caller submits it.
+    /// Records `frame` of the scene into `encoder`; the caller submits it. Until the view is
+    /// [ready](View::ready) for the frame's target it records nothing, and the target keeps what it
+    /// holds.
     ///
     /// Uploads stream within the GPU's budget per frame. A mark shows a new data version once all of
     /// its changed pages are on the GPU, and keeps drawing the previous one until then.
@@ -29,28 +31,10 @@ impl View {
         self.record(encoder, frame, true);
     }
 
-    /// Records `frame` for a picture, which takes no input: it makes what it draws with, and leaves
-    /// the pipelines input needs to the frames that take it.
+    /// Records `frame` for a picture, which takes no input: it asks for what it draws and changes
+    /// with alone.
     pub(crate) fn render_picture(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>) {
         self.record(encoder, frame, false);
-    }
-
-    /// Goes on to `time` without drawing, on a frame the view wants that would look as the last one
-    /// did ([`wants_frame`](View::wants_frame) but not [`needs_render`](View::needs_render)): a touch
-    /// held long enough asks for its menu, and the next few pipelines input needs are made. It records
-    /// nothing, so the target keeps the last frame.
-    pub fn go_on(&mut self, time: f64) {
-        if self.gpu.lost() {
-            return;
-        }
-        let gpu = self.gpu.clone();
-        let _ = gpu.0.device.poll(wgpu::PollType::Poll);
-        self.tell_gpu_errors();
-        self.clock.tick(time);
-        self.held_long();
-        if let Some((format, samples)) = self.pipelines_made {
-            self.make_pipelines(&mut gpu.0.lock(), format, samples, true);
-        }
     }
 
     fn record(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>, input: bool) {
@@ -59,6 +43,9 @@ impl View {
                 self.told_lost = true;
                 self.events.tell(Event::Error(Error::DeviceLost));
             }
+            return;
+        }
+        if !self.ready_for(frame.format, frame.pixel_ratio, input) {
             return;
         }
         let started = Instant::now();
@@ -78,7 +65,6 @@ impl View {
         self.settle();
         self.advance(dt);
         let mut inner = gpu.0.lock();
-        self.make_pipelines(&mut inner, frame.format, super::resources::samples(frame.pixel_ratio), input);
         inner.atlas.tick();
         self.settle_labels(&mut inner);
         self.derive(&mut inner);
@@ -94,8 +80,11 @@ impl View {
             self.resources.as_mut().expect("created").write_lit(device, queue, &rows);
         }
         let measure = self.measuring();
-        let probe = self.probe_point();
-        let query = self.lay_out_lists();
+        // A picture takes no input; frames that do probe and answer queries once what those use
+        // compiled.
+        let answers = input && self.answers();
+        let probe = self.probe_point(answers);
+        let query = self.lay_out_lists(answers);
         let projected = self.projected();
         let srgb = frame.format.is_srgb();
         let mut uniform = uniforms::frame(&self.scene, &projected, self.size, srgb, elapsed, self.at);
@@ -150,7 +139,7 @@ impl View {
         self.events.extend(inner.atlas.errors.drain(..).map(Event::Error));
         self.events.extend(self.derived.take_errors().into_iter().map(Event::Error));
         drop(inner);
-        self.end(started);
+        self.end(started, input);
     }
 
     /// The time effects show this frame, and the seconds comets travel to it. What reads the clock
@@ -173,11 +162,10 @@ impl View {
     }
 
     /// Ends a frame begun at `started`: what it stood in for, what it took, and the next frame its
-    /// work asks for, as work landing between frames does.
-    fn end(&mut self, started: Instant) {
+    /// work asks for, as work landing between frames does. A frame taking no `input`, a picture's,
+    /// asks none for probes and queries, which only frames that take input run.
+    fn end(&mut self, started: Instant, input: bool) {
         let waiting = self.under_way();
-        let opening = Waiting { fit: waiting.fit && !self.refitting(), ..waiting };
-        self.opened |= opening.is_empty();
         if waiting != self.waiting {
             self.waiting = waiting;
             self.events.tell(Event::Waiting(waiting));
@@ -185,7 +173,7 @@ impl View {
         self.changed = false;
         self.stats.frames += 1;
         self.stats.cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
-        if self.due() {
+        if self.due(input) {
             self.signal.ask();
         }
     }
@@ -321,10 +309,11 @@ impl View {
     }
 
     /// Lays out the lists buffer: the marks' segment lists, then the lists of this frame's query,
-    /// whose words and depth use it returns. A buffer replaced empty counts every segment again.
-    fn lay_out_lists(&mut self) -> Option<([f32; 4], bool)> {
+    /// when it `answers` them, whose words and depth use it returns. A buffer replaced empty counts
+    /// every segment again.
+    fn lay_out_lists(&mut self, answers: bool) -> Option<([f32; 4], bool)> {
         self.lay_out_segments();
-        let query = self.next_query();
+        let query = if answers { self.next_query() } else { None };
         let words = self.queries.words().max(self.segment_words);
         let device = &self.gpu.0.device;
         self.resources.as_mut().expect("created").fit_lists(device, u64::from(words));

@@ -15,6 +15,7 @@ export interface Listed {
   unit: string;
   sizes: readonly number[];
   cold: boolean;
+  fetches: boolean;
   orders: Record<string, Order>;
 }
 
@@ -25,7 +26,7 @@ export interface Run {
   machine: string;
   /** Every phase in order: `init`, `data`, `load`, then the scenario's. */
   phases: Record<string, Cost>;
-  /** Frames drawn over `IDLE` ms once everything settled. */
+  /** Frames drawn over frames stepped once everything settled: none, for views that sleep. */
   idle: number;
   /** Bytes the budget lets data take. */
   budget: number;
@@ -56,6 +57,7 @@ function list(): Listed[] {
     unit: s.unit,
     sizes: s.sizes,
     cold: !!s.cold,
+    fetches: !!s.fetches,
     orders: {
       init: { time: 0 },
       data: { time: 1 },
@@ -76,7 +78,7 @@ async function run(name: string, size: number): Promise<Run> {
   gpu.budget = scenario.budget ?? BUDGET;
   const built = scenario.build(size);
   const stage = new Stage(latkit, gpu, await canvases(scenario.views?.(size) ?? 1), size);
-  const none = { frames: 0, cpu: 0, cpu95: 0, gpu: 0, gap: 0, resident: 0, steady: false };
+  const none = { frames: 0, cpu: 0, cpu95: 0, gpu: 0, resident: 0, steady: false };
   // Each phase says when it starts, so a page that stops answering is known by where it stopped.
   const named = <T>(phase: string, run: () => Promise<T>) => {
     console.debug(`phase ${phase}`);

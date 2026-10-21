@@ -448,10 +448,9 @@ body:has(aside[hidden]) :is(main, footer) {
   body {
     height: auto;
     min-height: 100dvh;
-    grid-template: 'header' 56px 'error' auto 'main' minmax(
-        360px,
-        65dvh
-      ) 'footer' auto 'side' auto / minmax(0, 1fr);
+    grid-template:
+      'header' 56px 'error' auto 'main' minmax(360px, 65dvh)
+      'footer' auto 'side' auto / minmax(0, 1fr);
   }
   header {
     gap: 12px;

@@ -126,7 +126,7 @@ impl View {
             let mut shows = false;
             for shown in &self.marks {
                 let style = shown.mark.style();
-                if (picked && !style.interaction.pick) || style.data != row.data || style.table != row.table {
+                if (picked && !shown.mark.picks()) || style.data != row.data || style.table != row.table {
                     continue;
                 }
                 shows = true;

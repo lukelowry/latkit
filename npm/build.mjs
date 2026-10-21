@@ -28,32 +28,6 @@ if (mode === 'prepare') {
   delete manifest.scripts;
   delete manifest.devDependencies;
   write(path.join(stage, 'package.json'), manifest);
-} else if (mode === 'optimize') {
-  const binaryen = read(path.join(root, 'node_modules/binaryen/package.json')).version;
-  assert.equal(binaryen, read(path.join(root, 'package.json')).devDependencies.binaryen);
-  const wasm = path.resolve(root, directory);
-  const before = fs.statSync(wasm).size;
-  execFileSync(
-    process.execPath,
-    [
-      path.join(root, 'node_modules/binaryen/bin/wasm-opt'),
-      '-Oz',
-      '--enable-simd',
-      '--enable-bulk-memory',
-      '--enable-reference-types',
-      '--enable-nontrapping-float-to-int',
-      '--enable-sign-ext',
-      wasm,
-      '-o',
-      wasm,
-    ],
-    { stdio: 'inherit' },
-  );
-  write(path.join(path.dirname(wasm), 'build.json'), {
-    binaryen,
-    before,
-    after: fs.statSync(wasm).size,
-  });
 } else if (mode === 'schema') {
   const types = await typescript(path.join(root, 'npm/schema.json'));
   for (const [name, source] of Object.entries(types)) {
@@ -131,7 +105,6 @@ if (mode === 'prepare') {
       typescript: read(path.join(root, 'node_modules/typescript/package.json')).version,
       esbuild: read(path.join(root, 'node_modules/esbuild/package.json')).version,
     },
-    optimization: read(path.join(stage, 'pkg/build.json')),
     sha256: createHash('sha256').update(fs.readFileSync(tarball)).digest('hex'),
     sizes,
   };

@@ -110,6 +110,31 @@ impl Gpu {
     pub fn work(&self) -> String {
         to_json(&self.0.work())
     }
+
+    /// Draws one frame now at `now`, milliseconds as an animation frame's timestamp; from the first,
+    /// no animation frames are asked for.
+    pub fn step(&self, now: f64) {
+        latkit::web::step(&self.0, now);
+    }
+
+    /// Resolves once the GPU finished what was submitted, every readback landed, and every pipeline
+    /// asked for compiled.
+    pub fn done(&self) -> js_sys::Promise {
+        let gpu = self.0.clone();
+        promise(async move {
+            latkit::web::done(&gpu).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Resolves when work a view waits on lands after this call, or a view asks for a frame.
+    pub fn landed(&self) -> js_sys::Promise {
+        let landed = latkit::web::landed(&self.0);
+        promise(async move {
+            landed.await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
 }
 
 #[wasm_bindgen]
@@ -393,6 +418,12 @@ impl View {
     #[wasm_bindgen(getter)]
     pub fn stats(&self) -> String {
         to_json(&self.view.read(latkit::View::stats))
+    }
+
+    /// Whether the view wants a frame: it changed, or work it waited on landed.
+    #[wasm_bindgen(getter, js_name = wantsFrame)]
+    pub fn wants_frame(&self) -> bool {
+        self.view.wants_frame()
     }
 
     /// Every row within `radius` CSS pixels of `point`, nearest first, as JSON hits.

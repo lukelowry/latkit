@@ -41,7 +41,10 @@ surface, graticule, daylight, atmosphere } }`, or `{ plot: { x, y } }`. A grid i
 ## Marks
 
 Every mark names its table, `of: [dataset, table]`, and takes `color`, `visible`, `priority`,
-`label`, `legend`, `shadow`, `name`, and `pick`, `select`, and `drag`.
+`label`, `legend`, `shadow`, `name`, and `pick`, `select`, and `drag`. Unless `pick` says, rows
+that are things are hovered, clicked, and probed (vertices, edges, faces, a plot's traces) and
+geometry is not (areas, and lines along paths: coasts, borders, roads), so hovering probes none of
+it; `pick: true` makes a map's states or cells answer the pointer.
 
 | Mark       | Draws each row as                                                  | Its own options                                                      |
 | ---------- | ------------------------------------------------------------------ | -------------------------------------------------------------------- |

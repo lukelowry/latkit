@@ -92,6 +92,37 @@ fn edges_join_their_ends_and_colormaps_fit_the_values() {
 }
 
 #[test]
+fn edges_ending_far_ahead_and_behind_the_eye_draw_whole() {
+    let Some(gpu) = gpu() else { return };
+    // A plane seen steeply from close by: from the middle one edge runs far ahead, its far end deep in
+    // the view, the other far back, under and past the eye. Each draws all the way across the view:
+    // the one ahead unbroken however differently deep its ends are, the one back cut where it leaves
+    // the view, not dropped.
+    let mut data = Data::new("grid");
+    data.apply(
+        Patch::new()
+            .set(Table::new("Bus", vec![1_u64, 2, 3]).field("x", vec![0.0; 3]).field("y", vec![0.0, 1000.0, -1000.0]))
+            .set(Table::new("Line", Ids::count(2)).reference("from", "Bus", vec![1_u64, 1]).reference(
+                "to",
+                "Bus",
+                vec![2_u64, 3],
+            )),
+    )
+    .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(Theme { edge: Some(Color::rgb(0.0, 1.0, 0.0)), ..plain_theme() })
+        .draw(Edges::of("grid", "Line").ends("from", "to").width(4.0))
+        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 60.0, bearing: 0.0 });
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let middle = SIZE / 2;
+    let column: String = (0..SIZE).map(|y| if at(&pixels, middle, y)[1] > 128 { '#' } else { '.' }).collect();
+    assert!(!column.contains('.'), "the edges down the middle, top to bottom: {column}");
+}
+
+#[test]
 fn great_circles_longer_than_their_list_coarsen_instead_of_stopping_short() {
     let Some(gpu) = gpu() else { return };
     // One edge a third of the way around the equator: sixty arcs, where its list first keeps six.

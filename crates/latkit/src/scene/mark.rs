@@ -117,14 +117,16 @@ impl Stroke {
 /// How a mark's rows answer the pointer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Interaction {
-    pub(crate) pick: bool,
+    /// Whether rows are hovered, clicked, and probed; unless set, what the mark draws says: see
+    /// [`Mark::picks`].
+    pub(crate) pick: Option<bool>,
     pub(crate) select: bool,
     pub(crate) drag: bool,
 }
 
 impl Default for Interaction {
     fn default() -> Interaction {
-        Interaction { pick: true, select: true, drag: false }
+        Interaction { pick: None, select: true, drag: false }
     }
 }
 
@@ -346,6 +348,17 @@ impl Mark {
             Mark::Lines(_) => MarkKind::Lines,
             Mark::Areas(_) => MarkKind::Areas,
         }
+    }
+
+    /// Whether its rows are hovered, clicked, and probed: as its `pick` says, else whether they are
+    /// things, as vertices, edges, faces, and a plot's traces are; geometry (areas, and lines along
+    /// paths: coasts, borders, roads) is not, so hovering probes none of it.
+    pub(crate) fn picks(&self) -> bool {
+        self.style().interaction.pick.unwrap_or(match self {
+            Mark::Vertices(_) | Mark::Edges(_) | Mark::Faces(_) => true,
+            Mark::Lines(lines) => lines.trace.is_some(),
+            Mark::Areas(_) => false,
+        })
     }
 
     /// `error`, met in this mark's options, as the `i`th mark of its scene: its path runs through the
@@ -595,9 +608,10 @@ macro_rules! mark {
             priority: Option<$crate::Expr>,
             /// Tells two marks of one table apart across scenes, and names the mark in hits.
             name: Option<$crate::Name>,
-            /// Whether rows are hovered, clicked, and probed.
-            #[serde(default = "crate::scene::mark::on")]
-            pick: bool,
+            /// Whether rows are hovered, clicked, and probed. Unless set, rows that are things are
+            /// (vertices, edges, faces, a plot's traces) and geometry is not (areas, and lines along
+            /// paths: coasts, borders, roads).
+            pick: Option<bool>,
             /// Whether a click selects a row.
             #[serde(default = "crate::scene::mark::on")]
             select: bool,
@@ -692,10 +706,12 @@ macro_rules! style_methods {
                 self
             }
 
-            /// Whether rows are hovered, clicked, and probed; on by default.
+            /// Whether rows are hovered, clicked, and probed. Unless set, rows that are things are
+            /// (vertices, edges, faces, a plot's traces) and geometry is not (areas, and lines along
+            /// paths: coasts, borders, roads).
             #[must_use]
             pub fn pick(mut self, on: bool) -> Self {
-                self.style.interaction.pick = on;
+                self.style.interaction.pick = Some(on);
                 self
             }
 

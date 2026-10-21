@@ -142,7 +142,7 @@ export default function page(stage: Stage): void {
     const mapped = input.colormap(mapOf(colormap));
     const background = light ? '#f4f1ea' : theme.background;
     const outlines: Mark[] = outline
-      ? [{ lines: { of: ['colors', 'Cell'], color: background, width: 0.75, pick: false } }]
+      ? [{ lines: { of: ['colors', 'Cell'], color: background, width: 0.75 } }]
       : [];
     return {
       // Lines under the cells show through what a map leaves clear.
@@ -156,6 +156,7 @@ export default function page(stage: Stage): void {
       ease: 0.25,
       marks: [
         {
+          // The cells are what the page reads: hovering one reads its value.
           areas: {
             of: ['colors', 'Cell'],
             color: CATEGORICAL.has(colormap)
@@ -163,6 +164,7 @@ export default function page(stage: Stage): void {
               : reversed
                 ? mapped.domain(1, 0)
                 : mapped.domain(0, 1),
+            pick: true,
           },
         },
         ...outlines,
