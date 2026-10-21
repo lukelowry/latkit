@@ -1,5 +1,14 @@
-import { Data, Patch, field, reference, units, type ColormapName, type Scene } from '../latkit.js';
-import type { Stage } from '../ui/stage.js';
+import { theme } from '../../ui/theme.js';
+import {
+  Data,
+  Patch,
+  field,
+  reference,
+  units,
+  type ColormapName,
+  type Scene,
+} from '../../latkit.js';
+import type { Stage } from '../../ui/stage.js';
 import { Body, ROOM, STEP, type Controls } from './body.js';
 import { loadMesh } from './mesh.js';
 
@@ -49,9 +58,7 @@ const SERIES = [
   { field: 'volume', label: 'Volume', color: '#cc9eff' },
 ];
 const THEME = {
-  base: 'dark',
-  background: '#090c11',
-  grid: '#ffffff1c',
+  ...theme,
   shading: 0.7,
 } as const;
 
@@ -66,6 +73,7 @@ const CONTACT_SHADOW = `fn marker(f: MarkerFragment) -> MarkerColor {
 
 export default async function bunny(stage: Stage): Promise<void> {
   const mesh = await loadMesh(new URL('./stanford-bunny.bin', import.meta.url));
+  if (stage.signal.aborted) return;
   const body = new Body(mesh);
   // Reduced motion hops lower, pops gentler, and never orbits.
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
@@ -252,7 +260,7 @@ export default async function bunny(stage: Stage): Promise<void> {
   );
   for (const event of ['pointerup', 'pointercancel', 'lostpointercapture'])
     squashButton.addEventListener(event, () => body.endSquash(), { signal: stage.signal });
-  const world = stage.section('World');
+  const world = stage.section('Physics');
   world.toggle(
     'Wind',
     'w',
@@ -271,16 +279,7 @@ export default async function bunny(stage: Stage): Promise<void> {
     9.81,
     waking((g: number) => (controls.gravity = g)),
   );
-  world.choice(
-    'Time',
-    [
-      ['1×', 1],
-      ['0.5×', 0.5],
-      ['0.2×', 0.2],
-    ],
-    1,
-    (s) => (timeScale = s),
-  );
+  world.speed([1, 0.5, 0.2], 1, (rate) => (timeScale = rate));
   const material = stage.section('Material');
   material.range(
     'Firmness',
@@ -299,14 +298,13 @@ export default async function bunny(stage: Stage): Promise<void> {
     waking((v: number) => (controls.inflate = v)),
   );
   const legend = stage.legend();
-  const legendElement = stage.regions.main.querySelector<HTMLElement>('.legend')!;
   const repaint = (p: string) => {
     paint = p;
     space.show(room(playback.mode === 'live'));
     legend.ramp(PAINTS[p]!.colormap, PAINTS[p]!.legend);
-    legendElement.style.display = p === 'solid' ? 'none' : '';
+    legend.hidden = p === 'solid';
   };
-  material.toggle('Inspect mesh', 'i', false, (on) => {
+  material.toggle('Mesh', 'i', false, (on) => {
     inspect = on;
     space.show(room(playback.mode === 'live'));
   });
@@ -317,7 +315,7 @@ export default async function bunny(stage: Stage): Promise<void> {
     repaint,
   );
 
-  const monitor = stage.section('Monitor');
+  const monitor = stage.section('History');
   monitor.series(SERIES);
   const plot = monitor.view(
     {
@@ -460,7 +458,7 @@ export default async function bunny(stage: Stage): Promise<void> {
     `${mesh.count.toLocaleString()} vertices · ${mesh.springs.a.length.toLocaleString()} springs · ${mesh.faces.a.length.toLocaleString()} faces`,
   );
   legend.ramp(PAINTS[paint]!.colormap, PAINTS[paint]!.legend);
-  legendElement.style.display = 'none';
+  legend.hidden = true;
   body.drop(true);
   publish();
 }

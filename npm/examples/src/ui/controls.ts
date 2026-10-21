@@ -14,14 +14,16 @@ const keyName = (key: string) => (key === ' ' ? 'Space' : key.toUpperCase());
 /** A titled group of controls in the side panel. */
 export class Section {
   readonly element: HTMLElement;
+  readonly content = h('div', { class: 'section-body' });
   /** The row toggles share, made on first use. */
   #toggles?: HTMLElement;
 
   constructor(
     private readonly stage: Stage,
     title: string,
+    open = true,
   ) {
-    this.element = h('section', { class: 'section' }, h('h2', {}, title));
+    this.element = h('details', { class: 'section', open }, h('summary', {}, title), this.content);
   }
 
   /** Buttons in a grid, each also run by its key. */
@@ -33,7 +35,7 @@ export class Section {
       this.stage.key(key, run);
       row.append(button);
     }
-    this.element.append(row);
+    this.content.append(row);
   }
 
   /** A button that stays pressed, also flipped by its key. Returns a setter for outside changes. */
@@ -57,7 +59,7 @@ export class Section {
     const flip = () => set(button.getAttribute('aria-pressed') !== 'true');
     button.addEventListener('click', flip, { signal: this.stage.signal });
     this.stage.key(key, flip);
-    if (!this.#toggles) this.element.append((this.#toggles = h('div', { class: 'actions' })));
+    if (!this.#toggles) this.content.append((this.#toggles = h('div', { class: 'actions' })));
     this.#toggles.append(button);
     return set;
   }
@@ -82,7 +84,7 @@ export class Section {
     };
     input.addEventListener('input', update, { signal: this.stage.signal });
     update();
-    this.element.append(h('label', { class: 'field' }, h('span', {}, label, output), input));
+    this.content.append(h('label', { class: 'field' }, h('span', {}, label, output), input));
   }
 
   /** One of several options; returns the select, for outside changes. */
@@ -100,7 +102,7 @@ export class Section {
     select.addEventListener('change', () => change(options[select.selectedIndex]![1]), {
       signal: this.stage.signal,
     });
-    this.element.append(h('label', { class: 'field' }, h('span', {}, label), select));
+    this.content.append(h('label', { class: 'field' }, h('span', {}, label), select));
     return select;
   }
 
@@ -110,19 +112,37 @@ export class Section {
       h('span', { style: `--swatch: ${color}` }, label),
     );
     const line = h('p', { class: 'series' }, ...swatches);
-    this.element.append(line);
+    this.content.append(line);
     return line;
   }
 
   /** A line of text the page keeps up to date. */
   note(text = ''): HTMLParagraphElement {
     const line = h('p', { class: 'note' }, text);
-    this.element.append(line);
+    this.content.append(line);
     return line;
   }
 
   /** A view inside this section. */
   view(scene: Scene, options: { label: string; height?: number }): View {
-    return this.stage.view(scene, { ...options, into: this.element });
+    return this.stage.view(scene, { ...options, into: this.content });
+  }
+
+  /** Standard playback speed control. */
+  speed(rates: readonly number[], value: number, change: (value: number) => void): void {
+    this.choice(
+      'Speed',
+      rates.map((rate) => [`${rate}×`, rate] as const),
+      value,
+      change,
+    );
+  }
+
+  /** A labeled text field, such as a selected item's name. */
+  text(label: string, change: (value: string) => void): HTMLInputElement {
+    const input = h('input', { type: 'text' });
+    input.addEventListener('change', () => change(input.value), { signal: this.stage.signal });
+    this.content.append(h('label', { class: 'field' }, h('span', {}, label), input));
+    return input;
   }
 }

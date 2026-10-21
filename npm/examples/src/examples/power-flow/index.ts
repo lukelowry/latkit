@@ -1,3 +1,4 @@
+import { theme } from '../../ui/theme.js';
 /**
  * Grid operations: a state's transmission grid as a control room watches it. Each substation is a
  * gauge of its output sized by its capacity, a plant's round and a load's square; branches are as
@@ -16,9 +17,9 @@ import {
   type Hit,
   type Motion,
   type Scene,
-} from '../latkit.js';
-import { each } from '../ui/rows.js';
-import type { Stage } from '../ui/stage.js';
+} from '../../latkit.js';
+import { each } from '../../ui/rows.js';
+import type { Stage } from '../../ui/stage.js';
 import { Grid, KINDS } from './grid.js';
 import texas from './texas.json';
 
@@ -182,8 +183,7 @@ export default async function page(stage: Stage): Promise<void> {
   const scene = (): Scene => ({
     space: { earth: { projection: 'mercator', surface: LOOK.ground, graticule: false } },
     theme: {
-      base: 'dark',
-      background: LOOK.background,
+      ...theme,
       text: LOOK.text,
       hover: LOOK.hover,
       selected: LOOK.hover,
@@ -228,6 +228,7 @@ export default async function page(stage: Stage): Promise<void> {
 
   // ── Grid ──
   const gridSection = stage.section('Grid');
+  gridSection.note('Simulated data');
   gridSection.range(
     'Demand',
     {
@@ -248,12 +249,12 @@ export default async function page(stage: Stage): Promise<void> {
 
   // ── Layers ──
   const layers = stage.section('Layers');
-  layers.toggle('Comets', 'c', state.comets, (on) => ((state.comets = on), restyle()));
+  layers.toggle('Flow', 'c', state.comets, (on) => ((state.comets = on), restyle()));
   layers.toggle('Labels', 'l', state.labels, (on) => ((state.labels = on), restyle()));
   layers.choice(
     'Motion',
     [
-      ['As the system asks', 'system'],
+      ['System', 'system'],
       ['Full', 'full'],
       ['Reduced', 'reduced'],
     ] as const,
@@ -263,11 +264,11 @@ export default async function page(stage: Stage): Promise<void> {
 
   // ── Inspector ──
   const inspector = stage.section('Inspector');
-  const described = inspector.note('Hover or click a substation or branch.');
+  const described = inspector.note('Select a substation or line.');
   let hovered: Hit | null = null;
   const inspect = () => {
     const row = hovered?.row ?? each(view.selection)[0];
-    if (!row) return void (described.textContent = 'Hover or click a substation or branch.');
+    if (!row) return void (described.textContent = 'Select a substation or line.');
     const value = (name: string) => data.get(row.table, row.id, name) as number;
     const i = Number(row.id);
     if (row.table === 'Substation') {

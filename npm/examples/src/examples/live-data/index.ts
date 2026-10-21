@@ -1,3 +1,5 @@
+import { random } from '../../random.js';
+import { theme } from '../../ui/theme.js';
 import {
   Data,
   Patch,
@@ -7,10 +9,10 @@ import {
   type Hit,
   type Id,
   type Scene,
-} from '../latkit.js';
-import { h } from '../ui/dom.js';
-import { each } from '../ui/rows.js';
-import type { Stage } from '../ui/stage.js';
+} from '../../latkit.js';
+import { h } from '../../ui/dom.js';
+import { each } from '../../ui/rows.js';
+import type { Stage } from '../../ui/stage.js';
 
 /** The areas signals belong to, in the colors tab10 gives them. */
 const AREAS = [
@@ -55,7 +57,7 @@ class Signals {
   readonly name: string[] = [];
   readonly #offset: Float32Array;
   readonly #noise: Float32Array;
-  #seed = 11;
+  readonly #random = random(11);
   /** The area struck by hand, and when. */
   #struck?: { area: number; at: number };
 
@@ -102,13 +104,6 @@ class Signals {
               : 45 + 20 * offset + 8 * swing + 0.5 * noise + 400 * dips;
     }
   }
-
-  #random(): number {
-    let t = (this.#seed = (this.#seed + 0x6d2b79f5) | 0);
-    t = Math.imul(t ^ (t >>> 15), 1 | t);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
 }
 
 /** How far a disturbance has pulled values, `since` seconds after it struck. */
@@ -144,7 +139,7 @@ export default function page(stage: Stage): void {
           y: { label: `${label} (${unit})`, format: 'fixed', precision: digits - 1 },
         },
       },
-      theme: { base: 'dark', background: '#090c11', dim: 0.15 },
+      theme: { ...theme, dim: 0.15 },
       ease: 0,
       marks: [
         {
@@ -231,7 +226,7 @@ export default function page(stage: Stage): void {
 
   const readout = stage.section('Reading');
   const reading = h('p', { class: 'series' });
-  readout.element.append(reading);
+  readout.content.append(reading);
   const name = (id: Id) => (data.get('Signal', id, 'name') as string | null) ?? `Signal ${id}`;
   const format = (value: number) => {
     const { unit, digits } = shown();
@@ -256,9 +251,9 @@ export default function page(stage: Stage): void {
 
   // The signals furthest out at the time shown, read by a query: a pick, of every signal, in
   // linear time.
-  const hottest = stage.section('Hot');
+  const hottest = stage.section('Largest changes', false);
   const hot = h('ol', { class: 'hot' });
-  hottest.element.append(hot);
+  hottest.content.append(hot);
   const list = () => {
     listed = performance.now();
     if (!data.span) return;
@@ -296,9 +291,10 @@ export default function page(stage: Stage): void {
     );
   };
 
-  const record = stage.section('Record');
+  const record = stage.section('Data');
+  record.note('Simulated data');
   record.choice(
-    'Measures',
+    'Measure',
     Object.entries(QUANTITIES).map(
       ([key, q]) => [`${q.label} (${q.unit})`, key as Quantity] as const,
     ),
@@ -330,9 +326,8 @@ export default function page(stage: Stage): void {
     (r) => (rate = r),
   );
   record.actions([{ label: 'Reset', key: 'n', run: () => restart() }]);
-  record.note('Measuring something else starts the record again.');
 
-  const show = stage.section('Show');
+  const show = stage.section('Display');
   show.choice(
     'Window',
     [
@@ -392,7 +387,7 @@ export default function page(stage: Stage): void {
     maps.append(swatch);
     return [map, swatch] as const;
   });
-  show.element.append(maps);
+  show.content.append(maps);
   const legend = stage.legend('top');
   const restyle = () => {
     view.show(scene());
@@ -404,7 +399,7 @@ export default function page(stage: Stage): void {
       swatch.setAttribute('aria-pressed', String(map === colormap));
   };
 
-  const disturb = stage.section('Disturb');
+  const disturb = stage.section('Disturbance');
   let target = 0;
   disturb.choice(
     'Area',
@@ -422,11 +417,11 @@ export default function page(stage: Stage): void {
       },
     },
   ]);
-  disturb.note(`Every ${EVERY} s one area is disturbed on its own.`);
+  disturb.note(`Auto disturbance: every ${EVERY} s`);
 
   const detail = () =>
     stage.detail(
-      `${count.toLocaleString()} signals · ${shown().label.toLowerCase()} · ${HISTORY} s kept · a disturbance every ${EVERY} s`,
+      `${count.toLocaleString()} signals · ${shown().label.toLowerCase()} · ${HISTORY} s kept`,
     );
   restyle();
   restart();

@@ -36,7 +36,9 @@ export class Stage {
       'keydown',
       (event) => {
         const action = this.#keys.get(event.key.toLowerCase());
-        const typing = (event.target as Element | null)?.closest?.('input, select, textarea');
+        const typing = (event.target as Element | null)?.closest?.(
+          'input, select, textarea, button, summary, [contenteditable]',
+        );
         if (!action || typing || event.ctrlKey || event.metaKey || event.altKey) return;
         event.preventDefault();
         action();
@@ -72,10 +74,36 @@ export class Stage {
     const canvas = h('canvas', { tabindex: 0, 'aria-label': label });
     if (height) canvas.style.height = `${height}px`;
     into.append(canvas);
-    const views = scenes.map((scene) => this.gpu.view(scene));
-    this.#canvases.add(this.gpu.canvas(canvas, { panels }).show(views));
-    views.forEach((view, i) => {
-      this.shown.push({ view, element: canvas, panel: panels[i]! });
+    const views = scenes.map((scene) => {
+      const view = this.gpu.view(scene);
+      // Leave room for the full font bounds above a plot's value-axis title.
+      if (typeof scene.space === 'object' && 'plot' in scene.space) view.insets = [12, 0, 0, 0];
+      return view;
+    });
+    const narrow = matchMedia('(max-width: 700px)');
+    const layout = () =>
+      narrow.matches && scenes.length > 1
+        ? panels.map(([x, y, width, height]) => [y, x, height, width] as const)
+        : panels;
+    let current = layout();
+    let surface = this.gpu.canvas(canvas, { panels: current }).show(views);
+    this.#canvases.add(surface);
+    const shown = views.map((view, i) => ({ view, element: canvas, panel: current[i]! }));
+    this.shown.push(...shown);
+    if (scenes.length > 1)
+      narrow.addEventListener(
+        'change',
+        () => {
+          surface.destroy();
+          this.#canvases.delete(surface);
+          current = layout();
+          shown.forEach((item, i) => (item.panel = current[i]!));
+          surface = this.gpu.canvas(canvas, { panels: current }).show(views);
+          this.#canvases.add(surface);
+        },
+        { signal: this.signal },
+      );
+    views.forEach((view) => {
       // What could not be fetched only goes undrawn; anything else stops the page.
       view.on('error', (error) =>
         error.code === 'io' ? this.detail(error.message) : this.fail(error),
@@ -118,8 +146,8 @@ export class Stage {
   }
 
   /** A titled group of controls in the side panel. */
-  section(title: string): Section {
-    const section = new Section(this, title);
+  section(title: string, open = true): Section {
+    const section = new Section(this, title, open);
     this.regions.side.append(section.element);
     return section;
   }
@@ -151,7 +179,7 @@ export class Stage {
     return line;
   }
 
-  /** A line under the page's summary, such as what its data holds. */
+  /** Compact dataset information in the shared header. */
   detail(text: string): void {
     this.line.textContent = text;
   }

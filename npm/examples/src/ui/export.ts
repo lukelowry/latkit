@@ -14,17 +14,23 @@ const FPS = 30;
  */
 export function exportSection(stage: Stage): void {
   if (!stage.shown.length) return;
-  const section = stage.section('Export');
-  const status = section.note('A picture or a video of the views as they show.');
+  const section = stage.section('Export', false);
+  const status = section.note();
+  status.setAttribute('role', 'status');
   let recording: AbortController | undefined;
   /** The views, and a shot of them laid out as the page shows them, `align` pixels a block. */
   const shot = (align: [number, number]): [Shot, View[]] => {
-    const shown = stage.shown.map(({ view, element, panel: [x, y, w, h] }) => {
-      const canvas = element.getBoundingClientRect();
-      const [left, top] = [canvas.left + x * canvas.width, canvas.top + y * canvas.height];
-      const [width, height] = [w * canvas.width, h * canvas.height];
-      return { view, box: { left, top, width, height, right: left + width, bottom: top + height } };
-    });
+    const shown = stage.shown
+      .map(({ view, element, panel: [x, y, w, h] }) => {
+        const canvas = element.getBoundingClientRect();
+        const [left, top] = [canvas.left + x * canvas.width, canvas.top + y * canvas.height];
+        const [width, height] = [w * canvas.width, h * canvas.height];
+        return {
+          view,
+          box: { left, top, width, height, right: left + width, bottom: top + height },
+        };
+      })
+      .filter(({ box }) => box.width > 0 && box.height > 0);
     const left = Math.min(...shown.map((s) => s.box.left));
     const top = Math.min(...shown.map((s) => s.box.top));
     const width = Math.max(...shown.map((s) => s.box.right)) - left;
@@ -95,8 +101,8 @@ export function exportSection(stage: Stage): void {
       (error: unknown) => (status.textContent = `Could not export: ${String(error)}`),
     );
   section.actions([
-    { label: 'Picture', key: 'x', run: failing(picture) },
-    { label: 'Video', key: 'v', run: failing(video) },
+    { label: 'Save PNG', key: 'x', run: failing(picture) },
+    { label: 'Record', key: 'v', run: failing(video) },
   ]);
 }
 

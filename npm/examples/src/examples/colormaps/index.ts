@@ -1,3 +1,4 @@
+import { theme } from '../../ui/theme.js';
 /**
  * The colormap catalog on a field of hexagons: each cell an area colored on the GPU through the
  * chosen colormap, beside the same colormap as a CSS ramp, so the two can be compared. Choose a
@@ -12,9 +13,9 @@ import {
   type ColormapName,
   type Mark,
   type Scene,
-} from '../latkit.js';
-import type { Stage } from '../ui/stage.js';
-import { h } from '../ui/dom.js';
+} from '../../latkit.js';
+import type { Stage } from '../../ui/stage.js';
+import { h } from '../../ui/dom.js';
 
 /**
  * A map of our own: clear to a placed, half-clear blue, then an opaque amber. Over the plane's
@@ -139,7 +140,7 @@ export default function page(stage: Stage): void {
   const scene = (): Scene => {
     const input = CATEGORICAL.has(colormap) ? field('class') : field('value');
     const mapped = input.colormap(mapOf(colormap));
-    const background = light ? '#f4f1ea' : '#090c11';
+    const background = light ? '#f4f1ea' : theme.background;
     const outlines: Mark[] = outline
       ? [{ lines: { of: ['colors', 'Cell'], color: background, width: 0.75, pick: false } }]
       : [];
@@ -147,6 +148,7 @@ export default function page(stage: Stage): void {
       // Lines under the cells show through what a map leaves clear.
       space: { plane: { grid: colormap === 'custom' ? { lines: { pitch: 4 } } : 'off' } },
       theme: {
+        ...theme,
         base: light ? 'light' : 'dark',
         background,
         hover: light ? '#000000aa' : '#ffffffaa',
@@ -178,7 +180,7 @@ export default function page(stage: Stage): void {
     const data = hexagons(columns, rows, value);
     view.setData(data);
     data.destroy();
-    stage.detail(`${(columns * rows).toLocaleString()} cells, each an area of six triangles`);
+    stage.detail(`${(columns * rows).toLocaleString()} cells`);
   };
   const restyle = () => {
     view.show(scene());
@@ -223,7 +225,7 @@ export default function page(stage: Stage): void {
 
   const shown = stage.section('Field');
   shown.choice(
-    'Shows',
+    'Value',
     [
       ['Peaks', 'peaks'],
       ['Waves', 'waves'],
@@ -278,7 +280,7 @@ export default function page(stage: Stage): void {
     const title = h('p', { class: 'note' }, kind);
     const grid = h('div', { class: 'swatches' });
     groups.push([kind, [title, grid]]);
-    catalog.element.append(title);
+    catalog.content.append(title);
     for (const name of names) {
       const swatch = h(
         'button',
@@ -300,7 +302,7 @@ export default function page(stage: Stage): void {
       swatches.set(name, swatch);
       grid.append(swatch);
     }
-    catalog.element.append(grid);
+    catalog.content.append(grid);
   }
 
   stage.meter(view);

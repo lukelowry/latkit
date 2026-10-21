@@ -54,7 +54,7 @@ export class Playback {
     );
     stage.key('k', flip);
     if (options.replay) {
-      const replay = h('button', { type: 'button' }, 'Instant replay', h('kbd', {}, 'R'));
+      const replay = h('button', { type: 'button' }, 'Replay', h('kbd', {}, 'R'));
       replay.addEventListener('click', () => this.replay(), { signal });
       stage.key('r', () => this.replay());
       this.#transport.append(replay);

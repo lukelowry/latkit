@@ -1,3 +1,4 @@
+import { theme } from '../../ui/theme.js';
 /**
  * A grid at scale over the earth. Choose a synthetic grid, from WECC 240-bus to ACTIVSg70k, a
  * continent's grid of two million buses built in the page, or a lattice of up to a million buses,
@@ -5,9 +6,16 @@
  * or OpenStreetMap's planet as vector tiles. Play a simulated fault and watch the machines' speeds
  * swing; turn the globe at noon or now; hover or click anything to inspect it.
  */
-import { field, type ColormapName, type Fit, type Mark, type Row, type Scene } from '../latkit.js';
-import { each } from '../ui/rows.js';
-import type { Stage } from '../ui/stage.js';
+import {
+  field,
+  type ColormapName,
+  type Fit,
+  type Mark,
+  type Row,
+  type Scene,
+} from '../../latkit.js';
+import { each } from '../../ui/rows.js';
+import type { Stage } from '../../ui/stage.js';
 import { LEVELS, loadCase, megabytes, type Case } from './cases.js';
 import { continent } from './continent.js';
 import { lattice } from './lattice.js';
@@ -16,15 +24,15 @@ import { STATE_FIELDS, joinStates, type Joined, type StateField } from './states
 
 /** The grids the page draws, synthetic cases first. */
 const GRIDS = [
-  ['WECC 240-bus, simulated fault', 'wecc240'],
-  ['ACTIVSg2000, Texas', 'activsg2000'],
-  ['ACTIVSg10k, western US, simulated fault', 'activsg10k'],
-  ['ACTIVSg25k, US Northeast', 'activsg25k'],
-  ['ACTIVSg70k, eastern US', 'activsg70k'],
-  ['North America, 2,000,000 buses', 'continent-2m'],
-  ['Lattice, 100,000 buses', 'lattice-100k'],
-  ['Lattice, 1,000,000 buses', 'lattice-1m'],
-  ['None: the map alone', 'none'],
+  ['WECC 240', 'wecc240'],
+  ['ACTIVSg2000', 'activsg2000'],
+  ['ACTIVSg10k', 'activsg10k'],
+  ['ACTIVSg25k', 'activsg25k'],
+  ['ACTIVSg70k', 'activsg70k'],
+  ['North America · 2M', 'continent-2m'],
+  ['Lattice · 100K', 'lattice-100k'],
+  ['Lattice · 1M', 'lattice-1m'],
+  ['None', 'none'],
 ] as const;
 type GridId = (typeof GRIDS)[number][1];
 
@@ -106,8 +114,7 @@ export default async function page(stage: Stage): Promise<void> {
       },
     },
     theme: {
-      base: 'dark',
-      background: LOOK.background,
+      ...theme,
       area: LOOK.fill,
       atmosphere: '#5aa9ff99',
       night: 0.28,
@@ -236,7 +243,7 @@ export default async function page(stage: Stage): Promise<void> {
     (id) => void loadGrid(id).catch(stage.fail),
   );
   const colorBy = gridSection.choice(
-    'Color buses by',
+    'Bus color',
     (Object.keys(BUS_COLORS) as BusColor[]).map((key) => [BUS_COLORS[key].label, key] as const),
     state.color,
     (color) => {
@@ -250,16 +257,7 @@ export default async function page(stage: Stage): Promise<void> {
 
   // ── Simulation ──
   const simulationSection = stage.section('Simulation');
-  simulationSection.choice(
-    'Rate',
-    [
-      ['0.1×', 0.1],
-      ['0.25×', 0.25],
-      ['1×', 1],
-    ] as const,
-    0.25,
-    (rate) => (playback.rate = rate),
-  );
+  simulationSection.speed([0.1, 0.25, 1], 0.25, (rate) => (playback.rate = rate));
   const simulationSummary = simulationSection.note();
   const playback = stage.playback({
     live: false,
@@ -279,7 +277,7 @@ export default async function page(stage: Stage): Promise<void> {
     (choice) => void loadMap(choice).catch(stage.fail),
   );
   const statesBy = mapSection.choice(
-    'Color states by',
+    'State color',
     [
       ['nothing', 'none'] as const,
       ...(Object.keys(STATE_FIELDS) as StateField[]).map(
@@ -314,7 +312,7 @@ export default async function page(stage: Stage): Promise<void> {
   viewSection.choice(
     'Daylight',
     [
-      ['Noon, midsummer', 'noon'],
+      ['Noon', 'noon'],
       ['Now', 'now'],
       ['Off', 'off'],
     ] as const,
@@ -328,12 +326,12 @@ export default async function page(stage: Stage): Promise<void> {
     state.atmosphere = on;
     restyle();
   });
-  viewSection.toggle('Graticule', 'g', state.graticule, (on) => {
+  viewSection.toggle('Grid', 'g', state.graticule, (on) => {
     state.graticule = on;
     restyle();
   });
-  viewSection.toggle('Turn', 't', false, (on) => (view.orbit = on ? 4 : 0));
-  viewSection.actions([{ label: 'Fit the grid', key: 'f', run: frame }]);
+  viewSection.toggle('Orbit', 't', false, (on) => (view.orbit = on ? 4 : 0));
+  viewSection.actions([{ label: 'Fit', key: 'f', run: frame }]);
 
   // ── Layers ──
   const layers = stage.section('Layers');
@@ -351,19 +349,19 @@ export default async function page(stage: Stage): Promise<void> {
   layer('Machines', 'm', 'machines');
   layer('Bus labels', 'n', 'labels');
   layer('Map labels', 'p', 'mapLabels');
-  layer('Comets', 'c', 'flow');
+  layer('Flow', 'c', 'flow');
 
   // ── Inspector ──
   const inspector = stage.section('Inspector');
-  const described = inspector.note('Hover or click anything.');
+  const described = inspector.note('Select an item.');
   const list = document.createElement('dl');
   list.className = 'fields';
-  inspector.element.append(list);
+  inspector.content.append(list);
   let hovered: Row | null = null;
   const inspect = () => {
     const row = hovered ?? each(view.selection)[0];
     list.replaceChildren();
-    if (!row) return void (described.textContent = 'Hover or click anything.');
+    if (!row) return void (described.textContent = 'Select an item.');
     const data = view.data(row.data);
     if (!data) return;
     const value = (name: string) => data.get(row.table, row.id, name, view.at);

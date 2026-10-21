@@ -9,7 +9,7 @@
  * by frame as int16 of `speedScale` per unit, `dt` seconds apart, and the fault the simulation
  * applied.
  */
-import { Data, Patch, reference } from '../latkit.js';
+import { Data, Patch, reference } from '../../latkit.js';
 
 interface Header {
   readonly case: string;

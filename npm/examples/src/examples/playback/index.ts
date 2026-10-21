@@ -1,3 +1,5 @@
+import { random } from '../../random.js';
+import { theme } from '../../ui/theme.js';
 import {
   Data,
   Patch,
@@ -10,8 +12,8 @@ import {
   type Id,
   type Mark,
   type Scene,
-} from '../latkit.js';
-import type { Stage } from '../ui/stage.js';
+} from '../../latkit.js';
+import type { Stage } from '../../ui/stage.js';
 
 /** Buses on a side of the lattice. */
 const SIDE = 60;
@@ -22,15 +24,15 @@ const SECONDS = 60;
  * voltages that ripple across it. */
 function grid(): { data: Data; buses: number; lines: number } {
   const buses = SIDE * SIDE;
-  const random = mulberry32(7);
+  const rng = random(7);
   const lon = new Float64Array(buses);
   const lat = new Float64Array(buses);
   const kv = new Float64Array(buses);
   const name: string[] = [];
   for (let i = 0; i < buses; i++) {
-    lon[i] = -106 + ((i % SIDE) + random() * 0.6) * (12 / SIDE);
-    lat[i] = 26 + (Math.floor(i / SIDE) + random() * 0.6) * (10 / SIDE);
-    kv[i] = [69, 138, 345][Math.floor(random() * 3)]!;
+    lon[i] = -106 + ((i % SIDE) + rng() * 0.6) * (12 / SIDE);
+    lat[i] = 26 + (Math.floor(i / SIDE) + rng() * 0.6) * (10 / SIDE);
+    kv[i] = [69, 138, 345][Math.floor(rng() * 3)]!;
     name.push(`Bus ${i + 1}`);
   }
   const from: number[] = [];
@@ -102,7 +104,7 @@ export default function page(stage: Stage): void {
     });
     return {
       space: look.space,
-      theme: { base: 'dark', background: '#090c11' },
+      theme,
       controls: { selectBox: true },
       marks,
     };
@@ -121,9 +123,9 @@ export default function page(stage: Stage): void {
     );
   };
 
-  const space = stage.section('Space');
+  const space = stage.section('View');
   space.choice(
-    'Draw on',
+    'Projection',
     [
       ['Map', 'mercator'],
       ['Globe', 'globe'],
@@ -138,7 +140,7 @@ export default function page(stage: Stage): void {
   );
   space.actions([{ label: 'Fit', key: 'f', run: () => view.fit() }]);
 
-  const style = stage.section('Look');
+  const style = stage.section('Display');
   style.choice(
     'Colormap',
     (['balance', 'vik', 'coolwarm', 'rdbu', 'berlin'] as const).map(
@@ -151,7 +153,7 @@ export default function page(stage: Stage): void {
     },
   );
   style.choice(
-    'Colors span',
+    'Range',
     [
       ['±2%', 0.02],
       ['±4%', 0.04],
@@ -180,7 +182,7 @@ export default function page(stage: Stage): void {
     look.labels = on;
     restyle();
   });
-  style.toggle('Ring outliers', 'o', look.outliers, (on) => {
+  style.toggle('Outliers', 'o', look.outliers, (on) => {
     look.outliers = on;
     restyle();
   });
@@ -210,30 +212,11 @@ export default function page(stage: Stage): void {
       describe();
     },
   });
-  selected.choice(
-    'Plays at',
-    [
-      ['1×', 1],
-      ['4×', 4],
-      ['10×', 10],
-    ] as const,
-    4,
-    (rate) => (playback.rate = rate),
-  );
+  selected.speed([1, 4, 10], 4, (rate) => (playback.rate = rate));
   playback.record(data.span!);
   restyle();
   describe();
   stage.detail(
     `${buses.toLocaleString()} buses · ${lines.toLocaleString()} lines · ${SECONDS} s of voltages`,
   );
-}
-
-function mulberry32(seed: number): () => number {
-  return () => {
-    seed |= 0;
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }

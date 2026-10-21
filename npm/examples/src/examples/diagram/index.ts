@@ -1,3 +1,4 @@
+import { theme } from '../../ui/theme.js';
 import {
   Data,
   Patch,
@@ -15,9 +16,9 @@ import {
   type Scene,
   type Shape,
   type Side,
-} from '../latkit.js';
-import { each, one } from '../ui/rows.js';
-import type { Stage } from '../ui/stage.js';
+} from '../../latkit.js';
+import { each, one } from '../../ui/rows.js';
+import type { Stage } from '../../ui/stage.js';
 
 /** Kinds of block: the shape each draws as, and its ports, each naming the signal it is plugged into. */
 const KINDS = {
@@ -361,9 +362,7 @@ export default function page(stage: Stage): void {
     return {
       space: { diagram: { grid: dots ? { dots: { pitch: 20 } } : 'off' } },
       layout,
-      theme: light
-        ? { base: 'light', background: '#f4f6f9' }
-        : { base: 'dark', background: '#0b0f14' },
+      theme: light ? { base: 'light', background: '#f4f6f9' } : theme,
       controls: { connect: true, delete: true, selectBox: true },
       marks,
     };
@@ -397,7 +396,7 @@ export default function page(stage: Stage): void {
     data.destroy();
     show(sketch.data());
     view.fit();
-    note(`${choice[0]}: drag, wire, rename, delete, undo.`);
+    note('Drag blocks or connect ports.');
     const blocks = kinds.reduce((n, kind) => n + (sketch.blocks.get(kind)?.length ?? 0), 0);
     stage.detail(
       `${blocks.toLocaleString()} blocks · ${sketch.signals.length.toLocaleString()} signals`,
@@ -603,21 +602,21 @@ export default function page(stage: Stage): void {
     })),
   );
 
-  const look = stage.section('Look');
+  const look = stage.section('Display');
   const layouts: readonly (readonly [string, Layout])[] = [
-    ['In ranks, left to right', layout],
-    ['In ranks, top to bottom', { layered: { flow: 'down', gap: 30, rankGap: 60 } }],
-    ['In ranks, right to left', { layered: { flow: 'left', gap: 30, rankGap: 80 } }],
-    ['In ranks, bottom to top', { layered: { flow: 'up', gap: 30, rankGap: 60 } }],
-    ['By graph distance', { stress: { gap: 140 } }],
+    ['Left to right', layout],
+    ['Top to bottom', { layered: { flow: 'down', gap: 30, rankGap: 60 } }],
+    ['Right to left', { layered: { flow: 'left', gap: 30, rankGap: 80 } }],
+    ['Bottom to top', { layered: { flow: 'up', gap: 30, rankGap: 60 } }],
+    ['Force layout', { stress: { gap: 140 } }],
   ];
-  look.choice('Place blocks without positions', layouts, layout, (next) => {
+  look.choice('Layout', layouts, layout, (next) => {
     layout = next;
     view.show(scene());
     view.fit();
   });
   look.choice(
-    'Wires run',
+    'Routing',
     [
       ['Around blocks', 'orthogonal'],
       ['Straight', 'straight'],
@@ -628,7 +627,7 @@ export default function page(stage: Stage): void {
       view.show(scene());
     },
   );
-  look.toggle('Comets', 'c', comets, (on) => {
+  look.toggle('Flow', 'c', comets, (on) => {
     comets = on;
     view.show(scene());
   });
@@ -642,15 +641,18 @@ export default function page(stage: Stage): void {
   });
 
   // The selected block's name, editable.
-  const selected = stage.section('Selected');
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = 'Select a block to rename it';
+  const selected = stage.section('Selection');
+  const input = selected.text('Name', (value) => {
+    const [row] = each(view.selection);
+    if (row)
+      edit(
+        new Patch().set(row.table, [row.id as number], { name: [value] }),
+        `Renamed to ${value}.`,
+      );
+  });
+  input.placeholder = 'Select a block';
   input.disabled = true;
-  input.setAttribute('aria-label', 'Name');
-  const told = document.createElement('p');
-  told.className = 'series';
-  selected.element.append(input, told);
+  const told = selected.note();
   const note = (text: string) => (told.textContent = text);
   const describe = () => {
     const [row] = each(view.selection);
@@ -658,18 +660,6 @@ export default function page(stage: Stage): void {
     input.disabled = !editable;
     input.value = editable ? name(row) : '';
   };
-  input.addEventListener(
-    'change',
-    () => {
-      const [row] = each(view.selection);
-      if (row)
-        edit(
-          new Patch().set(row.table, [row.id as number], { name: [input.value] }),
-          `Renamed to ${input.value}.`,
-        );
-    },
-    { signal: stage.signal },
-  );
   view.on('select', describe);
 
   stage.meter(view);

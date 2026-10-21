@@ -1,11 +1,11 @@
+import { theme } from '../../ui/theme.js';
 /**
  * One record in two views on one canvas: a lattice of nodes on a tilted plane, each standing on a
  * pole as high as its signal, and the signals traced on a plot. One playhead moves both; play at a
  * speed or scrub, and read where each view stands.
  */
-import { Data, Patch, field, reference, type Scene, type View } from '../latkit.js';
-import { h } from '../ui/dom.js';
-import type { Stage } from '../ui/stage.js';
+import { Data, Patch, field, reference, type Scene, type View } from '../../latkit.js';
+import type { Stage } from '../../ui/stage.js';
 
 /** Nodes a side of the lattice, frames recorded, seconds between them, and a full signal's height. */
 const SIDE = 20;
@@ -58,7 +58,7 @@ export default function page(stage: Stage): void {
   const signal = field('signal').colormap('viridis').domain(0, 1);
   const lattice: Scene = {
     space: { plane: { grid: 'off' } },
-    theme: { base: 'dark', background: '#090c11' },
+    theme,
     marks: [
       { edges: { of: ['signals', 'Link'], ends: ['from', 'to'], width: 1, color: '#3a4556' } },
       { edges: { of: ['signals', 'Node'], poles: true, width: 1.5, color: signal } },
@@ -77,7 +77,7 @@ export default function page(stage: Stage): void {
     space: {
       plot: { x: { label: 'Time (s)' }, y: { label: 'Signal', format: 'fixed', precision: 1 } },
     },
-    theme: { base: 'dark', background: '#090c11' },
+    theme,
     ease: 0,
     marks: [
       {
@@ -118,7 +118,7 @@ export default function page(stage: Stage): void {
   playback.record([0, duration]);
 
   // Where each view stands: both draw in the canvas's one frame, so they never part.
-  const where = stage.section('Views');
+  const where = stage.section('View stats', false);
   const lines = views.map(() => where.note());
   let read = 0;
   stage.frame(() => {
@@ -131,17 +131,8 @@ export default function page(stage: Stage): void {
     });
   });
 
-  const play = stage.section('Play');
-  play.choice(
-    'Speed',
-    [
-      ['0.25×', 0.25],
-      ['1×', 1],
-      ['4×', 4],
-    ] as const,
-    1,
-    (rate) => (playback.rate = rate),
-  );
+  const play = stage.section('Playback');
+  play.speed([0.25, 1, 4], 1, (rate) => (playback.rate = rate));
   play.choice(
     'Traces',
     [
@@ -155,8 +146,7 @@ export default function page(stage: Stage): void {
     },
   );
   const legend = stage.legend('top');
-  legend.ramp('viridis', `Signal 0 – 1, ${HEIGHT} units high at 1`);
-  play.element.append(h('p', { class: 'note' }, 'K plays and pauses; drag the timeline to scrub.'));
+  legend.ramp('viridis', 'Signal 0–1');
 
   stage.meter(plane);
   stage.detail(

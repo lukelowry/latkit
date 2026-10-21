@@ -349,9 +349,10 @@ async function visit(url: string, id: string): Promise<string[]> {
       await act(`stop stepping on canvas ${c}`, () => page.keyboard.press('Escape'));
     }
     // Every page exports a picture of its views: a shot draws them and a worker writes the PNG.
+    await page.locator('main canvas').first().focus();
     await deadline(page.keyboard.press('x'), STEP, 'ask for a picture');
     const saved = page.waitForFunction(
-      () => document.body.innerText.includes('Saved views.png'),
+      () => document.body.textContent?.includes('Saved views.png'),
       undefined,
       {
         timeout: STEP,
@@ -395,11 +396,11 @@ async function suite(only: string[]): Promise<string[]> {
     try {
       const page = await chrome.browser.newPage();
       await deadline(page.goto(url), STEP, 'open the suite');
-      const links = page.locator('nav a');
-      await deadline(links.first().waitFor(), STEP, 'the page bar');
-      ids = (await links.evaluateAll((as) => as.map((a) => a.getAttribute('href') ?? ''))).map(
-        (h) => h.slice(1),
-      );
+      const picker = page.getByRole('combobox', { name: 'Example', exact: true });
+      await deadline(picker.waitFor(), STEP, 'the example picker');
+      ids = await picker
+        .locator('option')
+        .evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value));
     } finally {
       await chrome.close();
     }

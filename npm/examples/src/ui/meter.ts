@@ -14,7 +14,9 @@ export class Meter {
   #since = performance.now();
 
   constructor(stage: Stage, view: View) {
-    stage.regions.main.append(this.#line);
+    const section = stage.section('Performance', false);
+    section.element.classList.add('performance');
+    section.content.append(this.#line);
     stage.frame(() => {
       this.#frames++;
       const now = performance.now();
@@ -31,7 +33,7 @@ export class Meter {
         );
       }
       for (const [label, ms] of this.#times) parts.push(`${label} ${ms.toFixed(1)} ms`);
-      this.#line.textContent = [...parts, ...this.#notes.map((note) => note())].join('  ·  ');
+      this.#line.textContent = [...parts, ...this.#notes.map((note) => note())].join('\n');
       this.#frames = 0;
       this.#since = now;
     });

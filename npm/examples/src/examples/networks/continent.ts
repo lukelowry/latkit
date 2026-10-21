@@ -1,3 +1,4 @@
+import { random } from '../../random.js';
 /**
  * A synthetic grid the size of a continent's. Buses cluster around North America's cities as a real
  * grid's do: every substation feeds radial distribution feeders, which hold most of the buses; each
@@ -5,7 +6,7 @@
  * switching stations, the busiest by double or triple circuits, with rural substations and power
  * plants along the way. Seeded, so every build draws the same grid, in time linear in its size.
  */
-import { Data, Patch, reference } from '../latkit.js';
+import { Data, Patch, reference } from '../../latkit.js';
 import { levelOf, type Case } from './cases.js';
 
 /** Metro areas: name, longitude, latitude, and millions of people. */
@@ -184,17 +185,6 @@ const PER_SUBSTATION = 320;
 const STATION_SPACING = 90;
 /** The share of buses fed along corridors rather than in cities. */
 const RURAL = 0.12;
-
-/** A seeded generator of numbers in [0, 1): mulberry32. */
-function random(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(s ^ (s >>> 15), s | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 /** Kilometres between two points, near enough for a continent. */
 function km(lon0: number, lat0: number, lon1: number, lat1: number): number {
