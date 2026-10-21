@@ -1,0 +1,41 @@
+{
+  "name": "latkit",
+  "version": "0.1.0",
+  "description": "Columnar data drawn as vertices, edges, lines, and areas with WebGPU.",
+  "type": "module",
+  "sideEffects": false,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./wasm": "./pkg/latkit_bg.wasm",
+    "./worker": "./dist/worker.js",
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "default": "./dist/core.js"
+    }
+  },
+  "files": [
+    "dist",
+    "pkg/latkit.js",
+    "pkg/latkit.d.ts",
+    "pkg/latkit_bg.wasm",
+    "pkg/latkit_bg.wasm.d.ts",
+    "NOTICES.md",
+    "THIRD_PARTY.md"
+  ],
+  "scripts": {
+    "build": "cargo xtask wasm",
+    "pack:release": "cargo xtask package",
+    "prepublishOnly": "node -e \"throw new Error('Publish the verified tarball with pnpm release from the repository root')\""
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

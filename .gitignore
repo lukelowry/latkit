@@ -1,15 +1,15 @@
 node_modules/
 dist/
 coverage/
-docs/_build/
-docs/api/reference/
-.turbo/
 .DS_Store
 *.log
 
-output/
-.bench/
-benchmark/.results/
 .playwright-cli/
+.playwright-mcp/
 
 .impeccable/
+target/
+/npm/pkg/
+
+# The CLI examples' videos: each example's README says how to render its own.
+/crates/latkit-cli/examples/*/*.mp4

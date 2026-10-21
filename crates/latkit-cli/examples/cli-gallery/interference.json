@@ -1,0 +1,42 @@
+{
+  "space": {
+    "plane": {
+      "grid": "off"
+    }
+  },
+  "ease": 0,
+  "theme": {
+    "background": "#080f1c",
+    "text": "#c7d5e4",
+    "font": "sans-serif",
+    "fontSize": 13,
+    "halo": 0,
+    "flow": "#d9fff0a0",
+    "flowSpacing": 100
+  },
+  "title": "02 / INTERFERENCE",
+  "subtitle": "33,600 particles / two wave sources / one interference field",
+  "marks": [
+    {
+      "vertices": {
+        "of": [
+          "art",
+          "Particle"
+        ],
+        "position": [
+          "x",
+          "y"
+        ],
+        "radius": "radius",
+        "color": {
+          "colormap": "magma",
+          "value": "heat",
+          "domain": [
+            0,
+            1
+          ]
+        }
+      }
+    }
+  ]
+}

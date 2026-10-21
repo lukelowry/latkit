@@ -1,22 +1,18 @@
 {
-  "name": "@latkit/benchmark",
+  "name": "latkit-bench",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "bench": "node run.ts"
   },
   "dependencies": {
-    "@latkit/connect": "workspace:*",
-    "@latkit/diagram": "workspace:*",
-    "@latkit/gpu": "workspace:*",
-    "@latkit/model": "workspace:*",
-    "@latkit/monitor": "workspace:*",
-    "@latkit/network": "workspace:*"
+    "latkit": "link:../npm"
   },
   "devDependencies": {
-    "@types/ws": "^8.18.2",
-    "@webgpu/types": "^0.1.71",
-    "ws": "8.21.0"
+    "@types/node": "^26.1.1",
+    "playwright-core": "1.64.0",
+    "typescript": "^5.7.0",
+    "vite": "^7.0.0"
   }
 }

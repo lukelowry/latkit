@@ -1,0 +1,50 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "examples",
+      "detail": "Stop any running example server, build the wasm (--dev), serve the example suite at http://127.0.0.1:5200, and open it",
+      "type": "shell",
+      "command": "cargo xtask examples --open",
+      "dependsOn": "examples: stop",
+      "problemMatcher": [],
+      "options": {
+        "statusbar": {
+          "label": "$(play) Examples",
+          "detail": "Build and serve npm/examples, then open it in the browser",
+          "running": { "label": "$(sync~spin) Examples" }
+        }
+      }
+    },
+    {
+      "label": "examples: stop",
+      "detail": "Stop whatever serves the example suite at http://127.0.0.1:5200",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "$ids = Get-NetTCPConnection -LocalPort 5200 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($id in $ids) { taskkill /PID $id /T /F | Out-Null }; if ($ids) { 'Stopped the example server.' } else { 'No example server was running.' }"
+      ],
+      "osx": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "pids=$(lsof -ti tcp:5200 -sTCP:LISTEN); if [ -n \"$pids\" ]; then kill $pids && echo 'Stopped the example server.'; else echo 'No example server was running.'; fi"
+        ]
+      },
+      "linux": {
+        "command": "sh",
+        "args": [
+          "-c",
+          "pids=$(lsof -ti tcp:5200 -sTCP:LISTEN); if [ -n \"$pids\" ]; then kill $pids && echo 'Stopped the example server.'; else echo 'No example server was running.'; fi"
+        ]
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent", "close": true },
+      "options": {
+        "statusbar": { "label": "$(debug-stop)", "detail": "Stop the example server" }
+      }
+    }
+  ]
+}

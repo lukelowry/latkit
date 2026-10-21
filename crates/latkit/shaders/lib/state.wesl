@@ -1,0 +1,142 @@
+// Evaluated rows: words of the `state` buffer. A row's kind words sit at `mark.state`, `mark.stride`
+// apart, so vertex slots count every vertex mark's rows; its extra words (labels, marker inputs) sit
+// at `mark.extra`, `mark.extras` apart.
+
+import package::lib::types::{
+    NONE, VERTEX_WORDS, VERTEX_POSITION, VERTEX_COLOR, VERTEX_STATUS, VERTEX_HALF, VERTEX_ELEVATION, VERTEX_DEPTH,
+    VERTEX_RANGE, VERTEX_FLAGS, EDGE_FROM, EDGE_TO, EDGE_COLOR, EDGE_WIDTH, EDGE_FLOW, EDGE_TRAVEL, EDGE_FLAGS, FACE_A, FACE_B,
+    FACE_C, FACE_COLOR, FACE_FLAGS, LINE_COLOR, LINE_WIDTH, LINE_FLOW, LINE_TRAVEL, LINE_FLAGS, AREA_COLOR,
+    AREA_FLAGS, MARK_EDGES, MARK_LINES,
+};
+import package::lib::bind::{state, mark};
+
+struct Vertex {
+    hi: vec2f,
+    lo: vec2f,
+    color: u32,
+    status: u32,
+    half: vec2f,
+    elevation: f32,
+    depth: f32,
+    // The CSS pixels its marker's half keeps within.
+    range: vec2f,
+    flags: u32,
+}
+
+struct Edge {
+    a: u32,
+    b: u32,
+    color: u32,
+    width: f32,
+    flow: f32,
+    travel: f32,
+    flags: u32,
+}
+
+struct Face {
+    corners: vec3u,
+    color: u32,
+    flags: u32,
+}
+
+struct Line {
+    color: u32,
+    width: f32,
+    flow: f32,
+    travel: f32,
+    flags: u32,
+}
+
+struct Area {
+    color: u32,
+    flags: u32,
+}
+
+// A range of CSS pixels in one word: each end in sixteenths of a pixel, up to 4095, the top value
+// meaning no end.
+fn pack_range(range: vec2f) -> u32 {
+    let ends = vec2u(round(clamp(range, vec2f(0.0), vec2f(4095.9375)) * 16.0));
+    let top = select(ends.y, 65535u, range.y > 4095.9375);
+    return ends.x | (top << 16u);
+}
+
+fn unpack_range(word: u32) -> vec2f {
+    let ends = vec2f(f32(word & 65535u), f32(word >> 16u)) / 16.0;
+    // The top of what a word holds is no end at all.
+    return vec2f(ends.x, select(ends.y, 3.4e38, (word >> 16u) == 65535u));
+}
+
+fn float_at(at: u32) -> f32 {
+    return bitcast<f32>(state[at]);
+}
+
+// The first kind word of `row` of the current mark.
+fn row_at(row: u32) -> u32 {
+    return mark.state + row * mark.stride;
+}
+
+// Extra word `word` of `row` of the current mark.
+fn extra_at(row: u32, word: u32) -> u32 {
+    return mark.extra + row * mark.extras + word;
+}
+
+fn vertex_at(at: u32) -> Vertex {
+    let p = at + VERTEX_POSITION;
+    return Vertex(
+        vec2f(float_at(p), float_at(p + 1u)),
+        vec2f(float_at(p + 2u), float_at(p + 3u)),
+        state[at + VERTEX_COLOR],
+        state[at + VERTEX_STATUS],
+        vec2f(float_at(at + VERTEX_HALF), float_at(at + VERTEX_HALF + 1u)),
+        float_at(at + VERTEX_ELEVATION),
+        float_at(at + VERTEX_DEPTH),
+        unpack_range(state[at + VERTEX_RANGE]),
+        state[at + VERTEX_FLAGS],
+    );
+}
+
+// The vertex in graph slot `slot`, from any vertex mark.
+fn vertex_slot(slot: u32) -> Vertex {
+    return vertex_at(slot * VERTEX_WORDS);
+}
+
+fn edge_at(at: u32) -> Edge {
+    return Edge(
+        state[at + EDGE_FROM],
+        state[at + EDGE_TO],
+        state[at + EDGE_COLOR],
+        float_at(at + EDGE_WIDTH),
+        float_at(at + EDGE_FLOW),
+        float_at(at + EDGE_TRAVEL),
+        state[at + EDGE_FLAGS],
+    );
+}
+
+fn face_at(at: u32) -> Face {
+    let corners = vec3u(state[at + FACE_A], state[at + FACE_B], state[at + FACE_C]);
+    return Face(corners, state[at + FACE_COLOR], state[at + FACE_FLAGS]);
+}
+
+fn line_at(at: u32) -> Line {
+    return Line(
+        state[at + LINE_COLOR],
+        float_at(at + LINE_WIDTH),
+        float_at(at + LINE_FLOW),
+        float_at(at + LINE_TRAVEL),
+        state[at + LINE_FLAGS],
+    );
+}
+
+// The current mark's words for how far a stroke row's comets traveled and for its flow; NONE for a
+// mark that draws no strokes.
+fn travel_words() -> vec2u {
+    switch mark.kind {
+        case MARK_EDGES: { return vec2u(EDGE_TRAVEL, EDGE_FLOW); }
+        case MARK_LINES: { return vec2u(LINE_TRAVEL, LINE_FLOW); }
+        default: { return vec2u(NONE); }
+    }
+}
+
+fn area_at(at: u32) -> Area {
+    return Area(state[at + AREA_COLOR], state[at + AREA_FLAGS]);
+}

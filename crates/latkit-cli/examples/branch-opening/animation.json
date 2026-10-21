@@ -1,0 +1,98 @@
+{
+  "buses": 70000,
+  "branches": 88207,
+  "event": {
+    "branch": "branch_59757_59774_1",
+    "action": "open",
+    "at_s": 1.0
+  },
+  "frames": 1411,
+  "fps": 60,
+  "resolution": [
+    1920,
+    1080
+  ],
+  "seconds": 23.516666666666666,
+  "playback_speed": 0.4,
+  "simulation_start_s": 0.6,
+  "simulation_end_s": 10.0,
+  "source_samples": 602,
+  "source_sample_hz": 60,
+  "frequency_sha256": "b72edd6eac9313d37344ebfeb952f45d2bbfd167a46ddc4727602a555d969862",
+  "source_statistics": {
+    "rows": 602,
+    "duplicate_times": 1,
+    "nonfinite": 0,
+    "pre_event_max_abs_hz": 4.79100583710488e-07,
+    "min_hz": -1.646875017187117,
+    "max_hz": 0.6834897947345193,
+    "post_1_1_max_abs_hz": 0.24483731315202817,
+    "bus_count": 70000,
+    "final_time_s": 10.0,
+    "peak_bus_id": 59774,
+    "buses_over_10_millihz_after_1_1": 70000,
+    "late_peak_quantiles_hz": [
+      0.06676637830185664,
+      0.08986788489515062,
+      0.11676234152644169
+    ]
+  },
+  "estimator": "Causal 20 ms filtered derivative of unwrapped bus voltage angle; both event sides retained, including the angle-jump impulse.",
+  "height_scale": 4.764463688617888,
+  "height_gain": 0.45,
+  "camera_bearings_degrees": [
+    -10,
+    20
+  ],
+  "camera_start": {
+    "center": [
+      -92,
+      36.5
+    ],
+    "zoom": 5.087462841250339,
+    "pitch": 48,
+    "bearing": -10
+  },
+  "camera_end": {
+    "center": [
+      -92,
+      36.5
+    ],
+    "zoom": 5.087462841250339,
+    "pitch": 48,
+    "bearing": 20
+  },
+  "height_formula": "height_scale * asinh(df / 0.02) / asinh(0.35 / 0.02)",
+  "color_domain_hz": [
+    -0.2,
+    0.2
+  ],
+  "render_seconds": 6.544604299997445,
+  "total_seconds": 7.592458800005261,
+  "output_bytes": 46411083,
+  "command": [
+    "target/cli/latkit.exe",
+    "render",
+    "<repo>/target/branch-opening/render/map.json",
+    "--data",
+    "<repo>/target/branch-opening/render/grid.json",
+    "--data",
+    "states=<repo>/examples/branch-opening/states.geojson",
+    "--camera",
+    "<repo>/target/branch-opening/render/map-camera.json",
+    "--frames",
+    "<repo>/target/branch-opening/render/frames.jsonl",
+    "--deadline",
+    "120",
+    "--font",
+    "C:/Windows/Fonts/segoeui.ttf",
+    "--size",
+    "1920x1080",
+    "--fps",
+    "60",
+    "--bitrate",
+    "16000000",
+    "--output",
+    "<repo>/examples/branch-opening/animation.mp4"
+  ]
+}

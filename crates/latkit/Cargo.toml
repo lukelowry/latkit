@@ -1,0 +1,98 @@
+[package]
+name = "latkit"
+description = "Columnar data drawn as vertices, edges, lines, and areas on the GPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["visualization", "webgpu", "graph", "map", "plot"]
+categories = ["visualization", "rendering", "graphics", "wasm"]
+include = ["LICENSE", "src/**", "tests/fixtures/**", "build/**", "build.rs", "shaders/**", "colormaps/catalog.txt", "colormaps/NOTICES.md", "THIRD_PARTY.md", "README.md"]
+
+# Every feature's API, as CI documents it; target-gated code (Windows video, browser glue) compiles
+# out of this one target.
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu"]
+
+[features]
+default = ["gpu"]
+gpu = ["dep:wgpu", "dep:glam", "dep:web-time", "dep:wesl", "dep:naga"]
+native = ["gpu", "dep:cosmic-text", "dep:windows", "dep:windows-core"]
+web = ["gpu", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys"]
+
+[dependencies]
+url.workspace = true
+thiserror.workspace = true
+hashbrown.workspace = true
+rustc-hash.workspace = true
+bytemuck.workspace = true
+# JSON: scenes, data, shots, and view state, with the schema of what is read and the path to what
+# could not be; GeoJSON and tiles' metadata. Gzip-compressed bytes.
+serde = { workspace = true }
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+schemars.workspace = true
+flate2.workspace = true
+# Images: icons read from PNG; pictures written as PNG, JPEG, or lossless WebP.
+image-webp.workspace = true
+jpeg-encoder.workspace = true
+png.workspace = true
+wgpu = { workspace = true, optional = true }
+glam = { workspace = true, optional = true }
+web-time = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cosmic-text = { workspace = true, optional = true }
+
+# Native video: H.264 from the platform's encoder.
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, optional = true }
+windows-core = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = [
+    "AddEventListenerOptions",
+    "CssStyleDeclaration",
+    "DedicatedWorkerGlobalScope",
+    "DomRect",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "Headers",
+    "HtmlElement",
+    "ImageData",
+    "KeyboardEvent",
+    "MediaQueryList",
+    "MouseEvent",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+    "PointerEvent",
+    "Request",
+    "RequestInit",
+    "ResizeObserver",
+    "Response",
+    "TextMetrics",
+    "WheelEvent",
+    "Window",
+    "WorkerGlobalScope",
+] }
+
+[build-dependencies]
+wesl = { workspace = true, optional = true }
+naga = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+pollster.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+
+[lints]
+workspace = true

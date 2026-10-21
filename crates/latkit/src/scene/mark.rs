@@ -1,0 +1,792 @@
+use std::sync::Arc;
+
+use super::{Areas, Edges, Faces, Label, Lines, Vertices};
+use crate::expr::compile::{Compiler, Store};
+use crate::gpu::shaders as wgsl;
+use crate::{Error, Expr, Name, Result, Size, Space};
+
+/// One drawn table of a scene: `{ vertices | edges | faces | lines | areas: options }` as JSON.
+#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
+pub enum Mark {
+    /// Rows drawn as markers.
+    Vertices(Vertices),
+    /// Rows drawn as strokes between two vertices.
+    Edges(Edges),
+    /// Rows drawn as triangles between three vertices.
+    Faces(Faces),
+    /// Rows drawn as lines along their paths, or on a plot through their samples.
+    Lines(Lines),
+    /// Rows drawn as the areas their polygons cover.
+    Areas(Areas),
+}
+
+impl From<Vertices> for Mark {
+    fn from(mark: Vertices) -> Mark {
+        Mark::Vertices(mark)
+    }
+}
+
+impl From<Edges> for Mark {
+    fn from(mark: Edges) -> Mark {
+        Mark::Edges(mark)
+    }
+}
+
+impl From<Faces> for Mark {
+    fn from(mark: Faces) -> Mark {
+        Mark::Faces(mark)
+    }
+}
+
+impl From<Lines> for Mark {
+    fn from(mark: Lines) -> Mark {
+        Mark::Lines(mark)
+    }
+}
+
+impl From<Areas> for Mark {
+    fn from(mark: Areas) -> Mark {
+        Mark::Areas(mark)
+    }
+}
+
+/// The field a mark reads its shape from unless told otherwise: what geography's tables hold.
+pub(crate) const GEOMETRY: &str = "geometry";
+
+/// Options every mark has.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Style {
+    pub(crate) data: Name,
+    pub(crate) table: Name,
+    pub(crate) color: Option<Expr>,
+    pub(crate) visible: Expr,
+    /// Each row's priority, read from its data alone.
+    pub(crate) priority: Option<Expr>,
+    pub(crate) name: Option<Name>,
+    pub(crate) interaction: Interaction,
+    pub(crate) label: Option<Label>,
+    pub(crate) shadow: bool,
+    /// A legend of the colors, under this title.
+    pub(crate) legend: Option<Arc<str>>,
+}
+
+/// Options of marks that draw strokes: edges and lines.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Stroke {
+    pub(crate) width: Option<Size>,
+    pub(crate) dash: Expr,
+    pub(crate) flow: Expr,
+}
+
+impl Default for Stroke {
+    fn default() -> Stroke {
+        Stroke { width: None, dash: false.into(), flow: 0.0.into() }
+    }
+}
+
+/// Where a stroke mark keeps its width, flow, and flags in each row, and the theme's width.
+pub(crate) struct StrokeWords {
+    pub(crate) width: u32,
+    pub(crate) flow: u32,
+    pub(crate) flags: u32,
+    pub(crate) theme_width: u32,
+}
+
+impl Stroke {
+    /// Compiles the stroke's options; in a diagram its width is in units. The CSS pixels the width
+    /// keeps within are its size's.
+    pub(crate) fn px(&self) -> [f32; 2] {
+        self.width.as_ref().map_or(crate::Size::ANY, |size| size.px)
+    }
+
+    /// Compiles the stroke's options; in a diagram its width is in units.
+    pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords, diagram: bool) -> Result<()> {
+        c.channel("dash", &self.dash, Store::Flag { word: words.flags, bit: wgsl::DASH })?;
+        c.channel("flow", &self.flow, Store::Number { word: words.flow, fallback: None })?;
+        let width =
+            |units| Store::Size { word: words.width, units: units || diagram, fallback: Some(words.theme_width) };
+        match &self.width {
+            Some(size) => c.channel("width", &size.expr, width(size.units)),
+            None => c.theme("width", words.theme_width, width(false)),
+        }
+    }
+}
+
+/// How a mark's rows answer the pointer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Interaction {
+    /// Whether rows are hovered, clicked, and probed; unless set, what the mark draws says: see
+    /// [`Mark::picks`].
+    pub(crate) pick: Option<bool>,
+    pub(crate) select: bool,
+    pub(crate) drag: bool,
+}
+
+impl Default for Interaction {
+    fn default() -> Interaction {
+        Interaction { pick: None, select: true, drag: false }
+    }
+}
+
+impl Style {
+    pub(crate) fn new(data: Name, table: Name) -> Style {
+        Style {
+            data,
+            table,
+            color: None,
+            visible: true.into(),
+            priority: None,
+            name: None,
+            interaction: Interaction::default(),
+            label: None,
+            shadow: false,
+            legend: None,
+        }
+    }
+}
+
+/// What a scene's marks are drawn as.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum MarkKind {
+    Vertices,
+    Edges,
+    Faces,
+    Lines,
+    Areas,
+}
+
+impl MarkKind {
+    /// The primitive its rows draw with.
+    pub(crate) fn primitive(self) -> Primitive {
+        match self {
+            MarkKind::Vertices => Primitive::Points,
+            MarkKind::Edges | MarkKind::Lines => Primitive::Strokes,
+            MarkKind::Faces | MarkKind::Areas => Primitive::Triangles,
+        }
+    }
+
+    /// What a mark of this kind is written under in JSON.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            MarkKind::Vertices => "vertices",
+            MarkKind::Edges => "edges",
+            MarkKind::Faces => "faces",
+            MarkKind::Lines => "lines",
+            MarkKind::Areas => "areas",
+        }
+    }
+}
+
+/// Identifies a mark across scenes: a new scene's mark with the same key eases from the old one.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct Key {
+    pub(crate) kind: MarkKind,
+    pub(crate) data: Name,
+    pub(crate) table: Name,
+    pub(crate) name: Option<Name>,
+}
+
+/// The four shaders every mark draws with.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum Primitive {
+    Points,
+    Strokes,
+    Triangles,
+}
+
+impl Primitive {
+    pub(crate) fn code(self) -> u32 {
+        match self {
+            Primitive::Points => wgsl::POINTS,
+            Primitive::Strokes => wgsl::STROKES,
+            Primitive::Triangles => wgsl::TRIANGLES,
+        }
+    }
+}
+
+/// How a mark's markers draw: built in or custom, their shape, and the inputs they read.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub(crate) struct Markers {
+    pub(crate) marker: u32,
+    pub(crate) shape: u32,
+    pub(crate) corner: f32,
+    pub(crate) hole: f32,
+    /// Inputs, and the row word of the first.
+    pub(crate) inputs: u32,
+    pub(crate) input: u32,
+    /// A pie's slice colors, packed; an icon marker's layers, filled in when packed.
+    pub(crate) palette: Vec<u32>,
+    /// An icon marker's images.
+    pub(crate) icons: Vec<crate::Image>,
+    /// A custom marker's WGSL.
+    pub(crate) custom: Option<std::sync::Arc<str>>,
+}
+
+/// How a compiled mark's labels draw: the extra word their words start at, the program column of
+/// their text, their size in length units (CSS pixels, or units in a diagram), and where their lines
+/// wrap.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Labeling {
+    pub(crate) extra: u32,
+    pub(crate) column: u32,
+    pub(crate) size: f32,
+    pub(crate) max_width: Option<f32>,
+    /// The font its texts are set in: the label's, else the theme's.
+    pub(crate) font: std::sync::Arc<str>,
+    /// The most labels shown at once, or none.
+    pub(crate) max: Option<u32>,
+}
+
+/// What a mark compiles in: the theme it falls back on, and its space.
+#[derive(Clone, Copy)]
+pub(crate) struct Context<'a> {
+    pub(crate) theme: &'a super::Theme,
+    pub(crate) space: &'a Space,
+    pub(crate) layout: &'a super::Layout,
+}
+
+impl Context<'_> {
+    /// Whether the space is a diagram, where every length is a unit and the sheet says where vertices
+    /// stand and how wires run.
+    pub(crate) fn diagram(&self) -> bool {
+        matches!(self.space, Space::Diagram(_))
+    }
+
+    /// Whether, outside a diagram, the view places vertex rows without positions by the scene's
+    /// layout: on a plane or the earth.
+    pub(crate) fn placed(&self) -> bool {
+        matches!(self.space, Space::Plane(_) | Space::Earth(_)) && !matches!(self.layout, super::Layout::None)
+    }
+}
+
+/// What a compiled mark draws with, besides its program.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Drawing {
+    pub(crate) kind: MarkKind,
+    /// The primitive the mark draws its rows with.
+    pub(crate) primitive: Primitive,
+    /// Where a stroke's segments run between, or where a triangle's corners come from: one of the
+    /// `PATH_*` codes.
+    pub(crate) path: u32,
+    /// Kind words per row, and extra words per row after them.
+    pub(crate) stride: u32,
+    pub(crate) extras: u32,
+    pub(crate) flags: u32,
+    pub(crate) markers: Markers,
+    /// The program column a line traces, or `NONE`.
+    pub(crate) trace: u32,
+    /// Program columns: the geometry a stroke's path runs through (a diagram's route, bends, or a
+    /// line's path) or an area's triangles; and each row's lane among edges joining the same two
+    /// vertices; `NONE` without.
+    pub(crate) geometry: u32,
+    pub(crate) lane: u32,
+    pub(crate) label: Option<Labeling>,
+    /// A vertex mark's ports, by the reference field that names their nets, with the program column
+    /// reading that field.
+    pub(crate) ports: Vec<(Name, super::Port, u32)>,
+    /// The size a vertex mark's port labels are set at, in length units.
+    pub(crate) port_label_size: f32,
+    /// The CSS pixels the mark's size keeps within: a vertex's half, a stroke's width.
+    pub(crate) size_px: [f32; 2],
+}
+
+impl Drawing {
+    pub(crate) fn new(kind: MarkKind, stride: u32) -> Drawing {
+        let path = match kind {
+            MarkKind::Edges | MarkKind::Faces => wgsl::PATH_ENDS,
+            MarkKind::Lines => wgsl::PATH_TRACE,
+            MarkKind::Areas => wgsl::PATH_GEOMETRY,
+            MarkKind::Vertices => wgsl::NONE,
+        };
+        Drawing {
+            kind,
+            primitive: kind.primitive(),
+            path,
+            stride,
+            extras: 0,
+            flags: 0,
+            markers: Markers::default(),
+            trace: wgsl::NONE,
+            geometry: wgsl::NONE,
+            lane: wgsl::NONE,
+            label: None,
+            ports: Vec::new(),
+            port_label_size: 0.0,
+            size_px: crate::Size::ANY,
+        }
+    }
+}
+
+impl Mark {
+    pub(crate) fn style(&self) -> &Style {
+        match self {
+            Mark::Vertices(m) => &m.style,
+            Mark::Edges(m) => &m.style,
+            Mark::Faces(m) => &m.style,
+            Mark::Lines(m) => &m.style,
+            Mark::Areas(m) => &m.style,
+        }
+    }
+
+    fn style_mut(&mut self) -> &mut Style {
+        match self {
+            Mark::Vertices(m) => &mut m.style,
+            Mark::Edges(m) => &mut m.style,
+            Mark::Faces(m) => &mut m.style,
+            Mark::Lines(m) => &mut m.style,
+            Mark::Areas(m) => &mut m.style,
+        }
+    }
+
+    pub(crate) fn kind(&self) -> MarkKind {
+        match self {
+            Mark::Vertices(_) => MarkKind::Vertices,
+            Mark::Edges(_) => MarkKind::Edges,
+            Mark::Faces(_) => MarkKind::Faces,
+            Mark::Lines(_) => MarkKind::Lines,
+            Mark::Areas(_) => MarkKind::Areas,
+        }
+    }
+
+    /// Whether its rows are hovered, clicked, and probed: as its `pick` says, else whether they are
+    /// things, as vertices, edges, faces, and a plot's traces are; geometry (areas, and lines along
+    /// paths: coasts, borders, roads) is not, so hovering probes none of it.
+    pub(crate) fn picks(&self) -> bool {
+        self.style().interaction.pick.unwrap_or(match self {
+            Mark::Vertices(_) | Mark::Edges(_) | Mark::Faces(_) => true,
+            Mark::Lines(lines) => lines.trace.is_some(),
+            Mark::Areas(_) => false,
+        })
+    }
+
+    /// `error`, met in this mark's options, as the `i`th mark of its scene: its path runs through the
+    /// mark as its JSON does, `marks[i].vertices`.
+    pub(crate) fn within(&self, i: usize, error: Error) -> Error {
+        error.at(self.kind().name()).at(i).at("marks")
+    }
+
+    /// Why `data`, the dataset it names, cannot draw it: the table it names is absent.
+    pub(crate) fn absent_from(&self, data: &crate::Data) -> Option<Error> {
+        let style = self.style();
+        data.table(&style.table)
+            .is_none()
+            .then(|| Error::invalid(format!("dataset '{}' has no table '{}'", style.data, style.table)).at("of"))
+    }
+
+    /// Whether its rows can carry comets: a stroke mark flowing at more than a constant 0.
+    pub(crate) fn flows(&self) -> bool {
+        let stroke = match self {
+            Mark::Edges(m) => &m.stroke,
+            Mark::Lines(m) => &m.stroke,
+            Mark::Vertices(_) | Mark::Faces(_) | Mark::Areas(_) => return false,
+        };
+        stroke.flow != Stroke::default().flow
+    }
+
+    /// The path a stroke mark's rows run along, or an area's triangles come from: one of the `PATH_`
+    /// codes, which its pipelines are made for. In a diagram every wire runs through the geometry
+    /// its sheet worked out; on a plot a line traces its samples, elsewhere it runs along its path.
+    pub(crate) fn path(&self, space: &Space) -> Option<u32> {
+        match self {
+            Mark::Edges(e) if e.poles => Some(wgsl::PATH_POLES),
+            Mark::Edges(e) if e.joins.is_some() => Some(wgsl::PATH_GEOMETRY),
+            Mark::Edges(_) if matches!(space, Space::Diagram(_)) => Some(wgsl::PATH_GEOMETRY),
+            Mark::Edges(_) => Some(wgsl::PATH_ENDS),
+            Mark::Lines(_) if matches!(space, Space::Plot(_)) => Some(wgsl::PATH_TRACE),
+            Mark::Lines(_) | Mark::Areas(_) => Some(wgsl::PATH_GEOMETRY),
+            Mark::Vertices(_) | Mark::Faces(_) => None,
+        }
+    }
+
+    /// The first option of this mark only a diagram has, if any: ports, groups, nets, orthogonal
+    /// routes. A diagram's own refusals: shadows and elevation.
+    pub(crate) fn misplaced(&self, diagram: bool) -> Option<(&'static str, &'static str)> {
+        const ONLY: &str = "only a diagram has ports, groups, nets, and orthogonal routes";
+        let style = self.style();
+        if let Mark::Areas(_) = self
+            && style.shadow
+        {
+            return Some(("shadow", "an area lies on the ground: it casts no shadow"));
+        }
+        if diagram {
+            if style.shadow {
+                return Some(("shadow", "a diagram is flat: nothing casts shadows"));
+            }
+            if let Mark::Edges(e) = self
+                && e.poles
+            {
+                return Some(("poles", "a diagram is flat: poles stand on planes and the earth"));
+            }
+            if let Mark::Edges(e) = self
+                && e.joins.is_some()
+            {
+                return Some(("joins", "a diagram's nets join vertex ports"));
+            }
+            if let Mark::Vertices(v) = self
+                && v.elevation != Expr::from(0.0)
+            {
+                return Some(("elevation", "a diagram is flat: vertices have no elevation"));
+            }
+            return None;
+        }
+        match self {
+            Mark::Vertices(v) if !v.ports.is_empty() => Some(("port", ONLY)),
+            Mark::Vertices(v) if v.contains.is_some() => Some(("contains", ONLY)),
+            Mark::Edges(e) if e.ends.is_none() && !e.poles && e.joins.is_none() => Some(("ends", ONLY)),
+            Mark::Edges(e) if e.route == Some(super::Route::Orthogonal) => Some(("route", ONLY)),
+            _ => None,
+        }
+    }
+
+    /// Lines are keyed by the field they trace unless named.
+    pub(crate) fn key(&self) -> Key {
+        let style = self.style();
+        let name = match self {
+            Mark::Lines(lines) => style.name.clone().or_else(|| Some(lines.traced().clone())),
+            _ => style.name.clone(),
+        };
+        Key { kind: self.kind(), data: style.data.clone(), table: style.table.clone(), name }
+    }
+
+    /// Whether `other` draws the same, whatever either's interaction.
+    pub(crate) fn draws_like(&self, other: &Mark) -> bool {
+        let mut a = self.clone();
+        a.style_mut().interaction = other.style().interaction;
+        a == *other
+    }
+
+    pub(crate) fn compile(&self, compiler: &mut Compiler<'_>, context: Context<'_>) -> Result<Drawing> {
+        let mut drawing = match self {
+            Mark::Vertices(m) => m.compile(compiler, context),
+            Mark::Edges(m) => m.compile(compiler, context),
+            Mark::Faces(m) => m.compile(compiler),
+            Mark::Lines(m) => m.compile(compiler, context),
+            Mark::Areas(m) => m.compile(compiler, context),
+        }?;
+        let style = self.style();
+        if let Some(priority) = &style.priority {
+            compiler.check_data("priority", priority)?;
+        }
+        if let Some(label) = &style.label {
+            let priority = label.priority.as_ref().or(style.priority.as_ref());
+            compile_label(label, priority, compiler, context.theme, &mut drawing).map_err(|e| e.at("label"))?;
+        }
+        if style.shadow {
+            drawing.flags |= wgsl::CASTS;
+        }
+        Ok(drawing)
+    }
+}
+
+/// Compiles `label`'s text, `priority` (its own, else the mark's), and color into extra words after
+/// the mark's own.
+fn compile_label(
+    label: &Label,
+    priority: Option<&Expr>,
+    c: &mut Compiler<'_>,
+    theme: &super::Theme,
+    drawing: &mut Drawing,
+) -> Result<()> {
+    let extra = drawing.extras;
+    let word = |k: u32| drawing.stride + extra + k;
+    let column = c.text("text", &label.text, word(wgsl::LABEL_CODE))?;
+    let priority: Expr = priority.cloned().unwrap_or_else(|| 0.0.into()).scale(0.0..=255.0).into();
+    c.channel("priority", &priority, Store::Number { word: word(wgsl::LABEL_PRIORITY), fallback: None })?;
+    let color = Store::Color { word: word(wgsl::LABEL_COLOR), fallback: wgsl::THEME_TEXT };
+    match &label.color {
+        Some(expr) => c.channel("color", expr, color)?,
+        None => c.theme("color", wgsl::THEME_TEXT, color)?,
+    }
+    drawing.extras += wgsl::LABEL_WORDS;
+    drawing.flags |= wgsl::LABELED;
+    drawing.label = Some(Labeling {
+        extra,
+        column,
+        size: label.size.unwrap_or(theme.font_size),
+        max_width: label.max_width,
+        font: label.font.clone().unwrap_or_else(|| theme.font.clone()),
+        max: label.max,
+    });
+    Ok(())
+}
+
+/// A mark's documentation as its schema's description: its prose, before its examples.
+pub(crate) fn described(lines: &[&str]) -> String {
+    let prose =
+        lines.iter().map(|line| line.strip_prefix(' ').unwrap_or(line)).take_while(|line| !line.starts_with("```"));
+    let paragraphs: Vec<String> =
+        prose.collect::<Vec<_>>().split(|line| line.is_empty()).map(|p| p.join(" ")).collect();
+    paragraphs.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(
+        "
+
+",
+    )
+}
+
+/// Declares a mark: its struct, holding the options every mark has, those strokes have where it
+/// draws them, and its own; and its JSON form, flat, with `of` naming its dataset and table, from
+/// which it deserializes and its schema derives. Its own options are declared once, here.
+macro_rules! mark {
+    ($(#[doc = $line:literal])* $name:ident $(+ $stroke:ident)? {
+        $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* $(,)?
+    }) => {
+        $(#[doc = $line])*
+        #[derive(Clone, PartialEq, Debug)]
+        pub struct $name {
+            pub(crate) style: $crate::scene::mark::Style,
+            $(pub(crate) $stroke: $crate::scene::mark::Stroke,)?
+            $($(#[$doc])* pub(crate) $field: $ty,)*
+        }
+
+        $crate::scene::mark::mark!(@form $name $(+ $stroke)? { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* });
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<$name, D::Error> {
+                let form = <Form as serde::Deserialize>::deserialize(deserializer)?;
+                Ok($name {
+                    style: form.style(),
+                    $($stroke: form.stroke(),)?
+                    $($field: form.$field,)*
+                })
+            }
+        }
+
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                let mut schema = <Form as schemars::JsonSchema>::json_schema(generator);
+                schema.insert("description".into(), $crate::scene::mark::described(&[$($line),*]).into());
+                schema
+            }
+        }
+    };
+    (@form $name:ident { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
+        $crate::scene::mark::mark!(@struct { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {});
+    };
+    (@form $name:ident + stroke { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
+        $crate::scene::mark::mark!(@struct { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {
+            /// CSS pixels, or position units with `units`; units in a diagram.
+            width: Option<$crate::Size>,
+            /// Whether each row is dashed.
+            #[serde(default = "crate::scene::mark::no")]
+            dash: $crate::Expr,
+            /// Comets flowing along each row at this speed a second: CSS pixels, units in a diagram,
+            /// or position units where the theme's flow is in units; negative flows backward. A speed
+            /// that changes carries comets on from where they are.
+            #[serde(default = "crate::scene::mark::still")]
+            flow: $crate::Expr,
+        });
+
+        impl Form {
+            fn stroke(&self) -> $crate::scene::mark::Stroke {
+                $crate::scene::mark::Stroke { width: self.width.clone(), dash: self.dash.clone(), flow: self.flow.clone() }
+            }
+        }
+    };
+    (@struct { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* } { $($stroke:tt)* }) => {
+        /// The mark as JSON writes it: `of`, its own options, then those of strokes and of every mark.
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Form {
+            /// The dataset and table drawn.
+            #[schemars(extend("tsType" = "[data: string, table: string]"))]
+            of: ($crate::Name, $crate::Name),
+            $($(#[$doc])* $(#[schemars(extend("tsType" = $ts))])? #[serde(default $(= $default)?)] $field: $ty,)*
+            $($stroke)*
+            /// Each row's color; the theme's unless set.
+            color: Option<$crate::Expr>,
+            /// Whether each row is drawn and picked.
+            #[serde(default = "crate::scene::mark::yes")]
+            visible: $crate::Expr,
+            /// Each row's priority, from its data alone: what matters more draws on top, stays drawn as
+            /// a table too large to draw whole thins to the tiles in view, and is labeled first.
+            priority: Option<$crate::Expr>,
+            /// Tells two marks of one table apart across scenes, and names the mark in hits.
+            name: Option<$crate::Name>,
+            /// Whether rows are hovered, clicked, and probed. Unless set, rows that are things are
+            /// (vertices, edges, faces, a plot's traces) and geometry is not (areas, and lines along
+            /// paths: coasts, borders, roads).
+            pick: Option<bool>,
+            /// Whether a click selects a row.
+            #[serde(default = "crate::scene::mark::on")]
+            select: bool,
+            /// Whether pressing a row drags it instead of panning.
+            #[serde(default)]
+            drag: bool,
+            /// Each row's text: a text field, or a label's options.
+            label: Option<$crate::Label>,
+            /// Whether each row casts a shadow onto the ground and onto faces, away from the theme's
+            /// light.
+            #[serde(default)]
+            shadow: bool,
+            /// A legend of the colors at the view's bottom right, under this title: the colormap across
+            /// its domain, ticked; a cell for each category; or a swatch beside each name of a map's
+            /// `categories`. The color maps through a colormap with a domain or named categories; a
+            /// conditional's `otherwise` is read before its cases.
+            legend: Option<std::sync::Arc<str>>,
+        }
+
+        impl Form {
+            fn style(&self) -> $crate::scene::mark::Style {
+                $crate::scene::mark::Style {
+                    data: self.of.0.clone(),
+                    table: self.of.1.clone(),
+                    color: self.color.clone(),
+                    visible: self.visible.clone(),
+                    priority: self.priority.clone(),
+                    name: self.name.clone(),
+                    interaction: $crate::scene::mark::Interaction { pick: self.pick, select: self.select, drag: self.drag },
+                    label: self.label.clone(),
+                    shadow: self.shadow,
+                    legend: self.legend.clone(),
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use mark;
+
+/// Defaults of the JSON forms.
+pub(crate) fn yes() -> Expr {
+    true.into()
+}
+
+pub(crate) fn no() -> Expr {
+    false.into()
+}
+
+pub(crate) fn still() -> Expr {
+    0.0.into()
+}
+
+pub(crate) fn on() -> bool {
+    true
+}
+
+pub(crate) fn zero() -> Expr {
+    0.0.into()
+}
+
+/// The options every mark has, as inherent methods.
+macro_rules! style_methods {
+    ($mark:ty) => {
+        impl $mark {
+            /// Each row's color.
+            #[must_use]
+            pub fn color(mut self, color: impl Into<$crate::Expr>) -> Self {
+                self.style.color = Some(color.into());
+                self
+            }
+
+            /// Whether each row is drawn and picked.
+            #[must_use]
+            pub fn visible(mut self, visible: impl Into<$crate::Expr>) -> Self {
+                self.style.visible = visible.into();
+                self
+            }
+
+            /// Each row's priority, from its data alone: what matters more draws on top, stays drawn
+            /// as a table too large to draw whole thins to the tiles in view, and is labeled first.
+            #[must_use]
+            pub fn priority(mut self, priority: impl Into<$crate::Expr>) -> Self {
+                self.style.priority = Some(priority.into());
+                self
+            }
+
+            /// Names the mark, so two marks of one table can be told apart across scenes.
+            #[must_use]
+            pub fn named(mut self, name: impl Into<$crate::Name>) -> Self {
+                self.style.name = Some(name.into());
+                self
+            }
+
+            /// Whether rows are hovered, clicked, and probed. Unless set, rows that are things are
+            /// (vertices, edges, faces, a plot's traces) and geometry is not (areas, and lines along
+            /// paths: coasts, borders, roads).
+            #[must_use]
+            pub fn pick(mut self, on: bool) -> Self {
+                self.style.interaction.pick = Some(on);
+                self
+            }
+
+            /// Whether a click selects a row; on by default.
+            #[must_use]
+            pub fn select(mut self, on: bool) -> Self {
+                self.style.interaction.select = on;
+                self
+            }
+
+            /// Whether pressing a row drags it instead of panning; off by default.
+            #[must_use]
+            pub fn drag(mut self, on: bool) -> Self {
+                self.style.interaction.drag = on;
+                self
+            }
+
+            /// Labels each row.
+            #[must_use]
+            pub fn label(mut self, label: $crate::Label) -> Self {
+                self.style.label = Some(label);
+                self
+            }
+
+            /// Whether each row casts a shadow onto the ground and onto faces, away from the theme's
+            /// light.
+            #[must_use]
+            pub fn shadow(mut self, on: bool) -> Self {
+                self.style.shadow = on;
+                self
+            }
+
+            /// Draws a legend of the colors at the view's bottom right, under `title`: the colormap
+            /// across its domain, ticked; a cell for each category; or a swatch beside each name of
+            /// [named categories](crate::Colormap::categories). The color maps through a colormap
+            /// with a domain or named categories; a conditional's `otherwise` is read before its
+            /// cases. Legends stack upward in the marks' order.
+            #[must_use]
+            pub fn legend(mut self, title: impl Into<std::sync::Arc<str>>) -> Self {
+                self.style.legend = Some(title.into());
+                self
+            }
+        }
+    };
+}
+
+/// The options of marks that draw strokes, as inherent methods.
+macro_rules! stroke_methods {
+    ($mark:ty) => {
+        impl $mark {
+            /// Each row's width: CSS pixels, or position units with [`units`](crate::units); units in
+            /// a diagram.
+            #[must_use]
+            pub fn width(mut self, width: impl Into<$crate::Size>) -> Self {
+                self.stroke.width = Some(width.into());
+                self
+            }
+
+            /// Whether each row is dashed.
+            #[must_use]
+            pub fn dash(mut self, dash: impl Into<$crate::Expr>) -> Self {
+                self.stroke.dash = dash.into();
+                self
+            }
+
+            /// Comets flowing along each row at this speed a second: CSS pixels, units in a diagram, or
+            /// position units where the theme's [`Flow`](crate::Flow) is in units; negative flows
+            /// backward. A speed that changes carries comets on from where they are.
+            #[must_use]
+            pub fn flow(mut self, speed: impl Into<$crate::Expr>) -> Self {
+                self.stroke.flow = speed.into();
+                self
+            }
+        }
+    };
+}
+
+pub(crate) use {stroke_methods, style_methods};

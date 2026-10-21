@@ -1,0 +1,28 @@
+[package]
+name = "latkit-cli"
+description = "Render latkit scenes of JSON or binary data to images and videos."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["visualization", "rendering", "video", "graph", "cli"]
+categories = ["command-line-utilities", "visualization", "multimedia::video"]
+readme = "README.md"
+include = ["LICENSE", "src/**", "README.md"]
+
+[[bin]]
+name = "latkit"
+path = "src/main.rs"
+
+[dependencies]
+latkit = { workspace = true, features = ["native"] }
+clap.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+schemars.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

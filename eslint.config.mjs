@@ -10,15 +10,16 @@ export default defineConfig([
     ignores: [
       '**/coverage/**',
       '**/dist/**',
-      '**/docs/_build/**',
       '**/node_modules/**',
       '**/*.d.ts.map',
       'pnpm-lock.yaml',
-      'output/**',
-      'packages/monitor/tests/browser/generated/**',
       '.playwright-cli/**',
-      '.bench/**',
-      'benchmark/.results/**',
+      'crates/**',
+      'target/**',
+      '.impeccable/**',
+      'npm/pkg/**',
+      'npm/dist/**',
+      'npm/test/scenes.js',
     ],
   },
   {
@@ -53,12 +54,15 @@ export default defineConfig([
         },
       ],
       '@typescript-eslint/unbound-method': 'off',
-      // A class's types live under it in a type-only `declare namespace`: `Document.Operation`.
-      '@typescript-eslint/no-namespace': ['error', { allowDeclarations: true }],
     },
   },
   {
-    files: ['**/tests/**/*.ts', '**/*.unit.test.ts', '**/*.bench.ts', 'benchmark/**/*.ts'],
+    files: [
+      '**/*.test.ts',
+      'npm/examples/test/**/*.ts',
+      'npm/examples/gate/**/*.ts',
+      'benchmark/**/*.ts',
+    ],
     rules: {
       '@typescript-eslint/no-empty-function': 'off',
       '@typescript-eslint/no-explicit-any': 'off',

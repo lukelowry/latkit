@@ -1,0 +1,105 @@
+[workspace]
+members = ["crates/*", "xtask"]
+default-members = ["crates/latkit"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/lukelowry/latkit"
+homepage = "https://latkit.readthedocs.io"
+
+[workspace.dependencies]
+url = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+toml_edit = "0.25"
+latkit = { version = "0.1.0", path = "crates/latkit", default-features = false }
+
+thiserror = "2"
+hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
+rustc-hash = "2"
+
+# Match Gpu::new: primary native backends and browser WebGPU, without unused GLES.
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl", "webgpu"] }
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.34"
+web-time = "1"
+
+wesl = "0.6"
+naga = { version = "30", features = ["wgsl-in"] }
+
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+serde_path_to_error = "0.1"
+schemars = { version = "1", default-features = false, features = ["derive", "std", "preserve_order"] }
+flate2 = "1"
+image-webp = "0.2"
+jpeg-encoder = "0.7"
+png = "0.18"
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+proptest = "1"
+pollster = "0.4"
+cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "fontconfig"] }
+clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+tempfile = "3"
+windows = { version = "0.62.2", features = [
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+] }
+# What `windows::core::implement` expands to: COM objects of ours, such as callbacks.
+windows-core = "0.62.2"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+similar_names = "allow"
+many_single_char_names = "allow"
+float_cmp = "allow"
+struct_excessive_bools = "allow"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+# The executable: release speed for its CPU work (JSON, PNG, layout, text), without symbols.
+[profile.cli]
+inherits = "release"
+strip = true
+
+[profile.wasm]
+inherits = "release"
+opt-level = 3
+panic = "abort"
+strip = true
+
+[profile.wasm-dev]
+inherits = "wasm"
+opt-level = 2
+lto = false
+codegen-units = 16
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 2
