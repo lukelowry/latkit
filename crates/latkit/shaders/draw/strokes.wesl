@@ -7,7 +7,7 @@
 
 import package::lib::types::{ARROWS, PATH_TRACE, SPACE_DIAGRAM};
 import package::lib::path::PATH;
-import package::lib::bind::{frame, mark};
+import package::lib::bind::{frame, mark, eye};
 import package::lib::project::{to_clip, nearer, culled};
 import package::lib::path::{
     segment, segment_screen, stroke_style, ends_colored, ends_part, path_count, path_length, px_per_length,
@@ -20,23 +20,21 @@ import package::lib::shade::{caster, daylight};
 import package::lib::color::output;
 
 struct Varyings {
+    // The corner in clip space; in the fragment, the target pixel, which `pixel` reads.
     @builtin(position) clip: vec4f,
-    // The pixel in CSS pixels, a screen position: interpolated linearly, as a quad whose ends lie at
-    // different depths would otherwise skew it off the stroke.
-    @location(0) @interpolate(linear) p: vec2f,
-    @location(1) @interpolate(flat) a: vec2f,
-    @location(2) @interpolate(flat) b: vec2f,
-    @location(3) @interpolate(flat) row: u32,
-    @location(4) color: vec4f,
+    @location(0) @interpolate(flat) a: vec2f,
+    @location(1) @interpolate(flat) b: vec2f,
+    @location(2) @interpolate(flat) row: u32,
+    @location(3) color: vec4f,
     // Width, distance along at `a` and at `b`, flow.
-    @location(5) @interpolate(flat) style: vec4f,
-    @location(6) height: f32,
+    @location(4) @interpolate(flat) style: vec4f,
+    @location(5) height: f32,
     // Whether the segment ends in an arrowhead, then whether it dashes.
-    @location(7) @interpolate(flat) arrow: u32,
+    @location(6) @interpolate(flat) arrow: u32,
     // The row's focus bits, which the focus draw glows by.
-    @location(8) @interpolate(flat) focus: u32,
+    @location(7) @interpolate(flat) focus: u32,
     // Distance along at `a` and at `b` in length units, and how far the row's comets traveled.
-    @location(9) @interpolate(flat) comet: vec3f,
+    @location(8) @interpolate(flat) comet: vec3f,
 }
 
 // Whether this variant draws lit rows, its quads reaching out to their glow.
@@ -77,7 +75,6 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let side = f32(corner >> 1u) * 2.0 - 1.0;
     let screen = mix(a - dir * reach, b + dir * reach, t) + normal * side * reach;
     out.clip = nearer(to_clip(screen, select(ca, cb, t > 0.5)));
-    out.p = screen;
     out.a = a;
     out.b = b;
     // How far along the whole segment this corner lies, of the part drawn.
@@ -107,6 +104,13 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     return out;
 }
 
+// The fragment's pixel in CSS pixels, a screen position as `a` and `b` are. Read from the fragment's
+// own position, never interpolated: a quad whose ends lie at very different depths skews what is
+// interpolated, and a renderer clipping the quad at the screen's edge, as lavapipe does, moves it.
+fn pixel(v: Varyings) -> vec2f {
+    return v.clip.xy / eye.pixel_ratio;
+}
+
 fn segment_of(v: Varyings) -> Stroke {
     let dash = (v.arrow & 2u) != 0u;
     return Stroke(v.a, v.b, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, (v.arrow & 1u) != 0u);
@@ -115,7 +119,7 @@ fn segment_of(v: Varyings) -> Stroke {
 @if(!casts && !focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    let c = stroke(v.p, segment_of(v));
+    let c = stroke(pixel(v), segment_of(v));
     return output(vec4f(c.rgb * c.a, c.a));
 }
 
@@ -123,14 +127,15 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     let s = segment_of(v);
-    return output(glow(MarkerColor(stroke(v.p, s), stroke_distance(v.p, s).x), v.focus));
+    let p = pixel(v);
+    return output(glow(MarkerColor(stroke(p, s), stroke_distance(p, s).x), v.focus));
 }
 
 @if(casts)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     let s = segment_of(v);
-    let alpha = s.color.a * covered(stroke_distance(v.p, s), s);
+    let alpha = s.color.a * covered(stroke_distance(pixel(v), s), s);
     if alpha <= 0.01 {
         discard;
     }

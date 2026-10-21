@@ -14,33 +14,67 @@ on:
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
-  actions: read
-  contents: write
-  id-token: write
-  pull-requests: write
+  contents: read
 
 env:
   CI: true
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
   NPM_CONFIG_ACCESS: public
   NPM_CONFIG_PROVENANCE: true
 
 jobs:
-  release:
-    name: Version or publish
+  # What the commit releases: pending changesets open or update the version PR, a version not yet
+  # tagged publishes, and a tagged one has nothing left to do.
+  plan:
     # A push's run only: a pull request's run can come from a fork's branch named main.
     if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      step: ${{ steps.plan.outputs.step }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-          fetch-depth: 0
       - name: Verify manual recovery uses a commit that passed CI
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh run list --workflow ci.yml --branch main --commit "$(git rev-parse HEAD)" --json conclusion --jq 'any(.[]; .conclusion == "success")' | grep -qx true
+      - name: Decide what the commit releases
+        id: plan
+        run: |
+          version=$(jq -r .version npm/package.json)
+          if compgen -G '.changeset/*.md' > /dev/null; then
+            echo "step=version" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --tags origin "refs/tags/latkit@$version" > /dev/null; then
+            echo "step=none" >> "$GITHUB_OUTPUT"
+          else
+            echo "step=publish" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    name: Version or publish
+    needs: plan
+    if: needs.plan.outputs.step != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+    env:
+      PUBLISH: ${{ needs.plan.outputs.step == 'publish' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6
         with:
           version: 10.30.0
@@ -49,24 +83,30 @@ jobs:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org/
-      - run: rustup show
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
       - run: pnpm install --frozen-lockfile
       - name: Read the WASM bindings generator's version
+        if: env.PUBLISH == 'true'
         id: bindgen
         run: |
           echo "version=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
+        if: env.PUBLISH == 'true'
         id: bindgen-cache
         with:
           path: ~/.cargo/bin/wasm-bindgen
           key: wasm-bindgen-cli-${{ steps.bindgen.outputs.version }}
       - name: Install the matching WASM bindings generator
-        if: steps.bindgen-cache.outputs.cache-hit != 'true'
+        if: env.PUBLISH == 'true' && steps.bindgen-cache.outputs.cache-hit != 'true'
         run: cargo install wasm-bindgen-cli --version "${{ steps.bindgen.outputs.version }}" --locked
-      - run: pnpm --dir npm/examples exec playwright-core install --with-deps chromium
+      - if: env.PUBLISH == 'true'
+        run: pnpm --dir npm/examples exec playwright-core install --with-deps chromium
       # The tarball a consumer installs, checked in Chrome; `pnpm release` publishes this file.
-      - run: cargo xtask package
-      - run: cargo xtask package-test
+      - if: env.PUBLISH == 'true'
+        run: cargo xtask package
+      - if: env.PUBLISH == 'true'
+        run: cargo xtask package-test
       # One retryable release verifies npm and both crates before creating tags.
       - name: Open a version pull request, or publish all distributions
         id: changesets

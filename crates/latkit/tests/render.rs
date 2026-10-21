@@ -604,8 +604,10 @@ fn frames_tell_what_they_cost_the_gpu_where_it_measures() {
         common::finish(&gpu);
         step(&gpu, &mut view);
     }
+    // Milliseconds, measured: no frame passes the deadline `finish` holds it to, even on a CPU
+    // renderer under load, while a count of nanoseconds would.
     let ms = view.stats().gpu_ms;
-    assert!(ms > 0.0 && ms < 1000.0, "{ms} ms");
+    assert!(ms > 0.0 && ms < common::DEADLINE.as_secs_f32() * 1000.0, "{ms} ms");
 }
 
 #[test]
