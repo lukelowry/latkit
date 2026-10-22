@@ -164,6 +164,10 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
     slots[wgsl::THEME_SURFACE as usize] = theme.surface.packed();
+    slots[wgsl::THEME_OUTLINE as usize] = theme.outline.map_or(0, Color::packed);
+    slots[wgsl::THEME_CORNER as usize] = theme.corner.to_bits();
+    slots[wgsl::THEME_PORT_SIZE as usize] = theme.port_size.to_bits();
+    slots[wgsl::THEME_LIFT as usize] = theme.shadow.lift.to_bits();
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 

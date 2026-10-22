@@ -1,29 +1,31 @@
 /** Diagram: a microgrid's controller as blocks in groups, wired port to port and laid out by latkit. */
-import { Patch, reference, type Mark, type Port, type Shape, type Side } from 'latkit/core';
+import { Patch, reference, type Marker, type Mark, type Port, type Side } from 'latkit/core';
 import { THEME, type Piece } from './look.ts';
 
-/** Kinds of block: the shape each draws as, and its ports. */
+/** Kinds of block: the marker each draws as, its fill, and its ports. */
 const KINDS = {
-  Source: { shape: 'ellipse', ports: [['out', 'right', true]] },
+  Source: { marker: 'rounded', color: '#173836', ports: [['out', 'right', true]] },
   Process: {
-    shape: 'rounded',
+    marker: 'block',
+    color: '#1c2b3f',
     ports: [
       ['in', 'left', false],
       ['out', 'right', true],
     ],
   },
   Control: {
-    shape: 'diamond',
+    marker: 'block',
+    color: '#3a2e18',
     ports: [
       ['in', 'left', false],
       ['feedback', 'bottom', false],
       ['out', 'right', true],
     ],
   },
-  Sink: { shape: 'rectangle', ports: [['in', 'left', false]] },
+  Sink: { marker: 'block', color: '#29243f', ports: [['in', 'left', false]] },
 } as const satisfies Record<
   string,
-  { shape: Shape; ports: readonly (readonly [string, Side, boolean])[] }
+  { marker: Marker; color: string; ports: readonly (readonly [string, Side, boolean])[] }
 >;
 type Kind = keyof typeof KINDS;
 
@@ -143,14 +145,33 @@ export default function diagram(): Piece {
   }
   const title = { text: 'name', size: 11, color: '#8ea3b8' };
   const marks: Mark[] = [
-    { vertices: { of: ['plant', 'Area'], contains: ['Group', 'area'], label: title } },
-    { vertices: { of: ['plant', 'Group'], contains: ['Process', 'group'], label: title } },
-    { edges: { of: ['plant', 'Signal'], route: 'orthogonal', arrows: true, width: 1.5, flow: 40 } },
+    {
+      vertices: { of: ['plant', 'Area'], contains: ['Group', 'area'], label: title, shadow: true },
+    },
+    {
+      vertices: {
+        of: ['plant', 'Group'],
+        contains: ['Process', 'group'],
+        label: title,
+        color: '#1d2632',
+        shadow: true,
+      },
+    },
+    {
+      edges: {
+        of: ['plant', 'Signal'],
+        route: 'orthogonal',
+        arrows: true,
+        width: 1.5,
+        color: '#8a9ab0',
+      },
+    },
     ...kinds.map((kind): Mark => ({
       vertices: {
         of: ['plant', kind],
-        marker: KINDS[kind].shape,
-        color: '#24344a',
+        marker: KINDS[kind].marker,
+        color: KINDS[kind].color,
+        shadow: true,
         ring: {
           when: [[{ op: 'gt', args: ['status', 0] }, { color: '#ffb000' }]],
           otherwise: { missing: true },
@@ -167,12 +188,11 @@ export default function diagram(): Piece {
     name: 'diagram',
     alt: 'A microgrid controller as blocks in nested groups, wired port to port with routed wires and a feedback loop',
     data: [patch],
-    elapsed: 0.6,
     scene: {
       space: { diagram: { grid: { dots: { pitch: 20 } } } },
-      layout: { layered: { flow: 'right', gap: 30, rankGap: 70 } },
+      layout: { layered: { flow: 'right', gap: 40, rankGap: 52 } },
       ease: 0,
-      theme: { ...THEME, flow: { color: '#7cc4ffd0' } },
+      theme: { ...THEME, surface: '#151c26', grid: '#ffffff0d' },
       marks,
     },
   };

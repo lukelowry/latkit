@@ -205,12 +205,17 @@ impl View {
                 priority: None,
                 place: Place::Nowhere,
                 reads: (!matches!(space, Space::Diagram(_))).then(FxHashSet::default),
+                traced: FxHashSet::default(),
             });
             if planned.priority.is_none() {
                 planned.priority.clone_from(&style.priority);
             }
             if placing && planned.place == Place::Nowhere {
                 planned.place = place_of(&shown.mark, table);
+            }
+            if let Some(compiled) = &shown.compiled {
+                let traces = compiled.program.columns.iter().filter(|c| c.trace && c.of.is_none() && !c.derived);
+                planned.traced.extend(traces.map(|c| c.name.clone()));
             }
             if let (Some(reads), Some(compiled)) = (&mut planned.reads, &shown.compiled) {
                 for column in &compiled.program.columns {

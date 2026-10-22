@@ -214,7 +214,8 @@ it; `pick: true` makes a map's states or cells answer the pointer.
 
 A `flow` sends comets along a stroke. In a diagram, vertices are blocks with `ports`, a vertex mark
 with `contains` draws groups around the rows that name it, and edges of a table without `ends` are
-nets joining the ports that name them.
+nets joining the ports that name them. The theme's `outline`, `corner`, `portSize`, and `bend` set
+how blocks, groups, ports, and wires look, and `shadow: true` lifts blocks and groups off the sheet.
 
 ### Expressions
 

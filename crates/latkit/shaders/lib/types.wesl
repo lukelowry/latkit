@@ -133,9 +133,7 @@ const SIDE_LEFT: u32 = 0u;
 const SIDE_RIGHT: u32 = 1u;
 const SIDE_TOP: u32 = 2u;
 const SIDE_BOTTOM: u32 = 3u;
-// Length units across a port's marker: CSS pixels, or units in a diagram.
-const PORT_SIZE: f32 = 7.0;
-// A group's header band, in label sizes: its title sits in it.
+// A group's header, in label sizes: its title sits in it.
 const HEADER_BAND: f32 = 1.8;
 // Angle a geodesic segment spans at most, in degrees.
 const GEODESIC_STEP: f32 = 2.0;
@@ -352,6 +350,12 @@ const THEME_MISSING: u32 = 8u;
 const THEME_CLEAR: u32 = 9u;
 // What a group's container is filled with.
 const THEME_SURFACE: u32 = 10u;
+// A diagram's look, in units: the border of its blocks and groups (clear for none), their corners'
+// radius, its ports' width, and how far a block's shadow falls below it.
+const THEME_OUTLINE: u32 = 11u;
+const THEME_CORNER: u32 = 12u;
+const THEME_PORT_SIZE: u32 = 13u;
+const THEME_LIFT: u32 = 14u;
 const THEME_SLOTS: u32 = 16u;
 
 // Backdrop grids.

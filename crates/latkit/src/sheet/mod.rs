@@ -20,7 +20,7 @@ use crate::derive::graph::{EdgeMark, VertexMark, drawing, key_of, links, marks, 
 use crate::derive::{Derive, Input, Jobs, Read, Tables, answers, beside, kept, stamp_of};
 use crate::expr::cpu::Rows;
 use crate::gpu::atlas;
-use crate::gpu::shaders::{HEADER_BAND, PORT_SIZE, TEXT_BASE};
+use crate::gpu::shaders::{HEADER_BAND, TEXT_BASE};
 use crate::host::{Job, Key, Placement, TextRun};
 use crate::layout::rect::{Rect, around, union};
 use crate::{Layout, Marker, Pending, Shape, Side, Theme, Vertices};
@@ -336,8 +336,15 @@ impl Sheet {
         input: &Input<'_>,
         jobs: &mut Jobs<'_>,
     ) -> Vec<Vec<usize>> {
-        let spacing = f64::from(input.scene.theme.edge_spacing);
-        let context = wires::Context { vertices: &drawn.vertices, marks: vertex_marks, edges: edge_marks, spacing };
+        let theme = &input.scene.theme;
+        let context = wires::Context {
+            vertices: &drawn.vertices,
+            marks: vertex_marks,
+            edges: edge_marks,
+            spacing: f64::from(theme.edge_spacing),
+            bend: f64::from(theme.bend),
+            port: f64::from(theme.port_size),
+        };
         wires::paths(&context, input, jobs, change, &mut drawn.wired, (&mut self.routes, &mut self.routing))
     }
 
@@ -407,22 +414,37 @@ impl Sheet {
             (2.0 * radius, 2.0 * radius)
         };
         // Room for its ports: a pitch apiece along each side, and their labels across from each other.
-        let pitch = (2.0 * f64::from(PORT_SIZE)).max(1.4 * size);
+        let port = f64::from(theme.port_size);
+        let pitch = (2.0 * port).max(1.4 * size);
         let count = |side: Side| ports.iter().filter(|(_, p)| p.side == side).count() as f64;
         height = height.max((count(Side::Left).max(count(Side::Right)) + 1.0) * pitch);
         width = width.max((count(Side::Top).max(count(Side::Bottom)) + 1.0) * pitch);
-        let port_size = 0.8 * theme.font_size;
+        let port_text = 0.8 * theme.font_size;
         let mut widest = |side: Side| {
             let mut widest: f64 = 0.0;
             for label in ports.iter().filter(|(_, p)| p.side == side).filter_map(|(_, p)| p.label.as_deref()) {
-                let run = atlas::run(label.into(), theme.font.clone(), port_size, None);
-                widest = widest.max(self.measure(run, input)[0] * f64::from(port_size) / f64::from(TEXT_BASE));
+                let run = atlas::run(label.into(), theme.font.clone(), port_text, None);
+                widest = widest.max(self.measure(run, input)[0] * f64::from(port_text) / f64::from(TEXT_BASE));
             }
             widest
         };
         let labels = widest(Side::Left) + widest(Side::Right);
         if labels > 0.0 {
-            width = width.max(w + labels + 3.0 * f64::from(PORT_SIZE) + 1.6 * size);
+            width = width.max(w + labels + 3.0 * port + 1.6 * size);
+        }
+        // A port named on the top or the bottom takes a line of its own between its side and the
+        // label, and as much on the other side, so the label stays in the middle; and its share of
+        // the side holds its name.
+        let mut stacked = false;
+        for side in [Side::Top, Side::Bottom] {
+            let name = widest(side);
+            if name > 0.0 {
+                stacked = true;
+                width = width.max((count(side) + 1.0) * (name + port));
+            }
+        }
+        if stacked {
+            height = height.max(h + 1.2 * size + 2.0 * (1.3 * f64::from(port_text) + port));
         }
         [width / 2.0, height / 2.0]
     }

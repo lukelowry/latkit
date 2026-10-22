@@ -400,6 +400,32 @@ fn lines_trace_their_samples_across_a_plot() {
 }
 
 #[test]
+fn lines_traced_in_priority_order_draw_their_whole_span() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("signals");
+    data.apply(Patch::new().axis("time", "s").set(Table::new("Signal", Ids::count(1)).field("rank", vec![1.0])))
+        .expect("valid");
+    for t in 0..=10 {
+        data.apply(Patch::new().append([f64::from(t)], "Signal", [("v", vec![0.5])])).expect("frame");
+    }
+    let axis = Axis { grid: false, hidden: true, ..Axis::default() };
+    let scene = Scene::new(Plot { x: axis.clone(), y: axis }).theme(plain_theme()).draw(
+        Lines::of("signals", "Signal").trace("v").priority(field("rank")).color(Color::rgb(1.0, 0.0, 0.0)).width(4.0),
+    );
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
+    view.set_at(0.0);
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let center = SIZE / 2;
+    // Ordered by priority, the table draws in part; its trace still spans every frame, not only
+    // those about the coordinate shown, at its start.
+    for x in [center - 40, center, center + 40] {
+        assert!(close(at(&pixels, x, center), [255, 0, 0, 255]), "at {x}: {:?}", at(&pixels, x, center));
+    }
+}
+
+#[test]
 fn a_plot_frames_its_traces_whole_span_wherever_it_shows() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("signals");

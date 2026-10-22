@@ -49,10 +49,12 @@ fn lines(p: vec2f, w: vec2f, pitch: f32) -> f32 {
     return max(c.x, c.y);
 }
 
+// Dots `pitch` apart through `p`, which moves `w` per pixel: a CSS pixel across on any screen, fading
+// out as their cells shrink to a few pixels.
 fn dots(p: vec2f, w: vec2f, pitch: f32) -> f32 {
     let cells = max(w / pitch, vec2f(1e-12));
     let px = abs(fract(p / pitch + 0.5) - 0.5) / cells;
-    return saturate(1.5 - length(px)) * (1.0 - smoothstep(0.08, 0.25, max(cells.x, cells.y)));
+    return saturate(eye.pixel_ratio + 0.5 - length(px)) * (1.0 - smoothstep(0.08, 0.25, max(cells.x, cells.y)));
 }
 
 // Lines spaced `pitch` times a power of ten, from the `lowest` power to the `highest`: the spacing

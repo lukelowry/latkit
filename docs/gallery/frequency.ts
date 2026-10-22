@@ -27,6 +27,8 @@ export default function frequency(): Piece {
           lines: {
             of: ['grid', 'Machine'],
             trace: 'speed',
+            // The nearest machines, swinging hardest, on top.
+            priority: { op: 'neg', args: ['distance'] },
             width: 0.7,
             color: {
               colormap: {

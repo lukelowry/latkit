@@ -2,7 +2,7 @@
 
 import package::lib::types::{
     SELECTED, HOVERED, SHAPE_RECTANGLE, SHAPE_ROUNDED, SHAPE_DIAMOND, MARKER_GAUGE, MARKER_PIE, MARKER_BLOCK,
-    LABELED, HEADER_BAND, THEME_TEXT,
+    THEME_TEXT, THEME_OUTLINE, THEME_CORNER, THEME_PORT_SIZE, THEME_LIFT,
 };
 import package::lib::bind::{frame, eye, mark, program};
 import package::lib::mark::coverage;
@@ -36,17 +36,41 @@ fn shape_distance(shape: u32, p: vec2f, half: vec2f) -> f32 {
     }
 }
 
-// The outline a marker's distance is measured from: blocks are rounded boxes, others their shape.
-fn outline_distance(p: vec2f, half: vec2f) -> f32 {
-    if mark.marker == MARKER_BLOCK {
-        return box_distance(p, half, min(mark.corner, min(half.x, half.y)));
-    }
-    return shape_distance(mark.shape, p, half);
+fn theme_word(slot: u32) -> u32 {
+    return frame.theme[slot / 4u][slot % 4u];
 }
 
-// The theme's text color: what borders and ports mix toward, so they read on light and dark grounds.
+// The theme's text color: what ports mix toward, so they read on light and dark grounds.
 fn theme_text() -> vec3f {
-    return unpack4x8unorm(frame.theme[THEME_TEXT / 4u][THEME_TEXT % 4u]).rgb;
+    return unpack4x8unorm(theme_word(THEME_TEXT)).rgb;
+}
+
+// The border of a diagram's blocks and groups; clear for none.
+fn theme_outline() -> vec4f {
+    return unpack4x8unorm(theme_word(THEME_OUTLINE));
+}
+
+// A diagram's corner radius, a port's width, and how far a shadow falls: CSS pixels at this zoom.
+fn theme_corner() -> f32 {
+    return bitcast<f32>(theme_word(THEME_CORNER)) * frame.unit;
+}
+
+fn theme_port_size() -> f32 {
+    return bitcast<f32>(theme_word(THEME_PORT_SIZE)) * frame.unit;
+}
+
+fn theme_lift() -> f32 {
+    return bitcast<f32>(theme_word(THEME_LIFT)) * frame.unit;
+}
+
+// The outline a marker's distance is measured from: blocks are rounded boxes, their corners the
+// theme's unless the marker sets its own, others their shape.
+fn outline_distance(p: vec2f, half: vec2f) -> f32 {
+    if mark.marker == MARKER_BLOCK {
+        let corner = select(mark.corner * frame.unit, theme_corner(), mark.corner < 0.0);
+        return box_distance(p, half, min(corner, min(half.x, half.y)));
+    }
+    return shape_distance(mark.shape, p, half);
 }
 
 // `color` covering where `distance` is negative, antialiased over a pixel.
@@ -100,28 +124,37 @@ fn builtin_marker(f: MarkerFragment) -> MarkerColor {
     }
 }
 
-// A group's container: a rounded box filled in its color, tinted a step toward the text color for
-// each group holding it; a header band across its top where its title sits; and a hairline border.
+// A group's container: a box with the theme's corners, filled in its color, tinted a step toward the
+// text color for each group holding it, and bordered; its title sits in the room atop it.
 fn container(f: MarkerFragment, depth: f32) -> MarkerColor {
-    let text = theme_text();
-    let fill = mix(f.color.rgb, text, min(0.06 * depth, 0.3));
-    let d = box_distance(f.p, f.half, min(6.0 * frame.unit, 0.2 * min(f.half.x, f.half.y)));
-    var body = filled(vec4f(fill, f.color.a), d);
-    if (mark.flags & LABELED) != 0u {
-        // y is up in a marker: the header band runs down from its top.
-        let header = mark.label_size * frame.unit * HEADER_BAND;
-        let band = max(d, (f.half.y - header) - f.p.y);
-        body = over(filled(vec4f(mix(fill, text, 0.07), f.color.a), band), body);
-    }
-    let hairline = 0.5 / eye.pixel_ratio;
-    let border = filled(vec4f(mix(fill, text, 0.4), f.color.a), abs(d + hairline) - hairline);
-    return MarkerColor(over(border, body).color, d);
+    let fill = mix(f.color.rgb, theme_text(), min(0.06 * depth, 0.3));
+    let d = box_distance(f.p, f.half, min(theme_corner(), 0.5 * min(f.half.x, f.half.y)));
+    return border(filled(vec4f(fill, f.color.a), d), d, f.color.a);
 }
 
-// A ring of the status color just outside the marker's outline.
-fn status_ring(m: MarkerColor, p: vec2f, half: vec2f, status: vec4f) -> MarkerColor {
-    let d = outline_distance(p, half);
-    return over(filled(status, abs(d - 1.5) - 1.25), m);
+// `m`, its outline `d` bordered inside in the theme's outline a unit wide, never under a pixel.
+fn border(m: MarkerColor, d: f32, alpha: f32) -> MarkerColor {
+    let outline = theme_outline();
+    if outline.a <= 0.0 {
+        return m;
+    }
+    let half = 0.5 * max(frame.unit, 1.0 / eye.pixel_ratio);
+    return MarkerColor(over(filled(vec4f(outline.rgb, outline.a * alpha), abs(d + half) - half), m).color, m.distance);
+}
+
+// `m` over its shadow on the sheet: its outline `distance` lowered by the theme's lift, as soft
+// again, in the theme's shadow color.
+fn dropped(m: MarkerColor, distance: f32, alpha: f32) -> MarkerColor {
+    let lift = max(theme_lift(), 0.5);
+    let shade = frame.shade.color;
+    let a = shade.a * alpha * (1.0 - smoothstep(-lift, lift, distance));
+    return MarkerColor(over(m, MarkerColor(vec4f(shade.rgb, a), distance)).color, m.distance);
+}
+
+// A ring of the status color just outside the marker's outline, a part of the drawing in a diagram.
+fn status_ring(m: MarkerColor, status: vec4f) -> MarkerColor {
+    let u = frame.unit;
+    return MarkerColor(over(filled(status, abs(m.distance - 1.5 * u) - 1.25 * u), m).color, m.distance);
 }
 
 // `m` premultiplied.

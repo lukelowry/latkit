@@ -66,6 +66,9 @@ pub(crate) struct Planned {
     /// The fields marks read of it, which its rows drawn hold with every reference field; `None`
     /// where they hold every field.
     pub(crate) reads: Option<FxHashSet<Name>>,
+    /// The sampled fields marks trace across the axis, which its rows drawn hold whole: every frame,
+    /// at every level, where other sampled fields hold only the frames about the coordinate shown.
+    pub(crate) traced: FxHashSet<Name>,
 }
 
 impl Planned {
@@ -564,7 +567,9 @@ impl Set {
         let Some(list) = rows.get(&table.name) else {
             return if remaps && planned { self.remapped(table, versions) } else { table.clone() };
         };
-        let reads = ask.plans.get(&(source.name().clone(), table.name.clone())).and_then(|p| p.reads.as_ref());
+        let plan = ask.plans.get(&(source.name().clone(), table.name.clone()));
+        let reads = plan.and_then(|p| p.reads.as_ref());
+        let traced = |name: &Name| plan.is_some_and(|p| p.traced.contains(name));
         // The source row of each row drawn, picked only where something gathers afresh.
         let picks = std::cell::OnceCell::new();
         let picked = || {
@@ -627,10 +632,12 @@ impl Set {
                     (stamp, made)
                 }
                 Field::Sampled(samples, version) if read => {
-                    let frame = frames(samples);
-                    let stamp = stamp_of((version, frame));
+                    // A trace draws every frame; else only the frames about the coordinate shown.
+                    let frame = if traced(name) { None } else { frames(samples) };
+                    let stamp = stamp_of((version, frame, traced(name)));
                     let made = match (kept, writes.as_deref()) {
                         (Some(kept), Some([])) if kept.stamp == stamp => kept.drawn.clone(),
+                        _ if traced(name) => Field::Sampled(samples.gather(picked()), Version::next()),
                         _ => {
                             let span = frame.map_or(0..0, |f| f..f + 2);
                             Field::Sampled(samples.gather_frames(picked(), span), Version::next())
@@ -964,7 +971,7 @@ fn fields_of(expr: &Expr, out: &mut Vec<Name>) {
     }
 }
 
-/// The frame shown of each sampled field marks read of a table drawn in part.
+/// The frame shown of each sampled field marks read, and do not trace, of a table drawn in part.
 fn sampled_frames(source: &Data, ask: &Ask<'_>) -> Vec<Option<u64>> {
     let mut frames = Vec::new();
     for table in source.tables() {
@@ -975,6 +982,7 @@ fn sampled_frames(source: &Data, ask: &Ask<'_>) -> Vec<Option<u64>> {
         for (name, field) in &table.fields {
             if let Field::Sampled(samples, _) = field
                 && planned.reads.as_ref().is_none_or(|r| r.contains(name))
+                && !planned.traced.contains(name)
             {
                 frames.push(samples.frame_at(ask.at));
             }

@@ -16,11 +16,11 @@ use crate::{Color, Expr, Image};
 pub enum Marker {
     /// A filled shape.
     Shape(Shape),
-    /// A block: a rectangle with rounded corners of `corner` CSS pixels, sized for diagrams.
+    /// A block: a rectangle with rounded corners, sized for diagrams.
     Block {
-        /// Corner radius, CSS pixels; 4 unless set.
-        #[serde(default = "corner")]
-        corner: f32,
+        /// Corner radius, CSS pixels, or units in a diagram; the theme's `corner` unless set.
+        #[serde(default)]
+        corner: Option<f32>,
     },
     /// A shape's outline, filled to `fill` from 0 to 1: around a circle, up other shapes.
     Gauge {
@@ -98,11 +98,6 @@ impl<'de> Deserialize<'de> for Marker {
     }
 }
 
-/// A block's corner radius unless set.
-fn corner() -> f32 {
-    4.0
-}
-
 impl Default for Marker {
     fn default() -> Marker {
         Marker::Shape(Shape::Ellipse)
@@ -116,9 +111,9 @@ impl From<Shape> for Marker {
 }
 
 impl Marker {
-    /// A block with 4 pixel corners.
+    /// A block with the theme's corners.
     pub fn block() -> Marker {
-        Marker::Block { corner: corner() }
+        Marker::Block { corner: None }
     }
 
     /// The expressions each row's marker reads, in input order.
@@ -138,9 +133,13 @@ impl Marker {
         let base = Markers { inputs, input, ..Markers::default() };
         match self {
             Marker::Shape(shape) => Markers { marker: wgsl::MARKER_SHAPE, shape: shape.code(), ..base },
-            Marker::Block { corner } => {
-                Markers { marker: wgsl::MARKER_BLOCK, shape: wgsl::SHAPE_ROUNDED, corner: *corner, ..base }
-            }
+            // A negative corner takes the theme's.
+            Marker::Block { corner } => Markers {
+                marker: wgsl::MARKER_BLOCK,
+                shape: wgsl::SHAPE_ROUNDED,
+                corner: corner.unwrap_or(-1.0),
+                ..base
+            },
             Marker::Gauge { shape, .. } => Markers { marker: wgsl::MARKER_GAUGE, shape: shape.code(), ..base },
             Marker::Pie { colors, hole, .. } => Markers {
                 marker: wgsl::MARKER_PIE,

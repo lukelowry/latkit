@@ -13,35 +13,44 @@ import {
   type Port,
   type Row,
   type Rows,
+  type Marker,
   type Scene,
-  type Shape,
   type Side,
 } from '../../latkit.js';
 import { each, one } from '../../ui/rows.js';
 import type { Stage } from '../../ui/stage.js';
 
-/** Kinds of block: the shape each draws as, and its ports, each naming the signal it is plugged into. */
+/**
+ * Kinds of block: the marker each draws as, its fill on the dark and the light sheet, and its ports,
+ * each naming the signal it is plugged into.
+ */
 const KINDS = {
-  Input: { shape: 'ellipse', ports: [['out', 'right', 'out']] },
+  Input: { marker: 'rounded', fill: ['#173836', '#e2f3ef'], ports: [['out', 'right', 'out']] },
   Process: {
-    shape: 'rounded',
+    marker: 'block',
+    fill: ['#1c2b3f', '#ffffff'],
     ports: [
       ['in', 'left', 'in'],
       ['out', 'right', 'out'],
     ],
   },
   Control: {
-    shape: 'diamond',
+    marker: 'block',
+    fill: ['#3a2e18', '#fbf0da'],
     ports: [
       ['in', 'left', 'in'],
       ['feedback', 'bottom', 'in'],
       ['out', 'right', 'out'],
     ],
   },
-  Output: { shape: 'rectangle', ports: [['in', 'left', 'in']] },
+  Output: { marker: 'block', fill: ['#29243f', '#ece8fb'], ports: [['in', 'left', 'in']] },
 } as const satisfies Record<
   string,
-  { shape: Shape; ports: readonly (readonly [string, Side, 'in' | 'out'])[] }
+  {
+    marker: Marker;
+    fill: readonly [string, string];
+    ports: readonly (readonly [string, Side, 'in' | 'out'])[];
+  }
 >;
 type Kind = keyof typeof KINDS;
 const kinds = Object.keys(KINDS) as Kind[];
@@ -321,16 +330,27 @@ export default function page(stage: Stage): void {
 
   const scene = (): Scene => {
     const marks: Mark[] = [];
-    // Containers take the theme's surface, tinted by how deep they sit; their titles head them.
+    // Containers take the theme's surface, tinted by how deep they sit; their titles head them, and
+    // they and the blocks they hold lift off the sheet.
     const title = { text: 'name', size: 11, color: light ? '#5b6b7d' : '#7f93a8' };
     if (sketch.stations.length) {
       marks.push({
-        vertices: { of: ['studio', 'Station'], contains: ['Group', 'station'], label: title },
+        vertices: {
+          of: ['studio', 'Station'],
+          contains: ['Group', 'station'],
+          label: title,
+          shadow: true,
+        },
       });
     }
     if (sketch.groups.length) {
       marks.push({
-        vertices: { of: ['studio', 'Group'], contains: ['Process', 'group'], label: title },
+        vertices: {
+          of: ['studio', 'Group'],
+          contains: ['Process', 'group'],
+          label: title,
+          shadow: true,
+        },
       });
     }
     // Comets run from each signal's driver to its readers.
@@ -350,8 +370,9 @@ export default function page(stage: Stage): void {
         vertices: {
           of: ['studio', kind],
           position: ['x', 'y'],
-          marker: KINDS[kind].shape,
-          color: light ? '#ffffff' : '#2c3b4d',
+          marker: KINDS[kind].marker,
+          color: KINDS[kind].fill[light ? 1 : 0],
+          shadow: true,
           ring: when(field('status').gt(0)).then(color('#ff8c42')).otherwise(missing()),
           ports: ports(kind),
           drag: true,

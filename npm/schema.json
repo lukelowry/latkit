@@ -1202,15 +1202,18 @@
               "additionalProperties": false
             },
             {
-              "description": "A block: a rectangle with rounded corners of `corner` CSS pixels, sized for diagrams.",
+              "description": "A block: a rectangle with rounded corners, sized for diagrams.",
               "type": "object",
               "properties": {
                 "block": {
                   "type": "object",
                   "properties": {
                     "corner": {
-                      "description": "Corner radius, CSS pixels; 4 unless set.",
-                      "type": "number",
+                      "description": "Corner radius, CSS pixels, or units in a diagram; the theme's `corner` unless set.",
+                      "type": [
+                        "number",
+                        "null"
+                      ],
                       "format": "float"
                     }
                   },
@@ -2380,6 +2383,29 @@
               "type": "number",
               "format": "float"
             },
+            "outline": {
+              "description": "The border of a diagram's blocks and groups, a unit wide; `None` draws none.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "tsType": "Color"
+            },
+            "corner": {
+              "description": "The radius of a diagram's block and group corners; a block's marker may set its own.",
+              "type": "number",
+              "format": "float"
+            },
+            "portSize": {
+              "description": "How wide a diagram's ports are.",
+              "type": "number",
+              "format": "float"
+            },
+            "bend": {
+              "description": "The radius of an orthogonal wire's bends.",
+              "type": "number",
+              "format": "float"
+            },
             "shadow": {
               "description": "How marks that cast shadows cast them.",
               "$ref": "#/$defs/Shadow"
@@ -2465,7 +2491,7 @@
         "lift": {
           "type": "number",
           "format": "float",
-          "description": "CSS pixels flat marks cast from, as if raised."
+          "description": "CSS pixels flat marks cast from, as if raised; in a diagram, how far a block's or a group's\nshadow falls below it, and as far again it softens."
         }
       },
       "description": "How marks that cast shadows cast them onto the ground and onto faces."

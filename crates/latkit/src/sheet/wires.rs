@@ -15,7 +15,6 @@ use super::Vertex;
 use crate::data::{Row, Table, Value};
 use crate::derive::graph::{EdgeMark, Joins, VertexMark, key_of, port_codes};
 use crate::derive::{Input, Jobs, answers, spread};
-use crate::gpu::shaders::PORT_SIZE;
 use crate::host::{Job, Key, Wiring};
 use crate::layout::rect::{EMPTY, Point, Rect, dot, grow, meets, union};
 use crate::layout::route::{Net, Terminal, finish, route, simplify};
@@ -80,13 +79,15 @@ pub(crate) struct Routing {
     clearance: f64,
 }
 
-/// What wires are worked out from: the diagram's vertices, vertex marks, and edge marks, and how far
-/// apart parallel wires run, units, which is also how round their bends are.
+/// What wires are worked out from: the diagram's vertices, vertex marks, and edge marks, and in
+/// units how far apart parallel wires run, how round their bends are, and how wide ports are.
 pub(crate) struct Context<'a> {
     pub(crate) vertices: &'a [Vertex],
     pub(crate) marks: &'a [VertexMark<'a>],
     pub(crate) edges: &'a [EdgeMark<'a>],
     pub(crate) spacing: f64,
+    pub(crate) bend: f64,
+    pub(crate) port: f64,
 }
 
 /// Where a wire meets a vertex: the point, y down, the side it leaves by, the vertex, and how far out
@@ -216,8 +217,12 @@ pub(crate) fn paths(
                 .into_iter()
                 .filter_map(|(v, code, output)| {
                     let b = vertices[v].bounds?;
-                    let end =
-                        End { at: port_point(b, code), side: Side::from_code(code & 3), vertex: v, rim: port_reach(b) };
+                    let end = End {
+                        at: port_point(b, code),
+                        side: Side::from_code(code & 3),
+                        vertex: v,
+                        rim: port_reach(b, context.port),
+                    };
                     Some((end, output))
                 })
                 .collect();
@@ -367,7 +372,7 @@ fn wire(
             Some(r) if r.terminals == stamps[k] => r.lines.clone(),
             _ => rest.iter().map(|end| elbow(root, end, clearance)).collect(),
         };
-        let mut parts = finish(&lines, context.spacing);
+        let mut parts = finish(&lines, context.bend);
         // A part reaching another output ends there without an arrowhead.
         let outputs = &rest[..(ask.outputs - 1).min(rest.len())];
         for part in &mut parts {
@@ -396,10 +401,10 @@ fn port_point(b: Rect, code: u32) -> Point {
     }
 }
 
-/// How far a port of box `b` reaches from its middle: a port draws `PORT_SIZE` across, at most half
-/// the box's smaller side.
-fn port_reach(b: Rect) -> f64 {
-    (f64::from(PORT_SIZE) / 2.0).min((b[2] - b[0]).min(b[3] - b[1]) / 4.0)
+/// How far a port `size` across on box `b` reaches from its middle: at most half the box's smaller
+/// side.
+fn port_reach(b: Rect, size: f64) -> f64 {
+    (size / 2.0).min((b[2] - b[0]).min(b[3] - b[1]) / 4.0)
 }
 
 /// An end leaving by a side: where its other end lies along the side, its edge, and which end.
@@ -691,8 +696,8 @@ mod tests {
         // A port reaches no further than halfway to the other end.
         assert_eq!(star(&[port([0.0, 0.0]), port([6.0, 0.0])], 1), [vec![[3.0, 0.0], [3.0, 0.0]]]);
         let b = [0.0, 0.0, 40.0, 40.0];
-        assert_eq!(port_reach(b), f64::from(PORT_SIZE) / 2.0);
-        assert_eq!(port_reach([0.0, 0.0, 8.0, 40.0]), 2.0, "at most half the box's smaller side");
+        assert_eq!(port_reach(b, 7.0), 3.5);
+        assert_eq!(port_reach([0.0, 0.0, 8.0, 40.0], 7.0), 2.0, "at most half the box's smaller side");
     }
 
     #[test]

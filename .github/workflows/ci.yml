@@ -175,7 +175,7 @@ jobs:
       - run: cargo xtask package
       - run: cargo xtask package-test
 
-  # The docs as Read the Docs builds them: a warning fails.
+  # The docs as Read the Docs builds them, from the locked environment: a warning fails.
   docs:
     needs: changes
     if: needs.changes.outputs.docs == 'true'
@@ -186,8 +186,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.14'
-      - run: uv sync --project docs --group docs
-      - run: uv run --project docs sphinx-build -W --keep-going -b html docs target/docs
+      - run: uv sync --locked --project docs --group docs
+      - run: uv run --locked --project docs sphinx-build -W --keep-going -b html docs target/docs
 
   # The one check branch protection requires: every job above passed, or was not needed.
   passed:
