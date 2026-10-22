@@ -11,6 +11,9 @@ const MISSING_COLOR: u32 = 0x00ff00ffu;
 const OP_CONST: u32 = 0u;
 const OP_MISSING: u32 = 1u;
 const OP_FIELD: u32 = 2u;
+const OP_SELECTED: u32 = 3u;
+const OP_HOVERED: u32 = 4u;
+const OP_POINTER: u32 = 5u;
 const OP_ELAPSED: u32 = 6u;
 const OP_THEME: u32 = 7u;
 const OP_NEG: u32 = 8u;
@@ -48,6 +51,7 @@ const OP_MOD: u32 = 39u;
 const OP_POW: u32 = 40u;
 const OP_LOG: u32 = 41u;
 const OP_EXP: u32 = 42u;
+const OP_ZOOM: u32 = 43u;
 const OP_STORE_CODE: u32 = 44u;
 
 // Values the expression stack holds at once.

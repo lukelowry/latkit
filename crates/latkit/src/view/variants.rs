@@ -33,30 +33,28 @@ pub(super) struct Asking {
     answering: Vec<Asked>,
 }
 
-/// What nearly every scene draws with, which the GPU compiles before any view asks: the backdrop and
-/// channels, points and ports, strokes between ends and through geometry with their bounds and
-/// lists, and text.
+/// What nearly every scene draws with, which the GPU compiles for views to come, in this order: the
+/// channels, strokes between ends and through geometry, points and the backdrop, their bounds and
+/// lists, ports; then text.
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub(crate) fn common(format: wgpu::TextureFormat, samples: u32) -> Vec<Asked> {
     let draw = |shader| Variant::draw(shader, format, samples);
     let mut needs = vec![
-        draw(Shader::Backdrop),
+        Variant::channels(pipelines::Reads { joined: false, timed: false, viewed: false }),
+        draw(Shader::Strokes).path(PATH_ENDS),
+        draw(Shader::Strokes).path(PATH_GEOMETRY),
         draw(Shader::Points),
-        draw(Shader::PointsPorts),
-        draw(Shader::Overlay),
-        draw(Shader::Glyphs),
-        draw(Shader::GlyphsPorts),
-        Variant::channels(pipelines::Reads { joined: false, timed: false }),
+        draw(Shader::Backdrop),
         Variant::compute(Shader::Bounds, "points"),
-        Variant::compute(Shader::Labels, "candidates"),
     ];
-    needs.extend(["columns", "rows"].map(|e| Variant::compute(Shader::Fields, e)));
-    needs.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| Variant::compute(Shader::Lists, e)));
     for path in [PATH_ENDS, PATH_GEOMETRY] {
-        needs.push(draw(Shader::Strokes).path(path));
         needs.push(Variant::compute(Shader::Bounds, "strokes").path(path));
         needs.extend(["count_segments", "write_segments"].map(|e| Variant::compute(Shader::Lists, e).path(path)));
     }
+    needs.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| Variant::compute(Shader::Lists, e)));
+    needs.extend([draw(Shader::PointsPorts), draw(Shader::Overlay), draw(Shader::Glyphs), draw(Shader::GlyphsPorts)]);
+    needs.push(Variant::compute(Shader::Labels, "candidates"));
+    needs.extend(["columns", "rows"].map(|e| Variant::compute(Shader::Fields, e)));
     needs.into_iter().map(Asked::Shader).collect()
 }
 
@@ -90,7 +88,8 @@ impl View {
         at
     }
 
-    /// Each mark's channels, made for what they read: before its data says, neither joins nor samples.
+    /// Each mark's channels, made for what they read: before its data says, neither joins, samples, nor
+    /// the view.
     fn channels(&self) -> Vec<Asked> {
         let mut channels: Vec<Asked> = Vec::new();
         for shown in &self.marks {

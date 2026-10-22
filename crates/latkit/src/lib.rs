@@ -56,7 +56,10 @@ pub use data::{
 };
 pub use data::{Order, Patches, Query};
 pub use error::{Error, Path, Result, Step};
-pub use expr::{Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, units, when};
+pub use expr::{
+    Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, hovered, pointer, selected,
+    units, when, zoom,
+};
 pub use image::{Image, ImageFormat};
 pub use json::from_json;
 pub use pending::{Pending, Resolver};

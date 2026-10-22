@@ -180,8 +180,16 @@ const state = (name: State): Expr => new Expr({ state: name });
 export const field = (name: string): Expr => new Expr({ field: name });
 /** A color constant. */
 export const color = (css: Color): Expr => new Expr({ color: css });
+/** Whether the row is selected. */
+export const selected = (): Expr => state('selected');
+/** Whether the pointer is over the row. */
+export const hovered = (): Expr => state('hovered');
+/** CSS pixels from a vertex to the pointer. */
+export const pointer = (): Expr => state('pointer');
 /** Seconds since the view was created. */
 export const elapsed = (): Expr => state('elapsed');
+/** The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. */
+export const zoom = (): Expr => state('zoom');
 /** A missing value: options that read one take the theme's. */
 export const missing = (): Expr => new Expr({ missing: true });
 /**

@@ -44,6 +44,39 @@ fn vertices_draw_at_their_positions_in_their_colors() {
 }
 
 #[test]
+fn channels_follow_the_selection_and_the_zoom() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("graph");
+    data.apply(Table::new("Node", Ids::count(2)).field("x", vec![0.0, 30.0]).field("y", vec![0.0, 0.0]))
+        .expect("valid");
+    let [red, green, blue] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].map(|[r, g, b]| Color::rgb(r, g, b));
+    let color = latkit::when(latkit::selected()).then(red).when(latkit::zoom().ge(1.0)).then(green).otherwise(blue);
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position("x", "y").radius(6.0).color(color));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    let center = SIZE / 2;
+    let pixels = frame(&gpu, &mut view);
+    assert!(close(at(&pixels, center + 30, center), [0, 0, 255, 255]), "{:?}", at(&pixels, center + 30, center));
+    view.select([latkit::Rows::new("graph", "Node", [1_u64])]);
+    let pixels = frame(&gpu, &mut view);
+    assert!(
+        close(at(&pixels, center + 30, center), [255, 0, 0, 255]),
+        "selected: {:?}",
+        at(&pixels, center + 30, center)
+    );
+    // What the selection leaves out dims, in its own color.
+    let [r, g, b, _] = at(&pixels, center, center);
+    assert!(b > 60 && r.max(g) < 20, "not selected: {:?}", [r, g, b]);
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom: 1.0, pitch: 0.0, bearing: 0.0 });
+    let pixels = frame(&gpu, &mut view);
+    let [r, g, b, _] = at(&pixels, center, center);
+    assert!(g > 60 && r.max(b) < 20, "zoomed in: {:?}", [r, g, b]);
+}
+
+#[test]
 fn edges_join_their_ends_and_colormaps_fit_the_values() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("grid");

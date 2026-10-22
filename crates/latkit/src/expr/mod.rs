@@ -23,10 +23,10 @@ use crate::Name;
 /// A `&str` converts to the field of that name, so options read fields by name:
 ///
 /// ```
-/// # use latkit::{field, when, Colormap, Color};
+/// # use latkit::{field, when, selected, Colormap, Color};
 /// let color = field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05);
 /// let radius = 4.0 + field("load") / 100.0;
-/// let status = when(field("alarm").gt(0.5)).then(Color::hex("#ffb000").unwrap()).otherwise(color);
+/// let status = when(selected()).then(Color::hex("#ffb000").unwrap()).otherwise(color);
 /// let high_voltage = field("kv").ge(230.0) & field("kind").is("substation");
 /// ```
 ///
@@ -61,11 +61,15 @@ pub(crate) struct FieldRef {
     pub(crate) component: Option<u8>,
 }
 
-/// What the view knows as it draws: the time.
+/// What the view knows of each row.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum State {
+    Selected,
+    Hovered,
+    Pointer,
     Elapsed,
+    Zoom,
 }
 
 /// An operation of one value.
@@ -126,9 +130,30 @@ pub fn when(condition: impl Into<Expr>) -> When {
     When { cases: Vec::new(), condition: condition.into() }
 }
 
+/// Whether the row is selected.
+pub fn selected() -> Expr {
+    node(Node::State(State::Selected))
+}
+
+/// Whether the pointer is over the row.
+pub fn hovered() -> Expr {
+    node(Node::State(State::Hovered))
+}
+
+/// CSS pixels from a vertex to the pointer; for vertices only, and not in their position.
+pub fn pointer() -> Expr {
+    node(Node::State(State::Pointer))
+}
+
 /// Seconds since the view was created; a mark that reads it redraws every frame.
 pub fn elapsed() -> Expr {
     node(Node::State(State::Elapsed))
+}
+
+/// The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. Options
+/// that read it change with the view, as levels of detail do.
+pub fn zoom() -> Expr {
+    node(Node::State(State::Zoom))
 }
 
 /// A size measured in position units, so it scales as the view zooms; [`Size::at_least`] and
@@ -529,9 +554,9 @@ mod tests {
 
     #[test]
     fn when_folds_right_to_left() {
-        let e = when(field("a")).then(1.0).when(field("b")).then(2.0).otherwise(3.0);
+        let e = when(selected()).then(1.0).when(hovered()).then(2.0).otherwise(3.0);
         let Node::When(c, a, rest) = &*e.0 else { panic!("a when") };
-        assert_eq!(c, &field("a"));
+        assert_eq!(c, &selected());
         assert_eq!(a, &Expr::from(1.0));
         assert!(matches!(&*rest.0, Node::When(..)));
     }

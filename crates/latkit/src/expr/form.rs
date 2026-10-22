@@ -5,7 +5,7 @@
 //! | ---------------------------------------------------------- | ------------------------------- |
 //! | `{ "field": "x", "of": ["data", "Table"], "step": true }`   | `field("x").of(..).step()`      |
 //! | `{ "color": "#ffb000" }`                                   | a color                         |
-//! | `{ "state": "elapsed" }`                                   | `elapsed()`                     |
+//! | `{ "state": "selected" }`                                  | `selected()`, `hovered()`, …    |
 //! | `{ "missing": true }`                                      | `Expr::missing()`               |
 //! | `{ "op": "add", "args": [a, b] }`                          | `a + b`, `a.min(b)`, `!a`, …    |
 //! | `{ "when": [[c, v], …], "otherwise": e }`                  | `when(c).then(v)…otherwise(e)`  |
@@ -291,7 +291,7 @@ struct ColorNode {
     color: Color,
 }
 
-/// What the view knows as it draws.
+/// What the view knows of each row.
 #[derive(JsonSchema)]
 #[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
 #[serde(deny_unknown_fields)]
@@ -631,7 +631,7 @@ impl JsonSchema for Stop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{elapsed, field, when};
+    use crate::{field, selected, when};
 
     fn parse(json: &str) -> Expr {
         serde_json::from_str(json).expect("an expression")
@@ -644,8 +644,8 @@ mod tests {
         assert_eq!(parse(r#"{"op": "add", "args": ["a", 1]}"#), field("a") + 1.0);
         assert_eq!(parse(r#"{"op": "not", "args": ["on"]}"#), !field("on"));
         assert_eq!(
-            parse(r##"{"when": [[{"state": "elapsed"}, {"color": "#ff0000"}]], "otherwise": "c"}"##),
-            when(elapsed()).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(field("c"))
+            parse(r##"{"when": [[{"state": "selected"}, {"color": "#ff0000"}]], "otherwise": "c"}"##),
+            when(selected()).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(field("c"))
         );
         assert_eq!(
             parse(r#"{"colormap": "balance", "value": "vm", "domain": [0.9, 1.1]}"#),

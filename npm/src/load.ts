@@ -6,7 +6,10 @@ export interface LoadOptions {
   createWorker?: () => Worker;
 }
 
-/** The initialized data and rendering API. GPU devices are requested separately by `Gpu.create()`. */
+/**
+ * The initialized data and rendering API. In a browser the page's first GPU is made as the runtime
+ * loads, and the first `Gpu.create()` takes it; later calls request devices of their own.
+ */
 export interface Latkit {
   Data: typeof import('./runtime.js').Data;
   Gpu: typeof import('./runtime.js').Gpu;
@@ -16,11 +19,14 @@ export interface Latkit {
 
 let configured: LoadOptions | undefined;
 let loading: Promise<Latkit> | undefined;
+/** The adapter asked for as the runtime loads, until the page's first GPU takes it. */
+let adapter: Promise<unknown> | undefined;
 
 /**
  * Loads the runtime once per page. Concurrent calls share one promise; a failed load can be retried.
  * Options explicitly supplied after the first call must match that call. Importing the package alone
- * neither initializes WASM nor requests a GPU or worker.
+ * neither initializes WASM nor requests a GPU or worker; loading asks for the page's GPU adapter
+ * while the WASM compiles.
  */
 export function loadLatkit(options: LoadOptions = {}): Promise<Latkit> {
   // Snapshot URLs so a caller cannot change the configuration while it loads.
@@ -39,7 +45,7 @@ export function loadLatkit(options: LoadOptions = {}): Promise<Latkit> {
     return loading;
   }
   configured = { wasm, createWorker: options.createWorker };
-  warmGpu();
+  askAdapter();
   loading = import('./runtime.js')
     .then((runtime) => runtime.initialize(configured!))
     .catch((cause: unknown) => {
@@ -51,24 +57,21 @@ export function loadLatkit(options: LoadOptions = {}): Promise<Latkit> {
 }
 
 /**
- * Starts the browser's GPU process while the runtime loads: a first device takes about 280 ms cold,
- * one after it about 30, so `Gpu.create()` later finds it started. The device made here is let go.
+ * Asks for the page's GPU adapter as latkit's own request does, while the runtime loads: the browser
+ * starts its GPU process meanwhile, which takes most of a cold device's 280 ms.
  */
-function warmGpu(): void {
+function askAdapter(): void {
   const gpu = (
     globalThis.navigator as
-      | {
-          gpu?: {
-            requestAdapter(): Promise<{ requestDevice(): Promise<{ destroy(): void }> } | null>;
-          };
-        }
-      | undefined
+      { gpu?: { requestAdapter(options: object): Promise<unknown> } } | undefined
   )?.gpu;
-  gpu
-    ?.requestAdapter()
-    .then((adapter) => adapter?.requestDevice())
-    .then(
-      (device) => device?.destroy(),
-      () => {},
-    );
+  adapter = gpu?.requestAdapter({ powerPreference: 'high-performance' });
+  adapter?.catch(() => {});
+}
+
+/** @internal The adapter asked for as the runtime loaded, once: the page's first GPU is made on it. */
+export function takeAdapter(): Promise<unknown> | undefined {
+  const taken = adapter;
+  adapter = undefined;
+  return taken;
 }

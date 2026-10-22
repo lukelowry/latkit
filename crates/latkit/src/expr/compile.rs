@@ -18,7 +18,10 @@ impl Deps {
     pub(crate) const DATA: Deps = Deps(1);
     pub(crate) const SAMPLES: Deps = Deps(2);
     pub(crate) const TIME: Deps = Deps(4);
-    pub(crate) const DOMAIN: Deps = Deps(8);
+    pub(crate) const POINTER: Deps = Deps(8);
+    pub(crate) const FOCUS: Deps = Deps(16);
+    pub(crate) const DOMAIN: Deps = Deps(32);
+    pub(crate) const CAMERA: Deps = Deps(64);
 
     pub(crate) fn intersects(self, other: Deps) -> bool {
         self.0 & other.0 != 0
@@ -301,7 +304,10 @@ impl<'a> Compiler<'a> {
     /// What `expr` reads that structure cannot: view state or a sampled field.
     fn unstructural(&self, expr: &Expr) -> Option<&'static str> {
         match &*expr.0 {
+            Node::State(State::Selected | State::Hovered) => Some("selection or hover"),
+            Node::State(State::Pointer) => Some("the pointer"),
             Node::State(State::Elapsed) => Some("time"),
+            Node::State(State::Zoom) => Some("the zoom"),
             Node::Field(f) if self.fields.kind(f.of.as_ref(), &f.name) == Some(Kind::Sampled) => {
                 Some("a sampled field")
             }
@@ -438,6 +444,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn coordinate(&mut self, e: &Expr) -> Result<()> {
+        if mentions_pointer(e) {
+            return Err(invalid("pointer() cannot place a position"));
+        }
         self.expect(e, Ty::Number)
     }
 
@@ -465,7 +474,11 @@ impl<'a> Compiler<'a> {
             Node::Color(c) => self.constant(c.packed(), Ty::Color),
             Node::Missing => self.push(wgsl::OP_MISSING, 0, Ty::Number),
             Node::Field(f) => self.field(f),
+            Node::State(State::Selected) => self.state(wgsl::OP_SELECTED, Deps::FOCUS, Ty::Bool),
+            Node::State(State::Hovered) => self.state(wgsl::OP_HOVERED, Deps::FOCUS, Ty::Bool),
+            Node::State(State::Pointer) => self.state(wgsl::OP_POINTER, Deps::POINTER, Ty::Number),
             Node::State(State::Elapsed) => self.state(wgsl::OP_ELAPSED, Deps::TIME, Ty::Number),
+            Node::State(State::Zoom) => self.state(wgsl::OP_ZOOM, Deps::CAMERA, Ty::Number),
             Node::Unary(op, a) => {
                 let ty = match (op, self.emit(a)?) {
                     (Unary::Not, Ty::Bool) => Ty::Bool,
@@ -724,6 +737,17 @@ fn binary_name(op: Binary) -> &'static str {
         Binary::Eq | Binary::Ne => "equality",
         Binary::And => "and",
         Binary::Or => "or",
+    }
+}
+
+fn mentions_pointer(e: &Expr) -> bool {
+    match &*e.0 {
+        Node::State(State::Pointer) => true,
+        Node::Unary(_, a) | Node::Is(a, _) | Node::Contains(a, _) => mentions_pointer(a),
+        Node::Binary(_, a, b) => mentions_pointer(a) || mentions_pointer(b),
+        Node::When(c, a, b) => mentions_pointer(c) || mentions_pointer(a) || mentions_pointer(b),
+        Node::Scale { input, .. } | Node::Colormap { input, .. } => mentions_pointer(input),
+        _ => false,
     }
 }
 

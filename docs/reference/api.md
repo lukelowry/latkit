@@ -302,39 +302,11 @@ const field: (name: string) => Expr;
 const color: (css: Color) => Expr;
 ```
 
-## selected
-
-```ts
-/** Whether the row is selected. */
-const selected: () => Expr;
-```
-
-## hovered
-
-```ts
-/** Whether the pointer is over the row. */
-const hovered: () => Expr;
-```
-
-## pointer
-
-```ts
-/** CSS pixels from a vertex to the pointer. */
-const pointer: () => Expr;
-```
-
 ## elapsed
 
 ```ts
 /** Seconds since the view was created. */
 const elapsed: () => Expr;
-```
-
-## zoom
-
-```ts
-/** The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. */
-const zoom: () => Expr;
 ```
 
 ## missing

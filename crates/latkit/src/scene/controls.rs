@@ -23,7 +23,8 @@ pub struct Controls {
     /// Enter opens the row stepped to and Space selects it. Otherwise arrows pan, `+` and `-` zoom,
     /// Home fits, and Escape clears the selection.
     pub keyboard: bool,
-    /// The row the user points at glows. It is hovered either way: events tell it.
+    /// The row the user points at glows. It is hovered either way: events tell it, and `hovered()`
+    /// reads it.
     pub hover: bool,
     /// CSS pixels around the pointer that picks reach; touch reaches 8 more.
     pub pick_radius: f32,

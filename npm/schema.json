@@ -741,14 +741,18 @@
       "required": [
         "state"
       ],
-      "description": "What the view knows as it draws."
+      "description": "What the view knows of each row."
     },
     "State": {
       "type": "string",
       "enum": [
-        "elapsed"
+        "selected",
+        "hovered",
+        "pointer",
+        "elapsed",
+        "zoom"
       ],
-      "description": "What the view knows as it draws: the time."
+      "description": "What the view knows of each row."
     },
     "MissingNode": {
       "type": "object",
@@ -2495,7 +2499,7 @@
               "type": "boolean"
             },
             "hover": {
-              "description": "The row the user points at glows. It is hovered either way: events tell it.",
+              "description": "The row the user points at glows. It is hovered either way: events tell it, and `hovered()`\nreads it.",
               "type": "boolean"
             },
             "pickRadius": {

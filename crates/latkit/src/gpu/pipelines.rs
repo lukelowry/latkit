@@ -1,10 +1,11 @@
 //! Pipelines, kept by [`Variant`]. Everything compiles through one queue per GPU
 //! ([`Pipelines::ask`]), the most urgent first: what frames draw with, then their text, then what
-//! changes, lit rows, and input need, then what the GPU readies for views to come. In a browser
-//! what frames draw with and their text compile at once, in that order, since the browser compiles
-//! in the order asked, and the rest a few at a time, each off the GPU's thread, side by side with
-//! the rest; what uses it waits until it landed, so no frame waits on a compile. Making it afterwards finds it compiled. Natively a pipeline is made in process where
-//! first used, which costs as little. Every pipeline shares the view and mark group layouts; each
+//! changes, lit rows, and input need, then what the GPU readies for views to come, once it would
+//! otherwise sit idle. In a browser what frames draw with compiles at once, their text as the
+//! browser's compile workers free up, and the rest a few at a time, each off the GPU's thread, side
+//! by side with the rest; what uses it waits until it landed, so no frame waits on a compile. Making
+//! it afterwards finds it compiled. Natively a pipeline is made in process where first used, which
+//! costs as little. Every pipeline shares the view and mark group layouts; each
 //! shader's pass group comes from its WGSL.
 
 use std::collections::HashMap;
@@ -27,16 +28,16 @@ pub(crate) enum Urgency {
     Draw,
     Text,
     Answer,
-    #[cfg_attr(
-        not(all(feature = "web", target_arch = "wasm32")),
-        expect(dead_code, reason = "only a browser's GPU compiles ahead of views")
-    )]
     Warm,
 }
 
 /// Compiles under way past what frames draw with and their text: few enough that frames drawing
 /// meanwhile keep the CPU, the next asked as each lands.
 const AT_ONCE: u64 = 4;
+
+/// How many pipelines a browser compiles side by side: text asked while fewer compile takes a free
+/// worker, where asked sooner it would hold back what frames draw with.
+const WORKERS: u64 = 8;
 
 /// A check of a custom marker's shader, resolving to its error if it has one: sent between threads
 /// natively, kept on the page's one thread in browsers.
@@ -53,7 +54,7 @@ struct Custom {
 }
 
 /// One pipeline: a shader's entry point made for one primitive's geometry (its `PROBED`), one kind
-/// of path (its `PATH`), and what channels read (its `JOINED` and `TIMED`), and for a render shader,
+/// of path (its `PATH`), and what channels read (its `JOINED`, `TIMED`, and `VIEWED`), and for a render shader,
 /// the format and samples per pixel it draws into.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Variant {
@@ -66,15 +67,17 @@ pub(crate) struct Variant {
 }
 
 /// What a mark's channels read besides its own table's static fields: fields of other tables by row
-/// id, and fields sampled over an axis. Every pipeline but the channels' reads both.
+/// id, fields sampled over an axis, and the view (selection, hover, the pointer, the zoom). Every
+/// pipeline but the channels' reads all of them.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Reads {
     pub(crate) joined: bool,
     pub(crate) timed: bool,
+    pub(crate) viewed: bool,
 }
 
 impl Reads {
-    pub(crate) const ALL: Reads = Reads { joined: true, timed: true };
+    pub(crate) const ALL: Reads = Reads { joined: true, timed: true, viewed: true };
 }
 
 impl Variant {
@@ -120,6 +123,7 @@ impl Variant {
             "PATH" => f64::from(self.path),
             "JOINED" => f64::from(u8::from(self.reads.joined)),
             "TIMED" => f64::from(u8::from(self.reads.timed)),
+            "VIEWED" => f64::from(u8::from(self.reads.viewed)),
             other => unreachable!("no value for the pipeline constant {other}"),
         };
         self.shader.source().overrides.iter().map(|&name| (name, value(name))).collect()
@@ -193,6 +197,12 @@ pub(crate) struct Pipelines {
     landed: Arc<AtomicU64>,
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     compiling: Arc<AtomicU64>,
+    /// Of those, what frames draw with.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    drawing: Arc<AtomicU64>,
+    /// Whether frames were asked to draw with anything yet, and whether what the GPU warms starts.
+    drew: bool,
+    warming: bool,
     /// What counts the pipelines compiled.
     counters: Arc<Counters>,
     /// The GPU these belong to, for a compile landing to start the next.
@@ -293,15 +303,20 @@ impl Pipelines {
             landed: Arc::default(),
             #[cfg(all(feature = "web", target_arch = "wasm32"))]
             compiling: Arc::default(),
+            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            drawing: Arc::default(),
+            drew: false,
+            warming: false,
             counters,
             gpu,
         }
     }
 
-    /// Asks for each of `needs` at `urgency`, `waker` waking as each lands: what frames draw with and
-    /// their text compile at once, the rest in turn, `AT_ONCE` at a time; asking again for one still
-    /// waiting its turn moves it up. Its shader module is made now: a browser reads a module's WGSL on its GPU
-    /// thread as it is made, so what compiles later is read before anything draws.
+    /// Asks for each of `needs` at `urgency`, `waker` waking as each lands: what frames draw with
+    /// compiles at once, their text as workers free up, the rest in turn, `AT_ONCE` at a time;
+    /// asking again for one still waiting its turn moves it up. Its shader module is made now: a
+    /// browser reads a module's WGSL on its GPU thread as it is made, so what compiles later is read
+    /// before anything draws.
     pub(crate) fn ask(&mut self, device: &wgpu::Device, needs: &[Asked], urgency: Urgency, waker: &Waker) {
         self.queue(device, needs, urgency, waker);
         self.pump(device);
@@ -328,20 +343,38 @@ impl Pipelines {
             }
             self.queue.push((urgency, need.clone()));
         }
+        // The largest first, so the last lands soonest; what the GPU warms in the order listed.
         crate::order::by_key(&mut self.queue, |(urgency, need)| {
-            crate::order::pair(*urgency as u32, !(need.size().min(u32::MAX as usize) as u32))
+            let size = if *urgency == Urgency::Warm { 0 } else { !(need.size().min(u32::MAX as usize) as u32) };
+            crate::order::pair(*urgency as u32, size)
         });
     }
 
-    /// Starts what waits its turn: all that frames draw with and their text, the rest while fewer
-    /// than `AT_ONCE` compile.
+    /// Starts what the GPU warms, as views would otherwise leave it idle: once the first scene's
+    /// frames have all they draw with, or when `Gpu::warm` finds no view asked for anything.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    pub(crate) fn warm(&mut self, device: &wgpu::Device) {
+        self.warming = true;
+        self.pump(device);
+    }
+
+    /// Starts what waits its turn, in order: all that frames draw with; their text while fewer than
+    /// `WORKERS` compile, or none of that does; the rest while fewer than `AT_ONCE` compile.
     pub(crate) fn pump(&mut self, device: &wgpu::Device) {
+        // What the GPU warms waits for the first scene's frames to have all they draw with.
+        self.warming |= self.drew && self.drawing() == 0;
         while let Some(&(urgency, _)) = self.queue.first()
-            && (urgency <= Urgency::Text || self.in_flight() < AT_ONCE)
+            && match urgency {
+                Urgency::Draw => true,
+                Urgency::Text => self.drawing() == 0 || self.in_flight() < WORKERS,
+                Urgency::Answer => self.in_flight() < AT_ONCE,
+                Urgency::Warm => self.warming && self.in_flight() < AT_ONCE,
+            }
         {
-            let (_, need) = self.queue.remove(0);
+            let (urgency, need) = self.queue.remove(0);
+            self.drew |= urgency == Urgency::Draw;
             let ahead = self.asked[&need].clone();
-            if !self.compile_ahead(device, &need, &ahead) {
+            if !self.compile_ahead(device, &need, &ahead, urgency == Urgency::Draw) {
                 ahead.land(&self.landed);
             }
         }
@@ -355,6 +388,18 @@ impl Pipelines {
     fn in_flight(&self) -> u64 {
         #[cfg(all(feature = "web", target_arch = "wasm32"))]
         return self.compiling.load(Ordering::Acquire);
+        #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
+        0
+    }
+
+    /// Compiles under way of what frames draw with.
+    #[cfg_attr(
+        not(all(target_arch = "wasm32", feature = "web")),
+        expect(clippy::unused_self, reason = "only a browser's device compiles ahead")
+    )]
+    fn drawing(&self) -> u64 {
+        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        return self.drawing.load(Ordering::Acquire);
         #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
         0
     }
@@ -376,25 +421,32 @@ impl Pipelines {
         self.in_flight() + self.queue.len() as u64
     }
 
-    /// Starts compiling `need` off the GPU's thread, where a browser can: whether it did. Its landing
-    /// starts the next waiting its turn.
+    /// Starts compiling `need` off the GPU's thread, where a browser can, counted among what frames
+    /// draw with when it `draws`: whether it did. Its landing starts the next waiting its turn.
     #[cfg_attr(
         not(all(target_arch = "wasm32", feature = "web")),
         expect(clippy::unused_self, reason = "only a browser's device compiles ahead")
     )]
-    fn compile_ahead(&mut self, device: &wgpu::Device, need: &Asked, ahead: &Arc<Ahead>) -> bool {
+    fn compile_ahead(&mut self, device: &wgpu::Device, need: &Asked, ahead: &Arc<Ahead>, draws: bool) -> bool {
         #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
             let Some(promise) = compiled::capture(device, || self.create(device, need)) else { return false };
             self.counters.add(Count::Pipelines, 1);
             ahead.compiled.store(true, Ordering::Release);
             let (ahead, landed, compiling) = (ahead.clone(), self.landed.clone(), self.compiling.clone());
+            let drawing = draws.then(|| self.drawing.clone());
             let gpu = self.gpu.clone();
             compiling.fetch_add(1, Ordering::AcqRel);
+            if let Some(drawing) = &drawing {
+                drawing.fetch_add(1, Ordering::AcqRel);
+            }
             wasm_bindgen_futures::spawn_local(async move {
                 // A descriptor the browser refuses lands too: making it then tells why, as it did.
                 let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
                 compiling.fetch_sub(1, Ordering::AcqRel);
+                if let Some(drawing) = drawing {
+                    drawing.fetch_sub(1, Ordering::AcqRel);
+                }
                 // Room for the next before what waits wakes, so it finds that under way.
                 if let Some(gpu) = gpu.upgrade()
                     && let Some(mut inner) = gpu.try_lock()
@@ -407,7 +459,7 @@ impl Pipelines {
         }
         #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
         {
-            let _ = (device, need, ahead);
+            let _ = (device, need, ahead, draws);
             false
         }
     }

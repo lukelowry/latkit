@@ -69,12 +69,14 @@ const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { retur
 const DYNAMIC: &[&str] = &["mark", "eye", "step"];
 
 /// The values each pipeline constant is made with, as constants of `lib/types.wesl` or booleans: the
-/// primitive a probe reads, the path a stroke reads, and whether channels read joins and samples.
+/// primitive a probe reads, the path a stroke reads, and whether channels read joins, samples, and
+/// the view.
 const OVERRIDES: &[(&str, &[&str])] = &[
     ("PROBED", &["POINTS", "STROKES", "TRIANGLES"]),
     ("PATH", &["PATH_ENDS", "PATH_TRACE", "PATH_GEOMETRY", "PATH_POLES"]),
     ("JOINED", &["false", "true"]),
     ("TIMED", &["false", "true"]),
+    ("VIEWED", &["false", "true"]),
 ];
 
 pub(crate) fn generate() {

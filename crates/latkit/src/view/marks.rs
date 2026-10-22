@@ -156,13 +156,17 @@ impl Shown {
         self.compiled.as_ref().map_or(0, |c| c.drawing.extras)
     }
 
-    /// What its channels read besides its own table's static fields, which their pipeline is made
-    /// for: before its data says, neither joins nor samples.
+    /// What its channels and fitted domains read besides its own table's static fields, which their
+    /// pipeline is made for: before its data says, neither joins, samples, nor the view.
     pub(crate) fn reads(&self) -> crate::gpu::pipelines::Reads {
-        let columns = self.compiled.as_ref().map_or(&[][..], |c| &c.program.columns[..]);
+        let Some(program) = self.compiled.as_ref().map(|c| &c.program) else {
+            return crate::gpu::pipelines::Reads { joined: false, timed: false, viewed: false };
+        };
+        let viewing = [wgsl::OP_SELECTED, wgsl::OP_HOVERED, wgsl::OP_POINTER, wgsl::OP_ZOOM];
         crate::gpu::pipelines::Reads {
-            joined: columns.iter().any(|c| c.of.is_some()),
-            timed: columns.iter().any(|c| c.sampled),
+            joined: program.columns.iter().any(|c| c.of.is_some()),
+            timed: program.columns.iter().any(|c| c.sampled),
+            viewed: program.code.iter().any(|op| viewing.contains(&op[0])),
         }
     }
 

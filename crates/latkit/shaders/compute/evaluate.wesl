@@ -12,8 +12,8 @@
 import package::lib::types::{
     NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING, BLOCK_ROWS, item,
     BLEND_KEEP, BLEND_NUMBER, BLEND_COLOR, BLEND_POSITION, STEP_REDUCE,
-    VERTEX_POSITION, VERTEX_FLAGS, VERTEX_HALF, VERTEX_RANGE, HALF_UNITS, OWN_HEIGHT, SIZED, MARK_VERTICES,
-    OP_CONST, OP_MISSING, OP_FIELD, OP_ELAPSED, OP_THEME,
+    VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, VERTEX_RANGE, HALF_UNITS, OWN_HEIGHT, SIZED,
+    MARK_VERTICES, OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME, OP_ZOOM,
     OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP,
     OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MIN, OP_MAX, OP_MOD, OP_POW,
     OP_LT, OP_LE, OP_GT, OP_GE, OP_EQ, OP_NE, OP_AND, OP_OR,
@@ -23,7 +23,9 @@ import package::lib::types::{
 import package::lib::bind::{frame, program, mark, state};
 import package::lib::state::{travel_words, pack_range};
 import package::lib::read::{column_value, bits_value, missing, missing_bits};
+import package::lib::focus::{is_selected, is_hovered};
 import package::lib::color::{scale, colormap};
+import package::lib::project::{project, to_screen};
 import package::lib::reduce::{ordered, unordered};
 
 // Each row's state as drawn when the mark's transition began.
@@ -38,6 +40,10 @@ import package::lib::reduce::{ordered, unordered};
 // What a dispatch of `evaluate` runs: the mark's channels over its listed blocks, or over every row
 // the reductions fitting its domains.
 @group(2) @binding(17) var<uniform> step: u32;
+
+// Whether the pipeline's marks read the view: selection, hover, the pointer, the zoom. Only those
+// made for marks that do compile it.
+override VIEWED: bool = true;
 
 // The row invocation `id` evaluates: row `id.x` of the mark's `id.y`th listed block.
 fn row_of(id: vec3u) -> u32 {
@@ -108,6 +114,33 @@ fn number(x: u32) -> f32 {
 
 fn word(x: f32) -> u32 {
     return bitcast<u32>(x);
+}
+
+fn truth(x: bool) -> u32 {
+    return word(f32(x));
+}
+
+// CSS pixels from a vertex to the pointer.
+fn pointer_distance(row: u32) -> f32 {
+    let at = word_at(row, VERTEX_POSITION);
+    let hi = vec2f(bitcast<f32>(state[at]), bitcast<f32>(state[at + 1u]));
+    let lo = vec2f(bitcast<f32>(state[at + 2u]), bitcast<f32>(state[at + 3u]));
+    let z = bitcast<f32>(state[word_at(row, VERTEX_ELEVATION)]);
+    return distance(to_screen(project(hi, lo, z)), frame.pointer);
+}
+
+// What the view knows of `row` and of itself, as op `code` reads it: whether it is selected or
+// hovered, how far it is from the pointer, the zoom.
+fn viewed(code: u32, row: u32) -> u32 {
+    if !VIEWED {
+        return MISSING;
+    }
+    switch code {
+        case OP_SELECTED: { return truth(is_selected(row)); }
+        case OP_HOVERED: { return truth(is_hovered(row)); }
+        case OP_POINTER: { return word(pointer_distance(row)); }
+        default: { return word(frame.zoom); }
+    }
 }
 
 fn unary(code: u32, a: f32) -> f32 {
@@ -233,6 +266,7 @@ fn run(row: u32, start: u32, end: u32) {
             case OP_CONST: { stack[sp] = constant(a); sp++; }
             case OP_MISSING: { stack[sp] = MISSING; sp++; }
             case OP_FIELD: { stack[sp] = column_value(a, row).x; sp++; }
+            case OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ZOOM: { stack[sp] = viewed(code, row); sp++; }
             case OP_ELAPSED: { stack[sp] = word(frame.elapsed); sp++; }
             case OP_THEME: { stack[sp] = theme_word(a); sp++; }
             case OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP: {

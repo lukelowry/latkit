@@ -5,11 +5,13 @@ import init, * as wasm from '../pkg/latkit.js';
 import { encoder } from './encoder.js';
 import type { Budget, Camera, Colormap, Fit, Id, Query, Row, Rows, Scene } from './inputs.js';
 import { jobs } from './jobs.js';
-import type { LoadOptions } from './load.js';
+import { takeAdapter, type LoadOptions } from './load.js';
 import type { Description, Failure, Hit, Stats, Value, ViewEvent, Work } from './outputs.js';
 import { Patch } from './patch.js';
 
 let run: ((bytes: Uint8Array) => Promise<Uint8Array>) | undefined;
+/** The page's first GPU, made as the runtime loads, until `Gpu.create()` takes it. */
+let first: Promise<wasm.Gpu> | undefined;
 
 /** @internal Initializes the bindings before returning their public API. */
 export async function initialize(options: LoadOptions) {
@@ -19,7 +21,31 @@ export async function initialize(options: LoadOptions) {
     wasm.setJobs(run);
   }
   if (typeof VideoEncoder === 'function') wasm.setEncoder(encoder);
+  // The page's first GPU is made now, so the page does not wait for its device when it draws.
+  if ((globalThis.navigator as { gpu?: unknown } | undefined)?.gpu) {
+    first = made();
+    first.catch(() => {});
+  }
   return Object.freeze({ Data, Gpu, Shot, colormapCss });
+}
+
+/**
+ * A GPU, on the adapter asked for as the runtime loaded while that one is left: latkit's own request
+ * for an adapter, a moment from now, finds it instead of asking the browser again.
+ */
+async function made(): Promise<wasm.Gpu> {
+  const adapter = takeAdapter();
+  const gpu = (globalThis.navigator as { gpu?: { requestAdapter?: unknown } } | undefined)?.gpu;
+  if (!adapter || !gpu) return wasm.Gpu.create();
+  gpu.requestAdapter = () => {
+    delete gpu.requestAdapter;
+    return adapter;
+  };
+  try {
+    return await wasm.Gpu.create();
+  } finally {
+    delete gpu.requestAdapter;
+  }
 }
 
 /** @internal The bytes of the patch its JSON makes, for `Patch.load`. */
@@ -241,9 +267,11 @@ export class Gpu {
     return this.#inner;
   }
 
-  /** Requests a WebGPU device. */
+  /** Requests a WebGPU device: the first call takes the one made as latkit loaded. */
   static async create(): Promise<Gpu> {
-    return new Gpu(await wasm.Gpu.create());
+    const inner = first ?? made();
+    first = undefined;
+    return new Gpu(await inner);
   }
 
   /**

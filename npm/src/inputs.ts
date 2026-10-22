@@ -233,7 +233,10 @@ export type Controls =
        * Home fits, and Escape clears the selection.
        */
       keyboard?: boolean;
-      /** The row the user points at glows. It is hovered either way: events tell it. */
+      /**
+       * The row the user points at glows. It is hovered either way: events tell it, and `hovered()`
+       * reads it.
+       */
       hover?: boolean;
       /** CSS pixels around the pointer that picks reach; touch reaches 8 more. */
       pickRadius?: number;
@@ -923,10 +926,10 @@ export type Space =
       diagram: Diagram;
     };
 
-/** What the view knows as it draws: the time. */
-export type State = 'elapsed';
+/** What the view knows of each row. */
+export type State = 'selected' | 'hovered' | 'pointer' | 'elapsed' | 'zoom';
 
-/** What the view knows as it draws. */
+/** What the view knows of each row. */
 export interface StateNode {
   state: State;
 }

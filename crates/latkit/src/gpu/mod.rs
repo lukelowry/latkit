@@ -26,6 +26,11 @@ use work::{Counters, Queue, Work};
 use crate::host::Host;
 use crate::{Error, Result};
 
+/// How long a browser's GPU waits for a view before it compiles what nearly every scene draws with:
+/// a page showing its first view sooner has it compile what it draws with first.
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+const WARM_AFTER: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// The format views draw canvases and shots in, so both share one set of pipelines: every WebGPU
 /// canvas takes it.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
@@ -207,19 +212,19 @@ impl Gpu {
         Ok(gpu)
     }
 
-    /// Asks, last of all, for what nearly every scene draws with into canvases at `pixel_ratio`:
-    /// queued now and started a task later, so a view shown as the GPU is made compiles what it draws
-    /// with first.
+    /// Asks, last of all, for what nearly every scene draws with into canvases at `pixel_ratio`, so
+    /// views opened later find it compiled. It starts once the first scene's frames have all they
+    /// draw with, so it never holds them back, or after `WARM_AFTER` if no view asked by then.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     fn warm(&self, pixel_ratio: f32) {
         let needs = crate::view::common(FORMAT, crate::view::samples(pixel_ratio));
         self.0.lock().pipelines.queue(&self.0.device, &needs, pipelines::Urgency::Warm, std::task::Waker::noop());
         let gpu = Arc::downgrade(&self.0);
-        crate::time::later(std::time::Duration::ZERO, move || {
+        crate::time::later(WARM_AFTER, move || {
             if let Some(gpu) = gpu.upgrade()
                 && let Some(mut inner) = gpu.try_lock()
             {
-                inner.pipelines.pump(&gpu.device);
+                inner.pipelines.warm(&gpu.device);
             }
         });
     }
