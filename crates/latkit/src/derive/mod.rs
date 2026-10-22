@@ -28,9 +28,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
 
-use rustc_hash::{FxHashMap, FxHasher};
+use rustc_hash::FxHasher;
 
-use crate::data::{Column, Data, Field, Name, Op, Page, Patch, Table, Value, Values, Version};
+use crate::data::{Column, Data, Field, Keyed, Name, Op, Page, Patch, Table, Value, Values, Version};
 use crate::gpu::readback::Readback;
 use crate::gpu::work::{Count, Counters};
 use crate::host::{Host, Job, Key, Request};
@@ -300,7 +300,7 @@ pub(crate) enum Read<'a> {
 }
 
 /// Derived tables, by the dataset and table each stands beside.
-pub(crate) type Tables = FxHashMap<(Name, Name), Table>;
+pub(crate) type Tables = Keyed<(Name, Name), Table>;
 
 /// One derivation: what it reads, stamped; what it works out, on the frame or as jobs; and the tables
 /// it writes.

@@ -138,11 +138,6 @@ impl View {
         self.camera = camera;
         self.fitting.plot_due = true;
         self.gestures.keys.stale();
-        for shown in &mut self.marks {
-            let channels =
-                shown.channels_reading(crate::expr::compile::Deps::CAMERA | crate::expr::compile::Deps::POINTER);
-            shown.dirty_rows(channels, None);
-        }
         self.wake();
         true
     }

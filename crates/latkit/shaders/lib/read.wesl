@@ -8,6 +8,11 @@ import package::lib::types::{
 };
 import package::lib::bind::{pages, program, mark};
 
+// Whether a pipeline's marks read fields of other tables by row id, and fields sampled over an axis
+// at the shown coordinate: set when it is made, so a scene doing neither compiles neither.
+override JOINED: bool = true;
+override TIMED: bool = true;
+
 // Whether `x` is NaN or infinite: missing.
 fn missing(x: f32) -> bool {
     return missing_bits(bitcast<u32>(x));
@@ -74,7 +79,7 @@ fn bits_value(column: u32, row: u32) -> u32 {
 // The row a column reads for `row`: through its join when it reads another table.
 fn joined_row(column: u32, row: u32) -> u32 {
     let join = column_word(column, COLUMN_JOIN);
-    if join == NONE {
+    if !JOINED || join == NONE {
         return row;
     }
     return bits_value(join, row);
@@ -86,7 +91,7 @@ fn column_value(column: u32, row: u32) -> vec2u {
     if r == NONE || r >= column_word(column, COLUMN_ROWS) {
         return vec2u(MISSING, 0u);
     }
-    if (column_word(column, COLUMN_FLAGS) & SAMPLED) != 0u {
+    if TIMED && (column_word(column, COLUMN_FLAGS) & SAMPLED) != 0u {
         return vec2u(sample_value(column, r), 0u);
     }
     return static_value(column, r);

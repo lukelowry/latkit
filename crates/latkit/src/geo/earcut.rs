@@ -342,9 +342,11 @@ impl Rings<'_> {
             let (n, next) = (self.n(p), self.n(self.n(p).next));
             (next.y - n.y) / (next.x - n.x)
         };
-        queue.sort_by(|&a, &b| {
-            let (na, nb) = (self.n(a), self.n(b));
-            na.x.total_cmp(&nb.x).then(na.y.total_cmp(&nb.y)).then_with(|| slope(a).total_cmp(&slope(b)))
+        // By x, then y, then slope: the last key first, as each sort keeps the order of ties.
+        crate::order::by_key(&mut queue, |&p| crate::order::number(slope(p)));
+        crate::order::by_wide_key(&mut queue, |&p| {
+            let n = self.n(p);
+            crate::order::wide(crate::order::number(n.x), crate::order::number(n.y))
         });
         for hole in queue {
             outer = self.eliminate_hole(hole, outer);

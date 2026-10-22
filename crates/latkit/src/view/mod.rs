@@ -40,6 +40,8 @@ pub use event::{Cursor, End, Event, Fit, Hit, Phase, Sample, Stats, Trigger, Wai
 pub use input::{Button, Device, Input, Key, Modifiers};
 pub(crate) use resources::{DEPTH, SHADE};
 pub(crate) use wake::Signal;
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub(crate) use {resources::samples, variants::common};
 
 use camera::Area;
 use clock::Clock;
@@ -140,6 +142,9 @@ pub struct View {
     /// Likewise while what lights rows, probes, and answers queries compiles: its frames draw without
     /// lit rows, and probes and queries wait.
     answering: Option<u64>,
+    /// Likewise while what its text draws with compiles: its frames draw without labels, glyphs, and
+    /// the overlay.
+    texting: Option<u64>,
     /// Who asked for the arranging under way.
     arranging: Vec<crate::Resolver<Vec<Patch>>>,
     /// Whether the platform asks for reduced motion, which `Motion::System` follows.
@@ -207,6 +212,7 @@ impl View {
             asked: Vec::new(),
             compiling: None,
             answering: None,
+            texting: None,
             arranging: Vec::new(),
             reduced_motion: false,
             shadow_map: Derived::default(),
@@ -304,10 +310,13 @@ impl View {
         }
         self.scene = scene;
         self.scene_version += 1;
-        // What the new scene uses is asked for as it next draws; what it shares landed already.
+        // What the new scene uses compiles from now, while its data syncs and its sheet arranges; what
+        // it shares landed already.
         self.asked.clear();
         self.compiling = None;
         self.answering = None;
+        self.texting = None;
+        self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, resources::samples(self.pixel_ratio)), true);
         self.focus.dirty = true;
         self.gestures.keys.stale();
         self.invalidate();
@@ -659,12 +668,14 @@ impl View {
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         let draws = self.pipelines_ready(&mut inner, format, resources::samples(pixel_ratio), input);
-        let answers = self.answers_ready(&mut inner);
+        let answers = self.answers_ready(&inner);
+        let texts = self.texts_ready(&inner);
         let landed = inner.pipelines.landed();
         drop(inner);
         self.compiling = (!draws).then_some(landed);
         self.answering = (!answers).then_some(landed);
-        let compiling = self.compiling.is_some() || self.answering.is_some();
+        self.texting = (!texts).then_some(landed);
+        let compiling = self.compiling.is_some() || self.answering.is_some() || self.texting.is_some();
         if self.waiting.compiling != compiling {
             self.waiting.compiling = compiling;
             self.events.tell(Event::Waiting(self.waiting));
@@ -675,6 +686,11 @@ impl View {
     /// Whether probes and queries can run: what they and the lit rows' draws use compiled.
     fn answers(&self) -> bool {
         self.answering.is_none()
+    }
+
+    /// Whether frames draw text: what labels, glyphs, and the overlay use compiled.
+    fn texts(&self) -> bool {
+        self.texting.is_none()
     }
 
     /// Whether what its frames draw with is still compiling: it draws nothing new until all of it
@@ -703,6 +719,7 @@ impl View {
             // Probes and queries wait for what answers them to compile, which wakes the view as it lands.
             || (self.answers() && (self.probing.due() || self.queries.due()))
             || self.answering.is_some_and(|seen| landed() != seen)
+            || self.texting.is_some_and(|seen| landed() != seen)
             || self.derived.tiled.due()
             || self.labels.fading(self.clock.now())
             // A mark evaluates once its columns synced: until then, the pages they wait for wake it.
@@ -752,7 +769,10 @@ impl View {
             m.compiled.is_some() || m.failure.is_some() || self.source(data).is_some() || self.derived.tiles.owns(data)
         };
         Waiting {
-            compiling: self.asked.is_empty() || self.compiling.is_some() || self.answering.is_some(),
+            compiling: self.asked.is_empty()
+                || self.compiling.is_some()
+                || self.answering.is_some()
+                || self.texting.is_some(),
             data: !self.marks.iter().all(given) || marks().any(|m| !m.tables.synced() || m.tables.waiting()),
             derived: !self.derived.complete(),
             labels: !self.labels.complete(),

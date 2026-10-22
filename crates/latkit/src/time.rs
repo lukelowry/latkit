@@ -16,6 +16,9 @@ pub(crate) fn wake_after(after: Duration, waker: Waker) {
     platform::wake_after(after, waker);
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub(crate) use platform::later;
+
 /// What wakes a task waiting on views: their work landing, their readbacks mapping. Waking it marks
 /// it woken until a wait takes that.
 #[derive(Default)]
@@ -132,14 +135,19 @@ mod platform {
 
     /// Wakes `waker` from the global scope's `setTimeout`, in a page or a worker alike.
     pub(super) fn wake_after(after: Duration, waker: Waker) {
-        let wake = Closure::once_into_js(move || waker.wake());
+        later(after, move || waker.wake());
+    }
+
+    /// Runs `run` from the global scope's `setTimeout` once `after` has passed, a task later at least.
+    pub(crate) fn later(after: Duration, run: impl FnOnce() + 'static) {
+        let run = Closure::once_into_js(run);
         let global = js_sys::global();
         let set = js_sys::Reflect::get(&global, &"setTimeout".into())
             .ok()
             .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
         let ms = after.as_secs_f64() * 1000.0;
         if let Some(set) = set {
-            let _ = set.call2(&global, &wake, &ms.into());
+            let _ = set.call2(&global, &run, &ms.into());
         }
     }
 }

@@ -9,7 +9,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use super::{Derive, Derived, Input, Jobs, Tables, beside, kept, stamp_of};
 use crate::Mark;
 use crate::Pending;
-use crate::data::{Field, Ids, Name, Patch, Reference, Table, UNWIRED, Values};
+use crate::data::{Field, Ids, Keyed, Name, Patch, Reference, Table, UNWIRED, Values};
 use crate::host::Job;
 
 /// Microseconds a row takes to find its lane, by estimate.
@@ -22,7 +22,7 @@ type Made = Derived<(), Pending<Vec<u8>>>;
 pub(crate) struct Lanes {
     tables: Tables,
     /// Each table's lanes, made or making.
-    made: FxHashMap<(Name, Name), Made>,
+    made: Keyed<(Name, Name), Made>,
 }
 
 impl Derive for Lanes {

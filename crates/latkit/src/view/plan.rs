@@ -14,7 +14,7 @@ use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use super::View;
 use super::marks::Shown;
-use crate::data::{Field, Geometry, Name, Table};
+use crate::data::{Field, Geometry, Keyed, Name, Table};
 use crate::derive::tiled::{Draw, Place, Planned, Plans};
 use crate::derive::{Derived, stamp_of};
 use crate::expr::compile::Words;
@@ -53,7 +53,7 @@ impl Cost {
 #[derive(Default)]
 struct Costs {
     whole: Plans,
-    tables: FxHashMap<(Name, Name), Cost>,
+    tables: Keyed<(Name, Name), Cost>,
     /// The pages the costs count that any view drawing the same data shares: each field's by its
     /// version and how it is read, the bytes the costs count of it, and its bytes once.
     shared: FxHashMap<u64, (f64, f64)>,
@@ -192,8 +192,8 @@ impl View {
     fn costs(&self) -> Costs {
         let space = &self.scene.space;
         let placing = matches!(space, Space::Earth(_) | Space::Plane(_));
-        let mut plans: Plans = FxHashMap::default();
-        let mut costs: FxHashMap<(Name, Name), Cost> = FxHashMap::default();
+        let mut plans = Plans::default();
+        let mut costs: Keyed<(Name, Name), Cost> = Keyed::default();
         let mut shared: FxHashMap<u64, (f64, f64)> = FxHashMap::default();
         let mut joined: Vec<((Name, Name), Name)> = Vec::new();
         for shown in &self.marks {

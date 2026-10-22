@@ -224,7 +224,7 @@ pub(crate) fn paths(
             if ends.len() < 2 {
                 continue;
             }
-            ends.sort_by_key(|&(_, output)| !output);
+            crate::order::by_key(&mut ends, |&(_, output)| u64::from(!output));
             let outputs = ends.iter().filter(|(_, output)| *output).count().max(1);
             let ends: Vec<End> = ends.into_iter().map(|(end, _)| end).collect();
             if orthogonal {
@@ -424,7 +424,7 @@ fn face(asks: &mut [Ask], edges: &[(usize, [usize; 2])], vertices: &[Vertex]) {
     }
     let mut ends: Vec<[Option<End>; 2]> = vec![[None; 2]; edges.len()];
     for ((v, side), mut placed) in sides {
-        placed.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+        crate::order::by_wide_key(&mut placed, |x| crate::order::wide(crate::order::number(x.0), x.1 as u64));
         let count = (placed.len() as u32).min(255);
         for (place, (_, k, end)) in placed.into_iter().enumerate() {
             let code = side.code() | ((place as u32).min(255) << 2) | (count << 10);
@@ -498,7 +498,7 @@ fn fixed(context: &Context<'_>, asks: &[Ask], routed: &[usize], routes: &FxHashM
         .filter(|(row, r)| !routing.contains(row) && meets(&r.reach, &region))
         .filter_map(|(row, r)| Some((drawing(context, row)?, r)))
         .collect();
-    near.sort_unstable_by_key(|&(at, _)| at);
+    crate::order::by_key(&mut near, |&((e, row), _)| crate::order::pair(e as u32, row as u32));
     near.into_iter().flat_map(|(_, r)| flipped(&r.lines)).collect()
 }
 

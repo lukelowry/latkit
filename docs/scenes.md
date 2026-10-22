@@ -63,17 +63,18 @@ nets joining the ports that name them.
 Options that vary by row take expressions: a number, a field name, a `#hex` color, or a builder.
 
 ```ts
-import { field, when, selected, units } from 'latkit';
+import { field, when, units } from 'latkit';
 
 field('load').div(field('capacity')).clamp(0, 1); // arithmetic and comparisons
 field('vm').colormap('balance').domain(0.95, 1.05); // through a colormap
 field('kv').scale(2, 8); // onto a range
-when(selected()).then('#ffb000').otherwise(field('kind').colormap('tableau10'));
+when(field('alarm').gt(0.5)).then('#ffb000').otherwise(field('kind').colormap('tableau10'));
 units('radius', { atLeast: 2 }); // a size in position units, kept within pixels
 field('vm').of('weather', 'Station'); // read from another dataset, joined by id
 ```
 
-State expressions read the view: `selected()`, `hovered()`, `pointer()`, `elapsed()`, `zoom()`.
+`elapsed()` reads the view's clock. Hover and selection glow through the focus styles, and sizes in
+pixels hold across zoom.
 Colormaps are a catalog name or your own colors, `{ kind, colors }`; a categorical map can name its
 `categories` for its legend. `colormapCss(map)` gives the same colors as a CSS gradient.
 

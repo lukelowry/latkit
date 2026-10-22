@@ -45,7 +45,7 @@ export default [
           "radius": { "op": "add", "args": [{ "op": "div", "args": ["kv", 100] }, 1] },
           "marker": "diamond",
           "color": {
-            "when": [[{ "state": "selected" }, { "color": "#ffb000" }]],
+            "when": [[{ "op": "gt", "args": ["alarm", 0.5] }, { "color": "#ffb000" }]],
             "otherwise": { "colormap": "balance", "value": { "field": "vm", "step": true }, "domain": [0.95, 1.05] }
           },
           "visible": { "op": "and", "args": [{ "op": "ge", "args": ["kv", 115] }, { "is": ["kind", "substation"] }] }
@@ -96,7 +96,7 @@ export default [
           "marker": { "gauge": { "fill": "load", "shape": "rounded" } },
           "ring": { "color": "#ff0000" },
           "label": "name",
-          "radius": { "op": "mul", "args": [{ "state": "zoom" }, 2] }
+          "radius": { "op": "mul", "args": [{ "op": "sin", "args": [{ "state": "elapsed" }] }, 2] }
         }
       },
       { "vertices": { "of": ["grid", "Plant"], "marker": { "pie": { "slices": ["coal", "gas"], "colors": ["#333333", "#88aaff"], "hole": 0.4 } } } },

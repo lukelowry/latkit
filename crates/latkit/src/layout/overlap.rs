@@ -53,7 +53,7 @@ pub(crate) fn separate(boxes: &[[f64; 4]], pinned: &[bool], clearance: f64) -> V
         }
     }
     let mut order: Vec<usize> = (0..centers.len()).filter(|&i| !pinned[i]).collect();
-    order.sort_by(|&a, &b| centers[a][0].total_cmp(&centers[b][0]).then(a.cmp(&b)));
+    crate::order::by_key(&mut order, |&a| crate::order::number(centers[a][0]));
     grid.fill(&mut cells, &centers, (0..centers.len()).filter(|&i| pinned[i]));
     for i in order {
         // Right past the placed boxes it overlaps, until it overlaps none.

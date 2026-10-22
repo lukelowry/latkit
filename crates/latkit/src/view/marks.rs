@@ -156,6 +156,16 @@ impl Shown {
         self.compiled.as_ref().map_or(0, |c| c.drawing.extras)
     }
 
+    /// What its channels read besides its own table's static fields, which their pipeline is made
+    /// for: before its data says, neither joins nor samples.
+    pub(crate) fn reads(&self) -> crate::gpu::pipelines::Reads {
+        let columns = self.compiled.as_ref().map_or(&[][..], |c| &c.program.columns[..]);
+        crate::gpu::pipelines::Reads {
+            joined: columns.iter().any(|c| c.of.is_some()),
+            timed: columns.iter().any(|c| c.sampled),
+        }
+    }
+
     /// The path its strokes read, or where its triangles' corners come from: one of the `PATH_` codes,
     /// which its pipelines are made for.
     pub(crate) fn path(&self) -> u32 {

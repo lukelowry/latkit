@@ -11,9 +11,6 @@ const MISSING_COLOR: u32 = 0x00ff00ffu;
 const OP_CONST: u32 = 0u;
 const OP_MISSING: u32 = 1u;
 const OP_FIELD: u32 = 2u;
-const OP_SELECTED: u32 = 3u;
-const OP_HOVERED: u32 = 4u;
-const OP_POINTER: u32 = 5u;
 const OP_ELAPSED: u32 = 6u;
 const OP_THEME: u32 = 7u;
 const OP_NEG: u32 = 8u;
@@ -51,7 +48,6 @@ const OP_MOD: u32 = 39u;
 const OP_POW: u32 = 40u;
 const OP_LOG: u32 = 41u;
 const OP_EXP: u32 = 42u;
-const OP_ZOOM: u32 = 43u;
 const OP_STORE_CODE: u32 = 44u;
 
 // Values the expression stack holds at once.
@@ -299,6 +295,11 @@ const STEP_BOXED: u32 = 4u;
 const STEP_LOCATE: u32 = 5u;
 const STEP_UNDER: u32 = 6u;
 const STEPS: u32 = 7u;
+
+// What a dispatch of the expression machine's `evaluate` runs, as its step uniform names it: a
+// mark's channels, or the reductions fitting its domains.
+const STEP_CHANNELS: u32 = 0u;
+const STEP_REDUCE: u32 = 1u;
 // Words of a hit a query finds: its row, distance in sixty-fourths of a pixel, part, screen x and y,
 // and depth.
 const HIT_WORDS: u32 = 6u;
@@ -489,11 +490,7 @@ struct Mark {
     frozen: u32,
     frozen_extra: u32,
     motion: f32,
-    // While the mark eases toward what its channels evaluated, where row 0's settled kind and extra
-    // words start in the settled mirror; NONE otherwise. Where the program holds how each word of a
-    // row eases, a word each.
-    settled: u32,
-    settled_extra: u32,
+    // Where the program holds how each word of a row eases, a word each.
     blends: u32,
     // The row blocks a dispatch over the mark's rows covers: at `block` in the blocks buffer,
     // `blocks` of them.

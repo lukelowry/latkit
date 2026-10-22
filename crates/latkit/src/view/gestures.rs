@@ -23,7 +23,6 @@ use super::event::{Awaited, Cursor, End, Event, Fit, Hit, Phase, Trigger};
 use super::input::{Button, Device, Input, Key, Modifiers};
 use super::marks::Shown;
 use super::probe::{Answer, Probed, near};
-use crate::expr::compile::Deps;
 use crate::scene::mark::MarkKind;
 use crate::{Camera, Grid, Pending, Row, Rows, Scene, Space, Zoom};
 
@@ -215,14 +214,10 @@ impl View {
         used
     }
 
-    /// The pointer acts at `trigger`: what reads it evaluates again, and it takes the hover back from
-    /// the keys.
+    /// The pointer acts at `trigger`, and takes the hover back from the keys.
     fn follow_pointer(&mut self, trigger: Trigger) {
         self.pointer = Some(trigger);
         self.gestures.keys.at = None;
-        for shown in &mut self.marks {
-            shown.dirty_rows(shown.channels_reading(Deps::POINTER), None);
-        }
     }
 
     /// Where the pointer last acted, the keys it held, and what it is.

@@ -9,7 +9,9 @@
 use rustc_hash::FxHashMap;
 
 use super::{Derive, Input, Jobs, Tables, answers, beside, stamp_of};
-use crate::data::{Column, Field, GeometryBuilder, Id, Name, PAGE_ROWS, Page, PageId, Table, Value, Values, Version};
+use crate::data::{
+    Column, Field, GeometryBuilder, Id, Keyed, Name, PAGE_ROWS, Page, PageId, Table, Value, Values, Version,
+};
 use crate::host::{Job, Shaping};
 use crate::scene::areas::triangles_of;
 use crate::scene::lines::path_of;
@@ -74,7 +76,7 @@ impl Derive for Shapes {
             changed |= shaped.update(want, source, jobs);
         }
         // Each drawn table's derived table holds every field shaped from it.
-        let mut fields: FxHashMap<(Name, Name), Vec<(Name, Field)>> = FxHashMap::default();
+        let mut fields: Keyed<(Name, Name), Vec<(Name, Field)>> = Keyed::default();
         for want in &wants {
             if let Some(field) = self.shaped.get(want).and_then(|s| s.field.clone()) {
                 fields.entry((want.data.clone(), want.table.clone())).or_default().push((want.derived(), field));

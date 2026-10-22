@@ -3,9 +3,9 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
-use serde_json::Value;
 
 use crate::Expr;
+use crate::expr::form::Written;
 
 /// A row's text, placed beside, inside, or along what its mark draws, following it every frame: a
 /// text field, or options. Labels that would overlap give way by priority; among equals, those
@@ -16,8 +16,8 @@ use crate::Expr;
 /// # use latkit::{field, Label, Vertices};
 /// let buses = Vertices::of("grid", "Bus").position("lon", "lat").label(Label::new("name").priority(field("kv")));
 /// ```
-#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
-#[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone, PartialEq, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = text_or_options)]
 pub struct Label {
     /// A text field.
@@ -46,11 +46,22 @@ pub struct Label {
 /// A label reads a text field as its text alone, or an object with `text` as its options.
 impl<'de> Deserialize<'de> for Label {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Label, D::Error> {
-        let value = Value::deserialize(deserializer)?;
-        if value.as_object().is_some_and(|map| map.contains_key("text")) {
-            return Label::deserialize(value).map_err(de::Error::custom);
-        }
-        Expr::from_value(value).map(Label::new).map_err(de::Error::custom)
+        let label = |written: Written| match written {
+            Written::Object(mut form) if form.text.is_some() => {
+                form.only("a label", &["text", "size", "color", "priority", "maxWidth", "font", "max"])?;
+                Ok(Label {
+                    color: form.color()?,
+                    text: form.text.expect("held"),
+                    size: form.size,
+                    priority: form.priority,
+                    max_width: form.max_width,
+                    font: form.font,
+                    max: form.max,
+                })
+            }
+            written => written.expr().map(Label::new),
+        };
+        label(Written::deserialize(deserializer)?).map_err(de::Error::custom)
     }
 }
 

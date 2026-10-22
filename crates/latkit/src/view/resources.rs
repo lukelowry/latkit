@@ -530,6 +530,13 @@ impl Resources {
         group
     }
 
+    /// The expression machine's group for a mark easing: its channels store into the settled mirror
+    /// where the state binds, and the writable stand-in binds where the mirror does.
+    pub(crate) fn settling_group(&self, device: &wgpu::Device, inner: &mut Inner) -> Option<wgpu::BindGroup> {
+        let settled = self.settled.as_ref()?;
+        Some(self.bind_into(device, inner, Shader::Evaluate, settled, &self.scratch))
+    }
+
     /// The freeze pass's group: state read from the buffer rows moved out of when they moved.
     pub(crate) fn freeze_group(&mut self, device: &wgpu::Device, inner: &mut Inner, moved: bool) -> wgpu::BindGroup {
         match self.retired.as_ref().filter(|_| moved) {
@@ -552,6 +559,18 @@ impl Resources {
     }
 
     fn bind(&self, device: &wgpu::Device, inner: &mut Inner, shader: Shader, state: &wgpu::Buffer) -> wgpu::BindGroup {
+        self.bind_into(device, inner, shader, state, self.settled.as_ref().unwrap_or(&self.scratch))
+    }
+
+    /// `shader`'s pass group, `state` bound as the state and `settled` as the settled mirror.
+    fn bind_into(
+        &self,
+        device: &wgpu::Device,
+        inner: &mut Inner,
+        shader: Shader,
+        state: &wgpu::Buffer,
+        settled: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
         let layout = inner.pipelines.pass_layout(device, shader);
         let entries: Vec<wgpu::BindGroupEntry<'_>> = shader
             .source()
@@ -574,7 +593,7 @@ impl Resources {
                     10 => wgpu::BindingResource::TextureView(&self.shadows.view),
                     12 => self.remap.buffer.as_entire_binding(),
                     13 => self.labels.as_entire_binding(),
-                    14 => self.settled.as_ref().unwrap_or(&self.scratch).as_entire_binding(),
+                    14 => settled.as_entire_binding(),
                     15 => wgpu::BindingResource::TextureView(&inner.icons.view),
                     16 => self.blocks.buffer.as_entire_binding(),
                     17 => wgpu::BindingResource::Buffer(wgpu::BufferBinding {

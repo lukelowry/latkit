@@ -8,7 +8,7 @@ use std::sync::Arc;
 use rustc_hash::FxBuildHasher;
 
 use crate::Name;
-use crate::data::{Page, PageId, Values};
+use crate::data::{Keyed, Page, PageId, Values};
 use crate::gpu::shaders::MISSING;
 
 /// Pages a dictionary keeps the codes of: past them, it forgets them all.
@@ -16,7 +16,7 @@ const PAGES: usize = 256;
 
 #[derive(Default)]
 pub(crate) struct Dictionaries {
-    fields: HashMap<(Name, Name, Name), Dictionary, FxBuildHasher>,
+    fields: Keyed<(Name, Name, Name), Dictionary>,
 }
 
 #[derive(Default)]

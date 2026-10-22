@@ -10,7 +10,6 @@ use super::View;
 use super::event::{Event, Hit};
 use super::sync::{Source, table_of};
 use crate::data::{Field, PAGE_ROWS, Reference};
-use crate::expr::compile::Deps;
 use crate::gpu::shaders as wgsl;
 use crate::gpu::work::Queue;
 use crate::scene::mark::Primitive;
@@ -84,19 +83,6 @@ impl View {
         } else {
             for &(w, b) in &changes {
                 queue.write_buffer(buffer, u64::from(w) * 4, &b.to_le_bytes());
-            }
-        }
-        if !changes.is_empty() {
-            // Channels reading focus evaluate the blocks of the rows whose words changed; every row
-            // after the words were laid out again.
-            for shown in &mut self.marks {
-                let (focus, rows) = (shown.region.focus, shown.rows + shown.exits);
-                let blocks: Vec<u32> = changes
-                    .iter()
-                    .filter(|&&(w, _)| w >= focus && w - focus < rows)
-                    .map(|&(w, _)| (w - focus) / wgsl::BLOCK_ROWS)
-                    .collect();
-                shown.dirty_rows(shown.channels_reading(Deps::FOCUS), (!fresh).then_some(&blocks[..]));
             }
         }
         // Rows lit only by hover draw no glow when it does not glow.

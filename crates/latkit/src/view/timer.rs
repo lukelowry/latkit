@@ -90,7 +90,7 @@ impl Timer {
         }
         landed.then(|| {
             let mut sorted = self.measured.clone();
-            sorted.sort_by(f32::total_cmp);
+            crate::order::by_key(&mut sorted, |&x| crate::order::number(f64::from(x)));
             sorted[sorted.len() / 2]
         })
     }

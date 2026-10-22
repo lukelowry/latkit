@@ -39,6 +39,7 @@ export function loadLatkit(options: LoadOptions = {}): Promise<Latkit> {
     return loading;
   }
   configured = { wasm, createWorker: options.createWorker };
+  warmGpu();
   loading = import('./runtime.js')
     .then((runtime) => runtime.initialize(configured!))
     .catch((cause: unknown) => {
@@ -47,4 +48,27 @@ export function loadLatkit(options: LoadOptions = {}): Promise<Latkit> {
       throw Object.assign(new Error('could not load latkit', { cause }), { code: 'io' });
     });
   return loading;
+}
+
+/**
+ * Starts the browser's GPU process while the runtime loads: a first device takes about 280 ms cold,
+ * one after it about 30, so `Gpu.create()` later finds it started. The device made here is let go.
+ */
+function warmGpu(): void {
+  const gpu = (
+    globalThis.navigator as
+      | {
+          gpu?: {
+            requestAdapter(): Promise<{ requestDevice(): Promise<{ destroy(): void }> } | null>;
+          };
+        }
+      | undefined
+  )?.gpu;
+  gpu
+    ?.requestAdapter()
+    .then((adapter) => adapter?.requestDevice())
+    .then(
+      (device) => device?.destroy(),
+      () => {},
+    );
 }

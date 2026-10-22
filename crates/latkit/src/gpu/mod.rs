@@ -126,7 +126,7 @@ impl Ledger {
         let split = |ask: &Ask| ask.own + ask.shared.iter().map(|(piece, bytes)| bytes / sharing[piece]).sum::<f64>();
         let mine = split(&self.asks[&view]);
         let mut asks: Vec<f64> = self.asks.values().map(split).collect();
-        asks.sort_by(f64::total_cmp);
+        crate::order::numbers(&mut asks);
         let mut left = budget as f64 * PLANNED;
         for (i, &each) in asks.iter().enumerate() {
             let even = left / (asks.len() - i) as f64;
@@ -199,7 +199,29 @@ impl Gpu {
             })
             .await
             .map_err(|e| Error::Unsupported(format!("no GPU device: {e}").into()))?;
-        Ok(Gpu::create(Some(instance), Some(adapter), device, queue))
+        let gpu = Gpu::create(Some(instance), Some(adapter), device, queue);
+        // In a browser what nearly every scene draws with compiles from now, while the page loads its
+        // data, so the first view finds it compiled.
+        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        gpu.warm(web_sys::window().map_or(1.0, |w| w.device_pixel_ratio() as f32));
+        Ok(gpu)
+    }
+
+    /// Asks, last of all, for what nearly every scene draws with into canvases at `pixel_ratio`:
+    /// queued now and started a task later, so a view shown as the GPU is made compiles what it draws
+    /// with first.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    fn warm(&self, pixel_ratio: f32) {
+        let needs = crate::view::common(FORMAT, crate::view::samples(pixel_ratio));
+        self.0.lock().pipelines.queue(&self.0.device, &needs, pipelines::Urgency::Warm, std::task::Waker::noop());
+        let gpu = Arc::downgrade(&self.0);
+        crate::time::later(std::time::Duration::ZERO, move || {
+            if let Some(gpu) = gpu.upgrade()
+                && let Some(mut inner) = gpu.try_lock()
+            {
+                inner.pipelines.pump(&gpu.device);
+            }
+        });
     }
 
     /// Draws with an application-owned device and queue without replacing their callbacks.
@@ -240,33 +262,25 @@ impl Gpu {
         });
         let budget = Budget::of(&device);
         let counters = Arc::new(Counters::default());
-        let inner = Inner {
-            arena: Arena::new(&device, budget.bytes),
-            pipelines: Pipelines::new(&device, counters.clone()),
-            colormaps: Colormaps::new(&device),
-            dictionaries: Dictionaries::default(),
-            atlas: Atlas::new(&device, counters.clone()),
-            icons: Icons::new(&device),
-            readbacks: Readbacks::counted(counters.clone()),
-            host: None,
-            budget,
-            ledger: Ledger::default(),
-        };
         let queue = Queue::new(queue, counters.clone());
         #[cfg_attr(
             target_arch = "wasm32",
             allow(clippy::arc_with_non_send_sync, reason = "WebGPU objects stay on the one thread a page has")
         )]
-        let shared = Arc::new(Shared {
-            instance,
-            adapter,
-            device,
-            queue,
-            counters,
-            sampler,
-            lost,
-            errors,
-            inner: Mutex::new(inner),
+        let shared = Arc::new_cyclic(|gpu| {
+            let inner = Inner {
+                arena: Arena::new(&device, budget.bytes),
+                pipelines: Pipelines::new(&device, counters.clone(), gpu.clone()),
+                colormaps: Colormaps::new(&device),
+                dictionaries: Dictionaries::default(),
+                atlas: Atlas::new(&device, counters.clone()),
+                icons: Icons::new(&device),
+                readbacks: Readbacks::counted(counters.clone()),
+                host: None,
+                budget,
+                ledger: Ledger::default(),
+            };
+            Shared { instance, adapter, device, queue, counters, sampler, lost, errors, inner: Mutex::new(inner) }
         });
         Gpu(shared)
     }
@@ -324,6 +338,16 @@ impl Gpu {
 impl Shared {
     pub(crate) fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The lock, unless something holds it now.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    pub(crate) fn try_lock(&self) -> Option<MutexGuard<'_, Inner>> {
+        match self.inner.try_lock() {
+            Ok(inner) => Some(inner),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
     }
 }
 

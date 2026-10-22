@@ -25,6 +25,8 @@ mod image;
 mod json;
 #[cfg(feature = "gpu")]
 mod layout;
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+mod order;
 #[cfg(feature = "gpu")]
 mod panels;
 mod pending;
@@ -54,10 +56,7 @@ pub use data::{
 };
 pub use data::{Order, Patches, Query};
 pub use error::{Error, Path, Result, Step};
-pub use expr::{
-    Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, hovered, pointer, selected,
-    units, when, zoom,
-};
+pub use expr::{Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, units, when};
 pub use image::{Image, ImageFormat};
 pub use json::from_json;
 pub use pending::{Pending, Resolver};

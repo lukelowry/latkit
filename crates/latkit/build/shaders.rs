@@ -68,11 +68,13 @@ const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { retur
 /// Uniforms bound at a dynamic offset: each mark's, each pass's eye, and each probe dispatch's step.
 const DYNAMIC: &[&str] = &["mark", "eye", "step"];
 
-/// The values each pipeline constant is made with, as constants of `lib/types.wesl`: the primitive a
-/// probe reads, and the path a stroke reads.
+/// The values each pipeline constant is made with, as constants of `lib/types.wesl` or booleans: the
+/// primitive a probe reads, the path a stroke reads, and whether channels read joins and samples.
 const OVERRIDES: &[(&str, &[&str])] = &[
     ("PROBED", &["POINTS", "STROKES", "TRIANGLES"]),
     ("PATH", &["PATH_ENDS", "PATH_TRACE", "PATH_GEOMETRY", "PATH_POLES"]),
+    ("JOINED", &["false", "true"]),
+    ("TIMED", &["false", "true"]),
 ];
 
 pub(crate) fn generate() {
@@ -188,7 +190,12 @@ fn manifest_entry(shader: &str, file: &str, module: &naga::Module, types: &naga:
             .flat_map(|before| {
                 values.iter().map(move |value| {
                     let mut next = before.clone();
-                    next.push((name, type_constant(types, value)));
+                    let value = match *value {
+                        "false" => 0,
+                        "true" => 1,
+                        name => type_constant(types, name),
+                    };
+                    next.push((name, value));
                     next
                 })
             })
@@ -208,11 +215,14 @@ fn manifest_entry(shader: &str, file: &str, module: &naga::Module, types: &naga:
     )
 }
 
-/// Whether a pipeline of `module` is ever made with `constants`: faces read their ends and areas
-/// their geometry; a probe made for points reads no path, so it keeps the default one, and one made
-/// for triangles reads a face's ends or an area's geometry.
+/// Whether a pipeline of `module` is ever made with `constants`: only channels go without joins or
+/// samples; faces read their ends and areas their geometry; a probe made for points reads no path, so
+/// it keeps the default one, and one made for triangles reads a face's ends or an area's geometry.
 fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
     let value = |name: &str| constants.iter().find(|(n, _)| *n == name).map(|&(_, v)| v);
+    if module != "compute::evaluate" && (value("JOINED") == Some(0) || value("TIMED") == Some(0)) {
+        return false;
+    }
     let path = value("PATH");
     match module {
         "draw::triangles" => return path == Some(type_constant(types, "PATH_ENDS")),

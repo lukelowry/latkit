@@ -661,7 +661,7 @@ fn hold(vertex_marks: &[VertexMark<'_>], vertices: &mut [Vertex]) {
 /// its header across the top. A group holding nothing placed stands at its own place.
 fn stand_groups(vertices: &mut [Vertex], places: &FxHashMap<Row, [f64; 2]>, header: &[f64], padding: f64) {
     let mut order: Vec<usize> = (0..vertices.len()).filter(|&v| vertices[v].group).collect();
-    order.sort_by_key(|&v| std::cmp::Reverse(vertices[v].depth));
+    crate::order::by_key(&mut order, |&v| !u64::from(vertices[v].depth));
     let mut held: Vec<Option<[f64; 4]>> = vec![None; vertices.len()];
     for v in vertices.iter().filter(|v| !v.group) {
         if let (Some(p), Some(b)) = (v.parent, v.bounds) {

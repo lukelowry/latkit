@@ -130,7 +130,9 @@ fn start(level: &Level, gap: f64, offsets: &[u32], targets: &[u32]) -> Vec<[f64;
     let mut part = vec![u32::MAX; n];
     let mut parts: Vec<Vec<usize>> = Vec::new();
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by_key(|&v| (level.pinned[v].is_none(), std::cmp::Reverse(offsets[v + 1] - offsets[v])));
+    crate::order::by_key(&mut order, |&v| {
+        crate::order::pair(u32::from(level.pinned[v].is_none()), !(offsets[v + 1] - offsets[v]))
+    });
     for &root in &order {
         if part[root] != u32::MAX {
             continue;

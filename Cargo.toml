@@ -12,7 +12,6 @@ repository = "https://github.com/lukelowry/latkit"
 homepage = "https://latkit.readthedocs.io"
 
 [workspace.dependencies]
-url = "2"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 toml_edit = "0.25"
 latkit = { version = "0.1.0", path = "crates/latkit", default-features = false }

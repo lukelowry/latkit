@@ -168,7 +168,7 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
 }
 
 /// What `mark` evaluates and how it eases by `clock`: the row blocks this frame's evaluation covers,
-/// and while it eases, where its frozen and settled rows start, its progress, and how each word eases.
+/// and while it eases, where its frozen rows start, its progress, and how each word eases.
 fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
     let region = &shown.region;
     mark.block = shown.block;
@@ -176,17 +176,11 @@ fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
     mark.blends = shown.offsets.blends;
     mark.frozen = wgsl::NONE;
     mark.frozen_extra = wgsl::NONE;
-    mark.settled = wgsl::NONE;
-    mark.settled_extra = wgsl::NONE;
     mark.motion = 1.0;
     if let Some(transition) = &shown.transition {
         mark.frozen = region.state;
         mark.frozen_extra = region.extra;
         mark.motion = transition.motion(clock);
-        if transition.settles() {
-            mark.settled = region.state;
-            mark.settled_extra = region.extra;
-        }
     }
 }
 

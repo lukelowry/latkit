@@ -4,8 +4,6 @@
 //! groups lifted to the groups they meet in. Every layout places one level at a time, so every
 //! layout nests alike.
 
-use std::cmp::Reverse;
-
 /// A graph to lay out, plane units with y up: each vertex's width and height, its center when it has
 /// one, the group holding it, and how far a group's box reaches past its members (left, bottom,
 /// right, top); and links between vertices, from one to another where a layout reads direction.
@@ -42,7 +40,7 @@ pub(crate) fn nested(graph: &Graph<'_>, mut place: impl FnMut(&Level) -> Vec<[f6
         holds[group as usize] = true;
     }
     let mut groups: Vec<usize> = (0..count).filter(|&group| holds[group]).collect();
-    groups.sort_by_key(|&group| Reverse(depth[group]));
+    crate::order::by_key(&mut groups, |&group| !u64::from(depth[group]));
     let mut level = vec![0; count];
     for (k, &group) in groups.iter().enumerate() {
         level[group] = k + 1;

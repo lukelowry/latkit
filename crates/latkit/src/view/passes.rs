@@ -276,31 +276,32 @@ impl super::marks::Shown {
 
 impl View {
     /// Evaluates the dirty channels of marks `work`, each over its dirty row blocks, its fitted
-    /// domains reduced first where they changed.
+    /// domains reduced first where they changed: into its state, bound by `state`, or while it eases
+    /// into its settled mirror, bound by `settling`. Leaves `state` bound.
     fn evaluate(
         &mut self,
         pass: &mut wgpu::ComputePass<'_>,
         inner: &mut Inner,
         group: &wgpu::BindGroup,
+        (state, settling): (&wgpu::BindGroup, Option<&wgpu::BindGroup>),
         work: &[usize],
     ) {
         if work.is_empty() {
             return;
         }
         let device = &self.gpu.0.device;
-        let evaluate = inner.pipelines.compute(device, Shader::Evaluate, "evaluate");
-        // Only marks fitting domains reduce.
-        let reducing = work.iter().any(|&i| self.marks[i].reduce && self.marks[i].rows > 0);
-        let reduce = reducing.then(|| inner.pipelines.compute(device, Shader::Evaluate, "reduce"));
+        let step = super::resources::step;
         for &i in work {
             let shown = &mut self.marks[i];
+            let into = settling.filter(|_| shown.transition.is_some()).unwrap_or(state);
+            pass.set_pipeline(&inner.pipelines.compute_pipeline(device, Variant::channels(shown.reads())));
             pass.set_bind_group(1, group, &[offset(i)]);
-            if let Some(reduce) = reduce.as_ref().filter(|_| shown.reduce && shown.rows > 0) {
-                pass.set_pipeline(reduce);
+            if shown.reduce && shown.rows > 0 {
+                pass.set_bind_group(2, into, &[step(wgsl::STEP_REDUCE)]);
                 dispatch(pass, shown.rows);
             }
-            pass.set_pipeline(&evaluate);
-            let rows = shown.rows + shown.exits;
+            pass.set_bind_group(2, into, &[step(wgsl::STEP_CHANNELS)]);
+            let rows = shown.rows;
             dispatch_blocks(pass, rows, shown.block_count);
             let blocks = shown.blocks.of(rows);
             let evaluated = blocks.iter().map(|&b| u64::from((rows - b * wgsl::BLOCK_ROWS).min(wgsl::BLOCK_ROWS)));
@@ -309,6 +310,7 @@ impl View {
             shown.blocks = super::marks::Blocks::default();
             shown.reduce = false;
         }
+        pass.set_bind_group(2, state, &[step(wgsl::STEP_CHANNELS)]);
     }
 
     /// Evaluates dirty channels, and sums face normals when what they rest on changed; with
@@ -344,6 +346,11 @@ impl View {
         }
         let groups = resources.groups(&gpu.0, inner);
         let evaluate_group = resources.pass(device, inner, Shader::Evaluate);
+        let settling_group = work
+            .iter()
+            .any(|&i| self.marks[i].transition.is_some())
+            .then(|| resources.settling_group(device, inner))
+            .flatten();
         let normals_group = (!faces.is_empty()).then(|| resources.pass(device, inner, Shader::Normals));
         let bounds_group = (!measured.is_empty()).then(|| resources.pass(device, inner, Shader::Bounds));
         let lists_group = (!segments.is_empty()).then(|| resources.pass(device, inner, Shader::Lists));
@@ -361,9 +368,9 @@ impl View {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
-            pass.set_bind_group(2, &evaluate_group, &[]);
+            pass.set_bind_group(2, &evaluate_group, &[super::resources::step(wgsl::STEP_CHANNELS)]);
             self.every_row(&mut pass, inner, &groups.mark, "carry", &carried);
-            self.evaluate(&mut pass, inner, &groups.mark, &work);
+            self.evaluate(&mut pass, inner, &groups.mark, (&evaluate_group, settling_group.as_ref()), &work);
             // After evaluating, so what a mark shows eases toward what it evaluated this frame.
             self.every_row(&mut pass, inner, &groups.mark, "ease", &eased);
             // After evaluating, so comets travel at the flow this frame shows.
@@ -426,8 +433,7 @@ impl View {
         let eased: Vec<usize> = (0..self.marks.len())
             .filter(|&i| {
                 let shown = &self.marks[i];
-                let settles = shown.transition.as_ref().is_some_and(super::transition::Transition::settles);
-                shown.drawable() && settles && (shown.easing || work.contains(&i))
+                shown.drawable() && shown.transition.is_some() && (shown.easing || work.contains(&i))
             })
             .collect();
         for shown in &mut self.marks {
@@ -457,7 +463,7 @@ impl View {
         let mut words = Vec::new();
         for shown in &mut self.marks {
             let evaluates = shown.drawable() && (shown.dirty != 0 || shown.reduce);
-            let blocks = if evaluates { shown.blocks.of(shown.rows + shown.exits) } else { Vec::new() };
+            let blocks = if evaluates { shown.blocks.of(shown.rows) } else { Vec::new() };
             shown.block = words.len() as u32;
             shown.block_count = blocks.len() as u32;
             words.extend(blocks);
@@ -547,8 +553,11 @@ impl View {
     ) {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let Inner { atlas, pipelines, .. } = &mut *inner;
-        atlas.lay(device, &gpu.0.queue, encoder, pipelines);
+        let texts = self.texts();
+        if texts {
+            let Inner { atlas, pipelines, .. } = &mut *inner;
+            atlas.lay(device, &gpu.0.queue, encoder, pipelines);
+        }
         let background =
             if self.signal.transparent() { [0.0; 4] } else { self.scene.theme.background.to_array().map(f64::from) };
         let plot = matches!(self.scene.space, Space::Plot(_));
@@ -612,6 +621,9 @@ impl View {
                 marks.draw(&mut pass, drawn, inner, i, shown, true);
                 marks.ports(&mut pass, drawn, inner, i, shown);
             }
+        }
+        if !texts {
+            return;
         }
         let glyphs = [Shader::Glyphs, Shader::GlyphsPorts].map(|shader| (shader, group(shader)));
         self.draw_labels(&mut pass, drawn, inner, frame.format, samples, &groups, glyphs);

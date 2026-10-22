@@ -349,8 +349,11 @@ impl View {
     }
 
     /// Places labels when what they would show changed, and fades them; reads back the texts
-    /// placement asked for.
+    /// placement asked for. Labels wait for what places them to compile.
     pub(super) fn place_labels(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, eye: &wgsl::Eye) {
+        if !self.texts() {
+            return;
+        }
         let labeled: Vec<(usize, Slots)> =
             self.labels.slots.iter().enumerate().filter_map(|(i, s)| s.map(|s| (i, s))).collect();
         if labeled.is_empty() {
