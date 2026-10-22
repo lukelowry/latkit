@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import { Patch, reference } from 'latkit/core';
+import { Patch, reference, type ExprInput } from 'latkit/core';
 import { angles, shifts } from './flow.ts';
 import { levelOf, readCase } from './grids.ts';
 import { THEME, worldMap, type Piece } from './look.ts';
@@ -57,39 +57,28 @@ export default function opening(): Piece {
     levelOf(Math.max(kv[net.from[e]!]!, kv[net.to[e]!]!)),
   );
   const hz = frequency();
-  // A stalk down to the ground from one bus of 345 kV and up in each cell of 3/4 degree, so the
+  // A pole down to the ground from one bus of 345 kV and up in each cell of 3/4 degree, so the
   // height reads without a curtain of them.
   const cells = new Set<string>();
-  const tall = Array.from({ length: n }, (_, b) => b).filter((b) => {
-    if (kv[b]! < 345) return false;
+  const pole = Float32Array.from({ length: n }, (_, b) => {
     const cell = `${Math.floor(c.positions[2 * b]! / 0.75)} ${Math.floor(c.positions[2 * b + 1]! / 0.75)}`;
-    return !cells.has(cell) && cells.add(cell) !== undefined;
+    if (kv[b]! < 345 || cells.has(cell)) return 0;
+    cells.add(cell);
+    return 1;
   });
-  const all = n + tall.length;
-  const bus = (b: number) => (b < n ? b : tall[b - n]!);
   const data = Patch.to('grid')
     .replace(
       'Bus',
-      { count: all },
+      { count: n },
       {
-        lon: Float64Array.from({ length: all }, (_, b) => c.positions[2 * bus(b)]!),
-        lat: Float64Array.from({ length: all }, (_, b) => c.positions[2 * bus(b) + 1]!),
+        lon: Float64Array.from({ length: n }, (_, b) => c.positions[2 * b]!),
+        lat: Float64Array.from({ length: n }, (_, b) => c.positions[2 * b + 1]!),
+        kv,
+        hz,
         // A fraction of the earth's radius: on the ground at the lowest frequencies, rising with
-        // the frequency, the highest peaks compressed. Each stalk's foot stays on the ground.
-        height: Float32Array.from({ length: all }, (_, b) =>
-          b < n ? 0.022 * Math.asinh(Math.max(0, hz[b]! + 0.016) / 0.03) : 0,
-        ),
-      },
-    )
-    .replace(
-      'Stalk',
-      { count: tall.length },
-      {
-        from: reference('Bus', Uint32Array.from(tall)),
-        to: reference(
-          'Bus',
-          Uint32Array.from(tall, (_, k) => n + k),
-        ),
+        // the frequency, the highest peaks compressed.
+        height: Float32Array.from(hz, (f) => 0.022 * Math.asinh(Math.max(0, f + 0.016) / 0.03)),
+        pole,
       },
     )
     .replace(
@@ -100,6 +89,7 @@ export default function opening(): Piece {
         to: reference('Bus', net.to),
         gain,
         change: Float32Array.from(gain, Math.abs),
+        level,
         // Wider by voltage, and by how far past a quiet 10 MW the branch's flow changed.
         width: Float32Array.from(
           gain,
@@ -121,6 +111,14 @@ export default function opening(): Piece {
   });
   // Map lines are a light steel at low alpha, so they lighten whatever lies under them.
   const map = (alpha: string) => `#7fa6cc${alpha}`;
+  // The distribution web under 115 kV that the opening leaves be, dim and thin under the rest.
+  const quiet: ExprInput = {
+    op: 'and',
+    args: [
+      { op: 'le', args: ['level', 1] },
+      { op: 'lt', args: ['change', 1.7] },
+    ],
+  };
   return {
     name: 'opening',
     alt: 'The ACTIVSg70k grid on the globe as one 765 kV line opens: buses raised by their frequency, branches that pick up its power glow amber, those it leaves glow cyan',
@@ -135,11 +133,25 @@ export default function opening(): Piece {
     camera: { center: [-85.5, 38.6], zoom: 5.1, pitch: 56, bearing: -6 },
     scene: {
       space: {
-        earth: { projection: 'globe', surface: '#111a24', graticule: false, atmosphere: true },
+        earth: {
+          projection: 'globe',
+          surface: '#111a24',
+          graticule: true,
+          atmosphere: true,
+          // Dusk at the equinox: the sun sets over the grid's west, night falls on the Atlantic.
+          daylight: Date.UTC(2026, 8, 22, 22, 20) / 1000,
+        },
       },
       ease: 0,
-      // The docs page's own ground, and air a muted steel rather than the event's cyan.
-      theme: { ...THEME, background: '#0f141a', atmosphere: '#6a93c052' },
+      // The docs page's own ground, air a muted steel rather than the event's cyan, a faint
+      // graticule, and a night that keeps the grid readable.
+      theme: {
+        ...THEME,
+        background: '#0f141a',
+        atmosphere: '#6a93c052',
+        grid: map('12'),
+        night: 0.35,
+      },
       marks: [
         { lines: { of: ['states', 'polygons'], width: 0.5, color: map('1f') } },
         { lines: { of: ['borders', 'lines'], width: 0.6, color: map('33') } },
@@ -156,10 +168,22 @@ export default function opening(): Piece {
         },
         {
           edges: {
-            of: ['grid', 'Stalk'],
-            ends: ['from', 'to'],
+            of: ['grid', 'Bus'],
+            poles: true,
+            visible: { op: 'eq', args: ['pole', 1] },
             width: 0.35,
             color: '#a9b4bf33',
+            pick: false,
+          },
+        },
+        {
+          edges: {
+            of: ['grid', 'Branch'],
+            ends: ['from', 'to'],
+            name: 'web',
+            width: 0.3,
+            color: '#39414b',
+            visible: { op: 'and', args: [{ op: 'eq', args: ['open', 0] }, quiet] },
             pick: false,
           },
         },
@@ -170,15 +194,15 @@ export default function opening(): Piece {
             priority: 'change',
             width: 'width',
             color: {
-              // A quiet grey within 10 MW either way; past it, cyan and amber of equal brightness.
+              // The backbone a quiet grey within 10 MW either way; past it, cyan and amber of equal brightness.
               colormap: {
                 kind: 'diverging',
                 colors: [
                   [0, '#a8e6ff'],
                   [0.14, '#4cc4f0'],
                   [0.27, '#3a8db5'],
-                  [0.36, '#5e6874'],
-                  [0.64, '#5e6874'],
+                  [0.36, '#6c7784'],
+                  [0.64, '#6c7784'],
                   [0.73, '#b07a3a'],
                   [0.86, '#f2a13a'],
                   [1, '#ffd27a'],
@@ -187,14 +211,20 @@ export default function opening(): Piece {
               value: 'gain',
               domain: [-6, 6],
             },
-            visible: { op: 'eq', args: ['open', 0] },
+            visible: {
+              op: 'and',
+              args: [
+                { op: 'eq', args: ['open', 0] },
+                { op: 'not', args: [quiet] },
+              ],
+            },
             pick: false,
           },
         },
-        // The opened line: a dark casing, red, and a bright core, the brightest thing drawn.
-        opened('casing', 8, '#0b0f14cc'),
-        opened('opened', 3.4, '#ff2e4d'),
-        opened('core', 1.1, '#ffd6dd'),
+        // The opened line: a faint red halo, red, and a bright core, the brightest thing drawn.
+        opened('halo', 10, '#ff2e4d2e'),
+        opened('opened', 4.4, '#ff2e4d'),
+        opened('core', 1.3, '#ffd6dd'),
       ],
     },
   };
