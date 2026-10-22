@@ -4,7 +4,7 @@ default-members = ["crates/latkit"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -14,7 +14,7 @@ homepage = "https://latkit.readthedocs.io"
 [workspace.dependencies]
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 toml_edit = "0.25"
-latkit = { version = "0.2.0", path = "crates/latkit", default-features = false }
+latkit = { version = "0.2.1", path = "crates/latkit", default-features = false }
 
 thiserror = "2"
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
