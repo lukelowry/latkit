@@ -1,5 +1,5 @@
 ---
-'latkit': minor
+'latkit': patch
 ---
 
 A view's first frame waits only for what draws its marks, a browser's first GPU is made while the runtime loads, channels compile only what their marks read, and the wasm is an eighth smaller.
