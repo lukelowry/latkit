@@ -2,7 +2,7 @@
 
 ```{image} ../images/opening.png
 :alt: The ACTIVSg70k grid as one 765 kV line opens: branches that pick up its power glow amber, those it leaves glow blue, across a quiet web of 88,000 branches
-:class: picture
+:class: picture banner
 ```
 
 The ACTIVSg70k case as its Little Rock to Newark 765 kV line opens. A DC power flow of all 70,000

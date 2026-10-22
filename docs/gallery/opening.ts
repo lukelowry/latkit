@@ -1,12 +1,25 @@
 /**
  * A line opening: ACTIVSg70k as its Little Rock to Newark 765 kV line opens. A DC power flow of the
  * whole grid finds where the line's power goes: the branches that pick it up glow amber, those it
- * leaves glow blue, and the rest of the grid stays a quiet web.
+ * leaves glow blue, and the rest of the grid stays a quiet web. Each bus stands as high as its
+ * frequency, recorded 2.5 s into a simulation of the same opening.
  */
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 import { Patch, reference } from 'latkit/core';
 import { angles, shifts } from './flow.ts';
 import { levelOf, readCase } from './grids.ts';
-import { THEME, type Piece } from './look.ts';
+import { THEME, worldMap, type Piece } from './look.ts';
+import { STATES } from './grid.ts';
+
+/** Each bus's frequency deviation in hertz, as `record.ts` wrote it. */
+function frequency(): Float32Array {
+  const file = fileURLToPath(new URL('opening.frequency.gz', import.meta.url));
+  const bytes = gunzipSync(fs.readFileSync(file));
+  const tenMicrohertz = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2);
+  return Float32Array.from(tenMicrohertz, (v) => v * 1e-5);
+}
 
 export default function opening(): Piece {
   const c = readCase('activsg70k');
@@ -43,13 +56,32 @@ export default function opening(): Piece {
   const level = Float32Array.from({ length: m }, (_, e) =>
     levelOf(Math.max(kv[net.from[e]!]!, kv[net.to[e]!]!)),
   );
+  const hz = frequency();
+  const lift = Number(process.env.HERO_LIFT ?? 0.025);
+  // A stalk down to the ground from each bus of 345 kV and up, so its height reads.
+  const tall = Array.from({ length: n }, (_, b) => b).filter((b) => kv[b]! >= Number(process.env.HERO_KV ?? 345));
+  const all = n + tall.length;
+  const bus = (b: number) => (b < n ? b : tall[b - n]!);
   const data = Patch.to('grid')
     .replace(
       'Bus',
-      { count: n },
+      { count: all },
       {
-        x: Float64Array.from({ length: n }, (_, b) => c.positions[2 * b]!),
-        y: Float64Array.from({ length: n }, (_, b) => c.positions[2 * b + 1]!),
+        lon: Float64Array.from({ length: all }, (_, b) => c.positions[2 * bus(b)]!),
+        lat: Float64Array.from({ length: all }, (_, b) => c.positions[2 * bus(b) + 1]!),
+        // A fraction of the earth's radius: on the ground at the lowest frequencies, rising with
+        // the frequency, the highest peaks compressed. Each stalk's foot stays on the ground.
+        height: Float32Array.from({ length: all }, (_, b) =>
+          b < n ? lift * Math.asinh(Math.max(0, hz[b]! + 0.016) / 0.03) : 0,
+        ),
+      },
+    )
+    .replace(
+      'Stalk',
+      { count: tall.length },
+      {
+        from: reference('Bus', Uint32Array.from(tall)),
+        to: reference('Bus', Uint32Array.from(tall, (_, k) => n + k)),
       },
     )
     .replace(
@@ -65,17 +97,48 @@ export default function opening(): Piece {
         open: Float32Array.from({ length: m }, (_, e) => (e === line ? 1 : 0)),
       },
     );
+  const camera = process.env.HERO_CAM
+    ? (JSON.parse(process.env.HERO_CAM) as Piece['camera'])
+    : { center: [-86, 34.5], zoom: 4.3, pitch: 58, bearing: -12 };
   return {
     name: 'opening',
-    alt: 'The ACTIVSg70k grid as one 765 kV line opens: branches that pick up its power glow amber, those it leaves glow blue, across a quiet web of 88,000 branches',
-    data: [data],
-    camera: { center: [-85.7, 36.4, 0], zoom: 4.28, pitch: 52, bearing: -16 },
+    alt: 'The ACTIVSg70k grid on the globe as one 765 kV line opens: buses raised by their frequency, branches that pick up its power glow amber, those it leaves glow blue',
+    size: [2400, 1000],
+    data: [
+      data,
+      { name: 'states', file: STATES },
+      { name: 'coast', file: worldMap('coastline') },
+      { name: 'borders', file: worldMap('countries') },
+    ],
+    camera,
     scene: {
-      space: { plane: { grid: 'off' } },
+      space: {
+        earth: { projection: 'globe', surface: '#0c131b', graticule: false, atmosphere: true },
+      },
       ease: 0,
       theme: THEME,
       marks: [
-        { vertices: { of: ['grid', 'Bus'], position: ['x', 'y'], radius: 0, pick: false } },
+        { lines: { of: ['borders', 'lines'], width: 0.6, color: '#253a50' } },
+        { lines: { of: ['states', 'polygons'], width: 0.5, color: '#1d2d3e' } },
+        { lines: { of: ['coast', 'lines'], width: 0.8, color: '#33587a' } },
+        {
+          vertices: {
+            of: ['grid', 'Bus'],
+            position: ['lon', 'lat'],
+            elevation: 'height',
+            radius: 0,
+            pick: false,
+          },
+        },
+        {
+          edges: {
+            of: ['grid', 'Stalk'],
+            ends: ['from', 'to'],
+            width: 0.5,
+            color: '#5b86ad40',
+            pick: false,
+          },
+        },
         {
           edges: {
             of: ['grid', 'Branch'],
@@ -85,15 +148,7 @@ export default function opening(): Piece {
             color: {
               colormap: {
                 kind: 'diverging',
-                colors: [
-                  '#a6dcff',
-                  '#4a9be0',
-                  '#2b5a7c',
-                  '#34495a',
-                  '#73502c',
-                  '#e09238',
-                  '#ffd98a',
-                ],
+                colors: ['#a6dcff', '#4a9be0', '#2b5a7c', '#34495a', '#73502c', '#e09238', '#ffd98a'],
               },
               value: 'gain',
               domain: [-6, 6],
@@ -107,9 +162,8 @@ export default function opening(): Piece {
             of: ['grid', 'Branch'],
             ends: ['from', 'to'],
             name: 'opened',
-            width: 2.4,
-            color: '#ffffff',
-            dash: true,
+            width: 3.2,
+            color: '#ff3b3b',
             visible: { op: 'eq', args: ['open', 1] },
             pick: false,
           },

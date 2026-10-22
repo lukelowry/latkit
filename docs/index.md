@@ -9,6 +9,7 @@ renders interactive views in the browser with WebGPU, and images and video from 
 
 ```{image} images/opening.png
 :alt: The ACTIVSg70k grid as one 765 kV line opens: branches that pick up its power glow amber, those it leaves glow blue, across a quiet web of 88,000 branches
+:class: banner
 ```
 
 :::

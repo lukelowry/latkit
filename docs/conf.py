@@ -68,10 +68,13 @@ html_title = "latkit"
 pygments_style = "github-light"
 pygments_dark_style = "github-dark"
 html_static_path = ["_static"]
+html_favicon = "_static/favicon.svg"
 html_css_files = ["custom.css"]
 html_theme_options = {
     "light_css_variables": palette("light"),
     "dark_css_variables": palette("dark"),
+    "light_logo": "logo.svg",
+    "dark_logo": "logo-dark.svg",
     "top_of_page_buttons": [],
     "footer_icons": [
         {"name": "GitHub", "url": "https://github.com/lukelowry/latkit", "html": GITHUB}

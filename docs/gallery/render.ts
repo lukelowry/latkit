@@ -55,7 +55,7 @@ async function render(name: string): Promise<void> {
     '--output',
     output,
     '--size',
-    `${SIZE[0]}x${SIZE[1]}`,
+    (piece.size ?? SIZE).join('x'),
     '--scale',
     String(SCALE),
     ...fonts.flatMap((f) => ['--font', f]),

@@ -124,6 +124,12 @@ article img.picture {
   border-radius: 0.75rem;
 }
 
+/* The hero is a banner, 2400 by 1000. */
+.plot img.banner,
+article img.picture.banner {
+  aspect-ratio: 12 / 5;
+}
+
 .caption {
   margin-bottom: 2.5rem;
   font-size: var(--font-size--small);
@@ -249,5 +255,6 @@ table.numbers :is(th, td):not(:first-child) {
   width: 100%;
   height: auto;
   aspect-ratio: 16 / 10;
+  object-fit: cover;
   border-radius: 0.5rem;
 }

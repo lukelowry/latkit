@@ -1,6 +1,9 @@
 /**
  * What every piece of the gallery shares: its frame, its ground and type, and what a piece is.
  */
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 import type { Camera, Fit, Patch, Scene } from 'latkit/core';
 
 /** Pixels written. Views lay out half as many CSS pixels, drawn twice as sharp. */
@@ -49,6 +52,8 @@ export interface Piece {
   readonly alt: string;
   readonly data: readonly (Patch | File)[];
   readonly scene: Scene;
+  /** Pixels written, when not `SIZE`: the hero is a banner. */
+  readonly size?: readonly [number, number];
   /** The camera; without one the view frames everything drawn. */
   readonly camera?: Camera;
   /** What a view without a camera frames: everything drawn unless set. */
@@ -74,3 +79,13 @@ export function rows(n: number, f: (i: number) => number): Uint32Array {
 }
 
 export const TAU = 2 * Math.PI;
+
+/** A map the example suite ships, inflated to `target/gallery` for the CLI to read as GeoJSON. */
+export function worldMap(name: string): string {
+  const out = fileURLToPath(new URL(`../../target/gallery/${name}.geojson`, import.meta.url));
+  const source = fileURLToPath(
+    new URL(`../../npm/examples/public/maps/${name}.geojson.gz`, import.meta.url),
+  );
+  fs.writeFileSync(out, gunzipSync(fs.readFileSync(source)));
+  return out;
+}

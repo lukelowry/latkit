@@ -2,7 +2,13 @@
   <img src="docs/images/opening.png" width="100%" alt="The ACTIVSg70k grid as one 765 kV line opens: branches that pick up its power glow amber, those it leaves glow blue, across a quiet web of 88,000 branches">
 </p>
 
-<h1 align="center">latkit</h1>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/_static/logo-dark.svg">
+    <img src="docs/_static/logo.svg" width="40" alt="" align="center">
+  </picture>
+  latkit
+</h1>
 
 <p align="center">
   A GPU-accelerated visualization library for large networks, such as power grids:<br>

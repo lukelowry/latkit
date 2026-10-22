@@ -1,9 +1,6 @@
 /** Globe: routes between the world's great cities along great circles, comets flowing on them. */
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { gunzipSync } from 'node:zlib';
 import { Patch, reference } from 'latkit/core';
-import { THEME, type Piece } from './look.ts';
+import { THEME, worldMap, type Piece } from './look.ts';
 
 /** Cities: name, longitude, latitude, and people in millions, about. */
 const CITIES: readonly (readonly [string, number, number, number])[] = [
@@ -86,16 +83,6 @@ function arc(
   return (2 * Math.asin(Math.sqrt(h))) / r;
 }
 
-/** A map the example suite ships, inflated to `target/gallery` for the CLI to read as GeoJSON. */
-function map(name: string): string {
-  const out = fileURLToPath(new URL(`../../target/gallery/${name}.geojson`, import.meta.url));
-  const source = fileURLToPath(
-    new URL(`../../npm/examples/public/maps/${name}.geojson.gz`, import.meta.url),
-  );
-  fs.writeFileSync(out, gunzipSync(fs.readFileSync(source)));
-  return out;
-}
-
 export default function globe(): Piece {
   const index = new Map(CITIES.map((c, i) => [c[0], i]));
   const pairs = new Set<string>();
@@ -140,8 +127,8 @@ export default function globe(): Piece {
     alt: `Routes between ${CITIES.length} of the world's great cities, along great circles on a globe, comets flowing on them`,
     data: [
       data,
-      { name: 'coast', file: map('coastline') },
-      { name: 'borders', file: map('countries') },
+      { name: 'coast', file: worldMap('coastline') },
+      { name: 'borders', file: worldMap('countries') },
     ],
     camera: { center: [16, 20], zoom: 2.3, pitch: 0, bearing: 0 },
     elapsed: 3,
