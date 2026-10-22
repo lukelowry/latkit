@@ -231,7 +231,10 @@ impl View {
             }
             sprites.push(line([left, top], [left, bottom], 1.0, axis));
             if let Some(title) = &plot.y.label {
-                sprites.extend(writer.text(title, [left - font * 4.0, top - font * 0.8], Align::Above));
+                // Hung from the top of the room above the plot, so a taller face grows toward the axis
+                // rather than off the picture.
+                let room = gutters(plot, theme)[0];
+                sprites.extend(writer.text(title, [left - font * 4.0, top - room + font * 0.35], Align::BelowRight));
             }
         }
         if self.at.is_finite() && (x[0]..=x[1]).contains(&self.at) {

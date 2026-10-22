@@ -74,6 +74,14 @@ pub struct Theme {
     pub halo: f32,
     /// Distance between a group's members and its outline.
     pub group_padding: f32,
+    /// The border of a diagram's blocks and groups, a unit wide; `None` draws none.
+    pub outline: Option<Color>,
+    /// The radius of a diagram's block and group corners; a block's marker may set its own.
+    pub corner: f32,
+    /// How wide a diagram's ports are.
+    pub port_size: f32,
+    /// The radius of an orthogonal wire's bends.
+    pub bend: f32,
     /// How marks that cast shadows cast them.
     pub shadow: Shadow,
     /// The air glowing around the globe, where the earth has an atmosphere.
@@ -113,7 +121,8 @@ pub struct Shadow {
     pub light: [f32; 3],
     /// How much a shadow spreads per unit of a caster's height: the light's size.
     pub softness: f32,
-    /// CSS pixels flat marks cast from, as if raised.
+    /// CSS pixels flat marks cast from, as if raised; in a diagram, how far a block's or a group's
+    /// shadow falls below it, and as far again it softens.
     pub lift: f32,
 }
 
@@ -133,7 +142,7 @@ impl Theme {
             area: Color::hex("#2b3d50").expect("hex"),
             shading: 0.6,
             text: Color::hex("#a8b2c2").expect("hex"),
-            font: "ui-monospace, Menlo, Consolas, monospace".into(),
+            font: "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif".into(),
             font_size: 11.0,
             playhead: Color::hex("#ffe5d4").expect("hex").alpha(0.8),
             missing: Color::hex("#6b7480").expect("hex"),
@@ -155,6 +164,10 @@ impl Theme {
             arrow: 7.0,
             halo: 2.0,
             group_padding: 16.0,
+            outline: Some(Color::WHITE.alpha(0.12)),
+            corner: 6.0,
+            port_size: 7.0,
+            bend: 6.0,
             shadow: Shadow { color: Color::BLACK.alpha(0.45), light: [-0.35, 0.45, 1.0], softness: 0.15, lift: 3.0 },
             atmosphere: Color::hex("#5aa9ff").expect("hex").alpha(0.55),
             night: 0.3,
@@ -175,6 +188,7 @@ impl Theme {
             missing: Color::hex("#9aa3ad").expect("hex"),
             hover: Color::hex("#000000").expect("hex").alpha(0.35),
             selected: Some(Color::hex("#e36209").expect("hex").alpha(0.9)),
+            outline: Some(Color::BLACK.alpha(0.14)),
             flow: Flow { color: Color::hex("#ffffff").expect("hex").alpha(0.9), ..Theme::dark().flow },
             shadow: Shadow { color: Color::BLACK.alpha(0.22), ..Theme::dark().shadow },
             atmosphere: Color::hex("#6cb4ff").expect("hex").alpha(0.45),

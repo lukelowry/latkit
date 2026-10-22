@@ -47,7 +47,7 @@ fn wanted(sight: &Sight<'_>, zooms: [u8; 2], bounds: [f64; 4]) -> Vec<TileKey> {
         }
         queue = next;
     }
-    out.sort_by(|a, b| a.1.total_cmp(&b.1));
+    crate::order::by_key(&mut out, |a| crate::order::number(a.1));
     out.into_iter().map(|(key, _)| key).collect()
 }
 
@@ -330,7 +330,7 @@ fn decoded_tables(scene: &Scene, name: &Name) -> Vec<Decoded> {
             None => tables.push(Decoded { layer, kind, table }),
         }
     }
-    tables.sort_by(|a, b| a.table.cmp(&b.table));
+    crate::order::by_name(&mut tables, |t| t.table.as_str());
     tables
 }
 

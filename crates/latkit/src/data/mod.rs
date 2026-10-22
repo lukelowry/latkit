@@ -25,6 +25,8 @@ pub use dataset::Data;
 pub use describe::{Description, Envelope, FieldDescription, TableDescription};
 pub use ids::Ids;
 pub use name::{Id, Name, Row, Rows};
+#[cfg(feature = "gpu")]
+pub(crate) use name::{Keyed, Named};
 pub use patch::Patch;
 pub use table::Table;
 pub use values::{Kind, Value, Values};

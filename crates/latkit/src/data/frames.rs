@@ -69,9 +69,15 @@ mod range {
 impl Manifest {
     /// The manifest `bytes` hold; `None` where they hold none, being no JSON object listing `frames`.
     pub(crate) fn from_bytes(bytes: &[u8]) -> Option<Result<Manifest>> {
-        let json: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-        json.get("frames")?.as_array()?;
-        let manifest = crate::json::read::<Manifest, _>(&json).and_then(|m| {
+        /// What any manifest holds, whatever else it does.
+        #[derive(serde::Deserialize)]
+        struct Listing {
+            #[serde(rename = "frames")]
+            _frames: Vec<serde::de::IgnoredAny>,
+        }
+        let text = std::str::from_utf8(bytes).ok()?;
+        crate::from_json::<Listing>(text).ok()?;
+        let manifest = crate::from_json::<Manifest>(text).and_then(|m| {
             if !chunks(m.chunk) {
                 return Err(Error::invalid("a span holds a multiple of 8 entries, 8 to 2^20").at("chunk"));
             }

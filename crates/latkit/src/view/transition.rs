@@ -5,13 +5,12 @@
 //! Rows that left are frozen past the new rows and fade out there. While the mark eases, its channels
 //! store into the settled state, a second mirror of the state, once per change; each frame the clock
 //! moves, the ease pass writes what every row shows from its frozen and settled state by the mark's
-//! progress,
-//! so draws, probes, bounds, and shadows read eased state without knowing a transition runs, and no
-//! channel runs to ease. Where no row is the same as one shown before, as when another dataset
-//! replaces the one drawn, every row only fades: evaluated once into the state as the transition
-//! starts, the mark eases by its progress alone. The frozen and settled buffers mirror the state
-//! buffer's layout and exist only while a transition does. A stroke's geometry column keeps the
-//! table it had as the transition began, and its paths morph from it point by point.
+//! progress, and which rows fade, so draws, probes, bounds, and shadows read eased state without
+//! knowing a transition runs, and no channel runs to ease. Where no row is the same as one shown
+//! before, as when another dataset replaces the one drawn, every row enters, shows what it evaluated,
+//! and only fades. The frozen and settled buffers mirror the state buffer's layout and exist only
+//! while a transition does. A stroke's geometry column keeps the table it had as the transition
+//! began, and its paths morph from it point by point.
 //!
 //! Without an ease, a flowing mark whose rows moved still begins a transition, of no length: it
 //! shows the new state at once, and its comets carry their travel over to the rows' new places.
@@ -24,12 +23,10 @@ use crate::gpu::Inner;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::MarkKind;
 
-/// A mark easing from what it showed, begun at a time on the view's clock, and whether its rows
-/// only fade.
+/// A mark easing from what it showed, begun at a time on the view's clock.
 pub(crate) struct Transition {
     start: f64,
     seconds: f64,
-    fades: bool,
 }
 
 /// A transition waiting for the frame that freezes it.
@@ -48,12 +45,6 @@ impl Transition {
 
     fn done(&self, clock: &Clock) -> bool {
         clock.done(self.start, self.seconds)
-    }
-
-    /// Whether the mark's channels evaluate into its settled state, toward which the ease pass eases
-    /// what it shows; one whose rows only fade evaluates into the state.
-    pub(crate) fn settles(&self) -> bool {
-        !self.fades
     }
 }
 
@@ -177,12 +168,10 @@ impl View {
             });
         }
         if !starting.is_empty() {
-            let fades: Vec<bool> =
-                starting.iter().map(|&i| self.marks[i].begin.as_ref().is_some_and(|b| b.fades)).collect();
             self.freeze(encoder, inner, &starting);
             let start = self.clock.now();
-            for (&i, fades) in starting.iter().zip(fades) {
-                self.marks[i].transition = Some(Transition { start, seconds, fades });
+            for &i in &starting {
+                self.marks[i].transition = Some(Transition { start, seconds });
             }
         }
         let mut running = false;
@@ -200,9 +189,8 @@ impl View {
                 }
             } else {
                 running = true;
-                // Rows that only fade were written once; their fade follows the mark's progress. The
-                // rest ease as the clock moves, and only then: their channels evaluated once.
-                shown.easing = transition.settles() && self.clock.moved();
+                // Rows ease as the clock moves, and only then: their channels evaluated once.
+                shown.easing = self.clock.moved();
             }
         }
         if !running && self.marks.iter().all(|m| m.transition.is_none()) {
@@ -220,9 +208,7 @@ impl View {
         let slots = self.slot_table(starting);
         let resources = self.resources.as_mut().expect("created before transitions");
         resources.ensure_frozen(device);
-        if self.marks.iter().any(|m| m.begin.as_ref().is_some_and(|b| !b.fades)) {
-            resources.ensure_settled(device);
-        }
+        resources.ensure_settled(device);
         let mut words: Vec<u32> = Vec::new();
         let table = slots.map(|table| {
             words.extend(table);

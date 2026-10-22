@@ -9,6 +9,7 @@ import package::lib::types::{
     SPACE_DIAGRAM,
 };
 import package::lib::bind::{frame, eye, mark};
+import package::lib::mark::PRIMITIVE;
 import package::lib::project::{to_screen, clip_of};
 import package::lib::points::point;
 import package::lib::path::{PATH, Segment, segment_screen, path_count};
@@ -30,7 +31,7 @@ fn length_px(size: f32) -> f32 {
 
 fn anchor(row: u32) -> Anchor {
     var a: Anchor;
-    switch mark.primitive {
+    switch PRIMITIVE {
         case POINTS: {
             let p = point(row);
             a.shown = p.shown;

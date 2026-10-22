@@ -164,11 +164,15 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
     slots[wgsl::THEME_SURFACE as usize] = theme.surface.packed();
+    slots[wgsl::THEME_OUTLINE as usize] = theme.outline.map_or(0, Color::packed);
+    slots[wgsl::THEME_CORNER as usize] = theme.corner.to_bits();
+    slots[wgsl::THEME_PORT_SIZE as usize] = theme.port_size.to_bits();
+    slots[wgsl::THEME_LIFT as usize] = theme.shadow.lift.to_bits();
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
 /// What `mark` evaluates and how it eases by `clock`: the row blocks this frame's evaluation covers,
-/// and while it eases, where its frozen and settled rows start, its progress, and how each word eases.
+/// and while it eases, where its frozen rows start, its progress, and how each word eases.
 fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
     let region = &shown.region;
     mark.block = shown.block;
@@ -176,17 +180,11 @@ fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
     mark.blends = shown.offsets.blends;
     mark.frozen = wgsl::NONE;
     mark.frozen_extra = wgsl::NONE;
-    mark.settled = wgsl::NONE;
-    mark.settled_extra = wgsl::NONE;
     mark.motion = 1.0;
     if let Some(transition) = &shown.transition {
         mark.frozen = region.state;
         mark.frozen_extra = region.extra;
         mark.motion = transition.motion(clock);
-        if transition.settles() {
-            mark.settled = region.state;
-            mark.settled_extra = region.extra;
-        }
     }
 }
 

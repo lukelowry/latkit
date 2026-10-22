@@ -16,12 +16,12 @@
 
 use std::sync::Arc;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 
 use super::pyramid::{Leveling, Places, Placing, Pyramid, Wanted, answer, reaches};
 use super::sight::{Domain, Sight};
 use super::{Jobs, stamp_of};
-use crate::data::{Data, Field, Name, RowIds, Table, UNWIRED, Version};
+use crate::data::{Data, Field, Keyed, Name, Named, RowIds, Table, UNWIRED, Version};
 use crate::expr::cpu::Rows;
 use crate::expr::{Expr, Node};
 use crate::host::Job;
@@ -66,6 +66,9 @@ pub(crate) struct Planned {
     /// The fields marks read of it, which its rows drawn hold with every reference field; `None`
     /// where they hold every field.
     pub(crate) reads: Option<FxHashSet<Name>>,
+    /// The sampled fields marks trace across the axis, which its rows drawn hold whole: every frame,
+    /// at every level, where other sampled fields hold only the frames about the coordinate shown.
+    pub(crate) traced: FxHashSet<Name>,
 }
 
 impl Planned {
@@ -76,7 +79,7 @@ impl Planned {
 }
 
 /// How each table drawn draws, by dataset and table.
-pub(crate) type Plans = FxHashMap<(Name, Name), Planned>;
+pub(crate) type Plans = Keyed<(Name, Name), Planned>;
 
 /// What drawing in part reads this frame.
 pub(crate) struct Ask<'a> {
@@ -185,12 +188,12 @@ struct Gathered {
     writes: Option<Vec<(usize, usize)>>,
     versions: Option<(Version, Version)>,
     ids: Option<RowIds>,
-    fields: FxHashMap<Name, Kept>,
+    fields: Named<Kept>,
     /// Each reference field's ids as gathered and resolved, as of a version of it, and of that version
     /// and the versions the rows it names hold where they are drawn; and every row's target by it, as
     /// of a version of it.
-    references: FxHashMap<Name, (u64, u64, Field)>,
-    targets: FxHashMap<Name, (Version, Arc<[u32]>)>,
+    references: Named<(u64, u64, Field)>,
+    targets: Named<(Version, Arc<[u32]>)>,
 }
 
 /// A field as gathered: a stamp of what it was gathered from, that field of the table, and the field
@@ -207,7 +210,7 @@ struct Set {
     /// The stamp of everything its pyramids are placed from: every table placed, and the square.
     stamp: u64,
     /// Each table's pyramid, as last placed.
-    placed: FxHashMap<Name, Arc<Placed>>,
+    placed: Named<Arc<Placed>>,
     working: Vec<Working>,
     /// Whether asking for its pyramids waits for a frame that gathers nothing.
     deferred: bool,
@@ -216,11 +219,11 @@ struct Set {
     held: u64,
     /// Updates since its rows were laid out.
     quiet: u32,
-    tables: FxHashMap<Name, Gathered>,
+    tables: Named<Gathered>,
     /// Each table drawn in part as last laid out: its rows drawn, and the versions it holds while they
     /// do.
-    rows: FxHashMap<Name, Arc<[u32]>>,
-    versions: FxHashMap<Name, (Version, Version)>,
+    rows: Named<Arc<[u32]>>,
+    versions: Named<(Version, Version)>,
     /// Whether a table draws an even sample of its rows until its pyramid lands.
     sampling: bool,
 }
@@ -230,15 +233,15 @@ impl Set {
         Set {
             name,
             stamp: 0,
-            placed: FxHashMap::default(),
+            placed: Named::default(),
             working: Vec::new(),
             deferred: false,
             laid: 0,
             held: 0,
             quiet: 0,
-            tables: FxHashMap::default(),
-            rows: FxHashMap::default(),
-            versions: FxHashMap::default(),
+            tables: Named::default(),
+            rows: Named::default(),
+            versions: Named::default(),
             sampling: false,
         }
     }
@@ -384,7 +387,7 @@ impl Set {
         if !relaid {
             return Some(self.rewrite(source, ask));
         }
-        let serving: FxHashMap<Name, Arc<Placed>> = serving.into_iter().collect();
+        let serving: Named<Arc<Placed>> = serving.into_iter().collect();
         Some(self.build(source, ask, &serving, &chosen, &pinned, afresh))
     }
 
@@ -409,12 +412,12 @@ impl Set {
         &mut self,
         source: &Data,
         ask: &Ask<'_>,
-        serving: &FxHashMap<Name, Arc<Placed>>,
+        serving: &Named<Arc<Placed>>,
         chosen: &[(Name, Choice)],
         pinned: &[&Row],
         afresh: bool,
     ) -> Data {
-        let mut wanted: FxHashMap<Name, Vec<u32>> = chosen
+        let mut wanted: Named<Vec<u32>> = chosen
             .iter()
             .filter_map(|(name, choice)| {
                 let len = source.table(name).map_or(0, Table::len) as u32;
@@ -422,7 +425,7 @@ impl Set {
             })
             .collect();
         // Rows pinned, and the rows the edges drawn end at, draw whatever their tiles.
-        let mut drawn: FxHashMap<Name, Bitset> = wanted
+        let mut drawn: Named<Bitset> = wanted
             .iter()
             .map(|(name, list)| (name.clone(), Bitset::of(list, source.table(name).map_or(0, Table::len))))
             .collect();
@@ -463,8 +466,8 @@ impl Set {
             }
         }
         // Each table drawn in part: its rows laid out, and the versions it holds while they do.
-        let mut rows: FxHashMap<Name, Arc<[u32]>> = FxHashMap::default();
-        let mut versions: FxHashMap<Name, (Version, Version)> = FxHashMap::default();
+        let mut rows: Named<Arc<[u32]>> = Named::default();
+        let mut versions: Named<(Version, Version)> = Named::default();
         for (name, list) in &wanted {
             let gathered = self.tables.entry(name.clone()).or_default();
             let len = source.table(name).map_or(0, Table::len);
@@ -521,7 +524,7 @@ impl Set {
     /// Table `table` as it is, its references naming the rows drawn of the tables drawn in part, each
     /// holding `versions` while they do: resolved again only when the reference or where the rows it
     /// names are drawn changed.
-    fn remapped(&mut self, table: &Table, versions: &FxHashMap<Name, (Version, Version)>) -> Table {
+    fn remapped(&mut self, table: &Table, versions: &Named<(Version, Version)>) -> Table {
         let mut out = table.clone();
         for (name, field) in &table.fields {
             let Field::Reference(reference) = field else { continue };
@@ -555,8 +558,8 @@ impl Set {
         source: &Data,
         table: &Table,
         ask: &Ask<'_>,
-        rows: &FxHashMap<Name, Arc<[u32]>>,
-        versions: &FxHashMap<Name, (Version, Version)>,
+        rows: &Named<Arc<[u32]>>,
+        versions: &Named<(Version, Version)>,
     ) -> Table {
         // A table no mark draws stays as it is: only joins read it, by id.
         let planned = ask.plans.contains_key(&(source.name().clone(), table.name.clone()));
@@ -564,7 +567,9 @@ impl Set {
         let Some(list) = rows.get(&table.name) else {
             return if remaps && planned { self.remapped(table, versions) } else { table.clone() };
         };
-        let reads = ask.plans.get(&(source.name().clone(), table.name.clone())).and_then(|p| p.reads.as_ref());
+        let plan = ask.plans.get(&(source.name().clone(), table.name.clone()));
+        let reads = plan.and_then(|p| p.reads.as_ref());
+        let traced = |name: &Name| plan.is_some_and(|p| p.traced.contains(name));
         // The source row of each row drawn, picked only where something gathers afresh.
         let picks = std::cell::OnceCell::new();
         let picked = || {
@@ -618,7 +623,7 @@ impl Set {
                                 .filter_map(|r| at.get(r).filter(|&&a| a != UNWIRED).map(|&a| (a as usize, r)))
                                 .collect();
                             written.extend_from_slice(laid);
-                            written.sort_unstable_by_key(|w| w.0);
+                            crate::order::by_key(&mut written, |w| w.0 as u64);
                             written.dedup_by_key(|w| w.0);
                             Field::Values(drawn.write(len, &written, column).expect("one storage"), Version::next())
                         }
@@ -627,10 +632,12 @@ impl Set {
                     (stamp, made)
                 }
                 Field::Sampled(samples, version) if read => {
-                    let frame = frames(samples);
-                    let stamp = stamp_of((version, frame));
+                    // A trace draws every frame; else only the frames about the coordinate shown.
+                    let frame = if traced(name) { None } else { frames(samples) };
+                    let stamp = stamp_of((version, frame, traced(name)));
                     let made = match (kept, writes.as_deref()) {
                         (Some(kept), Some([])) if kept.stamp == stamp => kept.drawn.clone(),
+                        _ if traced(name) => Field::Sampled(samples.gather(picked()), Version::next()),
                         _ => {
                             let span = frame.map_or(0..0, |f| f..f + 2);
                             Field::Sampled(samples.gather_frames(picked(), span), Version::next())
@@ -760,7 +767,9 @@ impl Choice {
             (Choice::Tiles(wanted), Some(placed)) => {
                 let pyramid = &placed.pyramid;
                 let mut tiles = wanted.tiles.clone();
-                tiles.sort_by_key(|&(t, _)| std::cmp::Reverse((pyramid.tiles[t as usize].key.z, u32::MAX - t)));
+                crate::order::by_key(&mut tiles, |&(t, _)| {
+                    !crate::order::pair(u32::from(pyramid.tiles[t as usize].key.z), u32::MAX - t)
+                });
                 let mut list = Vec::new();
                 for (t, finest) in tiles {
                     let range = pyramid.tiles[t as usize].rows.clone();
@@ -857,7 +866,7 @@ impl Slots {
             return self.afresh(wanted);
         }
         // A row left and taken again writes what takes it.
-        writes.sort_by_key(|w| w.0);
+        crate::order::by_key(&mut writes, |w| u64::from(w.0));
         writes.dedup_by(|later, earlier| {
             let same = later.0 == earlier.0;
             if same {
@@ -908,7 +917,7 @@ fn placed<'a>(source: &'a Data, ask: &'a Ask<'_>) -> Vec<(&'a Table, &'a Planned
         }
     }
     // Tables an edge table's ends name come before it.
-    out.sort_by_key(|(_, p)| matches!(p.place, Place::Ends(_)));
+    crate::order::by_key(&mut out, |(_, p)| u64::from(matches!(p.place, Place::Ends(_))));
     out
 }
 
@@ -962,7 +971,7 @@ fn fields_of(expr: &Expr, out: &mut Vec<Name>) {
     }
 }
 
-/// The frame shown of each sampled field marks read of a table drawn in part.
+/// The frame shown of each sampled field marks read, and do not trace, of a table drawn in part.
 fn sampled_frames(source: &Data, ask: &Ask<'_>) -> Vec<Option<u64>> {
     let mut frames = Vec::new();
     for table in source.tables() {
@@ -973,6 +982,7 @@ fn sampled_frames(source: &Data, ask: &Ask<'_>) -> Vec<Option<u64>> {
         for (name, field) in &table.fields {
             if let Field::Sampled(samples, _) = field
                 && planned.reads.as_ref().is_none_or(|r| r.contains(name))
+                && !planned.traced.contains(name)
             {
                 frames.push(samples.frame_at(ask.at));
             }
@@ -1056,7 +1066,7 @@ fn locate(table: &Table, place: &Place, all: &[Data]) -> Places {
 }
 
 /// What to ask pyramid jobs for `placed`, in the square they tile, and each table's bounds.
-fn leveling(ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> (Leveling, FxHashMap<Name, [f64; 4]>) {
+fn leveling(ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> (Leveling, Named<[f64; 4]>) {
     let names: Vec<Name> = placed.iter().map(|(t, _)| t.name.clone()).collect();
     let mut tables: Vec<Placing> = placed
         .iter()
@@ -1067,7 +1077,7 @@ fn leveling(ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> (Leveling, FxHashMa
             Placing { rows: table.len() as u32, answered: !planned.as_is(), places, ..Placing::default() }
         })
         .collect();
-    let mut bounds: FxHashMap<Name, [f64; 4]> = FxHashMap::default();
+    let mut bounds: Named<[f64; 4]> = Named::default();
     let mut all = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
     for (name, placing) in names.iter().zip(&tables) {
         let b = bounds_of(&placing.places);

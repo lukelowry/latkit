@@ -481,7 +481,7 @@ impl Picture {
             .map(|entry| Asked::Shader(Variant::compute(Shader::Compose, entry)))
             .collect();
         let mut inner = self.gpu.0.lock();
-        inner.pipelines.ask(self.gpu.device(), &needs, waker);
+        inner.pipelines.ask(self.gpu.device(), &needs, crate::gpu::pipelines::Urgency::Draw, waker);
         inner.pipelines.ready(&needs)
     }
 

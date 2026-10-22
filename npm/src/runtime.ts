@@ -10,6 +10,8 @@ import type { Description, Failure, Hit, Stats, Value, ViewEvent, Work } from '.
 import { Patch } from './patch.js';
 
 let run: ((bytes: Uint8Array) => Promise<Uint8Array>) | undefined;
+/** The page's first GPU, made as the runtime loads, until `Gpu.create()` takes it. */
+let first: Promise<wasm.Gpu> | undefined;
 
 /** @internal Initializes the bindings before returning their public API. */
 export async function initialize(options: LoadOptions) {
@@ -19,6 +21,12 @@ export async function initialize(options: LoadOptions) {
     wasm.setJobs(run);
   }
   if (typeof VideoEncoder === 'function') wasm.setEncoder(encoder);
+  // The page's first GPU is made now, so the page does not wait for its device when it draws; it
+  // compiles nothing until a view opens.
+  if ((globalThis.navigator as { gpu?: unknown } | undefined)?.gpu) {
+    first = wasm.Gpu.create();
+    first.catch(() => {});
+  }
   return Object.freeze({ Data, Gpu, Shot, colormapCss });
 }
 
@@ -241,9 +249,11 @@ export class Gpu {
     return this.#inner;
   }
 
-  /** Requests a WebGPU device. */
+  /** Requests a WebGPU device: the first call takes the one made as latkit loaded. */
   static async create(): Promise<Gpu> {
-    return new Gpu(await wasm.Gpu.create());
+    const inner = first ?? wasm.Gpu.create();
+    first = undefined;
+    return new Gpu(await inner);
   }
 
   /**

@@ -691,10 +691,10 @@ export type Marker =
       shape: Shape;
     }
   | {
-      /** A block: a rectangle with rounded corners of `corner` CSS pixels, sized for diagrams. */
+      /** A block: a rectangle with rounded corners, sized for diagrams. */
       block: {
-        /** Corner radius, CSS pixels; 4 unless set. */
-        corner?: number;
+        /** Corner radius, CSS pixels, or units in a diagram; the theme's `corner` unless set. */
+        corner?: number | null;
       };
     }
   | {
@@ -884,7 +884,10 @@ export interface Shadow {
   light?: [number, number, number];
   /** How much a shadow spreads per unit of a caster's height: the light's size. */
   softness?: number;
-  /** CSS pixels flat marks cast from, as if raised. */
+  /**
+   * CSS pixels flat marks cast from, as if raised; in a diagram, how far a block's or a group's
+   * shadow falls below it, and as far again it softens.
+   */
   lift?: number;
 }
 
@@ -1017,6 +1020,14 @@ export type Theme =
       halo?: number;
       /** Distance between a group's members and its outline. */
       groupPadding?: number;
+      /** The border of a diagram's blocks and groups, a unit wide; `null` draws none. */
+      outline?: Color | null;
+      /** The radius of a diagram's block and group corners; a block's marker may set its own. */
+      corner?: number;
+      /** How wide a diagram's ports are. */
+      portSize?: number;
+      /** The radius of an orthogonal wire's bends. */
+      bend?: number;
       /** How marks that cast shadows cast them. */
       shadow?: Shadow;
       /** The air glowing around the globe, where the earth has an atmosphere. */

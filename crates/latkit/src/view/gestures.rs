@@ -23,7 +23,6 @@ use super::event::{Awaited, Cursor, End, Event, Fit, Hit, Phase, Trigger};
 use super::input::{Button, Device, Input, Key, Modifiers};
 use super::marks::Shown;
 use super::probe::{Answer, Probed, near};
-use crate::expr::compile::Deps;
 use crate::scene::mark::MarkKind;
 use crate::{Camera, Grid, Pending, Row, Rows, Scene, Space, Zoom};
 
@@ -221,7 +220,7 @@ impl View {
         self.pointer = Some(trigger);
         self.gestures.keys.at = None;
         for shown in &mut self.marks {
-            shown.dirty_rows(shown.channels_reading(Deps::POINTER), None);
+            shown.dirty_rows(shown.channels_reading(crate::expr::compile::Deps::POINTER), None);
         }
     }
 

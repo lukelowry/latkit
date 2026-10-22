@@ -6,14 +6,14 @@
 // shadow map; the ports variant draws one quad per port of every row, on its side of the row's
 // marker.
 
-import package::lib::types::{STATUS, MARKER_ICON, GROUP};
-import package::lib::bind::{frame, mark, state, ramp, program, focused};
+import package::lib::types::{STATUS, MARKER_ICON, MARKER_SHAPE, MARKER_BLOCK, GROUP, CASTS, SPACE_DIAGRAM};
+import package::lib::bind::{frame, eye, mark, state, ramp, program, focused};
 import package::lib::state::extra_at;
 import package::lib::project::{to_screen, to_clip, nearer, culled};
 import package::lib::points::{Point, point, reach, port_at};
 import package::lib::marker::{
-    MarkerColor, MarkerFragment, builtin_marker, container, outline_distance, shape_distance, filled, over,
-    status_ring, glow, premultiplied, theme_text,
+    MarkerColor, MarkerFragment, builtin_marker, container, border, dropped, outline_distance, box_distance,
+    shape_distance, filled, over, status_ring, glow, premultiplied, theme_text, theme_corner, theme_lift,
 };
 import package::lib::shade::{caster, daylight};
 import package::lib::mark::fringe;
@@ -64,7 +64,7 @@ fn drawn(instance: u32) -> Drawn {
     let p = point(instance / n);
     let port = port_at(p, instance % n);
     let half = vec2f(port.half);
-    return Drawn(p, port.center, half, half + 1.0 + fringe(), port.shape, f32(port.wired));
+    return Drawn(p, port.center, half, half + 1.5 * frame.unit + fringe(), port.shape, f32(port.wired));
 }
 
 @vertex
@@ -118,28 +118,49 @@ fn marker(f: MarkerFragment) -> MarkerColor {
 
 // A port: its shape in its row's color mixed toward the theme's text, so it reads on the marker in
 // either theme, ringed by the background so it reads apart from the marker; hollow while no net plugs
-// into it.
+// into it. Its ring and outline are part of the drawing, as the port is.
 @if(ports)
 fn shaded(v: Varyings) -> MarkerColor {
+    let u = frame.unit;
     let d = shape_distance(v.shape, v.p, v.half);
     let ink = vec4f(mix(v.color.rgb, theme_text(), 0.55), v.color.a);
-    let ring = filled(vec4f(frame.background.rgb, v.color.a), d - 1.5);
+    let ring = filled(vec4f(frame.background.rgb, v.color.a), d - 1.25 * u);
     if v.extra > 0.5 {
         return over(filled(ink, d), ring);
     }
-    let hollow = over(filled(ink, abs(d + 0.75) - 0.75), filled(vec4f(frame.background.rgb, v.color.a), d));
+    let line = 0.5 * max(1.25 * u, 1.0 / eye.pixel_ratio);
+    let hollow = over(filled(ink, abs(d + line) - line), filled(vec4f(frame.background.rgb, v.color.a), d));
     return over(hollow, ring);
+}
+
+// Whether the mark draws a diagram's blocks: shapes and blocks on a diagram's sheet, which the theme
+// borders, and shadows when they cast them.
+fn sheet_blocks() -> bool {
+    return frame.space == SPACE_DIAGRAM && (mark.marker == MARKER_SHAPE || mark.marker == MARKER_BLOCK);
 }
 
 @if(!ports)
 fn shaded(v: Varyings) -> MarkerColor {
     let f = MarkerFragment(v.p, v.half, v.color, inputs(v.row));
     var m = marker(f);
-    if (mark.flags & GROUP) != 0u {
+    let group = (mark.flags & GROUP) != 0u;
+    if group {
         m = container(f, v.extra);
+    } else if sheet_blocks() {
+        m = border(m, m.distance, v.color.a);
     }
     if (mark.flags & STATUS) != 0u && v.status.a > 0.0 {
-        m = status_ring(m, v.p, v.half, vec4f(v.status.rgb, v.status.a * v.color.a));
+        m = status_ring(m, vec4f(v.status.rgb, v.status.a * v.color.a));
+    }
+    if (mark.flags & CASTS) != 0u && frame.space == SPACE_DIAGRAM {
+        // y is up in a marker: the shadow falls below, measured from its outline lowered.
+        let below = v.p + vec2f(0.0, theme_lift());
+        let distance = select(
+            outline_distance(below, v.half),
+            box_distance(below, v.half, min(theme_corner(), 0.5 * min(v.half.x, v.half.y))),
+            group,
+        );
+        m = dropped(m, distance, v.color.a);
     }
     return m;
 }

@@ -138,10 +138,7 @@ impl Host for Native {
 fn read(request: &Request) -> Result<Vec<u8>> {
     let url = &*request.url;
     let path = if url.starts_with("file:") {
-        url::Url::parse(url)
-            .ok()
-            .and_then(|url| url.to_file_path().ok())
-            .ok_or_else(|| Error::invalid(format!("invalid file URL: {url}")))?
+        crate::url::file_path(url).ok_or_else(|| Error::invalid(format!("invalid file URL: {url}")))?
     } else {
         if url.contains("://") {
             return Err(Error::Unsupported(format!("the native host reads files, not {url}").into()));

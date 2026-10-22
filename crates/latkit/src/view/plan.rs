@@ -14,7 +14,7 @@ use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use super::View;
 use super::marks::Shown;
-use crate::data::{Field, Geometry, Name, Table};
+use crate::data::{Field, Geometry, Keyed, Name, Table};
 use crate::derive::tiled::{Draw, Place, Planned, Plans};
 use crate::derive::{Derived, stamp_of};
 use crate::expr::compile::Words;
@@ -53,7 +53,7 @@ impl Cost {
 #[derive(Default)]
 struct Costs {
     whole: Plans,
-    tables: FxHashMap<(Name, Name), Cost>,
+    tables: Keyed<(Name, Name), Cost>,
     /// The pages the costs count that any view drawing the same data shares: each field's by its
     /// version and how it is read, the bytes the costs count of it, and its bytes once.
     shared: FxHashMap<u64, (f64, f64)>,
@@ -192,8 +192,8 @@ impl View {
     fn costs(&self) -> Costs {
         let space = &self.scene.space;
         let placing = matches!(space, Space::Earth(_) | Space::Plane(_));
-        let mut plans: Plans = FxHashMap::default();
-        let mut costs: FxHashMap<(Name, Name), Cost> = FxHashMap::default();
+        let mut plans = Plans::default();
+        let mut costs: Keyed<(Name, Name), Cost> = Keyed::default();
         let mut shared: FxHashMap<u64, (f64, f64)> = FxHashMap::default();
         let mut joined: Vec<((Name, Name), Name)> = Vec::new();
         for shown in &self.marks {
@@ -205,12 +205,17 @@ impl View {
                 priority: None,
                 place: Place::Nowhere,
                 reads: (!matches!(space, Space::Diagram(_))).then(FxHashSet::default),
+                traced: FxHashSet::default(),
             });
             if planned.priority.is_none() {
                 planned.priority.clone_from(&style.priority);
             }
             if placing && planned.place == Place::Nowhere {
                 planned.place = place_of(&shown.mark, table);
+            }
+            if let Some(compiled) = &shown.compiled {
+                let traces = compiled.program.columns.iter().filter(|c| c.trace && c.of.is_none() && !c.derived);
+                planned.traced.extend(traces.map(|c| c.name.clone()));
             }
             if let (Some(reads), Some(compiled)) = (&mut planned.reads, &shown.compiled) {
                 for column in &compiled.program.columns {

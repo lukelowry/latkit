@@ -2,8 +2,8 @@
 // bounds, and labels all read a point through `point`.
 
 import package::lib::types::{
-    NONE, VISIBLE, PLACED, SIZED, STATUS, HOVERED, VERTEX_HALF, VERTEX_WORDS, SIDE_LEFT, SIDE_RIGHT, SIDE_TOP,
-    PORT_WORDS, PORT_CODE, PORT_SHAPE, PORT_COLUMN, PORT_SIZE, HALF_UNITS, OWN_HEIGHT,
+    NONE, VISIBLE, PLACED, SIZED, STATUS, CASTS, HOVERED, VERTEX_HALF, VERTEX_WORDS, SIDE_LEFT, SIDE_RIGHT,
+    SIDE_TOP, PORT_WORDS, PORT_CODE, PORT_SHAPE, PORT_COLUMN, HALF_UNITS, OWN_HEIGHT, SPACE_DIAGRAM,
 };
 import package::lib::bind::{frame, eye, mark, program};
 import package::lib::state::{vertex_slot, Vertex};
@@ -11,6 +11,7 @@ import package::lib::project::{world, clip_of, shows, to_screen};
 import package::lib::focus::{focus_of, faded, growth};
 import package::lib::read::bits_value;
 import package::lib::mark::{px, fringe, within};
+import package::lib::marker::{theme_port_size, theme_lift};
 
 struct Point {
     clip: vec4f,
@@ -107,15 +108,17 @@ fn port_at(p: Point, k: u32) -> Port {
     let info = mark.port_info + k * PORT_WORDS;
     let code = program[info + PORT_CODE];
     let center = to_screen(p.clip) + port_place(p.half, code);
-    let half = min(0.5 * PORT_SIZE * frame.unit, 0.5 * min(p.half.x, p.half.y));
+    let half = min(0.5 * theme_port_size(), 0.5 * min(p.half.x, p.half.y));
     let column = program[info + PORT_COLUMN];
     let wired = column != NONE && bits_value(column, p.row) != NONE;
     return Port(center, half, program[info + PORT_SHAPE], code, wired);
 }
 
-// CSS pixels a point's quad reaches past its center: the marker, its status ring when it has one, a
-// target pixel of edge, and when `lit`, as the focus draw draws it, its glow.
+// CSS pixels a point's quad reaches past its center: the marker, its status ring when it has one,
+// its shadow on a diagram's sheet when it casts one, a target pixel of edge, and when `lit`, as the
+// focus draw draws it, its glow.
 fn reach(p: Point, lit: bool) -> vec2f {
-    let ring = select(0.0, 3.0, (mark.flags & STATUS) != 0u && p.status.a > 0.0);
-    return p.half + ring + select(0.0, frame.glow, lit) + fringe();
+    let ring = select(0.0, 3.0 * frame.unit, (mark.flags & STATUS) != 0u && p.status.a > 0.0);
+    let shadow = select(0.0, 2.0 * theme_lift(), (mark.flags & CASTS) != 0u && frame.space == SPACE_DIAGRAM);
+    return p.half + max(ring, shadow) + select(0.0, frame.glow, lit) + fringe();
 }

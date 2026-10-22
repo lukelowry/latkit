@@ -294,9 +294,10 @@ impl View {
                 entries.as_chunks().0.iter().map(move |entry| (f.mark, entry))
             })
             .collect();
-        kept.sort_unstable_by_key(|&(i, entry)| {
-            (entry[1], std::cmp::Reverse(i), std::cmp::Reverse(entry[2]), entry[0], entry[3], entry[4], entry[5])
-        });
+        // The last keys first, as each sort keeps the order of ties.
+        let key = |high: u32, low: u32| u128::from(crate::order::pair(high, low));
+        crate::order::by_wide_key(&mut kept, |&(_, entry)| key(entry[3], entry[4]) << 32 | u128::from(entry[5]));
+        crate::order::by_wide_key(&mut kept, |&(i, entry)| key(entry[1], !(i as u32)) << 64 | key(!entry[2], entry[0]));
         let mut seen = FxHashSet::default();
         let mut hits = Vec::new();
         for (i, entry) in kept {

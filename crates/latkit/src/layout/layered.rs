@@ -72,7 +72,7 @@ fn arrange(level: &Level, options: &Layered) -> Vec<[f64; 2]> {
         return centers;
     }
     // Tallest first, then by first member, so like parts line up.
-    loose.sort_by(|a, b| (b.1[3] - b.1[1]).total_cmp(&(a.1[3] - a.1[1])));
+    crate::order::by_key(&mut loose, |a| !crate::order::number(a.1[3] - a.1[1]));
     let boxes: Vec<[f64; 2]> = loose.iter().map(|(_, b)| [b[2] - b[0], b[3] - b[1]]).collect();
     let gap = options.rank_gap;
     let span = pack::span(&boxes, gap, ASPECT).max(anchored.map_or(0.0, |anchored| anchored[2] - anchored[0]));
@@ -197,7 +197,7 @@ fn ranks(count: usize, links: &[[u32; 2]]) -> Vec<u32> {
         pointed[to as usize] = true;
     }
     let mut roots: Vec<u32> = (0..count as u32).collect();
-    roots.sort_by_key(|&vertex| pointed[vertex as usize]);
+    crate::order::by_key(&mut roots, |&vertex| u64::from(pointed[vertex as usize]));
     // A link into a vertex still on the walk closes a cycle; every other link keeps its direction.
     let mut state = vec![NEW; count];
     let mut forward: Vec<[u32; 2]> = Vec::with_capacity(links.len());
@@ -275,7 +275,7 @@ fn reorder(layers: &mut Runs<u32>, above: &Runs<u32>, below: &Runs<u32>, adjacen
                     near.iter().map(|&other| f64::from(position[other as usize])).sum::<f64>() / near.len() as f64
                 };
             }
-            layer.sort_by(|&a, &b| score[a as usize].total_cmp(&score[b as usize]));
+            crate::order::by_key(layer, |&a| crate::order::number(score[a as usize]));
             settle(layer, &mut position);
         }
         let crossed = crossings.count(layers, &position, adjacent);
@@ -416,7 +416,7 @@ fn balance(centers: &mut [[f64; 2]], extents: &[[f64; 2]], layers: &Runs<u32>, b
             let near = below.get(vertex as usize);
             across.clear();
             across.extend(near.iter().map(|&other| centers[other as usize][1]));
-            across.sort_unstable_by(f64::total_cmp);
+            crate::order::numbers(&mut across);
             let middle = across.len() / 2;
             goals.push(match across.len() {
                 0 => None,
@@ -745,7 +745,7 @@ mod tests {
         let mut frames: Vec<(usize, [f64; 4])> = (50..count).map(|v| (v, frame(centers[v], SIZE))).collect();
         frames.extend((0..50).map(|g| (g, graph.frame(&centers, g, options.gap / 2.0))));
         // Ranks run down the page, so sweeping down it compares each frame with few others.
-        frames.sort_by(|a, b| a.1[1].total_cmp(&b.1[1]));
+        crate::order::by_key(&mut frames, |a| crate::order::number(a.1[1]));
         for (k, &(a, first)) in frames.iter().enumerate() {
             for &(b, second) in frames[k + 1..].iter().take_while(|(_, second)| second[1] < first[3]) {
                 let held = graph.groups[a] == Some(b as u32) || graph.groups[b] == Some(a as u32);

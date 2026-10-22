@@ -133,9 +133,7 @@ const SIDE_LEFT: u32 = 0u;
 const SIDE_RIGHT: u32 = 1u;
 const SIDE_TOP: u32 = 2u;
 const SIDE_BOTTOM: u32 = 3u;
-// Length units across a port's marker: CSS pixels, or units in a diagram.
-const PORT_SIZE: f32 = 7.0;
-// A group's header band, in label sizes: its title sits in it.
+// A group's header, in label sizes: its title sits in it.
 const HEADER_BAND: f32 = 1.8;
 // Angle a geodesic segment spans at most, in degrees.
 const GEODESIC_STEP: f32 = 2.0;
@@ -299,6 +297,11 @@ const STEP_BOXED: u32 = 4u;
 const STEP_LOCATE: u32 = 5u;
 const STEP_UNDER: u32 = 6u;
 const STEPS: u32 = 7u;
+
+// What a dispatch of the expression machine's `evaluate` runs, as its step uniform names it: a
+// mark's channels, or the reductions fitting its domains.
+const STEP_CHANNELS: u32 = 0u;
+const STEP_REDUCE: u32 = 1u;
 // Words of a hit a query finds: its row, distance in sixty-fourths of a pixel, part, screen x and y,
 // and depth.
 const HIT_WORDS: u32 = 6u;
@@ -347,6 +350,12 @@ const THEME_MISSING: u32 = 8u;
 const THEME_CLEAR: u32 = 9u;
 // What a group's container is filled with.
 const THEME_SURFACE: u32 = 10u;
+// A diagram's look, in units: the border of its blocks and groups (clear for none), their corners'
+// radius, its ports' width, and how far a block's shadow falls below it.
+const THEME_OUTLINE: u32 = 11u;
+const THEME_CORNER: u32 = 12u;
+const THEME_PORT_SIZE: u32 = 13u;
+const THEME_LIFT: u32 = 14u;
 const THEME_SLOTS: u32 = 16u;
 
 // Backdrop grids.
@@ -489,11 +498,7 @@ struct Mark {
     frozen: u32,
     frozen_extra: u32,
     motion: f32,
-    // While the mark eases toward what its channels evaluated, where row 0's settled kind and extra
-    // words start in the settled mirror; NONE otherwise. Where the program holds how each word of a
-    // row eases, a word each.
-    settled: u32,
-    settled_extra: u32,
+    // Where the program holds how each word of a row eases, a word each.
     blends: u32,
     // The row blocks a dispatch over the mark's rows covers: at `block` in the blocks buffer,
     // `blocks` of them.

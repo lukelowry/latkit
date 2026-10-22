@@ -5,7 +5,7 @@ mod colormap;
 #[cfg(feature = "gpu")]
 pub(crate) mod compile;
 pub(crate) mod cpu;
-mod form;
+pub(crate) mod form;
 mod ramp;
 
 use std::ops::{Add, BitAnd, BitOr, Div, Mul, Neg, Not, RangeInclusive, Rem, Sub};

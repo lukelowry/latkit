@@ -44,6 +44,39 @@ fn vertices_draw_at_their_positions_in_their_colors() {
 }
 
 #[test]
+fn channels_follow_the_selection_and_the_zoom() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("graph");
+    data.apply(Table::new("Node", Ids::count(2)).field("x", vec![0.0, 30.0]).field("y", vec![0.0, 0.0]))
+        .expect("valid");
+    let [red, green, blue] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].map(|[r, g, b]| Color::rgb(r, g, b));
+    let color = latkit::when(latkit::selected()).then(red).when(latkit::zoom().ge(1.0)).then(green).otherwise(blue);
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Vertices::of("graph", "Node").position("x", "y").radius(6.0).color(color));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_data(data);
+    let center = SIZE / 2;
+    let pixels = frame(&gpu, &mut view);
+    assert!(close(at(&pixels, center + 30, center), [0, 0, 255, 255]), "{:?}", at(&pixels, center + 30, center));
+    view.select([latkit::Rows::new("graph", "Node", [1_u64])]);
+    let pixels = frame(&gpu, &mut view);
+    assert!(
+        close(at(&pixels, center + 30, center), [255, 0, 0, 255]),
+        "selected: {:?}",
+        at(&pixels, center + 30, center)
+    );
+    // What the selection leaves out dims, in its own color.
+    let [r, g, b, _] = at(&pixels, center, center);
+    assert!(b > 60 && r.max(g) < 20, "not selected: {:?}", [r, g, b]);
+    view.set_camera(Camera::Map { center: [0.0; 3], zoom: 1.0, pitch: 0.0, bearing: 0.0 });
+    let pixels = frame(&gpu, &mut view);
+    let [r, g, b, _] = at(&pixels, center, center);
+    assert!(g > 60 && r.max(b) < 20, "zoomed in: {:?}", [r, g, b]);
+}
+
+#[test]
 fn edges_join_their_ends_and_colormaps_fit_the_values() {
     let Some(gpu) = gpu() else { return };
     let mut data = Data::new("grid");
@@ -364,6 +397,32 @@ fn lines_trace_their_samples_across_a_plot() {
     let center = SIZE / 2;
     assert!(close(at(&pixels, center, center), [255, 0, 0, 255]), "{:?}", at(&pixels, center, center));
     assert!(close(at(&pixels, center, center - 20), [0, 0, 0, 255]), "only the line is drawn");
+}
+
+#[test]
+fn lines_traced_in_priority_order_draw_their_whole_span() {
+    let Some(gpu) = gpu() else { return };
+    let mut data = Data::new("signals");
+    data.apply(Patch::new().axis("time", "s").set(Table::new("Signal", Ids::count(1)).field("rank", vec![1.0])))
+        .expect("valid");
+    for t in 0..=10 {
+        data.apply(Patch::new().append([f64::from(t)], "Signal", [("v", vec![0.5])])).expect("frame");
+    }
+    let axis = Axis { grid: false, hidden: true, ..Axis::default() };
+    let scene = Scene::new(Plot { x: axis.clone(), y: axis }).theme(plain_theme()).draw(
+        Lines::of("signals", "Signal").trace("v").priority(field("rank")).color(Color::rgb(1.0, 0.0, 0.0)).width(4.0),
+    );
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
+    view.set_at(0.0);
+    view.set_data(data);
+    let pixels = frame(&gpu, &mut view);
+    let center = SIZE / 2;
+    // Ordered by priority, the table draws in part; its trace still spans every frame, not only
+    // those about the coordinate shown, at its start.
+    for x in [center - 40, center, center + 40] {
+        assert!(close(at(&pixels, x, center), [255, 0, 0, 255]), "at {x}: {:?}", at(&pixels, x, center));
+    }
 }
 
 #[test]

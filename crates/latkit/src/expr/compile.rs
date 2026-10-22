@@ -688,17 +688,6 @@ impl<'a> Compiler<'a> {
     }
 }
 
-fn mentions_pointer(e: &Expr) -> bool {
-    match &*e.0 {
-        Node::State(State::Pointer) => true,
-        Node::Unary(_, a) | Node::Is(a, _) | Node::Contains(a, _) => mentions_pointer(a),
-        Node::Binary(_, a, b) => mentions_pointer(a) || mentions_pointer(b),
-        Node::When(c, a, b) => mentions_pointer(c) || mentions_pointer(a) || mentions_pointer(b),
-        Node::Scale { input, .. } | Node::Colormap { input, .. } => mentions_pointer(input),
-        _ => false,
-    }
-}
-
 fn unary_code(op: Unary) -> u32 {
     match op {
         Unary::Neg => wgsl::OP_NEG,
@@ -748,6 +737,17 @@ fn binary_name(op: Binary) -> &'static str {
         Binary::Eq | Binary::Ne => "equality",
         Binary::And => "and",
         Binary::Or => "or",
+    }
+}
+
+fn mentions_pointer(e: &Expr) -> bool {
+    match &*e.0 {
+        Node::State(State::Pointer) => true,
+        Node::Unary(_, a) | Node::Is(a, _) | Node::Contains(a, _) => mentions_pointer(a),
+        Node::Binary(_, a, b) => mentions_pointer(a) || mentions_pointer(b),
+        Node::When(c, a, b) => mentions_pointer(c) || mentions_pointer(a) || mentions_pointer(b),
+        Node::Scale { input, .. } | Node::Colormap { input, .. } => mentions_pointer(input),
+        _ => false,
     }
 }
 

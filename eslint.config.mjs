@@ -17,6 +17,7 @@ export default defineConfig([
       'crates/**',
       'target/**',
       '.impeccable/**',
+      'docs/.venv/**',
       'npm/pkg/**',
       'npm/dist/**',
       'npm/test/scenes.js',

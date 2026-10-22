@@ -122,7 +122,7 @@ pub(crate) fn answer(leveling: &Leveling) -> Patch {
                 tiled(&sorted, &own_anchors, &extents, &ranks, &level)
             } else {
                 let mut order: Vec<u32> = (0..table.rows).collect();
-                order.sort_unstable_by_key(|&r| ranks[r as usize]);
+                crate::order::by_key(&mut order, |&r| ranks[r as usize]);
                 (order, vec![(pack(TileKey { z: 0, x: 0, y: 0 }), table.rows, u32::MAX)])
             };
             let (keys, (ends, reaches)): (Vec<u64>, (Vec<u32>, Vec<u32>)) =
@@ -201,7 +201,7 @@ fn mates(sorted: &[(u64, u32)], pairs: &[u64]) -> Vec<u32> {
         }
         if j - i > 1 {
             let mut alike: Vec<u32> = sorted[i..j].iter().map(|&(_, r)| r).collect();
-            alike.sort_unstable_by_key(|&r| pairs[r as usize]);
+            crate::order::by_key(&mut alike, |&r| pairs[r as usize]);
             let mut k = 0;
             while k < alike.len() {
                 let pair = pairs[alike[k] as usize];
@@ -244,7 +244,7 @@ fn ranks(priority: &[f32], n: usize) -> Vec<u64> {
 /// Rows along the curve, by their place on it.
 fn along(anchors: &[[u32; 2]]) -> Vec<(u64, u32)> {
     let mut sorted: Vec<(u64, u32)> = anchors.iter().enumerate().map(|(r, &a)| (morton(a), r as u32)).collect();
-    sorted.sort_unstable_by_key(|&(m, _)| m);
+    sorted.sort_unstable();
     sorted
 }
 
@@ -448,7 +448,7 @@ fn tiled(
             let start = order.len();
             order.extend_from_slice(&rows[i..j]);
             // By priority alone: rows alike draw in either order.
-            order[start..].sort_unstable_by_key(|&r| (ranks[r as usize] >> 32) as u32);
+            crate::order::by_key(&mut order[start..], |&r| ranks[r as usize] >> 32);
             tiles.push((pack(key), order.len() as u32, reach));
             i = j;
         }

@@ -92,7 +92,7 @@ impl Port {
             .map(|i| {
                 let port = ports[i];
                 let mut same: Vec<usize> = (0..ports.len()).filter(|&j| ports[j].side == port.side).collect();
-                same.sort_by_key(|&j| (ports[j].order.unwrap_or(u32::MAX), j));
+                crate::order::by_key(&mut same, |&j| crate::order::pair(ports[j].order.unwrap_or(u32::MAX), j as u32));
                 let place = same.iter().position(|&j| j == i).unwrap_or(0) as u32;
                 let output = if port.output { wgsl::PORT_OUTPUT } else { 0 };
                 port.side.code() | (place.min(255) << 2) | ((same.len() as u32).min(255) << 10) | output

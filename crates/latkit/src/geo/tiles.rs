@@ -28,26 +28,33 @@ impl Template {
 
     /// The TileJSON document `bytes`, found at `base`.
     pub(crate) fn tilejson(bytes: &[u8], base: &str) -> Result<Template, String> {
-        let json: serde_json::Value =
-            serde_json::from_slice(bytes).map_err(|e| format!("{base} is not TileJSON: {e}"))?;
-        let template = json["tiles"][0].as_str().ok_or_else(|| format!("the TileJSON at {base} names no tiles"))?;
-        if let Some(format) = json["format"].as_str()
+        /// What a TileJSON document says that tiles draw by.
+        #[derive(serde::Deserialize)]
+        struct TileJson {
+            #[serde(default)]
+            tiles: Vec<String>,
+            format: Option<String>,
+            minzoom: Option<f64>,
+            maxzoom: Option<f64>,
+            bounds: Option<Vec<f64>>,
+            scheme: Option<String>,
+        }
+        let text = std::str::from_utf8(bytes).map_err(|e| format!("{base} is not TileJSON: {e}"))?;
+        let json = crate::from_json::<TileJson>(text).map_err(|e| format!("{base} is not TileJSON: {e}"))?;
+        let template = json.tiles.first().ok_or_else(|| format!("the TileJSON at {base} names no tiles"))?;
+        if let Some(format) = json.format.as_deref()
             && ["png", "jpg", "jpeg", "webp", "avif"].contains(&format)
         {
             return Err(format!("the TileJSON at {base} names image tiles; only vector tiles draw"));
         }
-        let zoom = |key: &str, or: u8| json[key].as_u64().map_or(or, |z| z.min(24) as u8);
-        let bounds = json["bounds"]
-            .as_array()
-            .filter(|b| b.len() == 4)
-            .and_then(|b| Some([b[0].as_f64()?, b[1].as_f64()?, b[2].as_f64()?, b[3].as_f64()?]))
-            .unwrap_or(WORLD);
+        let zoom = |z: Option<f64>, or: u8| z.filter(|z| *z >= 0.0).map_or(or, |z| z.min(24.0) as u8);
+        let bounds = json.bounds.as_deref().and_then(|b| <[f64; 4]>::try_from(b).ok()).unwrap_or(WORLD);
         Ok(Template {
             url: crate::url::resolve(base, template),
-            min_zoom: zoom("minzoom", 0),
-            max_zoom: zoom("maxzoom", 14),
+            min_zoom: zoom(json.minzoom, 0),
+            max_zoom: zoom(json.maxzoom, 14),
             bounds,
-            tms: json["scheme"].as_str() == Some("tms"),
+            tms: json.scheme.as_deref() == Some("tms"),
         })
     }
 

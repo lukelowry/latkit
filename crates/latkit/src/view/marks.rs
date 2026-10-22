@@ -156,6 +156,20 @@ impl Shown {
         self.compiled.as_ref().map_or(0, |c| c.drawing.extras)
     }
 
+    /// What its channels and fitted domains read besides its own table's static fields, which their
+    /// pipeline is made for: before its data says, neither joins, samples, nor the view.
+    pub(crate) fn reads(&self) -> crate::gpu::pipelines::Reads {
+        let Some(program) = self.compiled.as_ref().map(|c| &c.program) else {
+            return crate::gpu::pipelines::Reads { joined: false, timed: false, viewed: false };
+        };
+        let viewing = [wgsl::OP_SELECTED, wgsl::OP_HOVERED, wgsl::OP_POINTER, wgsl::OP_ZOOM];
+        crate::gpu::pipelines::Reads {
+            joined: program.columns.iter().any(|c| c.of.is_some()),
+            timed: program.columns.iter().any(|c| c.sampled),
+            viewed: program.code.iter().any(|op| viewing.contains(&op[0])),
+        }
+    }
+
     /// The path its strokes read, or where its triangles' corners come from: one of the `PATH_` codes,
     /// which its pipelines are made for.
     pub(crate) fn path(&self) -> u32 {

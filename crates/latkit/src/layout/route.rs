@@ -201,7 +201,7 @@ impl<'a> Router<'a> {
         let (first, rest) = terminals.split_first()?;
         let root = self.end(*first, rest.first()?.at);
         let mut readers: Vec<End> = rest.iter().map(|terminal| self.end(*terminal, root.at)).collect();
-        readers.sort_by(|a, b| manhattan(a.at, root.at).total_cmp(&manhattan(b.at, root.at)));
+        crate::order::by_key(&mut readers, |a| crate::order::number(manhattan(a.at, root.at)));
         let mut tree = Tree::default();
         let origin = tree.add(root.at, NONE, Joint::Terminal);
         tree.add(self.stub(&root), origin, Joint::Stub(origin));
@@ -321,7 +321,9 @@ impl<'a> Router<'a> {
         let tolerance = self.spacing / 16.0;
         for axis in 0..2 {
             let mut runs = runs(trees, axis, self.least());
-            runs.sort_by(|a, b| a.line.total_cmp(&b.line).then(a.along[0].total_cmp(&b.along[0])));
+            crate::order::by_wide_key(&mut runs, |a| {
+                crate::order::wide(crate::order::number(a.line), crate::order::number(a.along[0]))
+            });
             let mut first = 0;
             while first < runs.len() {
                 let mut end = first + 1;
@@ -358,12 +360,12 @@ impl<'a> Router<'a> {
             false
         });
         let mut order: Vec<&Run> = cluster.iter().collect();
-        order.sort_by(|a, b| {
-            let (length_a, length_b) = (a.along[1] - a.along[0], b.along[1] - b.along[0]);
-            a.turn
-                .total_cmp(&b.turn)
-                .then_with(|| if a.turn > 0.0 { length_a.total_cmp(&length_b) } else { length_b.total_cmp(&length_a) })
-                .then(a.along[0].total_cmp(&b.along[0]))
+        // By turn, then length (longest first where ends turn lower), then start: the last key
+        // first, as each sort keeps the order of ties.
+        crate::order::by_key(&mut order, |a| crate::order::number(a.along[0]));
+        crate::order::by_wide_key(&mut order, |a| {
+            let length = crate::order::number(a.along[1] - a.along[0]);
+            crate::order::wide(crate::order::number(a.turn), if a.turn > 0.0 { length } else { !length })
         });
         let last = (order.len() - 1) as f64;
         let step = gap.min((high - low).max(0.0) / last.max(1.0));
@@ -462,7 +464,7 @@ impl Tree {
                 out.push(Attach { point, child, interior: true });
             }
         }
-        out.sort_by(|a, b| manhattan(a.point, toward).total_cmp(&manhattan(b.point, toward)));
+        crate::order::by_key(&mut out, |a| crate::order::number(manhattan(a.point, toward)));
         out
     }
 
@@ -990,10 +992,12 @@ fn spans(boxes: &[Rect], window: Rect, ends: &[Point], along: usize) -> Vec<Span
         .map(|[line, at]| [line, at.max(start).min(end)])
         .chain([[low, f64::NAN], [high, f64::NAN]])
         .collect();
-    seeds.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    crate::order::by_wide_key(&mut seeds, |a| {
+        crate::order::wide(crate::order::number(a[0]), crate::order::number(a[1]))
+    });
     // A sweep across the lines: the boxes whose open stretch across holds the line, by start along.
     let mut order: Vec<usize> = (0..boxes.len()).collect();
-    order.sort_by(|&a, &b| boxes[a][held].total_cmp(&boxes[b][held]).then(a.cmp(&b)));
+    crate::order::by_key(&mut order, |&a| crate::order::number(boxes[a][held]));
     let mut order = order.into_iter().peekable();
     let mut active: Vec<Rect> = Vec::new();
     let mut spans = Vec::new();
@@ -1039,7 +1043,9 @@ fn spans(boxes: &[Rect], window: Rect, ends: &[Point], along: usize) -> Vec<Span
             spans.push(Span { line, lo: lo.min(at), hi: hi.max(at) });
         }
     }
-    spans.sort_by(|a, b| a.line.total_cmp(&b.line).then(a.lo.total_cmp(&b.lo)));
+    crate::order::by_wide_key(&mut spans, |a| {
+        crate::order::wide(crate::order::number(a.line), crate::order::number(a.lo))
+    });
     spans.dedup();
     spans
 }
@@ -1154,9 +1160,10 @@ impl Index {
         let extent = items.iter().fold(EMPTY, |extent, &item| union(extent, boxes[item]));
         let cell =
             |v: f64, lo: f64, hi: f64| if hi > lo { ((v - lo) / (hi - lo) * f64::from(u16::MAX)) as u32 } else { 0 };
-        items.sort_by_cached_key(|&item| {
+        crate::order::by_key(&mut items, |&item| {
             let middle = [boxes[item][0].midpoint(boxes[item][2]), boxes[item][1].midpoint(boxes[item][3])];
-            (morton(cell(middle[0], extent[0], extent[2]), cell(middle[1], extent[1], extent[3])), item)
+            let at = morton(cell(middle[0], extent[0], extent[2]), cell(middle[1], extent[1], extent[3]));
+            crate::order::pair(at, item as u32)
         });
         let mut nodes: Vec<Rect> = items.iter().map(|&item| boxes[item]).collect();
         let mut starts = vec![0];

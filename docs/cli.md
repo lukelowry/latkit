@@ -24,16 +24,16 @@ latkit schema scene > scene.schema.json
 | `validate` | reads and checks everything `render` would, frames included, without a GPU                                |
 | `inspect`  | prints datasets as JSON: tables, rows, fields and their kinds, the axis and its span                      |
 | `query`    | prints the rows a query keeps, sorted and paged, as JSON Lines                                            |
-| `tile`     | writes a dataset as [time tiles](data.md#fetch-long-histories-in-spans) in `--output`                     |
+| `tile`     | writes a dataset as [time tiles](guide.md#fetch-long-histories-in-spans) in `--output`                    |
 | `schema`   | prints the JSON Schema of every input, or of `scene`, `data`, `patch`, `query`, `camera`, `fit`, `frames` |
 
 ## Inputs
 
-- **Scenes** are the [scene](scenes.md) JSON, with a `title` and `subtitle`, and on any mark a
+- **Scenes** are the [scene](guide.md#scenes) JSON, with a `title` and `subtitle`, and on any mark a
   `legend`. `--camera FILE` gives scenes cameras, in order; a view without one frames `--fit`
   (`all`, or a fit as JSON). `--insets T,R,B,L` keeps room clear.
-- **Datasets** (`-d [NAME=]FILE`) are a [JSON document](formats.md#json), latkit's
-  [bytes](formats.md#bytes), or GeoJSON, which takes a `NAME`. A `NAME` renames any dataset.
+- **Datasets** (`-d [NAME=]FILE`) are a [JSON document](guide.md#json), latkit's
+  [bytes](guide.md#bytes), or GeoJSON, which takes a `NAME`. A `NAME` renames any dataset.
   Slices of binary files load relative to the document.
 - **Tiles** (`--tiles NAME=FILE`) are time tiles' `frames.json`, as `tile` writes it, or a PMTiles
   file, TileJSON, or a `{z}/{x}/{y}` template on disk.

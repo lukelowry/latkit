@@ -1,18 +1,19 @@
-// The expression machine: every row of a mark runs the mark's channels, which store into its state.
-// All rows run the same instructions, so control flow stays uniform across a workgroup. A dispatch
-// covers the row blocks the mark lists, only those whose rows changed when only those did.
+// The expression machine: every row of a mark runs the mark's channels, which store into what the
+// view binds as its state. All rows run the same instructions, so control flow stays uniform across a
+// workgroup. A dispatch covers the row blocks the mark lists, only those whose rows changed when only
+// those did.
 //
-// While the mark eases (`mark.frozen` set), a row whose visibility flips fades, and rows past
-// `mark.rows` left, fading out. While it eases toward what changed (`mark.settled` set), channels
-// store into the settled mirror instead, once per change, and each frame `ease` writes what every
-// row shows from its frozen and settled state by the mark's progress: numbers and colors mix, positions
-// move by their offset, and the rest show as evaluated. No channel runs to ease.
+// Evaluating knows nothing of transitions: while a mark eases, the view binds its settled mirror as
+// the state, and each frame `ease` writes what every row shows from its frozen and settled state by
+// the mark's progress: numbers and colors mix, positions move by their offset, a row whose visibility
+// flipped fades, rows past `mark.rows` left and fade out, and the rest show as evaluated. No channel
+// runs to ease.
 
 import package::lib::types::{
     NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING, BLOCK_ROWS, item,
-    BLEND_KEEP, BLEND_NUMBER, BLEND_COLOR, BLEND_POSITION,
-    VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, VERTEX_RANGE, HALF_UNITS, OWN_HEIGHT, SIZED, MARK_VERTICES,
-    OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME, OP_ZOOM,
+    BLEND_KEEP, BLEND_NUMBER, BLEND_COLOR, BLEND_POSITION, STEP_REDUCE,
+    VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, VERTEX_RANGE, HALF_UNITS, OWN_HEIGHT, SIZED,
+    MARK_VERTICES, OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME, OP_ZOOM,
     OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP,
     OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MIN, OP_MAX, OP_MOD, OP_POW,
     OP_LT, OP_LE, OP_GT, OP_GE, OP_EQ, OP_NE, OP_AND, OP_OR,
@@ -32,10 +33,17 @@ import package::lib::reduce::{ordered, unordered};
 // Per fitted domain: the order-preserving bits of its least and greatest value.
 @group(2) @binding(4) var<storage, read_write> domains: array<atomic<u32>>;
 // Each row's state as its channels evaluated it, where it settles once the mark's transition ends:
-// the state's mirror, written while the mark eases toward it.
+// the state's mirror, which `ease` reads.
 @group(2) @binding(14) var<storage, read_write> settled: array<u32>;
 // Each mark's row blocks a dispatch covers: at `mark.block`, `mark.blocks` of them.
 @group(2) @binding(16) var<storage, read> blocks: array<u32>;
+// What a dispatch of `evaluate` runs: the mark's channels over its listed blocks, or over every row
+// the reductions fitting its domains.
+@group(2) @binding(17) var<uniform> step: u32;
+
+// Whether the pipeline's marks read the view: selection, hover, the pointer, the zoom. Only those
+// made for marks that do compile it.
+override VIEWED: bool = true;
 
 // The row invocation `id` evaluates: row `id.x` of the mark's `id.y`th listed block.
 fn row_of(id: vec3u) -> u32 {
@@ -79,26 +87,12 @@ fn easing() -> bool {
     return mark.frozen != NONE;
 }
 
-// Whether channels store into the settled mirror: the mark eases toward what they evaluate.
-fn settling() -> bool {
-    return mark.settled != NONE;
-}
-
-// Word `word` of `row` where channels store it: the settled state while the mark eases toward it,
-// else the state. The settled state mirrors the state, word for word.
 fn load(row: u32, word: u32) -> u32 {
-    if settling() {
-        return settled[word_at(row, word)];
-    }
     return state[word_at(row, word)];
 }
 
 fn store(row: u32, word: u32, value: u32) {
-    if settling() {
-        settled[word_at(row, word)] = value;
-    } else {
-        state[word_at(row, word)] = value;
-    }
+    state[word_at(row, word)] = value;
 }
 
 // Word `word` of `row` as it was drawn when the transition began.
@@ -114,14 +108,6 @@ fn entering(row: u32, flags: u32) -> bool {
     return (was(row, flags) & ENTERING) != 0u;
 }
 
-fn pointer_distance(row: u32) -> f32 {
-    let at = word_at(row, VERTEX_POSITION);
-    let hi = vec2f(bitcast<f32>(state[at]), bitcast<f32>(state[at + 1u]));
-    let lo = vec2f(bitcast<f32>(state[at + 2u]), bitcast<f32>(state[at + 3u]));
-    let z = bitcast<f32>(state[word_at(row, VERTEX_ELEVATION)]);
-    return distance(to_screen(project(hi, lo, z)), frame.pointer);
-}
-
 fn number(x: u32) -> f32 {
     return bitcast<f32>(x);
 }
@@ -132,6 +118,29 @@ fn word(x: f32) -> u32 {
 
 fn truth(x: bool) -> u32 {
     return word(f32(x));
+}
+
+// CSS pixels from a vertex to the pointer.
+fn pointer_distance(row: u32) -> f32 {
+    let at = word_at(row, VERTEX_POSITION);
+    let hi = vec2f(bitcast<f32>(state[at]), bitcast<f32>(state[at + 1u]));
+    let lo = vec2f(bitcast<f32>(state[at + 2u]), bitcast<f32>(state[at + 3u]));
+    let z = bitcast<f32>(state[word_at(row, VERTEX_ELEVATION)]);
+    return distance(to_screen(project(hi, lo, z)), frame.pointer);
+}
+
+// What the view knows of `row` and of itself, as op `code` reads it: whether it is selected or
+// hovered, how far it is from the pointer, the zoom.
+fn viewed(code: u32, row: u32) -> u32 {
+    if !VIEWED {
+        return MISSING;
+    }
+    switch code {
+        case OP_SELECTED: { return truth(is_selected(row)); }
+        case OP_HOVERED: { return truth(is_hovered(row)); }
+        case OP_POINTER: { return word(pointer_distance(row)); }
+        default: { return word(frame.zoom); }
+    }
 }
 
 fn unary(code: u32, a: f32) -> f32 {
@@ -207,24 +216,26 @@ fn ease_position(row: u32, w: u32, now: u32, flags: u32) -> u32 {
     return word(number(now) + offset * (1.0 - mark.motion));
 }
 
-// Sets or clears `bit` of the flags at word `w`. While easing, a row whose visibility flips stays
-// drawn and fades.
+// The flags `row` shows while its mark eases: as evaluated, but a row whose visibility flipped stays
+// drawn and fades, in where it became visible or entered, out where it stopped being.
+fn faded(row: u32, flags: u32) -> u32 {
+    let now = settled[word_at(row, flags)] & ~(FADE_IN | FADE_OUT);
+    let fresh = entering(row, flags);
+    let before = fresh || (was(row, flags) & VISIBLE) != 0u;
+    let on = (now & VISIBLE) != 0u;
+    if on && (fresh || !before) {
+        return now | FADE_IN;
+    }
+    if !on && before {
+        return now | VISIBLE | FADE_OUT;
+    }
+    return now;
+}
+
+// Sets or clears `bit` of the flags at word `w`; whether the row fades is the ease's to show.
 fn store_flag(row: u32, w: u32, bit: u32, on: bool) {
     let stored = load(row, w);
-    var flags = select(stored & ~bit, stored | bit, on);
-    if bit == VISIBLE {
-        flags &= ~(FADE_IN | FADE_OUT);
-        if easing() {
-            let before = entering(row, w) || (was(row, w) & VISIBLE) != 0u;
-            let fresh = entering(row, w);
-            if on && (fresh || !before) {
-                flags |= FADE_IN;
-            } else if !on && before {
-                flags |= VISIBLE | FADE_OUT;
-            }
-        }
-    }
-    store(row, w, flags & ~ENTERING);
+    store(row, w, select(stored & ~bit, stored | bit, on) & ~(ENTERING | FADE_IN | FADE_OUT));
 }
 
 // A position, from data or in a diagram from its sheet, as high and low parts of x and y; a row
@@ -255,11 +266,8 @@ fn run(row: u32, start: u32, end: u32) {
             case OP_CONST: { stack[sp] = constant(a); sp++; }
             case OP_MISSING: { stack[sp] = MISSING; sp++; }
             case OP_FIELD: { stack[sp] = column_value(a, row).x; sp++; }
-            case OP_SELECTED: { stack[sp] = truth(is_selected(row)); sp++; }
-            case OP_HOVERED: { stack[sp] = truth(is_hovered(row)); sp++; }
-            case OP_POINTER: { stack[sp] = word(pointer_distance(row)); sp++; }
+            case OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ZOOM: { stack[sp] = viewed(code, row); sp++; }
             case OP_ELAPSED: { stack[sp] = word(frame.elapsed); sp++; }
-            case OP_ZOOM: { stack[sp] = word(frame.zoom); sp++; }
             case OP_THEME: { stack[sp] = theme_word(a); sp++; }
             case OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP: {
                 stack[sp - 1u] = word(unary(code, number(stack[sp - 1u])));
@@ -337,23 +345,29 @@ fn fade_exit(row: u32, flags: u32) {
 
 @compute @workgroup_size(256)
 fn evaluate(@builtin(global_invocation_id) id: vec3u) {
-    let row = row_of(id);
-    // The flags word is the last kind word of every mark's rows.
-    let flags = mark.stride - 1u;
+    // Reductions run over every row; channels over the listed blocks, those the mask names. One
+    // loop runs either, since a backend compiles each call of the machine whole.
+    let reducing = step == STEP_REDUCE;
+    var row: u32;
+    if reducing {
+        row = item(id);
+    } else {
+        row = row_of(id);
+    }
     if row >= mark.rows {
-        // Rows that left fade out; while the mark eases toward its settled state, `ease` writes them.
-        if row < mark.rows + mark.exits && easing() && !settling() {
-            fade_exit(row, flags);
-        }
         return;
     }
-    for (var k = 0u; k < mark.channels; k++) {
-        if (mark.mask & (1u << k)) != 0u {
+    let first = select(0u, mark.channels, reducing);
+    let end = select(mark.channels, mark.channels + mark.reductions, reducing);
+    for (var k = first; k < end; k++) {
+        if reducing || (mark.mask & (1u << k)) != 0u {
             let range = mark.ranges + 2u * k;
             run(row, program[range], program[range + 1u]);
         }
     }
-    if mark.kind == MARK_VERTICES {
+    // The flags word is the last kind word of every mark's rows.
+    let flags = mark.stride - 1u;
+    if !reducing && mark.kind == MARK_VERTICES {
         let units = select(0u, HALF_UNITS, (mark.units & (1u << VERTEX_HALF)) != 0u);
         let own = select(0u, OWN_HEIGHT, (mark.flags & SIZED) != 0u);
         store(row, flags, (load(row, flags) & ~(HALF_UNITS | OWN_HEIGHT)) | units | own);
@@ -362,8 +376,8 @@ fn evaluate(@builtin(global_invocation_id) id: vec3u) {
 }
 
 // Each frame a mark eases toward its settled state: every word a channel stores shows the frozen
-// state moved toward the settled one by the mark's progress, as the program says each eases; rows that left
-// fade out. No channel runs.
+// state moved toward the settled one by the mark's progress, as the program says each eases, and the
+// flags show rows fading; rows that left fade out. No channel runs.
 @compute @workgroup_size(256)
 fn ease(@builtin(global_invocation_id) id: vec3u) {
     let row = item(id);
@@ -389,6 +403,7 @@ fn ease(@builtin(global_invocation_id) id: vec3u) {
         }
         state[word_at(row, w)] = shown;
     }
+    state[word_at(row, flags)] = faded(row, flags);
 }
 
 // Comets travel on by each stroke row's flow over the frame's step, so a flow that changes carries
@@ -420,16 +435,4 @@ fn carry(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     state[word_at(row, travel)] = was(row, travel);
-}
-
-@compute @workgroup_size(256)
-fn reduce(@builtin(global_invocation_id) id: vec3u) {
-    let row = item(id);
-    if row >= mark.rows {
-        return;
-    }
-    for (var k = mark.channels; k < mark.channels + mark.reductions; k++) {
-        let range = mark.ranges + 2u * k;
-        run(row, program[range], program[range + 1u]);
-    }
 }

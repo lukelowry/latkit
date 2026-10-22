@@ -5,6 +5,8 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rustc_hash::FxHashMap;
+
 /// The name of a dataset, table, or field: cheap to clone, compared and ordered by its text.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
@@ -307,3 +309,185 @@ counter!(
     /// Identifies the contents of one page; a written page gets a new id.
     PageId
 );
+
+/// Values by key: one hash table of keys for every kind of value, so a map by name compiles once
+/// whatever it holds, and the values in a list, in the order inserted; a removal moves the last into
+/// its place.
+#[derive(Clone, Debug)]
+pub(crate) struct Keyed<K, V> {
+    index: FxHashMap<K, u32>,
+    entries: Vec<(K, V)>,
+}
+
+/// Values by name.
+pub(crate) type Named<V> = Keyed<Name, V>;
+
+impl<K, V> Default for Keyed<K, V> {
+    fn default() -> Keyed<K, V> {
+        Keyed { index: FxHashMap::default(), entries: Vec::new() }
+    }
+}
+
+impl<K: Hash + Eq + Clone, V> Keyed<K, V> {
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn at<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> Option<usize>
+    where
+        K: Borrow<Q>,
+    {
+        self.index.get(key).map(|&i| i as usize)
+    }
+
+    pub(crate) fn get<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+    {
+        self.at(key).map(|i| &self.entries[i].1)
+    }
+
+    pub(crate) fn get_mut<Q: Hash + Eq + ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+    {
+        self.at(key).map(|i| &mut self.entries[i].1)
+    }
+
+    pub(crate) fn contains_key<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.index.contains_key(key)
+    }
+
+    /// Sets `key`'s value, returning the one it replaced.
+    pub(crate) fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if let Some(i) = self.at(&key) {
+            return Some(std::mem::replace(&mut self.entries[i].1, value));
+        }
+        self.index.insert(key.clone(), self.entries.len() as u32);
+        self.entries.push((key, value));
+        None
+    }
+
+    pub(crate) fn remove<Q: Hash + Eq + ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+    {
+        let i = self.index.remove(key)? as usize;
+        let (_, value) = self.entries.swap_remove(i);
+        if let Some((moved, _)) = self.entries.get(i) {
+            self.index.insert(moved.clone(), i as u32);
+        }
+        Some(value)
+    }
+
+    /// Where `key`'s value is, or goes.
+    pub(crate) fn entry(&mut self, key: K) -> Entry<'_, K, V> {
+        Entry { keyed: self, key }
+    }
+
+    /// Keeps the entries `keep` holds to, in their order.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool) {
+        let before = self.entries.len();
+        self.entries.retain_mut(|(key, value)| keep(key, value));
+        if self.entries.len() != before {
+            self.index.clear();
+            self.index.extend(self.entries.iter().zip(0..).map(|((key, _), i)| (key.clone(), i)));
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.index.clear();
+        self.entries.clear();
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.entries.iter().map(|(key, value)| (key, value))
+    }
+
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &K> {
+        self.entries.iter().map(|(key, _)| key)
+    }
+
+    pub(crate) fn values(&self) -> impl Iterator<Item = &V> {
+        self.entries.iter().map(|(_, value)| value)
+    }
+}
+
+impl<K: Hash + Eq + Clone, V> FromIterator<(K, V)> for Keyed<K, V> {
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(entries: I) -> Keyed<K, V> {
+        let mut keyed = Keyed::default();
+        keyed.extend(entries);
+        keyed
+    }
+}
+
+impl<K: Hash + Eq + Clone, V> Extend<(K, V)> for Keyed<K, V> {
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, entries: I) {
+        for (key, value) in entries {
+            self.insert(key, value);
+        }
+    }
+}
+
+impl<K, V> IntoIterator for Keyed<K, V> {
+    type Item = (K, V);
+    type IntoIter = std::vec::IntoIter<(K, V)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a Keyed<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = std::iter::Map<std::slice::Iter<'a, (K, V)>, fn(&'a (K, V)) -> (&'a K, &'a V)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter().map(|(key, value)| (key, value))
+    }
+}
+
+/// Where a key's value is in a [`Keyed`], or goes.
+pub(crate) struct Entry<'a, K, V> {
+    keyed: &'a mut Keyed<K, V>,
+    key: K,
+}
+
+impl<'a, K: Hash + Eq + Clone, V> Entry<'a, K, V> {
+    /// The key's value, made by `make` where it has none.
+    pub(crate) fn or_insert_with(self, make: impl FnOnce() -> V) -> &'a mut V {
+        let Entry { keyed, key } = self;
+        let i = keyed.at(&key).unwrap_or_else(|| {
+            keyed.index.insert(key.clone(), keyed.entries.len() as u32);
+            keyed.entries.push((key, make()));
+            keyed.entries.len() - 1
+        });
+        &mut keyed.entries[i].1
+    }
+
+    pub(crate) fn or_insert(self, value: V) -> &'a mut V {
+        self.or_insert_with(|| value)
+    }
+
+    pub(crate) fn or_default(self) -> &'a mut V
+    where
+        V: Default,
+    {
+        self.or_insert_with(V::default)
+    }
+}
+
+impl<K: Hash + Eq + Clone + Borrow<Q>, Q: Hash + Eq + ?Sized, V> std::ops::Index<&Q> for Keyed<K, V> {
+    type Output = V;
+
+    fn index(&self, key: &Q) -> &V {
+        self.get(key).expect("a key the table holds")
+    }
+}

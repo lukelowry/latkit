@@ -349,8 +349,11 @@ impl View {
     }
 
     /// Places labels when what they would show changed, and fades them; reads back the texts
-    /// placement asked for.
+    /// placement asked for. Labels wait for what places them to compile.
     pub(super) fn place_labels(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, eye: &wgsl::Eye) {
+        if !self.texts() {
+            return;
+        }
         let labeled: Vec<(usize, Slots)> =
             self.labels.slots.iter().enumerate().filter_map(|(i, s)| s.map(|s| (i, s))).collect();
         if labeled.is_empty() {
@@ -387,6 +390,7 @@ impl View {
             }
         }
         let groups = resources.groups(&gpu.0, inner);
+        let measuring = resources.pass(device, inner, Shader::Candidates);
         let group = resources.pass(device, inner, Shader::Labels);
         let [_, columns, rows] = self.labels.cells;
         {
@@ -395,9 +399,21 @@ impl View {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
-            pass.set_bind_group(2, &group, &[]);
             let marks: Vec<(usize, u32, u32)> =
                 labeled.iter().map(|&(i, _)| (i, self.marks[i].rows, self.marks[i].path())).collect();
+            // Candidates are measured where their anchors put them, by a program made for each mark's
+            // primitive; placement reads what it wrote.
+            if due {
+                pass.set_bind_group(2, &measuring, &[]);
+                for &(i, rows, path) in &marks {
+                    let primitive = self.marks[i].primitive();
+                    let variant = Variant::compute(Shader::Candidates, "candidates").path(path).primitive(primitive);
+                    pass.set_pipeline(&inner.pipelines.compute_pipeline(device, variant));
+                    pass.set_bind_group(1, &groups.mark, &[offset(i)]);
+                    dispatch(&mut pass, rows);
+                }
+            }
+            pass.set_bind_group(2, &group, &[]);
             // A diagram's labels claim no cells.
             let cleared = (!diagram).then(|| {
                 ["clear_cells", "reset_cells"].map(|entry| inner.pipelines.compute(device, Shader::Labels, entry))
@@ -421,9 +437,6 @@ impl View {
                 pass.set_pipeline(pipeline);
                 dispatch(pass, columns * rows);
             };
-            if due {
-                each(&mut pass, "candidates");
-            }
             if due && let Some([clear, reset]) = &cleared {
                 // A capped mark's labels past its cap give up their room before any claims.
                 if let Some(pipelines) = &selecting {
@@ -513,7 +526,7 @@ impl View {
             if slots.is_none() || shown.rows == 0 {
                 continue;
             }
-            let variant = Variant::draw(labels, format, samples).path(shown.path());
+            let variant = Variant::draw(labels, format, samples).path(shown.path()).primitive(shown.primitive());
             pass.set_pipeline(&inner.pipelines.render_pipeline(device, variant));
             pass.set_bind_group(2, labels_group, &[]);
             pass.set_bind_group(1, &groups.mark, &[offset(i)]);

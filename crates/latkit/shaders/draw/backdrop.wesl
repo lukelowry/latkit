@@ -49,10 +49,12 @@ fn lines(p: vec2f, w: vec2f, pitch: f32) -> f32 {
     return max(c.x, c.y);
 }
 
+// Dots `pitch` apart through `p`, which moves `w` per pixel: a CSS pixel across on any screen, fading
+// out as their cells shrink to a few pixels.
 fn dots(p: vec2f, w: vec2f, pitch: f32) -> f32 {
     let cells = max(w / pitch, vec2f(1e-12));
     let px = abs(fract(p / pitch + 0.5) - 0.5) / cells;
-    return saturate(1.5 - length(px)) * (1.0 - smoothstep(0.08, 0.25, max(cells.x, cells.y)));
+    return saturate(eye.pixel_ratio + 0.5 - length(px)) * (1.0 - smoothstep(0.08, 0.25, max(cells.x, cells.y)));
 }
 
 // Lines spaced `pitch` times a power of ten, from the `lowest` power to the `highest`: the spacing
@@ -143,10 +145,10 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
         color = blend(color, frame.grid_color, grid(p, w, 1.0, -2.0, 1.0, false) * fade * covered);
     }
     if frame.atmosphere.a > 0.0 && frame.globe > 0.0 {
-        // A rim of air over the globe's edge and a halo past it, lit where the sun is up over the
-        // ground the ray passes nearest.
-        let rim = pow(1.0 - saturate(facing), 3.0) * round;
-        let halo = pow(1.0 - smoothstep(radius, radius * 1.12, off), 2.0) * (1.0 - round) * f32(along > 0.0);
+        // A thin rim of air over the globe's edge and a halo just past it, as thick as the air is
+        // beside the earth, lit where the sun is up over the ground the ray passes nearest.
+        let rim = pow(1.0 - saturate(facing), 6.0) * round;
+        let halo = pow(1.0 - smoothstep(radius, radius * 1.045, off), 2.0) * (1.0 - round) * f32(along > 0.0);
         let below = daylight(globe_degrees(o + d * along, radius));
         let air = (rim + halo) * frame.atmosphere.a * frame.globe * mix(0.2, 1.0, below);
         color = vec4f(mix(color.rgb, frame.atmosphere.rgb, saturate(air)), color.a);

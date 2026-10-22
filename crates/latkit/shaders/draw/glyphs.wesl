@@ -4,13 +4,14 @@
 // size, and the halo is a wider threshold of the same field.
 
 import package::lib::types::{
-    CANDIDATE_WORDS, CANDIDATE_ALPHA, LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, PORT_SIZE, SIDE_LEFT,
+    CANDIDATE_WORDS, CANDIDATE_ALPHA, LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, SIDE_LEFT,
     SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD, TEXT_ESTIMATE, SPACE_DIAGRAM, THEME_TEXT,
 };
 import package::lib::bind::{frame, eye, mark, state, program, ramp};
 import package::lib::state::extra_at;
 import package::lib::read::missing_bits;
 import package::lib::points::{point, port_at, port_inward};
+import package::lib::marker::theme_port_size;
 import package::lib::label::{anchor, length_px, legibility, text_at, fits, Text};
 import package::lib::project::culled;
 import package::lib::color::output;
@@ -102,7 +103,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let port = port_at(p, k);
     let code = program[info + PORT_CODE];
     let inward = port_inward(code);
-    let gap = 0.5 * PORT_SIZE * frame.unit;
+    let gap = 0.5 * theme_port_size();
     let at = port.center + inward * (port.half + gap);
     var align = vec2f(0.5);
     var room = vec2f(2.0 * p.half.x, p.half.y);

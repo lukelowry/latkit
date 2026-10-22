@@ -233,7 +233,7 @@ impl Data {
     /// A version of `self` holding `tables` instead, its name, axis, schema, and origin kept: what a
     /// view draws of a dataset it draws in part, eased from one version to the next like `self`'s.
     pub(crate) fn drawn(&self, mut tables: Vec<Table>) -> Data {
-        tables.sort_by(|a, b| a.name.cmp(&b.name));
+        crate::order::by_name(&mut tables, |t| t.name.as_str());
         Data(Arc::new(Inner {
             name: self.0.name.clone(),
             axis: self.0.axis.clone(),

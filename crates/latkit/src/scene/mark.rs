@@ -401,7 +401,7 @@ impl Mark {
     }
 
     /// The first option of this mark only a diagram has, if any: ports, groups, nets, orthogonal
-    /// routes. A diagram's own refusals: shadows and elevation.
+    /// routes. A diagram's own refusals: shadows but blocks' and groups', and elevation.
     pub(crate) fn misplaced(&self, diagram: bool) -> Option<(&'static str, &'static str)> {
         const ONLY: &str = "only a diagram has ports, groups, nets, and orthogonal routes";
         let style = self.style();
@@ -411,8 +411,11 @@ impl Mark {
             return Some(("shadow", "an area lies on the ground: it casts no shadow"));
         }
         if diagram {
-            if style.shadow {
-                return Some(("shadow", "a diagram is flat: nothing casts shadows"));
+            if style.shadow && !matches!(self, Mark::Vertices(_)) {
+                return Some((
+                    "shadow",
+                    "a diagram's blocks and groups cast shadows onto its sheet; nothing else does",
+                ));
             }
             if let Mark::Edges(e) = self
                 && e.poles

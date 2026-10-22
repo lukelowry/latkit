@@ -192,7 +192,7 @@ impl Scene {
         }
         for (i, mark) in self.marks.iter().enumerate() {
             if self.marks[..i].iter().any(|m| m.key() == mark.key()) {
-                let reason = "draws the same table as an earlier mark of its kind; give one a name with named";
+                let reason = "draws the same table as an earlier mark of its kind; give one a `name`";
                 return Err(Error::invalid(reason).at(i).at("marks"));
             }
             if let Some((option, reason)) = mark.misplaced(diagram) {
