@@ -64,6 +64,19 @@ importers:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
 
+  docs/gallery:
+    dependencies:
+      latkit:
+        specifier: link:../../npm
+        version: link:../../npm
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.1
+        version: 26.1.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   npm:
     devDependencies:
       typescript:

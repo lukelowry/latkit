@@ -10,6 +10,9 @@ coverage/
 .impeccable/
 target/
 /npm/pkg/
+# The docs' environment, from uv sync --project docs.
+/docs/.venv/
+/docs/uv.lock
 
 # The CLI examples' videos: each example's README says how to render its own.
 /crates/latkit-cli/examples/*/*.mp4

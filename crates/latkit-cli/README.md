@@ -15,6 +15,7 @@ latkit schema scene > scene.schema.json
 ```
 
 Commands, inputs, frames, outputs, and diagnostics are in
-[the documentation](https://latkit.readthedocs.io/en/latest/cli.html).
-[The gallery](examples/cli-gallery/README.md), [the 70,000-bus fault](examples/bus-fault/README.md),
-and [the WECC240 fault](examples/wecc240-fault/README.md) are made with Python and this CLI alone.
+[the documentation](https://latkit.readthedocs.io/en/latest/cli.html), and
+[its examples](https://latkit.readthedocs.io/en/latest/examples/) are drawn by this CLI.
+[The 70,000-bus fault](examples/bus-fault/README.md) and
+[the WECC240 fault](examples/wecc240-fault/README.md) are made with Python and this CLI alone.

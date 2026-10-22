@@ -1,0 +1,253 @@
+/* latkit: its own mark blue on its own surfaces, Inter headings like its pictures' titles. */
+
+@font-face {
+  font-family: 'Inter';
+  font-weight: 600;
+  font-display: swap;
+  src: url('fonts/Inter-SemiBold.ttf') format('truetype');
+}
+
+body[data-theme] {
+  --font-stack--headings: 'Inter', var(--font-stack);
+  --radius: 0.5rem;
+  --color-sidebar-link-text--top-level: var(--color-foreground-primary);
+  --color-link-underline: color-mix(in srgb, var(--color-brand-content) 32%, transparent);
+  --color-link-underline--hover: var(--color-brand-content);
+  --color-link-underline--visited: var(--color-link-underline);
+  --color-link-underline--visited--hover: var(--color-brand-content);
+  --color-highlighted-background: color-mix(in srgb, var(--color-selected) 22%, transparent);
+  --color-table-header-background: transparent;
+  --color-table-border: var(--color-background-border);
+  --color-api-background-hover: var(--color-background-secondary);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-brand-primary) 26%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+html {
+  scrollbar-color: var(--color-foreground-border) transparent;
+}
+
+article a {
+  text-underline-offset: 0.18em;
+}
+
+/* Brand and navigation */
+
+.sidebar-brand {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+  padding-block: 1.25rem 1rem;
+}
+
+.sidebar-logo-container {
+  margin: 0;
+}
+
+.sidebar-logo {
+  width: 1.75rem;
+}
+
+.sidebar-brand-text {
+  font-family: var(--font-stack--headings);
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.sidebar-tree .current-page > .reference {
+  color: var(--color-brand-primary);
+}
+
+/* Type */
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: 2.25rem;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+}
+
+h2 {
+  font-size: 1.45rem;
+  letter-spacing: -0.015em;
+  margin-top: 2.75rem;
+}
+
+h3 {
+  font-size: 1.125rem;
+}
+
+article p,
+article li,
+article dd {
+  line-height: 1.6;
+}
+
+.lede {
+  font-size: 1.125rem;
+  color: var(--color-foreground-secondary);
+}
+
+.lede p {
+  line-height: 1.55;
+}
+
+/* Pictures: full column width, framed like the dark ground they are drawn on */
+
+.plot {
+  margin: 1.75rem 0 1rem;
+}
+
+/* Every picture latkit draws for these pages is 1600 by 1000, so its room is held before it loads. */
+.plot img,
+article img.picture {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 10;
+  border: 1px solid var(--color-background-border);
+  border-radius: 0.75rem;
+}
+
+.caption {
+  margin-bottom: 2.5rem;
+  font-size: var(--font-size--small);
+  color: var(--color-foreground-muted);
+}
+
+/* Code */
+
+body[data-theme] .highlight {
+  border: 1px solid var(--color-background-border);
+  border-radius: var(--radius);
+  background: var(--color-code-background);
+}
+
+.highlight pre {
+  padding: 0.75rem 1rem;
+}
+
+/* Tables */
+
+table.docutils {
+  width: 100%;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: var(--font-size--small);
+}
+
+table.docutils th,
+table.docutils td {
+  border-inline: 0;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+}
+
+table.docutils th {
+  font-weight: 600;
+  vertical-align: bottom;
+  border-bottom-color: var(--color-foreground-border);
+}
+
+table.numbers td {
+  font-variant-numeric: tabular-nums;
+}
+
+table.numbers :is(th, td):not(:first-child) {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Example index on the home page */
+
+.examples dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  margin: 1.25rem 0 2rem;
+}
+
+.examples dl > dt,
+.examples dl > dd {
+  margin: 0;
+  padding: 0.7rem 2rem 0.7rem 0;
+  border-top: 1px solid var(--color-background-border);
+}
+
+.examples dl > dt {
+  font-weight: 600;
+}
+
+.examples dl > dd {
+  color: var(--color-foreground-secondary);
+}
+
+.examples dd p {
+  margin: 0;
+}
+
+@media (max-width: 40em) {
+  .examples dl {
+    display: block;
+  }
+
+  .examples dl > dt {
+    padding-bottom: 0;
+  }
+
+  .examples dl > dd {
+    padding-top: 0.25rem;
+    border-top: 0;
+  }
+}
+
+/* Gallery: a card for each picture, its name under it */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0 2.5rem;
+}
+
+.cards p {
+  margin: 0;
+}
+
+.cards a.reference {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.6rem 0.6rem 0.75rem;
+  border: 1px solid var(--color-background-border);
+  border-radius: 0.75rem;
+  color: var(--color-foreground-primary);
+  font-size: var(--font-size--small);
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color 0.15s ease-out;
+}
+
+.cards a.reference:hover {
+  border-color: var(--color-brand-primary);
+}
+
+.cards img {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 10;
+  border-radius: 0.5rem;
+}

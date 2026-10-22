@@ -806,8 +806,10 @@ impl View {
         let [top, right, bottom, left] = self.insets.map(f64::from);
         let mut area = [left, top, w - right, h - bottom];
         if let Space::Plot(plot) = &self.scene.space {
+            // A plot's axes start below its title, which the other spaces draw over.
             let gutters = axes::gutters(plot, &self.scene.theme);
-            area = [area[0] + gutters[3], area[1] + gutters[0], area[2] - gutters[1], area[3] - gutters[2]];
+            let top = area[1] + self.title_band() + gutters[0];
+            area = [area[0] + gutters[3], top, area[2] - gutters[1], area[3] - gutters[2]];
         }
         if area[2] - area[0] < 1.0 {
             area[2] = area[0] + 1.0;

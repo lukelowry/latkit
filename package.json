@@ -13,7 +13,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,mjs,cjs,json,md,yml,yaml,css,html}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,cjs,json,md,yml,yaml,css,html}\"",
     "lint": "eslint .",
-    "typecheck": "tsc -p npm/test && pnpm --dir npm/examples exec tsc --noEmit && pnpm --dir npm/examples exec tsc -p gate && pnpm --dir benchmark exec tsc -p .",
+    "typecheck": "tsc -p npm/test && pnpm --dir npm/examples exec tsc --noEmit && pnpm --dir npm/examples exec tsc -p gate && pnpm --dir benchmark exec tsc -p . && pnpm --dir docs/gallery exec tsc -p .",
     "test": "vitest run && node --test npm/test/data.test.mjs npm/test/jobs.test.mjs npm/test/release.test.mjs npm/test/video.test.mjs",
     "version-packages": "changeset version && cargo xtask version",
     "release": "cargo xtask release"

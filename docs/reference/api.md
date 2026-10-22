@@ -1,10 +1,26 @@
 # JavaScript API
 
-Generated from the shipped declarations. Builders are available from `latkit/core`;
-`loadLatkit()` returns `Data`, `Gpu`, `Shot`, and `colormapCss`.
-See the guides for workflows and the [scene and result types](types.md) for option shapes.
+Generated from the shipped declarations. `loadLatkit()` returns `Data`, `Gpu`, `Shot`, and
+`colormapCss`; builders and patches need no WebAssembly. Options take the [scene and result
+types](types.md).
 
-## LoadOptions
+## Loading
+
+Load the runtime once a page.
+
+### loadLatkit
+
+```ts
+/**
+ * Loads the runtime once per page. Concurrent calls share one promise; a failed load can be retried.
+ * Options explicitly supplied after the first call must match that call. Importing the package alone
+ * neither initializes WASM nor requests a GPU or worker; loading asks for the page's GPU adapter
+ * while the WASM compiles.
+ */
+function loadLatkit(options?: LoadOptions): Promise<Latkit>;
+```
+
+### LoadOptions
 
 ```ts
 /** Options for the page's shared WASM runtime. Omitted options reuse its existing configuration. */
@@ -16,7 +32,7 @@ interface LoadOptions {
 }
 ```
 
-## Latkit
+### Latkit
 
 ```ts
 /**
@@ -31,92 +47,123 @@ interface Latkit {
 }
 ```
 
-## loadLatkit
+### LatkitError
 
 ```ts
 /**
- * Loads the runtime once per page. Concurrent calls share one promise; a failed load can be retried.
- * Options explicitly supplied after the first call must match that call. Importing the package alone
- * neither initializes WASM nor requests a GPU or worker; loading asks for the page's GPU adapter
- * while the WASM compiles.
+ * What latkit throws: an `Error` with a `code`, and for invalid input the `path` to the part, such
+ * as `marks[2].vertices.color`.
  */
-function loadLatkit(options?: LoadOptions): Promise<Latkit>;
+interface LatkitError extends Error {
+  code: Failure['code'];
+  path?: string;
+}
 ```
 
-## RowIds
+## Data and patches
 
-```ts
-/** Row ids as a patch takes them: listed, `{ count }` for rows `0..count`, or a typed array. */
-type RowIds = Ids | readonly (Id | null)[] | Uint32Array | Float64Array;
-```
+Datasets of named tables, changed by patches written without WebAssembly.
 
-## Geometry
-
-```ts
-/** A point `[x, y]`, or a list of geometries one level shallower: a path, its parts, or polygons. */
-type Geometry = readonly number[] | readonly Geometry[];
-```
-
-## Values
+### Data
 
 ```ts
 /**
- * One field's values, a value per row; `null` is missing. Typed arrays copy at once: numbers, or
- * in a `Uint8Array` booleans, nonzero true. Booleans, texts, and geometries also as arrays.
+ * A named collection of tables, changed in place by patches. A snapshot keeps a version, sharing
+ * every page with it, so keeping earlier versions, as an undo history does, costs only the pages
+ * they hold apart. A view draws the version it was given until it is given another.
  */
-type Values =
-  | Float64Array
-  | Float32Array
-  | Int32Array
-  | Uint32Array
-  | Uint8Array
-  | readonly (number | null)[]
-  | readonly (boolean | null)[]
-  | readonly (string | null)[]
-  | readonly (Geometry | null)[];
-```
-
-## Reference
-
-```ts
-/** A field naming rows of another table by id: `null` leaves a row unwired. */
-interface Reference {
-  reference: string;
-  ids: RowIds;
+class Data {
+  constructor(name: string);
+  /** Releases this handle. Views and snapshots keep the versions they hold. */
+  destroy(): void;
+  [Symbol.dispose](): void;
+  /**
+   * The dataset `bytes` hold: latkit's bytes, renamed `name` when given, or GeoJSON, gzip-compressed
+   * or not, read in a worker as dataset `name`: points, line strings, and polygons as tables
+   * `points`, `lines`, and `polygons`, each with its geometry as field `geometry` and its properties
+   * as fields.
+   */
+  static read(bytes: Uint8Array, name?: string): Promise<Data>;
+  /**
+   * The dataset its JSON document builds, `{"name": ..., "patch": [...]}`, the patch loading as
+   * `Patch.load` loads one.
+   */
+  static load(json: string, base?: string): Promise<Data>;
+  get name(): string;
+  /** The names of the tables. */
+  get tables(): string[];
+  /** Every row's id of `table`, in row order. */
+  ids(table: string): Id[];
+  /** The names of `table`'s fields. */
+  fields(table: string): string[];
+  /** The first and last axis coordinates the sampled fields span. */
+  get span(): [number, number] | undefined;
+  /** Applies every change of `patch`, or none when one is invalid. */
+  apply(patch: Patch | Uint8Array): this;
+  /** This version, kept while `apply` changes this one: O(1). */
+  snapshot(): Data;
+  /** The value of `field` for the row with `id` in `table`, at axis coordinate `at` when given. */
+  get(table: string, id: Id, field: string, at?: number): Value;
+  /** What the dataset holds: tables, rows, fields and their kinds, the axis and its span. */
+  describe(): Description;
+  /**
+   * The rows of a table `query` keeps, filtered, sorted, and paged, sampled fields read at its
+   * coordinate, on the CPU through the expressions marks draw with.
+   */
+  query(query: Query): Table;
+  /**
+   * Each row's least and greatest value of sampled `field` of `table` over `spans` equal spans of
+   * `range`, of every row or of rows `ids`: row after row, NaN where a span holds no frame. Reads the
+   * coarsest levels of detail that fit, so a span costs a few reads however many frames it covers.
+   */
+  envelope(
+    table: string,
+    field: string,
+    range: [number, number],
+    spans: number,
+    ids?: readonly Id[],
+  ): Envelope;
+  /** The dataset as latkit's bytes: the patch that builds it. */
+  toBytes(): Uint8Array;
 }
 ```
 
-## reference
+### Table
 
 ```ts
-/** Values of a field naming rows of `table` by id. */
-function reference(table: string, ids: RowIds): Reference;
-```
-
-## Fields
-
-```ts
-/** A table's fields by name. */
-type Fields = Readonly<Record<string, Values | Reference>>;
-```
-
-## ReadableBytes
-
-```ts
-/** A byte stream, structurally compatible with the browser and Node ReadableStream. */
-interface ReadableBytes {
-  getReader(): {
-    read(): Promise<{
-      done: boolean;
-      value?: Uint8Array;
-    }>;
-    cancel(reason?: unknown): Promise<void>;
-    releaseLock(): void;
-  };
+/**
+ * The rows a query keeps, in the forms a patch writes: numbers as a `Float64Array` (missing NaN),
+ * other values as arrays (missing `null`), a reference as its target ids.
+ */
+interface Table {
+  table: string;
+  ids: Id[];
+  fields: Record<
+    string,
+    | Float64Array
+    | Value[]
+    | {
+        reference: string;
+        ids: (Id | null)[];
+      }
+  >;
+  /** The rows the query kept before paging. */
+  total: number;
 }
 ```
 
-## Patch
+### Envelope
+
+```ts
+/** Rows' least and greatest values over spans of the axis: `at` holds one more edge than spans. */
+interface Envelope {
+  at: Float64Array;
+  least: Float32Array;
+  greatest: Float32Array;
+}
+```
+
+### Patch
 
 ````ts
 /**
@@ -217,22 +264,84 @@ class Patch {
 }
 ````
 
-## Color
+### RowIds
 
 ```ts
-/** A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. Where an option takes an expression, a
- * string starting with `#` is a hex color and any other string names a field. */
-type Color = string;
+/** Row ids as a patch takes them: listed, `{ count }` for rows `0..count`, or a typed array. */
+type RowIds = Ids | readonly (Id | null)[] | Uint32Array | Float64Array;
 ```
 
-## ExprInput
+### Values
 
 ```ts
-/** What an expression is written as: an {@link Expr}, or its JSON form. */
-type ExprInput = Expr | ExprNode;
+/**
+ * One field's values, a value per row; `null` is missing. Typed arrays copy at once: numbers, or
+ * in a `Uint8Array` booleans, nonzero true. Booleans, texts, and geometries also as arrays.
+ */
+type Values =
+  | Float64Array
+  | Float32Array
+  | Int32Array
+  | Uint32Array
+  | Uint8Array
+  | readonly (number | null)[]
+  | readonly (boolean | null)[]
+  | readonly (string | null)[]
+  | readonly (Geometry | null)[];
 ```
 
-## Expr
+### Geometry
+
+```ts
+/** A point `[x, y]`, or a list of geometries one level shallower: a path, its parts, or polygons. */
+type Geometry = readonly number[] | readonly Geometry[];
+```
+
+### Reference
+
+```ts
+/** A field naming rows of another table by id: `null` leaves a row unwired. */
+interface Reference {
+  reference: string;
+  ids: RowIds;
+}
+```
+
+### reference
+
+```ts
+/** Values of a field naming rows of `table` by id. */
+function reference(table: string, ids: RowIds): Reference;
+```
+
+### Fields
+
+```ts
+/** A table's fields by name. */
+type Fields = Readonly<Record<string, Values | Reference>>;
+```
+
+### ReadableBytes
+
+```ts
+/** A byte stream, structurally compatible with the browser and Node ReadableStream. */
+interface ReadableBytes {
+  getReader(): {
+    read(): Promise<{
+      done: boolean;
+      value?: Uint8Array;
+    }>;
+    cancel(reason?: unknown): Promise<void>;
+    releaseLock(): void;
+  };
+}
+```
+
+## Expressions
+
+What varies by row: builders writing the expressions scenes take.
+
+### Expr
 
 ```ts
 /** A value for every row of a mark: a constant, a field, view state, or arithmetic of them. */
@@ -282,7 +391,69 @@ class Expr {
 }
 ```
 
-## Mapped
+### ExprInput
+
+```ts
+/** What an expression is written as: an {@link Expr}, or its JSON form. */
+type ExprInput = Expr | ExprNode;
+```
+
+### Color
+
+```ts
+/** A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. Where an option takes an expression, a
+ * string starting with `#` is a hex color and any other string names a field. */
+type Color = string;
+```
+
+### field
+
+```ts
+/** The field `name` of each row. */
+const field: (name: string) => Expr;
+```
+
+### color
+
+```ts
+/** A color constant. */
+const color: (css: Color) => Expr;
+```
+
+### missing
+
+```ts
+/** A missing value: options that read one take the theme's. */
+const missing: () => Expr;
+```
+
+### when
+
+```ts
+/** Starts a conditional: `when(c).then(a).when(d).then(b).otherwise(e)`. */
+function when(condition: ExprInput): When;
+```
+
+### When
+
+```ts
+declare class When {
+  constructor(cases: [ExprNode, ExprNode][], condition: ExprNode);
+  then(value: ExprInput): Then;
+}
+```
+
+### Then
+
+```ts
+declare class Then {
+  constructor(cases: [ExprNode, ExprNode][]);
+  when(condition: ExprInput): When;
+  otherwise(value: ExprInput): Expr;
+}
+```
+
+### Mapped
 
 ```ts
 /** A value through a colormap or onto a range, whose domain can be set. */
@@ -292,63 +463,7 @@ class Mapped extends Expr {
 }
 ```
 
-## field
-
-```ts
-/** The field `name` of each row. */
-const field: (name: string) => Expr;
-```
-
-## color
-
-```ts
-/** A color constant. */
-const color: (css: Color) => Expr;
-```
-
-## selected
-
-```ts
-/** Whether the row is selected. */
-const selected: () => Expr;
-```
-
-## hovered
-
-```ts
-/** Whether the pointer is over the row. */
-const hovered: () => Expr;
-```
-
-## pointer
-
-```ts
-/** CSS pixels from a vertex to the pointer. */
-const pointer: () => Expr;
-```
-
-## elapsed
-
-```ts
-/** Seconds since the view was created. */
-const elapsed: () => Expr;
-```
-
-## zoom
-
-```ts
-/** The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. */
-const zoom: () => Expr;
-```
-
-## missing
-
-```ts
-/** A missing value: options that read one take the theme's. */
-const missing: () => Expr;
-```
-
-## units
+### units
 
 ```ts
 /**
@@ -365,33 +480,49 @@ const units: (
 ) => Size;
 ```
 
-## when
+### selected
 
 ```ts
-/** Starts a conditional: `when(c).then(a).when(d).then(b).otherwise(e)`. */
-function when(condition: ExprInput): When;
+/** Whether the row is selected. */
+const selected: () => Expr;
 ```
 
-## When
+### hovered
 
 ```ts
-declare class When {
-  constructor(cases: [ExprNode, ExprNode][], condition: ExprNode);
-  then(value: ExprInput): Then;
-}
+/** Whether the pointer is over the row. */
+const hovered: () => Expr;
 ```
 
-## Then
+### pointer
 
 ```ts
-declare class Then {
-  constructor(cases: [ExprNode, ExprNode][]);
-  when(condition: ExprInput): When;
-  otherwise(value: ExprInput): Expr;
-}
+/** CSS pixels from a vertex to the pointer. */
+const pointer: () => Expr;
 ```
 
-## RgbaImage
+### zoom
+
+```ts
+/** The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. */
+const zoom: () => Expr;
+```
+
+### elapsed
+
+```ts
+/** Seconds since the view was created. */
+const elapsed: () => Expr;
+```
+
+### icon
+
+```ts
+/** An icon marker showing one of `images` for each row, picked by `index`. */
+function icon(images: readonly RgbaImage[], index: ExprInput): Marker;
+```
+
+### RgbaImage
 
 ```ts
 /** Straight-alpha RGBA pixels, compatible with browser ImageData and server-produced pixels. */
@@ -402,144 +533,21 @@ interface RgbaImage {
 }
 ```
 
-## icon
-
-```ts
-/** An icon marker showing one of `images` for each row, picked by `index`. */
-function icon(images: readonly RgbaImage[], index: ExprInput): Marker;
-```
-
-## LatkitError
+### colormapCss
 
 ```ts
 /**
- * What latkit throws: an `Error` with a `code`, and for invalid input the `path` to the part, such
- * as `marks[2].vertices.color`.
+ * A CSS gradient through `map`, a catalog name or colors of your own, for legends: the colors the
+ * GPU draws, a band each for a categorical map's categories.
  */
-interface LatkitError extends Error {
-  code: Failure['code'];
-  path?: string;
-}
+function colormapCss(map: Colormap, direction?: string): string;
 ```
 
-## ViewEvents
+## Views
 
-```ts
-/**
- * What a view tells its listeners, by type. Intents (`click`, `open`, `menu`, `drag`, `connect`,
- * `delete`) are told once each, in the order the user acted. Changes (`hover`, `select`, `camera`,
- * `waiting`) tell only their latest, and their state can always be read. A view tells only what the
- * application did not do itself: its setters change state silently.
- */
-type ViewEvents = {
-  [E in ViewEvent as E['type']]: E extends {
-    type: 'error';
-  }
-    ? LatkitError
-    : E['detail'];
-};
-```
+A GPU makes views, and canvases that show them.
 
-## Table
-
-```ts
-/**
- * The rows a query keeps, in the forms a patch writes: numbers as a `Float64Array` (missing NaN),
- * other values as arrays (missing `null`), a reference as its target ids.
- */
-interface Table {
-  table: string;
-  ids: Id[];
-  fields: Record<
-    string,
-    | Float64Array
-    | Value[]
-    | {
-        reference: string;
-        ids: (Id | null)[];
-      }
-  >;
-  /** The rows the query kept before paging. */
-  total: number;
-}
-```
-
-## Envelope
-
-```ts
-/** Rows' least and greatest values over spans of the axis: `at` holds one more edge than spans. */
-interface Envelope {
-  at: Float64Array;
-  least: Float32Array;
-  greatest: Float32Array;
-}
-```
-
-## Data
-
-```ts
-/**
- * A named collection of tables, changed in place by patches. A snapshot keeps a version, sharing
- * every page with it, so keeping earlier versions, as an undo history does, costs only the pages
- * they hold apart. A view draws the version it was given until it is given another.
- */
-class Data {
-  constructor(name: string);
-  /** Releases this handle. Views and snapshots keep the versions they hold. */
-  destroy(): void;
-  [Symbol.dispose](): void;
-  /**
-   * The dataset `bytes` hold: latkit's bytes, renamed `name` when given, or GeoJSON, gzip-compressed
-   * or not, read in a worker as dataset `name`: points, line strings, and polygons as tables
-   * `points`, `lines`, and `polygons`, each with its geometry as field `geometry` and its properties
-   * as fields.
-   */
-  static read(bytes: Uint8Array, name?: string): Promise<Data>;
-  /**
-   * The dataset its JSON document builds, `{"name": ..., "patch": [...]}`, the patch loading as
-   * `Patch.load` loads one.
-   */
-  static load(json: string, base?: string): Promise<Data>;
-  get name(): string;
-  /** The names of the tables. */
-  get tables(): string[];
-  /** Every row's id of `table`, in row order. */
-  ids(table: string): Id[];
-  /** The names of `table`'s fields. */
-  fields(table: string): string[];
-  /** The first and last axis coordinates the sampled fields span. */
-  get span(): [number, number] | undefined;
-  /** Applies every change of `patch`, or none when one is invalid. */
-  apply(patch: Patch | Uint8Array): this;
-  /** This version, kept while `apply` changes this one: O(1). */
-  snapshot(): Data;
-  /** The value of `field` for the row with `id` in `table`, at axis coordinate `at` when given. */
-  get(table: string, id: Id, field: string, at?: number): Value;
-  /** What the dataset holds: tables, rows, fields and their kinds, the axis and its span. */
-  describe(): Description;
-  /**
-   * The rows of a table `query` keeps, filtered, sorted, and paged, sampled fields read at its
-   * coordinate, on the CPU through the expressions marks draw with.
-   */
-  query(query: Query): Table;
-  /**
-   * Each row's least and greatest value of sampled `field` of `table` over `spans` equal spans of
-   * `range`, of every row or of rows `ids`: row after row, NaN where a span holds no frame. Reads the
-   * coarsest levels of detail that fit, so a span costs a few reads however many frames it covers.
-   */
-  envelope(
-    table: string,
-    field: string,
-    range: [number, number],
-    spans: number,
-    ids?: readonly Id[],
-  ): Envelope;
-  /** The dataset as latkit's bytes: the patch that builds it. */
-  toBytes(): Uint8Array;
-}
-```
-
-## Gpu
+### Gpu
 
 ```ts
 /** The GPU device views draw with. Views of one GPU draw in one animation frame. */
@@ -600,27 +608,7 @@ class Gpu {
 }
 ```
 
-## Panel
-
-```ts
-/** A view's panel of a canvas or a picture: `[x, y, width, height]` as fractions of it. */
-type Panel = readonly [number, number, number, number];
-```
-
-## Canvas
-
-```ts
-/** Views shown in the panels of a `<canvas>` or an `OffscreenCanvas`. */
-class Canvas {
-  /** Shows `views`, one per panel, in place of those it showed. A view shows in one canvas at a time. */
-  show(views: readonly View[]): this;
-  /** Stops drawing; the views remain, and the element keeps its last frame. */
-  destroy(): void;
-  [Symbol.dispose](): void;
-}
-```
-
-## View
+### View
 
 ````ts
 /** A scene drawn from data it is given by name: shown by a canvas, which passes it input, or drawn by shots. */
@@ -737,7 +725,49 @@ class View {
 }
 ````
 
-## Shot
+### ViewEvents
+
+```ts
+/**
+ * What a view tells its listeners, by type. Intents (`click`, `open`, `menu`, `drag`, `connect`,
+ * `delete`) are told once each, in the order the user acted. Changes (`hover`, `select`, `camera`,
+ * `waiting`) tell only their latest, and their state can always be read. A view tells only what the
+ * application did not do itself: its setters change state silently.
+ */
+type ViewEvents = {
+  [E in ViewEvent as E['type']]: E extends {
+    type: 'error';
+  }
+    ? LatkitError
+    : E['detail'];
+};
+```
+
+### Canvas
+
+```ts
+/** Views shown in the panels of a `<canvas>` or an `OffscreenCanvas`. */
+class Canvas {
+  /** Shows `views`, one per panel, in place of those it showed. A view shows in one canvas at a time. */
+  show(views: readonly View[]): this;
+  /** Stops drawing; the views remain, and the element keeps its last frame. */
+  destroy(): void;
+  [Symbol.dispose](): void;
+}
+```
+
+### Panel
+
+```ts
+/** A view's panel of a canvas or a picture: `[x, y, width, height]` as fractions of it. */
+type Panel = readonly [number, number, number, number];
+```
+
+## Pictures and video
+
+Shots draw views into images and video.
+
+### Shot
 
 ````ts
 /**
@@ -781,7 +811,7 @@ class Shot {
 }
 ````
 
-## Image
+### Image
 
 ```ts
 /** RGBA pixels, straight alpha, rows top to bottom. */
@@ -805,14 +835,14 @@ class Image {
 }
 ```
 
-## ImageFormat
+### ImageFormat
 
 ```ts
 /** How an image is written as a file. */
 type ImageFormat = 'png' | 'jpeg' | 'webp';
 ```
 
-## Video
+### Video
 
 ```ts
 /** A video being drawn, encoded, and written. */
@@ -834,14 +864,4 @@ class Video {
   /** Cancels drawing and encoding, aborts the output, and unlocks it after pending writes settle. Idempotent. */
   abort(reason?: unknown): Promise<void>;
 }
-```
-
-## colormapCss
-
-```ts
-/**
- * A CSS gradient through `map`, a catalog name or colors of your own, for legends: the colors the
- * GPU draws, a band each for a categorical map's categories.
- */
-function colormapCss(map: Colormap, direction?: string): string;
 ```

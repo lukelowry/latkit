@@ -10,6 +10,7 @@ A view's first frame waits only for what draws its marks, a browser's first GPU 
 - Changed: a view's first frame draws its marks; labels, glyphs, and the overlay join once their pipelines landed, fading in as after any change. `complete` still waits for all of it.
 - Changed: a mark's channels compile for what they read: without fields of other tables, sampled fields, or `selected()`, `hovered()`, `pointer()`, and `zoom()`, their pipeline leaves each out. Fitted domains reduce in the channels' own pipeline.
 - Changed: label placement and the label draw compile for their mark's primitive, points, strokes, or triangles, as probes do: a quarter of the time for labels on points. Probes see each instance through one call, and placement passes no longer compile once per path.
+- Fixed: a plot's axes start below its title and subtitle, which drew over the plot.
 - Changed: every transition eases through the settled state, so evaluating channels knows nothing of transitions.
 - Changed: expressions, sizes, labels, and colormaps are read where they are written, so error paths reach into expressions.
 - Changed: the wasm is 12% smaller (11% gzipped): sorts, name-keyed tables, and JSON reading each compile once, and URLs resolve without the `url` crate.

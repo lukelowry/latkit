@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/hero.webp" width="100%" alt="Seventy thousand buses of a synthetic United States grid, colored by frequency as a 765 kV line opens">
+  <img src="docs/images/grid.png" width="100%" alt="Seventy thousand buses of a synthetic grid on the United States, its lines colored and widened by voltage">
 </p>
 
 <h1 align="center">latkit</h1>
@@ -112,41 +112,20 @@ latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --outpu
 ## Gallery
 
 <p align="center">
-  <a href="npm/examples/src/examples/power-flow"><img src="docs/images/power-flow.webp" width="49%" alt="Texas substations as pie markers on a map, lines colored by loading, power flowing along them"></a>
-  <a href="npm/examples/src/examples/linked-views"><img src="docs/images/linked-views.webp" width="49%" alt="A surface of 400 sensors in 3D beside three selected signal traces over ten seconds"></a>
-  <a href="npm/examples/src/examples/diagram"><img src="docs/images/diagram.webp" width="98.5%" alt="A block diagram of a water plant: grouped blocks, ports, and routed wires"></a>
-  <a href="crates/latkit-cli/examples/cli-gallery"><img src="docs/images/helios.webp" width="32%" alt="A synthetic transmission network in five concentric rings"></a>
-  <a href="docs/images/torus-silk.png"><img src="docs/images/torus-silk.png" width="32%" alt="Torus Silk: 64 cyan, amber, and coral filaments woven into a three-dimensional torus knot, rendered with latkit-cli"></a>
-  <a href="docs/images/golden-bloom.png"><img src="docs/images/golden-bloom.png" width="32%" alt="Golden Bloom: 32,000 golden-angle seeds forming a spiral of sapphire, rose, and amber, rendered with npm latkit's WASM renderer"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/texas.html"><img src="docs/images/texas.png" width="32%" alt="Two thousand buses of a synthetic Texas grid: generators as amber discs sized by output, comets along its highest-voltage lines"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/frequency.html"><img src="docs/images/frequency.png" width="32%" alt="The speed of 1,456 machines over ten seconds after a fault, near ones bright and swinging hardest, far ones dark"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/globe.html"><img src="docs/images/globe.png" width="32%" alt="Routes between forty of the world's great cities, along great circles on a globe, comets flowing on them"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/diagram.html"><img src="docs/images/diagram.png" width="32%" alt="A microgrid controller as blocks in nested groups, wired port to port with routed wires and a feedback loop"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/torus.html"><img src="docs/images/torus.png" width="32%" alt="Sixty-four filaments in cyan, amber, and coral, twisting around a three-dimensional torus knot"></a>
+  <a href="https://latkit.readthedocs.io/en/latest/examples/clifford.html"><img src="docs/images/clifford.png" width="32%" alt="A Clifford strange attractor of 260,000 translucent points, colored by the way each step turns"></a>
 </p>
 
-<p align="center">
-  <sub>From the <a href="npm/examples">example pages</a> and the <a href="crates/latkit-cli/examples">command-line examples</a>, with Torus Silk and Golden Bloom rendered using the published latkit-cli and npm latkit 0.2.0 releases.</sub>
-</p>
+Every picture is drawn by latkit; [the examples](https://latkit.readthedocs.io/en/latest/examples/) hold them all with the code that draws them.
 
-## Repository
+## Documentation
 
-| Part                              | What it is                                                     |
-| --------------------------------- | -------------------------------------------------------------- |
-| [`latkit`](crates/latkit)         | The Rust library: data, expressions, scenes, views, and video  |
-| [npm `latkit`](npm)               | The library in the browser, with types for every scene         |
-| [`latkit-cli`](crates/latkit-cli) | Pictures and video of scenes, from JSON or binary data         |
-| [Examples](npm/examples)          | Every feature on a page, and the browser gate that drives them |
-| [Benchmark](benchmark)            | Every scenario's phases up its sizes, held to committed work   |
-| [Docs](docs)                      | The guides, on [Read the Docs](https://latkit.readthedocs.io)  |
-
-The `@latkit/*` TypeScript packages, a lighter alternative without WebAssembly, are maintained on
-the [`npm/js`](https://github.com/lukelowry/latkit/tree/npm/js) branch.
-
-## Develop
-
-Requires Rust (pinned in `rust-toolchain.toml`), Node.js 24, and pnpm 10.30.
-
-```sh
-pnpm install
-cargo xtask examples --open   # the example pages at http://127.0.0.1:5200
-cargo xtask check             # format, lint, test, typecheck, and the browser gate
-cargo xtask bench --quick     # every benchmark scenario once, at its smallest size
-```
+Guides, examples, and the reference are on [Read the Docs](https://latkit.readthedocs.io); the Rust
+API is on [docs.rs](https://docs.rs/latkit). [Contributing](CONTRIBUTING.md) covers the repository and
+how to build it.
 
 Created by [Luke Lowery](https://lukelowry.github.io/). [MIT License](LICENSE).

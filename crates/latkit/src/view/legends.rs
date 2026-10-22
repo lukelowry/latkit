@@ -23,8 +23,23 @@ const CATEGORIES: usize = 24;
 const ROWS: usize = 8;
 /// The size of what a legend writes beside its colors, ticks and names, for the theme's text size.
 const SMALL: f64 = 0.9;
+/// The sizes of the title and subtitle for the theme's text size, and the line each takes for its size.
+const TITLE: f64 = 1.75;
+const SUBTITLE: f64 = 1.1;
+const LEADING: f64 = 1.35;
 
 impl View {
+    /// CSS pixels the scene's title and subtitle take below the top inset, with the margin above them
+    /// and half of it below: none when it has neither.
+    pub(super) fn title_band(&self) -> f64 {
+        let font = f64::from(self.scene.theme.font_size);
+        let lines: f64 = [(self.scene.title.is_some(), TITLE), (self.scene.subtitle.is_some(), SUBTITLE)]
+            .into_iter()
+            .filter_map(|(shown, scale)| shown.then_some(font * scale * LEADING))
+            .sum();
+        if lines > 0.0 { 1.5 * MARGIN + lines } else { 0.0 }
+    }
+
     /// The sprites of the scene's title and subtitle, and of its marks' legends.
     pub(super) fn annotations(&self, inner: &mut Inner) -> Vec<wgsl::Sprite> {
         let scene = &self.scene;
@@ -45,10 +60,12 @@ impl View {
         };
         let mut sprites = Vec::new();
         let mut y = area[1];
-        for (text, scale, color) in [(&scene.title, 1.75, theme.text), (&scene.subtitle, 1.1, theme.text.alpha(0.7))] {
+        for (text, scale, color) in
+            [(&scene.title, TITLE, theme.text), (&scene.subtitle, SUBTITLE, theme.text.alpha(0.7))]
+        {
             let Some(text) = text else { continue };
             writer(inner, scale, color, &mut |w| sprites.extend(w.text(text, [area[0], y], Align::BelowRight)));
-            y += font * scale * 1.35;
+            y += font * scale * LEADING;
         }
         let mut base = area[3];
         for (title, color) in legends() {

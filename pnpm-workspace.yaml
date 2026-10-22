@@ -2,3 +2,4 @@ packages:
   - 'npm'
   - 'npm/examples'
   - 'benchmark'
+  - 'docs/gallery'
