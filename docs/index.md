@@ -8,7 +8,7 @@ renders interactive views in the browser with WebGPU, and images and video from 
 :::{container} plot
 
 ```{image} images/opening.png
-:alt: The ACTIVSg70k grid as one 765 kV line opens: branches that pick up its power glow amber, those it leaves glow blue, across a quiet web of 88,000 branches
+:alt: The ACTIVSg70k grid on the globe as one 765 kV line opens: buses raised by their frequency, branches that pick up its power glow amber, those it leaves glow cyan
 :class: banner
 ```
 
@@ -16,8 +16,8 @@ renders interactive views in the browser with WebGPU, and images and video from 
 
 :::{container} caption
 The 70,000-bus ACTIVSg70k grid as one 765 kV line opens: a DC power flow finds where its power goes,
-amber on the branches that pick it up and blue on those it leaves. Drawn by the `latkit` command
-line in the {doc}`examples/opening` example.
+amber on the branches that pick it up and cyan on those it leaves, and each bus stands as high as its
+frequency. Drawn by the `latkit` command line in the {doc}`examples/opening` example.
 :::
 
 ## Install

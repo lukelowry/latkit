@@ -57,9 +57,14 @@ export default function opening(): Piece {
     levelOf(Math.max(kv[net.from[e]!]!, kv[net.to[e]!]!)),
   );
   const hz = frequency();
-  const lift = Number(process.env.HERO_LIFT ?? 0.025);
-  // A stalk down to the ground from each bus of 345 kV and up, so its height reads.
-  const tall = Array.from({ length: n }, (_, b) => b).filter((b) => kv[b]! >= Number(process.env.HERO_KV ?? 345));
+  // A stalk down to the ground from one bus of 345 kV and up in each cell of 3/4 degree, so the
+  // height reads without a curtain of them.
+  const cells = new Set<string>();
+  const tall = Array.from({ length: n }, (_, b) => b).filter((b) => {
+    if (kv[b]! < 345) return false;
+    const cell = `${Math.floor(c.positions[2 * b]! / 0.75)} ${Math.floor(c.positions[2 * b + 1]! / 0.75)}`;
+    return !cells.has(cell) && cells.add(cell) !== undefined;
+  });
   const all = n + tall.length;
   const bus = (b: number) => (b < n ? b : tall[b - n]!);
   const data = Patch.to('grid')
@@ -72,7 +77,7 @@ export default function opening(): Piece {
         // A fraction of the earth's radius: on the ground at the lowest frequencies, rising with
         // the frequency, the highest peaks compressed. Each stalk's foot stays on the ground.
         height: Float32Array.from({ length: all }, (_, b) =>
-          b < n ? lift * Math.asinh(Math.max(0, hz[b]! + 0.016) / 0.03) : 0,
+          b < n ? 0.022 * Math.asinh(Math.max(0, hz[b]! + 0.016) / 0.03) : 0,
         ),
       },
     )
@@ -81,7 +86,10 @@ export default function opening(): Piece {
       { count: tall.length },
       {
         from: reference('Bus', Uint32Array.from(tall)),
-        to: reference('Bus', Uint32Array.from(tall, (_, k) => n + k)),
+        to: reference(
+          'Bus',
+          Uint32Array.from(tall, (_, k) => n + k),
+        ),
       },
     )
     .replace(
@@ -92,17 +100,30 @@ export default function opening(): Piece {
         to: reference('Bus', net.to),
         gain,
         change: Float32Array.from(gain, Math.abs),
-        // Wider by voltage, and by how much the branch's flow changed.
-        width: Float32Array.from(gain, (g, e) => 0.28 + 0.1 * level[e]! + 0.2 * Math.abs(g)),
+        // Wider by voltage, and by how far past a quiet 10 MW the branch's flow changed.
+        width: Float32Array.from(
+          gain,
+          (g, e) => 0.45 + 0.12 * level[e]! + 0.3 * Math.max(0, Math.min(Math.abs(g), 6) - 1.7),
+        ),
         open: Float32Array.from({ length: m }, (_, e) => (e === line ? 1 : 0)),
       },
     );
-  const camera = process.env.HERO_CAM
-    ? (JSON.parse(process.env.HERO_CAM) as Piece['camera'])
-    : { center: [-86, 34.5], zoom: 4.3, pitch: 58, bearing: -12 };
+  const opened = (name: string, width: number, color: string) => ({
+    edges: {
+      of: ['grid', 'Branch'] as [string, string],
+      ends: ['from', 'to'] as [string, string],
+      name,
+      width,
+      color,
+      visible: { op: 'eq' as const, args: ['open', 1] as [string, number] },
+      pick: false,
+    },
+  });
+  // Map lines are a light steel at low alpha, so they lighten whatever lies under them.
+  const map = (alpha: string) => `#7fa6cc${alpha}`;
   return {
     name: 'opening',
-    alt: 'The ACTIVSg70k grid on the globe as one 765 kV line opens: buses raised by their frequency, branches that pick up its power glow amber, those it leaves glow blue',
+    alt: 'The ACTIVSg70k grid on the globe as one 765 kV line opens: buses raised by their frequency, branches that pick up its power glow amber, those it leaves glow cyan',
     size: [2400, 1000],
     data: [
       data,
@@ -110,23 +131,26 @@ export default function opening(): Piece {
       { name: 'coast', file: worldMap('coastline') },
       { name: 'borders', file: worldMap('countries') },
     ],
-    camera,
+    // Low over the Gulf, looking north, the horizon a thin arc above the Great Lakes.
+    camera: { center: [-85.5, 38.6], zoom: 5.1, pitch: 56, bearing: -6 },
     scene: {
       space: {
-        earth: { projection: 'globe', surface: '#0c131b', graticule: false, atmosphere: true },
+        earth: { projection: 'globe', surface: '#111a24', graticule: false, atmosphere: true },
       },
       ease: 0,
-      theme: THEME,
+      // The docs page's own ground, and air a muted steel rather than the event's cyan.
+      theme: { ...THEME, background: '#0f141a', atmosphere: '#6a93c052' },
       marks: [
-        { lines: { of: ['borders', 'lines'], width: 0.6, color: '#253a50' } },
-        { lines: { of: ['states', 'polygons'], width: 0.5, color: '#1d2d3e' } },
-        { lines: { of: ['coast', 'lines'], width: 0.8, color: '#33587a' } },
+        { lines: { of: ['states', 'polygons'], width: 0.5, color: map('1f') } },
+        { lines: { of: ['borders', 'lines'], width: 0.6, color: map('33') } },
+        { lines: { of: ['coast', 'lines'], width: 0.7, color: map('4d') } },
         {
           vertices: {
             of: ['grid', 'Bus'],
             position: ['lon', 'lat'],
             elevation: 'height',
             radius: 0,
+            color: '#00000000',
             pick: false,
           },
         },
@@ -134,8 +158,8 @@ export default function opening(): Piece {
           edges: {
             of: ['grid', 'Stalk'],
             ends: ['from', 'to'],
-            width: 0.5,
-            color: '#5b86ad40',
+            width: 0.35,
+            color: '#a9b4bf33',
             pick: false,
           },
         },
@@ -146,9 +170,19 @@ export default function opening(): Piece {
             priority: 'change',
             width: 'width',
             color: {
+              // A quiet grey within 10 MW either way; past it, cyan and amber of equal brightness.
               colormap: {
                 kind: 'diverging',
-                colors: ['#a6dcff', '#4a9be0', '#2b5a7c', '#34495a', '#73502c', '#e09238', '#ffd98a'],
+                colors: [
+                  [0, '#a8e6ff'],
+                  [0.14, '#4cc4f0'],
+                  [0.27, '#3a8db5'],
+                  [0.36, '#5e6874'],
+                  [0.64, '#5e6874'],
+                  [0.73, '#b07a3a'],
+                  [0.86, '#f2a13a'],
+                  [1, '#ffd27a'],
+                ],
               },
               value: 'gain',
               domain: [-6, 6],
@@ -157,17 +191,10 @@ export default function opening(): Piece {
             pick: false,
           },
         },
-        {
-          edges: {
-            of: ['grid', 'Branch'],
-            ends: ['from', 'to'],
-            name: 'opened',
-            width: 3.2,
-            color: '#ff3b3b',
-            visible: { op: 'eq', args: ['open', 1] },
-            pick: false,
-          },
-        },
+        // The opened line: a dark casing, red, and a bright core, the brightest thing drawn.
+        opened('casing', 8, '#0b0f14cc'),
+        opened('opened', 3.4, '#ff2e4d'),
+        opened('core', 1.1, '#ffd6dd'),
       ],
     },
   };

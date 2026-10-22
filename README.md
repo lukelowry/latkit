@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/opening.png" width="100%" alt="The ACTIVSg70k grid as one 765 kV line opens: branches that pick up its power glow amber, those it leaves glow blue, across a quiet web of 88,000 branches">
+  <img src="docs/images/opening.png" width="100%" alt="The ACTIVSg70k grid on the globe as one 765 kV line opens: buses raised by their frequency, branches that pick up its power glow amber, those it leaves glow cyan">
 </p>
 
 <h1 align="center">

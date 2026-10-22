@@ -6,7 +6,7 @@ typed `Scene`, and the `latkit` command line. The
 live in the browser.
 
 :::{container} cards
-[![The ACTIVSg70k grid as one 765 kV line opens: branches that pick up its power glow amber, those it leaves glow blue](../images/opening.png) Line opening](opening.md)
+[![The ACTIVSg70k grid on the globe as one 765 kV line opens: buses raised by their frequency, branches that pick up its power glow amber, those it leaves glow cyan](../images/opening.png) Line opening](opening.md)
 
 [![Seventy thousand buses of a synthetic grid on the United States, its lines colored and widened by voltage](../images/grid.png) ACTIVSg70k](grid.md)
 
