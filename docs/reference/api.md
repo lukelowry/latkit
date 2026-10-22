@@ -19,7 +19,10 @@ interface LoadOptions {
 ## Latkit
 
 ```ts
-/** The initialized data and rendering API. GPU devices are requested separately by `Gpu.create()`. */
+/**
+ * The initialized data and rendering API. In a browser the page's first GPU is made as the runtime
+ * loads, and the first `Gpu.create()` takes it; later calls request devices of their own.
+ */
 interface Latkit {
   Data: typeof import('./runtime.js').Data;
   Gpu: typeof import('./runtime.js').Gpu;
@@ -34,7 +37,8 @@ interface Latkit {
 /**
  * Loads the runtime once per page. Concurrent calls share one promise; a failed load can be retried.
  * Options explicitly supplied after the first call must match that call. Importing the package alone
- * neither initializes WASM nor requests a GPU or worker.
+ * neither initializes WASM nor requests a GPU or worker; loading asks for the page's GPU adapter
+ * while the WASM compiles.
  */
 function loadLatkit(options?: LoadOptions): Promise<Latkit>;
 ```
@@ -302,11 +306,39 @@ const field: (name: string) => Expr;
 const color: (css: Color) => Expr;
 ```
 
+## selected
+
+```ts
+/** Whether the row is selected. */
+const selected: () => Expr;
+```
+
+## hovered
+
+```ts
+/** Whether the pointer is over the row. */
+const hovered: () => Expr;
+```
+
+## pointer
+
+```ts
+/** CSS pixels from a vertex to the pointer. */
+const pointer: () => Expr;
+```
+
 ## elapsed
 
 ```ts
 /** Seconds since the view was created. */
 const elapsed: () => Expr;
+```
+
+## zoom
+
+```ts
+/** The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. */
+const zoom: () => Expr;
 ```
 
 ## missing
@@ -512,7 +544,7 @@ class Data {
 ```ts
 /** The GPU device views draw with. Views of one GPU draw in one animation frame. */
 class Gpu {
-  /** Requests a WebGPU device. */
+  /** Requests a WebGPU device: the first call takes the one made as latkit loaded. */
   static create(): Promise<Gpu>;
   /**
    * A view of `scene`; its marks draw once {@link View.setData} gives their data. A {@link Canvas}
