@@ -68,8 +68,6 @@ export default function terrain(): Piece {
       space: { plane: { grid: 'off' } },
       ease: 0,
       theme: THEME,
-      title: 'Terrain',
-      subtitle: '57,000 vertices and 112,000 faces, lit, in three dimensions',
       marks: [
         {
           vertices: {

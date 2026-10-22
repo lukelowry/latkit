@@ -33,8 +33,6 @@ export default function tides(): Piece {
       space: { plane: { grid: 'off' } },
       ease: 0,
       theme: THEME,
-      title: 'Tides',
-      subtitle: '110 closed contours of 600 segments each, deformed by drifting harmonics',
       marks: [
         {
           lines: {

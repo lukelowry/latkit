@@ -143,7 +143,7 @@ export default function globe(): Piece {
       { name: 'coast', file: map('coastline') },
       { name: 'borders', file: map('countries') },
     ],
-    camera: { center: [16, 22], zoom: 2.12, pitch: 0, bearing: 0 },
+    camera: { center: [16, 20], zoom: 2.3, pitch: 0, bearing: 0 },
     elapsed: 3,
     scene: {
       space: {
@@ -154,8 +154,6 @@ export default function globe(): Piece {
         ...THEME,
         flow: { color: '#fff6e0e0', spacing: 9, length: 3.5, width: 2.6, units: true },
       },
-      title: 'Globe',
-      subtitle: `${routes.length} routes between ${CITIES.length} cities, along great circles`,
       marks: [
         { lines: { of: ['borders', 'lines'], width: 0.5, color: '#22384f' } },
         { lines: { of: ['coast', 'lines'], width: 0.8, color: '#3d6a8f' } },

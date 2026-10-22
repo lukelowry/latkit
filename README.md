@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="docs/images/grid.png" width="100%" alt="Seventy thousand buses of a synthetic grid on the United States, its lines colored and widened by voltage">
+  <img src="docs/images/opening.png" width="100%" alt="The ACTIVSg70k grid as one 765 kV line opens: branches that pick up its power glow amber, those it leaves glow blue, across a quiet web of 88,000 branches">
 </p>
 
 <h1 align="center">latkit</h1>
 
 <p align="center">
-  Networks, maps, plots, and diagrams of millions of rows, drawn on the GPU:<br>
-  in the browser with WebGPU, and as pictures and video from the command line.
+  A GPU-accelerated visualization library for large networks, such as power grids:<br>
+  interactive views in the browser with WebGPU, and images and video from the command line.
 </p>
 
 <p align="center">

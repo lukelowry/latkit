@@ -42,8 +42,6 @@ export default function grid(): Piece {
       space: { earth: { projection: 'mercator', graticule: false, surface: THEME.background } },
       ease: 0,
       theme: THEME,
-      title: c.name,
-      subtitle: `${c.header.buses.toLocaleString('en-US')} buses and ${c.header.branches.toLocaleString('en-US')} branches of a synthetic grid, by voltage`,
       marks: [
         ...states(),
         { vertices: { of: ['grid', 'Bus'], position: ['lon', 'lat'], radius: 0, pick: false } },

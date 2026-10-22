@@ -74,8 +74,6 @@ export default function torus(): Piece {
       space: { plane: { grid: 'off' } },
       ease: 0,
       theme: THEME,
-      title: 'Torus silk',
-      subtitle: '64 filaments of 900 points each, around a (2, 3) torus knot, in three dimensions',
       marks: [
         {
           vertices: {

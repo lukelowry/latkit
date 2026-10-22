@@ -18,21 +18,20 @@ export const THEME = {
 } as const;
 
 /**
- * A fit of `box`, a drawing's least and greatest x and y with y up, into the picture below its
- * title: the title's band above, an even margin around, the drawing centered in what is left.
+ * A fit of `box`, a drawing's least and greatest x and y with y up, into the picture: centered,
+ * with an even margin around.
  */
 export function framed([x0, y0, x1, y1]: readonly [number, number, number, number]): Fit {
   const aspect = SIZE[0] / SIZE[1];
-  const [margin, title] = [0.06, 0.14];
-  const height = Math.max(
-    (y1 - y0) / (1 - title - margin),
-    (x1 - x0) / ((1 - 2 * margin) * aspect),
-  );
+  const room = 1 - 2 * 0.07;
+  const height = Math.max((y1 - y0) / room, (x1 - x0) / (room * aspect));
   const width = height * aspect;
   const [cx, cy] = [(x0 + x1) / 2, (y0 + y1) / 2];
-  const bottom = cy - ((margin + 1 - title) / 2) * height;
   return {
-    bounds: { min: [cx - width / 2, bottom, 0], max: [cx + width / 2, bottom + height, 0] },
+    bounds: {
+      min: [cx - width / 2, cy - height / 2, 0],
+      max: [cx + width / 2, cy + height / 2, 0],
+    },
   };
 }
 

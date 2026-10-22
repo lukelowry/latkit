@@ -173,8 +173,6 @@ export default function diagram(): Piece {
       layout: { layered: { flow: 'right', gap: 30, rankGap: 70 } },
       ease: 0,
       theme: { ...THEME, flow: { color: '#7cc4ffd0' } },
-      title: 'Diagram',
-      subtitle: `${blocks.length} blocks in nested groups, ${signals.length} signals routed port to port, laid out by latkit`,
       marks,
     },
   };

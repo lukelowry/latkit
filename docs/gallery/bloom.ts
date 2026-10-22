@@ -30,8 +30,6 @@ export default function bloom(): Piece {
       space: { plane: { grid: 'off' } },
       ease: 0,
       theme: THEME,
-      title: 'Golden bloom',
-      subtitle: '32,000 seeds a golden angle apart, colored by a wave winding through them',
       marks: [
         {
           vertices: {

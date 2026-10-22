@@ -31,6 +31,8 @@ export interface Case {
   readonly positions: Float32Array;
   /** Each machine's bus row. */
   readonly machineBus: Uint32Array;
+  /** One of the case's arrays by name, such as `branch.reactance`. */
+  readonly array: <T>(name: string, of: new (b: ArrayBuffer, o: number, l: number) => T) => T;
 }
 
 /** A voltage level: 0 below 100 kV, then 115–161, 230, 345, 500, and 765 kV. */
@@ -121,5 +123,5 @@ export function readCase(id: string): Case {
     for (let f = 0; f < header.frames; f++)
       patch.append(f * header.dt, 'Machine', { speed: speeds.subarray(f * g, (f + 1) * g) });
   }
-  return { name: header.case, header, patch, positions: position, machineBus };
+  return { name: header.case, header, patch, positions: position, machineBus, array };
 }

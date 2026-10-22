@@ -69,8 +69,6 @@ export default function currents(): Piece {
       space: { plane: { grid: 'off' } },
       ease: 0,
       theme: THEME,
-      title: 'Currents',
-      subtitle: `${geometry.length.toLocaleString('en-US')} streamlines through a field of seven vortices, colored by speed`,
       marks: [
         {
           lines: {

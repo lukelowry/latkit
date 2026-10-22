@@ -22,8 +22,6 @@ export default function frequency(): Piece {
       space: { plot: { x: { label: 'Time (s)' }, y: { label: 'Speed (mHz from 60 Hz)' } } },
       ease: 0,
       theme: THEME,
-      title: c.name,
-      subtitle: `${machines} machines swinging after a fault at ${fault.on} s, brighter the nearer it`,
       marks: [
         {
           lines: {

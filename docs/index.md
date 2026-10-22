@@ -1,21 +1,22 @@
 # latkit
 
 :::{container} lede
-Networks, maps, plots, and diagrams of millions of rows, drawn on the GPU: in the browser with
-WebGPU, and as pictures and video from the command line.
+latkit is a GPU-accelerated visualization library for large networks, such as power grids. It
+renders interactive views in the browser with WebGPU, and images and video from the command line.
 :::
 
 :::{container} plot
 
-```{image} images/grid.png
-:alt: Seventy thousand buses of a synthetic grid on the United States, its lines colored and widened by voltage
+```{image} images/opening.png
+:alt: The ACTIVSg70k grid as one 765 kV line opens: branches that pick up its power glow amber, those it leaves glow blue, across a quiet web of 88,000 branches
 ```
 
 :::
 
 :::{container} caption
-ACTIVSg70k's 70,000 buses by voltage, drawn by the `latkit` command line in the {doc}`examples/grid`
-example.
+The 70,000-bus ACTIVSg70k grid as one 765 kV line opens: a DC power flow finds where its power goes,
+amber on the branches that pick it up and blue on those it leaves. Drawn by the `latkit` command
+line in the {doc}`examples/opening` example.
 :::
 
 ## Install

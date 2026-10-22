@@ -1,11 +1,13 @@
 # Examples
 
-Every picture here is drawn by latkit, titles and all, from the module on its page: data written
-with `Patch`, a typed `Scene`, and the `latkit` command line. The [example
-suite](https://github.com/lukelowry/latkit/tree/main/npm/examples) runs the same features live in
-the browser.
+Every picture here is drawn by latkit from the module on its page: data written with `Patch`, a
+typed `Scene`, and the `latkit` command line. The
+[example suite](https://github.com/lukelowry/latkit/tree/main/npm/examples) runs the same features
+live in the browser.
 
 :::{container} cards
+[![The ACTIVSg70k grid as one 765 kV line opens: branches that pick up its power glow amber, those it leaves glow blue](../images/opening.png) Line opening](opening.md)
+
 [![Seventy thousand buses of a synthetic grid on the United States, its lines colored and widened by voltage](../images/grid.png) ACTIVSg70k](grid.md)
 
 [![Two thousand buses of a synthetic Texas grid: generators as amber discs sized by output, comets along its highest-voltage lines](../images/texas.png) ACTIVSg2000](texas.md)
@@ -34,6 +36,7 @@ the browser.
 ```{toctree}
 :hidden:
 
+opening
 grid
 texas
 frequency

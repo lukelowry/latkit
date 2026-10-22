@@ -1,7 +1,7 @@
 /**
  * The documentation's gallery, drawn by latkit. Each piece writes its datasets with `Patch`, as
  * latkit's bytes, and its scene as a typed `Scene`; the `latkit` command line draws it into
- * `docs/images/NAME.png`, titles and all, with nothing done to the picture after.
+ * `docs/images/NAME.png`, with nothing done to the picture after.
  *
  *   cargo build --locked -p latkit-cli --profile cli
  *   cargo xtask wasm                  # the package `latkit/core` comes from
@@ -15,6 +15,7 @@ import { SCALE, SIZE, type Piece } from './look.ts';
 
 /** Every piece, in the gallery's order. */
 export const PIECES = [
+  'opening',
   'grid',
   'texas',
   'frequency',

@@ -18,8 +18,6 @@ export default function texas(): Piece {
         ...THEME,
         flow: { color: '#fff4dcd0', spacing: 0.9, length: 0.35, width: 3, units: true },
       },
-      title: c.name,
-      subtitle: `${c.header.buses.toLocaleString('en-US')} buses of a synthetic Texas grid: generators by output, comets along its backbone`,
       marks: [
         ...states('#2c3e54'),
         {

@@ -31,8 +31,6 @@ export default function clifford(): Piece {
       space: { plane: { grid: 'off' } },
       ease: 0,
       theme: THEME,
-      title: 'Clifford',
-      subtitle: 'A strange attractor: 260,000 translucent points, colored by where each step heads',
       marks: [
         {
           vertices: {

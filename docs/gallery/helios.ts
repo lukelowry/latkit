@@ -53,8 +53,6 @@ export default function helios(): Piece {
       space: { plane: { grid: 'off' } },
       ease: 0,
       theme: { ...THEME, flow: { color: '#d9fff0a0', spacing: 100 } },
-      title: 'Helios',
-      subtitle: '480 buses and 896 branches, power flowing along them',
       marks: [
         { edges: { of: ['art', 'Branch'], ends: ['from', 'to'], width: 0.85, flow: 18 } },
         {
