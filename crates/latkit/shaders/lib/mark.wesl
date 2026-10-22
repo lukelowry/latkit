@@ -1,6 +1,11 @@
 // What every mark's shaders share.
 
+import package::lib::types::POINTS;
 import package::lib::bind::{eye, mark};
+
+// The primitive a pipeline's marks draw, `POINTS`, `STROKES`, or `TRIANGLES`, for the shaders made for
+// one: each pipeline holds only that one's geometry, and compiles quickly.
+override PRIMITIVE: u32 = POINTS;
 
 // A size in CSS pixels: state word `word` holds position units when the mark measures it in units.
 fn px(size: f32, word: u32) -> f32 {

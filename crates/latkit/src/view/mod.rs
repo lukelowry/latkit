@@ -232,6 +232,9 @@ impl View {
             stats: Stats::default(),
         };
         view.show(scene)?;
+        // Views to come find what nearly every scene draws with compiled, once this one draws.
+        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        gpu.warm();
         // Until it draws, a view waits on everything its first frame would.
         view.waiting = view.under_way();
         Ok(view)

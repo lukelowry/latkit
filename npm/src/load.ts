@@ -19,8 +19,6 @@ export interface Latkit {
 
 let configured: LoadOptions | undefined;
 let loading: Promise<Latkit> | undefined;
-/** The adapter asked for as the runtime loads, until the page's first GPU takes it. */
-let adapter: Promise<unknown> | undefined;
 
 /**
  * Loads the runtime once per page. Concurrent calls share one promise; a failed load can be retried.
@@ -45,7 +43,7 @@ export function loadLatkit(options: LoadOptions = {}): Promise<Latkit> {
     return loading;
   }
   configured = { wasm, createWorker: options.createWorker };
-  askAdapter();
+  startGpuProcess();
   loading = import('./runtime.js')
     .then((runtime) => runtime.initialize(configured!))
     .catch((cause: unknown) => {
@@ -57,21 +55,14 @@ export function loadLatkit(options: LoadOptions = {}): Promise<Latkit> {
 }
 
 /**
- * Asks for the page's GPU adapter as latkit's own request does, while the runtime loads: the browser
- * starts its GPU process meanwhile, which takes most of a cold device's 280 ms.
+ * Asks for a GPU adapter as latkit's own request does, while the runtime loads: the browser starts
+ * its GPU process meanwhile, which takes most of a cold device's 280 ms, and latkit's request finds
+ * it running.
  */
-function askAdapter(): void {
+function startGpuProcess(): void {
   const gpu = (
     globalThis.navigator as
       { gpu?: { requestAdapter(options: object): Promise<unknown> } } | undefined
   )?.gpu;
-  adapter = gpu?.requestAdapter({ powerPreference: 'high-performance' });
-  adapter?.catch(() => {});
-}
-
-/** @internal The adapter asked for as the runtime loaded, once: the page's first GPU is made on it. */
-export function takeAdapter(): Promise<unknown> | undefined {
-  const taken = adapter;
-  adapter = undefined;
-  return taken;
+  gpu?.requestAdapter({ powerPreference: 'high-performance' }).catch(() => {});
 }

@@ -30,9 +30,6 @@ use serde::de::{self, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visi
 use super::{Binary, Color, Colormap, ColormapKind, Expr, Node, Size, State, Stop, Unary, node};
 use crate::Name;
 
-/// The key naming each kind of expression object.
-const KINDS: &[&str] = &["field", "color", "state", "missing", "op", "when", "is", "contains", "scale", "colormap"];
-
 impl<'de> Deserialize<'de> for Expr {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Expr, D::Error> {
         Written::deserialize(deserializer)?.expr().map_err(de::Error::custom)
@@ -184,21 +181,12 @@ impl Form {
     /// The expression it writes: the first kind it holds, and only that kind's keys.
     pub(crate) fn expr(self) -> Result<Expr, String> {
         let held = self.held();
-        let Some(&kind) = held.iter().find(|key| KINDS.contains(key)) else {
-            return Err(format!("an expression object has one of {}", KINDS.join(", ")));
+        let Some(own) = held.iter().find_map(|key| KINDS.iter().find(|keys| keys[0] == *key)) else {
+            let mut kinds: Vec<&str> = KINDS.iter().map(|keys| keys[0]).collect();
+            kinds.dedup();
+            return Err(format!("an expression object has one of {}", kinds.join(", ")));
         };
-        let own: &[&str] = match kind {
-            "field" => &["field", "of", "step"],
-            "op" => &["op", "args"],
-            "when" => &["when", "otherwise"],
-            "scale" => &["scale", "value", "domain"],
-            "colormap" => &["colormap", "value", "domain"],
-            "color" => &["color"],
-            "state" => &["state"],
-            "missing" => &["missing"],
-            "is" => &["is"],
-            _ => &["contains"],
-        };
+        let kind = own[0];
         self.only(kind, own)?;
         let Form { field, color, state, missing, op, when, is, contains, scale, colormap, .. } = self;
         let needs = |key: &str| format!("{kind} needs {key}");
@@ -269,113 +257,96 @@ fn domained(mapped: super::Mapped, domain: Option<[f64; 2]>) -> Expr {
     }
 }
 
-/// A field of each row: of the mark's own table, or of another dataset's table joined by row id.
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct FieldNode {
-    field: Name,
-    /// The dataset and table the field is read from, joined by row id.
-    #[serde(default)]
-    #[schemars(extend("tsType" = "[data: string, table: string]"))]
-    of: Option<(Name, Name)>,
-    /// Reads a sampled field at its last frame without interpolating.
-    #[serde(default)]
-    step: bool,
+/// Each kind of expression object, declared once: the schema of its JSON, which reading never builds,
+/// and the keys reading lets an object of that kind hold, its own key first.
+macro_rules! kinds {
+    ($($(#[$meta:meta])* $node:ident { $($(#[$attr:meta])* $key:ident: $ty:ty),+ $(,)? })+) => {
+        $(
+            $(#[$meta])*
+            #[derive(JsonSchema)]
+            #[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
+            #[serde(deny_unknown_fields)]
+            struct $node {
+                $($(#[$attr])* $key: $ty,)+
+            }
+        )+
+
+        /// Each kind's keys, its own first, in the order an object's keys name its kind.
+        const KINDS: &[&[&str]] = &[$(&[$(stringify!($key)),+]),+];
+
+        /// Each kind's schema, in that order.
+        fn kinds(generator: &mut SchemaGenerator) -> Vec<Schema> {
+            vec![$(generator.subschema_for::<$node>()),+]
+        }
+    };
 }
 
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct ColorNode {
-    color: Color,
-}
-
-/// What the view knows of each row.
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct StateNode {
-    state: State,
-}
-
-/// A missing value: options that read one take the theme's.
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct MissingNode {
-    #[schemars(extend("const" = true))]
-    missing: bool,
-}
-
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct UnaryNode {
-    op: Unary,
-    args: [Expr; 1],
-}
-
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct BinaryNode {
-    op: Binary,
-    args: [Expr; 2],
-}
-
-/// The value of the first case whose condition holds, else `otherwise`.
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct WhenNode {
-    #[schemars(extend("tsType" = "[condition: ExprInput, value: ExprInput][]"))]
-    when: Vec<(Expr, Expr)>,
-    otherwise: Expr,
-}
-
-/// Whether a text field equals the text.
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct IsNode {
-    #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
-    is: (Expr, String),
-}
-
-/// Whether a text field holds the text, ignoring case: read by queries, which hold texts.
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct ContainsNode {
-    #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
-    contains: (Expr, String),
-}
-
-/// `value` mapped linearly onto the range `scale`, clamped: from its `domain`, else from the extent of
-/// the values shown.
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct ScaleNode {
-    #[schemars(extend("tsType" = "[low: number, high: number]"))]
-    scale: [f64; 2],
-    value: Expr,
-    #[serde(default)]
-    #[schemars(extend("tsType" = "[low: number, high: number]"))]
-    domain: Option<[f64; 2]>,
-}
-
-/// `value` through `colormap`: from its `domain`, else from the extent of the values shown.
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
-#[serde(deny_unknown_fields)]
-struct ColormapNode {
-    colormap: Colormap,
-    value: Expr,
-    #[serde(default)]
-    #[schemars(extend("tsType" = "[low: number, high: number]"))]
-    domain: Option<[f64; 2]>,
+kinds! {
+    /// A field of each row: of the mark's own table, or of another dataset's table joined by row id.
+    FieldNode {
+        field: Name,
+        /// The dataset and table the field is read from, joined by row id.
+        #[serde(default)]
+        #[schemars(extend("tsType" = "[data: string, table: string]"))]
+        of: Option<(Name, Name)>,
+        /// Reads a sampled field at its last frame without interpolating.
+        #[serde(default)]
+        step: bool,
+    }
+    ColorNode {
+        color: Color,
+    }
+    /// What the view knows of each row.
+    StateNode {
+        state: State,
+    }
+    /// A missing value: options that read one take the theme's.
+    MissingNode {
+        #[schemars(extend("const" = true))]
+        missing: bool,
+    }
+    UnaryNode {
+        op: Unary,
+        args: [Expr; 1],
+    }
+    BinaryNode {
+        op: Binary,
+        args: [Expr; 2],
+    }
+    /// The value of the first case whose condition holds, else `otherwise`.
+    WhenNode {
+        #[schemars(extend("tsType" = "[condition: ExprInput, value: ExprInput][]"))]
+        when: Vec<(Expr, Expr)>,
+        otherwise: Expr,
+    }
+    /// Whether a text field equals the text.
+    IsNode {
+        #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
+        is: (Expr, String),
+    }
+    /// Whether a text field holds the text, ignoring case: read by queries, which hold texts.
+    ContainsNode {
+        #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
+        contains: (Expr, String),
+    }
+    /// `value` mapped linearly onto the range `scale`, clamped: from its `domain`, else from the extent of
+    /// the values shown.
+    ScaleNode {
+        #[schemars(extend("tsType" = "[low: number, high: number]"))]
+        scale: [f64; 2],
+        value: Expr,
+        #[serde(default)]
+        #[schemars(extend("tsType" = "[low: number, high: number]"))]
+        domain: Option<[f64; 2]>,
+    }
+    /// `value` through `colormap`: from its `domain`, else from the extent of the values shown.
+    ColormapNode {
+        colormap: Colormap,
+        value: Expr,
+        #[serde(default)]
+        #[schemars(extend("tsType" = "[low: number, high: number]"))]
+        domain: Option<[f64; 2]>,
+    }
 }
 
 /// A size in position units, so it scales as the view zooms, kept within CSS pixels when given.
@@ -417,19 +388,7 @@ impl JsonSchema for ExprNode {
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        let forms = [
-            generator.subschema_for::<FieldNode>(),
-            generator.subschema_for::<ColorNode>(),
-            generator.subschema_for::<StateNode>(),
-            generator.subschema_for::<MissingNode>(),
-            generator.subschema_for::<UnaryNode>(),
-            generator.subschema_for::<BinaryNode>(),
-            generator.subschema_for::<WhenNode>(),
-            generator.subschema_for::<IsNode>(),
-            generator.subschema_for::<ContainsNode>(),
-            generator.subschema_for::<ScaleNode>(),
-            generator.subschema_for::<ColormapNode>(),
-        ];
+        let forms = kinds(generator);
         let mut any = vec![
             json_schema!({ "type": "number" }),
             json_schema!({ "type": "boolean" }),

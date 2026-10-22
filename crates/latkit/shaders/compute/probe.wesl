@@ -25,10 +25,7 @@ import package::lib::points::{point, port_at};
 import package::lib::path::{PATH, Segment, segment, segment_screen, stroke_style, stroke_instances, path_count};
 import package::lib::triangles::{triangle_corner, triangle_row, triangle_instances, area_anchor};
 import package::lib::marker::outline_distance;
-
-// The primitive this pipeline probes: each pipeline is made for one, so it holds only that one's
-// geometry and compiles quickly.
-override PROBED: u32 = 0u;
+import package::lib::mark::PRIMITIVE;
 
 // Which step a dispatch takes.
 struct Step {
@@ -165,7 +162,7 @@ fn seen_triangle(instance: u32, locating: bool) -> Seen {
 
 // Instance `instance` of the mark's primitive on screen; locating, row `instance`'s place.
 fn seen(instance: u32, locating: bool) -> Seen {
-    switch PROBED {
+    switch PRIMITIVE {
         case POINTS: { return seen_point(instance); }
         case STROKES: { return seen_segment(instance, locating); }
         default: { return seen_triangle(instance, locating); }
@@ -177,7 +174,7 @@ fn reach(s: Seen, p: vec2f) -> Reach {
     if !s.kept || !s.shown {
         return unreached();
     }
-    switch PROBED {
+    switch PRIMITIVE {
         case POINTS: {
             if s.part > 0u {
                 return Reach(max(length(p - s.b.xy) - s.half.x, 0.0), s.a.z, s.b.xy, s.row, s.part);
@@ -226,7 +223,7 @@ fn boxed(s: Seen) -> bool {
     if !s.kept {
         return false;
     }
-    switch PROBED {
+    switch PRIMITIVE {
         case POINTS: {
             return s.part == 0u && s.shown && s.front.x && in_box(s.a.xy);
         }
@@ -249,19 +246,17 @@ fn boxed(s: Seen) -> bool {
     }
 }
 
-// Where row `row` lies on screen, and 1 as z where it shows: a point's center, a path's middle
-// segment's middle, a face's middle; an area lies where its label hangs.
-fn located(row: u32) -> vec3f {
-    if row >= mark.rows {
-        return vec3f(0.0);
-    }
-    if PROBED == TRIANGLES && PATH == PATH_GEOMETRY {
-        let anchor = area_anchor(row);
-        let clip = clip_of(anchor.world);
-        return vec3f(to_screen(clip), f32(anchor.shown && anchor.ahead && clip.w > 0.0));
-    }
-    let s = seen(row, true);
-    switch PROBED {
+// Where an area's row `row` lies on screen, and 1 as z where it shows: where its label hangs.
+fn anchored(row: u32) -> vec3f {
+    let anchor = area_anchor(row);
+    let clip = clip_of(anchor.world);
+    return vec3f(to_screen(clip), f32(anchor.shown && anchor.ahead && clip.w > 0.0));
+}
+
+// Where the row seen locating lies on screen, and 1 as z where it shows: a point's center, a path's
+// middle segment's middle, a face's middle.
+fn located(s: Seen) -> vec3f {
+    switch PRIMITIVE {
         case POINTS: { return vec3f(s.a.xy, f32(s.shown && s.front.x)); }
         case STROKES: { return vec3f(0.5 * (s.a.xy + s.b.xy), f32(s.front.x)); }
         default: { return vec3f((s.a.xy + s.b.xy + s.c.xy) / 3.0, f32(all(s.front))); }
@@ -294,10 +289,10 @@ fn under() -> f32 {
 
 // Instances of the mark's primitive: rows and their ports, a stroke's segments, or triangles.
 fn instances() -> u32 {
-    if PROBED == STROKES {
+    if PRIMITIVE == STROKES {
         return stroke_instances();
     }
-    if PROBED == POINTS {
+    if PRIMITIVE == POINTS {
         return mark.rows * (1u + mark.ports);
     }
     return triangle_instances();
@@ -319,6 +314,13 @@ fn append(r: Reach) {
     atomicStore(&probe[entry + 5u], bitcast<u32>(r.depth));
 }
 
+// Writes where the row located lies.
+fn locate(at: vec3f) {
+    atomicStore(&probe[PROBE_LOCATE_X], bitcast<u32>(at.x));
+    atomicStore(&probe[PROBE_LOCATE_Y], bitcast<u32>(at.y));
+    atomicStore(&probe[PROBE_LOCATED], u32(at.z));
+}
+
 @compute @workgroup_size(256)
 fn answer(@builtin(global_invocation_id) id: vec3u) {
     let s = step.step;
@@ -332,16 +334,22 @@ fn answer(@builtin(global_invocation_id) id: vec3u) {
         atomicStore(&probe[PROBE_UNDER], bitcast<u32>(under()));
         return;
     }
-    if s == STEP_LOCATE {
-        let at = located(bitcast<u32>(frame.query.x));
-        atomicStore(&probe[PROBE_LOCATE_X], bitcast<u32>(at.x));
-        atomicStore(&probe[PROBE_LOCATE_Y], bitcast<u32>(at.y));
-        atomicStore(&probe[PROBE_LOCATED], u32(at.z));
-        return;
-    }
-    // Describing reads the topmost instance the hover found, when it is this mark's.
+    // Locating reads the row the query names; describing, the topmost instance the hover found, when
+    // it is this mark's. Every step that reads an instance sees it through the one call below.
+    let locating = s == STEP_LOCATE;
     var i = item(id);
-    if s == STEP_DESCRIBE {
+    if locating {
+        i = bitcast<u32>(frame.query.x);
+        if i >= mark.rows {
+            locate(vec3f(0.0));
+            return;
+        }
+        // An area lies where its label hangs.
+        if PRIMITIVE == TRIANGLES && PATH == PATH_GEOMETRY {
+            locate(anchored(i));
+            return;
+        }
+    } else if s == STEP_DESCRIBE {
         let key = atomicLoad(&probe[PROBE_KEY]);
         let instance = atomicLoad(&probe[PROBE_INSTANCE]);
         if key == NONE || instance == 0u || 255u - (key & 255u) != min(mark.index, 255u) {
@@ -351,7 +359,11 @@ fn answer(@builtin(global_invocation_id) id: vec3u) {
     } else if i >= instances() {
         return;
     }
-    let drawn = seen(i, false);
+    let drawn = seen(i, locating);
+    if locating {
+        locate(located(drawn));
+        return;
+    }
     if s == STEP_BOXED {
         if boxed(drawn) {
             atomicOr(&probe[mark.query + drawn.row / 32u], 1u << (drawn.row % 32u));

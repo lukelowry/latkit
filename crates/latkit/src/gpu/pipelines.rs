@@ -31,12 +31,9 @@ pub(crate) enum Urgency {
     Warm,
 }
 
-/// Compiles under way past what frames draw with and their text: few enough that frames drawing
-/// meanwhile keep the CPU, the next asked as each lands.
-const AT_ONCE: u64 = 4;
-
-/// How many pipelines a browser compiles side by side: text asked while fewer compile takes a free
-/// worker, where asked sooner it would hold back what frames draw with.
+/// How many pipelines a browser compiles side by side. Text asked while fewer compile takes a free
+/// worker, where asked sooner it would hold back what frames draw with; the rest compile at most half
+/// as many at once, so frames drawing meanwhile keep the CPU, the next asked as each lands.
 const WORKERS: u64 = 8;
 
 /// A check of a custom marker's shader, resolving to its error if it has one: sent between threads
@@ -53,9 +50,10 @@ struct Custom {
     failed: bool,
 }
 
-/// One pipeline: a shader's entry point made for one primitive's geometry (its `PROBED`), one kind
-/// of path (its `PATH`), and what channels read (its `JOINED`, `TIMED`, and `VIEWED`), and for a render shader,
-/// the format and samples per pixel it draws into.
+/// One pipeline: a shader's entry point made for one primitive's geometry (its `PRIMITIVE`), one kind
+/// of path (its `PATH`), and what channels read (its `JOINED`, `TIMED`, and `VIEWED`), and for a render
+/// shader, the format and samples per pixel it draws into. It holds a primitive and a path only where
+/// its shader reads them, so no two of its pipelines compile the same.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Variant {
     shader: Shader,
@@ -98,10 +96,9 @@ impl Variant {
         Variant { shader, entry, primitive: 0, path: PATH_ENDS, reads: Reads::ALL, target: None }
     }
 
-    /// The probe program made for marks of `primitive` (a `POINTS`, `STROKES`, or `TRIANGLES` code),
-    /// which answers every question a step at a time.
+    /// The probe program made for marks of `primitive`, which answers every question a step at a time.
     pub(crate) fn probe(shader: Shader, primitive: u32) -> Variant {
-        Variant { shader, entry: "answer", primitive, path: PATH_ENDS, reads: Reads::ALL, target: None }
+        Variant::compute(shader, "answer").primitive(primitive)
     }
 
     /// The channels of marks reading what `reads` says.
@@ -109,17 +106,33 @@ impl Variant {
         Variant { reads, ..Variant::compute(Shader::Evaluate, "evaluate") }
     }
 
-    /// The variant whose strokes read `path`, one of the `PATH_` codes.
+    /// The variant made for marks of `primitive`, a `POINTS`, `STROKES`, or `TRIANGLES` code, where its
+    /// shader holds one primitive's geometry.
+    #[must_use]
+    pub(crate) fn primitive(mut self, primitive: u32) -> Variant {
+        if self.reads_constant("PRIMITIVE") {
+            self.primitive = primitive;
+        }
+        self
+    }
+
+    /// The variant whose strokes read `path`, one of the `PATH_` codes, where its shader reads one.
     #[must_use]
     pub(crate) fn path(mut self, path: u32) -> Variant {
-        self.path = path;
+        if self.reads_constant("PATH") {
+            self.path = path;
+        }
         self
+    }
+
+    fn reads_constant(&self, name: &str) -> bool {
+        self.shader.source().overrides.contains(&name)
     }
 
     /// The pipeline constants its shader declares, set.
     fn constants(&self) -> Vec<(&'static str, f64)> {
         let value = |name: &str| match name {
-            "PROBED" => f64::from(self.primitive),
+            "PRIMITIVE" => f64::from(self.primitive),
             "PATH" => f64::from(self.path),
             "JOINED" => f64::from(u8::from(self.reads.joined)),
             "TIMED" => f64::from(u8::from(self.reads.timed)),
@@ -203,6 +216,9 @@ pub(crate) struct Pipelines {
     /// Whether frames were asked to draw with anything yet, and whether what the GPU warms starts.
     drew: bool,
     warming: bool,
+    /// Whether what views to come draw with was queued.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    warmed: bool,
     /// What counts the pipelines compiled.
     counters: Arc<Counters>,
     /// The GPU these belong to, for a compile landing to start the next.
@@ -307,13 +323,15 @@ impl Pipelines {
             drawing: Arc::default(),
             drew: false,
             warming: false,
+            #[cfg(all(feature = "web", target_arch = "wasm32"))]
+            warmed: false,
             counters,
             gpu,
         }
     }
 
     /// Asks for each of `needs` at `urgency`, `waker` waking as each lands: what frames draw with
-    /// compiles at once, their text as workers free up, the rest in turn, `AT_ONCE` at a time;
+    /// compiles at once, their text as workers free up, the rest in turn, half the `WORKERS` at a time;
     /// asking again for one still waiting its turn moves it up. Its shader module is made now: a
     /// browser reads a module's WGSL on its GPU thread as it is made, so what compiles later is read
     /// before anything draws.
@@ -350,16 +368,17 @@ impl Pipelines {
         });
     }
 
-    /// Starts what the GPU warms, as views would otherwise leave it idle: once the first scene's
-    /// frames have all they draw with, or when `Gpu::warm` finds no view asked for anything.
+    /// Queues what `needs` lists, what views to come draw with, once per GPU: it compiles once the
+    /// first scene's frames have all they draw with, so it never holds them back.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
-    pub(crate) fn warm(&mut self, device: &wgpu::Device) {
-        self.warming = true;
-        self.pump(device);
+    pub(crate) fn warm(&mut self, device: &wgpu::Device, needs: impl FnOnce() -> Vec<Asked>) {
+        if !std::mem::replace(&mut self.warmed, true) {
+            self.queue(device, &needs(), Urgency::Warm, Waker::noop());
+        }
     }
 
     /// Starts what waits its turn, in order: all that frames draw with; their text while fewer than
-    /// `WORKERS` compile, or none of that does; the rest while fewer than `AT_ONCE` compile.
+    /// `WORKERS` compile, or none of that does; the rest while fewer than half as many compile.
     pub(crate) fn pump(&mut self, device: &wgpu::Device) {
         // What the GPU warms waits for the first scene's frames to have all they draw with.
         self.warming |= self.drew && self.drawing() == 0;
@@ -367,8 +386,8 @@ impl Pipelines {
             && match urgency {
                 Urgency::Draw => true,
                 Urgency::Text => self.drawing() == 0 || self.in_flight() < WORKERS,
-                Urgency::Answer => self.in_flight() < AT_ONCE,
-                Urgency::Warm => self.warming && self.in_flight() < AT_ONCE,
+                Urgency::Answer => self.in_flight() < WORKERS / 2,
+                Urgency::Warm => self.warming && self.in_flight() < WORKERS / 2,
             }
         {
             let (urgency, need) = self.queue.remove(0);

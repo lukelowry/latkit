@@ -20,8 +20,9 @@ use crate::{Mark, Marker, Scene, Space};
 /// The passes of the select capping a mark's labels.
 const SELECT: [&str; 4] = ["select_start", "select_count", "select_find", "select_cut"];
 
-/// The label passes run for each labeled mark; in a diagram, only the first.
-const LABELS: [&str; 6] = ["candidates", "claim", "decide", "occupy", "ask", "fade"];
+/// The passes placing each labeled mark's labels once its candidates are measured; a diagram's labels
+/// need no placement.
+pub(super) const PLACING: [&str; 5] = ["claim", "decide", "occupy", "ask", "fade"];
 
 /// What a view asked the GPU to compile for frames into one target, taking input or not: what they
 /// draw with, their text, and what changes, lights rows, probes, and answers queries.
@@ -53,7 +54,7 @@ pub(crate) fn common(format: wgpu::TextureFormat, samples: u32) -> Vec<Asked> {
     }
     needs.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| Variant::compute(Shader::Lists, e)));
     needs.extend([draw(Shader::PointsPorts), draw(Shader::Overlay), draw(Shader::Glyphs), draw(Shader::GlyphsPorts)]);
-    needs.push(Variant::compute(Shader::Labels, "candidates"));
+    needs.push(Variant::compute(Shader::Candidates, "candidates"));
     needs.extend(["columns", "rows"].map(|e| Variant::compute(Shader::Fields, e)));
     needs.into_iter().map(Asked::Shader).collect()
 }
@@ -238,10 +239,15 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
     // geometry: any row drawn can be located, whether or not it picks.
     stages.input.push(Asked::Shader(Variant::probe(pipelines::probe(samples), primitive).path(path)));
     if style.label.is_some() {
-        // In a diagram, only the first label pass runs.
-        let labels = if matches!(scene.space, Space::Diagram(_)) { &LABELS[..1] } else { &LABELS[..] };
-        stages.text.push(Asked::Shader(draw(Shader::Glyphs).path(path)));
-        stages.text.extend(labels.iter().map(|e| Asked::Shader(Variant::compute(Shader::Labels, e).path(path))));
+        // Measuring where labels hang and drawing them are made for the mark's primitive; a diagram's
+        // labels need no placement.
+        stages.text.push(Asked::Shader(draw(Shader::Glyphs).path(path).primitive(primitive)));
+        stages
+            .text
+            .push(Asked::Shader(Variant::compute(Shader::Candidates, "candidates").path(path).primitive(primitive)));
+        if !matches!(scene.space, Space::Diagram(_)) {
+            stages.text.extend(PLACING.map(|e| Asked::Shader(Variant::compute(Shader::Labels, e).path(path))));
+        }
         if style.label.as_ref().is_some_and(|l| l.max.is_some()) && !matches!(scene.space, Space::Diagram(_)) {
             stages.text.extend(SELECT.map(|e| compute(Shader::Labels, e)));
         }

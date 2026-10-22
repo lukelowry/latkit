@@ -1,8 +1,9 @@
 /**
  * The browser gate. Times every shader variant's pipelines in Chrome against a budget, then opens
  * every page of the suite in a fresh browser and moves the pointer over it. It fails on a pipeline
- * over budget or failing to compile, a console error, a page that draws no frame in time, or a frame
- * that stalls while the page opens or under the pointer. Every wait races a deadline.
+ * over budget or failing to compile, a console error, a page that draws no frame in time, a page
+ * missing frames in a row while it opens or under the pointer, or a pipeline compiled where first
+ * used. Every wait races a deadline.
  *
  * On SwiftShader (`--software`, as Linux always is), the CPU draws, slower than any budget, so the
  * gate only checks that every pipeline compiles: pages and times are judged on a GPU.
@@ -25,9 +26,11 @@ const COMPILE_BUDGET = 800;
 /** Milliseconds from opening a page, cold, to its views' first frames, which draw everything their
  * scenes use: every pipeline compiles side by side, off Chrome's GPU thread. */
 const FIRST_FRAME_BUDGET = 1000;
-/** Milliseconds between two animation frames, while a page opens or the pointer moves over it:
- * nothing compiles on Chrome's GPU thread, so no frame waits. */
-const FRAME_BUDGET = 50;
+/** Display frames in a row a page may miss while it opens or the pointer moves over it. Frames come
+ * at the display's pace, which the machine sets: 60 Hz on a panel, 32 Hz over Remote Desktop, whose
+ * vblanks slip one at a time. Nothing compiles on Chrome's GPU thread, so no frame waits on latkit;
+ * what it compiles where first used is counted apart, as `work.late`. */
+const MISSED = 1;
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
 const examples = path.dirname(here);
@@ -246,17 +249,24 @@ async function visit(url: string, id: string): Promise<string[]> {
       if (message.type() === 'error') failures.push(`console: ${message.text().slice(0, 300)}`);
     });
     page.on('pageerror', (error) => failures.push(`page: ${error.message.slice(0, 300)}`));
-    // The longest gap between animation frames since the last reset.
+    // The longest gap between animation frames since the last reset, and the display's frame
+    // interval: the median of the latest gaps.
     await page.addInitScript(() => {
-      const w = window as unknown as { gap: number; resetGap(): void };
+      const w = window as unknown as { gap: number; resetGap(): void; interval(): number };
       let last = 0;
+      const gaps: number[] = [];
       w.gap = 0;
       w.resetGap = () => {
         w.gap = 0;
         last = 0;
       };
+      w.interval = () => [...gaps].sort((a, b) => a - b)[gaps.length >> 1] ?? 1000 / 60;
       const tick = (now: number) => {
-        if (last) w.gap = Math.max(w.gap, now - last);
+        if (last) {
+          w.gap = Math.max(w.gap, now - last);
+          gaps.push(now - last);
+          if (gaps.length > 120) gaps.shift();
+        }
         last = now;
         requestAnimationFrame(tick);
       };
@@ -358,14 +368,28 @@ async function visit(url: string, id: string): Promise<string[]> {
       failures.push(`no picture exported: ${said}`);
     }
     const { gap, step } = longest;
+    const { interval, late } = await page.evaluate(() => {
+      const w = window as unknown as {
+        interval(): number;
+        stage?: { gpu: { work: { late: number } } };
+      };
+      return { interval: w.interval(), late: w.stage?.gpu.work.late ?? 0 };
+    });
+    // A gap of n intervals missed n - 1 frames; past MISSED + 1.5 intervals, more than MISSED did.
+    const budget = (MISSED + 1.5) * interval;
     console.log(
-      `${id}: first frame ${first.toFixed(0)} ms, longest while opening ${opening.toFixed(0)} ms; ` +
-        `longest under the pointer ${gap.toFixed(0)} ms, on ${step || 'nothing'}`,
+      `${id}: first frame ${first.toFixed(0)} ms, frames every ${interval.toFixed(0)} ms, longest while ` +
+        `opening ${opening.toFixed(0)} ms; longest under the pointer ${gap.toFixed(0)} ms, on ${step || 'nothing'}`,
     );
-    if (opening > FRAME_BUDGET)
-      failures.push(`a frame took ${opening.toFixed(0)} ms opening, over ${FRAME_BUDGET}`);
-    if (gap > FRAME_BUDGET)
-      failures.push(`a frame took ${gap.toFixed(0)} ms on ${step}, over ${FRAME_BUDGET}`);
+    const missed = (ms: number) => Math.round(ms / interval) - 1;
+    if (opening > budget)
+      failures.push(`missed ${missed(opening)} frames in a row opening (${opening.toFixed(0)} ms)`);
+    if (gap > budget)
+      failures.push(`missed ${missed(gap)} frames in a row on ${step} (${gap.toFixed(0)} ms)`);
+    if (late > 0)
+      failures.push(
+        `${late} pipelines compiled where first used, holding back the frames using them`,
+      );
   } finally {
     await chrome.close();
   }

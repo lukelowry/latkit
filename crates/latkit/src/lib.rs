@@ -8,13 +8,14 @@
 //! Every input is plain data that deserializes: [`from_json`] reads one from JSON text, an error
 //! naming the path to what it could not read, and [`schema`] gives its JSON Schema.
 
-// Without `gpu`, some of the data's internals have no reader.
-#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+// Without `gpu`, what only drawing reads of the data, expressions, and sorts has no reader; builds
+// with it, which lint every feature, find what nothing reads.
+#![cfg_attr(not(feature = "gpu"), allow(dead_code))]
+
 mod data;
 #[cfg(feature = "gpu")]
 mod derive;
 mod error;
-#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 mod expr;
 mod geo;
 #[cfg(feature = "gpu")]
@@ -25,7 +26,6 @@ mod image;
 mod json;
 #[cfg(feature = "gpu")]
 mod layout;
-#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 mod order;
 #[cfg(feature = "gpu")]
 mod panels;

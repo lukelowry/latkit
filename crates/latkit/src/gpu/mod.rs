@@ -26,11 +26,6 @@ use work::{Counters, Queue, Work};
 use crate::host::Host;
 use crate::{Error, Result};
 
-/// How long a browser's GPU waits for a view before it compiles what nearly every scene draws with:
-/// a page showing its first view sooner has it compile what it draws with first.
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
-const WARM_AFTER: std::time::Duration = std::time::Duration::from_millis(300);
-
 /// The format views draw canvases and shots in, so both share one set of pipelines: every WebGPU
 /// canvas takes it.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
@@ -204,29 +199,17 @@ impl Gpu {
             })
             .await
             .map_err(|e| Error::Unsupported(format!("no GPU device: {e}").into()))?;
-        let gpu = Gpu::create(Some(instance), Some(adapter), device, queue);
-        // In a browser what nearly every scene draws with compiles from now, while the page loads its
-        // data, so the first view finds it compiled.
-        #[cfg(all(feature = "web", target_arch = "wasm32"))]
-        gpu.warm(web_sys::window().map_or(1.0, |w| w.device_pixel_ratio() as f32));
-        Ok(gpu)
+        Ok(Gpu::create(Some(instance), Some(adapter), device, queue))
     }
 
-    /// Asks, last of all, for what nearly every scene draws with into canvases at `pixel_ratio`, so
-    /// views opened later find it compiled. It starts once the first scene's frames have all they
-    /// draw with, so it never holds them back, or after `WARM_AFTER` if no view asked by then.
+    /// Queues, once, what nearly every scene draws with into the page's canvases, so views opened
+    /// later find it compiled: in a browser, as its first view opens, compiling once that view's
+    /// frames have all they draw with. A GPU no view uses compiles nothing.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
-    fn warm(&self, pixel_ratio: f32) {
-        let needs = crate::view::common(FORMAT, crate::view::samples(pixel_ratio));
-        self.0.lock().pipelines.queue(&self.0.device, &needs, pipelines::Urgency::Warm, std::task::Waker::noop());
-        let gpu = Arc::downgrade(&self.0);
-        crate::time::later(WARM_AFTER, move || {
-            if let Some(gpu) = gpu.upgrade()
-                && let Some(mut inner) = gpu.try_lock()
-            {
-                inner.pipelines.warm(&gpu.device);
-            }
-        });
+    pub(crate) fn warm(&self) {
+        let pixel_ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio() as f32);
+        let samples = crate::view::samples(pixel_ratio);
+        self.0.lock().pipelines.warm(&self.0.device, || crate::view::common(FORMAT, samples));
     }
 
     /// Draws with an application-owned device and queue without replacing their callbacks.
