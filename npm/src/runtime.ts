@@ -319,6 +319,16 @@ export class Gpu {
     return JSON.parse(this.inner.work) as Work;
   }
 
+  /** Bytes on the GPU every view of it draws from: data, and what each view keeps per row. */
+  get resident(): number {
+    return this.inner.resident;
+  }
+
+  /** Bytes waiting to upload, for every view of this GPU. */
+  get uploading(): number {
+    return this.inner.uploading;
+  }
+
   /**
    * Draws one frame now at `now`, milliseconds on the clock animation frames give: the frame
    * listeners, then every canvas that needs a frame. From the first step no animation frames are

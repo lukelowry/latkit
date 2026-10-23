@@ -1,6 +1,6 @@
 // Freezing: what each row of a mark showed when its transition began, gathered into the frozen
 // buffer at the row's new place. The remap words list where each new row was (NONE for a row that
-// entered), then the rows that left, which fade out past `mark.rows`. Slot words of a mark whose
+// entered), then the rows that left, which fade out past the live ones. Slot words of a mark whose
 // ends point at vertices follow them to their new slots.
 
 import package::lib::types::{NONE, ENTERING, item};
@@ -14,7 +14,7 @@ import package::lib::bind::{mark, state};
 @compute @workgroup_size(256)
 fn gather(@builtin(global_invocation_id) id: vec3u) {
     let i = item(id);
-    if i >= mark.rows + mark.exits {
+    if i >= mark.held {
         return;
     }
     let old_state = remap[mark.remap];

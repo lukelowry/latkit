@@ -8,7 +8,7 @@ use std::sync::Arc;
 use rustc_hash::FxBuildHasher;
 
 use crate::Name;
-use crate::data::{Keyed, Page, PageId, Values};
+use crate::data::{Column, Keyed, Page, PageId, Values};
 use crate::gpu::shaders::MISSING;
 
 /// Pages a dictionary keeps the codes of: past them, it forgets them all.
@@ -70,6 +70,12 @@ impl Dictionary {
         }
         self.pages.insert(page.id, codes.clone());
         codes
+    }
+
+    /// The codes of `column`'s rows `rows`, in that order, their texts added: what a page packed in a
+    /// table's order holds. Each row costs a lookup, however its pages were coded.
+    pub(crate) fn rows(&mut self, column: &Column, rows: &[u32]) -> Vec<u32> {
+        rows.iter().map(|&r| column.at(r as usize).map_or(MISSING, |(values, i)| self.code(values, i))).collect()
     }
 
     /// The code of value `i` of `values` as an `f32` word, its text added when it is new.

@@ -65,6 +65,9 @@ const COLUMN_TABLE: u32 = 2u;
 const COLUMN_LOW: u32 = 3u;
 const COLUMN_JOIN: u32 = 4u;
 const COLUMN_T: u32 = 5u;
+// Rows per page of the column's table, as a shift: a page of the data, or a page a table drawn in
+// part holds.
+const COLUMN_BITS: u32 = 6u;
 // Column flags.
 const SAMPLED: u32 = 1u;
 const STEP: u32 = 2u;
@@ -73,14 +76,29 @@ const BITS: u32 = 4u;
 // Rows per data page, as a shift.
 const PAGE_BITS: u32 = 16u;
 const PAGE_MASK: u32 = 65535u;
-// Rows a block holds: a page of every column. A dispatch over more items than one dimension holds
-// steps a block at a time in its second, 256 workgroups of 256 wide.
-const BLOCK_ROWS: u32 = 65536u;
+// Rows per page a table drawn in part holds, as a shift: a mark's rows of it lie a page at a time in
+// slots, in the order its pyramid draws them.
+const HELD_BITS: u32 = 12u;
+const HELD_MASK: u32 = 4095u;
+// Rows a block holds: what a mark evaluates at a time, a held page.
+const BLOCK_ROWS: u32 = 4096u;
+// Items a dispatch over more items than one dimension holds steps through at a time in its second
+// dimension, 256 workgroups of 256 wide.
+const DISPATCH_ROWS: u32 = 65536u;
 
-// The item invocation `id` of a dispatch over items covers: blocks of BLOCK_ROWS along the second
+// Words of a run of drawn rows in a mark's list of them: where it starts among the drawn rows, the
+// held row it starts at, and whether its tile fades in or out (FADE_IN, FADE_OUT).
+const RUN_WORDS: u32 = 3u;
+// A drawn row's word, as the expansion of the runs writes it: its held row, and whether its tile
+// fades in or out.
+const DRAWN_ROW: u32 = 0x3fffffffu;
+const DRAWN_ENTERING: u32 = 0x40000000u;
+const DRAWN_LEAVING: u32 = 0x80000000u;
+
+// The item invocation `id` of a dispatch over items covers: runs of DISPATCH_ROWS along the second
 // dimension, when the first holds too few.
 fn item(id: vec3u) -> u32 {
-    return id.y * BLOCK_ROWS + id.x;
+    return id.y * DISPATCH_ROWS + id.x;
 }
 
 // How a word of a row eases while its mark does: kept as it is (no channel stores it), shown as
@@ -94,6 +112,9 @@ const BLEND_POSITION: u32 = 4u;
 // Points per block of a geometry's points, as a shift: a block of x and y words is a chunk.
 const POINT_BITS: u32 = 15u;
 const POINT_MASK: u32 = 32767u;
+// Words of a geometry column's table per page: the block of each row's first point, where the page's
+// blocks of points are listed in the table, how many points the page has, and how many rows.
+const PATH_PAGE_WORDS: u32 = 4u;
 
 // Vertex state words.
 const VERTEX_WORDS: u32 = 12u;
@@ -486,9 +507,19 @@ struct Mark {
     index: u32,
     kind: u32,
     primitive: u32,
-    // Rows drawn and evaluated, and rows past them that left and fade out.
+    // Rows drawn, and rows past them that left and fade out.
     rows: u32,
     exits: u32,
+    // Rows the mark holds evaluated, leaving rows included: of a table drawn whole its rows, of one
+    // drawn in part its held pages' rows. Every per-row word is a held row's.
+    held: u32,
+    // Where the program lists which held rows the drawn rows are, a run at a time, and where the
+    // lists hold each drawn row's word, expanded from them; NONE where every drawn row is the held
+    // row of its number, as a table drawn whole draws.
+    row_runs: u32,
+    drawn: u32,
+    // How far the tiles coming and going have faded, from 0 to 1.
+    reveal: f32,
     // Each row's kind words: where row 0's start and how many; then its extra words.
     state: u32,
     stride: u32,

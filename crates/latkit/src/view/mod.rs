@@ -3,6 +3,7 @@
 mod axes;
 mod camera;
 mod clock;
+mod drawing;
 mod event;
 mod fit;
 mod focus;
@@ -39,9 +40,9 @@ pub(crate) use camera::Projected;
 pub use event::{Cursor, End, Event, Fit, Hit, Phase, Sample, Stats, Trigger, Waiting};
 pub use input::{Button, Device, Input, Key, Modifiers};
 pub(crate) use resources::{DEPTH, SHADE};
-pub(crate) use wake::Signal;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
-pub(crate) use {resources::samples, variants::common};
+pub(crate) use variants::common;
+pub(crate) use wake::Signal;
 
 use camera::Area;
 use clock::Clock;
@@ -103,8 +104,9 @@ pub struct View {
     scene_version: u64,
     /// The datasets given, and those the view fetches as the camera asks, by name.
     sources: Vec<Data>,
-    /// What marks draw of each: the dataset as it is, or as drawn in part.
-    data: Vec<Data>,
+    /// What the camera chose of each table drawn in part, this frame, and what draws of each.
+    choices: crate::derive::tiled::Choices,
+    drawings: crate::data::Keyed<(Name, Name), drawing::Drawn>,
     /// What the view derives from the data and the scene: tables beside the tables it draws, row for
     /// row, which marks read like data.
     derived: Derivations,
@@ -158,7 +160,7 @@ pub struct View {
     probing: Probing,
     queries: query::Queries,
     /// Words the marks' segment lists take at the front of the lists buffer.
-    segment_words: u32,
+    list_words: u32,
     labels: labels::Labels,
     gestures: Gestures,
     /// The pointer over the view: where, with what keys, and with what; `None` once it left.
@@ -189,7 +191,8 @@ impl View {
             scene: Scene::new(scene.space.clone()),
             scene_version: 0,
             sources: Vec::new(),
-            data: Vec::new(),
+            choices: crate::derive::tiled::Choices::default(),
+            drawings: crate::data::Keyed::default(),
             derived: Derivations::default(),
             marks: Vec::new(),
             camera,
@@ -221,7 +224,7 @@ impl View {
             focus: Focus::default(),
             probing: Probing::default(),
             queries: query::Queries::default(),
-            segment_words: 0,
+            list_words: 0,
             labels: labels::Labels::default(),
             gestures: Gestures::default(),
             pointer: None,
@@ -319,7 +322,11 @@ impl View {
         self.compiling = None;
         self.answering = None;
         self.texting = None;
-        self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, resources::samples(self.pixel_ratio)), true);
+        // Where the GPU's frames have their samples per pixel already, what the scene draws with
+        // starts compiling now; else its first frame asks.
+        if let Some(samples) = gpu.samples() {
+            self.ask(&mut gpu.0.lock(), (crate::gpu::FORMAT, samples), true);
+        }
         self.focus.dirty = true;
         self.gestures.keys.stale();
         self.invalidate();
@@ -375,11 +382,6 @@ impl View {
         self.sources.iter().find(|d| d.name() == name)
     }
 
-    /// What marks draw of the dataset named `name`: it as it is, or as drawn in part.
-    fn drawn(&self, name: &str) -> Option<&Data> {
-        self.data.iter().find(|d| d.name() == name)
-    }
-
     /// Fetches `tiles` as the camera asks for them, kept as the dataset they name, which the view
     /// owns: marks draw it like any other, [`data`](View::data) reads it, and
     /// [`remove_data`](View::remove_data) stops it. Tiles of the same name replace these.
@@ -392,7 +394,7 @@ impl View {
     pub fn remove_data(&mut self, name: &str) {
         self.derived.tiles.remove(name);
         self.sources.retain(|d| d.name() != name);
-        self.data.retain(|d| d.name() != name);
+        self.drawings.retain(|key, _| key.0 != name);
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         for shown in &mut self.marks {
@@ -404,7 +406,7 @@ impl View {
                 shown.compiled = None;
                 shown.rows = 0;
                 shown.exits = 0;
-                shown.drawn = None;
+                shown.holding = None;
             }
         }
         drop(inner);
@@ -584,25 +586,16 @@ impl View {
 
     /// What the view did.
     pub fn stats(&self) -> Stats {
-        let inner = self.gpu.0.lock();
         let rows = |m: &Shown| {
             let style = m.mark.style();
             self.source(&style.data).and_then(|d| d.table(&style.table)).map_or(0, |t| t.len() as u64)
         };
         let [tiles, tiles_loading] = self.derived.tiles.counts();
-        // A table drawn through tiles leaves holes where tiles drawn before were: they draw nothing.
-        let drawn = |m: &Shown| match &m.drawn {
-            Some((_, table)) => (table.len() - table.ids.holes()) as u64,
-            None => u64::from(m.rows),
-        };
         Stats {
             rows: self.marks.iter().map(rows).sum(),
-            drawn: self.marks.iter().map(drawn).sum(),
+            drawn: self.marks.iter().map(|m| u64::from(m.steady_rows())).sum(),
             tiles,
             tiles_loading,
-            uploading: inner.arena.pending(),
-            resident: inner.arena.resident(),
-            budget: inner.budget.bytes.min(inner.arena.capacity()),
             waiting: self.waiting,
             ..self.stats
         }
@@ -669,8 +662,9 @@ impl View {
     /// [`ready`](View::ready).
     pub(crate) fn ready_for(&mut self, format: wgpu::TextureFormat, pixel_ratio: f32, input: bool) -> bool {
         let gpu = self.gpu.clone();
+        let samples = gpu.samples_for(pixel_ratio);
         let mut inner = gpu.0.lock();
-        let draws = self.pipelines_ready(&mut inner, format, resources::samples(pixel_ratio), input);
+        let draws = self.pipelines_ready(&mut inner, format, samples, input);
         let answers = self.answers_ready(&inner);
         let texts = self.texts_ready(&inner);
         let landed = inner.pipelines.landed();
@@ -723,7 +717,7 @@ impl View {
             || (self.answers() && (self.probing.due() || self.queries.due()))
             || self.answering.is_some_and(|seen| landed() != seen)
             || self.texting.is_some_and(|seen| landed() != seen)
-            || self.derived.tiled.due()
+            || self.fading()
             || self.labels.fading(self.clock.now())
             // A mark evaluates once its columns synced: until then, the pages they wait for wake it.
             || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
@@ -753,7 +747,6 @@ impl View {
             || self.regions_dirty
             || self.fitting.due()
             || (input && self.answers() && (self.probing.due() || self.queries.due()))
-            || self.derived.tiled.due()
             || self.marks.iter().any(|m| m.begin.is_some())
     }
 
@@ -776,7 +769,7 @@ impl View {
                 || self.compiling.is_some()
                 || self.answering.is_some()
                 || self.texting.is_some(),
-            data: !self.marks.iter().all(given) || marks().any(|m| !m.tables.synced() || m.tables.waiting()),
+            data: !self.marks.iter().all(given) || marks().any(|m| !m.tables.synced() || m.tables.pending()),
             derived: !self.derived.complete(),
             labels: !self.labels.complete(),
             fit: self.fitting.due() || self.fitting.reading(),
@@ -789,8 +782,14 @@ impl View {
     /// and is not counted.
     pub(crate) fn easing(&self) -> bool {
         self.rig.easing()
+            || self.fading()
             || self.labels.fading(self.clock.now())
             || self.marks.iter().any(|m| m.begin.is_some() || m.transition.is_some())
+    }
+
+    /// Whether tiles of a table drawn in part fade in or out.
+    fn fading(&self) -> bool {
+        self.drawings.values().any(|d| d.current.as_ref().is_some_and(|c| c.fades))
     }
 
     fn invalidate(&mut self) {

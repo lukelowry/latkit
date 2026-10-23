@@ -417,6 +417,28 @@ fn the_wheel_zooms_as_the_controls_say() {
     assert!(!view.input(&wheel(true), common::now()), "nothing zooms");
 }
 
+#[test]
+fn zooming_at_the_fits_limit_moves_nothing() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = view(&gpu, Controls { motion: Motion::Reduced, ..Controls::default() });
+    view.fit(latkit::Fit::All);
+    frame(&gpu, &mut view);
+    let Camera::Map { zoom: framed, .. } = *view.camera() else { panic!("a diagram's camera") };
+    // Just short of the deepest zoom what was framed allows, the wheel turns toward a corner.
+    let near = Camera::Map { center: [5.0, -3.0, 0.0], zoom: framed + 7.95, pitch: 0.0, bearing: 0.0 };
+    view.set_camera(near);
+    let wheel = Input::Wheel { point: [C + 30.0, C - 20.0], delta: [0.0, -400.0], modifiers: Modifiers::default() };
+    view.input(&wheel, common::now());
+    step(&gpu, &mut view);
+    let at_limit = *view.camera();
+    assert!((zoom(&view) - (framed + 8.0)).abs() < 1e-9, "the zoom stops at its limit: {}", zoom(&view));
+    for _ in 0..3 {
+        view.input(&wheel, common::now());
+        step(&gpu, &mut view);
+        assert_eq!(*view.camera(), at_limit, "past the limit the camera holds still, center and all");
+    }
+}
+
 fn view_off(gpu: &latkit::Gpu) -> View {
     view(gpu, Controls { zoom: Zoom::Off, ..Controls::default() })
 }

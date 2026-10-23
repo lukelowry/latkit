@@ -11,6 +11,8 @@ mod browser;
 mod job;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod native;
+#[cfg(any(test, all(feature = "web", target_arch = "wasm32")))]
+mod queue;
 
 use std::sync::Arc;
 

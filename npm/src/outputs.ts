@@ -122,12 +122,6 @@ export interface Stats {
   tiles: number;
   /** Tiles being fetched or decoded, of every tile source. */
   tilesLoading: number;
-  /** Bytes of data waiting to upload. */
-  uploading: number;
-  /** Bytes of data pages on the GPU, for every view of its `Gpu`. */
-  resident: number;
-  /** Bytes the GPU's `Budget` lets data take. */
-  budget: number;
   /**
    * The work under way the last frame stood in for; nothing when it drew everything as the data,
    * scene, and camera say: see `View::complete`.
@@ -278,6 +272,11 @@ export interface Work {
   written: number;
   /** Rows whose channels the GPU evaluated. */
   evaluated: number;
+  /**
+   * Rows packed into pages of the order a table drawn in part draws in: each page once, the first
+   * time a view draws it, and again only where a write changed its rows.
+   */
+  packed: number;
   /**
    * Reads back from the GPU: probes, queries, fits, label placements, segment counts, pictures; not
    * the frame timer's, which only some devices have.

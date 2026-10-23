@@ -1,8 +1,8 @@
-//! Selection, hover, and the rows a fit measures, as focus words: one per row of every mark, written
-//! only where they change. The selection keeps only rows a pickable mark shows. The ends of a selected
-//! or hovered edge are lit too. Each mark's lit rows are listed for its focus draw, which draws them
-//! again over everything, glowing. Hover is state either way, which expressions read; whether it
-//! glows is the controls' to say.
+//! Selection, hover, and the rows a fit measures, as focus words: one per held row of every mark,
+//! written only where they change. The selection keeps only rows a pickable mark shows. The ends of a
+//! selected or hovered edge are lit too. Each mark's lit rows are listed, as the rows it draws, for its
+//! focus draw, which draws them again over everything, glowing. Hover is state either way, which
+//! expressions read; whether it glows is the controls' to say.
 
 use rustc_hash::FxHashMap;
 
@@ -90,10 +90,10 @@ impl View {
             // Channels reading focus evaluate the blocks of the rows whose words changed; every row
             // after the words were laid out again.
             for shown in &mut self.marks {
-                let (focus, rows) = (shown.region.focus, shown.rows + shown.exits);
+                let (focus, held) = (shown.region.focus, shown.held());
                 let blocks: Vec<u32> = changes
                     .iter()
-                    .filter(|&&(w, _)| w >= focus && w - focus < rows)
+                    .filter(|&&(w, _)| w >= focus && w - focus < held)
                     .map(|&(w, _)| (w - focus) / wgsl::BLOCK_ROWS)
                     .collect();
                 shown.dirty_rows(shown.channels_reading(Deps::FOCUS), (!fresh).then_some(&blocks[..]));
@@ -104,9 +104,9 @@ impl View {
         self.focus.written = words;
     }
 
-    /// Sets `bit` in the focus words of `rows` in every mark showing them (with `picked`, every
+    /// Sets `bit` in the focus words of `rows` in every mark holding them (with `picked`, every
     /// pickable one), and with `ends` lights the ends of each edge among them; returns the rows some
-    /// mark shows. A row its data holds stays shown while a table drawn in part does not draw it.
+    /// mark shows. A row its data holds stays shown while a table drawn in part holds no page of it.
     fn focus_rows(
         &self,
         rows: &[Row],
@@ -117,12 +117,8 @@ impl View {
     ) -> Vec<Row> {
         let mut kept = Vec::new();
         for row in rows {
-            let held = self.data(&row.data).and_then(|d| d.table(&row.table)).and_then(|t| t.row(row.id.as_ref()));
-            if held.is_none() {
-                continue;
-            }
-            let table = self.drawn(&row.data).and_then(|d| d.table(&row.table));
-            let index = table.and_then(|t| t.row(row.id.as_ref()));
+            let Some(table) = self.data(&row.data).and_then(|d| d.table(&row.table)) else { continue };
+            let Some(index) = table.row(row.id.as_ref()) else { continue };
             let mut shows = false;
             for shown in &self.marks {
                 let style = shown.mark.style();
@@ -130,9 +126,8 @@ impl View {
                     continue;
                 }
                 shows = true;
-                let (Some(table), Some(index)) = (table, index) else { continue };
-                if (index as u32) < shown.rows {
-                    *words.entry(shown.region.focus + index as u32).or_default() |= bit;
+                if let Some(held) = shown.held_row(index as u32) {
+                    *words.entry(shown.region.focus + held).or_default() |= bit;
                 }
                 let crate::Mark::Edges(edges) = &shown.mark else { continue };
                 let Some((from, to)) = edges.ends.as_ref().filter(|_| ends) else { continue };
@@ -148,7 +143,7 @@ impl View {
         kept
     }
 
-    /// Lights the row `reference` names for row `index` in every vertex mark drawing its table.
+    /// Lights the row `reference` names for row `index` in every vertex mark holding its table's.
     fn light_end(&self, data: &crate::Name, reference: &Reference, index: usize, words: &mut FxHashMap<u32, u32>) {
         let Some(target) = reference.target(index) else { return };
         for shown in &self.marks {
@@ -156,37 +151,40 @@ impl View {
             if shown.kind() == crate::scene::mark::MarkKind::Vertices
                 && style.data == *data
                 && style.table == reference.to
-                && target < shown.rows
+                && let Some(held) = shown.held_row(target)
             {
-                *words.entry(shown.region.focus + target).or_default() |= wgsl::END;
+                *words.entry(shown.region.focus + held).or_default() |= wgsl::END;
             }
         }
     }
 
-    /// Lists every mark's rows with a bit of `glowing` set for its focus draw, with the instances
-    /// each takes.
+    /// Lists every mark's drawn rows with a bit of `glowing` set for its focus draw, with the
+    /// instances each takes.
     fn lay_out_lit(&mut self, words: &FxHashMap<u32, u32>, glowing: u32) {
         let mut all = Vec::new();
         for i in 0..self.marks.len() {
-            let (focus, rows) = (self.marks[i].region.focus, self.marks[i].rows);
-            let mut lit: Vec<u32> = words
+            let shown = &self.marks[i];
+            let (focus, live) = (shown.region.focus, shown.live());
+            let mut lit: Vec<(u32, u32)> = words
                 .iter()
-                .filter(|&(&w, &bits)| w >= focus && w - focus < rows && bits & glowing != 0)
-                .map(|(&w, _)| w - focus)
+                .filter(|&(&w, &bits)| w >= focus && w - focus < live && bits & glowing != 0)
+                .filter_map(|(&w, _)| Some((shown.item_of(w - focus)?, w - focus)))
                 .collect();
             lit.sort_unstable();
-            let pieces = if lit.is_empty() { 0 } else { self.pieces(i, &lit) };
+            let held: Vec<u32> = lit.iter().map(|&(_, h)| h).collect();
+            let pieces = if lit.is_empty() { 0 } else { self.pieces(i, &held) };
             let rows = if pieces == 0 { 0 } else { lit.len() as u32 };
             self.marks[i].lit = Lit { at: all.len() as u32, rows, pieces };
             if rows > 0 {
-                all.extend(lit);
+                all.extend(lit.into_iter().map(|(item, _)| item));
             }
         }
         self.focus.lit = Some(all);
     }
 
-    /// Instances mark `i`'s focus draw takes for each of its `lit` rows: a point one; a path as many
-    /// as the longest of theirs has pieces, past which a row's own draw nothing; none for faces.
+    /// Instances mark `i`'s focus draw takes for each of its lit held rows `lit`: a point one; a path
+    /// as many as the longest of theirs has pieces, past which a row's own draw nothing; none for
+    /// faces.
     fn pieces(&self, i: usize, lit: &[u32]) -> u32 {
         let shown = &self.marks[i];
         let Some(compiled) = &shown.compiled else { return 0 };
@@ -200,23 +198,24 @@ impl View {
         }
     }
 
-    /// The most points any of mark `i`'s `lit` rows has in its geometry column: its path, its bends,
-    /// or its triangles.
+    /// The most points any of mark `i`'s held rows `lit` has in its geometry column: its path, its
+    /// bends, or its triangles.
     fn longest(&self, i: usize, lit: &[u32]) -> u32 {
         let shown = &self.marks[i];
         let Some(compiled) = &shown.compiled else { return 0 };
         let Some(column) = compiled.program.columns.get(compiled.drawing.geometry as usize) else { return 0 };
         let style = shown.mark.style();
-        let Some(data) = self.drawn(&style.data) else { return 0 };
+        let Some(data) = self.source(&style.data) else { return 0 };
         let Some(table) = data.table(&style.table) else { return 0 };
-        let source = Source { data, table, derived: self.derived.beside(&style.data, &style.table) };
-        let Some((_, table)) = table_of(column, &source, &self.data) else { return 0 };
+        let source = Source { data, table, derived: self.derived.beside(&style.data, &style.table), paged: Vec::new() };
+        let Some((_, table)) = table_of(column, &source, &self.sources) else { return 0 };
         let Some(Field::Values(values, _)) = table.field_named(&column.name) else { return 0 };
         let pages = values.pages();
         lit.iter()
-            .filter_map(|&row| {
-                let page = pages.get(row as usize / PAGE_ROWS)?;
-                Some(page.values.geometry()?.row_coords(row as usize % PAGE_ROWS).len() as u32)
+            .filter_map(|&held| {
+                let row = shown.source_row(held)? as usize;
+                let page = pages.get(row / PAGE_ROWS)?;
+                Some(page.values.geometry()?.row_coords(row % PAGE_ROWS).len() as u32)
             })
             .max()
             .unwrap_or(0)

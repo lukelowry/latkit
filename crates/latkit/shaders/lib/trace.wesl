@@ -1,19 +1,19 @@
 // Traces: what a line draws of a sampled field across the axis: runs of entries left to right, each
-// of one level, frames or buckets. The traced column's table holds a header (how many runs, row
-// blocks, and levels); per run its level's place among the levels, its first entry, how many, and the
+// of one level, frames or buckets. The traced column's table holds a header (how many runs, pages of
+// rows, and levels); per run its level's place among the levels, its first entry, how many, and the
 // point it starts at; per level the level, how many axis pages it has, where they are listed, and
-// where its row blocks' lists start; per level and row block how many pages of frames or least values
+// where its pages' lists start; per level and page of rows how many pages of frames or least values
 // it has and where they are listed, then of greatest values; then those lists: axis pages as (offset,
 // first entry), pages of values as (offset, first entry, words per entry). Offsets within the table
 // are relative to it. A line runs through each frame, and through each bucket's least and greatest
 // value where it draws; between runs that do not meet, a point is left out, breaking the line.
 
-import package::lib::types::{NONE, MISSING, COLUMN_TABLE, PAGE_BITS, PAGE_MASK};
+import package::lib::types::{NONE, MISSING, COLUMN_TABLE};
 import package::lib::bind::{pages, program, mark};
-import package::lib::read::column_word;
+import package::lib::read::{column_word, page_of};
 
 const HEADER: u32 = 4u;
-const RUN_WORDS: u32 = 4u;
+const TRACE_RUN_WORDS: u32 = 4u;
 const LEVEL_WORDS: u32 = 4u;
 
 fn trace_table() -> u32 {
@@ -47,14 +47,14 @@ struct TraceRun {
 // The run point `k` lies in: the last starting at or before it.
 fn trace_run(k: u32) -> TraceRun {
     let t = trace_table();
-    let r = last_at_most(t + HEADER, max(program[t], 1u), RUN_WORDS, 3u, k);
+    let r = last_at_most(t + HEADER, max(program[t], 1u), TRACE_RUN_WORDS, 3u, k);
     return TraceRun(program[r], program[r + 1u], program[r + 2u], program[r + 3u]);
 }
 
 // Where level `slot`'s words start.
 fn trace_level_at(slot: u32) -> u32 {
     let t = trace_table();
-    return t + HEADER + RUN_WORDS * program[t] + LEVEL_WORDS * slot;
+    return t + HEADER + TRACE_RUN_WORDS * program[t] + LEVEL_WORDS * slot;
 }
 
 // The level a run of `slot` draws.
@@ -75,7 +75,8 @@ fn trace_axis(slot: u32, entry: u32) -> vec2f {
 // (`side` 0) or greatest (1).
 fn trace_entry(row: u32, slot: u32, entry: u32, side: u32) -> u32 {
     let t = trace_table();
-    let block = row >> PAGE_BITS;
+    let at = page_of(mark.trace, row);
+    let block = at.x;
     if block >= program[t + 1u] {
         return MISSING;
     }
@@ -85,7 +86,7 @@ fn trace_entry(row: u32, slot: u32, entry: u32, side: u32) -> u32 {
         return MISSING;
     }
     let e = last_at_most(t + program[lists + 1u], count, 3u, 1u, entry);
-    let local = row & PAGE_MASK;
+    let local = at.y;
     let per = program[e + 2u];
     if program[e] == NONE || local >= per || entry < program[e + 1u] {
         return MISSING;

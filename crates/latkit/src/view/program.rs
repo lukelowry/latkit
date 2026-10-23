@@ -1,6 +1,7 @@
 //! The program buffer: each mark's descriptors, tables, ranges, code, constants, ends, and ports in a
-//! region of its own, rewritten alone when only that mark changed. A region that outgrows its room
-//! moves to the end of the buffer; when the end passes the buffer, every region is laid out again.
+//! region of its own, rewritten alone when only that mark changed, and then only where its words
+//! changed. A region that outgrows its room moves to the end of the buffer; when the end passes the
+//! buffer, every region is laid out again.
 
 use super::{Event, View};
 use crate::gpu::Inner;
@@ -12,9 +13,25 @@ pub(crate) struct Regions {
     pub(crate) relayout: bool,
 }
 
+/// Words alike between two that changed, past which they are written apart.
+const GAP: usize = 16;
+
 /// The room a region of `len` words gets, so it can grow a little in place.
 fn room(len: u32) -> u32 {
     len + len / 4 + 16
+}
+
+/// The spans of `words` that differ from `was`, what the same place held, as `[start, end)`: those
+/// closer than `GAP` words written as one.
+fn changed(was: &[u32], words: &[u32]) -> Vec<[usize; 2]> {
+    let mut spans: Vec<[usize; 2]> = Vec::new();
+    for i in (0..words.len()).filter(|&i| was.get(i) != Some(&words[i])) {
+        match spans.last_mut() {
+            Some(span) if i - span[1] < GAP => span[1] = i + 1,
+            _ => spans.push([i, i + 1]),
+        }
+    }
+    spans
 }
 
 impl View {
@@ -47,6 +64,7 @@ impl View {
                     _ if self.regions.end + room(len) <= capacity => {
                         let start = self.regions.end;
                         shown.words = Some([start, room(len)]);
+                        shown.written.clear();
                         self.regions.end += room(len);
                         start
                     }
@@ -57,7 +75,11 @@ impl View {
                 };
                 let mut words = Vec::with_capacity(len as usize);
                 shown.pack(start, &mut words);
-                gpu.0.queue.write_buffer(resources.program(), u64::from(start) * 4, bytemuck::cast_slice(&words));
+                for [from, to] in changed(&shown.written, &words) {
+                    let at = u64::from(start) * 4 + from as u64 * 4;
+                    gpu.0.queue.write_buffer(resources.program(), at, bytemuck::cast_slice(&words[from..to]));
+                }
+                shown.written = words;
                 shown.packed = true;
             }
         }
@@ -69,6 +91,7 @@ impl View {
                 let start = words.len() as u32;
                 let len = shown.packed_len();
                 shown.pack(start, &mut words);
+                shown.written = words[start as usize..].to_vec();
                 words.resize((start + room(len)) as usize, 0);
                 shown.words = Some([start, room(len)]);
                 shown.packed = true;

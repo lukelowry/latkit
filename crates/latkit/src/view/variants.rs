@@ -180,6 +180,10 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     if any(|m| matches!(m, Mark::Edges(_) | Mark::Lines(_) | Mark::Areas(_))) {
         stages.draw.extend(["scan_blocks", "scan_sums", "add_sums"].map(|e| compute(Shader::Lists, e)));
     }
+    // Any table may come to draw in part, as its data grows past the budget or orders it by priority.
+    if !scene.marks.is_empty() {
+        stages.draw.push(compute(Shader::Lists, "expand_runs"));
+    }
     for mark in &scene.marks {
         mark_stages(mark, scene, format, samples, &mut stages);
     }

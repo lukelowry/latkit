@@ -135,19 +135,15 @@ impl schemars::JsonSchema for Value {
     }
 }
 
-/// A row picked that names none: the value made of it is missing, as a hole among the rows drawn
-/// of a table drawn through tiles is.
-pub(crate) const HOLE: usize = usize::MAX;
-
 /// Where each value an assembly makes comes from, among its sources: the first, then pages of
 /// [`PAGE_ROWS`](super::column::PAGE_ROWS) rows each. A concrete type rather than a closure, so
 /// [`Values::assemble`] is compiled once.
 #[derive(Clone, Copy)]
 pub(crate) enum Picks<'a> {
-    /// Value `i` is row `rows[i]` of the pages, missing for a [`HOLE`].
+    /// Value `i` is row `rows[i]` of the pages.
     Rows(&'a [usize]),
-    /// Value `i` is row `from[i]` of the pages where it is written, missing for a [`HOLE`], else row
-    /// `i` of the first source while `i < kept`, else missing.
+    /// Value `i` is row `from[i]` of the pages where it is written, else row `i` of the first source
+    /// while `i < kept`, else missing.
     Writes { from: &'a [Option<usize>], kept: usize },
 }
 
@@ -162,7 +158,7 @@ impl Picks<'_> {
     /// The source and row of value `i`, or `None` where it is missing.
     #[inline]
     fn get(self, i: usize) -> Option<(usize, usize)> {
-        let paged = |row: usize| (row != HOLE).then_some((1 + (row >> PAGE_BITS), row & PAGE_MASK));
+        let paged = |row: usize| Some((1 + (row >> PAGE_BITS), row & PAGE_MASK));
         match self {
             Picks::Rows(rows) => paged(rows[i]),
             Picks::Writes { from, kept } => match from[i] {
@@ -299,22 +295,6 @@ impl Values {
             Array::U64(v) => v[i] as f64,
             Array::Bool(v) => f64::from(u8::from(v.get(i))),
             Array::Text(_) | Array::Geometry(_) => f64::NAN,
-        }
-    }
-
-    /// The values as `u32`s, when they are stored so and none is missing.
-    pub(crate) fn u32s(&self) -> Option<&[u32]> {
-        match (&self.array, &self.valid) {
-            (Array::U32(v), None) => Some(v),
-            _ => None,
-        }
-    }
-
-    /// The values as `u64`s, when they are stored so and none is missing.
-    pub(crate) fn u64s(&self) -> Option<&[u64]> {
-        match (&self.array, &self.valid) {
-            (Array::U64(v), None) => Some(v),
-            _ => None,
         }
     }
 

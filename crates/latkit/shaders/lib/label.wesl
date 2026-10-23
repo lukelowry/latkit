@@ -14,9 +14,10 @@ import package::lib::project::{to_screen, clip_of};
 import package::lib::points::point;
 import package::lib::path::{PATH, Segment, segment_screen, path_count};
 import package::lib::triangles::{triangle_corner, area_anchor};
+import package::lib::drawn::held_row;
 
-// Where row `row`'s label hangs, CSS pixels, how it aligns to that point (0 left or top, 0.5
-// centered), the room it must fit in (none when zero), and whether its row shows.
+// Where a row's label hangs, CSS pixels, how it aligns to that point (0 left or top, 0.5 centered),
+// the room it must fit in (none when zero), and whether its row shows.
 struct Anchor {
     at: vec2f,
     align: vec2f,
@@ -29,8 +30,10 @@ fn length_px(size: f32) -> f32 {
     return size * frame.unit;
 }
 
-fn anchor(row: u32) -> Anchor {
+// Where drawn row `item`'s label hangs.
+fn anchor(item: u32) -> Anchor {
     var a: Anchor;
+    let row = held_row(item);
     switch PRIMITIVE {
         case POINTS: {
             let p = point(row);
@@ -54,10 +57,11 @@ fn anchor(row: u32) -> Anchor {
             }
         }
         case STROKES: {
-            let count = path_count(row);
+            let count = path_count(item);
             // A trace labels its last sample; other paths their middle.
             let last = PATH == PATH_TRACE;
-            let on = segment_screen(Segment(row, select(count / 2u, max(count, 1u) - 1u, last), 0.0));
+            let index = select(count / 2u, max(count, 1u) - 1u, last);
+            let on = segment_screen(Segment(row, item, index, 0.0, 1.0, 1.0, false));
             a.shown = count > 0u && on.shown;
             if last {
                 a.at = on.b + vec2f(6.0, 0.0);
@@ -80,7 +84,7 @@ fn anchor(row: u32) -> Anchor {
             var sum = vec2f(0.0);
             a.shown = true;
             for (var k = 0u; k < 3u; k++) {
-                let c = triangle_corner(row, k);
+                let c = triangle_corner(item, k);
                 let clip = clip_of(c.world);
                 a.shown = a.shown && c.shown && c.ahead && clip.w > 0.0;
                 sum += to_screen(clip);

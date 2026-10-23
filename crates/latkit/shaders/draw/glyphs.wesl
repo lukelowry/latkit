@@ -10,11 +10,12 @@ import package::lib::types::{
 import package::lib::bind::{frame, eye, mark, state, program, ramp};
 import package::lib::state::extra_at;
 import package::lib::read::missing_bits;
-import package::lib::points::{point, port_at, port_inward};
+import package::lib::points::{shown_point, port_at, port_inward};
 import package::lib::marker::theme_port_size;
 import package::lib::label::{anchor, length_px, legibility, text_at, fits, Text};
 import package::lib::project::culled;
 import package::lib::color::output;
+import package::lib::drawn::drawn_row;
 
 @group(2) @binding(8) var atlas: texture_2d<f32>;
 @group(2) @binding(13) var<storage, read> labels: array<u32>;
@@ -52,10 +53,12 @@ fn unshown() -> Varyings {
 
 @if(!ports)
 @vertex
-fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32) -> Varyings {
-    if row >= mark.rows {
+fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
+    if instance >= mark.rows {
         return unshown();
     }
+    let drawn = drawn_row(instance);
+    let row = drawn.row;
     let code_bits = state[extra_at(row, mark.label + LABEL_CODE)];
     if missing_bits(code_bits) {
         return unshown();
@@ -67,7 +70,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32)
     if (uv0 == 0u && uv1 == 0u) || (uv0 & TEXT_ESTIMATE) != 0u {
         return unshown();
     }
-    let a = anchor(row);
+    let a = anchor(instance);
     let size = length_px(mark.label_size);
     let t = text_at(uv0, uv1, size, a.at, a.align);
     // A diagram's labels show while they fit and read; elsewhere as placement decided.
@@ -75,6 +78,8 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32)
     if frame.space == SPACE_DIAGRAM {
         alpha = f32(a.shown && fits(t.hi - t.lo, a.room)) * legibility(size);
     }
+    // A label fades with its row's tile.
+    alpha *= drawn.presence;
     if !(alpha > 0.0) {
         return unshown();
     }
@@ -88,9 +93,9 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32)
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
     let n = max(mark.ports, 1u);
-    let row = instance / n;
+    let item = instance / n;
     let k = instance % n;
-    if row >= mark.rows {
+    if item >= mark.rows {
         return unshown();
     }
     let info = mark.port_info + k * PORT_WORDS;
@@ -99,7 +104,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     if uv0 == 0u && uv1 == 0u {
         return unshown();
     }
-    let p = point(row);
+    let p = shown_point(item);
     let port = port_at(p, k);
     let code = program[info + PORT_CODE];
     let inward = port_inward(code);

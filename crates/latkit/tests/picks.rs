@@ -77,6 +77,28 @@ fn picks_list_every_row_in_reach_nearest_first() {
 }
 
 #[test]
+fn a_hit_names_the_row_and_place_its_frame_drew() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = view(&gpu, Controls::default());
+    let c = SIZE as f32 / 2.0;
+    let pending = view.pick([c, c], 6.0);
+    // The frame answering draws node 1 at the middle; before its answer lands, the nodes are given
+    // in another order and the camera moves away.
+    step(&gpu, &mut view);
+    let mut data = graph();
+    let reordered =
+        Table::new("Node", vec![3_u64, 2, 1]).field("x", vec![-40.0, 10.0, 0.0]).field("y", vec![30.0, 0.0, 0.0]);
+    data.apply(Patch::new().replace(reordered)).expect("valid");
+    view.set_data(data);
+    view.set_camera(Camera::Map { center: [500.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
+    let hits = answer(&gpu, &mut view, pending);
+    let first = hits.first().expect("a hit");
+    assert_eq!(first.row, latkit::Row::new("graph", "Node", 1_u64), "{hits:?}");
+    assert!(first.position[0].abs() < 1.0, "where its frame drew it: {:?}", first.position);
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
 fn every_hit_of_geodesic_edges_lies_in_reach() {
     let Some(gpu) = gpu() else { return };
     // A lattice on the globe: geodesic edges drawn through a segment list, which draws fewer segments

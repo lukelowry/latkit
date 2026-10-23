@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::super::sight::{Sight, TILE_PX, meets};
+use super::super::sight::{Domain, Sight, TILE_PX, meets};
 use super::super::tiling::{Decoding, Requested, Source, Tiling};
 use super::super::{Input, Jobs, stamp_of};
 use crate::data::{Data, Field, Id, Name, Op, Patch, Table, Values};
@@ -37,7 +37,7 @@ fn wanted(sight: &Sight<'_>, zooms: [u8; 2], bounds: [f64; 4]) -> Vec<TileKey> {
             if b[0] > bounds[2] || b[2] < bounds[0] || b[1] > bounds[3] || b[3] < bounds[1] || !meets(&region, b) {
                 continue;
             }
-            let (size, distance) = sight.measure(&focus, b);
+            let (size, distance) = sight.measure(&focus, &Domain::Earth, key);
             let room = out.len() + next.len() + (queue.len() - k) * 4 < MAX_TILES;
             if key.z < zooms[1] && (key.z < zooms[0] || size > limit) && room {
                 next.extend(key.children());

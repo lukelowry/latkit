@@ -1,23 +1,28 @@
 //! Pyramids: a table's rows grouped into tiles by the coarsest level each shows at, worked out in a
-//! job. Each level splits the tiles above it four ways, and each tile holds a grid of cells, a row to
-//! a cell, so no tile holds more rows than its grid has cells. Rows land by priority: each at the
-//! coarsest level where its cell is free, so what matters more shows from farther out, and rows
-//! crowding one cell wait for a finer level, where they spread over cells of their own. A row never
-//! lands finer than its size allows, so its tile grown by half its own size holds it whole. An edge
-//! lands by its own priority, in the cell of its middle, and edges joining the same two vertices land
-//! together; what draws an edge draws its ends with it. A table drawn whole by priority is one tile,
-//! its rows in priority order.
+//! job, a dataset's tables in one. Each level splits the tiles above it four ways, and each tile
+//! holds a grid of cells, a row to a cell. Rows land by priority: each at the coarsest level where its
+//! cell is free, so what matters more shows from farther out, and rows crowding one cell wait for a
+//! finer level, where they spread over cells of their own. A row never lands finer than its size
+//! allows, so its tile grown by half its own size holds it whole. An edge lands by its own priority,
+//! in the cell of its middle, and edges joining the same two vertices land together; a vertex lands
+//! no finer than the coarsest edge ending at it, so the ends of every edge drawn show from as far out
+//! as it does. A table drawn whole by priority is one tile, its rows in priority order.
+//!
+//! A pyramid is an order: rows by tile, coarsest level first, each tile's rows together, and the
+//! place of each row in it. The camera chooses tiles, each a range of the order.
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use super::order::PAGE;
 use super::sight::{Domain, Region, Sight, TILE_PX, meets};
-use crate::data::{Field, Ids, Op, Patch, Table};
+use crate::data::{UNWIRED, Version};
 use crate::tiles::TileKey;
 
-/// Cells across a tile's grid, as a shift: a tile holds at most `4^GRID_BITS` rows of its level.
+/// Cells across a tile's grid, as a shift: a tile holds at most `4^GRID_BITS` rows of its level, but
+/// for the ends of edges, which land with them.
 pub(crate) const GRID_BITS: u32 = 7;
 /// The finest level.
 pub(crate) const MAX_LEVEL: u8 = 24;
@@ -25,6 +30,11 @@ pub(crate) const MAX_LEVEL: u8 = 24;
 const NEVER: u8 = u8::MAX;
 /// Tiles a camera may ask a pyramid for at most: past it, tiles stop splitting.
 const MAX_TILES: usize = 1024;
+/// Cells across a tile's grid of sub-cells, as a shift: the parts of a tile the camera may ask for
+/// alone, each a range of the order, so what draws of a large tile is what the camera sees of it.
+const SUB_BITS: u32 = 3;
+/// Rows past which a tile is asked for a sub-cell at a time.
+const SUB_ROWS: usize = 256;
 
 /// What a pyramid job places: tables of rows in a square of their space.
 #[derive(Clone, Debug)]
@@ -89,17 +99,25 @@ fn anchored(places: &Places, domain: &Domain) -> (Vec<[u32; 2]>, Vec<u32>) {
     }
 }
 
-/// The pyramid of each table a job answered for, by its place among the tables asked, with where
-/// each row lies across the square and how far it reaches.
-pub(crate) fn answer(leveling: &Leveling) -> Patch {
+/// Where one table's rows lie across the square, how far each reaches, the coarsest level each may
+/// land at, and for an edge table each row's pair of ends.
+struct Anchored {
+    anchors: Vec<[u32; 2]>,
+    extents: Vec<u32>,
+    floor: Vec<u8>,
+    pairs: Option<Vec<u64>>,
+}
+
+/// The pyramid of each table a job answered for, by its place among the tables asked.
+pub(crate) fn answer(leveling: &Leveling) -> Vec<(u32, Pyramid)> {
     let wraps = leveling.domain == Domain::Earth;
-    let mut anchors: Vec<Vec<[u32; 2]>> = Vec::with_capacity(leveling.tables.len());
-    let mut patch = Patch::new();
-    for (i, table) in leveling.tables.iter().enumerate() {
+    let tables = &leveling.tables;
+    let mut placed: Vec<Anchored> = Vec::with_capacity(tables.len());
+    for table in tables {
         let n = table.rows as usize;
-        let (own_anchors, extents, floor, pairs) = if let Some((target, ends)) = &table.ends {
-            let Some(at) = anchors.get(*target as usize) else { return Patch::new() };
-            let (own, extents) = by_ends(ends, at, wraps, n);
+        let anchoring = if let Some((target, ends)) = &table.ends {
+            let Some(at) = placed.get(*target as usize).map(|a| &a.anchors) else { return Vec::new() };
+            let (anchors, extents) = by_ends(ends, at, wraps, n);
             // A row with an end naming no row draws nothing: it lands only at the finest level.
             let floor = (0..n)
                 .map(|r| {
@@ -108,45 +126,64 @@ pub(crate) fn answer(leveling: &Leveling) -> Patch {
                 })
                 .collect();
             let pairs = (ends.len() == 2).then(|| pairs(&ends[0], &ends[1]));
-            (own, extents, floor, pairs)
+            Anchored { anchors, extents, floor, pairs }
         } else {
-            let (own, extents) = anchored(&table.places, &leveling.domain);
-            (own, extents, vec![0; n], None)
+            let (anchors, extents) = anchored(&table.places, &leveling.domain);
+            Anchored { anchors, extents, floor: vec![0; n], pairs: None }
         };
-        let leveled = table.leveled && own_anchors.len() == n;
-        let sorted = if leveled { along(&own_anchors) } else { Vec::new() };
-        let ranks = ranks(&table.priority, n);
-        let level = if leveled { place(&sorted, &extents, &ranks, &floor, pairs.as_deref()) } else { vec![0; n] };
-        if table.answered {
-            let (order, tiles) = if leveled {
-                tiled(&sorted, &own_anchors, &extents, &ranks, &level)
-            } else {
-                let mut order: Vec<u32> = (0..table.rows).collect();
-                crate::order::by_key(&mut order, |&r| ranks[r as usize]);
-                (order, vec![(pack(TileKey { z: 0, x: 0, y: 0 }), table.rows, u32::MAX)])
-            };
-            let (keys, (ends, reaches)): (Vec<u64>, (Vec<u32>, Vec<u32>)) =
-                tiles.into_iter().map(|(k, e, r)| (k, (e, r))).unzip();
-            patch = patch
-                .set(
-                    Table::new(format!("tiles{i}"), Ids::count(keys.len() as u32))
-                        .field("key", keys)
-                        .field("end", ends)
-                        .field("reach", reaches),
-                )
-                .set(Table::new(format!("order{i}"), Ids::count(order.len() as u32)).field("row", order));
-            if leveled {
-                let (u, v): (Vec<u32>, Vec<u32>) = own_anchors.iter().map(|a| (a[0], a[1])).unzip();
-                let mut placed = Table::new(format!("anchors{i}"), Ids::count(n as u32)).field("u", u).field("v", v);
-                if !extents.is_empty() {
-                    placed = placed.field("extent", extents.clone());
+        placed.push(anchoring);
+    }
+    let leveled = |i: usize| tables[i].leveled && placed[i].anchors.len() == tables[i].rows as usize;
+    let mut sorted: Vec<Vec<(u64, u32)>> = Vec::with_capacity(tables.len());
+    let mut ranked: Vec<Vec<u64>> = Vec::with_capacity(tables.len());
+    for (i, table) in tables.iter().enumerate() {
+        sorted.push(if leveled(i) { along(&placed[i].anchors) } else { Vec::new() });
+        ranked.push(ranks(&table.priority, table.rows as usize));
+    }
+    let level_of = |i: usize, ceiling: &[u8]| -> Vec<u8> {
+        if !leveled(i) {
+            return vec![0; tables[i].rows as usize];
+        }
+        let a = &placed[i];
+        place(&sorted[i], &a.extents, &ranked[i], &a.floor, a.pairs.as_deref(), ceiling)
+    };
+    // Edges land first: a vertex lands no finer than the coarsest edge ending at it.
+    let mut levels: Vec<Option<Vec<u8>>> = vec![None; tables.len()];
+    let mut ceilings: Vec<Vec<u8>> = vec![Vec::new(); tables.len()];
+    for (i, table) in tables.iter().enumerate() {
+        let Some((target, ends)) = &table.ends else { continue };
+        let level = level_of(i, &[]);
+        let target = *target as usize;
+        if leveled(i) && leveled(target) {
+            let ceiling = &mut ceilings[target];
+            ceiling.resize(tables[target].rows as usize, MAX_LEVEL);
+            for end in ends {
+                for (r, &t) in end.iter().enumerate() {
+                    if let Some(c) = ceiling.get_mut(t as usize).filter(|_| t != UNWIRED) {
+                        *c = (*c).min(level[r]);
+                    }
                 }
-                patch = patch.set(placed);
             }
         }
-        anchors.push(own_anchors);
+        levels[i] = Some(level);
     }
-    patch
+    let mut out = Vec::new();
+    for (i, table) in tables.iter().enumerate() {
+        let level = levels[i].take().unwrap_or_else(|| level_of(i, &ceilings[i]));
+        if !table.answered {
+            continue;
+        }
+        let (order, tiles) = if leveled(i) {
+            tiled(&sorted[i], &placed[i].anchors, &placed[i].extents, &ranked[i], &level)
+        } else {
+            let mut order: Vec<u32> = (0..table.rows).collect();
+            crate::order::by_key(&mut order, |&r| ranked[i][r as usize]);
+            let whole = Tile { key: TileKey { z: 0, x: 0, y: 0 }, rows: 0..table.rows, reach: 1.0, cells: Vec::new() };
+            (order, vec![whole])
+        };
+        out.push((i as u32, Pyramid::new(order, tiles)));
+    }
+    out
 }
 
 /// Where each of `n` rows placed by `ends` lies, among rows anchored at `at`: the middle of the box
@@ -277,20 +314,6 @@ fn tile_of(anchor: [u32; 2], z: u8) -> TileKey {
     TileKey { z, x: at(anchor[0]), y: at(anchor[1]) }
 }
 
-/// `cover` grown to hold tile `key`: a box from the west and the north, fixed point.
-fn covering(cover: [u64; 4], key: TileKey) -> [u64; 4] {
-    let shift = 32 - u32::from(key.z);
-    let (x, y) = (u64::from(key.x) << shift, u64::from(key.y) << shift);
-    let size = 1_u64 << shift;
-    [cover[0].min(x), cover[1].min(y), cover[2].max(x + size), cover[3].max(y + size)]
-}
-
-/// Whether a row anchored at `anchor`, reaching `extent` from it, reaches into `cover`.
-pub(crate) fn reaches(cover: &[u64; 4], anchor: [u32; 2], extent: u32) -> bool {
-    let (u, v, e) = (u64::from(anchor[0]), u64::from(anchor[1]), u64::from(extent));
-    u + e >= cover[0] && u.saturating_sub(e) < cover[2] && v + e >= cover[1] && v.saturating_sub(e) < cover[3]
-}
-
 /// A tile as a job's answer numbers it: in 53 bits, so a number holds it exactly.
 pub(crate) fn pack(key: TileKey) -> u64 {
     u64::from(key.z) << 48 | u64::from(key.x) << 24 | u64::from(key.y)
@@ -302,15 +325,29 @@ fn unpack(key: u64) -> TileKey {
 
 /// The level each row lands at: rows in each cell of each level, coarsest first, give way by rank; a
 /// row lands at the first level where it outranks every row left in its cell, no coarser than
-/// `floor`, at the finest its size allows when it has not landed by then.
+/// `floor`, and no finer than its size allows or `ceiling` says, where it lands when it has not by
+/// then.
 ///
 /// Rows along the curve are taken in runs, each the rows left in one cell. While a run stays in one
 /// cell level after level, those levels take its highest rows in rank order at once; where it
 /// spreads over several cells, each cell's rows go on as a run of their own. So a crowd sharing a
 /// cell for many levels costs its size once, not once a level.
-fn place(sorted: &[(u64, u32)], extents: &[u32], ranks: &[u64], floor: &[u8], pairs: Option<&[u64]>) -> Vec<u8> {
+fn place(
+    sorted: &[(u64, u32)],
+    extents: &[u32],
+    ranks: &[u64],
+    floor: &[u8],
+    pairs: Option<&[u64]>,
+    ceiling: &[u8],
+) -> Vec<u8> {
     let n = sorted.len();
-    let fits: Vec<u8> = (0..n).map(|r| extents.get(r).map_or(MAX_LEVEL, |&e| fit(e))).collect();
+    let fits: Vec<u8> = (0..n)
+        .map(|r| {
+            let own = extents.get(r).map_or(MAX_LEVEL, |&e| fit(e));
+            own.min(ceiling.get(r).copied().unwrap_or(MAX_LEVEL))
+        })
+        .collect();
+    let forcing = !extents.is_empty() || !ceiling.is_empty();
     let mates = pairs.map(|pairs| mates(sorted, pairs)).unwrap_or_default();
     let mut level = vec![NEVER; n];
     let mut work: Vec<(u64, u32)> = sorted.to_vec();
@@ -375,8 +412,8 @@ fn place(sorted: &[(u64, u32)], extents: &[u32], ranks: &[u64], floor: &[u8], pa
                 }
                 scratch = heap.into_vec();
             }
-            // Rows no finer level holds land where their size says.
-            if !extents.is_empty() {
+            // Rows no finer level may hold land where their size or their edges say.
+            if forcing {
                 forced.clear();
                 forced.extend(work[a..b].iter().map(|&(_, r)| r).filter(|&r| fits[r as usize] <= deepest));
                 for &r in &forced {
@@ -406,16 +443,16 @@ fn place(sorted: &[(u64, u32)], extents: &[u32], ranks: &[u64], floor: &[u8], pa
     level
 }
 
-/// Rows by tile, coarsest level first, each tile's rows in priority order, highest last; and each
-/// tile packed, where its rows end, and how far they reach past it, fixed point. `sorted` holds the
-/// rows along the curve.
+/// Rows by tile, coarsest level first, each tile's rows in priority order, highest last, and a large
+/// tile's a sub-cell at a time, each in priority order; and the tiles. `sorted` holds the rows along
+/// the curve.
 fn tiled(
     sorted: &[(u64, u32)],
     anchors: &[[u32; 2]],
     extents: &[u32],
     ranks: &[u64],
     level: &[u8],
-) -> (Vec<u32>, Vec<(u64, u32, u32)>) {
+) -> (Vec<u32>, Vec<Tile>) {
     let n = anchors.len();
     // Rows by level, along the curve within each, so each tile's rows are a run.
     let mut starts = vec![0_usize; usize::from(MAX_LEVEL) + 2];
@@ -446,103 +483,98 @@ fn tiled(
                 j += 1;
             }
             let start = order.len();
-            order.extend_from_slice(&rows[i..j]);
+            let members = &rows[i..j];
             // By priority alone: rows alike draw in either order.
-            crate::order::by_key(&mut order[start..], |&r| ranks[r as usize] >> 32);
-            tiles.push((pack(key), order.len() as u32, reach));
+            let by_priority = |order: &mut Vec<u32>, from: usize| {
+                crate::order::by_key(&mut order[from..], |&r| ranks[r as usize] >> 32);
+            };
+            let mut cells = Vec::new();
+            if members.len() > SUB_ROWS {
+                // Along the curve, each sub-cell's rows are a run.
+                let shift = 2 * (32 - u32::from(z) - SUB_BITS);
+                let mask = (1_u64 << (2 * SUB_BITS)) - 1;
+                let mut k = 0;
+                for cell in 0..=mask {
+                    let from = order.len();
+                    while k < members.len() && (morton(anchors[members[k] as usize]) >> shift) & mask == cell {
+                        order.push(members[k]);
+                        k += 1;
+                    }
+                    by_priority(&mut order, from);
+                    cells.push(order.len() as u32);
+                }
+            } else {
+                order.extend_from_slice(members);
+                by_priority(&mut order, start);
+            }
+            let reach = f64::from(reach) / 4_294_967_296.0;
+            tiles.push(Tile { key, rows: start as u32..order.len() as u32, reach, cells });
             i = j;
         }
     }
     (order, tiles)
 }
 
-/// One tile of a pyramid: where its rows lie in the pyramid's order, and how far they reach past it,
-/// across the square.
+/// One tile of a pyramid: where its rows lie in the pyramid's order, how far they reach past it
+/// across the square, and for a large tile where each sub-cell's rows end, in the curve's order of
+/// the sub-cells.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Tile {
     pub(crate) key: TileKey,
     pub(crate) rows: Range<u32>,
     pub(crate) reach: f64,
+    pub(crate) cells: Vec<u32>,
 }
 
-/// The tiles the camera asks of a pyramid, each with whether it is one of the finest asked, and the
-/// part of the square, from the west and the north, the finest cover: a coarser tile draws only its
-/// rows reaching into it.
-#[derive(Clone, Debug, Default, PartialEq, Hash)]
-pub(crate) struct Wanted {
-    pub(crate) tiles: Vec<(u32, bool)>,
-    pub(crate) cover: Option<[u64; 4]>,
+/// The pages of the order `ranges` hold past page `last`, and the last page they reach. The order lays
+/// its levels out coarsest first, so a level's pages lie past those of the levels above it, but for
+/// one they may share.
+fn pages_past(ranges: &[(u8, Range<u32>)], last: Option<u32>) -> (u32, Option<u32>) {
+    let mut spans: Vec<(u32, u32)> =
+        ranges.iter().filter(|(_, r)| r.start < r.end).map(|(_, r)| (r.start / PAGE, (r.end - 1) / PAGE)).collect();
+    spans.sort_unstable();
+    let (mut pages, mut reached) = (0, last);
+    for (first, end) in spans {
+        let from = reached.map_or(first, |l| first.max(l + 1));
+        pages += (end + 1).saturating_sub(from);
+        reached = Some(reached.map_or(end, |l| l.max(end)));
+    }
+    (pages, reached)
 }
 
-/// A table's rows grouped into tiles: a job's answer, read.
-#[derive(Debug, Default)]
+/// Sub-cell `cell` of tile `key`, numbered along the curve.
+fn sub_key(key: TileKey, cell: usize) -> TileKey {
+    let (mut x, mut y) = (0, 0);
+    for b in 0..SUB_BITS {
+        x |= ((cell >> (2 * b)) as u32 & 1) << b;
+        y |= ((cell >> (2 * b + 1)) as u32 & 1) << b;
+    }
+    TileKey { z: key.z + SUB_BITS as u8, x: key.x << SUB_BITS | x, y: key.y << SUB_BITS | y }
+}
+
+/// A table's rows grouped into tiles: its order, rows by tile, coarsest level first, each tile's rows
+/// in priority order, highest last; each row's place in it; and its tiles.
+#[derive(Debug)]
 pub(crate) struct Pyramid {
-    /// Rows by tile, coarsest level first, each tile's rows in priority order, highest last.
     pub(crate) order: Vec<u32>,
+    pub(crate) rank: Vec<u32>,
     pub(crate) tiles: Vec<Tile>,
-    /// Where each row lies across the square, fixed point, and half its size alike: none for a
-    /// table in one tile, and no sizes for points.
-    pub(crate) anchors: Vec<[u32; 2]>,
-    pub(crate) extents: Vec<u32>,
+    /// What tells it from every other pyramid: what pages packed in its order are kept by.
+    pub(crate) made: Version,
     index: FxHashMap<TileKey, u32>,
     /// Every tile with tiles below it.
     above: FxHashSet<TileKey>,
 }
 
 impl Pyramid {
-    /// The pyramids a job answered, by the place of the table among those asked.
-    pub(crate) fn read(bytes: &[u8]) -> FxHashMap<u32, Pyramid> {
-        Patch::from_bytes(bytes).map(Pyramid::answered).unwrap_or_default()
-    }
-
-    /// The pyramids `patch` answers, by the place of the table among those asked.
-    pub(crate) fn answered(patch: Patch) -> FxHashMap<u32, Pyramid> {
-        let mut tiles: FxHashMap<u32, Vec<Tile>> = FxHashMap::default();
-        let mut orders: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
-        let mut placed: FxHashMap<u32, (Vec<[u32; 2]>, Vec<u32>)> = FxHashMap::default();
-        for op in patch.ops {
-            let Op::Set(table) = op else { continue };
-            let number = |prefix: &str| table.name.strip_prefix(prefix).and_then(|i| i.parse::<u32>().ok());
-            let column = |name: &str| match table.field_named(name) {
-                Some(Field::Values(column, _)) => Some(column.clone()),
-                _ => None,
-            };
-            // Words read as they are stored, page by page.
-            let words = |name: &str| -> Vec<u32> {
-                column(name).map_or_else(Vec::new, |c| {
-                    c.pages().iter().flat_map(|p| p.values.u32s().unwrap_or(&[]).iter().copied()).collect()
-                })
-            };
-            if let Some(i) = number("tiles") {
-                let keys: Vec<u64> = column("key").map_or_else(Vec::new, |c| {
-                    c.pages().iter().flat_map(|p| p.values.u64s().unwrap_or(&[]).iter().copied()).collect()
-                });
-                let (ends, reaches) = (words("end"), words("reach"));
-                let mut start = 0;
-                let read = keys.iter().zip(&ends).zip(&reaches).map(|((&key, &end), &reach)| {
-                    let rows = start..end;
-                    start = end;
-                    Tile { key: unpack(key), rows, reach: f64::from(reach) / 4_294_967_296.0 }
-                });
-                tiles.insert(i, read.collect());
-            } else if let Some(i) = number("order") {
-                orders.insert(i, words("row"));
-            } else if let Some(i) = number("anchors") {
-                let anchors = words("u").into_iter().zip(words("v")).map(|(u, v)| [u, v]).collect();
-                placed.insert(i, (anchors, words("extent")));
+    /// The pyramid of `order` and `tiles`: each row's place in the order worked out from it.
+    pub(crate) fn new(order: Vec<u32>, tiles: Vec<Tile>) -> Pyramid {
+        let mut rank = vec![UNWIRED; order.len()];
+        for (d, &r) in order.iter().enumerate() {
+            if let Some(slot) = rank.get_mut(r as usize) {
+                *slot = d as u32;
             }
         }
-        tiles
-            .into_iter()
-            .filter_map(|(i, tiles)| {
-                let mut pyramid = Pyramid::new(orders.remove(&i)?, tiles);
-                (pyramid.anchors, pyramid.extents) = placed.remove(&i).unwrap_or_default();
-                Some((i, pyramid))
-            })
-            .collect()
-    }
-
-    pub(crate) fn new(order: Vec<u32>, tiles: Vec<Tile>) -> Pyramid {
         let index = tiles.iter().enumerate().map(|(i, t)| (t.key, i as u32)).collect();
         let mut above = FxHashSet::default();
         for tile in &tiles {
@@ -552,81 +584,129 @@ impl Pyramid {
                 }
             }
         }
-        Pyramid { order, tiles, anchors: Vec::new(), extents: Vec::new(), index, above }
+        Pyramid { order, rank, tiles, made: Version::next(), index, above }
     }
 
-    /// The tiles the camera asks for, coarsest first: at each level, every tile its rows reach into
-    /// what the camera shows from, splitting while a tile draws larger than its size. A level whose
-    /// rows would pass `rows` goes, coarser ones drawing whole in its place.
-    pub(crate) fn wanted(&self, sight: &Sight<'_>, domain: &Domain, rows: u32) -> Wanted {
+    /// Rows it orders.
+    pub(crate) fn rows(&self) -> u32 {
+        self.order.len() as u32
+    }
+
+    /// The ranges of the order the camera asks for, coarsest first, each with its level: at each
+    /// level, every tile its rows reach into what the camera shows from, a large one only where its
+    /// sub-cells do, splitting while a tile draws larger than its size. A drawing holds whole pages of
+    /// the order, so a level whose pages would hold more than `rows` rows goes, coarser ones drawing
+    /// whole in its place.
+    pub(crate) fn wanted(&self, sight: &Sight<'_>, domain: &Domain, rows: u32) -> Vec<(u8, Range<u32>)> {
         if self.tiles.len() == 1 && self.tiles[0].key.z == 0 {
-            return Wanted { tiles: vec![(0, true)], cover: None };
+            return vec![(0, self.tiles[0].rows.clone())];
         }
         let region: Region = sight.region();
         let focus = sight.focus();
         let limit = TILE_PX * 1.25;
-        let mut out: Vec<(u32, bool)> = Vec::new();
-        let mut cover = [u64::MAX, u64::MAX, 0, 0];
-        let mut total = 0_u32;
+        let mut out: Vec<(u8, Range<u32>)> = Vec::new();
+        let (fit, mut held, mut last) = (rows.div_ceil(PAGE), 0_u32, None);
         let mut level = vec![TileKey { z: 0, x: 0, y: 0 }];
-        // The tiles of the level above that split, and where among those found each is.
-        let mut split: Vec<(TileKey, Option<usize>)> = Vec::new();
         while !level.is_empty() {
             let mut found = Vec::new();
-            let mut leaves = Vec::new();
-            let mut splitting = Vec::new();
-            let mut added = 0_u32;
             let mut next = Vec::new();
             for key in level {
                 let grow = 0.5 / f64::from(1_u32 << key.z);
                 if !meets(&region, domain.bounds(key, grow)) {
                     continue;
                 }
-                let splits = self.above.contains(&key)
-                    && next.len() < MAX_TILES
-                    && sight.measure(&focus, domain.bounds(key, 0.0)).0 > limit;
-                let mut at = None;
                 if let Some(&t) = self.index.get(&key) {
                     let tile = &self.tiles[t as usize];
                     if meets(&region, domain.bounds(key, tile.reach)) {
-                        at = Some(out.len() + found.len());
-                        found.push((t, !splits));
-                        added = added.saturating_add(tile.rows.len() as u32);
+                        let first = found.len();
+                        if tile.cells.is_empty() {
+                            found.push((key.z, tile.rows.clone()));
+                        }
+                        // A sub-cell's rows lie within it, each reaching no farther than the tile's.
+                        let grow = tile.reach + 0.5 / f64::from(1_u32 << (u32::from(key.z) + SUB_BITS));
+                        let mut start = tile.rows.start;
+                        for (cell, &end) in tile.cells.iter().enumerate() {
+                            if end > start && meets(&region, domain.bounds(sub_key(key, cell), grow)) {
+                                let ours = found.len() > first;
+                                match found.last_mut() {
+                                    Some((_, range)) if ours && range.end == start => range.end = end,
+                                    _ => found.push((key.z, start..end)),
+                                }
+                            }
+                            start = end;
+                        }
                     }
                 }
+                let splits =
+                    self.above.contains(&key) && next.len() < MAX_TILES && sight.measure(&focus, domain, key).0 > limit;
                 if splits {
                     next.extend(key.children());
-                    splitting.push((key, at));
-                } else {
-                    leaves.push(key);
                 }
             }
-            if total.saturating_add(added) > rows && !out.is_empty() {
-                // The tiles that split draw whole instead.
-                for (key, at) in split {
-                    cover = covering(cover, key);
-                    if let Some(at) = at {
-                        out[at].1 = true;
-                    }
-                }
+            // A level whose pages would pass what fits goes: the coarser ones draw in its place.
+            let (pages, reached) = pages_past(&found, last);
+            if held + pages > fit && !out.is_empty() {
                 break;
             }
-            total = total.saturating_add(added);
+            (held, last) = (held + pages, reached);
             out.extend(found);
-            for key in leaves {
-                cover = covering(cover, key);
-            }
-            split = splitting;
             level = next;
         }
-        Wanted { tiles: out, cover: (cover[0] <= cover[2]).then_some(cover) }
+        out
     }
+
+    /// The pyramids a job answered, by the place of the table among those asked, as
+    /// [`encode`] wrote them.
+    pub(crate) fn read(bytes: &[u8]) -> Vec<(u32, Pyramid)> {
+        let words: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|&w| u32::from_le_bytes(w)).collect();
+        let mut words = words.as_slice();
+        let mut take = |n: usize| -> Option<&[u32]> {
+            let (head, rest) = words.split_at_checked(n)?;
+            words = rest;
+            Some(head)
+        };
+        let mut out = Vec::new();
+        'tables: while let Some(&[table, n]) = take(2) {
+            let n = n as usize;
+            let (Some(order), Some(&[count])) = (take(n).map(<[u32]>::to_vec), take(1)) else { break };
+            let mut tiles = Vec::with_capacity(count as usize);
+            let mut start = 0;
+            for _ in 0..count {
+                let Some(&[lo, hi, end, reach, cells]) = take(5) else { break 'tables };
+                let Some(cells) = take(cells as usize) else { break 'tables };
+                let key = unpack(u64::from(lo) | u64::from(hi) << 32);
+                let reach = f64::from(reach) / 4_294_967_296.0;
+                tiles.push(Tile { key, rows: start..end, reach, cells: cells.to_vec() });
+                start = end;
+            }
+            out.push((table, Pyramid::new(order, tiles)));
+        }
+        out
+    }
+}
+
+/// `pyramids` as a job answers them: for each, the place of its table among those asked, how many
+/// rows it orders, its order, how many tiles, and each tile's key, where its rows end, how far they
+/// reach, and how many sub-cells it has and where each one's rows end, little-endian words.
+pub(crate) fn encode(pyramids: &[(u32, Pyramid)]) -> Vec<u8> {
+    let mut words: Vec<u32> = Vec::new();
+    for (table, pyramid) in pyramids {
+        words.extend([*table, pyramid.rows()]);
+        words.extend_from_slice(&pyramid.order);
+        words.push(pyramid.tiles.len() as u32);
+        for tile in &pyramid.tiles {
+            let key = pack(tile.key);
+            let reach = (tile.reach * 4_294_967_296.0).min(f64::from(u32::MAX)) as u32;
+            words.extend([key as u32, (key >> 32) as u32, tile.rows.end, reach, tile.cells.len() as u32]);
+            words.extend_from_slice(&tile.cells);
+        }
+    }
+    words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::UNWIRED;
 
     /// Fixed point across the square.
     fn at(u: f64, v: f64) -> [u32; 2] {
@@ -639,16 +719,22 @@ mod tests {
         (domain, Places::Points(points.iter().map(|&[u, v]| [u as f32, (1.0 - v) as f32]).collect()))
     }
 
+    /// The level row `row` of `pyramid` lands at.
+    fn level_of(pyramid: &Pyramid, row: u32) -> u8 {
+        let at = pyramid.rank[row as usize];
+        pyramid.tiles.iter().find(|t| t.rows.contains(&at)).expect("a tile").key.z
+    }
+
     #[test]
     fn crowded_rows_wait_for_finer_levels_by_priority() {
         // Two rows in one cell: the higher lands at the root, the lower a level finer.
         let anchors = [at(0.3, 0.3), at(0.3, 0.3), at(0.8, 0.8)];
-        let level = place(&along(&anchors), &[], &ranks(&[1.0, 2.0, 0.0], 3), &[0, 0, 0], None);
+        let level = place(&along(&anchors), &[], &ranks(&[1.0, 2.0, 0.0], 3), &[0, 0, 0], None, &[]);
         assert_eq!(level[1], 0, "the higher priority lands at the root");
         assert_eq!(level[2], 0, "a row alone in its cell lands at the root");
         assert_eq!(level[0], 1, "the lower lands once the higher has left its cell");
         let alike = [at(0.3, 0.3); 4];
-        let level = place(&along(&alike), &[], &ranks(&[], 4), &[0; 4], None);
+        let level = place(&along(&alike), &[], &ranks(&[], 4), &[0; 4], None, &[]);
         let mut sorted = level.clone();
         sorted.sort_unstable();
         assert_eq!(sorted, vec![0, 1, 2, 3], "a row a level, equals in an order of their own");
@@ -661,22 +747,31 @@ mod tests {
             (0..n).map(|i| at(f64::from(i % 250) / 250.0, f64::from(i / 250) / 200.0)).collect();
         let sorted = along(&anchors);
         let ranks = ranks(&[], n as usize);
-        let level = place(&sorted, &[], &ranks, &vec![0; n as usize], None);
+        let level = place(&sorted, &[], &ranks, &vec![0; n as usize], None, &[]);
         let (order, tiles) = tiled(&sorted, &anchors, &[], &ranks, &level);
         assert_eq!(order.len(), n as usize);
-        let mut start = 0;
-        for &(_, end, _) in &tiles {
-            assert!(end - start <= 1 << (2 * GRID_BITS), "a tile holds at most its grid's cells");
-            start = end;
+        for tile in &tiles {
+            assert!(tile.rows.len() <= 1 << (2 * GRID_BITS), "a tile holds at most its grid's cells");
         }
         assert!(tiles.len() > 1);
+        // A large tile's rows lie a sub-cell at a time, each sub-cell's within it.
+        let large = tiles.iter().find(|t| !t.cells.is_empty()).expect("a large tile");
+        let mut start = large.rows.start;
+        for (cell, &end) in large.cells.iter().enumerate() {
+            let sub = sub_key(large.key, cell);
+            for &r in &order[start as usize..end as usize] {
+                assert_eq!(tile_of(anchors[r as usize], sub.z), sub, "row {r} lies in sub-cell {cell}");
+            }
+            start = end;
+        }
+        assert_eq!(start, large.rows.end);
     }
 
     #[test]
     fn large_rows_stay_coarse_and_edges_land_by_their_own_priority() {
         let anchors = [at(0.1, 0.1), at(0.9, 0.9)];
         let extents = [1 << 30, 0];
-        let level = place(&along(&anchors), &extents, &ranks(&[0.0, 0.0], 2), &[0, 0], None);
+        let level = place(&along(&anchors), &extents, &ranks(&[0.0, 0.0], 2), &[0, 0], None, &[]);
         assert!(level[0] <= 1, "a row reaching a quarter of the square stays coarse");
         // Two vertices crowd one cell; the edges between them land by their own priority, parallel
         // ones together, and one naming no row only at the finest level.
@@ -701,15 +796,44 @@ mod tests {
                 },
             ],
         };
-        let pyramids = Pyramid::read(&answer(&leveling).to_bytes());
+        let pyramids: FxHashMap<u32, Pyramid> = answer(&leveling).into_iter().collect();
         let edges = &pyramids[&1];
-        let level_of = |p: &Pyramid, row: u32| {
-            let at = p.order.iter().position(|&r| r == row).unwrap() as u32;
-            p.tiles.iter().find(|t| t.rows.contains(&at)).unwrap().key.z
-        };
-        assert_eq!(level_of(edges, 0), 0, "an edge alone in its cell shows from the root, its ends carried");
+        assert_eq!(level_of(edges, 0), 0, "an edge alone in its cell shows from the root");
         assert_eq!(level_of(edges, 1), 0, "with the edge joining the same vertices");
         assert_eq!(level_of(edges, 2), MAX_LEVEL, "an edge naming no row waits for the finest level");
+        // Its ends show with it: vertices 1 and 2 land at the root though they share a cell.
+        let vertices = &pyramids[&0];
+        assert_eq!((level_of(vertices, 1), level_of(vertices, 2)), (0, 0), "ends land with their edges");
+    }
+
+    #[test]
+    fn answers_read_back_as_written() {
+        let (domain, places) = square(&[[0.1, 0.1], [0.9, 0.9], [0.5, 0.5]]);
+        let leveling = Leveling {
+            domain,
+            tables: vec![Placing { rows: 3, leveled: true, answered: true, places, ..Placing::default() }],
+        };
+        let answered = answer(&leveling);
+        let read = Pyramid::read(&encode(&answered));
+        assert_eq!(read.len(), 1);
+        let (table, pyramid) = &read[0];
+        assert_eq!(*table, 0);
+        assert_eq!(pyramid.order, answered[0].1.order);
+        assert_eq!(pyramid.tiles, answered[0].1.tiles);
+        for (d, &r) in pyramid.order.iter().enumerate() {
+            assert_eq!(pyramid.rank[r as usize], d as u32, "each row's place in the order");
+        }
+    }
+
+    #[test]
+    fn levels_count_the_pages_they_hold() {
+        // Two sub-cells in one page, one in the next, and a level below reaching the page where the
+        // one above ended.
+        let above = [(0, 10..20), (0, 50..60), (0, PAGE + 3..PAGE + 9)];
+        let (pages, last) = pages_past(&above, None);
+        assert_eq!((pages, last), (2, Some(1)));
+        let below = [(1, PAGE + 20..3 * PAGE + 1)];
+        assert_eq!(pages_past(&below, last), (2, Some(3)), "pages 2 and 3; page 1 is held already");
     }
 
     #[test]
@@ -725,8 +849,8 @@ mod tests {
             domain: Domain::Earth,
             tables: vec![Placing { rows: 3, answered: true, priority: [5.0, 1.0, 3.0].into(), ..Placing::default() }],
         };
-        let pyramids = Pyramid::read(&answer(&leveling).to_bytes());
-        assert_eq!(pyramids[&0].order, vec![1, 2, 0], "highest last, drawn on top");
-        assert_eq!(pyramids[&0].tiles.len(), 1);
+        let pyramids = answer(&leveling);
+        assert_eq!(pyramids[0].1.order, vec![1, 2, 0], "highest last, drawn on top");
+        assert_eq!(pyramids[0].1.tiles.len(), 1);
     }
 }

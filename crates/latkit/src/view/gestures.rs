@@ -320,7 +320,8 @@ impl View {
                 let delta = [f64::from(to[0] - from[0]), f64::from(to[1] - from[1])];
                 let camera = self.camera.panned(&self.projected(), anchor, delta);
                 let view = self.projected_with(&camera);
-                let camera = camera.zoomed(&view, anchor, f64::from(spread(after) / spread(before)).log2());
+                let levels = f64::from(spread(after) / spread(before)).log2();
+                let camera = camera.zoomed(&view, anchor, levels, self.zoom_limits());
                 self.steer(camera);
             }
             _ => {}

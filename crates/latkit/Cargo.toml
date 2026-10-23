@@ -70,6 +70,7 @@ web-sys = { workspace = true, optional = true, features = [
     "KeyboardEvent",
     "MediaQueryList",
     "MouseEvent",
+    "Navigator",
     "OffscreenCanvas",
     "OffscreenCanvasRenderingContext2d",
     "PointerEvent",
@@ -81,6 +82,7 @@ web-sys = { workspace = true, optional = true, features = [
     "WheelEvent",
     "Window",
     "WorkerGlobalScope",
+    "WorkerNavigator",
 ] }
 
 [build-dependencies]

@@ -6,11 +6,12 @@
 // Evaluating knows nothing of transitions: while a mark eases, the view binds its settled mirror as
 // the state, and each frame `ease` writes what every row shows from its frozen and settled state by
 // the mark's progress: numbers and colors mix, positions move by their offset, a row whose visibility
-// flipped fades, rows past `mark.rows` left and fade out, and the rest show as evaluated. No channel
-// runs to ease.
+// flipped fades, rows past the live ones left and fade out, and the rest show as evaluated. No
+// channel runs to ease. Every row here is a held row.
 
 import package::lib::types::{
-    NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING, BLOCK_ROWS, item,
+    NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING, BLOCK_ROWS, HELD_BITS,
+    HELD_MASK, item,
     BLEND_KEEP, BLEND_NUMBER, BLEND_COLOR, BLEND_POSITION, STEP_REDUCE,
     VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, VERTEX_RANGE, HALF_UNITS, OWN_HEIGHT, SIZED,
     MARK_VERTICES, OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME, OP_ZOOM,
@@ -48,6 +49,45 @@ override VIEWED: bool = true;
 // The row invocation `id` evaluates: row `id.x` of the mark's `id.y`th listed block.
 fn row_of(id: vec3u) -> u32 {
     return blocks[mark.block + id.y] * BLOCK_ROWS + id.x;
+}
+
+// Rows of the mark that are live: those past them left and fade out.
+fn live() -> u32 {
+    return mark.held - mark.exits;
+}
+
+// The held row of drawing row `row` of a table whose held pages' slots the program lists at `slots`
+// (how many pages, then each one's slot; then how many rows it keeps whose pages it does not hold,
+// then each one's place and held row, ascending by place), NONE where it holds the row nowhere; a
+// table drawn whole, with no such list, holds every row as itself.
+fn held_of(slots: u32, row: u32) -> u32 {
+    if slots == NONE || row == NONE {
+        return row;
+    }
+    let pages = program[slots];
+    let page = row >> HELD_BITS;
+    if page < pages {
+        let slot = program[slots + 1u + page];
+        if slot != NONE {
+            return (slot << HELD_BITS) | (row & HELD_MASK);
+        }
+    }
+    let kept = slots + 1u + pages;
+    let count = program[kept];
+    var lo = 0u;
+    var hi = count;
+    while lo < hi {
+        let mid = (lo + hi) / 2u;
+        if program[kept + 1u + 2u * mid] < row {
+            lo = mid + 1u;
+        } else {
+            hi = mid;
+        }
+    }
+    if lo < count && program[kept + 1u + 2u * lo] == row {
+        return program[kept + 2u + 2u * lo];
+    }
+    return NONE;
 }
 
 fn constant(i: u32) -> u32 {
@@ -312,10 +352,14 @@ fn run(row: u32, start: u32, end: u32) {
                 position(row, a, column_value(b, row), column_value(c, row));
             }
             case OP_STORE_END: {
-                // Without a column, the end is the row itself, as a pole's.
-                let end_row = select(bits_value(b, row), row, b == NONE);
-                let first = program[mark.ends + c];
-                store(row, a, select(first + end_row, NONE, end_row == NONE || first == NONE));
+                // An end is a row of the table its reference names, held where the vertex mark drawing
+                // that table holds it; without a column, the row itself, as a pole's.
+                let first = program[mark.ends + 2u * c];
+                var end = row;
+                if b != NONE {
+                    end = held_of(program[mark.ends + 2u * c + 1u], bits_value(b, row));
+                }
+                store(row, a, select(first + end, NONE, end == NONE || first == NONE));
             }
             case OP_REDUCE: {
                 sp--;
@@ -345,16 +389,11 @@ fn fade_exit(row: u32, flags: u32) {
 
 @compute @workgroup_size(256)
 fn evaluate(@builtin(global_invocation_id) id: vec3u) {
-    // Reductions run over every row; channels over the listed blocks, those the mask names. One
-    // loop runs either, since a backend compiles each call of the machine whole.
+    // Reductions run over every live block, channels over the blocks listed and only those the mask
+    // names. One loop runs either, since a backend compiles each call of the machine whole.
     let reducing = step == STEP_REDUCE;
-    var row: u32;
-    if reducing {
-        row = item(id);
-    } else {
-        row = row_of(id);
-    }
-    if row >= mark.rows {
+    let row = row_of(id);
+    if row >= live() {
         return;
     }
     let first = select(0u, mark.channels, reducing);
@@ -382,8 +421,8 @@ fn evaluate(@builtin(global_invocation_id) id: vec3u) {
 fn ease(@builtin(global_invocation_id) id: vec3u) {
     let row = item(id);
     let flags = mark.stride - 1u;
-    if row >= mark.rows {
-        if row < mark.rows + mark.exits {
+    if row >= live() {
+        if row < mark.held {
             fade_exit(row, flags);
         }
         return;
@@ -413,7 +452,7 @@ fn ease(@builtin(global_invocation_id) id: vec3u) {
 fn travel(@builtin(global_invocation_id) id: vec3u) {
     let row = item(id);
     let words = travel_words();
-    if row >= mark.rows + mark.exits || words.x == NONE {
+    if row >= mark.held || words.x == NONE {
         return;
     }
     let at = word_at(row, words.x);
@@ -431,7 +470,7 @@ fn travel(@builtin(global_invocation_id) id: vec3u) {
 fn carry(@builtin(global_invocation_id) id: vec3u) {
     let row = item(id);
     let travel = travel_words().x;
-    if row >= mark.rows + mark.exits || travel == NONE || !easing() {
+    if row >= mark.held || travel == NONE || !easing() {
         return;
     }
     state[word_at(row, travel)] = was(row, travel);

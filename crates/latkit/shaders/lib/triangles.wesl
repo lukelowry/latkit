@@ -10,6 +10,7 @@ import package::lib::project::{world, clip_of, shows};
 import package::lib::focus::faded;
 import package::lib::read::{points_of, point_bits, missing_bits};
 import package::lib::path::{PATH, Segment, segment, stroke_instances};
+import package::lib::drawn::drawn_row;
 
 struct Corner {
     world: vec3f,
@@ -32,12 +33,18 @@ fn triangle_instances() -> u32 {
     return mark.rows;
 }
 
-// Corner `corner` of triangle `instance`.
+// Corner `corner` of triangle `instance`, faded as its tile comes and goes.
 fn triangle_corner(instance: u32, corner: u32) -> Corner {
     if PATH == PATH_GEOMETRY {
-        return area_point(segment(instance), 1u + corner);
+        let s = segment(instance);
+        var c = area_point(s, 1u + corner);
+        c.color.a *= s.presence;
+        return c;
     }
-    return face_corner(instance, corner);
+    let d = drawn_row(instance);
+    var c = face_corner(d.row, corner);
+    c.color.a *= d.presence;
+    return c;
 }
 
 // Whether triangle `instance` draws: every corner placed, and one in front of the globe's horizon;
@@ -54,10 +61,10 @@ fn triangle_shown(instance: u32) -> bool {
     return ahead;
 }
 
-// The row triangle `instance` belongs to.
-fn triangle_row(instance: u32) -> u32 {
+// The drawn row triangle `instance` belongs to.
+fn triangle_item(instance: u32) -> u32 {
     if PATH == PATH_GEOMETRY {
-        return segment(instance).row;
+        return segment(instance).item;
     }
     return instance;
 }
@@ -111,7 +118,7 @@ fn area_point(t: Segment, offset: u32) -> Corner {
 
 // Where area row `row`'s label hangs: inside its largest polygon, farthest from its edges.
 fn area_anchor(row: u32) -> Corner {
-    return area_point(Segment(row, 0u, 0.0), 0u);
+    return area_point(Segment(row, NONE, 0u, 0.0, 1.0, 1.0, false), 0u);
 }
 
 fn corner_clip(c: Corner) -> vec4f {

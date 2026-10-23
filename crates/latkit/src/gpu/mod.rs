@@ -6,6 +6,7 @@ pub(crate) mod atlas;
 pub(crate) mod colormaps;
 pub(crate) mod dictionary;
 pub(crate) mod icons;
+pub(crate) mod packed;
 pub(crate) mod pipelines;
 pub(crate) mod readback;
 pub(crate) mod shaders;
@@ -19,6 +20,7 @@ use atlas::Atlas;
 use colormaps::Colormaps;
 use dictionary::Dictionaries;
 use icons::Icons;
+use packed::Packed;
 use pipelines::Pipelines;
 use readback::Readbacks;
 use work::{Counters, Queue, Work};
@@ -70,7 +72,17 @@ pub(crate) struct Shared {
     pub(crate) lost: Arc<AtomicBool>,
     /// Errors the device reported outside any scope, for views to tell.
     pub(crate) errors: Arc<Mutex<Vec<Error>>>,
+    /// Samples per pixel every frame drawn with this GPU takes: decided once, from the screen it
+    /// serves, so a pixel ratio changing later (a browser's zoom, a window moved to another screen)
+    /// never makes a scene's pipelines again.
+    samples: std::sync::OnceLock<u32>,
     inner: Mutex<Inner>,
+}
+
+/// Samples per pixel at `pixel_ratio`: shader-drawn marks antialias themselves, so dense screens skip
+/// multisampling, which only triangles' edges need.
+fn samples_at(pixel_ratio: f32) -> u32 {
+    if pixel_ratio >= 1.75 { 1 } else { 4 }
 }
 
 pub(crate) struct Inner {
@@ -78,6 +90,8 @@ pub(crate) struct Inner {
     pub(crate) pipelines: Pipelines,
     pub(crate) colormaps: Colormaps,
     pub(crate) dictionaries: Dictionaries,
+    /// Pages of tables drawn in part, packed in their orders, which every view drawing them shares.
+    pub(crate) packed: Packed,
     pub(crate) atlas: Atlas,
     pub(crate) icons: Icons,
     pub(crate) readbacks: Readbacks,
@@ -85,6 +99,30 @@ pub(crate) struct Inner {
     pub(crate) budget: Budget,
     /// What each view plans within: its share of the budget.
     pub(crate) ledger: Ledger,
+    /// What the frame its views draw together may still do.
+    pub(crate) frame: Allowance,
+}
+
+/// What one frame of a GPU's views may still do between them: bytes to upload, and microseconds of
+/// work done on the frame rather than in jobs. A frame ends when a view that drew in it draws again,
+/// so views drawn together (a page's canvases, a shot's panels) share one, and a view drawn alone,
+/// even at a held instant, has one each time.
+#[derive(Default)]
+pub(crate) struct Allowance {
+    drawn: Vec<u64>,
+    pub(crate) upload: u64,
+    pub(crate) work: u32,
+}
+
+impl Inner {
+    /// Begins view `view`'s part of a frame: a new frame when it already drew in this one.
+    pub(crate) fn begin_frame(&mut self, view: u64) {
+        if self.frame.drawn.is_empty() || self.frame.drawn.contains(&view) {
+            self.frame =
+                Allowance { drawn: Vec::new(), upload: self.budget.upload_per_frame, work: crate::derive::FRAME_WORK };
+        }
+        self.frame.drawn.push(view);
+    }
 }
 
 /// The share of the budget the views of a GPU plan what they draw within, between them; the rest holds
@@ -208,8 +246,20 @@ impl Gpu {
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     pub(crate) fn warm(&self) {
         let pixel_ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio() as f32);
-        let samples = crate::view::samples(pixel_ratio);
-        self.0.lock().pipelines.warm(&self.0.device, || crate::view::common(FORMAT, samples));
+        let samples = self.samples_for(pixel_ratio);
+        let waker = crate::web::waker(self);
+        self.0.lock().pipelines.warm(&self.0.device, &waker, || crate::view::common(FORMAT, samples));
+    }
+
+    /// Samples per pixel its frames take, once decided.
+    pub(crate) fn samples(&self) -> Option<u32> {
+        self.0.samples.get().copied()
+    }
+
+    /// Samples per pixel its frames take: decided by the first frame's `pixel_ratio` where no screen
+    /// decided it when the GPU was made, and kept from then on.
+    pub(crate) fn samples_for(&self, pixel_ratio: f32) -> u32 {
+        *self.0.samples.get_or_init(|| samples_at(pixel_ratio))
     }
 
     /// Draws with an application-owned device and queue without replacing their callbacks.
@@ -261,15 +311,33 @@ impl Gpu {
                 pipelines: Pipelines::new(&device, counters.clone(), gpu.clone()),
                 colormaps: Colormaps::new(&device),
                 dictionaries: Dictionaries::default(),
+                packed: Packed::new(counters.clone()),
                 atlas: Atlas::new(&device, counters.clone()),
                 icons: Icons::new(&device),
                 readbacks: Readbacks::counted(counters.clone()),
                 host: None,
                 budget,
                 ledger: Ledger::default(),
+                frame: Allowance::default(),
             };
-            Shared { instance, adapter, device, queue, counters, sampler, lost, errors, inner: Mutex::new(inner) }
+            Shared {
+                instance,
+                adapter,
+                device,
+                queue,
+                counters,
+                sampler,
+                lost,
+                errors,
+                samples: std::sync::OnceLock::new(),
+                inner: Mutex::new(inner),
+            }
         });
+        // In a page, the screen decides at once: every view and canvas of the GPU draws for it.
+        #[cfg(all(feature = "web", target_arch = "wasm32"))]
+        if let Some(window) = web_sys::window() {
+            let _ = shared.samples.set(samples_at(window.device_pixel_ratio() as f32));
+        }
         Gpu(shared)
     }
 
@@ -310,6 +378,16 @@ impl Gpu {
     /// How much GPU memory latkit uses.
     pub fn budget(&self) -> Budget {
         self.0.lock().budget
+    }
+
+    /// Bytes on the GPU every view of it draws from: data pages and what each view keeps per row.
+    pub fn resident(&self) -> u64 {
+        self.0.lock().arena.resident()
+    }
+
+    /// Bytes waiting to upload, for every view of it.
+    pub fn uploading(&self) -> u64 {
+        self.0.lock().arena.pending()
     }
 
     /// Gives views the platform's services: setting text, and doing jobs off the frame.

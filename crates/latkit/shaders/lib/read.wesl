@@ -1,10 +1,11 @@
-// Reading columns: page tables in `program` point at blocks of `pages`. Values stay `u32` bits until
-// arithmetic needs them, so a missing value is never an `f32` constant (WGSL cannot represent NaN
-// constants).
+// Reading columns: page tables in `program` point at blocks of `pages`. A column's pages are its
+// data's, or for a mark drawing a table in part the pages of it the mark holds, a slot each; its
+// descriptor says how many rows a page holds. Values stay `u32` bits until arithmetic needs them, so
+// a missing value is never an `f32` constant (WGSL cannot represent NaN constants).
 
 import package::lib::types::{
     NONE, MISSING, COLUMN_WORDS, COLUMN_FLAGS, COLUMN_ROWS, COLUMN_TABLE, COLUMN_LOW, COLUMN_JOIN, COLUMN_T,
-    SAMPLED, STEP, PAGE_BITS, PAGE_MASK, POINT_BITS, POINT_MASK,
+    COLUMN_BITS, SAMPLED, STEP, POINT_BITS, POINT_MASK, PATH_PAGE_WORDS,
 };
 import package::lib::bind::{pages, program, mark};
 
@@ -33,10 +34,17 @@ fn page_word(block: u32, offset: u32, fallback: u32) -> u32 {
     return pages[block + offset];
 }
 
+// The page of column `column` row `row` lies in, and where in it.
+fn page_of(column: u32, row: u32) -> vec2u {
+    let bits = column_word(column, COLUMN_BITS);
+    return vec2u(row >> bits, row & ((1u << bits) - 1u));
+}
+
 // A static column's value as (high, low) bits: the low part carries what f32 drops of an f64.
 fn static_value(column: u32, row: u32) -> vec2u {
-    let page = row >> PAGE_BITS;
-    let local = row & PAGE_MASK;
+    let at = page_of(column, row);
+    let page = at.x;
+    let local = at.y;
     let table = column_word(column, COLUMN_TABLE);
     let hi = page_word(program[table + page], local, MISSING);
     let low = column_word(column, COLUMN_LOW);
@@ -46,11 +54,12 @@ fn static_value(column: u32, row: u32) -> vec2u {
     return vec2u(hi, page_word(program[low + page], local, 0u));
 }
 
-// A sampled column's value at the shown coordinate, as bits. Each row block has a cursor of six
+// A sampled column's value at the shown coordinate, as bits. Each page of rows has a cursor of six
 // words: block and word of this frame, block and word of the next frame, and both frames' row counts.
 fn sample_value(column: u32, row: u32) -> u32 {
-    let cursor = column_word(column, COLUMN_TABLE) + (row >> PAGE_BITS) * 6u;
-    let local = row & PAGE_MASK;
+    let at = page_of(column, row);
+    let cursor = column_word(column, COLUMN_TABLE) + at.x * 6u;
+    let local = at.y;
     if local >= program[cursor + 4u] {
         return MISSING;
     }
@@ -73,7 +82,8 @@ fn bits_value(column: u32, row: u32) -> u32 {
         return NONE;
     }
     let table = column_word(column, COLUMN_TABLE);
-    return page_word(program[table + (row >> PAGE_BITS)], row & PAGE_MASK, NONE);
+    let at = page_of(column, row);
+    return page_word(program[table + at.x], at.y, NONE);
 }
 
 // The row a column reads for `row`: through its join when it reads another table.
@@ -105,24 +115,23 @@ struct Points {
     count: u32,
 }
 
-// Row `row`'s points of geometry column `column`. The column's table holds, per page, the block of
-// each row's first point, where the page's blocks of points are listed in the table, and how many
-// points the page has; a block holds `1 << POINT_BITS` points as x and y bits.
+// Row `row`'s points of geometry column `column`. A block holds `1 << POINT_BITS` points as x and y
+// bits.
 fn points_of(column: u32, row: u32) -> Points {
     if column == NONE || row >= column_word(column, COLUMN_ROWS) {
         return Points(0u, 0u, 0u);
     }
-    let rows = column_word(column, COLUMN_ROWS);
     let table = column_word(column, COLUMN_TABLE);
-    let page = table + 3u * (row >> PAGE_BITS);
+    let at = page_of(column, row);
+    let page = table + PATH_PAGE_WORDS * at.x;
     let firsts = program[page];
-    if firsts == NONE {
+    if firsts == NONE || at.y >= program[page + 3u] {
         return Points(0u, 0u, 0u);
     }
-    let local = row & PAGE_MASK;
+    let local = at.y;
     let first = pages[firsts + local];
     var end = program[page + 2u];
-    if local < PAGE_MASK && row + 1u < rows {
+    if local + 1u < program[page + 3u] {
         end = pages[firsts + local + 1u];
     }
     return Points(table + program[page + 1u], first, end - first);

@@ -393,7 +393,7 @@ export default async function page(stage: Stage): Promise<void> {
   meter.note(() => `${thousands(view.stats.drawn)} of ${thousands(view.stats.rows)} rows drawn`);
   meter.note(
     () =>
-      `${(view.stats.resident / 1e6).toFixed(0)} of ${(view.stats.budget / 1e6).toFixed(0)} MB on the GPU`,
+      `${(stage.gpu.resident / 1e6).toFixed(0)} of ${(stage.gpu.budget.bytes / 1e6).toFixed(0)} MB on the GPU`,
   );
 
   function showLegend(): void {

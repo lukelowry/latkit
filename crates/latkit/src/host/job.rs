@@ -2,8 +2,9 @@
 //! into triangles, grouping a large table's rows into tiles, writing a picture as a file), handed to the
 //! host to do off the frame. A job is bytes in and bytes out, so a thread, or a worker holding its own
 //! copy of latkit, can do it with nothing shared. A view's job answers with a [`Patch`]: the rows it
-//! worked out, by id, with their places, the paths their wires run along, or their shapes; an image
-//! job answers with the file.
+//! worked out, by id, with their places, the paths their wires run along, or their shapes; or in its
+//! own words, lanes as numbers and pyramids as their orders and tiles. An image job answers with the
+//! file.
 
 use std::sync::Arc;
 
@@ -142,12 +143,20 @@ impl Job {
         self.0
     }
 
-    /// Does the job, answering with a patch's bytes. Bytes that are no job answer nothing.
+    /// Does the job, answering in the words its derivation reads: rows by id as a patch's bytes,
+    /// lanes as numbers, a pyramid as its order and tiles, an image as its file. Bytes that are no
+    /// job answer nothing.
     pub fn run(self) -> Vec<u8> {
         let mut input = Reader::new(&self.0);
         let kind = input.u32();
         if kind == Some(Kind::Image as u32) {
             return run_image(&mut input).unwrap_or_default();
+        }
+        if kind == Some(Kind::Lanes as u32) {
+            return run_lanes(&mut input).unwrap_or_default();
+        }
+        if kind == Some(Kind::Pyramid as u32) {
+            return run_pyramid(&mut input).unwrap_or_default();
         }
         let answer = match kind {
             Some(k) if k == Kind::Layered as u32 || k == Kind::Stress as u32 => run_layout(k, &mut input),
@@ -155,8 +164,6 @@ impl Job {
             Some(k) if k == Kind::Shapes as u32 => run_shapes(&mut input),
             Some(k) if k == Kind::Tile as u32 => run_tile(&mut input),
             Some(k) if k == Kind::GeoJson as u32 => run_geojson(&mut input),
-            Some(k) if k == Kind::Lanes as u32 => run_lanes(&mut input),
-            Some(k) if k == Kind::Pyramid as u32 => run_pyramid(&mut input),
             _ => None,
         };
         answer.map(|patch| patch.to_bytes()).unwrap_or_default()
@@ -260,7 +267,7 @@ impl Job {
     }
 
     /// Finding every edge row's lane among the rows joining the same two vertices, from each row's two
-    /// ends; it answers a table of every row's lane as field `lane`, without rows when none share.
+    /// ends; it answers every row's lane as a little-endian `f32`, nothing when none share.
     pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Job {
         let mut out = Writer::new(Kind::Lanes);
         out.u32(from.len() as u32);
@@ -269,8 +276,8 @@ impl Job {
         Job(out.0)
     }
 
-    /// Grouping `leveling`'s tables into tiles; it answers each table's pyramid, as
-    /// [`Pyramid::read`](crate::derive::pyramid::Pyramid::read) reads it.
+    /// Grouping `leveling`'s tables into tiles, a dataset's at once; it answers each table's pyramid,
+    /// as [`Pyramid::read`](crate::derive::pyramid::Pyramid::read) reads it.
     pub(crate) fn pyramid(leveling: &Leveling) -> Job {
         let mut out = Writer::new(Kind::Pyramid);
         match leveling.domain {
@@ -492,7 +499,7 @@ fn run_geojson(input: &mut Reader<'_>) -> Option<Patch> {
     crate::geo::geojson(name, input.rest()).ok().map(|data| data.to_patch())
 }
 
-fn run_pyramid(input: &mut Reader<'_>) -> Option<Patch> {
+fn run_pyramid(input: &mut Reader<'_>) -> Option<Vec<u8>> {
     let domain = match [input.f64()?, input.f64()?, input.f64()?, input.f64()?] {
         [0.0, ..] => Domain::Earth,
         [_, x, y, size] => Domain::Plane { min: [x, y], size },
@@ -519,13 +526,14 @@ fn run_pyramid(input: &mut Reader<'_>) -> Option<Patch> {
         };
         tables.push(Placing { rows, leveled: has(0), answered: has(1), places, priority, ends });
     }
-    Some(crate::derive::pyramid::answer(&Leveling { domain, tables }))
+    Some(crate::derive::pyramid::encode(&crate::derive::pyramid::answer(&Leveling { domain, tables })))
 }
 
-fn run_lanes(input: &mut Reader<'_>) -> Option<Patch> {
+fn run_lanes(input: &mut Reader<'_>) -> Option<Vec<u8>> {
     let rows = input.u32()? as usize;
     let (from, to) = (input.words(rows)?, input.words(rows)?);
-    Some(crate::derive::lanes_answer(&from, &to))
+    let lanes = crate::derive::lanes(&from, &to)?;
+    Some(lanes.iter().flat_map(|lane| lane.to_le_bytes()).collect())
 }
 
 /// Little-endian words, floats, and keys, written.

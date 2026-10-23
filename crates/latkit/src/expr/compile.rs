@@ -113,8 +113,10 @@ pub(crate) struct Program {
     /// Op ranges of every channel, then of every reduction.
     pub(crate) ranges: Vec<[u32; 2]>,
     pub(crate) channels: Vec<Channel>,
-    /// What each fitted domain's input reads.
+    /// What each fitted domain's input reads, and the input: a table drawn in part fits a domain
+    /// reading only its data over all its rows on the CPU.
     pub(crate) domains: Vec<Reads>,
+    pub(crate) fitted: Vec<Expr>,
     pub(crate) columns: Vec<ColumnUse>,
     pub(crate) texts: Vec<TextUse>,
     /// Colormap ops, whose layer the view writes.
@@ -637,6 +639,7 @@ impl<'a> Compiler<'a> {
                 }
                 let index = self.program.domains.len() as u32;
                 self.program.domains.push(Reads::default());
+                self.program.fitted.push(input.clone());
                 self.program.constants.extend([1, 0, 0, index]);
                 // Compile the input again as a reduction; `finish` places it after the channels.
                 let saved = (std::mem::take(&mut self.program.code), self.depth, self.deps, self.columns_read);

@@ -210,10 +210,16 @@ fn release_idle(frames: &Rc<RefCell<Frames>>) {
     FRAMES.with(|all| all.borrow_mut().retain(|f| !Rc::ptr_eq(f, frames)));
 }
 
-/// Asks for an animation frame of the `Gpu` whose shared state lies at `gpu`: what a view's waker does
-/// when work it waited on lands, always on the page's one thread.
+/// Asks for an animation frame of the `Gpu` whose shared state lies at `gpu`, waking what waits for
+/// its work to land: what a view's waker does when work it waited on lands, always on the page's one
+/// thread.
 struct Wakes {
     gpu: usize,
+}
+
+/// What wakes `gpu`'s frames, and what waits for its work to land ([`landed`]), as work lands.
+pub(crate) fn waker(gpu: &Gpu) -> std::task::Waker {
+    std::task::Waker::from(Arc::new(Wakes { gpu: Arc::as_ptr(&gpu.0) as usize }))
 }
 
 impl std::task::Wake for Wakes {
@@ -326,7 +332,7 @@ impl PageView {
     pub fn new(mut view: View) -> PageView {
         let gpu = view.gpu().clone();
         // The view sleeps while it waits; what it waits on asks for the next frame as it lands.
-        view.set_waker(std::task::Waker::from(Arc::new(Wakes { gpu: Arc::as_ptr(&gpu.0) as usize })));
+        view.set_waker(waker(&gpu));
         if gpu.0.lock().host.is_none() {
             gpu.set_host(crate::host::Browser);
         }

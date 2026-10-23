@@ -116,6 +116,11 @@ impl Column {
         &self.pages
     }
 
+    /// Whether `other` holds the same pages: the same values, without comparing one.
+    pub(crate) fn shares(&self, other: &Column) -> bool {
+        self.len == other.len && self.pages.iter().zip(other.pages.iter()).all(|(a, b)| a.id == b.id)
+    }
+
     pub(crate) fn like(&self) -> &Values {
         &self.like
     }
@@ -124,11 +129,25 @@ impl Column {
         self.pages.get(row >> PAGE_BITS)?.values.get(row & PAGE_MASK)
     }
 
+    /// Where row `row` lies: its page's values and its place among them; `None` past the column's end.
+    pub(crate) fn at(&self, row: usize) -> Option<(&Values, usize)> {
+        let values = &self.pages.get(row >> PAGE_BITS)?.values;
+        let i = row & PAGE_MASK;
+        (i < values.len()).then_some((values, i))
+    }
+
+    /// The values of rows `rows`, in that order, as the GPU reads them: missing past the column's end,
+    /// as rows a derived table standing in for one not yet derived lacks are.
+    pub(crate) fn pick(&self, rows: &[u32]) -> Values {
+        let from: Vec<Option<usize>> = rows.iter().map(|&r| Some(r as usize).filter(|&r| r < self.len)).collect();
+        let sources: Vec<&Values> = std::iter::once(&self.like).chain(self.pages.iter().map(|p| &p.values)).collect();
+        Values::assemble(&sources, Picks::Writes { from: &from, kept: 0 }).expect("one storage")
+    }
+
     /// The column with `len` rows (at least the current count) and `writes` applied.
     ///
-    /// `writes` are `(row, row of source)` sorted by row with no row twice; a [`HOLE`](super::values::HOLE)
-    /// for the row of source writes a missing value. Pages that no write touches and whose length does
-    /// not change keep their ids; new rows not written are missing.
+    /// `writes` are `(row, row of source)` sorted by row with no row twice. Pages that no write
+    /// touches and whose length does not change keep their ids; new rows not written are missing.
     pub(crate) fn write(&self, len: usize, writes: &[(usize, usize)], source: &Column) -> Result<Column> {
         debug_assert!(len >= self.len);
         debug_assert!(writes.windows(2).all(|w| w[0].0 < w[1].0));
@@ -190,6 +209,37 @@ impl Column {
         Some(rows)
     }
 
+    /// Whether its first `rows` rows hold what they held in `before`, which it was written from a few
+    /// writes back at most: written since only past them, as appending writes. Writes a page no
+    /// longer remembers count as written.
+    pub(crate) fn kept_below(&self, before: &Column, rows: usize) -> bool {
+        (0..rows.div_ceil(PAGE_ROWS)).all(|p| {
+            let (Some(now), Some(then)) = (self.pages.get(p), before.pages.get(p)) else { return false };
+            let start = p * PAGE_ROWS;
+            now.id == then.id
+                || now.rows_since(then.id).is_some_and(|written| written.iter().all(|&r| start + r as usize >= rows))
+        })
+    }
+
+    /// The rows written since `before`, or added, in order: of each page written over `before`'s,
+    /// the rows it remembers, else every row of it. Rows `before` held past this column's end are not
+    /// rows of it.
+    pub(crate) fn written_since(&self, before: &Column) -> Vec<usize> {
+        let mut rows = Vec::new();
+        for (p, now) in self.pages.iter().enumerate() {
+            let start = p * PAGE_ROWS;
+            match before.pages.get(p) {
+                Some(then) if then.id == now.id => {}
+                Some(then) => match now.rows_since(then.id) {
+                    Some(written) => rows.extend(written.into_iter().map(|r| start + r as usize)),
+                    None => rows.extend(start..start + now.values.len()),
+                },
+                None => rows.extend(start..start + now.values.len()),
+            }
+        }
+        rows
+    }
+
     /// Every value in row order, as one run: a single page's without copying, else the pages copied
     /// one after another.
     pub(crate) fn values(&self) -> Values {
@@ -234,8 +284,8 @@ impl Column {
         rows
     }
 
-    /// The column of rows `rows`, in that order, missing for a [`HOLE`](super::values::HOLE). Leading
-    /// pages whose rows are unchanged keep their ids.
+    /// The column of rows `rows`, in that order. Leading pages whose rows are unchanged keep their
+    /// ids.
     pub(crate) fn gather(&self, rows: &[usize]) -> Column {
         let kept = rows.iter().enumerate().take_while(|&(i, &r)| i == r).count();
         let kept_pages = (kept / PAGE_ROWS).min(rows.len() / PAGE_ROWS);
@@ -267,19 +317,6 @@ mod tests {
         assert_eq!(written.pages()[2].id, column.pages()[2].id);
         assert_eq!(written.get(PAGE_ROWS + 3), Some(Value::Number(-1.0)));
         assert_eq!(written.get(PAGE_ROWS + 4), Some(Value::Number((PAGE_ROWS + 4) as f64)));
-    }
-
-    #[test]
-    fn holes_write_and_gather_missing() {
-        let column = Column::new(&numbers(4));
-        let source = Column::new(&Values::from(vec![7.0_f64]));
-        let written = column.write(5, &[(1, super::super::values::HOLE), (4, 0)], &source).expect("numbers");
-        assert_eq!(
-            (written.get(0), written.get(1), written.get(4)),
-            (Some(Value::Number(0.0)), None, Some(Value::Number(7.0)))
-        );
-        let gathered = column.gather(&[3, super::super::values::HOLE, 0]);
-        assert_eq!((gathered.get(0), gathered.get(1)), (Some(Value::Number(3.0)), None));
     }
 
     #[test]
@@ -327,6 +364,33 @@ mod tests {
         let far = near.write(near.len(), &[(7, 0)], &source).expect("numbers");
         assert_eq!(far.rows_since(&column), None);
         assert_eq!(far.rows_since(&near), Some(vec![7]));
+    }
+
+    #[test]
+    fn rows_written_or_added_since_are_found_page_by_page() {
+        let column = Column::new(&numbers(PAGE_ROWS + 10));
+        let source = Column::new(&Values::from(vec![-1.0_f64]));
+        let written = column.write(PAGE_ROWS + 12, &[(3, 0)], &source).expect("numbers");
+        assert_eq!(
+            written.written_since(&column),
+            [3, PAGE_ROWS + 10, PAGE_ROWS + 11],
+            "the row written, and the rows added past the end"
+        );
+        let fresh = Column::new(&numbers(PAGE_ROWS + 10));
+        assert_eq!(fresh.written_since(&column).len(), PAGE_ROWS + 10, "a page not written over is every row");
+        assert_eq!(column.written_since(&column), Vec::<usize>::new(), "nothing written since itself");
+    }
+
+    #[test]
+    fn rows_appended_keep_the_rows_before_them() {
+        let column = Column::new(&numbers(PAGE_ROWS + 10));
+        let source = Column::new(&Values::from(vec![-1.0_f64]));
+        let appended = column.write(PAGE_ROWS + 12, &[(PAGE_ROWS + 11, 0)], &source).expect("numbers");
+        assert!(appended.kept_below(&column, PAGE_ROWS + 10), "rows appended past them");
+        let written = appended.write(appended.len(), &[(PAGE_ROWS + 9, 0)], &source).expect("numbers");
+        assert!(written.kept_below(&appended, PAGE_ROWS + 9), "a row written past those asked about");
+        assert!(!written.kept_below(&appended, PAGE_ROWS + 10), "and before them");
+        assert!(!Column::new(&numbers(PAGE_ROWS + 10)).kept_below(&column, 1), "another column's rows are not");
     }
 
     #[test]

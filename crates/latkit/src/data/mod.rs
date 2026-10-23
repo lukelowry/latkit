@@ -48,7 +48,6 @@ pub(crate) use {
     patch::Op,
     samples::{AxisPage, FRAME_PAGE_WORDS, FramePage, MAX_LEVEL, Run, Samples, bucket_frames, detail, sides},
     table::{Inverse, Reference, UNWIRED},
-    values::HOLE,
 };
 
 #[cfg(test)]

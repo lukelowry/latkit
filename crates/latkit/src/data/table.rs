@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use super::bits::Bits;
-use super::column::{Column, Page};
+use super::column::Column;
 use super::ids::{Ids, Index, RowIds};
 use super::name::{Id, IdRef, Name, PageId, Version};
 use super::samples::Samples;
@@ -131,6 +131,23 @@ impl Reference {
         }
     }
 
+    /// The row row `row` names, [`UNWIRED`] where it names none or lies past the rows: read where its
+    /// page stores it, as [`targets`](Reference::targets) reads every row.
+    pub(crate) fn target_row(&self, row: usize) -> u32 {
+        let Some((values, i)) = self.rows.at(row) else { return UNWIRED };
+        match (&values.array, &values.valid) {
+            (Array::U32(rows), None) => rows[i],
+            (Array::U32(rows), Some(valid)) => {
+                if valid.get(i) {
+                    rows[i]
+                } else {
+                    UNWIRED
+                }
+            }
+            _ => self.target(row).unwrap_or(UNWIRED),
+        }
+    }
+
     /// Every row's target row, [`UNWIRED`] where it names none: read page by page, not value by value.
     pub(crate) fn targets(&self) -> Vec<u32> {
         let mut out = Vec::with_capacity(self.rows.len());
@@ -173,48 +190,6 @@ impl Reference {
             }
             Inverse { starts, rows }
         })
-    }
-
-    /// This reference for ids `ids`, naming rows `targets` of a target table of `order` and
-    /// `structure`, [`UNWIRED`] where none: resolved already, as a table drawn in part holds it.
-    /// `targets` holds a row for each id. A page of `kept`, as it was resolved before, whose ids and
-    /// targets are those of the same page now, keeps its id, so it does not upload again.
-    pub(crate) fn resolved_to(
-        &self,
-        ids: Column,
-        targets: &[u32],
-        order: Version,
-        structure: Version,
-        kept: Option<&Reference>,
-    ) -> Reference {
-        let mut pages = Vec::with_capacity(ids.pages().len());
-        let mut resolved = Vec::with_capacity(ids.pages().len());
-        let mut start = 0;
-        for (p, page) in ids.pages().iter().enumerate() {
-            let rows = &targets[start..start + page.values.len()];
-            start += rows.len();
-            let dangling = (0..rows.len()).any(|i| rows[i] == UNWIRED && page.values.is_valid(i));
-            let same =
-                kept.and_then(|k| Some((k.rows.pages().get(p)?, k.ids.pages().get(p)?))).filter(|(old, old_ids)| {
-                    old_ids.id == page.id && matches!(&old.values.array, Array::U32(old) if old[..] == *rows)
-                });
-            if let Some((old, _)) = same {
-                pages.push(old.clone());
-            } else {
-                let valid = Bits::from_fn(rows.len(), |i| rows[i] != UNWIRED);
-                let values = Values { array: Array::U32(rows.to_vec().into()), valid: (!valid.all()).then_some(valid) };
-                pages.push(Page::new(values));
-            }
-            resolved.push(Resolved { ids: page.id, order, structure, dangling });
-        }
-        Reference {
-            to: self.to.clone(),
-            ids,
-            rows: Column::of_pages(pages, &Values::from(Vec::<u32>::new())),
-            resolved: resolved.into(),
-            version: Version::next(),
-            inverse: Arc::default(),
-        }
     }
 
     /// Whether `rows` must be resolved again against a target with these versions.

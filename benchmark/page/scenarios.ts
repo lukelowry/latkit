@@ -2,7 +2,8 @@
  * Every scenario: what it sweeps, the scene and data at each size, and what it does. Each phase
  * declares how its cost may grow with size, so the sweep checks the README's rules: CPU per frame
  * stays flat in the rows, a one-row change costs the same at any size, restyling moves no data,
- * views share pages, and loading grows no faster than the data. `init`, `data`, and `load` come
+ * views share pages, coming back where the camera was costs nothing, appending never thins what
+ * draws, and loading grows no faster than the data. `init`, `data`, and `load` come
  * first in every scenario, and idle frames are counted after the last.
  */
 import { field, type Budget, type Camera, type ColormapName, type Scene, type Space } from 'latkit';
@@ -156,6 +157,22 @@ const zoom = (): Phase => ({
   },
 });
 
+/** Zooms two levels in, then back where it was: measured, the way back, which draws the pages it held
+ * and so packs, uploads, and evaluates nothing. */
+const revisit = (): Phase => ({
+  name: 'revisit',
+  order: { time: 0, bytes: 0 },
+  run: async (s) => {
+    const start = s.view.camera as MapCamera;
+    await s.once(() => {
+      for (const v of s.views) v.camera = { ...start, zoom: start.zoom + 2 };
+    });
+    return s.once(() => {
+      for (const v of s.views) v.camera = start;
+    });
+  },
+});
+
 /** Recolors through `scene`'s colormap: the GPU evaluates again; no data moves. */
 const restyle = (scene: Scene): Phase => ({
   name: 'restyle',
@@ -169,6 +186,30 @@ const one = (data: string, table: string, name: string): Phase => ({
   order: { time: 0, bytes: 0 },
   run: (s) =>
     s.steady(FRAMES, (i) => s.apply(data, (p) => p.set(table, [i], { [name]: [(i % 10) / 10] }))),
+});
+
+/** Appends a row to `table` every frame, as a feed of new rows does: what draws never thins. */
+const append = (
+  data: string,
+  table: string,
+  row: (i: number) => Record<string, number[]>,
+): Phase => ({
+  name: 'append',
+  order: { time: 0 },
+  run: async (s) => {
+    const n = s.count(data, table);
+    const drawn = () => s.views.map((v) => v.stats.drawn);
+    const start = drawn();
+    let thinned = '';
+    const cost = await s.steady(FRAMES, (i) => {
+      const now = drawn();
+      if (!thinned && now.some((d, v) => d < start[v]!))
+        thinned = `${now.join(', ')} drawn, ${start.join(', ')} before`;
+      s.apply(data, (p) => p.set(table, [n + i], row(i)));
+    });
+    if (thinned) throw new Error(`appending thinned what draws: ${thinned}`);
+    return cost;
+  },
 });
 
 /** Changes every row's value at once. */
@@ -364,12 +405,18 @@ export const scenarios: Record<string, Scenario> = {
     phases: [
       pan(),
       zoom(),
+      revisit(),
       restyle(dots('plane', 'magma')),
       one('d', 'Point', 'v'),
       every('d', 'Point', 'v'),
       ...pick(),
       hover(),
       select('d', 'Point'),
+      append('d', 'Point', (i) => ({
+        x: [((i * 37) % 100) / 100],
+        y: [((i * 53) % 100) / 100],
+        v: [0.5],
+      })),
     ],
   },
   grid: {
@@ -380,7 +427,19 @@ export const scenarios: Record<string, Scenario> = {
       scene: grid({ earth: { projection: 'globe' } }),
       data: { g: make.lattice(n) },
     }),
-    phases: [pan(), zoom(), one('g', 'Bus', 'load'), ...pick(), hover()],
+    phases: [
+      pan(),
+      zoom(),
+      revisit(),
+      one('g', 'Bus', 'load'),
+      ...pick(),
+      hover(),
+      append('g', 'Bus', (i) => ({
+        lon: [-170 + (340 * ((i * 37) % 100)) / 100],
+        lat: [-60 + (120 * ((i * 53) % 100)) / 100],
+        load: [0.5],
+      })),
+    ],
   },
   labels: {
     about: 'every vertex labeled: placement, collisions, and the texts set',

@@ -1085,21 +1085,6 @@ impl Samples {
         self.gather_runs(rows, &self.runs(), self.start..self.end)
     }
 
-    /// The samples of rows `rows`, in that order, over the frames of `frames` held: what a table drawn
-    /// in part shows of them about one coordinate.
-    pub(crate) fn gather_frames(&self, rows: &[usize], frames: Range<u64>) -> Samples {
-        let start = frames.start.max(self.start);
-        let frames = start..frames.end.min(self.end).max(start);
-        let runs: Vec<Run> = self
-            .runs()
-            .into_iter()
-            .filter(|r| r.level == 0)
-            .map(|r| Run { level: 0, entries: r.entries.start.max(frames.start)..r.entries.end.min(frames.end) })
-            .filter(|r| !r.entries.is_empty())
-            .collect();
-        self.gather_runs(rows, &runs, frames)
-    }
-
     /// The samples of rows `rows` over `runs`, reading frames `frames`.
     fn gather_runs(&self, rows: &[usize], runs: &[Run], frames: Range<u64>) -> Samples {
         let mut gathered = Samples::from_frame(frames.start);
@@ -1250,8 +1235,6 @@ mod tests {
         let gathered = samples.gather(&[1]);
         assert_eq!(gathered.value(0, 0), Some(2.0));
         assert_eq!(gathered.value(0, 1), Some(4.0));
-        let one = samples.gather_frames(&[0], 1..2);
-        assert_eq!((one.start(), one.end(), one.value(0, 1), one.value(0, 0)), (1, 2, Some(3.0), None));
     }
 
     /// Level 1 buckets 0..4 (frames 0..32) and the frames of bucket 1, of two rows.

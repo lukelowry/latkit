@@ -40,14 +40,6 @@ impl Bits {
         Bits { words: words.into(), offset: 0, len }
     }
 
-    /// How many bits are set.
-    pub(crate) fn count(&self) -> usize {
-        if self.offset != 0 {
-            return (0..self.len).filter(|&i| self.get(i)).count();
-        }
-        self.to_words().iter().map(|w| w.count_ones() as usize).sum()
-    }
-
     pub(crate) fn all(&self) -> bool {
         if self.offset != 0 {
             return (0..self.len).all(|i| self.get(i));

@@ -105,8 +105,8 @@ impl View {
         // Everything a table drawn through tiles holds frames by its rows' bounds, whatever is drawn. A
         // mark with no rows has nothing to frame: it holds a fit only while no mark has rows.
         let compiled = || self.marks.iter().filter(|m| m.compiled.is_some());
-        let drawn = |m: &Shown| (m.drawable() && !m.tables.waiting()) || (all && self.tiled_bounds(m).is_some());
-        let empty = |m: &Shown| m.tables.synced() && m.rows + m.exits == 0;
+        let drawn = |m: &Shown| (m.drawable() && !m.tables.pending()) || (all && self.tiled_bounds(m).is_some());
+        let empty = |m: &Shown| m.tables.synced() && m.held() == 0;
         let ready = compiled().any(&drawn)
             && compiled().all(|m| drawn(m) || empty(m))
             && !self.derived.sheet.placing()
@@ -262,7 +262,7 @@ impl View {
         let spans = self.marks.iter().filter_map(|shown| {
             let crate::Mark::Lines(lines) = &shown.mark else { return None };
             let style = shown.mark.style();
-            let table = self.drawn(&style.data)?.table(&style.table)?;
+            let table = self.source(&style.data)?.table(&style.table)?;
             match table.field_named(&lines.traced())? {
                 crate::data::Field::Sampled(samples, _) => samples.span(),
                 _ => None,

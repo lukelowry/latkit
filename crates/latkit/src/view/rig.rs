@@ -74,6 +74,11 @@ impl Rig {
 }
 
 impl View {
+    /// The zooms gestures and the rig keep the camera within: what the last fit framed allows.
+    pub(super) fn zoom_limits(&self) -> Option<[f64; 2]> {
+        self.rig.bounds.map(|bounds| bounds.zooms())
+    }
+
     /// Moves the camera by a gesture or the rig, kept within reach of what was fitted.
     pub(super) fn steer(&mut self, camera: Camera) {
         let camera = match &self.rig.bounds {
@@ -108,7 +113,7 @@ impl View {
             let view = self.projected();
             let mut camera = self.camera.panned(&view, anchor, pan);
             camera = camera.turned(&self.projected_with(&camera), anchor, turn);
-            camera = camera.zoomed(&self.projected_with(&camera), anchor, zoom);
+            camera = camera.zoomed(&self.projected_with(&camera), anchor, zoom, self.zoom_limits());
             let settle = |v: f64, least: f64| if v.abs() < least { 0.0 } else { v };
             self.rig.pan = [settle(self.rig.pan[0] - pan[0], 0.05), settle(self.rig.pan[1] - pan[1], 0.05)];
             self.rig.turn = [settle(self.rig.turn[0] - turn[0], 0.01), settle(self.rig.turn[1] - turn[1], 0.01)];

@@ -15,10 +15,14 @@
 //! Without an ease, a flowing mark whose rows moved still begins a transition, of no length: it
 //! shows the new state at once, and its comets carry their travel over to the rows' new places.
 
+use std::sync::Arc;
+
 use super::View;
 use super::clock::Clock;
-use super::marks::Shown;
+use super::drawing::{Drawing, Holds};
+use super::marks::{Holding, Shown};
 use crate::data::{PAGE_ROWS, RowIds, Table};
+use crate::derive::order::PAGE;
 use crate::gpu::Inner;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::MarkKind;
@@ -55,9 +59,8 @@ pub(crate) fn remap(old: &Table, new: &Table) -> Option<(Vec<u32>, Vec<u32>)> {
         return None;
     }
     if old.order == new.order && new.len() >= old.len() {
-        // Rows kept in place, those of pages rewritten aside: there a row whose id changed enters, as
-        // one a table drawn through tiles writes where a tile drawn before was, and the row it
-        // replaces leaves.
+        // Rows kept in place, those of pages rewritten aside: there a row whose id changed enters, and
+        // the row it replaces leaves.
         let mut sources: Vec<u32> = (0..new.len()).map(|r| if r < old.len() { r as u32 } else { wgsl::NONE }).collect();
         let mut exits = Vec::new();
         for block in rewritten(old, new).unwrap_or_default() {
@@ -111,26 +114,117 @@ pub(crate) fn rewritten(old: &Table, new: &Table) -> Option<Vec<u32>> {
     }
 }
 
-/// The rows of `new` replacing every row of `old`, as when another dataset of the same name replaces
-/// the one drawn: each enters, and each old row leaves, whatever its id.
-pub(crate) fn replaced(old: &Table, new: &Table) -> (Vec<u32>, Vec<u32>) {
-    (vec![wgsl::NONE; new.len()], (0..old.len() as u32).collect())
+/// How rows moved from what `old` held to what `new` holds: each new held row's old held row
+/// (`NONE` if it entered), and the old rows drawn that left. `None` when every row kept its place, as
+/// a table drawn in part keeps its rows' places while its order serves, whatever the camera draws.
+pub(crate) fn moved(old: &Holding, new: &Holding) -> Option<(Vec<u32>, Vec<u32>)> {
+    if old.origin != new.origin {
+        // Another dataset of the same name: every row enters, and every row drawn leaves.
+        return Some((vec![wgsl::NONE; held(new) as usize], drawn(old)));
+    }
+    match (&old.drawing, &new.drawing) {
+        (None, None) => remap(&old.table, &new.table),
+        (Some(a), Some(b)) if a.order.id() == b.order.id() && old.table.order == new.table.order => None,
+        _ => Some(follow(old, new)),
+    }
+}
+
+/// Rows held by the table's own order or a drawing's.
+fn held(holding: &Holding) -> u32 {
+    holding.drawing.as_ref().map_or(holding.table.len() as u32, |d| d.live())
+}
+
+/// The held rows `holding` draws, but those fading out with their tiles.
+fn drawn(holding: &Holding) -> Vec<u32> {
+    match &holding.drawing {
+        None => (0..holding.table.len() as u32).collect(),
+        Some(drawing) => drawing
+            .runs
+            .iter()
+            .filter(|run| run.fade != wgsl::FADE_OUT)
+            .flat_map(|run| run.held..run.held + run.len)
+            .collect(),
+    }
+}
+
+/// How rows moved between holdings of different orders: each row followed to where `old` held it,
+/// by id where rows came or went.
+fn follow(old: &Holding, new: &Holding) -> (Vec<u32>, Vec<u32>) {
+    let same = old.table.order == new.table.order;
+    let source = |h: u32| match &new.drawing {
+        Some(drawing) => drawing.source(h),
+        None => (h < new.table.len() as u32).then_some(h),
+    };
+    let held_of = |r: usize| match &old.drawing {
+        Some(drawing) => drawing.held_row(r as u32),
+        None => (r < old.table.len()).then_some(r as u32),
+    };
+    let mut kept = vec![false; held(old) as usize];
+    let sources: Vec<u32> = (0..held(new))
+        .map(|h| {
+            let Some(r) = source(h).map(|r| r as usize) else { return wgsl::NONE };
+            let was = if same {
+                (r < old.table.len()).then_some(r)
+            } else {
+                new.table.ids.key(r).and_then(|key| old.table.row(key))
+            };
+            let Some(at) = was.and_then(held_of) else { return wgsl::NONE };
+            if let Some(k) = kept.get_mut(at as usize) {
+                *k = true;
+            }
+            at
+        })
+        .collect();
+    let exits = drawn(old).into_iter().filter(|&h| !kept.get(h as usize).copied().unwrap_or(false)).collect();
+    (sources, exits)
+}
+
+/// Whether every new row is where it was, or entered.
+pub(crate) fn in_place(sources: &[u32]) -> bool {
+    sources.iter().enumerate().all(|(r, &s)| s == r as u32 || s == wgsl::NONE)
+}
+
+/// The slots of `new` holding rows `old` did not hold there: every slot holding a page without one
+/// before, those whose page took rows appended since, and those of rows kept that changed.
+pub(crate) fn bound(old: Option<&Drawing>, new: &Drawing) -> Vec<u32> {
+    let grown = old.map_or(u32::MAX, |old| old.order.len() / PAGE);
+    let appended = old.is_some_and(|o| o.order.len() != new.order.len());
+    (0..new.slot_count())
+        .filter(|&s| match new.holds(s) {
+            Holds::Free => false,
+            held => {
+                let alike = old.is_some_and(|o| o.holds_alike(new, s));
+                !alike || matches!(held, Holds::Page(page) if appended && page >= grown)
+            }
+        })
+        .map(|s| s as u32)
+        .collect()
+}
+
+/// Whether two holdings hold the same rows the same way: the same table's rows, laid out alike.
+pub(crate) fn holds_alike(a: &Holding, b: &Holding) -> bool {
+    let same_drawing = match (&a.drawing, &b.drawing) {
+        (None, None) => true,
+        (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+        _ => false,
+    };
+    a.origin == b.origin && a.table.structure == b.table.structure && a.table.order == b.table.order && same_drawing
 }
 
 impl Shown {
     /// Takes over the rows `before` holds, as a changed description of the same mark.
     pub(crate) fn inherit(&mut self, before: &Shown) {
         self.region = before.region;
-        self.held = before.held;
+        self.before = before.before;
         self.rows = before.rows;
-        self.drawn.clone_from(&before.drawn);
+        self.holding.clone_from(&before.holding);
         self.version = before.version + 1;
         self.place_version = before.place_version + 1;
     }
 
     /// Starts easing from what the mark shows: its rows moved as `moved` says, if they did.
     pub(crate) fn begin(&mut self, moved: Option<(Vec<u32>, Vec<u32>)>) {
-        if self.held == 0 {
+        if self.before == 0 {
             return;
         }
         let fades = moved.as_ref().is_some_and(|(sources, _)| sources.iter().all(|&s| s == wgsl::NONE));
@@ -144,6 +238,20 @@ impl Shown {
         }
         self.begin = Some(Begin { sources, fades });
         self.all_dirty();
+    }
+
+    /// Starts the running transition over from what the mark shows, as slots `bound` of held rows
+    /// take pages of rows that enter: the rest ease on toward where they settle, which their channels
+    /// evaluated already, and rows that left go on fading out past the live ones.
+    pub(crate) fn restart(&mut self, bound: &[u32]) {
+        let mut sources: Vec<u32> = (0..self.live()).collect();
+        for &slot in bound {
+            let rows = slot * PAGE..((slot + 1) * PAGE).min(sources.len() as u32);
+            sources[rows.start as usize..rows.end as usize].fill(wgsl::NONE);
+        }
+        // The rows that left lay past the live rows when the frame began.
+        sources.extend(self.before.saturating_sub(self.exits)..self.before);
+        self.begin = Some(Begin { sources: Some(sources), fades: false });
     }
 }
 
@@ -223,7 +331,7 @@ impl View {
             match begin.sources {
                 None => {
                     let source = if shown.moved.is_some() { resources.retired_state() } else { None };
-                    let rows = shown.held.min(shown.rows);
+                    let rows = shown.before.min(shown.live());
                     resources.copy_frozen(encoder, source, was, now, rows);
                 }
                 Some(sources) => {
@@ -258,7 +366,7 @@ impl View {
         for &i in &gathers {
             let shown = &self.marks[i];
             pass.set_bind_group(1, &groups.mark, &[super::passes::offset(i)]);
-            super::passes::dispatch(&mut pass, shown.rows + shown.exits);
+            super::passes::dispatch(&mut pass, shown.held());
         }
     }
 
@@ -274,20 +382,20 @@ impl View {
         }
         let vertices = self.marks.iter().filter(|m| m.kind() == MarkKind::Vertices);
         let old_slot = |m: &Shown| m.moved.unwrap_or(m.region).state / wgsl::VERTEX_WORDS;
-        let size = vertices.clone().map(|m| old_slot(m) + m.held).max().unwrap_or(0);
+        let size = vertices.clone().map(|m| old_slot(m) + m.before).max().unwrap_or(0);
         let mut table = vec![wgsl::NONE; size as usize];
         for m in vertices {
             let (from, to) = (old_slot(m), m.region.state / wgsl::VERTEX_WORDS);
             match m.begin.as_ref().and_then(|b| b.sources.as_ref()) {
                 Some(sources) => {
                     for (new_row, &old_row) in sources.iter().enumerate() {
-                        if old_row != wgsl::NONE && old_row < m.held {
+                        if old_row != wgsl::NONE && old_row < m.before {
                             table[(from + old_row) as usize] = to + new_row as u32;
                         }
                     }
                 }
                 None => {
-                    for row in 0..m.held.min(m.rows) {
+                    for row in 0..m.before.min(m.live()) {
                         table[(from + row) as usize] = to + row;
                     }
                 }

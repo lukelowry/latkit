@@ -48,11 +48,14 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     var out: Varyings;
     let s = segment(instance);
     out.row = s.row;
-    if LIT_DRAW && (s.row >= mark.rows || s.index >= path_count(s.row)) {
+    if LIT_DRAW && (s.item >= mark.rows || s.index >= path_count(s.item)) {
         out.clip = culled();
         return out;
     }
-    let style = stroke_style(s.row);
+    // A stroke fades and grows with its row's tile.
+    var style = stroke_style(s.row);
+    style.color.a *= s.presence;
+    style.width *= s.growth;
     let on = segment_screen(s);
     let ends = on.ends;
     if !style.shown || !on.shown {

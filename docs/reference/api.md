@@ -584,6 +584,10 @@ class Gpu {
   set budget(budget: Budget);
   /** What this GPU did since it was created, counted exactly; see {@link Work}. */
   get work(): Work;
+  /** Bytes on the GPU every view of it draws from: data, and what each view keeps per row. */
+  get resident(): number;
+  /** Bytes waiting to upload, for every view of this GPU. */
+  get uploading(): number;
   /**
    * Draws one frame now at `now`, milliseconds on the clock animation frames give: the frame
    * listeners, then every canvas that needs a frame. From the first step no animation frames are

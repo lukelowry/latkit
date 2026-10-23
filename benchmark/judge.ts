@@ -50,7 +50,7 @@ const FLOOR = { frame: 0.5, action: TICK, bytes: 64 * 1024 };
 /** How much slower than the baseline a median may be. */
 const SLOWER = 1.25;
 /** Work the data and the frames drawn alone set, which repeats exactly once a phase settles. */
-const EXACT = new Set(['uploaded', 'evaluated', 'jobs', 'pipelines', 'late', 'resident']);
+const EXACT = new Set(['uploaded', 'evaluated', 'packed', 'jobs', 'pipelines', 'late', 'resident']);
 /** How much more of the rest a phase may do than the baseline: the frame a job or a fetch lands in
  * moves label placements and tiles by up to about 1.7×, and a per-frame blowup by far more. */
 const STEADY = 2;

@@ -927,13 +927,15 @@ mod tests {
                 data: std::slice::from_ref(&data),
                 host: None,
                 dragging: true,
+                paged: None,
             };
             if let Some(drawn) = &edits.drawn {
                 redrawn += usize::from(edited(drawn, &input, &marks(&input).0).is_some());
             }
             whole.drawn = None;
             for sheet in [&mut edits, &mut whole] {
-                sheet.update(&input, &mut Jobs::new(None, Waker::noop(), &counters, &errors));
+                sheet
+                    .update(&input, &mut Jobs::new(None, Waker::noop(), &counters, &errors, crate::derive::FRAME_WORK));
             }
             if let Some(difference) = differ(&edits.tables, &whole.tables) {
                 panic!("step {step}: {difference}");

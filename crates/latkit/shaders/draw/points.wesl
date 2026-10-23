@@ -10,7 +10,7 @@ import package::lib::types::{STATUS, MARKER_ICON, MARKER_SHAPE, MARKER_BLOCK, GR
 import package::lib::bind::{frame, eye, mark, state, ramp, program, focused};
 import package::lib::state::extra_at;
 import package::lib::project::{to_screen, to_clip, nearer, culled};
-import package::lib::points::{Point, point, reach, port_at};
+import package::lib::points::{Point, shown_point, reach, port_at};
 import package::lib::marker::{
     MarkerColor, MarkerFragment, builtin_marker, container, border, dropped, outline_distance, box_distance,
     shape_distance, filled, over, status_ring, glow, premultiplied, theme_text, theme_corner, theme_lift,
@@ -48,20 +48,20 @@ struct Drawn {
 
 @if(!ports && !focused)
 fn drawn(instance: u32) -> Drawn {
-    let p = point(instance);
+    let p = shown_point(instance);
     return Drawn(p, to_screen(p.clip), p.half, reach(p, false), mark.shape, p.depth);
 }
 
 @if(focused)
 fn drawn(instance: u32) -> Drawn {
-    let p = point(focused[mark.focused + instance]);
+    let p = shown_point(focused[mark.focused + instance]);
     return Drawn(p, to_screen(p.clip), p.half, reach(p, true), mark.shape, p.depth);
 }
 
 @if(ports)
 fn drawn(instance: u32) -> Drawn {
     let n = max(mark.ports, 1u);
-    let p = point(instance / n);
+    let p = shown_point(instance / n);
     let port = port_at(p, instance % n);
     let half = vec2f(port.half);
     return Drawn(p, port.center, half, half + 1.5 * frame.unit + fringe(), port.shape, f32(port.wired));

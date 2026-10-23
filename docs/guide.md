@@ -328,12 +328,15 @@ view.setData(grid);
 
 ### Stats and memory
 
-`view.stats` tells rows drawn, draw calls, tiles, bytes resident and uploading, and CPU and GPU
-milliseconds a frame. `gpu.work` counts exactly what the GPU did: bytes uploaded and written, rows
-evaluated, readbacks, jobs, texts, and pipelines. `gpu.budget = { bytes, uploadPerFrame }` sets how
-much memory data takes. The GPU's views share it: a view gets what it asks while an even split
-covers it, and the rest split what is left; pages several views draw count once. A table too large
-for its view's share draws through the tiles in view.
+`view.stats` tells rows drawn, draw calls, tiles, and CPU and GPU milliseconds a frame;
+`gpu.resident` and `gpu.uploading` the bytes of data on the GPU and waiting to upload, for every
+view of it. `gpu.work` counts exactly what the GPU did: bytes uploaded and written, rows evaluated
+and packed, readbacks, jobs, texts, and pipelines. `gpu.budget = { bytes, uploadPerFrame }` sets how
+much memory data takes, and how much of it a frame uploads. The GPU's views share it: a view gets
+what it asks while an even split covers it, and the rest split what is left; pages several views
+draw count once. A table too large for its view's share draws through the tiles in view, a page of
+its order at a time; a page it drew stays on the GPU while its share leaves room, so the camera
+coming back draws it again for nothing.
 
 A frame does the work of what changed: a patch evaluates only the pages it wrote, unless a fitted
 domain or a join reads them; a transition evaluates once and blends each frame; and rows drawn

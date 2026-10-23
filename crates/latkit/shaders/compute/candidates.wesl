@@ -14,26 +14,31 @@ import package::lib::state::extra_at;
 import package::lib::read::missing_bits;
 import package::lib::label::{anchor, length_px, legibility, text_at, fits, in_view};
 import package::lib::placement::{word, put, candidate, want, seen};
+import package::lib::drawn::drawn_row;
 
 @compute @workgroup_size(256)
 fn candidates(@builtin(global_invocation_id) id: vec3u) {
-    let row = item(id);
-    if row >= mark.rows {
+    let i = item(id);
+    if i >= mark.rows {
         return;
     }
+    let drawn = drawn_row(i);
+    let row = drawn.row;
     let at = candidate(row);
     let before = word(at + CANDIDATE_STATE);
     let sticky = (before & PLACED_LABEL) != 0u;
     let code_bits = state[extra_at(row, mark.label + LABEL_CODE)];
     var next = select(0u, STICKY, sticky);
-    if missing_bits(code_bits) || (state[mark.state + row * mark.stride + mark.stride - 1u] & VISIBLE) == 0u {
+    let flags = state[mark.state + row * mark.stride + mark.stride - 1u];
+    // A row whose tile leaves keeps no label.
+    if missing_bits(code_bits) || (flags & VISIBLE) == 0u || drawn.leaving {
         put(at + CANDIDATE_STATE, next);
         return;
     }
     let code = u32(bitcast<f32>(code_bits));
     let uv0 = word(mark.runs + 2u * code);
     let uv1 = word(mark.runs + 2u * code + 1u);
-    let a = anchor(row);
+    let a = anchor(i);
     let size = length_px(mark.label_size);
     let diagram = frame.space == SPACE_DIAGRAM;
     let estimated = (uv0 & TEXT_ESTIMATE) != 0u;

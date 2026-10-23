@@ -4,13 +4,14 @@
 // entries the list keeps. Each count is held to its share of a u32, so the total never wraps.
 // Reduce-then-scan needs no forward progress between workgroups, so it is safe on every device.
 
-import package::lib::bind::mark;
+import package::lib::bind::{mark, program};
 import package::lib::types::{
     LIST_ITEMS, LIST_COUNTS, LIST_SUMS, LIST_ENTRIES, LIST_DRAW, LIST_DISPATCH, LIST_KEPT, PATH_TRACE, TRIANGLES,
-    BLOCK_ROWS, item,
+    DISPATCH_ROWS, RUN_WORDS, FADE_IN, FADE_OUT, DRAWN_ENTERING, DRAWN_LEAVING, item,
 };
 import package::lib::lists::{lists, list_start};
 import package::lib::path::{row_segments, path_point, path_length, PATH};
+import package::lib::drawn::held_row;
 
 var<workgroup> tile: array<u32, 256>;
 var<workgroup> shared_items: u32;
@@ -35,8 +36,8 @@ fn scan_blocks(@builtin(local_invocation_id) l: vec3u, @builtin(workgroup_id) g:
     let h = header();
     let n = lists[h + LIST_ITEMS];
     let counts = lists[h + LIST_COUNTS];
-    // Past one dimension's workgroups, blocks of BLOCK_ROWS items step along the second.
-    let block = g.y * (BLOCK_ROWS / 256u) + g.x;
+    // Past one dimension's workgroups, runs of DISPATCH_ROWS items step along the second.
+    let block = g.y * (DISPATCH_ROWS / 256u) + g.x;
     let i = block * 256u + l.x;
     // Whatever the counts, the starts climb, so every item's writes end.
     let share = 0xffffffffu / max(n, 1u);
@@ -92,14 +93,40 @@ fn add_sums(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
-// A mark's segments, numbered by its list: each row counts the segments of its path, then writes
-// its row at each of their places, with how far along its path each starts, so a segment's instance
+// Each drawn row's word, from the runs the program lists: its held row, in the last run starting at
+// or before it, and whether that run's tile fades in or out. What every pass drawing or answering for
+// the mark reads in one word, written when the runs change.
+@compute @workgroup_size(256)
+fn expand_runs(@builtin(global_invocation_id) id: vec3u) {
+    let i = item(id);
+    if i >= mark.rows + mark.exits {
+        return;
+    }
+    var lo = 0u;
+    var hi = max(program[mark.row_runs], 1u);
+    while hi - lo > 1u {
+        let mid = (lo + hi) / 2u;
+        if program[mark.row_runs + 1u + mid * RUN_WORDS] <= i {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let run = mark.row_runs + 1u + lo * RUN_WORDS;
+    let fade = program[run + 2u];
+    let entering = select(0u, DRAWN_ENTERING, (fade & FADE_IN) != 0u);
+    let leaving = select(0u, DRAWN_LEAVING, (fade & FADE_OUT) != 0u);
+    lists[mark.drawn + i] = (program[run + 1u] + (i - program[run])) | entering | leaving;
+}
+
+// A mark's segments, numbered by its list: each drawn row counts the segments of its path, then
+// writes its number at each of their places, with how far along its path each starts, so a segment's instance
 // finds its row, its index in it, and where dashes and comets stand at its start.
 @compute @workgroup_size(256)
 fn count_segments(@builtin(global_invocation_id) id: vec3u) {
     let i = item(id);
     if i < lists[mark.list + LIST_ITEMS] {
-        lists[lists[mark.list + LIST_COUNTS] + i] = row_segments(i);
+        lists[lists[mark.list + LIST_COUNTS] + i] = row_segments(held_row(i));
     }
 }
 
@@ -115,12 +142,13 @@ fn write_segments(@builtin(global_invocation_id) id: vec3u) {
     // An area's triangles have no distance along.
     let measured = mark.primitive != TRIANGLES && PATH != PATH_TRACE;
     var along = 0.0;
-    var last = path_point(i, 0u);
+    let row = held_row(i);
+    var last = path_point(row, end - at, 0u);
     for (var k = at; k < end; k++) {
         lists[entries + 2u * k] = i;
         lists[entries + 2u * k + 1u] = bitcast<u32>(along);
         if measured {
-            let next = path_point(i, k - at + 1u);
+            let next = path_point(row, end - at, k - at + 1u);
             along += select(0.0, path_length(last, next), last.shown && next.shown);
             last = next;
         }

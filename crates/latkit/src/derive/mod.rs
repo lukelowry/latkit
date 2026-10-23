@@ -13,16 +13,17 @@
 
 pub(crate) mod graph;
 mod lanes;
+pub(crate) mod order;
 pub(crate) mod places;
 pub(crate) mod pyramid;
-mod shapes;
+pub(crate) mod shapes;
 pub(crate) mod sight;
 mod stars;
 pub(crate) mod tiled;
 pub(crate) mod tiles;
 mod tiling;
 
-pub(crate) use lanes::{answer as lanes_answer, spread};
+pub(crate) use lanes::{lanes, spread};
 
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -127,9 +128,9 @@ impl<T, A: Answer> Derived<T, A> {
     }
 }
 
-/// Microseconds of work, by estimate, the derivations do on one frame between them; what does not fit
-/// goes to the host as jobs.
-const FRAME_WORK: u32 = 4000;
+/// Microseconds of work, by estimate, the derivations of a GPU's views do on one frame between them;
+/// what does not fit goes to the host as jobs.
+pub(crate) const FRAME_WORK: u32 = 4000;
 
 /// The frame's budget of inline work and the host's pool, which every derivation shares. Each job
 /// and fetch wakes the view when it lands.
@@ -144,13 +145,15 @@ pub(crate) struct Jobs<'a> {
 }
 
 impl<'a> Jobs<'a> {
+    /// The jobs of a frame with `left` microseconds of work on it still to spend.
     pub(crate) fn new(
         host: Option<&'a dyn Host>,
         waker: &'a Waker,
         counters: &'a Counters,
         errors: &'a Arc<Mutex<Vec<crate::Error>>>,
+        left: u32,
     ) -> Jobs<'a> {
-        Jobs { host, waker, counters, errors, left: FRAME_WORK }
+        Jobs { errors, host, waker, counters, left }
     }
 
     /// Whether work of `cost` microseconds fits what is left of the frame's budget, spending it if so.
@@ -195,8 +198,8 @@ impl<'a> Jobs<'a> {
     }
 }
 
-/// What every derivation reads: the scene and its data, the host that measures text, and whether
-/// rows are being dragged. Jobs go through the frame's [`Jobs`].
+/// What every derivation reads: the scene and its data, the host that measures text, whether rows
+/// are being dragged, and what each table drawn in part draws. Jobs go through the frame's [`Jobs`].
 pub(crate) struct Input<'a> {
     pub(crate) scene: &'a Scene,
     /// Bumps whenever the scene changes.
@@ -205,6 +208,16 @@ pub(crate) struct Input<'a> {
     pub(crate) host: Option<&'a dyn Host>,
     /// Whether rows are being dragged: what they move derives on the frame, however much.
     pub(crate) dragging: bool,
+    /// Each table drawn in part, by dataset and table: what row-local derivations work on alone.
+    pub(crate) paged: Option<&'a Keyed<(Name, Name), Paged>>,
+}
+
+/// What a table drawn in part draws this frame: the order its rows draw in, the pages of it drawn,
+/// and the places of the rows kept whose pages are not, each ascending.
+pub(crate) struct Paged {
+    pub(crate) order: order::Order,
+    pub(crate) pages: Vec<u32>,
+    pub(crate) kept: Vec<u32>,
 }
 
 impl Input<'_> {
@@ -413,6 +426,12 @@ impl Derivations {
             .into_iter()
             .find_map(|tables| tables.get(&key));
         [first, self.shapes.tables().get(&key)]
+    }
+
+    /// The shapes of table `table` of dataset `data` drawn in part, a page of its order at a time,
+    /// by the field each is written as.
+    pub(crate) fn paged(&self, data: &Name, table: &Name) -> Vec<(Name, &shapes::PagedShapes)> {
+        self.shapes.paged(data, table)
     }
 }
 

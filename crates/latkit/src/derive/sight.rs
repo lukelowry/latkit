@@ -205,18 +205,23 @@ impl Sight<'_> {
         boxes(lon - half, lon + half, south, north)
     }
 
-    /// How large a tile of bounds `b` draws where it lies nearest each focus, and how far from the
-    /// view's middle that lands.
-    pub(crate) fn measure(&self, focus: &[[f64; 2]], b: [f64; 4]) -> (f64, f64) {
-        let [w, s, e, n] = b;
-        let (dx, dy) = ((e - w) / 64.0, (n - s) / 64.0);
+    /// How large tile `key` of `domain`'s square draws where it lies nearest each focus, and how far
+    /// from the view's middle that lands. It steps across the tile in the square, where the tiles of a
+    /// level are alike, so on a flat map they all measure the same wherever they lie.
+    pub(crate) fn measure(&self, focus: &[[f64; 2]], domain: &Domain, key: TileKey) -> (f64, f64) {
+        let side = 1.0 / f64::from(1_u32 << key.z);
+        let (west, north) = (f64::from(key.x) * side, f64::from(key.y) * side);
+        let step = side / 64.0;
         let (mut size, mut distance) = (0.0_f64, f64::INFINITY);
-        for &[fx, fy] in focus {
-            let near = if self.earth { fx + 360.0 * ((w.midpoint(e) - fx) / 360.0).round() } else { fx };
-            let (x, y) = (near.clamp(w, e - dx), fy.clamp(s, n - dy));
-            let Some(p) = self.project([x, y]) else { continue };
-            let reach = |q: Option<[f64; 2]>| q.map_or(0.0, |q| 64.0 * (q[0] - p[0]).hypot(q[1] - p[1]));
-            size = size.max(reach(self.project([x + dx, y]))).max(reach(self.project([x, y + dy])));
+        for &f in focus {
+            let [fx, fy] = domain.unit(f);
+            // The earth's square wraps: the focus a turn either way, whichever lies nearer the tile.
+            let fx = if *domain == Domain::Earth { fx + (west + side / 2.0 - fx).round() } else { fx };
+            let at = [fx.clamp(west, west + side - step), fy.clamp(north, north + side - step)];
+            let Some(p) = self.project(domain.position(at)) else { continue };
+            let reach =
+                |q: [f64; 2]| self.project(domain.position(q)).map_or(0.0, |q| 64.0 * (q[0] - p[0]).hypot(q[1] - p[1]));
+            size = size.max(reach([at[0] + step, at[1]])).max(reach([at[0], at[1] + step]));
             distance = distance.min((p[0] - self.size[0] / 2.0).hypot(p[1] - self.size[1] / 2.0));
         }
         (size, distance)

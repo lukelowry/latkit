@@ -342,12 +342,6 @@ pub struct Stats {
     pub tiles: u64,
     /// Tiles being fetched or decoded, of every tile source.
     pub tiles_loading: u64,
-    /// Bytes of data waiting to upload.
-    pub uploading: u64,
-    /// Bytes of data pages on the GPU, for every view of its `Gpu`.
-    pub resident: u64,
-    /// Bytes the GPU's [`Budget`](crate::Budget) lets data take.
-    pub budget: u64,
     /// The work under way the last frame stood in for; nothing when it drew everything as the data,
     /// scene, and camera say: see [`View::complete`](crate::View::complete).
     pub waiting: Waiting,

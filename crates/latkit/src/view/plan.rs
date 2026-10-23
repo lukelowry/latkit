@@ -10,7 +10,7 @@
 
 use std::hash::{Hash, Hasher};
 
-use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use rustc_hash::{FxHashMap, FxHasher};
 
 use super::View;
 use super::marks::Shown;
@@ -179,7 +179,8 @@ impl View {
         let left = (share - whole).max(share / 4.0);
         let each = left / (tiled.len() + usize::from(traced > 0.0)).max(1) as f64;
         for key in &tiled {
-            let per_row = costs[key].per_row.max(1.0) + costs[key].geometry / costs[key].rows.max(1) as f64;
+            // A row drawn in part takes a word more: which held row it is.
+            let per_row = costs[key].per_row.max(1.0) + 4.0 + costs[key].geometry / costs[key].rows.max(1) as f64;
             let rows = (each / per_row).min(f64::from(u32::MAX)) as u32;
             plans.get_mut(key).expect("listed").draw = Draw::Tiles { rows: rows.max(LEAST) };
         }
@@ -195,7 +196,6 @@ impl View {
         let mut plans = Plans::default();
         let mut costs: Keyed<(Name, Name), Cost> = Keyed::default();
         let mut shared: FxHashMap<u64, (f64, f64)> = FxHashMap::default();
-        let mut joined: Vec<((Name, Name), Name)> = Vec::new();
         for shown in &self.marks {
             let style = shown.mark.style();
             let Some(table) = self.source(&style.data).and_then(|d| d.table(&style.table)) else { continue };
@@ -204,32 +204,12 @@ impl View {
                 draw: Draw::Whole,
                 priority: None,
                 place: Place::Nowhere,
-                reads: (!matches!(space, Space::Diagram(_))).then(FxHashSet::default),
-                traced: FxHashSet::default(),
             });
             if planned.priority.is_none() {
                 planned.priority.clone_from(&style.priority);
             }
             if placing && planned.place == Place::Nowhere {
                 planned.place = place_of(&shown.mark, table);
-            }
-            if let Some(compiled) = &shown.compiled {
-                let traces = compiled.program.columns.iter().filter(|c| c.trace && c.of.is_none() && !c.derived);
-                planned.traced.extend(traces.map(|c| c.name.clone()));
-            }
-            if let (Some(reads), Some(compiled)) = (&mut planned.reads, &shown.compiled) {
-                for column in &compiled.program.columns {
-                    match &column.of {
-                        None if !column.derived => {
-                            reads.insert(column.name.clone());
-                        }
-                        Some(of) => joined.push((of.clone(), column.name.clone())),
-                        None => {}
-                    }
-                }
-                if let Some(field) = geometry_of(&shown.mark) {
-                    reads.insert(field);
-                }
             }
             let cost = costs.entry(key).or_insert(Cost { rows: table.len(), per_row: 0.0, geometry: 0.0, traced: 0.0 });
             cost.per_row += row_bytes(shown);
@@ -239,11 +219,6 @@ impl View {
                 let (counted, once) = shared.entry(piece).or_insert((0.0, 0.0));
                 *counted += bytes;
                 *once = bytes;
-            }
-        }
-        for (key, field) in joined {
-            if let Some(reads) = plans.get_mut(&key).and_then(|p| p.reads.as_mut()) {
-                reads.insert(field);
             }
         }
         Costs { whole: plans, tables: costs, shared }

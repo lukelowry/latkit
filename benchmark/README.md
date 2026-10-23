@@ -18,9 +18,9 @@ A run fails on:
   (`late`), or resident data over its budget;
 - a phase growing with size faster than its order;
 - more work than `baselines/work.json`: exactly for what the data sets (`uploaded`, `evaluated`,
-  `jobs`, `pipelines`, `late`, `resident`) in a phase that acts once, and within 2× for what moves
-  with the frame a job or a fetch lands in (`written`, `readbacks`, `texts`, every count of a phase
-  acting each frame, and all of a scenario fed by fetches);
+  `packed`, `jobs`, `pipelines`, `late`, `resident`) in a phase that acts once, and within 2× for
+  what moves with the frame a job or a fetch lands in (`written`, `readbacks`, `texts`, every count
+  of a phase acting each frame, and all of a scenario fed by fetches);
 - in a full sweep, on the machine `baselines/<machine>.json` was taken on, a phase over 1.25× slower,
   and for a phase acting once, later by over a timer tick (16 ms).
 

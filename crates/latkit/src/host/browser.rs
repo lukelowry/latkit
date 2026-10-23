@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
+use super::queue::Queue;
 use super::{Encoder, Unit};
 use super::{Host, Job, Raster, Request, TextRun};
 use crate::Encoding;
@@ -17,7 +18,46 @@ pub struct Browser;
 thread_local! {
     static CANVAS: RefCell<Option<(OffscreenCanvas, OffscreenCanvasRenderingContext2d)>> = const { RefCell::new(None) };
     static JOBS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+    static QUEUE: RefCell<Queue> = RefCell::new(Queue::default());
     static ENCODERS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+}
+
+/// Jobs the page's workers do at once: as many as its pool keeps, one fewer than its cores, at most
+/// four.
+fn workers() -> usize {
+    let cores = web_sys::window()
+        .map(|window| window.navigator().hardware_concurrency())
+        .or_else(|| {
+            js_sys::global()
+                .dyn_into::<web_sys::WorkerGlobalScope>()
+                .ok()
+                .map(|scope| scope.navigator().hardware_concurrency())
+        })
+        .unwrap_or(2.0) as usize;
+    cores.saturating_sub(1).clamp(1, 4)
+}
+
+/// Hands waiting jobs to the page's workers while they have room, skipping those nothing waits for.
+fn pump(run: &js_sys::Function) {
+    loop {
+        let next = QUEUE.with(|queue| queue.borrow_mut().next(workers()));
+        let Some((job, resolver)) = next else { return };
+        let bytes = js_sys::Uint8Array::from(&job.into_bytes()[..]);
+        let promise = run.call1(&JsValue::NULL, &bytes).map(js_sys::Promise::from);
+        let run = run.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let answer = match promise {
+                Ok(promise) => wasm_bindgen_futures::JsFuture::from(promise)
+                    .await
+                    .map(|bytes| js_sys::Uint8Array::new(&bytes).to_vec())
+                    .map_err(|error| Error::Unsupported(format!("a job failed: {error:?}").into())),
+                Err(error) => Err(Error::Unsupported(format!("jobs: {error:?}").into())),
+            };
+            resolver.resolve(answer);
+            QUEUE.with(|queue| queue.borrow_mut().done());
+            pump(&run);
+        });
+    }
 }
 
 impl Browser {
@@ -175,20 +215,9 @@ impl Host for Browser {
 
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         let Some(run) = JOBS.with(|jobs| jobs.borrow().clone()) else { return Pending::ready(Ok(job.run())) };
-        let bytes = js_sys::Uint8Array::from(&job.into_bytes()[..]);
-        let promise = match run.call1(&JsValue::NULL, &bytes).map(js_sys::Promise::from) {
-            Ok(promise) => promise,
-            Err(error) => return Pending::ready(Err(Error::Unsupported(format!("jobs: {error:?}").into()))),
-        };
         let (pending, resolver) = Pending::new();
-        wasm_bindgen_futures::spawn_local(async move {
-            let answer = wasm_bindgen_futures::JsFuture::from(promise).await;
-            resolver.resolve(
-                answer
-                    .map(|bytes| js_sys::Uint8Array::new(&bytes).to_vec())
-                    .map_err(|error| Error::Unsupported(format!("a job failed: {error:?}").into())),
-            );
-        });
+        QUEUE.with(|queue| queue.borrow_mut().push(job, resolver));
+        pump(&run);
         pending
     }
 

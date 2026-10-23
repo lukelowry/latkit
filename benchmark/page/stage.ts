@@ -247,7 +247,7 @@ export class Stage {
       cpu95: quantile(drawn.cpu, 0.95),
       gpu: quantile(drawn.gpu, 0.5),
       work,
-      resident: this.views[0]?.stats.resident ?? 0,
+      resident: this.gpu.resident,
       steady,
     };
   }

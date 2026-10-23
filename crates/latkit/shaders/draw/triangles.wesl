@@ -26,11 +26,11 @@ struct Varyings {
 }
 
 @vertex
-fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32) -> Varyings {
+fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
     var out: Varyings;
-    out.row = row;
-    let c = triangle_corner(row, corner);
-    if !triangle_shown(row) {
+    let c = triangle_corner(instance, corner);
+    out.row = c.row;
+    if !triangle_shown(instance) {
         out.clip = culled();
         return out;
     }
@@ -39,7 +39,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) row: u32)
     let s = c.slot * 3u;
     out.normal = vec3f(f32(normals[s]), f32(normals[s + 1u]), f32(normals[s + 2u]));
     out.color = c.color;
-    out.focus = focus_of(row);
+    out.focus = focus_of(c.row);
     return out;
 }
 

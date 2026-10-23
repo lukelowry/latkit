@@ -86,6 +86,11 @@ impl Bounds {
             zoom: [self.zoom[0].min(other.zoom[0]), self.zoom[1].max(other.zoom[1])],
         }
     }
+
+    /// The zooms the camera keeps within: a few levels out past what was framed, eight in.
+    pub(crate) fn zooms(&self) -> [f64; 2] {
+        [self.zoom[0] - 3.0, self.zoom[1] + 8.0]
+    }
 }
 
 impl Camera {
@@ -199,8 +204,10 @@ impl Camera {
         Camera::Map { center: view.shifted(center, d, d.z), zoom, pitch: to_pitch, bearing: to_bearing }
     }
 
-    /// Zoomed in by `levels`, out when negative, toward `anchor`, which keeps its place on screen.
-    pub(crate) fn zoomed(&self, view: &Projected, anchor: [f64; 3], levels: f64) -> Camera {
+    /// Zoomed in by `levels`, out when negative, toward `anchor`, which keeps its place on screen. A
+    /// map's zoom stays within `limits` (what a fit framed lets it reach) before the anchor moves the
+    /// center, so a zoom held at its limit moves nothing.
+    pub(crate) fn zoomed(&self, view: &Projected, anchor: [f64; 3], levels: f64, limits: Option<[f64; 2]>) -> Camera {
         match *self {
             Camera::Plot { x, y } => {
                 let scale = (-levels).exp2();
@@ -210,7 +217,13 @@ impl Camera {
                 Camera::Plot { x: about(x, anchor[0]), y: y.map(|y| about(y, anchor[1])) }
             }
             Camera::Map { center, zoom, pitch, bearing } => {
-                let to = (zoom + levels).clamp(-MAX_ZOOM, MAX_ZOOM);
+                let [least, most] = limits.unwrap_or([-MAX_ZOOM, MAX_ZOOM]);
+                let (least, most) = (least.max(-MAX_ZOOM), most.min(MAX_ZOOM));
+                // A zoom already past a limit is not pulled back toward it by a gesture going further.
+                let to = (zoom + levels).clamp(least.min(zoom), most.max(zoom));
+                if to == zoom {
+                    return *self;
+                }
                 if view.globe >= 0.5 {
                     let zoomed = Camera::Map { center, zoom: to, pitch, bearing };
                     return match view.screen(view.world(anchor)) {
@@ -235,7 +248,7 @@ impl Camera {
         let across = |k: usize| center[k].clamp(bounds.min[k] - span, bounds.max[k] + span);
         Camera::Map {
             center: [across(0), across(1), center[2].clamp(bounds.min[2], bounds.max[2])],
-            zoom: zoom.clamp(bounds.zoom[0] - 3.0, bounds.zoom[1] + 8.0),
+            zoom: zoom.clamp(bounds.zooms()[0], bounds.zooms()[1]),
             pitch: pitch.clamp(0.0, MAX_PITCH),
             bearing,
         }
@@ -344,6 +357,7 @@ pub(crate) fn latitude(mercator_y: f64) -> f64 {
 ///
 /// World coordinates are what the shaders project: position units from the camera's center across a
 /// plane or plot, mercator radians or the globe on the earth, with elevation up.
+#[derive(Clone)]
 pub(crate) struct Projected {
     pub(crate) clip_from_world: DMat4,
     pub(crate) world_from_clip: DMat4,
@@ -681,8 +695,8 @@ mod tests {
         };
         check(camera.panned(&view, anchor, [120.0, -50.0]), [at[0] + 120.0, at[1] - 50.0]);
         check(camera.turned(&view, anchor, [35.0, 12.0]), at);
-        check(camera.zoomed(&view, anchor, 1.5), at);
-        check(camera.zoomed(&view, anchor, -2.0), at);
+        check(camera.zoomed(&view, anchor, 1.5, None), at);
+        check(camera.zoomed(&view, anchor, -2.0, None), at);
     }
 
     #[test]
@@ -723,8 +737,8 @@ mod tests {
             assert!((s[0] - want[0]).abs() < 0.5 && (s[1] - want[1]).abs() < 0.5, "{s:?} for {want:?}");
         };
         check(camera.panned(&view, anchor, [-90.0, 40.0]), [at[0] - 90.0, at[1] + 40.0]);
-        check(camera.zoomed(&view, anchor, 1.25), at);
-        check(camera.zoomed(&view, anchor, -0.75), at);
+        check(camera.zoomed(&view, anchor, 1.25, None), at);
+        check(camera.zoomed(&view, anchor, -0.75, None), at);
         check(camera.turned(&view, anchor, [25.0, 10.0]), at);
     }
 

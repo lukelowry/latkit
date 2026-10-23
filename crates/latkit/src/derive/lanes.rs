@@ -9,7 +9,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use super::{Derive, Derived, Input, Jobs, Tables, beside, kept, stamp_of};
 use crate::Mark;
 use crate::Pending;
-use crate::data::{Field, Ids, Keyed, Name, Patch, Reference, Table, UNWIRED, Values};
+use crate::data::{Field, Keyed, Name, Reference, Table, UNWIRED, Values};
 use crate::host::Job;
 
 /// Microseconds a row takes to find its lane, by estimate.
@@ -100,17 +100,9 @@ fn reference<'t>(table: &'t Table, name: &str) -> Option<&'t Reference> {
     }
 }
 
-/// The lanes a lanes job answered: its table's field `lane`, or none.
+/// The lanes a lanes job answered, a little-endian `f32` each; none where it answered nothing.
 fn answered(bytes: &[u8]) -> Option<Vec<f32>> {
-    let patch = Patch::from_bytes(bytes).ok()?;
-    patch.ops.into_iter().find_map(|op| match op {
-        crate::data::Op::Set(table) => {
-            let Some(Field::Values(column, _)) = table.field_named("lane") else { return None };
-            let pages = column.pages().iter();
-            Some(pages.flat_map(|page| (0..page.values.len()).map(|i| page.values.number(i) as f32)).collect())
-        }
-        _ => None,
-    })
+    (!bytes.is_empty()).then(|| bytes.as_chunks::<4>().0.iter().map(|&w| f32::from_le_bytes(w)).collect())
 }
 
 /// Each row's lane among the rows joining the same two vertices, from the rows' two ends
@@ -148,12 +140,6 @@ pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Option<Vec<f32>> {
             })
             .collect(),
     )
-}
-
-/// Lanes as a job's answer: a table of every row's lane, or one without rows when there are none.
-pub(crate) fn answer(from: &[u32], to: &[u32]) -> Patch {
-    let lanes = lanes(from, to).unwrap_or_default();
-    Patch::new().set(Table::new("lanes", Ids::count(lanes.len() as u32)).field("lane", lanes))
 }
 
 /// Each of `rows` rows' lane among the rows joining the same two ends, which `ends` names: the

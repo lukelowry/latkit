@@ -170,10 +170,11 @@ impl RowIds {
         }
     }
 
+    /// The id of row `row`, `None` past the rows.
     pub(crate) fn key(&self, row: usize) -> Option<IdRef<'_>> {
         match self {
-            RowIds::Count(_) => Some(IdRef::Number(row as u64)),
-            RowIds::Listed(c) => key(&c.pages()[row >> PAGE_BITS].values, row & PAGE_MASK),
+            RowIds::Count(n) => (row < *n as usize).then_some(IdRef::Number(row as u64)),
+            RowIds::Listed(c) => c.at(row).and_then(|(values, i)| key(values, i)),
         }
     }
 
@@ -200,24 +201,6 @@ impl RowIds {
         let len = column.len() + added.len();
         let writes: Vec<(usize, usize)> = (0..added.len()).map(|k| (column.len() + k, k)).collect();
         Ok(RowIds::Listed(column.write(len, &writes, &Column::new(&source))?))
-    }
-
-    /// The ids with `len` rows (at least the current count) and `writes` applied, `(row, row of
-    /// source)` by row, a hole where the row of source is a [`HOLE`](super::values::HOLE). Pages no
-    /// write touches keep their ids.
-    pub(crate) fn write(&self, len: usize, writes: &[(usize, usize)], source: &RowIds) -> Result<RowIds> {
-        // The ids written, gathered first, so a count's ids are made only for those.
-        let from: Vec<usize> = writes.iter().map(|&(_, s)| s).collect();
-        let written = match source {
-            RowIds::Count(_) => {
-                let ids: Vec<Option<u64>> =
-                    from.iter().map(|&s| (s != super::values::HOLE).then_some(s as u64)).collect();
-                Column::new(&Values::from(ids))
-            }
-            RowIds::Listed(column) => column.gather(&from),
-        };
-        let at: Vec<(usize, usize)> = writes.iter().enumerate().map(|(k, &(row, _))| (row, k)).collect();
-        Ok(RowIds::Listed(self.listed().write(len, &at, &written)?))
     }
 
     /// The ids of `rows`, in that order.
@@ -252,8 +235,7 @@ impl RowIds {
             .collect()
     }
 
-    /// The first row without an id: a hole, which only the rows a view draws of a table drawn through
-    /// tiles have.
+    /// The first row without an id, which no table may have.
     pub(crate) fn hole(&self) -> Option<usize> {
         let RowIds::Listed(column) = self else { return None };
         let mut start = 0;
@@ -266,12 +248,6 @@ impl RowIds {
             start += page.values.len();
         }
         None
-    }
-
-    /// How many rows are holes, without an id.
-    pub(crate) fn holes(&self) -> usize {
-        let RowIds::Listed(column) = self else { return 0 };
-        column.pages().iter().filter_map(|p| p.values.valid.as_ref().map(|v| p.values.len() - v.count())).sum()
     }
 
     /// The id → row index, past holes; an error names a repeated id.
@@ -403,15 +379,5 @@ mod tests {
         let ids = RowIds::new(&Ids::from(vec!["a", "b", "c"])).gather(&[2, 0]);
         assert_eq!(ids.id(0), Some(Id::from("c")));
         assert_eq!(RowIds::Count(4).gather(&[0, 2]).id(1), Some(Id::Number(2)));
-    }
-
-    #[test]
-    fn holes_have_no_id_and_index_past() {
-        let ids = RowIds::new(&Ids::from(vec!["a", "b", "c"])).gather(&[2, super::super::values::HOLE, 0]);
-        assert_eq!((ids.id(1), ids.hole()), (None, Some(1)));
-        let index = ids.index().expect("unique past the hole");
-        assert_eq!(index.get(&ids, IdRef::Text("a")), Some(2));
-        let numbered = RowIds::Count(3).gather(&[1, super::super::values::HOLE]);
-        assert_eq!(numbered.index().expect("unique").get(&numbered, IdRef::Number(1)), Some(0));
     }
 }

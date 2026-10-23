@@ -4355,24 +4355,6 @@
           "minimum": 0,
           "description": "Tiles being fetched or decoded, of every tile source."
         },
-        "uploading": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0,
-          "description": "Bytes of data waiting to upload."
-        },
-        "resident": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0,
-          "description": "Bytes of data pages on the GPU, for every view of its `Gpu`."
-        },
-        "budget": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0,
-          "description": "Bytes the GPU's [`Budget`](crate::Budget) lets data take."
-        },
         "waiting": {
           "$ref": "#/outputs/Waiting",
           "description": "The work under way the last frame stood in for; nothing when it drew everything as the data,\nscene, and camera say: see [`View::complete`](crate::View::complete)."
@@ -4396,9 +4378,6 @@
         "instances",
         "tiles",
         "tilesLoading",
-        "uploading",
-        "resident",
-        "budget",
         "waiting",
         "cpuMs",
         "gpuMs"
@@ -4425,6 +4404,12 @@
           "format": "uint64",
           "minimum": 0,
           "description": "Rows whose channels the GPU evaluated."
+        },
+        "packed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Rows packed into pages of the order a table drawn in part draws in: each page once, the first\ntime a view draws it, and again only where a write changed its rows."
         },
         "readbacks": {
           "type": "integer",
@@ -4461,6 +4446,7 @@
         "uploaded",
         "written",
         "evaluated",
+        "packed",
         "readbacks",
         "jobs",
         "texts",

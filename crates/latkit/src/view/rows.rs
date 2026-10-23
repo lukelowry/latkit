@@ -45,7 +45,7 @@ impl View {
         let shape = |m: &super::marks::Shown| (m.stride(), m.extras());
         let fits = self.marks.iter().all(|m| {
             let r = &m.region;
-            m.rows + m.exits <= r.capacity && (r.stride, r.extras) == shape(m)
+            m.held() <= r.capacity && (r.stride, r.extras) == shape(m)
         });
         if fits && !self.regions_dirty {
             return false;
@@ -60,7 +60,7 @@ impl View {
         for &i in &order {
             let m = &self.marks[i];
             let (stride, extras) = shape(m);
-            let need = m.rows + m.exits;
+            let need = m.held();
             let capacity = if need <= m.region.capacity && (m.region.stride, m.region.extras) == (stride, extras) {
                 m.region.capacity
             } else {
@@ -81,7 +81,7 @@ impl View {
         let old = resources.replace_rows(&device, sizes);
         for (shown, new) in self.marks.iter_mut().zip(regions) {
             let was = shown.region;
-            let kept = was.capacity.min(new.capacity).min(shown.held);
+            let kept = was.capacity.min(new.capacity).min(shown.before);
             let copy = |encoder: &mut wgpu::CommandEncoder,
                         from: &wgpu::Buffer,
                         to: &wgpu::Buffer,
@@ -100,7 +100,7 @@ impl View {
             }
             // A running transition's frozen and settled rows move with its rows.
             if shown.transition.is_some() && (was.stride, was.extras) == (new.stride, new.extras) {
-                let rows = was.capacity.min(new.capacity).min(shown.rows + shown.exits);
+                let rows = was.capacity.min(new.capacity).min(shown.held());
                 for (from, to) in [(&old.frozen, resources.frozen()), (&old.settled, resources.settled())] {
                     if let (Some(from), Some(to)) = (from, to) {
                         copy(encoder, from, to, was.state, new.state, rows * new.stride);

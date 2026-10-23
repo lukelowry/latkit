@@ -207,6 +207,10 @@ pub(crate) fn mark(
     };
     mark.rows = shown.rows;
     mark.exits = shown.exits;
+    mark.held = shown.held();
+    mark.row_runs = shown.offsets.runs;
+    mark.drawn = shown.drawn_rows.at.map_or(wgsl::NONE, |[start, _]| start);
+    mark.reveal = shown.reveal;
     mark.state = region.state;
     mark.stride = shown.stride();
     mark.extra = region.extra;

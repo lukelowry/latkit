@@ -12,6 +12,7 @@ import package::lib::focus::{focus_of, faded, growth};
 import package::lib::read::bits_value;
 import package::lib::mark::{px, fringe, within};
 import package::lib::marker::{theme_port_size, theme_lift};
+import package::lib::drawn::drawn_row;
 
 struct Point {
     clip: vec4f,
@@ -57,6 +58,15 @@ fn point(row: u32) -> Point {
     p.row = row;
     p.focus = focus;
     p.shown = (v.flags & VISIBLE) != 0u && placed(v) && shows(p.world) && p.clip.w > 0.0;
+    return p;
+}
+
+// The marker of drawn row `item`, faded and grown as its tile comes and goes.
+fn shown_point(item: u32) -> Point {
+    let d = drawn_row(item);
+    var p = point(d.row);
+    p.color.a *= d.presence;
+    p.half *= d.growth;
     return p;
 }
 

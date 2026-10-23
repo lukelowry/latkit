@@ -111,6 +111,18 @@ impl Gpu {
         to_json(&self.0.work())
     }
 
+    /// Bytes on the GPU every view of it draws from.
+    #[wasm_bindgen(getter)]
+    pub fn resident(&self) -> f64 {
+        self.0.resident() as f64
+    }
+
+    /// Bytes waiting to upload, for every view of it.
+    #[wasm_bindgen(getter)]
+    pub fn uploading(&self) -> f64 {
+        self.0.uploading() as f64
+    }
+
     /// Draws one frame now at `now`, milliseconds as an animation frame's timestamp; from the first,
     /// no animation frames are asked for.
     pub fn step(&self, now: f64) {

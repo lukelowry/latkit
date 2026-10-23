@@ -411,6 +411,10 @@ impl<K: Hash + Eq + Clone, V> Keyed<K, V> {
         self.entries.iter().map(|(key, value)| (key, value))
     }
 
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
+        self.entries.iter_mut().map(|(key, value)| (&*key, value))
+    }
+
     pub(crate) fn keys(&self) -> impl Iterator<Item = &K> {
         self.entries.iter().map(|(key, _)| key)
     }

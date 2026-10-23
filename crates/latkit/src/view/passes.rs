@@ -5,9 +5,13 @@
 //! overlay; a probe, when one waits, reads what the frame drew through the same geometry.
 
 use super::resources::{EyeSlot, MARK_STRIDE};
+use super::sync::{Source, table_of};
 use super::{Frame, View};
 use crate::Space;
+use crate::data::Field;
 use crate::derive::stamp_of;
+use crate::expr::compile::{Deps, Reads};
+use crate::expr::cpu::Rows;
 use crate::gpu::Inner;
 use crate::gpu::pipelines::Variant;
 use crate::gpu::readback::Readback;
@@ -185,20 +189,23 @@ struct Work {
     /// Marks whose comets carry their travel over to rows a transition moved, and that travel.
     carried: Vec<usize>,
     travelled: Vec<usize>,
+    /// Marks whose drawn rows' words are expanded from their runs again.
+    expanded: Vec<usize>,
 }
 
 /// Dispatches a workgroup for every `WORKGROUP` of `items`, if there are any; past one dimension's
-/// workgroups, blocks of `BLOCK_ROWS` items along the second, as `item` in `lib/types.wesl` reads them.
+/// workgroups, runs of `DISPATCH_ROWS` items along the second, as `item` in `lib/types.wesl` reads
+/// them.
 pub(super) fn dispatch(pass: &mut wgpu::ComputePass<'_>, items: u32) {
     let groups = items.div_ceil(WORKGROUP);
     if groups > MAX_GROUPS {
-        pass.dispatch_workgroups(wgsl::BLOCK_ROWS / WORKGROUP, items.div_ceil(wgsl::BLOCK_ROWS), 1);
+        pass.dispatch_workgroups(wgsl::DISPATCH_ROWS / WORKGROUP, items.div_ceil(wgsl::DISPATCH_ROWS), 1);
     } else if groups > 0 {
         pass.dispatch_workgroups(groups, 1, 1);
     }
 }
 
-/// Dispatches over `blocks` listed row blocks of a mark of `rows` rows: a block's rows wide.
+/// Dispatches over `blocks` listed row blocks of a mark of `rows` held rows: a block's rows wide.
 fn dispatch_blocks(pass: &mut wgpu::ComputePass<'_>, rows: u32, blocks: u32) {
     let wide = rows.min(wgsl::BLOCK_ROWS).div_ceil(WORKGROUP);
     if wide > 0 && blocks > 0 {
@@ -211,7 +218,41 @@ pub(super) fn offset(index: usize) -> u32 {
     (index as u64 * MARK_STRIDE) as u32
 }
 
+/// `input`'s least and greatest value over `rows`, as `lib/reduce.wesl` keeps them: the complement
+/// of the least's ordered bits, then the greatest's; nothing where no row has one.
+fn fit(rows: &Rows<'_>, input: &crate::Expr) -> [u32; 2] {
+    let ordered = |x: f32| {
+        let b = x.to_bits();
+        if b & 0x8000_0000 != 0 { !b } else { b | 0x8000_0000 }
+    };
+    let (mut least, mut most) = (f32::INFINITY, f32::NEG_INFINITY);
+    for x in rows.numbers(input, |v| v as f32) {
+        if x.is_finite() {
+            (least, most) = (least.min(x), most.max(x));
+        }
+    }
+    if least > most { [0, 0] } else { [!ordered(least), ordered(most)] }
+}
+
 impl super::marks::Shown {
+    /// Whether its fitted domains fit over every row of the table it draws in part, on the CPU: it
+    /// draws a table in part, and they read only its own data, nothing the view shows or derives.
+    pub(crate) fn fits_data(&self) -> bool {
+        let Some(compiled) = &self.compiled else { return false };
+        let program = &compiled.program;
+        let viewed = Deps::TIME | Deps::POINTER | Deps::FOCUS | Deps::CAMERA | Deps::DOMAIN;
+        let derived = |reads: &Reads| {
+            program
+                .columns
+                .iter()
+                .enumerate()
+                .any(|(c, column)| column.derived && reads.columns & Reads::column(c) != 0)
+        };
+        self.drawing().is_some()
+            && !program.domains.is_empty()
+            && program.domains.iter().all(|reads| !reads.deps.intersects(viewed) && !derived(reads))
+    }
+
     /// Segments of each row's path, for strokes whose rows all have as many.
     pub(crate) fn segments_per_row(&self) -> u32 {
         if self.compiled.is_none() {
@@ -296,12 +337,15 @@ impl View {
             let into = settling.filter(|_| shown.transition.is_some()).unwrap_or(state);
             pass.set_pipeline(&inner.pipelines.compute_pipeline(device, Variant::channels(shown.reads())));
             pass.set_bind_group(1, group, &[offset(i)]);
-            if shown.reduce && shown.rows > 0 {
+            let rows = shown.live();
+            // A domain changing evaluates every block, so the reductions run over the blocks listed;
+            // a table drawn in part fits domains reading only its data on the CPU, over every row.
+            if shown.reduce && rows > 0 && !shown.fits_data() {
+                debug_assert_eq!(shown.blocks, super::marks::Blocks::All, "a domain changing changes every row");
                 pass.set_bind_group(2, into, &[step(wgsl::STEP_REDUCE)]);
-                dispatch(pass, shown.rows);
+                dispatch_blocks(pass, rows, shown.block_count);
             }
             pass.set_bind_group(2, into, &[step(wgsl::STEP_CHANNELS)]);
-            let rows = shown.rows;
             dispatch_blocks(pass, rows, shown.block_count);
             let blocks = shown.blocks.of(rows);
             let evaluated = blocks.iter().map(|&b| u64::from((rows - b * wgsl::BLOCK_ROWS).min(wgsl::BLOCK_ROWS)));
@@ -325,16 +369,29 @@ impl View {
     ) -> Option<Readback> {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let Work { evaluated: work, eased, segments, faces, measured, carried, travelled } = self.work(measure, travel);
-        if [&work, &eased, &segments, &faces, &measured, &carried, &travelled].iter().all(|marks| marks.is_empty()) {
+        let Work { evaluated: work, eased, segments, faces, measured, carried, travelled, expanded } =
+            self.work(measure, travel);
+        let all = [&work, &eased, &segments, &faces, &measured, &carried, &travelled, &expanded];
+        if all.iter().all(|marks| marks.is_empty()) {
             return None;
+        }
+        // Domains a table drawn in part fits over all its rows, on the CPU; the GPU fits the rest.
+        let mut fitted: Vec<(usize, Vec<u32>)> = Vec::new();
+        for &i in &work {
+            if self.marks[i].reduce && self.marks[i].fits_data() {
+                fitted.push((i, self.data_domains(i)));
+            }
         }
         let resources = self.resources.as_mut().expect("created before passes");
         for &i in &work {
             let shown = &self.marks[i];
-            if shown.reduce {
-                let bytes = u64::from(shown.reductions()) * 8;
-                encoder.clear_buffer(resources.domains(), u64::from(shown.domains) * 8, Some(bytes));
+            if !shown.reduce {
+                continue;
+            }
+            let at = u64::from(shown.domains) * 8;
+            match fitted.iter().find(|(m, _)| *m == i) {
+                Some((_, words)) => gpu.0.queue.write_buffer(resources.domains(), at, bytemuck::cast_slice(words)),
+                None => encoder.clear_buffer(resources.domains(), at, Some(u64::from(shown.reductions()) * 8)),
             }
         }
         let extent_bytes = self.marks.len() as u64 * u64::from(wgsl::EXTENT_WORDS) * 4;
@@ -353,7 +410,8 @@ impl View {
             .flatten();
         let normals_group = (!faces.is_empty()).then(|| resources.pass(device, inner, Shader::Normals));
         let bounds_group = (!measured.is_empty()).then(|| resources.pass(device, inner, Shader::Bounds));
-        let lists_group = (!segments.is_empty()).then(|| resources.pass(device, inner, Shader::Lists));
+        let lists_group =
+            (!segments.is_empty() || !expanded.is_empty()).then(|| resources.pass(device, inner, Shader::Lists));
         for &i in &segments {
             let list = self.marks[i].segments.list.expect("listed");
             gpu.0.queue.write_buffer(
@@ -368,6 +426,11 @@ impl View {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
+            // Each drawn row's word first: every pass after reads it.
+            if let Some(group) = &lists_group {
+                pass.set_bind_group(2, group, &[]);
+                self.expand_runs(&mut pass, inner, &groups.mark, &expanded);
+            }
             pass.set_bind_group(2, &evaluate_group, &[super::resources::step(wgsl::STEP_CHANNELS)]);
             self.every_row(&mut pass, inner, &groups.mark, "carry", &carried);
             self.evaluate(&mut pass, inner, &groups.mark, (&evaluate_group, settling_group.as_ref()), &work);
@@ -414,7 +477,7 @@ impl View {
     fn work(&mut self, measure: bool, travel: bool) -> Work {
         for shown in &mut self.marks {
             // A mark without rows has nothing to evaluate.
-            if shown.rows + shown.exits == 0 && shown.tables.synced() {
+            if shown.held() == 0 && shown.tables.synced() {
                 shown.dirty = 0;
                 shown.reduce = false;
             }
@@ -454,7 +517,8 @@ impl View {
         let flowing = |i: &usize| self.marks[*i].drawable() && self.marks[*i].mark.flows();
         let carried = (0..self.marks.len()).filter(|i| self.marks[*i].carry && flowing(i)).collect();
         let travelled = (0..self.marks.len()).filter(|i| travel && flowing(i)).collect();
-        Work { evaluated: work, eased, segments, faces, measured, carried, travelled }
+        let expanded = self.drawn_rows_due();
+        Work { evaluated: work, eased, segments, faces, measured, carried, travelled, expanded }
     }
 
     /// Lists the row blocks each mark evaluates this frame where its uniform finds them: every block of
@@ -463,7 +527,7 @@ impl View {
         let mut words = Vec::new();
         for shown in &mut self.marks {
             let evaluates = shown.drawable() && (shown.dirty != 0 || shown.reduce);
-            let blocks = if evaluates { shown.blocks.of(shown.rows) } else { Vec::new() };
+            let blocks = if evaluates { shown.blocks.of(shown.live()) } else { Vec::new() };
             shown.block = words.len() as u32;
             shown.block_count = blocks.len() as u32;
             words.extend(blocks);
@@ -473,7 +537,26 @@ impl View {
         resources.write_blocks(&gpu.0.device, &gpu.0.queue, &words);
     }
 
-    /// Runs the expression machine's entry point `entry` over every row and exit of each of `marks`.
+    /// Writes each drawn row's word of each of `marks`, those that left included, from its runs.
+    fn expand_runs(
+        &self,
+        pass: &mut wgpu::ComputePass<'_>,
+        inner: &mut Inner,
+        mark: &wgpu::BindGroup,
+        marks: &[usize],
+    ) {
+        if marks.is_empty() {
+            return;
+        }
+        pass.set_pipeline(&inner.pipelines.compute(&self.gpu.0.device, Shader::Lists, "expand_runs"));
+        for &i in marks {
+            pass.set_bind_group(1, mark, &[offset(i)]);
+            dispatch(pass, self.marks[i].rows + self.marks[i].exits);
+        }
+    }
+
+    /// Runs the expression machine's entry point `entry` over every held row of each of `marks`, those
+    /// that left included.
     fn every_row(
         &self,
         pass: &mut wgpu::ComputePass<'_>,
@@ -488,7 +571,7 @@ impl View {
         pass.set_pipeline(&inner.pipelines.compute(&self.gpu.0.device, Shader::Evaluate, entry));
         for &i in marks {
             pass.set_bind_group(1, mark, &[offset(i)]);
-            dispatch(pass, self.marks[i].rows + self.marks[i].exits);
+            dispatch(pass, self.marks[i].held());
         }
     }
 
@@ -513,6 +596,40 @@ impl View {
             pass.set_pipeline(&inner.pipelines.compute_pipeline(device, write));
             dispatch(pass, items);
         }
+    }
+
+    /// The words of mark `i`'s fitted domains as `lib/reduce.wesl` keeps them, each fitted over every
+    /// row of the table it draws in part, so a domain stays put however little of the table the
+    /// camera shows. Each is kept by what it read: a camera move fits none again.
+    fn data_domains(&mut self, i: usize) -> Vec<u32> {
+        let shown = &self.marks[i];
+        let Some(compiled) = &shown.compiled else { return Vec::new() };
+        let program = &compiled.program;
+        let style = shown.mark.style();
+        let table = self.source(&style.data).and_then(|d| Some((d, d.table(&style.table)?)));
+        let Some((data, table)) = table else { return vec![0; 2 * program.domains.len()] };
+        let source = Source { data, table, derived: self.derived.beside(&style.data, &style.table), paged: Vec::new() };
+        let rows = Rows::new(table, &self.sources).at(self.at);
+        let mut fitted = Vec::with_capacity(program.domains.len());
+        for (d, (reads, input)) in program.domains.iter().zip(&program.fitted).enumerate() {
+            let versions: Vec<Option<crate::data::Version>> = (0..program.columns.len())
+                .filter(|&c| reads.columns & Reads::column(c) != 0)
+                .map(|c| {
+                    let column = &program.columns[c];
+                    table_of(column, &source, &self.sources)?.1.field_named(&column.name).map(Field::version)
+                })
+                .collect();
+            let sampled = reads.deps.intersects(Deps::SAMPLES).then_some(self.at.to_bits());
+            let stamp = stamp_of((versions, table.structure, sampled));
+            let words = match shown.fitted.get(d) {
+                Some(&(kept, words)) if kept == stamp => words,
+                _ => fit(&rows, input),
+            };
+            fitted.push((stamp, words));
+        }
+        let words = fitted.iter().flat_map(|(_, w)| *w).collect();
+        self.marks[i].fitted = fitted;
+        words
     }
 
     /// Whether face normals must be summed again: a face mark or a vertex mark wrote its state since
@@ -562,7 +679,7 @@ impl View {
             if self.signal.transparent() { [0.0; 4] } else { self.scene.theme.background.to_array().map(f64::from) };
         let plot = matches!(self.scene.space, Space::Plot(_));
         let scissor = scissor(self.area(), frame);
-        let samples = super::resources::samples(frame.pixel_ratio);
+        let samples = gpu.samples_for(frame.pixel_ratio);
         let resources = self.resources.as_mut().expect("created before passes");
         let (color, depth) = resources.targets(device, frame.size, frame.format, samples);
         let groups = resources.groups(&gpu.0, inner);

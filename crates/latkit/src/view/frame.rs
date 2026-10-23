@@ -5,17 +5,20 @@
 
 use web_time::Instant;
 
-use super::marks::Shown;
-use super::passes::Drawn;
+use super::drawing::Drawn;
+use super::marks::{End, Holding, Shown};
 use super::resources::{EyeSlot, MARK_STRIDE, Resources};
-use super::sync::{Source, Synced, Window, table_of};
-use super::transition::{remap, replaced, rewritten};
+use super::sync::{Inputs, Rows, Source, Synced, Window, table_of};
+use super::transition::{bound, holds_alike, in_place, moved};
 use super::{Camera, Event, Frame, View, timer, uniforms};
+use crate::data::Keyed;
+use crate::derive::order::Order;
+use crate::derive::tiled::Place;
 use crate::expr::compile::Deps;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
-use crate::{Error, derive};
+use crate::{Error, Name, derive};
 
 /// The most seconds comets travel in one frame: after a pause they carry on, not leap.
 const TRAVEL: f64 = 0.1;
@@ -65,6 +68,7 @@ impl View {
         self.settle();
         self.advance(dt);
         let mut inner = gpu.0.lock();
+        inner.begin_frame(self.id);
         inner.atlas.tick();
         self.settle_labels(&mut inner);
         self.derive(&mut inner);
@@ -112,7 +116,7 @@ impl View {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
         self.count_found(encoder, &inner);
-        let mut drawn = Drawn::default();
+        let mut drawn = super::passes::Drawn::default();
         if let Some(light) = &light {
             self.cast(encoder, &mut inner, &mut drawn, light);
         } else {
@@ -132,7 +136,7 @@ impl View {
             timer.end(encoder, device);
         }
         for shown in &mut self.marks {
-            shown.held = shown.rows + shown.exits;
+            shown.before = shown.held();
             shown.moved = None;
             shown.carry = false;
         }
@@ -229,9 +233,9 @@ impl View {
     }
 
     /// Derives what marks read beside their data, from the data and the scene alone, handing the
-    /// host what the frame cannot afford. First the tiles the camera and the plot window ask for:
-    /// the datasets tiles make, then what each dataset drawn in part draws, which the rest derive
-    /// from.
+    /// host what the frame cannot afford. First the tiles the camera and the plot window ask for,
+    /// the datasets tiles make; then the orders tables drawn in part draw in, and the ranges of them
+    /// the camera asks for; then every other derivation, from the data.
     fn derive(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let projected = self.projected();
@@ -241,7 +245,7 @@ impl View {
         // One budget for the frame: the tiles, what is drawn in part, then every other derivation.
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
         let errors = self.gpu.0.errors.clone();
-        let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors);
+        let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, inner.frame.work);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
         let reading = self.reading();
         let asked = derive::tiles::Asked { sight: earth.then_some(&sight), reading: &reading };
@@ -253,48 +257,23 @@ impl View {
         let budget = inner.budget.bytes;
         self.update_plan(&mut inner.ledger, budget);
         self.trace_columns = self.planning.trace_columns();
-        let pinned: Vec<crate::Row> = self.focus.selection.iter().chain(&self.focus.fitting).cloned().collect();
         let ask = derive::tiled::Ask {
             sources: &self.sources,
             plans: self.planning.plans(),
             sight: placing.then_some(&sight),
             earth,
-            pinned: &pinned,
-            at: self.at,
         };
         let mut tiled = std::mem::take(&mut self.derived.tiled);
-        let (changed, _) = tiled.update(&ask, &mut jobs);
+        self.choices = tiled.update(&ask, &mut jobs);
         self.derived.tiled = tiled;
-        self.follow_sources(&changed);
+        let paged = self.paged();
         let mut derived = std::mem::take(&mut self.derived);
-        if derived.update(&self.derive_input(host.as_deref()), &mut jobs) {
+        let input = derive::Input { paged: Some(&paged), ..self.derive_input(host.as_deref()) };
+        if derived.update(&input, &mut jobs) {
             self.changed = true;
         }
         self.derived = derived;
-    }
-
-    /// Makes what marks draw follow the sources: each dataset as it is, or as drawn in part, which
-    /// `changed` holds the new versions of.
-    fn follow_sources(&mut self, changed: &[crate::Data]) {
-        let mut next = Vec::with_capacity(self.sources.len());
-        for source in &self.sources {
-            let name = source.name();
-            let drawn = match changed.iter().find(|d| d.name() == name).cloned() {
-                Some(drawn) => drawn,
-                None if self.derived.tiled.draws(name) => match self.drawn(name) {
-                    Some(drawn) => drawn.clone(),
-                    None => continue,
-                },
-                None => source.clone(),
-            };
-            next.push(drawn);
-        }
-        if next != self.data {
-            self.data = next;
-            // Rows may have moved under the focus.
-            self.focus.dirty = true;
-            self.fitting.plot_due = true;
-        }
+        inner.frame.work = jobs.left() as u32;
     }
 
     /// What derivations read this frame.
@@ -302,9 +281,10 @@ impl View {
         derive::Input {
             scene: &self.scene,
             scene_version: self.scene_version,
-            data: &self.data,
+            data: &self.sources,
             host,
             dragging: self.dragging(),
+            paged: None,
         }
     }
 
@@ -314,7 +294,7 @@ impl View {
     fn lay_out_lists(&mut self, answers: bool) -> Option<([f32; 4], bool)> {
         self.lay_out_segments();
         let device = &self.gpu.0.device;
-        self.resources.as_mut().expect("created").fit_lists(device, u64::from(self.segment_words));
+        self.resources.as_mut().expect("created").fit_lists(device, u64::from(self.list_words));
         if answers { self.next_query() } else { None }
     }
 
@@ -328,6 +308,7 @@ impl View {
     ) {
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        self.reveal();
         let marks = self.mark_uniforms();
         let resources = self.resources.as_mut().expect("created");
         queue.write_buffer(&resources.frame, 0, bytemuck::bytes_of(frame));
@@ -347,16 +328,16 @@ impl View {
         }
     }
 
-    /// Syncs every mark's columns and streams the pages they need within the frame's budget.
+    /// Lays out what each table drawn in part draws, syncs every mark's columns to it, streams the
+    /// pages they need within what the GPU's frame has left to upload, and swaps in each dataset
+    /// whose pages have all landed, those that just did included.
     fn stream(&mut self, inner: &mut Inner) {
         let gpu = self.gpu.clone();
-        let waiting = self.sync(inner);
-        let budget = inner.budget;
-        inner.arena.pump(&gpu.0.device, &gpu.0.queue, budget.upload_per_frame);
-        if waiting {
-            // Pages that just uploaded can show this frame.
-            self.sync(inner);
-        }
+        self.lay_out_drawings();
+        self.sync(inner);
+        let uploaded = inner.arena.pump(&gpu.0.device, &gpu.0.queue, inner.frame.upload);
+        inner.frame.upload = inner.frame.upload.saturating_sub(uploaded);
+        self.publish(inner);
     }
 
     /// Every mark's uniform, at its dynamic offset.
@@ -406,74 +387,156 @@ impl View {
         derive::tiles::Reading { across, columns, at: self.at, fields }
     }
 
-    /// Syncs every mark's columns; changed columns dirty the channels reading them, and changed
-    /// static values or rows start a transition. True when a mark waits for uploads.
-    fn sync(&mut self, inner: &mut Inner) -> bool {
+    /// Syncs every mark's columns to its data, and for a table drawn in part to the drawing replacing
+    /// what draws: tables whose inputs changed are rebuilt once, and wait for their pages.
+    fn sync(&mut self, inner: &mut Inner) {
         let at = self.at;
         let (across, columns) = self.trace_window();
         let window = Window { across, columns, steps: 0 };
-        // A drag moves rows at once.
-        let easing = !self.ease().is_zero() && !self.dragging();
-        let mut waiting = false;
+        // The order each table drawn in part draws in, by dataset.
+        let mut orders: Keyed<Name, Vec<(Name, Order)>> = Keyed::default();
+        for ((data, table), drawn) in &self.drawings {
+            if let Some(drawing) = drawn.latest() {
+                orders.entry(data.clone()).or_default().push((table.clone(), drawing.order.clone()));
+            }
+        }
         for shown in &mut self.marks {
             let Some(compiled) = &shown.compiled else { continue };
-            let program = compiled.program.clone();
-            let geometry = compiled.drawing.geometry;
-            let window = Window { steps: compiled.drawing.flags & (wgsl::STEP_BEFORE | wgsl::STEP_AFTER), ..window };
             let style = shown.mark.style();
-            let Some(data) = self.data.iter().find(|d| *d.name() == style.data) else { continue };
+            let Some(data) = self.sources.iter().find(|d| *d.name() == style.data) else { continue };
             let Some(table) = data.table(&style.table) else { continue };
             let derived = self.derived.beside(&style.data, &style.table);
-            let source = Source { data, table, derived };
-            let synced = shown.tables.sync(&program, &source, &self.data, at, window, geometry, inner);
-            waiting |= matches!(synced, Synced::Waiting);
-            let Synced::Changed { columns, blocks } = synced else { continue };
-            let moved = shown.drawn.as_ref().and_then(|(origin, old)| {
-                if *origin == data.origin() { remap(old, table) } else { Some(replaced(old, table)) }
-            });
-            // A path morphs from the one its row ran through only while every row keeps its place;
-            // rows that moved, as tiles' do when finer ones replace them, fade instead.
-            let kept = moved.as_ref().is_none_or(|(sources, exits)| {
-                exits.is_empty() && sources.iter().enumerate().all(|(r, &s)| s == r as u32 || s == wgsl::NONE)
-            });
-            // Rows that came, went, or moved evaluate every channel, constants included: where every row
-            // kept its place, as a table drawn through tiles keeps those of the tiles still drawn, over
-            // the row blocks rewritten; else over every row.
-            let in_place = moved
-                .as_ref()
-                .is_some_and(|(sources, _)| sources.iter().enumerate().all(|(r, &s)| s == r as u32 || s == wgsl::NONE));
-            if moved.is_some() || shown.rows != table.len() as u32 {
-                match shown.drawn.as_ref().filter(|_| in_place).and_then(|(_, old)| rewritten(old, table)) {
-                    Some(blocks) => shown.rows_rewritten(&blocks),
-                    None => shown.all_dirty(),
+            let source = Source { data, table, derived, paged: self.derived.paged(&style.data, &style.table) };
+            let drawing = self.drawings.get(&(style.data.clone(), style.table.clone())).and_then(Drawn::latest);
+            let rows = drawing.map_or(Rows::Own, |drawing| Rows::Held(drawing));
+            let window = Window { steps: compiled.drawing.flags & (wgsl::STEP_BEFORE | wgsl::STEP_AFTER), ..window };
+            let orders = orders.get(&style.data).map_or(&[][..], Vec::as_slice);
+            let inputs = Inputs { all: &self.sources, at, window, orders };
+            shown.tables.sync(&compiled.program, &source, rows, &inputs, inner);
+        }
+    }
+
+    /// Swaps in what each dataset draws once all of it is ready: every mark's rebuilt tables, and
+    /// the drawing of each of its tables drawn in part, together, so edges never end at another
+    /// drawing's vertices and a data version appears whole.
+    fn publish(&mut self, inner: &mut Inner) {
+        let mut datasets: Vec<Name> =
+            self.marks.iter().filter(|m| m.compiled.is_some()).map(|m| m.mark.style().data.clone()).collect();
+        datasets.sort();
+        datasets.dedup();
+        let now = self.clock.now();
+        for name in datasets {
+            let marks: Vec<usize> = (0..self.marks.len())
+                .filter(|&i| self.marks[i].compiled.is_some() && self.marks[i].mark.style().data == name)
+                .collect();
+            if marks.iter().any(|&i| self.marks[i].tables.waiting(inner) == Synced::Waiting) {
+                continue;
+            }
+            for (key, drawn) in self.drawings.iter_mut() {
+                if key.0 == name
+                    && let Some(next) = drawn.next.take()
+                {
+                    if next.fades {
+                        drawn.since = now;
+                    }
+                    drawn.current = Some(next);
                 }
             }
-            // Without an ease, a flowing mark whose rows moved still begins, a transition of no length,
-            // so its comets follow the rows.
-            let carries = shown.mark.flows() && moved.is_some();
-            if (easing || carries) && shown.held > 0 && (moved.is_some() || shown.static_columns(columns)) {
-                shown.begin(moved);
-            } else if moved.is_some() {
-                shown.exits = 0;
+            for i in marks {
+                self.took(i, inner);
             }
-            if !kept || (shown.begin.is_none() && shown.transition.is_none()) {
-                shown.tables.thaw(inner);
+        }
+    }
+
+    /// Takes what mark `i` draws now its dataset is published: its rebuilt tables, its table's
+    /// drawing, and the rows they hold. Changed columns dirty the channels reading them; rows that
+    /// came, went, or moved evaluate every channel, and with changed static values begin a
+    /// transition.
+    fn took(&mut self, i: usize, inner: &mut Inner) {
+        // A drag moves rows at once.
+        let easing = !self.ease().is_zero() && !self.dragging();
+        let shown = &mut self.marks[i];
+        let Some(compiled) = &shown.compiled else { return };
+        let (program, geometry) = (compiled.program.clone(), compiled.drawing.geometry);
+        let key = (shown.mark.style().data.clone(), shown.mark.style().table.clone());
+        let Some(data) = self.sources.iter().find(|d| *d.name() == key.0) else { return };
+        let Some(table) = data.table(&key.1) else { return };
+        let drawing = self.drawings.get(&key).and_then(|d| d.current.clone());
+        let published = shown.tables.publish(&program, geometry, inner);
+        let holding = Holding { origin: data.origin(), table: table.clone(), drawing: drawing.clone() };
+        if published.is_none() && shown.holding.as_ref().is_some_and(|h| holds_alike(h, &holding)) {
+            return;
+        }
+        let before = shown.holding.take();
+        let alike = before.as_ref().is_some_and(|old| holds_alike(old, &holding));
+        let moved = before.as_ref().and_then(|old| moved(old, &holding));
+        // A path morphs from the one its row ran through only while every row keeps its place;
+        // rows that moved, as rows do between orders, fade instead.
+        let kept = moved.as_ref().is_none_or(|(sources, exits)| exits.is_empty() && in_place(sources));
+        // Slots given pages of other rows: their rows evaluate every channel, and their labels start
+        // over.
+        let bound = match &drawing {
+            Some(new) => bound(before.as_ref().and_then(|h| h.drawing.as_deref()).filter(|_| moved.is_none()), new),
+            None => Vec::new(),
+        };
+        match &before {
+            // Rows that came, went, or moved evaluate every channel, constants included: where every
+            // row kept its place, over the row blocks rewritten; else over every row.
+            Some(old) if old.drawing.is_none() && drawing.is_none() => {
+                if moved.is_some() || shown.rows != table.len() as u32 {
+                    let rewritten = old.table.len() <= table.len() && moved.as_ref().is_none_or(|(s, _)| in_place(s));
+                    match rewritten.then(|| super::transition::rewritten(&old.table, table)).flatten() {
+                        Some(pages) => shown.rows_rewritten(&super::marks::Blocks::of_pages(&pages)),
+                        None => shown.all_dirty(),
+                    }
+                }
             }
-            shown.rows = table.len() as u32;
-            shown.drawn = Some((data.origin(), table.clone()));
-            shown.columns_changed(columns, blocks.as_deref());
-            if shown.kind() == MarkKind::Lines {
-                self.fitting.plot_due = true;
-            }
+            Some(_) if moved.is_none() => shown.slots_bound(&bound),
+            _ => shown.all_dirty(),
+        }
+        shown.rows = drawing.as_ref().map_or(table.len() as u32, |d| d.items);
+        shown.holding = Some(holding);
+        // Without an ease, a flowing mark whose rows moved still begins, a transition of no length,
+        // so its comets follow the rows.
+        let carries = shown.mark.flows() && moved.is_some();
+        let eased = published.as_ref().is_some_and(|p| shown.static_columns(p.data));
+        if (easing || carries) && shown.before > 0 && (moved.is_some() || eased) {
+            shown.begin(moved);
+        } else if moved.is_some() {
+            shown.exits = 0;
+        } else if shown.transition.is_some() && !bound.is_empty() {
+            // Rows of slots bound while the mark eases enter; the rest ease on from what they show.
+            shown.restart(&bound);
+        }
+        if !kept || (shown.begin.is_none() && shown.transition.is_none()) {
+            shown.tables.thaw(inner);
+        }
+        // Where rows draw changed: what follows it, shadows, normals, labels, and segment lists, follows.
+        // A column changed alone evaluates the channels reading it, which moves them as it must.
+        if !alike {
+            shown.version += 1;
+            shown.place_version += 1;
+        }
+        shown.bound = bound;
+        shown.packed = false;
+        if let Some(published) = &published {
+            shown.columns_changed(published.data, published.blocks.as_deref());
+            let source = Source { data, table, derived: self.derived.beside(&key.0, &key.1), paged: Vec::new() };
             for text in &program.texts {
                 let column = &program.columns[text.column as usize];
-                let code = table_of(column, &source, &self.data).map_or(wgsl::NONE, |(d, t)| {
+                let code = table_of(column, &source, &self.sources).map_or(wgsl::NONE, |(d, t)| {
                     inner.dictionaries.field(d, &t.name, &column.name).code_of(&text.text)
                 });
                 shown.constants[text.constant as usize] = code;
             }
         }
-        waiting
+        if shown.kind() == MarkKind::Lines {
+            self.fitting.plot_due = true;
+        }
+        // Rows may have moved under the focus.
+        if !alike {
+            self.focus.dirty = true;
+        }
     }
 
     /// Where each mark's fitted domains start; returns how many there are.
@@ -490,30 +553,56 @@ impl View {
     }
 
     /// Points every edge and face mark's ends at the vertex marks drawing their tables.
+    /// The ends of rows evaluate again where their vertices moved: another vertex mark or region,
+    /// another order, or for rows that hold no page their ends lie in, other slots. Edges drawn in
+    /// part hold the pages their ends lie in, whose slots never move under them.
     fn attach_ends(&mut self) {
         for i in 0..self.marks.len() {
             let ends = ends(&self.marks, i);
-            if ends != self.marks[i].ends {
-                self.marks[i].ends = ends;
-                self.marks[i].packed = false;
+            let was = &self.marks[i].ends;
+            if ends == *was {
+                continue;
+            }
+            let style = self.marks[i].mark.style();
+            let place = self.planning.plans().get(&(style.data.clone(), style.table.clone())).map(|p| &p.place);
+            let closed = self.marks[i].drawing().is_some() && matches!(place, Some(Place::Ends(_)));
+            let moved = ends.len() != was.len()
+                || ends.iter().zip(was).any(|(a, b)| {
+                    a.first != b.first || a.order != b.order || (!closed && (a.pages != b.pages || a.kept != b.kept))
+                });
+            // Edges kept find their ends among the rows kept, which move as those change: they alone
+            // evaluate again.
+            let kept = closed && ends.iter().zip(was).any(|(a, b)| a.kept != b.kept);
+            self.marks[i].ends = ends;
+            self.marks[i].packed = false;
+            if moved {
                 self.marks[i].all_dirty();
+            } else if kept {
+                let slots = self.marks[i].drawing().map(|d| d.kept_slots()).unwrap_or_default();
+                self.marks[i].slots_bound(&slots);
             }
         }
     }
 }
 
-/// The graph slot of vertex 0 of the vertex mark each of mark `i`'s ends attaches to, or `NONE`. An
-/// end attaches to the unnamed vertex mark drawing its table, else to the first one.
-fn ends(marks: &[Shown], i: usize) -> Vec<u32> {
+/// Where each of mark `i`'s ends finds its vertices: the vertex mark it attaches to, its vertex 0's
+/// graph slot, and where it holds the pages of the order it draws its table in, if in part. An end
+/// attaches to the unnamed vertex mark drawing its table, else to the first one.
+fn ends(marks: &[Shown], i: usize) -> Vec<End> {
     let Some(compiled) = &marks[i].compiled else { return Vec::new() };
     let data = &marks[i].mark.style().data;
     compiled
         .program
         .ends
         .iter()
-        .map(|table| {
-            super::graph::end_mark(marks, data, table)
-                .map_or(wgsl::NONE, |m| marks[m].region.state / wgsl::VERTEX_WORDS)
+        .map(|table| match super::graph::end_mark(marks, data, table) {
+            Some(m) => End {
+                first: marks[m].region.state / wgsl::VERTEX_WORDS,
+                order: marks[m].drawing().map_or(0, |d| d.order.id()),
+                pages: marks[m].drawing().map(|d| d.pages.clone()),
+                kept: marks[m].drawing().map(|d| d.kept_rows.clone()),
+            },
+            None => End { first: wgsl::NONE, order: 0, pages: None, kept: None },
         })
         .collect()
 }

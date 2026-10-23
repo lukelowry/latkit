@@ -19,6 +19,7 @@ import package::lib::bind::{frame, mark, state};
 import package::lib::state::extra_at;
 import package::lib::read::missing_bits;
 import package::lib::placement::{labels, word, put, candidate, want, seen};
+import package::lib::drawn::held_row;
 
 // Buckets of a digit of the select capping labels.
 const SELECT_BUCKETS: u32 = 2048u;
@@ -36,6 +37,12 @@ fn digit(d: u32) -> vec2u {
         case 1u: { return vec2u(10u, 11u); }
         default: { return vec2u(0u, 10u); }
     }
+}
+
+// The held row of the drawn row invocation `id` covers, or NONE past the mark's live rows.
+fn labeled(id: vec3u) -> u32 {
+    let i = item(id);
+    return select(NONE, held_row(i), i < mark.rows);
 }
 
 fn wanting(row: u32) -> bool {
@@ -60,9 +67,9 @@ fn select_start(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn select_count(@builtin(global_invocation_id) id: vec3u) {
-    let row = item(id);
+    let row = labeled(id);
     let d = word(select_word(2u));
-    if row >= mark.rows || mark.label_max == NONE || d >= 3u || !wanting(row) {
+    if row == NONE || mark.label_max == NONE || d >= 3u || !wanting(row) {
         return;
     }
     let key = word(candidate(row) + CANDIDATE_KEY);
@@ -108,8 +115,8 @@ fn select_find() {
 
 @compute @workgroup_size(256)
 fn select_cut(@builtin(global_invocation_id) id: vec3u) {
-    let row = item(id);
-    if row >= mark.rows || mark.label_max == NONE || !wanting(row) || word(select_word(2u)) == 4u {
+    let row = labeled(id);
+    if row == NONE || mark.label_max == NONE || !wanting(row) || word(select_word(2u)) == 4u {
         return;
     }
     let at = candidate(row) + CANDIDATE_STATE;
@@ -157,8 +164,8 @@ fn reset_cells(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn claim(@builtin(global_invocation_id) id: vec3u) {
-    let row = item(id);
-    if row >= mark.rows || !undecided(row) {
+    let row = labeled(id);
+    if row == NONE || !undecided(row) {
         return;
     }
     let at = candidate(row);
@@ -177,8 +184,8 @@ fn claim(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn decide(@builtin(global_invocation_id) id: vec3u) {
-    let row = item(id);
-    if row >= mark.rows || !undecided(row) {
+    let row = labeled(id);
+    if row == NONE || !undecided(row) {
         return;
     }
     let at = candidate(row);
@@ -196,8 +203,8 @@ fn decide(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn occupy(@builtin(global_invocation_id) id: vec3u) {
-    let row = item(id);
-    if row >= mark.rows || (word(candidate(row) + CANDIDATE_STATE) & PLACED_LABEL) == 0u {
+    let row = labeled(id);
+    if row == NONE || (word(candidate(row) + CANDIDATE_STATE) & PLACED_LABEL) == 0u {
         return;
     }
     let c = cells_of(row);
@@ -210,8 +217,8 @@ fn occupy(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn ask(@builtin(global_invocation_id) id: vec3u) {
-    let row = item(id);
-    if row >= mark.rows {
+    let row = labeled(id);
+    if row == NONE {
         return;
     }
     let s = word(candidate(row) + CANDIDATE_STATE);
@@ -228,8 +235,8 @@ fn ask(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn fade(@builtin(global_invocation_id) id: vec3u) {
-    let row = item(id);
-    if row >= mark.rows {
+    let row = labeled(id);
+    if row == NONE {
         return;
     }
     let at = candidate(row);

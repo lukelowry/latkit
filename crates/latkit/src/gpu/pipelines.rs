@@ -369,11 +369,12 @@ impl Pipelines {
     }
 
     /// Queues what `needs` lists, what views to come draw with, once per GPU: it compiles once the
-    /// first scene's frames have all they draw with, so it never holds them back.
+    /// first scene's frames have all they draw with, so it never holds them back. `waker` wakes as
+    /// each lands, so what waits for the GPU's work to land sees it.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
-    pub(crate) fn warm(&mut self, device: &wgpu::Device, needs: impl FnOnce() -> Vec<Asked>) {
+    pub(crate) fn warm(&mut self, device: &wgpu::Device, waker: &Waker, needs: impl FnOnce() -> Vec<Asked>) {
         if !std::mem::replace(&mut self.warmed, true) {
-            self.queue(device, &needs(), Urgency::Warm, Waker::noop());
+            self.queue(device, &needs(), Urgency::Warm, waker);
         }
     }
 

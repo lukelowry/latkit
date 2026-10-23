@@ -59,6 +59,9 @@ work! {
     written: Written,
     /// Rows whose channels the GPU evaluated.
     evaluated: Evaluated,
+    /// Rows packed into pages of the order a table drawn in part draws in: each page once, the first
+    /// time a view draws it, and again only where a write changed its rows.
+    packed: Packed,
     /// Reads back from the GPU: probes, queries, fits, label placements, segment counts, pictures;
     /// not the frame timer's, which only some devices have.
     readbacks: Readbacks,

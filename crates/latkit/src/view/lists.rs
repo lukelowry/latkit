@@ -1,6 +1,8 @@
 //! Lists on the GPU: each item counts its entries, a scan turns the counts into where each item's
 //! entries start, and each item writes its entries there. The total lands in the list's header as
-//! indirect draw and dispatch arguments, so nothing waits on a readback to know it.
+//! indirect draw and dispatch arguments, so nothing waits on a readback to know it. After the
+//! segment lists lie the words of the rows each mark drawing a table in part draws: which held row
+//! each is, expanded from its runs when they change, so every pass reads a drawn row in one word.
 
 use super::View;
 use super::marks::Shown;
@@ -25,6 +27,15 @@ pub(crate) struct Segments {
 
 /// Words a segment list keeps per segment: its row, and its distance along.
 const SEGMENT_WORDS: u32 = 2;
+
+/// Where the words of the rows a mark drawing a table in part draws lie in the lists buffer,
+/// `[start, room]` in words, and the stamp of what they were last expanded from: the drawing, where
+/// they lie, and the buffer.
+#[derive(Default)]
+pub(crate) struct DrawnRows {
+    pub(crate) at: Option<[u32; 2]>,
+    expanded: u64,
+}
 
 /// Where a list lies in the lists buffer, in words.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -106,7 +117,38 @@ impl View {
             at += List::front_words(list.kept, SEGMENT_WORDS) + List::back_words(items);
             shown.segments.list = Some(list);
         }
-        self.segment_words = at;
+        // Then a word for each row a mark drawing a table in part draws, those that left included.
+        for shown in &mut self.marks {
+            if shown.drawing().is_none() {
+                shown.drawn_rows.at = None;
+                continue;
+            }
+            let items = shown.rows + shown.exits;
+            let region = match shown.drawn_rows.at {
+                Some([start, room]) if start == at && room >= items => [start, room],
+                _ => [at, items + items / 4],
+            };
+            at += region[1];
+            shown.drawn_rows.at = Some(region);
+        }
+        self.list_words = at;
+    }
+
+    /// The marks whose drawn rows' words are written again this frame: where their drawing, where
+    /// the words lie, or the lists buffer changed.
+    pub(super) fn drawn_rows_due(&mut self) -> Vec<usize> {
+        let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
+        let mut due = Vec::new();
+        for (i, shown) in self.marks.iter_mut().enumerate() {
+            let Some(at) = shown.drawn_rows.at.filter(|_| shown.drawable()) else { continue };
+            let drawn = shown.drawing().map(|d| d.made);
+            let stamp = stamp_of((at, shown.rows, shown.exits, drawn, generation));
+            if stamp != shown.drawn_rows.expanded {
+                shown.drawn_rows.expanded = stamp;
+                due.push(i);
+            }
+        }
+        due
     }
 
     /// The marks whose segment lists build again this frame: their list, the lists buffer, or their
@@ -121,7 +163,8 @@ impl View {
             let Some(list) = shown.segments.list.filter(|_| shown.drawable()) else { continue };
             let arcs = shown.geodesic.then(|| (&vertices, shown.places_drawn()));
             let tables = shown.tables.generation();
-            let stamp = stamp_of((list.header, list.items, list.kept, tables, generation, arcs));
+            let drawn = shown.drawing().map(|d| d.made);
+            let stamp = stamp_of((list.header, list.items, list.kept, tables, generation, arcs, drawn));
             if stamp != shown.segments.built {
                 shown.segments.built = stamp;
                 due.push(i);

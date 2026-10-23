@@ -10,7 +10,8 @@ import package::lib::reduce::ordered;
 import package::lib::state::{row_at, vertex_at};
 import package::lib::points::{placed, vertex_half};
 import package::lib::path::{PATH, segment, segment_ends, stroke_style, stroke_instances};
-import package::lib::triangles::{triangle_corner, triangle_row, triangle_instances};
+import package::lib::triangles::{triangle_corner, triangle_instances};
+import package::lib::drawn::held_row;
 
 @group(2) @binding(2) var<storage, read_write> extents: array<atomic<u32>>;
 
@@ -31,10 +32,14 @@ fn counted(row: u32) -> bool {
 @compute @workgroup_size(256)
 fn points(@builtin(global_invocation_id) id: vec3u) {
     let i = item(id);
-    if i >= mark.rows || !counted(i) {
+    if i >= mark.rows {
         return;
     }
-    let v = vertex_at(row_at(i));
+    let row = held_row(i);
+    if !counted(row) {
+        return;
+    }
+    let v = vertex_at(row_at(row));
     if (v.flags & 1u) == 0u || !placed(v) {
         return;
     }
@@ -55,7 +60,7 @@ fn strokes(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let s = segment(i);
-    if s.row >= mark.rows || !counted(s.row) || !stroke_style(s.row).shown {
+    if s.item >= mark.rows || !counted(s.row) || !stroke_style(s.row).shown {
         return;
     }
     let ends = segment_ends(s);
@@ -72,8 +77,8 @@ fn areas(@builtin(global_invocation_id) id: vec3u) {
     if PATH != PATH_GEOMETRY || i >= triangle_instances() {
         return;
     }
-    let row = triangle_row(i);
-    if row >= mark.rows || !counted(row) {
+    let s = segment(i);
+    if s.item >= mark.rows || !counted(s.row) {
         return;
     }
     for (var k = 0u; k < 3u; k++) {

@@ -57,11 +57,6 @@ fn steps(device: &wgpu::Device) -> wgpu::Buffer {
     })
 }
 
-/// Samples per pixel: shader-drawn marks antialias themselves, so dense screens skip multisampling.
-pub(crate) fn samples(pixel_ratio: f32) -> u32 {
-    if pixel_ratio >= 1.75 { 1 } else { 4 }
-}
-
 /// A storage buffer that grows by half again when it runs out of room.
 struct Grown {
     buffer: wgpu::Buffer,

@@ -6,8 +6,8 @@
 //! A page is identified by its id, the words of it a program reads, and its piece. Page tables pin
 //! the pages they reference, so a page in use is never evicted; unpinned pages stay cached, the least
 //! recently used going first when a page needs their room. Uploads stream within a per-frame byte
-//! budget. A page that finds no room waits until pins let room go: views plan what they draw to fit
-//! the pool, so none waits long.
+//! budget. A page that finds no room waits aside until pins let room go, while the pages after it go
+//! on: views plan what they draw to fit the pool, so none waits long.
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -231,11 +231,11 @@ pub(crate) struct Arena {
     unpinned: BTreeMap<u64, PageKey>,
     tick: u64,
     uploads: VecDeque<PageKey>,
+    /// Pages that found no room, waiting for a pin to let some go.
+    stuck: Vec<PageKey>,
     contents: HashMap<PageKey, Content, FxBuildHasher>,
     /// Bytes of allocated blocks.
     resident: u64,
-    /// Whether the page at the front of the queue found no room, the last time it tried.
-    starved: bool,
 }
 
 impl Arena {
@@ -254,9 +254,9 @@ impl Arena {
             unpinned: BTreeMap::new(),
             tick: 0,
             uploads: VecDeque::new(),
+            stuck: Vec::new(),
             contents: HashMap::default(),
             resident: 0,
-            starved: false,
         }
     }
 
@@ -286,6 +286,11 @@ impl Arena {
         self.blocks.get(&key).filter(|b| b.offset != NONE && b.written >= need).map(|b| b.offset)
     }
 
+    /// Whether `key` waits to upload.
+    pub(crate) fn queued(&self, key: PageKey) -> bool {
+        self.contents.contains_key(&key)
+    }
+
     /// Keeps `key` resident while pinned; pins nest.
     pub(crate) fn pin(&mut self, key: PageKey) {
         let block = self.blocks.entry(key).or_insert(Block { offset: NONE, class: 0, written: 0, pins: 0, tick: 0 });
@@ -309,13 +314,15 @@ impl Arena {
         self.tick += 1;
         block.tick = self.tick;
         self.unpinned.insert(self.tick, key);
-        // Room let go may be what a waiting page needs.
-        self.starved = false;
+        // Room let go may be what a page without room needs: it tries again first.
+        for key in self.stuck.drain(..).rev() {
+            self.uploads.push_front(key);
+        }
     }
 
     /// Whether uploads are waiting that can make progress.
     pub(crate) fn uploading(&self) -> bool {
-        !self.uploads.is_empty() && !self.starved
+        !self.uploads.is_empty()
     }
 
     /// Bytes waiting to upload.
@@ -328,19 +335,17 @@ impl Arena {
         self.resident
     }
 
-    /// Bytes the pool may grow to.
-    pub(crate) fn capacity(&self) -> u64 {
-        u64::from(self.limit) * CHUNK_BYTES
-    }
-
     /// Uploads queued pages, at least one and at most `budget` bytes; returns the bytes uploaded.
     ///
-    /// A page that finds no room stays queued at the front, and later pages wait behind it, so the
-    /// pages of one table upload in order; it tries again once a pin lets room go.
+    /// A page that finds no room waits aside, and the pages after it go on; it tries again once a
+    /// pin lets room go.
     pub(crate) fn pump(&mut self, device: &wgpu::Device, queue: &Queue, budget: u64) -> u64 {
         let mut bytes = 0;
-        while !self.starved
-            && (bytes == 0 || bytes < budget)
+        // Views drawn earlier in the frame spent it.
+        if budget == 0 {
+            return 0;
+        }
+        while (bytes == 0 || bytes < budget)
             && let Some(key) = self.uploads.pop_front()
         {
             let Some(content) = self.contents.remove(&key) else { continue };
@@ -351,9 +356,8 @@ impl Arena {
                 _ => {
                     let Some(offset) = self.place(device, queue, key, content.class(len)) else {
                         self.contents.insert(key, content);
-                        self.uploads.push_front(key);
-                        self.starved = true;
-                        break;
+                        self.stuck.push(key);
+                        continue;
                     };
                     (offset, 0)
                 }

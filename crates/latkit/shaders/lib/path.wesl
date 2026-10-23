@@ -18,17 +18,30 @@ import package::lib::focus::{faded, growth};
 import package::lib::mark::px;
 import package::lib::points::vertex_half;
 import package::lib::lists::{lists, list_entry, list_start, list_total};
+import package::lib::drawn::drawn_row;
 
 // The path a pipeline's strokes read: one of the `PATH_` codes, fixed when the pipeline is made.
 override PATH: u32 = PATH_ENDS;
 
 // One segment of a row's path, and how far along the path it starts, in length units: position
-// units, degrees on the earth. A list keeps each segment's distance along; a row of one segment
-// starts at 0.
+// units, degrees on the earth. `row` is the held row, whose state and columns it reads; `item` the
+// drawn row, which the mark's list numbers. A list keeps each segment's distance along; a row of one
+// segment starts at 0. As its row's tile comes and goes, it shows `presence` of itself, grown by
+// `growth`, and while it leaves answers no pointer.
 struct Segment {
     row: u32,
+    item: u32,
     index: u32,
     along: f32,
+    presence: f32,
+    growth: f32,
+    leaving: bool,
+}
+
+// Segment `index` of drawn row `item`'s path, starting `along` it: the row looked up once.
+fn path_segment(item: u32, index: u32, along: f32) -> Segment {
+    let d = drawn_row(item);
+    return Segment(d.row, item, index, along, d.presence, d.growth, d.leaving);
 }
 
 // A point a path runs through: where it stands (position units as high and low parts, elevation),
@@ -78,11 +91,11 @@ struct OnScreen {
 fn segment(instance: u32) -> Segment {
     if mark.per_row != NONE {
         let per = max(mark.per_row, 1u);
-        return Segment(instance / per, instance % per, 0.0);
+        return path_segment(instance / per, instance % per, 0.0);
     }
     let entry = list_entry(mark.list, 2u * instance);
-    let row = lists[entry];
-    return Segment(row, instance - list_start(mark.list, row), bitcast<f32>(lists[entry + 1u]));
+    let item = lists[entry];
+    return path_segment(item, instance - list_start(mark.list, item), bitcast<f32>(lists[entry + 1u]));
 }
 
 // In the focus draw, piece `instance % mark.pieces` of the lit row `instance / mark.pieces`, as far
@@ -90,13 +103,13 @@ fn segment(instance: u32) -> Segment {
 @if(focused)
 fn segment(instance: u32) -> Segment {
     let pieces = max(mark.pieces, 1u);
-    let row = focused[mark.focused + instance / pieces];
+    let item = focused[mark.focused + instance / pieces];
     let index = instance % pieces;
     var along = 0.0;
-    if mark.per_row == NONE && row < mark.rows && index < path_count(row) {
-        along = bitcast<f32>(lists[list_entry(mark.list, 2u * (list_start(mark.list, row) + index)) + 1u]);
+    if mark.per_row == NONE && item < mark.rows && index < path_count(item) {
+        along = bitcast<f32>(lists[list_entry(mark.list, 2u * (list_start(mark.list, item) + index)) + 1u]);
     }
-    return Segment(row, index, along);
+    return path_segment(item, index, along);
 }
 
 // Length units between two points of a path: what a segment adds to the distance along it.
@@ -117,12 +130,12 @@ fn stroke_instances() -> u32 {
     return list_total(mark.list);
 }
 
-// Segments in row `row`'s path, as drawn.
-fn path_count(row: u32) -> u32 {
+// Segments in drawn row `item`'s path, as drawn.
+fn path_count(item: u32) -> u32 {
     if mark.per_row != NONE {
         return mark.per_row;
     }
-    return list_start(mark.list, row + 1u) - list_start(mark.list, row);
+    return list_start(mark.list, item + 1u) - list_start(mark.list, item);
 }
 
 // Segments a geodesic from `a` to `b` takes: one per few degrees of arc.
@@ -133,9 +146,9 @@ fn arcs(a: vec2f, b: vec2f) -> u32 {
     return clamp(u32(ceil(degrees(d) / GEODESIC_STEP)), 1u, MAX_PIECES);
 }
 
-// Points the geometry column gives row `row`: an edge's bends, or a whole path.
+// Points the geometry column gives held row `row`: an edge's bends, or a whole path.
 fn geometry_count(row: u32) -> u32 {
-    if row >= mark.rows {
+    if row >= mark.held - mark.exits {
         return 0u;
     }
     return points_of(mark.geometry, row).count;
@@ -264,13 +277,13 @@ fn between(a: Vertex, b: Vertex, t: f32, bow: f32) -> PathPoint {
 // it runs between its ends in as many pieces as its list kept for it, each lane bowing in world units
 // so the camera never moves it. An end reads only its own vertex. Each kind of point is made in one
 // place, so shaders compile small.
-fn end_point(row: u32, i: u32) -> PathPoint {
+fn end_point(row: u32, count: u32, i: u32) -> PathPoint {
     let e = edge_at(row_at(row));
     if e.a == NONE || e.b == NONE || e.a == e.b {
         return hidden();
     }
     let bends = points_of(mark.geometry, row);
-    let last = select(bends.count + 1u, path_count(row), bends.count == 0u);
+    let last = select(bends.count + 1u, count, bends.count == 0u);
     if i == 0u || i >= last {
         return vertex_point(select(e.b, e.a, i == 0u));
     }
@@ -379,10 +392,10 @@ fn pole_point(row: u32, i: u32) -> PathPoint {
     return p;
 }
 
-// Point `i` of row `row`'s path, whatever it runs through, placed in the world.
-fn path_point(row: u32, i: u32) -> PathPoint {
+// Point `i` of held row `row`'s path of `count` segments, whatever it runs through, placed in the world.
+fn path_point(row: u32, count: u32, i: u32) -> PathPoint {
     switch PATH {
-        case PATH_ENDS: { return end_point(row, i); }
+        case PATH_ENDS: { return end_point(row, count, i); }
         case PATH_TRACE: { return placed_point(trace_point(row, i)); }
         case PATH_GEOMETRY: { return placed_point(geometry_point(row, i)); }
         case PATH_POLES: { return pole_point(row, i); }
@@ -395,7 +408,7 @@ fn path_point(row: u32, i: u32) -> PathPoint {
 fn segment_ends(s: Segment) -> array<PathPoint, 2> {
     var ends: array<PathPoint, 2>;
     for (var e = 0u; e < 2u; e++) {
-        ends[e] = path_point(s.row, s.index + e);
+        ends[e] = path_point(s.row, path_count(s.item), s.index + e);
     }
     return ends;
 }
@@ -407,12 +420,12 @@ fn ends_part(s: Segment) -> bool {
         let next = s.index + 2u;
         return next >= points.count || missing_bits(point_bits(points, next).x);
     }
-    return s.index + 1u == path_count(s.row);
+    return s.index + 1u == path_count(s.item);
 }
 
 // Lanes from the middle that row `row` runs in among edges joining the same two vertices.
 fn lane(row: u32) -> f32 {
-    if mark.lane == NONE || row >= mark.rows {
+    if mark.lane == NONE || row >= mark.held - mark.exits {
         return 0.0;
     }
     let bits = column_value(mark.lane, row).x;
