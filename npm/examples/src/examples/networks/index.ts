@@ -21,6 +21,7 @@ import {
   zoom,
   type ColormapName,
   type Controls,
+  type Data,
   type Expr,
   type Fit,
   type Mark,
@@ -29,7 +30,7 @@ import {
   type Scene,
   type Size,
   type Zoom,
-} from '../../latkit.js';
+} from 'latkit';
 import { h } from '../../ui/dom.js';
 import { each } from '../../ui/rows.js';
 import type { Stage } from '../../ui/stage.js';
@@ -96,6 +97,8 @@ const fixed = (value: number) => (value >= 100 ? value.toFixed(0) : value.toPrec
 interface Grid {
   readonly id: GridId;
   readonly label: string;
+  /** Its dataset; none for the map alone. */
+  readonly data?: Data;
   readonly buses: number;
   readonly lines: number;
   readonly summary: string;
@@ -123,7 +126,7 @@ function extent(positions: Float32Array): Fit {
 /** A case's buses zoned by the `ZONE`-degree square each stands in: a zone for each square, and a
  * reference from each bus to its zone, which an edges mark draws as a star joining its buses. */
 function zones(found: Case): Patch {
-  const ids = found.data.ids('Bus');
+  const ids = found.data.query({ of: 'Bus', select: {} }).ids;
   const squares = new Map<number, number>();
   const zone = new Uint32Array(ids.length);
   for (let i = 0; i < ids.length; i++) {
@@ -173,7 +176,7 @@ export default async function page(stage: Stage): Promise<void> {
     glow: 5,
     dim: 0.35,
     halo: 2,
-    hoverScale: 1.25,
+    grow: 1.25,
     night: 0.28,
     comets: 'screen' as 'screen' | 'map',
     cometScale: 1,
@@ -217,7 +220,6 @@ export default async function page(stage: Stage): Promise<void> {
         : {
             earth: {
               projection: state.projection === 'globe' ? 'globe' : 'mercator',
-              surface: LOOK.ground,
               graticule: state.graticule,
               atmosphere: state.atmosphere,
               ...(state.daylight === 'off'
@@ -227,18 +229,14 @@ export default async function page(stage: Stage): Promise<void> {
           },
     theme: {
       ...theme,
-      area: LOOK.fill,
-      atmosphere: '#5aa9ff99',
-      night: look.night,
-      glow: look.glow,
-      dim: look.dim,
-      halo: look.halo,
-      hoverScale: look.hoverScale,
-      laneBow: look.bow,
+      area: { color: LOOK.fill },
+      earth: { ground: LOOK.ground, atmosphere: '#5aa9ff99', night: look.night },
+      text: { halo: look.halo },
+      focus: { glow: look.glow, dim: look.dim, grow: look.grow },
       // Marks without a color of their own take the theme's: plain buses and lines; lines set to
       // blend take the colors of the buses they join.
-      vertex: '#d9e2ec',
-      edge: look.lineColor === 'ends' ? null : '#8fa3b8',
+      vertex: { color: '#d9e2ec' },
+      edge: { color: look.lineColor === 'ends' ? null : '#8fa3b8', bow: look.bow },
       // Comets kept soft, as rivers carry them across the map too: on screen, pixels apart; on the
       // map, degrees apart, so they zoom with it.
       flow:
@@ -246,9 +244,8 @@ export default async function page(stage: Stage): Promise<void> {
           ? {
               color: '#d6e6ffa6',
               width: 3 * look.cometScale,
-              length: 0.35 * look.cometScale,
-              spacing: 1.2 * look.cometScale,
-              units: true,
+              length: units(0.35 * look.cometScale),
+              spacing: units(1.2 * look.cometScale),
             }
           : {
               color: '#d6e6ffa6',
@@ -425,7 +422,7 @@ export default async function page(stage: Stage): Promise<void> {
   });
   // Fits keep clear of the readout over the view's top and the credit and legend over its foot.
   view.insets = [32, 16, 32, 16];
-  const restyle = () => view.show(scene());
+  const restyle = () => (view.scene = scene());
   /** Frames the grid, whatever the map beneath it spans; the map alone, all of it. */
   const frame = () => view.fit(grid?.bounds ?? 'all');
   const legend = stage.legend();
@@ -549,7 +546,7 @@ export default async function page(stage: Stage): Promise<void> {
   canvas.addEventListener(
     'pointermove',
     (event) => {
-      const ground = view.ground([event.offsetX, event.offsetY]);
+      const ground = view.position([event.offsetX, event.offsetY]);
       where.textContent = ground
         ? state.projection === 'plane'
           ? `Pointer at ${ground[0].toFixed(2)}, ${ground[1].toFixed(2)}`
@@ -697,7 +694,7 @@ export default async function page(stage: Stage): Promise<void> {
   const lookSection = stage.section('Look', false);
   const slider = (
     label: string,
-    name: 'glow' | 'dim' | 'halo' | 'hoverScale' | 'night' | 'cometScale',
+    name: 'glow' | 'dim' | 'halo' | 'grow' | 'night' | 'cometScale',
     o: { min: number; max: number; step: number; format: (v: number) => string },
   ) =>
     lookSection.range(label, { ...o, value: look[name] }, (value) => {
@@ -712,7 +709,7 @@ export default async function page(stage: Stage): Promise<void> {
     format: (v) => `${Math.round(v * 100)}%`,
   });
   slider('Label halo', 'halo', { min: 0, max: 5, step: 0.5, format: (v) => `${v} px` });
-  slider('Hover growth', 'hoverScale', {
+  slider('Hover growth', 'grow', {
     min: 1,
     max: 2,
     step: 0.05,
@@ -799,10 +796,12 @@ export default async function page(stage: Stage): Promise<void> {
     const row = hoveredRow ?? each(view.selection)[0];
     list.replaceChildren();
     if (!row) return void (described.textContent = 'Select an item.');
-    const data = view.data(row.data);
+    const data = view.snapshot(row.data);
     if (!data) return;
-    const value = (name: string) => data.get(row.table, row.id, name, view.at);
-    const fields = data.fields(row.table).filter((name) => !HIDDEN.test(name));
+    const at = view.at;
+    const value = (name: string) => data.get(row.table, row.id, name, { at });
+    const table = data.describe().tables.find((t) => t.name === row.table);
+    const fields = (table?.fields ?? []).map((f) => f.name).filter((name) => !HIDDEN.test(name));
     const name = fields.find((f) => /^name$/i.test(f));
     described.textContent = `${row.table} · ${name ? format(value(name)) : `#${row.id}`}${hoveredRow ? '' : ' · selected'}`;
     // The grid's figures first, then the rest, leaving out what this row has no value for.
@@ -818,25 +817,26 @@ export default async function page(stage: Stage): Promise<void> {
       list.append(dt, dd);
       if (++shown === 18) break;
     }
+    data.destroy();
   };
-  view.on('hover', ({ hit }) => {
+  view.on('hovered', ({ hit }) => {
     hoveredRow = hit?.row ?? null;
     inspect();
   });
-  view.on('select', inspect);
+  view.on('selection', inspect);
 
   /** Puts the tag where its bus now stands on screen, or hides it where none shows. */
   function pin(): void {
-    const point = tagged && view.point(tagged);
+    const point = tagged && view.screen(tagged);
     tag.hidden = !point;
     if (point) tag.style.translate = `${point[0]}px ${point[1]}px`;
   }
   /** Selects every bus whose name holds `text`, frames them, and tags the first. */
   function find(text: string): void {
-    const data = view.data('grid');
+    const data = grid?.data;
     tagged = undefined;
     look.found = '';
-    if (!text || !data?.tables.includes('Bus') || !grid?.case?.named) {
+    if (!text || !data || !grid?.case?.named) {
       pin();
       restyle();
       if (text) described.textContent = 'This grid has no named buses.';
@@ -861,7 +861,7 @@ export default async function page(stage: Stage): Promise<void> {
     const [lon, lat] = [found.fields.lon as Float64Array, found.fields.lat as Float64Array];
     look.found = names[0]!;
     restyle();
-    view.select(rows);
+    view.selection = rows;
     // One found is brought into view as the camera stands; more are framed together.
     view.fit(found.ids.length === 1 ? { reveal: first } : { rows });
     tagged = [lon[0]!, lat[0]!, 0];
@@ -892,16 +892,18 @@ export default async function page(stage: Stage): Promise<void> {
     legend.ramp(colormap, `${label} 0 – ${fixed(grid.peaks[state.color])} MW`);
   }
 
-  /** The grid's figures in the map's states, when it has states, and what they color by. */
+  /** The grid's figures in the map's states, when it has states, and what they color by; and the
+   * view given what the map and the grid hold. */
   function join(): void {
-    joined?.data.destroy();
+    if (joined) map?.loaded.states?.restore(joined.before);
+    joined?.before.destroy();
     joined = undefined;
     const states = map?.loaded.states;
     if (states && grid?.case && state.statesBy !== 'none') {
       joined = joinStates(states, grid.case);
-      view.setData(joined.data);
       mapSummary.textContent = `${map!.loaded.summary} · the grid reaches ${joined.states} states`;
     }
+    view.sources = [...(map?.loaded.sources ?? []), ...(grid?.data ? [grid.data] : [])];
     restyle();
     showLegend();
   }
@@ -915,7 +917,6 @@ export default async function page(stage: Stage): Promise<void> {
     const started = performance.now();
     let next: Grid;
     if (id === 'none') {
-      view.removeData('grid');
       next = {
         id,
         label,
@@ -927,10 +928,10 @@ export default async function page(stage: Stage): Promise<void> {
       };
     } else if (id.startsWith('lattice')) {
       const built = lattice(id);
-      view.setData(built.data);
       next = {
         id,
         label,
+        data: built.data,
         buses: built.buses,
         lines: built.lines,
         bounds: built.bounds,
@@ -948,11 +949,11 @@ export default async function page(stage: Stage): Promise<void> {
       // Cases' buses are zoned by where they stand; a continent's are too many to zone in the page.
       const zoned = found.named;
       if (zoned) found.data.apply(zones(found));
-      view.setData(found.data);
       const peak = (values: Float32Array) => values.reduce((top, v) => Math.max(top, v), 0);
       next = {
         id,
         label,
+        data: found.data,
         buses: found.buses,
         lines: found.lines,
         case: found,
@@ -969,7 +970,7 @@ export default async function page(stage: Stage): Promise<void> {
       };
     }
     grid = next;
-    view.select([]);
+    view.selection = [];
     hoveredRow = null;
     search.value = '';
     tagged = undefined;
@@ -1004,17 +1005,18 @@ export default async function page(stage: Stage): Promise<void> {
   async function loadMap(choice: MapChoice | undefined): Promise<void> {
     mapLoad?.abort();
     const load = (mapLoad = new AbortController());
-    map?.loaded.unload(view);
-    map = undefined;
+    if (joined) map?.loaded.states?.restore(joined.before);
+    joined?.before.destroy();
     joined = undefined;
+    map = undefined;
     credit.textContent = '';
     mapSummary.textContent = choice ? 'loading…' : '';
-    restyle();
+    join();
     if (!choice) return;
-    const loaded = await choice.load(view, load.signal, (status) => {
+    const loaded = await choice.load(load.signal, (status) => {
       if (!load.signal.aborted) mapSummary.textContent = status;
     });
-    if (load.signal.aborted) return loaded.unload(view);
+    if (load.signal.aborted) return;
     map = { choice, loaded };
     credit.textContent = choice.attribution;
     mapSummary.textContent = loaded.summary;

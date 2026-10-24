@@ -36,13 +36,13 @@ impl Faces {
         let Some(corners) = &self.corners else {
             return Err(Error::invalid("name the reference fields of each row's three corners").at("corners"));
         };
-        for (corner, word) in corners.iter().zip([wgsl::FACE_A, wgsl::FACE_B, wgsl::FACE_C]) {
-            c.end(corner, word).map_err(|e| e.at("corners"))?;
+        for corner in corners {
+            c.end(corner).map_err(|e| e.at("corners"))?;
         }
         let mut flags = 0;
         match &self.style.color {
-            Some(expr) => {
-                c.channel("color", expr, Store::Color { word: wgsl::FACE_COLOR, fallback: wgsl::THEME_VERTEX })?;
+            Some(paint) => {
+                c.channel("color", &paint.0, Store::Color { word: wgsl::FACE_COLOR, fallback: wgsl::THEME_VERTEX })?;
             }
             None => flags |= wgsl::ENDS_COLOR,
         }

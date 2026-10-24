@@ -4,7 +4,7 @@
  * repository; or OpenStreetMap's planet as OpenFreeMap's vector tiles. GeoJSON downloads as bytes
  * and is read in a worker; tiles are fetched as the camera asks for them.
  */
-import { Data, field, type ColormapName, type Mark, type View } from '../../latkit.js';
+import { Data, Tiles, field, type ColormapName, type Mark, type Source } from 'latkit';
 import { download, megabytes } from './cases.js';
 
 /** The page's colors, as CSS. */
@@ -28,22 +28,22 @@ export interface Styling {
   readonly states?: { readonly by: string; readonly peak: number; readonly colormap: ColormapName };
 }
 
-/** A map, loaded: its marks, drawn under the grid, and its states when it has them. */
+/** A map, loaded: its marks, drawn under the grid, what they draw, and its states when it has them. */
 export interface Loaded {
   readonly summary: string;
   marks(styling: Styling): Mark[];
+  /** The datasets its marks draw. */
+  readonly sources: readonly Source[];
   /** The dataset of states the grid's figures color, its rows in table `polygons`. */
   readonly states?: Data;
-  /** Takes back from the view what loading gave it. */
-  unload(view: View): void;
 }
 
 export interface MapChoice {
   readonly id: string;
   readonly label: string;
   readonly attribution: string;
-  /** Loads the map into `view`, telling `progress` how it goes. */
-  load(view: View, signal: AbortSignal, progress: (status: string) => void): Promise<Loaded>;
+  /** Loads the map, telling `progress` how it goes. */
+  load(signal: AbortSignal, progress: (status: string) => void): Promise<Loaded>;
 }
 
 const NE = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/';
@@ -55,7 +55,7 @@ const borders: MapChoice = {
   id: 'borders',
   label: 'Coasts and borders',
   attribution: NATURAL_EARTH,
-  async load(view, signal) {
+  async load(signal) {
     const started = performance.now();
     const files = ['coastline', 'countries', 'provinces'] as const;
     const sets = await Promise.all(
@@ -64,11 +64,11 @@ const borders: MapChoice = {
           `${import.meta.env.BASE_URL}maps/${name}.geojson.gz`,
           signal,
         );
-        return Data.read(bytes, name);
+        return Data.read(bytes, { name, signal });
       }),
     );
-    for (const data of sets) view.setData(data);
     return {
+      sources: sets,
       summary: `coasts and borders in ${seconds(started)}`,
       marks: () => [
         {
@@ -77,7 +77,6 @@ const borders: MapChoice = {
         { lines: { of: ['countries', 'lines'], color: LOOK.line, width: 1 } },
         { lines: { of: ['coastline', 'lines'], color: LOOK.coast, width: 1 } },
       ],
-      unload: (view) => files.forEach((name) => view.removeData(name)),
     };
   },
 };
@@ -88,7 +87,7 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
     id: `states-${scale}`,
     label,
     attribution: NATURAL_EARTH,
-    async load(view, signal, progress) {
+    async load(signal, progress) {
       const started = performance.now();
       const { bytes, received } = await download(
         `${NE}ne_${scale}_admin_1_states_provinces.geojson`,
@@ -96,9 +95,9 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
         (got, total) => progress(`downloading ${megabytes(got, total)}`),
       );
       const fetched = performance.now();
-      const data = await Data.read(bytes, 'states');
-      view.setData(data);
+      const data = await Data.read(bytes, { name: 'states', signal });
       return {
+        sources: [data],
         states: data,
         summary: `${(received / 1e6).toFixed(1)} MB in ${seconds(started)}, read in ${seconds(fetched)}`,
         marks: ({ labels, states }) => [
@@ -115,7 +114,6 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
           },
           { lines: { of: ['states', 'polygons'], color: LOOK.line, width: 0.7 } },
         ],
-        unload: (view) => view.removeData('states'),
       };
     },
   };
@@ -126,9 +124,9 @@ const planet: MapChoice = {
   id: 'planet',
   label: 'Planet, vector tiles',
   attribution: 'OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors',
-  load(view) {
-    view.setTiles('base', 'https://tiles.openfreemap.org/planet');
+  load() {
     return Promise.resolve({
+      sources: [new Tiles('base', 'https://tiles.openfreemap.org/planet')],
       summary: 'tiles fetch as the camera asks for them',
       marks: ({ labels }) => [
         { areas: { of: ['base', 'landcover'], color: LOOK.landcover } },
@@ -157,7 +155,6 @@ const planet: MapChoice = {
             ]
           : []),
       ],
-      unload: (view) => view.removeData('base'),
     });
   },
 };

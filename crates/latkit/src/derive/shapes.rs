@@ -11,13 +11,13 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::order::Order;
-use super::tiles::TileSets;
 use super::{Input, Jobs, Paged, Tables, beside, stamp_of};
 use crate::data::{
     Column, Field, Geometry, GeometryBuilder, Id, Keyed, Name, Page, PageId, RowIds, Table, Values, Version,
 };
 use crate::gpu::shaders::PAGE_ROWS;
 use crate::host::{Job, Shaping, shapes_answer};
+use crate::tiles::TileSets;
 use crate::{Mark, Pending, Scene, Space};
 
 /// Microseconds a point takes to triangulate, by estimate.
@@ -729,7 +729,7 @@ mod tests {
     use super::*;
     use crate::derive::pyramid::Pyramid;
     use crate::gpu::work::Counters;
-    use crate::{Areas, Data, Ids, Plane, Scene};
+    use crate::{Areas, Data, Ids, Plane, Scene, Snapshot};
 
     type Ring = Vec<[f64; 2]>;
 
@@ -757,7 +757,7 @@ mod tests {
     #[test]
     fn a_table_drawn_in_part_is_shaped_a_page_drawn_at_a_time() {
         let n = 3 * PAGE_ROWS as usize;
-        let mut data = Data::new("map");
+        let data = Data::new("map");
         let squares: Vec<Vec<Ring>> = (0..n).map(|i| square(i as f64)).collect();
         data.apply(Table::new("Zone", Ids::count(n as u32)).field("geometry", squares)).expect("valid");
         let scene = Scene::new(Plane::default()).draw(Areas::of("map", "Zone"));
@@ -766,7 +766,7 @@ mod tests {
         let order = Order::Pyramid { pyramid, rows: n as u32 };
         let (counters, errors) = (Counters::default(), Arc::new(Mutex::new(Vec::new())));
         let mut shapes = Shapes::default();
-        let update = |shapes: &mut Shapes, data: &Data, pages: Vec<u32>| {
+        let update = |shapes: &mut Shapes, data: &Snapshot, pages: Vec<u32>| {
             let mut paged = Keyed::default();
             paged.insert(("map".into(), "Zone".into()), Paged { order: order.clone(), pages, kept: Vec::new() });
             let input = Input {
@@ -780,7 +780,7 @@ mod tests {
             let mut jobs = Jobs::new(None, Waker::noop(), &counters, &errors, u32::MAX);
             shapes.update(&input, &TileSets::default(), &mut jobs);
         };
-        update(&mut shapes, &data, vec![1]);
+        update(&mut shapes, &data.snapshot(), vec![1]);
         let first = made(&shapes);
         assert_eq!(first.iter().map(|&(page, _)| page).collect::<Vec<_>>(), [1], "only the page drawn is shaped");
         let paged = shapes.paged(&"map".into(), &"Zone".into());
@@ -789,13 +789,13 @@ mod tests {
         let triangles = page.shapes.geometry().expect("triangles").row_coords(0).len();
         assert!(triangles >= 3, "its rows' triangles, in the order's order: {triangles} points");
         // Drawing another page shapes it alone; the first keeps its shapes.
-        update(&mut shapes, &data, vec![1, 2]);
+        update(&mut shapes, &data.snapshot(), vec![1, 2]);
         let second = made(&shapes);
         assert_eq!((second.len(), second[0]), (2, first[0]));
         // A write to a row drawn in page 2 shapes that page again, and only it.
         let row = u64::from(order.source(2 * PAGE_ROWS + 5));
         data.apply(Table::new("Zone", vec![row]).field("geometry", vec![square(-9.0)])).expect("valid");
-        update(&mut shapes, &data, vec![1, 2]);
+        update(&mut shapes, &data.snapshot(), vec![1, 2]);
         let third = made(&shapes);
         assert_eq!(third[0], second[0], "page 1 holds no row written");
         assert_ne!(third[1].1, second[1].1, "page 2 is shaped again");
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn a_table_drawn_whole_lands_its_shapes_a_page_at_a_time() {
         let n = 2 * PAGE_ROWS as usize + 10;
-        let mut data = Data::new("map");
+        let data = Data::new("map");
         let squares: Vec<Vec<Ring>> = (0..n).map(|i| square(i as f64)).collect();
         data.apply(Table::new("Zone", Ids::count(n as u32)).field("geometry", squares)).expect("valid");
         let scene = Scene::new(Plane::default()).draw(Areas::of("map", "Zone"));
@@ -812,10 +812,11 @@ mod tests {
         let mut shapes = Shapes::default();
         // No budget on the frame: every shape is made in a job, which lands by the next update.
         let update = |shapes: &mut Shapes, data: &Data| {
+            let data = data.snapshot();
             let input = Input {
                 scene: &scene,
                 scene_version: 1,
-                data: std::slice::from_ref(data),
+                data: std::slice::from_ref(&data),
                 host: None,
                 dragging: false,
                 paged: None,

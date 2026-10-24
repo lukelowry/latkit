@@ -12,7 +12,7 @@ use latkit::{Color, Data, Event, Expr, Ids, Image, Marker, Scene, Shape, Table, 
 
 fn one(marker: Marker) -> (View, latkit::Gpu) {
     let gpu = gpu().expect("a GPU");
-    let mut data = Data::new("d");
+    let data = Data::new("d");
     data.apply(Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("v", vec![0.5]))
         .expect("valid");
     let scene = Scene::new(plane())
@@ -20,7 +20,7 @@ fn one(marker: Marker) -> (View, latkit::Gpu) {
         .draw(Vertices::of("d", "V").position("x", "y").radius(20.0).color(Color::WHITE).marker(marker));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     (view, gpu)
 }
 
@@ -95,14 +95,14 @@ fn custom_markers_draw_their_wgsl_and_bad_ones_are_told() {
 #[test]
 fn status_rings_surround_their_markers() {
     let Some(gpu) = gpu() else { return };
-    let mut data = Data::new("d");
+    let data = Data::new("d");
     data.apply(Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(
         Vertices::of("d", "V").position("x", "y").radius(10.0).color(Color::WHITE).ring(Color::rgb(1.0, 0.0, 0.0)),
     );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     let c = SIZE / 2;
     let ring = at(&pixels, c + 11, c);
@@ -120,7 +120,7 @@ fn a_missing_status_draws_no_ring_whichever_branch_it_is() {
         when(field("alarm").lt(0.5)).then(Expr::missing()).otherwise(red),
     ];
     for status in forms {
-        let mut data = Data::new("d");
+        let data = Data::new("d");
         let table = Table::new("V", Ids::count(2)).field("x", vec![-30.0, 30.0]).field("y", vec![0.0, 0.0]);
         data.apply(table.field("alarm", vec![1.0, 0.0])).expect("valid");
         let scene = Scene::new(plane())
@@ -128,7 +128,7 @@ fn a_missing_status_draws_no_ring_whichever_branch_it_is() {
             .draw(Vertices::of("d", "V").position("x", "y").radius(10.0).color(Color::WHITE).ring(status));
         let mut view = View::new(&gpu, scene).expect("valid scene");
         view.set_camera(camera());
-        view.set_data(data);
+        view.set_sources([&data]).expect("a source");
         let pixels = frame(&gpu, &mut view);
         let c = SIZE / 2;
         let alarmed = at(&pixels, c - 30 + 11, c);

@@ -122,11 +122,6 @@ export interface Stats {
   tiles: number;
   /** Tiles being fetched or decoded, of every tile source. */
   tilesLoading: number;
-  /**
-   * The work under way the last frame stood in for; nothing when it drew everything as the data,
-   * scene, and camera say: see `View::complete`.
-   */
-  waiting: Waiting;
   /** Milliseconds the last frame took to record on the CPU. */
   cpuMs: number;
   /**
@@ -165,7 +160,7 @@ export interface Trigger {
  */
 export type Value = number | boolean | string | null | [number, number] | unknown[][];
 
-/** What happened in a view, for the application to act on. Drain them with `View::events`. */
+/** What happened in a view, for the application to act on, as `view.on` tells it. */
 export type ViewEvent =
   | {
       type: 'click';
@@ -234,7 +229,7 @@ export type ViewEvent =
       };
     }
   | {
-      type: 'hover';
+      type: 'hovered';
       detail: {
         /** The row now pointed at; `null` once it left every row. */
         hit: Hit | null;
@@ -243,7 +238,7 @@ export type ViewEvent =
       };
     }
   | {
-      type: 'select';
+      type: 'selection';
       detail: {
         /** The rows selected now. */
         rows: Rows[];
@@ -272,6 +267,16 @@ export interface Work {
   written: number;
   /** Rows whose channels the GPU evaluated. */
   evaluated: number;
+  /**
+   * Rows of edges and faces whose ends the GPU found where their vertices are held: rows that
+   * changed, and every row held where the vertices they end at moved.
+   */
+  resolved: number;
+  /**
+   * Bytes of pages of words per row the GPU cleared: those read before anything writes them, and the
+   * normals faces sum afresh.
+   */
+  cleared: number;
   /**
    * Rows packed into pages of the order a table drawn in part draws in: each page once, the first
    * time a view draws it, and again only where a write changed its rows.

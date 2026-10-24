@@ -9,5 +9,5 @@
     "types": ["vite/client", "node"],
     "lib": ["ES2022", "DOM", "DOM.Iterable", "ESNext.Disposable"]
   },
-  "include": ["src", "test", "vite.config.ts"]
+  "include": ["src", "scripts", "test", "vite.config.ts"]
 }

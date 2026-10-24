@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
 const directory = process.env.LATKIT_TEST_PACKAGE ?? path.resolve(import.meta.dirname, '..');
-const { Video, Shot } = await import(pathToFileURL(path.join(directory, 'dist/runtime.js')).href);
+const { Video, Shot } = await import(pathToFileURL(path.join(directory, 'dist/shot.js')).href);
 
 function recording(sink = {}, options = {}) {
   const calls = { free: 0, cancel: 0, abort: 0, close: 0 };
@@ -34,12 +34,12 @@ function recording(sink = {}, options = {}) {
     },
     ...options,
   };
-  return { video: new Video(inner, stream.getWriter(), 30), stream, calls, inner };
+  return { video: Video.made(inner, stream.getWriter(), 30), stream, calls, inner };
 }
 
 test('finish retains counters and releases the output exactly once', async () => {
   const { video, stream, calls } = recording();
-  await video.frame([]);
+  await video.frame();
   const finished = video.finish();
   assert.equal(video.finish(), finished);
   await finished;
@@ -56,7 +56,6 @@ test('record aborts and unlocks on step and progress failures', async () => {
     const error = new Error('record failed');
     await assert.rejects(
       video.record(
-        [],
         () => {
           if (!progress) throw error;
           return true;
@@ -79,7 +78,7 @@ test('write failures close the encoder and release the output lock', async () =>
       throw new Error('disk full');
     },
   });
-  await assert.rejects(video.frame([]), /disk full/);
+  await assert.rejects(video.frame(), /disk full/);
   assert.equal(stream.locked, false);
   assert.equal(calls.free, 1);
   assert.equal(calls.cancel, 1);
@@ -121,29 +120,19 @@ test('concurrent frames reject without disrupting the frame already drawing', as
         }),
     },
   );
-  const frame = video.frame([]);
-  await assert.rejects(video.frame([]), /one frame/);
+  const frame = video.frame();
+  await assert.rejects(video.frame(), /one frame/);
   resolveFrame(new Uint8Array());
   await frame;
   await video.finish();
 });
 
-test('locked outputs do not create encoders, and setup failures unlock outputs', () => {
+test('locked outputs make no encoder, and failing to make one unlocks the output', () => {
   const shot = new Shot([64, 64]);
   const stream = new WritableStream();
   const writer = stream.getWriter();
-  let created = 0;
-  const gpu = {
-    inner: {
-      video() {
-        created++;
-        throw new Error('no encoder');
-      },
-    },
-  };
-  assert.throws(() => shot.video(gpu, 30, stream));
-  assert.equal(created, 0);
+  assert.throws(() => shot.video({ fps: 30, output: stream }), /locked/);
   writer.releaseLock();
-  assert.throws(() => shot.video(gpu, 30, stream), /no encoder/);
+  assert.throws(() => shot.video({ fps: 30, output: stream }), { code: 'unloaded' });
   assert.equal(stream.locked, false);
 });

@@ -8,7 +8,7 @@ use super::marks::Shown;
 use super::words::Kept;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
-use crate::{Color, Grid, Scene, Space, Theme};
+use crate::{Color, Grid, Length, Scene, Space, Theme};
 
 fn matrix(m: DMat4) -> [[f32; 4]; 4] {
     m.to_cols_array_2d().map(|c| c.map(|v| v as f32))
@@ -20,8 +20,8 @@ fn vector(v: DVec3) -> [f32; 4] {
 
 /// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels, showing
 /// axis coordinate `at`, `elapsed` seconds of motion into the view's clock. Pointer, probe, and
-/// focus words start empty. In a diagram every length but glow and halo is a unit, so the theme's
-/// lengths scale with the zoom.
+/// focus words start empty. The theme's lengths are in the space's unit, so in a diagram they scale
+/// with the zoom; a halo and focus's glow are CSS pixels everywhere.
 pub(crate) fn frame(
     scene: &Scene,
     projected: &Projected,
@@ -43,20 +43,17 @@ pub(crate) fn frame(
         Grid::Dots { pitch, .. } => (wgsl::GRID_DOTS, pitch),
     };
     let unit = if projected.space == wgsl::SPACE_DIAGRAM { projected.px_per_unit[0] as f32 } else { 1.0 };
-    let (surface, graticule) = match &scene.space {
-        Space::Earth(earth) => (earth.surface.unwrap_or(theme.surface), earth.graticule),
-        _ => (theme.surface, false),
-    };
+    let graticule = matches!(&scene.space, Space::Earth(earth) if earth.graticule);
     // The sun stands where it does at the earth's daylight instant, on by the axis coordinate shown.
     let (sun, atmosphere) = match &scene.space {
         Space::Earth(earth) => (
             earth.daylight.map(|t| crate::scene::sun(t + if at.is_finite() { at } else { 0.0 })),
-            earth.atmosphere.then(|| theme.atmosphere.to_array()),
+            earth.atmosphere.then(|| theme.earth.atmosphere.to_array()),
         ),
         _ => (None, None),
     };
     // A selected color with a negative red asks for each row's own color.
-    let selected = theme.selected.map_or([-1.0, 0.0, 0.0, 0.9], Color::to_array);
+    let selected = theme.focus.selected.map_or([-1.0, 0.0, 0.0, 0.9], Color::to_array);
     let mut frame: wgsl::Frame = bytemuck::Zeroable::zeroed();
     frame.light = vector(projected.light);
     frame.center_hi = [cx.0, cy.0];
@@ -67,39 +64,43 @@ pub(crate) fn frame(
     frame.globe = projected.globe as f32;
     frame.mercator_y = projected.mercator_y as f32;
     frame.elapsed = elapsed as f32;
-    frame.glow = theme.glow;
-    frame.dim = theme.dim;
+    frame.glow = theme.focus.glow;
+    frame.dim = theme.focus.dim;
     frame.dash = theme.dash * unit;
     // Comets travel in their own lengths, which a stroke turns into pixels where it draws them.
-    frame.flow_spacing = theme.flow.spacing;
-    frame.flow_length = theme.flow.length;
+    frame.flow_spacing = theme.flow.spacing.value();
+    frame.flow_length = theme.flow.length.value();
     frame.flow_width = theme.flow.width * unit;
-    frame.flow_units = u32::from(theme.flow.units);
-    frame.lane_bow = theme.lane_bow;
+    frame.flow_unit = match theme.flow.spacing {
+        Length::Space(_) => wgsl::FLOW_LENGTHS,
+        Length::Units(_) => wgsl::FLOW_UNITS,
+        Length::Px(_) => wgsl::FLOW_PX,
+    };
+    frame.bow = theme.edge.bow;
     // Hover is state either way; the controls say only whether it glows.
     let glows = scene.controls.hover;
-    frame.hover_scale = if glows { theme.hover_scale } else { 1.0 };
+    frame.grow = if glows { theme.focus.grow } else { 1.0 };
     frame.shading = theme.shading;
-    frame.arrow = theme.arrow * unit;
-    frame.halo = theme.halo;
-    frame.group_padding = theme.group_padding * unit;
+    frame.arrow = theme.edge.arrow * unit;
+    frame.halo = theme.text.halo;
+    frame.group_padding = theme.diagram.group_padding * unit;
     frame.unit = unit;
     frame.zoom = projected.zoom as f32;
     frame.linear = u32::from(linear);
-    frame.hover = if glows { theme.hover.to_array() } else { [0.0; 4] };
+    frame.hover = if glows { theme.focus.hover.to_array() } else { [0.0; 4] };
     frame.selected = selected;
     frame.flow = theme.flow.color.to_array();
     frame.background = theme.background.to_array();
-    frame.surface = surface.to_array();
+    frame.ground = theme.earth.ground.to_array();
     frame.grid_color = theme.grid.to_array();
     frame.grid_kind = grid_kind;
     frame.grid_pitch = grid_pitch as f32;
     frame.grid_fade = grid_fade(scene, projected, size) as f32;
     frame.graticule = u32::from(graticule);
-    frame.sun = sun.map_or([0.0; 4], |s| [s[0] as f32, s[1] as f32, s[2] as f32, theme.night.clamp(0.0, 1.0)]);
+    frame.sun = sun.map_or([0.0; 4], |s| [s[0] as f32, s[1] as f32, s[2] as f32, theme.earth.night.clamp(0.0, 1.0)]);
     frame.atmosphere = atmosphere.unwrap_or([0.0; 4]);
     frame.theme = theme_slots(theme);
-    frame.shadow = theme.shadow.color.to_array();
+    frame.shadow = theme.diagram.shadow.color.to_array();
     frame
 }
 
@@ -128,31 +129,31 @@ pub(crate) fn eye(projected: &Projected, size: [f64; 2], pixel_ratio: f32) -> wg
 /// The theme's values in slot order: colors packed, sizes as `f32` bits.
 fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     let mut slots = [0_u32; wgsl::THEME_SLOTS as usize];
-    let edge = theme.edge.unwrap_or(theme.vertex);
-    slots[wgsl::THEME_VERTEX as usize] = theme.vertex.packed();
-    slots[wgsl::THEME_VERTEX_RADIUS as usize] = theme.vertex_radius.to_bits();
+    let edge = theme.edge.color.unwrap_or(theme.vertex.color);
+    slots[wgsl::THEME_VERTEX as usize] = theme.vertex.color.packed();
+    slots[wgsl::THEME_VERTEX_RADIUS as usize] = theme.vertex.radius.to_bits();
     slots[wgsl::THEME_EDGE as usize] = edge.packed();
-    slots[wgsl::THEME_EDGE_WIDTH as usize] = theme.edge_width.to_bits();
-    slots[wgsl::THEME_LINE as usize] = theme.line.packed();
-    slots[wgsl::THEME_LINE_WIDTH as usize] = theme.line_width.to_bits();
-    slots[wgsl::THEME_AREA as usize] = theme.area.packed();
-    slots[wgsl::THEME_TEXT as usize] = theme.text.packed();
+    slots[wgsl::THEME_EDGE_WIDTH as usize] = theme.edge.width.to_bits();
+    slots[wgsl::THEME_LINE as usize] = theme.line.color.packed();
+    slots[wgsl::THEME_LINE_WIDTH as usize] = theme.line.width.to_bits();
+    slots[wgsl::THEME_AREA as usize] = theme.area.color.packed();
+    slots[wgsl::THEME_TEXT as usize] = theme.text.color.packed();
     slots[wgsl::THEME_MISSING as usize] = theme.missing.packed();
     slots[wgsl::THEME_CLEAR as usize] = 0;
-    slots[wgsl::THEME_SURFACE as usize] = theme.surface.packed();
-    slots[wgsl::THEME_OUTLINE as usize] = theme.outline.map_or(0, Color::packed);
-    slots[wgsl::THEME_CORNER as usize] = theme.corner.to_bits();
-    slots[wgsl::THEME_PORT_SIZE as usize] = theme.port_size.to_bits();
-    slots[wgsl::THEME_LIFT as usize] = theme.shadow.lift.to_bits();
+    slots[wgsl::THEME_GROUP as usize] = theme.diagram.group.packed();
+    slots[wgsl::THEME_OUTLINE as usize] = theme.diagram.outline.map_or(0, Color::packed);
+    slots[wgsl::THEME_CORNER as usize] = theme.diagram.corner.to_bits();
+    slots[wgsl::THEME_PORT_SIZE as usize] = theme.diagram.port_size.to_bits();
+    slots[wgsl::THEME_LIFT as usize] = theme.diagram.shadow.lift.to_bits();
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
-/// What `mark` evaluates and how it eases by `clock`: the pages of rows this frame's evaluation
-/// covers, and while it eases, the page tables of its frozen and settled words, its progress, and how
-/// each word eases.
+/// What `mark` evaluates and how it eases by `clock`: the pages of rows this frame's evaluation and
+/// end pass cover, and while it eases, the page tables of its frozen and settled words, its progress,
+/// and how each word eases.
 fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
     mark.block = shown.block;
-    mark.blocks = shown.block_count;
+    mark.end_block = shown.end_block;
     mark.blends = shown.offsets.blends;
     mark.frozen = wgsl::NONE;
     mark.settled = wgsl::NONE;

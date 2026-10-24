@@ -14,7 +14,7 @@ import {
   type Expr,
   type Mark,
   type Scene,
-} from '../../latkit.js';
+} from 'latkit';
 import { h } from '../../ui/dom.js';
 import type { Stage } from '../../ui/stage.js';
 import { theme } from '../../ui/theme.js';
@@ -248,16 +248,16 @@ export default function page(stage: Stage): void {
   const view = stage.view(scene(), {
     label: 'A field of hexagons through a colormap: hover a cell to read it',
   });
+  view.sources = [data];
   const legend = stage.legend();
 
   const rebuild = () => {
     const [columns, rows] = size;
     data.apply(hexagons(columns, rows, value));
-    view.setData(data);
     stage.detail(`${(columns * rows).toLocaleString()} cells`);
   };
   const restyle = () => {
-    view.show(scene());
+    view.scene = scene();
     legend.ramp(
       mapOf(colormap),
       `${colormap}${CATEGORICAL.has(colormap) ? ', ten classes' : reversed ? ', reversed' : ''}`,
@@ -383,7 +383,7 @@ export default function page(stage: Stage): void {
     if (show === 'class' || show === 'others') restyle();
   });
   const reading = shown.note('Hover a cell.');
-  view.on('hover', ({ hit }) => {
+  view.on('hovered', ({ hit }) => {
     if (!hit) return void (reading.textContent = 'Hover a cell.');
     const v = data.get('Cell', hit.row.id, 'value') as number | null;
     reading.textContent = `Cell ${hit.row.id}: ${v?.toFixed(3) ?? '–'}`;
@@ -404,7 +404,7 @@ export default function page(stage: Stage): void {
       if (brushing) return;
       brushing = true;
       void view
-        .pick([event.offsetX, event.offsetY], reach)
+        .pick([event.offsetX, event.offsetY], { radius: reach })
         .then((hits) => {
           const values = hits.map((hit) => data.get('Cell', hit.row.id, 'value') as number);
           const mean = values.reduce((sum, v) => sum + v, 0) / Math.max(1, values.length);

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::{Areas, Edges, Faces, Label, Lines, Vertices};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Error, Expr, Name, Result, Size, Space};
+use crate::{Error, Expr, Name, Paint, Result, Size, Space};
 
 /// One drawn table of a scene: `{ vertices | edges | faces | lines | areas: options }` as JSON.
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -60,7 +60,7 @@ pub(crate) const GEOMETRY: &str = "geometry";
 pub(crate) struct Style {
     pub(crate) data: Name,
     pub(crate) table: Name,
-    pub(crate) color: Option<Expr>,
+    pub(crate) color: Option<Paint>,
     pub(crate) visible: Expr,
     /// Each row's priority, read from its data alone.
     pub(crate) priority: Option<Expr>,
@@ -94,21 +94,20 @@ pub(crate) struct StrokeWords {
 }
 
 impl Stroke {
-    /// Compiles the stroke's options; in a diagram its width is in units. The CSS pixels the width
-    /// keeps within are its size's.
+    /// The CSS pixels the width keeps within: its size's.
     pub(crate) fn px(&self) -> [f32; 2] {
         self.width.as_ref().map_or(crate::Size::ANY, |size| size.px)
     }
 
-    /// Compiles the stroke's options; in a diagram its width is in units.
+    /// Compiles the stroke's options: its width in the space's unit unless it says its own, and the
+    /// theme's in the space's.
     pub(crate) fn compile(&self, c: &mut Compiler<'_>, words: &StrokeWords, diagram: bool) -> Result<()> {
         c.channel("dash", &self.dash, Store::Flag { word: words.flags, bit: wgsl::DASH })?;
         c.channel("flow", &self.flow, Store::Number { word: words.flow, fallback: None })?;
-        let width =
-            |units| Store::Size { word: words.width, units: units || diagram, fallback: Some(words.theme_width) };
+        let width = |units| Store::Size { word: words.width, units, fallback: Some(words.theme_width) };
         match &self.width {
-            Some(size) => c.channel("width", &size.expr, width(size.units)),
-            None => c.theme("width", words.theme_width, width(false)),
+            Some(size) => c.channel("width", &size.expr, width(size.in_units(diagram))),
+            None => c.theme("width", words.theme_width, width(diagram)),
         }
     }
 }
@@ -366,7 +365,7 @@ impl Mark {
     }
 
     /// Why `data`, the dataset it names, cannot draw it: the table it names is absent.
-    pub(crate) fn absent_from(&self, data: &crate::Data) -> Option<Error> {
+    pub(crate) fn absent_from(&self, data: &crate::Snapshot) -> Option<Error> {
         let style = self.style();
         data.table(&style.table)
             .is_none()
@@ -430,6 +429,32 @@ impl Mark {
         }
     }
 
+    /// Calls `f` with every expression the mark's options hold.
+    pub(crate) fn for_each_expr<'a>(&'a self, f: &mut impl FnMut(&'a Expr)) {
+        let style = self.style();
+        style.color.iter().map(|paint| &paint.0).chain([&style.visible]).chain(&style.priority).for_each(&mut *f);
+        if let Some(label) = &style.label {
+            [&label.text]
+                .into_iter()
+                .chain(label.color.iter().map(|paint| &paint.0))
+                .chain(&label.priority)
+                .for_each(&mut *f);
+        }
+        let stroke = match self {
+            Mark::Edges(m) => Some(&m.stroke),
+            Mark::Lines(m) => Some(&m.stroke),
+            Mark::Vertices(_) | Mark::Faces(_) | Mark::Areas(_) => None,
+        };
+        if let Some(stroke) = stroke {
+            stroke.width.iter().map(|size| &size.expr).chain([&stroke.dash, &stroke.flow]).for_each(&mut *f);
+        }
+        if let Mark::Vertices(v) = self {
+            v.position.iter().flatten().chain([&v.elevation]).for_each(&mut *f);
+            v.radius.iter().chain(v.size.iter().flatten()).map(|size| &size.expr).for_each(&mut *f);
+            v.ring.iter().map(|paint| &paint.0).chain(v.marker.inputs()).for_each(&mut *f);
+        }
+    }
+
     /// Lines are keyed by the field they trace unless named.
     pub(crate) fn key(&self) -> Key {
         let style = self.style();
@@ -483,7 +508,7 @@ fn compile_label(
     c.channel("priority", &priority, Store::Number { word: word(wgsl::LABEL_PRIORITY), fallback: None })?;
     let color = Store::Color { word: word(wgsl::LABEL_COLOR), fallback: wgsl::THEME_TEXT };
     match &label.color {
-        Some(expr) => c.channel("color", expr, color)?,
+        Some(paint) => c.channel("color", &paint.0, color)?,
         None => c.theme("color", wgsl::THEME_TEXT, color)?,
     }
     drawing.extras += wgsl::LABEL_WORDS;
@@ -491,9 +516,9 @@ fn compile_label(
     drawing.label = Some(Labeling {
         extra,
         column,
-        size: label.size.unwrap_or(theme.font_size),
+        size: label.size.unwrap_or(theme.text.size),
         max_width: label.max_width,
-        font: label.font.clone().unwrap_or_else(|| theme.font.clone()),
+        font: label.font.clone().unwrap_or_else(|| theme.text.font.clone()),
         max: label.max,
     });
     Ok(())
@@ -557,14 +582,15 @@ macro_rules! mark {
     };
     (@form $name:ident + stroke { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
         $crate::scene::mark::mark!(@struct { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {
-            /// CSS pixels, or position units with `units`; units in a diagram.
+            /// Each row's width, in the space's unit unless it says its own: units in a diagram, CSS
+            /// pixels elsewhere.
             width: Option<$crate::Size>,
             /// Whether each row is dashed.
             #[serde(default = "crate::scene::mark::no")]
             dash: $crate::Expr,
-            /// Comets flowing along each row at this speed a second: CSS pixels, units in a diagram,
-            /// or position units where the theme's flow is in units; negative flows backward. A speed
-            /// that changes carries comets on from where they are.
+            /// Comets flowing along each row at this speed a second, in the lengths of the theme's
+            /// flow; negative flows backward. A speed that changes carries comets on from where they
+            /// are.
             #[serde(default = "crate::scene::mark::still")]
             flow: $crate::Expr,
         });
@@ -586,7 +612,7 @@ macro_rules! mark {
             $($(#[$doc])* $(#[schemars(extend("tsType" = $ts))])? #[serde(default $(= $default)?)] $field: $ty,)*
             $($stroke)*
             /// Each row's color; the theme's unless set.
-            color: Option<$crate::Expr>,
+            color: Option<$crate::Paint>,
             /// Whether each row is drawn and picked.
             #[serde(default = "crate::scene::mark::yes")]
             visible: $crate::Expr,
@@ -661,7 +687,7 @@ macro_rules! style_methods {
         impl $mark {
             /// Each row's color.
             #[must_use]
-            pub fn color(mut self, color: impl Into<$crate::Expr>) -> Self {
+            pub fn color(mut self, color: impl Into<$crate::Paint>) -> Self {
                 self.style.color = Some(color.into());
                 self
             }
@@ -736,8 +762,9 @@ macro_rules! style_methods {
 macro_rules! stroke_methods {
     ($mark:ty) => {
         impl $mark {
-            /// Each row's width: CSS pixels, or position units with [`units`](crate::units); units in
-            /// a diagram.
+            /// Each row's width, in the space's unit unless it says its own: units in a diagram, CSS
+            /// pixels elsewhere; [`px`](crate::px) keeps CSS pixels, [`units`](crate::units) takes
+            /// position units.
             #[must_use]
             pub fn width(mut self, width: impl Into<$crate::Size>) -> Self {
                 self.stroke.width = Some(width.into());
@@ -751,9 +778,9 @@ macro_rules! stroke_methods {
                 self
             }
 
-            /// Comets flowing along each row at this speed a second: CSS pixels, units in a diagram, or
-            /// position units where the theme's [`Flow`](crate::Flow) is in units; negative flows
-            /// backward. A speed that changes carries comets on from where they are.
+            /// Comets flowing along each row at this speed a second, in the lengths of the theme's
+            /// [`flow`](crate::FlowTheme); negative flows backward. A speed that changes carries
+            /// comets on from where they are.
             #[must_use]
             pub fn flow(mut self, speed: impl Into<$crate::Expr>) -> Self {
                 self.stroke.flow = speed.into();

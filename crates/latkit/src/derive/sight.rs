@@ -96,7 +96,7 @@ impl Sight<'_> {
 
     /// The position on the ground under screen point `p`.
     fn ground(&self, p: [f64; 2]) -> Option<[f64; 2]> {
-        let w = self.projected.surface(p)?;
+        let w = self.projected.ground(p)?;
         let [x, y, _] = self.projected.position(w);
         Some([x, y])
     }

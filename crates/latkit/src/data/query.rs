@@ -1,7 +1,7 @@
 //! Reading data back: the rows of a table a query keeps, in the order it sorts them, a page of them,
 //! with their fields or what expressions make of them. Queries run on the CPU through the same
-//! expressions marks draw with, a plain field read page by page, and return a table, so what comes
-//! back has the shape of what goes in.
+//! expressions marks draw with, a plain field read page by page, and read back a table, so what
+//! comes back has the shape of what goes in.
 
 use std::cmp::Ordering;
 
@@ -10,23 +10,23 @@ use super::name::Name;
 use super::ordered::Ordered;
 use super::table::{Field, Table};
 use super::values::Values;
-use super::{Data, column::Column};
+use super::{Snapshot, column::Column};
 use crate::expr::Expr;
 use crate::expr::cpu::Rows;
 use crate::{Error, Result};
 
 /// The rows of a table to read back: of the rows `ids` names (every row unless set), those `filter`
 /// keeps, sorted by `sort`, a page of them from `offset` of at most `limit`, with the fields `select`
-/// names or computes; sampled fields read at axis coordinate `at`, their last frame by default. Plain
-/// data, like a scene.
+/// names or computes, every field unless it is set; sampled fields read at axis coordinate `at`, their
+/// last frame by default. Plain data, like a scene.
 ///
 /// ```
 /// use latkit::{Data, Ids, Order, Query, Table, field};
-/// let mut data = Data::new("grid");
+/// let data = Data::new("grid");
 /// data.apply(Table::new("Branch", Ids::count(3)).field("loading", vec![40.0, 95.0, 120.0]).field("name", vec!["a", "b", "c"]))?;
-/// let (hot, kept) = data.query(&Query::of("Branch").filter(field("loading").gt(90.0)).sort(field("loading"), Order::Descending).limit(1))?;
-/// assert_eq!(hot.get(2_u64, "name"), Some(latkit::Value::Text("c".into())));
-/// assert_eq!((hot.len(), kept), (1, 2));
+/// let hot = data.snapshot().query(&Query::of("Branch").filter(field("loading").gt(90.0)).sort(field("loading"), Order::Descending).limit(1))?;
+/// assert_eq!(hot.table.get(2_u64, "name"), Some(latkit::Value::Text("c".into())));
+/// assert_eq!((hot.table.len(), hot.total), (1, 2));
 /// # Ok::<(), latkit::Error>(())
 /// ```
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -51,9 +51,10 @@ pub struct Query {
     offset: usize,
     /// The most rows read; a limit picks them in linear time before sorting only those.
     limit: Option<usize>,
-    /// Fields to read by name: a field as it is, anything else as numbers. Every field unless set.
+    /// Fields to read by name: a field as it is, anything else as numbers. Every field unless set;
+    /// none set reads the ids alone.
     #[serde(default)]
-    select: Ordered<Expr>,
+    select: Option<Ordered<Expr>>,
     /// The axis coordinate sampled fields are read at; their last frame unless set.
     at: Option<f64>,
 }
@@ -79,7 +80,7 @@ impl Query {
             sort: Vec::new(),
             offset: 0,
             limit: None,
-            select: Ordered::default(),
+            select: None,
             at: None,
         }
     }
@@ -123,7 +124,14 @@ impl Query {
     /// selected, every field is read.
     #[must_use]
     pub fn select(mut self, name: impl Into<Name>, value: impl Into<Expr>) -> Query {
-        self.select.0.push((name.into(), value.into()));
+        self.select.get_or_insert_with(Ordered::default).0.push((name.into(), value.into()));
+        self
+    }
+
+    /// Reads the rows' ids alone, no field.
+    #[must_use]
+    pub fn ids_alone(mut self) -> Query {
+        self.select = Some(Ordered::default());
         self
     }
 
@@ -135,11 +143,21 @@ impl Query {
     }
 }
 
-impl Data {
-    /// The rows of a table `query` asks for, as a table of their own: their ids, and their fields or
-    /// what the query computes, sampled fields read at its coordinate; and how many rows its filter
+/// What a query read: the rows it kept, a page of them in order, as a table of their own, and how
+/// many rows it kept before the page.
+#[derive(Clone, Debug)]
+pub struct QueryResult {
+    /// The rows read, named as the table they were read from: their ids, and their fields or what
+    /// the query computes, sampled fields read at its coordinate.
+    pub table: Table,
+    /// The rows the query kept before paging.
+    pub total: usize,
+}
+
+impl Snapshot {
+    /// The rows of a table `query` asks for, as a table of their own, and how many rows its filter
     /// kept, before the page. A limit picks its rows in linear time before sorting only them.
-    pub fn query(&self, query: &Query) -> Result<(Table, usize)> {
+    pub fn query(&self, query: &Query) -> Result<QueryResult> {
         let table = self.table(&query.of).ok_or_else(|| Error::invalid("no such table").at(query.of.as_str()))?;
         let at = query.at.unwrap_or(f64::INFINITY);
         let all = std::slice::from_ref(self);
@@ -183,13 +201,13 @@ impl Data {
             structure: version,
             order: version,
         };
-        if query.select.0.is_empty() {
+        let Some(select) = &query.select else {
             for (name, field) in &table.fields {
                 out.insert(name.clone(), plain(field, at, page));
             }
-            return Ok((out, total));
-        }
-        for (name, value) in &query.select.0 {
+            return Ok(QueryResult { table: out, total });
+        };
+        for (name, value) in &select.0 {
             let field = if let Some(f) = value.field_name() {
                 let Some(field) = table.field_named(f) else {
                     return Err(Error::invalid(format!("no field {f}")).at(name.as_str()).at("select"));
@@ -202,7 +220,7 @@ impl Data {
             };
             out.insert(name.clone(), field);
         }
-        Ok((out, total))
+        Ok(QueryResult { table: out, total })
     }
 }
 

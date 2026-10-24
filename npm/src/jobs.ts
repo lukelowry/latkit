@@ -26,7 +26,7 @@ interface Slot {
  */
 export function jobs(
   module: WebAssembly.Module,
-  createWorker = () => new Worker(new URL('./worker.js', import.meta.url)),
+  worker = () => new Worker(new URL('./worker.js', import.meta.url)),
 ): (bytes: Uint8Array) => Promise<Uint8Array> {
   const idle = new Set<Slot>();
 
@@ -56,9 +56,8 @@ export function jobs(
   };
 
   const start = (): Slot => {
-    const worker = createWorker();
-    const slot: Slot = { worker, ready: false };
-    worker.onmessage = ({ data }: MessageEvent<Answer>) => {
+    const slot: Slot = { worker: worker(), ready: false };
+    slot.worker.onmessage = ({ data }: MessageEvent<Answer>) => {
       if (!slot.ready) {
         if (!data.ready) return fail(slot, data.error ?? 'worker initialization failed');
         slot.ready = true;
@@ -74,11 +73,11 @@ export function jobs(
         job.resolve(data.bytes);
       }
     };
-    worker.onerror = (event) => {
+    slot.worker.onerror = (event) => {
       event.preventDefault();
       fail(slot, event.message || 'worker failed');
     };
-    worker.onmessageerror = () => fail(slot, 'could not read worker message');
+    slot.worker.onmessageerror = () => fail(slot, 'could not read worker message');
     return slot;
   };
 

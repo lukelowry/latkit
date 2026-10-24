@@ -1,5 +1,5 @@
 /** Golden bloom: seeds a golden angle apart, colored by a wave turning through them. */
-import { Patch } from 'latkit/core';
+import { Patch } from 'latkit';
 import { THEME, floats, framed, type Piece } from './look.ts';
 
 export default function bloom(): Piece {
@@ -9,7 +9,7 @@ export default function bloom(): Piece {
   const angle = (i: number) => i * golden;
   // Where a seed lies around the center, unwound from its golden angle.
   const polar = (i: number) => angle(i) % (2 * Math.PI);
-  const data = Patch.to('bloom').replace(
+  const data = new Patch('bloom').replace(
     'Seed',
     { count: seeds },
     {

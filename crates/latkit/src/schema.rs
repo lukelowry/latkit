@@ -41,6 +41,7 @@ pub fn schemas() -> serde_json::Value {
     inputs.subschema_for::<crate::Data>();
     inputs.subschema_for::<crate::Patch>();
     inputs.subschema_for::<crate::Query>();
+    inputs.subschema_for::<crate::EnvelopeRequest>();
     inputs.subschema_for::<crate::Camera>();
     inputs.subschema_for::<crate::Fit>();
     inputs.subschema_for::<crate::Budget>();

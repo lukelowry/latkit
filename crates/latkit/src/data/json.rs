@@ -1,31 +1,48 @@
-//! Datasets and patches as JSON: the format is documented on [`Patch::load`], its forms in
-//! `forms.rs`; slices of binary files are fetched through a host.
+//! Reading datasets and patches: latkit's bytes, GeoJSON, and JSON, as their first bytes say. The
+//! JSON format is documented on [`Patch::read`], its forms in `forms.rs`; slices of binary files are
+//! fetched through a host.
 
 use serde::Deserialize;
 
-use super::dataset::Data;
 use super::forms::{Column, DataForm, OpForm, patch};
 use super::name::Name;
 use super::ordered::Ordered;
 use super::patch::Patch;
+use super::snapshot::Snapshot;
+use super::source::Data;
 use crate::resource::{Fetch, Request};
 use crate::{Error, Result};
 
+/// How [`Data::read`] and [`Patch::read`] read what they are given: the name a dataset takes, and
+/// where a JSON document lies, so its slices of files are fetched through `host` relative to it.
+#[derive(Clone, Copy, Default)]
+pub struct Reading<'a> {
+    /// The name the dataset takes: GeoJSON needs one; latkit's bytes and documents name their own
+    /// unless given one.
+    pub name: Option<&'a str>,
+    /// The document's own path or URL: a slice's file is relative to it, or as it is where it is
+    /// empty or the file's is absolute.
+    pub base: &'a str,
+    /// What fetches a document's slices of files.
+    pub host: Option<&'a dyn Fetch>,
+}
+
 impl Patch {
-    /// A patch from its JSON: what any language writes without latkit. The patch is a list of the
-    /// changes [`Patch`]'s methods make, each named by its method with its parameters by name.
+    /// The patch `bytes` hold: latkit's, one frame as [`Patch::to_bytes`] writes it, or its JSON,
+    /// what any language writes without latkit. The JSON is a list of the changes [`Patch`]'s methods
+    /// make, each named by its method with its parameters by name.
     ///
     /// ```json
     /// [
     ///   {"replace": {"table": "Bus", "ids": [101, 205], "fields": {"x": [0, 10], "name": ["North", "South"]}}},
     ///   {"replace": {"table": "Branch", "ids": {"count": 1}, "fields": {"from": {"reference": "Bus", "ids": [101]}}}},
     ///   {"axis": {"name": "time", "unit": "s"}},
-    ///   {"append": {"at": [0, 0.5], "table": "Bus", "fields": {"vm": {"file": "vm.f32", "dtype": "f32le", "count": 4}}}}
+    ///   {"append": {"table": "Bus", "at": [0, 0.5], "fields": {"vm": {"file": "vm.f32", "dtype": "f32le", "count": 4}}}}
     /// ]
     /// ```
     ///
-    /// - `replace` and `set` take `{table, ids, fields}`, `remove` `{table, ids}`, `append` `{at, table,
-    ///   ids?, fields}`, `forget` `{before}`, `axis` `{name, unit}`, and `frames` `{table, field,
+    /// - `replace` and `set` take `{table, ids, fields}`, `remove` `{table, ids}`, `append` `{table,
+    ///   at, fields, ids?}`, `forget` `{before}`, `axis` `{name, unit}`, and `frames` `{table, field,
     ///   level?, first, at, values}`, as [`Patch::frames`] takes them.
     /// - `ids` is a count naming rows `0..n`, or numbers or texts; `null` leaves a reference unwired.
     /// - A field is an array of one kind of value, as [`Values`](crate::Values) takes them; `{"reference": table,
@@ -35,38 +52,88 @@ impl Patch {
     /// - `append`'s `at` is one axis coordinate or several, as [`Patch::append`] takes them.
     /// - An error names the path to what could not be read, such as `[2].set.fields.x`.
     ///
-    /// Slices are fetched through `host`, all at once: a file's path or URL relative to `base`, the
-    /// document's own, or as it is when `base` is empty or the file's is absolute.
+    /// Slices are fetched through the reading's host, all at once, relative to its base.
     ///
     /// ```no_run
     /// # async fn example(host: &impl latkit::resource::Fetch) -> latkit::Result<()> {
-    /// let json = r#"[{"append": {"at": 0.5, "table": "Bus", "fields": {"vm": {"file": "vm.f32", "dtype": "f32le", "count": 3}}}}]"#;
-    /// let patch = latkit::Patch::load(json, "data/grid.json", host).await?; // reads data/vm.f32
+    /// use latkit::{Patch, Reading};
+    /// let json = br#"[{"append": {"table": "Bus", "at": 0.5, "fields": {"vm": {"file": "vm.f32", "dtype": "f32le", "count": 3}}}}]"#;
+    /// let patch = Patch::read(json, Reading { base: "data/grid.json", host: Some(host), ..Reading::default() }).await?; // reads data/vm.f32
     /// # Ok(()) }
     /// ```
-    pub async fn load(json: &str, base: &str, host: &(impl Fetch + ?Sized)) -> Result<Patch> {
-        let ops: Vec<OpForm> = crate::from_json(json)?;
-        build(ops, base, host).await
+    pub async fn read(bytes: &[u8], reading: Reading<'_>) -> Result<Patch> {
+        if bytes.starts_with(b"LATK") {
+            return Patch::from_bytes(bytes);
+        }
+        let ops: Vec<OpForm> = crate::from_json(text(bytes, "a patch is latkit's bytes or JSON")?)?;
+        build(ops, reading).await
     }
 }
 
 impl Data {
-    /// A dataset from its JSON, `{"name": ..., "patch": [...]}`: its name and the patch that builds it,
-    /// as its bytes are. The patch loads as [`Patch::load`] loads one.
-    pub async fn load(json: &str, base: &str, host: &(impl Fetch + ?Sized)) -> Result<Data> {
-        let form: DataForm = crate::from_json(json)?;
-        if form.name.is_empty() {
-            return Err(Error::invalid("a dataset is named").at("name"));
-        }
-        let patch = build(form.patch, base, host).await.map_err(|e| e.at("patch"))?;
-        let mut data = Data::new(form.name);
-        data.apply(patch)?;
-        Ok(data)
+    /// The dataset `bytes` hold, as their first bytes say:
+    ///
+    /// - latkit's own, as [`Snapshot::to_bytes`] writes them;
+    /// - GeoJSON, gzip-compressed or not: its features become rows of tables `points`, `lines`, and
+    ///   `polygons` by their geometry, each with its geometry as field `geometry` and its properties
+    ///   as fields;
+    /// - or its JSON document, `{"name": ..., "patch": [...]}`: its name and the patch that builds it,
+    ///   read as [`Patch::read`] reads one.
+    ///
+    /// The reading's name names the dataset, as GeoJSON needs; latkit's bytes and documents name their
+    /// own unless given one.
+    ///
+    /// ```
+    /// # use latkit::{Data, Reading};
+    /// let city = pollster::block_on(Data::read(
+    ///     br#"{"type": "Feature", "properties": {"name": "Hall"}, "geometry": {"type": "Point", "coordinates": [-97.74, 30.27]}}"#,
+    ///     Reading { name: Some("city"), ..Reading::default() },
+    /// ))?;
+    /// let points = city.snapshot().describe().tables.into_iter().find(|t| t.name == "points");
+    /// assert_eq!(points.map(|t| t.rows), Some(1));
+    /// # Ok::<(), latkit::Error>(())
+    /// ```
+    pub async fn read(bytes: &[u8], reading: Reading<'_>) -> Result<Data> {
+        let read = if bytes.starts_with(b"LATK") {
+            Snapshot::from_bytes(bytes)?
+        } else if geojson(bytes) {
+            let name = reading.name.ok_or_else(|| Error::invalid("GeoJSON names its dataset").at("name"))?;
+            return crate::geo::geojson(name, bytes).map(Data::from);
+        } else {
+            let form: DataForm =
+                crate::from_json(text(bytes, "a dataset is latkit's bytes, GeoJSON, or its JSON document")?)?;
+            if form.name.is_empty() {
+                return Err(Error::invalid("a dataset is named").at("name"));
+            }
+            let patch = build(form.patch, reading).await.map_err(|e| e.at("patch"))?;
+            Snapshot::new(form.name).applied(patch)?
+        };
+        Ok(Data::from(match reading.name {
+            Some(name) if name != read.name().as_str() => read.renamed(name),
+            _ => read,
+        }))
     }
 }
 
+/// Whether `bytes` hold GeoJSON rather than latkit's bytes or a dataset's document: gzip-compressed,
+/// or a JSON object whose first member is not one of a document's, `name` or `patch`.
+pub(crate) fn geojson(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return true;
+    }
+    let Some(object) = bytes.trim_ascii_start().strip_prefix(b"{") else { return false };
+    let Some(key) = object.trim_ascii_start().strip_prefix(b"\"") else { return false };
+    let key = key.split(|&b| b == b'"').next().unwrap_or_default();
+    key != b"name" && key != b"patch"
+}
+
+/// `bytes` as UTF-8 text, or an error saying what they should be.
+fn text<'a>(bytes: &'a [u8], expected: &'static str) -> Result<&'a str> {
+    std::str::from_utf8(bytes).map_err(|_| Error::invalid(expected))
+}
+
 /// Patches by dataset name, in the order written: what one step of a stream of changes carries, as
-/// JSON `{"grid": [...], "weather": [...]}`, each patch in [`Patch::load`]'s form.
+/// JSON `{"grid": [...], "weather": [...]}`, each patch in [`Patch::read`]'s form.
 #[derive(Default, Deserialize)]
 pub struct Patches(Ordered<Vec<OpForm>>);
 
@@ -83,32 +150,38 @@ impl schemars::JsonSchema for Patches {
 }
 
 impl Patches {
-    /// Each dataset's patch, in order, their slices fetched through `host` relative to `base`.
-    pub async fn load(self, base: &str, host: &(impl Fetch + ?Sized)) -> Result<Vec<(Name, Patch)>> {
+    /// Each dataset's patch, in order, their slices fetched through the reading's host relative to its
+    /// base.
+    pub async fn read(self, reading: Reading<'_>) -> Result<Vec<(Name, Patch)>> {
         let mut patches = Vec::with_capacity(self.0.0.len());
         for (name, ops) in self.0.0 {
-            let patch = build(ops, base, host).await.map_err(|e| e.at(name.as_str()))?;
+            let patch = build(ops, reading).await.map_err(|e| e.at(name.as_str()))?;
             patches.push((name, patch));
         }
         Ok(patches)
     }
 }
 
-/// The patch `ops` make: their slices of files fetched through `host` at once, relative to `base`,
-/// then each change built in order.
-async fn build(mut ops: Vec<OpForm>, base: &str, host: &(impl Fetch + ?Sized)) -> Result<Patch> {
+/// The patch `ops` make: their slices of files fetched through the reading's host at once, relative
+/// to its base, then each change built in order.
+async fn build(mut ops: Vec<OpForm>, reading: Reading<'_>) -> Result<Patch> {
     let mut slices: Vec<&mut Column> = ops
         .iter_mut()
         .flat_map(|op| op.columns().iter_mut().map(|(_, column)| column))
         .filter(|column| matches!(column, Column::Slice(_)))
         .collect();
-    let fetching = slices
-        .iter()
-        .map(|column| {
-            let Column::Slice(slice) = &**column else { unreachable!("slices only") };
-            Ok(host.fetch(&Request::range(crate::url::resolve(base, &slice.file), slice.offset..slice.end()?)))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let fetching = match reading.host {
+        Some(host) => slices
+            .iter()
+            .map(|column| {
+                let Column::Slice(slice) = &**column else { unreachable!("slices only") };
+                let range = slice.offset..slice.end()?;
+                Ok(host.fetch(&Request::range(crate::url::resolve(reading.base, &slice.file), range)))
+            })
+            .collect::<Result<Vec<_>>>()?,
+        None if slices.is_empty() => Vec::new(),
+        None => return Err(Error::Unsupported("a document's slices of files are fetched through a host".into())),
+    };
     for (column, bytes) in slices.iter_mut().zip(fetching) {
         let Column::Slice(slice) = &**column else { unreachable!("slices only") };
         let values = slice.read(&bytes.await?)?;
@@ -140,8 +213,11 @@ mod tests {
         }
     }
 
-    fn load_data(json: &str, host: &Files) -> Result<Data> {
-        pollster::block_on(Data::load(json, "docs/grid.json", host))
+    fn read_data(json: &str, host: &Files) -> Result<Data> {
+        pollster::block_on(Data::read(
+            json.as_bytes(),
+            Reading { base: "docs/grid.json", host: Some(host), name: None },
+        ))
     }
 
     #[test]
@@ -152,18 +228,18 @@ mod tests {
                 "at": [[0, 1], [2, 3, 9]], "path": [[[0, 0], [1, 1]], []]}}},
             {"replace": {"table": "Branch", "ids": {"count": 1}, "fields": {"from": {"reference": "Bus", "ids": ["a"]}}}}
         ]}"#;
-        let data = load_data(json, &Files::default()).unwrap();
-        let bus = data.table("Bus").unwrap();
-        assert_eq!(bus.get("b", "x"), Some(Value::Number(1.5)));
-        assert_eq!(bus.get("a", "x"), None);
-        assert_eq!(bus.get("a", "on"), Some(Value::Bool(false)));
-        assert_eq!(bus.get("b", "name"), Some(Value::Text("B".into())));
-        assert_eq!(bus.get("a", "at"), Some(Value::Point([2.0, 3.0])));
-        assert_eq!(bus.kind("path"), Some(Kind::Path));
-        assert_eq!(bus.get("b", "path"), Some(Value::Path(vec![[0.0, 0.0], [1.0, 1.0]])));
-        let row = Row { data: "grid".into(), table: "Branch".into(), id: 0_u64.into() };
+        let data = read_data(json, &Files::default()).unwrap().snapshot();
+        let bus = |id: &str, field: &str| data.get("Bus", id, field, None);
+        assert_eq!(bus("b", "x"), Some(Value::Number(1.5)));
+        assert_eq!(bus("a", "x"), None);
+        assert_eq!(bus("a", "on"), Some(Value::Bool(false)));
+        assert_eq!(bus("b", "name"), Some(Value::Text("B".into())));
+        assert_eq!(bus("a", "at"), Some(Value::Point([2.0, 3.0])));
+        assert_eq!(bus("b", "path"), Some(Value::Path(vec![[0.0, 0.0], [1.0, 1.0]])));
+        let kinds = data.describe().tables.into_iter().flat_map(|t| t.fields).find(|f| f.name == "path");
+        assert_eq!(kinds.map(|f| f.kind), Some(Kind::Path));
         let target = Row { data: "grid".into(), table: "Bus".into(), id: "a".into() };
-        assert_eq!(data.get(&row, "from"), Some(Value::Row(target)));
+        assert_eq!(data.get("Branch", 0_u64, "from", None), Some(Value::Row(target)));
     }
 
     #[test]
@@ -173,22 +249,38 @@ mod tests {
         let json = r#"{"name": "grid", "patch": [
             {"replace": {"table": "Bus", "ids": {"count": 2}, "fields": {"kv": {"file": "v.f32", "dtype": "f32le", "offset": 4, "count": 2}}}},
             {"axis": {"name": "time", "unit": "s"}},
-            {"append": {"at": [0, 1], "table": "Bus", "fields": {"vm": {"file": "v.f32", "dtype": "f32le", "offset": 4, "count": 4}}}},
+            {"append": {"table": "Bus", "at": [0, 1], "fields": {"vm": {"file": "v.f32", "dtype": "f32le", "offset": 4, "count": 4}}}},
             {"forget": {"before": -1}}
         ]}"#;
-        let data = load_data(json, &host).unwrap();
+        let data = read_data(json, &host).unwrap().snapshot();
         let asked: Vec<Request> = host.1.lock().unwrap().clone();
         assert_eq!(asked, [Request::range("docs/v.f32", 4..12), Request::range("docs/v.f32", 4..20)]);
-        assert_eq!(data.span(), Some([0.0, 1.0]));
-        let row = |id: u64| Row { data: "grid".into(), table: "Bus".into(), id: id.into() };
-        assert_eq!(data.get(&row(1), "kv"), Some(Value::Number(2.0)));
-        assert_eq!(data.get_at(&row(1), "vm", 1.0), Some(Value::Number(4.0)));
+        assert_eq!(data.describe().span, Some([0.0, 1.0]));
+        assert_eq!(data.get("Bus", 1_u64, "kv", None), Some(Value::Number(2.0)));
+        assert_eq!(data.get("Bus", 1_u64, "vm", 1.0), Some(Value::Number(4.0)));
+    }
+
+    #[test]
+    fn what_bytes_hold_says_how_they_read() {
+        let bytes = br#"{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}}"#;
+        assert!(geojson(bytes) && geojson(b" {\"features\": []}") && geojson(&[0x1f, 0x8b, 8]));
+        assert!(!geojson(br#"{"name": "grid", "patch": []}"#) && !geojson(b"[]") && !geojson(b"LATK"));
+        let named = |name| Reading { name, ..Reading::default() };
+        let error = pollster::block_on(Data::read(bytes, named(None))).unwrap_err();
+        assert_eq!(error.to_string(), "name: GeoJSON names its dataset");
+        let read = pollster::block_on(Data::read(bytes, named(Some("city")))).unwrap();
+        assert_eq!(read.name().as_str(), "city");
+        let renamed = pollster::block_on(Data::read(&read.snapshot().to_bytes(), named(Some("town")))).unwrap();
+        assert_eq!(renamed.snapshot().table("points").map(crate::Table::len), Some(1), "its tables, renamed");
+        assert_eq!(renamed.name().as_str(), "town");
     }
 
     #[test]
     fn errors_name_the_change_table_and_field() {
+        let host = Files::default();
         let error = |json: &str| {
-            pollster::block_on(Patch::load(json, "", &Files::default())).map(|_| ()).unwrap_err().to_string()
+            let reading = Reading { host: Some(&host), ..Reading::default() };
+            pollster::block_on(Patch::read(json.as_bytes(), reading)).map(|_| ()).unwrap_err().to_string()
         };
         assert!(
             error(r#"[{"replace": {"table": "Bus", "ids": {"count": 2}, "fields": {"x": [1, "a"]}}}]"#)
@@ -205,7 +297,9 @@ mod tests {
         );
         let missing = r#"[{"replace": {"table": "Bus", "ids": {"count": 1}, "fields": {"x": {"file": "f.bin", "dtype": "f64le", "count": 1}}}}]"#;
         assert_eq!(error(missing), "io: f.bin: 0 bytes of the slice's 8");
-        let invalid = load_data(
+        let hostless = pollster::block_on(Patch::read(missing.as_bytes(), Reading::default()));
+        assert!(matches!(hostless, Err(Error::Unsupported(_))), "a slice needs a host to fetch it");
+        let invalid = read_data(
             r#"{"name": "grid", "patch": [{"replace": {"table": "Bus", "ids": [1, 1]}}]}"#,
             &Files::default(),
         );

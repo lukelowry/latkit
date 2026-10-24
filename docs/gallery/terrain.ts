@@ -1,5 +1,5 @@
 /** Terrain: ridged mountains as lit faces between a grid of vertices, colored by height. */
-import { Patch, reference } from 'latkit/core';
+import { Patch, reference } from 'latkit';
 import { THEME, floats, rows, type Piece } from './look.ts';
 
 /** Height at `x`, `y`: ridges of several directions and scales, sharpened, then summed. */
@@ -39,7 +39,7 @@ export default function terrain(): Piece {
     const at = r * columns + c;
     return [at, at + 1, at + columns, at + 1, at + columns + 1, at + columns][k]!;
   };
-  const data = Patch.to('land')
+  const data = new Patch('land')
     .replace('Vertex', { count: n }, { x: floats(n, px), y: floats(n, py), z })
     .replace(
       'Face',

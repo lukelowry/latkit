@@ -12,6 +12,8 @@ export interface PlaybackOptions {
   replay?: { seconds: number; rate: number };
   /** Called as playback goes live or leaves it. */
   change?(live: boolean): void;
+  /** Coordinate `at` as the transport writes it; seconds unless given. */
+  format?(at: number): string;
 }
 
 /** Live, paused, or playing a recorded span, with the transport that drives it. */
@@ -21,7 +23,7 @@ export class Playback {
   end = 0;
   #at = 0;
   #rate: number;
-  readonly #live: boolean;
+  #live: boolean;
   readonly #toggle = h('button', { type: 'button', class: 'primary' });
   readonly #slider = h('input', {
     type: 'range',
@@ -90,6 +92,19 @@ export class Playback {
     if (this.mode === 'playing') this.#rate = rate;
   }
 
+  /** Whether the data records as it plays, from now on: live follows its end; otherwise it pauses,
+   * and playing loops. */
+  set live(live: boolean) {
+    this.#live = live;
+    this.#set(live ? 'live' : 'paused');
+  }
+
+  /** Shows coordinate `at`, paused. */
+  seek(at: number): void {
+    this.#set('paused');
+    this.#show(at);
+  }
+
   /** The recorded span changed; live playback shows its end. */
   record([start, end]: readonly [number, number]): void {
     this.start = start;
@@ -135,7 +150,7 @@ export class Playback {
   #show(at: number): void {
     this.#at = at;
     this.#slider.value = String(at);
-    this.#time.value = `${at.toFixed(2)} s`;
+    this.#time.value = this.options.format?.(at) ?? `${at.toFixed(2)} s`;
     this.options.show(at);
   }
 }

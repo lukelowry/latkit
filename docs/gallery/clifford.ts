@@ -1,5 +1,5 @@
 /** Clifford: a strange attractor of a quarter million points, translucent, so density shows. */
-import { Patch } from 'latkit/core';
+import { Patch } from 'latkit';
 import { THEME, framed, type Piece } from './look.ts';
 
 export default function clifford(): Piece {
@@ -21,7 +21,7 @@ export default function clifford(): Piece {
     }
     [px, py] = [nx, ny];
   }
-  const data = Patch.to('attractor').replace('Point', { count: n }, { x, y, turn });
+  const data = new Patch('attractor').replace('Point', { count: n }, { x, y, turn });
   return {
     name: 'clifford',
     alt: 'A Clifford strange attractor of 260,000 translucent points, colored by the way each step turns',

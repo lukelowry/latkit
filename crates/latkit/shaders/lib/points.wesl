@@ -45,7 +45,7 @@ fn point(row: u32) -> Point {
     half = within(half, vec2f(mark.size_min, mark.size_max));
     let focus = focus_of(row);
     let grows = (mark.units & (1u << VERTEX_HALF)) == 0u && (focus & HOVERED) != 0u;
-    half *= select(1.0, frame.hover_scale, grows) * growth(v.flags);
+    half *= select(1.0, frame.grow, grows) * growth(v.flags);
     let color = unpack4x8unorm(v.color);
     var p: Point;
     p.world = world(v.hi, v.lo, v.elevation);

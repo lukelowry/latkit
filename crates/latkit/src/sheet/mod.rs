@@ -341,9 +341,9 @@ impl Sheet {
             vertices: &drawn.vertices,
             marks: vertex_marks,
             edges: edge_marks,
-            spacing: f64::from(theme.edge_spacing),
-            bend: f64::from(theme.bend),
-            port: f64::from(theme.port_size),
+            spacing: f64::from(theme.edge.spacing),
+            bend: f64::from(theme.diagram.bend),
+            port: f64::from(theme.diagram.port_size),
         };
         wires::paths(&context, input, jobs, change, &mut drawn.wired, (&mut self.routes, &mut self.routing))
     }
@@ -377,7 +377,7 @@ impl Sheet {
     /// box fitting its label and ports. A group's is what it takes holding nothing: its title.
     fn half(&mut self, vm: &VertexMark<'_>, rows: &Rows<'_>, row: usize, input: &Input<'_>) -> [f64; 2] {
         let theme = &input.scene.theme;
-        let radius = f64::from(theme.vertex_radius);
+        let radius = f64::from(theme.vertex.radius);
         let group = vm.mark.contains.is_some();
         if !group {
             if let Some([w, h]) = &vm.mark.size {
@@ -391,7 +391,7 @@ impl Sheet {
         }
         let text = self.label(vm.mark, rows, row, input);
         if group {
-            let padding = f64::from(theme.group_padding);
+            let padding = f64::from(theme.diagram.group_padding);
             let title = text.map_or(0.0, |([w, _], _)| w);
             return [title / 2.0 + padding, header(vm.mark, theme) / 2.0 + padding];
         }
@@ -400,7 +400,7 @@ impl Sheet {
         if text.is_none() && ports.is_empty() {
             return [radius, radius];
         }
-        let size = text.map_or(f64::from(theme.font_size), |(_, size)| size);
+        let size = text.map_or(f64::from(theme.text.size), |(_, size)| size);
         let [w, h] = text.map_or([0.0; 2], |(box_, _)| box_);
         // A round or pointed outline holds its text's box inside it.
         let fit = match shape_of(vm.mark) {
@@ -414,16 +414,16 @@ impl Sheet {
             (2.0 * radius, 2.0 * radius)
         };
         // Room for its ports: a pitch apiece along each side, and their labels across from each other.
-        let port = f64::from(theme.port_size);
+        let port = f64::from(theme.diagram.port_size);
         let pitch = (2.0 * port).max(1.4 * size);
         let count = |side: Side| ports.iter().filter(|(_, p)| p.side == side).count() as f64;
         height = height.max((count(Side::Left).max(count(Side::Right)) + 1.0) * pitch);
         width = width.max((count(Side::Top).max(count(Side::Bottom)) + 1.0) * pitch);
-        let port_text = 0.8 * theme.font_size;
+        let port_text = 0.8 * theme.text.size;
         let mut widest = |side: Side| {
             let mut widest: f64 = 0.0;
             for label in ports.iter().filter(|(_, p)| p.side == side).filter_map(|(_, p)| p.label.as_deref()) {
-                let run = atlas::run(label.into(), theme.font.clone(), port_text, None);
+                let run = atlas::run(label.into(), theme.text.font.clone(), port_text, None);
                 widest = widest.max(self.measure(run, input)[0] * f64::from(port_text) / f64::from(TEXT_BASE));
             }
             widest
@@ -454,8 +454,8 @@ impl Sheet {
         let label = mark.style.label.as_ref()?;
         let text = rows.text(&label.text, row)?;
         let theme = &input.scene.theme;
-        let size = label.size.unwrap_or(theme.font_size);
-        let font = label.font.clone().unwrap_or_else(|| theme.font.clone());
+        let size = label.size.unwrap_or(theme.text.size);
+        let font = label.font.clone().unwrap_or_else(|| theme.text.font.clone());
         let run = atlas::run(text, font, size, label.max_width);
         let measured = self.measure(run, input);
         Some((measured.map(|v| v * f64::from(size) / f64::from(TEXT_BASE)), f64::from(size)))
@@ -609,7 +609,7 @@ fn edited(drawn: &Drawn, input: &Input<'_>, vertex_marks: &[VertexMark<'_>]) -> 
 
 /// The band across the top of each vertex mark's groups, and the padding around their members.
 fn framing(vertex_marks: &[VertexMark<'_>], theme: &Theme) -> (Vec<f64>, f64) {
-    (vertex_marks.iter().map(|vm| header(vm.mark, theme)).collect(), f64::from(theme.group_padding))
+    (vertex_marks.iter().map(|vm| header(vm.mark, theme)).collect(), f64::from(theme.diagram.group_padding))
 }
 
 /// The box holding every placed vertex and every wire.
@@ -634,7 +634,7 @@ fn shape_of(mark: &Vertices) -> Shape {
 /// marks, or without titles.
 fn header(mark: &Vertices, theme: &Theme) -> f64 {
     match (&mark.contains, &mark.style.label) {
-        (Some(_), Some(label)) => f64::from(label.size.unwrap_or(theme.font_size) * HEADER_BAND),
+        (Some(_), Some(label)) => f64::from(label.size.unwrap_or(theme.text.size) * HEADER_BAND),
         _ => 0.0,
     }
 }
@@ -853,7 +853,7 @@ mod tests {
         let pairs = |from: Vec<u64>, to: Vec<u64>, name: &str| {
             Table::new(name, Ids::count(from.len() as u32)).reference("from", "B", from).reference("to", "B", to)
         };
-        let mut data = Data::new("d");
+        let data = Data::new("d");
         data.apply(
             Patch::new()
                 .set(Table::new("G", vec![1_u64, 2]))
@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn an_edit_derives_what_deriving_every_row_does() {
-        let (scene, mut data) = diagram();
+        let (scene, data) = diagram();
         let (counters, errors) = (Counters::default(), Arc::new(Mutex::new(Vec::new())));
         let (mut edits, mut whole) = (Sheet::default(), Sheet::default());
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
@@ -921,10 +921,11 @@ mod tests {
                 }
                 data.apply(edit).expect("valid edit");
             }
+            let now = data.snapshot();
             let input = Input {
                 scene: &scene,
                 scene_version: 1,
-                data: std::slice::from_ref(&data),
+                data: std::slice::from_ref(&now),
                 host: None,
                 dragging: true,
                 paged: None,

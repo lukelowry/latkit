@@ -110,10 +110,10 @@ def prepare(work, frames):
     magnitude = op("ln", op("add", x, op("sqrt", op("add", op("mul", x, x), 1))))
     signed = {"when": [[op("lt", "df", 0), op("neg", magnitude)]], "otherwise": magnitude}
     elevation = op("mul", signed, 1.4 / math.asinh(0.1 / 0.01))
-    theme = {"background": "#0a111b", "text": "#d5e1ed", "font": "Segoe UI, sans-serif", "fontSize": 17}
+    theme = {"background": "#0a111b", "text": {"color": "#d5e1ed", "font": "Segoe UI, sans-serif", "size": 17}}
     map_scene = {
         "space": {"plane": {"grid": "off"}}, "ease": 0,
-        "theme": {**theme, "edge": None, "laneBow": 0},
+        "theme": {**theme, "edge": {"color": None, "bow": 0}},
         "title": "WECC 240 / FAULT RESPONSE",
         "subtitle": "JOHN DAY / Bus 4005 / Applied 1.00 s / Cleared 1.15 s",
         "marks": [
@@ -133,7 +133,8 @@ def prepare(work, frames):
         return {
             "space": {"plot": {"x": {"label": "Simulation time / s"},
                                "y": {"label": title, "precision": 3 if field == "df" else 2}}},
-            "ease": 0, "theme": {**theme, "background": "#101b28", "fontSize": 14, "playhead": "#f3f7fc"},
+            "ease": 0, "theme": {**theme, "background": "#101b28", "text": {**theme["text"], "size": 14},
+                                 "plot": {"playhead": "#f3f7fc"}},
             "marks": [{"lines": {
                 "of": ["grid", table], "trace": field, "width": 2.0, "visible": visible,
                 "color": color,

@@ -14,13 +14,14 @@ import {
   field,
   icon,
   reference,
+  units,
   when,
   type Hit,
   type Marker,
   type Motion,
   type RgbaImage,
   type Scene,
-} from '../../latkit.js';
+} from 'latkit';
 import { each } from '../../ui/rows.js';
 import type { Stage } from '../../ui/stage.js';
 import { theme } from '../../ui/theme.js';
@@ -252,20 +253,16 @@ export default async function page(stage: Stage): Promise<void> {
     },
   });
   const scene = (): Scene => ({
-    space: { earth: { projection: 'mercator', surface: LOOK.ground, graticule: false } },
+    space: { earth: { graticule: false } },
     theme: {
       ...theme,
-      text: LOOK.text,
-      hover: LOOK.hover,
+      earth: { ground: LOOK.ground },
+      text: { color: LOOK.text, font: 'Jura, sans-serif', size: 12, halo: 3 },
       // Selected rows glow blue, or each in its own color.
-      selected: state.ownGlow ? null : LOOK.hover,
+      focus: { hover: LOOK.hover, selected: state.ownGlow ? null : LOOK.hover, glow: 6 },
       // Comets are part of the map, in degrees: they zoom with it and stay on their branches.
-      flow: { color: LOOK.comet, spacing: 1.35, length: 0.6, width: 6, units: true },
-      font: 'Jura, sans-serif',
-      fontSize: 12,
-      halo: 3,
-      glow: 6,
-      laneBow: 0.22,
+      flow: { color: LOOK.comet, spacing: units(1.35), length: units(0.6), width: 6 },
+      edge: { bow: 0.22 },
     },
     ease: state.ease,
     // Easing, pulses, and comets hold still where the system asks for reduced motion, unless set.
@@ -293,11 +290,10 @@ export default async function page(stage: Stage): Promise<void> {
   const view = stage.view(scene(), {
     label: 'A state’s grid: hover or click a substation or branch to inspect it',
   });
-  view.setData(border);
-  view.setData(data);
+  view.sources = [border, data];
   const { xMin, xMax, yMin, yMax } = texas.bounds;
   view.fit({ bounds: { min: [xMin, yMin, 0], max: [xMax, yMax, 0] } });
-  const restyle = () => view.show(scene());
+  const restyle = () => (view.scene = scene());
 
   // ── Grid ──
   const gridSection = stage.section('Grid');
@@ -398,8 +394,8 @@ export default async function page(stage: Stage): Promise<void> {
         : `${s[from]!.name} → ${s[to]!.name} · ${Math.round(value('mw'))} MW · ${Math.round(value('loading'))}% of ${b.pmax} MW`;
     }
   };
-  view.on('hover', ({ hit }) => ((hovered = hit), inspect()));
-  view.on('select', inspect);
+  view.on('hovered', ({ hit }) => ((hovered = hit), inspect()));
+  view.on('selection', inspect);
 
   const meter = stage.meter(view);
   meter.note(() => `${grid.trips} trips`);
@@ -407,7 +403,6 @@ export default async function page(stage: Stage): Promise<void> {
   /** Shows the grid as it stands. */
   function show(): void {
     data.apply(patchOf(grid));
-    view.setData(data);
     const served = grid.injection.reduce((sum, p, i) => sum + (grid.load[i] ? -p : 0), 0);
     const out = grid.out.reduce((a, b) => a + b, 0);
     totals.textContent = `${Math.round(served).toLocaleString()} MW served · ${out} branches out · ${grid.dark} loads dark`;

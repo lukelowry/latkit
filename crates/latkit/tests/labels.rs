@@ -9,7 +9,7 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{SIZE, at, camera, diagram, errors, frame, gpu, plain_theme, plane};
+use common::{SIZE, at, camera, diagram, errors, frame, gpu, haloless, plain_theme, plane};
 use latkit::Ids;
 use latkit::host::{Host, Raster, TextRun};
 use latkit::{Camera, Color, Data, Label, Marker, Scene, Table, Vertices, View, field};
@@ -45,7 +45,7 @@ fn view(gpu: &latkit::Gpu, x: Vec<f64>, priority: Vec<f64>) -> View {
 
 fn shown(gpu: &latkit::Gpu, x: Vec<f64>, priority: Vec<f64>, shape: impl Fn(Vertices) -> Vertices) -> View {
     gpu.set_host(Boxes);
-    let mut data = Data::new("d");
+    let data = Data::new("d");
     let n = x.len();
     data.apply(
         Table::new("V", Ids::count(n as u32))
@@ -63,11 +63,11 @@ fn shown(gpu: &latkit::Gpu, x: Vec<f64>, priority: Vec<f64>, shape: impl Fn(Vert
         .priority(field("p"))
         .color(latkit::when(field("hue").lt(0.5)).then(red).otherwise(blue));
     let scene = Scene::new(plane())
-        .theme(latkit::Theme { halo: 0.0, ..plain_theme() })
+        .theme(haloless())
         .draw(shape(Vertices::of("d", "V").position("x", "y")).pick(false).label(label));
     let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     view
 }
 
@@ -94,7 +94,7 @@ fn a_color_changing_every_frame_leaves_labels_placed() {
     for _ in 0..30 {
         common::step(&gpu, &mut view);
     }
-    assert!(view.complete(), "waiting on {}", view.stats().waiting);
+    assert!(view.complete(), "waiting on {}", view.waiting());
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn only_labels_that_show_have_their_texts_set() {
     let x: Vec<f64> = (0..n).map(|i| f64::from((i * 37) % 120) - 60.0).collect();
     let y: Vec<f64> = (0..n).map(|i| f64::from((i * 53) % 120) - 60.0).collect();
     let names: Vec<String> = (0..n).map(|i| format!("row {i}")).collect();
-    let mut data = Data::new("d");
+    let data = Data::new("d");
     data.apply(Table::new("V", Ids::count(n as u32)).field("x", x).field("y", y).field("name", names)).expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(
         Vertices::of("d", "V")
@@ -145,7 +145,7 @@ fn only_labels_that_show_have_their_texts_set() {
     );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     let count = set.load(Ordering::Relaxed);
     assert!(count > 0 && count < 200, "texts set: {count}");
@@ -157,13 +157,13 @@ fn only_labels_that_show_have_their_texts_set() {
 /// A block in a diagram, 60 by 20 units, labeled in red at size 10, seen at `zoom`.
 fn diagram_block(gpu: &latkit::Gpu, zoom: f64) -> Vec<[u8; 4]> {
     gpu.set_host(Boxes);
-    let mut data = Data::new("d");
+    let data = Data::new("d");
     data.apply(
         Table::new("V", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0]).field("name", vec!["abcdef"]),
     )
     .expect("valid");
     let label = Label::new("name").size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
-    let scene = Scene::new(diagram()).theme(latkit::Theme { halo: 0.0, ..plain_theme() }).draw(
+    let scene = Scene::new(diagram()).theme(haloless()).draw(
         Vertices::of("d", "V")
             .position("x", "y")
             .size(60.0, 20.0)
@@ -174,7 +174,7 @@ fn diagram_block(gpu: &latkit::Gpu, zoom: f64) -> Vec<[u8; 4]> {
     );
     let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(gpu, &mut view);
     assert_eq!(errors(&mut view), Vec::new());
     pixels
@@ -209,7 +209,7 @@ fn a_cap_shows_only_the_labels_of_highest_priority() {
     gpu.set_host(Counted(set.clone()));
     // Four rows one above another, apart enough that none would give way, priorities rising upward.
     let ys = [-45.0, -15.0, 15.0, 45.0];
-    let mut data = Data::new("d");
+    let data = Data::new("d");
     data.apply(
         Table::new("V", Ids::count(4))
             .field("x", vec![-30.0; 4])
@@ -220,10 +220,10 @@ fn a_cap_shows_only_the_labels_of_highest_priority() {
     .expect("valid");
     let label = Label::new("name").size(10.0).priority(field("p")).color(Color::rgb(1.0, 0.0, 0.0)).max(2);
     let marks = Vertices::of("d", "V").position("x", "y").radius(1.0).color(Color::rgb(0.0, 0.0, 1.0)).pick(false);
-    let scene = Scene::new(plane()).theme(latkit::Theme { halo: 0.0, ..plain_theme() }).draw(marks.label(label));
+    let scene = Scene::new(plane()).theme(haloless()).draw(marks.label(label));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     let c = SIZE / 2;
     // The plane runs y up; each label starts beside its marker.

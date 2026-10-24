@@ -205,8 +205,9 @@ mod tests {
         let tables =
             [Decoded { layer: "water".into(), kind: Kind::Polygons, table: "water".into(), shapes: vec![triangles] }];
         let patch = decode(&bytes, key, &tables).expect("a tile");
-        let mut data = Data::new("base");
+        let data = Data::new("base");
         data.apply(patch).expect("valid");
+        let data = data.snapshot();
         let water = data.table("water").expect("the table");
         assert_eq!(water.len(), 1);
         let id = crate::geo::pmtiles::tile_id(key) * FEATURES;

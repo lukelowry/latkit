@@ -1,7 +1,7 @@
-//! Pictures and videos of views: a shot crosses as JSON,
-//! `{ size, scale, panels, transparent, deadline, elapsed }` with times in seconds, and draws the views
-//! given, whose canvases hold their last frames meanwhile. An image's pixels cross once and its files
-//! are written in workers; a video hands back the bytes each frame made, for the page to write.
+//! Pictures and videos of views: a shot crosses as JSON, `{ size, scale, panels, transparent, capture,
+//! elapsed }` with times in seconds, with the views of its panels, whose canvases hold their last frames
+//! meanwhile; the page bounds how long it waits. An image's pixels cross once and its files are
+//! written in workers; a video hands back the bytes each frame made, for the page to write.
 
 use std::cell::RefCell;
 use std::io::Write;
@@ -13,6 +13,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::Error;
 use crate::canvas::{Handle, views_of};
+use crate::pending::{Task, task};
 
 /// RGBA pixels, straight alpha, rows top to bottom.
 #[wasm_bindgen]
@@ -36,9 +37,8 @@ impl Image {
         self.0.rgba.to_vec()
     }
 
-    /// A promise of the image written in a worker as a `png`, `jpeg` at `quality` from 1 to 100, or
-    /// `webp` file.
-    pub fn encode(&self, format: &str, quality: Option<f64>) -> Result<js_sys::Promise, Error> {
+    /// The image written in a worker as a `png`, `jpeg` at `quality` from 1 to 100, or `webp` file.
+    pub fn encode(&self, format: &str, quality: Option<f64>) -> Result<Task, Error> {
         let quality = match quality {
             None => 90,
             Some(q) if (1.0..=100.0).contains(&q) => q.round() as u8,
@@ -51,7 +51,7 @@ impl Image {
             other => return Err(latkit::Error::invalid(format!("no image format {other:?}")).at("format").into()),
         };
         let job = latkit::host::Job::encode(&self.0, format);
-        Ok(crate::promise(async move {
+        Ok(task(async move {
             let file = latkit::host::Browser.spawn(job).await?;
             if file.is_empty() {
                 return Err(latkit::Error::invalid(format!("the image could not be written as {format}")));
@@ -61,16 +61,17 @@ impl Image {
     }
 }
 
-/// The picture `shot` (JSON) takes of the views of `views`, one per panel, once they are complete
-/// and still.
+/// The picture `shot` (JSON) takes of `views`, one per panel, once they are complete as it captures.
 #[wasm_bindgen]
-pub fn image(shot: &str, views: Vec<Handle>) -> Result<js_sys::Promise, Error> {
-    let shot: latkit::Shot = crate::json("shot", shot)?;
+pub fn image(shot: &str, views: Vec<Handle>) -> Result<Task, Error> {
+    let shot = shot_of(shot)?;
     let views = views_of(views);
-    Ok(wasm_bindgen_futures::future_to_promise(async move {
-        let image = latkit::web::image(&shot, &views).await.map_err(|e| JsValue::from(Error::from(e)))?;
-        Ok(Image(image).into())
-    }))
+    Ok(task(async move { Ok(Image(latkit::web::image(&shot, &views).await?)) }))
+}
+
+/// The shot `json` describes, waiting as long as the page does.
+fn shot_of(json: &str) -> Result<latkit::Shot, Error> {
+    Ok(crate::json::<latkit::Shot>("shot", json)?.deadline(None))
 }
 
 /// Bytes a video wrote and the page has not yet taken.
@@ -88,11 +89,12 @@ impl Write for Written {
     }
 }
 
-/// A video of a shot's pictures, encoded by WebCodecs as frames are drawn.
+/// A video of a shot's pictures of its views, encoded by WebCodecs as frames are drawn.
 #[wasm_bindgen]
 pub struct Video {
     /// The video, or nothing while a frame draws it, and once it is finished.
     inner: Rc<RefCell<Option<latkit::Video<latkit::Mp4<Written>>>>>,
+    views: Vec<latkit::web::PageView>,
     written: Written,
     fps: f64,
     frames: Rc<RefCell<u64>>,
@@ -113,11 +115,11 @@ impl Video {
         *self.frames.borrow() as f64
     }
 
-    /// Draws the next frame of the views of `views`, one per panel; resolves to the bytes of the file
-    /// ready to write, once there is room for another frame.
-    pub fn frame(&self, views: Vec<Handle>) -> js_sys::Promise {
+    /// Draws the next frame of its views; resolves to the bytes of the file ready to write, once there
+    /// is room for another frame.
+    pub fn frame(&self) -> js_sys::Promise {
         let (inner, written, frames) = (self.inner.clone(), self.written.clone(), self.frames.clone());
-        let views = views_of(views);
+        let views = self.views.clone();
         self.cancellable(async move {
             let taken = inner.borrow_mut().take();
             let error = || latkit::Error::invalid("a video draws one frame at a time, until it is finished");
@@ -178,17 +180,27 @@ impl Drop for Video {
     }
 }
 
-/// A video of `shot`'s (JSON) pictures at `fps` frames a second, as MP4 at `bitrate` bits a second
-/// or about 0.15 bits a pixel a frame.
-pub(crate) fn video(gpu: &latkit::Gpu, shot: &str, fps: f64, bitrate: Option<f64>) -> Result<Video, Error> {
-    let shot: latkit::Shot = crate::json("shot", shot)?;
+/// A video of `shot`'s (JSON) pictures of `views`, one per panel, at `fps` frames a second, as MP4 at
+/// `bitrate` bits a second or about 0.15 bits a pixel a frame.
+#[wasm_bindgen]
+pub fn video(shot: &str, views: Vec<Handle>, fps: f64, bitrate: Option<f64>) -> Result<Video, Error> {
+    let shot = shot_of(shot)?;
+    let views = views_of(views);
+    let gpu = views.first().ok_or_else(|| latkit::Error::invalid("a video draws a view or more").at("layout"))?.gpu();
     let written = Written::default();
     let mut mp4 = latkit::Mp4::new(written.clone());
     if let Some(bitrate) = bitrate {
         mp4 = mp4.bitrate(bitrate as u32);
     }
-    let video = shot.video(gpu, fps, mp4)?;
-    Ok(Video { inner: Rc::new(RefCell::new(Some(video))), written, fps, frames: Rc::default(), active: Rc::default() })
+    let video = shot.video(&gpu, fps, mp4)?;
+    Ok(Video {
+        inner: Rc::new(RefCell::new(Some(video))),
+        views,
+        written,
+        fps,
+        frames: Rc::default(),
+        active: Rc::default(),
+    })
 }
 
 /// Has videos encoded by what `create` makes of `(width, height, fps, bitrate)`: the npm package's

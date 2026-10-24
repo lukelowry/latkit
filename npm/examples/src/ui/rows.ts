@@ -1,5 +1,5 @@
 /** Sets of rows, as a view selects and tells them, and the rows in them. */
-import type { Row, Rows } from '../latkit.js';
+import type { Row, Rows } from 'latkit';
 
 /** Each row of `sets`, in order. */
 export const each = (sets: readonly Rows[]): Row[] =>

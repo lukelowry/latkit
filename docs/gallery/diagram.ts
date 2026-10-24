@@ -1,5 +1,5 @@
 /** Diagram: a microgrid's controller as blocks in groups, wired port to port and laid out by latkit. */
-import { Patch, reference, type Marker, type Mark, type Port, type Side } from 'latkit/core';
+import { Patch, reference, type Marker, type Mark, type Port, type Side } from 'latkit';
 import { THEME, type Piece } from './look.ts';
 
 /** Kinds of block: the marker each draws as, its fill, and its ports. */
@@ -95,7 +95,7 @@ export default function diagram(): Piece {
   wire('Output', inverter, breaker);
   wire('Power', breaker, bus, [droop, 'feedback']);
 
-  const patch = Patch.to('plant')
+  const patch = new Patch('plant')
     .replace(
       'Signal',
       signals.map((s) => s.id),
@@ -192,7 +192,7 @@ export default function diagram(): Piece {
       space: { diagram: { grid: { dots: { pitch: 20 } } } },
       layout: { layered: { flow: 'right', gap: 40, rankGap: 52 } },
       ease: 0,
-      theme: { ...THEME, surface: '#151c26', grid: '#ffffff0d' },
+      theme: { ...THEME, grid: '#ffffff0d', diagram: { group: '#151c26' } },
       marks,
     },
   };

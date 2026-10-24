@@ -13,7 +13,7 @@ import {
   type ColormapName,
   type Grid,
   type Scene,
-} from '../../latkit.js';
+} from 'latkit';
 import type { Stage } from '../../ui/stage.js';
 import { theme } from '../../ui/theme.js';
 import { Body, ROOM, STEP, type Controls } from './body.js';
@@ -169,7 +169,12 @@ export default async function bunny(stage: Stage): Promise<void> {
     return {
       space: { plane: { grid: GRIDS[lit.grid] } },
       // The mesh's dots and springs draw the theme's sizes.
-      theme: { ...THEME, shading: lit.shading, vertexRadius: inspect ? lit.dots : 0, edgeWidth: 1 },
+      theme: {
+        ...THEME,
+        shading: lit.shading,
+        vertex: { radius: inspect ? lit.dots : 0 },
+        edge: { width: 1 },
+      },
       controls: { pickRadius: 14 },
       marks: [
         {
@@ -242,6 +247,7 @@ export default async function bunny(stage: Stage): Promise<void> {
   const space = stage.view(room(true), {
     label: 'The bunny: drag it to pull and fling it, click it to poke it',
   });
+  space.sources = [data];
   space.camera = { center: [0, 0], zoom: 6, pitch: 58, bearing: 30 };
   space.fit({ bounds: { min: [-ROOM, -ROOM, 0], max: [ROOM, ROOM, 2.4] } });
 
@@ -316,13 +322,13 @@ export default async function bunny(stage: Stage): Promise<void> {
   const legend = stage.legend();
   const repaint = (p: string) => {
     paint = p;
-    space.show(room(playback.mode === 'live'));
+    space.scene = room(playback.mode === 'live');
     legend.ramp(PAINTS[p]!.colormap, PAINTS[p]!.legend);
     legend.hidden = p === 'solid';
   };
   material.toggle('Mesh', 'i', false, (on) => {
     inspect = on;
-    space.show(room(playback.mode === 'live'));
+    space.scene = room(playback.mode === 'live');
   });
   material.choice(
     'Color',
@@ -336,7 +342,7 @@ export default async function bunny(stage: Stage): Promise<void> {
     { min: 0, max: 1, step: 0.05, value: lit.shading, format: (v) => `${Math.round(v * 100)}%` },
     (shading) => {
       lit.shading = shading;
-      space.show(room(playback.mode === 'live'));
+      space.scene = room(playback.mode === 'live');
     },
   );
   light.range(
@@ -344,7 +350,7 @@ export default async function bunny(stage: Stage): Promise<void> {
     { min: 0.5, max: 4, step: 0.25, value: lit.dots, format: (v) => `${v.toFixed(2)} px` },
     (dots) => {
       lit.dots = dots;
-      space.show(room(playback.mode === 'live'));
+      space.scene = room(playback.mode === 'live');
     },
   );
   light.choice(
@@ -357,7 +363,7 @@ export default async function bunny(stage: Stage): Promise<void> {
     lit.grid,
     (grid) => {
       lit.grid = grid;
-      space.show(room(playback.mode === 'live'));
+      space.scene = room(playback.mode === 'live');
     },
   );
 
@@ -374,14 +380,15 @@ export default async function bunny(stage: Stage): Promise<void> {
     },
     { label: 'Center height, speed, and volume', height: 220 },
   );
+  plot.sources = [data];
 
   const playback = stage.playback({
     replay: { seconds: 5, rate: 0.3 },
     show(at) {
-      const pieces = data.get('Body', 0, 'phase', at) === 1;
+      const pieces = data.get('Body', 0, 'phase', { at }) === 1;
       if (pieces !== fragments) {
         fragments = pieces;
-        space.show(room(playback.mode === 'live'));
+        space.scene = room(playback.mode === 'live');
       }
       space.at = at;
       plot.at = at;
@@ -390,7 +397,7 @@ export default async function bunny(stage: Stage): Promise<void> {
     },
     change(live) {
       // Paused, a press pans instead of grabbing.
-      space.show(room(live));
+      space.scene = room(live);
       if (!live) {
         body.release(true);
         body.endSquash();
@@ -426,9 +433,9 @@ export default async function bunny(stage: Stage): Promise<void> {
       shadow.opacity[0] = 0.42 / (1 + height * height * 0.4);
     }
     const patch = new Patch()
-      .append(body.time, 'Vertex', { ...frame })
-      .append(body.time, 'Shadow', shadow)
-      .append(body.time, 'Body', {
+      .append('Vertex', body.time, { ...frame })
+      .append('Shadow', body.time, shadow)
+      .append('Body', body.time, {
         height: [height],
         speed: [speed],
         volume: [Number.isFinite(volume) ? volume : null],
@@ -437,14 +444,12 @@ export default async function bunny(stage: Stage): Promise<void> {
       .forget(body.time - HISTORY);
     if (body.burst.active || wasBurst || !recordedChunks) {
       body.burst.sample(chunkFrame, STEP);
-      patch.append(body.time, 'ChunkVertex', { ...chunkFrame });
+      patch.append('ChunkVertex', body.time, { ...chunkFrame });
       recordedChunks = true;
     }
     wasBurst = body.burst.active;
     data.apply(patch);
-    space.setData(data);
-    plot.setData(data);
-    playback.record(data.span!);
+    playback.record(data.describe().span!);
     popButton.firstChild!.textContent = body.burst.active ? 'Gather' : 'Pop';
   };
 
@@ -474,9 +479,9 @@ export default async function bunny(stage: Stage): Promise<void> {
   const meter = stage.meter(space);
   meter.note(() => {
     const at = playback.at;
-    const height = (data.get('Body', 0, 'height', at) as number | null) ?? 0;
-    const speed = (data.get('Body', 0, 'speed', at) as number | null) ?? 0;
-    const volume = data.get('Body', 0, 'volume', at) as number | null;
+    const height = (data.get('Body', 0, 'height', { at }) as number | null) ?? 0;
+    const speed = (data.get('Body', 0, 'speed', { at }) as number | null) ?? 0;
+    const volume = data.get('Body', 0, 'volume', { at }) as number | null;
     const state =
       playback.mode === 'live' ? body.state : playback.mode === 'playing' ? 'replay' : 'paused';
     return `${state}  ·  center ${height.toFixed(2)} m  ·  ${speed.toFixed(1)} m/s  ·  ${volume !== null && Number.isFinite(volume) ? `volume ${(volume * 100).toFixed(0)}%` : '24 pieces'}`;

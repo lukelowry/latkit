@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde_json::{Map, Value as Json};
 
-use crate::data::{Data, Ids, Name, Patch, Table, Values};
+use crate::data::{Ids, Name, Patch, Snapshot, Table, Values};
 use crate::{Error, Result};
 
 type Point = [f64; 2];
@@ -21,7 +21,7 @@ type Point = [f64; 2];
 /// and a geometry collection a row per member. Properties become fields: numbers, booleans, and texts,
 /// any other value written as its JSON. Rows take their features' ids where every row of a table has
 /// one and no two share it, and are numbered in order otherwise.
-pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Data> {
+pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Snapshot> {
     let bytes = super::gunzipped(bytes)?;
     let top: Top = serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("not GeoJSON: {e}")))?;
     let mut tables = [Rows::default(), Rows::default(), Rows::default()];
@@ -46,9 +46,7 @@ pub(crate) fn geojson(name: impl Into<Name>, bytes: &[u8]) -> Result<Data> {
             patch = patch.replace(table);
         }
     }
-    let mut data = Data::new(name);
-    data.apply(patch)?;
-    Ok(data)
+    Snapshot::new(name).applied(patch)
 }
 
 /// The top of a document: a collection, a feature, or a geometry, as one struct of each's members.

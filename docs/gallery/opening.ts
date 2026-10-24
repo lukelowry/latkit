@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import { Patch, reference, type ExprInput } from 'latkit/core';
+import { Patch, reference, type ExprInput } from 'latkit';
 import { angles, shifts } from './flow.ts';
 import { levelOf, readCase } from './grids.ts';
 import { THEME, worldMap, type Piece } from './look.ts';
@@ -66,7 +66,7 @@ export default function opening(): Piece {
     cells.add(cell);
     return 1;
   });
-  const data = Patch.to('grid')
+  const data = new Patch('grid')
     .replace(
       'Bus',
       { count: n },
@@ -135,7 +135,6 @@ export default function opening(): Piece {
       space: {
         earth: {
           projection: 'globe',
-          surface: '#111a24',
           graticule: true,
           atmosphere: true,
           // Dusk at the equinox: the sun sets over the grid's west, night falls on the Atlantic.
@@ -148,9 +147,8 @@ export default function opening(): Piece {
       theme: {
         ...THEME,
         background: '#0f141a',
-        atmosphere: '#6a93c052',
         grid: map('12'),
-        night: 0.35,
+        earth: { ground: '#111a24', atmosphere: '#6a93c052', night: 0.35 },
       },
       marks: [
         { lines: { of: ['states', 'polygons'], width: 0.5, color: map('1f') } },

@@ -1,10 +1,10 @@
 //! Views in a browser. A [`PageView`] is a view the page holds: the page reads and changes it, hears
 //! what it tells, and lends it to shots, with or without a canvas showing it. A [`Canvas`] shows views
-//! in the panels of a `<canvas>` element, or of an `OffscreenCanvas` in a worker, and feeds each view
-//! the pointer, wheel, and keys that land on its panel. Every canvas of one [`Gpu`] draws in one
-//! animation frame, into one command buffer, after the frame listeners of [`on_frame`] run: linked
-//! views always show the same moment, and an application's per-frame work lands in the frame it was
-//! done for.
+//! as its layout places them in a `<canvas>` element, or in an `OffscreenCanvas` in a worker, and
+//! feeds each view the pointer, wheel, and keys that land on its panel. Every canvas of one [`Gpu`]
+//! draws in one animation frame, into one command buffer, after the frame listeners of [`on_frame`]
+//! run: linked views always show the same moment, and an application's per-frame work lands in the
+//! frame it was done for.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -357,6 +357,11 @@ impl PageView {
         f(&self.0.borrow().view)
     }
 
+    /// The GPU the view draws with.
+    pub fn gpu(&self) -> Gpu {
+        self.0.borrow().view.gpu().clone()
+    }
+
     /// Calls `listener` with what the view tells, a batch at a time and in order, until the returned
     /// listener is dropped. A listener hears what is told while it listens; what lasts is state the
     /// view reads out.
@@ -411,10 +416,21 @@ impl PageView {
     }
 }
 
-/// Views shown in a `<canvas>` element or an `OffscreenCanvas`, one per panel. An element sizes
-/// itself to its CSS box at the device's pixel ratio and passes each view the pointer, wheel, and
-/// keys that land on its panel; an offscreen canvas keeps the size it is given and takes no input. A
-/// frame draws only the views that need one, or all of them when the canvas changes size.
+/// A view's place in a canvas: the view, and where it draws, `[x, y, width, height]` as fractions of
+/// the canvas. A later panel draws over an earlier one.
+#[derive(Clone)]
+pub struct Panel {
+    /// The view shown.
+    pub view: PageView,
+    /// Where it draws.
+    pub at: [f32; 4],
+}
+
+/// Views shown in a `<canvas>` element or an `OffscreenCanvas`, as its layout places them. An
+/// element sizes itself to its CSS box at the device's pixel ratio and passes each view the pointer,
+/// wheel, and keys that land on its panel; an offscreen canvas keeps the size it is given and takes
+/// no input. A frame draws only the views that need one, or all of them when the canvas changes size
+/// or layout.
 #[derive(Clone)]
 pub struct Canvas(Rc<RefCell<Painted>>);
 
@@ -434,7 +450,7 @@ struct Painted {
     textures: Vec<Option<(wgpu::Texture, [u32; 2])>>,
     /// Each panel in CSS pixels, as last drawn: what input lands on.
     rects: Vec<[f32; 4]>,
-    /// Whether every view draws in the next frame: the canvas changed size or what it shows.
+    /// Whether every view draws in the next frame: the canvas changed size or layout.
     due: bool,
     /// The panel each pointer down went to, the panel under the pointer, and the panel keys go to.
     captured: Vec<(u32, usize)>,
@@ -451,8 +467,9 @@ type Handler = (&'static str, Closure<dyn FnMut(web_sys::Event)>);
 type Resizing = (ResizeObserver, Closure<dyn FnMut(JsValue)>);
 
 impl Canvas {
-    /// A canvas showing views in `panels` of `element`. The `Gpu` must come from [`Gpu::new`].
-    pub fn new(gpu: &Gpu, element: &HtmlCanvasElement, panels: impl Into<Panels>) -> Result<Canvas> {
+    /// A canvas showing views in `element` as `layout` places them. The `Gpu` must come from
+    /// [`Gpu::new`].
+    pub fn new(gpu: &Gpu, element: &HtmlCanvasElement, layout: Vec<Panel>) -> Result<Canvas> {
         let size = [element.width(), element.height()];
         let surface = Surface::new(gpu, wgpu::SurfaceTarget::Canvas(element.clone()), size)?;
         let _ = element.style().set_property("touch-action", "none");
@@ -460,7 +477,8 @@ impl Canvas {
         if !element.has_attribute("tabindex") {
             element.set_tab_index(0);
         }
-        let canvas = Canvas::with_target(gpu, Target::Element(element.clone()), surface, panels.into());
+        let canvas = Canvas::with_target(gpu, Target::Element(element.clone()), surface);
+        canvas.set_layout(layout)?;
         let weak = Rc::downgrade(&canvas.0);
         let resized = Closure::<dyn FnMut(JsValue)>::new(move |_: JsValue| {
             if let Some(state) = weak.upgrade() {
@@ -476,30 +494,27 @@ impl Canvas {
         Ok(canvas)
     }
 
-    /// A canvas showing views in `panels` of `canvas`, `pixel_ratio` of its pixels a CSS pixel: in a
-    /// worker, or wherever no page feeds it input. It keeps the size the canvas is given.
-    pub fn offscreen(
-        gpu: &Gpu,
-        canvas: &OffscreenCanvas,
-        panels: impl Into<Panels>,
-        pixel_ratio: f32,
-    ) -> Result<Canvas> {
+    /// A canvas showing views in `canvas` as `layout` places them, `pixel_ratio` of its pixels a CSS
+    /// pixel: in a worker, or wherever no page feeds it input. It keeps the size the canvas is given.
+    pub fn offscreen(gpu: &Gpu, canvas: &OffscreenCanvas, layout: Vec<Panel>, pixel_ratio: f32) -> Result<Canvas> {
         if !(pixel_ratio.is_finite() && pixel_ratio > 0.0) {
             return Err(Error::invalid("a canvas's pixel ratio is positive").at("pixelRatio"));
         }
         let size = [canvas.width(), canvas.height()];
         let surface = Surface::new(gpu, wgpu::SurfaceTarget::OffscreenCanvas(canvas.clone()), size)?;
         let target = Target::Offscreen { canvas: canvas.clone(), pixel_ratio };
-        Ok(Canvas::with_target(gpu, target, surface, panels.into()))
+        let made = Canvas::with_target(gpu, target, surface);
+        made.set_layout(layout)?;
+        Ok(made)
     }
 
-    fn with_target(gpu: &Gpu, target: Target, surface: Surface, panels: Panels) -> Canvas {
+    fn with_target(gpu: &Gpu, target: Target, surface: Surface) -> Canvas {
         let frames = frames_of(gpu);
         let state = Rc::new(RefCell::new(Painted {
             target,
             surface,
             frames: frames.clone(),
-            panels,
+            panels: Panels::default(),
             views: Vec::new(),
             textures: Vec::new(),
             rects: Vec::new(),
@@ -516,12 +531,10 @@ impl Canvas {
         Canvas(state)
     }
 
-    /// Shows `views`, one per panel, in place of those it showed. A view shows in one canvas at a time.
-    pub fn show(&self, views: &[PageView]) -> Result<()> {
-        let expected = self.0.borrow().panels.len();
-        if views.len() != expected {
-            return Err(Error::invalid(format!("a canvas of {expected} panels shows {} views", views.len())));
-        }
+    /// Shows the views of `layout` where it places them, in place of those it showed. A view shows in
+    /// one panel of one canvas at a time; a panel covering no pixels is invalid.
+    pub fn set_layout(&self, layout: Vec<Panel>) -> Result<()> {
+        let views: Vec<&PageView> = layout.iter().map(|panel| &panel.view).collect();
         let twice = views.iter().enumerate().any(|(i, a)| views[i + 1..].iter().any(|b| Rc::ptr_eq(&a.0, &b.0)));
         let frames = self.0.borrow().frames.clone();
         let elsewhere = frames.borrow().canvases.iter().filter_map(Weak::upgrade).any(|other| {
@@ -529,10 +542,13 @@ impl Canvas {
                 && other.borrow().views.iter().any(|shown| views.iter().any(|v| Rc::ptr_eq(&v.0, &shown.0)))
         });
         if twice || elsewhere {
-            return Err(Error::invalid("a view shows in one panel of one canvas"));
+            return Err(Error::invalid("a view shows in one panel of one canvas").at("layout"));
         }
+        let panels = Panels::from(layout.iter().map(|panel| panel.at).collect::<Vec<_>>());
+        panels.rects([1 << 16, 1 << 16], [1, 1]).map_err(|e| e.at("layout"))?;
         let mut state = self.0.borrow_mut();
-        state.views = views.to_vec();
+        state.panels = panels;
+        state.views = layout.into_iter().map(|panel| panel.view).collect();
         state.textures.clear();
         state.captured.clear();
         state.hovered = None;

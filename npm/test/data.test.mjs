@@ -8,20 +8,23 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const directory = process.env.LATKIT_TEST_PACKAGE ?? path.resolve(import.meta.dirname, '..');
-const { loadLatkit, Patch, reference, field } = await import(
+const { load, Data, Patch, reference, field } = await import(
   pathToFileURL(path.join(directory, 'dist/index.js')).href
 );
 const wasm = new WebAssembly.Module(fs.readFileSync(path.join(directory, 'pkg/latkit_bg.wasm')));
-const { Data } = await loadLatkit({ wasm });
+await load({ wasm });
 
 /** Every chunk of `bytes`, `size` at a time, as a socket might hand them over. */
 function* pieces(bytes, size) {
   for (let at = 0; at < bytes.length; at += size) yield bytes.subarray(at, at + size);
 }
 
-test('patches carry every kind of value through the bytes', () => {
+/** Every id of `table` of `data`, in row order. */
+const ids = (data, table) => data.query({ of: table }).ids;
+
+test('patches carry every kind of value through the bytes', async () => {
   const grid = new Data('grid').apply(
-    Patch.to('grid')
+    new Patch('grid')
       .axis('time', 's')
       .replace('Bus', [101, 102, 103], {
         kv: Float64Array.of(230, 115, 69),
@@ -120,7 +123,7 @@ test('patches carry every kind of value through the bytes', () => {
     ['number', 'bool', 'text', 'point', 'path', 'polygons'],
   );
   // A dataset's bytes are the patch that builds it, read back alike.
-  const again = new Data('grid').apply(Patch.fromBytes(grid.toBytes()));
+  const again = new Data('grid').apply(await Patch.read(grid.toBytes()));
   assert.deepEqual(again.describe(), grid.describe());
   assert.deepEqual(again.get('Bus', 103, 'area'), get(103, 'area'));
   grid.destroy();
@@ -134,20 +137,23 @@ test('changes apply in place, a snapshot keeps a version, and a patch names its 
     new Patch()
       .set('Bus', [3, 4], { x: [30, 40] })
       .remove('Bus', [1])
-      .append([0, 1], 'Bus', { v: Float32Array.of(1, 2, 3, 4, 5, 6) })
-      .append(2, 'Bus', { v: [9] }, [4]),
+      .append('Bus', [0, 1], { v: Float32Array.of(1, 2, 3, 4, 5, 6) })
+      .append('Bus', 2, { v: [9] }, { ids: [4] }),
   );
-  assert.deepEqual(data.ids('Bus'), [2, 3, 4]);
-  assert.deepEqual(before.ids('Bus'), [1, 2, 3], 'the snapshot holds');
+  assert.deepEqual(ids(data, 'Bus'), [2, 3, 4]);
+  assert.deepEqual(ids(before, 'Bus'), [1, 2, 3], 'the snapshot holds');
   assert.equal(data.get('Bus', 4, 'x'), 40);
-  assert.equal(data.get('Bus', 4, 'v', 2), 9, 'rows named take the frame');
-  assert.equal(data.get('Bus', 2, 'v', 2), 4, 'the rest hold their last values');
-  assert.deepEqual(data.span, [0, 2]);
+  assert.equal(data.get('Bus', 4, 'v', { at: 2 }), 9, 'rows named take the frame');
+  assert.equal(data.get('Bus', 2, 'v', { at: 2 }), 4, 'the rest hold their last values');
+  assert.deepEqual(data.describe().span, [0, 2]);
   data.apply(new Patch().forget(1));
-  assert.deepEqual(data.span, [1, 2]);
-  assert.throws(() => data.apply(Patch.to('weather')), { code: 'invalid' });
+  assert.deepEqual(data.describe().span, [1, 2]);
+  assert.throws(() => data.apply(new Patch('weather')), { code: 'invalid' });
   assert.throws(() => data.apply(new Patch().set('Bus', [1], { x: ['a'] })), { code: 'invalid' });
   assert.equal(data.get('Bus', 2, 'x'), 2, 'a failed patch changes nothing');
+  data.restore(before);
+  assert.deepEqual(ids(data, 'Bus'), [1, 2, 3], 'restored to the snapshot');
+  assert.throws(() => new Data('other').restore(before), { code: 'invalid' });
   data.destroy();
   before.destroy();
 });
@@ -157,36 +163,48 @@ test('appends one after another write as one change, each frame copied at its ca
   const patch = new Patch().replace('Bus', [1, 2], { x: [1, 2] });
   for (let f = 0; f < 4; f++) {
     frame.set([f, 10 * f]);
-    patch.append(f, 'Bus', { v: frame });
+    patch.append('Bus', f, { v: frame });
   }
   const bytes = patch.toBytes();
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // After the header and the empty name: the count of changes.
   assert.equal(view.getUint32(20, true), 2, 'the replace, and one append of every frame');
   const data = new Data('grid').apply(patch);
-  const v = (t) => data.get('Bus', 2, 'v', t);
+  const v = (at) => data.get('Bus', 2, 'v', { at });
   assert.deepEqual([v(0), v(1), v(2), v(3)], [0, 10, 20, 30], 'each frame as it was at its call');
+  const envelope = data.envelope({ table: 'Bus', field: 'v', range: [0, 4], spans: 2, ids: [2] });
+  assert.deepEqual([...envelope.at], [0, 2, 4]);
+  assert.deepEqual(
+    [...envelope.least, ...envelope.greatest],
+    [0, 20, 10, 30],
+    'row 2, span by span',
+  );
+  assert.throws(() => data.envelope({ table: 'Nope', field: 'v', range: [0, 1], spans: 1 }), {
+    code: 'invalid',
+    path: 'Nope',
+  });
   data.destroy();
 });
 
-test('time tiles hold runs of a sampled field, holes between them', () => {
+test('time tiles hold runs of a sampled field, holes between them', async () => {
   const data = new Data('grid').apply(new Patch().replace('Bus', [1, 2], { x: [1, 2] }));
   data.apply(
     new Patch()
-      .frames('Bus', 'v', { first: 100 }, [100, 101], Float32Array.of(1, 2, 3, 4))
-      .frames('Bus', 'v', { level: 1, first: 0 }, [0, 7], [0.5, 0.25, 1.5, 1.25]),
+      .frames('Bus', 'v', { first: 100, at: [100, 101], values: Float32Array.of(1, 2, 3, 4) })
+      .frames('Bus', 'v', { level: 1, first: 0, at: [0, 7], values: [0.5, 0.25, 1.5, 1.25] }),
   );
-  assert.deepEqual(data.span, [0, 101]);
-  assert.equal(data.get('Bus', 2, 'v', 101), 4);
-  assert.equal(data.get('Bus', 1, 'v', 50), null, 'a hole holds no frame');
-  const again = new Patch().frames('Bus', 'v', { first: 100 }, [100], [1, 2]);
+  assert.deepEqual(data.describe().span, [0, 101]);
+  assert.equal(data.get('Bus', 2, 'v', { at: 101 }), 4);
+  assert.equal(data.get('Bus', 1, 'v', { at: 50 }), null, 'a hole holds no frame');
+  const again = new Patch().frames('Bus', 'v', { first: 100, at: [100], values: [1, 2] });
   assert.throws(() => data.apply(again), { code: 'invalid' }, 'frames held already');
-  assert.throws(() => new Patch().frames('Bus', 'v', { level: 1, first: 0 }, [0, 7, 9], [1]), {
-    code: 'invalid',
-  });
-  const back = new Data('grid').apply(Patch.fromBytes(data.toBytes()));
+  assert.throws(
+    () => new Patch().frames('Bus', 'v', { level: 1, first: 0, at: [0, 7, 9], values: [1] }),
+    { code: 'invalid' },
+  );
+  const back = new Data('grid').apply(await Patch.read(data.toBytes()));
   assert.deepEqual(back.describe(), data.describe());
-  assert.equal(back.get('Bus', 1, 'v', 100.5), 1);
+  assert.equal(back.get('Bus', 1, 'v', { at: 100.5 }), 1);
   data.destroy();
   back.destroy();
 });
@@ -199,13 +217,13 @@ test('a failed change leaves the patch as it was', () => {
   assert.deepEqual(patch.toBytes(), bytes);
   const extended = new Patch().set('Bus', [2], { x: [2] }).extend(patch);
   const data = new Data('grid').apply(extended);
-  assert.deepEqual(data.ids('Bus'), [2, 1]);
+  assert.deepEqual(ids(data, 'Bus'), [2, 1]);
   data.destroy();
 });
 
 test('patches stream back to back, split anywhere, and refuse what is too long', async () => {
   const sent = [
-    Patch.to('grid').replace('Bus', [7, 8, 9], { x: [1, 2, 3] }),
+    new Patch('grid').replace('Bus', [7, 8, 9], { x: [1, 2, 3] }),
     new Patch().set('Bus', [7], { x: [10] }),
     new Patch().remove('Bus', [8]),
   ];
@@ -218,13 +236,11 @@ test('patches stream back to back, split anywhere, and refuse what is too long',
       data.apply(patch);
     }
     assert.deepEqual(read, ['grid', undefined, undefined]);
-    assert.deepEqual(data.ids('Bus'), [7, 9]);
+    assert.deepEqual(ids(data, 'Bus'), [7, 9]);
     assert.equal(data.get('Bus', 7, 'x'), 10);
     data.destroy();
   }
-  const long = Patch.to('grid')
-    .replace('Bus', [1], { name: ['x'.repeat(100)] })
-    .toBytes();
+  const long = new Patch('grid').replace('Bus', [1], { name: ['x'.repeat(100)] }).toBytes();
   const read = (stream, options) => Array.fromAsync(Patch.stream(stream, options));
   await assert.rejects(read(pieces(long, 16), { limit: 64 }), { code: 'limit' });
   await assert.rejects(read(pieces(long.subarray(0, 40), 16)), /ended inside a patch/);
@@ -232,16 +248,18 @@ test('patches stream back to back, split anywhere, and refuse what is too long',
   await assert.rejects(read([json]), { code: 'invalid' });
 });
 
-test('JSON, latkit bytes, and GeoJSON read as datasets', async () => {
-  const json = JSON.stringify({
+test('JSON, latkit bytes, and GeoJSON read as datasets, as their first bytes say', async () => {
+  const document = {
     name: 'grid',
     patch: [{ replace: { table: 'Bus', ids: { count: 2 }, fields: { x: [1, 2] } } }],
-  });
-  const loaded = await Data.load(json);
+  };
+  const loaded = await Data.read(document);
   assert.equal(loaded.get('Bus', 1, 'x'), 2);
-  const read = await Data.read(loaded.toBytes(), 'renamed');
+  const text = await Data.read(new TextEncoder().encode(JSON.stringify(document)));
+  assert.deepEqual(text.describe(), loaded.describe(), 'a document read from its bytes');
+  const read = await Data.read(loaded.toBytes(), { name: 'renamed' });
   assert.equal(read.name, 'renamed');
-  const patch = await Patch.load('[{"set": {"table": "Bus", "ids": [1], "fields": {"x": [20]}}}]');
+  const patch = await Patch.read([{ set: { table: 'Bus', ids: [1], fields: { x: [20] } } }]);
   assert.equal(read.apply(patch).get('Bus', 1, 'x'), 20);
   const geojson = new TextEncoder().encode(
     JSON.stringify({
@@ -251,10 +269,14 @@ test('JSON, latkit bytes, and GeoJSON read as datasets', async () => {
       ],
     }),
   );
-  const places = await Data.read(geojson, 'places');
+  const places = await Data.read(geojson, { name: 'places' });
   assert.deepEqual(places.get('points', 0, 'geometry'), [1, 2]);
   await assert.rejects(Data.read(geojson), { code: 'invalid' }, 'GeoJSON takes a name');
-  for (const data of [loaded, read, places]) data.destroy();
+  const aborted = AbortSignal.abort();
+  await assert.rejects(Data.read(geojson, { name: 'places', signal: aborted }), {
+    code: 'cancelled',
+  });
+  for (const data of [loaded, text, read, places]) data.destroy();
 });
 
 test('queries filter, sort, page, and count', () => {
@@ -280,7 +302,7 @@ test('queries filter, sort, page, and count', () => {
   data.destroy();
 });
 
-test('LATK v1 fixture and long-running sample indexes agree with Rust', () => {
+test('LATK v1 fixture and long-running sample indexes agree with Rust', async () => {
   const fixture = Buffer.from(
     fs
       .readFileSync(
@@ -290,18 +312,18 @@ test('LATK v1 fixture and long-running sample indexes agree with Rust', () => {
       .trim(),
     'hex',
   );
-  const patch = new Patch().frames('T', 'v', { first: 2 ** 32 + 3 }, [0, 1], [1, 2]);
+  const patch = new Patch().frames('T', 'v', { first: 2 ** 32 + 3, at: [0, 1], values: [1, 2] });
   assert.deepEqual(Buffer.from(patch.toBytes()), fixture);
   const data = new Data('test').apply(new Patch().replace('T', { count: 1 }).extend(patch));
-  data.apply(new Patch().append(2, 'T', { v: [3] }));
+  data.apply(new Patch().append('T', 2, { v: [3] }));
   assert.equal(data.get('T', 0, 'v'), 3);
-  assert.deepEqual(data.span, [0, 2]);
+  assert.deepEqual(data.describe().span, [0, 2]);
   data.destroy();
   const version = Uint8Array.from(fixture);
   version[4] = 2;
-  assert.throws(() => Patch.fromBytes(version), /version/);
+  await assert.rejects(Patch.read(version), /version/);
   assert.throws(
-    () => new Patch().frames('T', 'v', { first: Number.MAX_SAFE_INTEGER }, [0], [1]),
+    () => new Patch().frames('T', 'v', { first: Number.MAX_SAFE_INTEGER, at: [0], values: [1] }),
     /safe/,
   );
 });

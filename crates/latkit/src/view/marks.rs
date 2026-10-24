@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use super::drawing::Drawing;
+use super::ends::End;
 use super::sync::Tables;
 use super::transition::{Begin, Transition};
 use super::words::{Kept, Words};
@@ -12,7 +13,7 @@ use crate::gpu::shaders as wgsl;
 use crate::gpu::{Inner, atlas};
 use crate::scene::compile::{self, Compiled};
 use crate::scene::mark::{Context, Key, MarkKind, Primitive};
-use crate::{Data, Error, Mark, Port, Result, Shape};
+use crate::{Error, Mark, Port, Result, Shape, Snapshot};
 
 /// Where a mark's parts sit in the program buffer, as absolute word offsets.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -64,42 +65,6 @@ pub(crate) struct Holding {
     pub(crate) drawing: Option<Arc<Drawing>>,
 }
 
-/// Where the rows an end of a mark's rows names are held: the vertex mark drawing their table, the
-/// pages of its rows' words and how many words a row has, and the pages of the normals faces sum at
-/// them; and where it holds each page of the order it draws that table in, and each row it keeps whose
-/// page it does not hold, by its place in the order.
-#[derive(Clone, PartialEq, Debug)]
-pub(crate) struct End {
-    pub(crate) mark: Option<usize>,
-    pub(crate) state: Arc<[u32]>,
-    pub(crate) stride: u32,
-    pub(crate) normals: Option<Arc<[u32]>>,
-    pub(crate) order: u64,
-    pub(crate) pages: Option<Arc<[u32]>>,
-    pub(crate) kept: Option<Arc<[[u32; 2]]>>,
-}
-
-impl End {
-    /// An end no vertex mark draws the table of.
-    pub(crate) fn unattached() -> End {
-        End { mark: None, state: Arc::new([]), stride: 0, normals: None, order: 0, pages: None, kept: None }
-    }
-
-    /// Words it takes in a mark's program past its `END_WORDS`: its page table, where pages and rows
-    /// kept are held, and its page table of normals.
-    fn tables(&self) -> usize {
-        self.state.len()
-            + self.pages.as_ref().map_or(0, |p| 2 + p.len() + 2 * self.kept.as_ref().map_or(0, |k| k.len()))
-            + self.normals.as_ref().map_or(0, |n| n.len())
-    }
-}
-
-/// The end before end `c` of `ends` that holds its rows where it does, whose words it shares: as the
-/// two ends of an edge between vertices of one mark do.
-fn shared(ends: &[End], c: usize) -> Option<usize> {
-    ends[..c].iter().position(|e| *e == ends[c])
-}
-
 pub(crate) struct Shown {
     pub(crate) mark: Mark,
     pub(crate) key: Key,
@@ -129,9 +94,18 @@ pub(crate) struct Shown {
     pub(crate) dirty: u32,
     pub(crate) blocks: Blocks,
     pub(crate) reduce: bool,
+    /// Row blocks whose state words start over, in pages new to it: evaluation writes every word of
+    /// their rows before any channel does.
+    pub(crate) fresh: Vec<u32>,
     /// Where this frame's evaluation lists the row blocks it covers, and how many.
     pub(crate) block: u32,
     pub(crate) block_count: u32,
+    /// The row blocks whose ends the end pass finds next frame: where rows or their ends changed,
+    /// and every block where the vertices they end at moved. Where this frame's end pass lists them,
+    /// and how many.
+    pub(crate) unresolved: Blocks,
+    pub(crate) end_block: u32,
+    pub(crate) end_block_count: u32,
     /// Whether this frame's ease pass writes what the mark shows from its frozen and settled state.
     pub(crate) easing: bool,
     /// The program's code and constants with colormap layers and text codes written in.
@@ -192,8 +166,12 @@ impl Shown {
             dirty: 0,
             blocks: Blocks::default(),
             reduce: false,
+            fresh: Vec::new(),
             block: 0,
             block_count: 0,
+            unresolved: Blocks::default(),
+            end_block: 0,
+            end_block_count: 0,
             easing: false,
             code: Vec::new(),
             constants: Vec::new(),
@@ -339,7 +317,7 @@ impl Shown {
         };
         let viewing = [wgsl::OP_SELECTED, wgsl::OP_HOVERED, wgsl::OP_POINTER, wgsl::OP_ZOOM];
         crate::gpu::pipelines::Reads {
-            joined: program.columns.iter().any(|c| c.of.is_some()),
+            joined: program.columns.iter().any(|c| c.from.is_some()),
             timed: program.columns.iter().any(|c| c.sampled),
             viewed: program.code.iter().any(|op| viewing.contains(&op[0])),
         }
@@ -459,9 +437,18 @@ impl Shown {
             }
         }
         // A fitted domain, or a table read through a join, reaches past a row's own block.
-        let joined = program.columns.iter().enumerate().any(|(i, c)| c.of.is_some() && columns & Reads::column(i) != 0);
+        let joined =
+            program.columns.iter().enumerate().any(|(i, c)| c.from.is_some() && columns & Reads::column(i) != 0);
+        // Rows whose ends' references changed find them again.
+        let ends = program
+            .ends
+            .iter()
+            .any(|end| end.column != wgsl::NONE && columns & Reads::column(end.column as usize) != 0);
         self.dirty_rows(channels, blocks.filter(|_| !reduce && !joined));
         self.reduce |= reduce;
+        if ends {
+            self.unresolved.add(blocks);
+        }
         self.packed = false;
     }
 
@@ -498,25 +485,34 @@ impl Shown {
     }
 
     /// Slots `blocks` of held rows given pages of rows held before or never: those blocks evaluate
-    /// every channel, constants included. Their rows' data is as it was, so domains fitted to it hold.
+    /// every channel, constants included, and find their ends. Their rows' data is as it was, so
+    /// domains fitted to it hold.
     pub(crate) fn slots_bound(&mut self, blocks: &[u32]) {
         let Some(compiled) = &self.compiled else { return };
         let n = compiled.program.channels.len();
+        let ends = !compiled.program.ends.is_empty() && !blocks.is_empty();
         self.dirty_rows(if n >= 32 { u32::MAX } else { (1 << n) - 1 }, Some(blocks));
+        if ends {
+            self.unresolved.add(Some(blocks));
+        }
     }
 
+    /// Every row evaluates every channel and finds its ends.
     pub(crate) fn all_dirty(&mut self) {
         if let Some(compiled) = &self.compiled {
             let n = compiled.program.channels.len();
             self.dirty = if n >= 32 { u32::MAX } else { (1 << n) - 1 };
             self.blocks = Blocks::All;
             self.reduce = !compiled.program.domains.is_empty();
+            if !compiled.program.ends.is_empty() {
+                self.unresolved = Blocks::All;
+            }
         }
     }
 
     /// Compiles the mark against `all` in `context`; it stays uncompiled while its data or table is
     /// not set.
-    pub(crate) fn compile(&mut self, all: &[Data], context: Context<'_>, gpu: &mut Inner) -> Result<()> {
+    pub(crate) fn compile(&mut self, all: &[Snapshot], context: Context<'_>, gpu: &mut Inner) -> Result<()> {
         self.tables.release(gpu);
         self.compiled = None;
         self.packed = false;
@@ -529,7 +525,7 @@ impl Shown {
     }
 
     /// Whether `data` changed a schema the mark compiled against, or brought data it waited for.
-    pub(crate) fn stale(&self, data: &Data) -> bool {
+    pub(crate) fn stale(&self, data: &Snapshot) -> bool {
         match &self.compiled {
             None => *data.name() == self.mark.style().data,
             Some(compiled) => {
@@ -564,11 +560,7 @@ impl Shown {
             + 2 * compiled.program.ranges.len()
             + 4 * self.code.len()
             + self.constants.len()
-            + (0..self.ends.len())
-                .map(|c| {
-                    wgsl::END_WORDS as usize + if shared(&self.ends, c).is_some() { 0 } else { self.ends[c].tables() }
-                })
-                .sum::<usize>()
+            + super::ends::words(&self.ends)
             + compiled.drawing.markers.palette.len()
             + self.ports.len()
             + self.drawing().map_or(0, |d| 1 + (d.runs.len() + 1) * wgsl::RUN_WORDS as usize)
@@ -598,7 +590,7 @@ impl Shown {
                     set(word + 3, wgsl::BLEND_SNAP);
                     set(word + wgsl::VERTEX_FLAGS - wgsl::VERTEX_POSITION, wgsl::BLEND_SNAP);
                 }
-                wgsl::OP_STORE_FLAG | wgsl::OP_STORE_CODE | wgsl::OP_STORE_END => set(word, wgsl::BLEND_SNAP),
+                wgsl::OP_STORE_FLAG | wgsl::OP_STORE_CODE => set(word, wgsl::BLEND_SNAP),
                 _ => {}
             }
         }
@@ -625,49 +617,7 @@ impl Shown {
         let constants = at(out);
         out.extend(&self.constants);
         let ends = at(out);
-        // `END_WORDS` an end, then each end's tables: the page table of its vertex mark's words; its
-        // pages, how many, then each one's slot, and the rows it keeps, how many, then each one's place
-        // and held row; and the page table of normals. Ends holding their rows alike share those words.
-        let mut heads: Vec<[u32; wgsl::END_WORDS as usize]> = Vec::with_capacity(self.ends.len());
-        let mut table = ends + wgsl::END_WORDS * self.ends.len() as u32;
-        let mut take = |len: usize| {
-            let at = table;
-            table += len as u32;
-            at
-        };
-        for (c, end) in self.ends.iter().enumerate() {
-            let head = if let Some(earlier) = shared(&self.ends, c) {
-                heads[earlier]
-            } else {
-                let state = if end.mark.is_some() { take(end.state.len()) } else { wgsl::NONE };
-                let slots = end
-                    .pages
-                    .as_ref()
-                    .map_or(wgsl::NONE, |p| take(2 + p.len() + 2 * end.kept.as_ref().map_or(0, |k| k.len())));
-                let normals = end.normals.as_ref().map_or(wgsl::NONE, |n| take(n.len()));
-                [state, end.stride, slots, normals]
-            };
-            heads.push(head);
-            out.extend(head);
-        }
-        for (c, end) in self.ends.iter().enumerate() {
-            if shared(&self.ends, c).is_some() {
-                continue;
-            }
-            if end.mark.is_some() {
-                out.extend(end.state.iter());
-            }
-            if let Some(pages) = &end.pages {
-                out.push(pages.len() as u32);
-                out.extend(pages.iter());
-                let kept = end.kept.as_deref().unwrap_or_default();
-                out.push(kept.len() as u32);
-                out.extend(kept.iter().flatten());
-            }
-            if let Some(normals) = &end.normals {
-                out.extend(normals.iter());
-            }
-        }
+        super::ends::pack(&self.ends, &compiled.program.ends, ends, out);
         let palette = at(out);
         out.extend(&compiled.drawing.markers.palette);
         let port_info = if self.ports.is_empty() { wgsl::NONE } else { at(out) };

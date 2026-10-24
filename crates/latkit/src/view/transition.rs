@@ -350,12 +350,10 @@ impl View {
                 }
                 None => wgsl::NONE,
             };
-            // Each kind word naming a vertex follows that vertex where its mark's rows moved.
-            let ends: Vec<(u32, u32)> = shown
-                .code
-                .iter()
-                .filter(|op| op[0] == wgsl::OP_STORE_END)
-                .filter_map(|op| Some((op[1], moves[shown.ends.get(op[3] as usize)?.mark?])))
+            // Each end, held in the kind word of its number, follows its vertex where that vertex's
+            // mark's rows moved.
+            let ends: Vec<(u32, u32)> = (0..shown.ends.len())
+                .filter_map(|k| Some((k as u32, moves[shown.ends[k].mark?])))
                 .filter(|&(_, moved)| moved != wgsl::NONE)
                 .collect();
             words[header + 3] = if ends.is_empty() {

@@ -9,11 +9,11 @@
  * frame. A lost device fails the phase at once, and every wait races a deadline.
  */
 import {
+  Data,
   Patch,
+  Tiles,
   type Camera,
-  type Data,
   type Gpu,
-  type Latkit,
   type Scene,
   type View,
   type Work,
@@ -74,7 +74,6 @@ interface Drawn {
 }
 
 export class Stage {
-  readonly latkit: Latkit;
   readonly gpu: Gpu;
   readonly canvases: readonly HTMLCanvasElement[];
   /** The scenario's size. */
@@ -82,13 +81,12 @@ export class Stage {
   readonly views: View[] = [];
   /** Errors the views told: a mark that does not fit its data fails the run. */
   readonly errors: string[] = [];
-  scene!: Scene;
   readonly #data = new Map<string, Data>();
   /** The stepped frames' clock, milliseconds. */
   #now = performance.now();
 
-  constructor(latkit: Latkit, gpu: Gpu, canvases: readonly HTMLCanvasElement[], size: number) {
-    [this.latkit, this.gpu, this.canvases, this.size] = [latkit, gpu, canvases, size];
+  constructor(gpu: Gpu, canvases: readonly HTMLCanvasElement[], size: number) {
+    [this.gpu, this.canvases, this.size] = [gpu, canvases, size];
     // Stepped from the start, so no animation frame draws while views load either.
     gpu.step(this.#now);
   }
@@ -106,23 +104,25 @@ export class Stage {
   /** Units across `px` CSS pixels at the middle of the first view. */
   across(px: number): number {
     const [x, y] = this.middle;
-    const [a, b] = [this.view.ground([x, y]), this.view.ground([x + px, y])];
+    const [a, b] = [this.view.position([x, y]), this.view.position([x + px, y])];
     return a && b ? Math.hypot(b[0] - a[0], b[1] - a[1]) : 1;
   }
 
   /** Rows of `table` in dataset `name`. */
   count(name: string, table: string): number {
-    return this.#data.get(name)!.ids(table).length;
+    return this.#data
+      .get(name)!
+      .describe()
+      .tables.find((t) => t.name === table)!.rows;
   }
 
   /** The axis coordinates dataset `name` recorded. */
   span(name: string): [number, number] {
-    return this.#data.get(name)!.span ?? [0, 1];
+    return this.#data.get(name)!.describe().span ?? [0, 1];
   }
 
   /** Takes each dataset in: latkit's work alone, the arrays made beforehand. */
   ingest(data: Record<string, Write>): Promise<Cost> {
-    const { Data } = this.latkit;
     return this.once(() => {
       for (const [name, write] of Object.entries(data))
         this.#data.set(name, new Data(name).apply(write(new Patch())));
@@ -131,16 +131,17 @@ export class Stage {
 
   /** Opens a view on each canvas and draws `scene`: from nothing to everything drawn. */
   load(scene: Scene, tiles: Record<string, string> = {}, camera?: Camera): Promise<Cost> {
-    this.scene = scene;
+    const sources = [
+      ...this.#data.values(),
+      ...Object.entries(tiles).map(([name, url]) => new Tiles(name, url)),
+    ];
     return this.once(() => {
       for (const canvas of this.canvases) {
-        const view = this.gpu.view(scene);
-        this.gpu.canvas(canvas).show([view]);
+        const view = this.gpu.view(scene, { sources });
+        this.gpu.canvas(canvas, { layout: [{ view }] });
         view.on('error', (error) =>
           this.errors.push(`${error.path ?? ''} ${error.message}`.trim()),
         );
-        for (const data of this.#data.values()) view.setData(data);
-        for (const [name, url] of Object.entries(tiles)) view.setTiles(name, url);
         if (camera) view.camera = camera;
         else view.fit('all');
         this.views.push(view);
@@ -148,16 +149,14 @@ export class Stage {
     });
   }
 
-  /** Shows `scene` in every view. */
-  show(scene: Scene): void {
-    this.scene = scene;
-    for (const view of this.views) view.show(scene);
+  /** Draws `scene` in every view. */
+  set scene(scene: Scene) {
+    for (const view of this.views) view.scene = scene;
   }
 
-  /** Writes a patch into dataset `name` and gives every view the next version. */
+  /** Writes a patch into dataset `name`, which every view draws from the next frame. */
   apply(name: string, write: Write): void {
-    const data = this.#data.get(name)!.apply(write(new Patch()));
-    for (const view of this.views) view.setData(data);
+    this.#data.get(name)!.apply(write(new Patch()));
   }
 
   /** Sends a pointer event at `point`, CSS pixels in the first view, as a person's would arrive. */
@@ -287,7 +286,7 @@ export class Stage {
         frames++;
         continue;
       }
-      if (this.views.every((v) => !v.stats.waiting.length && !v.stats.tilesLoading)) return;
+      if (this.views.every((v) => v.complete && !v.stats.tilesLoading)) return;
       await deadline(this.gpu.landed(), DEADLINE, `${this.#waiting()} landing`);
     }
     throw new Error(
@@ -298,6 +297,6 @@ export class Stage {
   /** What the views wait on. */
   #waiting(): string {
     const tiles = this.views.some((v) => v.stats.tilesLoading) ? ['tiles'] : [];
-    return [...new Set(this.views.flatMap((v) => v.stats.waiting)), ...tiles].join(', ');
+    return [...new Set(this.views.flatMap((v) => v.waiting)), ...tiles].join(', ');
   }
 }

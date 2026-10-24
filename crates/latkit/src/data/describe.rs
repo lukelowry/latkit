@@ -2,9 +2,9 @@
 //! spans of its axis.
 
 use super::column::{PAGE_BITS, PAGE_MASK};
-use super::dataset::Data;
 use super::ids::Ids;
 use super::name::Name;
+use super::snapshot::Snapshot;
 use super::table::{Field, Table};
 use super::values::Kind;
 use crate::{Error, Result};
@@ -52,7 +52,26 @@ pub struct FieldDescription {
     pub span: Option<[f64; 2]>,
 }
 
-impl Data {
+/// Rows' least and greatest values of a sampled field over equal spans of the axis, to read back:
+/// field `field` of table `table` over `spans` equal spans from `range[0]` to `range[1]`, of every
+/// row or of the rows `ids` names, in its order. Plain data, like a query.
+#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnvelopeRequest {
+    /// The table read.
+    pub table: Name,
+    /// The sampled field read.
+    pub field: Name,
+    /// The axis coordinates the spans cover, from the first to the last.
+    pub range: [f64; 2],
+    /// How many equal spans the range is cut into.
+    pub spans: usize,
+    /// The rows read, in this order; every row unless set.
+    #[serde(default)]
+    pub ids: Option<Ids>,
+}
+
+impl Snapshot {
     /// What the dataset holds: tables, rows, fields and their kinds, the axis and its span.
     pub fn describe(&self) -> Description {
         Description {
@@ -61,6 +80,28 @@ impl Data {
             span: self.span(),
             tables: self.tables().map(Table::describe).collect(),
         }
+    }
+
+    /// Each row's least and greatest value of a sampled field over equal spans of the axis, as
+    /// `request` asks: row after row, NaN where a span holds no frame. A span reads the coarsest
+    /// levels of detail the field holds that fit inside it, so it costs a few reads, however many
+    /// frames it covers; where the field holds only coarser ones, as time tiles still loading leave
+    /// it, those stand in.
+    ///
+    /// ```
+    /// # use latkit::{Data, EnvelopeRequest, Ids, Patch, Table};
+    /// let grid = Data::new("grid");
+    /// grid.apply(Table::new("Bus", Ids::count(1)))?;
+    /// grid.apply(Patch::new().append("Bus", [0.0, 1.0, 2.0, 3.0], [("vm", vec![1.0, 0.9, 1.1, 1.0])]))?;
+    /// let request = EnvelopeRequest { table: "Bus".into(), field: "vm".into(), range: [0.0, 4.0], spans: 2, ids: None };
+    /// let envelope = grid.snapshot().envelope(&request)?;
+    /// assert_eq!(envelope.least, [0.9, 1.0]);
+    /// # Ok::<(), latkit::Error>(())
+    /// ```
+    pub fn envelope(&self, request: &EnvelopeRequest) -> Result<Envelope> {
+        let EnvelopeRequest { table, field, range, spans, ids } = request;
+        let rows = self.table(table).ok_or_else(|| Error::invalid("no such table").at(table.as_str()))?;
+        rows.envelope(field, *range, *spans, ids.as_ref()).map_err(|e| e.at(table.as_str()))
     }
 }
 
@@ -83,11 +124,8 @@ impl Table {
     }
 
     /// Each row's least and greatest value of sampled field `field` over `spans` equal spans of the
-    /// axis from `range[0]` to `range[1]`: of every row, or of the rows `ids` names, in its order. A
-    /// span reads the coarsest levels of detail the field holds that fit inside it, so it costs a few
-    /// reads, however many frames it covers; where the field holds only coarser ones, as time tiles
-    /// still loading leave it, those stand in.
-    pub fn envelope(&self, field: &str, range: [f64; 2], spans: usize, ids: Option<&Ids>) -> Result<Envelope> {
+    /// axis from `range[0]` to `range[1]`: see [`Snapshot::envelope`].
+    pub(crate) fn envelope(&self, field: &str, range: [f64; 2], spans: usize, ids: Option<&Ids>) -> Result<Envelope> {
         let Some(Field::Sampled(samples, _)) = self.field_named(field) else {
             return Err(Error::invalid("not a sampled field").at(field));
         };

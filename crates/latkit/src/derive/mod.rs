@@ -7,11 +7,13 @@
 //!
 //! The derivations: a diagram's sheet (places, sizes, boxes, wires); elsewhere the lanes of edges
 //! sharing their ends, the stars of nets, and where the scene has a layout the places of vertex rows
-//! without positions; the shapes of geometry fields; the triangles of every area; and the tiles the
-//! camera asks for, which patch datasets the view owns.
+//! without positions; the shapes of geometry fields; the triangles of every area; whether texts hold
+//! what marks ask them about; and what the view draws of the tiles it is given, the pieces the camera
+//! asks for.
 
 pub(crate) mod graph;
 mod lanes;
+pub(crate) mod matches;
 pub(crate) mod order;
 pub(crate) mod places;
 pub(crate) mod pyramid;
@@ -19,8 +21,6 @@ pub(crate) mod shapes;
 pub(crate) mod sight;
 mod stars;
 pub(crate) mod tiled;
-pub(crate) mod tiles;
-mod tiling;
 
 pub(crate) use lanes::{spread, words as lane_words};
 
@@ -30,14 +30,14 @@ use std::task::Waker;
 
 use rustc_hash::FxHasher;
 
-use crate::data::{Column, Data, Field, Keyed, Name, Op, Page, Patch, Table, Value, Values, Version};
+use crate::data::{Column, Field, Keyed, Name, Op, Page, Patch, Snapshot, Table, Value, Values, Version};
 use crate::gpu::readback::Readback;
 use crate::gpu::work::{Count, Counters};
 use crate::host::{Host, Job, Key, Request};
 use crate::sheet::Sheet;
+use crate::tiles::TileSets;
 use crate::{Pending, Result, Scene, Space};
 use places::Places;
-use tiles::TileSets;
 
 /// A stamp of `inputs`: never 0, which no value is made from.
 pub(crate) fn stamp_of(inputs: impl Hash) -> u64 {
@@ -169,6 +169,17 @@ impl<'a> Jobs<'a> {
         u64::from(self.left)
     }
 
+    /// What its jobs and fetches wake as they land.
+    pub(crate) fn waker(&self) -> &Waker {
+        self.waker
+    }
+
+    /// The same host's jobs and fetches, waking `waker` as they land in place of this frame's view,
+    /// with none of the frame's budget: work done for every view drawing what it brings.
+    pub(crate) fn waking<'b>(&'b self, waker: &'b Waker) -> Jobs<'b> {
+        Jobs { errors: self.errors, host: self.host, waker, counters: self.counters, left: 0 }
+    }
+
     /// Spends `cost` microseconds of the budget whether it fits or not: work the frame cannot defer.
     pub(crate) fn spend(&mut self, cost: u64) {
         self.left = self.left.saturating_sub(cost.min(u64::from(u32::MAX)) as u32);
@@ -203,7 +214,7 @@ pub(crate) struct Input<'a> {
     pub(crate) scene: &'a Scene,
     /// Bumps whenever the scene changes.
     pub(crate) scene_version: u64,
-    pub(crate) data: &'a [Data],
+    pub(crate) data: &'a [Snapshot],
     pub(crate) host: Option<&'a dyn Host>,
     /// Whether rows are being dragged: what they move derives on the frame, however much.
     pub(crate) dragging: bool,
@@ -221,7 +232,7 @@ pub(crate) struct Paged {
 
 impl Input<'_> {
     /// The dataset named `name`.
-    pub(crate) fn data(&self, name: &str) -> Option<&Data> {
+    pub(crate) fn data(&self, name: &str) -> Option<&Snapshot> {
         self.data.iter().find(|d| d.name() == name)
     }
 
@@ -289,9 +300,9 @@ impl Input<'_> {
     ) {
         let own = own && !expr.fits();
         expr.for_each_field(&mut |f| {
-            let (data, of) = f.of.as_ref().map_or(table, |(d, t)| (d, t));
-            let field = self.data(data).and_then(|d| d.table(of)).and_then(|t| t.field_named(&f.name));
-            read(Read::Field { data, table: of, name: f.name.as_str(), field, own: own && f.of.is_none() });
+            let (data, read_from) = f.from.as_ref().map_or(table, |(d, t)| (d, t));
+            let field = self.data(data).and_then(|d| d.table(read_from)).and_then(|t| t.field_named(&f.name));
+            read(Read::Field { data, table: read_from, name: f.name.as_str(), field, own: own && f.from.is_none() });
         });
     }
 
@@ -355,14 +366,17 @@ pub(crate) struct Derivations {
     /// Elsewhere, the stars of nets joining vertex rows.
     stars: stars::Stars,
     shapes: shapes::Shapes,
-    /// The tiles the camera asks for, as datasets the view owns.
+    /// Whether texts hold what marks ask them about.
+    matches: matches::Matches,
+    /// What the view draws of the tiles it is given: the pieces the camera asks for, as datasets.
     pub(crate) tiles: TileSets,
     /// What the view draws of each dataset it draws in part.
     pub(crate) tiled: tiled::Tiled,
 }
 
-/// The derived tables beside one drawn table: the sheet's or the lanes', then the shapes'.
-pub(crate) type Beside<'a> = [Option<&'a Table>; 2];
+/// The derived tables beside one drawn table: the sheet's or the lanes', the shapes', then the
+/// matches'.
+pub(crate) type Beside<'a> = [Option<&'a Table>; 3];
 
 impl Derivations {
     /// Brings every derivation up to `input`, spending what the tiles left of the frame's `jobs`;
@@ -379,6 +393,7 @@ impl Derivations {
             self.lanes.update(input, jobs) | placed | self.stars.update(input, self.places.tables())
         };
         changed |= self.shapes.update(input, &self.tiles, jobs);
+        changed |= self.matches.update(input, jobs);
         changed
     }
 
@@ -424,7 +439,7 @@ impl Derivations {
         let first = [self.sheet.tables(), self.places.tables(), self.stars.tables(), self.lanes.tables()]
             .into_iter()
             .find_map(|tables| tables.get(&key));
-        [first, self.shapes.tables().get(&key)]
+        [first, self.shapes.tables().get(&key), self.matches.tables().get(&key)]
     }
 
     /// The shapes of table `table` of dataset `data` drawn in part, a page of its order at a time,

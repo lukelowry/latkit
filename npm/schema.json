@@ -48,7 +48,7 @@
       "required": [
         "space"
       ],
-      "description": "What a view draws and how it answers input: a space, marks in drawing order, a layout, a theme,\ncontrols, how long changes ease, and the title written over it. Plain data: as JSON, each field by\nits name in camelCase, each mark `{ vertices | edges | faces | lines | areas: options }`.\n\n```\n# use latkit::{Colormap, Edges, Earth, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet scene = Scene::new(Earth::globe())\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(Vertices::of(\"grid\", \"Bus\").position(\"lon\", \"lat\").color(voltage).legend(\"Bus voltage · pu\"))\n    .title(\"Voltage\");\n```"
+      "description": "What a view draws and how it answers input: a space, marks in drawing order, a layout, a theme,\ncontrols, how long changes ease, and the title written over it. Plain data: as JSON, each field by\nits name in camelCase, each mark `{ vertices | edges | faces | lines | areas: options }`.\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(Vertices::of(\"grid\", \"Bus\").position(\"lon\", \"lat\").color(voltage).legend(\"Bus voltage · pu\"))\n    .title(\"Voltage\");\n```"
     },
     "Space": {
       "anyOf": [
@@ -57,15 +57,14 @@
           "enum": [
             "plane",
             "diagram",
-            "mercator",
-            "globe",
+            "earth",
             "plot"
           ]
         },
         {
           "oneOf": [
             {
-              "description": "Longitude and latitude in degrees, on a map or a globe.",
+              "description": "Longitude and latitude in degrees, on a flat map or a globe.",
               "type": "object",
               "properties": {
                 "earth": {
@@ -119,7 +118,7 @@
           ]
         }
       ],
-      "description": "The coordinate space a scene's positions are in: a name, or `{ plane | diagram | earth | plot:\noptions }`. A diagram is a flat sheet seen from straight above: y runs down, and every length is a\nunit, a CSS pixel at zoom 0, except glow, halo, and pick radius. Only a diagram has ports, groups,\nnets, orthogonal routes, and layouts."
+      "description": "The coordinate space a scene's positions are in: a name, or `{ plane | diagram | earth | plot:\noptions }`. Its own unit is what lengths are in unless they say theirs: units in a diagram, a flat\nsheet seen from straight above with y running down, a unit a CSS pixel at zoom 0; CSS pixels\nelsewhere. Only a diagram has ports, groups, nets, and orthogonal routes."
     },
     "Earth": {
       "type": "object",
@@ -127,15 +126,7 @@
       "properties": {
         "projection": {
           "$ref": "#/$defs/Projection",
-          "description": "A flat map or a globe."
-        },
-        "surface": {
-          "description": "The ground's color; the theme's surface unless set.",
-          "tsType": "Color",
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "A flat map or a globe; a flat map unless set."
         },
         "graticule": {
           "type": "boolean",
@@ -154,7 +145,7 @@
           "description": "Whether air glows around the globe, in the theme's atmosphere color, brighter where it is day."
         }
       },
-      "description": "The earth: positions are longitude and latitude in degrees."
+      "description": "The earth: positions are longitude and latitude in degrees, its ground in the theme's earth\ncolors."
     },
     "Projection": {
       "oneOf": [
@@ -365,7 +356,7 @@
           "description": "The grid under the marks."
         }
       },
-      "description": "A sheet for diagrams, flat and seen from straight above: the camera pans and zooms. Positions are\nunits with y down, and every length is a unit, a CSS pixel at zoom 0 (sizes, padding, ports,\nstrokes, text, and the theme's), except glow, halo, and pick radius. Zooming scales one fixed\npicture. Only a diagram has ports, groups, nets, and orthogonal routes; it lays out blocks."
+      "description": "A sheet for diagrams, flat and seen from straight above: the camera pans and zooms. Positions are\nunits with y down, and lengths are units, a unit a CSS pixel at zoom 0 (sizes, padding, ports,\nstrokes, text, and the theme's), but for what says `px`, a halo, focus's glow, and the pick\nradius. Zooming scales one fixed picture. Only a diagram has ports, groups, nets, and orthogonal\nroutes; it lays out blocks."
     },
     "Mark": {
       "oneOf": [
@@ -488,7 +479,7 @@
               "type": "null"
             }
           ],
-          "description": "CSS pixels, or position units with `units`; units in a diagram."
+          "description": "Each row's radius, in the space's unit unless it says its own: units in a diagram, CSS pixels\nelsewhere."
         },
         "size": {
           "type": [
@@ -500,7 +491,7 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "description": "Width and height, for markers that are not round: CSS pixels, or position units with `units`;\nunits in a diagram, where a block without a size fits its label and ports."
+          "description": "Width and height, for markers that are not round, in the space's unit unless they say their\nown; in a diagram a block's are units, and a block without a size fits its label and ports."
         },
         "marker": {
           "$ref": "#/$defs/Marker",
@@ -509,7 +500,7 @@
         "ring": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Expr"
+              "$ref": "#/$defs/Paint"
             },
             {
               "type": "null"
@@ -560,7 +551,7 @@
         "color": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Expr"
+              "$ref": "#/$defs/Paint"
             },
             {
               "type": "null"
@@ -643,7 +634,7 @@
           "type": "boolean"
         },
         {
-          "description": "A field's name, or a hex color when it starts with `#`.",
+          "description": "A field's name.",
           "type": "string"
         },
         {
@@ -688,7 +679,7 @@
         "field": {
           "type": "string"
         },
-        "of": {
+        "from": {
           "type": [
             "array",
             "null"
@@ -714,7 +705,7 @@
       "required": [
         "field"
       ],
-      "description": "A field of each row: of the mark's own table, or of another dataset's table joined by row id."
+      "description": "A field of each row: of the mark's own table, or from another dataset's table joined by row id."
     },
     "ColorNode": {
       "type": "object",
@@ -924,7 +915,7 @@
       "required": [
         "contains"
       ],
-      "description": "Whether a text field holds the text, ignoring case: read by queries, which hold texts."
+      "description": "Whether a text field holds the text, ignoring case: in a mark, a field of its own table."
     },
     "ScaleNode": {
       "type": "object",
@@ -1133,15 +1124,31 @@
       "description": "How a colormap spans values."
     },
     "Size": {
-      "description": "A size: CSS pixels, or position units with `units`.",
+      "description": "A size, in the space's unit unless it says its own: units in a diagram, CSS pixels elsewhere; `px` keeps CSS pixels, and `units` takes position units, which scale as the view zooms.",
       "anyOf": [
         {
           "$ref": "#/$defs/Expr"
         },
         {
+          "$ref": "#/$defs/Px"
+        },
+        {
           "$ref": "#/$defs/Units"
         }
       ]
+    },
+    "Px": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "px": {
+          "$ref": "#/$defs/Expr"
+        }
+      },
+      "required": [
+        "px"
+      ],
+      "description": "A size in CSS pixels, whatever the space's own unit."
     },
     "Units": {
       "type": "object",
@@ -1172,7 +1179,7 @@
       "required": [
         "units"
       ],
-      "description": "A size in position units, so it scales as the view zooms, kept within CSS pixels when given."
+      "description": "A size in position units, whatever the space's own unit, so it scales as the view zooms, kept\nwithin CSS pixels when given."
     },
     "Marker": {
       "anyOf": [
@@ -1416,6 +1423,63 @@
       ],
       "description": "RGBA texels, straight alpha, sRGB, rows top to bottom."
     },
+    "Paint": {
+      "$ref": "#/$defs/PaintNode",
+      "tsType": "PaintInput"
+    },
+    "PaintNode": {
+      "description": "A color for every row of a mark: a CSS color, a value through a colormap, or a conditional choosing between colors.",
+      "anyOf": [
+        {
+          "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
+          "type": "string",
+          "tsType": "Color"
+        },
+        {
+          "$ref": "#/$defs/ColorNode"
+        },
+        {
+          "$ref": "#/$defs/ColormapNode"
+        },
+        {
+          "$ref": "#/$defs/WhenPaintNode"
+        },
+        {
+          "$ref": "#/$defs/MissingNode"
+        }
+      ]
+    },
+    "WhenPaintNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "when": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "$ref": "#/$defs/Expr"
+              },
+              {
+                "$ref": "#/$defs/Paint"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "tsType": "[condition: ExprInput, color: PaintInput][]"
+        },
+        "otherwise": {
+          "$ref": "#/$defs/Paint"
+        }
+      },
+      "required": [
+        "when",
+        "otherwise"
+      ],
+      "description": "A conditional's color: the first case's whose condition holds, else `otherwise`'s."
+    },
     "Port": {
       "anyOf": [
         {
@@ -1506,7 +1570,7 @@
               "$ref": "#/$defs/Expr"
             },
             "size": {
-              "description": "CSS pixels, or units in a diagram; the theme's font size unless set.",
+              "description": "In the space's unit: units in a diagram, CSS pixels elsewhere; the theme's text size unless\nset.",
               "type": [
                 "number",
                 "null"
@@ -1517,7 +1581,7 @@
               "description": "Each row's text color; the theme's text color unless set.",
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Expr"
+                  "$ref": "#/$defs/Paint"
                 },
                 {
                   "type": "null"
@@ -1536,7 +1600,7 @@
               ]
             },
             "maxWidth": {
-              "description": "How far a line runs before it wraps: CSS pixels, or units in a diagram.",
+              "description": "How far a line runs before it wraps, in the space's unit: units in a diagram, CSS pixels\nelsewhere.",
               "type": [
                 "number",
                 "null"
@@ -1657,7 +1721,7 @@
               "type": "null"
             }
           ],
-          "description": "CSS pixels, or position units with `units`; units in a diagram."
+          "description": "Each row's width, in the space's unit unless it says its own: units in a diagram, CSS\npixels elsewhere."
         },
         "dash": {
           "$ref": "#/$defs/Expr",
@@ -1665,12 +1729,12 @@
         },
         "flow": {
           "$ref": "#/$defs/Expr",
-          "description": "Comets flowing along each row at this speed a second: CSS pixels, units in a diagram,\nor position units where the theme's flow is in units; negative flows backward. A speed\nthat changes carries comets on from where they are."
+          "description": "Comets flowing along each row at this speed a second, in the lengths of the theme's\nflow; negative flows backward. A speed that changes carries comets on from where they\nare."
         },
         "color": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Expr"
+              "$ref": "#/$defs/Paint"
             },
             {
               "type": "null"
@@ -1794,7 +1858,7 @@
         "color": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Expr"
+              "$ref": "#/$defs/Paint"
             },
             {
               "type": "null"
@@ -1909,7 +1973,7 @@
               "type": "null"
             }
           ],
-          "description": "CSS pixels, or position units with `units`; units in a diagram."
+          "description": "Each row's width, in the space's unit unless it says its own: units in a diagram, CSS\npixels elsewhere."
         },
         "dash": {
           "$ref": "#/$defs/Expr",
@@ -1917,12 +1981,12 @@
         },
         "flow": {
           "$ref": "#/$defs/Expr",
-          "description": "Comets flowing along each row at this speed a second: CSS pixels, units in a diagram,\nor position units where the theme's flow is in units; negative flows backward. A speed\nthat changes carries comets on from where they are."
+          "description": "Comets flowing along each row at this speed a second, in the lengths of the theme's\nflow; negative flows backward. A speed that changes carries comets on from where they\nare."
         },
         "color": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Expr"
+              "$ref": "#/$defs/Paint"
             },
             {
               "type": "null"
@@ -2040,7 +2104,7 @@
         "color": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Expr"
+              "$ref": "#/$defs/Paint"
             },
             {
               "type": "null"
@@ -2228,75 +2292,8 @@
               "type": "string",
               "tsType": "Color"
             },
-            "surface": {
-              "description": "The earth's ground, and a group's container.",
-              "type": "string",
-              "tsType": "Color"
-            },
             "grid": {
-              "description": "A plane's or a diagram's grid.",
-              "type": "string",
-              "tsType": "Color"
-            },
-            "vertex": {
-              "description": "Vertex color.",
-              "type": "string",
-              "tsType": "Color"
-            },
-            "vertexRadius": {
-              "description": "Vertex radius.",
-              "type": "number",
-              "format": "float"
-            },
-            "edge": {
-              "description": "Edge color; `None` blends the colors of each edge's two vertices, and in a diagram takes the\ntext color.",
-              "type": [
-                "string",
-                "null"
-              ],
-              "tsType": "Color"
-            },
-            "edgeWidth": {
-              "description": "Edge width.",
-              "type": "number",
-              "format": "float"
-            },
-            "line": {
-              "description": "Line color.",
-              "type": "string",
-              "tsType": "Color"
-            },
-            "lineWidth": {
-              "description": "Line width.",
-              "type": "number",
-              "format": "float"
-            },
-            "area": {
-              "description": "Area color.",
-              "type": "string",
-              "tsType": "Color"
-            },
-            "shading": {
-              "description": "How much a face turned away from the camera darkens, 0 to 1.",
-              "type": "number",
-              "format": "float"
-            },
-            "text": {
-              "description": "Text: labels, axis ticks, and titles.",
-              "type": "string",
-              "tsType": "Color"
-            },
-            "font": {
-              "description": "The CSS font family text is set in.",
-              "type": "string"
-            },
-            "fontSize": {
-              "description": "Text size.",
-              "type": "number",
-              "format": "float"
-            },
-            "playhead": {
-              "description": "The line a plot draws at the shown coordinate.",
+              "description": "A plane's or a diagram's grid, and the earth's graticule.",
               "type": "string",
               "tsType": "Color"
             },
@@ -2305,104 +2302,55 @@
               "type": "string",
               "tsType": "Color"
             },
-            "hover": {
-              "description": "The glow around hovered rows.",
-              "type": "string",
-              "tsType": "Color"
-            },
-            "selected": {
-              "description": "The glow around selected rows; `None` glows in each row's own color.",
-              "type": [
-                "string",
-                "null"
-              ],
-              "tsType": "Color"
-            },
-            "glow": {
-              "description": "How far focus glows reach, CSS pixels.",
-              "type": "number",
-              "format": "float"
-            },
-            "dim": {
-              "description": "The opacity of rows outside a selection.",
-              "type": "number",
-              "format": "float"
-            },
-            "hoverScale": {
-              "description": "How much a hovered vertex sized in CSS pixels grows.",
-              "type": "number",
-              "format": "float"
-            },
             "dash": {
               "description": "Length of a dash.",
               "type": "number",
               "format": "float"
             },
+            "shading": {
+              "description": "How much a face turned away from the camera darkens, 0 to 1.",
+              "type": "number",
+              "format": "float"
+            },
+            "text": {
+              "description": "Labels, axis ticks, and titles.",
+              "$ref": "#/$defs/TextTheme"
+            },
+            "vertex": {
+              "description": "Vertices where their options say nothing.",
+              "$ref": "#/$defs/VertexTheme"
+            },
+            "edge": {
+              "description": "Edges where their options say nothing, their lanes, and their arrowheads.",
+              "$ref": "#/$defs/EdgeTheme"
+            },
+            "line": {
+              "description": "Lines where their options say nothing.",
+              "$ref": "#/$defs/LineTheme"
+            },
+            "area": {
+              "description": "Areas where their options say nothing.",
+              "$ref": "#/$defs/AreaTheme"
+            },
+            "focus": {
+              "description": "How hovered and selected rows glow, and rows outside a selection dim.",
+              "$ref": "#/$defs/FocusTheme"
+            },
             "flow": {
               "description": "How comets flowing along edges and lines look.",
-              "$ref": "#/$defs/Flow"
+              "$ref": "#/$defs/FlowTheme"
             },
-            "edgeSpacing": {
-              "description": "In a diagram, distance between the lanes of edges joining the same two vertices, and between\nparallel orthogonal wires, which keep twice it apart.",
-              "type": "number",
-              "format": "float"
+            "diagram": {
+              "description": "How a diagram's blocks, groups, ports, and wires look.",
+              "$ref": "#/$defs/DiagramTheme"
             },
-            "laneBow": {
-              "description": "Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction\nof the edge's length at its middle, as wide as eight lanes at most, more packing closer. A bow\nis part of the drawing, so zooming never moves it.",
-              "type": "number",
-              "format": "float"
+            "earth": {
+              "description": "How the earth looks.",
+              "$ref": "#/$defs/EarthTheme"
             },
-            "arrow": {
-              "description": "How far an arrowhead reaches past its edge's width.",
-              "type": "number",
-              "format": "float"
-            },
-            "halo": {
-              "description": "CSS pixels of background around label text.",
-              "type": "number",
-              "format": "float"
-            },
-            "groupPadding": {
-              "description": "Distance between a group's members and its outline.",
-              "type": "number",
-              "format": "float"
-            },
-            "outline": {
-              "description": "The border of a diagram's blocks and groups, a unit wide; `None` draws none.",
-              "type": [
-                "string",
-                "null"
-              ],
-              "tsType": "Color"
-            },
-            "corner": {
-              "description": "The radius of a diagram's block and group corners; a block's marker may set its own.",
-              "type": "number",
-              "format": "float"
-            },
-            "portSize": {
-              "description": "How wide a diagram's ports are.",
-              "type": "number",
-              "format": "float"
-            },
-            "bend": {
-              "description": "The radius of an orthogonal wire's bends.",
-              "type": "number",
-              "format": "float"
-            },
-            "shadow": {
-              "description": "How a diagram's blocks and groups drop shadows onto its sheet.",
-              "$ref": "#/$defs/Shadow"
-            },
-            "atmosphere": {
-              "description": "The air glowing around the globe, where the earth has an atmosphere.",
-              "type": "string",
-              "tsType": "Color"
-            },
-            "night": {
-              "description": "How bright the earth's night side stays where it is lit by daylight, 0 to 1.",
-              "type": "number",
-              "format": "float"
+            "plot": {
+              "description": "How a plot looks.",
+              "$ref": "#/$defs/PlotTheme"
             },
             "base": {
               "description": "The theme these options change; dark unless set.",
@@ -2415,9 +2363,151 @@
           "additionalProperties": false
         }
       ],
-      "description": "Colors and sizes marks take where their options read nothing, and the look of focus and motion: a\nbase theme's name, or options over one (`base`, dark unless set). Lengths are CSS pixels; in a\ndiagram they are units, except `glow` and `halo`."
+      "description": "Colors and sizes marks take where their options read nothing, and the look of text, focus,\nmotion, and each space, grouped by what they style: a base theme's name, or options over one\n(`base`, dark unless set), each group's over the base's. Lengths are in the space's unit, units in a\ndiagram and CSS pixels elsewhere, but for a text's halo and focus's glow, CSS pixels everywhere."
     },
-    "Flow": {
+    "TextTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "description": "Text's color.",
+          "tsType": "Color",
+          "type": "string"
+        },
+        "font": {
+          "type": "string",
+          "description": "The CSS font family text is set in."
+        },
+        "size": {
+          "type": "number",
+          "format": "float",
+          "description": "Text's size."
+        },
+        "halo": {
+          "type": "number",
+          "format": "float",
+          "description": "CSS pixels of background around label text."
+        }
+      },
+      "description": "Labels, axis ticks, and titles."
+    },
+    "VertexTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "description": "A vertex's color.",
+          "tsType": "Color",
+          "type": "string"
+        },
+        "radius": {
+          "type": "number",
+          "format": "float",
+          "description": "A vertex's radius."
+        }
+      },
+      "description": "Vertices where their options say nothing."
+    },
+    "EdgeTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "description": "An edge's color; `None` blends the colors of each edge's two vertices, and in a diagram takes\nthe text color.",
+          "tsType": "Color",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "width": {
+          "type": "number",
+          "format": "float",
+          "description": "An edge's width."
+        },
+        "spacing": {
+          "type": "number",
+          "format": "float",
+          "description": "In a diagram, distance between the lanes of edges joining the same two vertices, and between\nparallel orthogonal wires, which keep twice it apart."
+        },
+        "bow": {
+          "type": "number",
+          "format": "float",
+          "description": "Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction\nof the edge's length at its middle, as wide as eight lanes at most, more packing closer. A bow\nis part of the drawing, so zooming never moves it."
+        },
+        "arrow": {
+          "type": "number",
+          "format": "float",
+          "description": "How far an arrowhead reaches past its edge's width."
+        }
+      },
+      "description": "Edges where their options say nothing, their lanes, and their arrowheads."
+    },
+    "LineTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "description": "A line's color.",
+          "tsType": "Color",
+          "type": "string"
+        },
+        "width": {
+          "type": "number",
+          "format": "float",
+          "description": "A line's width."
+        }
+      },
+      "description": "Lines where their options say nothing."
+    },
+    "AreaTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "description": "An area's color.",
+          "tsType": "Color",
+          "type": "string"
+        }
+      },
+      "description": "Areas where their options say nothing."
+    },
+    "FocusTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hover": {
+          "description": "The glow around hovered rows.",
+          "tsType": "Color",
+          "type": "string"
+        },
+        "selected": {
+          "description": "The glow around selected rows; `None` glows in each row's own color.",
+          "tsType": "Color",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "glow": {
+          "type": "number",
+          "format": "float",
+          "description": "How far focus glows reach, CSS pixels."
+        },
+        "dim": {
+          "type": "number",
+          "format": "float",
+          "description": "The opacity of rows outside a selection."
+        },
+        "grow": {
+          "type": "number",
+          "format": "float",
+          "description": "How much a hovered vertex sized in CSS pixels grows."
+        }
+      },
+      "description": "How hovered and selected rows glow, and rows outside a selection dim."
+    },
+    "FlowTheme": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -2427,28 +2517,100 @@
           "type": "string"
         },
         "spacing": {
-          "type": "number",
-          "format": "float",
+          "$ref": "#/$defs/Length",
           "description": "Distance between comets."
         },
         "length": {
-          "type": "number",
-          "format": "float",
+          "$ref": "#/$defs/Length",
           "description": "How far a comet's tail trails its head."
         },
         "width": {
           "type": "number",
           "format": "float",
-          "description": "How wide a comet's head is, CSS pixels, or units in a diagram; never narrower than its stroke."
-        },
-        "units": {
-          "type": "boolean",
-          "description": "Whether comets are part of the drawing: their spacing, length, and each row's flow in position\nunits, degrees on the earth, so they zoom with the view and stay where they are on their lines.\nOtherwise they keep their size and speed on screen, and slide along their lines as it zooms."
+          "description": "How wide a comet's head is; never narrower than its stroke."
         }
       },
-      "description": "How comets flowing along edges and lines look: each a round head, brightest at its middle, trailing\na tail that thins and fades."
+      "description": "How comets flowing along edges and lines look: each a round head, brightest at its middle, trailing\na tail that thins and fades. Their spacing and length are in one unit, and each row's flow is in it\ntoo: in position units, degrees on the earth, comets are part of the drawing, zooming with the\nview and staying where they are on their lines; otherwise they keep their size and speed as it\nzooms."
     },
-    "Shadow": {
+    "Length": {
+      "description": "A length: a number, in the space's unit, units in a diagram and CSS pixels elsewhere; `{ px }`, CSS pixels; or `{ units }`, position units.",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "px": {
+              "type": "number",
+              "description": "CSS pixels, however the view zooms."
+            }
+          },
+          "required": [
+            "px"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "units": {
+              "type": "number",
+              "description": "Position units, which scale as the view zooms."
+            }
+          },
+          "required": [
+            "units"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "DiagramTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "description": "What a group's container is filled with.",
+          "tsType": "Color",
+          "type": "string"
+        },
+        "outline": {
+          "description": "The border of blocks and groups, a unit wide; `None` draws none.",
+          "tsType": "Color",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "corner": {
+          "type": "number",
+          "format": "float",
+          "description": "The radius of block and group corners; a block's marker may set its own."
+        },
+        "portSize": {
+          "type": "number",
+          "format": "float",
+          "description": "How wide ports are."
+        },
+        "bend": {
+          "type": "number",
+          "format": "float",
+          "description": "The radius of an orthogonal wire's bends."
+        },
+        "groupPadding": {
+          "type": "number",
+          "format": "float",
+          "description": "Distance between a group's members and its outline."
+        },
+        "shadow": {
+          "$ref": "#/$defs/ShadowTheme",
+          "description": "How blocks and groups drop shadows onto the sheet."
+        }
+      },
+      "description": "How a diagram's blocks, groups, ports, and wires look."
+    },
+    "ShadowTheme": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -2464,6 +2626,40 @@
         }
       },
       "description": "How a diagram's blocks and groups drop shadows onto its sheet."
+    },
+    "EarthTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ground": {
+          "description": "The ground's color.",
+          "tsType": "Color",
+          "type": "string"
+        },
+        "atmosphere": {
+          "description": "The air glowing around the globe, where the earth has an atmosphere.",
+          "tsType": "Color",
+          "type": "string"
+        },
+        "night": {
+          "type": "number",
+          "format": "float",
+          "description": "How bright the night side stays where daylight lights the earth, 0 to 1."
+        }
+      },
+      "description": "How the earth looks."
+    },
+    "PlotTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "playhead": {
+          "description": "The line drawn at the shown coordinate.",
+          "tsType": "Color",
+          "type": "string"
+        }
+      },
+      "description": "How a plot looks."
     },
     "Controls": {
       "anyOf": [
@@ -3171,11 +3367,14 @@
           "description": "The most rows read; a limit picks them in linear time before sorting only those."
         },
         "select": {
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "$ref": "#/$defs/Expr"
           },
-          "description": "Fields to read by name: a field as it is, anything else as numbers. Every field unless set."
+          "description": "Fields to read by name: a field as it is, anything else as numbers. Every field unless set;\nnone set reads the ids alone."
         },
         "at": {
           "type": [
@@ -3205,6 +3404,54 @@
         }
       ],
       "description": "Which way a sort runs; rows a key reads nothing for come last either way."
+    },
+    "EnvelopeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "table": {
+          "type": "string",
+          "description": "The table read."
+        },
+        "field": {
+          "type": "string",
+          "description": "The sampled field read."
+        },
+        "range": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "The axis coordinates the spans cover, from the first to the last."
+        },
+        "spans": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many equal spans the range is cut into."
+        },
+        "ids": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ids"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The rows read, in this order; every row unless set."
+        }
+      },
+      "required": [
+        "table",
+        "field",
+        "range",
+        "spans"
+      ],
+      "description": "Rows' least and greatest values of a sampled field over equal spans of the axis, to read back:\nfield `field` of table `table` over `spans` equal spans from `range[0]` to `range[1]`, of every\nrow or of the rows `ids` names, in its order. Plain data, like a query."
     },
     "Camera": {
       "anyOf": [
@@ -3473,10 +3720,9 @@
           "type": "boolean",
           "description": "Whether alpha is kept where the themes' backgrounds would be."
         },
-        "deadline": {
-          "type": "number",
-          "format": "double",
-          "description": "Seconds a picture, or a video frame, may take; 30 unless set."
+        "capture": {
+          "$ref": "#/$defs/Capture",
+          "description": "When the picture is taken: once its views are complete and still, or as they are now."
         },
         "elapsed": {
           "type": [
@@ -3490,7 +3736,7 @@
       "required": [
         "size"
       ],
-      "description": "A picture of views, each drawn into its panel of `size` pixels at `scale` pixels per CSS pixel:\nplain data, like a scene.\n\n```no_run\n# async fn example(view: &mut latkit::View) -> latkit::Result<()> {\nuse latkit::Shot;\nlet image = Shot::new([3840, 2160]).scale(2.0).image(&mut [view]).await?;\nstd::fs::write(\"view.png\", image.encode(latkit::ImageFormat::Png)?).expect(\"written\");\n# Ok(()) }\n```"
+      "description": "A picture of views, each drawn into its panel of `size` pixels at `scale` pixels per CSS pixel,\nonce they are complete as its capture says: plain data, like a scene.\n\n```no_run\n# async fn example(view: &mut latkit::View) -> latkit::Result<()> {\nuse latkit::Shot;\nlet image = Shot::new([3840, 2160]).scale(2.0).image(&mut [view]).await?;\nstd::fs::write(\"view.png\", image.encode(latkit::ImageFormat::Png)?).expect(\"written\");\n# Ok(()) }\n```"
     },
     "Panels": {
       "type": "array",
@@ -3504,6 +3750,21 @@
         "maxItems": 4
       },
       "description": "Where each of several views draws in a target: x, y, width, and height as fractions of it, a\npanel per view, in order; a later panel draws over an earlier one. None given is one view filling\nthe target.\n\n```\nuse latkit::Panels;\nlet map_over_plot = Panels::from([[0.0, 0.0, 1.0, 0.8], [0.0, 0.8, 1.0, 0.2]]);\nassert_eq!(map_over_plot.len(), 2);\nassert_eq!(Panels::default().len(), 1);\n```"
+    },
+    "Capture": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "still",
+          "description": "Once every view is complete and still: transitions, flights, and label fades run on, a\nsixtieth of a second a step, until they land."
+        },
+        {
+          "type": "string",
+          "const": "now",
+          "description": "Once every view is complete, as it stands now: what moves holds where it is."
+        }
+      ],
+      "description": "When a picture is taken."
     }
   },
   "outputs": {
@@ -3746,7 +4007,7 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "hover"
+              "const": "hovered"
             },
             "detail": {
               "type": "object",
@@ -3784,7 +4045,7 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "select"
+              "const": "selection"
             },
             "detail": {
               "type": "object",
@@ -3852,7 +4113,7 @@
             "type",
             "detail"
           ],
-          "description": "What the last frame stood in for changed; nothing once it is complete:\n[`View::complete`](crate::View::complete)."
+          "description": "What the last frame stood in for changed; nothing once it is complete:\n[`View::waiting`](crate::View::waiting)."
         },
         {
           "type": "object",
@@ -3872,7 +4133,7 @@
           "description": "Something failed, told once. A mark its data no longer fits also lists in\n[`View::failures`](crate::View::failures)."
         }
       ],
-      "description": "What happened in a view, for the application to act on. Drain them with\n[`View::events`](crate::View::events)."
+      "description": "What happened in a view, for the application to act on, as [`View::events`](crate::View::events)\ntells it."
     },
     "Hit": {
       "type": "object",
@@ -4324,10 +4585,6 @@
           "minimum": 0,
           "description": "Tiles being fetched or decoded, of every tile source."
         },
-        "waiting": {
-          "$ref": "#/outputs/Waiting",
-          "description": "The work under way the last frame stood in for; nothing when it drew everything as the data,\nscene, and camera say: see [`View::complete`](crate::View::complete)."
-        },
         "cpuMs": {
           "type": "number",
           "format": "float",
@@ -4347,7 +4604,6 @@
         "instances",
         "tiles",
         "tilesLoading",
-        "waiting",
         "cpuMs",
         "gpuMs"
       ],
@@ -4373,6 +4629,18 @@
           "format": "uint64",
           "minimum": 0,
           "description": "Rows whose channels the GPU evaluated."
+        },
+        "resolved": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Rows of edges and faces whose ends the GPU found where their vertices are held: rows that\nchanged, and every row held where the vertices they end at moved."
+        },
+        "cleared": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Bytes of pages of words per row the GPU cleared: those read before anything writes them, and\nthe normals faces sum afresh."
         },
         "packed": {
           "type": "integer",
@@ -4415,6 +4683,8 @@
         "uploaded",
         "written",
         "evaluated",
+        "resolved",
+        "cleared",
         "packed",
         "readbacks",
         "jobs",

@@ -1,4 +1,4 @@
-import { Shot, type ImageFormat, type View } from '../latkit.js';
+import type { ImageFormat } from 'latkit';
 import { h } from './dom.js';
 import type { Stage } from './stage.js';
 
@@ -14,12 +14,13 @@ const FORMATS: Record<ImageFormat, { extension: string; type: string; alpha: boo
 };
 
 /**
- * The Export section every page gets: a picture of its views laid out as the page shows them,
- * written as PNG, JPEG, or WebP in a worker, clear where the theme's background is when asked; and a
- * video of them as MP4, recorded as the page runs, with its progress, stopped by pressing again.
+ * The Export section every page gets: a picture of what its canvas shows, taken as it stands, written
+ * as PNG, JPEG, or WebP in a worker, clear where the theme's background is when asked; and a video of
+ * it as MP4, recorded as the page runs, with its progress, stopped by pressing again.
  */
 export function exportSection(stage: Stage): void {
-  if (!stage.shown.length) return;
+  const [canvas] = stage.canvases;
+  if (!canvas) return;
   const section = stage.section('Export', false);
   let format: ImageFormat = 'png';
   /** JPEG's quality, 1 to 100. */
@@ -28,46 +29,14 @@ export function exportSection(stage: Stage): void {
   /** Bits a pixel a frame of video: about 0.15 unless set. */
   let bits: number | undefined;
   let recording: AbortController | undefined;
-  /** The views, and a shot of them laid out as the page shows them, `align` pixels a block. */
-  const shot = (align: [number, number]): [Shot, View[]] => {
-    const shown = stage.shown
-      .map(({ view, element, panel: [x, y, w, h] }) => {
-        const canvas = element.getBoundingClientRect();
-        const [left, top] = [canvas.left + x * canvas.width, canvas.top + y * canvas.height];
-        const [width, height] = [w * canvas.width, h * canvas.height];
-        return {
-          view,
-          box: { left, top, width, height, right: left + width, bottom: top + height },
-        };
-      })
-      .filter(({ box }) => box.width > 0 && box.height > 0);
-    const left = Math.min(...shown.map((s) => s.box.left));
-    const top = Math.min(...shown.map((s) => s.box.top));
-    const width = Math.max(...shown.map((s) => s.box.right)) - left;
-    const height = Math.max(...shown.map((s) => s.box.bottom)) - top;
-    const scale = Math.min(2, devicePixelRatio);
-    const size: [number, number] = [
-      Math.max(align[0], Math.floor((width * scale) / align[0]) * align[0]),
-      Math.max(align[1], Math.floor((height * scale) / align[1]) * align[1]),
-    ];
-    const panels = shown.map(
-      ({ box }) =>
-        [
-          (box.left - left) / width,
-          (box.top - top) / height,
-          box.width / width,
-          box.height / height,
-        ] as const,
-    );
-    return [new Shot(size).scale(size[0] / width).panels(panels), shown.map((s) => s.view)];
-  };
+  /** Pixels a CSS pixel of what is saved: as sharp as the screen, at most twice. */
+  const scale = () => Math.min(2, devicePixelRatio);
   const picture = async () => {
     status.textContent = 'Taking a picture…';
     const { extension, type, alpha } = FORMATS[format];
-    const [plain, views] = shot([1, 1]);
-    const taken = transparent && alpha ? plain.transparent() : plain;
-    // A picture waits for its views to be still; the page holds its own motion meanwhile.
-    const image = await stage.hold(() => taken.image(views));
+    // The page runs on as it is taken: a picture of the moment, not of where motion settles.
+    const shot = canvas.shot({ scale: scale(), transparent: transparent && alpha, capture: 'now' });
+    const image = await shot.image();
     try {
       const file = await image.encode(format, { quality });
       const name = `views.${extension}`;
@@ -84,17 +53,18 @@ export function exportSection(stage: Stage): void {
       write: (chunk) => void chunks.push(chunk.slice()),
     });
     recording = new AbortController();
-    const [taken, views] = shot([4, 2]);
-    const bitrate = bits && Math.round(taken.size[0] * taken.size[1] * FPS * bits);
+    const shot = canvas.shot({ scale: scale() });
+    const bitrate = bits && Math.round(shot.size[0] * shot.size[1] * FPS * bits);
     const started = performance.now();
     try {
-      const recorder = taken.video(stage.gpu, FPS, output, {
+      const recorder = shot.video({
+        fps: FPS,
+        output,
         signal: recording.signal,
         ...(bitrate ? { bitrate } : {}),
       });
       // Each frame waits for the page to reach its time, so the video runs as the page does.
       await recorder.record(
-        views,
         async (time) => {
           while (performance.now() - started < time * 1000) await nextFrame();
           return time < SECONDS;

@@ -8,33 +8,36 @@
 // mark's progress: numbers and colors mix, positions move by their offset, a row whose visibility
 // flipped fades, rows past the live ones left and fade out, and the rest show as evaluated. No
 // channel runs to ease. Every row here is a held row, its words in pages its mark's page tables list.
+// Where an edge's or a face's vertices are held is no channel's to store: a step of its own finds it
+// (`lib/ends.wesl`).
 
 import package::lib::types::{
-    NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING, PAGE_ROWS, PAGE_BITS,
-    PAGE_MASK, END_WORDS, END_STATE, END_SLOTS, item,
-    BLEND_KEEP, BLEND_NUMBER, BLEND_COLOR, BLEND_POSITION, STEP_REDUCE,
+    NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING, PAGE_ROWS, FRESH, item,
+    BLEND_KEEP, BLEND_NUMBER, BLEND_COLOR, BLEND_POSITION, STEP_REDUCE, STEP_ENDS,
     VERTEX_POSITION, VERTEX_ELEVATION, VERTEX_FLAGS, VERTEX_HALF, VERTEX_RANGE, HALF_UNITS, OWN_HEIGHT, SIZED,
     MARK_VERTICES, OP_CONST, OP_MISSING, OP_FIELD, OP_SELECTED, OP_HOVERED, OP_POINTER, OP_ELAPSED, OP_THEME, OP_ZOOM,
     OP_NEG, OP_NOT, OP_ABS, OP_SQRT, OP_SIN, OP_COS, OP_FLOOR, OP_LOG, OP_EXP,
     OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MIN, OP_MAX, OP_MOD, OP_POW,
     OP_LT, OP_LE, OP_GT, OP_GE, OP_EQ, OP_NE, OP_AND, OP_OR,
     OP_SELECT, OP_SCALE, OP_COLORMAP, OP_STORE, OP_STORE_COLOR, OP_STORE_FLAG, OP_STORE_POSITION,
-    OP_POSITION, OP_STORE_END, OP_STORE_CODE, OP_REDUCE,
+    OP_POSITION, OP_STORE_CODE, OP_REDUCE,
 };
 import package::lib::bind::{frame, program, mark, pages};
 import package::lib::state::{travel_words, pack_range, record_at};
-import package::lib::read::{column_value, bits_value, missing, missing_bits};
+import package::lib::read::{column_value, missing, missing_bits};
 import package::lib::focus::{is_selected, is_hovered};
 import package::lib::color::{scale, colormap};
 import package::lib::project::{project, to_screen};
 import package::lib::reduce::{ordered, unordered};
+import package::lib::ends::resolve;
 
 // Per fitted domain: the order-preserving bits of its least and greatest value.
 @group(2) @binding(4) var<storage, read_write> domains: array<atomic<u32>>;
-// Each mark's row blocks a dispatch covers: at `mark.block`, `mark.blocks` of them.
+// Each mark's row blocks a dispatch covers: those its channels evaluate listed at `mark.block`, those
+// whose state words start over marked `FRESH`; and those whose ends it finds at `mark.end_block`.
 @group(2) @binding(16) var<storage, read> blocks: array<u32>;
-// What a dispatch of `evaluate` runs: the mark's channels over its listed blocks, or over every row
-// the reductions fitting its domains.
+// What a dispatch of `evaluate` runs: the mark's channels over its listed blocks, the reductions
+// fitting its domains over every row, or where the rows of its blocks listed for it hold their ends.
 @group(2) @binding(17) var<uniform> step: u32;
 
 // Whether the pipeline's marks read the view: selection, hover, the pointer, the zoom. Only those
@@ -43,46 +46,17 @@ override VIEWED: bool = true;
 
 // The row invocation `id` evaluates: row `id.x` of the mark's `id.y`th listed page.
 fn row_of(id: vec3u) -> u32 {
-    return blocks[mark.block + id.y] * PAGE_ROWS + id.x;
+    return (blocks[mark.block + id.y] & ~FRESH) * PAGE_ROWS + id.x;
+}
+
+// Whether the state words of the row invocation `id` evaluates start over.
+fn fresh(id: vec3u) -> bool {
+    return (blocks[mark.block + id.y] & FRESH) != 0u;
 }
 
 // Rows of the mark that are live: those past them left and fade out.
 fn live() -> u32 {
     return mark.held - mark.exits;
-}
-
-// The held row of drawing row `row` of a table whose held pages' slots the program lists at `slots`
-// (how many pages, then each one's slot; then how many rows it keeps whose pages it does not hold,
-// then each one's place and held row, ascending by place), NONE where it holds the row nowhere; a
-// table drawn whole, with no such list, holds every row as itself.
-fn held_of(slots: u32, row: u32) -> u32 {
-    if slots == NONE || row == NONE {
-        return row;
-    }
-    let pages = program[slots];
-    let page = row >> PAGE_BITS;
-    if page < pages {
-        let slot = program[slots + 1u + page];
-        if slot != NONE {
-            return (slot << PAGE_BITS) | (row & PAGE_MASK);
-        }
-    }
-    let kept = slots + 1u + pages;
-    let count = program[kept];
-    var lo = 0u;
-    var hi = count;
-    while lo < hi {
-        let mid = (lo + hi) / 2u;
-        if program[kept + 1u + 2u * mid] < row {
-            lo = mid + 1u;
-        } else {
-            hi = mid;
-        }
-    }
-    if lo < count && program[kept + 1u + 2u * lo] == row {
-        return program[kept + 2u + 2u * lo];
-    }
-    return NONE;
 }
 
 fn constant(i: u32) -> u32 {
@@ -357,16 +331,6 @@ fn run(row: u32, start: u32, end: u32) {
             case OP_POSITION: {
                 position(row, a, column_value(b, row), column_value(c, row));
             }
-            case OP_STORE_END: {
-                // An end is a row of the table its reference names, held where the vertex mark drawing
-                // that table holds it; without a column, the row itself, as a pole's.
-                let e = mark.ends + END_WORDS * c;
-                var end = row;
-                if b != NONE {
-                    end = held_of(program[e + END_SLOTS], bits_value(b, row));
-                }
-                store(row, a, select(end, NONE, end == NONE || program[e + END_STATE] == NONE));
-            }
             case OP_REDUCE: {
                 sp--;
                 let x = number(stack[sp]);
@@ -395,12 +359,27 @@ fn fade_exit(row: u32, flags: u32) {
 
 @compute @workgroup_size(256)
 fn evaluate(@builtin(global_invocation_id) id: vec3u) {
+    // Ends are found over the blocks listed for them; a row that left shows the ends it had.
+    if step == STEP_ENDS {
+        let row = blocks[mark.end_block + id.y] * PAGE_ROWS + id.x;
+        if row < live() {
+            resolve(row);
+        }
+        return;
+    }
     // Reductions run over every live block, channels over the blocks listed and only those the mask
     // names. One loop runs either, since a backend compiles each call of the machine whole.
     let reducing = step == STEP_REDUCE;
     let row = row_of(id);
     if row >= live() {
         return;
+    }
+    // A row whose words start over shows nothing but what its channels write: what none writes reads
+    // as zero.
+    if !reducing && fresh(id) {
+        for (var w = 0u; w < mark.stride + mark.extras; w++) {
+            pages[shown_at(row, w)] = 0u;
+        }
     }
     let first = select(0u, mark.channels, reducing);
     let end = select(mark.channels, mark.channels + mark.reductions, reducing);

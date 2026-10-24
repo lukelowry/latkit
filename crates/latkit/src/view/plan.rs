@@ -23,7 +23,7 @@ use crate::data::{Field, Keyed, Name, Table};
 use crate::derive::tiled::{Draw, Place, Planned, Plans};
 use crate::derive::{Derived, stamp_of};
 use crate::expr::compile::Words;
-use crate::gpu::arena::{PIECE_POINTS, path_points, rounded};
+use crate::gpu::arena::{path_page_bytes, path_points, rounded};
 use crate::gpu::shaders as wgsl;
 use crate::gpu::{Ask, Ledger};
 use crate::scene::mark::MarkKind;
@@ -166,11 +166,11 @@ impl View {
         self.scene_version.hash(&mut hasher);
         for shown in &self.marks {
             let style = shown.mark.style();
-            let data = self.source(&style.data);
+            let data = self.snapshot(&style.data);
             let table = data.and_then(|d| d.table(&style.table));
             let geometry = geometry_of(&shown.mark).and_then(|f| table?.field_named(&f)).map(Field::version);
             let owned = self.derived.tiles.owns(&style.data);
-            (data.map(crate::Data::schema), table.map(|t| t.structure), geometry, owned).hash(&mut hasher);
+            (data.map(crate::Snapshot::schema), table.map(|t| t.structure), geometry, owned).hash(&mut hasher);
         }
         hasher.finish().max(1)
     }
@@ -258,11 +258,11 @@ impl View {
         for shown in self.marks.iter().filter(|m| m.kind() == MarkKind::Faces) {
             let Some(compiled) = &shown.compiled else { continue };
             let data = &shown.mark.style().data;
-            summed.extend(compiled.program.ends.iter().map(|table| (data.clone(), table.clone())));
+            summed.extend(compiled.program.ends.iter().map(|end| (data.clone(), end.table.clone())));
         }
         for shown in &self.marks {
             let style = shown.mark.style();
-            let Some(table) = self.source(&style.data).and_then(|d| d.table(&style.table)) else { continue };
+            let Some(table) = self.snapshot(&style.data).and_then(|d| d.table(&style.table)) else { continue };
             let key = (style.data.clone(), style.table.clone());
             let planned = plans.entry(key.clone()).or_insert_with(|| Planned {
                 draw: Draw::Whole,
@@ -301,9 +301,9 @@ impl View {
             .iter()
             .filter(|c| c.words != Words::Path && !c.derived)
             .filter_map(|c| {
-                let read = match &c.of {
+                let read = match &c.from {
                     None => table.field_named(&c.name),
-                    Some((data, joined)) => self.source(data)?.table(joined)?.field_named(&c.name),
+                    Some((data, joined)) => self.snapshot(data)?.table(joined)?.field_named(&c.name),
                 };
                 let pages = table.len().div_ceil(wgsl::PAGE_ROWS as usize) as f64;
                 Some((stamp_of((read?.version(), c.low)), pages * column_page_bytes(c.low)))
@@ -319,7 +319,7 @@ impl View {
     /// Whether the table `key` names is edges or faces whose ends lie in a table drawn through tiles.
     fn ends_tiled(&self, key: &(Name, Name), plans: &Plans) -> bool {
         let Place::Ends(fields) = &plans[key].place else { return false };
-        let Some(table) = self.source(&key.0).and_then(|d| d.table(&key.1)) else { return false };
+        let Some(table) = self.snapshot(&key.0).and_then(|d| d.table(&key.1)) else { return false };
         let target = fields.first().and_then(|f| match table.field_named(f) {
             Some(Field::Reference(reference)) => Some(reference.to.clone()),
             _ => None,
@@ -386,24 +386,18 @@ fn page_bytes(shown: &Shown, easing: bool, normals: bool) -> f64 {
 fn traced_bytes(shown: &Shown, table: &Table) -> f64 {
     let Some(compiled) = &shown.compiled else { return 0.0 };
     let traced = compiled.program.columns.iter().filter(|c| {
-        c.trace && c.of.is_none() && !c.derived && matches!(table.field_named(&c.name), Some(Field::Sampled(..)))
+        c.trace && c.from.is_none() && !c.derived && matches!(table.field_named(&c.name), Some(Field::Sampled(..)))
     });
     traced.count() as f64 * table.len() as f64 * TRACE_COLUMN_BYTES
 }
 
 /// Bytes the geometry `shown` draws of `table` takes, as the arena allocates it: for each page of
-/// rows, a block of their first points, then their points a chunk at a time; an area's triangles take
-/// about three times the points of its outlines.
+/// rows, their rows' table and their points in pieces; an area's triangles take about three times the
+/// points of its outlines.
 fn geometry_bytes(shown: &Shown, table: &Table) -> f64 {
     let Some(field) = geometry_of(&shown.mark) else { return 0.0 };
     let Some(Field::Values(column, _)) = table.field_named(&field) else { return 0.0 };
     let scale = if matches!(shown.mark, Mark::Areas(_)) { 3 } else { 1 };
-    let page = |values: &crate::data::Values| {
-        let points = path_points(values) * scale;
-        let (whole, rest) = (points / PIECE_POINTS, points % PIECE_POINTS);
-        let pieces = whole as u64 * u64::from(rounded(2 * PIECE_POINTS as u32))
-            + if rest > 0 { u64::from(rounded(2 * rest as u32)) } else { 0 };
-        (u64::from(rounded(values.len() as u32)) + pieces) as f64 * 4.0
-    };
+    let page = |values: &crate::data::Values| path_page_bytes(values.len(), path_points(values) * scale) as f64;
     column.pages().iter().map(|p| page(&p.values)).sum()
 }

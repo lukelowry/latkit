@@ -1,5 +1,5 @@
 /** Torus silk: filaments twisting around a (2, 3) torus knot, drawn as edges in three dimensions. */
-import { Patch, reference } from 'latkit/core';
+import { Patch, reference } from 'latkit';
 import { TAU, THEME, floats, rows, type Piece } from './look.ts';
 
 type Vec = [number, number, number];
@@ -51,20 +51,18 @@ export default function torus(): Piece {
     }
   }
   const next = rows(n, (i) => Math.floor(i / samples) * samples + (((i % samples) + 1) % samples));
-  const data = Patch.to('silk')
-    .replace('Point', { count: n }, { x, y, z, tone })
-    .replace(
-      'Thread',
-      { count: n },
-      {
-        from: reference(
-          'Point',
-          rows(n, (i) => i),
-        ),
-        to: reference('Point', next),
-        tone: floats(n, (i) => tone[i]!),
-      },
-    );
+  const data = new Patch('silk').replace('Point', { count: n }, { x, y, z, tone }).replace(
+    'Thread',
+    { count: n },
+    {
+      from: reference(
+        'Point',
+        rows(n, (i) => i),
+      ),
+      to: reference('Point', next),
+      tone: floats(n, (i) => tone[i]!),
+    },
+  );
   return {
     name: 'torus',
     alt: 'Sixty-four filaments in cyan, amber, and coral, twisting around a three-dimensional torus knot',

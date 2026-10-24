@@ -236,7 +236,7 @@ impl Job {
 
     /// The picture the job takes: its size, scale, panels, alpha, and deadline.
     pub(crate) fn shot(&self) -> Shot {
-        let shot = Shot::new(self.size).scale(self.scale).deadline(self.deadline).panels(self.panel.clone());
+        let shot = Shot::new(self.size).scale(self.scale).deadline(Some(self.deadline)).panels(self.panel.clone());
         if self.transparent { shot.transparent() } else { shot }
     }
 

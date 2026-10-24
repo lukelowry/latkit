@@ -1,4 +1,5 @@
 /** Texas: ACTIVSg2000's generators sized by output, its highest-voltage lines carrying comets. */
+import { units } from 'latkit';
 import { THEME, type Piece } from './look.ts';
 import { readCase } from './grids.ts';
 import { LEVELS, STATES, WIDTHS, states } from './grid.ts';
@@ -12,11 +13,12 @@ export default function texas(): Piece {
     camera: { center: [-98.7, 31.25], zoom: 5.6, pitch: 32, bearing: 0 },
     elapsed: 2,
     scene: {
-      space: { earth: { projection: 'mercator', graticule: false, surface: THEME.background } },
+      space: { earth: { graticule: false } },
       ease: 0,
       theme: {
         ...THEME,
-        flow: { color: '#fff4dcd0', spacing: 0.9, length: 0.35, width: 3, units: true },
+        earth: { ground: THEME.background },
+        flow: { color: '#fff4dcd0', spacing: units(0.9), length: units(0.35), width: 3 },
       },
       marks: [
         ...states('#2c3e54'),

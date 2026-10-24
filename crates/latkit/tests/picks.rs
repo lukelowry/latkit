@@ -29,7 +29,7 @@ fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = l
 }
 
 fn graph() -> Data {
-    let mut data = Data::new("graph");
+    let data = Data::new("graph");
     data.apply(
         Patch::new()
             .set(
@@ -55,7 +55,7 @@ fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0));
     let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(graph());
+    view.set_sources([graph()]).expect("a source");
     frame(gpu, &mut view);
     view
 }
@@ -85,11 +85,11 @@ fn a_hit_names_the_row_and_place_its_frame_drew() {
     // The frame answering draws node 1 at the middle; before its answer lands, the nodes are given
     // in another order and the camera moves away.
     step(&gpu, &mut view);
-    let mut data = graph();
+    let data = graph();
     let reordered =
         Table::new("Node", vec![3_u64, 2, 1]).field("x", vec![-40.0, 10.0, 0.0]).field("y", vec![30.0, 0.0, 0.0]);
     data.apply(Patch::new().replace(reordered)).expect("valid");
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     view.set_camera(Camera::Map { center: [500.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
     let hits = answer(&gpu, &mut view, pending);
     let first = hits.first().expect("a hit");
@@ -117,7 +117,7 @@ fn every_hit_of_geodesic_edges_lies_in_reach() {
             to.push((i + side) as u64);
         }
     }
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     let lines = from.len();
     data.apply(
         Patch::new().set(Table::new("Bus", Ids::count((side * side) as u32)).field("lon", lon).field("lat", lat)).set(
@@ -125,13 +125,13 @@ fn every_hit_of_geodesic_edges_lies_in_reach() {
         ),
     )
     .expect("valid");
-    let earth = latkit::Earth { graticule: false, ..latkit::Earth::globe() };
+    let earth = latkit::Earth { graticule: false, ..latkit::Earth::default().projection(latkit::Projection::Globe) };
     let scene = Scene::new(earth)
         .theme(plain_theme())
         .draw(Edges::of("grid", "Line").ends("from", "to"))
         .draw(Vertices::of("grid", "Bus").position("lon", "lat"));
     let mut view = View::new(&gpu, scene).expect("valid scene");
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
     frame(&gpu, &mut view);
     let c = SIZE as f32 / 2.0;
@@ -153,11 +153,11 @@ fn every_hit_of_geodesic_edges_lies_in_reach() {
 fn locate_finds_a_row_on_screen() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, Controls::default());
-    let pending = view.locate(&latkit::Row::new("graph", "Node", 3_u64));
+    let pending = view.screen_of(&latkit::Row::new("graph", "Node", 3_u64));
     let point = answer(&gpu, &mut view, pending).expect("in view");
     let c = SIZE as f32 / 2.0;
     assert!((point[0] - (c - 40.0)).abs() < 0.5 && (point[1] - (c - 30.0)).abs() < 0.5, "{point:?}");
-    let pending = view.locate(&latkit::Row::new("graph", "Node", 99_u64));
+    let pending = view.screen_of(&latkit::Row::new("graph", "Node", 99_u64));
     assert_eq!(answer(&gpu, &mut view, pending), None, "no such row");
 }
 
@@ -174,7 +174,7 @@ fn a_shift_drag_selects_the_rows_in_its_box() {
     frame(&gpu, &mut view);
     let selected: Vec<Vec<latkit::Rows>> = view
         .events()
-        .filter_map(|e| if let Event::Select { rows, trigger: Some(_) } = e { Some(rows) } else { None })
+        .filter_map(|e| if let Event::Selection { rows, trigger: Some(_) } = e { Some(rows) } else { None })
         .collect();
     let rows = selected.last().expect("a selection");
     let mut ids: Vec<String> =
@@ -187,10 +187,10 @@ fn a_shift_drag_selects_the_rows_in_its_box() {
 #[test]
 fn hovering_a_trace_names_its_sample() {
     let Some(gpu) = gpu() else { return };
-    let mut data = Data::new("signals");
+    let data = Data::new("signals");
     data.apply(Table::new("Signal", Ids::count(1))).expect("valid");
     for t in 0..=10 {
-        data.apply(Patch::new().append([f64::from(t)], "Signal", [("v", vec![f64::from(t) / 10.0])])).expect("frame");
+        data.apply(Patch::new().append("Signal", [f64::from(t)], [("v", vec![f64::from(t) / 10.0])])).expect("frame");
     }
     let axis = Axis { hidden: true, grid: false, ..Axis::default() };
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
@@ -198,9 +198,9 @@ fn hovering_a_trace_names_its_sample() {
         .draw(Lines::of("signals", "Signal").trace("v").width(3.0));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
-    let at = view.point([7.0, 0.7, 0.0]).expect("on the plot");
+    let at = view.screen([7.0, 0.7, 0.0]).expect("on the plot");
     let pending = view.pick(at, 6.0);
     let hits = answer(&gpu, &mut view, pending);
     let sample = hits.first().and_then(|h| h.sample).expect("a sample");
@@ -211,7 +211,7 @@ fn hovering_a_trace_names_its_sample() {
 #[test]
 fn a_trace_keeps_large_absolute_indexes_on_the_gpu() {
     let Some(gpu) = gpu() else { return };
-    let mut data = Data::new("signals");
+    let data = Data::new("signals");
     data.apply(Table::new("Signal", Ids::count(1))).expect("valid");
     let first = (1_u64 << 32) + 123;
     data.apply(Patch::new().frames(
@@ -229,9 +229,9 @@ fn a_trace_keeps_large_absolute_indexes_on_the_gpu() {
         .draw(Lines::of("signals", "Signal").trace("v").width(3.0));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Plot { x: [0.0, 10.0], y: Some([0.0, 1.0]) });
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
-    let at = view.point([7.0, 0.7, 0.0]).expect("on the plot");
+    let at = view.screen([7.0, 0.7, 0.0]).expect("on the plot");
     let pending = view.pick(at, 6.0);
     let hits = answer(&gpu, &mut view, pending);
     let sample = hits.first().and_then(|h| h.sample).expect("a sample");

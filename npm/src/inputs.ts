@@ -1,6 +1,12 @@
 /** Written by `node npm/build.mjs schema` from `npm/schema.json`, what latkit reads: do not edit. */
 
-import type { Color, ExprInput } from './scene.js';
+import type { Color, ExprInput, PaintInput } from './scene.js';
+
+/** Areas where their options say nothing. */
+export interface AreaTheme {
+  /** An area's color. */
+  color?: Color;
+}
 
 /**
  * Rows drawn as the areas a polygon field holds: parcels, states, lakes, the land and water of a
@@ -14,7 +20,7 @@ export interface Areas {
   /** The polygon field each row fills: one polygon's rings, or polygons. `geometry` unless set. */
   geometry?: string | null;
   /** Each row's color; the theme's unless set. */
-  color?: ExprInput | null;
+  color?: PaintInput | null;
   /** Whether each row is drawn and picked. */
   visible?: ExprInput;
   /**
@@ -202,7 +208,7 @@ export interface ColormapNode {
   domain?: [low: number, high: number] | null;
 }
 
-/** Whether a text field holds the text, ignoring case: read by queries, which hold texts. */
+/** Whether a text field holds the text, ignoring case: in a mark, a field of its own table. */
 export interface ContainsNode {
   contains: [field: ExprInput, text: string];
 }
@@ -232,8 +238,8 @@ export type Controls =
        */
       keyboard?: boolean;
       /**
-       * The row the user points at glows. It is hovered either way: events tell it, and `hovered()`
-       * reads it.
+       * The row the user points at glows. It is hovered either way: events tell it, and `hovered` reads
+       * it.
        */
       hover?: boolean;
       /** CSS pixels around the pointer that picks reach; touch reaches 8 more. */
@@ -245,10 +251,10 @@ export type Controls =
       selectBox?: boolean;
       /**
        * Dragging from a port, from a vertex with Alt, or an edge off its end draws a connection, told as
-       * `Event::Connect`.
+       * a `'connect'` event.
        */
       connect?: boolean;
-      /** Delete and Backspace tell `Event::Delete` with the selection. */
+      /** Delete and Backspace tell a `'delete'` event with the selection. */
       delete?: boolean;
       /**
        * Clicking again where nothing moved selects the next row under the point, nearest first, so rows
@@ -262,7 +268,7 @@ export type Controls =
       press?: number;
       /**
        * How much the view moves on its own: eases, flights, coasting, orbits, label fades, comets, and
-       * what reads `elapsed()`.
+       * what reads `elapsed`.
        */
       motion?: Motion;
     };
@@ -281,24 +287,44 @@ export interface CustomColormap {
 
 /**
  * A sheet for diagrams, flat and seen from straight above: the camera pans and zooms. Positions
- * are units with y down, and every length is a unit, a CSS pixel at zoom 0 (sizes, padding, ports,
- * strokes, text, and the theme's), except glow, halo, and pick radius. Zooming scales one fixed
- * picture. Only a diagram has ports, groups, nets, and orthogonal routes; it lays out blocks.
+ * are units with y down, and lengths are units, a unit a CSS pixel at zoom 0 (sizes, padding,
+ * ports, strokes, text, and the theme's), but for what says `px`, a halo, focus's glow, and the
+ * pick radius. Zooming scales one fixed picture. Only a diagram has ports, groups, nets, and
+ * orthogonal routes; it lays out blocks.
  */
 export interface Diagram {
   /** The grid under the marks. */
   grid?: Grid;
 }
 
+/** How a diagram's blocks, groups, ports, and wires look. */
+export interface DiagramTheme {
+  /** What a group's container is filled with. */
+  group?: Color;
+  /** The border of blocks and groups, a unit wide; `null` draws none. */
+  outline?: Color | null;
+  /** The radius of block and group corners; a block's marker may set its own. */
+  corner?: number;
+  /** How wide ports are. */
+  portSize?: number;
+  /** The radius of an orthogonal wire's bends. */
+  bend?: number;
+  /** Distance between a group's members and its outline. */
+  groupPadding?: number;
+  /** How blocks and groups drop shadows onto the sheet. */
+  shadow?: ShadowTheme;
+}
+
 /** A direction on screen. */
 export type Direction = 'right' | 'left' | 'down' | 'up';
 
-/** The earth: positions are longitude and latitude in degrees. */
+/**
+ * The earth: positions are longitude and latitude in degrees, its ground in the theme's earth
+ * colors.
+ */
 export interface Earth {
-  /** A flat map or a globe. */
+  /** A flat map or a globe; a flat map unless set. */
   projection?: Projection;
-  /** The ground's color; the theme's surface unless set. */
-  surface?: Color | null;
   /** Whether lines of longitude and latitude cross the ground, in the theme's grid color. */
   graticule?: boolean;
   /**
@@ -309,6 +335,40 @@ export interface Earth {
   daylight?: number | null;
   /** Whether air glows around the globe, in the theme's atmosphere color, brighter where it is day. */
   atmosphere?: boolean;
+}
+
+/** How the earth looks. */
+export interface EarthTheme {
+  /** The ground's color. */
+  ground?: Color;
+  /** The air glowing around the globe, where the earth has an atmosphere. */
+  atmosphere?: Color;
+  /** How bright the night side stays where daylight lights the earth, 0 to 1. */
+  night?: number;
+}
+
+/** Edges where their options say nothing, their lanes, and their arrowheads. */
+export interface EdgeTheme {
+  /**
+   * An edge's color; `null` blends the colors of each edge's two vertices, and in a diagram takes
+   * the text color.
+   */
+  color?: Color | null;
+  /** An edge's width. */
+  width?: number;
+  /**
+   * In a diagram, distance between the lanes of edges joining the same two vertices, and between
+   * parallel orthogonal wires, which keep twice it apart.
+   */
+  spacing?: number;
+  /**
+   * Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction of
+   * the edge's length at its middle, as wide as eight lanes at most, more packing closer. A bow is
+   * part of the drawing, so zooming never moves it.
+   */
+  bow?: number;
+  /** How far an arrowhead reaches past its edge's width. */
+  arrow?: number;
 }
 
 /**
@@ -340,18 +400,20 @@ export interface Edges {
    * reference field names it, as a star from their middle to each.
    */
   joins?: [table: string, reference: string] | null;
-  /** CSS pixels, or position units with `units`; units in a diagram. */
+  /**
+   * Each row's width, in the space's unit unless it says its own: units in a diagram, CSS pixels
+   * elsewhere.
+   */
   width?: Size | null;
   /** Whether each row is dashed. */
   dash?: ExprInput;
   /**
-   * Comets flowing along each row at this speed a second: CSS pixels, units in a diagram, or
-   * position units where the theme's flow is in units; negative flows backward. A speed that changes
-   * carries comets on from where they are.
+   * Comets flowing along each row at this speed a second, in the lengths of the theme's flow;
+   * negative flows backward. A speed that changes carries comets on from where they are.
    */
   flow?: ExprInput;
   /** Each row's color; the theme's unless set. */
-  color?: ExprInput | null;
+  color?: PaintInput | null;
   /** Whether each row is drawn and picked. */
   visible?: ExprInput;
   /**
@@ -380,6 +442,24 @@ export interface Edges {
    * is read before its cases.
    */
   legend?: string | null;
+}
+
+/**
+ * Rows' least and greatest values of a sampled field over equal spans of the axis, to read back:
+ * field `field` of table `table` over `spans` equal spans from `range[0]` to `range[1]`, of every
+ * row or of the rows `ids` names, in its order. Plain data, like a query.
+ */
+export interface EnvelopeRequest {
+  /** The table read. */
+  table: string;
+  /** The sampled field read. */
+  field: string;
+  /** The axis coordinates the spans cover, from the first to the last. */
+  range: [number, number];
+  /** How many equal spans the range is cut into. */
+  spans: number;
+  /** The rows read, in this order; every row unless set. */
+  ids?: Ids | null;
 }
 
 /** A value for every row of a mark: a constant, a field, view state, or arithmetic of them. */
@@ -413,7 +493,7 @@ export interface Faces {
    */
   corners?: [a: string, b: string, c: string] | null;
   /** Each row's color; the theme's unless set. */
-  color?: ExprInput | null;
+  color?: PaintInput | null;
   /** Whether each row is drawn and picked. */
   visible?: ExprInput;
   /**
@@ -444,11 +524,11 @@ export interface Faces {
   legend?: string | null;
 }
 
-/** A field of each row: of the mark's own table, or of another dataset's table joined by row id. */
+/** A field of each row: of the mark's own table, or from another dataset's table joined by row id. */
 export interface FieldNode {
   field: string;
   /** The dataset and table the field is read from, joined by row id. */
-  of?: [data: string, table: string] | null;
+  from?: [data: string, table: string] | null;
   /** Reads a sampled field at its last frame without interpolating. */
   step?: boolean;
 }
@@ -476,23 +556,34 @@ export type Fit =
 
 /**
  * How comets flowing along edges and lines look: each a round head, brightest at its middle,
- * trailing a tail that thins and fades.
+ * trailing a tail that thins and fades. Their spacing and length are in one unit, and each row's
+ * flow is in it too: in position units, degrees on the earth, comets are part of the drawing,
+ * zooming with the view and staying where they are on their lines; otherwise they keep their size
+ * and speed as it zooms.
  */
-export interface Flow {
+export interface FlowTheme {
   /** A comet's color; its alpha is how strongly a comet covers its stroke. */
   color?: Color;
   /** Distance between comets. */
-  spacing?: number;
+  spacing?: Length;
   /** How far a comet's tail trails its head. */
-  length?: number;
-  /** How wide a comet's head is, CSS pixels, or units in a diagram; never narrower than its stroke. */
+  length?: Length;
+  /** How wide a comet's head is; never narrower than its stroke. */
   width?: number;
-  /**
-   * Whether comets are part of the drawing: their spacing, length, and each row's flow in position
-   * units, degrees on the earth, so they zoom with the view and stay where they are on their lines.
-   * Otherwise they keep their size and speed on screen, and slide along their lines as it zooms.
-   */
-  units?: boolean;
+}
+
+/** How hovered and selected rows glow, and rows outside a selection dim. */
+export interface FocusTheme {
+  /** The glow around hovered rows. */
+  hover?: Color;
+  /** The glow around selected rows; `null` glows in each row's own color. */
+  selected?: Color | null;
+  /** How far focus glows reach, CSS pixels. */
+  glow?: number;
+  /** The opacity of rows outside a selection. */
+  dim?: number;
+  /** How much a hovered vertex sized in CSS pixels grows. */
+  grow?: number;
 }
 
 /** How an axis writes its tick values. */
@@ -540,13 +631,16 @@ export type Label =
   | {
       /** A text field. */
       text: ExprInput;
-      /** CSS pixels, or units in a diagram; the theme's font size unless set. */
+      /** In the space's unit: units in a diagram, CSS pixels elsewhere; the theme's text size unless set. */
       size?: number | null;
       /** Each row's text color; the theme's text color unless set. */
-      color?: ExprInput | null;
+      color?: PaintInput | null;
       /** Where labels would overlap, the higher shows; the mark's priority unless set. */
       priority?: ExprInput | null;
-      /** How far a line runs before it wraps: CSS pixels, or units in a diagram. */
+      /**
+       * How far a line runs before it wraps, in the space's unit: units in a diagram, CSS pixels
+       * elsewhere.
+       */
       maxWidth?: number | null;
       /** The CSS font family list its texts are set in; the theme's font unless set. */
       font?: string | null;
@@ -571,7 +665,7 @@ export interface Layered {
  * How the view places vertex rows without positions: a diagram's blocks, sized, or the points of a
  * plane or the earth, among the rows linked to them, gaps in the space's units: a name, or
  * `{ stress | layered: options }`. A place, once given, holds: rows added later are placed around
- * the rest, and `View::arrange` lays every row out again.
+ * the rest, and `view.arrange` lays every row out again.
  */
 export type Layout =
   | 'none'
@@ -585,6 +679,29 @@ export type Layout =
       /** Ranks along a direction, for flows and hierarchies. */
       layered: Layered;
     };
+
+/**
+ * A length: a number, in the space's unit, units in a diagram and CSS pixels elsewhere; `{ px }`,
+ * CSS pixels; or `{ units }`, position units.
+ */
+export type Length =
+  | number
+  | {
+      /** CSS pixels, however the view zooms. */
+      px: number;
+    }
+  | {
+      /** Position units, which scale as the view zooms. */
+      units: number;
+    };
+
+/** Lines where their options say nothing. */
+export interface LineTheme {
+  /** A line's color. */
+  color?: Color;
+  /** A line's width. */
+  width?: number;
+}
 
 /**
  * Rows drawn as lines: along a path field (roads, rivers, borders) or a polygon field's rings,
@@ -603,18 +720,20 @@ export interface Lines {
   trace?: string | null;
   /** How each row runs between its samples, on a plot. */
   interpolation?: Interpolation;
-  /** CSS pixels, or position units with `units`; units in a diagram. */
+  /**
+   * Each row's width, in the space's unit unless it says its own: units in a diagram, CSS pixels
+   * elsewhere.
+   */
   width?: Size | null;
   /** Whether each row is dashed. */
   dash?: ExprInput;
   /**
-   * Comets flowing along each row at this speed a second: CSS pixels, units in a diagram, or
-   * position units where the theme's flow is in units; negative flows backward. A speed that changes
-   * carries comets on from where they are.
+   * Comets flowing along each row at this speed a second, in the lengths of the theme's flow;
+   * negative flows backward. A speed that changes carries comets on from where they are.
    */
   flow?: ExprInput;
   /** Each row's color; the theme's unless set. */
-  color?: ExprInput | null;
+  color?: PaintInput | null;
   /** Whether each row is drawn and picked. */
   visible?: ExprInput;
   /**
@@ -742,6 +861,12 @@ export type Motion = 'system' | 'full' | 'reduced';
 /** Which way a sort runs; rows a key reads nothing for come last either way. */
 export type Order = 'ascending' | 'descending';
 
+/**
+ * A color for every row of a mark: a CSS color, a value through a colormap, or a conditional
+ * choosing between colors.
+ */
+export type PaintNode = Color | ColorNode | ColormapNode | WhenPaintNode | MissingNode;
+
 /** A plane: positions are plane units. */
 export interface Plane {
   /** The grid under the marks. */
@@ -754,6 +879,12 @@ export interface Plot {
   x?: Axis;
   /** The vertical axis. */
   y?: Axis;
+}
+
+/** How a plot looks. */
+export interface PlotTheme {
+  /** The line drawn at the shown coordinate. */
+  playhead?: Color;
 }
 
 /**
@@ -785,6 +916,11 @@ export type Port =
 /** How the earth is drawn. */
 export type Projection = 'mercator' | 'globe';
 
+/** A size in CSS pixels, whatever the space's own unit. */
+export interface Px {
+  px: ExprInput;
+}
+
 /** The rows of a table to read back, run through the expressions marks draw with. */
 export interface Query {
   /** The table read. */
@@ -805,8 +941,11 @@ export interface Query {
   offset?: number;
   /** The most rows read; a limit picks them in linear time before sorting only those. */
   limit?: number | null;
-  /** Fields to read by name: a field as it is, anything else as numbers. Every field unless set. */
-  select?: { [name: string]: ExprInput };
+  /**
+   * Fields to read by name: a field as it is, anything else as numbers. Every field unless set; none
+   * set reads the ids alone.
+   */
+  select?: { [name: string]: ExprInput } | null;
   /** The axis coordinate sampled fields are read at; their last frame unless set. */
   at?: number | null;
 }
@@ -869,7 +1008,7 @@ export interface Scene {
 }
 
 /** How a diagram's blocks and groups drop shadows onto its sheet. */
-export interface Shadow {
+export interface ShadowTheme {
   /** What a shadow darkens toward; its alpha is how dark it gets under the block. */
   color?: Color;
   /** How far a block's or a group's shadow falls below it, and as far again it softens. */
@@ -882,23 +1021,26 @@ export type Shape = 'ellipse' | 'rectangle' | 'rounded' | 'diamond';
 /** A side of a marker. */
 export type Side = 'left' | 'right' | 'top' | 'bottom';
 
-/** A size: CSS pixels, or position units with `units`. */
-export type Size = ExprInput | Units;
+/**
+ * A size, in the space's unit unless it says its own: units in a diagram, CSS pixels elsewhere;
+ * `px` keeps CSS pixels, and `units` takes position units, which scale as the view zooms.
+ */
+export type Size = ExprInput | Px | Units;
 
 /**
  * The coordinate space a scene's positions are in: a name, or
- * `{ plane | diagram | earth | plot: options }`. A diagram is a flat sheet seen from straight
- * above: y runs down, and every length is a unit, a CSS pixel at zoom 0, except glow, halo, and
- * pick radius. Only a diagram has ports, groups, nets, orthogonal routes, and layouts.
+ * `{ plane | diagram | earth | plot: options }`. Its own unit is what lengths are in unless they
+ * say theirs: units in a diagram, a flat sheet seen from straight above with y running down, a
+ * unit a CSS pixel at zoom 0; CSS pixels elsewhere. Only a diagram has ports, groups, nets, and
+ * orthogonal routes.
  */
 export type Space =
   | 'plane'
   | 'diagram'
-  | 'mercator'
-  | 'globe'
+  | 'earth'
   | 'plot'
   | {
-      /** Longitude and latitude in degrees, on a map or a globe. */
+      /** Longitude and latitude in degrees, on a flat map or a globe. */
       earth: Earth;
     }
   | {
@@ -931,10 +1073,24 @@ export interface Stress {
   gap?: number;
 }
 
+/** Labels, axis ticks, and titles. */
+export interface TextTheme {
+  /** Text's color. */
+  color?: Color;
+  /** The CSS font family text is set in. */
+  font?: string;
+  /** Text's size. */
+  size?: number;
+  /** CSS pixels of background around label text. */
+  halo?: number;
+}
+
 /**
- * Colors and sizes marks take where their options read nothing, and the look of focus and motion:
- * a base theme's name, or options over one (`base`, dark unless set). Lengths are CSS pixels; in a
- * diagram they are units, except `glow` and `halo`.
+ * Colors and sizes marks take where their options read nothing, and the look of text, focus,
+ * motion, and each space, grouped by what they style: a base theme's name, or options over one
+ * (`base`, dark unless set), each group's over the base's. Lengths are in the space's unit, units
+ * in a diagram and CSS pixels elsewhere, but for a text's halo and focus's glow, CSS pixels
+ * everywhere.
  */
 export type Theme =
   | 'dark'
@@ -942,84 +1098,34 @@ export type Theme =
   | {
       /** Behind everything. */
       background?: Color;
-      /** The earth's ground, and a group's container. */
-      surface?: Color;
-      /** A plane's or a diagram's grid. */
+      /** A plane's or a diagram's grid, and the earth's graticule. */
       grid?: Color;
-      /** Vertex color. */
-      vertex?: Color;
-      /** Vertex radius. */
-      vertexRadius?: number;
-      /**
-       * Edge color; `null` blends the colors of each edge's two vertices, and in a diagram takes the
-       * text color.
-       */
-      edge?: Color | null;
-      /** Edge width. */
-      edgeWidth?: number;
-      /** Line color. */
-      line?: Color;
-      /** Line width. */
-      lineWidth?: number;
-      /** Area color. */
-      area?: Color;
-      /** How much a face turned away from the camera darkens, 0 to 1. */
-      shading?: number;
-      /** Text: labels, axis ticks, and titles. */
-      text?: Color;
-      /** The CSS font family text is set in. */
-      font?: string;
-      /** Text size. */
-      fontSize?: number;
-      /** The line a plot draws at the shown coordinate. */
-      playhead?: Color;
       /** What a missing color reads as. */
       missing?: Color;
-      /** The glow around hovered rows. */
-      hover?: Color;
-      /** The glow around selected rows; `null` glows in each row's own color. */
-      selected?: Color | null;
-      /** How far focus glows reach, CSS pixels. */
-      glow?: number;
-      /** The opacity of rows outside a selection. */
-      dim?: number;
-      /** How much a hovered vertex sized in CSS pixels grows. */
-      hoverScale?: number;
       /** Length of a dash. */
       dash?: number;
+      /** How much a face turned away from the camera darkens, 0 to 1. */
+      shading?: number;
+      /** Labels, axis ticks, and titles. */
+      text?: TextTheme;
+      /** Vertices where their options say nothing. */
+      vertex?: VertexTheme;
+      /** Edges where their options say nothing, their lanes, and their arrowheads. */
+      edge?: EdgeTheme;
+      /** Lines where their options say nothing. */
+      line?: LineTheme;
+      /** Areas where their options say nothing. */
+      area?: AreaTheme;
+      /** How hovered and selected rows glow, and rows outside a selection dim. */
+      focus?: FocusTheme;
       /** How comets flowing along edges and lines look. */
-      flow?: Flow;
-      /**
-       * In a diagram, distance between the lanes of edges joining the same two vertices, and between
-       * parallel orthogonal wires, which keep twice it apart.
-       */
-      edgeSpacing?: number;
-      /**
-       * Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction of
-       * the edge's length at its middle, as wide as eight lanes at most, more packing closer. A bow is
-       * part of the drawing, so zooming never moves it.
-       */
-      laneBow?: number;
-      /** How far an arrowhead reaches past its edge's width. */
-      arrow?: number;
-      /** CSS pixels of background around label text. */
-      halo?: number;
-      /** Distance between a group's members and its outline. */
-      groupPadding?: number;
-      /** The border of a diagram's blocks and groups, a unit wide; `null` draws none. */
-      outline?: Color | null;
-      /** The radius of a diagram's block and group corners; a block's marker may set its own. */
-      corner?: number;
-      /** How wide a diagram's ports are. */
-      portSize?: number;
-      /** The radius of an orthogonal wire's bends. */
-      bend?: number;
-      /** How a diagram's blocks and groups drop shadows onto its sheet. */
-      shadow?: Shadow;
-      /** The air glowing around the globe, where the earth has an atmosphere. */
-      atmosphere?: Color;
-      /** How bright the earth's night side stays where it is lit by daylight, 0 to 1. */
-      night?: number;
+      flow?: FlowTheme;
+      /** How a diagram's blocks, groups, ports, and wires look. */
+      diagram?: DiagramTheme;
+      /** How the earth looks. */
+      earth?: EarthTheme;
+      /** How a plot looks. */
+      plot?: PlotTheme;
       /** The theme these options change; dark unless set. */
       base?: 'dark' | 'light';
     };
@@ -1035,13 +1141,24 @@ export interface UnaryNode {
   args: [ExprInput];
 }
 
-/** A size in position units, so it scales as the view zooms, kept within CSS pixels when given. */
+/**
+ * A size in position units, whatever the space's own unit, so it scales as the view zooms, kept
+ * within CSS pixels when given.
+ */
 export interface Units {
   units: ExprInput;
   /** CSS pixels it keeps at least, however far the view zooms out. */
   atLeast?: number | null;
   /** CSS pixels it keeps at most, however far the view zooms in. */
   atMost?: number | null;
+}
+
+/** Vertices where their options say nothing. */
+export interface VertexTheme {
+  /** A vertex's color. */
+  color?: Color;
+  /** A vertex's radius. */
+  radius?: number;
 }
 
 /** Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram. */
@@ -1060,17 +1177,20 @@ export interface Vertices {
    * flat.
    */
   elevation?: ExprInput;
-  /** CSS pixels, or position units with `units`; units in a diagram. */
+  /**
+   * Each row's radius, in the space's unit unless it says its own: units in a diagram, CSS pixels
+   * elsewhere.
+   */
   radius?: Size | null;
   /**
-   * Width and height, for markers that are not round: CSS pixels, or position units with `units`;
-   * units in a diagram, where a block without a size fits its label and ports.
+   * Width and height, for markers that are not round, in the space's unit unless they say their own;
+   * in a diagram a block's are units, and a block without a size fits its label and ports.
    */
   size?: [Size, Size] | null;
   /** How each row is drawn. */
   marker?: Marker;
   /** A ring around each row's marker in this color; a missing or transparent color draws none. */
-  ring?: ExprInput | null;
+  ring?: PaintInput | null;
   /**
    * A port on each row for each reference field naming a net, which an `edges` mark of the net table
    * without ends draws. Diagrams only.
@@ -1087,7 +1207,7 @@ export interface Vertices {
    */
   shadow?: boolean;
   /** Each row's color; the theme's unless set. */
-  color?: ExprInput | null;
+  color?: PaintInput | null;
   /** Whether each row is drawn and picked. */
   visible?: ExprInput;
   /**
@@ -1122,6 +1242,12 @@ export interface Vertices {
 export interface WhenNode {
   when: [condition: ExprInput, value: ExprInput][];
   otherwise: ExprInput;
+}
+
+/** A conditional's color: the first case's whose condition holds, else `otherwise`'s. */
+export interface WhenPaintNode {
+  when: [condition: ExprInput, color: PaintInput][];
+  otherwise: PaintInput;
 }
 
 /** What zooms a view. */

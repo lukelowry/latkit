@@ -119,7 +119,7 @@ export function traces(rows: number, frames: number): Write {
   return (p) => {
     p.axis('time', 's').set('Signal', { count: rows }, { k });
     for (let f = 0; f < frames; f++)
-      p.append(f / RATE, 'Signal', { v: all.subarray(f * rows, (f + 1) * rows) });
+      p.append('Signal', f / RATE, { v: all.subarray(f * rows, (f + 1) * rows) });
     return p;
   };
 }
@@ -129,6 +129,6 @@ export function feed(rows: number, from: number, count: number, history: number)
   return Array.from({ length: count }, (_, i): Write => {
     const f = from + i;
     const v = Float32Array.from({ length: rows }, (_, r) => wave(r, f));
-    return (p) => p.append(f / RATE, 'Signal', { v }).forget((f - history) / RATE);
+    return (p) => p.append('Signal', f / RATE, { v }).forget((f - history) / RATE);
   });
 }

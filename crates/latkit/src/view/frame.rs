@@ -7,7 +7,7 @@
 use web_time::Instant;
 
 use super::drawing::Drawn;
-use super::marks::{End, Holding, Shown};
+use super::marks::Holding;
 use super::resources::{MARK_STRIDE, Resources};
 use super::sync::{Inputs, Rebuilt, Rows, Source, Window, table_of};
 use super::transition::{bound, holds_alike, in_place, moved};
@@ -15,7 +15,6 @@ use super::words::Kept;
 use super::{Camera, Event, Frame, View, timer, uniforms};
 use crate::data::Keyed;
 use crate::derive::order::Order;
-use crate::derive::tiled::Place;
 use crate::expr::compile::Deps;
 use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
@@ -79,6 +78,7 @@ impl View {
         self.pixel_ratio = frame.pixel_ratio.max(0.01);
         let ratio = f64::from(self.pixel_ratio);
         self.size = [f64::from(frame.size[0]) / ratio, f64::from(frame.size[1]) / ratio];
+        self.measure_gutters();
         self.settle();
         self.advance(dt);
         let mut inner = gpu.0.lock();
@@ -90,6 +90,7 @@ impl View {
         inner.atlas.tick();
         self.settle_labels(&mut inner);
         self.derive(&mut inner);
+        self.tell_failures();
         self.answer_arranging();
         self.stream(&mut inner);
         let fresh = self.lay_out(encoder, &mut inner);
@@ -226,8 +227,8 @@ impl View {
         let mut normals = vec![false; self.marks.len()];
         for shown in self.marks.iter().filter(|m| m.kind() == MarkKind::Faces) {
             let Some(compiled) = &shown.compiled else { continue };
-            for table in &compiled.program.ends {
-                if let Some(m) = super::graph::end_mark(&self.marks, &shown.mark.style().data, table) {
+            for end in &compiled.program.ends {
+                if let Some(m) = super::graph::end_mark(&self.marks, &shown.mark.style().data, &end.table) {
                     normals[m] = true;
                 }
             }
@@ -254,9 +255,10 @@ impl View {
                 shown.packed = false;
                 changed = true;
                 fresh |= kept == Kept::Focus;
-                // Rows whose state starts over evaluate every channel again.
+                // Rows whose state starts over evaluate every channel again, every word written first.
                 if kept == Kept::State {
                     shown.slots_bound(&new);
+                    shown.fresh.extend(&new);
                 }
             }
         }
@@ -316,7 +318,7 @@ impl View {
     /// lasts, which a plan within less lets go of first.
     fn hold_to_share(&mut self, inner: &Inner) {
         let mut pins: Vec<crate::gpu::arena::PageKey> = self.marks.iter().flat_map(|m| m.tables.pins()).collect();
-        pins.sort_unstable_by_key(|key| (key.page, key.piece, key.low, key.words as u8));
+        pins.sort_unstable_by_key(|key| (key.page, key.low, key.words as u8));
         pins.dedup();
         let pages: u64 = pins.into_iter().map(|key| inner.arena.bytes_of(key)).sum();
         let words: u64 = self.marks.iter().map(|m| m.words.bytes()).sum();
@@ -330,7 +332,7 @@ impl View {
     }
 
     /// Takes what landed since the last frame: probes, fits, queries, the intents and keys waiting on
-    /// picks; and tells, once, why marks the data given since no longer fits failed.
+    /// picks.
     fn settle(&mut self) {
         if let Some(ms) = self.timer.as_mut().and_then(timer::Timer::landed) {
             self.stats.gpu_ms = ms;
@@ -339,6 +341,11 @@ impl View {
         self.settle_probe();
         self.settle_query();
         self.settle_gestures();
+    }
+
+    /// Tells, once, why marks the data drawn does not fit failed: once the frame took the latest
+    /// versions, so a dataset filled between frames tells nothing of the version before.
+    fn tell_failures(&mut self) {
         for (i, shown) in self.marks.iter_mut().enumerate() {
             if let Some((error, told)) = &mut shown.failure
                 && !*told
@@ -350,9 +357,9 @@ impl View {
     }
 
     /// Derives what marks read beside their data, from the data and the scene alone, handing the
-    /// host what the frame cannot afford. First the tiles the camera and the plot window ask for,
-    /// the datasets tiles make; then the orders tables drawn in part draw in, and the ranges of them
-    /// the camera asks for; then every other derivation, from the data.
+    /// host what the frame cannot afford. First the pieces of tiles the camera and the plot window
+    /// ask for; then the orders tables drawn in part draw in, and the ranges of them the camera asks
+    /// for; then every other derivation, from the data.
     fn derive(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let projected = self.projected();
@@ -365,17 +372,16 @@ impl View {
         let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, inner.frame.work);
         let mut tiles = std::mem::take(&mut self.derived.tiles);
         let reading = self.reading();
-        let asked = derive::tiles::Asked { sight: earth.then_some(&sight), reading: &reading };
-        tiles.update(&self.derive_input(host.as_deref()), &asked, &jobs);
-        for data in tiles.take_changed() {
-            self.take_data(data, inner);
-        }
+        let asked = crate::tiles::Asked { sight: earth.then_some(&sight), reading: &reading };
+        // What the pieces change draws from the next frame, which takes it before asking what its
+        // marks read with.
+        tiles.update(&self.derive_input(host.as_deref()), &asked, &mut inner.tiles, &jobs);
         self.derived.tiles = tiles;
         let budget = inner.budget.bytes;
         self.update_plan(&mut inner.ledger, budget);
         self.trace_columns = self.planning.trace_columns();
         let ask = derive::tiled::Ask {
-            sources: &self.sources,
+            data: &self.snapshots,
             plans: self.planning.plans(),
             sight: placing.then_some(&sight),
             earth,
@@ -398,7 +404,7 @@ impl View {
         derive::Input {
             scene: &self.scene,
             scene_version: self.scene_version,
-            data: &self.sources,
+            data: &self.snapshots,
             host,
             dragging: self.dragging(),
             paged: None,
@@ -481,18 +487,18 @@ impl View {
 
     /// What marks read of sampled fields, for time tiles to fetch: the plot window, the coordinate
     /// shown, and each field a mark's program reads, with whether a line traces it.
-    fn reading(&self) -> derive::tiles::Reading {
+    fn reading(&self) -> crate::tiles::Reading {
         let (across, columns) = self.trace_window();
         let mut fields = Vec::new();
         for shown in &self.marks {
             let Some(compiled) = &shown.compiled else { continue };
             let style = shown.mark.style();
             for column in compiled.program.columns.iter().filter(|c| !c.derived) {
-                let (data, table) = column.of.clone().unwrap_or_else(|| (style.data.clone(), style.table.clone()));
+                let (data, table) = column.from.clone().unwrap_or_else(|| (style.data.clone(), style.table.clone()));
                 fields.push((data, table, column.name.clone(), column.trace));
             }
         }
-        derive::tiles::Reading { across, columns, at: self.at, fields }
+        crate::tiles::Reading { across, columns, at: self.at, fields }
     }
 
     /// Syncs every mark's columns to its data, and for a table drawn in part to the drawing replacing
@@ -512,7 +518,7 @@ impl View {
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(compiled) = &shown.compiled else { continue };
             let style = shown.mark.style();
-            let Some(data) = self.sources.iter().find(|d| *d.name() == style.data) else { continue };
+            let Some(data) = self.snapshots.iter().find(|d| *d.name() == style.data) else { continue };
             let Some(table) = data.table(&style.table) else { continue };
             let derived = self.derived.beside(&style.data, &style.table);
             let source = Source { data, table, derived, paged: self.derived.paged(&style.data, &style.table) };
@@ -520,7 +526,7 @@ impl View {
             let rows = drawing.map_or(Rows::Own, |drawing| Rows::Held(drawing));
             let window = Window { steps: compiled.drawing.flags & (wgsl::STEP_BEFORE | wgsl::STEP_AFTER), ..window };
             let orders = orders.get(&style.data).map_or(&[][..], Vec::as_slice);
-            let inputs = Inputs { all: &self.sources, at, window, orders };
+            let inputs = Inputs { all: &self.snapshots, at, window, orders };
             let staged = self.staged.get(&style.data).and_then(|s| s.of(i));
             if let Some(rebuilt) = shown.tables.rebuild(&compiled.program, &source, rows, &inputs, staged, inner) {
                 self.staged.entry(style.data.clone()).or_default().put(i, rebuilt, inner);
@@ -588,7 +594,7 @@ impl View {
         let drawing = self.drawings.get(&key).and_then(Drawn::latest);
         let live = match drawing {
             Some(drawing) => drawing.live(),
-            None => self.source(&key.0).and_then(|d| d.table(&key.1)).map_or(0, |t| t.len() as u32),
+            None => self.snapshot(&key.0).and_then(|d| d.table(&key.1)).map_or(0, |t| t.len() as u32),
         };
         // Pages new to it hold its next rows as `page_rows` will: a slot's whole page, or the table's
         // rows a page at a time.
@@ -629,7 +635,7 @@ impl View {
         let Some(compiled) = &shown.compiled else { return };
         let (program, geometry) = (compiled.program.clone(), compiled.drawing.geometry);
         let key = (shown.mark.style().data.clone(), shown.mark.style().table.clone());
-        let Some(data) = self.sources.iter().find(|d| *d.name() == key.0) else { return };
+        let Some(data) = self.snapshots.iter().find(|d| *d.name() == key.0) else { return };
         let Some(table) = data.table(&key.1) else { return };
         let drawing = self.drawings.get(&key).and_then(|d| d.current.clone());
         let published = rebuilt.map(|rebuilt| shown.tables.publish(rebuilt, &program, geometry, inner));
@@ -694,7 +700,7 @@ impl View {
             let source = Source { data, table, derived: self.derived.beside(&key.0, &key.1), paged: Vec::new() };
             for text in &program.texts {
                 let column = &program.columns[text.column as usize];
-                let code = table_of(column, &source, &self.sources).map_or(wgsl::NONE, |(d, t)| {
+                let code = table_of(column, &source, &self.snapshots).map_or(wgsl::NONE, |(d, t)| {
                     inner.dictionaries.field(d, &t.name, &column.name).code_of(&text.text)
                 });
                 shown.constants[text.constant as usize] = code;
@@ -721,67 +727,4 @@ impl View {
         }
         u64::from(domains)
     }
-
-    /// Points every edge and face mark's ends at the vertex marks drawing their tables. The ends of
-    /// rows evaluate again where their vertices moved: another vertex mark, another order, or for rows
-    /// that hold no page their ends lie in, other slots. Edges drawn in part hold the pages their ends
-    /// lie in, whose slots never move under them. Where only a vertex mark's pages of words changed,
-    /// the ends read them where they are, and nothing evaluates.
-    fn attach_ends(&mut self) {
-        for i in 0..self.marks.len() {
-            let ends = ends(&self.marks, i);
-            let was = &self.marks[i].ends;
-            if ends == *was {
-                continue;
-            }
-            let style = self.marks[i].mark.style();
-            let place = self.planning.plans().get(&(style.data.clone(), style.table.clone())).map(|p| &p.place);
-            let closed = self.marks[i].drawing().is_some() && matches!(place, Some(Place::Ends(_)));
-            let moved = ends.len() != was.len()
-                || ends.iter().zip(was).any(|(a, b)| {
-                    a.mark != b.mark || a.order != b.order || (!closed && (a.pages != b.pages || a.kept != b.kept))
-                });
-            // Edges kept find their ends among the rows kept, which move as those change: they alone
-            // evaluate again.
-            let kept = closed && ends.iter().zip(was).any(|(a, b)| a.kept != b.kept);
-            self.marks[i].ends = ends;
-            self.marks[i].packed = false;
-            if moved {
-                self.marks[i].all_dirty();
-            } else if kept {
-                let slots = self.marks[i].drawing().map(|d| d.kept_slots()).unwrap_or_default();
-                self.marks[i].slots_bound(&slots);
-            }
-        }
-    }
-}
-
-/// Where each of mark `i`'s ends finds its vertices: the vertex mark it attaches to, the pages of
-/// that mark's rows' words and of the normals faces sum at them, and where it holds the pages of the
-/// order it draws its table in, if in part. An end attaches to the unnamed vertex mark drawing its
-/// table, else to the first one, while that mark has pages for the rows it holds.
-fn ends(marks: &[Shown], i: usize) -> Vec<End> {
-    let Some(compiled) = &marks[i].compiled else { return Vec::new() };
-    let data = &marks[i].mark.style().data;
-    compiled
-        .program
-        .ends
-        .iter()
-        .map(|table| match super::graph::end_mark(marks, data, table) {
-            // A vertex mark without pages for its rows draws nothing, and nothing ends at it.
-            Some(m) if marks[m].pages_held() => {
-                let (state, normals) = (marks[m].words.pages(Kept::State), marks[m].words.pages(Kept::Normals));
-                End {
-                    mark: Some(m),
-                    state: state.blocks.clone(),
-                    stride: state.width,
-                    normals: (normals.width > 0).then(|| normals.blocks.clone()),
-                    order: marks[m].drawing().map_or(0, |d| d.order.id()),
-                    pages: marks[m].drawing().map(|d| d.pages.clone()),
-                    kept: marks[m].drawing().map(|d| d.kept_rows.clone()),
-                }
-            }
-            _ => End::unattached(),
-        })
-        .collect()
 }

@@ -1,4 +1,4 @@
-import type { Canvas, Gpu, Panel, Scene, View } from 'latkit';
+import type { Canvas, Gpu, Rect, Scene, View } from 'latkit';
 import { Section } from './controls.js';
 import { h } from './dom.js';
 import { Legend } from './legend.js';
@@ -19,12 +19,8 @@ export class Stage {
   /** Aborted when the page closes: pass it to listeners the page adds itself. */
   readonly signal = this.#abort.signal;
   readonly #views = new Set<View>();
-  readonly #canvases = new Set<Canvas>();
-  /** Each view a canvas of the page shows, its element, and the panel of it the view fills, in the
-   * order they were made. */
-  readonly shown: { view: View; element: HTMLCanvasElement; panel: Panel }[] = [];
+  readonly #canvases: Canvas[] = [];
   readonly #keys = new Map<string, () => void>();
-  #holding = 0;
 
   constructor(
     readonly gpu: Gpu,
@@ -52,15 +48,20 @@ export class Stage {
     return [...this.#views];
   }
 
+  /** Every canvas the page shows its views in, in the order they were made. */
+  get canvases(): readonly Canvas[] {
+    return this.#canvases;
+  }
+
   /** A view in a canvas of its own, in `into`, the main region unless given. */
   view(scene: Scene, options: { label: string; into?: HTMLElement; height?: number }): View {
     return this.panels([scene], options)[0]!;
   }
 
   /**
-   * Views sharing one canvas in `into`, the main region unless given: each in its panel, its x, y,
-   * width, and height as fractions of the canvas, side by side unless given. Input goes to the view
-   * under it.
+   * Views sharing one canvas in `into`, the main region unless given: each `at` its x, y, width, and
+   * height as fractions of the canvas, side by side unless given, and on a narrow screen one above
+   * the other. Input goes to the view under it.
    */
   panels(
     scenes: readonly Scene[],
@@ -68,41 +69,26 @@ export class Stage {
       label,
       into = this.regions.main,
       height,
-      panels = scenes.map((_, i) => [i / scenes.length, 0, 1 / scenes.length, 1] as const),
-    }: { label: string; into?: HTMLElement; height?: number; panels?: readonly Panel[] },
+      at = scenes.map((_, i): Rect => [i / scenes.length, 0, 1 / scenes.length, 1]),
+    }: { label: string; into?: HTMLElement; height?: number; at?: readonly Rect[] },
   ): View[] {
-    const canvas = h('canvas', { tabindex: 0, 'aria-label': label });
-    if (height) canvas.style.height = `${height}px`;
-    into.append(canvas);
-    const views = scenes.map((scene) => {
-      const view = this.gpu.view(scene);
-      // Leave room for the full font bounds above a plot's value-axis title.
-      if (typeof scene.space === 'object' && 'plot' in scene.space) view.insets = [12, 0, 0, 0];
-      return view;
-    });
+    const element = h('canvas', { tabindex: 0, 'aria-label': label });
+    if (height) element.style.height = `${height}px`;
+    into.append(element);
+    const views = scenes.map((scene) => this.gpu.view(scene));
     const narrow = matchMedia('(max-width: 700px)');
     const layout = () =>
-      narrow.matches && scenes.length > 1
-        ? panels.map(([x, y, width, height]) => [y, x, height, width] as const)
-        : panels;
-    let current = layout();
-    let surface = this.gpu.canvas(canvas, { panels: current }).show(views);
-    this.#canvases.add(surface);
-    const shown = views.map((view, i) => ({ view, element: canvas, panel: current[i]! }));
-    this.shown.push(...shown);
-    if (scenes.length > 1)
-      narrow.addEventListener(
-        'change',
-        () => {
-          surface.destroy();
-          this.#canvases.delete(surface);
-          current = layout();
-          shown.forEach((item, i) => (item.panel = current[i]!));
-          surface = this.gpu.canvas(canvas, { panels: current }).show(views);
-          this.#canvases.add(surface);
-        },
-        { signal: this.signal },
-      );
+      views.map((view, i) => {
+        const [x, y, width, height] = at[i]!;
+        return {
+          view,
+          at: narrow.matches && views.length > 1 ? ([y, x, height, width] as const) : at[i],
+        };
+      });
+    const canvas = this.gpu.canvas(element, { layout: layout() });
+    this.#canvases.push(canvas);
+    if (views.length > 1)
+      narrow.addEventListener('change', () => (canvas.layout = layout()), { signal: this.signal });
     views.forEach((view) => {
       // What could not be fetched only goes undrawn; anything else stops the page.
       view.on('error', (error) =>
@@ -113,14 +99,12 @@ export class Stage {
     return views;
   }
 
-  /** Calls `step` every frame before the views draw, with the seconds since the last, at most 0.1;
-   * not while the page holds still. */
+  /** Calls `step` every frame before the views draw, with the seconds since the last, at most 0.1. */
   frame(step: (dt: number) => void): void {
     let last: number | undefined;
     const stop = this.gpu.on('frame', (now) => {
-      const dt = last === undefined || this.#holding ? 0 : Math.min(0.1, (now - last) / 1000);
+      const dt = last === undefined ? 0 : Math.min(0.1, (now - last) / 1000);
       last = now;
-      if (this.#holding) return;
       try {
         step(dt);
       } catch (error) {
@@ -128,16 +112,6 @@ export class Stage {
       }
     });
     this.signal.addEventListener('abort', stop);
-  }
-
-  /** Holds the page's frame steps still while `work` runs, as a picture of it waits for stillness. */
-  async hold<T>(work: () => Promise<T>): Promise<T> {
-    this.#holding++;
-    try {
-      return await work();
-    } finally {
-      this.#holding--;
-    }
   }
 
   /** Runs `action` when `key` is pressed outside a text field. */

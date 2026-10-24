@@ -9,7 +9,7 @@ import path from 'node:path';
 import prettier from 'prettier';
 
 /** The types npm takes as plain data; everything they are built of comes with them. */
-const INPUTS = ['Scene', 'Query', 'Camera', 'Fit', 'Budget', 'ColormapKind'];
+const INPUTS = ['Scene', 'Query', 'EnvelopeRequest', 'Camera', 'Fit', 'Budget', 'ColormapKind'];
 
 /** The types npm reads back. */
 const OUTPUTS = [
@@ -25,7 +25,7 @@ const OUTPUTS = [
 ];
 
 /** The hand-written types a `tsType` names, and the module that declares them. */
-const IMPORTS = { './scene.js': ['Color', 'ExprInput'] };
+const IMPORTS = { './scene.js': ['Color', 'ExprInput', 'PaintInput'] };
 
 /** `inputs.ts` and `outputs.ts` of `schema.json` at `file`, formatted as the repository's sources are. */
 export async function typescript(file) {
@@ -181,10 +181,32 @@ function declare(defs, prefix, roots, declared) {
   return { names, source, borrowed: [...reached].filter((n) => declared.has(n) && used(n)) };
 }
 
+/** Rust's names npm calls otherwise. */
+const RENAMED = { 'View::events': 'view.on' };
+
+/**
+ * A code span of Rust's documentation as npm names what it names: an event as the event npm tells
+ * (`Event::Connect` a `'connect'` event), a member as one of an instance where it starts lowercase
+ * (`View::complete` `view.complete`, `Controls::connect` `controls.connect`) and of its type else, a
+ * call as what it calls (`hovered()` `hovered`).
+ */
+function named(code) {
+  const camel = (name) => name.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+  const lower = (name) => name[0].toLowerCase() + name.slice(1);
+  if (RENAMED[code]) return `\`${RENAMED[code]}\``;
+  const event = code.match(/^Event::(\w+)$/);
+  if (event) return `a \`'${lower(event[1])}'\` event`;
+  const span = code
+    .replace(/\b([A-Z]\w*)::([a-z]\w*)/g, (_, owner, member) => `${lower(owner)}.${camel(member)}`)
+    .replace(/\b([A-Z]\w*)::(\w+)/g, '$1.$2')
+    .replace(/\(\)/g, '');
+  return `\`${span}\``;
+}
+
 /**
  * Documentation as the forms write it, wrapped anew: paragraphs kept, lines at most 96 wide, Rust's
- * links to its own items as plain code, its `None` as the `null` JSON writes, and its examples,
- * which are Rust, left out.
+ * links to its own items as plain code, its names as npm's, its `None` as the `null` JSON writes,
+ * and its examples, which are Rust, left out.
  */
 function doc(text) {
   const lines = [];
@@ -192,7 +214,8 @@ function doc(text) {
     .replace(/```[\s\S]*?```/g, '')
     .replace(/\*\//g, '*\\/')
     .replace(/\[(`[^`]*`)\]\([^)]*\)/g, '$1')
-    .replaceAll('`None`', '`null`');
+    .replaceAll('`None`', '`null`')
+    .replace(/`([^`]*)`/g, (_, code) => named(code));
   for (const paragraph of plain.split('\n\n').filter((p) => p.trim())) {
     if (lines.length) lines.push('');
     let line = '';

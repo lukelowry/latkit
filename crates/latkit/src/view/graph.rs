@@ -23,7 +23,7 @@ impl View {
     /// does.
     pub fn neighbors(&self, row: &Row) -> Vec<Rows> {
         let mut found: Vec<Row> = Vec::new();
-        let Some(data) = self.data(&row.data) else { return Vec::new() };
+        let Some(data) = self.snapshot(&row.data) else { return Vec::new() };
         let Some(index) = data.table(&row.table).and_then(|t| t.row(row.id.as_ref())) else { return Vec::new() };
         let at = |table: &Name, r: u32| {
             let id = data.table(table)?.ids.id(r as usize)?;
@@ -75,7 +75,7 @@ impl View {
     /// Every vertex mark's port reference field that names rows of net mark `i`'s table.
     fn ports_naming(&self, i: usize) -> Vec<(usize, Name)> {
         let style = self.marks[i].mark.style();
-        let Some(data) = self.data(&style.data) else { return Vec::new() };
+        let Some(data) = self.snapshot(&style.data) else { return Vec::new() };
         let mut found = Vec::new();
         for (m, shown) in self.marks.iter().enumerate() {
             let s = shown.mark.style();
@@ -95,7 +95,7 @@ impl View {
 
     /// The row `row`'s reference field `field` names.
     pub(super) fn referenced(&self, row: &Row, field: &str) -> Option<Row> {
-        let data = self.data(&row.data)?;
+        let data = self.snapshot(&row.data)?;
         let table = data.table(&row.table)?;
         let r = reference(table, field)?;
         let id = data.table(&r.to)?.ids.id(r.target(table.row(row.id.as_ref())?)? as usize)?;

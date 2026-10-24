@@ -9,7 +9,7 @@
  * by frame as int16 of `speedScale` per unit, `dt` seconds apart, and the fault the simulation
  * applied.
  */
-import { Data, Patch, reference } from '../../latkit.js';
+import { Data, Patch, reference } from 'latkit';
 
 interface Header {
   readonly case: string;
@@ -167,7 +167,7 @@ export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.by
     const speeds = Float32Array.from(array('machine.speed', Int16Array), (value) => value * scale);
     patch.axis('time', 's');
     for (let f = 0; f < frames; f++)
-      patch.append(f * dt, 'Machine', { speed: speeds.subarray(f * g, (f + 1) * g) });
+      patch.append('Machine', f * dt, { speed: speeds.subarray(f * g, (f + 1) * g) });
     simulation = {
       frames,
       dt,

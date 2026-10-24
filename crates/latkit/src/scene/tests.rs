@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::{Color, Colormap, ColormapKind, Expr, field};
+use crate::{Color, Colormap, ColormapKind, Expr, field, px, units};
 
 fn scene(json: &str) -> Scene {
     serde_json::from_str(json).expect("a scene")
@@ -12,23 +12,24 @@ fn scene(json: &str) -> Scene {
 #[test]
 fn scenes_match_builders() {
     let json = r#"{
-        "space": "globe",
+        "space": { "earth": { "projection": "globe" } },
         "marks": [
-            { "edges": { "of": ["grid", "Branch"], "ends": ["from", "to"], "width": 2 } },
+            { "edges": { "of": ["grid", "Branch"], "ends": ["from", "to"], "width": { "px": 2 } } },
             { "vertices": { "of": ["grid", "Bus"], "position": ["lon", "lat"], "radius": { "units": 3 },
                 "color": { "colormap": "balance", "value": "vm", "domain": [0.95, 1.05] } } }
         ],
-        "theme": { "base": "light", "vertexRadius": 5 },
+        "theme": { "base": "light", "vertex": { "radius": 5 } },
         "ease": 0
     }"#;
-    let built = Scene::new(Earth::globe())
-        .theme(Theme { vertex_radius: 5.0, ..Theme::light() })
+    let light = Theme::light();
+    let built = Scene::new(Earth::default().projection(Projection::Globe))
+        .theme(Theme { vertex: VertexTheme { radius: 5.0, ..light.vertex }, ..light })
         .ease(Duration::ZERO)
-        .draw(Edges::of("grid", "Branch").ends("from", "to").width(2.0))
+        .draw(Edges::of("grid", "Branch").ends("from", "to").width(px(2.0)))
         .draw(
             Vertices::of("grid", "Bus")
                 .position("lon", "lat")
-                .radius(crate::units(3.0))
+                .radius(units(3.0))
                 .color(field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05)),
         );
     assert_eq!(scene(json), built);
@@ -42,7 +43,7 @@ fn things_pick_and_geometry_does_not_unless_asked() {
     assert!(!picks(Lines::of("d", "t").into()) && !picks(Areas::of("d", "t").into()), "geometry");
     assert!(picks(Areas::of("d", "t").pick(true).into()) && !picks(Vertices::of("d", "t").pick(false).into()));
     let marks = scene(
-        r#"{ "space": "mercator", "marks": [ { "areas": { "of": ["m", "states"] } },
+        r#"{ "space": "earth", "marks": [ { "areas": { "of": ["m", "states"] } },
         { "areas": { "of": ["m", "states"], "pick": true } } ] }"#,
     )
     .marks;
@@ -57,7 +58,7 @@ fn faces_lines_and_controls_match_builders() {
         "marks": [
             { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false } },
             { "lines": { "of": ["mesh", "Body"], "geometry": "outline", "color": "#66c7ff", "width": 2, "flow": 8 } },
-            { "vertices": { "of": ["mesh", "Vertex"], "select": false, "drag": true, "ring": "#ff0000" } }
+            { "vertices": { "of": ["mesh", "Vertex"], "select": false, "drag": true, "ring": "red" } }
         ]
     }"##;
     let built = Scene::new(Plane::default())
@@ -75,6 +76,42 @@ fn faces_lines_and_controls_match_builders() {
 }
 
 #[test]
+fn a_text_in_a_color_option_is_a_color_and_elsewhere_a_field() {
+    let json = r##"{
+        "space": "plane",
+        "marks": [{ "vertices": { "of": ["grid", "Bus"], "position": ["x", "y"], "radius": "r",
+            "color": { "when": [[{ "field": "on" }, "#ffb000"]], "otherwise": "gray" },
+            "label": { "text": "name", "color": "white" } } }]
+    }"##;
+    let css = |css: &str| Color::css(css).expect("a CSS color");
+    let built = Scene::new(Plane::default()).draw(
+        Vertices::of("grid", "Bus")
+            .position("x", "y")
+            .radius("r")
+            .color(crate::when(field("on")).then(css("#ffb000")).otherwise(css("gray")))
+            .label(Label::new("name").color(css("white"))),
+    );
+    assert_eq!(scene(json), built);
+    let error = serde_json::from_str::<Scene>(
+        r#"{ "space": "plane", "marks": [{ "vertices": { "of": ["grid", "Bus"], "color": "kv" } }] }"#,
+    )
+    .expect_err("a field's name where a color goes");
+    assert!(error.to_string().contains(r#"not a CSS color: "kv"; a field is field("kv")"#), "{error}");
+}
+
+#[test]
+fn joins_read_from_another_table() {
+    let json = r#"{
+        "space": "plane",
+        "marks": [{ "vertices": { "of": ["grid", "Bus"], "position": ["x", "y"],
+            "radius": { "field": "r", "from": ["weather", "Station"] } } }]
+    }"#;
+    let built = Scene::new(Plane::default())
+        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(field("r").from_table("weather", "Station")));
+    assert_eq!(scene(json), built);
+}
+
+#[test]
 fn areas_and_the_earths_look_match_builders() {
     let json = r##"{
         "space": { "earth": { "projection": "globe", "daylight": 1782043200, "atmosphere": true } },
@@ -82,10 +119,16 @@ fn areas_and_the_earths_look_match_builders() {
             { "areas": { "of": ["map", "states"], "geometry": "outline", "color": "#336699" } },
             { "lines": { "of": ["map", "states"], "geometry": "outline" } }
         ],
-        "theme": { "area": "#223344", "night": 0.4 }
+        "theme": { "area": { "color": "#223344" }, "earth": { "night": 0.4 } }
     }"##;
-    let built = Scene::new(Earth::globe().daylight(1_782_043_200.0).atmosphere(true))
-        .theme(Theme { area: Color::hex("#223344").expect("hex"), night: 0.4, ..Theme::default() })
+    let dark = Theme::dark();
+    let theme = Theme {
+        area: AreaTheme { color: Color::hex("#223344").expect("hex") },
+        earth: EarthTheme { night: 0.4, ..dark.earth },
+        ..dark
+    };
+    let built = Scene::new(Earth::default().projection(Projection::Globe).daylight(1_782_043_200.0).atmosphere(true))
+        .theme(theme)
         .draw(Areas::of("map", "states").geometry("outline").color(Color::hex("#336699").expect("hex")))
         .draw(Lines::of("map", "states").geometry("outline"));
     assert_eq!(scene(json), built);
@@ -100,10 +143,15 @@ fn comets_and_named_categories_match_builders() {
                 "color": { "colormap": { "kind": "categorical", "colors": ["#ff0000", "#0000ff"],
                     "categories": ["red", "blue"] }, "value": "k" } } }
         ],
-        "theme": { "flow": { "color": "#00ff00", "width": 6 } }
+        "theme": { "flow": { "color": "#00ff00", "width": 6, "spacing": { "units": 40 }, "length": { "units": 30 } } }
     }"##;
     let map = Colormap::new(ColormapKind::Categorical, [Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0)]).unwrap();
-    let flow = Flow { color: Color::rgb(0.0, 1.0, 0.0), width: 6.0, ..Theme::default().flow };
+    let flow = FlowTheme {
+        color: Color::rgb(0.0, 1.0, 0.0),
+        width: 6.0,
+        spacing: Length::Units(40.0),
+        length: Length::Units(30.0),
+    };
     let built = Scene::new(Plane::default())
         .theme(Theme { flow, ..Theme::default() })
         .draw(Vertices::of("grid", "Bus").legend("Kind").color(field("k").colormap(map.categories(["red", "blue"]))));
@@ -111,6 +159,10 @@ fn comets_and_named_categories_match_builders() {
     let continuous =
         r#"{ "colormap": { "kind": "sequential", "colors": ["red"], "categories": ["a"] }, "value": "k" }"#;
     assert!(serde_json::from_str::<Expr>(continuous).is_err(), "only a categorical map has categories");
+    let mixed = Scene::new(Plane::default())
+        .theme(Theme { flow: FlowTheme { spacing: Length::Units(40.0), ..Theme::default().flow }, ..Theme::default() });
+    let error = mixed.check().expect_err("spacing and length in two units");
+    assert!(error.to_string().starts_with("theme.flow.length: "), "{error}");
 }
 
 #[test]
@@ -118,10 +170,12 @@ fn themes_read_a_base_and_options_over_it() {
     let theme = |json: &str| serde_json::from_str::<Theme>(json).expect("a theme");
     assert_eq!(theme(r#""light""#), Theme::light());
     assert_eq!(theme("{}"), Theme::dark());
-    assert!(Theme::default().selected.is_some());
-    assert_eq!(theme(r#"{ "selected": null }"#).selected, None, "null clears a color");
-    assert_eq!(theme(r#"{ "base": "light", "glow": 3 }"#), Theme { glow: 3.0, ..Theme::light() });
-    assert!(serde_json::from_str::<Theme>(r#"{ "glw": 3 }"#).is_err(), "a typo");
+    assert!(Theme::default().focus.selected.is_some());
+    assert_eq!(theme(r#"{ "focus": { "selected": null } }"#).focus.selected, None, "null clears a color");
+    let light = Theme::light();
+    let glow = theme(r#"{ "base": "light", "focus": { "glow": 3 } }"#);
+    assert_eq!(glow, Theme { focus: FocusTheme { glow: 3.0, ..light.focus }, ..light });
+    assert!(serde_json::from_str::<Theme>(r#"{ "focus": { "glw": 3 } }"#).is_err(), "a typo");
 }
 
 #[test]
@@ -155,7 +209,7 @@ fn presets_stand_for_values() {
     let grid = r#"{ "diagram": { "grid": { "dots": { "pitch": 10, "snap": true } } } }"#;
     let space = serde_json::from_str::<Space>(grid).expect("a space");
     assert_eq!(space, Space::Diagram(Diagram { grid: Grid::Dots { pitch: 10.0, snap: true } }));
-    assert!(serde_json::from_str::<Space>(r#""earth""#).is_err(), "the earth is a mercator map or a globe");
+    assert_eq!(serde_json::from_str::<Space>(r#""earth""#).expect("a space"), Space::Earth(Earth::default()));
 }
 
 #[test]

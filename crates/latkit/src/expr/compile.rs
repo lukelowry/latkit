@@ -64,7 +64,7 @@ pub(crate) enum Words {
 /// or of the table the view derives beside the mark's own, row for row.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ColumnUse {
-    pub(crate) of: Option<(Name, Name)>,
+    pub(crate) from: Option<(Name, Name)>,
     pub(crate) derived: bool,
     pub(crate) name: Name,
     pub(crate) words: Words,
@@ -80,7 +80,7 @@ impl ColumnUse {
     /// The mark's own field `name`, read as `words`.
     fn own(name: impl Into<Name>, words: Words) -> ColumnUse {
         ColumnUse {
-            of: None,
+            from: None,
             derived: false,
             name: name.into(),
             words,
@@ -95,6 +95,14 @@ impl ColumnUse {
     fn derived(name: impl Into<Name>, words: Words) -> ColumnUse {
         ColumnUse { derived: true, ..ColumnUse::own(name, words) }
     }
+}
+
+/// An end of each row of a mark: the table whose row it names, and the program column of the
+/// reference field naming it, `NONE` where the end is the row's own vertex, as a pole's.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct EndUse {
+    pub(crate) table: Name,
+    pub(crate) column: u32,
 }
 
 /// A constant holding a text's dictionary code in a column; the view writes it.
@@ -121,8 +129,9 @@ pub(crate) struct Program {
     pub(crate) texts: Vec<TextUse>,
     /// Colormap ops, whose layer the view writes.
     pub(crate) colormaps: Vec<(u32, Colormap)>,
-    /// Tables that ends point at, by end index.
-    pub(crate) ends: Vec<Name>,
+    /// Each row's ends, by number: where each is held, the end pass writes into the kind word of its
+    /// number.
+    pub(crate) ends: Vec<EndUse>,
     /// State words stored in position units.
     pub(crate) units: u32,
 }
@@ -165,8 +174,8 @@ pub(crate) enum Store {
 
 /// The fields a mark's expressions can read.
 pub(crate) trait Fields {
-    /// The kind of `name` in the mark's table, or in `of`'s table.
-    fn kind(&self, of: Option<&(Name, Name)>, name: &str) -> Option<Kind>;
+    /// The kind of `name` in the mark's table, or in `from`'s table.
+    fn kind(&self, from: Option<&(Name, Name)>, name: &str) -> Option<Kind>;
     /// The table a reference field of the mark's table names.
     fn target(&self, name: &str) -> Option<Name>;
 }
@@ -310,7 +319,7 @@ impl<'a> Compiler<'a> {
             Node::State(State::Pointer) => Some("the pointer"),
             Node::State(State::Elapsed) => Some("time"),
             Node::State(State::Zoom) => Some("the zoom"),
-            Node::Field(f) if self.fields.kind(f.of.as_ref(), &f.name) == Some(Kind::Sampled) => {
+            Node::Field(f) if self.fields.kind(f.from.as_ref(), &f.name) == Some(Kind::Sampled) => {
                 Some("a sampled field")
             }
             Node::Unary(_, a) | Node::Is(a, _) | Node::Contains(a, _) => self.unstructural(a),
@@ -323,38 +332,28 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Compiles end `index` of an edge: the vertex the reference field `name` names.
-    pub(crate) fn end(&mut self, name: &str, word: u32) -> Result<()> {
-        let start = self.begin();
+    /// Adds the next end of each row: the vertex the reference field `name` names.
+    pub(crate) fn end(&mut self, name: &str) -> Result<()> {
         if self.fields.kind(None, name) != Some(Kind::Reference) {
             return Err(invalid("not a reference field").at(name));
         }
-        let target = self.fields.target(name).ok_or_else(|| invalid("not a reference field").at(name))?;
+        let table = self.fields.target(name).ok_or_else(|| invalid("not a reference field").at(name))?;
         let column = self.column(ColumnUse::own(name, Words::Bits));
-        let index = self.program.ends.len() as u32;
-        self.program.ends.push(target);
-        self.deps |= Deps::DATA;
-        self.op(wgsl::OP_STORE_END, word, column, index, 0, 0)?;
-        self.close(name, start);
+        self.program.ends.push(EndUse { table, column });
         Ok(())
     }
 
-    /// Compiles an end storing each row itself at `word`: its row of the vertex mark drawing the
-    /// mark's own table, row for row, as a pole stands on.
-    pub(crate) fn own_end(&mut self, table: &Name, word: u32) -> Result<()> {
-        let start = self.begin();
-        let index = self.program.ends.len() as u32;
-        self.program.ends.push(table.clone());
-        self.op(wgsl::OP_STORE_END, word, wgsl::NONE, index, 0, 0)?;
-        self.close("poles", start);
-        Ok(())
+    /// Adds the next end of each row: the row itself, as the vertex mark drawing the mark's own table
+    /// holds it, row for row, as a pole stands on.
+    pub(crate) fn own_end(&mut self, table: &Name) {
+        self.program.ends.push(EndUse { table: table.clone(), column: wgsl::NONE });
     }
 
     /// Compiles channel `name` storing the code of text field `expr` at `word`, and returns the
     /// program column whose dictionary names the codes.
     pub(crate) fn text(&mut self, name: &str, expr: &Expr, word: u32) -> Result<u32> {
         let Node::Field(f) = &*expr.0 else { return Err(invalid("a label's text is a text field").at(name)) };
-        if self.fields.kind(f.of.as_ref(), &f.name) != Some(Kind::Text) {
+        if self.fields.kind(f.from.as_ref(), &f.name) != Some(Kind::Text) {
             return Err(invalid("not a text field").at(&f.name).at(name));
         }
         let start = self.begin();
@@ -433,7 +432,7 @@ impl<'a> Compiler<'a> {
     /// The column of a plain number field or point component, with its low part.
     fn plain(&mut self, e: &Expr) -> Option<u32> {
         let Node::Field(f) = &*e.0 else { return None };
-        if f.of.is_some() || f.step {
+        if f.from.is_some() || f.step {
             return None;
         }
         let words = match (self.fields.kind(None, &f.name)?, f.component) {
@@ -518,10 +517,22 @@ impl<'a> Compiler<'a> {
                 self.op(wgsl::OP_SELECT, 0, 0, 0, 3, 1)?;
                 Ok(ty)
             }
-            Node::Contains(..) => Err(invalid("contains reads texts, which only a query holds")),
+            Node::Contains(a, text) => {
+                // The view works out on the CPU whether each row's text holds the text, as a field
+                // derived beside the mark's own table.
+                let Node::Field(f) = &*a.0 else { return Err(invalid("contains reads a text field")) };
+                if f.from.is_some() || self.fields.kind(None, &f.name) != Some(Kind::Text) {
+                    return Err(invalid("contains reads a text field of the mark's own table").at(&f.name));
+                }
+                let name = crate::derive::matches::contains_of(&f.name, text);
+                let column = self.column(ColumnUse::derived(name, Words::Values));
+                self.deps |= Deps::DATA;
+                self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
+                Ok(Ty::Bool)
+            }
             Node::Is(a, text) => {
                 let Node::Field(f) = &*a.0 else { return Err(invalid("is compares a text field")) };
-                if self.fields.kind(f.of.as_ref(), &f.name) != Some(Kind::Text) {
+                if self.fields.kind(f.from.as_ref(), &f.name) != Some(Kind::Text) {
                     return Err(invalid("is compares a text field").at(&f.name));
                 }
                 let column = self.field_column(f, Words::Codes, false);
@@ -560,7 +571,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn field(&mut self, f: &FieldRef) -> Result<Ty> {
-        let kind = self.fields.kind(f.of.as_ref(), &f.name).ok_or_else(|| match &f.of {
+        let kind = self.fields.kind(f.from.as_ref(), &f.name).ok_or_else(|| match &f.from {
             Some((data, table)) => invalid(format!("no field {} in {data}.{table}", f.name)),
             None => invalid(format!("no field {}", f.name)),
         })?;
@@ -583,7 +594,7 @@ impl<'a> Compiler<'a> {
     fn field_column(&mut self, f: &FieldRef, words: Words, sampled: bool) -> u32 {
         self.deps |= if sampled { Deps::SAMPLES } else { Deps::DATA };
         let step = f.step && sampled;
-        self.column(ColumnUse { of: f.of.clone(), sampled, step, ..ColumnUse::own(f.name.clone(), words) })
+        self.column(ColumnUse { from: f.from.clone(), sampled, step, ..ColumnUse::own(f.name.clone(), words) })
     }
 
     fn column(&mut self, use_: ColumnUse) -> u32 {

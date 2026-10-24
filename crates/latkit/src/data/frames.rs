@@ -13,10 +13,10 @@
 
 use std::ops::Range;
 
-use super::dataset::Data;
 use super::name::Name;
 use super::patch::{Op, Patch};
 use super::samples::Run;
+use super::snapshot::Snapshot;
 use super::table::Field;
 use crate::{Error, Result};
 
@@ -104,7 +104,7 @@ fn chunks(chunk: u32) -> bool {
     (8..=1 << 20).contains(&chunk) && chunk.is_multiple_of(8)
 }
 
-impl Data {
+impl Snapshot {
     /// The dataset as time tiles, each file's path and bytes handed to `write`: `frames.json`, the
     /// manifest a view's tiles open; `base.latk`, the dataset with its sampled fields reading their
     /// frames but holding none; and a patch for each span of `chunk` entries of each level of each
@@ -174,18 +174,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::{Ids, Table};
+    use crate::{Data, Ids, Table};
 
     #[test]
     fn a_history_writes_as_spans_a_manifest_names() {
-        let mut data = Data::new("grid");
-        data.apply(
+        let grid = Data::new("grid");
+        grid.apply(
             Patch::new().axis("time", "s").replace(Table::new("Bus", Ids::count(2)).field("kv", vec![1.0, 2.0])),
         )
         .expect("rows");
         let at: Vec<f64> = (0..100).map(f64::from).collect();
         let values: Vec<f64> = (0..200).map(|v| f64::from(v % 7)).collect();
-        data.apply(Patch::new().append(&at, "Bus", [("vm", values)])).expect("frames");
+        grid.apply(Patch::new().append("Bus", &at, [("vm", values)])).expect("frames");
+        let data = grid.snapshot();
         let mut files = BTreeMap::new();
         data.to_tiles(16, |path, bytes| {
             files.insert(path.to_owned(), bytes.to_vec());
@@ -201,12 +202,12 @@ mod tests {
             .filter(|p| std::path::Path::new(p).extension().is_some_and(|e| e == "latk") && *p != BASE)
             .collect();
         assert_eq!(spans.len(), 7 + 1 + 1);
-        let mut back = Data::from_bytes(&files[BASE]).expect("the base");
-        assert_eq!(back.describe().span, None, "the base holds no entries");
+        let back = Data::from(Snapshot::from_bytes(&files[BASE]).expect("the base"));
+        assert_eq!(back.snapshot().describe().span, None, "the base holds no entries");
         for path in &spans {
             back.apply(Patch::from_bytes(&files[*path]).expect("a span")).expect("held once");
         }
-        assert_eq!(back.to_bytes(), data.to_bytes(), "every span put back makes the history again");
+        assert_eq!(back.snapshot().to_bytes(), data.to_bytes(), "every span put back makes the history again");
         assert!(Manifest::from_bytes(br#"{"tiles": []}"#).is_none(), "TileJSON is no manifest");
         let backwards =
             br#"{"data": "b", "chunk": 16, "url": "u", "frames": [{"table": "t", "field": "f", "levels": 0, "frames": [3, 1]}]}"#;

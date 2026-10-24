@@ -108,9 +108,9 @@ impl View {
         let labeling = compiled.drawing.label.as_ref()?;
         let column = &compiled.program.columns[labeling.column as usize];
         let style = shown.mark.style();
-        let data = self.source(&style.data)?;
-        let source = Source { data, table: data.table(&style.table)?, derived: [None; 2], paged: Vec::new() };
-        let (d, t) = table_of(column, &source, &self.sources)?;
+        let data = self.snapshot(&style.data)?;
+        let source = Source { data, table: data.table(&style.table)?, derived: [None; 3], paged: Vec::new() };
+        let (d, t) = table_of(column, &source, &self.snapshots)?;
         let text = inner.dictionaries.field(d, &t.name, &column.name).text(code)?.clone();
         Some(atlas::run(text, labeling.font.clone(), labeling.size, labeling.max_width))
     }
@@ -122,10 +122,10 @@ impl View {
         let Some(labeling) = &compiled.drawing.label else { return 0 };
         let column = &compiled.program.columns[labeling.column as usize];
         let style = shown.mark.style();
-        let Some(data) = self.source(&style.data) else { return 0 };
+        let Some(data) = self.snapshot(&style.data) else { return 0 };
         let Some(table) = data.table(&style.table) else { return 0 };
-        let source = Source { data, table, derived: [None; 2], paged: Vec::new() };
-        let Some((d, t)) = table_of(column, &source, &self.sources) else { return 0 };
+        let source = Source { data, table, derived: [None; 3], paged: Vec::new() };
+        let Some((d, t)) = table_of(column, &source, &self.snapshots) else { return 0 };
         inner.dictionaries.field(d, &t.name, &column.name).len() as u32
     }
 
@@ -286,10 +286,10 @@ impl View {
             let Some(labeling) = &compiled.drawing.label else { break 'texts None };
             let column = &compiled.program.columns[labeling.column as usize];
             let style = shown.mark.style();
-            let Some(data) = self.source(&style.data) else { break 'texts None };
+            let Some(data) = self.snapshot(&style.data) else { break 'texts None };
             let Some(table) = data.table(&style.table) else { break 'texts None };
-            let source = Source { data, table, derived: [None; 2], paged: Vec::new() };
-            let Some((d, t)) = table_of(column, &source, &self.sources) else { break 'texts None };
+            let source = Source { data, table, derived: [None; 3], paged: Vec::new() };
+            let Some((d, t)) = table_of(column, &source, &self.snapshots) else { break 'texts None };
             let dictionary = inner.dictionaries.field(d, &t.name, &column.name);
             Some(codes.clone().map(|code| dictionary.text(code).cloned()).collect::<Vec<_>>())
                 .map(|texts| (texts, labeling))
@@ -349,12 +349,13 @@ impl View {
     /// nothing placed before, and fade in from nothing.
     fn clear_bound(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) {
         let words = u64::from(wgsl::PAGE_ROWS * wgsl::CANDIDATE_WORDS) * 4;
+        let queue = &self.gpu.0.queue;
         for shown in &mut self.marks {
             let bound = std::mem::take(&mut shown.bound);
             let blocks = &shown.words.pages(Kept::Candidates).blocks;
             for block in bound.iter().filter_map(|&slot| blocks.get(slot as usize)) {
                 inner.arena.written();
-                encoder.clear_buffer(inner.arena.buffer(), u64::from(*block) * 4, Some(words));
+                queue.clear_buffer(encoder, inner.arena.buffer(), u64::from(*block) * 4, words);
             }
         }
     }

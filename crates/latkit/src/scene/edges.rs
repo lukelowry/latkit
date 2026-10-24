@@ -103,11 +103,11 @@ impl Edges {
                 );
             }
             // Both ends are the row's own vertex, which lights as its pole does.
-            c.own_end(&self.style.table, wgsl::EDGE_FROM)?;
-            c.own_end(&self.style.table, wgsl::EDGE_TO)?;
+            c.own_end(&self.style.table);
+            c.own_end(&self.style.table);
         } else if let Some((from, to)) = &self.ends {
-            c.end(from, wgsl::EDGE_FROM).map_err(|e| e.at("ends"))?;
-            c.end(to, wgsl::EDGE_TO).map_err(|e| e.at("ends"))?;
+            c.end(from).map_err(|e| e.at("ends"))?;
+            c.end(to).map_err(|e| e.at("ends"))?;
         } else if self.bends.is_some() {
             return Err(Error::invalid("bends run between ends; name them").at("bends"));
         }
@@ -118,8 +118,8 @@ impl Edges {
         }
         let mut flags = if self.arrows { wgsl::ARROWS } else { 0 };
         let color = Store::Color { word: wgsl::EDGE_COLOR, fallback: wgsl::THEME_EDGE };
-        match (&self.style.color, context.theme.edge) {
-            (Some(expr), _) => c.channel("color", expr, color)?,
+        match (&self.style.color, context.theme.edge.color) {
+            (Some(paint), _) => c.channel("color", &paint.0, color)?,
             (None, Some(_)) => c.theme("color", wgsl::THEME_EDGE, color)?,
             // A diagram's wires, and nets without ends to blend, take the text color.
             (None, None) if context.diagram() || self.ends.is_none() => {

@@ -4,7 +4,7 @@
  * `docs/images/NAME.png`, with nothing done to the picture after.
  *
  *   cargo build --locked -p latkit-cli --profile cli
- *   cargo xtask wasm                  # the package `latkit/core` comes from
+ *   cargo xtask wasm                  # the package `latkit` comes from
  *   node docs/gallery/render.ts [name...]
  */
 import { execFileSync } from 'node:child_process';

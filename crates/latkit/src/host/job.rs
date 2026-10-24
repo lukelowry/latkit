@@ -297,13 +297,18 @@ impl Job {
         Job(out.0)
     }
 
-    /// Reading GeoJSON `bytes` as dataset `name`, as [`Data::read`](crate::Data::read) does; it
-    /// answers the patch that builds the dataset, or nothing when the bytes are no GeoJSON.
-    pub fn geojson(name: &str, bytes: &[u8]) -> Job {
+    /// Reading `bytes` as dataset `name` off the thread that asks, where they hold GeoJSON, which can
+    /// be large, as [`Data::read`](crate::Data::read) reads it: `None` where they hold latkit's bytes
+    /// or a dataset's document, which read where they are. It answers the patch that builds the
+    /// dataset, or nothing where the GeoJSON is invalid.
+    pub fn geojson(name: &str, bytes: &[u8]) -> Option<Job> {
+        if !crate::data::geojson(bytes) {
+            return None;
+        }
         let mut out = Writer::new(Kind::GeoJson);
         out.text(name);
         out.0.extend_from_slice(bytes);
-        Job(out.0)
+        Some(Job(out.0))
     }
 
     /// Finding every edge row's lane among the rows joining the same two vertices, from each row's two
@@ -712,9 +717,8 @@ mod tests {
 
     /// Field `field` of `table`'s row `id` in the answer.
     fn answered(answer: &[u8], table: &str, id: u64, field: &str) -> Option<Value> {
-        let mut data = crate::Data::new("d");
-        data.apply(Patch::from_bytes(answer).ok()?).ok()?;
-        data.get(&crate::Row::new("d", table, id), field)
+        let data = crate::Snapshot::new("d").applied(Patch::from_bytes(answer).ok()?).ok()?;
+        data.get(table, id, field, None)
     }
 
     #[test]

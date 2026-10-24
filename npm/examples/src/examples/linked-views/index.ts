@@ -17,7 +17,7 @@ import {
   type Scene,
   type Size,
   type View,
-} from '../../latkit.js';
+} from 'latkit';
 import type { Stage } from '../../ui/stage.js';
 import { theme } from '../../ui/theme.js';
 
@@ -63,7 +63,7 @@ function record(): Data {
       signal[f * n + i] =
         0.5 + 0.45 * Math.sin(0.37 * x[i]! + 1.3 * t) * Math.cos(0.31 * y[i]! - 0.7 * t);
   });
-  return new Data('signals').apply(patch.append(times, 'Node', { signal }));
+  return new Data('signals').apply(patch.append('Node', times, { signal }));
 }
 
 export default function page(stage: Stage): void {
@@ -88,7 +88,7 @@ export default function page(stage: Stage): void {
         : 3.4;
   const lattice = (): Scene => ({
     space: { plane: { grid: 'off' } },
-    theme: { ...theme, dim: 0.25 },
+    theme: { ...theme, focus: { dim: 0.25 } },
     marks: [
       { edges: { of: ['signals', 'Link'], ends: ['from', 'to'], width: 1, color: '#3a4556' } },
       ...(look.poles
@@ -118,7 +118,7 @@ export default function page(stage: Stage): void {
     space: {
       plot: { x: { label: 'Time (s)' }, y: { label: 'Signal', format: 'fixed', precision: 2 } },
     },
-    theme: { ...theme, dim: 0.2 },
+    theme: { ...theme, focus: { dim: 0.2 } },
     ease: 0,
     marks: [
       {
@@ -137,20 +137,19 @@ export default function page(stage: Stage): void {
   });
   const [plane, plot] = stage.panels([lattice(), traces()], {
     label: 'A lattice on poles beside its signals traced: one playhead moves both',
-    panels: [
+    at: [
       [0, 0, 0.55, 1],
       [0.55, 0, 0.45, 1],
     ],
   }) as [View, View];
   const data = record();
-  plane.setData(data);
-  plot.setData(data);
+  plane.sources = plot.sources = [data];
   plane.camera = { center: [(SIDE - 1) / 2, (SIDE - 1) / 2, 0], zoom: 3, pitch: 50, bearing: 20 };
   plane.fit();
   plot.camera = { x: [0, duration], y: [0, 1] };
   const restyle = () => {
-    plane.show(lattice());
-    plot.show(traces());
+    plane.scene = lattice();
+    plot.scene = traces();
   };
 
   // What either view selects, the other selects too.
@@ -159,8 +158,8 @@ export default function page(stage: Stage): void {
     [plane, plot],
     [plot, plane],
   ] as const)
-    from.on('select', () => {
-      if (!same(from.selection, to.selection)) to.select(from.selection);
+    from.on('selection', () => {
+      if (!same(from.selection, to.selection)) to.selection = from.selection;
     });
 
   const views = [
@@ -200,7 +199,7 @@ export default function page(stage: Stage): void {
     few,
     (next) => {
       few = next;
-      plot.show(traces());
+      plot.scene = traces();
     },
   );
   play.toggle('Hold samples', 'h', look.held, (on) => ((look.held = on), restyle()));
@@ -210,7 +209,7 @@ export default function page(stage: Stage): void {
     { min: 0, max: 6, step: 0.25, value: look.height, format: (v) => `${v.toFixed(2)} units` },
     (height) => {
       look.height = height;
-      plane.show(lattice());
+      plane.scene = lattice();
     },
   );
   shape.choice(
@@ -221,9 +220,9 @@ export default function page(stage: Stage): void {
       ['Units of the plane', 'units'],
     ] as const,
     look.size,
-    (size) => ((look.size = size), plane.show(lattice())),
+    (size) => ((look.size = size), (plane.scene = lattice())),
   );
-  shape.toggle('Poles', 'p', look.poles, (on) => ((look.poles = on), plane.show(lattice())));
+  shape.toggle('Poles', 'p', look.poles, (on) => ((look.poles = on), (plane.scene = lattice())));
   shape.note('Select nodes on the lattice or traces on the plot: both views select them.');
   const legend = stage.legend('top');
   legend.ramp('viridis', 'Signal 0–1');

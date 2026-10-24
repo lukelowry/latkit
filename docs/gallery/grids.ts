@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import { Patch, reference } from 'latkit/core';
+import { Patch, reference } from 'latkit';
 
 interface Header {
   readonly case: string;
@@ -81,7 +81,7 @@ export function readCase(id: string): Case {
   }
   const lon = Float64Array.from({ length: n }, (_, b) => position[2 * b]!);
   const lat = Float64Array.from({ length: n }, (_, b) => position[2 * b + 1]!);
-  const patch = Patch.to('grid')
+  const patch = new Patch('grid')
     .replace(
       'Bus',
       { count: n },
@@ -121,7 +121,7 @@ export function readCase(id: string): Case {
     const speeds = Float32Array.from(array('machine.speed', Int16Array), (v) => v * scale);
     patch.axis('time', 's');
     for (let f = 0; f < header.frames; f++)
-      patch.append(f * header.dt, 'Machine', { speed: speeds.subarray(f * g, (f + 1) * g) });
+      patch.append('Machine', f * header.dt, { speed: speeds.subarray(f * g, (f + 1) * g) });
   }
   return { name: header.case, header, patch, positions: position, machineBus, array };
 }

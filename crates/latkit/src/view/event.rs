@@ -1,8 +1,9 @@
 //! What a view tells the application. An intent asks something of it: a click, an open, a menu, a
 //! drag, a connection, a deletion, each told once, in the order the user acted. A change tells that
-//! state the view keeps moved: hover, selection, camera, what a frame waits on. Only the latest change
-//! of each is told, and the state can always be read, so a listener added late reads what it missed.
-//! A view tells only what the application did not do itself: its setters change state silently.
+//! state the view keeps moved, named as the state is: `hovered`, `selection`, `camera`, `waiting`.
+//! Only the latest change of each is told, and the state can always be read, so a listener added
+//! late reads what it missed. A view tells only what the application did not do itself: its setters
+//! change state silently.
 
 use std::collections::VecDeque;
 
@@ -10,8 +11,8 @@ use super::Camera;
 use super::input::{Device, Modifiers};
 use crate::{Error, Name, Pending, Row, Rows};
 
-/// What happened in a view, for the application to act on. Drain them with
-/// [`View::events`](crate::View::events).
+/// What happened in a view, for the application to act on, as [`View::events`](crate::View::events)
+/// tells it.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(tag = "type", content = "detail", rename_all = "lowercase")]
 #[schemars(rename = "ViewEvent")]
@@ -73,14 +74,14 @@ pub enum Event {
         trigger: Trigger,
     },
     /// What the user points at changed: [`View::hovered`](crate::View::hovered).
-    Hover {
+    Hovered {
         /// The row now pointed at; `None` once it left every row.
         hit: Option<Hit>,
         /// The pointer, or the keys.
         trigger: Trigger,
     },
     /// The selection changed: [`View::selection`](crate::View::selection).
-    Select {
+    Selection {
         /// The rows selected now.
         rows: Vec<Rows>,
         /// How the user changed it; `None` when the data dropped rows from it.
@@ -90,7 +91,7 @@ pub enum Event {
     /// [`View::camera`](crate::View::camera).
     Camera(Camera),
     /// What the last frame stood in for changed; nothing once it is complete:
-    /// [`View::complete`](crate::View::complete).
+    /// [`View::waiting`](crate::View::waiting).
     Waiting(Waiting),
     /// Something failed, told once. A mark its data no longer fits also lists in
     /// [`View::failures`](crate::View::failures).
@@ -129,7 +130,7 @@ impl Event {
         match (self, older) {
             (Event::Drag { phase: Phase::Move, .. }, Event::Drag { phase: Phase::Move, .. }) => true,
             (Event::Error(error), Event::Error(old)) => error == old,
-            (Event::Hover { .. } | Event::Select { .. } | Event::Camera(_) | Event::Waiting(_), _) => {
+            (Event::Hovered { .. } | Event::Selection { .. } | Event::Camera(_) | Event::Waiting(_), _) => {
                 std::mem::discriminant(self) == std::mem::discriminant(older)
             }
             _ => false,
@@ -342,9 +343,6 @@ pub struct Stats {
     pub tiles: u64,
     /// Tiles being fetched or decoded, of every tile source.
     pub tiles_loading: u64,
-    /// The work under way the last frame stood in for; nothing when it drew everything as the data,
-    /// scene, and camera say: see [`View::complete`](crate::View::complete).
-    pub waiting: Waiting,
     /// Milliseconds the last frame took to record on the CPU.
     pub cpu_ms: f32,
     /// Milliseconds the GPU takes on a frame: the median of the last frames it measured; 0 where the

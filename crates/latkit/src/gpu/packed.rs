@@ -69,9 +69,15 @@ impl Packed {
         self.counters.clone()
     }
 
-    /// The pages of `packing`, packed from `source` as it is now, in `order`: kept while no row they
-    /// hold was written since. Without a source, kept while `packing` is the same.
-    fn pages(&mut self, packing: &Packing, order: &Order, source: Option<&Column>) -> &mut Pages {
+    /// The pages of `packing`, packed from `source` as it is now: each kept while no row it holds was
+    /// written since, `page_of` saying which page holds a row. Without a source, kept while `packing`
+    /// is the same.
+    fn pages(
+        &mut self,
+        packing: &Packing,
+        source: Option<&Column>,
+        page_of: impl Fn(u32) -> Option<usize>,
+    ) -> &mut Pages {
         self.uses += 1;
         if !self.columns.contains_key(packing) && self.columns.len() >= KEPT {
             forget(&mut self.columns, |p| p.used);
@@ -87,8 +93,7 @@ impl Packed {
             && !pages.source.as_ref().is_some_and(|s| s.shares(source))
         {
             if let Some(before) = &pages.source {
-                for row in source.written_since(before) {
-                    let page = (order.rank(row as u32) / PAGE_ROWS) as usize;
+                for page in source.written_since(before).into_iter().filter_map(|row| page_of(row as u32)) {
                     if let Some(id) = pages.ids.get_mut(page) {
                         *id = None;
                     }
@@ -118,7 +123,7 @@ impl Packed {
         source: Option<&Column>,
         wanted: &[u32],
     ) -> Vec<PageId> {
-        let pages = self.pages(packing, order, source);
+        let pages = self.pages(packing, source, |row| Some((order.rank(row) / PAGE_ROWS) as usize));
         wanted
             .iter()
             .map(|&k| {
@@ -131,17 +136,20 @@ impl Packed {
             .collect()
     }
 
+    /// The id of a page of rows kept, of `packing`, packed from `source`: kept while none of the rows
+    /// it holds, which `holds` tells, was written since.
+    pub(crate) fn kept(&mut self, packing: &Packing, source: Option<&Column>, holds: impl Fn(u32) -> bool) -> PageId {
+        let pages = self.pages(packing, source, |row| holds(row).then_some(0));
+        if pages.ids.is_empty() {
+            pages.ids.push(None);
+        }
+        *pages.ids[0].get_or_insert_with(PageId::next)
+    }
+
     /// Samples `samples`' rows `rows` hold, page `page` of `packing`, gathered once.
-    pub(crate) fn samples(
-        &mut self,
-        packing: &Packing,
-        order: &Order,
-        page: u32,
-        rows: &[u32],
-        samples: &Samples,
-    ) -> Samples {
+    pub(crate) fn samples(&mut self, packing: &Packing, page: u32, rows: &[u32], samples: &Samples) -> Samples {
         let counters = self.counters.clone();
-        let pages = self.pages(packing, order, None);
+        let pages = self.pages(packing, None, |_| None);
         let k = page as usize;
         if pages.samples.len() <= k {
             pages.samples.resize(k + 1, None);

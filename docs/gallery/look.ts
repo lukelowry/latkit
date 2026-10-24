@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import type { Camera, Fit, Patch, Scene } from 'latkit/core';
+import type { Camera, Fit, Patch, Scene } from 'latkit';
 
 /** Pixels written. Views lay out half as many CSS pixels, drawn twice as sharp. */
 export const SIZE = [1600, 1000] as const;
@@ -14,10 +14,7 @@ export const SCALE = 2;
 export const THEME = {
   base: 'dark',
   background: '#0b0f14',
-  text: '#c3ccd6',
-  font: 'sans-serif',
-  fontSize: 12,
-  halo: 0,
+  text: { color: '#c3ccd6', font: 'sans-serif', size: 12, halo: 0 },
 } as const;
 
 /**

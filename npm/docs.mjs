@@ -27,8 +27,11 @@ function declarations(file) {
       .printNode(ts.EmitHint.Unspecified, node, source)
       .replace(/\bexport declare /g, '')
       .replace(/\bexport /g, '')
-      .replace(/^\s*(?:#private;|private .*;)\s*$/gm, '');
-    found.set(name, signature.trim());
+      .replace(/^declare /gm, '')
+      .replace(/^\s*(?:#private;|private .*;)\s*$/gm, '')
+      .trim();
+    // An overloaded function's signatures, each in turn.
+    found.set(name, found.has(name) ? `${found.get(name)}\n${signature}` : signature);
   }
   return found;
 }
@@ -58,22 +61,29 @@ function page(head, files, sections) {
 
 const pages = {
   'api.md': page(
-    '# JavaScript API\n\nGenerated from the shipped declarations. `loadLatkit()` returns `Data`, `Gpu`, `Shot`, and\n`colormapCss`; builders and patches need no WebAssembly. Options take the [scene and result\ntypes](types.md).\n\n',
-    ['load', 'patch', 'scene', 'runtime'].map((name) => `npm/dist/${name}.d.ts`),
+    '# JavaScript API\n\nGenerated from the shipped declarations. `load()` loads the WebAssembly that datasets, views,\nand pictures are made with; scenes, expressions, and patches need none. Options take the [scene\nand result types](types.md).\n\n',
+    ['load', 'internal', 'data', 'patch', 'scene', 'colormap', 'gpu', 'view', 'canvas', 'shot'].map(
+      (name) => `npm/dist/${name}.d.ts`,
+    ),
     [
       [
-        'Loading',
-        'Load the runtime once a page.',
-        ['loadLatkit', 'LoadOptions', 'Latkit', 'LatkitError'],
+        'Loading and waiting',
+        'Load the WebAssembly once a page; every wait ends at its signal.',
+        ['load', 'LoadOptions', 'Wait', 'LatkitError'],
       ],
       [
         'Data and patches',
-        'Datasets of named tables, changed by patches written without WebAssembly.',
+        'Datasets of named tables, changed by patches written without WebAssembly, and what views draw them from.',
         [
           'Data',
-          'Table',
+          'Snapshot',
+          'Tiles',
+          'Source',
+          'DataSource',
+          'QueryResult',
           'Envelope',
           'Patch',
+          'PatchSource',
           'RowIds',
           'Values',
           'Geometry',
@@ -85,10 +95,15 @@ const pages = {
       ],
       [
         'Expressions',
-        'What varies by row: builders writing the expressions scenes take.',
+        'What varies by row: builders writing the expressions and colors scenes take.',
         [
           'Expr',
           'ExprInput',
+          'Mapped',
+          'Missing',
+          'Paint',
+          'PaintInput',
+          'Colormapped',
           'Color',
           'field',
           'color',
@@ -96,8 +111,11 @@ const pages = {
           'when',
           'When',
           'Then',
-          'Mapped',
+          'Next',
+          'InputOf',
+          'px',
           'units',
+          'Within',
           'selected',
           'hovered',
           'pointer',
@@ -111,12 +129,24 @@ const pages = {
       [
         'Views',
         'A GPU makes views, and canvases that show them.',
-        ['Gpu', 'View', 'ViewEvents', 'Canvas', 'Panel'],
+        [
+          'Gpu',
+          'View',
+          'ViewOptions',
+          'ViewEvents',
+          'Insets',
+          'Point',
+          'Position',
+          'Canvas',
+          'CanvasOptions',
+          'Panel',
+          'Rect',
+        ],
       ],
       [
         'Pictures and video',
         'Shots draw views into images and video.',
-        ['Shot', 'Image', 'ImageFormat', 'Video'],
+        ['Shot', 'ShotOptions', 'Image', 'ImageFormat', 'Video'],
       ],
     ],
   ),
@@ -126,7 +156,7 @@ const pages = {
     [
       [
         'Scenes',
-        'A scene: its space, its marks, and how it looks and answers input.',
+        'A scene: its space, how it answers input, and how it is laid out.',
         [
           'Scene',
           'Space',
@@ -139,9 +169,6 @@ const pages = {
           'Tick',
           'Format',
           'Grid',
-          'Theme',
-          'Flow',
-          'Shadow',
           'Controls',
           'Motion',
           'Zoom',
@@ -151,6 +178,25 @@ const pages = {
           'Direction',
           'Order',
           'Budget',
+        ],
+      ],
+      [
+        'Themes',
+        'How a scene looks, a group for each kind of thing it draws, and the lengths its options take.',
+        [
+          'Theme',
+          'TextTheme',
+          'VertexTheme',
+          'EdgeTheme',
+          'LineTheme',
+          'AreaTheme',
+          'FlowTheme',
+          'FocusTheme',
+          'DiagramTheme',
+          'ShadowTheme',
+          'EarthTheme',
+          'PlotTheme',
+          'Length',
         ],
       ],
       [
@@ -168,19 +214,20 @@ const pages = {
           'Bitmap',
           'Port',
           'Side',
-          'End',
           'Route',
           'Interpolation',
           'Label',
           'Size',
+          'Px',
           'Units',
         ],
       ],
       [
         'Expressions',
-        'Expressions as JSON: a constant, a field, or a node of these kinds.',
+        'Expressions as JSON: a constant, a field, or a node of these kinds; and colors, which take CSS strings where values take field names.',
         [
           'ExprNode',
+          'PaintNode',
           'FieldNode',
           'ColorNode',
           'StateNode',
@@ -188,6 +235,7 @@ const pages = {
           'UnaryNode',
           'BinaryNode',
           'WhenNode',
+          'WhenPaintNode',
           'IsNode',
           'ContainsNode',
           'ScaleNode',
@@ -204,7 +252,7 @@ const pages = {
       [
         'Rows, cameras, and queries',
         'Naming rows, framing them, and asking for them.',
-        ['Id', 'Ids', 'Row', 'Rows', 'Camera', 'Fit', 'Query'],
+        ['Id', 'Ids', 'Row', 'Rows', 'Camera', 'Fit', 'Query', 'EnvelopeRequest'],
       ],
       [
         'Results',
@@ -212,6 +260,7 @@ const pages = {
         [
           'ViewEvent',
           'Hit',
+          'End',
           'Failure',
           'Phase',
           'Trigger',
@@ -238,6 +287,11 @@ for (const [name, content] of Object.entries(pages)) {
     ...(await prettier.resolveConfig(file)),
     parser: 'markdown',
   });
+  // The reference names things as npm does: no path of Rust's, and in the types the schema writes
+  // from Rust's documentation, no call of Rust's.
+  const rust = name === 'types.md' ? /::|\w\(\)/ : /::/;
+  const leftover = formatted.split('\n').filter((line) => rust.test(line));
+  assert.deepEqual(leftover, [], `${file}: Rust's names in the TypeScript reference`);
   if (check)
     assert.equal(
       fs.readFileSync(file, 'utf8').replaceAll('\r\n', '\n'),

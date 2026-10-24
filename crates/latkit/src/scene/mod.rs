@@ -1,4 +1,5 @@
-//! Scenes: what a view draws, as plain data. Marks name their data; the view is given the data.
+//! Scenes: what a view draws, as plain data. Marks name their datasets; the view draws them from the
+//! sources it is given.
 
 pub(crate) mod areas;
 pub(crate) mod compile;
@@ -34,19 +35,22 @@ pub use marker::{Marker, Shape};
 pub use port::{Port, Side};
 pub(crate) use space::sun;
 pub use space::{Axis, Diagram, Earth, Format, Grid, Plane, Plot, Projection, Space};
-pub use theme::{Flow, Shadow, Theme};
+pub use theme::{
+    AreaTheme, DiagramTheme, EarthTheme, EdgeTheme, FlowTheme, FocusTheme, Length, LineTheme, PlotTheme, ShadowTheme,
+    TextTheme, Theme, VertexTheme,
+};
 pub use vertices::Vertices;
 
-use crate::{Data, Error, Expr, Result};
+use crate::{Error, Result, Snapshot, Source};
 
 /// What a view draws and how it answers input: a space, marks in drawing order, a layout, a theme,
 /// controls, how long changes ease, and the title written over it. Plain data: as JSON, each field by
 /// its name in camelCase, each mark `{ vertices | edges | faces | lines | areas: options }`.
 ///
 /// ```
-/// # use latkit::{Colormap, Edges, Earth, Scene, Vertices, field};
+/// # use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};
 /// let voltage = field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05);
-/// let scene = Scene::new(Earth::globe())
+/// let scene = Scene::new(Earth::default().projection(Projection::Globe))
 ///     .draw(Edges::of("grid", "Branch").ends("from", "to"))
 ///     .draw(Vertices::of("grid", "Bus").position("lon", "lat").color(voltage).legend("Bus voltage · pu"))
 ///     .title("Voltage");
@@ -152,30 +156,38 @@ impl Scene {
         &self.space
     }
 
-    /// Checks the scene against complete datasets without creating a GPU. Uses the same expression
-    /// compiler as a view, but requires every drawn dataset and table to be present, but for the
-    /// datasets `tiles` make, which a view fetches as it draws: their marks are checked once they do.
-    pub fn validate(&self, data: &[Data], tiles: &[crate::Tiles]) -> Result<()> {
+    /// Checks the scene against the sources a view would draw it from, without a GPU: the compiler a
+    /// view uses, every dataset and table drawn present, but for those tiles give, which a view
+    /// fetches as it draws, so their marks are checked as their pieces land.
+    pub fn validate(&self, sources: &[Source]) -> Result<()> {
         self.check()?;
-        for (i, item) in data.iter().enumerate() {
-            if data[..i].iter().any(|other| other.name() == item.name()) {
-                return Err(Error::invalid("duplicate dataset name").at(i).at("data"));
+        for (i, source) in sources.iter().enumerate() {
+            if sources[..i].iter().any(|other| other.name() == source.name()) {
+                return Err(Error::invalid(format!("two sources named '{}'", source.name())).at(i).at("sources"));
             }
         }
+        let snapshots: Vec<Snapshot> = sources
+            .iter()
+            .filter_map(|source| match source {
+                Source::Data(data) => Some(data.snapshot()),
+                Source::Snapshot(snapshot) => Some(snapshot.clone()),
+                Source::Tiles(_) => None,
+            })
+            .collect();
         for (i, mark) in self.marks.iter().enumerate() {
             let style = mark.style();
-            if tiles.iter().any(|t| *t.name() == style.data) {
+            if sources.iter().any(|s| matches!(s, Source::Tiles(t) if *t.name() == style.data)) {
                 continue;
             }
-            let dataset = data.iter().find(|d| *d.name() == style.data).ok_or_else(|| {
-                mark.within(i, Error::invalid(format!("dataset '{}' was not supplied", style.data)).at("of"))
+            let dataset = snapshots.iter().find(|d| *d.name() == style.data).ok_or_else(|| {
+                mark.within(i, Error::invalid(format!("no source gives dataset '{}'", style.data)).at("of"))
             })?;
             if let Some(error) = mark.absent_from(dataset) {
                 return Err(mark.within(i, error));
             }
             compile::compile(
                 mark,
-                data,
+                &snapshots,
                 mark::Context { theme: &self.theme, space: &self.space, layout: &self.layout },
             )
             .map_err(|error| mark.within(i, error))?;
@@ -190,6 +202,11 @@ impl Scene {
         if matches!(self.space, Space::Plot(_)) && self.layout != Layout::None {
             return Err(Error::invalid("a plot lays out no vertices").at("layout"));
         }
+        let flow = &self.theme.flow;
+        if !flow.spacing.alike(flow.length) {
+            let reason = "a comet's spacing and length are in one unit, which each row's flow is in too";
+            return Err(Error::invalid(reason).at("length").at("flow").at("theme"));
+        }
         for (i, mark) in self.marks.iter().enumerate() {
             if self.marks[..i].iter().any(|m| m.key() == mark.key()) {
                 let reason = "draws the same table as an earlier mark of its kind; give one a `name`";
@@ -199,7 +216,7 @@ impl Scene {
                 return Err(mark.within(i, Error::invalid(reason).at(option)));
             }
             let style = mark.style();
-            let shown = match style.color.as_ref().and_then(Expr::colormap_of) {
+            let shown = match style.color.as_ref().and_then(|paint| paint.0.colormap_of()) {
                 Some((colormap, domain)) => domain.is_some() || !colormap.named_categories().is_empty(),
                 None => false,
             };

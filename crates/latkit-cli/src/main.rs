@@ -76,7 +76,7 @@ fn inspect(sources: &[Source], deadline: Duration) -> Result<(), Failure> {
     let host = latkit::host::Native::new();
     let mut all = Vec::with_capacity(sources.len());
     for source in sources {
-        all.push(inputs::dataset(source, &host, deadline)?.describe());
+        all.push(inputs::dataset(source, &host, deadline)?.snapshot().describe());
     }
     let mut out = io::stdout().lock();
     serde_json::to_writer_pretty(&mut out, &all).map_err(|e| Failure::from(Error::Io(e.to_string().into())))?;
@@ -119,7 +119,7 @@ fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure
         if query.trim_start().starts_with('{') { query.as_bytes().to_vec() } else { inputs::read(Path::new(query))? };
     let text = std::str::from_utf8(&text).map_err(|_| Failure::from(Error::invalid("not UTF-8 text").at("query")))?;
     let query: Query = latkit::from_json(text).map_err(|e| Failure::from(e.at("query")))?;
-    let (rows, _) = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.query(&query)?;
+    let rows = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.snapshot().query(&query)?.table;
     let columns: Vec<(String, Values)> =
         rows.fields().map(|(name, _)| (name.to_string(), rows.values(name).expect("a field the table has"))).collect();
     let mut out = io::BufWriter::new(io::stdout().lock());
@@ -142,7 +142,7 @@ fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure
 /// The dataset as time tiles in directory `output`: its manifest, the dataset without its sampled
 /// fields' histories, and their spans of `chunk` entries.
 fn tile(source: &Source, output: &Path, chunk: u32, deadline: Duration) -> Result<(), Failure> {
-    let data = inputs::dataset(source, &latkit::host::Native::new(), deadline)?;
+    let data = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.snapshot();
     let mut failure = None;
     let written = data.to_tiles(chunk, |path, bytes| {
         let file = output.join(path);

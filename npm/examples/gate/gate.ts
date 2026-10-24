@@ -31,6 +31,18 @@ const FIRST_FRAME_BUDGET = 1000;
  * vblanks slip one at a time. Nothing compiles on Chrome's GPU thread, so no frame waits on latkit;
  * what it compiles where first used is counted apart, as `work.late`. */
 const MISSED = 1;
+/** Milliseconds between display frames past which the gate tells what the views were doing. */
+const LONG = 50;
+
+/** A gap between display frames past `LONG`: how long, each view's last frame on the CPU and the
+ * GPU and what it waited on, and the work the GPU did since the frame before. */
+interface Long {
+  gap: number;
+  cpuMs: number[];
+  gpuMs: number[];
+  waiting: string[][];
+  work: Record<string, number>;
+}
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
 const examples = path.dirname(here);
@@ -214,14 +226,14 @@ async function settled(page: Page, budget: number): Promise<void> {
   await page.waitForFunction(
     () => {
       const w = window as unknown as {
-        stage?: { views: { stats: { frames: number; waiting: string[] } }[] };
+        stage?: { views: { stats: { frames: number }; waiting: string[] }[] };
         opened?: Set<number>;
         refitting?: Map<number, number>;
       };
       const views = w.stage?.views ?? [];
       w.opened ??= new Set();
       w.refitting ??= new Map();
-      views.forEach(({ stats: { frames, waiting } }, i) => {
+      views.forEach(({ stats: { frames }, waiting }, i) => {
         if (!waiting.length) w.opened!.add(i);
         if (waiting.join() !== 'fit') w.refitting!.delete(i);
         else if (!w.refitting!.has(i)) w.refitting!.set(i, frames);
@@ -250,28 +262,62 @@ async function visit(url: string, id: string): Promise<string[]> {
     });
     page.on('pageerror', (error) => failures.push(`page: ${error.message.slice(0, 300)}`));
     // The longest gap between animation frames since the last reset, and the display's frame
-    // interval: the median of the latest gaps.
-    await page.addInitScript(() => {
-      const w = window as unknown as { gap: number; resetGap(): void; interval(): number };
+    // interval: the median of the latest gaps; and each gap past `LONG`, with what the views did.
+    await page.addInitScript((long: number) => {
+      interface Stage {
+        views: { stats: { cpuMs: number; gpuMs: number }; waiting: string[] }[];
+        gpu: { work: Record<string, number> };
+      }
+      const w = window as unknown as {
+        gap: number;
+        long: Long[];
+        resetGap(): void;
+        interval(): number;
+        stage?: Stage;
+      };
       let last = 0;
+      let work: Record<string, number> = {};
       const gaps: number[] = [];
       w.gap = 0;
+      w.long = [];
       w.resetGap = () => {
         w.gap = 0;
+        w.long = [];
         last = 0;
       };
       w.interval = () => [...gaps].sort((a, b) => a - b)[gaps.length >> 1] ?? 1000 / 60;
       const tick = (now: number) => {
+        const stage = w.stage;
+        const done = stage?.gpu.work ?? {};
         if (last) {
-          w.gap = Math.max(w.gap, now - last);
-          gaps.push(now - last);
+          const gap = now - last;
+          w.gap = Math.max(w.gap, gap);
+          gaps.push(gap);
           if (gaps.length > 120) gaps.shift();
+          if (gap > long && stage) {
+            const delta = Object.entries(done)
+              .map(([kind, n]) => [kind, n - (work[kind] ?? 0)] as const)
+              .filter(([, n]) => n > 0);
+            w.long.push({
+              gap,
+              cpuMs: stage.views.map((view) => view.stats.cpuMs),
+              gpuMs: stage.views.map((view) => view.stats.gpuMs),
+              waiting: stage.views.map((view) => view.waiting),
+              work: Object.fromEntries(delta),
+            });
+          }
         }
+        work = done;
         last = now;
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
-    });
+    }, LONG);
+    /** Tells the frames past `LONG` since the last reset, while `doing`. */
+    const tell = async (doing: string) => {
+      const long = await page.evaluate(() => (window as unknown as { long: Long[] }).long);
+      for (const frame of long) console.log(`  ${id}: ${describe(frame)} ${doing}`);
+    };
     const opened = performance.now();
     await deadline(page.goto(`${url}#${id}`), STEP, `open ${id}`);
     /** Waits until every view has drawn more than `frames` frames, for at most `budget` ms. */
@@ -303,14 +349,17 @@ async function visit(url: string, id: string): Promise<string[]> {
     await deadline(settled(page, STEP), STEP + 1000, `${id}'s opening`);
     await deadline(page.waitForTimeout(500), STEP, 'settle');
     const opening = await page.evaluate(() => (window as unknown as { gap: number }).gap);
+    await tell('opening');
     let longest = { gap: 0, step: '' };
-    /** Does `step` and waits two frames; keeps the longest gap between frames and its step. */
+    /** Does `step` and waits two frames; keeps the longest gap between frames and its step, and
+     * tells each frame past `LONG`. */
     const act = async (step: string, action: () => Promise<void>) => {
       await page.evaluate(() => (window as unknown as { resetGap(): void }).resetGap());
       await deadline(action(), STEP, step);
       await frames(page);
       const gap = await page.evaluate(() => (window as unknown as { gap: number }).gap);
       if (gap > longest.gap) longest = { gap, step };
+      await tell(`on ${step}`);
     };
     const canvases = await page.locator('main canvas').all();
     for (const [c, canvas] of canvases.entries()) {
@@ -356,10 +405,9 @@ async function visit(url: string, id: string): Promise<string[]> {
     } catch {
       // What the views waited on, and what the page said, name why.
       const said = await page.evaluate(() => {
-        const views = (
-          window as unknown as { stage?: { views: { stats: { waiting: string[] } }[] } }
-        ).stage?.views;
-        const waiting = (views ?? []).map((view) => view.stats.waiting.join('+') || 'nothing');
+        const views = (window as unknown as { stage?: { views: { waiting: string[] }[] } }).stage
+          ?.views;
+        const waiting = (views ?? []).map((view) => view.waiting.join('+') || 'nothing');
         const status = [...document.querySelectorAll('.status, [role=status], output')]
           .map((element) => element.textContent?.trim())
           .filter(Boolean);
@@ -394,6 +442,18 @@ async function visit(url: string, id: string): Promise<string[]> {
     await chrome.close();
   }
   return failures;
+}
+
+/** A frame past `LONG` as the gate tells it: what each view's last frame took on the CPU and the GPU
+ * and waited on, and the work the GPU did, bytes in MB. */
+function describe({ gap, cpuMs, gpuMs, waiting, work }: Long): string {
+  const ms = (list: number[]) => list.map((n) => n.toFixed(1)).join('/');
+  const waited = waiting.map((list) => list.join('+') || 'nothing').join(', ');
+  const bytes = new Set(['uploaded', 'written', 'cleared']);
+  const done = Object.entries(work)
+    .map(([kind, n]) => `${kind} ${bytes.has(kind) ? `${(n / 1e6).toFixed(2)} MB` : n}`)
+    .join(', ');
+  return `frame of ${gap.toFixed(0)} ms (cpu ${ms(cpuMs)} ms, gpu ${ms(gpuMs)} ms, waiting on ${waited}; ${done || 'no work'})`;
 }
 
 /** Serves the suite and visits `only` its pages, or every page its bar lists. */

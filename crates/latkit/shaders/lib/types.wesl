@@ -44,7 +44,7 @@ const OP_STORE_COLOR: u32 = 32u;
 const OP_STORE_FLAG: u32 = 33u;
 const OP_STORE_POSITION: u32 = 34u;
 const OP_POSITION: u32 = 35u;
-const OP_STORE_END: u32 = 36u;
+const OP_STORE_CODE: u32 = 36u;
 const OP_REDUCE: u32 = 37u;
 const OP_FLOOR: u32 = 38u;
 const OP_MOD: u32 = 39u;
@@ -52,7 +52,6 @@ const OP_POW: u32 = 40u;
 const OP_LOG: u32 = 41u;
 const OP_EXP: u32 = 42u;
 const OP_ZOOM: u32 = 43u;
-const OP_STORE_CODE: u32 = 44u;
 
 // Values the expression stack holds at once.
 const STACK: u32 = 16u;
@@ -78,6 +77,9 @@ const PAGE_ROWS: u32 = 4096u;
 // Items a dispatch over more items than one dimension holds steps through at a time in its second
 // dimension, 256 workgroups of 256 wide.
 const DISPATCH_ROWS: u32 = 65536u;
+// What marks a row block evaluation lists whose state words start over: it writes each of them
+// before any channel does.
+const FRESH: u32 = 0x80000000u;
 
 // Words of a run of drawn rows in a mark's list of them: where it starts among the drawn rows, the
 // held row it starts at, and whether its tile fades in or out (FADE_IN, FADE_OUT).
@@ -102,22 +104,30 @@ const BLEND_NUMBER: u32 = 2u;
 const BLEND_COLOR: u32 = 3u;
 const BLEND_POSITION: u32 = 4u;
 
-// Points per block of a geometry's points, as a shift: a block of x and y words is a chunk.
-const POINT_BITS: u32 = 16u;
-const POINT_MASK: u32 = 65535u;
-// Words of a geometry column's table per page: the block of each row's first point, where the page's
-// blocks of points are listed in the table, how many points the page has, and how many rows.
+// Points a piece of a geometry's points holds at most, as a shift, as x and y words: a piece holds a
+// group of a page's rows, so a row written again changes only its group's, and a row larger than a
+// piece fills as many as it takes.
+const POINT_BITS: u32 = 12u;
+const POINT_MASK: u32 = 4095u;
+// Words of a geometry column's table per page: the block of its rows' table, two words a row (the
+// piece its points begin in, among the page's, shifted up by POINT_BITS over its first point there;
+// and how many points it has), where the page's pieces are listed in the column's table, how many
+// points the page has, and how many rows.
 const PATH_PAGE_WORDS: u32 = 4u;
 
 // Words of each end of a mark in its program: where the vertex mark drawing the end's table keeps
-// its rows (the page table of its rows' words and how many words a row has), where it holds each page
-// of the order it draws that table in (NONE where it draws the table whole), and the page table of the
-// normals faces sum at its rows (NONE where none do).
-const END_WORDS: u32 = 4u;
+// its rows (the page table of its rows' words and how many words a row has), where it holds the rows
+// of the order it draws that table in (each page's slot, then each row it keeps whose page it does
+// not hold; NONE where it draws the table whole), the page table of the normals faces sum at its rows
+// (NONE where none do), and the program column of the reference field naming the end's rows (NONE
+// where the end is the row's own vertex, as a pole's). The end pass writes where end `k` of a row is
+// held into the row's kind word `k`.
+const END_WORDS: u32 = 5u;
 const END_STATE: u32 = 0u;
 const END_STRIDE: u32 = 1u;
 const END_SLOTS: u32 = 2u;
 const END_NORMALS: u32 = 3u;
+const END_COLUMN: u32 = 4u;
 
 // Words of the normal faces sum at a vertex row: x, y, and z in fixed point.
 const NORMAL_WORDS: u32 = 3u;
@@ -136,8 +146,9 @@ const VERTEX_DEPTH: u32 = 9u;
 const VERTEX_RANGE: u32 = 10u;
 const VERTEX_FLAGS: u32 = 11u;
 
-// Edge state words. Every kind's flags are its last word. A stroke's travel is how far its comets
-// moved, which no channel writes.
+// Edge state words. Every kind's flags are its last word. Its ends are where the vertices it joins
+// are held, which the end pass finds; a stroke's travel is how far its comets moved; no channel
+// writes either.
 const EDGE_WORDS: u32 = 7u;
 const EDGE_FROM: u32 = 0u;
 const EDGE_TO: u32 = 1u;
@@ -171,7 +182,7 @@ const BOW_PIECES: u32 = 16u;
 // Lanes a family of edges joining the same two vertices spreads as wide as at most: more pack closer.
 const FAMILY_LANES: f32 = 8.0;
 
-// Face state words.
+// Face state words: its corners, where the end pass finds their vertices held, first.
 const FACE_WORDS: u32 = 5u;
 const FACE_A: u32 = 0u;
 const FACE_B: u32 = 1u;
@@ -329,9 +340,10 @@ const STEP_UNDER: u32 = 6u;
 const STEPS: u32 = 7u;
 
 // What a dispatch of the expression machine's `evaluate` runs, as its step uniform names it: a
-// mark's channels, or the reductions fitting its domains.
+// mark's channels, the reductions fitting its domains, or where its rows' ends are held.
 const STEP_CHANNELS: u32 = 0u;
 const STEP_REDUCE: u32 = 1u;
+const STEP_ENDS: u32 = 2u;
 // Words of a hit a query finds: its row, distance in sixty-fourths of a pixel, part, screen x and y,
 // and depth.
 const HIT_WORDS: u32 = 6u;
@@ -379,7 +391,7 @@ const THEME_MISSING: u32 = 8u;
 // Nothing: a fully transparent color, what a missing status draws.
 const THEME_CLEAR: u32 = 9u;
 // What a group's container is filled with.
-const THEME_SURFACE: u32 = 10u;
+const THEME_GROUP: u32 = 10u;
 // A diagram's look, in units: the border of its blocks and groups (clear for none), their corners'
 // radius, its ports' width, and how far a block's shadow falls below it.
 const THEME_OUTLINE: u32 = 11u;
@@ -387,6 +399,11 @@ const THEME_CORNER: u32 = 12u;
 const THEME_PORT_SIZE: u32 = 13u;
 const THEME_LIFT: u32 = 14u;
 const THEME_SLOTS: u32 = 16u;
+
+// The unit comets' spacing and length are in: the space's lengths, position units, or CSS pixels.
+const FLOW_LENGTHS: u32 = 0u;
+const FLOW_UNITS: u32 = 1u;
+const FLOW_PX: u32 = 2u;
 
 // Backdrop grids.
 const GRID_OFF: u32 = 0u;
@@ -434,17 +451,17 @@ struct Frame {
     glow: f32,
     dim: f32,
     dash: f32,
-    // Comets: the distance between them and how far a tail trails its head, in the theme's lengths
-    // or with `flow_units` in position units; how wide a head is, in CSS pixels; and the seconds
-    // they travel this frame.
+    // Comets: the distance between them and how far a tail trails its head, in the unit `flow_unit`
+    // says; how wide a head is, in CSS pixels; and the seconds they travel this frame.
     flow_spacing: f32,
     flow_length: f32,
     flow_width: f32,
-    flow_units: u32,
+    flow_unit: u32,
     flow_step: f32,
     // How far a lane bows, in its edge's lengths at its middle.
-    lane_bow: f32,
-    hover_scale: f32,
+    bow: f32,
+    // How much a hovered vertex sized in CSS pixels grows.
+    grow: f32,
     shading: f32,
     arrow: f32,
     halo: f32,
@@ -470,7 +487,8 @@ struct Frame {
     selected: vec4f,
     flow: vec4f,
     background: vec4f,
-    surface: vec4f,
+    // The earth's ground.
+    ground: vec4f,
     grid_color: vec4f,
     // The direction toward the sun in the earth's frame (x toward 0° longitude on the equator, z
     // toward the north pole), and how bright night stays; no direction where daylight is off.
@@ -525,10 +543,10 @@ struct Mark {
     motion: f32,
     // Where the program holds how each word of a row eases, a word each.
     blends: u32,
-    // The row blocks a dispatch over the mark's rows covers: at `block` in the blocks buffer,
-    // `blocks` of them.
+    // The row blocks a dispatch over the mark's rows covers, as the blocks buffer lists them: those
+    // its channels evaluate at `block`, those whose ends the end pass finds at `end_block`.
     block: u32,
-    blocks: u32,
+    end_block: u32,
     // The page table of each row's focus word.
     focus: u32,
     domains: u32,

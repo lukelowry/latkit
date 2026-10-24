@@ -6,7 +6,7 @@ import { random } from '../../random.js';
  * switching stations, the busiest by double or triple circuits, with rural substations and power
  * plants along the way. Seeded, so every build draws the same grid, in time linear in its size.
  */
-import { Data, Patch, reference } from '../../latkit.js';
+import { Data, Patch, reference } from 'latkit';
 import { levelOf, type Case } from './cases.js';
 
 /** Metro areas: name, longitude, latitude, and millions of people. */

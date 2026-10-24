@@ -9,21 +9,28 @@ use rustc_hash::FxHashMap;
 
 use super::{Binary, Domain, Expr, FieldRef, Node, Unary};
 use crate::Kind;
-use crate::data::{Data, Field, Geometry, Table, Value};
+use crate::data::{Field, Geometry, Snapshot, Table, Value};
 
 /// The rows an expression reads: a table, and every dataset its joins may name.
 pub(crate) struct Rows<'a> {
     pub(crate) table: &'a Table,
-    pub(crate) all: &'a [Data],
+    pub(crate) all: &'a [Snapshot],
     /// The axis coordinate sampled fields are read at: their last frame by default.
     at: f64,
     /// Fitted domains already reduced, by the input they reduce.
     fitted: RefCell<FxHashMap<*const Node, [f64; 2]>>,
+    /// The texts `contains` looks for, lowercased once.
+    lowered: RefCell<FxHashMap<Arc<str>, Arc<str>>>,
 }
 
 impl<'a> Rows<'a> {
-    pub(crate) fn new(table: &'a Table, all: &'a [Data]) -> Rows<'a> {
-        Rows { table, all, at: f64::INFINITY, fitted: RefCell::default() }
+    pub(crate) fn new(table: &'a Table, all: &'a [Snapshot]) -> Rows<'a> {
+        Rows { table, all, at: f64::INFINITY, fitted: RefCell::default(), lowered: RefCell::default() }
+    }
+
+    /// `text` lowercased, as `contains` looks for it.
+    fn lowered(&self, text: &Arc<str>) -> Arc<str> {
+        self.lowered.borrow_mut().entry(text.clone()).or_insert_with(|| text.to_lowercase().into()).clone()
     }
 
     /// The rows with sampled fields read at axis coordinate `at`.
@@ -48,7 +55,7 @@ impl<'a> Rows<'a> {
                 out.resize_with(n, || make(*v));
                 return out;
             }
-            Node::Field(f) if f.of.is_none() => {
+            Node::Field(f) if f.from.is_none() => {
                 if let Some(Field::Values(column, _)) = self.table.field_named(&f.name) {
                     let pages = column.pages().iter().map(|p| &p.values);
                     match (column.kind(), f.component) {
@@ -87,7 +94,7 @@ impl<'a> Rows<'a> {
 
     /// Field `f`'s value for `row`: of the table, or of a joined one by the row's id.
     fn value(&self, f: &FieldRef, row: usize) -> Option<Value> {
-        let value = match &f.of {
+        let value = match &f.from {
             None => self.table.value(row, &f.name, self.at)?,
             Some((data, table)) => {
                 let other = self.all.iter().find(|d| d.name() == data)?.table(table)?;
@@ -126,8 +133,8 @@ impl<'a> Rows<'a> {
             }
             Node::Contains(a, text) => {
                 let Node::Field(f) = &*a.0 else { return f64::NAN };
-                let held = |t: &str| t.to_lowercase().contains(&text.to_lowercase());
-                f64::from(u8::from(matches!(self.value(f, row), Some(Value::Text(t)) if held(&t))))
+                let needle = self.lowered(text);
+                f64::from(u8::from(matches!(self.value(f, row), Some(Value::Text(t)) if super::holds(&t, &needle))))
             }
             Node::Scale { input, domain, range } => {
                 let x = self.eval(input, row);

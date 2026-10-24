@@ -1,9 +1,10 @@
 //! Queries: every row within reach of a point, every row in a box, and where a row lies on screen,
 //! answered on the GPU by each mark's probe program through the geometry the frame drew, and read back
-//! a frame or two later, then decoded against what that frame drew. What a query finds of each mark follows the probe's words: the hits it keeps,
-//! after how many it found and how many it keeps, or a bit per row. Hits land in any order; they are
-//! told in one, and a mark that found more than it kept asks again with room for them all. One query
-//! runs at a time; the rest wait their turn.
+//! a frame or two later, then decoded against what that frame drew. What a query finds of each mark
+//! follows the probe's words: the hits it keeps, after how many it found and how many it keeps, or a
+//! bit per row. Hits land in any order; they are told in one, and a mark that found more than it kept
+//! asks again with room for them all. One query runs at a time; the rest wait their turn, and one
+//! nobody waits for any more is passed over.
 
 use std::collections::VecDeque;
 
@@ -32,6 +33,15 @@ pub(crate) enum Ask {
 }
 
 impl Ask {
+    /// Whether nobody waits for its answer any more: a box selects, so it always runs.
+    fn cancelled(&self) -> bool {
+        match self {
+            Ask::Hits { reply, .. } => reply.is_cancelled(),
+            Ask::Locate { reply, .. } => reply.is_cancelled(),
+            Ask::Boxed { .. } => false,
+        }
+    }
+
     /// The frame's query words for it.
     fn words(&self, marks: &[usize], view: &View) -> [f32; 4] {
         match self {
@@ -99,9 +109,9 @@ pub(crate) struct Queries {
 }
 
 impl Queries {
-    /// Whether a query waits to run.
+    /// Whether a query waits to run that someone still waits for.
     pub(crate) fn due(&self) -> bool {
-        !self.waiting.is_empty() || self.running.is_some()
+        self.running.is_some() || self.waiting.iter().any(|ask| !ask.cancelled())
     }
 }
 
@@ -117,7 +127,7 @@ impl View {
 
     /// Where `row` lies on screen, CSS pixels from the top left, as the next frames draw it; `None`
     /// when no mark draws it in view. A diagram's vertices answer at once from its sheet.
-    pub fn locate(&mut self, row: &Row) -> Pending<Option<[f32; 2]>> {
+    pub fn screen_of(&mut self, row: &Row) -> Pending<Option<[f32; 2]>> {
         let diagram = matches!(self.scene.space, crate::Space::Diagram(_));
         if let Some(b) = self.derived.sheet.bounds(row).filter(|_| diagram) {
             let view = self.projected();
@@ -143,17 +153,18 @@ impl View {
         if style.data != row.data || style.table != row.table {
             return None;
         }
-        let index = self.source(&style.data)?.table(&style.table)?.row(row.id.as_ref())?;
+        let index = self.snapshot(&style.data)?.table(&style.table)?.row(row.id.as_ref())?;
         shown.item_of(shown.held_row(index as u32)?).filter(|&item| item < shown.rows)
     }
 
-    /// Takes the next query for this frame when none runs, makes room for what it finds past the
-    /// probe's words, and returns its query words and whether it reads depth.
+    /// Takes the next query for this frame when none runs, passing over those nobody waits for, makes
+    /// room for what it finds past the probe's words, and returns its query words and whether it
+    /// reads depth.
     pub(super) fn next_query(&mut self) -> Option<([f32; 4], bool)> {
         if self.queries.running.is_some() || self.queries.reading.is_some() {
             return None;
         }
-        let ask = self.queries.waiting.pop_front()?;
+        let ask = std::iter::from_fn(|| self.queries.waiting.pop_front()).find(|ask| !ask.cancelled())?;
         let marks: Vec<usize> = match &ask {
             Ask::Locate { row, .. } => (0..self.marks.len())
                 .filter(|&i| self.marks[i].drawable() && self.row_index(i, row).is_some())

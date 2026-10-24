@@ -1,8 +1,8 @@
-// The backdrop under every mark: a plane's or a diagram's grid, or the earth's surface and graticule,
+// The backdrop under every mark: a plane's or a diagram's grid, or the earth's ground and graticule,
 // lit by daylight, and on the globe ringed by its air. Lines
 // are a pixel wide and antialiased per axis. Their spacing steps by tens, and the next step fades in as
 // the lines crowd, so no seam shows. They fade where the view grazes the ground, and on a plane away
-// from what the camera looks at. The round globe writes its depth a hair under its surface, so what
+// from what the camera looks at. The round globe writes its depth a hair under the ground, so what
 // lies behind it hides and what lies on it draws.
 
 import package::lib::types::{SPACE_EARTH, SPACE_PLANE, SPACE_DIAGRAM, GRID_OFF, GRID_DOTS};
@@ -16,9 +16,9 @@ struct Varyings {
     @location(0) ndc: vec2f,
 }
 
-// How far under its surface the globe's depth lies, in its radii: deeper than a chord of a few
+// How far under the ground the globe's depth lies, in its radii: deeper than a chord of a few
 // degrees sags, so paths and areas on the ground draw over it.
-const SURFACE_BIAS: f32 = 1e-3;
+const GROUND_BIAS: f32 = 1e-3;
 
 // What a pixel of the backdrop draws: its color, and the depth of the ground there.
 struct Ground {
@@ -119,7 +119,7 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
     let hit = o + d * (along - sqrt(max(radius * radius - off * off, 0.0)));
     let globe = frame.globe >= 0.5;
     var p: vec2f;
-    var ground = frame.surface;
+    var ground = frame.ground;
     if globe {
         p = globe_degrees(hit, radius);
     } else {
@@ -146,7 +146,7 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
     }
     var depth = FAR_Z;
     if frame.globe >= 1.0 && round > 0.5 {
-        let under = eye.clip_from_world * vec4f(hit - normalize(hit - center) * radius * SURFACE_BIAS, 1.0);
+        let under = eye.clip_from_world * vec4f(hit - normalize(hit - center) * radius * GROUND_BIAS, 1.0);
         depth = clamp(under.z / under.w, FAR_Z, NEAR_Z);
     }
     return Ground(color, depth);

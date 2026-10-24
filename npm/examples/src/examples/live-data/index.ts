@@ -2,10 +2,13 @@
  * Thousands of signals streaming in, traced over a scrolling window: frames append as they arrive
  * and the oldest are forgotten. Read the trace under the pointer, rank the largest changes with a
  * query, color traces by area or by their value now, and strike a disturbance to watch it spread.
+ * Or draw a recorded day instead, fetched as time tiles a span at a time, at the detail the window
+ * draws.
  */
 import {
   Data,
   Patch,
+  Tiles,
   colormapCss,
   field,
   type ColormapName,
@@ -15,7 +18,8 @@ import {
   type Interpolation,
   type Query,
   type Scene,
-} from '../../latkit.js';
+  type Snapshot,
+} from 'latkit';
 import { random } from '../../random.js';
 import { h } from '../../ui/dom.js';
 import { each } from '../../ui/rows.js';
@@ -39,6 +43,10 @@ const LASTS = 6;
 /** Signals the hot list names, and how often it reads them again. */
 const HOT = 12;
 const HOT_EVERY = 250;
+/** The recorded day: time tiles `scripts/history.ts` writes, of 64 buses' voltages every 15 s. */
+const RECORDED = '/history/frames.json';
+/** Seconds of the recorded day a second of playing shows. */
+const DAY_RATE = 600;
 
 /**
  * What the signals measure: each its unit, the range it keeps to, the digits it reads to, and
@@ -157,10 +165,19 @@ function depth(since: number): number {
     : 0;
 }
 
+/** Second `at` of a day as a clock reads it. */
+function clock(at: number): string {
+  const s = Math.max(0, Math.round(at));
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${two(Math.floor(s / 3600))}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`;
+}
+
 export default function page(stage: Stage): void {
+  let source: 'live' | 'recorded' = 'live';
   let count = 2000;
   let quantity: Quantity = 'voltage';
   let window = 20;
+  let dayWindow = Infinity;
   let rate = 50;
   let interpolation: Interpolation = 'linear';
   let auto = true;
@@ -175,6 +192,8 @@ export default function page(stage: Stage): void {
   let signals = new Signals(count, quantity);
   let values = new Float32Array(count);
   let data = new Data('scada');
+  /** The span of the recorded day that landed. */
+  let day: [number, number] | undefined;
   let t = 0;
   let carry = 0;
   const shown = () => QUANTITIES[quantity];
@@ -206,13 +225,22 @@ export default function page(stage: Stage): void {
       },
       ...(axes.title
         ? {
-            title: `${label} live`,
-            subtitle: `${count.toLocaleString()} signals · ${rate} samples a second`,
+            title: `${label} ${source === 'live' ? 'live' : 'over a recorded day'}`,
+            subtitle:
+              source === 'live'
+                ? `${count.toLocaleString()} signals · ${rate} samples a second`
+                : '64 buses · a sample every 15 s',
           }
         : {}),
       // Traces draw the theme's line width, and plain, its line color; what a signal does not report
       // reads as missing.
-      theme: { ...theme, dim, playhead, lineWidth: width, line: '#7fb3ff', missing: '#ff4fd8' },
+      theme: {
+        ...theme,
+        focus: { dim },
+        plot: { playhead },
+        line: { color: '#7fb3ff', width },
+        missing: '#ff4fd8',
+      },
       ease: 0,
       marks: [
         {
@@ -238,31 +266,69 @@ export default function page(stage: Stage): void {
     label: 'Live signals: hover a trace to read it, click it to pick it out',
   });
 
+  /**
+   * `f` of what the view draws of the signals now: the live record, or what it fetched of the
+   * recorded day; `undefined` before it has any.
+   */
+  const read = <T>(f: (held: Data | Snapshot) => T): T | undefined => {
+    if (source === 'live') return f(data);
+    const held = view.snapshot('scada');
+    if (!held) return undefined;
+    try {
+      return f(held);
+    } finally {
+      held.destroy();
+    }
+  };
+
   /** Frames what `at` shows: the window before it, filling from the record's start until the
    * record is as long; or all that is kept. */
   const frame = (at: number) => {
-    const first = data.span?.[0] ?? at;
+    const first = read((held) => held.describe().span?.[0]) ?? at;
+    const span = source === 'live' ? window : dayWindow;
     const x: [number, number] =
-      window === Infinity
-        ? [first, at]
-        : [Math.max(first, at - window), Math.max(at, first + window)];
+      span === Infinity
+        ? [first, Math.max(at, first + 1)]
+        : [Math.max(first, at - span), Math.max(at, first + span)];
     const range = shown().range;
     view.camera = { x, y: auto ? null : [range[0], range[1]] };
   };
 
-  /** Takes a patch the feed brought: the record grows, and the view draws the next version. */
+  /** Takes a patch the feed brought: the record grows, and the view draws it the next frame. */
   const take = (patch: Patch) => {
     data.apply(patch);
-    view.setData(data);
-    playback.record(data.span!);
+    playback.record(data.describe().span!);
   };
   /** The stream patches come through when they come as bytes, made again with each record. */
   let feed: Feed | undefined;
   stage.signal.addEventListener('abort', () => feed?.close());
 
-  /** Starts the record again: `n` signals measuring the quantity shown. */
+  /** Draws the source chosen: a live record started again, of `n` signals measuring the quantity
+   * shown; or the recorded day, drawn as the tiles of it the window asks for land. */
   const restart = (n = count) => {
     count = n;
+    // Patches of the record before arrive no more.
+    feed?.close();
+    feed = undefined;
+    data.destroy();
+    view.selection = [];
+    hot.replaceChildren();
+    for (const section of [feedSection, disturb]) section.element.hidden = source === 'recorded';
+    liveWindows.parentElement!.hidden = source === 'recorded';
+    dayWindows.parentElement!.hidden = source === 'live';
+    if (source === 'recorded') {
+      day = undefined;
+      quantity = 'voltage';
+      measure.value = String(Object.keys(QUANTITIES).indexOf(quantity));
+      data = new Data('scada');
+      view.sources = [new Tiles('scada', RECORDED)];
+      playback.live = false;
+      playback.rate = DAY_RATE;
+      restyle();
+      detail();
+      describe(null);
+      return;
+    }
     signals = new Signals(n, quantity);
     signals.dropouts = dropouts;
     values = new Float32Array(n);
@@ -270,23 +336,21 @@ export default function page(stage: Stage): void {
     carry = 0;
     // The record starts with its first frame, so the value field is there from the start.
     signals.sample(0, values);
-    data.destroy();
     data = new Data('scada').apply(
       new Patch()
         .axis('time', 's')
         .set('Signal', { count: n }, { name: signals.name, area: signals.area })
-        .append(0, 'Signal', { value: values }),
+        .append('Signal', 0, { value: values }),
     );
-    view.select([]);
-    view.setData(data);
-    // Patches of the record before arrive no more.
-    feed?.close();
+    view.sources = [data];
     const current = data;
     feed = new Feed((patch) => data === current && take(patch));
+    playback.rate = 1;
+    playback.live = true;
+    restyle();
     frame(0);
     detail();
     describe(null);
-    hot.replaceChildren();
   };
 
   const playback = stage.playback({
@@ -295,13 +359,29 @@ export default function page(stage: Stage): void {
       view.at = at;
       frame(at);
     },
+    format: (at) => (source === 'live' ? `${at.toFixed(2)} s` : clock(at)),
   });
 
   const meter = stage.meter(view);
-  meter.note(() => `${((count * rate) / 1000).toFixed(0)}k samples/s`);
+  meter.note(() =>
+    source === 'live' ? `${((count * rate) / 1000).toFixed(0)}k samples/s` : 'tiles of a day',
+  );
   let listed = 0;
+  let spanned = 0;
   stage.frame((dt) => {
     if (performance.now() - listed > HOT_EVERY) list();
+    // The recorded day spans what of it landed, growing as its spans do: until the transport is
+    // moved, it shows to the end.
+    if (source === 'recorded' && performance.now() - spanned > HOT_EVERY) {
+      spanned = performance.now();
+      const span = read((held) => held.describe().span);
+      if (span && (span[0] !== day?.[0] || span[1] !== day?.[1])) {
+        const end = !day || playback.at >= day[1];
+        day = span;
+        playback.record(span);
+        if (end) playback.seek(span[1]);
+      }
+    }
     if (playback.mode !== 'live') return;
     meter.measure('append', () => {
       carry += dt * rate;
@@ -312,7 +392,7 @@ export default function page(stage: Stage): void {
       for (let k = 0; k < frames; k++) {
         t += 1 / rate;
         signals.sample(t, values);
-        patch.append(t, 'Signal', { value: values });
+        patch.append('Signal', t, { value: values });
       }
       patch.forget(t - HISTORY);
       if (streamed) feed!.send(patch);
@@ -323,19 +403,24 @@ export default function page(stage: Stage): void {
   const readout = stage.section('Reading');
   const reading = h('p', { class: 'series' });
   readout.content.append(reading);
-  const name = (id: Id) => (data.get('Signal', id, 'name') as string | null) ?? `Signal ${id}`;
+  const name = (id: Id) =>
+    (read((held) => held.get('Signal', id, 'name')) as string | null | undefined) ?? `Signal ${id}`;
   const format = (value: number) => {
     const { unit, digits } = shown();
     return `${value.toFixed(digits)} ${unit}`;
   };
+  const when = (at: number) => (source === 'live' ? `${at.toFixed(2)} s` : clock(at));
   /** Signal `id`'s least and greatest values over the window shown, read from its levels of detail. */
   const spread = (id: Id) => {
     const camera = view.camera;
-    if (!('x' in camera) || !data.span) return '';
-    const { least, greatest } = data.envelope('Signal', 'value', camera.x, 1, [id]);
-    return Number.isNaN(least[0])
-      ? ''
-      : `; ${format(least[0]!)} to ${format(greatest[0]!)} in the window`;
+    if (!('x' in camera)) return '';
+    const envelope = read((held) =>
+      held.describe().span
+        ? held.envelope({ table: 'Signal', field: 'value', range: camera.x, spans: 1, ids: [id] })
+        : undefined,
+    );
+    if (!envelope || Number.isNaN(envelope.least[0])) return '';
+    return `; ${format(envelope.least[0]!)} to ${format(envelope.greatest[0]!)} in the window`;
   };
   const describe = (hit: Hit | null) => {
     const picked = each(view.selection)
@@ -343,13 +428,13 @@ export default function page(stage: Stage): void {
       .join(', ');
     const sample = hit?.sample;
     reading.textContent = sample
-      ? `${name(hit.row.id)} at ${sample.at.toFixed(2)} s: ${format(sample.value)}${spread(hit.row.id)}`
+      ? `${name(hit.row.id)} at ${when(sample.at)}: ${format(sample.value)}${spread(hit.row.id)}`
       : picked
         ? `Picked ${picked}.`
         : 'Hover a trace.';
   };
-  view.on('hover', ({ hit }) => describe(hit));
-  view.on('select', () => {
+  view.on('hovered', ({ hit }) => describe(hit));
+  view.on('selection', () => {
     describe(null);
     list();
   });
@@ -382,7 +467,6 @@ export default function page(stage: Stage): void {
   hottest.content.append(hot);
   const list = () => {
     listed = performance.now();
-    if (!data.span) return;
     const { low, range } = shown();
     const query: Query = {
       of: 'Signal',
@@ -392,21 +476,26 @@ export default function page(stage: Stage): void {
       select: { name: 'name', value: 'value' },
       at: view.at,
     };
-    let rows = data.query({ ...query, offset: page * HOT });
-    // Past the last page, the last.
-    if (!rows.ids.length && page > 0) {
-      page = Math.max(0, Math.ceil(rows.total / HOT) - 1);
-      rows = data.query({ ...query, offset: page * HOT });
-    }
-    paged.textContent = rows.total
-      ? `${page * HOT + 1}–${page * HOT + rows.ids.length} of ${rows.total.toLocaleString()}`
+    const found = read((held) => {
+      if (!held.describe().span) return undefined;
+      let rows = held.query({ ...query, offset: page * HOT });
+      // Past the last page, the last.
+      if (!rows.ids.length && page > 0) {
+        page = Math.max(0, Math.ceil(rows.total / HOT) - 1);
+        rows = held.query({ ...query, offset: page * HOT });
+      }
+      return rows;
+    });
+    if (!found) return;
+    paged.textContent = found.total
+      ? `${page * HOT + 1}–${page * HOT + found.ids.length} of ${found.total.toLocaleString()}`
       : 'None';
-    const names = rows.fields.name as readonly string[];
-    const read = rows.fields.value as Float64Array;
+    const names = found.fields.name as readonly string[];
+    const readings = found.fields.value as Float64Array;
     const picked = new Set(each(view.selection).map((row) => String(row.id)));
     hot.replaceChildren(
-      ...rows.ids.map((id, k) => {
-        const value = read[k]!;
+      ...found.ids.map((id, k) => {
+        const value = readings[k]!;
         const span = (value - range[0]) / (range[1] - range[0]);
         const score = Math.min(1, Math.max(0, low ? 1 - span : span));
         const button = h(
@@ -418,7 +507,7 @@ export default function page(stage: Stage): void {
           h('span', { class: 'bar', style: `--score: ${(score * 100).toFixed(0)}%` }),
         );
         button.addEventListener('click', () => {
-          view.select([{ data: 'scada', table: 'Signal', ids: [id] }]);
+          view.selection = [{ data: 'scada', table: 'Signal', ids: [id] }];
           describe(null);
           list();
         });
@@ -428,8 +517,21 @@ export default function page(stage: Stage): void {
   };
 
   const record = stage.section('Data');
-  record.note('Simulated data');
   record.choice(
+    'Source',
+    [
+      ['Live feed', 'live'],
+      ['Recorded day', 'recorded'],
+    ] as const,
+    source,
+    (next) => {
+      source = next;
+      restart();
+    },
+  );
+  const feedSection = stage.section('Live feed');
+  feedSection.note('Simulated data');
+  const measure = feedSection.choice(
     'Measure',
     Object.entries(QUANTITIES).map(
       ([key, q]) => [`${q.label} (${q.unit})`, key as Quantity] as const,
@@ -437,11 +539,10 @@ export default function page(stage: Stage): void {
     quantity,
     (next) => {
       quantity = next;
-      restyle();
       restart();
     },
   );
-  record.choice(
+  feedSection.choice(
     'Signals',
     [
       ['500', 500],
@@ -451,7 +552,7 @@ export default function page(stage: Stage): void {
     count,
     restart,
   );
-  record.choice(
+  feedSection.choice(
     'Samples',
     [
       ['20 per second', 20],
@@ -464,7 +565,7 @@ export default function page(stage: Stage): void {
       restyle();
     },
   );
-  record.choice(
+  feedSection.choice(
     'Feed',
     [
       ['In the page', false],
@@ -473,14 +574,14 @@ export default function page(stage: Stage): void {
     streamed,
     (next) => (streamed = next),
   );
-  record.toggle('Dropouts', 'o', dropouts, (on) => {
+  feedSection.toggle('Dropouts', 'o', dropouts, (on) => {
     dropouts = on;
     signals.dropouts = on;
   });
-  record.actions([{ label: 'Reset', key: 'n', run: () => restart() }]);
+  feedSection.actions([{ label: 'Reset', key: 'n', run: () => restart() }]);
 
   const show = stage.section('Display');
-  show.choice(
+  const liveWindows = show.choice(
     'Window',
     [
       ['5 s', 5],
@@ -491,6 +592,20 @@ export default function page(stage: Stage): void {
     window,
     (w) => {
       window = w;
+      frame(view.at);
+    },
+  );
+  const dayWindows = show.choice(
+    'Window',
+    [
+      ['10 minutes', 600],
+      ['An hour', 3600],
+      ['Six hours', 6 * 3600],
+      ['The day', Infinity],
+    ],
+    dayWindow,
+    (w) => {
+      dayWindow = w;
       frame(view.at);
     },
   );
@@ -512,7 +627,7 @@ export default function page(stage: Stage): void {
     { min: 0.5, max: 3, step: 0.5, value: width, format: (v) => `${v} px` },
     (next) => {
       width = next;
-      view.show(scene());
+      view.scene = scene();
     },
   );
   show.choice(
@@ -525,7 +640,7 @@ export default function page(stage: Stage): void {
     interpolation,
     (next) => {
       interpolation = next;
-      view.show(scene());
+      view.scene = scene();
     },
   );
   show.range(
@@ -533,7 +648,7 @@ export default function page(stage: Stage): void {
     { min: 0, max: 1, step: 0.05, value: dim, format: (v) => `${Math.round(v * 100)}%` },
     (next) => {
       dim = next;
-      view.show(scene());
+      view.scene = scene();
     },
   );
   show.choice(
@@ -546,14 +661,14 @@ export default function page(stage: Stage): void {
     playhead,
     (next) => {
       playhead = next;
-      view.show(scene());
+      view.scene = scene();
     },
   );
   show.toggle('Auto range', 'a', auto, (on) => {
     auto = on;
     frame(view.at);
   });
-  show.toggle('Title', undefined, axes.title, (on) => ((axes.title = on), view.show(scene())));
+  show.toggle('Title', undefined, axes.title, (on) => ((axes.title = on), (view.scene = scene())));
   const axesSection = stage.section('Axes', false);
   axesSection.choice(
     'Values',
@@ -564,15 +679,20 @@ export default function page(stage: Stage): void {
       ['Engineering', 'engineering'],
     ] as const,
     axes.format,
-    (format) => ((axes.format = format), view.show(scene())),
+    (format) => ((axes.format = format), (view.scene = scene())),
   );
-  axesSection.toggle('Grid', 'g', axes.grid, (on) => ((axes.grid = on), view.show(scene())));
-  axesSection.toggle('Limits', 'l', axes.limits, (on) => ((axes.limits = on), view.show(scene())));
+  axesSection.toggle('Grid', 'g', axes.grid, (on) => ((axes.grid = on), (view.scene = scene())));
+  axesSection.toggle(
+    'Limits',
+    'l',
+    axes.limits,
+    (on) => ((axes.limits = on), (view.scene = scene())),
+  );
   axesSection.toggle(
     'Time axis',
     undefined,
     axes.time,
-    (on) => ((axes.time = on), view.show(scene())),
+    (on) => ((axes.time = on), (view.scene = scene())),
   );
   const areas = show.series(AREAS.map(([label, color]) => ({ label, color })));
   const maps = h('div', { class: 'swatches' });
@@ -593,7 +713,7 @@ export default function page(stage: Stage): void {
   show.content.append(maps);
   const legend = stage.legend('top');
   const restyle = () => {
-    view.show(scene());
+    view.scene = scene();
     const { label, unit, range } = shown();
     areas.hidden = colorBy !== 'area';
     maps.hidden = legend.hidden = colorBy !== 'value';
@@ -624,8 +744,9 @@ export default function page(stage: Stage): void {
 
   const detail = () =>
     stage.detail(
-      `${count.toLocaleString()} signals · ${shown().label.toLowerCase()} · ${HISTORY} s kept`,
+      source === 'live'
+        ? `${count.toLocaleString()} signals · ${shown().label.toLowerCase()} · ${HISTORY} s kept`
+        : '64 buses · voltage · a recorded day, fetched as the window draws it',
     );
-  restyle();
   restart();
 }

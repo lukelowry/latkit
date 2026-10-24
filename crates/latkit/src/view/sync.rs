@@ -32,11 +32,11 @@ use crate::derive::shapes::PagedShapes;
 use crate::derive::stamp_of;
 use crate::expr::compile::{ColumnUse, Program, Reads, Words};
 use crate::gpu::Inner;
-use crate::gpu::arena::{Ask, Content, PIECE_POINTS, PageKey, path_pieces, path_points};
+use crate::gpu::arena::{Ask, Content, PageKey, PathPage, path_pieces, path_points};
 use crate::gpu::packed::{self, Packing};
 use crate::gpu::shaders as wgsl;
 use crate::gpu::work::Count;
-use crate::{Data, Name, Table};
+use crate::{Name, Snapshot, Table};
 
 const WORDS: usize = wgsl::COLUMN_WORDS as usize;
 
@@ -146,7 +146,7 @@ impl ColumnTable {
 
 /// Rows of the mark's table joined by id to rows of another table.
 struct Join {
-    of: (Name, Name),
+    from: (Name, Name),
     structure: (Version, Version),
     pages: Vec<(PageId, Arc<[u32]>)>,
 }
@@ -305,7 +305,7 @@ pub(crate) struct Published {
 /// Where a mark's own rows come from, the tables the view derives beside them, and drawn in part, the
 /// shapes it makes a page of their order at a time, by the field each is written as.
 pub(crate) struct Source<'a> {
-    pub(crate) data: &'a Data,
+    pub(crate) data: &'a Snapshot,
     pub(crate) table: &'a Table,
     pub(crate) derived: Beside<'a>,
     pub(crate) paged: Vec<(Name, &'a PagedShapes)>,
@@ -321,7 +321,7 @@ impl<'a> Source<'a> {
 /// What a sync reads besides the mark's own rows: every dataset, the coordinate shown, the window a
 /// trace spans, and the order each table of its dataset drawn in part draws in.
 pub(crate) struct Inputs<'a> {
-    pub(crate) all: &'a [Data],
+    pub(crate) all: &'a [Snapshot],
     pub(crate) at: f64,
     pub(crate) window: Window,
     pub(crate) orders: &'a [(Name, Order)],
@@ -355,12 +355,12 @@ impl Tables {
     ) -> Option<Rebuilt> {
         let joins = joins(program);
         let fields = program.columns.iter().map(|column| {
-            let join = column.of.as_ref().map_or(wgsl::NONE, |of| {
-                (program.columns.len() + joins.iter().position(|j| *j == of).expect("listed")) as u32
+            let join = column.from.as_ref().map_or(wgsl::NONE, |from| {
+                (program.columns.len() + joins.iter().position(|j| *j == from).expect("listed")) as u32
             });
             Use::Field { column, join }
         });
-        let uses: Vec<Use<'_>> = fields.chain(joins.iter().map(|of| Use::Join(of))).collect();
+        let uses: Vec<Use<'_>> = fields.chain(joins.iter().map(|from| Use::Join(from))).collect();
         // Every table rebuilds where they have no tables of this shape yet, but where a reshape is
         // staged already: the tables are compared with it.
         let reshaped = staged.is_some_and(|s| s.reshape && s.tables.len() == uses.len());
@@ -374,9 +374,9 @@ impl Tables {
         for (i, use_) in uses.iter().enumerate() {
             let (stamp, paged) = match use_ {
                 Use::Field { column, .. } => {
-                    (stamp(column, source, inputs), if column.of.is_none() { held } else { 0 })
+                    (stamp(column, source, inputs), if column.from.is_none() { held } else { 0 })
                 }
-                Use::Join(of) => match joined(of, inputs.all) {
+                Use::Join(from) => match joined(from, inputs.all) {
                     Some(other) => (Stamp::Join(source.table.structure, other.structure), held),
                     None => (Stamp::Missing, held),
                 },
@@ -390,14 +390,14 @@ impl Tables {
             let mut builder = Builder::new(gpu);
             let descriptor = match use_ {
                 Use::Field { column, join } => {
-                    let rows = if column.of.is_none() { rows } else { Rows::Own };
+                    let rows = if column.from.is_none() { rows } else { Rows::Own };
                     let mut descriptor = builder.column(column, source, rows, inputs);
                     descriptor[wgsl::COLUMN_JOIN as usize] = *join;
                     descriptor
                 }
-                Use::Join(of) => {
-                    let join = self.join(of, source, inputs.all);
-                    let descriptor = builder.join(&join, of, source, rows, inputs.all);
+                Use::Join(from) => {
+                    let join = self.join(from, source, inputs.all);
+                    let descriptor = builder.join(&join, from, source, rows, inputs.all);
                     self.remember(join);
                     descriptor
                 }
@@ -436,7 +436,7 @@ impl Tables {
                 }
                 let bits = match program.columns.get(i) {
                     Some(_) => Reads::column(i),
-                    None => columns_of(program, joins[i - program.columns.len()]),
+                    None => columns_from(program, joins[i - program.columns.len()]),
                 };
                 published.columns |= bits;
                 if table.stamp != self.current[i].stamp {
@@ -540,28 +540,28 @@ impl Tables {
         self.synced = false;
     }
 
-    /// The join rows for `of`, reused while neither table's rows change.
-    fn join(&self, of: &(Name, Name), source: &Source<'_>, all: &[Data]) -> Join {
-        let Some(other) = joined(of, all) else {
+    /// The join rows for `from`, reused while neither table's rows change.
+    fn join(&self, from: &(Name, Name), source: &Source<'_>, all: &[Snapshot]) -> Join {
+        let Some(other) = joined(from, all) else {
             return Join {
-                of: of.clone(),
+                from: from.clone(),
                 structure: (source.table.structure, source.table.structure),
                 pages: Vec::new(),
             };
         };
         let structure = (source.table.structure, other.structure);
-        if let Some(join) = self.joins.iter().find(|j| &j.of == of && j.structure == structure) {
-            return Join { of: of.clone(), structure, pages: join.pages.clone() };
+        if let Some(join) = self.joins.iter().find(|j| &j.from == from && j.structure == structure) {
+            return Join { from: from.clone(), structure, pages: join.pages.clone() };
         }
         let rows: Vec<u32> = (0..source.table.len())
             .map(|r| source.table.ids.key(r).and_then(|key| other.row(key)).map_or(wgsl::NONE, |row| row as u32))
             .collect();
         let pages = rows.chunks(wgsl::PAGE_ROWS as usize).map(|chunk| (PageId::next(), Arc::from(chunk))).collect();
-        Join { of: of.clone(), structure, pages }
+        Join { from: from.clone(), structure, pages }
     }
 
     fn remember(&mut self, join: Join) {
-        self.joins.retain(|j| j.of != join.of);
+        self.joins.retain(|j| j.from != join.from);
         self.joins.push(join);
     }
 }
@@ -582,33 +582,37 @@ fn unpin(pins: &[PageKey], gpu: &mut Inner) {
 /// The distinct tables the program's joins read, in first-read order.
 fn joins(program: &Program) -> Vec<&(Name, Name)> {
     let mut joins: Vec<&(Name, Name)> = Vec::new();
-    for of in program.columns.iter().filter_map(|c| c.of.as_ref()) {
-        if !joins.contains(&of) {
-            joins.push(of);
+    for from in program.columns.iter().filter_map(|c| c.from.as_ref()) {
+        if !joins.contains(&from) {
+            joins.push(from);
         }
     }
     joins
 }
 
-/// Bits of the program's columns that read through the join to `of`.
-fn columns_of(program: &Program, of: &(Name, Name)) -> u64 {
+/// Bits of the program's columns that read through the join from `from`.
+fn columns_from(program: &Program, from: &(Name, Name)) -> u64 {
     program
         .columns
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.of.as_ref() == Some(of))
+        .filter(|(_, c)| c.from.as_ref() == Some(from))
         .fold(0, |bits, (i, _)| bits | Reads::column(i))
 }
 
 /// The dataset and table a column reads: the mark's own, another one joined by id, or the derived
 /// table beside the mark's own that holds the field.
-pub(crate) fn table_of<'a>(column: &ColumnUse, source: &Source<'a>, all: &'a [Data]) -> Option<(&'a Name, &'a Table)> {
+pub(crate) fn table_of<'a>(
+    column: &ColumnUse,
+    source: &Source<'a>,
+    all: &'a [Snapshot],
+) -> Option<(&'a Name, &'a Table)> {
     if column.derived {
         let mut beside = source.derived.iter().flatten();
         let table = beside.find(|t| t.field_named(&column.name).is_some()).copied().or(source.derived[0])?;
         return Some((source.data.name(), table));
     }
-    match &column.of {
+    match &column.from {
         None => Some((source.data.name(), source.table)),
         Some((data, table)) => {
             let data = all.iter().find(|d| d.name() == data)?;
@@ -618,7 +622,7 @@ pub(crate) fn table_of<'a>(column: &ColumnUse, source: &Source<'a>, all: &'a [Da
 }
 
 /// The table a join reads.
-fn joined<'a>((data, table): &(Name, Name), all: &'a [Data]) -> Option<&'a Table> {
+fn joined<'a>((data, table): &(Name, Name), all: &'a [Snapshot]) -> Option<&'a Table> {
     all.iter().find(|d| d.name() == data)?.table(table)
 }
 
@@ -660,7 +664,7 @@ fn stamp(column: &ColumnUse, source: &Source<'_>, inputs: &Inputs<'_>) -> Stamp 
             Stamp::Sampled(*version, frame, t.to_bits())
         }
         Some(Field::Reference(reference)) => {
-            let to = if column.of.is_none() { inputs.order_of(&reference.to).map_or(0, Order::id) } else { 0 };
+            let to = if column.from.is_none() { inputs.order_of(&reference.to).map_or(0, Order::id) } else { 0 };
             Stamp::Field(reference.version, to)
         }
         Some(field) => Stamp::Field(field.version(), 0),
@@ -774,7 +778,7 @@ impl<'g> Builder<'g> {
             }
             Some(Field::Reference(reference)) => {
                 reference.rows.pages().iter().for_each(|page| self.list(Some(page.id)));
-                match inputs.order_of(&reference.to).filter(|_| column.of.is_none()) {
+                match inputs.order_of(&reference.to).filter(|_| column.from.is_none()) {
                     // The rows it names where their table draws them.
                     Some(order) => {
                         for (p, page) in reference.rows.pages().iter().enumerate() {
@@ -855,10 +859,10 @@ impl<'g> Builder<'g> {
                 d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED;
                 let packing = Packing { reads: stamp_of(version), ..packing };
                 let blocks: Vec<(Samples, usize)> = (0..slots)
-                    .map(|s| match slot_key(&packing, drawing, None, s) {
+                    .map(|s| match slot_key(&packing, drawing, s) {
                         None => (Samples::default(), 0),
-                        Some((packing, page, _)) => {
-                            (self.gpu.packed.samples(&packing, order, page, &drawing.rows(s), samples), 0)
+                        Some((packing, page)) => {
+                            (self.gpu.packed.samples(&packing, page, &drawing.rows(s), samples), 0)
                         }
                     })
                     .collect();
@@ -874,7 +878,7 @@ impl<'g> Builder<'g> {
                 for s in 0..slots {
                     let at = self.words.len();
                     self.words.extend([wgsl::NONE, 0, wgsl::NONE, 0, 0, 0]);
-                    let Some((base, page, _)) = slot_key(&packing, drawing, None, s) else { continue };
+                    let Some((base, page)) = slot_key(&packing, drawing, s) else { continue };
                     for (k, f) in [frame, frame.map(|f| f + 1)].into_iter().enumerate() {
                         let Some(f) = f.filter(|&f| samples.held(0, f)) else { continue };
                         let packing = Packing { reads: stamp_of((version, f)), ..base.clone() };
@@ -917,8 +921,7 @@ impl<'g> Builder<'g> {
             let id = match drawing.holds(s) {
                 Holds::Free => None,
                 Holds::Page(_) => ids.next(),
-                Holds::Kept(_) => slot_key(packing, drawing, source, s)
-                    .map(|(kept, page, source)| self.gpu.packed.page(&kept, &drawing.order, source, page)),
+                Holds::Kept(_) => slot_page(&mut self.gpu.packed, packing, drawing, source, s),
             };
             let Some(id) = id else {
                 self.words.push(wgsl::NONE);
@@ -942,10 +945,10 @@ impl<'g> Builder<'g> {
     fn join(
         &mut self,
         join: &Join,
-        of: &(Name, Name),
+        from: &(Name, Name),
         source: &Source<'_>,
         rows: Rows<'_>,
-        all: &[Data],
+        all: &[Snapshot],
     ) -> [u32; WORDS] {
         self.pages = None;
         let mut d = [0; WORDS];
@@ -955,12 +958,12 @@ impl<'g> Builder<'g> {
         d[wgsl::COLUMN_JOIN as usize] = wgsl::NONE;
         if let Rows::Held(drawing) = rows {
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
-            let Some(other) = joined(of, all) else { return d };
+            let Some(other) = joined(from, all) else { return d };
             let packing = Packing {
                 order: drawing.order.id(),
                 origin: source.data.origin(),
                 table: source.table.name.clone(),
-                field: format!("{}/{}", of.0, of.1).into(),
+                field: format!("{}/{}", from.0, from.1).into(),
                 words: Words::Bits,
                 low: false,
                 reads: stamp_of((source.table.structure, other.structure, other.order)),
@@ -1003,12 +1006,11 @@ impl<'g> Builder<'g> {
         let per = wgsl::PATH_PAGE_WORDS as usize;
         self.words.resize(per * drawing.slot_count(), 0);
         for s in 0..drawing.slot_count() {
-            let Some((packing, page, source)) = slot_key(packing, drawing, Some(column), s) else {
+            let Some(id) = slot_page(&mut self.gpu.packed, packing, drawing, Some(column), s) else {
                 self.words[per * s..per * (s + 1)].copy_from_slice(&[wgsl::NONE, 0, 0, 0]);
                 self.list(None);
                 continue;
             };
-            let id = self.gpu.packed.page(&packing, &drawing.order, source, page);
             self.list(Some(id));
             let rows = drawing.rows(s);
             let points = rows_points(column, &rows);
@@ -1066,22 +1068,28 @@ impl<'g> Builder<'g> {
         }
     }
 
-    /// Page `p` of a geometry column's table, `id`, of `points` points and `rows` rows: its first
-    /// points, then its points a chunk at a time, which `pieces` makes where one is not on the GPU.
-    fn path_page(&mut self, p: usize, id: PageId, points: usize, rows: u32, pieces: impl FnOnce() -> Vec<Vec<u32>>) {
+    /// Page `p` of a geometry column's table, `id`, of `points` points and `rows` rows: its rows'
+    /// table, then its pieces of points, each keyed by what it holds, so a page written again uploads
+    /// only the pieces whose rows' points changed. `pieces` makes them where the GPU lacks one.
+    fn path_page(&mut self, p: usize, id: PageId, points: usize, rows: u32, pieces: impl FnOnce() -> PathPage) {
         let per = wgsl::PATH_PAGE_WORDS as usize;
         self.points += points as u32;
-        let count = points.div_ceil(PIECE_POINTS) + 1;
-        let keys: Vec<PageKey> =
-            (0..count).map(|piece| PageKey { page: id, words: Words::Path, low: false, piece: piece as u32 }).collect();
         let arena = &self.gpu.arena;
-        let made = keys.iter().all(|&key| arena.holds(key, 1));
-        let mut pieces = if made { Vec::new() } else { pieces() };
+        let kept = self.gpu.pieces.of(id).filter(|keys| keys.iter().all(|&key| arena.holds(key, 1)));
+        let (keys, mut made) = if let Some(keys) = kept {
+            (keys, Vec::new())
+        } else {
+            let PathPage { rows, pieces } = pieces();
+            let made: Vec<Vec<u32>> = std::iter::once(rows).chain(pieces).collect();
+            let keys: Arc<[PageKey]> = made.iter().map(|words| PageKey::piece(words)).collect();
+            self.gpu.pieces.keep(id, keys.clone());
+            (keys, made)
+        };
         let listed = self.words.len();
-        self.words.resize(listed + count - 1, wgsl::NONE);
-        for (piece, key) in keys.into_iter().enumerate() {
+        self.words.resize(listed + keys.len() - 1, wgsl::NONE);
+        for (piece, &key) in keys.iter().enumerate() {
             let at = if piece == 0 { per * p } else { listed + piece - 1 };
-            let words = pieces.get_mut(piece).map(std::mem::take).unwrap_or_default();
+            let words = made.get_mut(piece).map(std::mem::take).unwrap_or_default();
             self.place(at, key, 1, || Content::Computed(words));
         }
         self.words[per * p + 1] = listed as u32;
@@ -1165,29 +1173,38 @@ impl<'g> Builder<'g> {
     }
 }
 
-/// How the registry keeps the page slot `s` of `drawing` holds of a column packed as `packing` from
-/// `source`, and the source it follows: a page of the order by its number, kept while no row it holds
-/// is written; a page of rows kept by the rows it holds and the pages of `source` they lie in, so a
-/// write to any of those packs it again. `None` for a free slot.
-fn slot_key<'c>(
-    packing: &Packing,
-    drawing: &Drawing,
-    source: Option<&'c Column>,
-    s: usize,
-) -> Option<(Packing, u32, Option<&'c Column>)> {
+/// How the registry keeps the page slot `s` of `drawing` holds of a column packed as `packing`: a page
+/// of the order by its number, a page of rows kept by the places it holds. `None` for a free slot.
+fn slot_key(packing: &Packing, drawing: &Drawing, s: usize) -> Option<(Packing, u32)> {
     match drawing.holds(s) {
         Holds::Free => None,
-        Holds::Page(page) => Some((packing.clone(), page, source)),
+        Holds::Page(page) => Some((packing.clone(), page)),
+        Holds::Kept(_) => Some((kept_packing(packing, drawing.kept_places(s)), 0)),
+    }
+}
+
+/// How the registry keeps a page of rows kept, at `places` of the order, of a column packed as
+/// `packing`.
+fn kept_packing(packing: &Packing, places: &[u32]) -> Packing {
+    Packing { order: stamp_of((packing.order, places)), ..packing.clone() }
+}
+
+/// The id of the page of `packing` slot `s` of `drawing` holds, packed from `source`: a page of its
+/// order, or of its rows kept, each kept while none of its rows was written since; `None` for a free
+/// slot.
+fn slot_page(
+    packed: &mut crate::gpu::packed::Packed,
+    packing: &Packing,
+    drawing: &Drawing,
+    source: Option<&Column>,
+    s: usize,
+) -> Option<PageId> {
+    match drawing.holds(s) {
+        Holds::Free => None,
+        Holds::Page(page) => Some(packed.page(packing, &drawing.order, source, page)),
         Holds::Kept(_) => {
-            let rows = drawing.rows(s);
-            let mut pages: Vec<PageId> = source.map_or_else(Vec::new, |column| {
-                rows.iter()
-                    .filter_map(|&r| column.pages().get((r >> wgsl::PAGE_BITS) as usize).map(|page| page.id))
-                    .collect()
-            });
-            pages.sort_unstable();
-            pages.dedup();
-            Some((Packing { order: stamp_of((packing.order, rows, pages)), ..packing.clone() }, 0, None))
+            let holds = |row: u32| drawing.held_row(row).is_some_and(|h| (h / wgsl::PAGE_ROWS) as usize == s);
+            Some(packed.kept(&kept_packing(packing, drawing.kept_places(s)), source, holds))
         }
     }
 }

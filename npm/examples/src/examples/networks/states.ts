@@ -3,7 +3,7 @@
  * color by: buses, load, and generation counted where each bus stands, and where the grid was
  * simulated, how far its machines' speeds swing in each state, frame by frame.
  */
-import { Patch, type Data, type Id } from '../../latkit.js';
+import { Patch, type Data, type Id, type Snapshot } from 'latkit';
 import type { Case } from './cases.js';
 
 /** What each state's figures hold, and in what unit. */
@@ -16,7 +16,8 @@ export const STATE_FIELDS = {
 export type StateField = keyof typeof STATE_FIELDS;
 
 export interface Joined {
-  readonly data: Data;
+  /** The states as they were before the grid's figures were written into them. */
+  readonly before: Snapshot;
   /** How many states the grid reaches. */
   readonly states: number;
   /** Each figure's largest value in any state. */
@@ -46,7 +47,7 @@ function inside(state: State, x: number, y: number): boolean {
   return crossings % 2 === 1;
 }
 
-/** A snapshot of `states` with the grid's figures for every state it reaches. */
+/** Writes the grid's figures into `states` for every state it reaches, keeping what they were. */
 export function joinStates(states: Data, grid: Case): Joined {
   const { positions, simulation } = grid;
   const extent = [Infinity, Infinity, -Infinity, -Infinity];
@@ -56,7 +57,7 @@ export function joinStates(states: Data, grid: Case): Joined {
     extent[2] = Math.max(extent[2]!, positions[b * 2]!);
     extent[3] = Math.max(extent[3]!, positions[b * 2 + 1]!);
   }
-  const ids: Id[] = states.ids('polygons');
+  const ids: Id[] = states.query({ of: 'polygons', select: {} }).ids;
   const found: State[] = [];
   ids.forEach((id, row) => {
     const polygons = (states.get('polygons', id, 'geometry') ?? []) as Ring[][];
@@ -126,8 +127,10 @@ export function joinStates(states: Data, grid: Case): Joined {
         swing[k] = Math.max(swing[k]!, Math.abs(simulation.speeds[f * g + m]!));
       }
       peaks.swing = Math.max(peaks.swing, peak(swing));
-      patch.append(f * simulation.dt, 'polygons', { swing });
+      patch.append('polygons', f * simulation.dt, { swing });
     }
   }
-  return { data: states.snapshot().apply(patch), states: reached.size, peaks };
+  const before = states.snapshot();
+  states.apply(patch);
+  return { before, states: reached.size, peaks };
 }

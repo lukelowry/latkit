@@ -5,7 +5,7 @@
  * says whether that GPU's device was lost. The runner opens a fresh page for every run, so nothing
  * carries over but the browser's shader cache.
  */
-import { loadLatkit, type Gpu } from 'latkit';
+import { Gpu } from 'latkit';
 import { LOAD, scenarios, type Order } from './scenarios.ts';
 import { Stage, type Cost } from './stage.ts';
 
@@ -42,7 +42,7 @@ let current: Gpu | undefined;
 
 /** Resolves once a GPU device can be made: a wedged driver hangs here, so the runner asks first. */
 async function ready(): Promise<void> {
-  (await (await loadLatkit()).Gpu.create()).destroy();
+  (await Gpu.create()).destroy();
 }
 
 /** Whether the run's device was lost: the runner asks after a failure, and stops the sweep if so. */
@@ -72,12 +72,11 @@ async function run(name: string, size: number): Promise<Run> {
   if (!scenario) throw new Error(`no scenario ${name}`);
   console.debug('phase init');
   const begun = performance.now();
-  const latkit = await loadLatkit();
-  const gpu = (current = await latkit.Gpu.create());
+  const gpu = (current = await Gpu.create());
   const ms = performance.now() - begun;
   gpu.budget = scenario.budget ?? BUDGET;
   const built = scenario.build(size);
-  const stage = new Stage(latkit, gpu, await canvases(scenario.views?.(size) ?? 1), size);
+  const stage = new Stage(gpu, await canvases(scenario.views?.(size) ?? 1), size);
   const none = { frames: 0, cpu: 0, cpu95: 0, gpu: 0, resident: 0, steady: false };
   // Each phase says when it starts, so a page that stops answering is known by where it stopped.
   const named = <T>(phase: string, run: () => Promise<T>) => {

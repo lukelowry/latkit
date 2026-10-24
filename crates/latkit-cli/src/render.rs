@@ -4,9 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use latkit::Tiles;
 use latkit::host::Native;
-use latkit::{Camera, Data, Error, Fit, Gpu, Mp4, Name, Patch, Scene, Sink, View};
+use latkit::{Camera, Data, Error, Fit, Gpu, Mp4, Name, Patch, Scene, Sink, Tiles, View};
 
 use crate::args::{Format, Job, Source};
 use crate::inputs::{self, Ahead, Each, Frame, Frames};
@@ -39,9 +38,6 @@ impl Inputs {
                 Tiles::new(name.as_deref().unwrap_or_default(), path.to_string_lossy().as_ref())
             })
             .collect();
-        for (path, scene) in &scenes {
-            scene.validate(&data, &tiles).map_err(|e| Failure::at(e, path))?;
-        }
         let cameras = job.camera.iter().map(|p| inputs::camera(p)).collect::<Result<Vec<_>, _>>()?;
         for (i, camera) in cameras.iter().enumerate() {
             if !camera.fits(scenes[i].1.space()) {
@@ -51,20 +47,24 @@ impl Inputs {
                 ));
             }
         }
-        Ok(Inputs { scenes, data, tiles, cameras, fit: inputs::fit(&job.fit)?, host })
+        let inputs = Inputs { scenes, data, tiles, cameras, fit: inputs::fit(&job.fit)?, host };
+        for (path, scene) in &inputs.scenes {
+            scene.validate(&inputs.sources()).map_err(|e| Failure::at(e, path))?;
+        }
+        Ok(inputs)
     }
 
-    /// A view of each scene, given every dataset and the tiles, looking where the job says.
+    /// What every view draws: each dataset, and the tiles.
+    fn sources(&self) -> Vec<latkit::Source> {
+        self.data.iter().map(latkit::Source::from).chain(self.tiles.iter().map(latkit::Source::from)).collect()
+    }
+
+    /// A view of each scene, drawing every dataset and the tiles, looking where the job says.
     fn views(&self, gpu: &Gpu, job: &Job) -> Result<Vec<View>, Failure> {
         let mut views = Vec::with_capacity(self.scenes.len());
         for (i, (path, scene)) in self.scenes.iter().enumerate() {
             let mut view = View::new(gpu, scene.clone()).map_err(|e| Failure::at(e, path))?;
-            for data in &self.data {
-                view.set_data(data.clone());
-            }
-            for tiles in &self.tiles {
-                view.set_tiles(tiles.clone());
-            }
+            view.set_sources(self.sources()).map_err(|e| Failure::at(e, path))?;
             if let Some(insets) = job.insets {
                 view.set_insets(insets);
             }
@@ -82,7 +82,7 @@ impl Inputs {
 }
 
 pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
-    let mut inputs = Inputs::read(job)?;
+    let inputs = Inputs::read(job)?;
     let gpu = block(job.deadline, Gpu::new())?;
     gpu.set_host(inputs.host.clone());
     let mut views = inputs.views(&gpu, job)?;
@@ -104,7 +104,7 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
     };
     let frames = Frames::open(path, inputs.host.clone(), job.deadline)?.ahead();
     let host = inputs.host.clone();
-    let mut sequence = Sequence { job, path, gpu: &gpu, views: &mut views, inputs: &mut inputs, report };
+    let mut sequence = Sequence { job, path, gpu: &gpu, views: &mut views, inputs: &inputs, report };
     let format = job.format();
     if let Some(image) = format.image(job.quality) {
         let images = if job.sequence() {
@@ -134,7 +134,7 @@ struct Sequence<'a> {
     path: &'a Path,
     gpu: &'a Gpu,
     views: &'a mut Vec<View>,
-    inputs: &'a mut Inputs,
+    inputs: &'a Inputs,
     report: &'a mut Report,
 }
 
@@ -148,12 +148,7 @@ impl Sequence<'_> {
             let (index, frame, patches) = next?;
             any = true;
             let at = |error: Error| Failure::at(error.at(index).at("frames"), path);
-            let changed = apply(&mut self.inputs.data, &self.inputs.scenes, &frame, patches).map_err(at)?;
-            for i in changed {
-                for view in self.views.iter_mut() {
-                    view.set_data(self.inputs.data[i].clone());
-                }
-            }
+            apply(&self.inputs.data, &self.inputs.scenes, &frame, patches).map_err(at)?;
             steer(self.views, &frame);
             block(job.deadline, video.frame(&mut self.views.iter_mut().collect::<Vec<_>>())).map_err(at)?;
             self.report.progress(video.frames(), video.time());
@@ -168,14 +163,15 @@ impl Sequence<'_> {
     }
 }
 
-/// Applies `frame`'s patches to the datasets they name, in order, and checks the cameras it gives
-/// each view against that view's scene: the datasets it changed, by index.
+/// Applies `frame`'s patches to the datasets they name, in order, which every view draws from its
+/// next frame, and checks the cameras it gives each view against that view's scene: whether it
+/// changed any dataset.
 fn apply(
-    data: &mut [Data],
+    data: &[Data],
     scenes: &[(PathBuf, Scene)],
     frame: &Frame,
     patches: Vec<(Name, Patch)>,
-) -> latkit::Result<Vec<usize>> {
+) -> latkit::Result<bool> {
     // One camera for every view looks through those it fits; one per view must fit its own.
     for (option, each) in [("camera", &frame.camera), ("fly", &frame.fly)] {
         let Some(Each::Each(cameras)) = each else { continue };
@@ -190,16 +186,13 @@ fn apply(
             }
         }
     }
-    let mut changed = Vec::new();
+    let changed = !patches.is_empty();
     for (name, patch) in patches {
-        let i = data
+        let dataset = data
             .iter()
-            .position(|d| *d.name() == name)
+            .find(|d| *d.name() == name)
             .ok_or_else(|| Error::invalid(format!("no dataset is named {name}")).at(name.as_str()).at("patch"))?;
-        data[i].apply(patch).map_err(|e| e.at(name.as_str()).at("patch"))?;
-        if !changed.contains(&i) {
-            changed.push(i);
-        }
+        dataset.apply(patch).map_err(|e| e.at(name.as_str()).at("patch"))?;
     }
     Ok(changed)
 }
@@ -231,16 +224,16 @@ fn steer(views: &mut [View], frame: &Frame) {
 /// Reads, loads, and checks everything `render` would, without a GPU: scenes against the datasets,
 /// cameras, fonts, and every frame applied in turn.
 pub(crate) fn validate(job: &Job) -> Result<(), Failure> {
-    let mut inputs = Inputs::read(job)?;
+    let inputs = Inputs::read(job)?;
     let Some(path) = &job.frames else { return Ok(()) };
     let mut frames = Frames::open(path, inputs.host.clone(), job.deadline)?;
     let mut any = false;
     while let Some((index, frame, patches)) = frames.next()? {
         any = true;
         let at = |error: Error| Failure::at(error.at(index).at("frames"), path);
-        if !apply(&mut inputs.data, &inputs.scenes, &frame, patches).map_err(at)?.is_empty() {
+        if apply(&inputs.data, &inputs.scenes, &frame, patches).map_err(at)? {
             for (_, scene) in &inputs.scenes {
-                scene.validate(&inputs.data, &inputs.tiles).map_err(at)?;
+                scene.validate(&inputs.sources()).map_err(at)?;
             }
         }
     }

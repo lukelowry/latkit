@@ -34,6 +34,18 @@ use crate::Name;
 #[derive(Clone, PartialEq, Debug)]
 pub struct Expr(pub(crate) Arc<Node>);
 
+/// A color for every row of a mark: a color, or an expression making one, such as a value through a
+/// colormap or a conditional choosing between colors. Color options take one; as JSON a string is a
+/// CSS color, and a field reads as `{"field": name}`.
+///
+/// ```
+/// # use latkit::{field, Color, Colormap, Paint};
+/// let fixed = Paint::from(Color::css("rebeccapurple").unwrap());
+/// let mapped = Paint::from(field("vm").colormap(Colormap::BALANCE));
+/// ```
+#[derive(Clone, PartialEq, Debug)]
+pub struct Paint(pub(crate) Expr);
+
 #[derive(PartialEq, Debug)]
 pub(crate) enum Node {
     Number(f64),
@@ -51,11 +63,11 @@ pub(crate) enum Node {
     Colormap { input: Expr, colormap: Colormap, domain: Domain },
 }
 
-/// A field read: of the mark's own table, or of another dataset's table joined by row id.
+/// A field read: of the mark's own table, or from another dataset's table joined by row id.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct FieldRef {
     pub(crate) name: Name,
-    pub(crate) of: Option<(Name, Name)>,
+    pub(crate) from: Option<(Name, Name)>,
     pub(crate) step: bool,
     /// For a point geometry: 0 for x, 1 for y.
     pub(crate) component: Option<u8>,
@@ -120,9 +132,21 @@ pub(crate) fn node(node: Node) -> Expr {
     Expr(Arc::new(node))
 }
 
+/// Whether `text` holds `needle`, ignoring case, `needle` lowercased already: what `contains` asks,
+/// in a query and a mark alike.
+pub(crate) fn holds(text: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if text.is_ascii() && needle.is_ascii() {
+        return text.as_bytes().windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()));
+    }
+    text.to_lowercase().contains(needle)
+}
+
 /// The field `name` of each row.
 pub fn field(name: impl Into<Name>) -> Expr {
-    node(Node::Field(FieldRef { name: name.into(), of: None, step: false, component: None }))
+    node(Node::Field(FieldRef { name: name.into(), from: None, step: false, component: None }))
 }
 
 /// Starts a conditional: `when(c).then(a).when(d).then(b).otherwise(e)`.
@@ -156,10 +180,16 @@ pub fn zoom() -> Expr {
     node(Node::State(State::Zoom))
 }
 
-/// A size measured in position units, so it scales as the view zooms; [`Size::at_least`] and
-/// [`Size::at_most`] keep it within CSS pixels.
+/// A size in position units, whatever the space's own: it scales as the view zooms, and
+/// [`Size::at_least`] and [`Size::at_most`] keep it within CSS pixels.
 pub fn units(size: impl Into<Expr>) -> Size {
-    Size { expr: size.into(), units: true, px: Size::ANY }
+    Size { expr: size.into(), unit: Some(Unit::Units), px: Size::ANY }
+}
+
+/// A size in CSS pixels, whatever the space's own: a stroke keeps its width on screen as a diagram
+/// zooms.
+pub fn px(size: impl Into<Expr>) -> Size {
+    Size { expr: size.into(), unit: Some(Unit::Px), px: Size::ANY }
 }
 
 macro_rules! unary {
@@ -246,8 +276,8 @@ impl Expr {
         node(Node::Is(self, text.into()))
     }
 
-    /// Whether a text field holds `text`, ignoring case. Only a [`Query`](crate::Query) reads it, as
-    /// the GPU holds no texts.
+    /// Whether a text field holds `text`, ignoring case: of the mark's own table in a mark, which the
+    /// view works out on the CPU as the field changes.
     #[must_use]
     pub fn contains(self, text: &str) -> Expr {
         node(Node::Contains(self, text.into()))
@@ -255,9 +285,9 @@ impl Expr {
 
     /// Reads this expression's fields from `table` of dataset `data`, joined by row id.
     #[must_use]
-    pub fn of(self, data: impl Into<Name>, table: impl Into<Name>) -> Expr {
-        let of = (data.into(), table.into());
-        self.map_fields(&|f| FieldRef { of: Some(of.clone()), ..f.clone() })
+    pub fn from_table(self, data: impl Into<Name>, table: impl Into<Name>) -> Expr {
+        let from = (data.into(), table.into());
+        self.map_fields(&|f| FieldRef { from: Some(from.clone()), ..f.clone() })
     }
 
     /// Reads sampled fields at the last frame at or before the shown coordinate, without
@@ -281,7 +311,7 @@ impl Expr {
     }
 
     pub(crate) fn component(name: impl Into<Name>, component: u8) -> Expr {
-        node(Node::Field(FieldRef { name: name.into(), of: None, step: false, component: Some(component) }))
+        node(Node::Field(FieldRef { name: name.into(), from: None, step: false, component: Some(component) }))
     }
 
     fn map_fields(&self, f: &impl Fn(&FieldRef) -> FieldRef) -> Expr {
@@ -299,6 +329,30 @@ impl Expr {
                 node(Node::Colormap { input: input.map_fields(f), colormap: colormap.clone(), domain: *domain })
             }
             Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::State(_) => self.clone(),
+        }
+    }
+
+    /// Calls `f` with every text field the expression asks whether it holds a text, and the text.
+    pub(crate) fn for_each_contains<'e>(&'e self, f: &mut impl FnMut(&'e FieldRef, &'e str)) {
+        match &*self.0 {
+            Node::Contains(a, text) => {
+                if let Node::Field(field) = &*a.0 {
+                    f(field, text);
+                }
+            }
+            Node::Unary(_, a) | Node::Is(a, _) | Node::Scale { input: a, .. } | Node::Colormap { input: a, .. } => {
+                a.for_each_contains(f);
+            }
+            Node::Binary(_, a, b) => {
+                a.for_each_contains(f);
+                b.for_each_contains(f);
+            }
+            Node::When(c, a, b) => {
+                c.for_each_contains(f);
+                a.for_each_contains(f);
+                b.for_each_contains(f);
+            }
+            Node::Number(_) | Node::Bool(_) | Node::Color(_) | Node::Missing | Node::Field(_) | Node::State(_) => {}
         }
     }
 
@@ -342,7 +396,7 @@ impl Expr {
     /// The field's name, when the expression is a field of its own table read as it is.
     pub(crate) fn field_name(&self) -> Option<&Name> {
         match &*self.0 {
-            Node::Field(f) if f.of.is_none() && f.component.is_none() => Some(&f.name),
+            Node::Field(f) if f.from.is_none() && f.component.is_none() => Some(&f.name),
             _ => None,
         }
     }
@@ -390,6 +444,24 @@ impl From<Mapped> for Expr {
     }
 }
 
+impl From<Mapped> for Paint {
+    fn from(mapped: Mapped) -> Paint {
+        Paint(mapped.0)
+    }
+}
+
+impl From<Expr> for Paint {
+    fn from(expr: Expr) -> Paint {
+        Paint(expr)
+    }
+}
+
+impl From<Color> for Paint {
+    fn from(color: Color) -> Paint {
+        Paint(color.into())
+    }
+}
+
 /// The open cases of a [`when`].
 pub struct When {
     cases: Vec<(Expr, Expr)>,
@@ -421,18 +493,36 @@ impl Then {
     }
 }
 
-/// A size: CSS pixels, or position units with [`units`], kept within a range of CSS pixels.
+/// A size, in the space's unit unless it says its own: a bare value is in units in a diagram and in
+/// CSS pixels elsewhere; [`px`] keeps it CSS pixels and [`units`] makes it position units, which
+/// scale as the view zooms. It keeps within a range of CSS pixels.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Size {
     pub(crate) expr: Expr,
-    pub(crate) units: bool,
+    /// The unit it says it is in; the space's unless set.
+    pub(crate) unit: Option<Unit>,
     /// The CSS pixels it keeps within, at any zoom.
     pub(crate) px: [f32; 2],
+}
+
+/// The unit a length says it is in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Unit {
+    /// CSS pixels, whatever the zoom.
+    Px,
+    /// Position units, which scale as the view zooms.
+    Units,
 }
 
 impl Size {
     /// Any number of CSS pixels.
     pub(crate) const ANY: [f32; 2] = [0.0, f32::INFINITY];
+
+    /// Whether it is in position units, in a space whose own unit is position units, as a diagram's
+    /// is, or CSS pixels.
+    pub(crate) fn in_units(&self, space_units: bool) -> bool {
+        self.unit.map_or(space_units, |unit| unit == Unit::Units)
+    }
 
     /// Keeps at least `px` CSS pixels however far the view zooms out: `units(field("r")).at_least(2.0)`
     /// grows with the map and never vanishes. A marker keeps its proportions, its larger side held.
@@ -452,7 +542,7 @@ impl Size {
 
 impl<T: Into<Expr>> From<T> for Size {
     fn from(value: T) -> Size {
-        Size { expr: value.into(), units: false, px: Size::ANY }
+        Size { expr: value.into(), unit: None, px: Size::ANY }
     }
 }
 
@@ -569,12 +659,12 @@ mod tests {
     }
 
     #[test]
-    fn of_reaches_every_field() {
-        let e = (field("a") + field("b")).of("weather", "Station");
+    fn a_join_reaches_every_field() {
+        let e = (field("a") + field("b")).from_table("weather", "Station");
         let Node::Binary(_, a, b) = &*e.0 else { panic!("a sum") };
         for side in [a, b] {
             let Node::Field(f) = &*side.0 else { panic!("a field") };
-            assert_eq!(f.of, Some(("weather".into(), "Station".into())));
+            assert_eq!(f.from, Some(("weather".into(), "Station".into())));
         }
     }
 }

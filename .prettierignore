@@ -10,8 +10,9 @@ npm/pkg
 npm/dist
 crates/latkit/colormaps
 npm/test/scenes.js
-# Written by the CLI examples' scripts, and by the bench.
+# Written by the CLI examples' scripts, the examples' history script, and the bench.
 crates/latkit-cli/examples/**/*.json
+npm/examples/public/history
 benchmark/baselines
 # Written by the schema test: LATKIT_BLESS=1 cargo test -p latkit --test schema.
 npm/schema.json

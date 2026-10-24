@@ -38,9 +38,9 @@ page is done with them. The package's consumer test type-checks and renders this
 ```
 
 A **dataset** is named tables of columns, changed by **patches**. A **scene** says what to draw:
-marks naming tables, in a space, with a theme and controls. A **view** draws a scene from the
-datasets it is given, on a canvas or into pictures. Scenes, expressions, and patches are plain data
-that need no WebAssembly; `loadLatkit()` loads it for data and drawing.
+marks naming tables, in a space, with a theme and controls. A **view** draws a scene from its
+**sources**, the datasets it draws, on a canvas or into pictures. Scenes, expressions, and patches
+are plain data that need no WebAssembly; `load()` loads it for data and drawing.
 
 ## Examples
 

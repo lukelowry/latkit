@@ -1,5 +1,5 @@
 /** Tides: closed contours swelling outward, each deformed by harmonics that drift with its level. */
-import { Patch } from 'latkit/core';
+import { Patch } from 'latkit';
 import { TAU, THEME, framed, type Piece } from './look.ts';
 
 export default function tides(): Piece {
@@ -23,7 +23,7 @@ export default function tides(): Piece {
     geometry.push(path);
     level.push(l);
   }
-  const data = Patch.to('tides').replace('Contour', { count: contours }, { geometry, level });
+  const data = new Patch('tides').replace('Contour', { count: contours }, { geometry, level });
   return {
     name: 'tides',
     alt: 'One hundred and ten closed contours swelling outward, from deep blue at the center to sand at the rim',

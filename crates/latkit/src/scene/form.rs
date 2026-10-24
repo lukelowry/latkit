@@ -1,5 +1,5 @@
 //! What scenes read as JSON. Each type deserializes as itself and its schema is derived from it; a
-//! type a name can stand for also reads one of its presets' names, such as `"inspect"`, `"globe"`, or
+//! type a name can stand for also reads one of its presets' names, such as `"inspect"`, `"earth"`, or
 //! `"stress"`.
 
 use std::fmt;

@@ -6,7 +6,15 @@
  * draws, and loading grows no faster than the data. `init`, `data`, and `load` come
  * first in every scenario, and idle frames are counted after the last.
  */
-import { field, type Budget, type Camera, type ColormapName, type Scene, type Space } from 'latkit';
+import {
+  Shot,
+  field,
+  type Budget,
+  type Camera,
+  type ColormapName,
+  type Scene,
+  type Space,
+} from 'latkit';
 import * as make from './data.ts';
 import { deadline, type Cost, type Stage, type Write } from './stage.ts';
 
@@ -178,7 +186,7 @@ const revisit = (): Phase => ({
 const restyle = (scene: Scene): Phase => ({
   name: 'restyle',
   order: { bytes: 0 },
-  run: (s) => s.once(() => s.show(scene)),
+  run: (s) => s.once(() => (s.scene = scene)),
 });
 
 /** Changes one row's value every frame: what one row costs at any size. */
@@ -230,12 +238,12 @@ const pick = (): Phase[] => [
   {
     name: 'first pick',
     order: { time: 0, bytes: 0 },
-    run: (s) => s.once(() => s.view.pick(s.middle, 6)),
+    run: (s) => s.once(() => s.view.pick(s.middle, { radius: 6 })),
   },
   {
     name: 'pick',
     order: { time: 0, bytes: 0 },
-    run: (s) => s.once(() => s.view.pick(s.middle, 6)),
+    run: (s) => s.once(() => s.view.pick(s.middle, { radius: 6 })),
   },
 ];
 
@@ -244,7 +252,11 @@ const hover = (): Phase => ({
   name: 'hover',
   order: { time: 0, bytes: 0 },
   run: async (s) => {
-    const [hit] = await deadline(s.until(s.view.pick(s.middle, 40)), 10_000, 'a row to hover');
+    const [hit] = await deadline(
+      s.until(s.view.pick(s.middle, { radius: 40 })),
+      10_000,
+      'a row to hover',
+    );
     if (!hit) {
       const seen = { middle: s.middle, camera: s.view.camera, stats: s.view.stats };
       throw new Error(`nothing near the middle to hover: ${JSON.stringify(seen)}`);
@@ -254,7 +266,7 @@ const hover = (): Phase => ({
       return await s.once(
         () =>
           new Promise<void>((resolve) => {
-            const stop = s.view.on('hover', ({ hit: h }) => {
+            const stop = s.view.on('hovered', ({ hit: h }) => {
               told.push(h?.row ?? null);
               if (!h) return;
               stop();
@@ -281,7 +293,9 @@ const select = (data: string, table: string): Phase => ({
   name: 'select',
   order: { time: 0 },
   run: (s) =>
-    s.once(() => s.view.select([{ data, table, ids: Array.from({ length: 100 }, (_, id) => id) }])),
+    s.once(
+      () => (s.view.selection = [{ data, table, ids: Array.from({ length: 100 }, (_, id) => id) }]),
+    ),
 });
 
 /** Moves every row to a new place at once, easing: CPU per frame while they fly. */
@@ -351,20 +365,21 @@ function shot(s: Stage) {
   const width = Math.round(Math.sqrt((s.size * 16) / 9) / 4) * 4;
   const height = Math.round((width * 9) / 16 / 2) * 2;
   const n = s.views.length;
-  return new s.latkit.Shot([width, height]).panels(s.views.map((_, i) => [i / n, 0, 1 / n, 1]));
+  const layout = s.views.map((view, i) => ({ view, at: [i / n, 0, 1 / n, 1] as const }));
+  return new Shot([width, height], { layout });
 }
 
 const image = (): Phase => ({
   name: 'image',
   order: { time: 1 },
-  run: (s) => s.once(() => shot(s).image(s.views)),
+  run: (s) => s.once(() => shot(s).image()),
 });
 
 const png = (): Phase => ({
   name: 'png',
   order: { time: 1 },
   run: async (s) => {
-    const picture = await deadline(shot(s).image(s.views), 60_000, 'a picture');
+    const picture = await shot(s).image({ signal: AbortSignal.timeout(60_000) });
     return s.once(() => picture.encode('png'));
   },
 });
@@ -376,11 +391,11 @@ const video = (moving: boolean): Phase => ({
   run: (s) => {
     const start = s.view.camera as MapCamera;
     return s.once(async () => {
-      const video = shot(s).video(s.gpu, 30, new WritableStream<Uint8Array>());
+      const video = shot(s).video({ fps: 30, output: new WritableStream<Uint8Array>() });
       for (let i = 0; i < 30; i++) {
         if (moving)
           for (const v of s.views) v.camera = { ...start, bearing: start.bearing + 2 * i };
-        await video.frame(s.views);
+        await video.frame();
       }
       await video.finish();
     });
@@ -477,7 +492,7 @@ export const scenarios: Record<string, Scenario> = {
     sizes: [1e2, 1e3, 1e4, 3e4],
     build: (n) => ({
       scene: {
-        space: 'mercator',
+        space: 'earth',
         ease: 0,
         marks: [
           {
@@ -500,7 +515,7 @@ export const scenarios: Record<string, Scenario> = {
     fetches: true,
     build: (n) => ({
       scene: {
-        space: 'mercator',
+        space: 'earth',
         ease: 0,
         marks: [{ areas: { of: ['t', 'cells'], color: '#4a7fb5' } }],
       },

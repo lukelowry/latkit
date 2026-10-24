@@ -37,7 +37,7 @@ fn lattice(columns: usize, rows: usize) -> Data {
     let links: Vec<usize> = (0..n).filter(|i| i % columns + 1 < columns).collect();
     let from: Vec<u64> = links.iter().map(|&i| i as u64).collect();
     let to: Vec<u64> = links.iter().map(|&i| i as u64 + 1).collect();
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     data.apply(Patch::new().set(Table::new("Bus", Ids::count(n as u32)).field("x", x).field("y", y)).set(
         Table::new("Line", Ids::count(links.len() as u32)).reference("from", "Bus", from).reference("to", "Bus", to),
     ))
@@ -48,7 +48,7 @@ fn lattice(columns: usize, rows: usize) -> Data {
 #[test]
 fn what_matters_more_draws_on_top() {
     let Some(gpu) = gpu() else { return };
-    let mut data = Data::new("graph");
+    let data = Data::new("graph");
     data.apply(
         Table::new("Node", Ids::count(2))
             .field("x", vec![0.0, 0.0])
@@ -68,7 +68,7 @@ fn what_matters_more_draws_on_top() {
         let mark = if priority { mark.clone().priority(field("p")) } else { mark.clone() };
         let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(mark)).expect("valid scene");
         view.set_camera(camera());
-        view.set_data(data.clone());
+        view.set_sources([&data]).expect("a source");
         let pixels = frame(&gpu, &mut view);
         assert!(close(at(&pixels, center, center), want), "priority {priority}: {:?}", at(&pixels, center, center));
     }
@@ -77,7 +77,7 @@ fn what_matters_more_draws_on_top() {
 #[test]
 fn a_table_that_starts_empty_draws_its_rows() {
     let Some(gpu) = gpu() else { return };
-    let mut data = Data::new("graph");
+    let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(0)).field("x", Vec::<f64>::new()).field("y", Vec::<f64>::new()))
         .expect("valid");
     let scene = Scene::new(plane())
@@ -85,10 +85,9 @@ fn a_table_that_starts_empty_draws_its_rows() {
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(Color::rgb(1.0, 1.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data.clone());
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
-    view.set_data(data);
     let pixels = frame(&gpu, &mut view);
     let center = SIZE / 2;
     assert!(close(at(&pixels, center, center), [255, 255, 255, 255]), "its constant color and visibility evaluate");
@@ -104,7 +103,7 @@ fn a_dense_table_draws_the_tiles_in_view_and_keeps_what_is_selected() {
         .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     let stats = view.stats();
@@ -116,7 +115,7 @@ fn a_dense_table_draws_the_tiles_in_view_and_keeps_what_is_selected() {
     assert!(close(at(&pixels, center + 4, center + 4), [0, 0, 0, 255]), "and none between rows");
     // A row far from the tiles in view stays selected, and draws.
     let far = Row::new("grid", "Bus", 7_u64);
-    view.select([far.clone().into()]);
+    view.set_selection([far.clone().into()]);
     frame(&gpu, &mut view);
     assert_eq!(view.selection(), [latkit::Rows::from(far)]);
     assert_eq!(view.stats().drawn, stats.drawn + 1, "the selected row draws whatever its tile");
@@ -133,7 +132,7 @@ fn panning_a_dense_table_draws_every_row_in_view_as_tiles_come_and_go() {
         .draw(Edges::of("grid", "Line").ends("from", "to").width(2.0).color(Color::rgb(0.0, 1.0, 0.0)))
         .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
-    view.set_data(lattice(columns, rows));
+    view.set_sources([lattice(columns, rows)]).expect("a source");
     let center = SIZE / 2;
     let camera = |x: f64| Camera::Map { center: [x, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 };
     let mut whole = 0;
@@ -143,7 +142,7 @@ fn panning_a_dense_table_draws_every_row_in_view_as_tiles_come_and_go() {
         // whole, the edges with their ends.
         for _ in 0..4 {
             let pixels = common::step(&gpu, &mut view);
-            let waiting = view.stats().waiting;
+            let waiting = view.waiting();
             if step > 0 && !waiting.data && !waiting.marks {
                 let pixel = |dx: u32, dy: u32| at(&pixels, center + dx, center + dy);
                 assert!(close(pixel(0, 0), [255, 255, 255, 255]), "step {step}, as it lands: {:?}", pixel(0, 0));
@@ -172,7 +171,7 @@ fn panning_a_dense_table_draws_every_row_in_view_as_tiles_come_and_go() {
     assert!(close(at(&pixels, center, center), [255, 255, 255, 255]), "{:?}", at(&pixels, center, center));
     // A row picked by id is found among the rows drawn.
     let selected = Row::new("grid", "Bus", (250 * columns + 400) as u64);
-    view.select([selected.clone().into()]);
+    view.set_selection([selected.clone().into()]);
     view.set_camera(camera(380.0));
     frame(&gpu, &mut view);
     assert_eq!(view.selection(), [latkit::Rows::from(selected)], "what is selected stays so");
@@ -183,14 +182,14 @@ fn panning_a_dense_table_draws_every_row_in_view_as_tiles_come_and_go() {
 fn appending_to_a_table_drawn_through_tiles_never_thins_it() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);
-    let mut data = lattice(columns, rows);
+    let data = lattice(columns, rows);
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)
         .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(data.clone());
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     assert!(view.complete(), "its pyramid serves");
     let drawn = view.stats().drawn;
@@ -201,7 +200,6 @@ fn appending_to_a_table_drawn_through_tiles_never_thins_it() {
         let id = (columns * rows) as u64 + u64::from(added);
         let row = Table::new("Bus", vec![id]).field("x", vec![-50.0]).field("y", vec![f64::from(added)]);
         data.apply(row).expect("valid");
-        view.set_data(data.clone());
         let pixels = common::step(&gpu, &mut view);
         assert_eq!(errors(&mut view), []);
         let pixel = |dx: u32| at(&pixels, center + dx, center);
@@ -223,7 +221,7 @@ fn a_change_to_one_rows_color_moves_no_row() {
     let (columns, rows) = (600, 500);
     let n = columns * rows;
     let links: Vec<usize> = (0..n).filter(|i| i % columns + 1 < columns).collect();
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     data.apply(
         Patch::new()
             .set(
@@ -239,7 +237,7 @@ fn a_change_to_one_rows_color_moves_no_row() {
             ),
     )
     .expect("valid");
-    let scene = Scene::new(latkit::Earth::globe())
+    let scene = Scene::new(latkit::Earth::default().projection(latkit::Projection::Globe))
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)
         .draw(Edges::of("grid", "Line").ends("from", "to"))
@@ -250,7 +248,7 @@ fn a_change_to_one_rows_color_moves_no_row() {
         );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [10.0, 10.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(data.clone());
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     assert!(view.stats().drawn < view.stats().rows / 4, "the grid draws in part");
@@ -258,11 +256,11 @@ fn a_change_to_one_rows_color_moves_no_row() {
     for id in [0, 250 * columns + 300] {
         let before = gpu.work();
         data.apply(Table::new("Bus", vec![id as u64]).field("v", vec![1.0])).expect("valid");
-        view.set_data(data.clone());
         frame(&gpu, &mut view);
         let work = gpu.work() - before;
         assert_eq!(work.readbacks, 0, "bus {id}: no line counts its pieces again");
         assert!(work.evaluated <= 1 << 12, "bus {id}: a page at most evaluates: {}", work.evaluated);
+        assert_eq!(work.resolved, 0, "bus {id}: no line finds its ends again");
     }
 }
 
@@ -275,7 +273,7 @@ fn a_frame_waiting_for_pages_packs_nothing_again() {
     );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(lattice(600, 500));
+    view.set_sources([lattice(600, 500)]).expect("a source");
     frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     // Pages trickle up a few at a time: what the camera moves to waits for them.
@@ -284,9 +282,9 @@ fn a_frame_waiting_for_pages_packs_nothing_again() {
     let before = gpu.work();
     common::step(&gpu, &mut view);
     let packed = (gpu.work() - before).packed;
-    assert!(packed > 0 && view.stats().waiting.data, "the pages it moved to pack, and wait to upload");
+    assert!(packed > 0 && view.waiting().data, "the pages it moved to pack, and wait to upload");
     let mut waited = 0;
-    while view.stats().waiting.data && waited < common::SETTLE {
+    while view.waiting().data && waited < common::SETTLE {
         common::step(&gpu, &mut view);
         waited += 1;
     }
@@ -309,7 +307,7 @@ fn a_fitted_domain_holds_however_little_of_its_table_draws() {
     y.push(499.5);
     v.push(10.0);
     let p: Vec<f64> = v.iter().map(|v| -v).collect();
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     data.apply(Table::new("Bus", Ids::count(n as u32 + 1)).field("x", x).field("y", y).field("v", v).field("p", p))
         .expect("valid");
     // A blue ground, so a gray row tells from no row.
@@ -323,7 +321,7 @@ fn a_fitted_domain_holds_however_little_of_its_table_draws() {
     );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     assert!(view.stats().drawn < view.stats().rows / 4, "the table draws in part");
@@ -339,7 +337,7 @@ fn a_join_into_a_table_drawn_in_part_reads_every_row() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);
     let n = columns * rows;
-    let mut data = lattice(columns, rows);
+    let data = lattice(columns, rows);
     // Bus 7 lies far from the view; a probe in the middle reads its value by id.
     let v: Vec<f64> = (0..n).map(|i| if i == 7 { 1.0 } else { 0.0 }).collect();
     data.apply(
@@ -356,15 +354,15 @@ fn a_join_into_a_table_drawn_in_part_reads_every_row() {
             Vertices::of("grid", "Probe")
                 .position("x", "y")
                 .radius(4.0)
-                .color(field("v").of("grid", "Bus").colormap(latkit::Colormap::GRAYS).domain(0.0..=1.0)),
+                .color(field("v").from_table("grid", "Bus").colormap(latkit::Colormap::GRAYS).domain(0.0..=1.0)),
         );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     assert!(view.stats().drawn < view.stats().rows / 4, "the buses draw in part");
-    let probe = view.point([300.5, 250.5, 0.0]).expect("in view");
+    let probe = view.screen([300.5, 250.5, 0.0]).expect("in view");
     let pixel = at(&pixels, probe[0] as u32, probe[1] as u32);
     assert!(close(pixel, [255, 255, 255, 255]), "bus 7's value, though no tile in view holds it: {pixel:?}");
 }
@@ -379,7 +377,7 @@ fn pages_held_while_rows_ease_enter_as_the_rest_ease_on() {
             .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
         let mut view = View::new(&gpu, scene).expect("valid scene");
         view.set_camera(camera(zoom));
-        view.set_data(lattice(600, 500));
+        view.set_sources([lattice(600, 500)]).expect("a source");
         view
     };
     let mut pulled = view(1.0);
@@ -407,7 +405,7 @@ fn areas_drawn_in_part_fill_the_pages_drawn_as_the_camera_moves() {
             vec![vec![[x, y], [x + 0.5, y], [x + 0.5, y + 0.5], [x, y + 0.5], [x, y]]]
         })
         .collect();
-    let mut data = Data::new("map");
+    let data = Data::new("map");
     data.apply(Table::new("Cell", Ids::count((columns * rows) as u32)).field("geometry", cells)).expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
@@ -415,7 +413,7 @@ fn areas_drawn_in_part_fill_the_pages_drawn_as_the_camera_moves() {
         .draw(Areas::of("map", "Cell").color(Color::rgb(1.0, 0.0, 0.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     let camera = |x: f64, y: f64| Camera::Map { center: [x, y, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 };
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     for (x, y) in [(300.25, 250.25), (80.25, 60.25)] {
         view.set_camera(camera(x, y));
         let pixels = frame(&gpu, &mut view);
@@ -442,12 +440,12 @@ fn rows_kept_off_screen_hold_pages_of_their_own() {
         .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(lattice(600, 500));
+    view.set_sources([lattice(600, 500)]).expect("a source");
     frame(&gpu, &mut view);
     let (drawn, before) = (view.stats().drawn, gpu.work());
     // A hundred rows along the grid's foot, far from the view, each in another page of the order.
     let ids: Vec<latkit::Id> = (0..100_u64).map(|i| latkit::Id::from(600 * (i % 50) + i * 6)).collect();
-    view.select([latkit::Rows { data: "grid".into(), table: "Bus".into(), ids }]);
+    view.set_selection([latkit::Rows { data: "grid".into(), table: "Bus".into(), ids }]);
     frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     assert_eq!(view.stats().drawn, drawn + 100, "every row kept draws");
@@ -468,13 +466,13 @@ fn an_edge_kept_draws_between_its_ends() {
         .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0).color(Color::rgb(1.0, 1.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.5, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(lattice(600, 500));
+    view.set_sources([lattice(600, 500)]).expect("a source");
     let center = SIZE / 2;
     let green = |p: [u8; 4]| p[1] > 150 && p[0] < 100 && p[2] < 100;
     let before = frame(&gpu, &mut view);
     assert!(!green(at(&before, center, center)), "the edge is not drawn: {:?}", at(&before, center, center));
     // Line 150050 runs from bus 150300 to bus 150301, (300, 250) to (301, 250): kept, with its ends.
-    view.select([Row::new("grid", "Line", 150_050_u64).into()]);
+    view.set_selection([Row::new("grid", "Line", 150_050_u64).into()]);
     let after = frame(&gpu, &mut view);
     gpu.set_budget(budget);
     assert_eq!(errors(&mut view), []);
@@ -485,7 +483,7 @@ fn an_edge_kept_draws_between_its_ends() {
 fn lanes_standing_in_for_a_table_drawn_in_part_read_missing_past_their_rows() {
     let Some(gpu) = gpu() else { return };
     // Two buses joined twice: their lanes derive on the frame.
-    let mut pair = Data::new("grid");
+    let pair = Data::new("grid");
     pair.apply(
         Patch::new().set(Table::new("Bus", Ids::count(2)).field("x", vec![0.0, 1.0]).field("y", vec![0.0, 0.0])).set(
             Table::new("Line", Ids::count(2)).reference("from", "Bus", vec![0_u64, 0]).reference(
@@ -503,11 +501,11 @@ fn lanes_standing_in_for_a_table_drawn_in_part_read_missing_past_their_rows() {
         .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(pair);
+    view.set_sources([&pair]).expect("a source");
     frame(&gpu, &mut view);
     // A grid too large to draw whole replaces it: its lanes take a job, and until it lands the pair's
     // stand in, holding none of its rows past the first two.
-    view.set_data(lattice(600, 500));
+    view.set_sources([lattice(600, 500)]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     assert!(view.stats().drawn < view.stats().rows / 4, "the grid draws in part");
@@ -523,7 +521,7 @@ fn a_change_to_one_row_drawn_in_part_writes_that_row_alone() {
     let (rows, middle) = (200_000_u32, 12_345_u32);
     let n = rows as usize;
     let off = |r: usize| if r == middle as usize { 0.0 } else { 1000.0 };
-    let mut data = Data::new("points");
+    let data = Data::new("points");
     data.apply(
         Table::new("P", Ids::count(rows))
             .field("x", (0..n).map(off).collect::<Vec<_>>())
@@ -541,13 +539,12 @@ fn a_change_to_one_row_drawn_in_part_writes_that_row_alone() {
     );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data.clone());
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     assert_eq!(view.stats().drawn, u64::from(rows), "every row draws, in priority order");
     let before = gpu.work();
     data.apply(Table::new("P", vec![u64::from(middle)]).field("v", vec![1.0])).expect("valid");
-    view.set_data(data);
     let pixels = frame(&gpu, &mut view);
     let work = gpu.work() - before;
     let center = SIZE / 2;
@@ -569,7 +566,7 @@ fn a_field_drawn_in_part_that_changes_kind_gathers_afresh() {
             .field("p", (0..n).map(|r| r as f64).collect::<Vec<_>>())
             .field("v", v)
     };
-    let mut data = Data::new("points");
+    let data = Data::new("points");
     data.apply(table(vec![0.5; n].into())).expect("valid");
     let number = Vertices::of("points", "P")
         .position("x", "y")
@@ -581,11 +578,10 @@ fn a_field_drawn_in_part_that_changes_kind_gathers_afresh() {
         .color(when(field("v").is("a")).then(Color::WHITE).otherwise(Color::BLACK));
     let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(number).draw(text)).expect("valid");
     view.set_camera(camera());
-    view.set_data(data.clone());
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     assert_eq!(view.failures().count(), 1, "the text mark fails while `v` holds numbers");
     data.apply(Patch::new().replace(table(vec!["a"; n].into()))).expect("valid");
-    view.set_data(data);
     for _ in 0..10 {
         common::step(&gpu, &mut view);
     }
@@ -605,7 +601,7 @@ fn edges_drawn_through_tiles_show_with_their_ends() {
         .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0).color(Color::rgb(0.0, 0.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.5, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     assert!(view.stats().drawn < view.stats().rows / 4, "edges and vertices both draw the tiles in view");
@@ -621,7 +617,7 @@ fn a_tiny_budget_never_fails() {
     let Some(gpu) = gpu() else { return };
     gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
     let n = 200_000_u32;
-    let mut data = Data::new("points");
+    let data = Data::new("points");
     data.apply(
         Table::new("Point", Ids::count(n))
             .field("x", (0..n).map(|i| f64::from(i % 500)).collect::<Vec<_>>())
@@ -636,7 +632,7 @@ fn a_tiny_budget_never_fails() {
             .color(Color::rgb(1.0, 1.0, 1.0)),
     );
     let mut view = View::new(&gpu, scene).expect("valid scene");
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     view.fit(Fit::All);
     frame(&gpu, &mut view);
     assert!(errors(&mut view).is_empty(), "nothing fails");
@@ -657,14 +653,14 @@ fn a_first_look_draws_within_its_plan_while_pyramids_are_worked_out() {
         .draw(Edges::of("grid", "Line").ends("from", "to"))
         .draw(Vertices::of("grid", "Bus").position("x", "y"));
     let mut view = View::new(&gpu, scene).expect("valid scene");
-    view.set_data(lattice(1000, 500));
+    view.set_sources([lattice(1000, 500)]).expect("a source");
     view.fit(Fit::All);
     // Until the pyramids land, a sample draws, the ends of its edges among its vertices' rows: then
     // what replaces it finds room beside it.
     let mut settled = false;
     for _ in 0..600 {
         step(&gpu, &mut view);
-        if view.stats().waiting == Waiting::default() && !view.needs_render() {
+        if view.waiting() == Waiting::default() && !view.needs_render() {
             settled = true;
             break;
         }
@@ -673,26 +669,22 @@ fn a_first_look_draws_within_its_plan_while_pyramids_are_worked_out() {
         }
     }
     assert!(errors(&mut view).is_empty(), "nothing fails");
-    assert!(settled, "what replaces the sample lands: {:?}", view.stats().waiting);
+    assert!(settled, "what replaces the sample lands: {:?}", view.waiting());
     assert!(gpu.resident() <= 8 << 20, "{} bytes resident", gpu.resident());
 }
 
-#[test]
-fn edges_ending_too_far_apart_for_the_budget_tell_it_and_rest() {
-    let Some(gpu) = gpu() else { return };
-    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
-    // Each edge joins a vertex to one far off: none lands finer than the pyramid's root, which alone
-    // holds more than fits, and the ends of the fewest edges drawn lie in every page of the vertices,
-    // more than the budget holds.
+/// A grid of 500 by 500 vertices a unit apart, and an edge from each to the vertex `far` says: what
+/// `far` gives each from a stream of random numbers.
+fn far_apart(far: impl Fn(u32, u64) -> u64) -> Data {
     let n = 250_000_u32;
     let mut seed = 1_u64;
-    let far: Vec<u64> = (0..n)
-        .map(|_| {
+    let to: Vec<u64> = (0..n)
+        .map(|i| {
             seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
-            (seed >> 33) % u64::from(n)
+            far(i, seed >> 33)
         })
         .collect();
-    let mut data = Data::new("grid");
+    let data = Data::new("grid");
     data.apply(
         Patch::new()
             .set(
@@ -703,22 +695,61 @@ fn edges_ending_too_far_apart_for_the_budget_tell_it_and_rest() {
             .set(
                 Table::new("Line", Ids::count(n))
                     .reference("from", "Bus", (0..u64::from(n)).collect::<Vec<_>>())
-                    .reference("to", "Bus", far),
+                    .reference("to", "Bus", to),
             ),
     )
     .expect("valid");
+    data
+}
+
+#[test]
+fn edges_ending_far_apart_hold_the_rows_they_end_at() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
+    // Each edge joins a vertex to one far off: the ends of the fewest edges drawn lie in every page of
+    // the vertices, more pages than the budget holds, so the rows they end at are held one at a time.
+    let data = far_apart(|_, random| random % 250_000);
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Edges::of("grid", "Line").ends("from", "to"))
         .draw(Vertices::of("grid", "Bus").position("x", "y"));
     let mut view = View::new(&gpu, scene).expect("valid scene");
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     view.fit(Fit::All);
-    // The view settles: it waits for something to change, never spinning.
+    let before = gpu.work();
     frame(&gpu, &mut view);
-    let told = errors(&mut view);
-    assert!(matches!(told[..], [latkit::Error::Limit(_)]), "it tells its data does not fit: {told:?}");
+    assert_eq!(errors(&mut view), [], "what draws fits");
+    assert!(view.stats().drawn > 0, "edges and vertices draw");
+    assert!((gpu.work() - before).resolved > 0, "edges found where their ends are held");
     assert!(gpu.resident() <= 8 << 20, "{} bytes resident", gpu.resident());
+}
+
+#[test]
+fn edges_ending_far_apart_draw_between_their_ends() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
+    // Each edge runs along its row to a vertex of it far off, so every edge is level: one whose end
+    // were found at another vertex would slant across the gaps between the rows.
+    let data = far_apart(|i, random| u64::from(i - i % 500) + random % 500);
+    let green = Color::rgb(0.0, 1.0, 0.0);
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .ease(std::time::Duration::ZERO)
+        .draw(Edges::of("grid", "Line").ends("from", "to").width(2.0).color(green))
+        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0).color(Color::rgb(0.0, 0.0, 1.0)));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    // Rows eight pixels apart, the middle row of pixels between two of them.
+    view.set_camera(Camera::Map { center: [250.0, 250.5, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    assert_eq!(errors(&mut view), []);
+    let center = SIZE / 2;
+    for x in 0..SIZE {
+        let between = at(&pixels, x, center);
+        assert!(close(between, [0, 0, 0, 255]), "nothing crosses between the rows at {x}: {between:?}");
+    }
+    let along = (0..SIZE).filter(|&x| close(at(&pixels, x, center + 4), [0, 255, 0, 255])).count();
+    assert!(along > 0, "edges run along a row");
 }
 
 #[test]
@@ -729,9 +760,9 @@ fn traces_too_large_for_the_budget_thin_in_time() {
     let (rows, frames) = (20_000_usize, 150_u32);
     let mut patch = Patch::new().set(Table::new("Signal", Ids::count(rows as u32)));
     for t in 0..frames {
-        patch = patch.append([f64::from(t)], "Signal", [("v", vec![0.5; rows])]);
+        patch = patch.append("Signal", [f64::from(t)], [("v", vec![0.5; rows])]);
     }
-    let mut data = Data::new("signals");
+    let data = Data::new("signals");
     data.apply(patch).expect("valid");
     let axis = Axis { grid: false, hidden: true, ..Axis::default() };
     let scene = Scene::new(Plot { x: axis.clone(), y: axis })
@@ -739,7 +770,7 @@ fn traces_too_large_for_the_budget_thin_in_time() {
         .draw(Lines::of("signals", "Signal").trace("v").color(Color::rgb(1.0, 0.0, 0.0)).width(4.0));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Plot { x: [0.0, f64::from(frames - 1)], y: Some([0.0, 1.0]) });
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     let stats = view.stats();
@@ -752,19 +783,46 @@ fn traces_too_large_for_the_budget_thin_in_time() {
 }
 
 #[test]
+fn a_path_written_again_uploads_its_group_of_rows_alone() {
+    let Some(gpu) = gpu() else { return };
+    let rows = 2000_u32;
+    let path = |r: u32, lift: f64| -> Vec<[f64; 2]> {
+        (0..6).map(|k| [f64::from(k) * 10.0 - 25.0, f64::from(r % 40) - 20.0 + lift]).collect()
+    };
+    let data = Data::new("roads");
+    data.apply(
+        Table::new("Road", Ids::count(rows)).field("geometry", (0..rows).map(|r| path(r, 0.0)).collect::<Vec<_>>()),
+    )
+    .expect("valid");
+    let scene =
+        Scene::new(plane()).theme(plain_theme()).ease(std::time::Duration::ZERO).draw(Lines::of("roads", "Road"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    frame(&gpu, &mut view);
+    assert_eq!(errors(&mut view), []);
+    let before = gpu.work();
+    data.apply(Table::new("Road", [700_u64]).field("geometry", vec![path(700, 0.5)])).expect("valid");
+    frame(&gpu, &mut view);
+    let work = gpu.work() - before;
+    // The page's points take 96 KB, its rows' table 16 KB; the piece of the row's group of 64 rows, 3 KB.
+    assert!(work.uploaded <= 4 << 10, "the piece the row lies in uploads alone: {} bytes", work.uploaded);
+}
+
+#[test]
 fn a_path_longer_than_a_chunk_draws_whole() {
     let Some(gpu) = gpu() else { return };
     let points = 100_000_u32;
     let path: Vec<[f64; 2]> =
         (0..points).map(|i| [-60.0 + 120.0 * f64::from(i) / f64::from(points - 1), 0.0]).collect();
-    let mut data = Data::new("roads");
+    let data = Data::new("roads");
     data.apply(Table::new("Road", Ids::count(1)).field("geometry", vec![path])).expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Lines::of("roads", "Road").width(3.0).color(Color::rgb(1.0, 1.0, 0.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     let center = SIZE / 2;
     for x in [center - 50, center, center + 50] {
@@ -779,12 +837,12 @@ fn a_path_longer_than_a_chunk_draws_whole() {
 #[test]
 fn a_view_sleeps_while_it_waits() {
     let Some(gpu) = gpu() else { return };
-    let mut data = Data::new("graph");
+    let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     assert!(!view.needs_render(), "settled");
     let _hits = view.pick([64.0, 64.0], 4.0);

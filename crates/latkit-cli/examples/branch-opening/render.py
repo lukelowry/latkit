@@ -129,11 +129,11 @@ def prepare(source, job, frames):
     signed = {"when": [[op("lt", "df", 0), op("neg", magnitude)]], "otherwise": magnitude}
     height_scale = HEIGHT_GAIN * 1.7 * 0.15 * max(max(lon) - min(lon), max(lat) - min(lat))
     elevation = op("mul", signed, height_scale / math.asinh(0.35 / 0.02))
-    theme = {"background": BACKGROUND, "text": "#c9d4dc", "font": "Segoe UI, sans-serif", "fontSize": 15}
+    theme = {"background": BACKGROUND, "text": {"color": "#c9d4dc", "font": "Segoe UI, sans-serif", "size": 15}}
     scenes = {
         "map.json": {
             "space": {"plane": {"grid": "off"}}, "ease": 0,
-            "theme": {**theme, "edge": None, "laneBow": 0},
+            "theme": {**theme, "edge": {"color": None, "bow": 0}},
             "title": "ACTIVSg70k / Line opening",
             "subtitle": f"Little Rock - Newark, 765 kV / Opens at 1 s / Constant {SPEED:g}x speed",
             "marks": [

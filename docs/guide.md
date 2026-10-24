@@ -11,9 +11,9 @@ Patches change datasets all at once: every change of a patch, or none.
 ### Write a dataset
 
 ```ts
-import { loadLatkit, Patch, reference, field } from 'latkit';
+import { Data, Patch, field, load, reference } from 'latkit';
 
-const { Data } = await loadLatkit();
+await load();
 const grid = new Data('grid').apply(
   new Patch()
     .replace('Bus', [101, 102, 103], {
@@ -41,41 +41,40 @@ const grid = new Data('grid').apply(
   pieces), or polygons.
 - **References** name rows of another table by id: `reference(table, ids)`.
 
-| Change                                  | Does                                                                 |
-| --------------------------------------- | -------------------------------------------------------------------- |
-| `replace(table, ids, fields)`           | replaces the table, or adds it                                       |
-| `set(table, ids, fields)`               | writes fields for those rows: known ids change, others are added     |
-| `remove(table, ids)`                    | removes the rows                                                     |
-| `axis(name, unit)`                      | names the axis sampled fields are recorded over                      |
-| `append(at, table, fields, ids?)`       | records a frame at each coordinate of `at`, of every row or of `ids` |
-| `forget(before)`                        | forgets the frames before a coordinate                               |
-| `frames(table, field, run, at, values)` | holds a run of a sampled field's entries, as a time tile does        |
+| Change                                               | Does                                                                 |
+| ---------------------------------------------------- | -------------------------------------------------------------------- |
+| `replace(table, ids, fields)`                        | replaces the table, or adds it                                       |
+| `set(table, ids, fields)`                            | writes fields for those rows: known ids change, others are added     |
+| `remove(table, ids)`                                 | removes the rows                                                     |
+| `axis(name, unit)`                                   | names the axis sampled fields are recorded over                      |
+| `append(table, at, fields, { ids })`                 | records a frame at each coordinate of `at`, of every row or of `ids` |
+| `forget(before)`                                     | forgets the frames before a coordinate                               |
+| `frames(table, field, { level, first, at, values })` | holds a run of a sampled field's entries, as a time tile does        |
 
 ### Change it
 
-`apply` changes a dataset in place. A snapshot keeps a version in O(1), sharing its pages, so an
-undo history costs only what changed. A view draws the version it was given until it is given
-another:
+`apply` changes a dataset in place, and every view drawing it draws the change from the next frame.
+A snapshot keeps one version in O(1), sharing its pages, so an undo history costs only what
+changed:
 
 ```ts
 const before = grid.snapshot();
-grid.apply(new Patch().set('Bus', [101], { name: ['Northgate'] }));
-view.setData(grid); // the view draws the change
-view.setData(before); // and the version before it
+grid.apply(new Patch().set('Bus', [101], { name: ['Northgate'] })); // drawn the next frame
+grid.restore(before); // and undone
 ```
 
 ### Record over time
 
 Sampled values are stored as `f32`, including values supplied as `Float64Array`; coordinates
 remain `f64`. NaN means missing in sampled values and numeric query results. Static columns retain
-their original numeric storage. A field's first frame makes it sampled. A view shows the axis coordinate `view.at`: each sampled
-field reads its last frame at or before it.
+their original numeric storage. A field's first frame makes it sampled. A view shows the axis
+coordinate `view.at`: each sampled field reads its last frame at or before it.
 
 ```ts
 grid.apply(new Patch().axis('time', 's'));
-grid.apply(new Patch().append(0.5, 'Bus', { vm: Float32Array.of(1.01, 0.99, 1.0) }));
-grid.apply(new Patch().append([1, 1.5], 'Bus', { vm: Float32Array.of(1, 1, 1, 0.98, 0.97, 0.99) }));
-grid.apply(new Patch().append(2, 'Bus', { vm: [1.02] }, [101])); // one row; the rest hold
+grid.apply(new Patch().append('Bus', 0.5, { vm: Float32Array.of(1.01, 0.99, 1.0) }));
+grid.apply(new Patch().append('Bus', [1, 1.5], { vm: Float32Array.of(1, 1, 1, 0.98, 0.97, 0.99) }));
+grid.apply(new Patch().append('Bus', 2, { vm: [1.02] }, { ids: [101] })); // one row; the rest hold
 grid.apply(new Patch().forget(1)); // a rolling window
 view.at = 1.2;
 ```
@@ -89,18 +88,19 @@ that gives each pixel column a bucket or two, so a long history draws as fast as
 A history too large to load whole is written as time tiles, and a view fetches only what it draws:
 
 ```sh
-latkit tile history.bin -o history/
+latkit tile history.latk -o history/
 ```
 
 ```ts
-view.setTiles('grid', 'history/frames.json');
+view.sources = [new Tiles('grid', 'history/frames.json')];
 ```
 
 `tile` writes `frames.json`, `base.latk` (the dataset with every sampled field's frames left out),
-and each field's history in spans of `--chunk` entries, at every level of detail (`Data::to_tiles`
-in Rust). A line tracing a field fetches the spans its plot window draws, at the detail it draws
-them, and a mark showing a field fetches the frames about `view.at`. A span still loading draws the
-coarser span above it, as a map tile still loading draws the tile a zoom out.
+and each field's history in spans of `--chunk` entries, at every level of detail
+(`Snapshot::to_tiles` in Rust). A line tracing a field fetches the spans its plot window draws, at
+the detail it draws them, and a mark showing a field fetches the frames about `view.at`. A span
+still loading draws the coarser span above it, as a map tile still loading draws the tile a zoom
+out.
 
 ### Stream
 
@@ -110,24 +110,23 @@ in addition to the input chunk and patches you retain. Breaking iteration cancel
 server in any language writes the same frames ([format](#bytes)).
 
 ```ts
-for await (const patch of Patch.stream((await fetch('/feed')).body!)) {
-  grid.apply(patch);
-  view.setData(grid);
-}
+for await (const patch of Patch.stream((await fetch('/feed')).body!)) grid.apply(patch);
 ```
 
-A patch made with `Patch.to('grid')` names its dataset, and `apply` refuses it for another.
+A patch made with `new Patch('grid')` names its dataset, and `apply` refuses it for another.
 
-### Load files
+### Read files
 
 ```ts
-const grid = await Data.load(json, 'data/grid.json'); // a JSON document, slices relative to it
+const grid = await Data.read('data/grid.json'); // a JSON document, its slices relative to it
 const saved = await Data.read(bytes); // latkit's bytes, as data.toBytes() wrote them
-const states = await Data.read(geojson, 'states'); // GeoJSON, gzip-compressed or not, in a worker
+const states = await Data.read(geojson, { name: 'states' }); // GeoJSON, gzip-compressed or not
 ```
 
 GeoJSON becomes tables `points`, `lines`, and `polygons`, each with its geometry as field
-`geometry` and its properties as fields. The JSON document's form is in [Formats](#json).
+`geometry` and its properties as fields; it is read in a worker. The JSON document's form is in
+[Formats](#json). `Patch.read(source)` reads one patch the same ways, its bytes without
+WebAssembly.
 
 ### Read back
 
@@ -147,24 +146,24 @@ const hot = grid.query({
 
 `total` counts the rows kept before `limit`. `field('name').contains('north')` matches texts in
 queries. `describe()` lists tables, rows, fields and their kinds, and the axis and its span.
-`envelope(table, field, range, spans)` gives each row's least and greatest value of a sampled field
-over equal spans of the axis, read from levels of detail, so a span costs a few reads however many
-frames it covers.
+`envelope({ table, field, range, spans, ids })` gives each row's least and greatest value of a
+sampled field over equal spans of the axis, read from levels of detail, so a span costs a few reads
+however many frames it covers. A `Snapshot` reads the same way, as of its version.
 
-`Patch.fromBytes(bytes)` copies one frame; `patch.extend(next)` appends its operations.
-`Uint8Array` means booleans in JavaScript patches; JSON binary slices with dtype `u8` mean numbers.
-Use `Uint32Array` for unsigned numeric bytes in a JavaScript patch. For all method signatures,
-see the [API reference](reference/api.md).
+`patch.extend(next)` appends another patch's operations. `Uint8Array` means booleans in
+JavaScript patches; JSON binary slices with dtype `u8` mean numbers. Use `Uint32Array` for unsigned
+numeric bytes in a JavaScript patch. For all method signatures, see the
+[API reference](reference/api.md).
 
 ## Scenes
 
 A scene is plain data: a `space`, `marks` drawn in order, and optionally a `layout`, `theme`,
-`controls`, `ease` (seconds changes ease over), and a `title` and `subtitle`. A view shows a scene;
-`view.show(next)` replaces it, keeping every row's place in the transition.
+`controls`, `ease` (seconds changes ease over), and a `title` and `subtitle`. A view draws a scene;
+`view.scene = next` replaces it, keeping every row's place in the transition.
 
 ```ts
 const scene: Scene = {
-  space: 'mercator',
+  space: 'earth',
   marks: [
     { edges: { of: ['grid', 'Branch'], ends: ['from', 'to'], width: 1.5 } },
     {
@@ -178,23 +177,24 @@ const scene: Scene = {
       },
     },
   ],
-  theme: { base: 'light', vertexRadius: 4 },
+  theme: { base: 'light', vertex: { radius: 4 } },
   controls: 'inspect',
 };
 ```
 
 ### Spaces
 
-| Space                   | Positions                                                         |
-| ----------------------- | ----------------------------------------------------------------- |
-| `'plane'`               | plane units with elevation; the camera turns and tilts            |
-| `'mercator'`, `'globe'` | longitude and latitude in degrees, on a map or a globe            |
-| `'plot'`                | the axis coordinate across, values up                             |
-| `'diagram'`             | a flat sheet, y down, every length a unit; ports, groups, layouts |
+| Space       | Positions                                                         |
+| ----------- | ----------------------------------------------------------------- |
+| `'plane'`   | plane units with elevation; the camera turns and tilts            |
+| `'earth'`   | longitude and latitude in degrees, on a map or a globe            |
+| `'plot'`    | the axis coordinate across, values up                             |
+| `'diagram'` | a flat sheet, y down, every length a unit; ports, groups, layouts |
 
 Each takes options as `{ plane: { grid } }`, `{ diagram: { grid } }`, `{ earth: { projection,
-surface, graticule, daylight, atmosphere } }`, or `{ plot: { x, y } }`. A grid is `'off'`,
-`{ lines: { pitch } }`, or `{ dots: { pitch, snap } }`.
+graticule, daylight, atmosphere } }`, or `{ plot: { x, y } }`. The earth's `projection` is
+`'mercator'` (the default) or `'globe'`. A grid is `'off'`, `{ lines: { pitch } }`, or
+`{ dots: { pitch, snap } }`. A plot's axes measure their labels and titles and leave room for them.
 
 ### Marks
 
@@ -214,32 +214,42 @@ it; `pick: true` makes a map's states or cells answer the pointer.
 
 A `flow` sends comets along a stroke. In a diagram, vertices are blocks with `ports`, a vertex mark
 with `contains` draws groups around the rows that name it, and edges of a table without `ends` are
-nets joining the ports that name them. The theme's `outline`, `corner`, `portSize`, and `bend` set
-how blocks, groups, ports, and wires look, and `shadow: true` lifts blocks and groups off the sheet.
+nets joining the ports that name them. The theme's `diagram` group (`outline`, `corner`,
+`portSize`, `bend`) sets how blocks, groups, ports, and wires look, and `shadow: true` lifts blocks
+and groups off the sheet.
+
+Edges whose ends lie far apart draw within the budget too: the vertices they end at are held a row
+at a time where few of a table's pages hold them.
 
 ### Expressions
 
-Options that vary by row take expressions: a number, a field name, a `#hex` color, or a builder.
+Options that vary by row take expressions: a number, a field name, or a builder. Colors are values
+of their own: a string is a CSS color, and a field colors rows through a colormap or a condition.
 
 ```ts
-import { field, when, selected, units } from 'latkit';
+import { field, when, selected, units, px } from 'latkit';
 
 field('load').div(field('capacity')).clamp(0, 1); // arithmetic and comparisons
-field('vm').colormap('balance').domain(0.95, 1.05); // through a colormap
+field('vm').colormap('balance').domain(0.95, 1.05); // a color through a colormap
 field('kv').scale(2, 8); // onto a range
-when(selected()).then('#ffb000').otherwise(field('kind').colormap('tableau10'));
+when(selected()).then('#ffb000').otherwise(field('kind').colormap('tableau10')); // colors
 units('radius', { atLeast: 2 }); // a size in position units, kept within pixels
-field('vm').of('weather', 'Station'); // read from another dataset, joined by id
+px(3); // a size in CSS pixels, however the view zooms
+field('vm').from('weather', 'Station'); // read from another dataset, joined by id
 ```
 
-State expressions read the view: `selected()`, `hovered()`, `pointer()`, `elapsed()`, `zoom()`.
-Colormaps are a catalog name or your own colors, `{ kind, colors }`; a categorical map can name its
-`categories` for its legend. `colormapCss(map)` gives the same colors as a CSS gradient.
+A size is CSS pixels on a plane, the earth, and a plot, and position units in a diagram, unless
+`px()` or `units()` says. State expressions read the view: `selected()`, `hovered()`, `pointer()`,
+`elapsed()`, `zoom()`. Colormaps are a catalog name or your own colors, `{ kind, colors }`; a
+categorical map can name its `categories` for its legend. `colormapCss(map)` gives the same colors
+as a CSS gradient.
 
 ### Themes, controls, and layouts
 
-- **Theme**: `'dark'`, `'light'`, or options over a base, `{ base: 'light', fontSize: 12 }`. `edge:
-null` blends each edge's ends' colors, and `selected: null` glows in each row's own color.
+- **Theme**: `'dark'`, `'light'`, or options over a base, a group for each kind of thing drawn:
+  `{ base: 'light', text: { size: 12 }, edge: { width: 2 } }`. `edge: { color: null }` blends each
+  edge's ends' colors, and `focus: { selected: null }` glows in each row's own color. A comet's
+  spacing and length take `{ px: n }` or `{ units: n }`.
 - **Controls**: `'inspect'` (the default), `'none'`, or options: `pan`, `zoom`, `turn`,
   `keyboard`, `hover`, `pickRadius`, `selectBox`, `connect`, `delete`, `cycle`, `press`, `motion`.
 - **Layout** places vertex rows without positions: `'stress'`, `'layered'`, or their options. A
@@ -247,32 +257,30 @@ null` blends each edge's ends' colors, and `selected: null` glows in each row's 
 
 ## Views
 
-A `Gpu` makes views and canvases. A view draws one scene from the datasets it is given by name; a
-canvas shows views, one per panel, and passes each the input on its panel.
+A `Gpu` makes views and canvases. A view draws one scene from its sources, each a dataset by its
+name; a canvas shows views, one per panel, and passes each the input on its panel.
 
 ```ts
 const gpu = await Gpu.create();
-const map = gpu.view(mapScene);
-const plot = gpu.view(plotScene);
-gpu
-  .canvas(element, {
-    panels: [
-      [0, 0, 1, 0.7],
-      [0, 0.7, 1, 0.3],
-    ],
-  })
-  .show([map, plot]);
-for (const view of [map, plot]) view.setData(grid);
+const map = gpu.view(mapScene, { sources: [grid] });
+const plot = gpu.view(plotScene, { sources: [grid] });
+gpu.canvas(element, {
+  layout: [
+    { view: map, at: [0, 0, 1, 0.7] },
+    { view: plot, at: [0, 0.7, 1, 0.3] },
+  ],
+});
 ```
 
-### Data and tiles
+### Sources
 
-`setData(data)` gives a view a dataset, replacing the one of its name; `removeData(name)` takes it
-away. `setTiles(name, url)` fetches a dataset in pieces as the view asks for them, kept as dataset
-`name`: [time tiles](#fetch-long-histories-in-spans), a `frames.json` manifest, or vector
-tiles as the camera asks for them (a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}`
-template), each layer a table of the kind marks draw it as, or named `layer:polygons`,
-`layer:lines`, or `layer:points`.
+`view.sources` lists what a view draws, each by its name: a `Data`, its latest version, from the
+frame after each patch applies; a `Snapshot`, as it is; or `Tiles`, fetched in pieces as the view
+asks for them, every view of a GPU sharing what is fetched: [time tiles](#fetch-long-histories-in-spans),
+a `frames.json` manifest, or vector tiles as the camera asks for them (a PMTiles archive, a TileJSON
+document, or a `{z}/{x}/{y}` template), each layer a table of the kind marks draw it as, or named
+`layer:polygons`, `layer:lines`, or `layer:points`. `view.snapshot(name)` is the version of a
+source the view draws now, tiles fetched so far included.
 
 ### Camera
 
@@ -289,31 +297,32 @@ view.orbit = 6; // degrees a second
 
 `view.on(type, listener)` returns a function that stops listening. Intents are told once each, in
 the order the user acted: `click`, `open`, `menu`, `drag`, `connect`, `delete`. Changes tell only
-their latest, and their state can always be read: `hover` (`view.hovered`), `select`
-(`view.selection`), `camera`, and `waiting` (`view.stats.waiting`). A view tells only what the
+their latest, and their state can always be read: `hovered` (`view.hovered`), `selection`
+(`view.selection`), `camera`, and `waiting` (`view.waiting`). A view tells only what the
 application did not do: its setters change state silently.
 
 ```ts
 view.on('click', ({ hit }) => console.log(hit.row, hit.point));
 view.on('drag', ({ hit, position }) => move(hit.row, position)); // where the row goes, as grabbed
-view.on('select', ({ rows }) => inspect(rows));
+view.on('selection', ({ rows }) => inspect(rows));
 view.on('error', (error) => console.error(error.code, error.path, error.message));
 ```
 
 ### Rows
 
 A row is `{ data, table, id }`; a set of rows of one table is `{ data, table, ids }`. The selection,
-`select` events, `delete` events, fits, and neighbors are sets:
+`selection` events, `delete` events, fits, and neighbors are sets:
 
 ```ts
-view.select([{ data: 'grid', table: 'Bus', ids: [101, 102] }]);
+view.selection = [{ data: 'grid', table: 'Bus', ids: [101, 102] }];
 const joined = view.neighbors({ data: 'grid', table: 'Bus', id: 101 }); // across edges and nets
-const hits = await view.pick([x, y], 8); // rows within 8 CSS pixels, nearest first
-const at = await view.locate({ data: 'grid', table: 'Bus', id: 101 }); // [x, y] on screen, or null
+const hits = await view.pick([x, y], { radius: 8 }); // rows within 8 CSS pixels, nearest first
+const at = await view.screenOf({ data: 'grid', table: 'Bus', id: 101 }); // [x, y] on screen, or null
 ```
 
-Picks and locations answer once a frame draws the view, and reject with `timeout` after a deadline
-(`{ deadline: 5 }` seconds unless given) and with `cancelled` when the view is destroyed.
+Picks and locations answer once a frame draws the view. Every wait takes `{ signal }` and ends at
+it, 30 seconds unless given: it rejects with `timeout` when it timed out, and with `cancelled` when
+it was aborted or the view was destroyed.
 
 ### Layouts into data
 
@@ -323,27 +332,26 @@ into its position fields:
 
 ```ts
 for (const patch of await view.arrange()) if (patch.data === grid.name) grid.apply(patch);
-view.setData(grid);
 ```
 
 ### Stats and memory
 
 `view.stats` tells rows drawn, draw calls, tiles, and CPU and GPU milliseconds a frame;
 `gpu.resident` and `gpu.uploading` the bytes of data on the GPU and waiting to upload, for every
-view of it. `gpu.work` counts exactly what the GPU did: bytes uploaded and written, rows evaluated
-and packed, readbacks, jobs, texts, and pipelines. `gpu.budget = { bytes, uploadPerFrame }` sets how
-much memory data takes, and how much of it a frame uploads. The GPU's views share it: a view gets
-what it asks while an even split covers it, and the rest split what is left; pages several views
-draw count once. A table too large for its view's share draws through the tiles in view, a page of
-its order at a time; a page it drew stays on the GPU while its share leaves room, so the camera
-coming back draws it again for nothing.
+view of it. `gpu.work` counts exactly what the GPU did: bytes uploaded, written, and cleared, rows
+evaluated, whose ends it found, and packed, readbacks, jobs, texts, and pipelines.
+`gpu.budget = { bytes, uploadPerFrame }` sets how much memory data takes, and how much of it a frame
+uploads. The GPU's views share it: a view gets what it asks while an even split covers it, and the
+rest split what is left; pages several views draw count once. A table too large for its view's
+share draws through the tiles in view, a page of its order at a time; a page it drew stays on the
+GPU while its share leaves room, so the camera coming back draws it again for nothing.
 
 A frame does the work of what changed: a patch evaluates only the pages it wrote, unless a fitted
 domain or a join reads them; a transition evaluates once and blends each frame; and rows drawn
 through tiles keep their places while the camera moves, so only arriving rows upload.
 
-`Data`, `Gpu`, `View`, `Canvas`, and `Image` have an idempotent `destroy()` and `Symbol.dispose`; destroying a `Gpu` destroys its
-canvases, views, and frame listeners.
+`Data`, `Snapshot`, `Gpu`, `View`, `Canvas`, and `Image` have an idempotent `destroy()` and
+`Symbol.dispose`; destroying a `Gpu` destroys its canvases, views, and frame listeners.
 
 Videos are asynchronous resources: finish them with `await video.finish()` or cancel with
 `await video.abort(reason)`. `record` cleans up on errors automatically.
@@ -352,40 +360,46 @@ Videos are asynchronous resources: finish them with `await video.finish()` or ca
 then supply retained scenes and datasets. `view.failures` contains input/loading failures;
 `view.wantsFrame` is useful for custom scheduling. For manual rendering use `gpu.step(now)`;
 `gpu.done()` waits for drawing to settle, and `gpu.landed()` waits for pending work to arrive.
-`view.ground([x, y])` converts a canvas point to the scene's ground plane when it intersects.
+`view.position([x, y])` is the position under a canvas point, and `view.screen(position)` the
+point a position draws at.
 
 ## Pictures and video
 
 A `Shot` is plain data: a size in pixels, and how views are drawn into it. It draws views whether or
-not a canvas shows them; a canvas showing one holds its last frame meanwhile.
+not a canvas shows them; a canvas showing one holds its last frame meanwhile. `canvas.shot()` is a
+picture of exactly what a canvas shows.
 
 ```ts
-const shot = new Shot([3840, 2160]).scale(2); // 2 pixels a CSS pixel: 1920 by 1080 CSS pixels
-const image = await shot.image([view]); // once the view is complete and still
+const shot = new Shot([3840, 2160], { scale: 2, layout: [{ view }] }); // 1920 by 1080 CSS pixels
+const image = await shot.image(); // once the view is complete and still
 const png = await image.encode('png'); // or 'jpeg' with { quality }, or 'webp'
 image.destroy();
 ```
 
-| Option          | Does                                                             |
-| --------------- | ---------------------------------------------------------------- |
-| `scale(n)`      | draws `n` pixels per CSS pixel                                   |
-| `panels([...])` | where each view draws, `[x, y, width, height]` fractions         |
-| `transparent()` | keeps alpha where the themes' backgrounds are                    |
-| `deadline(s)`   | rejects with `timeout` after `s` seconds, readback included (30) |
-| `elapsed(s)`    | fixes time-reading expressions and effects at `s` seconds        |
+| Option        | Does                                                                    |
+| ------------- | ----------------------------------------------------------------------- |
+| `scale`       | draws `scale` pixels per CSS pixel                                      |
+| `layout`      | the views and where each draws, `at: [x, y, width, height]` fractions   |
+| `transparent` | keeps alpha where the themes' backgrounds are                           |
+| `capture`     | once views are complete and still (`'still'`), or as they are (`'now'`) |
+| `elapsed`     | fixes time-reading expressions and effects at `elapsed` seconds         |
 
 Files are encoded in a worker when workers are available; otherwise encoding runs on the calling thread.
 
 ### Video
 
-`shot.video(gpu, fps, output)` encodes H.264 in MP4 with WebCodecs as frames are drawn, and writes
-it to a `WritableStream`: a file handle's, or a buffer's. `record` steps the views to each frame's
-time; returning `false` finishes the video.
+`shot.video({ fps, output, bitrate })` encodes H.264 in MP4 with WebCodecs as frames are drawn, and
+writes it to a `WritableStream`: a file handle's, or a buffer's. `record` steps the views to each
+frame's time; returning `false` finishes the video.
 
 ```ts
 const file = await (await showSaveFilePicker()).createWritable();
-const video = new Shot([1920, 1080]).video(gpu, 60, file, { bitrate: 12e6 });
-await video.record([view], (time) => {
+const video = new Shot([1920, 1080], { layout: [{ view }] }).video({
+  fps: 60,
+  output: file,
+  bitrate: 12e6,
+});
+await video.record((time) => {
   view.at = time;
   return time < 10;
 });
@@ -394,13 +408,12 @@ await video.record([view], (time) => {
 Width and height are multiples of 4 and 2. A frame where nothing moved is held rather than drawn.
 `{ signal }` aborts a video: its output is aborted and its views are given back.
 
-For manual control, call `await video.frame([view])` one frame at a time, then
-`await video.finish()`. Finish and abort are idempotent; both release the output's writer lock,
-encoder, and abort listener. Frame/time counters remain readable after completion. A failed
-step, frame, write, or progress callback aborts `record`. Cancellation interrupts pending rendering
-and encoding; an arbitrary writable sink must still settle its own in-flight write before its
-lock can be released. Browser output uses Constrained Baseline H.264, with output timestamps
-checked against input order.
+For manual control, call `await video.frame()` one frame at a time, then `await video.finish()`.
+Finish and abort are idempotent; both release the output's writer lock, encoder, and abort
+listener. Frame/time counters remain readable after completion. A failed step, frame, write, or
+progress callback aborts `record`. Cancellation interrupts pending rendering and encoding; an
+arbitrary writable sink must still settle its own in-flight write before its lock can be released.
+Browser output uses Constrained Baseline H.264, with output timestamps checked against input order.
 
 ## Formats
 
@@ -491,8 +504,7 @@ follows from them. A writer outside latkit writes frames as `append` changes.
 
 The header is 16 bytes. The version is independent of the crate/npm version. Readers reject
 unknown versions, nonzero flags, unknown operation/storage tags, truncated frames, and trailing
-bytes. Pre-release unversioned frames must be regenerated from source data; they are not v1.
-The checked-in `latk-v1.hex` fixture is tested by Rust and JavaScript.
+bytes. The checked-in `latk-v1.hex` fixture is tested by Rust and JavaScript.
 
 Absolute frame indexes are `u64`; counts within an encoded run remain `u32`. A run's end and its
 span in frames must fit in `u64`. JavaScript builders accept only safe integers, including the
@@ -519,7 +531,7 @@ The Rust library is the `latkit` crate. The WASM binding crate is an implementat
 
 | Capability                          | Browser                        | Node                             | Native CLI                   |
 | ----------------------------------- | ------------------------------ | -------------------------------- | ---------------------------- |
-| Scenes, expressions, patch builders | `latkit/core` or `latkit`      | `latkit/core`, no DOM types      | JSON inputs                  |
+| Scenes, expressions, patch builders | `latkit`, no WebAssembly       | `latkit`, no WebAssembly         | JSON inputs                  |
 | Data and queries                    | WASM, no GPU required          | WASM with a compiled module      | Available without a GPU      |
 | Rendering                           | WebGPU in a secure context     | Use the CLI for native rendering | Vulkan, Metal, DX12          |
 | File/URL slices                     | Browser fetch and CORS         | Supply data directly             | Local paths and `file:` URLs |
@@ -535,14 +547,11 @@ Default loading resolves assets beside the installed modules. With Vite or anoth
 supporting URL imports, explicit assets also work under nested deployment paths:
 
 ```ts
-import { loadLatkit } from 'latkit';
+import { load } from 'latkit';
 import wasmUrl from 'latkit/wasm?url';
 import workerUrl from 'latkit/worker?url';
 
-const kit = await loadLatkit({
-  wasm: wasmUrl,
-  createWorker: () => new Worker(workerUrl),
-});
+await load({ wasm: wasmUrl, worker: () => new Worker(workerUrl) });
 ```
 
 `latkit/worker` is a standalone classic worker. A custom factory may use a Blob URL; retain the
@@ -557,16 +566,16 @@ CORS headers. These requirements are deployment choices; latkit does not change 
 ### Server-side builders and data
 
 ```ts
-import { Patch, field } from 'latkit/core';
+import { Patch, field } from 'latkit';
 
 const bytes = new Patch().replace('T', [1], { value: [42] }).toBytes();
 const expression = field('value').gt(0).toJSON();
 ```
 
-For Node data/query operations, load the package's matching WASM bytes as a `WebAssembly.Module`
-and pass it to `loadLatkit({ wasm })`. This runtime entry point exposes browser rendering types;
-server projects that only write patches should use `latkit/core`. For worker rendering, provide
-an `OffscreenCanvas` and drive `gpu.step(now)` if the environment has no animation-frame loop.
+Patches and expressions need no WebAssembly. For Node data/query operations, load the package's
+matching WASM bytes as a `WebAssembly.Module` and pass it to `load({ wasm })`. For worker
+rendering, provide an `OffscreenCanvas` and drive `gpu.step(now)` if the environment has no
+animation-frame loop.
 
 See [resource lifetimes](#stats-and-memory) and [video cleanup](#video).
 
@@ -576,25 +585,25 @@ For CPU data processing, opt out of the default GPU feature:
 
 ```toml
 [dependencies]
-latkit = { version = "0.1", default-features = false }
+latkit = { version = "0.3", default-features = false }
 ```
 
 ```rust
-use latkit::{Data, Ids, Patch, Query, Table, field};
+use latkit::{Data, Ids, Patch, Query, Reading, Table, field};
 
-let mut data = Data::new("grid");
-data.apply(Patch::new().replace(
-    Table::new("Bus", Ids::count(2)).field("kv", vec![115.0, 230.0]),
-))?;
-let (rows, total) = data.query(&Query::of("Bus").filter(field("kv").ge(200.0)))?;
-let saved = data.to_bytes();
-let restored = Data::from_bytes(&saved)?;
+let grid = Data::new("grid");
+grid.apply(Patch::new().replace(Table::new("Bus", Ids::count(2)).field("kv", vec![115.0, 230.0])))?;
+let high = grid.snapshot().query(&Query::of("Bus").filter(field("kv").ge(200.0)))?;
+let saved = grid.snapshot().to_bytes();
+let restored = Data::read(&saved, Reading::default()).await?;
 ```
 
-`Data::load` and `Patch::load` accept a `resource::Fetch` implementation for binary slices.
-Implement `fetch(&Request) -> Pending<Vec<u8>>`; `Pending::ready` wraps immediate results, and
-`Pending::new` returns a resolver for asynchronous work. A rendering `Host` automatically
-implements this smaller interface, so existing native and browser hosts work unchanged.
+A `Data` changes in place and its clones share it; a view drawing it draws its latest version, and
+a `Snapshot` keeps one version. `Data::read` and `Patch::read` take a `Reading`: the name a dataset
+takes, the base its slices are relative to, and the `resource::Fetch` that fetches them. Implement
+`fetch(&Request) -> Pending<Vec<u8>>`; `Pending::ready` wraps immediate results, and `Pending::new`
+returns a resolver for asynchronous work. A rendering `Host` implements this smaller interface, so
+the native and browser hosts read slices as they are.
 
 Enable `gpu` for scenes, views, and wgpu rendering; `native` adds system fonts, jobs, files, and
 Windows H.264. `web` enables browser integration for the WASM target. Native file loading does

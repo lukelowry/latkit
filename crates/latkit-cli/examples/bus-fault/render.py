@@ -86,11 +86,11 @@ def prepare(source, job, indices):
     ]})
 
     height_scale = 1.7 * 0.15 * max(max(lon) - min(lon), max(lat) - min(lat))
-    theme = {"background": BACKGROUND, "text": "#c9d4dc", "font": "Segoe UI, sans-serif", "fontSize": 15}
+    theme = {"background": BACKGROUND, "text": {"color": "#c9d4dc", "font": "Segoe UI, sans-serif", "size": 15}}
     scenes = {
         "map.json": {
             "space": {"plane": {"grid": "off"}}, "ease": 0,
-            "theme": {**theme, "edge": None, "laneBow": 0},
+            "theme": {**theme, "edge": {"color": None, "bow": 0}},
             "title": "ACTIVSg70k",
             "subtitle": f"A fault on bus {FAULT} at 1 s, cleared at 1.15 s",
             "marks": [
@@ -108,7 +108,7 @@ def prepare(source, job, indices):
         "plot.json": {
             "space": {"plot": {"x": {"label": "Simulation time · s"}, "y": {"label": "Δf · Hz", "precision": 2}}},
             "ease": 0,
-            "theme": {**theme, "fontSize": 13, "playhead": "#eff5f8"},
+            "theme": {**theme, "text": {**theme["text"], "size": 13}, "plot": {"playhead": "#eff5f8"}},
             "marks": [{"lines": {"of": ["trace", "Bus"], "trace": "df", "width": 1.4,
                                  "color": {"colormap": "tableau10", "value": "group"}}}],
         },

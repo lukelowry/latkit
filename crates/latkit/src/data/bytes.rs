@@ -26,6 +26,7 @@
 //! |          | bucket's least per row and, after every bucket's, its greatest (NaN missing)          |
 //! | `str`    | `u32` byte length, UTF-8                                                              |
 
+use std::io::Read;
 use std::sync::Arc;
 
 use super::bits::Bits;
@@ -170,21 +171,58 @@ pub(crate) fn read_values(bytes: &[u8]) -> Result<Values> {
 
 /// The patch `bytes` hold, every byte of them.
 pub(crate) fn decode(bytes: &[u8]) -> Result<Patch> {
-    match decode_with_limits(bytes, DecodeLimits::default())? {
+    match frame(bytes, DecodeLimits::default())? {
         Some((patch, used)) if used == bytes.len() => Ok(patch),
         Some(_) => Err(malformed("trailing bytes")),
         None => Err(malformed("truncated")),
     }
 }
 
-/// The patch at the start of `bytes` and how many bytes it takes; `None` while `bytes` hold only
-/// its start. A frame its length says runs past `limit` bytes is an error at once.
-pub(crate) fn decode_prefix(bytes: &[u8], limit: usize) -> Result<Option<(Patch, usize)>> {
-    decode_with_limits(bytes, DecodeLimits { frame_bytes: limit, ..DecodeLimits::default() })
+/// The patches `read` carries, frames back to back, each read once whole: its header, checked
+/// against `limits` as it arrives, says how many bytes follow. They end with the bytes, between
+/// frames, or at the first error.
+pub(crate) fn stream<R: Read>(mut read: R, limits: DecodeLimits) -> impl Iterator<Item = Result<Patch>> {
+    let mut ended = false;
+    std::iter::from_fn(move || {
+        if ended {
+            return None;
+        }
+        let patch = next(&mut read, limits).transpose();
+        ended = !matches!(patch, Some(Ok(_)));
+        patch
+    })
 }
 
-pub(crate) fn decode_with_limits(bytes: &[u8], limits: DecodeLimits) -> Result<Option<(Patch, usize)>> {
-    let limit = limits.frame_bytes;
+/// The patch of the next frame `read` holds; `None` where its bytes end between frames.
+fn next(read: &mut impl Read, limits: DecodeLimits) -> Result<Option<Patch>> {
+    let failed = |error: std::io::Error| match error.kind() {
+        std::io::ErrorKind::UnexpectedEof => malformed("truncated"),
+        _ => Error::Io(error.to_string().into()),
+    };
+    let mut bytes = vec![0; HEADER];
+    let mut held = 0;
+    // The header is checked as its bytes arrive, so bytes that are not latkit's fail at once.
+    let length = loop {
+        if let Some(length) = length(&bytes[..held], limits.frame_bytes)? {
+            break length;
+        }
+        match read.read(&mut bytes[held..]) {
+            Ok(0) if held == 0 => return Ok(None),
+            Ok(0) => return Err(malformed("truncated")),
+            Ok(n) => held += n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(failed(error)),
+        }
+    };
+    bytes.resize(length, 0);
+    read.read_exact(&mut bytes[HEADER..]).map_err(failed)?;
+    let (patch, _) = frame(&bytes, limits)?.expect("a whole frame");
+    Ok(Some(patch))
+}
+
+/// The length of the frame `bytes` begin, as its header says, once the header is checked and the
+/// length found within `limit`; `None` while `bytes` hold less than the header.
+fn length(bytes: &[u8], limit: usize) -> Result<Option<usize>> {
     let held = bytes.len().min(MAGIC.len());
     if bytes[..held] != MAGIC[..held] {
         return Err(malformed("not latkit bytes"));
@@ -208,6 +246,13 @@ pub(crate) fn decode_with_limits(bytes: &[u8], limits: DecodeLimits) -> Result<O
     if length < HEADER {
         return Err(malformed("a frame shorter than its header"));
     }
+    Ok(Some(length))
+}
+
+/// The patch of the frame `bytes` begin and the frame's length; `None` while `bytes` hold only its
+/// start.
+fn frame(bytes: &[u8], limits: DecodeLimits) -> Result<Option<(Patch, usize)>> {
+    let Some(length) = length(bytes, limits.frame_bytes)? else { return Ok(None) };
     let Some(frame) = bytes.get(..length) else { return Ok(None) };
     let mut r = Reader { bytes: frame, at: HEADER, remaining: limits.decoded_bytes };
     let patch = r.patch()?;
@@ -639,7 +684,7 @@ impl Reader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Data, Row, Value};
+    use crate::{Data, Row, Snapshot, Value};
 
     #[test]
     fn v1_fixture_and_large_indexes_are_stable() {
@@ -649,11 +694,12 @@ mod tests {
         let patch = Patch::new().frames("T", "v", 0, (1_u64 << 32) + 3, [0.0, 1.0], [1.0, 2.0]);
         assert_eq!(patch.to_bytes(), bytes);
         assert_eq!(Patch::from_bytes(&bytes).unwrap().to_bytes(), bytes);
-        let mut data = Data::new("test");
+        let data = Data::new("test");
         data.apply(Patch::new().replace(Table::new("T", Ids::count(1))).extend(patch)).unwrap();
-        data.apply(Patch::new().append([2.0], "T", [("v", vec![3.0_f32])])).unwrap();
+        data.apply(Patch::new().append("T", [2.0], [("v", vec![3.0_f32])])).unwrap();
+        let data = data.snapshot();
         assert_eq!(data.span(), Some([0.0, 2.0]));
-        assert_eq!(Data::from_bytes(&data.to_bytes()).unwrap().to_bytes(), data.to_bytes());
+        assert_eq!(Snapshot::from_bytes(&data.to_bytes()).unwrap().to_bytes(), data.to_bytes());
         let mut files = std::collections::HashMap::new();
         data.to_tiles(8, |path, bytes| {
             files.insert(path.to_owned(), bytes.to_vec());
@@ -667,15 +713,13 @@ mod tests {
         let mut flags = bytes.clone();
         flags[6] = 1;
         assert!(Patch::from_bytes(&flags).is_err());
-        assert!(matches!(
-            Patch::decode_with_limits(&bytes, DecodeLimits { frame_bytes: 1024, decoded_bytes: 1 }),
-            Err(Error::Limit(_))
-        ));
+        let tight = DecodeLimits { frame_bytes: 1024, decoded_bytes: 1 };
+        assert!(matches!(Patch::stream(&bytes[..], tight).next(), Some(Err(Error::Limit(_)))));
     }
 
     #[test]
     fn frame_overflow_is_atomic_and_high_levels_round_trip() {
-        let mut data = Data::new("test");
+        let data = Data::new("test");
         data.apply(Patch::new().replace(Table::new("T", Ids::count(1))).frames(
             "T",
             "v",
@@ -685,10 +729,10 @@ mod tests {
             [1.0],
         ))
         .unwrap();
-        let before = data.to_bytes();
-        assert!(data.apply(Patch::new().append([1.0], "T", [("v", vec![2.0_f32])])).is_err());
-        assert_eq!(data.to_bytes(), before);
-        let mut data = Data::new("test");
+        let before = data.snapshot().to_bytes();
+        assert!(data.apply(Patch::new().append("T", [1.0], [("v", vec![2.0_f32])])).is_err());
+        assert_eq!(data.snapshot().to_bytes(), before);
+        let data = Data::new("test");
         data.apply(Patch::new().replace(Table::new("T", Ids::count(1))).frames(
             "T",
             "v",
@@ -698,11 +742,12 @@ mod tests {
             [1.0, 2.0],
         ))
         .unwrap();
-        assert_eq!(Data::from_bytes(&data.to_bytes()).unwrap().to_bytes(), data.to_bytes());
+        let data = data.snapshot();
+        assert_eq!(Snapshot::from_bytes(&data.to_bytes()).unwrap().to_bytes(), data.to_bytes());
     }
 
     fn grid() -> Data {
-        let mut data = Data::new("grid");
+        let data = Data::new("grid");
         data.apply(
             Patch::new()
                 .axis("time", "s")
@@ -720,74 +765,87 @@ mod tests {
                 )),
         )
         .expect("valid");
-        data.apply(Patch::new().append([1.0], "Bus", [("vm", vec![1.0, 1.01, 0.99])])).expect("frame");
-        data.apply(Patch::new().append([2.0], "Bus", [("vm", vec![1.02, f64::NAN, 0.98])])).expect("frame");
+        data.apply(Patch::new().append("Bus", [1.0], [("vm", vec![1.0, 1.01, 0.99])])).expect("frame");
+        data.apply(Patch::new().append("Bus", [2.0], [("vm", vec![1.02, f64::NAN, 0.98])])).expect("frame");
         data
     }
 
     #[test]
     fn datasets_round_trip() {
-        let data = grid();
+        let data = grid().snapshot();
         let bytes = data.to_bytes();
-        let back = Data::from_bytes(&bytes).expect("decodes");
+        let back = Snapshot::from_bytes(&bytes).expect("decodes");
         assert_eq!(back.name(), "grid");
         assert_eq!(back.axis(), Some(("time", "s")));
-        let bus = |id: &str| Row::new("grid", "Bus", id);
         for field in ["kv", "name", "point", "open", "vm"] {
             for id in ["a", "b", "c"] {
-                assert_eq!(back.get(&bus(id), field), data.get(&bus(id), field), "{field} of {id}");
+                assert_eq!(back.get("Bus", id, field, None), data.get("Bus", id, field, None), "{field} of {id}");
             }
         }
-        assert_eq!(back.get_at(&bus("a"), "vm", 1.5), Some(Value::Number(f64::from(1.0_f32))));
-        assert_eq!(back.get(&Row::new("grid", "Branch", 1_u64), "to"), Some(Value::Row(bus("c"))));
+        assert_eq!(back.get("Bus", "a", "vm", 1.5), Some(Value::Number(f64::from(1.0_f32))));
+        assert_eq!(back.get("Branch", 1_u64, "to", None), Some(Value::Row(Row::new("grid", "Bus", "c"))));
         assert_eq!(back.to_bytes(), bytes, "encoding is deterministic");
     }
 
     #[test]
     fn patches_round_trip() {
-        let patch = Patch::new().remove("Bus", vec!["a"]).append([3.0], "Bus", [("vm", vec![1.0, 1.0, 1.0])]);
+        let patch = Patch::new().remove("Bus", vec!["a"]).append("Bus", [3.0], [("vm", vec![1.0, 1.0, 1.0])]);
         let bytes = patch.to_bytes();
         assert_eq!(Patch::from_bytes(&bytes).expect("decodes").to_bytes(), bytes);
-        assert!(Data::from_bytes(&bytes).is_err());
+        assert!(Snapshot::from_bytes(&bytes).is_err());
+    }
+
+    /// Bytes handed over at most `n` a read, as a socket hands them.
+    struct Trickle<'a>(&'a [u8], usize);
+
+    impl Read for Trickle<'_> {
+        fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.1.min(into.len()).min(self.0.len());
+            into[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
     }
 
     #[test]
-    fn patches_back_to_back_decode_one_by_one() {
-        let patches = [grid().to_patch(), Patch::new().forget(1.5), Patch::new().remove("Bus", vec!["a"])];
-        let stream: Vec<u8> = patches.iter().flat_map(Patch::to_bytes).collect();
-        let (mut at, mut read) = (0, Vec::new());
-        // Arriving a few bytes at a time, as from a socket.
-        for end in (0..=stream.len()).step_by(5).chain([stream.len()]) {
-            while let Some((patch, used)) = Patch::decode(&stream[at..end], usize::MAX).expect("valid so far") {
-                read.push(patch.to_bytes());
-                at += used;
-            }
-        }
+    fn patches_back_to_back_stream_one_by_one() {
+        let patches = [grid().snapshot().to_patch(), Patch::new().forget(1.5), Patch::new().remove("Bus", vec!["a"])];
+        let bytes: Vec<u8> = patches.iter().flat_map(Patch::to_bytes).collect();
+        let read: Vec<Vec<u8>> = Patch::stream(Trickle(&bytes, 5), DecodeLimits::default())
+            .map(|patch| patch.expect("valid").to_bytes())
+            .collect();
         assert_eq!(read, patches.iter().map(Patch::to_bytes).collect::<Vec<_>>());
-        assert!(Patch::decode(b"LATX....", 64).is_err(), "not latkit bytes, however many follow");
-        // A length past the limit fails at once rather than waiting for bytes that may never come.
+        let first = |bytes: &[u8], limits: DecodeLimits| Patch::stream(bytes, limits).next();
+        assert!(first(&[], DecodeLimits::default()).is_none(), "no bytes, no patches");
+        let foreign = first(b"LATX", DecodeLimits::default());
+        assert!(foreign.is_some_and(|e| e.is_err_and(|e| e.to_string().contains("not latkit bytes"))), "at once");
+        // A length past the limit fails as its header arrives rather than waiting for bytes that may
+        // never come.
         let long = Patch::new().set(Table::new("Bus", Ids::count(1)).field("name", vec!["x".repeat(100)])).to_bytes();
-        assert!(matches!(Patch::decode(&long[..70], 64), Err(Error::Limit(_))));
-        assert!(Patch::decode(&long[..70], 1 << 20).expect("short").is_none());
+        let short = DecodeLimits { frame_bytes: 64, ..DecodeLimits::default() };
+        assert!(matches!(first(&long[..HEADER], short), Some(Err(Error::Limit(_)))));
+        assert!(matches!(first(&long[..70], DecodeLimits::default()), Some(Err(Error::Invalid { .. }))), "truncated");
+        let mut twice = Patch::stream(&long[..70], DecodeLimits::default());
+        assert!(twice.next().is_some_and(|patch| patch.is_err()) && twice.next().is_none(), "ends at an error");
     }
 
     #[test]
     fn frames_keep_their_numbers_through_bytes_and_gathers() {
-        let mut data = grid();
+        let data = grid();
         data.apply(Patch::new().forget(1.5)).expect("forget");
-        let first = |data: &Data| match data.table("Bus").and_then(|t| t.field_named("vm")) {
+        let first = |data: &Snapshot| match data.table("Bus").and_then(|t| t.field_named("vm")) {
             Some(Field::Sampled(samples, _)) => samples.start(),
             _ => panic!("sampled"),
         };
-        assert_eq!(first(&data), 1);
-        assert_eq!(first(&Data::from_bytes(&data.to_bytes()).expect("decodes")), 1);
+        assert_eq!(first(&data.snapshot()), 1);
+        assert_eq!(first(&Snapshot::from_bytes(&data.snapshot().to_bytes()).expect("decodes")), 1);
         data.apply(Patch::new().remove("Bus", vec!["b"])).expect("remove");
-        assert_eq!(first(&data), 1, "rows removed keep the frames' numbers");
+        assert_eq!(first(&data.snapshot()), 1, "rows removed keep the frames' numbers");
     }
 
     #[test]
     fn time_tiles_round_trip_with_their_holes() {
-        let mut data = grid();
+        let data = grid();
         // The bucket of frames 64..72, and frames 200 and 201, past a hole.
         let bucket = Patch::new().frames("Bus", "vm", 1, 8, [64.0, 71.0], [0.9, 0.95, 0.97, 1.1, 1.05, 1.0]);
         let tile = bucket.frames("Bus", "vm", 0, 200, [200.0, 201.0], [1.0, 1.0, 1.0, 0.5, 0.5, 0.5]);
@@ -795,24 +853,24 @@ mod tests {
         assert_eq!(Patch::from_bytes(&bytes).expect("decodes").to_bytes(), bytes);
         data.apply(tile.clone()).expect("tiles");
         assert!(data.apply(tile).is_err(), "entries held already");
-        let back = Data::from_bytes(&data.to_bytes()).expect("decodes");
+        let data = data.snapshot();
+        let back = Snapshot::from_bytes(&data.to_bytes()).expect("decodes");
         assert_eq!(back.to_bytes(), data.to_bytes());
-        let bus = |id: &str| Row::new("grid", "Bus", id);
-        assert_eq!(back.get_at(&bus("c"), "vm", 201.5), Some(Value::Number(0.5)));
-        assert_eq!(back.get_at(&bus("a"), "vm", 100.0), None, "a hole holds no frame");
+        assert_eq!(back.get("Bus", "c", "vm", 201.5), Some(Value::Number(0.5)));
+        assert_eq!(back.get("Bus", "a", "vm", 100.0), None, "a hole holds no frame");
         assert_eq!(back.describe().span, Some([1.0, 201.0]));
     }
 
     #[test]
     fn malformed_bytes_are_invalid_not_panics() {
-        let bytes = grid().to_bytes();
+        let bytes = grid().snapshot().to_bytes();
         for end in 0..bytes.len() {
-            assert!(Data::from_bytes(&bytes[..end]).is_err());
+            assert!(Snapshot::from_bytes(&bytes[..end]).is_err());
         }
         let mut flipped = bytes.clone();
         for i in (0..flipped.len()).step_by(7) {
             flipped[i] ^= 0x5a;
-            let _ = Data::from_bytes(&flipped);
+            let _ = Snapshot::from_bytes(&flipped);
         }
     }
 }

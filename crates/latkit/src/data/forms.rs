@@ -1,5 +1,5 @@
 //! What JSON writes for data, decoded once: a patch's changes, a table's fields, values, and ids. A
-//! slice of a file is the one form read later, by [`Patch::load`] through a host; everything else is
+//! slice of a file is the one form read later, by [`Patch::read`] through a host; everything else is
 //! decoded as it is read. JavaScript writes the byte frames instead.
 
 use std::fmt;
@@ -93,7 +93,7 @@ pub(crate) enum At {
 }
 
 /// A dataset's JSON document.
-impl JsonSchema for super::dataset::Data {
+impl JsonSchema for super::source::Data {
     fn schema_name() -> Cow<'static, str> {
         "Data".into()
     }
@@ -217,7 +217,7 @@ impl JsonSchema for Geometry {
     }
 }
 
-/// A patch deserializes from its JSON: every change but a slice of a file, which [`Patch::load`]
+/// A patch deserializes from its JSON: every change but a slice of a file, which [`Patch::read`]
 /// reads.
 impl<'de> Deserialize<'de> for Patch {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Patch, D::Error> {
@@ -402,13 +402,13 @@ impl Dtype {
 }
 
 impl Column {
-    /// The values, read already: a slice of a file is read by [`Patch::load`].
+    /// The values, read already: a slice of a file is read by [`Patch::read`].
     fn values(self) -> Result<Values> {
         match self {
             Column::Values(values) => Ok(values),
             Column::Reference { .. } => unreachable!("references are fields of their own"),
             Column::Slice(slice) => {
-                Err(Error::invalid(format!("{}: a slice of a file is read by Patch::load", slice.file)))
+                Err(Error::invalid(format!("{}: a slice of a file is read by Patch::read", slice.file)))
             }
         }
     }
@@ -742,8 +742,9 @@ mod tests {
             {"remove": {"table": "Bus", "ids": [9]}},
         ]);
         let patch: Patch = serde_json::from_value(ops).expect("a patch");
-        let mut data = Data::new("grid");
+        let data = Data::new("grid");
         data.apply(patch).expect("valid");
+        let data = data.snapshot();
         let bus = data.table("Bus").expect("Bus");
         assert_eq!(bus.ids().collect::<Vec<_>>(), [Id::Number(7)]);
         assert_eq!(bus.get(7_u64, "kv"), Some(Value::Number(1.5)));
@@ -755,8 +756,8 @@ mod tests {
     fn forms_refuse_what_they_cannot_read_now() {
         let slice = serde_json::json!([{"replace": {"table": "Bus", "ids": {"count": 1}, "fields": {
             "kv": {"file": "kv.f64", "dtype": "f64le", "count": 1}}}}]);
-        let error = serde_json::from_value::<Patch>(slice).expect_err("a slice needs Patch::load").to_string();
-        assert!(error.contains("Patch::load"), "{error}");
+        let error = serde_json::from_value::<Patch>(slice).expect_err("a slice needs Patch::read").to_string();
+        assert!(error.contains("Patch::read"), "{error}");
         assert!(serde_json::from_value::<Ids>(serde_json::json!(3)).is_err(), "a bare number is no count");
         assert_eq!(serde_json::from_value::<Ids>(serde_json::json!({"count": 3})).expect("a count").len(), 3);
         assert_eq!(serde_json::from_value::<Id>(serde_json::json!(3)).expect("an id"), Id::Number(3));

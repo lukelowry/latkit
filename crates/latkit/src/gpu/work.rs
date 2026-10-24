@@ -59,6 +59,12 @@ work! {
     written: Written,
     /// Rows whose channels the GPU evaluated.
     evaluated: Evaluated,
+    /// Rows of edges and faces whose ends the GPU found where their vertices are held: rows that
+    /// changed, and every row held where the vertices they end at moved.
+    resolved: Resolved,
+    /// Bytes of pages of words per row the GPU cleared: those read before anything writes them, and
+    /// the normals faces sum afresh.
+    cleared: Cleared,
     /// Rows packed into pages of the order a table drawn in part draws in: each page once, the first
     /// time a view draws it, and again only where a write changed its rows.
     packed: Packed,
@@ -114,6 +120,18 @@ impl Queue {
             usage: wgpu::BufferUsages::COPY_SRC,
         });
         encoder.copy_buffer_to_buffer(&upload, 0, buffer, offset, bytes.len() as u64);
+    }
+
+    /// Clears `size` bytes of `buffer` from `offset` in `encoder`, counted as cleared.
+    pub(crate) fn clear_buffer(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        buffer: &wgpu::Buffer,
+        offset: u64,
+        size: u64,
+    ) {
+        self.counters.add(Count::Cleared, size);
+        encoder.clear_buffer(buffer, offset, Some(size));
     }
 
     /// Writes a data page's words into `buffer` at `offset`, counted as uploaded.

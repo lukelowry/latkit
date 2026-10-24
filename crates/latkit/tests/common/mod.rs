@@ -123,6 +123,18 @@ pub fn plain_theme() -> Theme {
     Theme { background: Color::BLACK, ..Theme::dark() }
 }
 
+/// The plain theme, its edges green.
+pub fn green_edges() -> Theme {
+    let plain = plain_theme();
+    Theme { edge: latkit::EdgeTheme { color: Some(Color::rgb(0.0, 1.0, 0.0)), ..plain.edge }, ..plain }
+}
+
+/// The plain theme, its labels without halos.
+pub fn haloless() -> Theme {
+    let plain = plain_theme();
+    Theme { text: latkit::TextTheme { halo: 0.0, ..plain.text.clone() }, ..plain }
+}
+
 pub fn plane() -> Plane {
     Plane { grid: Grid::Off }
 }

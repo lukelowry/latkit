@@ -1,10 +1,11 @@
 use std::sync::{Arc, OnceLock};
 
+use super::bytes::DecodeLimits;
 use super::column::Column;
-use super::dataset::Inner;
 use super::ids::Ids;
 use super::name::{Name, Version};
 use super::samples::{Run, Samples};
+use super::snapshot::Inner;
 use super::table::{Field, Reference, Table};
 use super::values::Values;
 use crate::{Error, Result};
@@ -84,16 +85,16 @@ impl Patch {
         self
     }
 
-    /// Records a frame at each axis coordinate of `at`: for each field, a value per row of `table`
-    /// at every coordinate, frame-major, every row's at the first coordinate, then at the next.
+    /// Records a frame of `table` at each axis coordinate of `at`: for each field, a value per row at
+    /// every coordinate, frame-major, every row's at the first coordinate, then at the next.
     ///
     /// A field's first frame makes it sampled. Coordinates never decrease; at equal coordinates the
     /// last frame reads.
     #[must_use]
     pub fn append<F, V>(
         mut self,
-        at: impl AsRef<[f64]>,
         table: impl Into<Name>,
+        at: impl AsRef<[f64]>,
         fields: impl IntoIterator<Item = (F, V)>,
     ) -> Patch
     where
@@ -105,16 +106,16 @@ impl Patch {
         self
     }
 
-    /// Records a frame at each axis coordinate of `at` for the rows of `table` that `ids` names, as
+    /// Records a frame of the rows of `table` that `ids` names at each axis coordinate of `at`, as
     /// [`append`](Patch::append) does for every row: a value per row named at every coordinate,
     /// frame-major. Rows left out hold their last value.
     #[must_use]
     pub fn append_rows<F, V>(
         mut self,
-        at: impl AsRef<[f64]>,
         table: impl Into<Name>,
-        ids: impl Into<Ids>,
+        at: impl AsRef<[f64]>,
         fields: impl IntoIterator<Item = (F, V)>,
+        ids: impl Into<Ids>,
     ) -> Patch
     where
         F: Into<Name>,
@@ -143,12 +144,12 @@ impl Patch {
     ///
     /// ```
     /// # use latkit::{Data, Ids, Patch, Table};
-    /// let mut grid = Data::new("grid");
+    /// let grid = Data::new("grid");
     /// grid.apply(Patch::new().replace(Table::new("Bus", Ids::count(2))))?;
     /// // Frames 100 and 101, then the bucket of frames 0..8.
     /// grid.apply(Patch::new().frames("Bus", "vm", 0, 100, [100.0, 101.0], [1.0, 0.9, 1.02, 0.98]))?;
     /// grid.apply(Patch::new().frames("Bus", "vm", 1, 0, [0.0, 7.0], [0.95, 0.9, 1.05, 1.0]))?;
-    /// assert_eq!(grid.describe().span, Some([0.0, 101.0]));
+    /// assert_eq!(grid.snapshot().describe().span, Some([0.0, 101.0]));
     /// # Ok::<(), latkit::Error>(())
     /// ```
     #[must_use]
@@ -182,37 +183,31 @@ impl Patch {
         super::bytes::encode(self)
     }
 
-    /// A patch from [`Patch::to_bytes`] or [`Data::to_bytes`](crate::Data::to_bytes).
+    /// A patch from [`Patch::to_bytes`] or [`Snapshot::to_bytes`](crate::Snapshot::to_bytes): one
+    /// whole frame.
     pub fn from_bytes(bytes: &[u8]) -> Result<Patch> {
         super::bytes::decode(bytes)
     }
 
-    /// The patch at the start of `bytes` and how many bytes it takes, or `None` while `bytes` hold
-    /// only its start: frames back to back, as files, pipes, and sockets carry them, decode one by
-    /// one, and each says its length up front, so a partial one costs nothing to wait on. A frame
-    /// longer than `limit` bytes is [`Error::Limit`](crate::Error::Limit) at once, so a stream of
-    /// untrusted bytes never waits on more than `limit`.
+    /// The patches `read` carries, frames back to back as files, pipes, and sockets carry them, each
+    /// once it arrived whole. A frame says its length up front, so one longer than `limits` allows is
+    /// [`Error::Limit`](crate::Error::Limit) before its bytes are read, and a stream of untrusted
+    /// bytes holds one frame at a time. The patches end with the bytes, between frames, or at the
+    /// first error.
     ///
     /// ```
-    /// # use latkit::{Ids, Patch, Table};
-    /// let mut stream = Patch::to("grid").set(Table::new("Bus", Ids::count(1))).to_bytes();
-    /// stream.extend(Patch::to("grid").remove("Bus", [0_u64]).to_bytes());
-    /// let limit = 1 << 20;
-    /// let (first, used) = Patch::decode(&stream, limit)?.expect("a whole patch");
-    /// let (second, rest) = Patch::decode(&stream[used..], limit)?.expect("a whole patch");
-    /// assert_eq!(used + rest, stream.len());
-    /// assert_eq!(second.data().map(|d| d.as_str()), Some("grid"));
-    /// assert!(Patch::decode(&stream[..used - 1], limit)?.is_none(), "more bytes to come");
-    /// assert!(Patch::decode(&stream, 8).is_err(), "longer than the limit");
+    /// # use latkit::{DecodeLimits, Ids, Patch, Table};
+    /// let mut bytes = Patch::to("grid").set(Table::new("Bus", Ids::count(1))).to_bytes();
+    /// bytes.extend(Patch::to("grid").remove("Bus", [0_u64]).to_bytes());
+    /// let patches = Patch::stream(&bytes[..], DecodeLimits::default()).collect::<latkit::Result<Vec<_>>>()?;
+    /// assert_eq!(patches.len(), 2);
+    /// assert_eq!(patches[1].data().map(|d| d.as_str()), Some("grid"));
+    /// let small = DecodeLimits { frame_bytes: 16, ..DecodeLimits::default() };
+    /// assert!(Patch::stream(&bytes[..], small).all(|patch| patch.is_err()), "longer than the limit");
     /// # Ok::<(), latkit::Error>(())
     /// ```
-    pub fn decode_with_limits(bytes: &[u8], limits: super::bytes::DecodeLimits) -> Result<Option<(Patch, usize)>> {
-        super::bytes::decode_with_limits(bytes, limits)
-    }
-
-    /// Decodes one frame with an encoded byte limit and the default decoded storage budget.
-    pub fn decode(bytes: &[u8], limit: usize) -> Result<Option<(Patch, usize)>> {
-        super::bytes::decode_prefix(bytes, limit)
+    pub fn stream<R: std::io::Read>(read: R, limits: DecodeLimits) -> impl Iterator<Item = Result<Patch>> {
+        super::bytes::stream(read, limits)
     }
 }
 

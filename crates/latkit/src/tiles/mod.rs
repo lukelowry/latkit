@@ -1,20 +1,30 @@
-//! Tiles: data fetched in pieces, by key, as a view asks for them. A key is covered by its parent up to
+//! Tiles: data fetched in pieces, by key, as views ask for them. A key is covered by its parent up to
 //! a root: a tile of the earth by the tile a zoom out, a span of a sampled field's history by the span
 //! a level of detail up. A piece not fetched yet draws its nearest fetched ancestor.
+//!
+//! A GPU fetches and decodes each source's pieces once for every view drawing them (`cache`, `tiling`);
+//! each view draws what its camera asks for of them as a dataset of its own (`sets`).
+
+mod cache;
+mod frames;
+mod sets;
+mod tiling;
+mod vector;
 
 use std::fmt::Debug;
 use std::hash::Hash;
-#[cfg(feature = "gpu")]
 use std::sync::Arc;
 
-#[cfg(feature = "gpu")]
+pub(crate) use cache::Cache;
+pub(crate) use sets::{Asked, Reading, TileSets};
+
 use crate::data::Name;
 
-/// Data a view fetches in pieces as it asks for them, kept as a dataset the view owns. Give them to a
-/// view with [`View::set_tiles`](crate::View::set_tiles); what the source's first bytes hold says
-/// which they are.
+/// A dataset fetched in pieces as views ask for them: a [`Source`](crate::Source) a view draws as a
+/// dataset of its own, holding the pieces its camera asks for. Every view of a GPU drawing tiles from
+/// one URL shares what is fetched. What the source's first bytes hold says which tiles they are.
 ///
-/// **Time tiles**, a `frames.json` manifest as [`Data::to_tiles`](crate::Data::to_tiles) writes it:
+/// **Time tiles**, a `frames.json` manifest as [`Snapshot::to_tiles`](crate::Snapshot::to_tiles) writes it:
 /// a dataset whose sampled fields' histories are fetched in spans. A line tracing a field fetches the
 /// level of detail its plot window draws at, a mark showing a field fetches the frames about the
 /// view's coordinate, and a span still loading draws the coarser span above it.
@@ -33,14 +43,12 @@ use crate::data::Name;
 /// let base = Tiles::new("base", "https://tiles.openfreemap.org/planet");
 /// let history = Tiles::new("grid", "history/frames.json");
 /// ```
-#[cfg(feature = "gpu")]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Tiles {
     pub(crate) name: Name,
     pub(crate) url: Arc<str>,
 }
 
-#[cfg(feature = "gpu")]
 impl Tiles {
     /// The tiles at `url`, drawn as dataset `name`.
     pub fn new(name: impl Into<Name>, url: impl Into<Arc<str>>) -> Tiles {
@@ -57,10 +65,6 @@ impl Tiles {
         &self.url
     }
 }
-
-/// Bytes read first of a source that is an archive, as a URL ending in `.pmtiles` names: its header,
-/// and in most archives the root directory after it. Any other source is read whole.
-pub(crate) const ARCHIVE_FIRST: u64 = 16_384;
 
 /// A key of a tiling: a piece of what a source holds, covered by its parent up to a root.
 pub(crate) trait Key: Copy + Eq + Hash + Ord + Debug {
@@ -82,14 +86,12 @@ impl Key for TileKey {
 /// A span of a sampled field's history: at level 0, `chunk` frames from `index × chunk`; at level `k`,
 /// `chunk` buckets of `8^k` frames from `index × chunk`, each row's least and greatest over each. Eight
 /// spans make the one a level up, as four tiles make the tile a zoom out.
-#[cfg(feature = "gpu")]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub(crate) struct Span {
     pub(crate) level: u8,
     pub(crate) index: u64,
 }
 
-#[cfg(feature = "gpu")]
 impl Key for Span {
     fn parent(self) -> Option<Span> {
         (u32::from(self.level) < crate::data::MAX_LEVEL).then(|| Span { level: self.level + 1, index: self.index / 8 })

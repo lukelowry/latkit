@@ -32,15 +32,15 @@ fn dark(pixel: [u8; 4]) -> bool {
 /// A dataset of one table of polygons, each row its rings.
 fn polygons(rows: Vec<Vec<Ring>>) -> Data {
     let ids: Vec<u64> = (1..=rows.len() as u64).collect();
-    let mut data = Data::new("map");
+    let data = Data::new("map");
     data.apply(Patch::new().set(Table::new("Zone", ids).field("geometry", rows))).expect("valid");
     data
 }
 
-fn show(gpu: &latkit::Gpu, scene: Scene, data: Data) -> View {
+fn view(gpu: &latkit::Gpu, scene: Scene, data: &Data) -> View {
     let mut view = View::new(gpu, scene.theme(plain_theme())).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([data]).expect("a source");
     view
 }
 
@@ -62,7 +62,7 @@ fn areas_fill_their_polygons_and_leave_their_holes() {
     let Some(gpu) = gpu() else { return };
     let data = polygons(vec![vec![square(-40.0, -40.0, 80.0), square(-10.0, -10.0, 20.0)]]);
     let scene = Scene::new(plane()).draw(Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")));
-    let mut view = show(&gpu, scene, data);
+    let mut view = view(&gpu, scene, &data);
     let pixels = frame(&gpu, &mut view);
     assert!(red(at(&pixels, C - 25, C)), "filled: {:?}", at(&pixels, C - 25, C));
     assert!(dark(at(&pixels, C, C)), "the hole is open: {:?}", at(&pixels, C, C));
@@ -77,12 +77,12 @@ fn areas_asked_to_pick_pick_their_rows_and_frame_a_fit() {
     // Areas are geometry: they answer the pointer only when asked to.
     let areas = Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")).pick(true);
     let scene = Scene::new(plane()).draw(areas);
-    let mut view = show(&gpu, scene, data);
+    let mut view = view(&gpu, scene, &data);
     view.fit(Fit::All);
     frame(&gpu, &mut view);
     let Camera::Map { center, .. } = *view.camera() else { panic!("a map camera") };
     assert!((center[0] - 220.0).abs() < 1.0 && (center[1] - 120.0).abs() < 1.0, "framed: {center:?}");
-    let left = view.point([120.0, 120.0, 0.0]).expect("in view");
+    let left = view.screen([120.0, 120.0, 0.0]).expect("in view");
     let pending = view.pick(left, 2.0);
     let hits = answer(&gpu, &mut view, pending);
     assert_eq!(hits.first().map(|h| h.row.id.clone()), Some(1_u64.into()), "{hits:?}");
@@ -94,7 +94,7 @@ fn lines_trace_the_rings_of_polygons() {
     let data = polygons(vec![vec![square(-40.0, -40.0, 80.0)]]);
     let scene =
         Scene::new(plane()).draw(Lines::of("map", "Zone").width(3.0).color(Color::hex("#ff0000").expect("hex")));
-    let mut view = show(&gpu, scene, data);
+    let mut view = view(&gpu, scene, &data);
     let pixels = frame(&gpu, &mut view);
     assert!(red(at(&pixels, C - 40, C)), "the ring: {:?}", at(&pixels, C - 40, C));
     assert!(dark(at(&pixels, C, C)), "inside stays open");
@@ -106,9 +106,9 @@ fn earth_areas_stay_whole_across_the_antimeridian() {
     let Some(gpu) = gpu() else { return };
     let ring = vec![[170.0, -10.0], [-170.0, -10.0], [-170.0, 10.0], [170.0, 10.0], [170.0, -10.0]];
     let data = polygons(vec![vec![ring]]);
-    let earth = Earth { graticule: false, ..Earth::mercator() };
+    let earth = Earth { graticule: false, ..Earth::default() };
     let scene = Scene::new(earth).draw(Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")));
-    let mut view = show(&gpu, scene, data);
+    let mut view = view(&gpu, scene, &data);
     view.set_camera(Camera::Map { center: [180.0, 0.0, 0.0], zoom: 2.0, pitch: 0.0, bearing: 0.0 });
     let pixels = frame(&gpu, &mut view);
     assert!(red(at(&pixels, C, C)), "across the antimeridian: {:?}", at(&pixels, C, C));
@@ -128,7 +128,7 @@ fn large_areas_triangulate_in_a_job_and_then_draw() {
         .collect();
     let data = polygons(vec![vec![ring]]);
     let scene = Scene::new(plane()).draw(Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")));
-    let mut view = show(&gpu, scene, data);
+    let mut view = view(&gpu, scene, &data);
     let pixels = frame(&gpu, &mut view);
     assert!(red(at(&pixels, C, C)), "drawn once the job lands: {:?}", at(&pixels, C, C));
     assert_eq!(errors(&mut view), Vec::new());
@@ -137,12 +137,12 @@ fn large_areas_triangulate_in_a_job_and_then_draw() {
 #[test]
 fn a_polygon_field_is_what_areas_fill() {
     let Some(gpu) = gpu() else { return };
-    let mut data = Data::new("map");
+    let data = Data::new("map");
     data.apply(
         Patch::new().set(Table::new("Zone", Ids::count(1)).field("geometry", vec![vec![[0.0, 0.0], [1.0, 1.0]]])),
     )
     .expect("valid");
-    let mut view = show(&gpu, Scene::new(plane()), data);
-    let refused = view.show(Scene::new(plane()).draw(Areas::of("map", "Zone")));
+    let mut view = view(&gpu, Scene::new(plane()), &data);
+    let refused = view.set_scene(Scene::new(plane()).draw(Areas::of("map", "Zone")));
     assert!(refused.is_err(), "a path field is no polygon field");
 }

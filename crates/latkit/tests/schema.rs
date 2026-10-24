@@ -42,11 +42,25 @@ fn docs_palette_is_the_default_themes() {
 #[test]
 fn every_input_has_a_schema_and_reads_what_it_describes() {
     let schemas = latkit::schemas();
-    for name in ["Scene", "Data", "Patch", "Query", "Camera", "Fit", "Budget", "Shot", "Expr", "Theme", "Mark"] {
+    let inputs = [
+        "Scene",
+        "Data",
+        "Patch",
+        "Query",
+        "EnvelopeRequest",
+        "Camera",
+        "Fit",
+        "Budget",
+        "Shot",
+        "Expr",
+        "Theme",
+        "Mark",
+    ];
+    for name in inputs {
         assert!(schemas["$defs"][name].is_object(), "{name} has a schema");
     }
-    let theme = &schemas["$defs"]["Theme"]["anyOf"];
-    assert!(theme.to_string().contains("vertexRadius"), "options are in camelCase");
+    let diagram = &schemas["$defs"]["DiagramTheme"];
+    assert!(diagram.to_string().contains("groupPadding"), "options are in camelCase");
     let names = &schemas["$defs"]["ColormapName"]["enum"];
     assert!(names.as_array().is_some_and(|n| n.iter().any(|n| n == "viridis")), "the catalog names its maps");
 }

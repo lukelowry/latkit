@@ -13,7 +13,7 @@ const C: u32 = SIZE / 2;
 
 /// Two nodes in area 1 and one outside it, linked in a chain; y runs down.
 fn graph() -> Data {
-    let mut data = Data::new("graph");
+    let data = Data::new("graph");
     data.apply(
         Patch::new()
             .set(Table::new("Area", vec![1_u64]))
@@ -34,7 +34,9 @@ fn graph() -> Data {
 }
 
 fn view(gpu: &latkit::Gpu, zoom: f64) -> View {
-    let theme = Theme { surface: Color::rgb(0.0, 0.0, 1.0), group_padding: 10.0, ..plain_theme() };
+    let plain = plain_theme();
+    let diagram = latkit::DiagramTheme { group: Color::rgb(0.0, 0.0, 1.0), group_padding: 10.0, ..plain.diagram };
+    let theme = Theme { diagram, ..plain };
     let scene = Scene::new(common::diagram())
         .theme(theme)
         .draw(Vertices::of("graph", "Area").contains("Node", "area"))
@@ -42,7 +44,7 @@ fn view(gpu: &latkit::Gpu, zoom: f64) -> View {
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(Color::rgb(1.0, 0.0, 0.0)));
     let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
-    view.set_data(graph());
+    view.set_sources([graph()]).expect("a source");
     view
 }
 

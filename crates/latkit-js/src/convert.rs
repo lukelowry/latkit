@@ -29,9 +29,10 @@ fn value(value: &latkit::Value) -> JsValue {
     }
 }
 
-/// `table` as a query answers it: `{ table, ids, fields, total }`, numbers as a `Float64Array`
-/// (missing NaN), other values as arrays (missing `null`), a reference as `{ reference, ids }`.
-pub(crate) fn table(table: &latkit::Table, total: usize) -> JsValue {
+/// What a query read, as `{ table, ids, fields, total }`: numbers as a `Float64Array` (missing NaN),
+/// other values as arrays (missing `null`), a reference as `{ reference, ids }`.
+pub(crate) fn query_result(read: &latkit::QueryResult) -> JsValue {
+    let table = &read.table;
     let fields = Object::create(JsValue::NULL.unchecked_ref::<Object>());
     for field in table.describe().fields {
         let values = table.values(&field.name).unwrap_or_else(|| latkit::Values::from(Vec::<f64>::new()));
@@ -49,7 +50,7 @@ pub(crate) fn table(table: &latkit::Table, total: usize) -> JsValue {
         ("table", JsValue::from_str(table.name())),
         ("ids", ids.into()),
         ("fields", fields.into()),
-        ("total", (total as f64).into()),
+        ("total", (read.total as f64).into()),
     ])
 }
 

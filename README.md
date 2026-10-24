@@ -36,10 +36,10 @@ cargo add latkit            # in Rust
 ## In the browser
 
 ```ts
-import { loadLatkit, Patch, field, type Scene } from 'latkit';
+import { Data, Gpu, Patch, field, load, type Scene } from 'latkit';
 
-const { Data, Gpu } = await loadLatkit();
-const data = new Data('grid').apply(
+await load();
+const grid = new Data('grid').apply(
   new Patch().replace('Bus', [101, 102], { x: [0, 30], y: [0, 20], kv: [230, 115] }),
 );
 const scene: Scene = {
@@ -57,14 +57,15 @@ const scene: Scene = {
 };
 
 const gpu = await Gpu.create();
-const view = gpu.view(scene);
-gpu.canvas(document.querySelector('canvas')!).show([view]);
-view.setData(data);
+const view = gpu.view(scene, { sources: [grid] });
+gpu.canvas(document.querySelector('canvas')!, { layout: [{ view }] });
 view.fit();
+
+grid.apply(new Patch().set('Bus', [102], { kv: [345] })); // drawn the next frame
 ```
 
-Scenes, expressions, and patches are plain data, typed from latkit's schema: `latkit/core` builds
-them without loading WebAssembly, in a worker or on a server.
+Scenes, expressions, and patches are plain data, typed from latkit's schema, and build without
+loading WebAssembly: in a worker or on a server too.
 
 ## On the command line
 

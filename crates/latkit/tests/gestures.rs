@@ -20,7 +20,7 @@ const C: f32 = SIZE as f32 / 2.0;
 
 /// Three nodes, a link from node 1 to node 3, and a port on each node's right.
 fn graph() -> Data {
-    let mut data = Data::new("graph");
+    let data = Data::new("graph");
     data.apply(
         Patch::new()
             .set(
@@ -50,9 +50,14 @@ fn scene(controls: Controls) -> Scene {
 }
 
 fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
+    view_of(gpu, controls, &graph())
+}
+
+/// A view of `graph`, drawn.
+fn view_of(gpu: &latkit::Gpu, controls: Controls, graph: &Data) -> View {
     let mut view = View::new(gpu, scene(controls)).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(graph());
+    view.set_sources([graph]).expect("a source");
     frame(gpu, &mut view);
     view
 }
@@ -137,14 +142,14 @@ fn dragging_from_a_port_connects() {
 #[test]
 fn a_dragged_row_keeps_where_it_was_grabbed() {
     let Some(gpu) = gpu() else { return };
-    let mut data = Data::new("graph");
+    let data = Data::new("graph");
     data.apply(Table::new("Node", vec![1_u64]).field("x", vec![-40.0]).field("y", vec![0.0])).expect("valid");
     let scene = Scene::new(diagram())
         .theme(plain_theme())
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).drag(true));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(data);
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     // Grabbed five units right of its middle, then moved 30 right and 20 down: y runs down.
     let grab = [C - 35.0, C];
@@ -181,7 +186,7 @@ fn a_scene_asks_for_all_it_uses_at_its_first_frame() {
     let scene = scene(editing()).ease(std::time::Duration::from_millis(200));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(graph());
+    view.set_sources([graph()]).expect("a source");
     frame(&gpu, &mut view);
     let at = [C - 40.0, C];
     let menu = |e: &Event| matches!(e, Event::Menu { .. }).then_some(());
@@ -193,14 +198,14 @@ fn a_scene_asks_for_all_it_uses_at_its_first_frame() {
         &[moved(port), down(port, Button::Primary), moved([C, C]), moved(target), up(target)],
         connected,
     );
-    let selected = |e: &Event| matches!(e, Event::Select { .. }).then_some(());
+    let selected = |e: &Event| matches!(e, Event::Selection { .. }).then_some(());
     after(&gpu, &mut view, &[moved(at), down(at, Button::Primary), up(at)], selected);
     after(&gpu, &mut view, &[key(Key::Menu)], menu);
-    let mut moved_graph = graph();
+    let moved_graph = graph();
     moved_graph
         .apply(Patch::new().set(Table::new("Node", vec![1_u64, 2, 3]).field("x", vec![-20.0, 20.0, 0.0])))
         .expect("valid");
-    view.set_data(moved_graph);
+    view.set_sources([&moved_graph]).expect("a source");
     frame(&gpu, &mut view);
     assert_eq!(gpu.work().late, 0, "every pipeline was asked for at the first frame");
 }
@@ -243,13 +248,12 @@ fn a_double_click_faster_than_its_probe_opens() {
 #[test]
 fn the_selection_lets_go_of_rows_the_data_drops() {
     let Some(gpu) = gpu() else { return };
-    let mut view = view(&gpu, editing());
-    view.select([Rows::new("graph", "Node", [2_u64, 3])]);
-    let mut data = view.data("graph").expect("shown").clone();
+    let data = graph();
+    let mut view = view_of(&gpu, editing(), &data);
+    view.set_selection([Rows::new("graph", "Node", [2_u64, 3])]);
     data.apply(Patch::new().remove("Node", vec![2_u64])).expect("valid");
-    view.set_data(data);
     let selected = after(&gpu, &mut view, &[], |e| match e {
-        Event::Select { rows, trigger } => Some((rows.clone(), *trigger)),
+        Event::Selection { rows, trigger } => Some((rows.clone(), *trigger)),
         _ => None,
     });
     let kept = vec![Rows::new("graph", "Node", [3_u64])];
@@ -278,7 +282,7 @@ fn a_shift_click_toggles_where_boxes_select() {
     let press = Input::Down { pointer: 1, point: at, button: Button::Primary, modifiers: shift, device: Device::Mouse };
     let release = Input::Up { pointer: 1, point: at, modifiers: shift };
     let toggled = after(&gpu, &mut view, &[moved(at), press, release], |e| match e {
-        Event::Select { rows, trigger: Some(trigger) } => Some((rows.clone(), trigger.modifiers.shift)),
+        Event::Selection { rows, trigger: Some(trigger) } => Some((rows.clone(), trigger.modifiers.shift)),
         _ => None,
     });
     assert_eq!(toggled, (vec![Rows::new("graph", "Node", [2_u64])], true), "a click, not an empty box");
@@ -291,7 +295,7 @@ fn the_keys_step_open_and_select() {
     let link = Row::new("graph", "Link", 0_u64);
     // Tab waits for the rows nearest the middle, then points at the nearest: the link.
     let hovered = after(&gpu, &mut view, &[key(Key::Tab)], |e| match e {
-        Event::Hover { hit: Some(hit), trigger } => Some((hit.row.clone(), trigger.device)),
+        Event::Hovered { hit: Some(hit), trigger } => Some((hit.row.clone(), trigger.device)),
         _ => None,
     });
     assert_eq!(hovered, (link.clone(), Device::Keyboard));
@@ -302,32 +306,33 @@ fn the_keys_step_open_and_select() {
     });
     assert_eq!(opened, (link.clone(), Device::Keyboard));
     let selected = after(&gpu, &mut view, &[key(Key::Space)], |e| match e {
-        Event::Select { rows, .. } => Some(rows.clone()),
+        Event::Selection { rows, .. } => Some(rows.clone()),
         _ => None,
     });
     assert_eq!(selected, vec![Rows::from(link)]);
     // Before the first row, Shift+Tab is not used, so focus moves on, and nothing stays pointed at.
     let back = Input::Key { key: Key::Tab, down: true, modifiers: Modifiers { shift: true, ..Modifiers::default() } };
     assert!(!view.input(&back, common::now()), "focus moves on");
-    let left = after(&gpu, &mut view, &[], |e| if let Event::Hover { hit, .. } = e { Some(hit.clone()) } else { None });
+    let left =
+        after(&gpu, &mut view, &[], |e| if let Event::Hovered { hit, .. } = e { Some(hit.clone()) } else { None });
     assert_eq!(left, None);
 }
 
 #[test]
 fn hover_is_told_without_its_glow_and_follows_the_frame() {
     let Some(gpu) = gpu() else { return };
-    let mut view = view(&gpu, Controls { hover: false, ..Controls::default() });
+    let data = graph();
+    let mut view = view_of(&gpu, Controls { hover: false, ..Controls::default() }, &data);
     let at = [C + 40.0, C];
     let hovered = after(&gpu, &mut view, &[moved(at)], |e| match e {
-        Event::Hover { hit: Some(hit), trigger } => Some((hit.row.clone(), trigger.device)),
+        Event::Hovered { hit: Some(hit), trigger } => Some((hit.row.clone(), trigger.device)),
         _ => None,
     });
     assert_eq!(hovered, (Row::new("graph", "Node", 2_u64), Device::Mouse));
     // The node moves out from under the still pointer: the hover follows.
-    let mut data = view.data("graph").expect("shown").clone();
     data.apply(Patch::new().set(Table::new("Node", vec![2_u64]).field("x", vec![200.0]))).expect("valid");
-    view.set_data(data);
-    let left = after(&gpu, &mut view, &[], |e| if let Event::Hover { hit, .. } = e { Some(hit.clone()) } else { None });
+    let left =
+        after(&gpu, &mut view, &[], |e| if let Event::Hovered { hit, .. } = e { Some(hit.clone()) } else { None });
     assert_eq!(left, None);
 }
 
@@ -337,9 +342,9 @@ fn setters_tell_nothing_while_motion_tells_the_camera() {
     let mut view = view(&gpu, editing());
     let set = Camera::Map { center: [10.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 };
     view.set_camera(set);
-    view.select([Rows::new("graph", "Node", [1_u64])]);
+    view.set_selection([Rows::new("graph", "Node", [1_u64])]);
     frame(&gpu, &mut view);
-    let told: Vec<Event> = view.events().filter(|e| matches!(e, Event::Camera(_) | Event::Select { .. })).collect();
+    let told: Vec<Event> = view.events().filter(|e| matches!(e, Event::Camera(_) | Event::Selection { .. })).collect();
     assert_eq!(told, Vec::new(), "setters tell nothing");
     view.fly(Camera::Map { center: [-10.0, 0.0, 0.0], zoom: 0.0, pitch: 0.0, bearing: 0.0 });
     let flown = after(&gpu, &mut view, &[], |e| if let Event::Camera(camera) = e { Some(*camera) } else { None });
@@ -355,7 +360,7 @@ fn waiting_tells_when_the_frame_is_complete() {
 }
 
 fn selected(e: &Event) -> Option<Vec<Rows>> {
-    if let Event::Select { rows, .. } = e { Some(rows.clone()) } else { None }
+    if let Event::Selection { rows, .. } = e { Some(rows.clone()) } else { None }
 }
 
 #[test]
@@ -397,7 +402,7 @@ fn a_touch_held_still_asks_for_a_menu_and_does_not_click() {
         step(&gpu, &mut view);
     }
     assert!(
-        !view.events().any(|e| matches!(e, Event::Click { .. } | Event::Select { .. })),
+        !view.events().any(|e| matches!(e, Event::Click { .. } | Event::Selection { .. })),
         "the release only lets go"
     );
 }

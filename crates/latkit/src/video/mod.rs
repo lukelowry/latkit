@@ -206,7 +206,7 @@ impl Shot {
         let host = gpu.0.lock().host.clone();
         sink.begin(&Encoding::new(self.size(), fps), host.as_deref())?;
         Ok(Video {
-            drawing: Drawing::later(self.clone(), S::PIXELS),
+            drawing: Drawing::later(self.clone(), S::PIXELS, false),
             sink,
             fps,
             index: 0,

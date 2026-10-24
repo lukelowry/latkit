@@ -174,7 +174,7 @@ fn lane_drawn(row: u32, l: Lane) -> bool {
     if (mark.flags & GEODESIC) == 0u {
         // The curve keeps within the triangle of its ends and the point that bows it, twice as far
         // out as its middle.
-        let c = between(a, b, 0.5, 2.0 * l.offset * frame.lane_bow);
+        let c = between(a, b, 0.5, 2.0 * l.offset * frame.bow);
         let cc = clip_of(world(c.hi, c.lo, c.z));
         if cc.w > 0.0 {
             let sc = to_screen(cc);
@@ -188,7 +188,7 @@ fn lane_drawn(row: u32, l: Lane) -> bool {
         }
     }
     // Pixels between neighboring lanes at their middle.
-    let apart = distance(sa, sb) * abs(frame.lane_bow) * l.step;
+    let apart = distance(sa, sb) * abs(frame.bow) * l.step;
     if !(apart < 1.0) {
         return true;
     }
@@ -339,7 +339,7 @@ fn end_point(row: u32, count: u32, i: u32) -> PathPoint {
     let t = f32(i) / f32(last);
     var p: PathPoint;
     if bends.count == 0u {
-        p = between(a, b, t, lane(row) * frame.lane_bow * 4.0 * t * (1.0 - t));
+        p = between(a, b, t, lane(row) * frame.bow * 4.0 * t * (1.0 - t));
     } else {
         let w = point_bits(bends, i - 1u);
         if missing_bits(w.x) || missing_bits(w.y) {

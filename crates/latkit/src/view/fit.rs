@@ -263,7 +263,7 @@ impl View {
         let spans = self.marks.iter().filter_map(|shown| {
             let crate::Mark::Lines(lines) = &shown.mark else { return None };
             let style = shown.mark.style();
-            let table = self.source(&style.data)?.table(&style.table)?;
+            let table = self.snapshot(&style.data)?.table(&style.table)?;
             match table.field_named(&lines.traced())? {
                 crate::data::Field::Sampled(samples, _) => samples.span(),
                 _ => None,

@@ -17,7 +17,7 @@ use super::pyramid::{Leveling, Places, Placing, Pyramid, answer};
 use super::sight::{Domain, Sight};
 use super::{Jobs, stamp_of};
 use crate::Pending;
-use crate::data::{Column, Data, Field, Keyed, Name, Named, Reference, Table, UNWIRED, Version};
+use crate::data::{Column, Field, Keyed, Name, Named, Reference, Snapshot, Table, UNWIRED, Version};
 use crate::expr::cpu::Rows;
 use crate::expr::{Expr, Node};
 use crate::gpu::shaders::PAGE_ROWS;
@@ -73,7 +73,7 @@ pub(crate) type Plans = Keyed<(Name, Name), Planned>;
 
 /// What drawing in part reads this frame.
 pub(crate) struct Ask<'a> {
-    pub(crate) sources: &'a [Data],
+    pub(crate) data: &'a [Snapshot],
     pub(crate) plans: &'a Plans,
     /// What the camera sees, on a map or a plane.
     pub(crate) sight: Option<&'a Sight<'a>>,
@@ -108,10 +108,10 @@ impl Tiled {
                 wanted.push(data);
             }
         }
-        self.sets.retain(|set| wanted.contains(&&set.name) && ask.sources.iter().any(|d| *d.name() == set.name));
+        self.sets.retain(|set| wanted.contains(&&set.name) && ask.data.iter().any(|d| *d.name() == set.name));
         let mut choices = Choices::default();
         for name in wanted {
-            let Some(source) = ask.sources.iter().find(|d| d.name() == name) else { continue };
+            let Some(source) = ask.data.iter().find(|d| d.name() == name) else { continue };
             let i = self.sets.iter().position(|s| s.name == *name).unwrap_or_else(|| {
                 self.sets.push(Set::new(name.clone()));
                 self.sets.len() - 1
@@ -228,7 +228,7 @@ impl Set {
     }
 
     /// Brings the pyramids up to `ask`, and chooses what each table drawn in part draws.
-    fn update(&mut self, source: &Data, ask: &Ask<'_>, jobs: &mut Jobs<'_>, choices: &mut Choices) {
+    fn update(&mut self, source: &Snapshot, ask: &Ask<'_>, jobs: &mut Jobs<'_>, choices: &mut Choices) {
         let landed = self.land();
         let placing = placed(source, ask);
         let stamp = stamp(source, ask, &placing);
@@ -476,7 +476,7 @@ fn lift(
 
 /// The tables of `source` a pyramid places, each with its plan: every table drawn in part, and every
 /// table the ends of one drawn through tiles name, which only anchors them.
-fn placed<'a>(source: &'a Data, ask: &'a Ask<'_>) -> Vec<(&'a Table, &'a Planned)> {
+fn placed<'a>(source: &'a Snapshot, ask: &'a Ask<'_>) -> Vec<(&'a Table, &'a Planned)> {
     let plan = |table: &Table| ask.plans.get(&(source.name().clone(), table.name.clone()));
     let mut out: Vec<(&Table, &Planned)> = Vec::new();
     for table in source.tables() {
@@ -503,7 +503,7 @@ pub(crate) fn ends_of<'t>(table: &'t Table, planned: &Planned) -> Option<&'t Nam
 }
 
 /// The stamp of everything a dataset's pyramids are placed from.
-fn stamp(source: &Data, ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> u64 {
+fn stamp(source: &Snapshot, ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> u64 {
     let tables: Vec<_> = placed
         .iter()
         .map(|(table, planned)| {
@@ -551,7 +551,7 @@ fn column_of<'t>(table: &'t Table, name: &Name) -> Option<&'t Column> {
 /// The fields `expr` reads of its mark's own table.
 fn fields_of(expr: &Expr, out: &mut Vec<Name>) {
     match &*expr.0 {
-        Node::Field(f) if f.of.is_none() => out.push(f.name.clone()),
+        Node::Field(f) if f.from.is_none() => out.push(f.name.clone()),
         Node::Unary(_, a) | Node::Is(a, _) => fields_of(a, out),
         Node::Binary(_, a, b) => {
             fields_of(a, out);
@@ -584,7 +584,7 @@ fn bounds_of(places: &Places) -> [f64; 4] {
 }
 
 /// Where `table`'s rows lie, as `place` puts them.
-fn locate(table: &Table, place: &Place, all: &[Data]) -> Places {
+fn locate(table: &Table, place: &Place, all: &[Snapshot]) -> Places {
     match place {
         Place::Points([x, y]) => {
             let rows = Rows::new(table, all);
@@ -622,7 +622,7 @@ fn leveling(ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> (Leveling, Named<[f
         .map(|(table, planned)| {
             // Tables drawn through tiles are placed; one only an edge table's ends name anchors them.
             let anchors = matches!(planned.draw, Draw::Tiles { .. }) || planned.as_is();
-            let places = if anchors { locate(table, &planned.place, ask.sources) } else { Places::None };
+            let places = if anchors { locate(table, &planned.place, ask.data) } else { Places::None };
             Placing { rows: table.len() as u32, answered: !planned.as_is(), places, ..Placing::default() }
         })
         .collect();
@@ -654,7 +654,7 @@ fn leveling(ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> (Leveling, Named<[f
         placing.leveled = matches!(planned.draw, Draw::Tiles { .. })
             && (!matches!(placing.places, Places::None) || placing.ends.is_some());
         if let Some(priority) = &planned.priority {
-            placing.priority = Rows::new(table, ask.sources).numbers(priority, |p| p as f32).into();
+            placing.priority = Rows::new(table, ask.data).numbers(priority, |p| p as f32).into();
         }
     }
     (Leveling { domain, tables }, bounds)
@@ -663,13 +663,13 @@ fn leveling(ask: &Ask<'_>, placed: &[(&Table, &Planned)]) -> (Leveling, Named<[f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Ids, Patch};
+    use crate::{Data, Ids, Patch};
 
     #[test]
     fn a_sample_lifts_the_rows_its_edges_sampled_end_at() {
         // A thousand vertices, and a thousand edges between vertices far apart in the table.
         let n = 1000_u64;
-        let mut data = Data::new("g");
+        let data = Data::new("g");
         data.apply(
             Patch::new().set(Table::new("V", Ids::count(n as u32)).field("x", vec![0.0; n as usize])).set(
                 Table::new("E", Ids::count(n as u32))
@@ -678,6 +678,7 @@ mod tests {
             ),
         )
         .expect("valid");
+        let data = data.snapshot();
         let (vertices, edges) = (data.table("V").expect("set"), data.table("E").expect("set"));
         let tiles = |place| Planned { draw: Draw::Tiles { rows: 100 }, priority: None, place };
         let (at, ends) = (tiles(Place::Nowhere), tiles(Place::Ends(vec!["a".into(), "b".into()])));

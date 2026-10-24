@@ -1,5 +1,5 @@
 /** Globe: routes between the world's great cities along great circles, comets flowing on them. */
-import { Patch, reference } from 'latkit/core';
+import { Patch, reference, units } from 'latkit';
 import { THEME, worldMap, type Piece } from './look.ts';
 
 /** Cities: name, longitude, latitude, and people in millions, about. */
@@ -96,7 +96,7 @@ export default function globe(): Piece {
   for (const [a, b] of HAULS)
     pairs.add([index.get(a)!, index.get(b)!].sort((p, q) => p - q).join(','));
   const routes = [...pairs].map((p) => p.split(',').map(Number) as [number, number]);
-  const data = Patch.to('world')
+  const data = new Patch('world')
     .replace(
       'City',
       { count: CITIES.length },
@@ -134,12 +134,13 @@ export default function globe(): Piece {
     elapsed: 3,
     scene: {
       space: {
-        earth: { projection: 'globe', surface: '#0e1824', graticule: false, atmosphere: true },
+        earth: { projection: 'globe', graticule: false, atmosphere: true },
       },
       ease: 0,
       theme: {
         ...THEME,
-        flow: { color: '#fff6e0e0', spacing: 9, length: 3.5, width: 2.6, units: true },
+        earth: { ground: '#0e1824' },
+        flow: { color: '#fff6e0e0', spacing: units(9), length: units(3.5), width: 2.6 },
       },
       marks: [
         { lines: { of: ['borders', 'lines'], width: 0.5, color: '#22384f' } },

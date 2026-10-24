@@ -3,10 +3,11 @@
 //! camera asks for, finest first; the rows kept whatever their tiles, selected or framed by a fit;
 //! and while tiles fade, those leaving. A page keeps its slot while it is held, so its rows keep their
 //! words as the camera moves; a page no longer drawn stays held while the plan leaves room, so
-//! drawing it again costs nothing, and a page held again costs only its words evaluated again. A page
-//! holding vertices that the edges drawn end at is held with them, so an edge always finds its ends.
-//! Rows kept whose pages it does not hold are held a row at a time, in pages of kept rows: each keeps
-//! its place there while kept, so the ends of edges that name it hold.
+//! drawing it again costs nothing, and a page held again costs only its words evaluated again. The
+//! vertices the edges held end at are held with them, so an edge always finds its ends: a page where
+//! many of them lie whole, the rest a row at a time, so edges whose ends lie far apart hold as many
+//! rows as they end at, not as many pages. Rows kept whose pages it does not hold are held in pages of
+//! kept rows, each in its place there while kept.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -23,6 +24,10 @@ use crate::gpu::shaders::PAGE_ROWS;
 
 /// What marks a slot holding a page of kept rows, beside the page's number.
 const KEPT: u32 = 1 << 31;
+
+/// Ends of the edges held lying in a page of the order of the table they end at, from which the page
+/// is held whole; fewer are held a row at a time. Ends never take more than twice the rows they name.
+const DENSE: u32 = PAGE_ROWS / 2;
 
 /// What a slot holds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -69,6 +74,8 @@ pub(crate) struct Drawing {
     /// The rows kept by their place in the order, ascending, each with its held row: what the ends of
     /// edges find kept vertices by.
     pub(crate) kept_rows: Arc<[[u32; 2]]>,
+    /// The rows drawn whatever their tiles, as places in the order, ascending.
+    pinned: Arc<[u32]>,
     pub(crate) runs: Vec<Run>,
     /// Runs by the held row they start at, for finding where a held row draws.
     by_held: Vec<u32>,
@@ -89,10 +96,16 @@ pub(crate) struct Drawing {
     /// the table's data.
     pub(crate) idle: u32,
     pub(crate) content: u64,
-    /// What it was laid out from: the order, what it draws, the rows kept, and the pages ends hold.
+    /// What it was laid out from: the order, what it draws, the rows kept, and what ends hold.
     pub(crate) laid: u64,
     /// What tells it from every other drawing: what lists of its rows are kept by.
     pub(crate) made: Version,
+    /// What tells where it holds the rows edges end at: the drawing's before it while none of those
+    /// rows moved, so the edges naming them find them where they were.
+    pub(crate) held_ends: Version,
+    /// What its rows kept were laid out from: the rows drawn whatever their tiles, what the edges held
+    /// ask of it, and the pages it holds. A drawing laid out from the same keeps them where they were.
+    kept_from: u64,
     /// What tells how it holds rows: see [`Drawing::layout`].
     layout: u64,
 }
@@ -111,8 +124,8 @@ pub(crate) struct Lay<'a> {
     /// Rows drawn whatever their tiles: those selected or framed by a fit, and those the edges kept end
     /// at.
     pub(crate) pinned: &'a Pinned,
-    /// Pages held for the ends of edges drawn, ascending.
-    pub(crate) ends: &'a [u32],
+    /// What the ends of the edges held hold of it, not drawn: pages whole, and rows one at a time.
+    pub(crate) ends: &'a Ending,
     /// Pages it may hold in all: those it no longer draws stay held while there is room.
     pub(crate) room: u32,
     /// What the words of the rows it holds are made from: the scene and the table's data. Pages no
@@ -124,15 +137,16 @@ impl Lay<'_> {
     /// The stamp of what it lays out.
     pub(crate) fn stamp(&self) -> u64 {
         let chosen = self.chosen;
-        stamp_of((chosen.order.id(), chosen.order.len(), &chosen.ranges, self.pinned.stamp, self.ends, self.room))
+        stamp_of((chosen.order.id(), chosen.order.len(), &chosen.ranges, self.pinned.stamp, self.ends.stamp, self.room))
     }
 }
 
 impl Drawing {
     /// What draws of `lay`: pages `before` holds kept in their slots, those it no longer draws while
-    /// `lay` leaves room, the rows kept whose pages it does not hold in pages of their own, each in
-    /// its place there, and with `fades` the tiles arriving since fading in and those gone fading out.
-    /// A drawing of another order keeps nothing: its rows move, and a transition moves them.
+    /// `lay` leaves room, the rows kept whose pages it does not hold (those drawn whatever their tiles,
+    /// and the ends' rows held one at a time) in pages of their own, each in its place there, and with
+    /// `fades` the tiles arriving since fading in and those gone fading out. A drawing of another order
+    /// keeps nothing: its rows move, and a transition moves them.
     pub(crate) fn lay(before: Option<&Drawing>, lay: &Lay<'_>, fades: bool) -> Drawing {
         let order = lay.chosen.order.clone();
         let before = before.filter(|b| b.order.id() == order.id());
@@ -145,24 +159,38 @@ impl Drawing {
             if fading { ranges.iter().filter(|r| !has(was, r)).cloned().collect() } else { Vec::new() };
         let leaving: Vec<Range<u32>> =
             if fading { was.iter().filter(|r| !has(&ranges, r)).cloned().collect() } else { Vec::new() };
-        // Pages held: those drawn, those fading out, and those ends lie in; while there is room and
-        // their words hold, those held before and no longer asked for; and the rows kept whose pages
-        // it does not hold, in pages of their own.
+        // Pages held: those drawn, those fading out, and those many ends lie in; while there is room
+        // and their words hold, those held before and no longer asked for; and the rows kept whose
+        // pages it does not hold, in pages of their own.
         let count = order.pages() as usize;
-        let asked_now = asked(count, ranges.iter().chain(&leaving), lay.ends);
+        let asked_now = asked(count, ranges.iter().chain(&leaving), &lay.ends.pages);
         let mut held = asked_now.clone();
         let idle_kept =
             before.filter(|b| b.content == lay.content).map_or(0, |b| linger(b, &asked_now, lay.room, &mut held));
-        let kept = keep(before, &lay.pinned.places, &held, &order);
+        // The rows kept stay as they were while what they are laid out from does, as rows appended or
+        // written leave it: every page keeps its slot, so no row the ends name moves.
+        let held_pages: Vec<usize> = (0..held.len()).filter(|&p| held[p]).collect();
+        let kept_from = stamp_of((lay.pinned.stamp, lay.ends.stamp, held_pages));
+        let same = before.filter(|b| b.kept_from == kept_from);
+        let kept: Arc<[u32]> = if let Some(b) = same {
+            b.kept.clone()
+        } else {
+            keep(before, &lay.pinned.places, &lay.ends.rows, &held, &order).into()
+        };
         let kept_pages = kept.len().div_ceil(PAGE_ROWS as usize);
         let (slots, pages, kept_slots) = place(before, &held, kept_pages);
-        let mut kept_rows: Vec<[u32; 2]> = kept
-            .iter()
-            .enumerate()
-            .filter(|&(_, &d)| d != wgsl::NONE)
-            .map(|(i, &d)| [d, kept_slots[i / PAGE_ROWS as usize] * PAGE_ROWS + (i as u32) % PAGE_ROWS])
-            .collect();
-        kept_rows.sort_unstable();
+        let kept_rows: Arc<[[u32; 2]]> = if let Some(b) = same {
+            b.kept_rows.clone()
+        } else {
+            let mut rows: Vec<[u32; 2]> = kept
+                .iter()
+                .enumerate()
+                .filter(|&(_, &d)| d != wgsl::NONE)
+                .map(|(i, &d)| [d, kept_slots[i / PAGE_ROWS as usize] * PAGE_ROWS + (i as u32) % PAGE_ROWS])
+                .collect();
+            rows.sort_unstable();
+            rows.into()
+        };
         let lays = before.map_or(1, |b| b.lays + 1);
         let asked: Arc<[u64]> = slots
             .iter()
@@ -180,8 +208,9 @@ impl Drawing {
             order,
             slots: slots.into(),
             pages: pages.into(),
-            kept: kept.into(),
-            kept_rows: kept_rows.into(),
+            kept,
+            kept_rows,
+            pinned: lay.pinned.places.clone(),
             runs: Vec::new(),
             by_held: Vec::new(),
             ranges,
@@ -195,9 +224,14 @@ impl Drawing {
             content: lay.content,
             laid: lay.stamp(),
             made: Version::next(),
+            held_ends: before.map_or_else(Version::next, |b| b.held_ends),
+            kept_from,
             layout: 0,
         };
         drawing.layout = stamp_of((drawing.order.id(), drawing.order.len(), &*drawing.slots, &*drawing.kept));
+        if before.is_some_and(|b| b.kept_from != kept_from && ends_moved(b, &drawing, lay.ends, &lay.pinned.places)) {
+            drawing.held_ends = Version::next();
+        }
         drawing.run(&entering, &lay.pinned.places);
         drawing.fades = !entering.is_empty() || !drawing.leaving.is_empty();
         drawing
@@ -283,11 +317,16 @@ impl Drawing {
         match self.holds(s) {
             Holds::Free => Vec::new(),
             Holds::Page(k) => (k * PAGE_ROWS..((k + 1) * PAGE_ROWS).min(self.order.len())).collect(),
-            Holds::Kept(j) => {
-                let start = (j * PAGE_ROWS) as usize;
-                self.kept[start..self.kept.len().min(start + PAGE_ROWS as usize)].to_vec()
-            }
+            Holds::Kept(_) => self.kept_places(s).to_vec(),
         }
+    }
+
+    /// The places in the order of the rows kept slot `s` holds, `NONE` where a place holds none; none
+    /// for a slot holding no rows kept.
+    pub(crate) fn kept_places(&self, s: usize) -> &[u32] {
+        let Holds::Kept(j) = self.holds(s) else { return &[] };
+        let start = ((j * PAGE_ROWS) as usize).min(self.kept.len());
+        &self.kept[start..self.kept.len().min(start + PAGE_ROWS as usize)]
     }
 
     /// The rows of its table slot `s` holds, in their places: what a page of its columns packs from;
@@ -343,20 +382,16 @@ impl Drawing {
         })
     }
 
-    /// The rows of its table it keeps whose pages it does not hold.
+    /// The rows of its table it keeps drawn whatever their tiles, whose pages it does not hold.
     pub(crate) fn kept(&self) -> impl Iterator<Item = u32> + '_ {
-        self.kept_rows.iter().map(|&[place, _]| self.order.source(place))
+        let paged = |d: u32| self.pages.get((d / PAGE_ROWS) as usize).is_some_and(|&slot| slot != wgsl::NONE);
+        self.pinned.iter().filter(move |&&d| d < self.order.len() && !paged(d)).map(|&d| self.order.source(d))
     }
 
     /// What tells how it holds rows: its order, what each slot holds, and where it keeps rows. A
     /// column's pages follow it.
     pub(crate) fn layout(&self) -> u64 {
         self.layout
-    }
-
-    /// The slots holding rows kept.
-    pub(crate) fn kept_slots(&self) -> Vec<u32> {
-        (0..self.slots.len()).filter(|&s| matches!(self.holds(s), Holds::Kept(_))).map(|s| s as u32).collect()
     }
 
     /// Whether slot `s` holds the same rows in `other` as in it.
@@ -384,6 +419,32 @@ fn asked<'r>(count: usize, ranges: impl Iterator<Item = &'r Range<u32>>, ends: &
     asked
 }
 
+/// Whether a row `ends` or `pinned` name, held in `before`, is held elsewhere in `now`: then the rows
+/// naming it find their ends again. A page held in both keeps its slot, and a row kept in both its
+/// place among the rows kept, so only rows of a page held in one alone move: those named of a page
+/// `before` held, and those `before` kept of a page `now` holds. A row `before` did not hold is named
+/// only by rows new to the edges, which find their ends as they arrive.
+fn ends_moved(before: &Drawing, now: &Drawing, ends: &Ending, pinned: &[u32]) -> bool {
+    let held = |drawing: &Drawing, page: usize| drawing.pages.get(page).is_some_and(|&slot| slot != wgsl::NONE);
+    // Whether any of `places`, ascending, lies in `page`.
+    let within = |places: &[u32], page: u32| {
+        let start = places.partition_point(|&d| d < page * PAGE_ROWS);
+        places.get(start).is_some_and(|&d| d < (page + 1) * PAGE_ROWS)
+    };
+    let kept_in = |page: u32| {
+        let start = before.kept_rows.partition_point(|&[place, _]| place < page * PAGE_ROWS);
+        before.kept_rows.get(start).is_some_and(|&[place, _]| place < (page + 1) * PAGE_ROWS)
+    };
+    (0..before.pages.len().max(now.pages.len())).any(|p| {
+        let page = p as u32;
+        match (held(before, p), held(now, p)) {
+            (true, false) => within(&ends.rows, page) || within(pinned, page),
+            (false, true) => kept_in(page),
+            _ => false,
+        }
+    })
+}
+
 /// Holds the pages `before` held that are no longer `asked` for while `room` leaves room, those
 /// asked for latest first: how many it holds.
 fn linger(before: &Drawing, asked: &[bool], room: u32, held: &mut [bool]) -> u32 {
@@ -400,12 +461,14 @@ fn linger(before: &Drawing, asked: &[bool], room: u32, held: &mut [bool]) -> u32
     kept.count() as u32
 }
 
-/// The rows of `pinned`, places in `order`, whose pages are not `held`, by their places among the rows
-/// kept, `NONE` where a place is free: each keeps its place in `before`, and the rest take the first
-/// free ones.
-fn keep(before: Option<&Drawing>, pinned: &[u32], held: &[bool], order: &Order) -> Vec<u32> {
-    let out: Vec<u32> =
-        pinned.iter().copied().filter(|&d| d < order.len() && !held[(d / PAGE_ROWS) as usize]).collect();
+/// The rows of `pinned` and of `ends`, places in `order`, whose pages are not `held`, by their places
+/// among the rows kept, `NONE` where a place is free: each keeps its place in `before`, and the rest
+/// take the first free ones.
+fn keep(before: Option<&Drawing>, pinned: &[u32], ends: &[u32], held: &[bool], order: &Order) -> Vec<u32> {
+    let mut out: Vec<u32> =
+        pinned.iter().chain(ends).copied().filter(|&d| d < order.len() && !held[(d / PAGE_ROWS) as usize]).collect();
+    out.sort_unstable();
+    out.dedup();
     let wanted: FxHashSet<u32> = out.iter().copied().collect();
     let mut kept: Vec<u32> = before.map_or_else(Vec::new, |b| b.kept.to_vec());
     let mut placed: FxHashSet<u32> = FxHashSet::default();
@@ -468,24 +531,33 @@ fn place(before: Option<&Drawing>, held: &[bool], kept_pages: usize) -> (Vec<u32
     (slots, pages, kept_slots)
 }
 
-/// Of each page of an edge table's order, the pages of its ends' table's order that the rows its
-/// edges end at lie in: worked out the first time it is held, kept while neither order nor the ends
-/// change. Rows appended to either table move no row already placed, so a page is worked out again
-/// only once rows were appended to it. A sample lifts the rows its edges end at in the sample of
-/// their table, so they lie in the pages it draws first.
+/// Of each page of an edge table's order, the places in its ends' table's order of the rows its edges
+/// end at: worked out the first time it is held, kept while neither order nor the ends change. Rows
+/// appended to either table move no row already placed, so a page is worked out again only once rows
+/// were appended to it. A sample lifts the rows its edges end at in the sample of their table, so they
+/// lie in the pages it draws first.
 #[derive(Default)]
 pub(crate) struct Ends {
     stamp: u64,
-    /// Each page's rows when it was worked out, and the pages its ends lie in.
-    pages: Vec<Option<(u32, Arc<[u32]>)>>,
+    /// Each page's rows when it was worked out, and the places its ends lie at.
+    pages: Vec<Option<(u32, Arc<Places>)>>,
     /// What the edges held asked last, and the stamp of what it was worked out from.
     asked: (u64, Arc<Ending>),
 }
 
+/// The places a page of edges ends at, ascending, each once, and for each page of the order they lie
+/// in, the run of them there: the page, and where its places start and end.
+struct Places {
+    places: Vec<u32>,
+    runs: Vec<[u32; 3]>,
+}
+
 impl Ends {
     /// What the edges `drawing` holds ask of the table they end at by `ends`, which draws in
-    /// `target`: the pages its ends lie in, and the rows the edges kept end at; worked out again only
-    /// where the pages the drawing holds or what it keeps changed.
+    /// `target`: the pages many of their ends lie in, the rest of the rows they end at, and the rows
+    /// the edges kept end at; worked out again only where the pages the drawing holds or what it keeps
+    /// changed. An edge page's ends count once each toward their page's, so a page whose rows the ends
+    /// of many edge pages share may be held whole for fewer rows.
     fn ending(&mut self, drawing: &Drawing, target: &Order, ends: &[&Reference]) -> Arc<Ending> {
         let stamp = stamp_of((drawing.order.id(), target.id(), ends.iter().map(|r| r.version).collect::<Vec<_>>()));
         if stamp != self.stamp {
@@ -496,13 +568,23 @@ impl Ends {
         if asked == self.asked.0 {
             return self.asked.1.clone();
         }
-        let mut pages: Vec<u32> = Vec::new();
-        for page in drawing.held_pages() {
-            pages.extend(self.of(&drawing.order, target, ends, page).iter());
+        let found: Vec<Arc<Places>> =
+            drawing.held_pages().map(|page| self.of(&drawing.order, target, ends, page)).collect();
+        let mut counts = vec![0_u32; target.pages() as usize];
+        for &[page, start, end] in found.iter().flat_map(|f| &f.runs) {
+            counts[page as usize] += end - start;
         }
-        pages.sort_unstable();
-        pages.dedup();
-        // The rows the edges kept end at, kept whatever their pages.
+        let dense = |page: u32| counts[page as usize] >= DENSE;
+        let pages: Vec<u32> = (0..counts.len() as u32).filter(|&page| dense(page)).collect();
+        let mut rows: Vec<u32> = Vec::new();
+        for f in &found {
+            for &[_, start, end] in f.runs.iter().filter(|&&[page, ..]| !dense(page)) {
+                rows.extend_from_slice(&f.places[start as usize..end as usize]);
+            }
+        }
+        rows.sort_unstable();
+        rows.dedup();
+        // The rows the edges kept end at, drawn whatever their pages.
         let mut kept: Vec<u32> = Vec::new();
         for row in drawing.kept() {
             for reference in ends {
@@ -512,31 +594,38 @@ impl Ends {
                 }
             }
         }
-        self.asked = (asked, Arc::new(Ending { pages, kept }));
+        self.asked = (asked, Arc::new(Ending::new(pages, rows, kept)));
         self.asked.1.clone()
     }
 
-    /// The pages of `target` that edge page `page` of `order` ends in, by `ends`.
-    fn of(&mut self, order: &Order, target: &Order, ends: &[&Reference], page: u32) -> Arc<[u32]> {
+    /// The places in `target` that edge page `page` of `order` ends at, by `ends`.
+    fn of(&mut self, order: &Order, target: &Order, ends: &[&Reference], page: u32) -> Arc<Places> {
         if self.pages.len() <= page as usize {
-            self.pages.resize(page as usize + 1, None);
+            self.pages.resize_with(page as usize + 1, || None);
         }
         let rows = order.len().saturating_sub(page * PAGE_ROWS).min(PAGE_ROWS);
         match &self.pages[page as usize] {
             Some((had, found)) if *had == rows => found.clone(),
             _ => {
-                let mut found: Vec<u32> = Vec::new();
+                let mut places: Vec<u32> = Vec::new();
                 for r in order.page(page) {
                     for reference in ends {
                         let t = reference.target_row(r as usize);
                         if t != UNWIRED && t < target.len() {
-                            found.push(target.rank(t) / PAGE_ROWS);
+                            places.push(target.rank(t));
                         }
                     }
                 }
-                found.sort_unstable();
-                found.dedup();
-                let found: Arc<[u32]> = found.into();
+                places.sort_unstable();
+                places.dedup();
+                let mut runs: Vec<[u32; 3]> = Vec::new();
+                for (i, &d) in places.iter().enumerate() {
+                    match runs.last_mut() {
+                        Some(run) if run[0] == d / PAGE_ROWS => run[2] = i as u32 + 1,
+                        _ => runs.push([d / PAGE_ROWS, i as u32, i as u32 + 1]),
+                    }
+                }
+                let found = Arc::new(Places { places, runs });
                 self.pages[page as usize] = Some((rows, found.clone()));
                 found
             }
@@ -544,23 +633,47 @@ impl Ends {
     }
 }
 
-/// What the edges drawn ask of the table they end at: the pages of its order their ends lie in, and
-/// the rows edges kept end at, kept whatever their pages.
-#[derive(Default)]
-struct Ending {
+/// What the edges held ask of the table they end at, as places in its order, ascending: the pages
+/// many of their ends lie in, held whole, and the rest of the rows they end at, held one at a time,
+/// neither drawn; and the rows the edges kept end at, drawn whatever their pages.
+#[derive(Default, Debug)]
+pub(crate) struct Ending {
     pages: Vec<u32>,
+    rows: Vec<u32>,
     kept: Vec<u32>,
+    /// What tells the pages and rows held from others without reading them.
+    stamp: u64,
+}
+
+impl Ending {
+    fn new(pages: Vec<u32>, rows: Vec<u32>, kept: Vec<u32>) -> Ending {
+        let stamp = stamp_of((&pages, &rows, &kept));
+        Ending { pages, rows, kept, stamp }
+    }
+
+    /// What `endings` ask together.
+    fn merged(endings: &[Arc<Ending>]) -> Ending {
+        let all = |part: fn(&Ending) -> &Vec<u32>| {
+            let mut all: Vec<u32> = endings.iter().flat_map(|e| part(e).iter().copied()).collect();
+            all.sort_unstable();
+            all.dedup();
+            all
+        };
+        Ending::new(all(|e| &e.pages), all(|e| &e.rows), all(|e| &e.kept))
+    }
 }
 
 /// What draws of a table drawn in part: the drawing drawn, the one replacing it once every page it
-/// needs is on the GPU, when the one drawn was first drawn on the view's clock, its ends' pages, and
-/// the rows it draws whatever their tiles.
+/// needs is on the GPU, when the one drawn was first drawn on the view's clock, what its edges ask of
+/// the table they end at, what the edges ending at it ask of it together, and the rows it draws
+/// whatever their tiles.
 #[derive(Default)]
 pub(crate) struct Drawn {
     pub(crate) current: Option<Arc<Drawing>>,
     pub(crate) next: Option<Arc<Drawing>>,
     pub(crate) since: f64,
     ends: Ends,
+    ending: (u64, Arc<Ending>),
     pinned: Pinned,
 }
 
@@ -568,6 +681,22 @@ impl Drawn {
     /// The drawing marks sync to: the one replacing what draws, else what draws.
     pub(crate) fn latest(&self) -> Option<&Arc<Drawing>> {
         self.next.as_ref().or(self.current.as_ref())
+    }
+
+    /// What every edge table drawn ending at it asks of it, as one; merged again only where any
+    /// changed.
+    fn ending(&mut self, endings: &[Arc<Ending>]) -> Arc<Ending> {
+        match endings {
+            [] => Arc::default(),
+            [one] => one.clone(),
+            many => {
+                let stamp = stamp_of(many.iter().map(|e| e.stamp).collect::<Vec<_>>());
+                if stamp != self.ending.0 {
+                    self.ending = (stamp, Arc::new(Ending::merged(many)));
+                }
+                self.ending.1.clone()
+            }
+        }
     }
 
     /// The rows drawn whatever their tiles: `own`, those selected or framed, and those `ending` keeps;
@@ -594,21 +723,22 @@ impl View {
         self.drawings.retain(|key, _| choices.contains_key(key));
         let fades = !self.ease().is_zero();
         let ease = self.ease().as_secs_f64();
-        // Edges first: the pages their ends lie in are held with them, and the rows edges kept end at
-        // kept with them.
+        // Edges first: the vertices their ends name are held with them, and the rows edges kept end
+        // at drawn with them.
         let mut keys: Vec<&(Name, Name)> = choices.keys().collect();
         crate::order::by_key(&mut keys, |key| {
             u64::from(!matches!(self.planning.plans().get(*key).map(|p| &p.place), Some(Place::Ends(_))))
         });
-        let mut ends: crate::data::Keyed<(Name, Name), Arc<Ending>> = crate::data::Keyed::default();
+        let mut ends: crate::data::Keyed<(Name, Name), Vec<Arc<Ending>>> = crate::data::Keyed::default();
         for key in keys {
             let chosen = &choices[key];
-            let ending = ends.remove(key).unwrap_or_default();
+            let endings = ends.remove(key).unwrap_or_default();
             let own = self.pinned(key, &chosen.order);
             let (content, room) = (self.content(key), self.room(key));
             let drawn = self.drawings.entry(key.clone()).or_default();
+            let ending = drawn.ending(&endings);
             let pinned = drawn.pin(own, &ending);
-            let lay = Lay { chosen, pinned: &pinned, ends: &ending.pages, room, content };
+            let lay = Lay { chosen, pinned: &pinned, ends: &ending, room, content };
             let stamp = lay.stamp();
             let current = drawn.current.clone();
             let latest = drawn.next.as_ref().or(current.as_ref());
@@ -621,10 +751,10 @@ impl View {
             {
                 drawn.next = Some(Arc::new(current.settled(&lay)));
             }
-            // The pages the edges this drawing holds end in, held with their vertices.
+            // The vertices the edges this drawing holds end at, held with their vertices.
             let Some(place) = self.planning.plans().get(key).map(|p| &p.place) else { continue };
             let Place::Ends(fields) = place else { continue };
-            let Some(table) = self.sources.iter().find(|d| *d.name() == key.0).and_then(|d| d.table(&key.1)) else {
+            let Some(table) = self.snapshots.iter().find(|d| *d.name() == key.0).and_then(|d| d.table(&key.1)) else {
                 continue;
             };
             let references: Vec<&Reference> = fields
@@ -639,7 +769,8 @@ impl View {
             let Some(target) = choices.get(&target_key) else { continue };
             let drawn = self.drawings.get_mut(key).expect("laid out");
             let drawing = drawn.latest().expect("laid out").clone();
-            ends.insert(target_key, drawn.ends.ending(&drawing, &target.order, &references));
+            let ending = drawn.ends.ending(&drawing, &target.order, &references);
+            ends.entry(target_key).or_default().push(ending);
         }
         self.choices = choices;
     }
@@ -685,7 +816,7 @@ impl View {
 
     /// What the words of the rows of `key`'s table are made from: the scene, and the table's data.
     fn content(&self, key: &(Name, Name)) -> u64 {
-        let table = self.source(&key.0).and_then(|d| d.table(&key.1));
+        let table = self.snapshot(&key.0).and_then(|d| d.table(&key.1));
         let data = table.map(|t| (t.structure, t.fields.iter().map(|(_, f)| f.version()).collect::<Vec<_>>()));
         stamp_of((self.scene_version, data))
     }
@@ -702,7 +833,7 @@ impl View {
     /// The places in `order` of the rows of `key`'s table drawn whatever their tiles: those selected,
     /// and those a fit frames, ascending.
     fn pinned(&self, key: &(Name, Name), order: &Order) -> Vec<u32> {
-        let Some(table) = self.source(&key.0).and_then(|d| d.table(&key.1)) else { return Vec::new() };
+        let Some(table) = self.snapshot(&key.0).and_then(|d| d.table(&key.1)) else { return Vec::new() };
         let mut rows: Vec<u32> = self
             .focus
             .selection
@@ -749,8 +880,7 @@ mod tests {
             &Lay {
                 chosen: &chosen(&order, &[0..PAGE_ROWS, 3 * PAGE_ROWS..4 * PAGE_ROWS]),
                 pinned: &Pinned::default(),
-                ends: &[],
-
+                ends: &Ending::default(),
                 room: 0,
                 content: 0,
             },
@@ -764,8 +894,7 @@ mod tests {
             &Lay {
                 chosen: &chosen(&order, &[3 * PAGE_ROWS..4 * PAGE_ROWS, 5 * PAGE_ROWS..6 * PAGE_ROWS]),
                 pinned: &Pinned::default(),
-                ends: &[],
-
+                ends: &Ending::default(),
                 room: 0,
                 content: 0,
             },
@@ -783,7 +912,13 @@ mod tests {
         let lay = |ranges: &[Range<u32>], room: u32, before: Option<&Drawing>| {
             Drawing::lay(
                 before,
-                &Lay { chosen: &chosen(&order, ranges), pinned: &Pinned::default(), ends: &[], room, content: 0 },
+                &Lay {
+                    chosen: &chosen(&order, ranges),
+                    pinned: &Pinned::default(),
+                    ends: &Ending::default(),
+                    room,
+                    content: 0,
+                },
                 false,
             )
         };
@@ -801,8 +936,13 @@ mod tests {
         assert_eq!(&*tight.slots, [6, 1]);
         // Their words made from other data or another scene, pages no longer drawn are let go.
         let ranges = [0..PAGE_ROWS, 4 * PAGE_ROWS..5 * PAGE_ROWS];
-        let changed =
-            Lay { chosen: &chosen(&order, &ranges), pinned: &Pinned::default(), ends: &[], room: 3, content: 1 };
+        let changed = Lay {
+            chosen: &chosen(&order, &ranges),
+            pinned: &Pinned::default(),
+            ends: &Ending::default(),
+            room: 3,
+            content: 1,
+        };
         let changed = Drawing::lay(Some(&back), &changed, false);
         assert_eq!((&*changed.slots, changed.idle), (&[0, wgsl::NONE, 4][..], 0));
     }
@@ -812,15 +952,20 @@ mod tests {
         let order = order(4 * PAGE_ROWS);
         let first = Drawing::lay(
             None,
-            &Lay { chosen: &one(&order, 0..10), pinned: &Pinned::default(), ends: &[], room: 0, content: 0 },
+            &Lay {
+                chosen: &one(&order, 0..10),
+                pinned: &Pinned::default(),
+                ends: &Ending::default(),
+                room: 0,
+                content: 0,
+            },
             true,
         );
         assert!(!first.fades, "a first drawing has nothing to fade from");
         let lay = Lay {
             chosen: &one(&order, PAGE_ROWS..PAGE_ROWS + 10),
             pinned: &pinned(&[3]),
-            ends: &[],
-
+            ends: &Ending::default(),
             room: 0,
             content: 0,
         };
@@ -837,10 +982,47 @@ mod tests {
     }
 
     #[test]
+    fn ends_lying_sparse_are_held_a_row_at_a_time() {
+        let order = order(4 * PAGE_ROWS);
+        // Many ends lie in page 3, two in page 2: page 3 is held whole, the two rows one at a time,
+        // and none draws.
+        let ends = Ending::new(vec![3], vec![2 * PAGE_ROWS + 5, 2 * PAGE_ROWS + 9], Vec::new());
+        let lay = Lay { chosen: &one(&order, 0..10), pinned: &Pinned::default(), ends: &ends, room: 0, content: 0 };
+        let drawing = Drawing::lay(None, &lay, false);
+        assert_eq!(&*drawing.slots, [0, 3, KEPT], "the page drawn, the ends' page, and a page of the ends' rows");
+        assert_eq!(drawing.items, 10, "what ends hold is not drawn");
+        assert_eq!(drawing.held_of(2 * PAGE_ROWS + 9), Some(2 * PAGE_ROWS + 1));
+        assert_eq!(drawing.held_of(2 * PAGE_ROWS + 6), None, "rows no end names are not held");
+        // Another end held: the rows held before keep their places.
+        let more = Ending::new(vec![3], vec![PAGE_ROWS, 2 * PAGE_ROWS + 5, 2 * PAGE_ROWS + 9], Vec::new());
+        let next = Drawing::lay(Some(&drawing), &Lay { ends: &more, ..lay }, false);
+        assert_eq!(next.held_of(2 * PAGE_ROWS + 9), Some(2 * PAGE_ROWS + 1));
+        assert_eq!(next.held_of(PAGE_ROWS), Some(2 * PAGE_ROWS + 2));
+        assert_eq!(next.held_ends, drawing.held_ends, "no row ends name moved");
+        // Rows appended to the order leave what the rows kept are laid out from: they stay as they were.
+        let Order::Pyramid { pyramid, .. } = &order else { unreachable!("a pyramid") };
+        let grown = Order::Pyramid { pyramid: pyramid.clone(), rows: 4 * PAGE_ROWS + 1 };
+        let appended = Drawing::lay(Some(&next), &Lay { chosen: &one(&grown, 0..10), ends: &more, ..lay }, false);
+        assert!(Arc::ptr_eq(&appended.kept_rows, &next.kept_rows), "the rows kept as they were");
+        assert_eq!(appended.held_ends, next.held_ends);
+        // Page 2 drawn: the rows of it held one at a time move into it, and the edges ending there find
+        // them again.
+        let drawn = Lay { chosen: &chosen(&order, &[0..10, 2 * PAGE_ROWS..2 * PAGE_ROWS + 10]), ends: &more, ..lay };
+        let paged = Drawing::lay(Some(&next), &drawn, false);
+        assert_eq!(paged.held_of(2 * PAGE_ROWS + 9), Some(paged.pages[2] * PAGE_ROWS + 9));
+        assert_ne!(paged.held_ends, next.held_ends, "rows ends name moved");
+    }
+
+    #[test]
     fn rows_kept_lie_in_pages_of_their_own_and_ends_hold_their_pages() {
         let order = order(4 * PAGE_ROWS);
-        let lay =
-            Lay { chosen: &one(&order, 0..10), pinned: &pinned(&[2 * PAGE_ROWS + 1]), ends: &[3], room: 0, content: 0 };
+        let lay = Lay {
+            chosen: &one(&order, 0..10),
+            pinned: &pinned(&[2 * PAGE_ROWS + 1]),
+            ends: &Ending::new(vec![3], Vec::new(), Vec::new()),
+            room: 0,
+            content: 0,
+        };
         let drawing = Drawing::lay(None, &lay, false);
         assert_eq!(&*drawing.slots, [0, 3, KEPT], "the page drawn, the ends', and a page of the row kept");
         assert_eq!(drawing.items, 11, "ends' pages are held, not drawn");

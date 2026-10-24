@@ -182,6 +182,8 @@ impl Marks<'_> {
 /// What a frame's compute pass does.
 struct Work {
     evaluated: Vec<usize>,
+    /// Marks whose rows find their ends where those changed.
+    resolved: Vec<usize>,
     /// Marks whose ease pass writes what they show from their frozen and settled state.
     eased: Vec<usize>,
     segments: Vec<usize>,
@@ -206,8 +208,27 @@ pub(super) fn dispatch(pass: &mut wgpu::ComputePass<'_>, items: u32) {
     }
 }
 
+/// The row blocks `shown` evaluates: those its channels changed over, and those whose state words
+/// start over, which `FRESH` marks.
+fn listed(shown: &super::marks::Shown) -> Vec<u32> {
+    let count = shown.live().div_ceil(wgsl::PAGE_ROWS);
+    let mut fresh: Vec<u32> = shown.fresh.iter().copied().filter(|&b| b < count).collect();
+    fresh.sort_unstable();
+    fresh.dedup();
+    let mut blocks = if shown.dirty != 0 || shown.reduce { shown.blocks.of(shown.live()) } else { Vec::new() };
+    blocks.extend(&fresh);
+    blocks.sort_unstable();
+    blocks.dedup();
+    for block in &mut blocks {
+        if fresh.binary_search(block).is_ok() {
+            *block |= wgsl::FRESH;
+        }
+    }
+    blocks
+}
+
 /// Dispatches over `blocks` listed row blocks of a mark of `rows` held rows: a block's rows wide.
-fn dispatch_blocks(pass: &mut wgpu::ComputePass<'_>, rows: u32, blocks: u32) {
+pub(super) fn dispatch_blocks(pass: &mut wgpu::ComputePass<'_>, rows: u32, blocks: u32) {
     let wide = rows.min(wgsl::PAGE_ROWS).div_ceil(WORKGROUP);
     if wide > 0 && blocks > 0 {
         pass.dispatch_workgroups(wide, blocks, 1);
@@ -354,6 +375,7 @@ impl View {
             shown.dirty = 0;
             shown.blocks = super::marks::Blocks::default();
             shown.reduce = false;
+            shown.fresh.clear();
         }
         pass.set_bind_group(2, state, &[step(wgsl::STEP_CHANNELS)]);
     }
@@ -370,31 +392,14 @@ impl View {
     ) -> Option<Readback> {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
-        let Work { evaluated: work, eased, segments, faces, measured, carried, travelled, expanded } =
+        let Work { evaluated: work, resolved, eased, segments, faces, measured, carried, travelled, expanded } =
             self.work(measure, travel);
-        let all = [&work, &eased, &segments, &faces, &measured, &carried, &travelled, &expanded];
+        let all = [&work, &resolved, &eased, &segments, &faces, &measured, &carried, &travelled, &expanded];
         if all.iter().all(|marks| marks.is_empty()) {
             return None;
         }
-        // Domains a table drawn in part fits over all its rows, on the CPU; the GPU fits the rest.
-        let mut fitted: Vec<(usize, Vec<u32>)> = Vec::new();
-        for &i in &work {
-            if self.marks[i].reduce && self.marks[i].fits_data() {
-                fitted.push((i, self.data_domains(i)));
-            }
-        }
+        self.start_domains(encoder, &work);
         let resources = self.resources.as_mut().expect("created before passes");
-        for &i in &work {
-            let shown = &self.marks[i];
-            if !shown.reduce {
-                continue;
-            }
-            let at = u64::from(shown.domains) * 8;
-            match fitted.iter().find(|(m, _)| *m == i) {
-                Some((_, words)) => gpu.0.queue.write_buffer(resources.domains(), at, bytemuck::cast_slice(words)),
-                None => encoder.clear_buffer(resources.domains(), at, Some(u64::from(shown.reductions()) * 8)),
-            }
-        }
         let extent_bytes = self.marks.len() as u64 * u64::from(wgsl::EXTENT_WORDS) * 4;
         if !measured.is_empty() {
             encoder.clear_buffer(resources.extents(), 0, Some(extent_bytes));
@@ -405,7 +410,7 @@ impl View {
             let words = u64::from(wgsl::PAGE_ROWS * wgsl::NORMAL_WORDS) * 4;
             for shown in &self.marks {
                 for &block in shown.words.pages(Kept::Normals).blocks.iter() {
-                    encoder.clear_buffer(inner.arena.buffer(), u64::from(block) * 4, Some(words));
+                    gpu.0.queue.clear_buffer(encoder, inner.arena.buffer(), u64::from(block) * 4, words);
                 }
             }
         }
@@ -437,6 +442,8 @@ impl View {
             pass.set_bind_group(2, &evaluate_group, &[super::resources::step(wgsl::STEP_CHANNELS)]);
             self.every_row(&mut pass, inner, &groups.mark, "carry", &carried);
             self.evaluate(&mut pass, inner, &groups.mark, &evaluate_group, &work);
+            // Before anything reading where rows' ends are held.
+            self.resolve_ends(&mut pass, inner, &groups.mark, &evaluate_group, &resolved);
             // After evaluating, so what a mark shows eases toward what it evaluated this frame.
             self.every_row(&mut pass, inner, &groups.mark, "ease", &eased);
             // After evaluating, so comets travel at the flow this frame shows.
@@ -474,20 +481,44 @@ impl View {
         })
     }
 
-    /// What this frame's compute pass does: the marks it evaluates, the segment lists it counts, the
-    /// faces whose normals it sums, the marks it measures, and with `travel` the marks whose comets
-    /// travel.
+    /// Starts the fitted domains marks `work` reduce: those a table drawn in part fits over all its rows
+    /// on the CPU written, the rest cleared for the GPU to fit.
+    fn start_domains(&mut self, encoder: &mut wgpu::CommandEncoder, work: &[usize]) {
+        let mut fitted: Vec<(usize, Vec<u32>)> = Vec::new();
+        for &i in work {
+            if self.marks[i].reduce && self.marks[i].fits_data() {
+                fitted.push((i, self.data_domains(i)));
+            }
+        }
+        let resources = self.resources.as_mut().expect("created before passes");
+        for &i in work {
+            let shown = &self.marks[i];
+            if !shown.reduce {
+                continue;
+            }
+            let at = u64::from(shown.domains) * 8;
+            match fitted.iter().find(|(m, _)| *m == i) {
+                Some((_, words)) => self.gpu.0.queue.write_buffer(resources.domains(), at, bytemuck::cast_slice(words)),
+                None => encoder.clear_buffer(resources.domains(), at, Some(u64::from(shown.reductions()) * 8)),
+            }
+        }
+    }
+
+    /// What this frame's compute pass does: the marks it evaluates and whose ends it finds, the
+    /// segment lists it counts, the faces whose normals it sums, the marks it measures, and with
+    /// `travel` the marks whose comets travel.
     fn work(&mut self, measure: bool, travel: bool) -> Work {
         for shown in &mut self.marks {
-            // A mark without rows has nothing to evaluate.
+            // A mark without rows has nothing to evaluate, nor ends to find.
             if shown.held() == 0 && shown.tables.synced() {
                 shown.dirty = 0;
                 shown.reduce = false;
+                shown.unresolved = super::marks::Blocks::default();
+                shown.fresh.clear();
             }
         }
-        let work: Vec<usize> = (0..self.marks.len())
-            .filter(|&i| self.marks[i].drawable() && (self.marks[i].dirty != 0 || self.marks[i].reduce))
-            .collect();
+        let work: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].block_count > 0).collect();
+        let resolved: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].end_block_count > 0).collect();
         for &i in &work {
             let shown = &mut self.marks[i];
             shown.version += 1;
@@ -521,19 +552,24 @@ impl View {
         let carried = (0..self.marks.len()).filter(|i| self.marks[*i].carry && flowing(i)).collect();
         let travelled = (0..self.marks.len()).filter(|i| travel && flowing(i)).collect();
         let expanded = self.drawn_rows_due();
-        Work { evaluated: work, eased, segments, faces, measured, carried, travelled, expanded }
+        Work { evaluated: work, resolved, eased, segments, faces, measured, carried, travelled, expanded }
     }
 
     /// Lists the row blocks each mark evaluates this frame where its uniform finds them: every block of
-    /// a mark some channel of which changed for every row, else the blocks of the pages that changed.
+    /// a mark some channel of which changed for every row, else the blocks of the pages that changed;
+    /// and the row blocks whose ends it finds.
     pub(super) fn lay_out_blocks(&mut self) {
         let mut words = Vec::new();
         for shown in &mut self.marks {
-            let evaluates = shown.drawable() && (shown.dirty != 0 || shown.reduce);
-            let blocks = if evaluates { shown.blocks.of(shown.live()) } else { Vec::new() };
+            let evaluates = shown.drawable() && (shown.dirty != 0 || shown.reduce || !shown.fresh.is_empty());
+            let blocks = if evaluates { listed(shown) } else { Vec::new() };
             shown.block = words.len() as u32;
             shown.block_count = blocks.len() as u32;
             words.extend(blocks);
+            let ends = if shown.drawable() { shown.unresolved.of(shown.live()) } else { Vec::new() };
+            shown.end_block = words.len() as u32;
+            shown.end_block_count = ends.len() as u32;
+            words.extend(ends);
         }
         let gpu = self.gpu.clone();
         let resources = self.resources.as_mut().expect("created before passes");
@@ -609,17 +645,17 @@ impl View {
         let Some(compiled) = &shown.compiled else { return Vec::new() };
         let program = &compiled.program;
         let style = shown.mark.style();
-        let table = self.source(&style.data).and_then(|d| Some((d, d.table(&style.table)?)));
+        let table = self.snapshot(&style.data).and_then(|d| Some((d, d.table(&style.table)?)));
         let Some((data, table)) = table else { return vec![0; 2 * program.domains.len()] };
         let source = Source { data, table, derived: self.derived.beside(&style.data, &style.table), paged: Vec::new() };
-        let rows = Rows::new(table, &self.sources).at(self.at);
+        let rows = Rows::new(table, &self.snapshots).at(self.at);
         let mut fitted = Vec::with_capacity(program.domains.len());
         for (d, (reads, input)) in program.domains.iter().zip(&program.fitted).enumerate() {
             let versions: Vec<Option<crate::data::Version>> = (0..program.columns.len())
                 .filter(|&c| reads.columns & Reads::column(c) != 0)
                 .map(|c| {
                     let column = &program.columns[c];
-                    table_of(column, &source, &self.sources)?.1.field_named(&column.name).map(Field::version)
+                    table_of(column, &source, &self.snapshots)?.1.field_named(&column.name).map(Field::version)
                 })
                 .collect();
             let sampled = reads.deps.intersects(Deps::SAMPLES).then_some(self.at.to_bits());

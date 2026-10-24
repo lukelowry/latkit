@@ -1,5 +1,5 @@
-//! What a job reads: scenes, datasets, cameras, fits, and frames. Datasets and frames' patches are
-//! the library's JSON documents, loaded through the host, which reads the files they name.
+//! What a job reads: scenes, datasets, cameras, fits, and frames. Datasets and frames' patches read
+//! as the library reads them, through the host, which reads the files their documents name.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
@@ -8,10 +8,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use latkit::host::Native;
-use latkit::{Camera, Data, Error, Fit, Name, Patch, Patches, Scene};
+use latkit::{Camera, Data, Error, Fit, Name, Patch, Patches, Reading, Scene};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use serde::de::IgnoredAny;
 
 use crate::args::{Source, is_stdio};
 use crate::{Failure, block};
@@ -59,32 +58,14 @@ pub(crate) fn fit(text: &str) -> Result<Fit, Failure> {
     latkit::from_json(&json).map_err(|e| Failure::from(e.at("--fit")))
 }
 
-/// The dataset `source` names: a JSON document loaded through `host`, latkit bytes, or GeoJSON,
-/// named as it says.
+/// The dataset `source` names: latkit's bytes, GeoJSON, or a JSON document whose files `host`
+/// reads, named as it says.
 pub(crate) fn dataset(source: &Source, host: &Native, deadline: Duration) -> Result<Data, Failure> {
     let path = &source.path;
     let bytes = read(path)?;
-    let at = |error: Error| Failure::at(error, path);
-    let name = source.name.as_deref();
-    if bytes.starts_with(b"LATK") || bytes.starts_with(&[0x1f, 0x8b]) || geojson(&bytes) {
-        return Data::read(&bytes, name).map_err(|e| at(e.at("NAME=FILE")));
-    }
-    let text = std::str::from_utf8(&bytes).map_err(|_| at(Error::invalid("a dataset is JSON or latkit bytes")))?;
-    let data = block(deadline, Data::load(text, &base(path), host)).map_err(at)?;
-    Ok(match name {
-        Some(name) if name != data.name().as_str() => data.renamed(name),
-        _ => data,
-    })
-}
-
-/// Whether JSON `bytes` are GeoJSON: an object with a `type`.
-fn geojson(bytes: &[u8]) -> bool {
-    #[derive(Deserialize)]
-    struct Probe {
-        #[serde(rename = "type")]
-        kind: Option<IgnoredAny>,
-    }
-    serde_json::from_slice::<Probe>(bytes).is_ok_and(|p| p.kind.is_some())
+    let base = base(path);
+    let reading = Reading { name: source.name.as_deref(), base: &base, host: Some(host) };
+    block(deadline, Data::read(&bytes, reading)).map_err(|e| Failure::at(e, path))
 }
 
 /// One output frame's changes, as a line of the frames file says.
@@ -165,7 +146,8 @@ impl Frames {
                 return Err(at(Error::invalid("at is finite").at("at")));
             }
             let base = base(&self.path);
-            let patches = std::mem::take(&mut frame.patch).load(&base, &self.host);
+            let reading = Reading { base: &base, host: Some(&self.host), name: None };
+            let patches = std::mem::take(&mut frame.patch).read(reading);
             let patches = block(self.deadline, patches).map_err(|e| at(e.at("patch")))?;
             return Ok(Some((index, frame, patches)));
         }
@@ -217,22 +199,28 @@ mod tests {
         let host = Native::new();
         let load = |text: &str| dataset(&text.parse().unwrap(), &host, deadline());
         let path = dir.path().join("grid.json").to_string_lossy().into_owned();
-        let data = load(&path).unwrap();
-        assert_eq!(data.table("Bus").unwrap().get("a", "x"), Some(latkit::Value::Number(-2.5)));
+        let data = load(&path).unwrap().snapshot();
+        assert_eq!(data.get("Bus", "a", "x", None), Some(latkit::Value::Number(-2.5)));
         assert_eq!(load(&format!("other={path}")).unwrap().name().as_str(), "other");
         std::fs::write(dir.path().join("grid.bin"), data.to_bytes()).unwrap();
-        assert_eq!(load(&dir.path().join("grid.bin").to_string_lossy()).unwrap().table("Bus").unwrap().len(), 2);
+        let rows = |data: &Data, table: &str| {
+            data.snapshot().describe().tables.into_iter().find(|t| t.name == table).map(|t| t.rows)
+        };
+        let bin = load(&dir.path().join("grid.bin").to_string_lossy()).unwrap();
+        assert_eq!(rows(&bin, "Bus"), Some(2));
         let geo = r#"{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}}"#;
         std::fs::write(dir.path().join("p.geojson"), geo).unwrap();
         let geo_path = dir.path().join("p.geojson").to_string_lossy().into_owned();
         assert!(load(&geo_path).is_err(), "GeoJSON names its dataset");
-        assert_eq!(load(&format!("places={geo_path}")).unwrap().table("points").unwrap().len(), 1);
+        let places = load(&format!("places={geo_path}")).unwrap();
+        assert_eq!(rows(&places, "points"), Some(1));
     }
 
     #[test]
     fn frames_keep_their_patches_order_and_apply_to_every_view_or_each() {
         let frame: Frame = latkit::from_json(r#"{"patch": {"b": [], "a": []}}"#).unwrap();
-        let patches = block(deadline(), frame.patch.load("", &Native::new())).unwrap();
+        let host = Native::new();
+        let patches = block(deadline(), frame.patch.read(Reading { host: Some(&host), ..Reading::default() })).unwrap();
         let names: Vec<&str> = patches.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["b", "a"]);
         assert!(latkit::from_json::<Frame>(r#"{"patch": {"a": [], "a": []}}"#).is_err(), "a dataset patched twice");

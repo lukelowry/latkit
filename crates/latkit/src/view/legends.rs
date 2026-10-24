@@ -32,7 +32,7 @@ impl View {
     /// CSS pixels the scene's title and subtitle take below the top inset, with the margin above them
     /// and half of it below: none when it has neither.
     pub(super) fn title_band(&self) -> f64 {
-        let font = f64::from(self.scene.theme.font_size);
+        let font = f64::from(self.scene.theme.text.size);
         let lines: f64 = [(self.scene.title.is_some(), TITLE), (self.scene.subtitle.is_some(), SUBTITLE)]
             .into_iter()
             .filter_map(|(shown, scale)| shown.then_some(font * scale * LEADING))
@@ -53,15 +53,15 @@ impl View {
         let [top, right, bottom, left] = self.insets.map(f64::from);
         let area = [left + MARGIN, top + MARGIN, w - right - MARGIN, h - bottom - MARGIN];
         let ratio = f64::from(self.pixel_ratio);
-        let font = f64::from(theme.font_size);
+        let font = f64::from(theme.text.size);
         let writer = |inner: &mut Inner, scale: f64, color: Color, f: &mut dyn FnMut(&mut Writer<'_>)| {
             let size_px = (font * scale * ratio).round().max(1.0) as u32;
-            f(&mut Writer { inner, font: theme.font.clone(), size_px, ratio, color });
+            f(&mut Writer { inner, font: theme.text.font.clone(), size_px, ratio, color });
         };
         let mut sprites = Vec::new();
         let mut y = area[1];
         for (text, scale, color) in
-            [(&scene.title, TITLE, theme.text), (&scene.subtitle, SUBTITLE, theme.text.alpha(0.7))]
+            [(&scene.title, TITLE, theme.text.color), (&scene.subtitle, SUBTITLE, theme.text.color.alpha(0.7))]
         {
             let Some(text) = text else { continue };
             writer(inner, scale, color, &mut |w| sprites.extend(w.text(text, [area[0], y], Align::BelowRight)));
@@ -69,7 +69,7 @@ impl View {
         }
         let mut base = area[3];
         for (title, color) in legends() {
-            let Some((colormap, domain)) = color.colormap_of() else { continue };
+            let Some((colormap, domain)) = color.0.colormap_of() else { continue };
             let write = |s, color, f: &mut dyn FnMut(&mut Writer<'_>)| writer(inner, s, color, f);
             let height = if !colormap.named_categories().is_empty() {
                 categories(&mut sprites, theme, [area[2], base], colormap, ratio, write, title)
@@ -96,7 +96,7 @@ fn categories(
     mut write: impl FnMut(f64, Color, &mut dyn FnMut(&mut Writer<'_>)),
     title: &Arc<str>,
 ) -> f64 {
-    let font = f64::from(theme.font_size);
+    let font = f64::from(theme.text.size);
     let names = colormap.named_categories();
     let names = &names[..names.len().min(CATEGORIES)];
     let [row, swatch] = [font * 1.5, font * 0.8];
@@ -112,7 +112,7 @@ fn categories(
             let category = column * ROWS + r;
             let color = Color::from_bytes(colormap.texels()[category]);
             sprites.push(fill([x, middle - swatch / 2.0], [x + swatch, middle + swatch / 2.0], color));
-            write(SMALL, theme.text.alpha(0.85), &mut |w| {
+            write(SMALL, theme.text.color.alpha(0.85), &mut |w| {
                 if let Some(text) = w.text(name, [x + swatch + font * 0.5, middle], Align::Right) {
                     right = f64::max(right, f64::from(text.b[0]));
                     sprites.push(text);
@@ -123,7 +123,7 @@ fn categories(
     }
     let mut height = corner[1] - top;
     if !title.is_empty() {
-        write(1.0, theme.text, &mut |w| sprites.extend(w.text(title, [0.0, top - 5.0], Align::Above)));
+        write(1.0, theme.text.color, &mut |w| sprites.extend(w.text(title, [0.0, top - 5.0], Align::Above)));
         height += font * 1.4 + 5.0;
     }
     let right = sprites[start..].iter().fold(0.0_f32, |right, s| right.max(s.a[0]).max(s.b[0]));
@@ -146,11 +146,11 @@ fn legend(
     mut write: impl FnMut(f64, Color, &mut dyn FnMut(&mut Writer<'_>)),
     title: &Arc<str>,
 ) -> f64 {
-    let font = f64::from(theme.font_size);
+    let font = f64::from(theme.text.size);
     let bar_bottom = corner[1] - font * SMALL * 1.4 - 4.0;
     let [left, top] = [corner[0] - BAR[0], bar_bottom - BAR[1]];
     let color = |t: usize| Color::from_bytes(colormap.texels()[t.min(255)]);
-    let text = theme.text.alpha(0.85);
+    let text = theme.text.color.alpha(0.85);
     let across = |v: f64| left + (v - domain[0]) / (domain[1] - domain[0]).max(f64::MIN_POSITIVE) * BAR[0];
     let mut labels: Vec<(String, f64)> = Vec::new();
     if colormap.kind() == ColormapKind::Categorical {
@@ -190,7 +190,7 @@ fn legend(
     });
     let mut height = corner[1] - top;
     if !title.is_empty() {
-        write(1.0, theme.text, &mut |w| sprites.extend(w.text(title, [left, top - 5.0], Align::Above)));
+        write(1.0, theme.text.color, &mut |w| sprites.extend(w.text(title, [left, top - 5.0], Align::Above)));
         height += font * 1.4 + 5.0;
     }
     height

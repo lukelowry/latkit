@@ -38,7 +38,7 @@ impl View {
     /// Writes every mark whose words changed into its region of the program buffer.
     pub(super) fn pack(&mut self, inner: &mut Inner) {
         let gpu = self.gpu.clone();
-        let font = self.scene.theme.font.clone();
+        let font = self.scene.theme.text.font.clone();
         for shown in self.marks.iter_mut().filter(|m| !m.packed) {
             shown.write_ports(&font, inner);
             let Some(compiled) = &mut shown.compiled else { continue };

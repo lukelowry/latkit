@@ -73,7 +73,7 @@ impl View {
         // Rows the data no longer holds, or no mark shows, leave the selection.
         if selection.len() < self.focus.selection.len() {
             self.focus.selection.clone_from(&selection);
-            self.events.tell(Event::Select { rows: Rows::group(selection), trigger: None });
+            self.events.tell(Event::Selection { rows: Rows::group(selection), trigger: None });
         }
         let cleared = self.focus.written.keys().filter(|at| !words.contains_key(at)).copied();
         let set = words.iter().filter(|(at, b)| self.focus.written.get(at) != Some(b)).map(|(&at, _)| at);
@@ -115,7 +115,7 @@ impl View {
     fn focus_rows(&self, rows: &[Row], bit: u32, picked: bool, ends: bool, words: &mut FxHashMap<At, u32>) -> Vec<Row> {
         let mut kept = Vec::new();
         for row in rows {
-            let Some(table) = self.data(&row.data).and_then(|d| d.table(&row.table)) else { continue };
+            let Some(table) = self.snapshot(&row.data).and_then(|d| d.table(&row.table)) else { continue };
             let Some(index) = table.row(row.id.as_ref()) else { continue };
             let mut shows = false;
             for (i, shown) in self.marks.iter().enumerate() {
@@ -203,10 +203,10 @@ impl View {
         let Some(compiled) = &shown.compiled else { return 0 };
         let Some(column) = compiled.program.columns.get(compiled.drawing.geometry as usize) else { return 0 };
         let style = shown.mark.style();
-        let Some(data) = self.source(&style.data) else { return 0 };
+        let Some(data) = self.snapshot(&style.data) else { return 0 };
         let Some(table) = data.table(&style.table) else { return 0 };
         let source = Source { data, table, derived: self.derived.beside(&style.data, &style.table), paged: Vec::new() };
-        let Some((_, table)) = table_of(column, &source, &self.sources) else { return 0 };
+        let Some((_, table)) = table_of(column, &source, &self.snapshots) else { return 0 };
         let Some(Field::Values(values, _)) = table.field_named(&column.name) else { return 0 };
         let pages = values.pages();
         lit.iter()

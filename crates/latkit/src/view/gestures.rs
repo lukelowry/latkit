@@ -405,7 +405,7 @@ impl View {
     fn hover(&mut self, hit: Option<Hit>, trigger: Trigger) {
         if hit.as_ref().map(|h| &h.row) != self.focus.hovered.as_ref().map(|h| &h.row) {
             self.focus.dirty = true;
-            self.events.tell(Event::Hover { hit: hit.clone(), trigger });
+            self.events.tell(Event::Hovered { hit: hit.clone(), trigger });
             self.wake();
         }
         self.focus.hovered = hit;
@@ -463,7 +463,7 @@ impl View {
             && let Some((from, edge, anchor)) =
                 answer.hit.as_ref().and_then(|probed| self.connect_from(probed, trigger.modifiers))
         {
-            let locating = anchor.is_none().then(|| self.locate(&from.row));
+            let locating = anchor.is_none().then(|| self.screen_of(&from.row));
             self.gestures.now = Gesture::Connect { pointer, from, edge, anchor, locating, to };
             return;
         }
@@ -547,7 +547,7 @@ impl View {
         if selection != self.focus.selection {
             self.focus.selection.clone_from(&selection);
             self.focus.dirty = true;
-            self.events.tell(Event::Select { rows: Rows::group(selection), trigger });
+            self.events.tell(Event::Selection { rows: Rows::group(selection), trigger });
         }
     }
 
@@ -654,7 +654,7 @@ impl View {
                 }
                 self.focus.selection.clone_from(&selection);
                 self.focus.dirty = true;
-                Event::Select { rows: Rows::group(selection), trigger: Some(trigger) }
+                Event::Selection { rows: Rows::group(selection), trigger: Some(trigger) }
             }
         })
     }

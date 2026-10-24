@@ -1,5 +1,5 @@
 /** Currents: streamlines through a field of vortices, as a wind map draws them, colored by speed. */
-import { Patch } from 'latkit/core';
+import { Patch } from 'latkit';
 import { THEME, framed, type Piece } from './look.ts';
 
 /** Vortices: where each turns, how strongly, and which way. */
@@ -55,7 +55,7 @@ export default function currents(): Piece {
     geometry.push(path);
     speed.push(travelled / path.length);
   }
-  const data = Patch.to('wind').replace(
+  const data = new Patch('wind').replace(
     'Streamline',
     { count: geometry.length },
     { geometry, speed },

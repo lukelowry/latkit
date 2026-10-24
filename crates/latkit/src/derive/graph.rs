@@ -2,7 +2,7 @@
 //! vertices, by their two ends or by the ports naming a net. Layouts link vertices by it, a diagram's
 //! wires run along it, and nets' stars join it.
 
-use crate::data::{Data, Field, Inverse, Name, Reference, Row, Table, Value};
+use crate::data::{Field, Inverse, Name, Reference, Row, Snapshot, Table, Value};
 use crate::expr::cpu::Rows;
 use crate::host::Key;
 use crate::scene::mark::Style;
@@ -11,7 +11,7 @@ use crate::{Edges, Mark, Port, Vertices};
 /// The vertex mark a table's rows take their places from, and the vertex index of its first row.
 pub(crate) struct VertexMark<'a> {
     pub(crate) mark: &'a Vertices,
-    pub(crate) data: &'a Data,
+    pub(crate) data: &'a Snapshot,
     pub(crate) table: &'a Table,
     pub(crate) first: usize,
 }
@@ -19,7 +19,7 @@ pub(crate) struct VertexMark<'a> {
 /// The edge mark a table's rows take their paths from.
 pub(crate) struct EdgeMark<'a> {
     pub(crate) mark: &'a Edges,
-    pub(crate) data: &'a Data,
+    pub(crate) data: &'a Snapshot,
     pub(crate) table: &'a Table,
 }
 

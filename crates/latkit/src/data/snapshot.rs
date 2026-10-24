@@ -3,32 +3,31 @@ use std::sync::Arc;
 
 use rustc_hash::FxHasher;
 
-use super::name::{Name, Row, Version};
+use super::name::{Id, Name, Row, Version};
 use super::patch::{Appends, Op, Patch};
 use super::samples::Samples;
 use super::table::{Field, Table};
 use super::values::Value;
 use crate::{Error, Result};
 
-/// A named collection of tables, changed in place by patches.
+/// One version of a dataset: immutable, O(1) to keep, and sharing every page with the versions
+/// before and after it. [`Data::snapshot`](crate::Data::snapshot) takes one; a view given one draws
+/// it as it is.
 ///
-/// Cloning is O(1) and a clone is a snapshot: [`apply`](Data::apply) changes only `self`, and every
-/// page it does not write stays shared with earlier snapshots.
+/// It reads alike whatever came of it since: what it holds described, values, queries, and envelopes.
 ///
 /// ```
-/// # use latkit::{Data, Ids, Patch, Table};
-/// let mut grid = Data::new("grid");
-/// grid.apply(
-///     Patch::new()
-///         .axis("time", "s")
-///         .replace(Table::new("Bus", vec![1_u64, 2]).field("kv", vec![230.0, 115.0]))
-///         .replace(Table::new("Branch", Ids::count(1)).reference("from", "Bus", vec![1_u64]).reference("to", "Bus", vec![2_u64])),
-/// )?;
-/// grid.apply(Patch::new().append([0.0], "Bus", [("vm", vec![1.01, 0.99])]))?;
+/// # use latkit::{Data, Patch, Table, Value};
+/// let grid = Data::new("grid");
+/// grid.apply(Table::new("Bus", vec![1_u64, 2]).field("kv", vec![230.0, 115.0]))?;
+/// let before = grid.snapshot();
+/// grid.apply(Patch::new().remove("Bus", [2_u64]))?;
+/// assert_eq!(before.get("Bus", 2_u64, "kv", None), Some(Value::Number(115.0)));
+/// assert_eq!(grid.snapshot().get("Bus", 2_u64, "kv", None), None);
 /// # Ok::<(), latkit::Error>(())
 /// ```
 #[derive(Clone)]
-pub struct Data(pub(crate) Arc<Inner>);
+pub struct Snapshot(pub(crate) Arc<Inner>);
 
 #[derive(Clone)]
 pub(crate) struct Inner {
@@ -44,11 +43,18 @@ pub(crate) struct Inner {
     pub(crate) schema: u64,
 }
 
-impl Data {
+impl Snapshot {
     /// An empty dataset named `name`.
-    pub fn new(name: impl Into<Name>) -> Data {
+    pub(crate) fn new(name: impl Into<Name>) -> Snapshot {
         let version = Version::next();
-        Data(Arc::new(Inner { name: name.into(), axis: None, tables: Vec::new(), version, origin: version, schema: 0 }))
+        Snapshot(Arc::new(Inner {
+            name: name.into(),
+            axis: None,
+            tables: Vec::new(),
+            version,
+            origin: version,
+            schema: 0,
+        }))
     }
 
     /// The dataset's name.
@@ -57,22 +63,22 @@ impl Data {
     }
 
     /// The name and unit of the axis sampled fields are recorded over.
-    pub fn axis(&self) -> Option<(&str, &str)> {
+    pub(crate) fn axis(&self) -> Option<(&str, &str)> {
         self.0.axis.as_ref().map(|(name, unit)| (name.as_str(), unit.as_str()))
     }
 
     /// Every table, by name.
-    pub fn tables(&self) -> impl Iterator<Item = &Table> + '_ {
+    pub(crate) fn tables(&self) -> impl Iterator<Item = &Table> + '_ {
         self.0.tables.iter()
     }
 
     /// The table named `name`.
-    pub fn table(&self, name: &str) -> Option<&Table> {
+    pub(crate) fn table(&self, name: &str) -> Option<&Table> {
         self.0.table(name)
     }
 
     /// The axis coordinates the sampled fields span.
-    pub fn span(&self) -> Option<[f64; 2]> {
+    pub(crate) fn span(&self) -> Option<[f64; 2]> {
         let spans = self.0.tables.iter().flat_map(|t| &t.fields).filter_map(|(_, field)| match field {
             Field::Sampled(samples, _) => samples.span(),
             _ => None,
@@ -80,42 +86,33 @@ impl Data {
         spans.reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])])
     }
 
-    /// The value of `field` for `row`; a sampled field reads its last frame.
-    pub fn get(&self, row: &Row, field: &str) -> Option<Value> {
-        self.get_at(row, field, f64::INFINITY)
-    }
-
-    /// The value of `field` for `row` at axis coordinate `at`: the last frame at or before it.
-    pub fn get_at(&self, row: &Row, field: &str, at: f64) -> Option<Value> {
-        if row.data != self.0.name {
-            return None;
-        }
-        let table = self.table(&row.table)?;
-        let index = table.row(row.id.as_ref())?;
-        match table.field_named(field)? {
+    /// The value of `field` for the row of `table` with `id`; `None` where it is missing. A sampled
+    /// field reads its last frame at or before axis coordinate `at`, its last frame unless given; a
+    /// reference reads the row it names.
+    pub fn get(&self, table: &str, id: impl Into<Id>, field: &str, at: impl Into<Option<f64>>) -> Option<Value> {
+        let rows = self.table(table)?;
+        let index = rows.row(id.into().as_ref())?;
+        match rows.field_named(field)? {
             Field::Reference(reference) => {
                 let Value::Number(target) = reference.rows.get(index)? else { return None };
-                let target_table = self.table(&reference.to)?;
-                let id = target_table.ids.id(target as usize)?;
+                let id = self.table(&reference.to)?.ids.id(target as usize)?;
                 Some(Value::Row(Row { data: self.0.name.clone(), table: reference.to.clone(), id }))
             }
-            _ => table.value(index, field, at),
+            _ => rows.value(index, field, at.into().unwrap_or(f64::INFINITY)),
         }
     }
 
-    /// Applies every change in `patch`, or none of them when one is invalid. A patch to another
+    /// The version `patch` makes of this one: every change in it, or none of them when one is invalid,
+    /// as an error whose path names the change and part, such as `patch[1].Bus.kv`. A patch to another
     /// dataset is an error.
-    ///
-    /// The error's path names the change and part, such as `patch[1].Bus.kv`.
-    pub fn apply(&mut self, patch: impl Into<Patch>) -> Result<()> {
-        let patch = patch.into();
+    pub(crate) fn applied(&self, patch: Patch) -> Result<Snapshot> {
         if let Some(data) = &patch.data
             && *data != self.0.name
         {
             return Err(Error::invalid(format!("a patch to '{data}' applied to '{}'", self.0.name)));
         }
         if patch.ops.is_empty() {
-            return Ok(());
+            return Ok(self.clone());
         }
         let mut next = (*self.0).clone();
         let mut ops = patch.ops.into_iter().enumerate().peekable();
@@ -140,8 +137,7 @@ impl Data {
         next.resolve()?;
         next.schema = next.signature();
         next.version = Version::next();
-        self.0 = Arc::new(next);
-        Ok(())
+        Ok(Snapshot(Arc::new(next)))
     }
 
     /// The patch to this dataset that builds it from an empty one.
@@ -158,46 +154,24 @@ impl Data {
         self.to_patch().to_bytes()
     }
 
-    /// A dataset from [`to_bytes`](Data::to_bytes), or any bytes of a patch to a dataset.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Data> {
+    /// The dataset the bytes of a patch to a dataset build.
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Snapshot> {
         let patch = Patch::from_bytes(bytes)?;
         let Some(name) = patch.data.clone() else {
             return Err(Error::invalid("the bytes hold a patch to no dataset").at("bytes"));
         };
-        let mut data = Data::new(name);
-        data.apply(patch)?;
-        Ok(data)
-    }
-
-    /// A dataset from bytes: latkit's own, as [`to_bytes`](Data::to_bytes) writes them, or GeoJSON,
-    /// gzip-compressed or not. GeoJSON's features become rows of tables `points`, `lines`, and
-    /// `polygons` by their geometry, each with its geometry as field `geometry` and its properties as
-    /// fields. `name` names the dataset, as GeoJSON needs; latkit's bytes name their own unless given
-    /// one.
-    ///
-    /// ```
-    /// let city = latkit::Data::read(br#"{"type": "Feature", "properties": {"name": "Hall"},
-    ///     "geometry": {"type": "Point", "coordinates": [-97.74, 30.27]}}"#, Some("city"))?;
-    /// assert_eq!(city.table("points").map(latkit::Table::len), Some(1));
-    /// # Ok::<(), latkit::Error>(())
-    /// ```
-    pub fn read(bytes: &[u8], name: Option<&str>) -> Result<Data> {
-        if bytes.starts_with(b"LATK") {
-            let data = Data::from_bytes(bytes)?;
-            return Ok(match name {
-                Some(name) if name != data.name().as_str() => data.renamed(name),
-                _ => data,
-            });
-        }
-        let name = name.ok_or_else(|| Error::invalid("GeoJSON names its dataset").at("name"))?;
-        crate::geo::geojson(name, bytes)
+        Snapshot::new(name).applied(patch)
     }
 
     /// The same tables as dataset `name`: another dataset, which views draw apart from this one.
-    #[must_use]
-    pub fn renamed(&self, name: impl Into<Name>) -> Data {
+    pub(crate) fn renamed(&self, name: impl Into<Name>) -> Snapshot {
         let version = Version::next();
-        Data(Arc::new(Inner { name: name.into(), version, origin: version, ..(*self.0).clone() }))
+        Snapshot(Arc::new(Inner { name: name.into(), version, origin: version, ..(*self.0).clone() }))
+    }
+
+    /// Which version of its dataset this is: two snapshots of the same version are the same.
+    pub(crate) fn version(&self) -> Version {
+        self.0.version
     }
 
     pub(crate) fn schema(&self) -> u64 {
@@ -231,15 +205,15 @@ impl Data {
     }
 }
 
-impl PartialEq for Data {
-    fn eq(&self, other: &Data) -> bool {
+impl PartialEq for Snapshot {
+    fn eq(&self, other: &Snapshot) -> bool {
         self.0.version == other.0.version
     }
 }
 
-impl std::fmt::Debug for Data {
+impl std::fmt::Debug for Snapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Data").field("name", &self.0.name).field("tables", &self.0.tables).finish()
+        f.debug_struct("Snapshot").field("name", &self.0.name).field("tables", &self.0.tables).finish()
     }
 }
 

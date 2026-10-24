@@ -310,6 +310,14 @@ counter!(
     PageId
 );
 
+impl PageId {
+    /// The page whose words `digest` digests: pages alike in what they hold are one. Its top bit
+    /// keeps it apart from every counted id.
+    pub(crate) fn of_content(digest: u64) -> PageId {
+        PageId(digest | 1 << 63)
+    }
+}
+
 /// Values by key: one hash table of keys for every kind of value, so a map by name compiles once
 /// whatever it holds, and the values in a list, in the order inserted; a removal moves the last into
 /// its place.

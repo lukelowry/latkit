@@ -15,11 +15,7 @@
       "default": "./dist/index.js"
     },
     "./wasm": "./pkg/latkit_bg.wasm",
-    "./worker": "./dist/worker.js",
-    "./core": {
-      "types": "./dist/core.d.ts",
-      "default": "./dist/core.js"
-    }
+    "./worker": "./dist/worker.js"
   },
   "files": [
     "dist",

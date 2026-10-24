@@ -29,9 +29,10 @@ export class Menu {
 
   /** Opens `items` at `point`, CSS pixels over `view`, kept inside the main view. */
   open(view: View, point: [number, number], items: readonly Item[]): void {
-    const shown = this.stage.shown.find((s) => s.view === view);
-    if (!shown) return;
-    const { element: canvas, panel } = shown;
+    const canvas = this.stage.canvases.find((c) => c.layout.some((p) => p.view === view));
+    const panel = canvas?.layout.find((p) => p.view === view)?.at ?? [0, 0, 1, 1];
+    const element = canvas?.element;
+    if (!(element instanceof HTMLCanvasElement)) return;
     this.#element.replaceChildren(
       ...items.map(({ label, run, disabled }) => {
         const button = h('button', { type: 'button', role: 'menuitem', disabled }, label);
@@ -45,8 +46,8 @@ export class Menu {
     this.#element.hidden = false;
     const main = this.stage.regions.main;
     const [width, height] = [this.#element.offsetWidth, this.#element.offsetHeight];
-    const x = canvas.offsetLeft + panel[0] * canvas.clientWidth + point[0];
-    const y = canvas.offsetTop + panel[1] * canvas.clientHeight + point[1];
+    const x = element.offsetLeft + panel[0] * element.clientWidth + point[0];
+    const y = element.offsetTop + panel[1] * element.clientHeight + point[1];
     const left = Math.min(x, main.clientWidth - width - 8);
     const top = Math.min(y, main.clientHeight - height - 8);
     this.#element.style.left = `${Math.max(8, left)}px`;

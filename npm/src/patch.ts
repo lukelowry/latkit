@@ -5,6 +5,8 @@
  */
 
 import type { Id, Ids } from './inputs.js';
+import { waited, wasm, type Wait } from './internal.js';
+import { load } from './load.js';
 
 /** Row ids as a patch takes them: listed, `{ count }` for rows `0..count`, or a typed array. */
 export type RowIds = Ids | readonly (Id | null)[] | Uint32Array | Float64Array;
@@ -64,19 +66,28 @@ const STORE = { f64: 0, f32: 1, i32: 2, u32: 3, u64: 4, bool: 5, text: 6, geomet
 const SAFE = Number.MAX_SAFE_INTEGER;
 const utf8 = new TextEncoder();
 
+/** What `Patch.read` reads: latkit's bytes or a patch's JSON. */
+export type PatchSource = Uint8Array | ArrayBuffer | Blob | Response | string | object;
+
+/** @internal The frame `patch` writes, without copying it: read at once, before the patch changes. */
+export let framed: (patch: Patch) => Uint8Array;
+
 /**
  * Changes to a dataset, applied in order and all at once by `Data.apply`: plain data, written as
  * latkit's bytes as it is built.
  *
  * ```ts
- * const patch = Patch.to('grid')
+ * const patch = new Patch('grid')
  *   .replace('Bus', [101, 102], { x: Float64Array.of(0, 10), name: ['North', 'South'] })
- *   .append(0.5, 'Bus', { vm: Float32Array.of(1.01, 0.99) });
+ *   .append('Bus', 0.5, { vm: Float32Array.of(1.01, 0.99) });
  * ```
  */
 export class Patch {
-  /** The dataset the patch changes, when it names one; `Data.apply` refuses it for another. */
-  readonly data: string | undefined;
+  static {
+    framed = (patch) => patch.#frame();
+  }
+
+  #data: string | undefined;
   #writer: Writer;
   #count = 0;
   /** Where the operations start: after the header, the name, and their count. */
@@ -85,39 +96,65 @@ export class Patch {
    * one: a field records its frames in one write, however many calls made them. */
   #run: Appends | undefined;
 
-  /** An empty patch, for whichever dataset it is applied to. */
-  constructor(data?: string);
-  /** @internal */
-  constructor(data: string, owned: Uint8Array);
-  constructor(data?: string, owned?: Uint8Array) {
-    this.data = data || undefined;
-    this.#writer = new Writer(owned);
-    if (owned) {
-      this.#ops = 0;
-      return;
-    }
+  /** An empty patch: to dataset `data`, which it names, or to whichever it is applied to. */
+  constructor(data?: string) {
+    this.#data = data || undefined;
+    this.#writer = new Writer();
     this.#writer.bytes(MAGIC);
     this.#writer.u16(VERSION);
     this.#writer.u16(0);
     this.#writer.zeros(8);
-    this.#writer.str(this.data ?? '');
+    this.#writer.str(this.#data ?? '');
     this.#writer.u32(0);
     this.#ops = this.#writer.length;
   }
 
-  /** An empty patch to dataset `data`. */
-  static to(data: string): Patch {
-    return new Patch(data);
+  /** The dataset the patch changes, when it names one; `Data.apply` refuses it for another. */
+  get data(): string | undefined {
+    return this.#data;
   }
 
-  /** The patch `bytes` hold: one frame, as `toBytes` or a stream writes it. */
-  static fromBytes(bytes: Uint8Array): Patch {
-    return Patch.#fromOwnedFrame(bytes.slice());
+  /**
+   * The patch `source` holds: latkit's bytes, one frame as `toBytes` writes it, or its JSON, what
+   * any language writes without latkit: a list of changes, each named by its method with its
+   * parameters by name, such as `{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}`.
+   * Slices of binary files, `{file, dtype, offset, count}`, are fetched at once relative to `base`,
+   * by default the URL the JSON was fetched from. `source` is bytes, a `Blob`, a `Response`, a URL
+   * to fetch, or the JSON as a value. Bytes read without WebAssembly; JSON loads it, as `load()`
+   * does. A frame longer than `limit` bytes (256 MiB unless given) is refused.
+   */
+  static async read(
+    source: PatchSource,
+    options: { base?: string; limit?: number } & Wait = {},
+  ): Promise<Patch> {
+    let base = '';
+    if (typeof source === 'string') {
+      source = await waited(
+        fetch(source, { signal: options.signal }),
+        options,
+        `fetching ${source}`,
+      );
+    }
+    if (source instanceof Response) {
+      if (!source.ok) throw new Error(`${source.url}: ${source.status} ${source.statusText}`);
+      base = source.url;
+      source = await source.arrayBuffer();
+    }
+    if (source instanceof Blob) source = await source.arrayBuffer();
+    if (source instanceof ArrayBuffer) source = new Uint8Array(source);
+    const bytes =
+      source instanceof Uint8Array ? source : new TextEncoder().encode(JSON.stringify(source));
+    if (MAGIC.every((byte, i) => bytes[i] === byte))
+      return Patch.#owning(bytes.slice(), options.limit);
+    await load();
+    const read = wasm().readPatch(bytes, options.base ?? base);
+    return Patch.#owning(await waited<Uint8Array>(read, options, 'reading a patch'), options.limit);
   }
 
-  static #fromOwnedFrame(bytes: Uint8Array): Patch {
+  /** The patch the frame `bytes` hold, keeping them. */
+  static #owning(bytes: Uint8Array, limit = 1 << 28): Patch {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const length = frameLength(bytes, Infinity);
+    const length = frameLength(bytes, limit);
     if (length === undefined || length !== bytes.length) throw malformed('not one whole frame');
     const nameLength = bytes.length >= HEADER + 4 ? view.getUint32(HEADER, true) : -1;
     const start = HEADER + 4 + nameLength + 4;
@@ -130,7 +167,9 @@ export class Patch {
     } catch {
       throw malformed('text is not UTF-8');
     }
-    const patch = new Patch(name, bytes);
+    const patch = new Patch();
+    patch.#data = name || undefined;
+    patch.#writer = new Writer(bytes);
     patch.#count = view.getUint32(start - 4, true);
     patch.#ops = start;
     return patch;
@@ -169,7 +208,7 @@ export class Patch {
           buffer = frame;
         }
         if (used === length) {
-          const patch = Patch.#fromOwnedFrame(buffer);
+          const patch = Patch.#owning(buffer, limit);
           buffer = new Uint8Array(HEADER);
           used = 0;
           length = undefined;
@@ -178,20 +217,6 @@ export class Patch {
       }
     }
     if (used !== 0) throw malformed('the stream ended inside a patch');
-  }
-
-  /**
-   * The patch its JSON makes: a list of changes, each named by its method with its parameters by
-   * name, such as `{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}`. Slices of
-   * binary files, `{file, dtype, offset, count}`, are fetched at once relative to `base`, the
-   * document's own URL. Reading JSON takes latkit's WebAssembly, which this loads as
-   * `loadLatkit()` does.
-   */
-  static async load(json: string, base = ''): Promise<Patch> {
-    const { loadLatkit } = await import('./load.js');
-    await loadLatkit();
-    const { readPatch } = await import('./runtime.js');
-    return Patch.fromBytes(await readPatch(json, base));
   }
 
   /** Names the axis sampled fields are recorded over, such as `('time', 's')`. */
@@ -224,16 +249,16 @@ export class Patch {
   }
 
   /**
-   * Records a frame at each axis coordinate of `at`: for each field, a value per row at every
-   * coordinate, frame-major; of every row of `table`, or of rows `ids`, the rest holding their last
+   * Records a frame of `table` at each axis coordinate of `at`: for each field, a value per row at
+   * every coordinate, frame-major; of every row, or of rows `ids`, the rest holding their last
    * values. A field's first frame makes it sampled. Appends of float arrays to the same fields of
    * every row, one after another, write as one change, so a frame a call costs no more than one call.
    */
   append(
-    at: number | readonly number[],
     table: string,
+    at: number | readonly number[],
     fields: Readonly<Record<string, Values>>,
-    ids?: RowIds,
+    { ids }: { ids?: RowIds } = {},
   ): this {
     const frames = typeof at === 'number' ? [at] : at;
     const entries = Object.entries(fields);
@@ -272,19 +297,27 @@ export class Patch {
   }
 
   /**
-   * Holds a run of sampled field `field`'s entries of level `level`, numbered from `first`: what a
-   * time tile holds, as `latkit tile` writes them. At level 0 the entries are frames, each a
-   * coordinate in `at` and a value per row of `table` in `values`. At level `k` they are buckets of
-   * `8^k` frames, each its first and last frame's coordinates in `at`, and in `values` each row's
-   * least value over each bucket, then each row's greatest. NaN is missing. No entry may be held
-   * already; frames past the field's widen it.
+   * Holds a run of sampled field `field`'s entries of level `level` (0 unless given), numbered from
+   * `first`: what a time tile holds, as `latkit tile` writes them. At level 0 the entries are frames,
+   * each a coordinate in `at` and a value per row of `table` in `values`. At level `k` they are
+   * buckets of `8^k` frames, each its first and last frame's coordinates in `at`, and in `values`
+   * each row's least value over each bucket, then each row's greatest. NaN is missing. No entry may
+   * be held already; frames past the field's widen it.
    */
   frames(
     table: string,
     field: string,
-    { level = 0, first }: { level?: number; first: number },
-    at: Float64Array | readonly number[],
-    values: Float32Array | readonly number[],
+    {
+      level = 0,
+      first,
+      at,
+      values,
+    }: {
+      level?: number;
+      first: number;
+      at: Float64Array | readonly number[];
+      values: Float32Array | readonly number[];
+    },
   ): this {
     const path = `${table}.${field}`;
     if (!Number.isInteger(level) || level < 0 || level > LEVELS)
@@ -328,11 +361,11 @@ export class Patch {
 
   /** The patch as bytes: one frame, naming its dataset when it has one. */
   toBytes(): Uint8Array {
-    return this.frame().slice();
+    return this.#frame().slice();
   }
 
-  /** @internal The frame, without copying it: read at once, before the patch changes. */
-  frame(): Uint8Array {
+  /** The frame, without copying it: read at once, before the patch changes. */
+  #frame(): Uint8Array {
     this.#flush();
     const view = this.#writer.view();
     const data = new DataView(view.buffer, view.byteOffset, view.byteLength);

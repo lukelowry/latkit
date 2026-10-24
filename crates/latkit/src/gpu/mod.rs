@@ -87,11 +87,15 @@ fn samples_at(pixel_ratio: f32) -> u32 {
 
 pub(crate) struct Inner {
     pub(crate) arena: Arena,
+    /// The pieces of the geometry pages drawn lately, by what they hold.
+    pub(crate) pieces: arena::Pieces,
     pub(crate) pipelines: Pipelines,
     pub(crate) colormaps: Colormaps,
     pub(crate) dictionaries: Dictionaries,
     /// Pages of tables drawn in part, packed in their orders, which every view drawing them shares.
     pub(crate) packed: Packed,
+    /// What was fetched and decoded of each source of tiles, which every view drawing it shares.
+    pub(crate) tiles: crate::tiles::Cache,
     pub(crate) atlas: Atlas,
     pub(crate) icons: Icons,
     pub(crate) readbacks: Readbacks,
@@ -310,10 +314,12 @@ impl Gpu {
         let shared = Arc::new_cyclic(|gpu| {
             let inner = Inner {
                 arena: Arena::new(&device, budget.bytes),
+                pieces: arena::Pieces::default(),
                 pipelines: Pipelines::new(&device, counters.clone(), gpu.clone()),
                 colormaps: Colormaps::new(&device),
                 dictionaries: Dictionaries::default(),
                 packed: Packed::new(counters.clone()),
+                tiles: crate::tiles::Cache::default(),
                 atlas: Atlas::new(&device, counters.clone()),
                 icons: Icons::new(&device),
                 readbacks: Readbacks::counted(counters.clone()),

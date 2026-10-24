@@ -14,6 +14,8 @@ pub(crate) struct Signal {
     transparent: AtomicBool,
     /// Whether a shot draws the view, so nothing else does.
     lent: AtomicBool,
+    /// Whether the shot draws the view's data as it was when lent, as a picture does.
+    holding: AtomicBool,
     /// Whatever draws the view's frames, as `View::set_waker` gave it.
     waker: Mutex<Option<Waker>>,
 }
@@ -34,10 +36,11 @@ impl Signal {
     }
 
     /// Lends the view to a shot: `waker` wakes the shot in place of whatever drew the view, which
-    /// draws it no more until it is given back; returns the waker it had.
-    pub(crate) fn lend(&self, waker: Waker, elapsed: Option<f64>, transparent: bool) -> Option<Waker> {
+    /// draws it no more until it is given back, `holding` its data as it is; returns the waker it had.
+    pub(crate) fn lend(&self, waker: Waker, elapsed: Option<f64>, transparent: bool, holding: bool) -> Option<Waker> {
         *self.elapsed.lock().unwrap_or_else(PoisonError::into_inner) = elapsed;
         self.transparent.store(transparent, Ordering::Release);
+        self.holding.store(holding, Ordering::Release);
         self.lent.store(true, Ordering::Release);
         self.waker.lock().unwrap_or_else(PoisonError::into_inner).replace(waker)
     }
@@ -47,6 +50,7 @@ impl Signal {
         *self.waker.lock().unwrap_or_else(PoisonError::into_inner) = waker;
         *self.elapsed.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.transparent.store(false, Ordering::Release);
+        self.holding.store(false, Ordering::Release);
         self.lent.store(false, Ordering::Release);
         self.landed.store(true, Ordering::Release);
         self.ask();
@@ -63,6 +67,11 @@ impl Signal {
     /// Whether a shot draws the view.
     pub(crate) fn lent(&self) -> bool {
         self.lent.load(Ordering::Acquire)
+    }
+
+    /// Whether the shot drawing the view draws its data as it was when lent.
+    pub(crate) fn holding(&self) -> bool {
+        self.holding.load(Ordering::Acquire)
     }
 
     /// Asks whatever draws the view for a frame.

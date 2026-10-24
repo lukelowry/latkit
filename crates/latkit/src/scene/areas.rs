@@ -47,7 +47,7 @@ impl Areas {
         }
         let color = Store::Color { word: wgsl::AREA_COLOR, fallback: wgsl::THEME_AREA };
         match &self.style.color {
-            Some(expr) => c.channel("color", expr, color)?,
+            Some(paint) => c.channel("color", &paint.0, color)?,
             None => c.theme("color", wgsl::THEME_AREA, color)?,
         }
         c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::AREA_FLAGS, bit: wgsl::VISIBLE })?;

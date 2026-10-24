@@ -50,7 +50,7 @@ impl Encoder for Kept {
 }
 
 fn dot(x: f64) -> Data {
-    let mut data = Data::new("graph");
+    let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(1)).field("x", vec![x]).field("y", vec![0.0])).expect("valid");
     data
 }
@@ -62,7 +62,7 @@ fn view(gpu: &latkit::Gpu) -> View {
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(20.0).color(Color::rgb(1.0, 0.0, 0.0)));
     let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(dot(0.0));
+    view.set_sources([dot(0.0)]).expect("a source");
     view
 }
 
@@ -88,7 +88,7 @@ fn frames_compose_into_nv12_and_hold_where_nothing_moved() {
         for _ in 0..6 {
             video.frame(&mut [&mut view]).await.expect("a frame");
         }
-        view.set_data(dot(30.0));
+        view.set_sources([dot(30.0)]).expect("a source");
         for _ in 0..3 {
             video.frame(&mut [&mut view]).await.expect("a frame");
         }
@@ -123,17 +123,17 @@ fn labeled_marks_easing_between_frames_complete_every_frame() {
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     let named = |x: f64| {
-        let mut data = dot(x);
+        let data = dot(x);
         data.apply(Table::new("Node", Ids::count(1)).field("name", vec!["a"])).expect("valid");
         data
     };
-    view.set_data(named(0.0));
-    let shot = Shot::new([SIZE, SIZE]).deadline(Duration::from_secs(5));
+    view.set_sources([named(0.0)]).expect("a source");
+    let shot = Shot::new([SIZE, SIZE]).deadline(Some(Duration::from_secs(5)));
     let mut video = shot.video(&gpu, 30.0, Mp4::new(Vec::new())).expect("a video");
     let started = std::time::Instant::now();
     pollster::block_on(async {
         for i in 0..10 {
-            view.set_data(named(f64::from(i) * 3.0));
+            view.set_sources([named(f64::from(i) * 3.0)]).expect("a source");
             video.frame(&mut [&mut view]).await.expect("a frame");
         }
     });
@@ -194,7 +194,7 @@ fn any_sink_takes_every_frame_in_order_and_held_ones_without_pixels() {
         for _ in 0..4 {
             video.frame(&mut [&mut view]).await.expect("a frame");
         }
-        view.set_data(dot(30.0));
+        view.set_sources([dot(30.0)]).expect("a source");
         video.frame(&mut [&mut view]).await.expect("a frame");
     });
     let frames = pollster::block_on(video.finish()).expect("finished");

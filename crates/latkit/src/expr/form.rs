@@ -1,18 +1,20 @@
-//! Expressions, sizes, colors, and colormaps as JSON. A number or boolean is a constant, a string a
-//! field (or a hex color when it starts with `#`), and an object one node, named by its key:
+//! Expressions, colors, sizes, and colormaps as JSON. A number or boolean is a constant, a string a
+//! field, and an object one node, named by its key; in a color option, a [`Paint`], a string is a CSS
+//! color instead, and a conditional's values are colors:
 //!
-//! | Form                                                       | Builder                         |
-//! | ---------------------------------------------------------- | ------------------------------- |
-//! | `{ "field": "x", "of": ["data", "Table"], "step": true }`   | `field("x").of(..).step()`      |
-//! | `{ "color": "#ffb000" }`                                   | a color                         |
-//! | `{ "state": "selected" }`                                  | `selected()`, `hovered()`, …    |
-//! | `{ "missing": true }`                                      | `Expr::missing()`               |
-//! | `{ "op": "add", "args": [a, b] }`                          | `a + b`, `a.min(b)`, `!a`, …    |
-//! | `{ "when": [[c, v], …], "otherwise": e }`                  | `when(c).then(v)…otherwise(e)`  |
-//! | `{ "is": [a, "text"] }`, `{ "contains": [a, "text"] }`     | `a.is("text")`, `a.contains(..)` |
-//! | `{ "scale": [0, 1], "value": a, "domain": [lo, hi] }`      | `a.scale(..).domain(..)`        |
-//! | `{ "colormap": "viridis", "value": a, "domain": [lo, hi] }` | `a.colormap(..).domain(..)`     |
-//! | `{ "units": a, "atLeast": 2, "atMost": 20 }` (sizes only)  | `units(a).at_least(..)`         |
+//! | Form                                                          | Builder                           |
+//! | ------------------------------------------------------------- | --------------------------------- |
+//! | `{ "field": "x", "from": ["data", "Table"], "step": true }`   | `field("x").from_table(..).step()` |
+//! | `{ "color": "#ffb000" }`                                      | a color                           |
+//! | `{ "state": "selected" }`                                     | `selected()`, `hovered()`, …      |
+//! | `{ "missing": true }`                                         | `Expr::missing()`                 |
+//! | `{ "op": "add", "args": [a, b] }`                             | `a + b`, `a.min(b)`, `!a`, …      |
+//! | `{ "when": [[c, v], …], "otherwise": e }`                     | `when(c).then(v)…otherwise(e)`    |
+//! | `{ "is": [a, "text"] }`, `{ "contains": [a, "text"] }`        | `a.is("text")`, `a.contains(..)`  |
+//! | `{ "scale": [0, 1], "value": a, "domain": [lo, hi] }`         | `a.scale(..).domain(..)`          |
+//! | `{ "colormap": "viridis", "value": a, "domain": [lo, hi] }`   | `a.colormap(..).domain(..)`       |
+//! | `{ "px": a }` (sizes only)                                    | `px(a)`                           |
+//! | `{ "units": a, "atLeast": 2, "atMost": 20 }` (sizes only)     | `units(a).at_least(..)`           |
 //!
 //! Each object is its kind's form exactly: a key another kind has is refused. A map is a catalog name
 //! or `{ "kind": "sequential", "colors": ["black", [0.2, "red"], "white"] }`, a color placed as a
@@ -27,7 +29,7 @@ use serde::Deserialize;
 use serde::de::value::MapAccessDeserializer;
 use serde::de::{self, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visitor};
 
-use super::{Binary, Color, Colormap, ColormapKind, Expr, Node, Size, State, Stop, Unary, node};
+use super::{Binary, Color, Colormap, ColormapKind, Expr, Node, Paint, Size, State, Stop, Unary, Unit, node};
 use crate::Name;
 
 impl<'de> Deserialize<'de> for Expr {
@@ -36,8 +38,15 @@ impl<'de> Deserialize<'de> for Expr {
     }
 }
 
-/// What an expression, a size, or a label is written as, read where it is written: a constant, a
-/// text, or an object, whose keys say what it is once all are read.
+impl<'de> Deserialize<'de> for Paint {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Paint, D::Error> {
+        Written::deserialize(deserializer)?.paint().map(Paint).map_err(de::Error::custom)
+    }
+}
+
+/// What an expression, a color, a size, or a label is written as, read where it is written: a
+/// constant, a text, or an object, whose keys say what it is once all are read. Where it is read says
+/// what a text is: a field's name, or in a color option a CSS color.
 pub(crate) enum Written {
     Constant(Expr),
     Text(String),
@@ -45,15 +54,24 @@ pub(crate) enum Written {
 }
 
 impl Written {
-    /// The expression it writes: a text names a field, or a color when it starts with `#`.
+    /// The expression it writes: a text names a field.
     pub(crate) fn expr(self) -> Result<Expr, String> {
         match self {
             Written::Constant(expr) => Ok(expr),
-            Written::Text(text) if text.starts_with('#') => {
-                Color::hex(&text).map(Expr::from).ok_or_else(|| format!("not a hex color: {text:?}"))
-            }
             Written::Text(name) => Ok(super::field(name)),
             Written::Object(form) => form.expr(),
+        }
+    }
+
+    /// The color it writes, as a color option reads it: a text is a CSS color, and a conditional's
+    /// values are colors.
+    pub(crate) fn paint(self) -> Result<Expr, String> {
+        match self {
+            Written::Constant(expr) => Ok(expr),
+            Written::Text(css) => Color::css(&css)
+                .map(Expr::from)
+                .ok_or_else(|| format!("not a CSS color: {css:?}; a field is field({css:?})")),
+            Written::Object(form) => form.paint(),
         }
     }
 }
@@ -70,7 +88,7 @@ impl<'de> Visitor<'de> for Reading {
     type Value = Written;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("a number, a boolean, a field's name, or an expression object")
+        f.write_str("a number, a boolean, a text, or an expression object")
     }
 
     fn visit_bool<E: de::Error>(self, b: bool) -> Result<Written, E> {
@@ -98,8 +116,8 @@ impl<'de> Visitor<'de> for Reading {
     }
 }
 
-/// Every key an expression object, a size in units, or a label's options hold; each kind's own
-/// alone make it.
+/// Every key an expression object, a size, or a label's options hold; each kind's own alone make it.
+/// A conditional's values are read as where it is read says.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Form {
@@ -108,17 +126,18 @@ pub(crate) struct Form {
     state: Option<State>,
     missing: Option<bool>,
     op: Option<String>,
-    when: Option<Vec<(Expr, Expr)>>,
+    when: Option<Vec<(Expr, Written)>>,
     is: Option<(Expr, String)>,
     contains: Option<(Expr, String)>,
     scale: Option<[f64; 2]>,
     colormap: Option<Colormap>,
-    of: Option<(Name, Name)>,
+    from: Option<(Name, Name)>,
     step: Option<bool>,
     args: Option<Vec<Expr>>,
-    otherwise: Option<Expr>,
+    otherwise: Option<Written>,
     value: Option<Expr>,
     domain: Option<[f64; 2]>,
+    pub(crate) px: Option<Expr>,
     pub(crate) units: Option<Expr>,
     pub(crate) at_least: Option<f32>,
     pub(crate) at_most: Option<f32>,
@@ -144,12 +163,13 @@ impl Form {
             ("contains", self.contains.is_some()),
             ("scale", self.scale.is_some()),
             ("colormap", self.colormap.is_some()),
-            ("of", self.of.is_some()),
+            ("from", self.from.is_some()),
             ("step", self.step.is_some()),
             ("args", self.args.is_some()),
             ("otherwise", self.otherwise.is_some()),
             ("value", self.value.is_some()),
             ("domain", self.domain.is_some()),
+            ("px", self.px.is_some()),
             ("units", self.units.is_some()),
             ("atLeast", self.at_least.is_some()),
             ("atMost", self.at_most.is_some()),
@@ -173,9 +193,26 @@ impl Form {
         }
     }
 
-    /// Its color: an expression's, or a label's.
+    /// A label's color, as a color option reads it.
     pub(crate) fn color(&mut self) -> Result<Option<Expr>, String> {
-        self.color.take().map(Written::expr).transpose()
+        self.color.take().map(Written::paint).transpose()
+    }
+
+    /// The color it writes, as a color option reads it: a conditional's values are colors; anything
+    /// else is the expression it writes, which must make a color.
+    pub(crate) fn paint(self) -> Result<Expr, String> {
+        if self.when.is_none() {
+            return self.expr();
+        }
+        self.conditional(Written::paint)
+    }
+
+    /// The conditional it writes, each of its values read by `value`.
+    fn conditional(self, value: fn(Written) -> Result<Expr, String>) -> Result<Expr, String> {
+        self.only("when", &["when", "otherwise"])?;
+        let otherwise = value(self.otherwise.ok_or("when needs otherwise")?)?;
+        let cases = self.when.expect("held");
+        cases.into_iter().rev().try_fold(otherwise, |rest, (c, v)| Ok(node(Node::When(c, value(v)?, rest))))
     }
 
     /// The expression it writes: the first kind it holds, and only that kind's keys.
@@ -188,13 +225,16 @@ impl Form {
         };
         let kind = own[0];
         self.only(kind, own)?;
-        let Form { field, color, state, missing, op, when, is, contains, scale, colormap, .. } = self;
+        if kind == "when" {
+            return self.conditional(Written::expr);
+        }
+        let Form { field, color, state, missing, op, is, contains, scale, colormap, .. } = self;
         let needs = |key: &str| format!("{kind} needs {key}");
         Ok(match kind {
             "field" => {
                 let expr = super::field(field.expect("held"));
-                let expr = match self.of {
-                    Some((data, table)) => expr.of(data, table),
+                let expr = match self.from {
+                    Some((data, table)) => expr.from_table(data, table),
                     None => expr,
                 };
                 if self.step == Some(true) { expr.step() } else { expr }
@@ -224,10 +264,6 @@ impl Form {
                         <[Expr; 2]>::try_from(args).map_err(|a| format!("{op} takes 2 arguments, not {}", a.len()))?;
                     node(Node::Binary(binary, a, b))
                 }
-            }
-            "when" => {
-                let otherwise = self.otherwise.ok_or_else(|| needs("otherwise"))?;
-                when.expect("held").into_iter().rev().fold(otherwise, |rest, (c, v)| node(Node::When(c, v, rest)))
             }
             "is" => {
                 let (a, text) = is.expect("held");
@@ -282,13 +318,13 @@ macro_rules! kinds {
 }
 
 kinds! {
-    /// A field of each row: of the mark's own table, or of another dataset's table joined by row id.
+    /// A field of each row: of the mark's own table, or from another dataset's table joined by row id.
     FieldNode {
         field: Name,
         /// The dataset and table the field is read from, joined by row id.
         #[serde(default)]
         #[schemars(extend("tsType" = "[data: string, table: string]"))]
-        of: Option<(Name, Name)>,
+        from: Option<(Name, Name)>,
         /// Reads a sampled field at its last frame without interpolating.
         #[serde(default)]
         step: bool,
@@ -324,7 +360,7 @@ kinds! {
         #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
         is: (Expr, String),
     }
-    /// Whether a text field holds the text, ignoring case: read by queries, which hold texts.
+    /// Whether a text field holds the text, ignoring case: in a mark, a field of its own table.
     ContainsNode {
         #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
         contains: (Expr, String),
@@ -349,9 +385,18 @@ kinds! {
     }
 }
 
-/// A size in position units, so it scales as the view zooms, kept within CSS pixels when given.
+/// A size in CSS pixels, whatever the space's own unit.
 #[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
+#[expect(dead_code, reason = "its schema alone: sizes read through `Form`")]
+#[serde(deny_unknown_fields)]
+struct Px {
+    px: Expr,
+}
+
+/// A size in position units, whatever the space's own unit, so it scales as the view zooms, kept
+/// within CSS pixels when given.
+#[derive(JsonSchema)]
+#[expect(dead_code, reason = "its schema alone: sizes read through `Form`")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(clippy::struct_field_names, reason = "its JSON is `{units, atLeast, atMost}`")]
 struct Units {
@@ -392,7 +437,7 @@ impl JsonSchema for ExprNode {
         let mut any = vec![
             json_schema!({ "type": "number" }),
             json_schema!({ "type": "boolean" }),
-            json_schema!({ "type": "string", "description": "A field's name, or a hex color when it starts with `#`." }),
+            json_schema!({ "type": "string", "description": "A field's name." }),
         ];
         any.extend(forms);
         json_schema!({
@@ -402,13 +447,63 @@ impl JsonSchema for ExprNode {
     }
 }
 
+/// A conditional's color: the first case's whose condition holds, else `otherwise`'s.
+#[derive(JsonSchema)]
+#[expect(dead_code, reason = "its schema alone: colors read through `Form`")]
+#[serde(deny_unknown_fields)]
+struct WhenPaintNode {
+    #[schemars(extend("tsType" = "[condition: ExprInput, color: PaintInput][]"))]
+    when: Vec<(Expr, Paint)>,
+    otherwise: Paint,
+}
+
+/// A color is its JSON, `PaintNode`; TypeScript also takes the builders that write it.
+impl JsonSchema for Paint {
+    fn schema_name() -> Cow<'static, str> {
+        "Paint".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let mut schema = generator.subschema_for::<PaintNode>();
+        schema.insert("tsType".into(), "PaintInput".into());
+        schema
+    }
+}
+
+/// The JSON a color option is written as.
+struct PaintNode;
+
+impl JsonSchema for PaintNode {
+    fn schema_name() -> Cow<'static, str> {
+        "PaintNode".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let any = vec![
+            generator.subschema_for::<Color>(),
+            generator.subschema_for::<ColorNode>(),
+            generator.subschema_for::<ColormapNode>(),
+            generator.subschema_for::<WhenPaintNode>(),
+            generator.subschema_for::<MissingNode>(),
+        ];
+        json_schema!({
+            "description": "A color for every row of a mark: a CSS color, a value through a colormap, or a conditional choosing between colors.",
+            "anyOf": any,
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for Size {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Size, D::Error> {
         let size = |written: Written| match written {
+            Written::Object(form) if form.px.is_some() => {
+                form.only("a size in CSS pixels", &["px"])?;
+                Ok(Size { expr: form.px.expect("held"), unit: Some(Unit::Px), px: Size::ANY })
+            }
             Written::Object(form) if form.units.is_some() => {
                 form.only("a size in units", &["units", "atLeast", "atMost"])?;
                 let px = [form.at_least.unwrap_or(0.0).max(0.0), form.at_most.unwrap_or(f32::INFINITY)];
-                Ok(Size { expr: form.units.expect("held"), units: true, px })
+                Ok(Size { expr: form.units.expect("held"), unit: Some(Unit::Units), px })
             }
             written => written.expr().map(Size::from),
         };
@@ -423,10 +518,11 @@ impl JsonSchema for Size {
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let expr = generator.subschema_for::<Expr>();
+        let px = generator.subschema_for::<Px>();
         let units = generator.subschema_for::<Units>();
         json_schema!({
-            "description": "A size: CSS pixels, or position units with `units`.",
-            "anyOf": [expr, units],
+            "description": "A size, in the space's unit unless it says its own: units in a diagram, CSS pixels elsewhere; `px` keeps CSS pixels, and `units` takes position units, which scale as the view zooms.",
+            "anyOf": [expr, px, units],
         })
     }
 }
@@ -596,9 +692,14 @@ mod tests {
         serde_json::from_str(json).expect("an expression")
     }
 
+    fn paint(json: &str) -> Result<Expr, String> {
+        serde_json::from_str::<Paint>(json).map(|paint| paint.0).map_err(|e| e.to_string())
+    }
+
     #[test]
     fn forms_match_builders() {
         assert_eq!(parse("\"vm\""), field("vm"));
+        assert_eq!(parse("\"#ff0000\""), field("#ff0000"), "a text in a value is a field's name");
         assert_eq!(parse("2.5"), Expr::from(2.5));
         assert_eq!(parse(r#"{"op": "add", "args": ["a", 1]}"#), field("a") + 1.0);
         assert_eq!(parse(r#"{"op": "not", "args": ["on"]}"#), !field("on"));
@@ -607,20 +708,40 @@ mod tests {
             when(selected()).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(field("c"))
         );
         assert_eq!(
+            parse(r#"{"field": "vm", "from": ["weather", "Station"], "step": true}"#),
+            field("vm").from_table("weather", "Station").step()
+        );
+        assert_eq!(
             parse(r#"{"colormap": "balance", "value": "vm", "domain": [0.9, 1.1]}"#),
             field("vm").colormap(Colormap::BALANCE).domain(0.9..=1.1).into()
         );
         assert_eq!(parse(r#"{"scale": [2, 8], "value": "kv"}"#), field("kv").scale(2.0..=8.0).into());
         assert_eq!(parse(r#"{"contains": ["name", "lake"]}"#), field("name").contains("lake"));
-        let size: Size = serde_json::from_str(r#"{"units": 3}"#).expect("a size");
-        assert_eq!(size, crate::units(3.0));
-        let size: Size = serde_json::from_str(r#"{"units": 3, "atLeast": 2, "atMost": 20}"#).expect("a size");
-        assert_eq!(size, crate::units(3.0).at_least(2.0).at_most(20.0));
+        let size = |json: &str| serde_json::from_str::<Size>(json).expect("a size");
+        assert_eq!(size("3"), Size::from(3.0));
+        assert_eq!(size(r#"{"px": 3}"#), crate::px(3.0));
+        assert_eq!(size(r#"{"units": 3}"#), crate::units(3.0));
+        assert_eq!(size(r#"{"units": 3, "atLeast": 2, "atMost": 20}"#), crate::units(3.0).at_least(2.0).at_most(20.0));
+        assert!(serde_json::from_str::<Size>(r#"{"px": 3, "atLeast": 2}"#).is_err(), "pixels hold no pixel range");
         let map: Colormap =
             serde_json::from_str(r#"{"kind": "sequential", "colors": ["black", [0.25, "red"], "white"]}"#)
                 .expect("a map");
         let stops = [Stop::from(Color::BLACK), (0.25, Color::rgb(1.0, 0.0, 0.0)).into(), Color::WHITE.into()];
         assert_eq!(map, Colormap::new(ColormapKind::Sequential, stops).unwrap());
+    }
+
+    #[test]
+    fn a_text_in_a_color_is_a_css_color() {
+        let red = Expr::from(Color::rgb(1.0, 0.0, 0.0));
+        assert_eq!(paint("\"red\""), Ok(red.clone()));
+        assert_eq!(paint("\"#ff0000\""), Ok(red.clone()));
+        let error = paint("\"kv\"").expect_err("a field's name");
+        assert!(error.starts_with(r#"not a CSS color: "kv"; a field is field("kv")"#), "{error}");
+        // A conditional's values are colors, its conditions values; a colormap's input is a value.
+        let chosen = paint(r#"{"when": [["on", "red"]], "otherwise": {"colormap": "viridis", "value": "kv"}}"#);
+        let mapped = field("kv").colormap(Colormap::VIRIDIS);
+        assert_eq!(chosen, Ok(when(field("on")).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(mapped)));
+        assert_eq!(paint(r#"{"field": "kv"}"#), Ok(field("kv")), "a field, which makes no color, fails as it compiles");
     }
 
     #[test]

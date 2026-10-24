@@ -2,17 +2,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer};
 
 use super::form::{Presets, preset_or, presets};
-use crate::Color;
 
 /// The coordinate space a scene's positions are in: a name, or `{ plane | diagram | earth | plot:
-/// options }`. A diagram is a flat sheet seen from straight above: y runs down, and every length is a
-/// unit, a CSS pixel at zoom 0, except glow, halo, and pick radius. Only a diagram has ports, groups,
-/// nets, orthogonal routes, and layouts.
+/// options }`. Its own unit is what lengths are in unless they say theirs: units in a diagram, a flat
+/// sheet seen from straight above with y running down, a unit a CSS pixel at zoom 0; CSS pixels
+/// elsewhere. Only a diagram has ports, groups, nets, and orthogonal routes.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = presets::<Space>)]
 pub enum Space {
-    /// Longitude and latitude in degrees, on a map or a globe.
+    /// Longitude and latitude in degrees, on a flat map or a globe.
     Earth(Earth),
     /// Plane units with elevation: graphs and scenes the camera turns and tilts around.
     Plane(Plane),
@@ -23,14 +22,13 @@ pub enum Space {
 }
 
 impl Presets for Space {
-    const NAMES: &'static [&'static str] = &["plane", "diagram", "mercator", "globe", "plot"];
+    const NAMES: &'static [&'static str] = &["plane", "diagram", "earth", "plot"];
 
     fn preset(name: &str) -> Option<Space> {
         Some(match name {
             "plane" => Space::Plane(Plane::default()),
             "diagram" => Space::Diagram(Diagram::default()),
-            "mercator" => Space::Earth(Earth::mercator()),
-            "globe" => Space::Earth(Earth::globe()),
+            "earth" => Space::Earth(Earth::default()),
             "plot" => Space::Plot(Plot::default()),
             _ => return None,
         })
@@ -77,14 +75,13 @@ impl From<Plot> for Space {
     }
 }
 
-/// The earth: positions are longitude and latitude in degrees.
+/// The earth: positions are longitude and latitude in degrees, its ground in the theme's earth
+/// colors.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Earth {
-    /// A flat map or a globe.
+    /// A flat map or a globe; a flat map unless set.
     pub projection: Projection,
-    /// The ground's color; the theme's surface unless set.
-    pub surface: Option<Color>,
     /// Whether lines of longitude and latitude cross the ground, in the theme's grid color.
     pub graticule: bool,
     /// Lit by the sun as it stands this many seconds after the Unix epoch, plus the view's axis
@@ -107,14 +104,11 @@ pub enum Projection {
 }
 
 impl Earth {
-    /// A web mercator map.
-    pub fn mercator() -> Earth {
-        Earth { projection: Projection::Mercator, surface: None, graticule: true, daylight: None, atmosphere: false }
-    }
-
-    /// A globe.
-    pub fn globe() -> Earth {
-        Earth { projection: Projection::Globe, ..Earth::mercator() }
+    /// Drawn as `projection` shows it: a flat map or a globe.
+    #[must_use]
+    pub fn projection(mut self, projection: Projection) -> Earth {
+        self.projection = projection;
+        self
     }
 
     /// Lit by the sun as it stands `seconds` after the Unix epoch, plus the view's axis coordinate.
@@ -150,8 +144,9 @@ pub(crate) fn sun(seconds: f64) -> [f64; 3] {
 }
 
 impl Default for Earth {
+    /// A web mercator map, its graticule drawn.
     fn default() -> Earth {
-        Earth::mercator()
+        Earth { projection: Projection::Mercator, graticule: true, daylight: None, atmosphere: false }
     }
 }
 
@@ -170,9 +165,10 @@ impl Default for Plane {
 }
 
 /// A sheet for diagrams, flat and seen from straight above: the camera pans and zooms. Positions are
-/// units with y down, and every length is a unit, a CSS pixel at zoom 0 (sizes, padding, ports,
-/// strokes, text, and the theme's), except glow, halo, and pick radius. Zooming scales one fixed
-/// picture. Only a diagram has ports, groups, nets, and orthogonal routes; it lays out blocks.
+/// units with y down, and lengths are units, a unit a CSS pixel at zoom 0 (sizes, padding, ports,
+/// strokes, text, and the theme's), but for what says `px`, a halo, focus's glow, and the pick
+/// radius. Zooming scales one fixed picture. Only a diagram has ports, groups, nets, and orthogonal
+/// routes; it lays out blocks.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagram {

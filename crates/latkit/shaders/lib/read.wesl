@@ -106,16 +106,17 @@ fn column_value(column: u32, row: u32) -> vec2u {
     return static_value(column, r);
 }
 
-// One row's points in a geometry column: where its page's blocks of points are listed in `program`,
-// its first point among the page's, and how many. Parts are broken by a missing point.
+// One row's points in a geometry column: where the piece its points begin in is listed in `program`,
+// its first point in that piece, and how many. Parts are broken by a missing point.
 struct Points {
     blocks: u32,
     first: u32,
     count: u32,
 }
 
-// Row `row`'s points of geometry column `column`. A block holds `1 << POINT_BITS` points as x and y
-// bits.
+// Row `row`'s points of geometry column `column`, as its page's rows' table says. A piece holds up to
+// `1 << POINT_BITS` points as x and y bits; a row larger than a piece begins one and fills those after
+// it.
 fn points_of(column: u32, row: u32) -> Points {
     if column == NONE || row >= column_word(column, COLUMN_ROWS) {
         return Points(0u, 0u, 0u);
@@ -123,17 +124,13 @@ fn points_of(column: u32, row: u32) -> Points {
     let table = column_word(column, COLUMN_TABLE);
     let at = page_of(row);
     let page = table + PATH_PAGE_WORDS * at.x;
-    let firsts = program[page];
-    if firsts == NONE || at.y >= program[page + 3u] {
+    let rows = program[page];
+    if rows == NONE || at.y >= program[page + 3u] {
         return Points(0u, 0u, 0u);
     }
-    let local = at.y;
-    let first = word(firsts + local);
-    var end = program[page + 2u];
-    if local + 1u < program[page + 3u] {
-        end = word(firsts + local + 1u);
-    }
-    return Points(table + program[page + 1u], first, end - first);
+    let entry = word(rows + 2u * at.y);
+    let listed = table + program[page + 1u] + (entry >> POINT_BITS);
+    return Points(listed, entry & POINT_MASK, word(rows + 2u * at.y + 1u));
 }
 
 // Point `k` of a row's points, as x and y bits.

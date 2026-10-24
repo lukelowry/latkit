@@ -5,6 +5,7 @@
  */
 import {
   Data,
+  Snapshot,
   Patch,
   color,
   field,
@@ -21,7 +22,7 @@ import {
   type Marker,
   type Scene,
   type Side,
-} from '../../latkit.js';
+} from 'latkit';
 import { h } from '../../ui/dom.js';
 import { each, one } from '../../ui/rows.js';
 import type { Stage } from '../../ui/stage.js';
@@ -204,14 +205,14 @@ class Sketch {
   }
 }
 
-/** The surfaces groups may take, on the dark and the light sheet. */
-const SURFACES = {
+/** The colors groups may take, on the dark and the light sheet. */
+const GROUP_COLORS = {
   slate: ['#1a2230', '#e6ebf2'],
   teal: ['#14302f', '#dcefec'],
   plum: ['#2a1f33', '#efe6f4'],
 } as const;
 
-/** A pipeline written as a JSON document, as `Data.load` reads one: a change per method, with its
+/** A pipeline written as a JSON document, as `Data.read` reads one: a change per method, with its
  * parameters by name. */
 const PIPELINE = {
   name: 'studio',
@@ -359,19 +360,19 @@ const PRESETS: readonly (readonly [string, () => Data | Promise<Data>])[] = [
       return s.data();
     },
   ],
-  ['Written as JSON', () => Data.load(JSON.stringify(PIPELINE))],
+  ['Written as JSON', () => Data.read(PIPELINE)],
 ];
 
 /**
- * Earlier versions of the data, to step back to and forward again: snapshots, each held here or
- * live, never both, and freed once forgotten.
+ * Earlier versions of the data, to step back to and forward again: snapshots, freed once
+ * forgotten.
  */
 class History {
-  readonly #undo: Data[] = [];
-  #redo: Data[] = [];
+  readonly #undo: Snapshot[] = [];
+  #redo: Snapshot[] = [];
 
   /** Remembers `before`, a snapshot of the version an edit started from. */
-  commit(before: Data): void {
+  commit(before: Snapshot): void {
     this.#undo.push(before);
     if (this.#undo.length > 100) this.#undo.shift()!.destroy();
     for (const after of this.#redo) after.destroy();
@@ -379,15 +380,17 @@ class History {
   }
 
   /** The version before `current`, which redo then steps forward to. */
-  undo(current: Data): Data | undefined {
+  undo(current: Snapshot): Snapshot | undefined {
     const before = this.#undo.pop();
     if (before) this.#redo.push(current);
+    else current.destroy();
     return before;
   }
 
-  redo(current: Data): Data | undefined {
+  redo(current: Snapshot): Snapshot | undefined {
     const after = this.#redo.pop();
     if (after) this.#undo.push(current);
+    else current.destroy();
     return after;
   }
 
@@ -418,12 +421,12 @@ export default function page(stage: Stage): void {
     portSize: 7,
     bend: 6,
     groupPadding: 16,
-    edgeSpacing: 4,
+    wireSpacing: 4,
     arrow: 7,
     lift: 3,
-    fontSize: 12,
+    textSize: 12,
     dash: 6,
-    groups: 'slate' as keyof typeof SURFACES,
+    groups: 'slate' as keyof typeof GROUP_COLORS,
     keyboard: true,
     cycle: false,
     press: 0.5,
@@ -436,12 +439,18 @@ export default function page(stage: Stage): void {
     off: 'off',
   };
 
+  /** The tables the diagram holds now. */
+  const held = () => new Set(data.describe().tables.map((t) => t.name));
+  /** Every id of `table`. */
+  const ids = (table: string) => data.query({ of: table, select: {} }).ids;
+
   const scene = (): Scene => {
+    const tables = held();
     const marks: Mark[] = [];
-    // Containers take the theme's surface, tinted by how deep they sit; their titles head them, and
+    // Containers take the theme's group color, tinted by how deep they sit; their titles head them, and
     // they and the blocks they hold lift off the sheet.
     const title = { text: 'name', size: 11, color: light ? '#5b6b7d' : '#7f93a8' };
-    if (data.tables.includes('Station')) {
+    if (tables.has('Station')) {
       marks.push({
         vertices: {
           of: ['studio', 'Station'],
@@ -451,7 +460,7 @@ export default function page(stage: Stage): void {
         },
       });
     }
-    if (data.tables.includes('Group')) {
+    if (tables.has('Group')) {
       marks.push({
         vertices: {
           of: ['studio', 'Group'],
@@ -476,7 +485,7 @@ export default function page(stage: Stage): void {
       },
     });
     // A mark for each kind of block the data holds; a table the data lacks would fail.
-    for (const kind of kinds.filter((k) => data.tables.includes(k))) {
+    for (const kind of kinds.filter((k) => tables.has(k))) {
       // Without a size, a block fits its label and ports.
       marks.push({
         vertices: {
@@ -497,18 +506,18 @@ export default function page(stage: Stage): void {
       layout,
       theme: {
         ...(light ? { base: 'light', background: '#f4f6f9' } : theme),
-        corner: style.corner,
-        outline: style.outline ? (light ? '#00000024' : '#ffffff1f') : null,
-        portSize: style.portSize,
-        bend: style.bend,
-        groupPadding: style.groupPadding,
-        edgeSpacing: style.edgeSpacing,
-        arrow: style.arrow,
-        fontSize: style.fontSize,
         dash: style.dash,
-        shadow: { color: light ? '#00000038' : '#00000073', lift: style.lift },
-        // Groups take the theme's surface.
-        surface: SURFACES[style.groups][light ? 1 : 0],
+        text: { size: style.textSize },
+        edge: { spacing: style.wireSpacing, arrow: style.arrow },
+        diagram: {
+          corner: style.corner,
+          outline: style.outline ? (light ? '#00000024' : '#ffffff1f') : null,
+          portSize: style.portSize,
+          bend: style.bend,
+          groupPadding: style.groupPadding,
+          group: GROUP_COLORS[style.groups][light ? 1 : 0],
+          shadow: { color: light ? '#00000038' : '#00000073', lift: style.lift },
+        },
       },
       controls: {
         connect: true,
@@ -523,26 +532,26 @@ export default function page(stage: Stage): void {
   };
   /** An id no row of the data has yet. */
   const fresh = () =>
-    1 + Math.max(0, ...data.tables.flatMap((t) => data.ids(t).map((id) => Number(id) || 0)));
+    1 + Math.max(0, ...[...held()].flatMap((t) => ids(t).map((id) => Number(id) || 0)));
   const view = stage.view(scene(), {
     label: 'A diagram: drag blocks, drag from a port to wire it, Delete removes',
   });
 
-  /** Shows the current version: `next`, or the data as it is now, and a mark for each kind it holds. */
-  let kindsShown = data.tables.join();
-  const show = (next = data) => {
-    data = next;
-    view.setData(data);
-    if (data.tables.join() !== kindsShown) {
-      kindsShown = data.tables.join();
-      view.show(scene());
+  /** Takes what the data holds now: a mark for each kind of block it holds, and its description. */
+  let kindsShown = [...held()].join();
+  const changed = () => {
+    const kindsHeld = [...held()].join();
+    if (kindsHeld !== kindsShown) {
+      kindsShown = kindsHeld;
+      view.scene = scene();
     }
     describe();
   };
   /** Applies `patch` as one edit that undo steps back over. */
   const edit = (patch: Patch, said: string) => {
     history.commit(data.snapshot());
-    show(data.apply(patch));
+    data.apply(patch);
+    changed();
     note(said);
   };
   /** Shows `next`, a diagram of its own: nothing to undo back to. */
@@ -550,16 +559,16 @@ export default function page(stage: Stage): void {
     history.clear();
     data.destroy();
     data = next;
-    view.show(scene());
-    show(next);
+    view.sources = [data];
+    kindsShown = [...held()].join();
+    view.scene = scene();
+    changed();
     view.fit();
     note(said);
-    const blocks = kinds.reduce(
-      (n, kind) => n + (data.tables.includes(kind) ? data.ids(kind).length : 0),
-      0,
-    );
+    const tables = held();
+    const blocks = kinds.reduce((n, kind) => n + (tables.has(kind) ? ids(kind).length : 0), 0);
     stage.detail(
-      `${blocks.toLocaleString()} blocks · ${data.ids('Signal').length.toLocaleString()} signals`,
+      `${blocks.toLocaleString()} blocks · ${ids('Signal').length.toLocaleString()} signals`,
     );
   };
   const load = async (choice: (typeof PRESETS)[number]) => {
@@ -572,7 +581,7 @@ export default function page(stage: Stage): void {
   const isBlock = (table: string): table is Kind => table in KINDS;
 
   // Moving: a block goes where the drag says, moves at once, and lands as one edit.
-  let before: Data | undefined;
+  let before: Snapshot | undefined;
   view.on('drag', ({ phase, hit, position }) => {
     if (!isBlock(hit.row.table)) return;
     if (phase === 'start') {
@@ -583,12 +592,13 @@ export default function page(stage: Stage): void {
       x: [position[0]],
       y: [position[1]],
     });
+    data.apply(at);
+    changed();
     if (phase === 'end') {
       if (before) history.commit(before);
       before = undefined;
-      show(data.apply(at));
       note(`Moved ${name(hit.row)}.`);
-    } else show(data.apply(at));
+    }
   });
 
   // Wiring: an output and an input join on the output's signal, made when it has none; an input
@@ -640,14 +650,14 @@ export default function page(stage: Stage): void {
   const reveal = (row: Row) => {
     const joined = view.neighbors(row);
     const near = [one(row), ...joined];
-    view.select(near);
+    view.selection = near;
     view.fit({ rows: near });
     describe();
     note(`${name(row)} and ${each(joined).length} joined to it.`);
   };
   /** Selects `row` and puts its name up for editing. */
   const rename = (row: Row) => {
-    view.select([one(row)]);
+    view.selection = [one(row)];
     describe();
     input.focus();
     input.select();
@@ -661,7 +671,7 @@ export default function page(stage: Stage): void {
   view.on('menu', ({ hits, trigger }) => {
     const row = hits[0]?.row;
     if (row && !view.selection.some((s) => s.table === row.table && s.ids.includes(row.id)))
-      view.select([one(row)]);
+      view.selection = [one(row)];
     describe();
     const rows = view.selection;
     const count = each(rows).length;
@@ -689,9 +699,10 @@ export default function page(stage: Stage): void {
       label: 'Undo',
       key: 'z',
       run: () => {
-        const before = history.undo(data);
+        const before = history.undo(data.snapshot());
         if (!before) return;
-        show(before);
+        data.restore(before);
+        changed();
         note('Undone.');
       },
     },
@@ -699,9 +710,10 @@ export default function page(stage: Stage): void {
       label: 'Redo',
       key: 'y',
       run: () => {
-        const after = history.redo(data);
+        const after = history.redo(data.snapshot());
         if (!after) return;
-        show(after);
+        data.restore(after);
+        changed();
         note('Redone.');
       },
     },
@@ -711,20 +723,24 @@ export default function page(stage: Stage): void {
       // Every block lets go of its position, the layout places them all again, and the places it
       // answers become the blocks' positions: one edit undo steps back over.
       run: () => {
-        const patch = Patch.to(data.name);
-        for (const kind of kinds.filter((k) => data.tables.includes(k))) {
-          const ids = data.ids(kind);
-          if (ids.length) patch.set(kind, ids, { x: ids.map(() => null), y: ids.map(() => null) });
+        const patch = new Patch(data.name);
+        const tables = held();
+        for (const kind of kinds.filter((k) => tables.has(k))) {
+          const rows = ids(kind);
+          if (rows.length)
+            patch.set(kind, rows, { x: rows.map(() => null), y: rows.map(() => null) });
         }
         history.commit(data.snapshot());
-        show(data.apply(patch));
+        data.apply(patch);
+        changed();
         view.fit();
         void view.arrange().then((patches) => {
           // The places of every table, written as one change.
           const placed = patches
             .filter((p) => p.data === data.name)
-            .reduce((all, p) => all.extend(p), Patch.to(data.name));
-          show(data.apply(placed));
+            .reduce((all, p) => all.extend(p), new Patch(data.name));
+          data.apply(placed);
+          changed();
           note('Arranged.');
         });
       },
@@ -775,7 +791,7 @@ export default function page(stage: Stage): void {
   ];
   look.choice('Layout', layouts, layout, (next) => {
     layout = next;
-    view.show(scene());
+    view.scene = scene();
     view.fit();
   });
   look.choice(
@@ -787,18 +803,18 @@ export default function page(stage: Stage): void {
     route,
     (next) => {
       route = next;
-      view.show(scene());
+      view.scene = scene();
     },
   );
   look.toggle('Flow', 'c', comets, (on) => {
     comets = on;
-    view.show(scene());
+    view.scene = scene();
   });
   look.toggle('Light', 'l', light, (on) => {
     light = on;
-    view.show(scene());
+    view.scene = scene();
   });
-  const restyle = () => view.show(scene());
+  const restyle = () => (view.scene = scene());
   look.toggle('Shapes', 'h', style.shapes, (on) => ((style.shapes = on), restyle()));
   look.toggle(
     'Diamond ports',
@@ -828,10 +844,10 @@ export default function page(stage: Stage): void {
       | 'portSize'
       | 'bend'
       | 'groupPadding'
-      | 'edgeSpacing'
+      | 'wireSpacing'
       | 'arrow'
       | 'lift'
-      | 'fontSize'
+      | 'textSize'
       | 'dash',
     min: number,
     max: number,
@@ -849,9 +865,9 @@ export default function page(stage: Stage): void {
   knob('Ports', 'portSize', 4, 14);
   knob('Wire bends', 'bend', 0, 16);
   knob('Group padding', 'groupPadding', 6, 32, 2);
-  knob('Wire spacing', 'edgeSpacing', 2, 12);
+  knob('Wire spacing', 'wireSpacing', 2, 12);
   knob('Arrowheads', 'arrow', 3, 14);
-  knob('Text', 'fontSize', 9, 16);
+  knob('Text', 'textSize', 9, 16);
   knob('Dashes', 'dash', 2, 14);
   knob('Shadow lift', 'lift', 0, 10);
   sheet.choice(
@@ -893,9 +909,7 @@ export default function page(stage: Stage): void {
       const chosen = picker.files?.[0];
       picker.value = '';
       if (!chosen) return;
-      void chosen
-        .arrayBuffer()
-        .then((bytes) => Data.read(new Uint8Array(bytes), 'studio'))
+      void Data.read(chosen, { name: 'studio' })
         .then((read) => open(read, `Opened ${chosen.name}.`))
         .catch((error: unknown) => note(`Could not open ${chosen.name}: ${String(error)}`));
     },
@@ -943,7 +957,7 @@ export default function page(stage: Stage): void {
     input.value = editable ? name(row) : '';
     tag.hidden = true;
     if (row && isBlock(row.table))
-      void view.locate(row).then((point) => {
+      void view.screenOf(row).then((point) => {
         if (!point || each(view.selection)[0]?.id !== row.id) return;
         tag.textContent = `${row.table} · ${name(row)}`;
         tag.style.translate = `${point[0]}px ${point[1] - 18}px`;
@@ -955,7 +969,7 @@ export default function page(stage: Stage): void {
       .tables.map((t) => `${t.name} ${t.rows.toLocaleString()}`)
       .join(' · ');
   };
-  view.on('select', describe);
+  view.on('selection', describe);
 
   stage.meter(view);
   void load(preset).catch(stage.fail);

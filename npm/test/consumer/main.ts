@@ -1,4 +1,4 @@
-import { loadLatkit, field, Patch, type Scene } from 'latkit';
+import { load, field, Data, Gpu, Patch, Shot, type Scene } from 'latkit';
 import { quickstart } from './quickstart';
 import wasmUrl from 'latkit/wasm?url';
 import workerUrl from 'latkit/worker?url';
@@ -52,44 +52,42 @@ async function run(custom: boolean, compiled: boolean) {
       new Blob([await (await fetch(workerUrl)).text()], { type: 'text/javascript' }),
     );
   }
-  const createWorker = () => {
+  const worker = () => {
     createdWorkers++;
     return new Worker(blob!);
   };
   const started = performance.now();
   const source = compiled ? await WebAssembly.compileStreaming(fetch(wasmUrl)) : wasmUrl;
-  const loading = loadLatkit(
-    custom ? { wasm: source, createWorker } : compiled ? { wasm: source } : undefined,
-  );
-  check(loading === loadLatkit(), 'concurrent loads must share their promise');
-  const kit = await loading;
+  const loading = load(custom ? { wasm: source, worker } : compiled ? { wasm: source } : undefined);
+  check(loading === load(), 'concurrent loads must share their promise');
+  await loading;
   const initialized = performance.now();
-  check(kit === (await loadLatkit()), 'subsequent loads must reuse the API');
+  check(load() === loading, 'later loads must reuse the first');
   let conflict = false;
   try {
-    await loadLatkit({ wasm: '/a-different-module.wasm' });
+    await load({ wasm: '/a-different-module.wasm' });
   } catch {
     conflict = true;
   }
   check(conflict, 'conflicting configuration must reject');
   check(createdWorkers === 0, 'loading must not create workers');
 
-  const { Data, Gpu, Shot } = kit;
   const data = new Data('grid').apply(
-    Patch.to('grid').replace('Bus', { count: 1 }, { x: [0], y: [0], radius: [12] }),
+    new Patch('grid').replace('Bus', { count: 1 }, { x: [0], y: [0], radius: [12] }),
   );
   const empty = new Data('grid');
   empty.destroy();
   empty.destroy();
   destroyed(() => empty.name);
   const decoded = await Data.read(data.toBytes());
+  const kept = decoded.snapshot();
 
   // Data reads back; patches stream back to back.
   const grid = new Data('grid').apply(
     new Patch()
       .axis('time', 's')
       .replace('Branch', [7, 8, 9], { loading: [40, 120, 95] })
-      .append([0, 1, 2], 'Branch', { flow: Float32Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9) }),
+      .append('Branch', [0, 1, 2], { flow: Float32Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9) }),
   );
   const hot = grid.query({
     of: 'Branch',
@@ -112,7 +110,7 @@ async function run(custom: boolean, compiled: boolean) {
   });
   for await (const next of Patch.stream(pieces)) grid.apply(next);
   check(
-    grid.ids('Branch').join() === '7,9' && grid.get('Branch', 7, 'loading') === 1,
+    grid.query({ of: 'Branch' }).ids.join() === '7,9' && grid.get('Branch', 7, 'loading') === 1,
     'patches stream',
   );
   grid.destroy();
@@ -123,23 +121,24 @@ async function run(custom: boolean, compiled: boolean) {
   const first = gpu.view(scene);
   const second = gpu.view(scene);
   const third = secondGpu.view(scene);
-  gpu.canvas(canvas('first')).show([first]);
-  gpu.canvas(canvas('second')).show([second]);
-  secondGpu.canvas(canvas('third')).show([third]);
+  gpu.canvas(canvas('first'), { layout: [{ view: first }] });
+  gpu.canvas(canvas('second'), { layout: [{ view: second }] });
+  secondGpu.canvas(canvas('third'), { layout: [{ view: third }] });
   // A view no canvas shows still draws in shots.
   const headless = gpu.view(scene);
   for (const view of [first, second, third, headless]) {
     view.on('error', (error) => {
       throw error;
     });
-    view.setData(decoded);
+    view.sources = view === third ? [kept] : [decoded];
   }
-  decoded.destroy(); // views retain the data
+  decoded.destroy(); // views keep the dataset
+  kept.destroy();
   await until(() =>
     [first, second, third].every((view) => view.stats.frames > 0 && view.stats.drawn === 1),
   );
   const firstFrame = performance.now();
-  const picture = await new Shot([64, 64]).image([headless]);
+  const picture = await new Shot([64, 64], { layout: [{ view: headless }] }).image();
   check(picture.width === 64 && picture.height === 64, 'a view without a canvas draws in a shot');
   const png = await picture.encode('png');
   const jpeg = await picture.encode('jpeg', { quality: 80 });
@@ -170,29 +169,32 @@ async function run(custom: boolean, compiled: boolean) {
         chunks.push(bytes);
       },
     });
-    const video = new Shot([64, 64]).video(gpu, 30, output);
-    await video.record([headless], (time) => time < 0.1);
+    const video = new Shot([64, 64], { layout: [{ view: headless }] }).video({ fps: 30, output });
+    await video.record((time) => time < 0.1);
     check(video.frames === 3 && !output.locked, 'video retains counters and releases its output');
     check(
       chunks.some((bytes) => new TextDecoder().decode(bytes).includes('ftyp')),
       'video writes an MP4 header',
     );
     const cancelledOutput = new WritableStream<Uint8Array>();
-    const cancelled = new Shot([64, 64]).video(gpu, 30, cancelledOutput);
-    const pending = cancelled.frame([headless]);
+    const cancelled = new Shot([64, 64], { layout: [{ view: headless }] }).video({
+      fps: 30,
+      output: cancelledOutput,
+    });
+    const pending = cancelled.frame();
     const settled = Promise.allSettled([pending]);
     await Promise.resolve();
     await cancelled.abort('consumer cancellation');
     check((await settled)[0].status === 'rejected', 'cancellation interrupts the WASM frame');
     check(!cancelledOutput.locked, 'cancelled video releases the writer');
-    const restored = await new Shot([64, 64]).image([headless]);
+    const restored = await new Shot([64, 64], { layout: [{ view: headless }] }).image();
     restored.destroy();
   }
   headless.destroy();
   check(
     (() => {
       try {
-        gpu.canvas(document.createElement('canvas')).show([second]);
+        gpu.canvas(document.createElement('canvas'), { layout: [{ view: second }] });
         return false;
       } catch {
         return true;
@@ -200,7 +202,7 @@ async function run(custom: boolean, compiled: boolean) {
     })(),
     'a view shows in one canvas at a time',
   );
-  const hits = await first.pick([128, 128], 8);
+  const hits = await first.pick([128, 128], { radius: 8 });
   check(
     hits.some((hit) => hit.row.table === 'Bus'),
     'GPU picking must see the rendered vertex',
@@ -214,8 +216,8 @@ async function run(custom: boolean, compiled: boolean) {
   destroyed(() => first.stats);
   check(second.stats.drawn === 1, 'destroying one view must preserve its sibling');
   const pending = Promise.allSettled([
-    second.pick([128, 128], 8),
-    second.locate({ data: 'grid', table: 'Bus', id: 0 }),
+    second.pick([128, 128], { radius: 8 }),
+    second.screenOf({ data: 'grid', table: 'Bus', id: 0 }),
   ]);
   gpu.destroy();
   gpu.destroy();
@@ -231,7 +233,7 @@ async function run(custom: boolean, compiled: boolean) {
       'query must reject with cancellation',
     );
   }
-  check(data.ids('Bus').length === 1, 'GPU cleanup must preserve independent data');
+  check(data.query({ of: 'Bus' }).ids.length === 1, 'GPU cleanup must preserve independent data');
   const stoppedTicks = ticks;
   let otherTicks = 0;
   const stopOther = secondGpu.on('frame', () => otherTicks++);
@@ -250,8 +252,8 @@ async function run(custom: boolean, compiled: boolean) {
       ],
     }),
   );
-  const places = await Data.read(bytes, 'places');
-  check(places.ids('points').length === 1, 'worker must decode GeoJSON');
+  const places = await Data.read(bytes, { name: 'places' });
+  check(places.query({ of: 'points' }).ids.length === 1, 'worker must decode GeoJSON');
   if (custom) check(createdWorkers > 0, 'custom worker factory must be used');
   places.destroy();
   secondGpu.destroy();
@@ -262,7 +264,7 @@ async function run(custom: boolean, compiled: boolean) {
   const example = await quickstart(exampleCanvas);
   await until(() => example.view.stats.drawn === 2);
   example.gpu.destroy();
-  example.data.destroy();
+  example.grid.destroy();
   exampleCanvas.remove();
   const transient = await Gpu.create();
   await new Promise<void>((resolve) => {

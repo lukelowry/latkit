@@ -1,26 +1,31 @@
 //! Pages on the GPU: one pool of 128 Ki-word chunks in one storage buffer, which doubles as it fills,
 //! up to the budget. It holds the data's pages, which upload, and the pages of words each view's marks
 //! keep per row, which the GPU writes. A chunk is carved into blocks of one power-of-two size, and no
-//! page is larger than a chunk: a geometry's points split into pieces of a chunk each. So the room any
-//! page leaves serves any other: a chunk whose blocks all come back is carved again for another size.
-//! Few sizes in few chunks leave little room unused in chunks partly used, which a small budget feels.
+//! page is larger than a chunk: a geometry's points split into pieces of a group of rows each. So the
+//! room any page leaves serves any other: a chunk whose blocks all come back is carved again for
+//! another size. Few sizes in few chunks leave little room unused in chunks partly used, which a small
+//! budget feels.
 //!
-//! A data page is identified by its id, the words of it a program reads, and its piece. What a view
-//! draws next reserves every page it reads at once, or none: those in the pool are pinned, and those
+//! A data page is identified by its id and the words of it a program reads; a geometry's pieces by
+//! what they hold, so a page written again finds the pieces of its rows that kept their points
+//! already on the GPU. What a view draws next reserves every page it reads at once, or none: those in
+//! the pool are pinned, and those
 //! it lacks take blocks then, evicting the least recently used unpinned pages, so nothing is partly
 //! pinned and no page waits for room. Page tables pin the pages they reference, so a page in use is
 //! never evicted; unpinned pages stay cached. Uploads stream within a per-frame byte budget into the
 //! blocks reserved. Views plan what they draw to fit the pool, so a reservation finding no room is
 //! rare: it waits for the next frame, which grows the pool by what it lacked.
 //!
-//! A page of words per row is a block of its own: cleared as it is handed out, before anything writes
-//! it, and freed only once the frame that let it go is done with it. The pool grows only before a
+//! A page of words per row is a block of its own: cleared as it is handed out where it is read before
+//! anything writes it, and freed only once the frame that let it go is done with it. The pool grows only before a
 //! frame records writes to the pages, since growing copies what they hold: a block a frame finds no
 //! room for then waits for the next.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
-use rustc_hash::FxBuildHasher;
+use rustc_hash::{FxBuildHasher, FxHasher};
 
 use crate::data::{AxisPage, FRAME_PAGE_WORDS, FramePage, PageId, Value, Values};
 use crate::expr::compile::Words;
@@ -37,9 +42,12 @@ const CLASSES: usize = (CHUNK_BITS - MIN_CLASS_BITS + 1) as usize;
 /// Words of a chunk's free bits: a bit for each block of the least class.
 const FREE_WORDS: usize = 1 << (CHUNK_BITS - MIN_CLASS_BITS - 6);
 const INITIAL_CHUNKS: u32 = 8;
-/// Points in a piece of a geometry's points: a chunk of x and y words.
+/// Points a piece of a geometry's points holds at most, as x and y words.
 pub(crate) const PIECE_POINTS: usize = 1 << POINT_BITS;
-const _: () = assert!(2 * PIECE_POINTS == CHUNK_WORDS as usize, "a piece of points fills a chunk");
+const _: () = assert!(2 * PIECE_POINTS <= CHUNK_WORDS as usize, "a piece of points fits a chunk");
+/// Rows a piece of a geometry's points begins at, at least: a piece holds the points of a group of this
+/// many rows, or fewer where it fills, so a row written again changes only its group's piece.
+const GROUP_ROWS: usize = 64;
 
 /// A page as a program reads it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -48,15 +56,48 @@ pub(crate) struct PageKey {
     pub(crate) words: Words,
     /// The part `f32` drops of an `f64`, rather than the value.
     pub(crate) low: bool,
-    /// Which piece of the page: a geometry's first points, then its points a chunk at a time; 0
-    /// for every other page, which is one piece.
-    pub(crate) piece: u32,
 }
 
 impl PageKey {
-    /// The one piece of a page that is not a geometry's.
     pub(crate) fn of(page: PageId, words: Words, low: bool) -> PageKey {
-        PageKey { page, words, low, piece: 0 }
+        PageKey { page, words, low }
+    }
+
+    /// A piece of a geometry, `words`, keyed by what it holds.
+    pub(crate) fn piece(words: &[u32]) -> PageKey {
+        let mut hasher = FxHasher::default();
+        words.hash(&mut hasher);
+        PageKey { page: PageId::of_content(hasher.finish()), words: Words::Path, low: false }
+    }
+}
+
+/// The pieces of the geometry pages drawn lately, by each page's id: its rows' table, then its pieces
+/// of points, keyed by what they hold. A page drawn again finds its pieces without making them; one
+/// written again makes them, and uploads those the GPU lacks.
+#[derive(Default)]
+pub(crate) struct Pieces {
+    keys: HashMap<PageId, Arc<[PageKey]>, FxBuildHasher>,
+    order: VecDeque<PageId>,
+}
+
+/// Geometry pages whose pieces are kept: a page past them makes its pieces again when it is drawn.
+const PIECED_PAGES: usize = 1 << 14;
+
+impl Pieces {
+    /// The pieces of page `page`, when kept.
+    pub(crate) fn of(&self, page: PageId) -> Option<Arc<[PageKey]>> {
+        self.keys.get(&page).cloned()
+    }
+
+    /// Keeps `keys` as page `page`'s pieces, forgetting the page kept longest when too many are.
+    pub(crate) fn keep(&mut self, page: PageId, keys: Arc<[PageKey]>) {
+        if self.keys.insert(page, keys).is_none() {
+            self.order.push_back(page);
+        }
+        while self.order.len() > PIECED_PAGES {
+            let Some(old) = self.order.pop_front() else { break };
+            self.keys.remove(&old);
+        }
     }
 }
 
@@ -171,23 +212,23 @@ pub(crate) fn path_points(values: &Values) -> usize {
     (0..values.len()).filter(|&row| values.is_valid(row)).map(|row| geometry.row_points(row)).sum()
 }
 
-/// A geometry page's pieces, as `lib/read.wesl` reads them: each row's first point, then its points
-/// a chunk at a time, every point an x and a y word. A row's parts, or its polygons' rings, are
-/// broken by a missing point.
-pub(crate) fn path_pieces(values: &Values) -> Vec<Vec<u32>> {
-    let mut firsts = Vec::with_capacity(values.len());
-    let mut pieces: Vec<Vec<u32>> = vec![Vec::new()];
-    let mut points = 0_u32;
-    let push = |point: [u32; 2], pieces: &mut Vec<Vec<u32>>, points: &mut u32| {
-        if pieces.last().is_some_and(|p| p.len() == 2 * PIECE_POINTS) {
-            pieces.push(Vec::with_capacity(2 * PIECE_POINTS));
-        }
-        pieces.last_mut().expect("a piece").extend(point);
-        *points += 1;
-    };
+/// A geometry page as `lib/read.wesl` reads it: its rows' table, two words a row (the piece its
+/// points begin in, among the page's, shifted up by `POINT_BITS` over its first point there; and how
+/// many points it has); then its pieces of points, every point an x and a y word.
+pub(crate) struct PathPage {
+    pub(crate) rows: Vec<u32>,
+    pub(crate) pieces: Vec<Vec<u32>>,
+}
+
+/// A geometry page's rows' table and pieces. A group of rows begins a piece, as does a row its piece
+/// has no room for, so a row written again changes only its group's piece; a row larger than a piece
+/// begins one and fills as many as it takes. A row's parts, or its polygons' rings, are broken by a
+/// missing point.
+pub(crate) fn path_pieces(values: &Values) -> PathPage {
+    let mut rows = Vec::with_capacity(2 * values.len());
+    let mut pieces: Vec<Vec<u32>> = Vec::new();
     let bits = |p: &[f64; 2]| p.map(|v| (v as f32).to_bits());
     for row in 0..values.len() {
-        firsts.push(points);
         let parts: Vec<Vec<[f64; 2]>> = match values.get(row) {
             Some(Value::Point(p)) => vec![vec![p]],
             Some(Value::Path(path)) => vec![path],
@@ -195,19 +236,48 @@ pub(crate) fn path_pieces(values: &Values) -> Vec<Vec<u32>> {
             Some(Value::Polygons(polygons)) => polygons.into_iter().flatten().collect(),
             _ => Vec::new(),
         };
+        let count = parts.iter().map(Vec::len).sum::<usize>() + parts.len().saturating_sub(1);
+        let begins = pieces.last().is_none_or(|piece| {
+            let held = piece.len() / 2;
+            held == PIECE_POINTS || (held > 0 && (row % GROUP_ROWS == 0 || count > PIECE_POINTS - held))
+        });
+        if begins {
+            pieces.push(Vec::new());
+        }
+        let slot = pieces.len() - 1;
+        rows.extend([(slot as u32) << POINT_BITS | (pieces[slot].len() / 2) as u32, count as u32]);
+        let mut push = |point: [u32; 2]| {
+            if pieces.last().is_some_and(|piece| piece.len() == 2 * PIECE_POINTS) {
+                pieces.push(Vec::new());
+            }
+            pieces.last_mut().expect("a piece").extend(point);
+        };
         for (k, part) in parts.iter().enumerate() {
             if k > 0 {
-                push([MISSING, MISSING], &mut pieces, &mut points);
+                push([MISSING, MISSING]);
             }
             for p in part {
-                push(bits(p), &mut pieces, &mut points);
+                push(bits(p));
             }
         }
     }
     if pieces.last().is_some_and(Vec::is_empty) {
         pieces.pop();
     }
-    std::iter::once(firsts).chain(pieces).collect()
+    PathPage { rows, pieces }
+}
+
+/// Bytes the arena holds a geometry page of `rows` rows and `points` points in, about: its rows'
+/// table, and its points in pieces of a group of rows each, or full pieces where rows hold more.
+pub(crate) fn path_page_bytes(rows: usize, points: usize) -> u64 {
+    let groups = rows.div_ceil(GROUP_ROWS).max(1);
+    let per_group = points.div_ceil(groups);
+    let pieces = if per_group <= PIECE_POINTS {
+        groups as u64 * u64::from(rounded(2 * per_group as u32))
+    } else {
+        points.div_ceil(PIECE_POINTS) as u64 * u64::from(rounded(2 * PIECE_POINTS as u32))
+    };
+    (u64::from(rounded(2 * rows as u32)) + if points > 0 { pieces } else { 0 }) * 4
 }
 
 struct Block {
@@ -360,13 +430,15 @@ impl Arena {
         true
     }
 
-    /// A block of its own holding `words`, for a page of words per row, cleared by the next
-    /// [`clear`](Arena::clear); `None` where the pool has no room now, which the next frame grows
+    /// A block of its own holding `words`, for a page of words per row, with `cleared` cleared by the
+    /// next [`clear`](Arena::clear); `None` where the pool has no room now, which the next frame grows
     /// it by.
-    pub(crate) fn block(&mut self, device: &wgpu::Device, queue: &Queue, words: u32) -> Option<u32> {
+    pub(crate) fn block(&mut self, device: &wgpu::Device, queue: &Queue, words: u32, cleared: bool) -> Option<u32> {
         let class = class_of(words);
         let offset = self.allocate(device, queue, class)?;
-        self.cleared.push((offset, class));
+        if cleared {
+            self.cleared.push((offset, class));
+        }
         Some(offset)
     }
 
@@ -385,7 +457,7 @@ impl Arena {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit clear") });
         for (offset, class) in self.cleared.drain(..) {
-            encoder.clear_buffer(&self.buffer, u64::from(offset) * 4, Some(u64::from(class_words(class)) * 4));
+            queue.clear_buffer(&mut encoder, &self.buffer, u64::from(offset) * 4, u64::from(class_words(class)) * 4);
         }
         queue.submit([encoder.finish()]);
     }
@@ -626,18 +698,41 @@ mod tests {
         assert!((back - (1.0 + 1e-9)).abs() < 1e-15);
     }
 
+    /// Row `row`'s piece, first point, and count, as a page's rows' table holds them.
+    fn entry(page: &PathPage, row: usize) -> (u32, u32, u32) {
+        let [entry, count] = [page.rows[2 * row], page.rows[2 * row + 1]];
+        (entry >> POINT_BITS, entry & ((1 << POINT_BITS) - 1), count)
+    }
+
     #[test]
-    fn geometry_pieces_hold_a_chunk_of_points_each() {
+    fn a_row_larger_than_a_piece_fills_as_many_as_it_takes() {
         let long: Vec<[f64; 2]> = (0..PIECE_POINTS + 10).map(|i| [i as f64, 0.0]).collect();
         let parts = vec![vec![[0.0, 0.0], [1.0, 1.0]], vec![[2.0, 2.0]]];
-        let values = Values::from(vec![vec![long.clone()], Vec::new(), parts]);
-        let pieces = path_pieces(&values);
-        assert_eq!(pieces[0], vec![0, (PIECE_POINTS + 10) as u32, (PIECE_POINTS + 10) as u32], "first points");
-        assert_eq!(pieces.len(), 3, "the first points, then two pieces of points");
-        assert_eq!(pieces[1].len(), 2 * PIECE_POINTS);
+        let values = Values::from(vec![vec![long], Vec::new(), parts]);
+        let page = path_pieces(&values);
+        assert_eq!(entry(&page, 0), (0, 0, (PIECE_POINTS + 10) as u32), "the long row begins the first piece");
+        assert_eq!(page.pieces[0].len(), 2 * PIECE_POINTS, "and fills it");
+        assert_eq!(entry(&page, 1), (1, 10, 0), "an empty row holds no point where the next begins");
         // The last row's two parts are broken by a missing point.
-        assert_eq!(pieces[2].len(), 2 * (10 + 2 + 1 + 1));
+        assert_eq!(entry(&page, 2), (1, 10, 4));
+        assert_eq!(page.pieces[1].len(), 2 * (10 + 4));
         assert_eq!(path_points(&values), PIECE_POINTS + 10 + 4);
-        assert!(pieces.iter().all(|p| p.len() <= CHUNK_WORDS as usize));
+    }
+
+    #[test]
+    fn a_row_written_again_changes_only_its_group_s_piece() {
+        let rows = |nudge: f64| {
+            let path =
+                |r: usize| (0..5).map(|k| [r as f64, f64::from(k) + if r == 70 { nudge } else { 0.0 }]).collect();
+            Values::from((0..200).map(|r| vec![path(r)]).collect::<Vec<Vec<Vec<[f64; 2]>>>>())
+        };
+        let (before, after) = (path_pieces(&rows(0.0)), path_pieces(&rows(0.5)));
+        assert_eq!(before.pieces.len(), 4, "a piece a group of 64 rows");
+        assert_eq!(entry(&before, 64), (1, 0, 5), "each group begins a piece");
+        let keys = |page: &PathPage| page.pieces.iter().map(|p| PageKey::piece(p)).collect::<Vec<_>>();
+        let changed: Vec<bool> = keys(&before).iter().zip(keys(&after)).map(|(a, b)| *a != b).collect();
+        assert_eq!(changed, [false, true, false, false], "row 70 lies in the second group");
+        assert_eq!(before.rows, after.rows, "the rows' table holds where points lie, not what they are");
+        assert!(path_page_bytes(200, 1000) < 16 * 1024, "a page's estimate counts pieces as they are cut");
     }
 }

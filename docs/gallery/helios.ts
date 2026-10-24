@@ -1,5 +1,5 @@
 /** Helios: flow through a synthetic network of five rings, its edges carrying comets. */
-import { Patch, reference } from 'latkit/core';
+import { Patch, reference } from 'latkit';
 import { TAU, THEME, framed, type Piece } from './look.ts';
 
 export default function helios(): Piece {
@@ -36,7 +36,7 @@ export default function helios(): Piece {
       }
     }
   }
-  const data = Patch.to('art')
+  const data = new Patch('art')
     .replace('Bus', { count: x.length }, { x, y, heat, radius, name })
     .replace(
       'Branch',

@@ -9,21 +9,21 @@ mod common;
 use std::time::Duration;
 
 use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane, step};
-use latkit::{Color, Data, Edges, Ids, Patch, Scene, Table, Theme, Vertices, View};
+use latkit::{Color, Data, Edges, Ids, Patch, Scene, Table, Vertices, View};
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
 
 fn scene() -> Scene {
     Scene::new(plane())
-        .theme(Theme { edge: Some(Color::rgb(0.0, 1.0, 0.0)), ..plain_theme() })
+        .theme(common::green_edges())
         .ease(Duration::from_secs(2))
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0))
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(6.0).color(Color::WHITE))
 }
 
 fn graph() -> Data {
-    let mut data = Data::new("graph");
+    let data = Data::new("graph");
     data.apply(
         Patch::new()
             .set(Table::new("Node", vec![1_u64, 2]).field("x", vec![-30.0, 30.0]).field("y", vec![0.0, 0.0]))
@@ -42,13 +42,12 @@ fn moved_vertices_start_where_they_were_and_their_edges_follow() {
     let Some(gpu) = gpu() else { return };
     let mut view = View::new(&gpu, scene()).expect("valid scene");
     view.set_camera(camera());
-    let mut data = graph();
-    view.set_data(data.clone());
+    let data = graph();
+    view.set_sources([&data]).expect("a source");
     let c = SIZE / 2;
     let pixels = frame(&gpu, &mut view);
     assert!(close(at(&pixels, c - 30, c), WHITE), "{:?}", at(&pixels, c - 30, c));
     data.apply(Table::new("Node", vec![1_u64]).field("y", vec![40.0])).expect("valid");
-    view.set_data(data);
     let pixels = step(&gpu, &mut view);
     assert!(close(at(&pixels, c - 30, c), WHITE), "the moved vertex starts where it was");
     assert!(close(at(&pixels, c - 30, c - 40), BLACK), "and has not jumped");
@@ -66,8 +65,8 @@ fn removed_rows_fade_where_they_stood_and_new_rows_grow() {
     let Some(gpu) = gpu() else { return };
     let mut view = View::new(&gpu, scene()).expect("valid scene");
     view.set_camera(camera());
-    let mut data = graph();
-    view.set_data(data.clone());
+    let data = graph();
+    view.set_sources([&data]).expect("a source");
     let c = SIZE / 2;
     frame(&gpu, &mut view);
     data.apply(
@@ -77,7 +76,6 @@ fn removed_rows_fade_where_they_stood_and_new_rows_grow() {
             .set(Table::new("Node", vec![3_u64]).field("x", vec![0.0]).field("y", vec![-40.0])),
     )
     .expect("valid");
-    view.set_data(data);
     let pixels = step(&gpu, &mut view);
     assert!(close(at(&pixels, c - 30, c), WHITE), "the removed vertex still shows: {:?}", at(&pixels, c - 30, c));
     assert!(close(at(&pixels, c + 30, c), WHITE), "the kept one stays");
@@ -95,13 +93,13 @@ fn another_dataset_of_the_same_name_replaces_rows_rather_than_moving_them() {
     let Some(gpu) = gpu() else { return };
     let mut view = View::new(&gpu, scene()).expect("valid scene");
     view.set_camera(camera());
-    view.set_data(graph());
+    view.set_sources([graph()]).expect("a source");
     let c = SIZE / 2;
     frame(&gpu, &mut view);
     // The same ids in a dataset of its own: its rows are not the drawn ones moved.
-    let mut other = graph();
+    let other = graph();
     other.apply(Table::new("Node", vec![1_u64]).field("y", vec![40.0])).expect("valid");
-    view.set_data(other);
+    view.set_sources([&other]).expect("a source");
     let pixels = step(&gpu, &mut view);
     assert!(close(at(&pixels, c - 30, c), WHITE), "the replaced vertex fades where it stood");
     assert!(at(&pixels, c - 30, c - 40)[0] < 60, "its replacement grows from nothing");
@@ -116,12 +114,11 @@ fn sampled_fields_and_zero_ease_change_at_once() {
     let Some(gpu) = gpu() else { return };
     let mut view = View::new(&gpu, scene().ease(Duration::ZERO)).expect("valid scene");
     view.set_camera(camera());
-    let mut data = graph();
-    view.set_data(data.clone());
+    let data = graph();
+    view.set_sources([&data]).expect("a source");
     let c = SIZE / 2;
     frame(&gpu, &mut view);
     data.apply(Table::new("Node", vec![1_u64]).field("y", vec![40.0])).expect("valid");
-    view.set_data(data);
     let pixels = step(&gpu, &mut view);
     assert!(close(at(&pixels, c - 30, c - 40), WHITE), "without ease the vertex moves at once");
 }
@@ -131,12 +128,11 @@ fn a_transition_evaluates_once_and_eases_without_evaluating() {
     let Some(gpu) = gpu() else { return };
     let mut view = View::new(&gpu, scene()).expect("valid scene");
     view.set_camera(camera());
-    let mut data = graph();
-    view.set_data(data.clone());
+    let data = graph();
+    view.set_sources([&data]).expect("a source");
     let c = SIZE / 2;
     frame(&gpu, &mut view);
     data.apply(Table::new("Node", vec![1_u64]).field("y", vec![40.0])).expect("valid");
-    view.set_data(data);
     step(&gpu, &mut view);
     let evaluated = gpu.work().evaluated;
     // A second into a transition of two.
@@ -161,13 +157,12 @@ fn a_change_to_one_page_evaluates_its_rows_alone() {
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     let xs: Vec<f64> = (0..rows).map(|r| f64::from(r % 100) - 50.0).collect();
-    let mut data = Data::new("points");
+    let data = Data::new("points");
     data.apply(Table::new("P", Ids::count(rows)).field("x", xs).field("y", vec![0.0; rows as usize])).expect("valid");
-    view.set_data(data.clone());
+    view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     let before = gpu.work().evaluated;
     data.apply(Table::new("P", vec![u64::from(rows - 1)]).field("y", vec![10.0])).expect("valid");
-    view.set_data(data);
     frame(&gpu, &mut view);
     assert_eq!(gpu.work().evaluated - before, 16, "only the last page's rows evaluate");
 }

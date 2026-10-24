@@ -163,7 +163,7 @@ impl Camera {
                 let to = [s[0] + delta[0], s[1] + delta[1]];
                 if view.globe >= 0.5 {
                     // Past the globe's edge there is nothing to hold the anchor to.
-                    if view.surface(to).is_none() {
+                    if view.ground(to).is_none() {
                         return *self;
                     }
                     return view.keeping(*self, anchor, to);
@@ -449,7 +449,7 @@ impl Projected {
     /// puts the anchor there in front of the globe, `camera` as it is.
     pub(crate) fn keeping(&self, camera: Camera, anchor: [f64; 3], to: [f64; 2]) -> Camera {
         let Camera::Map { center, zoom, pitch, bearing } = camera else { return camera };
-        let earth = Space::Earth(crate::Earth::globe());
+        let earth = Space::Earth(crate::Earth::default().projection(crate::Projection::Globe));
         let at = |center: [f64; 3]| {
             let camera = Camera::Map { center, zoom, pitch, bearing };
             let view = Projected::new(&earth, &camera, self.size, self.area, self.globe);
@@ -555,7 +555,7 @@ impl Projected {
     }
 
     /// Where the ray under `p` meets the ground: the plane's level, the map, or the globe.
-    pub(crate) fn surface(&self, p: [f64; 2]) -> Option<DVec3> {
+    pub(crate) fn ground(&self, p: [f64; 2]) -> Option<DVec3> {
         if self.globe < 0.5 {
             return self.on_plane(p, 0.0);
         }
@@ -611,7 +611,7 @@ pub(crate) fn split(x: f64) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Earth, Plane};
+    use crate::{Earth, Plane, Projection};
 
     const SIZE: [f64; 2] = [800.0, 600.0];
     const AREA: Area = [0.0, 0.0, 800.0, 600.0];
@@ -645,7 +645,7 @@ mod tests {
         assert!(near(to_screen(&view, [10.0, 20.0, 0.0]), [400.0, 300.0]));
         assert!(near(to_screen(&view, [11.0, 21.0, 0.0]), [402.0, 302.0]), "two pixels per unit, y down, upright");
         assert_eq!(camera.turned(&view, [0.0; 3], [20.0, 10.0]), camera);
-        let back = view.position(view.surface([402.0, 302.0]).expect("the sheet"));
+        let back = view.position(view.ground([402.0, 302.0]).expect("the sheet"));
         assert!((back[0] - 11.0).abs() < 1e-9 && (back[1] - 21.0).abs() < 1e-9, "{back:?}");
     }
 
@@ -665,7 +665,7 @@ mod tests {
         assert!(high[2] > low[2], "nearer is greater: {low:?} {high:?}");
         let back = view.position(view.unproject([high[0], high[1]], high[2]));
         assert!((back[2] - 30.0).abs() < 1e-6 && back[0].abs() < 1e-6, "{back:?}");
-        assert!(view.surface([low[0], low[1]]).expect("the ground").length() < 1e-6);
+        assert!(view.ground([low[0], low[1]]).expect("the ground").length() < 1e-6);
     }
 
     #[test]
@@ -703,7 +703,7 @@ mod tests {
     fn panning_toward_the_horizon_does_not_fling() {
         let camera = Camera::Map { center: [0.0; 3], zoom: 4.0, pitch: 75.0, bearing: 0.0 };
         let view = Projected::new(&plane(), &camera, SIZE, AREA, 0.0);
-        let anchor = view.position(view.surface([400.0, 200.0]).expect("ground"));
+        let anchor = view.position(view.ground([400.0, 200.0]).expect("ground"));
         let Camera::Map { center, .. } = camera.panned(&view, anchor, [0.0, -190.0]) else { panic!("a map") };
         assert!(center[1].abs() < 100.0, "a drag to the horizon stays near: {center:?}");
     }
@@ -711,14 +711,18 @@ mod tests {
     #[test]
     fn earth_positions_round_trip() {
         for globe in [0.0, 1.0] {
-            let space = Space::Earth(if globe > 0.0 { Earth::globe() } else { Earth::mercator() });
+            let space = Space::Earth(if globe > 0.0 {
+                Earth::default().projection(Projection::Globe)
+            } else {
+                Earth::default()
+            });
             let camera = Camera::Map { center: [-97.0, 31.0, 0.0], zoom: 4.0, pitch: 0.0, bearing: 0.0 };
             let view = Projected::new(&space, &camera, SIZE, AREA, globe);
             let p = [-95.5, 29.75, 0.0];
             let back = view.position(view.world(p));
             assert!((back[0] - p[0]).abs() < 1e-9 && (back[1] - p[1]).abs() < 1e-9, "globe {globe}: {back:?}");
             let s = to_screen(&view, p);
-            let ground = view.position(view.surface(s).expect("the surface"));
+            let ground = view.position(view.ground(s).expect("the ground"));
             assert!((ground[0] - p[0]).abs() < 1e-6 && (ground[1] - p[1]).abs() < 1e-6, "globe {globe}: {ground:?}");
         }
         assert!((latitude(mercator_y(37.5)) - 37.5).abs() < 1e-9);
@@ -726,10 +730,10 @@ mod tests {
 
     #[test]
     fn globe_gestures_keep_the_anchor_under_the_pointer() {
-        let space = Space::Earth(Earth::globe());
+        let space = Space::Earth(Earth::default().projection(Projection::Globe));
         let camera = Camera::Map { center: [-97.0, 31.0, 0.0], zoom: 3.0, pitch: 20.0, bearing: 15.0 };
         let view = Projected::new(&space, &camera, SIZE, AREA, 1.0);
-        let anchor = view.position(view.surface([520.0, 260.0]).expect("the globe"));
+        let anchor = view.position(view.ground([520.0, 260.0]).expect("the globe"));
         let at = to_screen(&view, anchor);
         let check = |moved: Camera, want: [f64; 2]| {
             let after = Projected::new(&space, &moved, SIZE, AREA, 1.0);

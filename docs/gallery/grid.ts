@@ -1,6 +1,6 @@
 /** The grid: ACTIVSg70k's buses and branches over the states they stand in, drawn by voltage. */
 import { fileURLToPath } from 'node:url';
-import type { CustomColormap, Mark, Size } from 'latkit/core';
+import type { CustomColormap, Mark, Size } from 'latkit';
 import { THEME, type Piece } from './look.ts';
 import { readCase } from './grids.ts';
 
@@ -39,9 +39,9 @@ export default function grid(): Piece {
     // Over the grid from the south, tilted, so the backbone recedes toward the Great Lakes.
     camera: { center: [-84.2, 37.2], zoom: 4.38, pitch: 42, bearing: -8 },
     scene: {
-      space: { earth: { projection: 'mercator', graticule: false, surface: THEME.background } },
+      space: { earth: { graticule: false } },
       ease: 0,
-      theme: THEME,
+      theme: { ...THEME, earth: { ground: THEME.background } },
       marks: [
         ...states(),
         { vertices: { of: ['grid', 'Bus'], position: ['lon', 'lat'], radius: 0, pick: false } },
