@@ -52,6 +52,16 @@ impl Geometry {
         &self.coords
     }
 
+    /// How many coordinates its rows span: of a slice, its own rows' only.
+    pub(crate) fn points(&self) -> usize {
+        let Some(rows) = self.levels.first() else { return self.coords.len() };
+        let mut span = rows[0] as usize..rows[rows.len() - 1] as usize;
+        for offsets in &self.levels[1..] {
+            span = offsets[span.start] as usize..offsets[span.end] as usize;
+        }
+        span.len()
+    }
+
     /// Whether row `row` holds exactly what `other`'s row `other_row` does: the same parts of the same
     /// coordinates, compared by their bits.
     pub(crate) fn same_row(&self, row: usize, other: &Geometry, other_row: usize) -> bool {
@@ -107,18 +117,6 @@ impl Geometry {
             hasher.write_u64(point[1].to_bits());
         }
         hasher.finish()
-    }
-
-    /// Coordinates the rows span, every part's.
-    pub(crate) fn coords_spanned(&self) -> usize {
-        if self.depth == 0 {
-            return self.len();
-        }
-        let mut span = 0..self.len();
-        for offsets in &self.levels {
-            span = offsets[span.start] as usize..offsets[span.end] as usize;
-        }
-        span.len()
     }
 
     /// How many points row `row`'s path takes as shaders read it: every coordinate, and a break
@@ -202,6 +200,25 @@ impl GeometryBuilder {
         } else {
             self.copy(source, 0, row);
         }
+    }
+
+    /// Rows `rows` of `source`, in order: each level's offsets and the coordinates copied whole.
+    pub(crate) fn push_rows(&mut self, source: &Geometry, rows: Range<usize>) {
+        debug_assert_eq!(source.depth, self.depth);
+        let mut span = rows;
+        for level in 0..self.levels.len() {
+            let offsets = &source.levels[level];
+            let (first, last) = (offsets[span.start], offsets[span.end]);
+            // Items of the next level pushed so far, which this run's items follow.
+            let next = match self.levels.get(level + 1) {
+                Some(below) => below.len() - 1,
+                None => self.coords.len(),
+            };
+            let next = u32::try_from(next).expect("a geometry page holds at most 2^32 items");
+            self.levels[level].extend(offsets[span.start + 1..=span.end].iter().map(|&o| o - first + next));
+            span = first as usize..last as usize;
+        }
+        self.coords.extend_from_slice(&source.coords[span]);
     }
 
     fn copy(&mut self, source: &Geometry, level: usize, item: usize) {
@@ -297,6 +314,26 @@ mod tests {
         assert_eq!(tail.len(), 2);
         assert_eq!(tail.get(0), Value::Polygons(Vec::new()));
         assert_eq!(tail.get(1), geometry.get(2));
+    }
+
+    #[test]
+    fn runs_of_rows_copy_as_rows_do() {
+        let geometry = polygons();
+        let (mut one, mut runs) = (GeometryBuilder::new(3), GeometryBuilder::new(3));
+        for row in [0, 1, 2, 1, 2] {
+            one.push_from(&geometry, row);
+        }
+        runs.push_rows(&geometry, 0..3);
+        runs.push_rows(&geometry, 1..3);
+        let (one, runs) = (one.finish(), runs.finish());
+        assert_eq!(
+            (0..5).map(|row| runs.get(row)).collect::<Vec<_>>(),
+            (0..5).map(|row| one.get(row)).collect::<Vec<_>>()
+        );
+        let tail = geometry.slice(1..3);
+        let mut sliced = GeometryBuilder::new(3);
+        sliced.push_rows(&tail, 0..2);
+        assert_eq!(sliced.finish().get(1), geometry.get(2), "a slice's rows, past its first offsets");
     }
 
     #[test]

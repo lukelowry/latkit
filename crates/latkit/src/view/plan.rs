@@ -1,8 +1,13 @@
 //! The plan: how each table drawn fits the budget. A table draws whole, in priority order when a mark
 //! drawing it gives one, unless it is too large to: denser than a screen shows, or more than the
-//! view's share of the budget holds with the rest. The GPU's ledger grants each view its share, by
-//! what it would draw whole. What the tables cost is worked out again only when the scene or a drawn
-//! table's rows or geometry change, and the plan only when those costs or the share do. Then a table a mark places on a map or a plane
+//! view's share of the budget holds with the rest. A table costs what the arena allocates for it: its
+//! columns' pages and the pages of words its marks keep per row, in the blocks the arena hands out,
+//! and its geometry's. The GPU's ledger grants each view its share, by what it would draw whole. What
+//! the tables cost is worked out again only when the scene or a drawn table's rows or geometry change,
+//! and the plan only when those costs or the share do. What tables drawn in part hold reaches past
+//! what the costs foresee, as the vertices the edges drawn end at do: where what the view holds passes
+//! its share, or finds no room in a full arena, it plans them within a smaller part of its share from
+//! then on, until the share changes; so what it draws and what replaces it fit, with room to cache. Then a table a mark places on a map or a plane
 //! draws through tiles, the rows of the tiles the camera asks for, as many as its share holds, and
 //! edges ending at it draw through tiles too, so they show with their ends; a table a mark traces
 //! draws whole, its traces spanning as few pixel columns as fit; any other table draws the rows that
@@ -14,12 +19,14 @@ use rustc_hash::{FxHashMap, FxHasher};
 
 use super::View;
 use super::marks::Shown;
-use crate::data::{Field, Geometry, Keyed, Name, Table};
+use crate::data::{Field, Keyed, Name, Table};
 use crate::derive::tiled::{Draw, Place, Planned, Plans};
 use crate::derive::{Derived, stamp_of};
 use crate::expr::compile::Words;
+use crate::gpu::arena::{PIECE_POINTS, path_points, rounded};
 use crate::gpu::shaders as wgsl;
 use crate::gpu::{Ask, Ledger};
+use crate::scene::mark::MarkKind;
 use crate::{Expr, Kind, Mark, Space};
 
 /// Rows past which a table a mark places draws through tiles: more than a screen shows one to a cell.
@@ -34,18 +41,23 @@ const TRACE_COLUMN_BYTES: f64 = 16.0;
 /// Pixel columns a trace spans at least, however little room is left.
 const TRACE_COLUMNS: u32 = 32;
 
-/// What a table costs: its rows, bytes each row takes on the GPU, bytes its geometry takes, and bytes
-/// its traces take for each pixel column they span.
+/// What a table costs, as the arena allocates it: its rows, bytes a page of them takes, bytes its
+/// geometry takes, and bytes its traces take for each pixel column they span.
 struct Cost {
     rows: usize,
-    per_row: f64,
+    per_page: f64,
     geometry: f64,
     traced: f64,
 }
 
 impl Cost {
     fn bytes(&self) -> f64 {
-        self.rows as f64 * self.per_row + self.geometry
+        self.rows.div_ceil(wgsl::PAGE_ROWS as usize) as f64 * self.per_page + self.geometry
+    }
+
+    /// Bytes a row takes on average.
+    fn per_row(&self) -> f64 {
+        self.per_page / f64::from(wgsl::PAGE_ROWS) + self.geometry / self.rows.max(1) as f64
     }
 }
 
@@ -60,11 +72,20 @@ struct Costs {
 }
 
 /// The plan, and the costs it weighs, each worked out again only when what it reads changes.
-#[derive(Default)]
 pub(crate) struct Planning {
     costs: Derived<Costs>,
     /// How each table draws, and the pixel columns a trace spans at most.
     plan: Derived<(Plans, u32)>,
+    /// The part of the room left for tables drawn in part that the plan gives them: lowered each time
+    /// what they held found no room in a full arena, until the share changes.
+    fit: f64,
+    share: f64,
+}
+
+impl Default for Planning {
+    fn default() -> Planning {
+        Planning { costs: Derived::default(), plan: Derived::default(), fit: 1.0, share: 0.0 }
+    }
 }
 
 impl Planning {
@@ -76,6 +97,30 @@ impl Planning {
     /// The pixel columns a trace spans at most.
     pub(crate) fn trace_columns(&self) -> u32 {
         self.plan.value.1
+    }
+
+    /// What tables drawn in part held found no room in a full arena: they draw within less, while
+    /// any draws more than the least it may. Whether the plan draws less.
+    pub(crate) fn overflowed(&mut self) -> bool {
+        self.tighten(0.75)
+    }
+
+    /// The view holds `bytes` for what it draws: past its share, tables drawn in part draw within as
+    /// much less as it passes the share by.
+    pub(crate) fn held(&mut self, bytes: u64) {
+        if self.share > 0.0 && bytes as f64 > self.share {
+            self.tighten(self.share / bytes as f64);
+        }
+    }
+
+    /// Plans tables drawn in part within `part` of what it gave them, while any draws more than the
+    /// least it may: whether it does.
+    fn tighten(&mut self, part: f64) -> bool {
+        let shrinks = self.plans().values().any(|p| matches!(p.draw, Draw::Tiles { rows } if rows > LEAST));
+        if shrinks {
+            self.fit *= part;
+        }
+        shrinks
     }
 }
 
@@ -97,9 +142,12 @@ impl View {
             shared: costs.shared.iter().map(|(piece, (_, bytes))| (*piece, *bytes)).collect(),
         };
         let share = ledger.grant(self.id, whole, ask, budget);
-        let stamp = stamp_of((self.planning.costs.stamp(), share.to_bits()));
+        if share != self.planning.share {
+            (self.planning.share, self.planning.fit) = (share, 1.0);
+        }
+        let stamp = stamp_of((self.planning.costs.stamp(), share.to_bits(), self.planning.fit.to_bits()));
         if self.planning.plan.due(stamp) {
-            let planned = self.plan(costs, share);
+            let planned = self.plan(costs, share, self.planning.fit);
             self.planning.plan.make(stamp, planned);
         }
     }
@@ -121,8 +169,9 @@ impl View {
     }
 
     /// How each table the scene draws draws, within `share` bytes, from what `costs` says each
-    /// costs, and the pixel columns a trace spans at most.
-    fn plan(&self, costs: &Costs, share: f64) -> (Plans, u32) {
+    /// costs, tables drawn in part within `fit` of the room left them; and the pixel columns a trace
+    /// spans at most.
+    fn plan(&self, costs: &Costs, share: f64, fit: f64) -> (Plans, u32) {
         let (mut plans, costs) = (costs.whole.clone(), &costs.tables);
         let tileable =
             |key: &(Name, Name), planned: &Planned| planned.place != Place::Nowhere && !self.derived.tiles.owns(&key.0);
@@ -176,11 +225,11 @@ impl View {
         }
         // Tables drawn through tiles, and traces, share what is left.
         let traced: f64 = costs.values().map(|c| c.traced).sum();
-        let left = (share - whole).max(share / 4.0);
+        let left = (share - whole).max(share / 4.0) * fit;
         let each = left / (tiled.len() + usize::from(traced > 0.0)).max(1) as f64;
         for key in &tiled {
             // A row drawn in part takes a word more: which held row it is.
-            let per_row = costs[key].per_row.max(1.0) + 4.0 + costs[key].geometry / costs[key].rows.max(1) as f64;
+            let per_row = costs[key].per_row().max(1.0) + 4.0;
             let rows = (each / per_row).min(f64::from(u32::MAX)) as u32;
             plans.get_mut(key).expect("listed").draw = Draw::Tiles { rows: rows.max(LEAST) };
         }
@@ -193,9 +242,17 @@ impl View {
     fn costs(&self) -> Costs {
         let space = &self.scene.space;
         let placing = matches!(space, Space::Earth(_) | Space::Plane(_));
+        let easing = !self.scene.ease.is_zero();
         let mut plans = Plans::default();
         let mut costs: Keyed<(Name, Name), Cost> = Keyed::default();
         let mut shared: FxHashMap<u64, (f64, f64)> = FxHashMap::default();
+        // The tables faces end at keep the normals faces sum at their rows.
+        let mut summed: Vec<(Name, Name)> = Vec::new();
+        for shown in self.marks.iter().filter(|m| m.kind() == MarkKind::Faces) {
+            let Some(compiled) = &shown.compiled else { continue };
+            let data = &shown.mark.style().data;
+            summed.extend(compiled.program.ends.iter().map(|table| (data.clone(), table.clone())));
+        }
         for shown in &self.marks {
             let style = shown.mark.style();
             let Some(table) = self.source(&style.data).and_then(|d| d.table(&style.table)) else { continue };
@@ -211,8 +268,10 @@ impl View {
             if placing && planned.place == Place::Nowhere {
                 planned.place = place_of(&shown.mark, table);
             }
-            let cost = costs.entry(key).or_insert(Cost { rows: table.len(), per_row: 0.0, geometry: 0.0, traced: 0.0 });
-            cost.per_row += row_bytes(shown);
+            let normals = shown.kind() == MarkKind::Vertices && summed.contains(&key);
+            let cost =
+                costs.entry(key).or_insert(Cost { rows: table.len(), per_page: 0.0, geometry: 0.0, traced: 0.0 });
+            cost.per_page += page_bytes(shown, easing, normals);
             cost.geometry += geometry_bytes(shown, table);
             cost.traced += traced_bytes(shown, table);
             for (piece, bytes) in self.shared_pages(shown, table) {
@@ -225,7 +284,7 @@ impl View {
     }
 
     /// The pages `shown` reads of `table`, and of the tables it joins, that every view drawing the
-    /// same data shares, as `row_bytes` and `geometry_bytes` count them: each field's, by its version
+    /// same data shares, as `page_bytes` and `geometry_bytes` count them: each field's, by its version
     /// and how it is read.
     fn shared_pages(&self, shown: &Shown, table: &Table) -> Vec<(u64, f64)> {
         let Some(compiled) = &shown.compiled else { return Vec::new() };
@@ -239,8 +298,8 @@ impl View {
                     None => table.field_named(&c.name),
                     Some((data, joined)) => self.source(data)?.table(joined)?.field_named(&c.name),
                 };
-                let width = if c.low { 8.0 } else { 4.0 };
-                Some((stamp_of((read?.version(), c.low)), table.len() as f64 * width))
+                let pages = table.len().div_ceil(wgsl::PAGE_ROWS as usize) as f64;
+                Some((stamp_of((read?.version(), c.low)), pages * column_page_bytes(c.low)))
             })
             .collect();
         if let Some(field) = geometry_of(&shown.mark).and_then(|f| table.field_named(&f)) {
@@ -290,15 +349,29 @@ fn geometry_of(mark: &Mark) -> Option<Name> {
     }
 }
 
-/// Bytes a row of `shown` takes on the GPU: its state and the frozen mirror a transition keeps, its
-/// focus word, a word for each column it reads and two for a position's, and its label's candidate.
-fn row_bytes(shown: &Shown) -> f64 {
+/// Bytes of the block a page of `width` words per row takes.
+fn block_bytes(width: u32) -> f64 {
+    f64::from(rounded(wgsl::PAGE_ROWS * width)) * 4.0
+}
+
+/// Bytes a page of a column's rows takes: its values, and its low parts where it reads them.
+fn column_page_bytes(low: bool) -> f64 {
+    block_bytes(1) * if low { 2.0 } else { 1.0 }
+}
+
+/// Bytes a page of `shown`'s rows takes, as the arena allocates them: a page of each column it reads,
+/// and of each kind of words it keeps per row: its state, its focus words, its labels' candidates, at
+/// a vertex mark faces attach to the normals they sum, and where the scene is `easing`, the frozen
+/// and settled state a transition keeps.
+fn page_bytes(shown: &Shown, easing: bool, normals: bool) -> f64 {
     let Some(compiled) = &shown.compiled else { return 0.0 };
-    let state = f64::from(compiled.drawing.stride + compiled.drawing.extras) * 8.0;
     let columns: f64 =
-        compiled.program.columns.iter().filter(|c| c.words != Words::Path).map(|c| if c.low { 8.0 } else { 4.0 }).sum();
-    let label = if compiled.drawing.label.is_some() { f64::from(wgsl::CANDIDATE_WORDS) * 4.0 } else { 0.0 };
-    state + 4.0 + columns + label
+        compiled.program.columns.iter().filter(|c| c.words != Words::Path).map(|c| column_page_bytes(c.low)).sum();
+    let state = block_bytes(compiled.drawing.stride + compiled.drawing.extras);
+    let labels = if compiled.drawing.label.is_some() { block_bytes(wgsl::CANDIDATE_WORDS) } else { 0.0 };
+    let normals = if normals { block_bytes(wgsl::NORMAL_WORDS) } else { 0.0 };
+    let eased = if easing { 2.0 * state } else { 0.0 };
+    columns + state + block_bytes(1) + labels + normals + eased
 }
 
 /// Bytes the traces `shown` draws of `table` take for each pixel column they span: a row's for each
@@ -311,12 +384,19 @@ fn traced_bytes(shown: &Shown, table: &Table) -> f64 {
     traced.count() as f64 * table.len() as f64 * TRACE_COLUMN_BYTES
 }
 
-/// Bytes the geometry `shown` draws of `table` takes: its points, and an area's triangles about
-/// three times as many.
+/// Bytes the geometry `shown` draws of `table` takes, as the arena allocates it: for each page of
+/// rows, a block of their first points, then their points a chunk at a time; an area's triangles take
+/// about three times the points of its outlines.
 fn geometry_bytes(shown: &Shown, table: &Table) -> f64 {
     let Some(field) = geometry_of(&shown.mark) else { return 0.0 };
     let Some(Field::Values(column, _)) = table.field_named(&field) else { return 0.0 };
-    let points: usize = column.pages().iter().filter_map(|p| p.values.geometry()).map(Geometry::coords_spanned).sum();
-    let scale = if matches!(shown.mark, Mark::Areas(_)) { 3.0 } else { 1.0 };
-    points as f64 * 8.0 * scale
+    let scale = if matches!(shown.mark, Mark::Areas(_)) { 3 } else { 1 };
+    let page = |values: &crate::data::Values| {
+        let points = path_points(values) * scale;
+        let (whole, rest) = (points / PIECE_POINTS, points % PIECE_POINTS);
+        let pieces = whole as u64 * u64::from(rounded(2 * PIECE_POINTS as u32))
+            + if rest > 0 { u64::from(rounded(2 * rest as u32)) } else { 0 };
+        (u64::from(rounded(values.len() as u32)) + pieces) as f64 * 4.0
+    };
+    column.pages().iter().map(|p| page(&p.values)).sum()
 }

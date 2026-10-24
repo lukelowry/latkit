@@ -40,6 +40,7 @@ pub(crate) use {geometry::Geometry, table::Field};
 // What the GPU side reads of the data.
 #[cfg(feature = "gpu")]
 pub(crate) use {
+    bytes::{read_values, values_bytes},
     column::{Column, PAGE_ROWS, Page},
     frames::{Listed, Manifest},
     geometry::GeometryBuilder,

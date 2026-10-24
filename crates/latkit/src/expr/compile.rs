@@ -260,9 +260,9 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// The program column of the derived number field `field`, which shaders read directly.
-    pub(crate) fn derived_number(&mut self, field: &str) -> u32 {
-        self.column(ColumnUse::derived(field, Words::Values))
+    /// The program column of the derived field `field`, read as words.
+    pub(crate) fn derived_bits(&mut self, field: &str) -> u32 {
+        self.column(ColumnUse::derived(field, Words::Bits))
     }
 
     /// The program column of the derived geometry field `field`, read as points per row.
@@ -339,7 +339,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles an end storing each row's own vertex slot at `word`: the vertex mark drawing the
+    /// Compiles an end storing each row itself at `word`: its row of the vertex mark drawing the
     /// mark's own table, row for row, as a pole stands on.
     pub(crate) fn own_end(&mut self, table: &Name, word: u32) -> Result<()> {
         let start = self.begin();

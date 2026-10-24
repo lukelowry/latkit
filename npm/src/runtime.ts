@@ -9,17 +9,14 @@ import type { LoadOptions } from './load.js';
 import type { Description, Failure, Hit, Stats, Value, ViewEvent, Work } from './outputs.js';
 import { Patch } from './patch.js';
 
-let run: ((bytes: Uint8Array) => Promise<Uint8Array>) | undefined;
 /** The page's first GPU, made as the runtime loads, until `Gpu.create()` takes it. */
 let first: Promise<wasm.Gpu> | undefined;
 
 /** @internal Initializes the bindings before returning their public API. */
 export async function initialize(options: LoadOptions) {
   await init(options.wasm === undefined ? undefined : { module_or_path: options.wasm });
-  if (options.createWorker || typeof Worker === 'function') {
-    run = jobs(wasm.module() as WebAssembly.Module, options.createWorker);
-    wasm.setJobs(run);
-  }
+  if (options.createWorker || typeof Worker === 'function')
+    wasm.setJobs(jobs(wasm.module() as WebAssembly.Module, options.createWorker));
   if (typeof VideoEncoder === 'function') wasm.setEncoder(encoder);
   // The page's first GPU is made now, so the page does not wait for its device when it draws; it
   // compiles nothing until a view opens.
@@ -134,18 +131,7 @@ export class Data {
    * as fields.
    */
   static async read(bytes: Uint8Array, name?: string): Promise<Data> {
-    if ([0x4c, 0x41, 0x54, 0x4b].every((b, i) => bytes[i] === b))
-      return new Data(wasm.Data.read(bytes, name));
-    if (name === undefined)
-      throw thrown({ code: 'invalid', message: 'GeoJSON is read as a named dataset' });
-    const job = wasm.geojsonJob(name, bytes);
-    const answer = run ? await run(job) : wasm.job(job);
-    if (answer.length === 0)
-      throw thrown({
-        code: 'invalid',
-        message: `${name}: the bytes are neither latkit's nor GeoJSON`,
-      });
-    return new Data(wasm.Data.read(answer, name));
+    return new Data((await wasm.Data.read(bytes, name)) as wasm.Data);
   }
 
   /**
@@ -770,11 +756,7 @@ export class Image {
    * 100 (90 by default), small, its alpha dropped; or WebP, lossless with alpha, smaller than PNG.
    */
   async encode(format: ImageFormat, options: { quality?: number } = {}): Promise<Uint8Array> {
-    const job = this.inner.encodeJob(format, options.quality);
-    const file = run ? await run(job) : wasm.job(job);
-    if (file.length === 0)
-      throw thrown({ code: 'invalid', message: `the image could not be written as ${format}` });
-    return file;
+    return (await this.inner.encode(format, options.quality)) as Uint8Array;
   }
 
   destroy(): void {

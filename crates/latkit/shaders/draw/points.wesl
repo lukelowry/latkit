@@ -7,7 +7,7 @@
 // marker.
 
 import package::lib::types::{STATUS, MARKER_ICON, MARKER_SHAPE, MARKER_BLOCK, GROUP, CASTS, SPACE_DIAGRAM};
-import package::lib::bind::{frame, eye, mark, state, ramp, program, focused};
+import package::lib::bind::{frame, eye, mark, word, ramp, program, focused};
 import package::lib::state::extra_at;
 import package::lib::project::{to_screen, to_clip, nearer, culled};
 import package::lib::points::{Point, shown_point, reach, port_at};
@@ -91,7 +91,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
 fn inputs(row: u32) -> array<f32, 8> {
     var input = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     for (var i = 0u; i < min(mark.inputs, 8u); i++) {
-        input[i] = bitcast<f32>(state[extra_at(row, mark.input + i)]);
+        input[i] = bitcast<f32>(word(extra_at(row, mark.input + i)));
     }
     return input;
 }

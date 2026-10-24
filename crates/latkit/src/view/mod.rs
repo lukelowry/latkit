@@ -22,7 +22,6 @@ mod program;
 mod query;
 mod resources;
 mod rig;
-mod rows;
 mod shadows;
 mod sync;
 mod timer;
@@ -30,6 +29,7 @@ mod transition;
 mod uniforms;
 mod variants;
 mod wake;
+mod words;
 
 use std::sync::Arc;
 use std::task::Waker;
@@ -107,6 +107,11 @@ pub struct View {
     /// What the camera chose of each table drawn in part, this frame, and what draws of each.
     choices: crate::derive::tiled::Choices,
     drawings: crate::data::Keyed<(Name, Name), drawing::Drawn>,
+    /// What replaces what the view draws of each dataset, its tables rebuilt, waiting for their pages.
+    staged: crate::data::Keyed<Name, sync::Staged>,
+    /// Pages the view draws found no room this frame, and the next frame makes some: it grows the
+    /// arena, or plans less.
+    short: bool,
     /// What the view derives from the data and the scene: tables beside the tables it draws, row for
     /// row, which marks read like data.
     derived: Derivations,
@@ -126,10 +131,8 @@ pub struct View {
     signal: Arc<wake::Signal>,
     waker: Waker,
     resources: Option<Resources>,
-    /// Marks' regions of the program buffer.
+    /// Where each mark's words lie in the program buffer.
     regions: Regions,
-    /// Marks came or went: row regions are laid out again.
-    regions_dirty: bool,
     /// Something visible changed since the last frame.
     changed: bool,
     /// Whether the application was told the device was lost.
@@ -193,6 +196,8 @@ impl View {
             sources: Vec::new(),
             choices: crate::derive::tiled::Choices::default(),
             drawings: crate::data::Keyed::default(),
+            staged: crate::data::Keyed::default(),
+            short: false,
             derived: Derivations::default(),
             marks: Vec::new(),
             camera,
@@ -208,7 +213,6 @@ impl View {
             signal,
             resources: None,
             regions: Regions::default(),
-            regions_dirty: true,
             changed: true,
             told_lost: false,
             waiting: Waiting::default(),
@@ -291,7 +295,7 @@ impl View {
                 let before = old.iter_mut().find(|s| s.as_ref().is_some_and(|s| s.key == shown.key));
                 if let Some(mut before) = before.and_then(Option::take) {
                     before.tables.release(&mut inner);
-                    shown.inherit(&before);
+                    shown.inherit(&mut before);
                     if easing && shown.compiled.as_ref().map(|c| c.drawing.stride) == Some(before.stride()) {
                         shown.begin(None);
                     }
@@ -300,12 +304,15 @@ impl View {
             })
             .collect();
         for mut dropped in old.into_iter().flatten() {
-            dropped.tables.release(&mut inner);
+            dropped.release(&mut inner);
+        }
+        // Marks moved: what they staged is built again for where they are now.
+        for (_, staged) in std::mem::take(&mut self.staged) {
+            staged.release(&mut inner);
         }
         for shown in self.marks.iter_mut().filter(|s| s.failure.is_none()) {
             shown.failure = absent(shown, &self.sources, &self.derived.tiles).map(|error| (error, false));
         }
-        self.regions_dirty = true;
         drop(inner);
         if !self.camera.fits(&scene.space) {
             self.camera = Camera::default_for(&scene.space);
@@ -358,8 +365,11 @@ impl View {
             }
         };
         let context = Context { theme: &self.scene.theme, space: &self.scene.space, layout: &self.scene.layout };
-        for shown in &mut self.marks {
+        for (i, shown) in self.marks.iter_mut().enumerate() {
             if shown.stale(&self.sources[at]) {
+                if let Some(staged) = self.staged.get_mut(&shown.mark.style().data) {
+                    staged.forget(i, inner);
+                }
                 let failed = shown.compile(&self.sources, context, inner).err();
                 let failed = failed.or_else(|| absent(shown, &self.sources, &self.derived.tiles));
                 shown.failure = failed.map(|error| (error, false));
@@ -397,11 +407,14 @@ impl View {
         self.drawings.retain(|key, _| key.0 != name);
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
-        for shown in &mut self.marks {
+        for (i, shown) in self.marks.iter_mut().enumerate() {
             if shown.mark.style().data == *name {
                 shown.failure = None;
             }
             if shown.compiled.as_ref().is_some_and(|c| c.schemas.iter().any(|(n, _)| n == name)) {
+                if let Some(staged) = self.staged.get_mut(&shown.mark.style().data) {
+                    staged.forget(i, &mut inner);
+                }
                 shown.tables.release(&mut inner);
                 shown.compiled = None;
                 shown.rows = 0;
@@ -724,6 +737,7 @@ impl View {
             || (moves && self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME))))
             || (moves && self.flowing())
             || self.gpu.0.lock().arena.uploading()
+            || self.short
     }
 
     /// Whether the view wants a frame: one that would differ ([`needs_render`](View::needs_render)),
@@ -739,12 +753,12 @@ impl View {
     }
 
     /// Whether the next frame, taking `input` or not, does work this one left: pages to upload past
-    /// the frame's budget, rows to lay out, a fit, probe, or query due, the tiles the camera wants, or
-    /// a transition to begin. Nothing else would wake the view for it: jobs, texts, fetches, and
-    /// readbacks do as they land.
+    /// the frame's budget, pages that found no room this frame, a fit, probe, or query due, the tiles
+    /// the camera wants, or a transition to begin. Nothing else would wake the view for it: jobs,
+    /// texts, fetches, and readbacks do as they land.
     fn due(&self, input: bool) -> bool {
         self.gpu.0.lock().arena.uploading()
-            || self.regions_dirty
+            || self.short
             || self.fitting.due()
             || (input && self.answers() && (self.probing.due() || self.queries.due()))
             || self.marks.iter().any(|m| m.begin.is_some())
@@ -769,11 +783,13 @@ impl View {
                 || self.compiling.is_some()
                 || self.answering.is_some()
                 || self.texting.is_some(),
-            data: !self.marks.iter().all(given) || marks().any(|m| !m.tables.synced() || m.tables.pending()),
+            data: !self.marks.iter().all(given)
+                || marks().any(|m| !m.tables.synced())
+                || self.staged.values().any(|s| !s.is_empty()),
             derived: !self.derived.complete(),
             labels: !self.labels.complete(),
             fit: self.fitting.due() || self.fitting.reading(),
-            marks: self.regions_dirty || marks().any(|m| m.counting() || m.begin.is_some()),
+            marks: marks().any(|m| m.counting() || m.begin.is_some()),
         }
     }
 
@@ -793,7 +809,6 @@ impl View {
     }
 
     fn invalidate(&mut self) {
-        self.regions_dirty = true;
         self.regions.relayout = true;
         self.fitting.plot_due = true;
         self.wake();
@@ -847,7 +862,10 @@ impl Drop for View {
         let gpu = self.gpu.clone();
         let mut inner = gpu.0.lock();
         for shown in &mut self.marks {
-            shown.tables.release(&mut inner);
+            shown.release(&mut inner);
+        }
+        for (_, staged) in std::mem::take(&mut self.staged) {
+            staged.release(&mut inner);
         }
         inner.ledger.leave(self.id);
     }

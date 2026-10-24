@@ -2,19 +2,22 @@
 //! template, given or from a TileJSON document, decoded in jobs, and patched into the dataset the view
 //! owns. The camera chooses the tiles that draw no larger than their own size where they lie nearest
 //! its focus, nearest first. Tiles decode only the layers marks draw, and again when the scene draws
-//! others.
+//! others; the job decoding a tile shapes its rows too, as their marks draw them, so a tile lands
+//! with its triangles and paths. The view holds the rows with their shapes, and draws the dataset of
+//! the rows as tiles wrote them.
 
 use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use super::super::shapes::shapings;
 use super::super::sight::{Domain, Sight, TILE_PX, meets};
 use super::super::tiling::{Decoding, Requested, Source, Tiling};
 use super::super::{Input, Jobs, stamp_of};
-use crate::data::{Data, Field, Id, Name, Op, Patch, Table, Values};
+use crate::data::{Data, Field, Id, Keyed, Name, Op, Patch, Table, Values};
 use crate::geo::mvt::Kind as Geometry;
 use crate::geo::pmtiles::{self, Directory, Entry, Header};
-use crate::geo::tiles::{Decoded, Template};
+use crate::geo::tiles::{Decoded, Template, shapes_field};
 use crate::host::{Job, Request};
 use crate::tiles::TileKey;
 use crate::{Error, Kind, Mark, Pending, Scene};
@@ -77,6 +80,8 @@ pub(crate) struct Vector {
     tiling: Tiling<TileKey>,
     /// The tiles whose rows the dataset holds, with the rows of each table.
     drawn: FxHashMap<TileKey, Vec<(Name, Vec<Id>)>>,
+    /// The rows the dataset holds, each table with the fields its shapes are written as too.
+    held: Data,
 }
 
 impl Vector {
@@ -111,7 +116,12 @@ impl Vector {
             leaf_fetches: FxHashMap::default(),
             tables: Vec::new(),
         };
-        Vector { tiles, tiling: Tiling::default(), drawn: FxHashMap::default() }
+        Vector { tiles, tiling: Tiling::default(), drawn: FxHashMap::default(), held: Data::new("held") }
+    }
+
+    /// The rows the dataset holds, each table with the fields its shapes are written as too.
+    pub(crate) fn held(&self) -> &Data {
+        &self.held
     }
 
     /// Whether the source is still opening, its root directory not landed.
@@ -154,7 +164,8 @@ impl Vector {
         (changed, drawn.standing_in, failure.or(drawn.failure))
     }
 
-    /// Makes `data` hold the rows of `drawn` and no other tile's; whether it changed.
+    /// Makes `data` hold the rows of `drawn` and no other tile's, as the tiles wrote them, and the
+    /// rows held those with their shapes; whether it changed.
     fn draw(&mut self, drawn: &[TileKey], stamp: u64, data: &mut Data) -> bool {
         let keep: FxHashSet<TileKey> = drawn.iter().copied().collect();
         let mut patch = Patch::new();
@@ -166,11 +177,16 @@ impl Vector {
             .filter(|k| !keep.contains(k) || self.tiling.decoded(k, stamp).is_none())
             .copied()
             .collect();
+        // One removal a table, which moves the rows after the first gone once.
+        let mut removed: Keyed<Name, Vec<Id>> = Keyed::default();
         for key in &gone {
             for (table, ids) in self.drawn.remove(key).unwrap_or_default() {
-                if data.table(&table).is_some() {
-                    patch = patch.remove(table, ids);
-                }
+                removed.entry(table).or_default().extend(ids);
+            }
+        }
+        for (table, ids) in removed {
+            if self.held.table(&table).is_some() {
+                patch = patch.remove(table, ids);
             }
         }
         for &key in drawn {
@@ -182,7 +198,7 @@ impl Vector {
             for op in &tile.ops {
                 if let Op::Set(table) = op {
                     rows.push((table.name.clone(), table.ids().collect()));
-                    patch = patch.set(harmonized(table, data));
+                    patch = patch.set(harmonized(table, &self.held));
                 }
             }
             self.drawn.insert(key, rows);
@@ -190,12 +206,22 @@ impl Vector {
         if patch.is_empty() {
             return false;
         }
-        let mut next = data.clone();
-        if next.apply(patch).is_ok() {
-            *data = next;
-            return true;
+        let mut held = self.held.clone();
+        if held.apply(patch).is_err() {
+            return false;
         }
-        false
+        // The dataset drawn holds each table held without its shapes, sharing all else.
+        let tables = held.tables().map(|table| {
+            let mut table = table.clone();
+            table.fields.retain(|(name, _)| !shapes_field(name));
+            table
+        });
+        let mut next = data.clone();
+        if next.apply(tables.fold(Patch::new(), Patch::replace)).is_err() {
+            return false;
+        }
+        (*data, self.held) = (next, held);
+        true
     }
 }
 
@@ -299,6 +325,7 @@ fn corrupt(url: &str) -> String {
 
 /// The tables marks draw from dataset `name`: a table named after a layer holds the kind of feature
 /// its marks draw, polygons first, then lines, then points; one named `layer:kind` holds that kind.
+/// Each is shaped as the marks drawing its geometry shape it.
 fn decoded_tables(scene: &Scene, name: &Name) -> Vec<Decoded> {
     let mut tables: Vec<Decoded> = Vec::new();
     for mark in &scene.marks {
@@ -327,7 +354,13 @@ fn decoded_tables(scene: &Scene, name: &Name) -> Vec<Decoded> {
         match tables.iter_mut().find(|d| d.table == table) {
             Some(d) if rank(kind) < rank(d.kind) => d.kind = kind,
             Some(_) => {}
-            None => tables.push(Decoded { layer, kind, table }),
+            None => {
+                let shapes = shapings(scene, name, &table)
+                    .into_iter()
+                    .filter_map(|(field, shaping)| (field == "geometry").then_some(shaping))
+                    .collect();
+                tables.push(Decoded { layer, kind, table, shapes });
+            }
         }
     }
     crate::order::by_name(&mut tables, |t| t.table.as_str());

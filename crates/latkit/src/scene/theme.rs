@@ -66,7 +66,8 @@ pub struct Theme {
     /// parallel orthogonal wires, which keep twice it apart.
     pub edge_spacing: f32,
     /// Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction
-    /// of the edge's length at its middle. A bow is part of the drawing, so zooming never moves it.
+    /// of the edge's length at its middle, as wide as eight lanes at most, more packing closer. A bow
+    /// is part of the drawing, so zooming never moves it.
     pub lane_bow: f32,
     /// How far an arrowhead reaches past its edge's width.
     pub arrow: f32,

@@ -13,12 +13,12 @@
 
 import package::lib::types::{
     NONE, LABEL_CODE, CANDIDATE_BOX, CANDIDATE_KEY, CANDIDATE_STATE, CANDIDATE_ALPHA, WANTS, PLACED_LABEL, DROPPED,
-    ESTIMATED, OCCUPIED, CELL, item,
+    UNSET, OCCUPIED, CELL, item,
 };
-import package::lib::bind::{frame, mark, state};
+import package::lib::bind::{frame, mark, word};
 import package::lib::state::extra_at;
 import package::lib::read::missing_bits;
-import package::lib::placement::{labels, word, put, candidate, want, seen};
+import package::lib::placement::{labels, label_word, put_label, put, candidate, want, seen};
 import package::lib::drawn::held_row;
 
 // Buckets of a digit of the select capping labels.
@@ -56,19 +56,19 @@ fn select_start(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     if i < SELECT_BUCKETS {
-        put(mark.label_select + i, 0u);
+        put_label(mark.label_select + i, 0u);
     }
     if i == 0u {
-        put(select_word(0u), 0u);
-        put(select_word(1u), mark.label_max);
-        put(select_word(2u), 0u);
+        put_label(select_word(0u), 0u);
+        put_label(select_word(1u), mark.label_max);
+        put_label(select_word(2u), 0u);
     }
 }
 
 @compute @workgroup_size(256)
 fn select_count(@builtin(global_invocation_id) id: vec3u) {
     let row = labeled(id);
-    let d = word(select_word(2u));
+    let d = label_word(select_word(2u));
     if row == NONE || mark.label_max == NONE || d >= 3u || !wanting(row) {
         return;
     }
@@ -76,7 +76,7 @@ fn select_count(@builtin(global_invocation_id) id: vec3u) {
     let at = digit(d);
     // Only keys whose higher digits are those found count.
     let above = at.x + at.y;
-    if above < 32u && (key >> above) != word(select_word(0u)) {
+    if above < 32u && (key >> above) != label_word(select_word(0u)) {
         return;
     }
     atomicAdd(&labels[mark.label_select + ((key >> at.x) & (SELECT_BUCKETS - 1u))], 1u);
@@ -85,16 +85,16 @@ fn select_count(@builtin(global_invocation_id) id: vec3u) {
 // The bucket holding the least key still to keep, clearing the buckets for the next digit.
 @compute @workgroup_size(1)
 fn select_find() {
-    let d = word(select_word(2u));
+    let d = label_word(select_word(2u));
     // A cap of none keeps no label: the cut drops them all.
     if mark.label_max == NONE || mark.label_max == 0u || d >= 3u {
         return;
     }
-    var left = word(select_word(1u));
+    var left = label_word(select_word(1u));
     var found = SELECT_BUCKETS;
     for (var b = 0u; b < SELECT_BUCKETS; b++) {
-        let n = word(mark.label_select + b);
-        put(mark.label_select + b, 0u);
+        let n = label_word(mark.label_select + b);
+        put_label(mark.label_select + b, 0u);
         if found == SELECT_BUCKETS {
             if n >= left {
                 found = b;
@@ -105,22 +105,22 @@ fn select_find() {
     }
     if found == SELECT_BUCKETS {
         // Fewer want room than the cap: each keeps its chance.
-        put(select_word(2u), 4u);
+        put_label(select_word(2u), 4u);
         return;
     }
-    put(select_word(0u), (word(select_word(0u)) << digit(d).y) | found);
-    put(select_word(1u), left);
-    put(select_word(2u), d + 1u);
+    put_label(select_word(0u), (label_word(select_word(0u)) << digit(d).y) | found);
+    put_label(select_word(1u), left);
+    put_label(select_word(2u), d + 1u);
 }
 
 @compute @workgroup_size(256)
 fn select_cut(@builtin(global_invocation_id) id: vec3u) {
     let row = labeled(id);
-    if row == NONE || mark.label_max == NONE || !wanting(row) || word(select_word(2u)) == 4u {
+    if row == NONE || mark.label_max == NONE || !wanting(row) || label_word(select_word(2u)) == 4u {
         return;
     }
     let at = candidate(row) + CANDIDATE_STATE;
-    if mark.label_max == 0u || word(candidate(row) + CANDIDATE_KEY) > word(select_word(0u)) {
+    if mark.label_max == 0u || word(candidate(row) + CANDIDATE_KEY) > label_word(select_word(0u)) {
         put(at, word(at) & ~WANTS);
     }
 }
@@ -150,15 +150,15 @@ fn undecided(row: u32) -> bool {
 fn clear_cells(@builtin(global_invocation_id) id: vec3u) {
     let i = item(id);
     if i < frame.cell_columns * frame.cell_rows {
-        put(frame.cells + i, NONE);
+        put_label(frame.cells + i, NONE);
     }
 }
 
 @compute @workgroup_size(256)
 fn reset_cells(@builtin(global_invocation_id) id: vec3u) {
     let i = item(id);
-    if i < frame.cell_columns * frame.cell_rows && word(frame.cells + i) != OCCUPIED {
-        put(frame.cells + i, NONE);
+    if i < frame.cell_columns * frame.cell_rows && label_word(frame.cells + i) != OCCUPIED {
+        put_label(frame.cells + i, NONE);
     }
 }
 
@@ -173,7 +173,7 @@ fn claim(@builtin(global_invocation_id) id: vec3u) {
     let c = cells_of(row);
     for (var y = c.y; y <= c.w; y++) {
         for (var x = c.x; x <= c.z; x++) {
-            if word(cell(x, y)) == OCCUPIED {
+            if label_word(cell(x, y)) == OCCUPIED {
                 put(at + CANDIDATE_STATE, word(at + CANDIDATE_STATE) | DROPPED);
                 return;
             }
@@ -193,7 +193,7 @@ fn decide(@builtin(global_invocation_id) id: vec3u) {
     let c = cells_of(row);
     for (var y = c.y; y <= c.w; y++) {
         for (var x = c.x; x <= c.z; x++) {
-            if word(cell(x, y)) != key {
+            if label_word(cell(x, y)) != key {
                 return;
             }
         }
@@ -210,7 +210,7 @@ fn occupy(@builtin(global_invocation_id) id: vec3u) {
     let c = cells_of(row);
     for (var y = c.y; y <= c.w; y++) {
         for (var x = c.x; x <= c.z; x++) {
-            put(cell(x, y), OCCUPIED);
+            put_label(cell(x, y), OCCUPIED);
         }
     }
 }
@@ -225,8 +225,8 @@ fn ask(@builtin(global_invocation_id) id: vec3u) {
     if (s & PLACED_LABEL) == 0u {
         return;
     }
-    let code = u32(bitcast<f32>(state[extra_at(row, mark.label + LABEL_CODE)]));
-    if (s & ESTIMATED) != 0u {
+    let code = u32(bitcast<f32>(word(extra_at(row, mark.label + LABEL_CODE))));
+    if (s & UNSET) != 0u {
         want(code);
     } else {
         seen(code);
@@ -240,9 +240,9 @@ fn fade(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let at = candidate(row);
-    // A label placed by an estimate waits for its text to fade in.
+    // A label placed before its text is set waits for it to fade in.
     let s = word(at + CANDIDATE_STATE);
-    let placed = (s & PLACED_LABEL) != 0u && (s & ESTIMATED) == 0u;
+    let placed = (s & PLACED_LABEL) != 0u && (s & UNSET) == 0u;
     let alpha = bitcast<f32>(word(at + CANDIDATE_ALPHA));
     let next = clamp(select(alpha - frame.label_fade, alpha + frame.label_fade, placed), 0.0, 1.0);
     put(at + CANDIDATE_ALPHA, bitcast<u32>(select(next, 0.0, missing_bits(bitcast<u32>(next)))));

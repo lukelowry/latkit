@@ -23,7 +23,7 @@ pub(crate) mod tiled;
 pub(crate) mod tiles;
 mod tiling;
 
-pub(crate) use lanes::{lanes, spread};
+pub(crate) use lanes::{spread, words as lane_words};
 
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -379,7 +379,7 @@ impl Derivations {
             let placed = self.places.update(input, jobs);
             self.lanes.update(input, jobs) | placed | self.stars.update(input, self.places.tables())
         };
-        changed |= self.shapes.update(input, jobs);
+        changed |= self.shapes.update(input, &self.tiles, jobs);
         changed
     }
 

@@ -114,11 +114,6 @@ impl Binding {
 
 include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 
-// A block of rows the GPU evaluates is a held page; a page of the data holds a whole number of them.
-const _: () = assert!(
-    1 << HELD_BITS == BLOCK_ROWS
-        && HELD_MASK + 1 == BLOCK_ROWS
-        && 1 << PAGE_BITS as usize == crate::data::PAGE_ROWS
-        && crate::data::PAGE_ROWS.is_multiple_of(BLOCK_ROWS as usize)
-        && DISPATCH_ROWS as usize == crate::data::PAGE_ROWS
-);
+// One page of rows: the data's, a table's order's, and a mark's, which it evaluates at a time.
+const _: () =
+    assert!(1 << PAGE_BITS == PAGE_ROWS && PAGE_MASK + 1 == PAGE_ROWS && PAGE_ROWS as usize == crate::data::PAGE_ROWS);

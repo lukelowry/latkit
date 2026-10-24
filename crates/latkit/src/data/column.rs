@@ -4,8 +4,9 @@ use super::name::PageId;
 use super::values::{Kind, Picks, Value, Values};
 use crate::Result;
 
-/// Rows per page: pages are the unit of sharing between versions and of upload to the GPU.
-pub(crate) const PAGE_BITS: u32 = 16;
+/// Rows per page: pages are the unit of sharing between versions, of upload to the GPU, of what a
+/// table draws in its order, and of what a mark keeps and evaluates per row.
+pub(crate) const PAGE_BITS: u32 = 12;
 pub(crate) const PAGE_ROWS: usize = 1 << PAGE_BITS;
 pub(crate) const PAGE_MASK: usize = PAGE_ROWS - 1;
 

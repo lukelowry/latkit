@@ -365,7 +365,7 @@ pub struct Waiting {
     pub labels: bool,
     /// A fit due or being measured.
     pub fit: bool,
-    /// Row regions laid out again, segment counts being read back, or a transition beginning.
+    /// Segment counts being read back, or a transition beginning.
     pub marks: bool,
 }
 
@@ -411,7 +411,7 @@ impl schemars::JsonSchema for Waiting {
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "Work under way a frame stands in for: pipelines the scene draws with compiling, until which the view draws nothing new (`compiling`); pages uploading or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again, segment counts, or a transition beginning (`marks`). Empty once a frame is complete.",
+            "description": "Work under way a frame stands in for: pipelines the scene draws with compiling, until which the view draws nothing new (`compiling`); pages uploading or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or texts not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition beginning (`marks`). Empty once a frame is complete.",
             "type": "array",
             "items": { "enum": ["compiling", "data", "derived", "labels", "fit", "marks"] },
         })

@@ -1011,7 +1011,8 @@ export type Theme =
       edgeSpacing?: number;
       /**
        * Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction of
-       * the edge's length at its middle. A bow is part of the drawing, so zooming never moves it.
+       * the edge's length at its middle, as wide as eight lanes at most, more packing closer. A bow is
+       * part of the drawing, so zooming never moves it.
        */
       laneBow?: number;
       /** How far an arrowhead reaches past its edge's width. */

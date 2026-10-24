@@ -167,6 +167,21 @@ impl Picks<'_> {
             },
         }
     }
+
+    /// The values in runs, in order: each a source and the first of its rows one after another, or
+    /// `None` for missing values, and how many.
+    fn runs(self) -> Vec<(Option<(usize, usize)>, usize)> {
+        let mut runs: Vec<(Option<(usize, usize)>, usize)> = Vec::new();
+        for i in 0..self.len() {
+            let pick = self.get(i);
+            match runs.last_mut() {
+                Some((Some((s, r)), n)) if pick == Some((*s, *r + *n)) => *n += 1,
+                Some((None, n)) if pick.is_none() => *n += 1,
+                _ => runs.push((pick, 1)),
+            }
+        }
+        runs
+    }
 }
 
 impl Values {
@@ -322,12 +337,14 @@ impl Values {
     /// The result keeps the first source's storage; numbers from other sources convert to it. A
     /// source of another kind is an error.
     pub(crate) fn assemble(sources: &[&Values], picks: Picks<'_>) -> Result<Values> {
-        let (len, pick) = (picks.len(), |i: usize| picks.get(i));
+        let len = picks.len();
         let like = sources.first().expect("a source");
         let kind = like.kind();
         if let Some(other) = sources.iter().find(|s| s.kind() != kind) {
             return Err(Error::invalid(format!("{:?} values for a {kind:?} field", other.kind())));
         }
+        // Rows one after another in one source copy as a run.
+        let runs = picks.runs();
         macro_rules! numbers {
             ($variant:ident, $t:ty, $store:expr) => {{
                 let cast: Vec<Values> = sources.iter().map(|s| s.cast(|x| x as $t, $store)).collect();
@@ -338,7 +355,14 @@ impl Values {
                         _ => unreachable!("cast to the first source's storage"),
                     })
                     .collect();
-                Array::$variant((0..len).map(|i| pick(i).map_or(<$t>::default(), |(s, r)| typed[s][r])).collect())
+                let mut out: Vec<$t> = Vec::with_capacity(len);
+                for &(run, n) in &runs {
+                    match run {
+                        Some((s, r)) => out.extend_from_slice(&typed[s][r..r + n]),
+                        None => out.resize(out.len() + n, <$t>::default()),
+                    }
+                }
+                Array::$variant(out.into())
             }};
         }
         let array = match &like.array {
@@ -348,34 +372,44 @@ impl Values {
             Array::U32(_) => numbers!(U32, u32, Store::U32),
             Array::U64(_) => numbers!(U64, u64, Store::U64),
             Array::Bool(_) => Array::Bool(
-                (0..len)
-                    .map(|i| pick(i).is_some_and(|(s, r)| matches!(&sources[s].array, Array::Bool(v) if v.get(r))))
+                runs.iter()
+                    .flat_map(|&(run, n)| (0..n).map(move |k| run.map(|(s, r)| (s, r + k))))
+                    .map(|pick| pick.is_some_and(|(s, r)| matches!(&sources[s].array, Array::Bool(v) if v.get(r))))
                     .collect(),
             ),
             Array::Text(_) => {
                 let mut builder = TextBuilder::with_capacity(len);
-                for i in 0..len {
-                    builder.push(pick(i).and_then(|(s, r)| sources[s].text().map(|t| t.get(r))).unwrap_or(""));
+                for &(run, n) in &runs {
+                    for k in 0..n {
+                        builder.push(run.and_then(|(s, r)| sources[s].text().map(|t| t.get(r + k))).unwrap_or(""));
+                    }
                 }
                 Array::Text(builder.finish())
             }
             Array::Geometry(g) => {
                 let mut builder = GeometryBuilder::new(g.depth());
-                for i in 0..len {
-                    match pick(i).and_then(|(s, r)| sources[s].geometry().map(|g| (g, r))) {
-                        Some((geometry, r)) => builder.push_from(geometry, r),
-                        None => builder.push_empty(),
+                for &(run, n) in &runs {
+                    match run.and_then(|(s, r)| Some((sources[s].geometry()?, r))) {
+                        Some((geometry, r)) => builder.push_rows(geometry, r..r + n),
+                        None => (0..n).for_each(|_| builder.push_empty()),
                     }
                 }
                 Array::Geometry(builder.finish())
             }
         };
+        // Every value present where every source's is and none is missing.
+        let gaps = runs.iter().any(|(run, _)| run.is_none_or(|(s, _)| sources[s].valid.is_some()));
+        if !gaps {
+            return Ok(Values { array, valid: None });
+        }
         let mut bits = BitsBuilder::with_capacity(len);
         let mut all = true;
-        for i in 0..len {
-            let valid = pick(i).is_some_and(|(s, r)| sources[s].is_valid(r));
-            all &= valid;
-            bits.push(valid);
+        for &(run, n) in &runs {
+            for k in 0..n {
+                let valid = run.is_some_and(|(s, r)| sources[s].is_valid(r + k));
+                all &= valid;
+                bits.push(valid);
+            }
         }
         Ok(Values { array, valid: (!all).then(|| bits.finish()) })
     }

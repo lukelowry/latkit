@@ -32,6 +32,11 @@ impl Host for Counted {
         self.0.fetch_add(1, Ordering::Relaxed);
         Boxes.rasterize(run)
     }
+
+    // Measuring sets no text.
+    fn measure(&self, run: &TextRun) -> latkit::Result<[f32; 2]> {
+        Boxes.measure(run)
+    }
 }
 
 fn view(gpu: &latkit::Gpu, x: Vec<f64>, priority: Vec<f64>) -> View {

@@ -444,7 +444,7 @@ fn an_edge_kept_draws_between_its_ends() {
     let Some(gpu) = gpu() else { return };
     let budget = gpu.budget();
     // So little room that only the coarsest edges draw.
-    gpu.set_budget(Budget { bytes: 1 << 20, ..budget });
+    gpu.set_budget(Budget { bytes: 16 << 20, ..budget });
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)

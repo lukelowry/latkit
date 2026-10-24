@@ -4,7 +4,7 @@
 // rows, only rows marked FIT count.
 
 import package::lib::types::{NONE, FIT, PATH_ENDS, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION, HALF_UNITS, item};
-import package::lib::bind::{frame, eye, mark, state};
+import package::lib::bind::{frame, eye, mark};
 import package::lib::focus::focus_of;
 import package::lib::reduce::ordered;
 import package::lib::state::{row_at, vertex_at};

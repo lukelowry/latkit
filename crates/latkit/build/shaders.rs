@@ -31,9 +31,9 @@ struct Entry {
 
 const ENTRIES: &[Entry] = &[
     Entry { module: "compute::evaluate", variants: &[("main", &["writes"])] },
-    Entry { module: "compute::freeze", variants: &[("main", &[])] },
+    Entry { module: "compute::freeze", variants: &[("main", &["writes"])] },
     Entry { module: "compute::bounds", variants: &[("main", &[])] },
-    Entry { module: "compute::normals", variants: &[("main", &[])] },
+    Entry { module: "compute::normals", variants: &[("main", &["atomic"])] },
     Entry { module: "compute::probe", variants: &[("main", &[]), ("multisampled", &["multisampled"])] },
     Entry { module: "compute::lists", variants: &[("main", &["lists"])] },
     Entry { module: "draw::backdrop", variants: &[("main", &[])] },
@@ -54,14 +54,14 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "draw::areas", variants: &[("main", &[]), ("focus", &["focused"])] },
     Entry { module: "draw::shade", variants: &[("main", &[])] },
     Entry { module: "draw::glyphs", variants: &[("main", &[]), ("ports", &["ports"])] },
-    Entry { module: "compute::candidates", variants: &[("main", &[])] },
-    Entry { module: "compute::labels", variants: &[("main", &[])] },
+    Entry { module: "compute::candidates", variants: &[("main", &["writes"])] },
+    Entry { module: "compute::labels", variants: &[("main", &["writes"])] },
     Entry { module: "draw::overlay", variants: &[("main", &[])] },
     Entry { module: "compute::compose", variants: &[("main", &[])] },
     Entry { module: "compute::fields", variants: &[("main", &[])] },
 ];
 
-const FEATURES: &[&str] = &["writes", "casts", "custom", "multisampled", "lists", "ports", "focused"];
+const FEATURES: &[&str] = &["writes", "atomic", "casts", "custom", "multisampled", "lists", "ports", "focused"];
 
 /// What a custom marker supplies, for validating its variant.
 const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";

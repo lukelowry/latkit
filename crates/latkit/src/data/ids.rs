@@ -1,4 +1,5 @@
 use std::hash::BuildHasher;
+use std::ops::Range;
 
 use hashbrown::HashTable;
 use hashbrown::hash_table::Entry;
@@ -253,11 +254,28 @@ impl RowIds {
     /// The id → row index, past holes; an error names a repeated id.
     pub(crate) fn index(&self) -> Result<Index> {
         let RowIds::Listed(_) = self else { return Ok(Index::Identity(self.len() as u32)) };
-        if let Some(pages) = self.numbers() {
-            return numbered(&pages, self.len());
-        }
         let mut table = HashTable::with_capacity(self.len());
-        for row in 0..self.len() {
+        self.insert(&mut table, 0..self.len())?;
+        Ok(Index::Table(table))
+    }
+
+    /// Indexes rows `rows` into `table`, past holes; an error names a repeated id. Numbered ids are
+    /// read page by page, without matching each id's kind.
+    fn insert(&self, table: &mut HashTable<u32>, rows: Range<usize>) -> Result<()> {
+        if let Some(pages) = self.numbers() {
+            let id = |r: u32| pages[r as usize >> PAGE_BITS][r as usize & PAGE_MASK];
+            for row in rows {
+                let n = id(row as u32);
+                match table.entry(hash(IdRef::Number(n)), |&r| id(r) == n, |&r| hash(IdRef::Number(id(r)))) {
+                    Entry::Occupied(_) => return Err(Error::invalid(format!("id {n} appears twice")).at(row)),
+                    Entry::Vacant(slot) => {
+                        slot.insert(row as u32);
+                    }
+                }
+            }
+            return Ok(());
+        }
+        for row in rows {
             let Some(key) = self.key(row) else { continue };
             let eq = |&r: &u32| self.key(r as usize) == Some(key);
             let rehash = |&r: &u32| hash(self.key(r as usize).expect("indexed rows have ids"));
@@ -268,26 +286,8 @@ impl RowIds {
                 }
             }
         }
-        Ok(Index::Table(table))
+        Ok(())
     }
-}
-
-/// The index of numbered ids, read page by page.
-fn numbered(pages: &[&[u64]], len: usize) -> Result<Index> {
-    let id = |r: u32| pages[r as usize >> PAGE_BITS][r as usize & PAGE_MASK];
-    let mut table = HashTable::with_capacity(len);
-    for (p, page) in pages.iter().enumerate() {
-        for (i, &n) in page.iter().enumerate() {
-            let row = p << PAGE_BITS | i;
-            match table.entry(hash(IdRef::Number(n)), |&r| id(r) == n, |&r| hash(IdRef::Number(id(r)))) {
-                Entry::Occupied(_) => return Err(Error::invalid(format!("id {n} appears twice")).at(row)),
-                Entry::Vacant(slot) => {
-                    slot.insert(row as u32);
-                }
-            }
-        }
-    }
-    Ok(Index::Table(table))
 }
 
 /// Finds a row by id without allocating.
@@ -302,6 +302,38 @@ pub(crate) fn hash(key: IdRef<'_>) -> u64 {
 }
 
 impl Index {
+    /// The index of `ids`, which hold the ids this one indexes and others after them, from row
+    /// `from`: this one with the others added, nothing it holds hashed again.
+    pub(crate) fn extended(&self, ids: &RowIds, from: usize) -> Result<Index> {
+        match (self, ids) {
+            (Index::Identity(_), RowIds::Count(n)) => Ok(Index::Identity(*n)),
+            (Index::Table(table), RowIds::Listed(_)) => {
+                let mut table = table.clone();
+                ids.insert(&mut table, from..ids.len())?;
+                Ok(Index::Table(table))
+            }
+            _ => ids.index(),
+        }
+    }
+
+    /// The index of `ids`, the ids this one indexes but those of the rows `doomed` names, the rest
+    /// moving up past them: this one without them, renumbered, nothing hashed again.
+    pub(crate) fn without(&self, doomed: &[bool], ids: &RowIds) -> Result<Index> {
+        let (Index::Table(table), RowIds::Listed(_)) = (self, ids) else { return ids.index() };
+        let mut moved = Vec::with_capacity(doomed.len());
+        let mut next = 0;
+        for &gone in doomed {
+            moved.push(next);
+            next += u32::from(!gone);
+        }
+        let mut table = table.clone();
+        table.retain(|r| !doomed[*r as usize]);
+        for r in &mut table {
+            *r = moved[*r as usize];
+        }
+        Ok(Index::Table(table))
+    }
+
     /// The rows numbered ids `ids` name, `unwired` where one names none or is missing, and whether a
     /// present id named no row: the loop chosen once for the ids' and the rows' kinds.
     pub(crate) fn resolve(&self, rows: &RowIds, ids: &Values, unwired: u32) -> (Vec<u32>, bool) {
@@ -366,6 +398,24 @@ mod tests {
         assert_eq!(index.get(&ids, IdRef::Number(9)), Some(5));
         assert_eq!(index.get(&ids, IdRef::Number(2)), Some(2));
         assert!(ids.extend(&[Id::from("a")]).is_err(), "texts do not join numbers");
+    }
+
+    #[test]
+    fn indexes_follow_rows_added_and_removed() {
+        let ids = RowIds::new(&Ids::from(vec![10_u64, 20, 30]));
+        let index = ids.index().expect("unique");
+        let more = ids.extend(&[Id::Number(40), Id::Number(50)]).expect("numbers");
+        let extended = index.extended(&more, 3).expect("unique");
+        assert_eq!(extended.get(&more, IdRef::Number(50)), Some(4));
+        assert_eq!(extended.get(&more, IdRef::Number(20)), Some(1));
+        assert!(index.extended(&more.extend(&[Id::Number(10)]).expect("numbers"), 5).is_err(), "an id twice");
+        // Rows 1 and 3 go: the others move up past them.
+        let doomed = [false, true, false, true, false];
+        let kept = more.gather(&[0, 2, 4]);
+        let fewer = extended.without(&doomed, &kept).expect("unique");
+        assert_eq!(fewer.get(&kept, IdRef::Number(50)), Some(2));
+        assert_eq!(fewer.get(&kept, IdRef::Number(30)), Some(1));
+        assert_eq!(fewer.get(&kept, IdRef::Number(20)), None);
     }
 
     #[test]

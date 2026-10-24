@@ -20,7 +20,7 @@ import package::lib::types::{
     PROBE_X, PROBE_Y, PROBE_UNDER, PROBE_ROW, PROBE_SEGMENT, PROBE_LOCATE_X, PROBE_LOCATE_Y, PROBE_LOCATED,
     STEP_NEAREST, STEP_TOPMOST, STEP_DESCRIBE, STEP_HITS, STEP_BOXED, STEP_LOCATE, STEP_UNDER, HIT_WORDS, item,
 };
-import package::lib::bind::{frame, eye, mark, state};
+import package::lib::bind::{frame, eye, mark, word};
 import package::lib::state::row_at;
 import package::lib::project::{to_screen, clip_of};
 import package::lib::points::{point, port_at};
@@ -93,7 +93,7 @@ fn nearest_on(p: vec2f, a: vec3f, b: vec3f) -> vec3f {
 // Whether drawn row `item`, held as `row`, answers the pointer: one of the mark's live rows, neither
 // it nor its tile, which is `leaving` or not, fading out.
 fn answers(item: u32, row: u32, leaving: bool) -> bool {
-    return item < mark.rows && !leaving && (state[row_at(row) + mark.stride - 1u] & FADE_OUT) == 0u;
+    return item < mark.rows && !leaving && (word(row_at(row) + mark.stride - 1u) & FADE_OUT) == 0u;
 }
 
 // A point's marker, or past the rows one of their ports.

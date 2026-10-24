@@ -9,7 +9,7 @@
 // value where it draws; between runs that do not meet, a point is left out, breaking the line.
 
 import package::lib::types::{NONE, MISSING, COLUMN_TABLE};
-import package::lib::bind::{pages, program, mark};
+import package::lib::bind::{program, mark, word};
 import package::lib::read::{column_word, page_of};
 
 const HEADER: u32 = 4u;
@@ -68,14 +68,14 @@ fn trace_axis(slot: u32, entry: u32) -> vec2f {
     let l = trace_level_at(slot);
     let e = last_at_most(trace_table() + program[l + 2u], max(program[l + 1u], 1u), 2u, 1u, entry);
     let w = program[e] + (entry - program[e + 1u]) * 2u;
-    return vec2f(bitcast<f32>(pages[w]), bitcast<f32>(pages[w + 1u]));
+    return vec2f(bitcast<f32>(word(w)), bitcast<f32>(word(w + 1u)));
 }
 
 // The bits of `row`'s value of entry `entry` of level `slot`: a frame's, or a bucket's least
 // (`side` 0) or greatest (1).
 fn trace_entry(row: u32, slot: u32, entry: u32, side: u32) -> u32 {
     let t = trace_table();
-    let at = page_of(mark.trace, row);
+    let at = page_of(row);
     let block = at.x;
     if block >= program[t + 1u] {
         return MISSING;
@@ -91,5 +91,5 @@ fn trace_entry(row: u32, slot: u32, entry: u32, side: u32) -> u32 {
     if program[e] == NONE || local >= per || entry < program[e + 1u] {
         return MISSING;
     }
-    return pages[program[e] + (entry - program[e + 1u]) * per + local];
+    return word(program[e] + (entry - program[e + 1u]) * per + local);
 }

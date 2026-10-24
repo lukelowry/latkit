@@ -105,7 +105,8 @@ impl View {
         // Everything a table drawn through tiles holds frames by its rows' bounds, whatever is drawn. A
         // mark with no rows has nothing to frame: it holds a fit only while no mark has rows.
         let compiled = || self.marks.iter().filter(|m| m.compiled.is_some());
-        let drawn = |m: &Shown| (m.drawable() && !m.tables.pending()) || (all && self.tiled_bounds(m).is_some());
+        let staged = |m: &Shown| self.staged.get(&m.mark.style().data).is_some_and(|s| !s.is_empty());
+        let drawn = |m: &Shown| (m.drawable() && !staged(m)) || (all && self.tiled_bounds(m).is_some());
         let empty = |m: &Shown| m.tables.synced() && m.held() == 0;
         let ready = compiled().any(&drawn)
             && compiled().all(|m| drawn(m) || empty(m))

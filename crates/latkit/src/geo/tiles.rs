@@ -1,8 +1,9 @@
 //! Vector tiles as data: where tiles come from, and a tile decoded into the rows of the tables marks
-//! draw from it.
+//! draw from it, each with its shapes.
 
 use super::mvt::{self, Kind, Property, Shape};
 use crate::data::{Ids, Name, Patch, Table, Values};
+use crate::host::Shaping;
 use crate::tiles::TileKey;
 
 /// Tiles fetched from a URL template, from a TileJSON document or given as one.
@@ -65,21 +66,31 @@ impl Template {
     }
 }
 
-/// A table a tile decodes into: its layer's features of one kind, as table `table`.
+/// A table a tile decodes into: its layer's features of one kind, as table `table`, and the shapes
+/// its marks draw of its geometry.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Decoded {
     pub(crate) layer: String,
     pub(crate) kind: Kind,
     pub(crate) table: Name,
+    pub(crate) shapes: Vec<Shaping>,
 }
 
 /// Features a tile's table numbers at most; ids beyond its place in the tile never collide.
 pub(crate) const FEATURES: u64 = 1 << 20;
 
+/// The field a tile's rows hold their geometry as.
+const GEOMETRY: &str = "geometry";
+
+/// Whether field `name` of a tile's table holds its rows' shapes, which no property is read as.
+pub(crate) fn shapes_field(name: &str) -> bool {
+    [Shaping::Triangles { earth: true }, Shaping::Path].iter().any(|s| *s.field_of(GEOMETRY) == *name)
+}
+
 /// Tile `key`'s rows as a patch of every table of `tables`: each feature of the table's layer and
-/// kind a row (a multi-point a row per point), its geometry field `geometry` and its properties
-/// fields. A row's id is the tile's place along the Hilbert curve times [`FEATURES`], plus its own
-/// place among the table's rows. `None` when the bytes are no tile.
+/// kind a row (a multi-point a row per point), its geometry field `geometry`, the fields its shapes
+/// are written as, and its properties fields. A row's id is the tile's place along the Hilbert curve
+/// times [`FEATURES`], plus its own place among the table's rows. `None` when the bytes are no tile.
 pub(crate) fn decode(bytes: &[u8], key: TileKey, tables: &[Decoded]) -> Option<Patch> {
     let bytes = super::gunzipped(bytes).ok()?;
     let layers = mvt::decode(&bytes, key)?;
@@ -107,7 +118,7 @@ pub(crate) fn decode(bytes: &[u8], key: TileKey, tables: &[Decoded]) -> Option<P
         if count == 0 {
             continue;
         }
-        let ids: Vec<u64> = (0..count as u64).map(|k| first + k).collect();
+        let ids: Ids = (0..count as u64).map(|k| first + k).collect::<Vec<_>>().into();
         let geometry: Values = match decoded.kind {
             Kind::Points => shapes[..count]
                 .iter()
@@ -127,9 +138,14 @@ pub(crate) fn decode(bytes: &[u8], key: TileKey, tables: &[Decoded]) -> Option<P
                 .collect::<Vec<_>>()
                 .into(),
         };
-        let mut table = Table::new(decoded.table.clone(), Ids::from(ids)).field("geometry", geometry);
+        let depth = geometry.geometry().map_or(0, crate::data::Geometry::depth);
+        let mut table = Table::new(decoded.table.clone(), ids);
+        for &shaping in decoded.shapes.iter().filter(|s| s.takes(depth)) {
+            table = table.field(shaping.field_of(GEOMETRY), shaping.shapes_of(&geometry));
+        }
+        table = table.field(GEOMETRY, geometry);
         for (k, key) in layer.keys.iter().enumerate() {
-            if key == "geometry" {
+            if key == GEOMETRY || shapes_field(key) {
                 continue;
             }
             let values: Vec<Option<&Property>> = properties[..count]
@@ -185,7 +201,9 @@ mod tests {
     fn a_tile_decodes_into_its_tables_rows() {
         let key = TileKey { z: 3, x: 2, y: 3 };
         let bytes = tile("water", 3, &square(100, 100, 1000), "bay");
-        let tables = [Decoded { layer: "water".into(), kind: Kind::Polygons, table: "water".into() }];
+        let triangles = Shaping::Triangles { earth: true };
+        let tables =
+            [Decoded { layer: "water".into(), kind: Kind::Polygons, table: "water".into(), shapes: vec![triangles] }];
         let patch = decode(&bytes, key, &tables).expect("a tile");
         let mut data = Data::new("base");
         data.apply(patch).expect("valid");
@@ -194,7 +212,10 @@ mod tests {
         let id = crate::geo::pmtiles::tile_id(key) * FEATURES;
         assert_eq!(water.get(id, "name"), Some(Value::Text("bay".into())), "stable ids");
         assert!(matches!(water.get(id, "geometry"), Some(Value::Polygons(_))));
-        let other = [Decoded { layer: "water".into(), kind: Kind::Lines, table: "water".into() }];
+        // Its shapes, the triangles areas draw: a label point and a triangle at least.
+        let triangles = water.get(id, "geometry.triangles");
+        assert!(matches!(triangles, Some(Value::Path(points)) if points.len() >= 4));
+        let other = [Decoded { layer: "water".into(), kind: Kind::Lines, table: "water".into(), shapes: Vec::new() }];
         assert!(decode(&bytes, key, &other).expect("a tile").is_empty(), "no lines in it");
     }
 

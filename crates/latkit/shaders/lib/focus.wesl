@@ -1,14 +1,16 @@
-// Selection and hover: one word of bits per held row; and how present a row is while its mark eases.
+// Selection and hover: one word of bits per held row, in pages the page table at `mark.focus` lists;
+// and how present a row is while its mark eases.
 
 import package::lib::types::{SELECTED, HOVERED, FADE_IN, FADE_OUT};
-import package::lib::bind::{frame, focus, mark};
+import package::lib::bind::{frame, mark, word};
+import package::lib::state::record_at;
 
 // The focus bits of held row `row`; none for a row that left.
 fn focus_of(row: u32) -> u32 {
     if row >= mark.held - mark.exits {
         return 0u;
     }
-    return focus[mark.focus + row];
+    return word(record_at(mark.focus, 1u, row));
 }
 
 fn is_selected(row: u32) -> bool {

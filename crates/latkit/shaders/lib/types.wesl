@@ -57,31 +57,24 @@ const OP_STORE_CODE: u32 = 44u;
 // Values the expression stack holds at once.
 const STACK: u32 = 16u;
 
-// Column descriptor words, eight per column in `meta`.
-const COLUMN_WORDS: u32 = 8u;
+// Column descriptor words, six per column in `meta`.
+const COLUMN_WORDS: u32 = 6u;
 const COLUMN_FLAGS: u32 = 0u;
 const COLUMN_ROWS: u32 = 1u;
 const COLUMN_TABLE: u32 = 2u;
 const COLUMN_LOW: u32 = 3u;
 const COLUMN_JOIN: u32 = 4u;
 const COLUMN_T: u32 = 5u;
-// Rows per page of the column's table, as a shift: a page of the data, or a page a table drawn in
-// part holds.
-const COLUMN_BITS: u32 = 6u;
 // Column flags.
 const SAMPLED: u32 = 1u;
 const STEP: u32 = 2u;
 const BITS: u32 = 4u;
 
-// Rows per data page, as a shift.
-const PAGE_BITS: u32 = 16u;
-const PAGE_MASK: u32 = 65535u;
-// Rows per page a table drawn in part holds, as a shift: a mark's rows of it lie a page at a time in
-// slots, in the order its pyramid draws them.
-const HELD_BITS: u32 = 12u;
-const HELD_MASK: u32 = 4095u;
-// Rows a block holds: what a mark evaluates at a time, a held page.
-const BLOCK_ROWS: u32 = 4096u;
+// Rows per page, as a shift: a page of the data, of a table drawn in part as its marks hold it, a
+// slot at a time, and of a mark's rows, which it evaluates a page at a time.
+const PAGE_BITS: u32 = 12u;
+const PAGE_MASK: u32 = 4095u;
+const PAGE_ROWS: u32 = 4096u;
 // Items a dispatch over more items than one dimension holds steps through at a time in its second
 // dimension, 256 workgroups of 256 wide.
 const DISPATCH_ROWS: u32 = 65536u;
@@ -110,11 +103,24 @@ const BLEND_COLOR: u32 = 3u;
 const BLEND_POSITION: u32 = 4u;
 
 // Points per block of a geometry's points, as a shift: a block of x and y words is a chunk.
-const POINT_BITS: u32 = 15u;
-const POINT_MASK: u32 = 32767u;
+const POINT_BITS: u32 = 16u;
+const POINT_MASK: u32 = 65535u;
 // Words of a geometry column's table per page: the block of each row's first point, where the page's
 // blocks of points are listed in the table, how many points the page has, and how many rows.
 const PATH_PAGE_WORDS: u32 = 4u;
+
+// Words of each end of a mark in its program: where the vertex mark drawing the end's table keeps
+// its rows (the page table of its rows' words and how many words a row has), where it holds each page
+// of the order it draws that table in (NONE where it draws the table whole), and the page table of the
+// normals faces sum at its rows (NONE where none do).
+const END_WORDS: u32 = 4u;
+const END_STATE: u32 = 0u;
+const END_STRIDE: u32 = 1u;
+const END_SLOTS: u32 = 2u;
+const END_NORMALS: u32 = 3u;
+
+// Words of the normal faces sum at a vertex row: x, y, and z in fixed point.
+const NORMAL_WORDS: u32 = 3u;
 
 // Vertex state words.
 const VERTEX_WORDS: u32 = 12u;
@@ -162,6 +168,8 @@ const GEODESIC_STEP: f32 = 2.0;
 const MAX_PIECES: u32 = 64u;
 // Pieces a path bowed into a lane takes at least.
 const BOW_PIECES: u32 = 16u;
+// Lanes a family of edges joining the same two vertices spreads as wide as at most: more pack closer.
+const FAMILY_LANES: f32 = 8.0;
 
 // Face state words.
 const FACE_WORDS: u32 = 5u;
@@ -204,12 +212,12 @@ const CANDIDATE_ALPHA: u32 = 6u;
 const TEXT_BASE: f32 = 32.0;
 const TEXT_SPREAD: f32 = 8.0;
 // Candidate states: in view and wanting room, placed, dropped, placed in the frame before, and
-// measured by an estimate while its text is not set.
+// placed while its text is not set.
 const WANTS: u32 = 1u;
 const PLACED_LABEL: u32 = 2u;
 const DROPPED: u32 = 4u;
 const STICKY: u32 = 8u;
-const ESTIMATED: u32 = 16u;
+const UNSET: u32 = 16u;
 // A text run whose distance field the GPU makes, as words at the start of the fields buffer: where its
 // coverage starts, its coverage's width and height, where its columns' least distances start, and
 // where its field starts and the words between the starts of its rows.
@@ -221,9 +229,9 @@ const FIELD_AT: u32 = 4u;
 const FIELD_ROW: u32 = 5u;
 const FIELD_WORDS: u32 = 6u;
 
-// A run table entry whose text is not set yet holds this flag as its first corner and the run's
-// estimated size as its second, so its label can be placed before it is set.
-const TEXT_ESTIMATE: u32 = 0x80000000u;
+// A run table entry whose text is not set yet holds this flag as its first corner and the run's size,
+// as measured, as its second, so its label is placed where it will show before it is set.
+const TEXT_UNSET: u32 = 0x80000000u;
 // A cell a placed label holds.
 const OCCUPIED: u32 = 0u;
 // CSS pixels a cell of the label grid covers.
@@ -511,7 +519,8 @@ struct Mark {
     rows: u32,
     exits: u32,
     // Rows the mark holds evaluated, leaving rows included: of a table drawn whole its rows, of one
-    // drawn in part its held pages' rows. Every per-row word is a held row's.
+    // drawn in part its held pages' rows. Every word a mark keeps per row is a held row's, in pages of
+    // `PAGE_ROWS` held rows each that page tables in the program list.
     held: u32,
     // Where the program lists which held rows the drawn rows are, a run at a time, and where the
     // lists hold each drawn row's word, expanded from them; NONE where every drawn row is the held
@@ -520,14 +529,14 @@ struct Mark {
     drawn: u32,
     // How far the tiles coming and going have faded, from 0 to 1.
     reveal: f32,
-    // Each row's kind words: where row 0's start and how many; then its extra words.
+    // The page table of each row's words: its kind words, `stride` of them, then its extra words.
     state: u32,
     stride: u32,
-    extra: u32,
     extras: u32,
-    // While the mark eases, where row 0's frozen kind and extra words start; NONE otherwise.
+    // While the mark eases, the page tables of each row's words as it showed when the transition
+    // began, and as its channels evaluate them, where it settles; NONE otherwise.
     frozen: u32,
-    frozen_extra: u32,
+    settled: u32,
     motion: f32,
     // Where the program holds how each word of a row eases, a word each.
     blends: u32,
@@ -535,6 +544,7 @@ struct Mark {
     // `blocks` of them.
     block: u32,
     blocks: u32,
+    // The page table of each row's focus word.
     focus: u32,
     domains: u32,
     columns: u32,
@@ -579,10 +589,10 @@ struct Mark {
     // Each port of a vertex mark's rows, and how many each row has.
     port_info: u32,
     ports: u32,
-    // The extra word of the label's code, or NONE; the labels buffer's offsets of its candidates, its
-    // run table (two words per code), its wanted codes (a count, then codes), and its seen codes (a
-    // bit per code shown in view); the id of its first candidate, unique across marks; the size
-    // labels and port labels are set at, in length units.
+    // The extra word of the label's code, or NONE; the page table of each row's candidate; the labels
+    // buffer's offsets of its run table (two words per code), its wanted codes (a count, then codes),
+    // and its seen codes (a bit per code shown in view); the id of its first candidate, unique across
+    // marks; the size labels and port labels are set at, in length units.
     label: u32,
     candidates: u32,
     runs: u32,
@@ -597,6 +607,8 @@ struct Mark {
     // The CSS pixels the mark's size keeps within at any zoom: a vertex's half, a stroke's width.
     size_min: f32,
     size_max: f32,
+    // A vertex mark's page table of the normals faces sum at its rows; NONE where no face reads it.
+    normals: u32,
 }
 
 // A line or a run of text drawn over the marks, in CSS pixels.

@@ -1,16 +1,16 @@
 //! Transitions: a mark whose description, static data, or rows change eases from what it showed.
 //!
-//! When one starts, what each row shows is frozen into the frozen buffer at the row's new place:
-//! copied when the rows are the same, gathered by id when rows were added, removed, or reordered.
-//! Rows that left are frozen past the new rows and fade out there. While the mark eases, its channels
-//! store into the settled state, a second mirror of the state, once per change; each frame the clock
-//! moves, the ease pass writes what every row shows from its frozen and settled state by the mark's
-//! progress, and which rows fade, so draws, probes, bounds, and shadows read eased state without
-//! knowing a transition runs, and no channel runs to ease. Where no row is the same as one shown
-//! before, as when another dataset replaces the one drawn, every row enters, shows what it evaluated,
-//! and only fades. The frozen and settled buffers mirror the state buffer's layout and exist only
-//! while a transition does. A stroke's geometry column keeps the table it had as the transition
-//! began, and its paths morph from it point by point.
+//! When one starts, what each row shows is frozen into the mark's frozen words at the row's new
+//! place: where it was when the rows are the same, gathered by id when rows were added, removed, or
+//! reordered. Rows that left are frozen past the new rows and fade out there. While the mark eases,
+//! its channels store into its settled words once per change; each frame the clock moves, the ease
+//! pass writes what every row shows from its frozen and settled words by the mark's progress, and
+//! which rows fade, so draws, probes, bounds, and shadows read eased state without knowing a
+//! transition runs, and no channel runs to ease. Where no row is the same as one shown before, as when
+//! another dataset replaces the one drawn, every row enters, shows what it evaluated, and only fades.
+//! The frozen and settled words are pages like the state's, kept only while a transition runs. A
+//! stroke's geometry column keeps the table it had as the transition began, and its paths morph from
+//! it point by point.
 //!
 //! Without an ease, a flowing mark whose rows moved still begins a transition, of no length: it
 //! shows the new state at once, and its comets carry their travel over to the rows' new places.
@@ -21,9 +21,10 @@ use super::View;
 use super::clock::Clock;
 use super::drawing::{Drawing, Holds};
 use super::marks::{Holding, Shown};
-use crate::data::{PAGE_ROWS, RowIds, Table};
-use crate::derive::order::PAGE;
+use super::words::Kept;
+use crate::data::{RowIds, Table};
 use crate::gpu::Inner;
+use crate::gpu::shaders::PAGE_ROWS;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::MarkKind;
 
@@ -64,7 +65,7 @@ pub(crate) fn remap(old: &Table, new: &Table) -> Option<(Vec<u32>, Vec<u32>)> {
         let mut sources: Vec<u32> = (0..new.len()).map(|r| if r < old.len() { r as u32 } else { wgsl::NONE }).collect();
         let mut exits = Vec::new();
         for block in rewritten(old, new).unwrap_or_default() {
-            let rows = block as usize * PAGE_ROWS..((block as usize + 1) * PAGE_ROWS).min(old.len());
+            let rows = (block * PAGE_ROWS) as usize..(((block + 1) * PAGE_ROWS) as usize).min(old.len());
             for r in rows.filter(|&r| old.ids.key(r) != new.ids.key(r)) {
                 sources[r] = wgsl::NONE;
                 if old.ids.key(r).is_some() {
@@ -101,11 +102,9 @@ pub(crate) fn remap(old: &Table, new: &Table) -> Option<(Vec<u32>, Vec<u32>)> {
 /// place: those whose ids' pages changed, and those past `old`'s rows. `None` where that does not
 /// tell, as between ids counted and ids listed.
 pub(crate) fn rewritten(old: &Table, new: &Table) -> Option<Vec<u32>> {
-    let blocks = |len: usize| len.div_ceil(PAGE_ROWS) as u32;
+    let pages = |len: usize| (len as u32).div_ceil(PAGE_ROWS);
     match (&old.ids, &new.ids) {
-        (RowIds::Count(a), RowIds::Count(b)) if b >= a => {
-            Some(((*a as usize / PAGE_ROWS) as u32..blocks(*b as usize)).collect())
-        }
+        (RowIds::Count(a), RowIds::Count(b)) if b >= a => Some((*a / PAGE_ROWS..pages(*b as usize)).collect()),
         (RowIds::Listed(a), RowIds::Listed(b)) if b.len() >= a.len() => {
             let (a, b) = (a.pages(), b.pages());
             Some((0..b.len()).filter(|&p| a.get(p).is_none_or(|page| page.id != b[p].id)).map(|p| p as u32).collect())
@@ -187,7 +186,7 @@ pub(crate) fn in_place(sources: &[u32]) -> bool {
 /// The slots of `new` holding rows `old` did not hold there: every slot holding a page without one
 /// before, those whose page took rows appended since, and those of rows kept that changed.
 pub(crate) fn bound(old: Option<&Drawing>, new: &Drawing) -> Vec<u32> {
-    let grown = old.map_or(u32::MAX, |old| old.order.len() / PAGE);
+    let grown = old.map_or(u32::MAX, |old| old.order.len() / PAGE_ROWS);
     let appended = old.is_some_and(|o| o.order.len() != new.order.len());
     (0..new.slot_count())
         .filter(|&s| match new.holds(s) {
@@ -212,9 +211,9 @@ pub(crate) fn holds_alike(a: &Holding, b: &Holding) -> bool {
 }
 
 impl Shown {
-    /// Takes over the rows `before` holds, as a changed description of the same mark.
-    pub(crate) fn inherit(&mut self, before: &Shown) {
-        self.region = before.region;
+    /// Takes over the rows `before` holds and their words, as a changed description of the same mark.
+    pub(crate) fn inherit(&mut self, before: &mut Shown) {
+        self.words = std::mem::take(&mut before.words);
         self.before = before.before;
         self.rows = before.rows;
         self.holding.clone_from(&before.holding);
@@ -246,7 +245,7 @@ impl Shown {
     pub(crate) fn restart(&mut self, bound: &[u32]) {
         let mut sources: Vec<u32> = (0..self.live()).collect();
         for &slot in bound {
-            let rows = slot * PAGE..((slot + 1) * PAGE).min(sources.len() as u32);
+            let rows = slot * PAGE_ROWS..((slot + 1) * PAGE_ROWS).min(sources.len() as u32);
             sources[rows.start as usize..rows.end as usize].fill(wgsl::NONE);
         }
         // The rows that left lay past the live rows when the frame began.
@@ -291,9 +290,9 @@ impl View {
                 shown.transition = None;
                 shown.exits = 0;
                 shown.all_dirty();
+                shown.packed = false;
                 if shown.tables.frozen().is_some() {
                     shown.tables.thaw(inner);
-                    shown.packed = false;
                 }
             } else {
                 running = true;
@@ -301,61 +300,82 @@ impl View {
                 shown.easing = self.clock.moved();
             }
         }
-        if !running && self.marks.iter().all(|m| m.transition.is_none()) {
-            let resources = self.resources.as_mut().expect("created");
-            resources.drop_frozen();
-            resources.drop_settled();
-        }
         running
     }
 
-    /// Records what each starting mark shows into the frozen buffer.
+    /// Records what each starting mark shows into its frozen words: the remap words say, for each, the
+    /// pages its rows' words were in as the frame began, how many rows showed, where each new row was
+    /// where rows moved, and where the vertices its ends name moved where those did.
     fn freeze(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, starting: &[usize]) {
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
-        let slots = self.slot_table(starting);
-        let resources = self.resources.as_mut().expect("created before transitions");
-        resources.ensure_frozen(device);
-        resources.ensure_settled(device);
         let mut words: Vec<u32> = Vec::new();
-        let table = slots.map(|table| {
-            words.extend(table);
-            0
-        });
-        let mut gathers = Vec::new();
+        // Where each vertex mark's rows moved: how many it held, then where each went.
+        let mut moves = vec![wgsl::NONE; self.marks.len()];
         for &i in starting {
-            let shown = &mut self.marks[i];
-            let begin = shown.begin.take().expect("starting");
-            let was = shown.moved.unwrap_or(shown.region);
-            let now = shown.region;
-            match begin.sources {
-                None => {
-                    let source = if shown.moved.is_some() { resources.retired_state() } else { None };
-                    let rows = shown.before.min(shown.live());
-                    resources.copy_frozen(encoder, source, was, now, rows);
-                }
-                Some(sources) => {
-                    let at = words.len() as u32;
-                    let slot_words = match shown.kind() {
-                        MarkKind::Edges => (1 << wgsl::EDGE_FROM) | (1 << wgsl::EDGE_TO),
-                        MarkKind::Faces => (1 << wgsl::FACE_A) | (1 << wgsl::FACE_B) | (1 << wgsl::FACE_C),
-                        _ => 0,
-                    };
-                    words.extend([was.state, was.extra, slot_words, table.unwrap_or(wgsl::NONE)]);
-                    words.extend(sources);
-                    shown.remap = at;
-                    shown.carry = true;
-                    gathers.push(i);
+            let m = &self.marks[i];
+            let Some(sources) = m.begin.as_ref().and_then(|b| b.sources.as_ref()) else { continue };
+            if m.kind() != MarkKind::Vertices {
+                continue;
+            }
+            moves[i] = words.len() as u32;
+            let at = words.len() + 1;
+            words.push(m.before);
+            words.resize(at + m.before as usize, wgsl::NONE);
+            for (new, &old) in sources.iter().enumerate() {
+                if old < m.before {
+                    words[at + old as usize] = new as u32;
                 }
             }
         }
-        if gathers.is_empty() {
-            return;
+        for &i in starting {
+            let shown = &mut self.marks[i];
+            let begin = shown.begin.take().expect("starting");
+            let before = shown.words.state_before().clone();
+            let width = shown.stride() + shown.extras();
+            // Rows whose words took another shape show nothing to ease from: they enter, and fade in.
+            let sources =
+                if before.width == width { begin.sources } else { Some(vec![wgsl::NONE; shown.held() as usize]) };
+            shown.carry = sources.is_some();
+            let header = words.len();
+            words.extend([0; 4]);
+            words[header] = words.len() as u32;
+            words.extend(before.blocks.iter());
+            words[header + 1] = shown.before.min(shown.live());
+            words[header + 2] = match sources {
+                Some(sources) => {
+                    let at = words.len() as u32;
+                    words.extend(sources);
+                    at
+                }
+                None => wgsl::NONE,
+            };
+            // Each kind word naming a vertex follows that vertex where its mark's rows moved.
+            let ends: Vec<(u32, u32)> = shown
+                .code
+                .iter()
+                .filter(|op| op[0] == wgsl::OP_STORE_END)
+                .filter_map(|op| Some((op[1], moves[shown.ends.get(op[3] as usize)?.mark?])))
+                .filter(|&(_, moved)| moved != wgsl::NONE)
+                .collect();
+            words[header + 3] = if ends.is_empty() {
+                wgsl::NONE
+            } else {
+                let at = words.len();
+                words.resize(at + shown.stride() as usize, wgsl::NONE);
+                for (word, moved) in ends {
+                    words[at + word as usize] = moved;
+                }
+                at as u32
+            };
+            shown.remap = header as u32;
         }
+        let resources = self.resources.as_mut().expect("created before transitions");
         resources.write_remap(device, queue, &words);
-        let moved = gathers.iter().any(|&i| self.marks[i].moved.is_some());
+        inner.arena.clear(device, queue);
+        inner.arena.written();
         let groups = resources.groups(&gpu.0, inner);
-        let group = resources.freeze_group(device, inner, moved);
+        let group = resources.pass(device, inner, Shader::Freeze);
         let pipeline = inner.pipelines.compute(device, Shader::Freeze, "gather");
         // The marks' uniforms this frame writes before it submits hold each mark's remap offset.
         let mut pass = encoder
@@ -363,44 +383,40 @@ impl View {
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &groups.view, &[0]);
         pass.set_bind_group(2, &group, &[]);
-        for &i in &gathers {
-            let shown = &self.marks[i];
+        for &i in starting {
             pass.set_bind_group(1, &groups.mark, &[super::passes::offset(i)]);
-            super::passes::dispatch(&mut pass, shown.held());
+            super::passes::dispatch(&mut pass, self.marks[i].held());
         }
     }
 
-    /// Where each old vertex slot moved, for the ends of rows easing out; `None` when no mark with
-    /// ends gathers.
-    fn slot_table(&self, starting: &[usize]) -> Option<Vec<u32>> {
-        let needed = starting.iter().any(|&i| {
-            let m = &self.marks[i];
-            m.kind() != MarkKind::Vertices && m.begin.as_ref().is_some_and(|b| b.sources.is_some())
-        });
-        if !needed {
-            return None;
-        }
-        let vertices = self.marks.iter().filter(|m| m.kind() == MarkKind::Vertices);
-        let old_slot = |m: &Shown| m.moved.unwrap_or(m.region).state / wgsl::VERTEX_WORDS;
-        let size = vertices.clone().map(|m| old_slot(m) + m.before).max().unwrap_or(0);
-        let mut table = vec![wgsl::NONE; size as usize];
-        for m in vertices {
-            let (from, to) = (old_slot(m), m.region.state / wgsl::VERTEX_WORDS);
-            match m.begin.as_ref().and_then(|b| b.sources.as_ref()) {
-                Some(sources) => {
-                    for (new_row, &old_row) in sources.iter().enumerate() {
-                        if old_row != wgsl::NONE && old_row < m.before {
-                            table[(from + old_row) as usize] = to + new_row as u32;
-                        }
-                    }
-                }
-                None => {
-                    for row in 0..m.before.min(m.live()) {
-                        table[(from + row) as usize] = to + row;
-                    }
+    /// Gives each mark whose transition starts or runs frozen and settled words for every row it
+    /// holds, and lets them go once it ends; a transition finding no room for them does not start, and
+    /// its rows show what they evaluate at once.
+    pub(super) fn fit_easing(&mut self, inner: &mut Inner) {
+        let gpu = self.gpu.clone();
+        let device = (&gpu.0.device, &gpu.0.queue);
+        for shown in &mut self.marks {
+            let easing = shown.begin.is_some() || shown.transition.is_some();
+            let rows = shown.page_rows();
+            let width = if easing { shown.stride() + shown.extras() } else { 0 };
+            let mut fits = true;
+            for kept in [Kept::Frozen, Kept::Settled] {
+                let had = shown.words.pages(kept).blocks.len();
+                match shown.words.fit(kept, &rows, width, device, &mut inner.arena) {
+                    Some(new) => shown.packed &= new.is_empty() && had == shown.words.pages(kept).blocks.len(),
+                    None => fits = false,
                 }
             }
+            if easing && !fits {
+                for kept in [Kept::Frozen, Kept::Settled] {
+                    shown.words.fit(kept, &[], 0, device, &mut inner.arena);
+                }
+                shown.begin = None;
+                shown.transition = None;
+                shown.exits = 0;
+                shown.all_dirty();
+                shown.packed = false;
+            }
         }
-        Some(table)
     }
 }

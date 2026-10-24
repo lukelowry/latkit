@@ -115,11 +115,13 @@ pub(crate) struct Allowance {
 }
 
 impl Inner {
-    /// Begins view `view`'s part of a frame: a new frame when it already drew in this one.
-    pub(crate) fn begin_frame(&mut self, view: u64) {
+    /// Begins view `view`'s part of a frame: a new frame when it already drew in this one, which
+    /// frees the pages the last one let go and grows the pool by what it found no room for.
+    pub(crate) fn begin_frame(&mut self, view: u64, device: &wgpu::Device, queue: &Queue) {
         if self.frame.drawn.is_empty() || self.frame.drawn.contains(&view) {
             self.frame =
                 Allowance { drawn: Vec::new(), upload: self.budget.upload_per_frame, work: crate::derive::FRAME_WORK };
+            self.arena.begin_frame(device, queue);
         }
         self.frame.drawn.push(view);
     }

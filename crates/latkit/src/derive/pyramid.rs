@@ -16,9 +16,9 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::order::PAGE;
 use super::sight::{Domain, Region, Sight, TILE_PX, meets};
 use crate::data::{UNWIRED, Version};
+use crate::gpu::shaders::PAGE_ROWS;
 use crate::tiles::TileKey;
 
 /// Cells across a tile's grid, as a shift: a tile holds at most `4^GRID_BITS` rows of its level, but
@@ -530,8 +530,11 @@ pub(crate) struct Tile {
 /// its levels out coarsest first, so a level's pages lie past those of the levels above it, but for
 /// one they may share.
 fn pages_past(ranges: &[(u8, Range<u32>)], last: Option<u32>) -> (u32, Option<u32>) {
-    let mut spans: Vec<(u32, u32)> =
-        ranges.iter().filter(|(_, r)| r.start < r.end).map(|(_, r)| (r.start / PAGE, (r.end - 1) / PAGE)).collect();
+    let mut spans: Vec<(u32, u32)> = ranges
+        .iter()
+        .filter(|(_, r)| r.start < r.end)
+        .map(|(_, r)| (r.start / PAGE_ROWS, (r.end - 1) / PAGE_ROWS))
+        .collect();
     spans.sort_unstable();
     let (mut pages, mut reached) = (0, last);
     for (first, end) in spans {
@@ -605,7 +608,7 @@ impl Pyramid {
         let focus = sight.focus();
         let limit = TILE_PX * 1.25;
         let mut out: Vec<(u8, Range<u32>)> = Vec::new();
-        let (fit, mut held, mut last) = (rows.div_ceil(PAGE), 0_u32, None);
+        let (fit, mut held, mut last) = (rows.div_ceil(PAGE_ROWS), 0_u32, None);
         let mut level = vec![TileKey { z: 0, x: 0, y: 0 }];
         while !level.is_empty() {
             let mut found = Vec::new();
@@ -829,10 +832,10 @@ mod tests {
     fn levels_count_the_pages_they_hold() {
         // Two sub-cells in one page, one in the next, and a level below reaching the page where the
         // one above ended.
-        let above = [(0, 10..20), (0, 50..60), (0, PAGE + 3..PAGE + 9)];
+        let above = [(0, 10..20), (0, 50..60), (0, PAGE_ROWS + 3..PAGE_ROWS + 9)];
         let (pages, last) = pages_past(&above, None);
         assert_eq!((pages, last), (2, Some(1)));
-        let below = [(1, PAGE + 20..3 * PAGE + 1)];
+        let below = [(1, PAGE_ROWS + 20..3 * PAGE_ROWS + 1)];
         assert_eq!(pages_past(&below, last), (2, Some(3)), "pages 2 and 3; page 1 is held already");
     }
 

@@ -154,7 +154,7 @@ impl Edges {
             drawing.geometry = c.derived_path("route");
         } else {
             drawing.geometry = self.bends.as_ref().map_or(wgsl::NONE, |bends| c.path(bends));
-            drawing.lane = c.derived_number("lane");
+            drawing.lane = c.derived_bits("lane");
         }
         Ok(drawing)
     }

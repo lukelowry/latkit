@@ -6,7 +6,7 @@ import package::lib::types::{
     SIDE_TOP, PORT_WORDS, PORT_CODE, PORT_SHAPE, PORT_COLUMN, HALF_UNITS, OWN_HEIGHT, SPACE_DIAGRAM,
 };
 import package::lib::bind::{frame, eye, mark, program};
-import package::lib::state::{vertex_slot, Vertex};
+import package::lib::state::{row_at, vertex_at, Vertex};
 import package::lib::project::{world, clip_of, shows, to_screen};
 import package::lib::focus::{focus_of, faded, growth};
 import package::lib::read::bits_value;
@@ -37,7 +37,7 @@ fn placed(v: Vertex) -> bool {
 // The marker of row `row` of the current vertex mark. A hovered marker sized in pixels grows; one
 // sized in units is part of the drawing, and only glows.
 fn point(row: u32) -> Point {
-    let v = vertex_slot(mark.state / VERTEX_WORDS + row);
+    let v = vertex_at(row_at(row));
     var half = vec2f(px(v.half.x, VERTEX_HALF));
     if (mark.flags & SIZED) != 0u {
         half.y = px(v.half.y, VERTEX_HALF + 1u);

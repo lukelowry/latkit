@@ -22,8 +22,8 @@ thread_local! {
     static ENCODERS: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
 }
 
-/// Jobs the page's workers do at once: as many as its pool keeps, one fewer than its cores, at most
-/// four.
+/// Jobs handed to the page's workers at once: one fewer than its cores, at most four. The page keeps
+/// a worker for each and queues nothing.
 fn workers() -> usize {
     let cores = web_sys::window()
         .map(|window| window.navigator().hardware_concurrency())
@@ -62,7 +62,8 @@ fn pump(run: &js_sys::Function) {
 
 impl Browser {
     /// Has views' jobs done by `run`, which takes a job's bytes as a `Uint8Array` and returns a
-    /// promise of its answer's: a pool of workers, each holding the page's compiled module.
+    /// promise of its answer's: workers, each holding the page's compiled module. Jobs queue here and
+    /// `run` gets one only when a worker is free for it.
     pub fn set_jobs(run: js_sys::Function) {
         JOBS.with(|jobs| *jobs.borrow_mut() = Some(run));
     }

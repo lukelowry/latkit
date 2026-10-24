@@ -21,7 +21,7 @@ pub use browser::Browser;
 pub use job::Job;
 pub(crate) use job::Placement;
 pub(crate) use job::Wiring;
-pub(crate) use job::{Key, Shaping};
+pub(crate) use job::{Key, Shaping, shapes_answer};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use native::Native;
 

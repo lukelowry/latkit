@@ -13,26 +13,26 @@
 //!
 //! Only columns whose inputs changed are rebuilt, once each: moving the shown coordinate rebuilds
 //! sampled columns' cursors and nothing else, and a table drawn in part rebuilds only where the pages
-//! its marks hold changed. Rebuilt tables wait, pinning their pages, until every page is resident;
-//! the view then swaps them in with every other mark of their dataset, so a data version, and what a
-//! camera move draws, appear whole. A rebuilt column that lists pages says which row blocks hold pages
-//! that changed, so only their rows evaluate again. While a mark eases, the table its geometry column
-//! had when the transition began stays, packed after the rest, so paths morph from it.
+//! its marks hold changed. Rebuilt tables are staged with every other mark's of their dataset: the
+//! dataset reserves every page they read at once, or none and waits for room, and once every page
+//! landed the view swaps them all in, so a data version, and what a camera move draws, appear whole.
+//! Staged tables are not built again while they wait, only where what they read changes again. A
+//! rebuilt column that lists pages says which pages of rows hold pages that changed, so only their rows
+//! evaluate again. While a mark eases, the table its geometry column had when the transition began
+//! stays, packed after the rest, so paths morph from it.
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use super::drawing::{Drawing, Holds};
-use crate::data::{
-    Column, Field, FramePage, GeometryBuilder, PAGE_ROWS, PageId, Run, Samples, Values, Version, detail,
-};
+use crate::data::{Column, Field, FramePage, GeometryBuilder, PageId, Run, Samples, Values, Version, detail};
 use crate::derive::Beside;
-use crate::derive::order::{Order, PAGE};
+use crate::derive::order::Order;
 use crate::derive::shapes::PagedShapes;
 use crate::derive::stamp_of;
 use crate::expr::compile::{ColumnUse, Program, Reads, Words};
 use crate::gpu::Inner;
-use crate::gpu::arena::{Content, PIECE_POINTS, PageKey, path_pieces, path_points};
+use crate::gpu::arena::{Ask, Content, PIECE_POINTS, PageKey, path_pieces, path_points};
 use crate::gpu::packed::{self, Packing};
 use crate::gpu::shaders as wgsl;
 use crate::gpu::work::Count;
@@ -108,13 +108,15 @@ impl Rows<'_> {
 }
 
 /// One column on the GPU: its descriptor, whose table offsets are relative to `words`, its page table
-/// or cursors, the pages it pins, and the words still waiting for a page.
+/// or cursors, and the pages it reads: until its dataset reserves them, what it asks the arena for,
+/// each with the word it lands at; then the pages it pins, and the words still waiting for a page.
 struct ColumnTable {
     stamp: Stamp,
     /// How it pages its rows: 0 for the data's pages, else the stamp of the pages held.
     held: u64,
     descriptor: [u32; WORDS],
     words: Vec<u32>,
+    asks: Vec<(usize, Ask)>,
     pins: Vec<PageKey>,
     /// Words waiting for a page's offset: the word, the page, and the words it must hold.
     missing: Vec<(usize, PageKey, u32)>,
@@ -149,18 +151,138 @@ struct Join {
     pages: Vec<(PageId, Arc<[u32]>)>,
 }
 
-/// Tables rebuilt and waiting for their pages, by index into the current ones; and whether every
-/// table was rebuilt, which replaces them all.
-struct Pending {
+/// A mark's tables rebuilt, by index into its current ones; and whether every table was rebuilt,
+/// which replaces them all.
+pub(crate) struct Rebuilt {
     tables: Vec<(usize, ColumnTable)>,
     reshape: bool,
+}
+
+impl Rebuilt {
+    /// Lets go of the pages its tables pin.
+    fn release(self, gpu: &mut Inner) {
+        for (_, table) in self.tables {
+            unpin(&table.pins, gpu);
+        }
+    }
+
+    /// Whether every table holds every page it reads, taking the offsets of those that landed.
+    fn ready(&mut self, gpu: &Inner) -> bool {
+        let mut ready = true;
+        for (_, table) in &mut self.tables {
+            ready &= table.asks.is_empty() && table.resolve(gpu);
+        }
+        ready
+    }
+}
+
+/// What replaces what a view draws of a dataset: its marks' tables rebuilt since the dataset last
+/// published, by mark. They wait until every page they read landed.
+#[derive(Default)]
+pub(crate) struct Staged {
+    marks: Vec<(usize, Rebuilt)>,
+}
+
+impl Staged {
+    /// Mark `mark`'s tables staged, if any.
+    pub(crate) fn of(&self, mark: usize) -> Option<&Rebuilt> {
+        self.marks.iter().find(|(m, _)| *m == mark).map(|(_, r)| r)
+    }
+
+    /// Stages mark `mark`'s tables `rebuilt`: tables rebuilt again replace those staged, whose pins
+    /// go; every table rebuilt replaces them all.
+    pub(crate) fn put(&mut self, mark: usize, rebuilt: Rebuilt, gpu: &mut Inner) {
+        let Some(at) = self.marks.iter().position(|(m, _)| *m == mark) else {
+            self.marks.push((mark, rebuilt));
+            return;
+        };
+        if rebuilt.reshape {
+            let (_, old) = std::mem::replace(&mut self.marks[at], (mark, rebuilt));
+            old.release(gpu);
+            return;
+        }
+        let staged = &mut self.marks[at].1;
+        for (i, table) in rebuilt.tables {
+            match staged.tables.iter().position(|(j, _)| *j == i) {
+                Some(k) => {
+                    let (_, old) = std::mem::replace(&mut staged.tables[k], (i, table));
+                    unpin(&old.pins, gpu);
+                }
+                None => staged.tables.push((i, table)),
+            }
+        }
+    }
+
+    /// Reserves every page the tables staged ask for, all or none: `false` where the arena has no room
+    /// for them now. Tables asking for pages the arena no longer holds, which they did not make, are
+    /// dropped, to be built again.
+    pub(crate) fn reserve(&mut self, gpu: &mut Inner, device: &wgpu::Device, queue: &crate::gpu::work::Queue) -> bool {
+        let gone = |table: &ColumnTable| {
+            table.asks.iter().any(|(_, a)| a.content.is_none() && !gpu.arena.holds(a.key, a.need))
+        };
+        for (_, rebuilt) in &mut self.marks {
+            rebuilt.tables.retain(|(_, table)| !gone(table));
+        }
+        let mut asks: Vec<Ask> = Vec::new();
+        let mut owners: Vec<(usize, usize, usize)> = Vec::new();
+        for (m, (_, rebuilt)) in self.marks.iter_mut().enumerate() {
+            for (t, (_, table)) in rebuilt.tables.iter_mut().enumerate() {
+                for (at, ask) in table.asks.drain(..) {
+                    owners.push((m, t, at));
+                    asks.push(ask);
+                }
+            }
+        }
+        if asks.is_empty() {
+            return true;
+        }
+        let reserved = gpu.arena.reserve(device, queue, &mut asks);
+        for ((m, t, at), ask) in owners.into_iter().zip(asks) {
+            let table = &mut self.marks[m].1.tables[t].1;
+            if reserved {
+                table.pins.push(ask.key);
+                table.missing.push((at, ask.key, ask.need));
+            } else {
+                table.asks.push((at, ask));
+            }
+        }
+        reserved
+    }
+
+    /// Whether every table staged holds every page it reads, taking the offsets of those that landed.
+    pub(crate) fn ready(&mut self, gpu: &Inner) -> bool {
+        self.marks.iter_mut().fold(true, |ready, (_, rebuilt)| rebuilt.ready(gpu) && ready)
+    }
+
+    /// Takes mark `mark`'s tables staged, to publish them.
+    pub(crate) fn take(&mut self, mark: usize) -> Option<Rebuilt> {
+        let at = self.marks.iter().position(|(m, _)| *m == mark)?;
+        Some(self.marks.swap_remove(at).1)
+    }
+
+    /// Lets go of mark `mark`'s tables staged: it compiled again, or went.
+    pub(crate) fn forget(&mut self, mark: usize, gpu: &mut Inner) {
+        if let Some(rebuilt) = self.take(mark) {
+            rebuilt.release(gpu);
+        }
+    }
+
+    /// Lets go of every table staged.
+    pub(crate) fn release(self, gpu: &mut Inner) {
+        for (_, rebuilt) in self.marks {
+            rebuilt.release(gpu);
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.marks.is_empty()
+    }
 }
 
 /// What a mark's program reads, column by column: the program's columns, then one per join.
 #[derive(Default)]
 pub(crate) struct Tables {
     current: Vec<ColumnTable>,
-    pending: Option<Pending>,
     /// The geometry column's table before it was last rebuilt, kept while the mark eases from it.
     frozen: Option<ColumnTable>,
     joins: Vec<Join>,
@@ -169,17 +291,6 @@ pub(crate) struct Tables {
     structure: Option<Version>,
     /// Bumps whenever a table is swapped in.
     generation: u64,
-}
-
-/// What a sync found.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Synced {
-    /// Nothing waits to replace the current tables.
-    Same,
-    /// Rebuilt tables wait for pages; the current ones still draw.
-    Waiting,
-    /// Rebuilt tables have every page, ready to replace the current ones.
-    Ready,
 }
 
 /// What publishing rebuilt tables changed: bit `i` of `columns` for each program column whose table
@@ -230,16 +341,18 @@ enum Use<'a> {
 }
 
 impl Tables {
-    /// Brings the tables up to `source` paged as `rows`, with what `inputs` reads: tables whose
-    /// inputs changed are rebuilt once, and wait until every page they read is resident.
-    pub(crate) fn sync(
+    /// The tables of what `source` paged as `rows` reads, with what `inputs` reads, whose inputs changed
+    /// since `staged`, the tables staged to replace these, or else since the current ones: built once
+    /// each, asking for their pages. `None` where none changed.
+    pub(crate) fn rebuild(
         &mut self,
         program: &Program,
         source: &Source<'_>,
         rows: Rows<'_>,
         inputs: &Inputs<'_>,
+        staged: Option<&Rebuilt>,
         gpu: &mut Inner,
-    ) -> Synced {
+    ) -> Option<Rebuilt> {
         let joins = joins(program);
         let fields = program.columns.iter().map(|column| {
             let join = column.of.as_ref().map_or(wgsl::NONE, |of| {
@@ -248,12 +361,15 @@ impl Tables {
             Use::Field { column, join }
         });
         let uses: Vec<Use<'_>> = fields.chain(joins.iter().map(|of| Use::Join(of))).collect();
-        let reshape = !self.synced
-            || self.current.len() != uses.len()
-            || (uses.is_empty() && self.structure != Some(source.table.structure));
+        // Every table rebuilds where they have no tables of this shape yet, but where a reshape is
+        // staged already: the tables are compared with it.
+        let reshaped = staged.is_some_and(|s| s.reshape && s.tables.len() == uses.len());
+        let reshape = !reshaped
+            && (!self.synced
+                || self.current.len() != uses.len()
+                || (uses.is_empty() && self.structure != Some(source.table.structure)));
         self.structure = Some(source.table.structure);
         let held = rows.stamp();
-        let pending = self.pending.take();
         let mut rebuilt: Vec<(usize, ColumnTable)> = Vec::new();
         for (i, use_) in uses.iter().enumerate() {
             let (stamp, paged) = match use_ {
@@ -266,8 +382,7 @@ impl Tables {
                 },
             };
             // What replaces table `i` once ready, else what draws.
-            let waiting =
-                pending.as_ref().filter(|p| !p.reshape || reshape).and_then(|p| p.tables.iter().find(|(j, _)| *j == i));
+            let waiting = staged.and_then(|s| s.tables.iter().find(|(j, _)| *j == i));
             let latest = waiting.map(|(_, t)| t).or(self.current.get(i));
             if !reshape && latest.is_some_and(|t| t.stamp == stamp && t.held == paged) {
                 continue;
@@ -289,51 +404,13 @@ impl Tables {
             };
             rebuilt.push((i, builder.finish(stamp, paged, descriptor)));
         }
-        // Tables rebuilt again replace those waiting, whose pins go; a reshape replaces them all.
-        let mut tables = match pending {
-            Some(p) if p.reshape == reshape || !reshape => p.tables,
-            Some(p) => {
-                p.tables.into_iter().for_each(|(_, t)| unpin(&t.pins, gpu));
-                Vec::new()
-            }
-            None => Vec::new(),
-        };
-        if rebuilt.is_empty() && !reshape {
-            if !tables.is_empty() {
-                self.pending = Some(Pending { tables, reshape: false });
-            }
-            return self.waiting(gpu);
-        }
-        for (i, table) in rebuilt {
-            match tables.iter().position(|(j, _)| *j == i) {
-                Some(at) => {
-                    let (_, old) = std::mem::replace(&mut tables[at], (i, table));
-                    unpin(&old.pins, gpu);
-                }
-                None => tables.push((i, table)),
-            }
-        }
-        self.pending = Some(Pending { tables, reshape });
-        self.waiting(gpu)
+        (reshape || !rebuilt.is_empty()).then_some(Rebuilt { tables: rebuilt, reshape })
     }
 
-    /// Whether rebuilt tables wait, and for pages: taking the offsets of those that landed.
-    pub(crate) fn waiting(&mut self, gpu: &Inner) -> Synced {
-        let Some(pending) = &mut self.pending else { return Synced::Same };
-        let mut ready = true;
-        for (_, table) in &mut pending.tables {
-            ready &= table.resolve(gpu);
-        }
-        if ready { Synced::Ready } else { Synced::Waiting }
-    }
-
-    /// Swaps in the tables rebuilt, once every page they read is resident: the current ones' pins
-    /// go, but the geometry column's, `geometry`, which stays frozen while the mark eases from it.
-    pub(crate) fn publish(&mut self, program: &Program, geometry: u32, gpu: &mut Inner) -> Option<Published> {
-        if self.waiting(gpu) != Synced::Ready {
-            return None;
-        }
-        let Pending { tables: rebuilt, reshape } = self.pending.take().expect("ready");
+    /// Swaps in the tables `rebuilt`, every page they read resident: the current ones' pins go, but
+    /// the geometry column's, `geometry`, which stays frozen while the mark eases from it.
+    pub(crate) fn publish(&mut self, rebuilt: Rebuilt, program: &Program, geometry: u32, gpu: &mut Inner) -> Published {
+        let Rebuilt { tables: rebuilt, reshape } = rebuilt;
         self.generation += 1;
         let joins = joins(program);
         let published = if reshape {
@@ -376,7 +453,7 @@ impl Tables {
             published
         };
         self.synced = true;
-        Some(published)
+        published
     }
 
     /// Drops the frozen geometry table: the mark no longer eases from it.
@@ -421,11 +498,6 @@ impl Tables {
         self.plan().map_or(0, |plan| plan.points)
     }
 
-    /// Whether rebuilt tables wait to replace the current ones.
-    pub(crate) fn pending(&self) -> bool {
-        self.pending.is_some()
-    }
-
     /// Words the descriptors and tables take in the program buffer.
     pub(crate) fn len(&self) -> usize {
         self.packed().map(|t| WORDS + t.words.len()).sum()
@@ -434,6 +506,11 @@ impl Tables {
     /// The tables packed: the current ones, then the frozen geometry table.
     fn packed(&self) -> impl Iterator<Item = &ColumnTable> + Clone {
         self.current.iter().chain(&self.frozen)
+    }
+
+    /// The pages the tables drawn pin.
+    pub(crate) fn pins(&self) -> impl Iterator<Item = PageKey> + '_ {
+        self.packed().flat_map(|t| t.pins.iter().copied())
     }
 
     /// Appends every descriptor, then every table; `base` is the word of the program buffer the
@@ -457,8 +534,7 @@ impl Tables {
     /// Releases every pin.
     pub(crate) fn release(&mut self, gpu: &mut Inner) {
         self.thaw(gpu);
-        let pending = self.pending.take().map(|p| p.tables).unwrap_or_default();
-        for table in self.current.drain(..).chain(pending.into_iter().map(|(_, t)| t)) {
+        for table in self.current.drain(..) {
             unpin(&table.pins, gpu);
         }
         self.synced = false;
@@ -480,7 +556,7 @@ impl Tables {
         let rows: Vec<u32> = (0..source.table.len())
             .map(|r| source.table.ids.key(r).and_then(|key| other.row(key)).map_or(wgsl::NONE, |row| row as u32))
             .collect();
-        let pages = rows.chunks(PAGE_ROWS).map(|chunk| (PageId::next(), Arc::from(chunk))).collect();
+        let pages = rows.chunks(wgsl::PAGE_ROWS as usize).map(|chunk| (PageId::next(), Arc::from(chunk))).collect();
         Join { of: of.clone(), structure, pages }
     }
 
@@ -490,17 +566,11 @@ impl Tables {
     }
 }
 
-/// The row blocks whose pages differ between table `before` and table `now`, a page's every block;
-/// `None` when either reads no page alone, or they page their rows apart, so every row changed.
+/// The pages of rows whose pages differ between table `before` and table `now`; `None` when either
+/// reads no page alone, so every row changed.
 fn changed_blocks(before: &ColumnTable, now: &ColumnTable) -> Option<Vec<u32>> {
     let (Some(old), Some(new)) = (&before.pages, &now.pages) else { return None };
-    let bits = now.descriptor[wgsl::COLUMN_BITS as usize];
-    if before.descriptor[wgsl::COLUMN_BITS as usize] != bits {
-        return None;
-    }
-    let blocks = 1 << (bits - wgsl::HELD_BITS);
-    let pages = (0..old.len().max(new.len())).filter(|&p| old.get(p) != new.get(p)).map(|p| p as u32);
-    Some(pages.flat_map(|p| p * blocks..(p + 1) * blocks).collect())
+    Some((0..old.len().max(new.len())).filter(|&p| old.get(p) != new.get(p)).map(|p| p as u32).collect())
 }
 
 fn unpin(pins: &[PageKey], gpu: &mut Inner) {
@@ -597,11 +667,10 @@ fn stamp(column: &ColumnUse, source: &Source<'_>, inputs: &Inputs<'_>) -> Stamp 
     }
 }
 
-/// Builds one column's table, asking the arena for each page.
+/// Builds one column's table, asking for each page it reads.
 struct Builder<'g> {
     words: Vec<u32>,
-    pins: Vec<PageKey>,
-    missing: Vec<(usize, PageKey, u32)>,
+    asks: Vec<(usize, Ask)>,
     plan: Option<Plan>,
     points: u32,
     /// The page of each page of rows, while every row reads its own page's.
@@ -611,32 +680,20 @@ struct Builder<'g> {
 
 impl<'g> Builder<'g> {
     fn new(gpu: &'g mut Inner) -> Builder<'g> {
-        Builder {
-            words: Vec::new(),
-            pins: Vec::new(),
-            missing: Vec::new(),
-            plan: None,
-            points: 0,
-            pages: Some(Vec::new()),
-            gpu,
-        }
+        Builder { words: Vec::new(), asks: Vec::new(), plan: None, points: 0, pages: Some(Vec::new()), gpu }
     }
 
     fn finish(self, stamp: Stamp, held: u64, descriptor: [u32; WORDS]) -> ColumnTable {
-        let Builder { words, pins, missing, plan, points, pages, gpu: _ } = self;
-        ColumnTable { stamp, held, descriptor, words, pins, missing, plan, points, pages }
+        let Builder { words, asks, plan, points, pages, gpu: _ } = self;
+        ColumnTable { stamp, held, descriptor, words, asks, pins: Vec::new(), missing: Vec::new(), plan, points, pages }
     }
 
-    /// Writes at word `at` where page `key` lies once it holds `need` words, pinning it; until it
-    /// does, `NONE`, and the table waits for it. `content` makes what it uploads.
+    /// Asks for page `key`, holding `need` words, to land at word `at` once it does; until then
+    /// `NONE`, and the table waits for it. `content` makes what it uploads, where the arena lacks it.
     fn place(&mut self, at: usize, key: PageKey, need: u32, content: impl FnOnce() -> Content) {
-        let offset = self.gpu.arena.get(key, need, content);
-        self.gpu.arena.pin(key);
-        self.pins.push(key);
-        self.words[at] = offset.unwrap_or(wgsl::NONE);
-        if offset.is_none() {
-            self.missing.push((at, key, need));
-        }
+        let content = (!self.gpu.arena.holds(key, need)).then(content);
+        self.asks.push((at, Ask { key, need, content }));
+        self.words[at] = wgsl::NONE;
     }
 
     /// Appends where page `key` lies, as [`place`](Builder::place) writes it.
@@ -656,14 +713,12 @@ impl<'g> Builder<'g> {
     fn column(&mut self, column: &ColumnUse, source: &Source<'_>, rows: Rows<'_>, inputs: &Inputs<'_>) -> [u32; WORDS] {
         let mut d = [0; WORDS];
         d[wgsl::COLUMN_LOW as usize] = wgsl::NONE;
-        d[wgsl::COLUMN_BITS as usize] = wgsl::PAGE_BITS;
         if column.words == Words::Bits {
             d[wgsl::COLUMN_FLAGS as usize] = wgsl::BITS;
         }
         if let Rows::Held(drawing) = rows
             && let Some(shapes) = source.paged(&column.name).filter(|_| column.derived)
         {
-            d[wgsl::COLUMN_BITS as usize] = wgsl::HELD_BITS;
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
             let packing = Packing {
                 order: drawing.order.id(),
@@ -684,7 +739,6 @@ impl<'g> Builder<'g> {
         d[wgsl::COLUMN_ROWS as usize] = table.len() as u32;
         let field = table.field_named(&column.name);
         if let Rows::Held(drawing) = rows {
-            d[wgsl::COLUMN_BITS as usize] = wgsl::HELD_BITS;
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
             let packing = Packing {
                 order: drawing.order.id(),
@@ -737,7 +791,7 @@ impl<'g> Builder<'g> {
                 self.pages = None;
                 d[wgsl::COLUMN_FLAGS as usize] |= wgsl::SAMPLED;
                 let blocks: Vec<(Samples, usize)> =
-                    (0..table.len().div_ceil(PAGE_ROWS)).map(|b| (samples.clone(), b)).collect();
+                    (0..table.len().div_ceil(wgsl::PAGE_ROWS as usize)).map(|b| (samples.clone(), b)).collect();
                 self.trace(samples, &blocks, plan(samples, inputs.window));
             }
             Some(Field::Sampled(samples, _)) => {
@@ -773,7 +827,7 @@ impl<'g> Builder<'g> {
                 for s in 0..slots {
                     self.held_page(drawing, s, &packing, Some(values), |gpu, rows| {
                         let mut codes = gpu.dictionaries.field(data, &packing.table, &packing.field).rows(values, rows);
-                        codes.resize(PAGE as usize, wgsl::MISSING);
+                        codes.resize(wgsl::PAGE_ROWS as usize, wgsl::MISSING);
                         codes
                     });
                 }
@@ -843,8 +897,8 @@ impl<'g> Builder<'g> {
                             counters.add(Count::Packed, rows.len() as u64);
                             Content::Computed(packed::frame(samples, &rows, Some(f)))
                         };
-                        self.place(at + 2 * k, key, PAGE, content);
-                        self.words[at + 4 + k] = PAGE;
+                        self.place(at + 2 * k, key, wgsl::PAGE_ROWS, content);
+                        self.words[at + 4 + k] = wgsl::PAGE_ROWS;
                     }
                 }
             }
@@ -870,7 +924,7 @@ impl<'g> Builder<'g> {
         let id = self.gpu.packed.page(&packing, &drawing.order, source, page);
         self.list(Some(id));
         let key = PageKey::of(id, packing.words, packing.low);
-        let held = self.gpu.arena.offset(key, PAGE).is_some() || self.gpu.arena.queued(key);
+        let held = self.gpu.arena.holds(key, wgsl::PAGE_ROWS);
         let words = if held {
             Vec::new()
         } else {
@@ -878,7 +932,7 @@ impl<'g> Builder<'g> {
             self.gpu.packed.count(rows.len());
             pack(self.gpu, &rows)
         };
-        self.push(key, PAGE, || Content::Computed(words));
+        self.push(key, wgsl::PAGE_ROWS, || Content::Computed(words));
     }
 
     /// A join's table: a bits column of the mark's rows, the rows of the other table with their ids.
@@ -896,10 +950,8 @@ impl<'g> Builder<'g> {
         d[wgsl::COLUMN_ROWS as usize] = source.table.len() as u32;
         d[wgsl::COLUMN_LOW as usize] = wgsl::NONE;
         d[wgsl::COLUMN_JOIN as usize] = wgsl::NONE;
-        d[wgsl::COLUMN_BITS as usize] = wgsl::PAGE_BITS;
         if let Rows::Held(drawing) = rows {
             d[wgsl::COLUMN_ROWS as usize] = drawing.live();
-            d[wgsl::COLUMN_BITS as usize] = wgsl::HELD_BITS;
             let Some(other) = joined(of, all) else { return d };
             let packing = Packing {
                 order: drawing.order.id(),
@@ -1022,7 +1074,7 @@ impl<'g> Builder<'g> {
         let keys: Vec<PageKey> =
             (0..count).map(|piece| PageKey { page: id, words: Words::Path, low: false, piece: piece as u32 }).collect();
         let arena = &self.gpu.arena;
-        let made = keys.iter().all(|&key| arena.offset(key, 1).is_some() || arena.queued(key));
+        let made = keys.iter().all(|&key| arena.holds(key, 1));
         let mut pieces = if made { Vec::new() } else { pieces() };
         let listed = self.words.len();
         self.words.resize(listed + count - 1, wgsl::NONE);
@@ -1097,7 +1149,7 @@ impl<'g> Builder<'g> {
     /// Six words per page of rows: this frame's block and word, the next frame's, and their row
     /// counts.
     fn cursors(&mut self, samples: &Samples, frame: Option<u64>, rows: usize) {
-        for block in 0..rows.div_ceil(PAGE_ROWS) {
+        for block in 0..rows.div_ceil(wgsl::PAGE_ROWS as usize) {
             let at = self.words.len();
             self.words.extend([wgsl::NONE, 0, wgsl::NONE, 0, 0, 0]);
             for (i, f) in [frame, frame.map(|f| f + 1)].into_iter().enumerate() {
@@ -1128,7 +1180,9 @@ fn slot_key<'c>(
         Holds::Kept(_) => {
             let rows = drawing.rows(s);
             let mut pages: Vec<PageId> = source.map_or_else(Vec::new, |column| {
-                rows.iter().filter_map(|&r| column.pages().get(r as usize / PAGE_ROWS).map(|page| page.id)).collect()
+                rows.iter()
+                    .filter_map(|&r| column.pages().get((r >> wgsl::PAGE_BITS) as usize).map(|page| page.id))
+                    .collect()
             });
             pages.sort_unstable();
             pages.dedup();

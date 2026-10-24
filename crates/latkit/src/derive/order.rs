@@ -9,10 +9,9 @@ use std::sync::Arc;
 
 use super::pyramid::Pyramid;
 use super::stamp_of;
-use crate::gpu::shaders as wgsl;
+use crate::gpu::shaders::PAGE_ROWS;
 
 /// Rows a page of an order holds: a held page.
-pub(crate) const PAGE: u32 = wgsl::BLOCK_ROWS;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Order {
@@ -94,7 +93,7 @@ impl Order {
 
     /// Pages of it.
     pub(crate) fn pages(&self) -> u32 {
-        self.len().div_ceil(PAGE)
+        self.len().div_ceil(PAGE_ROWS)
     }
 
     /// The rows a sample draws first: those lifted, then its own.
@@ -135,7 +134,7 @@ impl Order {
 
     /// The rows page `page` holds, in order.
     pub(crate) fn page(&self, page: u32) -> Vec<u32> {
-        let (start, end) = (page * PAGE, ((page + 1) * PAGE).min(self.len()));
+        let (start, end) = (page * PAGE_ROWS, ((page + 1) * PAGE_ROWS).min(self.len()));
         let Order::Sampled { rows, step, lifted } = self else { return (start..end).map(|d| self.source(d)).collect() };
         // The rows lifted it holds, then the sample's in turn, stepping past the places lifted.
         let m = lifted.len();
@@ -204,11 +203,12 @@ mod tests {
         assert_eq!(order.sampled(), 5, "the rows lifted, then the sample's own");
         assert_ne!(order.id(), sample(10, 3).id(), "pages packed in it are its own");
         // A page steps through the sample past the places lifted, as each row's source finds them.
-        let rows = 3 * PAGE + 17;
+        let rows = 3 * PAGE_ROWS + 17;
         let lifted = Lifted::new((0..rows).filter(|r| r % 5 == 1 || r % 7 == 0).collect(), rows, 4);
         let order = Order::Sampled { rows, step: 4, lifted };
         for page in 0..order.pages() {
-            let one: Vec<u32> = (page * PAGE..((page + 1) * PAGE).min(rows)).map(|d| order.source(d)).collect();
+            let one: Vec<u32> =
+                (page * PAGE_ROWS..((page + 1) * PAGE_ROWS).min(rows)).map(|d| order.source(d)).collect();
             assert_eq!(order.page(page), one, "page {page}");
         }
     }

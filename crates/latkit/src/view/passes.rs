@@ -6,6 +6,7 @@
 
 use super::resources::{EyeSlot, MARK_STRIDE};
 use super::sync::{Source, table_of};
+use super::words::Kept;
 use super::{Frame, View};
 use crate::Space;
 use crate::data::Field;
@@ -207,7 +208,7 @@ pub(super) fn dispatch(pass: &mut wgpu::ComputePass<'_>, items: u32) {
 
 /// Dispatches over `blocks` listed row blocks of a mark of `rows` held rows: a block's rows wide.
 fn dispatch_blocks(pass: &mut wgpu::ComputePass<'_>, rows: u32, blocks: u32) {
-    let wide = rows.min(wgsl::BLOCK_ROWS).div_ceil(WORKGROUP);
+    let wide = rows.min(wgsl::PAGE_ROWS).div_ceil(WORKGROUP);
     if wide > 0 && blocks > 0 {
         pass.dispatch_workgroups(wide, blocks, 1);
     }
@@ -316,15 +317,15 @@ impl super::marks::Shown {
 }
 
 impl View {
-    /// Evaluates the dirty channels of marks `work`, each over its dirty row blocks, its fitted
-    /// domains reduced first where they changed: into its state, bound by `state`, or while it eases
-    /// into its settled mirror, bound by `settling`. Leaves `state` bound.
+    /// Evaluates the dirty channels of marks `work`, each over its dirty pages of rows, its fitted
+    /// domains reduced first where they changed: into its state, or while it eases into its settled
+    /// words. `state` is the expression machine's pass group.
     fn evaluate(
         &mut self,
         pass: &mut wgpu::ComputePass<'_>,
         inner: &mut Inner,
         group: &wgpu::BindGroup,
-        (state, settling): (&wgpu::BindGroup, Option<&wgpu::BindGroup>),
+        state: &wgpu::BindGroup,
         work: &[usize],
     ) {
         if work.is_empty() {
@@ -334,7 +335,7 @@ impl View {
         let step = super::resources::step;
         for &i in work {
             let shown = &mut self.marks[i];
-            let into = settling.filter(|_| shown.transition.is_some()).unwrap_or(state);
+            let into = state;
             pass.set_pipeline(&inner.pipelines.compute_pipeline(device, Variant::channels(shown.reads())));
             pass.set_bind_group(1, group, &[offset(i)]);
             let rows = shown.live();
@@ -348,7 +349,7 @@ impl View {
             pass.set_bind_group(2, into, &[step(wgsl::STEP_CHANNELS)]);
             dispatch_blocks(pass, rows, shown.block_count);
             let blocks = shown.blocks.of(rows);
-            let evaluated = blocks.iter().map(|&b| u64::from((rows - b * wgsl::BLOCK_ROWS).min(wgsl::BLOCK_ROWS)));
+            let evaluated = blocks.iter().map(|&b| u64::from((rows - b * wgsl::PAGE_ROWS).min(wgsl::PAGE_ROWS)));
             self.gpu.0.counters.add(Count::Evaluated, evaluated.sum());
             shown.dirty = 0;
             shown.blocks = super::marks::Blocks::default();
@@ -398,16 +399,18 @@ impl View {
         if !measured.is_empty() {
             encoder.clear_buffer(resources.extents(), 0, Some(extent_bytes));
         }
+        inner.arena.written();
         if !faces.is_empty() {
-            encoder.clear_buffer(resources.normals(), 0, None);
+            // Faces sum their normals afresh into the pages of the vertex marks they attach to.
+            let words = u64::from(wgsl::PAGE_ROWS * wgsl::NORMAL_WORDS) * 4;
+            for shown in &self.marks {
+                for &block in shown.words.pages(Kept::Normals).blocks.iter() {
+                    encoder.clear_buffer(inner.arena.buffer(), u64::from(block) * 4, Some(words));
+                }
+            }
         }
         let groups = resources.groups(&gpu.0, inner);
         let evaluate_group = resources.pass(device, inner, Shader::Evaluate);
-        let settling_group = work
-            .iter()
-            .any(|&i| self.marks[i].transition.is_some())
-            .then(|| resources.settling_group(device, inner))
-            .flatten();
         let normals_group = (!faces.is_empty()).then(|| resources.pass(device, inner, Shader::Normals));
         let bounds_group = (!measured.is_empty()).then(|| resources.pass(device, inner, Shader::Bounds));
         let lists_group =
@@ -433,7 +436,7 @@ impl View {
             }
             pass.set_bind_group(2, &evaluate_group, &[super::resources::step(wgsl::STEP_CHANNELS)]);
             self.every_row(&mut pass, inner, &groups.mark, "carry", &carried);
-            self.evaluate(&mut pass, inner, &groups.mark, (&evaluate_group, settling_group.as_ref()), &work);
+            self.evaluate(&mut pass, inner, &groups.mark, &evaluate_group, &work);
             // After evaluating, so what a mark shows eases toward what it evaluated this frame.
             self.every_row(&mut pass, inner, &groups.mark, "ease", &eased);
             // After evaluating, so comets travel at the flow this frame shows.

@@ -2,16 +2,15 @@
 // shows its exact colors; turned away, a face darkens by the theme's shading. Faces receive the
 // ground's shadow map. The cast variant draws them through the light's eye into the map.
 
-import package::lib::bind::{frame, eye};
+import package::lib::bind::{frame, eye, word};
 import package::lib::project::culled;
 import package::lib::triangles::{triangle_corner, triangle_shown, corner_clip};
+import package::lib::state::end_normal;
 import package::lib::marker::{MarkerColor, glow};
 import package::lib::focus::focus_of;
 import package::lib::shade::{caster, lit};
 import package::lib::color::output;
 
-// Each vertex's summed face normals, in fixed point.
-@group(2) @binding(3) var<storage, read> normals: array<i32>;
 @if(!casts)
 @group(2) @binding(10) var shadows: texture_2d<f32>;
 
@@ -36,8 +35,11 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     out.clip = corner_clip(c);
     out.world = c.world;
-    let s = c.slot * 3u;
-    out.normal = vec3f(f32(normals[s]), f32(normals[s + 1u]), f32(normals[s + 2u]));
+    // The normals summed at each vertex, in fixed point.
+    let n = end_normal(corner, c.vertex);
+    if n != NONE {
+        out.normal = vec3f(f32(bitcast<i32>(word(n))), f32(bitcast<i32>(word(n + 1u))), f32(bitcast<i32>(word(n + 2u))));
+    }
     out.color = c.color;
     out.focus = focus_of(c.row);
     return out;

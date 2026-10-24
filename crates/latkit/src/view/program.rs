@@ -59,11 +59,11 @@ impl View {
         if !self.regions.relayout {
             for shown in self.marks.iter_mut().filter(|m| !m.packed && m.compiled.is_some()) {
                 let len = shown.packed_len();
-                let start = match shown.words {
+                let start = match shown.region {
                     Some([start, room]) if len <= room => start,
                     _ if self.regions.end + room(len) <= capacity => {
                         let start = self.regions.end;
-                        shown.words = Some([start, room(len)]);
+                        shown.region = Some([start, room(len)]);
                         shown.written.clear();
                         self.regions.end += room(len);
                         start
@@ -93,7 +93,7 @@ impl View {
                 shown.pack(start, &mut words);
                 shown.written = words[start as usize..].to_vec();
                 words.resize((start + room(len)) as usize, 0);
-                shown.words = Some([start, room(len)]);
+                shown.region = Some([start, room(len)]);
                 shown.packed = true;
             }
             self.regions.end = words.len() as u32;

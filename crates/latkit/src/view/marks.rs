@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use super::drawing::Drawing;
-use super::rows::Region;
 use super::sync::Tables;
 use super::transition::{Begin, Transition};
+use super::words::{Kept, Words};
 use crate::data::{Table, Version};
 use crate::expr::compile::{Deps, Reads};
 use crate::gpu::shaders as wgsl;
@@ -27,6 +27,15 @@ pub(crate) struct Offsets {
     pub(crate) blends: u32,
     /// The runs of held rows it draws, `NONE` where it draws every row as itself.
     pub(crate) runs: u32,
+    /// The page table of each kind of words it keeps per row, by `Kept`; `NONE` where it keeps none.
+    pub(crate) pages: [u32; 6],
+}
+
+impl Offsets {
+    /// Where the page table of `kept` lies, or `NONE`.
+    pub(crate) fn table(&self, kept: Kept) -> u32 {
+        self.pages[kept as usize]
+    }
 }
 
 impl Default for Offsets {
@@ -41,6 +50,7 @@ impl Default for Offsets {
             port_info: wgsl::NONE,
             blends: 0,
             runs: wgsl::NONE,
+            pages: [wgsl::NONE; 6],
         }
     }
 }
@@ -54,30 +64,40 @@ pub(crate) struct Holding {
     pub(crate) drawing: Option<Arc<Drawing>>,
 }
 
-/// Where the rows an end of a mark's rows names are held: the graph slot of vertex 0 of the vertex
-/// mark drawing their table, and where it holds each page of the order it draws that table in, and
-/// each row it keeps whose page it does not hold, by its place in the order.
+/// Where the rows an end of a mark's rows names are held: the vertex mark drawing their table, the
+/// pages of its rows' words and how many words a row has, and the pages of the normals faces sum at
+/// them; and where it holds each page of the order it draws that table in, and each row it keeps whose
+/// page it does not hold, by its place in the order.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct End {
-    pub(crate) first: u32,
+    pub(crate) mark: Option<usize>,
+    pub(crate) state: Arc<[u32]>,
+    pub(crate) stride: u32,
+    pub(crate) normals: Option<Arc<[u32]>>,
     pub(crate) order: u64,
     pub(crate) pages: Option<Arc<[u32]>>,
     pub(crate) kept: Option<Arc<[[u32; 2]]>>,
 }
 
 impl End {
-    /// Words it takes in a mark's program: two, then where pages and rows kept are held.
-    fn words(&self) -> usize {
-        2 + self.pages.as_ref().map_or(0, |p| 2 + p.len() + 2 * self.kept.as_ref().map_or(0, |k| k.len()))
+    /// An end no vertex mark draws the table of.
+    pub(crate) fn unattached() -> End {
+        End { mark: None, state: Arc::new([]), stride: 0, normals: None, order: 0, pages: None, kept: None }
+    }
+
+    /// Words it takes in a mark's program past its `END_WORDS`: its page table, where pages and rows
+    /// kept are held, and its page table of normals.
+    fn tables(&self) -> usize {
+        self.state.len()
+            + self.pages.as_ref().map_or(0, |p| 2 + p.len() + 2 * self.kept.as_ref().map_or(0, |k| k.len()))
+            + self.normals.as_ref().map_or(0, |n| n.len())
     }
 }
 
 /// The end before end `c` of `ends` that holds its rows where it does, whose words it shares: as the
 /// two ends of an edge between vertices of one mark do.
 fn shared(ends: &[End], c: usize) -> Option<usize> {
-    let end = &ends[c];
-    end.pages.as_ref()?;
-    ends[..c].iter().position(|e| e == end)
+    ends[..c].iter().position(|e| *e == ends[c])
 }
 
 pub(crate) struct Shown {
@@ -89,7 +109,7 @@ pub(crate) struct Shown {
     /// out.
     pub(crate) rows: u32,
     pub(crate) exits: u32,
-    /// Rows the region held when the frame began: what moves and freezes.
+    /// Rows it held when the frame began: what freezes.
     pub(crate) before: u32,
     /// What its state holds, as the tables last published lay it out.
     pub(crate) holding: Option<Holding>,
@@ -100,9 +120,8 @@ pub(crate) struct Shown {
     /// Each fitted domain fitted over every row of a table drawn in part: the stamp of what it read,
     /// and its words.
     pub(crate) fitted: Vec<(u64, [u32; 2])>,
-    /// Where its rows sit in every per-row buffer, and where they sat before this frame moved them.
-    pub(crate) region: Region,
-    pub(crate) moved: Option<Region>,
+    /// What it keeps per row, in pages of the arena.
+    pub(crate) words: Words,
     /// First fitted domain.
     pub(crate) domains: u32,
     /// Channels to evaluate, the row blocks they evaluate over, and whether fitted domains reduce,
@@ -124,7 +143,7 @@ pub(crate) struct Shown {
     pub(crate) ports: Vec<u32>,
     /// The mark's region of the program buffer, `[start, capacity]` in words, and where its parts
     /// are; `packed` is false until the region holds the current words, and `written` what it holds.
-    pub(crate) words: Option<[u32; 2]>,
+    pub(crate) region: Option<[u32; 2]>,
     pub(crate) offsets: Offsets,
     pub(crate) packed: bool,
     pub(crate) written: Vec<u32>,
@@ -168,8 +187,7 @@ impl Shown {
             reveal: 1.0,
             bound: Vec::new(),
             fitted: Vec::new(),
-            region: Region::EMPTY,
-            moved: None,
+            words: Words::default(),
             domains: 0,
             dirty: 0,
             blocks: Blocks::default(),
@@ -181,7 +199,7 @@ impl Shown {
             constants: Vec::new(),
             ends: Vec::new(),
             ports: Vec::new(),
-            words: None,
+            region: None,
             offsets: Offsets::default(),
             packed: false,
             written: Vec::new(),
@@ -265,10 +283,37 @@ impl Shown {
         self.live() + self.exits
     }
 
-    /// Whether the mark has a program, rows it holds, and columns synced at least once: a mark holding
-    /// only the rows the ends of edges drawn name evaluates them, and draws none.
+    /// Whether the mark has a program, rows it holds and pages of words for them, and columns synced
+    /// at least once: a mark holding only the rows the ends of edges drawn name evaluates them, and
+    /// draws none.
     pub(crate) fn drawable(&self) -> bool {
-        self.compiled.is_some() && self.held() > 0 && self.tables.synced()
+        self.compiled.is_some() && self.held() > 0 && self.tables.synced() && self.pages_held()
+    }
+
+    /// Whether its pages of words per row hold every row it holds.
+    pub(crate) fn pages_held(&self) -> bool {
+        let state = self.words.pages(Kept::State);
+        state.width == self.stride() + self.extras()
+            && state.blocks.len() as u32 >= self.held().div_ceil(wgsl::PAGE_ROWS)
+    }
+
+    /// Rows each page of its held rows holds: each slot's whole page of a table drawn in part, which
+    /// evaluates whole, or a table's own rows a page at a time; rows that left follow either.
+    pub(crate) fn page_rows(&self) -> Vec<u32> {
+        let (live, held) = (self.live(), self.held());
+        let full = |start: u32| self.drawing().is_some() && start < live;
+        (0..held.div_ceil(wgsl::PAGE_ROWS))
+            .map(|p| {
+                let start = p * wgsl::PAGE_ROWS;
+                if full(start) { wgsl::PAGE_ROWS } else { held.min(start + wgsl::PAGE_ROWS) - start }
+            })
+            .collect()
+    }
+
+    /// Lets go of what it holds on the GPU, as a mark does when it goes.
+    pub(crate) fn release(&mut self, gpu: &mut Inner) {
+        self.tables.release(gpu);
+        self.words.release(&mut gpu.arena);
     }
 
     /// Kind words per row.
@@ -319,9 +364,13 @@ impl Shown {
     /// Whether its edges curve between their ends, along great circles or bowed into lanes: how many
     /// pieces each takes is found on the GPU and read back.
     pub(crate) fn curved(&self) -> bool {
+        self.path() == wgsl::PATH_ENDS && (self.geodesic || self.laned())
+    }
+
+    /// Whether its edges bow into lanes among the edges joining the same two vertices.
+    pub(crate) fn laned(&self) -> bool {
         let Some(compiled) = &self.compiled else { return false };
-        let laned = compiled.drawing.lane != wgsl::NONE && self.tables.holds(compiled.drawing.lane);
-        self.path() == wgsl::PATH_ENDS && (self.geodesic || laned)
+        compiled.drawing.lane != wgsl::NONE && self.tables.holds(compiled.drawing.lane)
     }
 
     /// Instances its list must have room for: every path's segments, each curve's pieces as last
@@ -333,7 +382,13 @@ impl Shown {
         if compiled.drawing.primitive == Primitive::Triangles {
             return (points / 3 + rows).max(1) as u32;
         }
-        let pieces = if self.curved() { (self.segments.found.value as usize).max(rows * 4) } else { 0 };
+        let pieces = if !self.curved() {
+            0
+        } else if self.geodesic {
+            (self.segments.found.value as usize).max(rows * 4)
+        } else {
+            rows * wgsl::BOW_PIECES as usize
+        };
         (points + rows + pieces).max(1) as u32
     }
 
@@ -505,11 +560,14 @@ impl Shown {
             + 4 * self.code.len()
             + self.constants.len()
             + (0..self.ends.len())
-                .map(|c| if shared(&self.ends, c).is_some() { 2 } else { self.ends[c].words() })
+                .map(|c| {
+                    wgsl::END_WORDS as usize + if shared(&self.ends, c).is_some() { 0 } else { self.ends[c].tables() }
+                })
                 .sum::<usize>()
             + compiled.drawing.markers.palette.len()
             + self.ports.len()
-            + self.drawing().map_or(0, |d| 1 + (d.runs.len() + 1) * wgsl::RUN_WORDS as usize)) as u32
+            + self.drawing().map_or(0, |d| 1 + (d.runs.len() + 1) * wgsl::RUN_WORDS as usize)
+            + self.words.len()) as u32
             + self.stride()
             + self.extras()
     }
@@ -562,35 +620,48 @@ impl Shown {
         let constants = at(out);
         out.extend(&self.constants);
         let ends = at(out);
-        // Two words an end, then each end's pages: how many, then each one's slot; then the rows it
-        // keeps: how many, then each one's place and held row. Ends holding their rows alike share
-        // those words.
-        let mut tables: Vec<u32> = Vec::with_capacity(self.ends.len());
-        let mut table = ends + 2 * self.ends.len() as u32;
+        // `END_WORDS` an end, then each end's tables: the page table of its vertex mark's words; its
+        // pages, how many, then each one's slot, and the rows it keeps, how many, then each one's place
+        // and held row; and the page table of normals. Ends holding their rows alike share those words.
+        let mut heads: Vec<[u32; wgsl::END_WORDS as usize]> = Vec::with_capacity(self.ends.len());
+        let mut table = ends + wgsl::END_WORDS * self.ends.len() as u32;
+        let mut take = |len: usize| {
+            let at = table;
+            table += len as u32;
+            at
+        };
         for (c, end) in self.ends.iter().enumerate() {
-            out.push(end.first);
-            let at = match (&end.pages, shared(&self.ends, c)) {
-                (None, _) => wgsl::NONE,
-                (Some(_), Some(earlier)) => tables[earlier],
-                (Some(_), None) => {
-                    let at = table;
-                    table += (end.words() - 2) as u32;
-                    at
-                }
+            let head = if let Some(earlier) = shared(&self.ends, c) {
+                heads[earlier]
+            } else {
+                let state = if end.mark.is_some() { take(end.state.len()) } else { wgsl::NONE };
+                let slots = end
+                    .pages
+                    .as_ref()
+                    .map_or(wgsl::NONE, |p| take(2 + p.len() + 2 * end.kept.as_ref().map_or(0, |k| k.len())));
+                let normals = end.normals.as_ref().map_or(wgsl::NONE, |n| take(n.len()));
+                [state, end.stride, slots, normals]
             };
-            tables.push(at);
-            out.push(at);
+            heads.push(head);
+            out.extend(head);
         }
         for (c, end) in self.ends.iter().enumerate() {
-            let Some(pages) = &end.pages else { continue };
             if shared(&self.ends, c).is_some() {
                 continue;
             }
-            out.push(pages.len() as u32);
-            out.extend(pages.iter());
-            let kept = end.kept.as_deref().unwrap_or_default();
-            out.push(kept.len() as u32);
-            out.extend(kept.iter().flatten());
+            if end.mark.is_some() {
+                out.extend(end.state.iter());
+            }
+            if let Some(pages) = &end.pages {
+                out.push(pages.len() as u32);
+                out.extend(pages.iter());
+                let kept = end.kept.as_deref().unwrap_or_default();
+                out.push(kept.len() as u32);
+                out.extend(kept.iter().flatten());
+            }
+            if let Some(normals) = &end.normals {
+                out.extend(normals.iter());
+            }
         }
         let palette = at(out);
         out.extend(&compiled.drawing.markers.palette);
@@ -600,13 +671,17 @@ impl Shown {
         out.extend(self.blends());
         let runs = if self.drawing().is_some() { at(out) } else { wgsl::NONE };
         out.extend(self.runs());
-        self.offsets = Offsets { columns, ranges, code, constants, ends, palette, port_info, blends, runs };
+        let mut pages = [wgsl::NONE; 6];
+        for (kept, blocks) in self.words.tables() {
+            pages[kept as usize] = at(out);
+            out.extend(blocks);
+        }
+        self.offsets = Offsets { columns, ranges, code, constants, ends, palette, port_info, blends, runs, pages };
     }
 }
 
-/// The row blocks of a mark whose rows evaluate next: every block, or those listed, the blocks of the
-/// pages that changed. A block is the `BLOCK_ROWS` held rows of a held page; a page of the data holds
-/// several.
+/// The pages of a mark's rows that evaluate next: every page, or those listed, the pages that
+/// changed.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Blocks {
     All,
@@ -619,15 +694,7 @@ impl Default for Blocks {
     }
 }
 
-/// Blocks a page of the data holds.
-const PAGE_BLOCKS: u32 = (crate::data::PAGE_ROWS / wgsl::BLOCK_ROWS as usize) as u32;
-
 impl Blocks {
-    /// The blocks of the data pages `pages`.
-    pub(crate) fn of_pages(pages: &[u32]) -> Vec<u32> {
-        pages.iter().flat_map(|&p| p * PAGE_BLOCKS..(p + 1) * PAGE_BLOCKS).collect()
-    }
-
     /// Adds the blocks `blocks` names, or every block for `None`.
     fn add(&mut self, blocks: Option<&[u32]>) {
         match (&mut *self, blocks) {
@@ -639,7 +706,7 @@ impl Blocks {
 
     /// The blocks of a mark of `rows` rows to evaluate, in order, each once.
     pub(crate) fn of(&self, rows: u32) -> Vec<u32> {
-        let count = rows.div_ceil(wgsl::BLOCK_ROWS);
+        let count = rows.div_ceil(wgsl::PAGE_ROWS);
         match self {
             Blocks::All => (0..count).collect(),
             Blocks::Listed(listed) => {

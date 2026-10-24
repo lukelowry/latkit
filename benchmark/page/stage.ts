@@ -89,6 +89,8 @@ export class Stage {
 
   constructor(latkit: Latkit, gpu: Gpu, canvases: readonly HTMLCanvasElement[], size: number) {
     [this.latkit, this.gpu, this.canvases, this.size] = [latkit, gpu, canvases, size];
+    // Stepped from the start, so no animation frame draws while views load either.
+    gpu.step(this.#now);
   }
 
   get view(): View {

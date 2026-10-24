@@ -8,6 +8,7 @@ use std::io::Write;
 use std::rc::Rc;
 
 use futures_util::future::{AbortHandle, Abortable};
+use latkit::host::Host as _;
 use wasm_bindgen::prelude::*;
 
 use crate::Error;
@@ -35,10 +36,9 @@ impl Image {
         self.0.rgba.to_vec()
     }
 
-    /// The job writing the image as a `png`, `jpeg` at `quality` from 1 to 100, or `webp` file, for a
-    /// worker to do.
-    #[wasm_bindgen(js_name = encodeJob)]
-    pub fn encode_job(&self, format: &str, quality: Option<f64>) -> Result<Vec<u8>, Error> {
+    /// A promise of the image written in a worker as a `png`, `jpeg` at `quality` from 1 to 100, or
+    /// `webp` file.
+    pub fn encode(&self, format: &str, quality: Option<f64>) -> Result<js_sys::Promise, Error> {
         let quality = match quality {
             None => 90,
             Some(q) if (1.0..=100.0).contains(&q) => q.round() as u8,
@@ -50,7 +50,14 @@ impl Image {
             "webp" => latkit::ImageFormat::WebP,
             other => return Err(latkit::Error::invalid(format!("no image format {other:?}")).at("format").into()),
         };
-        Ok(latkit::host::Job::encode(&self.0, format).into_bytes())
+        let job = latkit::host::Job::encode(&self.0, format);
+        Ok(crate::promise(async move {
+            let file = latkit::host::Browser.spawn(job).await?;
+            if file.is_empty() {
+                return Err(latkit::Error::invalid(format!("the image could not be written as {format}")));
+            }
+            Ok(js_sys::Uint8Array::from(&file[..]))
+        }))
     }
 }
 

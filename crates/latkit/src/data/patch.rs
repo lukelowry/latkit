@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use super::column::Column;
 use super::dataset::Inner;
@@ -404,7 +404,8 @@ fn set(existing: &Table, input: Table) -> Result<Table> {
     let mut table = existing.clone();
     if !added.is_empty() {
         table.ids = existing.ids.extend(&added).map_err(|e| e.at("ids"))?;
-        table.index = Arc::default();
+        let index = index.extended(&table.ids, existing.len()).map_err(|e| e.at("ids"))?;
+        table.index = Arc::new(OnceLock::from(index));
         table.structure = Version::next();
     }
     for (name, field) in input.fields {
@@ -465,5 +466,7 @@ fn remove(existing: &Table, ids: &Ids) -> Result<Table> {
         return Ok(existing.clone());
     }
     let keep: Vec<usize> = (0..existing.len()).filter(|&r| !doomed[r]).collect();
-    Ok(existing.rows(&keep))
+    let mut table = existing.rows(&keep);
+    table.index = Arc::new(OnceLock::from(index.without(&doomed, &table.ids)?));
+    Ok(table)
 }

@@ -187,7 +187,7 @@ export default async function bunny(stage: Stage): Promise<void> {
             corners: ['a', 'b', 'c'],
             ...(paint === 'solid' ? { color: '#edccb4' } : {}),
             pick: false,
-            shadow: false,
+            shadow: true,
           },
         },
         {

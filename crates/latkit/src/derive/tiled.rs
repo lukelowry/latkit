@@ -12,7 +12,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use super::order::{Lifted, Order, PAGE};
+use super::order::{Lifted, Order};
 use super::pyramid::{Leveling, Places, Placing, Pyramid, answer};
 use super::sight::{Domain, Sight};
 use super::{Jobs, stamp_of};
@@ -20,6 +20,7 @@ use crate::Pending;
 use crate::data::{Column, Data, Field, Keyed, Name, Named, Reference, Table, UNWIRED, Version};
 use crate::expr::cpu::Rows;
 use crate::expr::{Expr, Node};
+use crate::gpu::shaders::PAGE_ROWS;
 use crate::host::Job;
 
 /// Microseconds placing a row takes, by estimate.
@@ -341,7 +342,7 @@ impl Set {
                 }
                 let served = planned.as_is() || self.placed.get(&table.name).is_some_and(|p| p.serves(table));
                 let appended = table.len().saturating_sub(read.rows);
-                self.working.is_some() || (served && appended < (read.rows / 8).max(PAGE as usize))
+                self.working.is_some() || (served && appended < (read.rows / 8).max(PAGE_ROWS as usize))
             })
     }
 

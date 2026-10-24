@@ -19,16 +19,16 @@ interface Slot {
 }
 
 /**
- * Runs one job per worker. Idle workers retire after 30 seconds; startup and jobs have a one-minute
- * deadline. Failure rejects the affected job and retires the worker; later jobs get a fresh one.
+ * Keeps the workers that do latkit's jobs alive, one job each. latkit queues its jobs and hands one
+ * over only when it can run, so the pool grows to as many jobs as run at once and nothing waits here.
+ * Idle workers retire after 30 seconds; startup and jobs have a one-minute deadline. Failure rejects
+ * the affected job and retires the worker; later jobs get a fresh one.
  */
 export function jobs(
   module: WebAssembly.Module,
   createWorker = () => new Worker(new URL('./worker.js', import.meta.url)),
 ): (bytes: Uint8Array) => Promise<Uint8Array> {
-  const size = Math.max(1, Math.min(4, (globalThis.navigator?.hardwareConcurrency || 2) - 1));
-  const queue: Job[] = [];
-  const slots = new Set<Slot>();
+  const idle = new Set<Slot>();
 
   const retire = (slot: Slot): void => {
     clearTimeout(slot.timer);
@@ -36,14 +36,13 @@ export function jobs(
     slot.worker.onerror = null;
     slot.worker.onmessageerror = null;
     slot.worker.terminate();
-    slots.delete(slot);
+    idle.delete(slot);
   };
 
   const fail = (slot: Slot, cause: unknown): void => {
     const job = slot.job;
     retire(slot);
     job?.reject(cause instanceof Error ? cause : new Error(String(cause)));
-    pump();
   };
 
   const send = (slot: Slot): void => {
@@ -59,7 +58,6 @@ export function jobs(
   const start = (): Slot => {
     const worker = createWorker();
     const slot: Slot = { worker, ready: false };
-    slots.add(slot);
     worker.onmessage = ({ data }: MessageEvent<Answer>) => {
       if (!slot.ready) {
         if (!data.ready) return fail(slot, data.error ?? 'worker initialization failed');
@@ -72,8 +70,8 @@ export function jobs(
         slot.job = undefined;
         clearTimeout(slot.timer);
         slot.timer = setTimeout(() => retire(slot), 30_000);
+        idle.add(slot);
         job.resolve(data.bytes);
-        pump();
       }
     };
     worker.onerror = (event) => {
@@ -84,29 +82,24 @@ export function jobs(
     return slot;
   };
 
-  function pump(): void {
-    while (queue.length) {
-      let slot = [...slots].find((candidate) => !candidate.job);
-      if (!slot && slots.size >= size) return;
-      const job = queue.shift()!;
+  return (bytes) =>
+    new Promise((resolve, reject) => {
+      const job = { bytes, resolve, reject };
+      let slot = idle.values().next().value;
       try {
-        slot ??= start();
+        if (slot) idle.delete(slot);
+        else {
+          slot = start();
+          slot.worker.postMessage(module);
+        }
         clearTimeout(slot.timer);
         slot.job = job;
         const active = slot;
         slot.timer = setTimeout(() => fail(active, 'worker job timed out'), 60_000);
-        if (slot.ready) send(slot);
-        else slot.worker.postMessage(module);
+        send(slot);
       } catch (error) {
         if (slot) retire(slot);
-        job.reject(error instanceof Error ? error : new Error(String(error)));
+        reject(error instanceof Error ? error : new Error(String(error)));
       }
-    }
-  }
-
-  return (bytes) =>
-    new Promise((resolve, reject) => {
-      queue.push({ bytes, resolve, reject });
-      pump();
     });
 }

@@ -166,6 +166,16 @@ impl TileSets {
         self.sets.iter().any(|s| *s.tiles.name == *name)
     }
 
+    /// The rows vector tiles brought of dataset `name`, each table with the fields its shapes are
+    /// written as too.
+    pub(crate) fn shaped(&self, name: &str) -> Option<&Data> {
+        let set = self.sets.iter().find(|s| *s.tiles.name == *name)?;
+        match &set.source {
+            Source::Open(Holds::Vector(vector)) => Some(vector.held()),
+            _ => None,
+        }
+    }
+
     /// Stops fetching the pieces drawn as dataset `name`.
     pub(crate) fn remove(&mut self, name: &str) {
         self.sets.retain(|s| s.tiles.name != name);

@@ -149,6 +149,25 @@ pub(crate) fn encode(patch: &Patch) -> Vec<u8> {
     w.0
 }
 
+/// `values` as bytes, as a field holding them writes them: how jobs hand a column over.
+#[cfg(feature = "gpu")]
+pub(crate) fn values_bytes(values: &Values) -> Vec<u8> {
+    let mut w = Writer(Vec::new());
+    w.values(values);
+    w.0
+}
+
+/// The values `bytes` hold, every byte of them, as [`values_bytes`] wrote them.
+#[cfg(feature = "gpu")]
+pub(crate) fn read_values(bytes: &[u8]) -> Result<Values> {
+    let mut r = Reader { bytes, at: 0, remaining: DecodeLimits::default().decoded_bytes };
+    let values = r.values()?;
+    if r.at != bytes.len() {
+        return Err(malformed("trailing bytes"));
+    }
+    Ok(values)
+}
+
 /// The patch `bytes` hold, every byte of them.
 pub(crate) fn decode(bytes: &[u8]) -> Result<Patch> {
     match decode_with_limits(bytes, DecodeLimits::default())? {
@@ -461,11 +480,14 @@ impl Reader<'_> {
         std::str::from_utf8(bytes).map(Name::from).map_err(|_| malformed("text is not UTF-8"))
     }
 
+    /// `n` values, copied whole.
     fn vec<T: bytemuck::Pod>(&mut self, n: usize) -> Result<Vec<T>> {
         // Includes conversion into column pages and the sampled levels derived from runs.
         self.charge(n, 4 * size_of::<T>())?;
         let bytes = self.take(n.checked_mul(size_of::<T>()).ok_or_else(|| malformed("too large"))?)?;
-        Ok(bytes.chunks_exact(size_of::<T>()).map(bytemuck::pod_read_unaligned).collect())
+        let mut out = vec![T::zeroed(); n];
+        bytemuck::cast_slice_mut::<T, u8>(&mut out).copy_from_slice(bytes);
+        Ok(out)
     }
 
     fn ids(&mut self) -> Result<Ids> {
@@ -595,8 +617,7 @@ impl Reader<'_> {
                     })
                     .collect::<Result<Vec<_>>>()?;
                 let n = self.len(16)?;
-                let flat: Vec<f64> = self.vec(n * 2)?;
-                let coords = flat.as_chunks::<2>().0.to_vec();
+                let coords: Vec<[f64; 2]> = self.vec(n)?;
                 let geometry =
                     Geometry::from_parts(depth, levels, coords).ok_or_else(|| malformed("geometry offsets"))?;
                 if geometry.len() != len {

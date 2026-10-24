@@ -9,10 +9,11 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
-use crate::data::{Column, Name, PAGE_ROWS, PageId, Reference, Samples, Table, UNWIRED, Version};
-use crate::derive::order::{Order, PAGE};
+use crate::data::{Column, Name, PageId, Reference, Samples, Table, UNWIRED, Version};
+use crate::derive::order::Order;
 use crate::expr::compile::Words;
 use crate::gpu::arena::page_words;
+use crate::gpu::shaders::PAGE_ROWS;
 use crate::gpu::shaders::{MISSING, NONE};
 use crate::gpu::work::{Count, Counters};
 
@@ -87,7 +88,7 @@ impl Packed {
         {
             if let Some(before) = &pages.source {
                 for row in source.written_since(before) {
-                    let page = (order.rank(row as u32) / PAGE) as usize;
+                    let page = (order.rank(row as u32) / PAGE_ROWS) as usize;
                     if let Some(id) = pages.ids.get_mut(page) {
                         *id = None;
                     }
@@ -163,7 +164,7 @@ fn forget<K: Clone + Eq + std::hash::Hash, V>(kept: &mut FxHashMap<K, V>, used: 
 /// The words `column`'s rows `rows` are read as, a page of them, missing past the rows.
 pub(crate) fn values(column: &Column, rows: &[u32], words: Words, low: bool) -> Vec<u32> {
     let mut out = page_words(&column.pick(rows), words, low);
-    out.resize(PAGE as usize, if words == Words::Bits { NONE } else { MISSING });
+    out.resize(PAGE_ROWS as usize, if words == Words::Bits { NONE } else { MISSING });
     out
 }
 
@@ -177,14 +178,14 @@ pub(crate) fn targets(reference: &Reference, rows: &[u32], rank: Option<&Order>)
             t => rank.map_or(t, |order| order.rank(t)),
         })
         .collect();
-    out.resize(PAGE as usize, NONE);
+    out.resize(PAGE_ROWS as usize, NONE);
     out
 }
 
 /// The words of reference page `page` of a table drawn in its own order: the rows it names, as
 /// `rank`, the order their table draws in, places them.
 pub(crate) fn ranked_page(reference: &Reference, page: usize, rank: &Order) -> Vec<u32> {
-    let start = page * PAGE_ROWS;
+    let start = page * PAGE_ROWS as usize;
     let len = reference.rows.pages().get(page).map_or(0, |p| p.values.len());
     (start..start + len)
         .map(|r| match reference.target_row(r) {
@@ -200,7 +201,7 @@ pub(crate) fn frame(samples: &Samples, rows: &[u32], frame: Option<u64>) -> Vec<
         .iter()
         .map(|&r| frame.and_then(|f| samples.value(r as usize, f)).map_or(MISSING, |v| (v as f32).to_bits()))
         .collect();
-    out.resize(PAGE as usize, MISSING);
+    out.resize(PAGE_ROWS as usize, MISSING);
     out
 }
 
@@ -210,7 +211,7 @@ pub(crate) fn joined(table: &Table, rows: &[u32], other: &Table) -> Vec<u32> {
         .iter()
         .map(|&r| table.ids.key(r as usize).and_then(|key| other.row(key)).map_or(NONE, |o| o as u32))
         .collect();
-    out.resize(PAGE as usize, NONE);
+    out.resize(PAGE_ROWS as usize, NONE);
     out
 }
 
@@ -236,7 +237,7 @@ mod tests {
 
     #[test]
     fn a_write_repacks_only_the_pages_its_rows_draw_in() {
-        let n = 3 * PAGE as usize;
+        let n = 3 * PAGE_ROWS as usize;
         let column = Column::new(&Values::from((0..n).map(|i| i as f64).collect::<Vec<_>>()));
         // The order draws the rows backward: the last page of rows is its first page.
         let order = Order::Pyramid {
@@ -251,6 +252,6 @@ mod tests {
         assert_eq!((after[0], after[1]), (ids[0], ids[1]), "pages not drawing row 5 are kept");
         assert_ne!(after[2], ids[2], "row 5 draws in the last page, which packs again");
         let words = values(&written, &order.page(2), Words::Values, false);
-        assert_eq!(f32::from_bits(words[PAGE as usize - 1 - 5]), -1.0, "row 5 packed where it draws");
+        assert_eq!(f32::from_bits(words[PAGE_ROWS as usize - 1 - 5]), -1.0, "row 5 packed where it draws");
     }
 }

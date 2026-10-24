@@ -5,10 +5,10 @@
 
 import package::lib::types::{
     CANDIDATE_WORDS, CANDIDATE_ALPHA, LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, SIDE_LEFT,
-    SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD, TEXT_ESTIMATE, SPACE_DIAGRAM, THEME_TEXT,
+    SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD, TEXT_UNSET, SPACE_DIAGRAM, THEME_TEXT,
 };
-import package::lib::bind::{frame, eye, mark, state, program, ramp};
-import package::lib::state::extra_at;
+import package::lib::bind::{frame, eye, mark, word, program, ramp};
+import package::lib::state::{extra_at, record_at};
 import package::lib::read::missing_bits;
 import package::lib::points::{shown_point, port_at, port_inward};
 import package::lib::marker::theme_port_size;
@@ -59,7 +59,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     let drawn = drawn_row(instance);
     let row = drawn.row;
-    let code_bits = state[extra_at(row, mark.label + LABEL_CODE)];
+    let code_bits = word(extra_at(row, mark.label + LABEL_CODE));
     if missing_bits(code_bits) {
         return unshown();
     }
@@ -67,14 +67,14 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let uv0 = labels[mark.runs + 2u * code];
     let uv1 = labels[mark.runs + 2u * code + 1u];
     // Nothing to draw until the text is set.
-    if (uv0 == 0u && uv1 == 0u) || (uv0 & TEXT_ESTIMATE) != 0u {
+    if (uv0 == 0u && uv1 == 0u) || (uv0 & TEXT_UNSET) != 0u {
         return unshown();
     }
     let a = anchor(instance);
     let size = length_px(mark.label_size);
     let t = text_at(uv0, uv1, size, a.at, a.align);
     // A diagram's labels show while they fit and read; elsewhere as placement decided.
-    var alpha = bitcast<f32>(labels[mark.candidates + row * CANDIDATE_WORDS + CANDIDATE_ALPHA]);
+    var alpha = bitcast<f32>(word(record_at(mark.candidates, CANDIDATE_WORDS, row) + CANDIDATE_ALPHA));
     if frame.space == SPACE_DIAGRAM {
         alpha = f32(a.shown && fits(t.hi - t.lo, a.room)) * legibility(size);
     }
@@ -83,7 +83,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     if !(alpha > 0.0) {
         return unshown();
     }
-    let color = unpack4x8unorm(state[extra_at(row, mark.label + LABEL_COLOR)]);
+    let color = unpack4x8unorm(word(extra_at(row, mark.label + LABEL_COLOR)));
     return quad(t, corner, vec4f(color.rgb, color.a * alpha));
 }
 

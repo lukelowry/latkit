@@ -14,6 +14,7 @@ mod convert;
 mod error;
 mod shot;
 
+use latkit::host::Host as _;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -173,13 +174,24 @@ impl Data {
         Data(latkit::Data::new(name))
     }
 
-    /// The dataset latkit bytes hold, renamed `name` when given.
-    #[allow(clippy::needless_pass_by_value, reason = "wasm-bindgen hands optional texts over owned")]
-    pub fn read(bytes: &[u8], name: Option<String>) -> Result<Data, Error> {
-        if !bytes.starts_with(b"LATK") {
-            return Err(latkit::Error::invalid("not latkit bytes").at("bytes").into());
+    /// A promise of the dataset `bytes` hold: latkit's bytes, renamed `name` when given, or GeoJSON,
+    /// read in a worker as dataset `name`.
+    pub fn read(bytes: &[u8], name: Option<String>) -> js_sys::Promise {
+        if bytes.starts_with(b"LATK") {
+            let data = latkit::Data::read(bytes, name.as_deref());
+            return promise(async move { data.map(Data) });
         }
-        Ok(Data(latkit::Data::read(bytes, name.as_deref())?))
+        let Some(name) = name else {
+            return promise(async { Err::<Data, _>(latkit::Error::invalid("GeoJSON names its dataset").at("name")) });
+        };
+        let job = latkit::host::Job::geojson(&name, bytes);
+        promise(async move {
+            let data = latkit::host::Browser.spawn(job).await?;
+            if data.is_empty() {
+                return Err(latkit::Error::invalid(format!("{name}: the bytes are neither latkit's nor GeoJSON")));
+            }
+            Ok(Data(latkit::Data::read(&data, Some(&name))?))
+        })
     }
 
     /// A promise of the dataset its JSON document builds, its slices fetched relative to `base`.
@@ -478,13 +490,6 @@ pub fn set_jobs(run: js_sys::Function) {
 #[wasm_bindgen]
 pub fn job(bytes: &[u8]) -> Vec<u8> {
     latkit::host::Job::from_bytes(bytes.to_vec()).run()
-}
-
-/// The job reading GeoJSON `bytes`, gzip-compressed or not, as dataset `name`, for a worker to do: it
-/// answers the bytes of the patch building the dataset, or nothing when the bytes are no GeoJSON.
-#[wasm_bindgen(js_name = geojsonJob)]
-pub fn geojson_job(name: &str, bytes: &[u8]) -> Vec<u8> {
-    latkit::host::Job::geojson(name, bytes).into_bytes()
 }
 
 /// The compiled module, for workers to instantiate.

@@ -1,13 +1,13 @@
 // Reading columns: page tables in `program` point at blocks of `pages`. A column's pages are its
-// data's, or for a mark drawing a table in part the pages of it the mark holds, a slot each; its
-// descriptor says how many rows a page holds. Values stay `u32` bits until arithmetic needs them, so
+// data's, or for a mark drawing a table in part the pages of it the mark holds, a slot each; every
+// page holds `PAGE_ROWS` rows. Values stay `u32` bits until arithmetic needs them, so
 // a missing value is never an `f32` constant (WGSL cannot represent NaN constants).
 
 import package::lib::types::{
     NONE, MISSING, COLUMN_WORDS, COLUMN_FLAGS, COLUMN_ROWS, COLUMN_TABLE, COLUMN_LOW, COLUMN_JOIN, COLUMN_T,
-    COLUMN_BITS, SAMPLED, STEP, POINT_BITS, POINT_MASK, PATH_PAGE_WORDS,
+    SAMPLED, STEP, PAGE_BITS, PAGE_MASK, POINT_BITS, POINT_MASK, PATH_PAGE_WORDS,
 };
-import package::lib::bind::{pages, program, mark};
+import package::lib::bind::{program, mark, word};
 
 // Whether a pipeline's marks read fields of other tables by row id, and fields sampled over an axis
 // at the shown coordinate: set when it is made, so a scene doing neither compiles neither.
@@ -31,18 +31,17 @@ fn page_word(block: u32, offset: u32, fallback: u32) -> u32 {
     if block == NONE {
         return fallback;
     }
-    return pages[block + offset];
+    return word(block + offset);
 }
 
-// The page of column `column` row `row` lies in, and where in it.
-fn page_of(column: u32, row: u32) -> vec2u {
-    let bits = column_word(column, COLUMN_BITS);
-    return vec2u(row >> bits, row & ((1u << bits) - 1u));
+// The page row `row` lies in, and where in it.
+fn page_of(row: u32) -> vec2u {
+    return vec2u(row >> PAGE_BITS, row & PAGE_MASK);
 }
 
 // A static column's value as (high, low) bits: the low part carries what f32 drops of an f64.
 fn static_value(column: u32, row: u32) -> vec2u {
-    let at = page_of(column, row);
+    let at = page_of(row);
     let page = at.x;
     let local = at.y;
     let table = column_word(column, COLUMN_TABLE);
@@ -57,7 +56,7 @@ fn static_value(column: u32, row: u32) -> vec2u {
 // A sampled column's value at the shown coordinate, as bits. Each page of rows has a cursor of six
 // words: block and word of this frame, block and word of the next frame, and both frames' row counts.
 fn sample_value(column: u32, row: u32) -> u32 {
-    let at = page_of(column, row);
+    let at = page_of(row);
     let cursor = column_word(column, COLUMN_TABLE) + at.x * 6u;
     let local = at.y;
     if local >= program[cursor + 4u] {
@@ -82,7 +81,7 @@ fn bits_value(column: u32, row: u32) -> u32 {
         return NONE;
     }
     let table = column_word(column, COLUMN_TABLE);
-    let at = page_of(column, row);
+    let at = page_of(row);
     return page_word(program[table + at.x], at.y, NONE);
 }
 
@@ -122,17 +121,17 @@ fn points_of(column: u32, row: u32) -> Points {
         return Points(0u, 0u, 0u);
     }
     let table = column_word(column, COLUMN_TABLE);
-    let at = page_of(column, row);
+    let at = page_of(row);
     let page = table + PATH_PAGE_WORDS * at.x;
     let firsts = program[page];
     if firsts == NONE || at.y >= program[page + 3u] {
         return Points(0u, 0u, 0u);
     }
     let local = at.y;
-    let first = pages[firsts + local];
+    let first = word(firsts + local);
     var end = program[page + 2u];
     if local + 1u < program[page + 3u] {
-        end = pages[firsts + local + 1u];
+        end = word(firsts + local + 1u);
     }
     return Points(table + program[page + 1u], first, end - first);
 }
@@ -141,5 +140,5 @@ fn points_of(column: u32, row: u32) -> Points {
 fn point_bits(points: Points, k: u32) -> vec2u {
     let i = points.first + k;
     let at = program[points.blocks + (i >> POINT_BITS)] + 2u * (i & POINT_MASK);
-    return vec2u(pages[at], pages[at + 1u]);
+    return vec2u(word(at), word(at + 1u));
 }

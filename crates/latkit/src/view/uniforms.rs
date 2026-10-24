@@ -5,6 +5,7 @@ use glam::{DMat4, DVec3, DVec4};
 
 use super::camera::{Projected, split};
 use super::marks::Shown;
+use super::words::Kept;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
 use crate::{Color, Grid, Scene, Space, Theme};
@@ -171,32 +172,31 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
-/// What `mark` evaluates and how it eases by `clock`: the row blocks this frame's evaluation covers,
-/// and while it eases, where its frozen rows start, its progress, and how each word eases.
+/// What `mark` evaluates and how it eases by `clock`: the pages of rows this frame's evaluation
+/// covers, and while it eases, the page tables of its frozen and settled words, its progress, and how
+/// each word eases.
 fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
-    let region = &shown.region;
     mark.block = shown.block;
     mark.blocks = shown.block_count;
     mark.blends = shown.offsets.blends;
     mark.frozen = wgsl::NONE;
-    mark.frozen_extra = wgsl::NONE;
+    mark.settled = wgsl::NONE;
     mark.motion = 1.0;
     if let Some(transition) = &shown.transition {
-        mark.frozen = region.state;
-        mark.frozen_extra = region.extra;
+        mark.frozen = shown.offsets.table(Kept::Frozen);
+        mark.settled = shown.offsets.table(Kept::Settled);
         mark.motion = transition.motion(clock);
     }
 }
 
-/// The uniform of mark `index`, easing by `clock`.
+/// The uniform of mark `index`, labeled as `labels` says, easing by `clock`.
 pub(crate) fn mark(
     index: usize,
     shown: &Shown,
-    labels: Option<super::labels::Slots>,
+    labels: &super::labels::Labels,
     clock: &super::clock::Clock,
 ) -> wgsl::Mark {
     let mut mark: wgsl::Mark = bytemuck::Zeroable::zeroed();
-    let region = &shown.region;
     mark.index = index as u32;
     mark.kind = match shown.kind() {
         MarkKind::Vertices => wgsl::MARK_VERTICES,
@@ -211,12 +211,13 @@ pub(crate) fn mark(
     mark.row_runs = shown.offsets.runs;
     mark.drawn = shown.drawn_rows.at.map_or(wgsl::NONE, |[start, _]| start);
     mark.reveal = shown.reveal;
-    mark.state = region.state;
+    mark.state = shown.offsets.table(Kept::State);
     mark.stride = shown.stride();
-    mark.extra = region.extra;
     mark.extras = shown.extras();
     ease(&mut mark, shown, clock);
-    mark.focus = region.focus;
+    mark.focus = shown.offsets.table(Kept::Focus);
+    mark.candidates = shown.offsets.table(Kept::Candidates);
+    mark.normals = shown.offsets.table(Kept::Normals);
     mark.domains = shown.domains;
     mark.columns = shown.offsets.columns;
     mark.ranges = shown.offsets.ranges;
@@ -242,13 +243,12 @@ pub(crate) fn mark(
     [mark.size_min, mark.size_max] = crate::Size::ANY;
     mark.label_max = wgsl::NONE;
     mark.label_select = wgsl::NONE;
-    if let Some(slots) = labels {
+    if let Some(slots) = labels.slots(index) {
         mark.label_select = slots.select;
-        mark.candidates = slots.candidates;
         mark.runs = slots.runs;
         mark.wanted = slots.wanted;
         mark.seen = slots.seen;
-        mark.label_id = slots.id;
+        mark.label_id = labels.id(index);
     }
     if let Some(compiled) = &shown.compiled {
         let program = &compiled.program;

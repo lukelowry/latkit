@@ -15,10 +15,11 @@ use rustc_hash::FxHashSet;
 
 use super::View;
 use crate::data::{Field, Name, Reference, UNWIRED, Version};
-use crate::derive::order::{Order, PAGE};
+use crate::derive::order::Order;
 use crate::derive::stamp_of;
 use crate::derive::tiled::{Chosen, Draw, Place};
 use crate::gpu::shaders as wgsl;
+use crate::gpu::shaders::PAGE_ROWS;
 
 /// What marks a slot holding a page of kept rows, beside the page's number.
 const KEPT: u32 = 1 << 31;
@@ -153,13 +154,13 @@ impl Drawing {
         let idle_kept =
             before.filter(|b| b.content == lay.content).map_or(0, |b| linger(b, &asked_now, lay.room, &mut held));
         let kept = keep(before, &lay.pinned.places, &held, &order);
-        let kept_pages = kept.len().div_ceil(PAGE as usize);
+        let kept_pages = kept.len().div_ceil(PAGE_ROWS as usize);
         let (slots, pages, kept_slots) = place(before, &held, kept_pages);
         let mut kept_rows: Vec<[u32; 2]> = kept
             .iter()
             .enumerate()
             .filter(|&(_, &d)| d != wgsl::NONE)
-            .map(|(i, &d)| [d, kept_slots[i / PAGE as usize] * PAGE + (i as u32) % PAGE])
+            .map(|(i, &d)| [d, kept_slots[i / PAGE_ROWS as usize] * PAGE_ROWS + (i as u32) % PAGE_ROWS])
             .collect();
         kept_rows.sort_unstable();
         let lays = before.map_or(1, |b| b.lays + 1);
@@ -230,9 +231,9 @@ impl Drawing {
         let mut span = |range: Range<u32>, fade: u32, runs: &mut Vec<Run>| {
             let mut d = range.start;
             while d < range.end {
-                let page = d / PAGE;
-                let end = range.end.min((page + 1) * PAGE);
-                push(pages[page as usize] * PAGE + d % PAGE, end - d, fade, runs);
+                let page = d / PAGE_ROWS;
+                let end = range.end.min((page + 1) * PAGE_ROWS);
+                push(pages[page as usize] * PAGE_ROWS + d % PAGE_ROWS, end - d, fade, runs);
                 d = end;
             }
         };
@@ -264,7 +265,7 @@ impl Drawing {
 
     /// Held rows: a page's rows in each slot.
     pub(crate) fn live(&self) -> u32 {
-        self.slots.len() as u32 * PAGE
+        self.slots.len() as u32 * PAGE_ROWS
     }
 
     /// How many slots it has, free ones among them.
@@ -281,10 +282,10 @@ impl Drawing {
     pub(crate) fn places(&self, s: usize) -> Vec<u32> {
         match self.holds(s) {
             Holds::Free => Vec::new(),
-            Holds::Page(k) => (k * PAGE..((k + 1) * PAGE).min(self.order.len())).collect(),
+            Holds::Page(k) => (k * PAGE_ROWS..((k + 1) * PAGE_ROWS).min(self.order.len())).collect(),
             Holds::Kept(j) => {
-                let start = (j * PAGE) as usize;
-                self.kept[start..self.kept.len().min(start + PAGE as usize)].to_vec()
+                let start = (j * PAGE_ROWS) as usize;
+                self.kept[start..self.kept.len().min(start + PAGE_ROWS as usize)].to_vec()
             }
         }
     }
@@ -304,9 +305,9 @@ impl Drawing {
 
     /// The held row of place `d` in the order, if it holds it: in its page, or among the rows kept.
     pub(crate) fn held_of(&self, d: u32) -> Option<u32> {
-        let slot = *self.pages.get((d / PAGE) as usize)?;
+        let slot = *self.pages.get((d / PAGE_ROWS) as usize)?;
         if slot != wgsl::NONE {
-            return Some(slot * PAGE + d % PAGE);
+            return Some(slot * PAGE_ROWS + d % PAGE_ROWS);
         }
         let i = self.kept_rows.partition_point(|&[place, _]| place < d);
         self.kept_rows.get(i).filter(|&&[place, _]| place == d).map(|&[_, held]| held)
@@ -319,10 +320,10 @@ impl Drawing {
 
     /// The row of its table held row `h` holds.
     pub(crate) fn source(&self, h: u32) -> Option<u32> {
-        let d = match self.holds((h / PAGE) as usize) {
+        let d = match self.holds((h / PAGE_ROWS) as usize) {
             Holds::Free => return None,
-            Holds::Page(page) => page.checked_mul(PAGE)? + h % PAGE,
-            Holds::Kept(j) => *self.kept.get((j * PAGE + h % PAGE) as usize)?,
+            Holds::Page(page) => page.checked_mul(PAGE_ROWS)? + h % PAGE_ROWS,
+            Holds::Kept(j) => *self.kept.get((j * PAGE_ROWS + h % PAGE_ROWS) as usize)?,
         };
         (d != wgsl::NONE && d < self.order.len()).then(|| self.order.source(d))
     }
@@ -369,7 +370,7 @@ impl Drawing {
 fn asked<'r>(count: usize, ranges: impl Iterator<Item = &'r Range<u32>>, ends: &[u32]) -> Vec<bool> {
     let mut asked = vec![false; count];
     for range in ranges.filter(|r| r.start < r.end) {
-        for page in range.start / PAGE..=(range.end - 1) / PAGE {
+        for page in range.start / PAGE_ROWS..=(range.end - 1) / PAGE_ROWS {
             if let Some(a) = asked.get_mut(page as usize) {
                 *a = true;
             }
@@ -403,7 +404,8 @@ fn linger(before: &Drawing, asked: &[bool], room: u32, held: &mut [bool]) -> u32
 /// kept, `NONE` where a place is free: each keeps its place in `before`, and the rest take the first
 /// free ones.
 fn keep(before: Option<&Drawing>, pinned: &[u32], held: &[bool], order: &Order) -> Vec<u32> {
-    let out: Vec<u32> = pinned.iter().copied().filter(|&d| d < order.len() && !held[(d / PAGE) as usize]).collect();
+    let out: Vec<u32> =
+        pinned.iter().copied().filter(|&d| d < order.len() && !held[(d / PAGE_ROWS) as usize]).collect();
     let wanted: FxHashSet<u32> = out.iter().copied().collect();
     let mut kept: Vec<u32> = before.map_or_else(Vec::new, |b| b.kept.to_vec());
     let mut placed: FxHashSet<u32> = FxHashSet::default();
@@ -490,7 +492,7 @@ impl Ends {
         if self.pages.len() <= page as usize {
             self.pages.resize(page as usize + 1, None);
         }
-        let rows = order.len().saturating_sub(page * PAGE).min(PAGE);
+        let rows = order.len().saturating_sub(page * PAGE_ROWS).min(PAGE_ROWS);
         match &self.pages[page as usize] {
             Some((had, found)) if *had == rows => found.clone(),
             _ => {
@@ -499,7 +501,7 @@ impl Ends {
                     for reference in ends {
                         let t = reference.target_row(r as usize);
                         if t != UNWIRED && t < target.len() {
-                            found.push(target.rank(t) / PAGE);
+                            found.push(target.rank(t) / PAGE_ROWS);
                         }
                     }
                 }
@@ -656,11 +658,12 @@ impl View {
         let mut paged = crate::data::Keyed::default();
         for (key, chosen) in self.choices.iter().filter(|(key, _)| shaped(key)) {
             let ranges = chosen.ranges.iter().filter(|r| r.start < r.end);
-            let mut pages: Vec<u32> = ranges.flat_map(|r| r.start / PAGE..=(r.end - 1) / PAGE).collect();
+            let mut pages: Vec<u32> = ranges.flat_map(|r| r.start / PAGE_ROWS..=(r.end - 1) / PAGE_ROWS).collect();
             pages.sort_unstable();
             pages.dedup();
             let pinned = self.pinned(key, &chosen.order);
-            let kept: Vec<u32> = pinned.into_iter().filter(|&d| pages.binary_search(&(d / PAGE)).is_err()).collect();
+            let kept: Vec<u32> =
+                pinned.into_iter().filter(|&d| pages.binary_search(&(d / PAGE_ROWS)).is_err()).collect();
             paged.insert(key.clone(), crate::derive::Paged { order: chosen.order.clone(), pages, kept });
         }
         paged
@@ -677,7 +680,7 @@ impl View {
     /// the rows the plan gives it fill; else none past those it draws.
     fn room(&self, key: &(Name, Name)) -> u32 {
         match self.planning.plans().get(key).map(|p| p.draw) {
-            Some(Draw::Tiles { rows }) => rows.div_ceil(PAGE),
+            Some(Draw::Tiles { rows }) => rows.div_ceil(PAGE_ROWS),
             _ => 0,
         }
     }
@@ -726,11 +729,11 @@ mod tests {
 
     #[test]
     fn pages_keep_their_slots_as_tiles_come_and_go() {
-        let order = order(8 * PAGE);
+        let order = order(8 * PAGE_ROWS);
         let first = Drawing::lay(
             None,
             &Lay {
-                chosen: &chosen(&order, &[0..PAGE, 3 * PAGE..4 * PAGE]),
+                chosen: &chosen(&order, &[0..PAGE_ROWS, 3 * PAGE_ROWS..4 * PAGE_ROWS]),
                 pinned: &Pinned::default(),
                 ends: &[],
                 room: 0,
@@ -739,12 +742,12 @@ mod tests {
             false,
         );
         assert_eq!(&*first.slots, [0, 3]);
-        assert_eq!(first.items, 2 * PAGE);
+        assert_eq!(first.items, 2 * PAGE_ROWS);
         // Page 0 leaves, page 5 arrives: it takes the slot page 0 left, and page 3 stays where it was.
         let next = Drawing::lay(
             Some(&first),
             &Lay {
-                chosen: &chosen(&order, &[3 * PAGE..4 * PAGE, 5 * PAGE..6 * PAGE]),
+                chosen: &chosen(&order, &[3 * PAGE_ROWS..4 * PAGE_ROWS, 5 * PAGE_ROWS..6 * PAGE_ROWS]),
                 pinned: &Pinned::default(),
                 ends: &[],
                 room: 0,
@@ -753,14 +756,14 @@ mod tests {
             false,
         );
         assert_eq!(&*next.slots, [5, 3]);
-        assert_eq!(next.held_of(3 * PAGE + 7), Some(PAGE + 7));
-        assert_eq!(next.source(7), Some(5 * PAGE + 7));
-        assert_eq!(next.item_of(PAGE + 7), Some(7), "page 3's rows draw first");
+        assert_eq!(next.held_of(3 * PAGE_ROWS + 7), Some(PAGE_ROWS + 7));
+        assert_eq!(next.source(7), Some(5 * PAGE_ROWS + 7));
+        assert_eq!(next.item_of(PAGE_ROWS + 7), Some(7), "page 3's rows draw first");
     }
 
     #[test]
     fn pages_no_longer_drawn_stay_held_while_there_is_room() {
-        let order = order(8 * PAGE);
+        let order = order(8 * PAGE_ROWS);
         let lay = |ranges: &[Range<u32>], room: u32, before: Option<&Drawing>| {
             Drawing::lay(
                 before,
@@ -768,20 +771,20 @@ mod tests {
                 false,
             )
         };
-        let first = lay(&[0..PAGE, PAGE..2 * PAGE], 3, None);
+        let first = lay(&[0..PAGE_ROWS, PAGE_ROWS..2 * PAGE_ROWS], 3, None);
         assert_eq!(&*first.slots, [0, 1]);
         // Page 1 is no longer drawn and page 4 is: with room for three pages, page 1 stays held.
-        let next = lay(&[0..PAGE, 4 * PAGE..5 * PAGE], 3, Some(&first));
-        assert_eq!((&*next.slots, next.items), (&[0, 1, 4][..], 2 * PAGE), "page 1 held, not drawn");
+        let next = lay(&[0..PAGE_ROWS, 4 * PAGE_ROWS..5 * PAGE_ROWS], 3, Some(&first));
+        assert_eq!((&*next.slots, next.items), (&[0, 1, 4][..], 2 * PAGE_ROWS), "page 1 held, not drawn");
         // Drawn again, it draws from its slot: no slot takes a page of other rows.
-        let back = lay(&[0..PAGE, PAGE..2 * PAGE], 3, Some(&next));
+        let back = lay(&[0..PAGE_ROWS, PAGE_ROWS..2 * PAGE_ROWS], 3, Some(&next));
         assert_eq!(&*back.slots, [0, 1, 4]);
         assert_eq!(crate::view::transition::bound(Some(&next), &back), Vec::<u32>::new());
         // With room for two, of the pages no longer drawn the one asked for latest stays.
-        let tight = lay(std::slice::from_ref(&(6 * PAGE..7 * PAGE)), 2, Some(&back));
+        let tight = lay(std::slice::from_ref(&(6 * PAGE_ROWS..7 * PAGE_ROWS)), 2, Some(&back));
         assert_eq!(&*tight.slots, [6, 1]);
         // Their words made from other data or another scene, pages no longer drawn are let go.
-        let ranges = [0..PAGE, 4 * PAGE..5 * PAGE];
+        let ranges = [0..PAGE_ROWS, 4 * PAGE_ROWS..5 * PAGE_ROWS];
         let changed =
             Lay { chosen: &chosen(&order, &ranges), pinned: &Pinned::default(), ends: &[], room: 3, content: 1 };
         let changed = Drawing::lay(Some(&back), &changed, false);
@@ -790,14 +793,20 @@ mod tests {
 
     #[test]
     fn tiles_fade_in_and_out_then_settle() {
-        let order = order(4 * PAGE);
+        let order = order(4 * PAGE_ROWS);
         let first = Drawing::lay(
             None,
             &Lay { chosen: &one(&order, 0..10), pinned: &Pinned::default(), ends: &[], room: 0, content: 0 },
             true,
         );
         assert!(!first.fades, "a first drawing has nothing to fade from");
-        let lay = Lay { chosen: &one(&order, PAGE..PAGE + 10), pinned: &pinned(&[3]), ends: &[], room: 0, content: 0 };
+        let lay = Lay {
+            chosen: &one(&order, PAGE_ROWS..PAGE_ROWS + 10),
+            pinned: &pinned(&[3]),
+            ends: &[],
+            room: 0,
+            content: 0,
+        };
         let next = Drawing::lay(Some(&first), &lay, true);
         assert!(next.fades);
         let fades: Vec<(u32, u32)> = next.runs.iter().map(|r| (r.len, r.fade)).collect();
@@ -812,24 +821,27 @@ mod tests {
 
     #[test]
     fn rows_kept_lie_in_pages_of_their_own_and_ends_hold_their_pages() {
-        let order = order(4 * PAGE);
+        let order = order(4 * PAGE_ROWS);
         let lay =
-            Lay { chosen: &one(&order, 0..10), pinned: &pinned(&[2 * PAGE + 1]), ends: &[3], room: 0, content: 0 };
+            Lay { chosen: &one(&order, 0..10), pinned: &pinned(&[2 * PAGE_ROWS + 1]), ends: &[3], room: 0, content: 0 };
         let drawing = Drawing::lay(None, &lay, false);
         assert_eq!(&*drawing.slots, [0, 3, KEPT], "the page drawn, the ends', and a page of the row kept");
         assert_eq!(drawing.items, 11, "ends' pages are held, not drawn");
-        let held = drawing.held_of(2 * PAGE + 1).expect("kept");
-        assert_eq!((held, drawing.source(held)), (2 * PAGE, Some(2 * PAGE + 1)));
+        let held = drawing.held_of(2 * PAGE_ROWS + 1).expect("kept");
+        assert_eq!((held, drawing.source(held)), (2 * PAGE_ROWS, Some(2 * PAGE_ROWS + 1)));
         assert_eq!(drawing.held_pages().collect::<Vec<_>>(), [0, 3]);
         // Another row kept takes the next place among them; the first keeps its own.
-        let more = Lay { pinned: &pinned(&[PAGE + 7, 2 * PAGE + 1]), ..lay };
+        let more = Lay { pinned: &pinned(&[PAGE_ROWS + 7, 2 * PAGE_ROWS + 1]), ..lay };
         let next = Drawing::lay(Some(&drawing), &more, false);
-        assert_eq!((next.held_of(2 * PAGE + 1), next.held_of(PAGE + 7)), (Some(2 * PAGE), Some(2 * PAGE + 1)));
+        assert_eq!(
+            (next.held_of(2 * PAGE_ROWS + 1), next.held_of(PAGE_ROWS + 7)),
+            (Some(2 * PAGE_ROWS), Some(2 * PAGE_ROWS + 1))
+        );
         assert_eq!(crate::view::transition::bound(Some(&drawing), &next), [2], "only the page of rows kept");
         // A row kept whose page comes to be drawn draws from its page.
-        let drawn = Lay { chosen: &chosen(&order, &[0..10, 2 * PAGE..2 * PAGE + 10]), ..more };
+        let drawn = Lay { chosen: &chosen(&order, &[0..10, 2 * PAGE_ROWS..2 * PAGE_ROWS + 10]), ..more };
         let paged = Drawing::lay(Some(&next), &drawn, false);
-        assert_eq!(paged.held_of(2 * PAGE + 1), Some(paged.pages[2] * PAGE + 1));
-        assert_eq!(paged.held_of(PAGE + 7), Some(2 * PAGE + 1), "the other kept where it was");
+        assert_eq!(paged.held_of(2 * PAGE_ROWS + 1), Some(paged.pages[2] * PAGE_ROWS + 1));
+        assert_eq!(paged.held_of(PAGE_ROWS + 7), Some(2 * PAGE_ROWS + 1), "the other kept where it was");
     }
 }

@@ -2,14 +2,14 @@
 //! into triangles, grouping a large table's rows into tiles, writing a picture as a file), handed to the
 //! host to do off the frame. A job is bytes in and bytes out, so a thread, or a worker holding its own
 //! copy of latkit, can do it with nothing shared. A view's job answers with a [`Patch`]: the rows it
-//! worked out, by id, with their places, the paths their wires run along, or their shapes; or in its
-//! own words, lanes as numbers and pyramids as their orders and tiles. An image job answers with the
-//! file.
+//! worked out, by id, with their places, the paths their wires run along, or a vector tile's rows and
+//! their shapes; or in its own words, lanes as numbers, shapes as the columns they fill, and pyramids
+//! as their orders and tiles. An image job answers with the file.
 
 use std::sync::Arc;
 
 use crate::Side;
-use crate::data::{Field, GeometryBuilder, Id, Name, Op, Patch, Table, Value, Values, Version};
+use crate::data::{GeometryBuilder, Id, Name, Patch, Table, Value, Values, read_values, values_bytes};
 use crate::derive::pyramid::{Leveling, Places, Placing};
 use crate::derive::sight::Domain;
 use crate::geo::mvt::Kind as Geometry;
@@ -75,6 +75,40 @@ impl Shaping {
             Shaping::Triangles { .. } => 1,
             Shaping::Path => depth,
         }
+    }
+
+    /// Whether geometry of `depth` takes this shaping: triangles cut parts or polygons, and a path
+    /// bends anything but points.
+    pub(crate) fn takes(self, depth: u8) -> bool {
+        match self {
+            Shaping::Triangles { .. } => matches!(depth, 2 | 3),
+            Shaping::Path => depth >= 1,
+        }
+    }
+
+    /// The derived field the shapes of geometry field `field` are written as.
+    pub(crate) fn field_of(self, field: &str) -> Name {
+        match self {
+            Shaping::Triangles { .. } => crate::scene::areas::triangles_of(field),
+            Shaping::Path => crate::scene::lines::path_of(field),
+        }
+    }
+
+    /// The shapes of every row of geometry `values`, in order: a row missing shapes as nothing, and a
+    /// path needing no bending as itself.
+    pub(crate) fn shapes_of(self, values: &Values) -> Values {
+        let depth = values.geometry().map_or(0, crate::data::Geometry::depth);
+        let mut shapes = GeometryBuilder::new(self.depth(depth));
+        for row in 0..values.len() {
+            match values.get(row) {
+                Some(value) => {
+                    let shaped = self.shape(&value);
+                    shapes.push_value(shaped.as_ref().unwrap_or(&value));
+                }
+                None => shapes.push_empty(),
+            }
+        }
+        Values::of_geometry(shapes.finish())
     }
 
     /// The shape of `value`, or `None` where it stays as it is: a path that needs no bending.
@@ -144,8 +178,8 @@ impl Job {
     }
 
     /// Does the job, answering in the words its derivation reads: rows by id as a patch's bytes,
-    /// lanes as numbers, a pyramid as its order and tiles, an image as its file. Bytes that are no
-    /// job answer nothing.
+    /// lanes as numbers, shapes as columns, a pyramid as its order and tiles, an image as its file.
+    /// Bytes that are no job answer nothing.
     pub fn run(self) -> Vec<u8> {
         let mut input = Reader::new(&self.0);
         let kind = input.u32();
@@ -158,10 +192,12 @@ impl Job {
         if kind == Some(Kind::Pyramid as u32) {
             return run_pyramid(&mut input).unwrap_or_default();
         }
+        if kind == Some(Kind::Shapes as u32) {
+            return run_shapes(&mut input).unwrap_or_default();
+        }
         let answer = match kind {
             Some(k) if k == Kind::Layered as u32 || k == Kind::Stress as u32 => run_layout(k, &mut input),
             Some(k) if k == Kind::Routes as u32 => run_routes(&mut input),
-            Some(k) if k == Kind::Shapes as u32 => run_shapes(&mut input),
             Some(k) if k == Kind::Tile as u32 => run_tile(&mut input),
             Some(k) if k == Kind::GeoJson as u32 => run_geojson(&mut input),
             _ => None,
@@ -212,17 +248,17 @@ impl Job {
         Job(out.0)
     }
 
-    /// Working out `shaping` for every row of `rows`, whose field `geometry` holds each row's
-    /// geometry; it answers each row's shape as field `shape`.
-    pub(crate) fn shapes(shaping: Shaping, rows: Table) -> Job {
+    /// Working out `shaping` for every row of each geometry column of `parts`; it answers each part's
+    /// shapes, as [`shapes_answer`] reads them.
+    pub(crate) fn shapes(shaping: Shaping, parts: &[Values]) -> Job {
         let mut out = Writer::new(Kind::Shapes);
         out.u32(shaping.code());
-        out.0.extend(Patch::new().set(rows).to_bytes());
+        out.columns(parts);
         Job(out.0)
     }
 
-    /// Decoding tile `key` from `bytes`, gzip-compressed or not, into the rows of `tables`; it answers
-    /// those rows.
+    /// Decoding tile `key` from `bytes`, gzip-compressed or not, into the rows of `tables`, each with
+    /// the shapes its marks draw; it answers those rows.
     pub(crate) fn tile(key: TileKey, tables: &[Decoded], bytes: &[u8]) -> Job {
         let mut out = Writer::new(Kind::Tile);
         out.u32(u32::from(key.z));
@@ -237,6 +273,10 @@ impl Job {
                 Geometry::Polygons => 2,
             });
             out.text(&decoded.table);
+            out.u32(decoded.shapes.len() as u32);
+            for shaping in &decoded.shapes {
+                out.u32(shaping.code());
+            }
         }
         out.0.extend_from_slice(bytes);
         Job(out.0)
@@ -267,7 +307,7 @@ impl Job {
     }
 
     /// Finding every edge row's lane among the rows joining the same two vertices, from each row's two
-    /// ends; it answers every row's lane as a little-endian `f32`, nothing when none share.
+    /// ends; it answers every row's lane word as a little-endian `u32`, nothing when none share.
     pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Job {
         let mut out = Writer::new(Kind::Lanes);
         out.u32(from.len() as u32);
@@ -445,26 +485,18 @@ fn run_routes(input: &mut Reader<'_>) -> Option<Patch> {
     Some(keyed(&keys, routes, |table, routes| table.field("route", routes)))
 }
 
-fn run_shapes(input: &mut Reader<'_>) -> Option<Patch> {
+/// The shapes a shapes job answers, a column for each part it was asked: `None` where the bytes
+/// are no answer.
+pub(crate) fn shapes_answer(bytes: &[u8]) -> Option<Vec<Values>> {
+    Reader::new(bytes).columns()
+}
+
+fn run_shapes(input: &mut Reader<'_>) -> Option<Vec<u8>> {
     let shaping = Shaping::from_code(input.u32()?)?;
-    let Op::Set(rows) = Patch::from_bytes(input.rest()).ok()?.ops.into_iter().next()? else { return None };
-    let Some(Field::Values(column, _)) = rows.field_named("geometry") else { return None };
-    let depth = column.kind().depth()?;
-    let mut shapes = GeometryBuilder::new(shaping.depth(depth));
-    for row in 0..rows.len() {
-        match column.get(row) {
-            Some(value) => {
-                let shaped = shaping.shape(&value);
-                shapes.push_value(shaped.as_ref().unwrap_or(&value));
-            }
-            None => shapes.push_empty(),
-        }
-    }
-    let shapes = Values::of_geometry(shapes.finish());
-    let mut answer = rows.clone();
-    answer.fields.clear();
-    answer.insert("shape".into(), Field::Values(crate::data::Column::new(&shapes), Version::next()));
-    Some(Patch::new().set(answer))
+    let parts = input.columns()?;
+    let mut out = Writer(Vec::new());
+    out.columns(&parts.iter().map(|part| shaping.shapes_of(part)).collect::<Vec<_>>());
+    Some(out.0)
 }
 
 fn run_tile(input: &mut Reader<'_>) -> Option<Patch> {
@@ -478,7 +510,9 @@ fn run_tile(input: &mut Reader<'_>) -> Option<Patch> {
                 1 => Geometry::Lines,
                 _ => Geometry::Polygons,
             };
-            Some(Decoded { layer, kind, table: input.text()?.into() })
+            let table = input.text()?.into();
+            let shapes = (0..input.u32()?).map(|_| Shaping::from_code(input.u32()?)).collect::<Option<Vec<_>>>()?;
+            Some(Decoded { layer, kind, table, shapes })
         })
         .collect::<Option<Vec<_>>>()?;
     decode(input.rest(), key, &tables)
@@ -532,8 +566,8 @@ fn run_pyramid(input: &mut Reader<'_>) -> Option<Vec<u8>> {
 fn run_lanes(input: &mut Reader<'_>) -> Option<Vec<u8>> {
     let rows = input.u32()? as usize;
     let (from, to) = (input.words(rows)?, input.words(rows)?);
-    let lanes = crate::derive::lanes(&from, &to)?;
-    Some(lanes.iter().flat_map(|lane| lane.to_le_bytes()).collect())
+    let words = crate::derive::lane_words(&from, &to)?;
+    Some(words.iter().flat_map(|word| word.to_le_bytes()).collect())
 }
 
 /// Little-endian words, floats, and keys, written.
@@ -572,6 +606,16 @@ impl Writer {
     fn text(&mut self, text: &str) {
         self.u32(text.len() as u32);
         self.0.extend(text.as_bytes());
+    }
+
+    /// Columns, each its byte length and its values' bytes.
+    fn columns(&mut self, columns: &[Values]) {
+        self.u32(columns.len() as u32);
+        for values in columns {
+            let bytes = values_bytes(values);
+            self.u32(bytes.len() as u32);
+            self.0.extend(bytes);
+        }
     }
 
     /// A key: 1 then a numbered id, or 2 then a texted one; the table's name after.
@@ -631,6 +675,19 @@ impl<'a> Reader<'a> {
         let (head, rest) = self.bytes.split_at_checked(len)?;
         self.bytes = rest;
         String::from_utf8(head.to_vec()).ok()
+    }
+
+    /// Columns as [`Writer::columns`] wrote them.
+    fn columns(&mut self) -> Option<Vec<Values>> {
+        let count = self.u32()?;
+        (0..count)
+            .map(|_| {
+                let len = self.u32()? as usize;
+                let (head, rest) = self.bytes.split_at_checked(len)?;
+                self.bytes = rest;
+                read_values(head).ok()
+            })
+            .collect()
     }
 
     /// A key as [`Writer::key`] wrote it.

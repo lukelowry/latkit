@@ -259,8 +259,8 @@ export type ViewEvent =
  * Work under way a frame stands in for: pipelines the scene draws with compiling, until which the
  * view draws nothing new (`compiling`); pages uploading or tables not yet built from them
  * (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or
- * texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again,
- * segment counts, or a transition beginning (`marks`). Empty once a frame is complete.
+ * texts not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a
+ * transition beginning (`marks`). Empty once a frame is complete.
  */
 export type Waiting = ('compiling' | 'data' | 'derived' | 'labels' | 'fit' | 'marks')[];
 

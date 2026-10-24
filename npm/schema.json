@@ -2364,7 +2364,7 @@
               "format": "float"
             },
             "laneBow": {
-              "description": "Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction\nof the edge's length at its middle. A bow is part of the drawing, so zooming never moves it.",
+              "description": "Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction\nof the edge's length at its middle, as wide as eight lanes at most, more packing closer. A bow\nis part of the drawing, so zooming never moves it.",
               "type": "number",
               "format": "float"
             },
@@ -4270,7 +4270,7 @@
       "description": "Where a view looks."
     },
     "Waiting": {
-      "description": "Work under way a frame stands in for: pipelines the scene draws with compiling, until which the view draws nothing new (`compiling`); pages uploading or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again, segment counts, or a transition beginning (`marks`). Empty once a frame is complete.",
+      "description": "Work under way a frame stands in for: pipelines the scene draws with compiling, until which the view draws nothing new (`compiling`); pages uploading or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or texts not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition beginning (`marks`). Empty once a frame is complete.",
       "type": "array",
       "items": {
         "enum": [

@@ -41,8 +41,8 @@ const SLACK = 0.2;
 /** Milliseconds a phase acting once may land later than its baseline by: a timer tick, which is
  * 15.6 ms on Windows, so readbacks answer one tick or the next. */
 const TICK = 16;
-/** Bytes a changed row uploads at least: its page, 65,536 rows of four bytes. */
-const PAGE = 65536 * 4;
+/** Bytes a changed row uploads at least: its page, 4,096 rows of four bytes. */
+const PAGE = 4096 * 4;
 /** Below these a cost counts as these: too small to fit an exponent to, or to call slower. A frame's
  * CPU time is read on a page's clock, which steps by 0.1 ms, so it counts from five steps; a phase
  * acting once lands on a tick. */

@@ -158,10 +158,14 @@ impl View {
         let vertices: Vec<(bool, u64)> =
             self.marks.iter().filter(|m| m.kind() == MarkKind::Vertices).map(Shown::places_drawn).collect();
         let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
+        // Lanes draw as the screen shows them: they count again as the camera moves.
+        let projected = self.projected();
+        let sight = (projected.clip_from_world.to_cols_array().map(f64::to_bits), self.size.map(f64::to_bits));
         let mut due = Vec::new();
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(list) = shown.segments.list.filter(|_| shown.drawable()) else { continue };
-            let arcs = shown.geodesic.then(|| (&vertices, shown.places_drawn()));
+            let laned = shown.laned().then_some(sight);
+            let arcs = (shown.geodesic || laned.is_some()).then(|| (&vertices, shown.places_drawn(), laned));
             let tables = shown.tables.generation();
             let drawn = shown.drawing().map(|d| d.made);
             let stamp = stamp_of((list.header, list.items, list.kept, tables, generation, arcs, drawn));
@@ -173,13 +177,15 @@ impl View {
         due
     }
 
-    /// Reads back how many segments each curved mark's list holds, so a list too small grows: one
-    /// count at a time, never dropped for a newer list, which is counted once it lands.
+    /// Reads back how many segments each mark along great circles holds, so a list too small grows:
+    /// one count at a time, never dropped for a newer list, which is counted once it lands. A mark
+    /// bowed into lanes alone has room for every piece of every lane, and reads back nothing.
     pub(super) fn count_found(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &Inner) {
         let gpu = self.gpu.clone();
         let Some(resources) = &self.resources else { return };
         for shown in &mut self.marks {
-            let Some(list) = shown.segments.list.filter(|_| shown.curved() && shown.drawable()) else { continue };
+            let geodesic = shown.curved() && shown.geodesic;
+            let Some(list) = shown.segments.list.filter(|_| geodesic && shown.drawable()) else { continue };
             let built = shown.segments.built;
             if shown.segments.found.busy() || !shown.segments.found.due(built) {
                 continue;
@@ -196,7 +202,7 @@ impl Shown {
     /// Whether how many segments its list holds is being read back, or is due to be.
     pub(crate) fn counting(&self) -> bool {
         let found = &self.segments.found;
-        found.busy() || (self.curved() && self.drawable() && found.due(self.segments.built))
+        found.busy() || (self.curved() && self.geodesic && self.drawable() && found.due(self.segments.built))
     }
 }
 

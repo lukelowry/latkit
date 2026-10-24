@@ -5,7 +5,7 @@
 
 import package::lib::types::{NONE, VISIBLE, PLACED, ENDS_COLOR, PATH_GEOMETRY};
 import package::lib::bind::mark;
-import package::lib::state::{row_at, face_at, area_at, vertex_slot};
+import package::lib::state::{row_at, face_at, area_at, end_vertex};
 import package::lib::project::{world, clip_of, shows};
 import package::lib::focus::faded;
 import package::lib::read::{points_of, point_bits, missing_bits};
@@ -16,8 +16,8 @@ struct Corner {
     world: vec3f,
     // Where it stands, in position units.
     position: vec3f,
-    // A face corner's vertex slot; `NONE` for an area's.
-    slot: u32,
+    // A face corner's vertex, a held row of the vertex mark its end attaches to; `NONE` for an area's.
+    vertex: u32,
     color: vec4f,
     row: u32,
     // Whether it has a place to stand, and whether it lies in front of the globe's horizon.
@@ -77,8 +77,8 @@ fn face_corner(row: u32, corner: u32) -> Corner {
         c.shown = false;
         return c;
     }
-    c.slot = f.corners[corner];
-    let v = vertex_slot(c.slot);
+    c.vertex = f.corners[corner];
+    let v = end_vertex(corner, c.vertex);
     c.world = world(v.hi, v.lo, v.elevation);
     c.position = vec3f(v.hi + v.lo, v.elevation);
     let color = select(unpack4x8unorm(f.color), unpack4x8unorm(v.color), (mark.flags & ENDS_COLOR) != 0u);
@@ -93,7 +93,7 @@ fn face_corner(row: u32, corner: u32) -> Corner {
 fn area_point(t: Segment, offset: u32) -> Corner {
     var c: Corner;
     c.row = t.row;
-    c.slot = NONE;
+    c.vertex = NONE;
     let a = area_at(row_at(t.row));
     let points = points_of(mark.geometry, t.row);
     let k = select(3u * t.index + offset, 0u, offset == 0u);

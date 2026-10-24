@@ -8,9 +8,10 @@
 import package::lib::types::{
     NONE, VISIBLE, PLACED, DASH, ENDS_COLOR, GEODESIC, STEP_BEFORE, STEP_AFTER, MARK_EDGES, PATH_ENDS, PATH_TRACE,
     PATH_GEOMETRY, PATH_POLES, EDGE_WIDTH, LINE_WIDTH, GEODESIC_STEP, OWN_HEIGHT, TRIANGLES, MAX_PIECES, BOW_PIECES, SPACE_EARTH,
+    MISSING, FAMILY_LANES,
 };
 import package::lib::bind::{frame, eye, mark, focused};
-import package::lib::state::{row_at, edge_at, line_at, vertex_slot, Vertex};
+import package::lib::state::{row_at, edge_at, line_at, end_vertex, same_vertex, Vertex};
 import package::lib::project::{PI, world, clip_of, shows, to_screen};
 import package::lib::read::{missing_bits, column_value, points_of, point_bits};
 import package::lib::trace::{trace_run, trace_level, trace_axis, trace_entry};
@@ -154,9 +155,51 @@ fn geometry_count(row: u32) -> u32 {
     return points_of(mark.geometry, row).count;
 }
 
+// Whether lane `l` of edge row `row` draws: the lanes of a family draw as the pixels they cover ask,
+// so its thousands of lanes take as many as the screen shows, in draws and picks alike. A lane whose
+// curve lies off the screen draws nothing; and where a pixel holds many lanes, which bow apart by the
+// same step, only every `step`-th lane draws, `step` a power of two, so the lanes drawn lie at least
+// a pixel apart.
+fn lane_drawn(row: u32, l: Lane) -> bool {
+    let e = edge_at(row_at(row));
+    let a = end_vertex(0u, e.a);
+    let b = end_vertex(1u, e.b);
+    let ca = clip_of(world(a.hi, a.lo, a.elevation));
+    let cb = clip_of(world(b.hi, b.lo, b.elevation));
+    if ca.w <= 0.0 || cb.w <= 0.0 {
+        return true;
+    }
+    let sa = to_screen(ca);
+    let sb = to_screen(cb);
+    if (mark.flags & GEODESIC) == 0u {
+        // The curve keeps within the triangle of its ends and the point that bows it, twice as far
+        // out as its middle.
+        let c = between(a, b, 0.5, 2.0 * l.offset * frame.lane_bow);
+        let cc = clip_of(world(c.hi, c.lo, c.z));
+        if cc.w > 0.0 {
+            let sc = to_screen(cc);
+            // Room for the stroke's width past the curve.
+            let margin = vec2f(64.0);
+            let lo = min(min(sa, sb), sc) - margin;
+            let hi = max(max(sa, sb), sc) + margin;
+            if any(hi < vec2f(0.0)) || any(lo > eye.size) {
+                return false;
+            }
+        }
+    }
+    // Pixels between neighboring lanes at their middle.
+    let apart = distance(sa, sb) * abs(frame.lane_bow) * l.step;
+    if !(apart < 1.0) {
+        return true;
+    }
+    let step = u32(exp2(ceil(log2(1.0 / max(apart, 1e-6)))));
+    return l.index % step == 0u;
+}
+
 // Segments row `row`'s path has, or for an area its triangles: the count a list over the mark's rows
 // counts. A path between two ends without bends runs in one piece, or bowed into a lane in enough
-// for the curve, and along a great circle in one per few degrees of its arc.
+// for the curve, none where its lane lies off the screen or is one of many a pixel holds, and along a
+// great circle in one per few degrees of its arc.
 fn row_segments(row: u32) -> u32 {
     switch PATH {
         case PATH_ENDS: {
@@ -164,7 +207,11 @@ fn row_segments(row: u32) -> u32 {
             if middle > 0u {
                 return middle + 1u;
             }
-            let pieces = select(1u, BOW_PIECES, lane(row) != 0.0);
+            let l = lane_of(row);
+            if l.offset != 0.0 && !lane_drawn(row, l) {
+                return 0u;
+            }
+            let pieces = select(1u, BOW_PIECES, l.offset != 0.0);
             if (mark.flags & GEODESIC) == 0u {
                 return pieces;
             }
@@ -172,8 +219,8 @@ fn row_segments(row: u32) -> u32 {
             if e.a == NONE || e.b == NONE {
                 return 0u;
             }
-            let a = vertex_slot(e.a);
-            let b = vertex_slot(e.b);
+            let a = end_vertex(0u, e.a);
+            let b = end_vertex(1u, e.b);
             return max(pieces, arcs(a.hi + a.lo, b.hi + b.lo));
         }
         case PATH_GEOMETRY: {
@@ -190,9 +237,9 @@ fn row_segments(row: u32) -> u32 {
     }
 }
 
-// The vertex in slot `slot` as a point of a path, placed.
-fn vertex_point(slot: u32) -> PathPoint {
-    let v = vertex_slot(slot);
+// The vertex held row `held` names through end `end` as a point of a path, placed.
+fn vertex_point(end: u32, held: u32) -> PathPoint {
+    let v = end_vertex(end, held);
     var p: PathPoint;
     p.hi = v.hi;
     p.lo = v.lo;
@@ -279,16 +326,16 @@ fn between(a: Vertex, b: Vertex, t: f32, bow: f32) -> PathPoint {
 // place, so shaders compile small.
 fn end_point(row: u32, count: u32, i: u32) -> PathPoint {
     let e = edge_at(row_at(row));
-    if e.a == NONE || e.b == NONE || e.a == e.b {
+    if e.a == NONE || e.b == NONE || same_vertex(e.a, e.b) {
         return hidden();
     }
     let bends = points_of(mark.geometry, row);
     let last = select(bends.count + 1u, count, bends.count == 0u);
     if i == 0u || i >= last {
-        return vertex_point(select(e.b, e.a, i == 0u));
+        return vertex_point(select(1u, 0u, i == 0u), select(e.b, e.a, i == 0u));
     }
-    let a = vertex_slot(e.a);
-    let b = vertex_slot(e.b);
+    let a = end_vertex(0u, e.a);
+    let b = end_vertex(1u, e.b);
     let t = f32(i) / f32(last);
     var p: PathPoint;
     if bends.count == 0u {
@@ -383,7 +430,7 @@ fn pole_point(row: u32, i: u32) -> PathPoint {
     if e.a == NONE {
         return hidden();
     }
-    var p = vertex_point(e.a);
+    var p = vertex_point(0u, e.a);
     if i > 0u {
         p.z = 0.0;
         p.half = vec2f(0.0);
@@ -424,12 +471,32 @@ fn ends_part(s: Segment) -> bool {
 }
 
 // Lanes from the middle that row `row` runs in among edges joining the same two vertices.
-fn lane(row: u32) -> f32 {
+// A row's lane among its family, the edges joining the same two vertices: how far it bows, in lanes
+// of the theme's bow, its place among the family from one side, and the step between lanes. A family
+// spreads as wide as `FAMILY_LANES` lanes at most: past that its lanes pack closer, a step apart.
+struct Lane {
+    offset: f32,
+    index: u32,
+    step: f32,
+}
+
+fn lane_of(row: u32) -> Lane {
     if mark.lane == NONE || row >= mark.held - mark.exits {
-        return 0.0;
+        return Lane(0.0, 0u, 1.0);
     }
-    let bits = column_value(mark.lane, row).x;
-    return select(bitcast<f32>(bits), 0.0, missing_bits(bits));
+    // Twice its lane, past half a word's range, above; its family's size below.
+    let word = column_value(mark.lane, row).x;
+    let size = word & 0xffffu;
+    if word == NONE || word == MISSING || size < 2u {
+        return Lane(0.0, 0u, 1.0);
+    }
+    let twice = i32(word >> 16u) - 32768;
+    let step = min(1.0, FAMILY_LANES / f32(size));
+    return Lane(0.5 * f32(twice) * step, u32((twice + i32(size) - 1) / 2), step);
+}
+
+fn lane(row: u32) -> f32 {
+    return lane_of(row).offset;
 }
 
 // The part of the segment from clip position `ca` to `cb` in front of the near plane, as fractions
