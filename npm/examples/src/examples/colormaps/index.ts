@@ -1,8 +1,8 @@
-import { theme } from '../../ui/theme.js';
 /**
  * The colormap catalog on a field of hexagons: each cell an area colored on the GPU through the
  * chosen colormap, beside the same colormap as a CSS ramp, so the two can be compared. Choose a
- * colormap, a field to show, and how many cells; hover a cell to read it.
+ * colormap, a field to show and how many cells, how the value is transformed on its way to the map,
+ * and which cells show; hover a cell to read it, or brush over the field to read what lies under it.
  */
 import {
   Data,
@@ -11,23 +11,63 @@ import {
   field,
   type Colormap,
   type ColormapName,
+  type Expr,
   type Mark,
   type Scene,
 } from '../../latkit.js';
-import type { Stage } from '../../ui/stage.js';
 import { h } from '../../ui/dom.js';
+import type { Stage } from '../../ui/stage.js';
+import { theme } from '../../ui/theme.js';
 
 /**
- * A map of our own: clear to a placed, half-clear blue, then an opaque amber. Over the plane's
- * grid, its alpha shows as the lines through the cells.
+ * Maps of our own: clear to a placed, half-clear blue, then an opaque amber, whose alpha shows the
+ * plane's grid through the cells; a diverging one from teal through a light middle to rust; and a
+ * cyclic one, whose ends meet.
  */
-const CUSTOM: Colormap = {
-  kind: 'sequential',
-  colors: ['#2a6fdb00', [0.55, '#2a6fdb99'], '#ffb000'],
+const CUSTOM = {
+  custom: { kind: 'sequential', colors: ['#2a6fdb00', [0.55, '#2a6fdb99'], '#ffb000'] },
+  diverging: { kind: 'diverging', colors: ['#00727a', '#e8e4d8', '#b5462a'] },
+  cyclic: { kind: 'cyclic', colors: ['#3b5bdb', '#e64980', '#fab005', '#3b5bdb'] },
+} as const satisfies Record<string, Colormap>;
+/** A colormap of the catalog, or one of ours. */
+type Choice = ColormapName | keyof typeof CUSTOM;
+const mapOf = (choice: Choice): Colormap =>
+  choice in CUSTOM ? CUSTOM[choice as keyof typeof CUSTOM] : (choice as ColormapName);
+
+/** How a cell's value, 0 to 1, is carried to the colormap, each again 0 to 1. */
+const TRANSFORMS: Record<string, [label: string, (v: Expr) => Expr]> = {
+  none: ['As is', (v) => v],
+  sqrt: ['Square root', (v) => v.sqrt()],
+  squared: ['Squared', (v) => v.pow(2)],
+  log: ['Logarithm', (v) => v.mul(9).add(1).ln().div(Math.LN10)],
+  exp: [
+    'Exponential',
+    (v) =>
+      v
+        .exp()
+        .sub(1)
+        .div(Math.E - 1),
+  ],
+  bands: ['Eight bands', (v) => v.mul(8).floor().div(8)],
+  stripes: ['Stripes', (v) => v.mul(10).rem(1)],
+  waves: [
+    'Waves',
+    (v) =>
+      v
+        .mul(4 * Math.PI)
+        .cos()
+        .mul(0.5)
+        .add(0.5),
+  ],
+  middle: ['From the middle', (v) => v.sub(0.5).abs().mul(2)],
+  inverted: ['Inverted', (v) => v.neg().add(1)],
+  clamped: ['Middle half', (v) => v.sub(0.25).mul(2).clamp(0, 1)],
+  edges: ['Nearer edge', (v) => v.min(v.neg().add(1)).mul(2)],
+  peaks: ['Peaks only', (v) => v.sub(0.6).max(0).div(0.4)],
 };
-/** A colormap of the catalog, or ours. */
-type Choice = ColormapName | 'custom';
-const mapOf = (choice: Choice): Colormap => (choice === 'custom' ? CUSTOM : choice);
+type Transform = keyof typeof TRANSFORMS;
+/** Which cells show: a band of values, or of classes. */
+type Show = 'all' | 'inside' | 'outside' | 'not' | 'class' | 'others';
 /** A checkerboard under a ramp, so what is clear in it shows. */
 const CHECKS = 'repeating-conic-gradient(#888 0 25%, #ccc 0 50%) 0 0 / 8px 8px';
 
@@ -81,7 +121,7 @@ const CATALOG: readonly (readonly [string, readonly Choice[]])[] = [
   ],
   ['Cyclic', ['phase', 'romao', 'twilight']],
   ['Categorical', ['tab10', 'tab20', 'tableau10', 'set2', 'dark2', 'paired', 'okabeito']],
-  ['Custom', ['custom']],
+  ['Custom', ['custom', 'diverging', 'cyclic']],
 ];
 const CATEGORICAL = new Set<Choice>(CATALOG.find(([kind]) => kind === 'Categorical')![1]);
 const KINDS = ['All', ...CATALOG.map(([kind]) => kind)] as const;
@@ -101,8 +141,9 @@ const FIELDS = {
 } as const;
 type FieldName = keyof typeof FIELDS;
 
-/** A field of `columns` by `rows` hexagons of side 1, pointy side up, as dataset `colors`. */
-function hexagons(columns: number, rows: number, value: FieldName): Data {
+/** A field of `columns` by `rows` hexagons of side 1, pointy side up, as a patch replacing table
+ * `Cell`: each cell's polygon, its value, its class of ten, and its value written. */
+function hexagons(columns: number, rows: number, value: FieldName): Patch {
   const count = columns * rows;
   const width = columns * Math.sqrt(3);
   const height = rows * 1.5;
@@ -124,9 +165,8 @@ function hexagons(columns: number, rows: number, value: FieldName): Data {
       values[r * columns + c] = v;
       classes[r * columns + c] = Math.min(9, Math.floor(v * 10));
     }
-  return new Data('colors').apply(
-    new Patch().set('Cell', { count }, { geometry, value: values, class: classes }),
-  );
+  const label = Array.from(values, (v) => v.toFixed(2));
+  return new Patch().replace('Cell', { count }, { geometry, value: values, class: classes, label });
 }
 
 export default function page(stage: Stage): void {
@@ -136,35 +176,69 @@ export default function page(stage: Stage): void {
   let outline = false;
   let reversed = false;
   let light = false;
+  let transform: Transform = 'none';
+  let show: Show = 'all';
+  let band: [number, number] = [0.3, 0.7];
+  let classed = 5;
+  let labels = false;
+  let ownLegend = false;
+  /** One dataset, replaced field by field: the view eases each cell from its color to the next. */
+  const data = new Data('colors');
+  stage.signal.addEventListener('abort', () => data.destroy());
+
+  /** Whether a cell shows, as the panel says. */
+  const visible = (): Expr | boolean => {
+    const v = field('value');
+    const c = field('class');
+    switch (show) {
+      case 'inside':
+        return v.ge(band[0]).and(v.le(band[1]));
+      case 'outside':
+        return v.lt(band[0]).or(v.gt(band[1]));
+      case 'not':
+        return v.ge(band[0]).and(v.le(band[1])).not();
+      case 'class':
+        return c.eq(classed);
+      case 'others':
+        return c.ne(classed);
+      default:
+        return true;
+    }
+  };
 
   const scene = (): Scene => {
-    const input = CATEGORICAL.has(colormap) ? field('class') : field('value');
+    const categorical = CATEGORICAL.has(colormap);
+    const input = categorical ? field('class') : TRANSFORMS[transform]![1](field('value'));
     const mapped = input.colormap(mapOf(colormap));
-    const background = light ? '#f4f1ea' : theme.background;
     const outlines: Mark[] = outline
-      ? [{ lines: { of: ['colors', 'Cell'], color: background, width: 0.75 } }]
+      ? [
+          {
+            lines: {
+              of: ['colors', 'Cell'],
+              color: light ? '#f7f8fa' : theme.background,
+              width: 0.75,
+            },
+          },
+        ]
       : [];
     return {
       // Lines under the cells show through what a map leaves clear.
       space: { plane: { grid: colormap === 'custom' ? { lines: { pitch: 4 } } : 'off' } },
-      theme: {
-        ...theme,
-        base: light ? 'light' : 'dark',
-        background,
-        hover: light ? '#000000aa' : '#ffffffaa',
-      },
+      // The base themes by name.
+      theme: light ? 'light' : 'dark',
       ease: 0.25,
       marks: [
         {
           // The cells are what the page reads: hovering one reads its value.
           areas: {
             of: ['colors', 'Cell'],
-            color: CATEGORICAL.has(colormap)
-              ? mapped
-              : reversed
-                ? mapped.domain(1, 0)
-                : mapped.domain(0, 1),
+            color: categorical ? mapped : reversed ? mapped.domain(1, 0) : mapped.domain(0, 1),
+            visible: visible(),
             pick: true,
+            // Where values matter most, their cells are labeled first.
+            priority: 'value',
+            ...(labels ? { label: { text: 'label', size: 10, max: 60 } } : {}),
+            ...(ownLegend ? { legend: TRANSFORMS[transform]![0] } : {}),
           },
         },
         ...outlines,
@@ -178,10 +252,8 @@ export default function page(stage: Stage): void {
 
   const rebuild = () => {
     const [columns, rows] = size;
-    // The view keeps its own version of the data.
-    const data = hexagons(columns, rows, value);
+    data.apply(hexagons(columns, rows, value));
     view.setData(data);
-    data.destroy();
     stage.detail(`${(columns * rows).toLocaleString()} cells`);
   };
   const restyle = () => {
@@ -190,18 +262,24 @@ export default function page(stage: Stage): void {
       mapOf(colormap),
       `${colormap}${CATEGORICAL.has(colormap) ? ', ten classes' : reversed ? ', reversed' : ''}`,
     );
+    legend.hidden = ownLegend;
     for (const [name, swatch] of swatches)
       swatch.setAttribute('aria-pressed', String(name === colormap));
   };
 
   const palette = stage.section('Colormap');
+  const ours: Record<keyof typeof CUSTOM, string> = {
+    custom: 'ours · alpha, a placed stop',
+    diverging: 'ours · diverging',
+    cyclic: 'ours · cyclic',
+  };
   const choose = palette.choice(
     'Colormap',
     CATALOG.flatMap(([kind, names]) =>
       names.map(
         (name) =>
           [
-            name === 'custom' ? 'ours · alpha, a placed stop' : `${name} · ${kind.toLowerCase()}`,
+            name in ours ? ours[name as keyof typeof CUSTOM] : `${name} · ${kind.toLowerCase()}`,
             name,
           ] as const,
       ),
@@ -224,6 +302,19 @@ export default function page(stage: Stage): void {
     light = on;
     restyle();
   });
+  palette.toggle('Legend in the view', undefined, ownLegend, (on) => {
+    ownLegend = on;
+    restyle();
+  });
+  palette.choice(
+    'Transform',
+    Object.entries(TRANSFORMS).map(([key, [label]]) => [label, key as Transform] as const),
+    transform,
+    (next) => {
+      transform = next;
+      restyle();
+    },
+  );
 
   const shown = stage.section('Field');
   shown.choice(
@@ -256,13 +347,76 @@ export default function page(stage: Stage): void {
       view.fit();
     },
   );
+  shown.toggle('Labels', 'b', labels, (on) => {
+    labels = on;
+    restyle();
+  });
+  shown.choice(
+    'Show',
+    [
+      ['Every cell', 'all'],
+      ['Values in the band', 'inside'],
+      ['Values outside it', 'outside'],
+      ['All but the band', 'not'],
+      ['One class', 'class'],
+      ['All but one class', 'others'],
+    ] as const,
+    show,
+    (next) => {
+      show = next;
+      restyle();
+    },
+  );
+  const bound = (k: 0 | 1, label: string) =>
+    shown.range(
+      label,
+      { min: 0, max: 1, step: 0.05, value: band[k], format: (v) => v.toFixed(2) },
+      (v) => {
+        band = k ? [band[0], v] : [v, band[1]];
+        if (show !== 'all') restyle();
+      },
+    );
+  bound(0, 'Band from');
+  bound(1, 'Band to');
+  shown.range('Class', { min: 0, max: 9, step: 1, value: classed, format: String }, (v) => {
+    classed = v;
+    if (show === 'class' || show === 'others') restyle();
+  });
   const reading = shown.note('Hover a cell.');
   view.on('hover', ({ hit }) => {
     if (!hit) return void (reading.textContent = 'Hover a cell.');
-    const data = view.data('colors');
-    const v = data?.get('Cell', hit.row.id, 'value') as number | null;
+    const v = data.get('Cell', hit.row.id, 'value') as number | null;
     reading.textContent = `Cell ${hit.row.id}: ${v?.toFixed(3) ?? '–'}`;
   });
+
+  // A brush: the cells within its reach of the pointer, read by a pick, and their mean value.
+  let reach = 24;
+  shown.range(
+    'Brush',
+    { min: 4, max: 80, step: 4, value: reach, format: (v) => `${v} px` },
+    (v) => (reach = v),
+  );
+  const brushed = shown.note('Brush over the field.');
+  let brushing = false;
+  stage.regions.main.querySelector('canvas')!.addEventListener(
+    'pointermove',
+    (event) => {
+      if (brushing) return;
+      brushing = true;
+      void view
+        .pick([event.offsetX, event.offsetY], reach)
+        .then((hits) => {
+          const values = hits.map((hit) => data.get('Cell', hit.row.id, 'value') as number);
+          const mean = values.reduce((sum, v) => sum + v, 0) / Math.max(1, values.length);
+          brushed.textContent = hits.length
+            ? `${hits.length} cells under the brush, mean ${mean.toFixed(3)}`
+            : 'Brush over the field.';
+        })
+        .catch(() => {})
+        .finally(() => (brushing = false));
+    },
+    { signal: stage.signal },
+  );
 
   // The catalog as CSS ramps: the colors the GPU draws, drawn by the browser over checks, so
   // what a map leaves clear shows.

@@ -2,11 +2,10 @@
 // containers. A quad covers its marker and a pixel of edge, no more, and a small one a later one
 // covers in a crowded cell is left out. The focus variant draws the rows the mark's focus lights
 // again, over everything, reaching out to their glow; a group only glows about its border, so what
-// it holds still shows. The cast variant draws the same quads through the light's eye into the
-// shadow map; the ports variant draws one quad per port of every row, on its side of the row's
-// marker.
+// it holds still shows. The ports variant draws one quad per port of every row, on its side of the
+// row's marker.
 
-import package::lib::types::{STATUS, MARKER_ICON, MARKER_SHAPE, MARKER_BLOCK, GROUP, CASTS, SPACE_DIAGRAM};
+import package::lib::types::{STATUS, MARKER_ICON, MARKER_SHAPE, MARKER_BLOCK, GROUP, SHADOW, SPACE_DIAGRAM};
 import package::lib::bind::{frame, eye, mark, word, ramp, program, focused};
 import package::lib::state::extra_at;
 import package::lib::project::{to_screen, to_clip, nearer, culled};
@@ -15,7 +14,7 @@ import package::lib::marker::{
     MarkerColor, MarkerFragment, builtin_marker, container, border, dropped, outline_distance, box_distance,
     shape_distance, filled, over, status_ring, glow, premultiplied, theme_text, theme_corner, theme_lift,
 };
-import package::lib::shade::{caster, daylight};
+import package::lib::daylight::daylight;
 import package::lib::mark::fringe;
 import package::lib::color::output;
 
@@ -28,12 +27,11 @@ struct Varyings {
     @location(2) color: vec4f,
     @location(3) @interpolate(flat) half: vec2f,
     @location(4) @interpolate(flat) status: vec4f,
-    @location(5) @interpolate(flat) height: f32,
-    @location(6) @interpolate(flat) shape: u32,
+    @location(5) @interpolate(flat) shape: u32,
     // A group's depth; for a port, 1 when its reference names a net.
-    @location(7) @interpolate(flat) extra: f32,
+    @location(6) @interpolate(flat) extra: f32,
     // The row's focus bits, which the focus draw glows by.
-    @location(8) @interpolate(flat) focus: u32,
+    @location(7) @interpolate(flat) focus: u32,
 }
 
 // What an instance draws: a row's marker, or with `ports` one of a row's ports.
@@ -78,7 +76,6 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     out.color = vec4f(d.p.color.rgb * daylight(d.p.position), d.p.color.a);
     out.half = max(d.half, vec2f(0.5));
     out.status = d.p.status;
-    out.height = d.p.world.z;
     out.shape = d.shape;
     out.extra = d.extra;
     out.focus = d.p.focus;
@@ -134,7 +131,7 @@ fn shaded(v: Varyings) -> MarkerColor {
 }
 
 // Whether the mark draws a diagram's blocks: shapes and blocks on a diagram's sheet, which the theme
-// borders, and shadows when they cast them.
+// borders.
 fn sheet_blocks() -> bool {
     return frame.space == SPACE_DIAGRAM && (mark.marker == MARKER_SHAPE || mark.marker == MARKER_BLOCK);
 }
@@ -152,7 +149,7 @@ fn shaded(v: Varyings) -> MarkerColor {
     if (mark.flags & STATUS) != 0u && v.status.a > 0.0 {
         m = status_ring(m, vec4f(v.status.rgb, v.status.a * v.color.a));
     }
-    if (mark.flags & CASTS) != 0u && frame.space == SPACE_DIAGRAM {
+    if (mark.flags & SHADOW) != 0u {
         // y is up in a marker: the shadow falls below, measured from its outline lowered.
         let below = v.p + vec2f(0.0, theme_lift());
         let distance = select(
@@ -165,7 +162,7 @@ fn shaded(v: Varyings) -> MarkerColor {
     return m;
 }
 
-@if(!casts && !focused)
+@if(!focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     return output(premultiplied(shaded(v)));
@@ -180,14 +177,4 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
         return output(glow(MarkerColor(vec4f(0.0), abs(m.distance)), v.focus));
     }
     return output(glow(m, v.focus));
-}
-
-@if(casts)
-@fragment
-fn fragment(v: Varyings) -> @location(0) vec4f {
-    let m = shaded(v);
-    if m.color.a <= 0.01 {
-        discard;
-    }
-    return caster(m.color.a, v.height);
 }

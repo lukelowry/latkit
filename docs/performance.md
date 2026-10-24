@@ -34,5 +34,6 @@ The browser gate opens every example page cold and moves the pointer over it. It
   there while the budget leaves room once the camera moves on, so coming back costs nothing.
 - What the view derives from the data, as lanes, triangles, and fitted domains, follows the data,
   never the camera: a page's triangles are made the first time it draws.
+- Map tiles are decoded and shaped in workers, so a tile landing costs the frame a copy of its rows.
 - A write costs the pages holding the rows it changed, and appending the page the rows land in:
   tiles are made again only once the rows appended since are an eighth as many as they hold.

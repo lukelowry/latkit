@@ -150,7 +150,7 @@ export function judge(
       past('time', fit.time, order.time);
       past('uploaded bytes', fit.uploaded, order.bytes);
       // What stays resident is the data's footprint, set by loading; later phases only add to it.
-      if (phase === 'load') past('resident bytes', fit.resident, order.bytes);
+      if (phase === 'load') past('resident bytes', fit.resident, order.resident ?? order.bytes);
       for (const n of at) {
         const now = bySize[n]![phase]!;
         const where = `${scenario.name} at ${n}, ${phase}`;

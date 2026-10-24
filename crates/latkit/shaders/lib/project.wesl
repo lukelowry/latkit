@@ -1,6 +1,6 @@
 // From positions to the screen. Positions are (high, low) pairs: their difference from the camera's
 // center is taken in parts, so f64 data keeps its precision at any zoom. Every pass projects through
-// its eye: the view, the light that casts shadows, or an exported image.
+// the view's eye.
 
 import package::lib::types::{SPACE_EARTH};
 import package::lib::bind::{frame, eye};

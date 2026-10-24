@@ -283,6 +283,21 @@ input[type='text'] {
   bottom: 10px;
   max-width: 48%;
 }
+.callout {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: 0;
+  padding: 2px 6px;
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-radius: var(--radius);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  /* Above the point it names, centered. */
+  transform: translate(-50%, calc(-100% - 10px));
+}
 .ramp {
   width: 88px;
   height: 6px;

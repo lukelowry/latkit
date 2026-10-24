@@ -36,8 +36,6 @@ export interface Areas {
   drag?: boolean;
   /** Each row's text: a text field, or a label's options. */
   label?: Label | null;
-  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
-  shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
    * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.
@@ -375,8 +373,6 @@ export interface Edges {
   drag?: boolean;
   /** Each row's text: a text field, or a label's options. */
   label?: Label | null;
-  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
-  shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
    * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.
@@ -439,8 +435,6 @@ export interface Faces {
   drag?: boolean;
   /** Each row's text: a text field, or a label's options. */
   label?: Label | null;
-  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
-  shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
    * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.
@@ -642,8 +636,6 @@ export interface Lines {
   drag?: boolean;
   /** Each row's text: a text field, or a label's options. */
   label?: Label | null;
-  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
-  shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
    * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.
@@ -876,18 +868,11 @@ export interface Scene {
   subtitle?: string | null;
 }
 
-/** How marks that cast shadows cast them onto the ground and onto faces. */
+/** How a diagram's blocks and groups drop shadows onto its sheet. */
 export interface Shadow {
-  /** What a shadow darkens toward; its alpha is how dark a shadow at contact gets. */
+  /** What a shadow darkens toward; its alpha is how dark it gets under the block. */
   color?: Color;
-  /** The direction toward the light, fixed in the world: shadows fall away from it. */
-  light?: [number, number, number];
-  /** How much a shadow spreads per unit of a caster's height: the light's size. */
-  softness?: number;
-  /**
-   * CSS pixels flat marks cast from, as if raised; in a diagram, how far a block's or a group's
-   * shadow falls below it, and as far again it softens.
-   */
+  /** How far a block's or a group's shadow falls below it, and as far again it softens. */
   lift?: number;
 }
 
@@ -1029,7 +1014,7 @@ export type Theme =
       portSize?: number;
       /** The radius of an orthogonal wire's bends. */
       bend?: number;
-      /** How marks that cast shadows cast them. */
+      /** How a diagram's blocks and groups drop shadows onto its sheet. */
       shadow?: Shadow;
       /** The air glowing around the globe, where the earth has an atmosphere. */
       atmosphere?: Color;
@@ -1096,6 +1081,11 @@ export interface Vertices {
    * drawn as a container around them, its label a title in its header. Diagrams only.
    */
   contains?: [table: string, reference: string] | null;
+  /**
+   * Whether each row, a block or a group, drops a shadow onto the sheet, as the theme's `shadow`
+   * says. Diagrams only.
+   */
+  shadow?: boolean;
   /** Each row's color; the theme's unless set. */
   color?: ExprInput | null;
   /** Whether each row is drawn and picked. */
@@ -1119,8 +1109,6 @@ export interface Vertices {
   drag?: boolean;
   /** Each row's text: a text field, or a label's options. */
   label?: Label | null;
-  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
-  shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
    * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.

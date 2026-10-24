@@ -2,14 +2,16 @@ import type { Scene, View } from 'latkit';
 import { h } from './dom.js';
 import type { Stage } from './stage.js';
 
-/** A button that runs `run`, and the key that runs it too. */
+/** A button that runs `run`, and the key that runs it too, if any. */
 export interface Action {
   label: string;
-  key: string;
+  key?: string;
   run: () => void;
 }
 
-const keyName = (key: string) => (key === ' ' ? 'Space' : key.toUpperCase());
+/** A key as its button shows it, if any. */
+const kbd = (key: string | undefined) =>
+  key ? [h('kbd', {}, key === ' ' ? 'Space' : key.toUpperCase())] : [];
 
 /** A titled group of controls in the side panel. */
 export class Section {
@@ -30,46 +32,43 @@ export class Section {
   actions(actions: readonly Action[]): void {
     const row = h('div', { class: 'actions' });
     for (const { label, key, run } of actions) {
-      const button = h('button', { type: 'button' }, label, h('kbd', {}, keyName(key)));
+      const button = h('button', { type: 'button' }, label, ...kbd(key));
       button.addEventListener('click', run, { signal: this.stage.signal });
-      this.stage.key(key, run);
+      if (key) this.stage.key(key, run);
       row.append(button);
     }
     this.content.append(row);
   }
 
-  /** A button that stays pressed, also flipped by its key. Returns a setter for outside changes. */
+  /** A button that stays pressed, also flipped by its key, if any. Returns a setter for outside
+   * changes. */
   toggle(
     label: string,
-    key: string,
+    key: string | undefined,
     value: boolean,
     change: (on: boolean) => void,
   ): (on: boolean) => void {
     const pressed = String(value);
-    const button = h(
-      'button',
-      { type: 'button', 'aria-pressed': pressed },
-      label,
-      h('kbd', {}, keyName(key)),
-    );
+    const button = h('button', { type: 'button', 'aria-pressed': pressed }, label, ...kbd(key));
     const set = (on: boolean) => {
       button.setAttribute('aria-pressed', String(on));
       change(on);
     };
     const flip = () => set(button.getAttribute('aria-pressed') !== 'true');
     button.addEventListener('click', flip, { signal: this.stage.signal });
-    this.stage.key(key, flip);
+    if (key) this.stage.key(key, flip);
     if (!this.#toggles) this.content.append((this.#toggles = h('div', { class: 'actions' })));
     this.#toggles.append(button);
     return set;
   }
 
-  /** A slider with its value shown through `format`. */
+  /** A slider with its value shown through `format`, calling `change` as it moves; returns the
+   * input, for outside changes. */
   range(
     label: string,
     o: { min: number; max: number; step: number; value: number; format: (value: number) => string },
     change: (value: number) => void,
-  ): void {
+  ): HTMLInputElement {
     const input = h('input', {
       type: 'range',
       min: o.min,
@@ -77,14 +76,17 @@ export class Section {
       step: o.step,
       value: o.value,
     });
-    const output = h('output');
-    const update = () => {
-      output.value = o.format(input.valueAsNumber);
-      change(input.valueAsNumber);
-    };
-    input.addEventListener('input', update, { signal: this.stage.signal });
-    update();
+    const output = h('output', {}, o.format(input.valueAsNumber));
+    input.addEventListener(
+      'input',
+      () => {
+        output.value = o.format(input.valueAsNumber);
+        change(input.valueAsNumber);
+      },
+      { signal: this.stage.signal },
+    );
     this.content.append(h('label', { class: 'field' }, h('span', {}, label, output), input));
+    return input;
   }
 
   /** One of several options; returns the select, for outside changes. */

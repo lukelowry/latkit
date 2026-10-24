@@ -3,8 +3,8 @@
 //!
 //! Every shader's pass group (group 2) binds by one convention: 0 the pages (the data's, and what
 //! marks keep per row), 2 extents, 4 domains, 5 probe words and what queries find, 6 depth, 7 sprites,
-//! 8 the text atlas, 9 lists, 10 the shadow map, 11 a level of it, 12 remap words, 13 labels,
-//! 15 icons, 16 the pages of rows each mark evaluates, 17 the probe's step.
+//! 8 the text atlas, 9 lists, 12 remap words, 13 labels, 15 icons, 16 the pages of rows each mark
+//! evaluates, 17 the probe's step.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -13,29 +13,11 @@ use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::gpu::work::Queue;
 use crate::gpu::{Inner, Shared};
 
-/// Bytes between marks' uniforms and between eyes: the dynamic offset alignment every device supports.
+/// Bytes between marks' uniforms: the dynamic offset alignment every device supports.
 pub(crate) const MARK_STRIDE: u64 = 256;
 const _: () = assert!(size_of::<wgsl::Mark>() as u64 <= MARK_STRIDE, "a mark's uniform fits its stride");
 /// The depth format; depth is reversed, nearer is greater.
 pub(crate) const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-/// The shadow map's format.
-pub(crate) const SHADE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// Texels across the shadow map.
-pub(crate) const SHADE_SIZE: u32 = 1024;
-
-/// The eyes a frame draws through, by index.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum EyeSlot {
-    Main = 0,
-    Light = 1,
-}
-
-impl EyeSlot {
-    pub(crate) fn offset(self) -> u32 {
-        (self as u64 * MARK_STRIDE) as u32
-    }
-}
-
 /// The dynamic offset of the probe's step `step`, one of the `STEP_` codes.
 pub(crate) fn step(step: u32) -> u32 {
     (u64::from(step) * MARK_STRIDE) as u32
@@ -108,41 +90,9 @@ struct Targets {
     samples: u32,
 }
 
-/// The ground's shadow map, its levels, and a view of each level.
-pub(crate) struct ShadowMap {
-    pub(crate) view: wgpu::TextureView,
-    pub(crate) levels: Vec<wgpu::TextureView>,
-}
-
-impl ShadowMap {
-    fn new(device: &wgpu::Device, size: u32) -> ShadowMap {
-        let count = size.max(1).ilog2() + 1;
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("latkit shadows"),
-            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
-            mip_level_count: count,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: SHADE,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let levels = (0..count)
-            .map(|level| {
-                texture.create_view(&wgpu::TextureViewDescriptor {
-                    base_mip_level: level,
-                    mip_level_count: Some(1),
-                    ..Default::default()
-                })
-            })
-            .collect();
-        ShadowMap { view: texture.create_view(&wgpu::TextureViewDescriptor::default()), levels }
-    }
-}
-
 pub(crate) struct Resources {
     pub(crate) frame: wgpu::Buffer,
-    eyes: wgpu::Buffer,
+    eye: wgpu::Buffer,
     marks: Grown,
     program: Grown,
     /// The rows each mark's focus draw lights.
@@ -158,7 +108,6 @@ pub(crate) struct Resources {
     sprites: Grown,
     lists: Grown,
     labels: wgpu::Buffer,
-    pub(crate) shadows: ShadowMap,
     /// Changes whenever one of the buffers or textures above is replaced; and whenever the lists
     /// buffer is, emptied.
     generation: u64,
@@ -177,7 +126,7 @@ impl Resources {
         let uniform = wgpu::BufferUsages::UNIFORM;
         Resources {
             frame: create(device, "latkit frame", uniform, size_of::<wgsl::Frame>() as u64),
-            eyes: create(device, "latkit eyes", uniform, 2 * MARK_STRIDE),
+            eye: create(device, "latkit eye", uniform, size_of::<wgsl::Eye>() as u64),
             marks: Grown::new(device, "latkit marks", uniform),
             program: Grown::new(device, "latkit program", storage),
             lit: Grown::new(device, "latkit lit", storage),
@@ -194,7 +143,6 @@ impl Resources {
                 storage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
             ),
             labels: create(device, "latkit labels", LABELS, 256),
-            shadows: ShadowMap::new(device, 1),
             generation: 0,
             lists_generation: 0,
             groups: None,
@@ -285,16 +233,8 @@ impl Resources {
         &self.labels
     }
 
-    /// Makes the shadow map exist at full size.
-    pub(crate) fn ensure_shadows(&mut self, device: &wgpu::Device) {
-        if self.shadows.levels.len() == 1 {
-            self.shadows = ShadowMap::new(device, SHADE_SIZE);
-            self.generation += 1;
-        }
-    }
-
-    pub(crate) fn eyes(&self) -> &wgpu::Buffer {
-        &self.eyes
+    pub(crate) fn eye(&self) -> &wgpu::Buffer {
+        &self.eye
     }
 
     pub(crate) fn program(&self) -> &wgpu::Buffer {
@@ -344,8 +284,6 @@ impl Resources {
         }
         let device = &gpu.device;
         let entry = |binding: u32, resource| wgpu::BindGroupEntry { binding, resource };
-        let eye =
-            wgpu::BufferBinding { buffer: &self.eyes, offset: 0, size: NonZeroU64::new(size_of::<wgsl::Eye>() as u64) };
         let view = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("latkit view"),
             layout: &inner.pipelines.view_layout,
@@ -354,7 +292,7 @@ impl Resources {
                 entry(1, self.program.buffer.as_entire_binding()),
                 entry(2, wgpu::BindingResource::TextureView(&inner.colormaps.view)),
                 entry(3, wgpu::BindingResource::Sampler(&gpu.sampler)),
-                entry(4, wgpu::BindingResource::Buffer(eye)),
+                entry(4, self.eye.as_entire_binding()),
                 entry(5, self.lit.buffer.as_entire_binding()),
             ],
         });
@@ -388,19 +326,6 @@ impl Resources {
         group
     }
 
-    /// A shadow map level's group, reading the level below it.
-    pub(crate) fn level_group(&self, device: &wgpu::Device, inner: &mut Inner, below: usize) -> wgpu::BindGroup {
-        let layout = inner.pipelines.pass_layout(device, Shader::Shade);
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("latkit shadow level"),
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 11,
-                resource: wgpu::BindingResource::TextureView(&self.shadows.levels[below]),
-            }],
-        })
-    }
-
     /// `shader`'s pass group, binding what its WGSL declares.
     fn bind(&self, device: &wgpu::Device, inner: &mut Inner, shader: Shader) -> wgpu::BindGroup {
         let layout = inner.pipelines.pass_layout(device, shader);
@@ -420,7 +345,6 @@ impl Resources {
                     7 => self.sprites.buffer.as_entire_binding(),
                     8 => wgpu::BindingResource::TextureView(&inner.atlas.view),
                     9 => self.lists.buffer.as_entire_binding(),
-                    10 => wgpu::BindingResource::TextureView(&self.shadows.view),
                     12 => self.remap.buffer.as_entire_binding(),
                     13 => self.labels.as_entire_binding(),
                     15 => wgpu::BindingResource::TextureView(&inner.icons.view),

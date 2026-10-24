@@ -94,6 +94,11 @@ impl Planning {
         &self.plan.value.0
     }
 
+    /// Bytes `pages` pages of `key`'s table take, as its costs count them.
+    pub(crate) fn page_bytes(&self, key: &(Name, Name), pages: u32) -> f64 {
+        self.costs.value.tables.get(key).map_or(0.0, |cost| f64::from(pages) * cost.per_page)
+    }
+
     /// The pixel columns a trace spans at most.
     pub(crate) fn trace_columns(&self) -> u32 {
         self.plan.value.1
@@ -105,10 +110,12 @@ impl Planning {
         self.tighten(0.75)
     }
 
-    /// The view holds `bytes` for what it draws: past its share, tables drawn in part draw within as
-    /// much less as it passes the share by.
-    pub(crate) fn held(&mut self, bytes: u64) {
-        if self.share > 0.0 && bytes as f64 > self.share {
+    /// The view holds `bytes` for what it draws: past its share, where the plan held back some of what
+    /// the camera asks of a table drawn in part (`capped`), tables drawn in part draw within as much
+    /// less as it passes the share by. Where it held back nothing, a plan within less draws no less,
+    /// and only lets go of the pages it keeps from before.
+    pub(crate) fn held(&mut self, bytes: u64, capped: bool) {
+        if capped && self.share > 0.0 && bytes as f64 > self.share {
             self.tighten(self.share / bytes as f64);
         }
     }

@@ -1,4 +1,8 @@
-import { theme } from '../../ui/theme.js';
+/**
+ * A block diagram on a sheet: blocks with ports, wires routed around them, and groups drawn around
+ * their members. Add, drag, connect, arrange, and undo; open a preset or a JSON file; restyle the
+ * sheet, its blocks, and its wires.
+ */
 import {
   Data,
   Patch,
@@ -7,6 +11,7 @@ import {
   missing,
   reference,
   when,
+  type Grid,
   type Id,
   type Layout,
   type Mark,
@@ -17,8 +22,10 @@ import {
   type Scene,
   type Side,
 } from '../../latkit.js';
+import { h } from '../../ui/dom.js';
 import { each, one } from '../../ui/rows.js';
 import type { Stage } from '../../ui/stage.js';
+import { theme } from '../../ui/theme.js';
 
 /**
  * Kinds of block: the marker each draws as, its fill on the dark and the light sheet, and its ports,
@@ -54,6 +61,14 @@ const KINDS = {
 >;
 type Kind = keyof typeof KINDS;
 const kinds = Object.keys(KINDS) as Kind[];
+/** Each kind as a shape of its own: inputs round, processes square, controls diamonds, outputs a
+ * block with deeply rounded corners. */
+const SHAPES = {
+  Input: 'ellipse',
+  Process: 'rectangle',
+  Control: { shape: 'diamond' },
+  Output: { block: { corner: 18 } },
+} as const satisfies Record<Kind, Marker>;
 
 /** A port of a block, by the reference field naming its signal. */
 interface Plug {
@@ -65,11 +80,19 @@ interface Plug {
 const direction = (kind: Kind, port: string) =>
   KINDS[kind].ports.find(([name]) => name === port)?.[2];
 
-/** A kind's ports as the scene declares them: outputs drive their signals, and a feedback port is named. */
-const ports = (kind: Kind): [string, Port][] =>
-  KINDS[kind].ports.map(([name, side, way]): [string, Port] => [
+/** A kind's ports as the scene declares them: outputs drive their signals, and a feedback port is
+ * named. As dots, a plain input is its side alone; as diamonds, each port is ordered on its side. */
+const ports = (kind: Kind, diamonds: boolean): [string, Port][] =>
+  KINDS[kind].ports.map(([name, side, way], order): [string, Port] => [
     name,
-    { side, output: way === 'out', ...(name === 'feedback' ? { label: 'feedback' } : {}) },
+    !diamonds && way === 'in' && name !== 'feedback'
+      ? side
+      : {
+          side,
+          output: way === 'out',
+          ...(name === 'feedback' ? { label: 'feedback' } : {}),
+          ...(diamonds ? { shape: 'diamond', order } : {}),
+        },
   ]);
 
 /**
@@ -181,8 +204,65 @@ class Sketch {
   }
 }
 
-/** The presets: a water plant laid out in ranks, then four drawn where they stand. */
-const PRESETS: readonly (readonly [string, () => Sketch])[] = [
+/** The surfaces groups may take, on the dark and the light sheet. */
+const SURFACES = {
+  slate: ['#1a2230', '#e6ebf2'],
+  teal: ['#14302f', '#dcefec'],
+  plum: ['#2a1f33', '#efe6f4'],
+} as const;
+
+/** A pipeline written as a JSON document, as `Data.load` reads one: a change per method, with its
+ * parameters by name. */
+const PIPELINE = {
+  name: 'studio',
+  patch: [
+    { set: { table: 'Signal', ids: [10, 11, 12], fields: { name: ['Raw', 'Cleaned', 'Report'] } } },
+    {
+      set: {
+        table: 'Input',
+        ids: [1],
+        fields: {
+          name: ['Sensor feed'],
+          x: [0],
+          y: [0],
+          status: [0],
+          out: { reference: 'Signal', ids: [10] },
+        },
+      },
+    },
+    {
+      set: {
+        table: 'Process',
+        ids: [2],
+        fields: {
+          name: ['Filter'],
+          x: [260],
+          y: [0],
+          status: [0],
+          in: { reference: 'Signal', ids: [10] },
+          out: { reference: 'Signal', ids: [11] },
+        },
+      },
+    },
+    {
+      set: {
+        table: 'Output',
+        ids: [3],
+        fields: {
+          name: ['Dashboard'],
+          x: [520],
+          y: [0],
+          status: [0],
+          in: { reference: 'Signal', ids: [11] },
+        },
+      },
+    },
+  ],
+};
+
+/** The presets: a water plant laid out in ranks, then four drawn where they stand, and one written
+ * as a JSON document. */
+const PRESETS: readonly (readonly [string, () => Data | Promise<Data>])[] = [
   [
     'Water plant',
     () => {
@@ -207,7 +287,7 @@ const PRESETS: readonly (readonly [string, () => Sketch])[] = [
       s.wire('Filtered', filters, tank);
       s.wire('Stored', tank, pump);
       s.wire('Pumped', pump, main);
-      return s;
+      return s.data();
     },
   ],
   [
@@ -226,7 +306,7 @@ const PRESETS: readonly (readonly [string, () => Sketch])[] = [
       s.wire('Measured', plant, response, sensor);
       s.wire('Feedback', sensor, [controller, 'feedback']);
       s.alarms.add(plant.id as number);
-      return s;
+      return s.data();
     },
   ],
   [
@@ -247,7 +327,7 @@ const PRESETS: readonly (readonly [string, () => Sketch])[] = [
       s.wire('Dispatch', dispatch, ...controls);
       // The meter reads one signal, so the plants share it.
       s.wire('Power', plants, meter);
-      return s;
+      return s.data();
     },
   ],
   [
@@ -261,7 +341,7 @@ const PRESETS: readonly (readonly [string, () => Sketch])[] = [
       s.wire('Source', input, process);
       s.wire('Evaluate', process, decision);
       s.wire('Accept', decision, result);
-      return s;
+      return s.data();
     },
   ],
   [
@@ -276,9 +356,10 @@ const PRESETS: readonly (readonly [string, () => Sketch])[] = [
           before = block;
         }
       }
-      return s;
+      return s.data();
     },
   ],
+  ['Written as JSON', () => Data.load(JSON.stringify(PIPELINE))],
 ];
 
 /**
@@ -319,48 +400,79 @@ class History {
 
 export default function page(stage: Stage): void {
   let preset = PRESETS[0]!;
-  let sketch = preset[1]();
-  let data = sketch.data();
+  let data = new Data('studio');
   let layout: Layout = { layered: { flow: 'right', gap: 30, rankGap: 80 } };
   let route: 'orthogonal' | 'straight' = 'orthogonal';
   let comets = false;
-  let dots = true;
+  type Sheet = 'dots' | 'snap' | 'lines' | 'off';
+  let grid: Sheet = 'dots';
   let light = false;
+  /** How the sheet, its blocks, ports, and wires look, and how the view answers keys and presses. */
+  const style = {
+    shapes: false,
+    diamonds: false,
+    names: false,
+    shadows: true,
+    corner: 6,
+    outline: true,
+    portSize: 7,
+    bend: 6,
+    groupPadding: 16,
+    edgeSpacing: 4,
+    arrow: 7,
+    lift: 3,
+    fontSize: 12,
+    dash: 6,
+    groups: 'slate' as keyof typeof SURFACES,
+    keyboard: true,
+    cycle: false,
+    press: 0.5,
+  };
   const history = new History();
+  const GRIDS: Record<Sheet, Grid> = {
+    dots: { dots: { pitch: 20 } },
+    snap: { dots: { pitch: 20, snap: true } },
+    lines: { lines: { pitch: 20 } },
+    off: 'off',
+  };
 
   const scene = (): Scene => {
     const marks: Mark[] = [];
     // Containers take the theme's surface, tinted by how deep they sit; their titles head them, and
     // they and the blocks they hold lift off the sheet.
     const title = { text: 'name', size: 11, color: light ? '#5b6b7d' : '#7f93a8' };
-    if (sketch.stations.length) {
+    if (data.tables.includes('Station')) {
       marks.push({
         vertices: {
           of: ['studio', 'Station'],
           contains: ['Group', 'station'],
           label: title,
-          shadow: true,
+          shadow: style.shadows,
         },
       });
     }
-    if (sketch.groups.length) {
+    if (data.tables.includes('Group')) {
       marks.push({
         vertices: {
           of: ['studio', 'Group'],
           contains: ['Process', 'group'],
           label: title,
-          shadow: true,
+          shadow: style.shadows,
         },
       });
     }
-    // Comets run from each signal's driver to its readers.
+    // Comets run from each signal's driver to its readers; a feedback signal is dashed.
     marks.push({
       edges: {
         of: ['studio', 'Signal'],
         route,
         arrows: true,
         width: 1.5,
+        dash: field('name').is('Feedback'),
         ...(comets ? { flow: 40 } : {}),
+        ...(style.names
+          ? { label: { text: 'name', size: 10, color: light ? '#5b6b7d' : '#7f93a8' } }
+          : {}),
       },
     });
     // A mark for each kind of block the data holds; a table the data lacks would fail.
@@ -370,24 +482,48 @@ export default function page(stage: Stage): void {
         vertices: {
           of: ['studio', kind],
           position: ['x', 'y'],
-          marker: KINDS[kind].marker,
+          marker: style.shapes ? SHAPES[kind] : KINDS[kind].marker,
           color: KINDS[kind].fill[light ? 1 : 0],
-          shadow: true,
+          shadow: style.shadows,
           ring: when(field('status').gt(0)).then(color('#ff8c42')).otherwise(missing()),
-          ports: ports(kind),
+          ports: ports(kind, style.diamonds),
           drag: true,
           label: { text: 'name', size: 12 },
         },
       });
     }
     return {
-      space: { diagram: { grid: dots ? { dots: { pitch: 20 } } : 'off' } },
+      space: { diagram: { grid: GRIDS[grid] } },
       layout,
-      theme: light ? { base: 'light', background: '#f4f6f9' } : theme,
-      controls: { connect: true, delete: true, selectBox: true },
+      theme: {
+        ...(light ? { base: 'light', background: '#f4f6f9' } : theme),
+        corner: style.corner,
+        outline: style.outline ? (light ? '#00000024' : '#ffffff1f') : null,
+        portSize: style.portSize,
+        bend: style.bend,
+        groupPadding: style.groupPadding,
+        edgeSpacing: style.edgeSpacing,
+        arrow: style.arrow,
+        fontSize: style.fontSize,
+        dash: style.dash,
+        shadow: { color: light ? '#00000038' : '#00000073', lift: style.lift },
+        // Groups take the theme's surface.
+        surface: SURFACES[style.groups][light ? 1 : 0],
+      },
+      controls: {
+        connect: true,
+        delete: true,
+        selectBox: true,
+        keyboard: style.keyboard,
+        cycle: style.cycle,
+        press: style.press,
+      },
       marks,
     };
   };
+  /** An id no row of the data has yet. */
+  const fresh = () =>
+    1 + Math.max(0, ...data.tables.flatMap((t) => data.ids(t).map((id) => Number(id) || 0)));
   const view = stage.view(scene(), {
     label: 'A diagram: drag blocks, drag from a port to wire it, Delete removes',
   });
@@ -409,19 +545,26 @@ export default function page(stage: Stage): void {
     show(data.apply(patch));
     note(said);
   };
-  const load = (choice: (typeof PRESETS)[number]) => {
-    preset = choice;
-    sketch = choice[1]();
+  /** Shows `next`, a diagram of its own: nothing to undo back to. */
+  const open = (next: Data, said: string) => {
     history.clear();
-    view.show(scene());
     data.destroy();
-    show(sketch.data());
+    data = next;
+    view.show(scene());
+    show(next);
     view.fit();
-    note('Drag blocks or connect ports.');
-    const blocks = kinds.reduce((n, kind) => n + (sketch.blocks.get(kind)?.length ?? 0), 0);
-    stage.detail(
-      `${blocks.toLocaleString()} blocks · ${sketch.signals.length.toLocaleString()} signals`,
+    note(said);
+    const blocks = kinds.reduce(
+      (n, kind) => n + (data.tables.includes(kind) ? data.ids(kind).length : 0),
+      0,
     );
+    stage.detail(
+      `${blocks.toLocaleString()} blocks · ${data.ids('Signal').length.toLocaleString()} signals`,
+    );
+  };
+  const load = async (choice: (typeof PRESETS)[number]) => {
+    preset = choice;
+    open(await choice[1](), 'Drag blocks or connect ports.');
   };
 
   const name = (row: Row) =>
@@ -473,7 +616,7 @@ export default function page(stage: Stage): void {
     const patch = new Patch();
     let signal = plugged?.id;
     if (signal === undefined) {
-      signal = sketch.next++;
+      signal = fresh();
       patch.set('Signal', [signal], { name: [`Signal ${signal}`] });
       patch.set(driver.kind, [driver.id as number], {
         [driver.port]: reference('Signal', [signal as number]),
@@ -539,7 +682,7 @@ export default function page(stage: Stage): void {
     'Preset',
     PRESETS.map((p) => [p[0], p] as const),
     preset,
-    load,
+    (choice) => void load(choice).catch(stage.fail),
   );
   studio.actions([
     {
@@ -568,17 +711,20 @@ export default function page(stage: Stage): void {
       // Every block lets go of its position, the layout places them all again, and the places it
       // answers become the blocks' positions: one edit undo steps back over.
       run: () => {
-        const patch = new Patch();
-        for (const kind of kinds) {
-          const ids = sketch.blocks.get(kind)?.map((b) => b.id) ?? [];
-          const all = ids.filter((id) => data.get(kind, id, 'name') !== null);
-          if (all.length) patch.set(kind, all, { x: all.map(() => null), y: all.map(() => null) });
+        const patch = Patch.to(data.name);
+        for (const kind of kinds.filter((k) => data.tables.includes(k))) {
+          const ids = data.ids(kind);
+          if (ids.length) patch.set(kind, ids, { x: ids.map(() => null), y: ids.map(() => null) });
         }
         history.commit(data.snapshot());
         show(data.apply(patch));
         view.fit();
         void view.arrange().then((patches) => {
-          for (const placed of patches) if (placed.data === data.name) show(data.apply(placed));
+          // The places of every table, written as one change.
+          const placed = patches
+            .filter((p) => p.data === data.name)
+            .reduce((all, p) => all.extend(p), Patch.to(data.name));
+          show(data.apply(placed));
           note('Arranged.');
         });
       },
@@ -601,11 +747,7 @@ export default function page(stage: Stage): void {
         // New blocks land where the camera looks; nothing else moves.
         const camera = view.camera;
         const [x, y] = 'center' in camera ? camera.center : [0, 0];
-        const id = sketch.next++;
-        sketch.blocks.set(kind, [
-          ...(sketch.blocks.get(kind) ?? []),
-          { id, name: `New ${kind.toLowerCase()}` },
-        ]);
+        const id = fresh();
         const plugged = Object.fromEntries(
           KINDS[kind].ports.map(([port]) => [port, reference('Signal', [null])]),
         );
@@ -652,14 +794,129 @@ export default function page(stage: Stage): void {
     comets = on;
     view.show(scene());
   });
-  look.toggle('Grid', 'g', dots, (on) => {
-    dots = on;
-    view.show(scene());
-  });
   look.toggle('Light', 'l', light, (on) => {
     light = on;
     view.show(scene());
   });
+  const restyle = () => view.show(scene());
+  look.toggle('Shapes', 'h', style.shapes, (on) => ((style.shapes = on), restyle()));
+  look.toggle(
+    'Diamond ports',
+    undefined,
+    style.diamonds,
+    (on) => ((style.diamonds = on), restyle()),
+  );
+  look.toggle('Signal names', undefined, style.names, (on) => ((style.names = on), restyle()));
+  look.choice(
+    'Grid',
+    [
+      ['Dots', 'dots'],
+      ['Dots that snap', 'snap'],
+      ['Lines', 'lines'],
+      ['Off', 'off'],
+    ] as const,
+    grid,
+    (next) => ((grid = next), restyle()),
+  );
+
+  // The sheet's theme: how blocks, groups, ports, wires, and shadows look.
+  const sheet = stage.section('Sheet', false);
+  const knob = (
+    label: string,
+    name:
+      | 'corner'
+      | 'portSize'
+      | 'bend'
+      | 'groupPadding'
+      | 'edgeSpacing'
+      | 'arrow'
+      | 'lift'
+      | 'fontSize'
+      | 'dash',
+    min: number,
+    max: number,
+    step = 1,
+  ) =>
+    sheet.range(
+      label,
+      { min, max, step, value: style[name], format: (v) => `${v} units` },
+      (value) => {
+        style[name] = value;
+        restyle();
+      },
+    );
+  knob('Corners', 'corner', 0, 16);
+  knob('Ports', 'portSize', 4, 14);
+  knob('Wire bends', 'bend', 0, 16);
+  knob('Group padding', 'groupPadding', 6, 32, 2);
+  knob('Wire spacing', 'edgeSpacing', 2, 12);
+  knob('Arrowheads', 'arrow', 3, 14);
+  knob('Text', 'fontSize', 9, 16);
+  knob('Dashes', 'dash', 2, 14);
+  knob('Shadow lift', 'lift', 0, 10);
+  sheet.choice(
+    'Groups',
+    [
+      ['Slate', 'slate'],
+      ['Teal', 'teal'],
+      ['Plum', 'plum'],
+    ] as const,
+    style.groups,
+    (groups) => ((style.groups = groups), restyle()),
+  );
+  sheet.toggle('Shadows', undefined, style.shadows, (on) => ((style.shadows = on), restyle()));
+  sheet.toggle('Outlines', undefined, style.outline, (on) => ((style.outline = on), restyle()));
+
+  // How the view answers keys and presses.
+  const answers = stage.section('Interaction', false);
+  answers.toggle('Keys', undefined, style.keyboard, (on) => ((style.keyboard = on), restyle()));
+  answers.toggle('Cycle picks', undefined, style.cycle, (on) => ((style.cycle = on), restyle()));
+  answers.choice(
+    'Long press',
+    [
+      ['Half a second', 0.5],
+      ['A second', 1],
+      ['Never', 0],
+    ] as const,
+    style.press,
+    (press) => ((style.press = press), restyle()),
+  );
+  answers.note('Keys: Tab steps through blocks, Enter renames, Space selects, Delete removes.');
+
+  // The diagram as a file: latkit's bytes, the patch that builds it, read back as they were.
+  const file = stage.section('File', false);
+  const picker = h('input', { type: 'file', accept: '.latk', hidden: true });
+  file.content.append(picker);
+  picker.addEventListener(
+    'change',
+    () => {
+      const chosen = picker.files?.[0];
+      picker.value = '';
+      if (!chosen) return;
+      void chosen
+        .arrayBuffer()
+        .then((bytes) => Data.read(new Uint8Array(bytes), 'studio'))
+        .then((read) => open(read, `Opened ${chosen.name}.`))
+        .catch((error: unknown) => note(`Could not open ${chosen.name}: ${String(error)}`));
+    },
+    { signal: stage.signal },
+  );
+  file.actions([
+    {
+      label: 'Save',
+      key: 's',
+      run: () => {
+        const url = URL.createObjectURL(
+          new Blob([data.toBytes().slice()], { type: 'application/octet-stream' }),
+        );
+        h('a', { href: url, download: 'diagram.latk' }).click();
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+        note('Saved diagram.latk.');
+      },
+    },
+    { label: 'Open', key: 'o', run: () => picker.click() },
+  ]);
+  const described = file.note();
 
   // The selected block's name, editable.
   const selected = stage.section('Selection');
@@ -675,14 +932,31 @@ export default function page(stage: Stage): void {
   input.disabled = true;
   const told = selected.note();
   const note = (text: string) => (told.textContent = text);
+  // The selected block wears a tag where the view located it; it goes when the camera moves.
+  const tag = h('p', { class: 'callout', hidden: true });
+  stage.regions.main.append(tag);
+  view.on('camera', () => (tag.hidden = true));
   const describe = () => {
     const [row] = each(view.selection);
     const editable = !!row && named(row);
     input.disabled = !editable;
     input.value = editable ? name(row) : '';
+    tag.hidden = true;
+    if (row && isBlock(row.table))
+      void view.locate(row).then((point) => {
+        if (!point || each(view.selection)[0]?.id !== row.id) return;
+        tag.textContent = `${row.table} · ${name(row)}`;
+        tag.style.translate = `${point[0]}px ${point[1] - 18}px`;
+        tag.hidden = false;
+      });
+    // What the data holds, as it describes itself.
+    described.textContent = data
+      .describe()
+      .tables.map((t) => `${t.name} ${t.rows.toLocaleString()}`)
+      .join(' · ');
   };
   view.on('select', describe);
 
   stage.meter(view);
-  load(preset);
+  void load(preset).catch(stage.fail);
 }

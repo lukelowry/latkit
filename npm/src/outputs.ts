@@ -111,7 +111,7 @@ export interface Stats {
    * drawn through tiles.
    */
   drawn: number;
-  /** Draw calls the last frame recorded, shadows and labels with the marks. */
+  /** Draw calls the last frame recorded, labels with the marks. */
   draws: number;
   /**
    * Instances the last frame's draws drew: points, segments, triangles, glyphs; at most, for

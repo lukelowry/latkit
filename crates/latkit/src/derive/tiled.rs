@@ -80,12 +80,14 @@ pub(crate) struct Ask<'a> {
     pub(crate) earth: bool,
 }
 
-/// What a view draws of a table drawn in part: its order, and the ranges of it the camera asks for,
-/// finest tiles first, so what matters more draws on top.
+/// What a view draws of a table drawn in part: its order, the ranges of it the camera asks for,
+/// finest tiles first, so what matters more draws on top, and whether the rows its plan gives it held
+/// back some of what the camera asks for: only then does a plan within less draw less of it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Chosen {
     pub(crate) order: Order,
     pub(crate) ranges: Vec<Range<u32>>,
+    pub(crate) capped: bool,
 }
 
 /// What each table drawn in part draws, by dataset and table.
@@ -205,9 +207,9 @@ struct Set {
     working: Option<Working>,
     /// What the pyramids last asked for were asked from, by table.
     read: Named<Read>,
-    /// Each table's rows that the samples of the edges ending at it end at, and what they were worked
-    /// out from.
-    lifted: Named<(u64, Lifted)>,
+    /// Each table's rows that the samples of the edges ending at it end at, the step of its own sample,
+    /// and what they were worked out from.
+    lifted: Named<(u64, Lifted, u32)>,
     /// Whether a table draws an even sample of its rows until its pyramid lands.
     sampling: bool,
 }
@@ -265,16 +267,8 @@ impl Set {
         {
             (served[i], served[j]) = (false, false);
         }
-        let steps: Vec<u32> = drawn
-            .iter()
-            .map(|(table, planned)| match planned.draw {
-                Draw::Tiles { rows } | Draw::First { rows } => {
-                    (table.len() as u32).div_ceil(rows.clamp(1, SAMPLE)).max(1)
-                }
-                Draw::Whole => 1,
-            })
-            .collect();
-        let mut lifted: Named<(u64, Lifted)> = Named::default();
+        let (sample, steps) = samples(&drawn, &ends);
+        let mut lifted: Named<(u64, Lifted, u32)> = Named::default();
         for (i, (table, planned)) in drawn.iter().enumerate() {
             let key = (source.name().clone(), table.name.clone());
             let len = table.len() as u32;
@@ -285,28 +279,28 @@ impl Set {
                     self.sampling = true;
                     // The rows the edges sampled end at draw first, as they land with them in a pyramid.
                     let edges: Vec<usize> = (0..drawn.len()).filter(|&e| ends[e] == Some(i)).collect();
-                    let rows = if edges.is_empty() {
-                        Lifted::default()
+                    let (rows, step) = if edges.is_empty() {
+                        (Lifted::default(), steps[i])
                     } else {
                         let was = self.lifted.get(&table.name);
-                        let made = lift(&drawn, &edges, &steps, i, was);
-                        let rows = made.1.clone();
+                        let made = lift(&drawn, &edges, &steps, i, sample[i], was);
+                        let chosen = (made.1.clone(), made.2);
                         lifted.insert(table.name.clone(), made);
-                        rows
+                        chosen
                     };
-                    let order = Order::Sampled { rows: len, step: steps[i], lifted: rows };
+                    let order = Order::Sampled { rows: len, step, lifted: rows };
                     let sampled = order.sampled();
-                    Chosen { order, ranges: std::iter::once(0..sampled).collect() }
+                    Chosen { order, ranges: std::iter::once(0..sampled).collect(), capped: sampled < len }
                 }
                 (Some(placed), draw) => {
                     let pyramid = &placed.pyramid;
                     let made = pyramid.rows();
-                    let ranges = match draw {
-                        Draw::Whole => std::iter::once(0..len).collect(),
+                    let (ranges, capped) = match draw {
+                        Draw::Whole => (std::iter::once(0..len).collect(), false),
                         // The rows that matter most draw last; rows appended since draw too.
-                        Draw::First { rows } => std::iter::once(made - rows.min(made)..len).collect(),
+                        Draw::First { rows } => (std::iter::once(made - rows.min(made)..len).collect(), rows < made),
                         Draw::Tiles { rows } => {
-                            let mut wanted =
+                            let (mut wanted, capped) =
                                 ask.sight.map(|s| pyramid.wanted(s, &placed.domain, rows)).unwrap_or_default();
                             // Finest first, so what matters more draws on top.
                             crate::order::by_key(&mut wanted, |(z, range)| {
@@ -316,10 +310,10 @@ impl Set {
                             if len > made {
                                 ranges.push(made..len);
                             }
-                            ranges
+                            (ranges, capped)
                         }
                     };
-                    Chosen { order: Order::Pyramid { pyramid: pyramid.clone(), rows: len }, ranges }
+                    Chosen { order: Order::Pyramid { pyramid: pyramid.clone(), rows: len }, ranges, capped }
                 }
             };
             choices.insert(key, chosen);
@@ -398,16 +392,48 @@ impl Set {
     }
 }
 
+/// How many rows each table of `drawn` samples until its pyramid lands, as many as its plan gives it,
+/// and every how many rows its sample takes one: the rows the sampled edges ending at a table, by
+/// `ends`, end at count toward its rows, so edges sample few enough that their ends take half their
+/// table's rows at most, the table's own sample the rest.
+fn samples(drawn: &[(&Table, &Planned)], ends: &[Option<usize>]) -> (Vec<u32>, Vec<u32>) {
+    let sample: Vec<u32> = drawn
+        .iter()
+        .map(|(table, planned)| match planned.draw {
+            Draw::Tiles { rows } | Draw::First { rows } => rows.clamp(1, SAMPLE),
+            Draw::Whole => table.len() as u32,
+        })
+        .collect();
+    let steps = drawn
+        .iter()
+        .enumerate()
+        .map(|(e, (table, planned))| {
+            let ends = ends[e].filter(|&i| planned.draw != Draw::Whole && drawn[i].1.draw != Draw::Whole);
+            let room = ends.map_or(u32::MAX, |i| {
+                let references = match &planned.place {
+                    Place::Ends(fields) => fields.len().max(1) as u32,
+                    _ => 1,
+                };
+                (sample[i] / 2 / references).max(1)
+            });
+            (table.len() as u32).div_ceil(sample[e].min(room)).max(1)
+        })
+        .collect();
+    (sample, steps)
+}
+
 /// The rows of table `drawn[at]` that the samples of the edge tables `edges` among `drawn`, each
-/// every `steps`th row, end at, lifted in its own sample: `was` where nothing it was worked out from
-/// changed, else worked out again; and what they were worked out from.
+/// every `steps`th row, end at, lifted in its own sample of `sample` rows, and the step of its own
+/// even sample of the rest: `was` where nothing it was worked out from changed, else worked out
+/// again; and what they were worked out from.
 fn lift(
     drawn: &[(&Table, &Planned)],
     edges: &[usize],
     steps: &[u32],
     at: usize,
-    was: Option<&(u64, Lifted)>,
-) -> (u64, Lifted) {
+    sample: u32,
+    was: Option<&(u64, Lifted, u32)>,
+) -> (u64, Lifted, u32) {
     let target = drawn[at].0;
     let references = |e: usize| -> Vec<&Reference> {
         let (table, planned) = drawn[e];
@@ -422,13 +448,13 @@ fn lift(
     };
     let from = stamp_of((
         target.len(),
-        steps[at],
+        sample,
         edges
             .iter()
             .map(|&e| (drawn[e].0.len(), steps[e], references(e).iter().map(|r| r.version).collect::<Vec<_>>()))
             .collect::<Vec<_>>(),
     ));
-    if let Some(was) = was.filter(|(had, _)| *had == from) {
+    if let Some(was) = was.filter(|(had, ..)| *had == from) {
         return was.clone();
     }
     let mut rows: Vec<u32> = Vec::new();
@@ -444,7 +470,8 @@ fn lift(
             }
         }
     }
-    (from, Lifted::new(rows, target.len() as u32, steps[at]))
+    let (lifted, step) = Lifted::within(rows, target.len() as u32, sample);
+    (from, lifted, step)
 }
 
 /// The tables of `source` a pyramid places, each with its plan: every table drawn in part, and every
@@ -655,16 +682,16 @@ mod tests {
         let tiles = |place| Planned { draw: Draw::Tiles { rows: 100 }, priority: None, place };
         let (at, ends) = (tiles(Place::Nowhere), tiles(Place::Ends(vec!["a".into(), "b".into()])));
         let drawn = [(vertices, &at), (edges, &ends)];
-        let (from, lifted) = lift(&drawn, &[1], &[10, 10], 0, None);
-        let order = Order::Sampled { rows: n as u32, step: 10, lifted: lifted.clone() };
+        let (from, lifted, step) = lift(&drawn, &[1], &[10, 10], 0, 300, None);
+        let order = Order::Sampled { rows: n as u32, step, lifted: lifted.clone() };
         // Every edge the edges' sample draws ends at a row the vertices' sample draws.
         for e in (0..n).step_by(10) {
             for t in [(e * 7) % n, (e * 13 + 1) % n] {
                 assert!(order.rank(t as u32) < order.sampled(), "edge {e} ends at vertex {t}, drawn first");
             }
         }
-        assert!(order.sampled() < n as u32, "and the rest wait for the pyramid");
-        let again = lift(&drawn, &[1], &[10, 10], 0, Some(&(from, lifted)));
+        assert!(order.sampled() <= 300, "the rows lifted count toward the sample, the rest waiting");
+        let again = lift(&drawn, &[1], &[10, 10], 0, 300, Some(&(from, lifted, step)));
         assert_eq!(again.0, from, "worked out once while its edges hold");
     }
 }

@@ -4,7 +4,7 @@
 //! backdrop, every mark's primitive and ports in scene order with depth, the labels, and the
 //! overlay; a probe, when one waits, reads what the frame drew through the same geometry.
 
-use super::resources::{EyeSlot, MARK_STRIDE};
+use super::resources::MARK_STRIDE;
 use super::sync::{Source, table_of};
 use super::words::Kept;
 use super::{Frame, View};
@@ -428,7 +428,7 @@ impl View {
                 label: Some("latkit compute"),
                 timestamp_writes: None,
             });
-            pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
+            pass.set_bind_group(0, &groups.view, &[]);
             // Each drawn row's word first: every pass after reads it.
             if let Some(group) = &lists_group {
                 pass.set_bind_group(2, group, &[]);
@@ -712,7 +712,7 @@ impl View {
             None => (frame.target, None),
         };
         let mut pass = main_pass(encoder, view, resolve, &depth, background, probing);
-        pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
+        pass.set_bind_group(0, &groups.view, &[]);
         pass.set_bind_group(1, &groups.mark, &[0]);
         pass.set_pipeline(&inner.pipelines.render(device, Shader::Backdrop, frame.format, samples));
         pass.set_bind_group(2, group(Shader::Backdrop), &[]);
@@ -774,7 +774,7 @@ impl View {
                 label: Some("latkit probe"),
                 timestamp_writes: None,
             });
-            pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
+            pass.set_bind_group(0, &groups.view, &[]);
             // Each step over every mark before the next: the nearest key, then its topmost instance,
             // then where that lies.
             for step in [wgsl::STEP_NEAREST, wgsl::STEP_TOPMOST, wgsl::STEP_DESCRIBE] {

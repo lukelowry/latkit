@@ -553,6 +553,10 @@
           "description": "Makes each row a group: it holds the rows of `table` whose reference field names it, and is\ndrawn as a container around them, its label a title in its header. Diagrams only.",
           "tsType": "[table: string, reference: string]"
         },
+        "shadow": {
+          "type": "boolean",
+          "description": "Whether each row, a block or a group, drops a shadow onto the sheet, as the theme's `shadow`\nsays. Diagrams only."
+        },
         "color": {
           "anyOf": [
             {
@@ -611,10 +615,6 @@
             }
           ],
           "description": "Each row's text: a text field, or a label's options."
-        },
-        "shadow": {
-          "type": "boolean",
-          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
         },
         "legend": {
           "type": [
@@ -1726,10 +1726,6 @@
           ],
           "description": "Each row's text: a text field, or a label's options."
         },
-        "shadow": {
-          "type": "boolean",
-          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
-        },
         "legend": {
           "type": [
             "string",
@@ -1853,10 +1849,6 @@
             }
           ],
           "description": "Each row's text: a text field, or a label's options."
-        },
-        "shadow": {
-          "type": "boolean",
-          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
         },
         "legend": {
           "type": [
@@ -1986,10 +1978,6 @@
           ],
           "description": "Each row's text: a text field, or a label's options."
         },
-        "shadow": {
-          "type": "boolean",
-          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
-        },
         "legend": {
           "type": [
             "string",
@@ -2107,10 +2095,6 @@
             }
           ],
           "description": "Each row's text: a text field, or a label's options."
-        },
-        "shadow": {
-          "type": "boolean",
-          "description": "Whether each row casts a shadow onto the ground and onto faces, away from the theme's\nlight."
         },
         "legend": {
           "type": [
@@ -2407,7 +2391,7 @@
               "format": "float"
             },
             "shadow": {
-              "description": "How marks that cast shadows cast them.",
+              "description": "How a diagram's blocks and groups drop shadows onto its sheet.",
               "$ref": "#/$defs/Shadow"
             },
             "atmosphere": {
@@ -2469,32 +2453,17 @@
       "additionalProperties": false,
       "properties": {
         "color": {
-          "description": "What a shadow darkens toward; its alpha is how dark a shadow at contact gets.",
+          "description": "What a shadow darkens toward; its alpha is how dark it gets under the block.",
           "tsType": "Color",
           "type": "string"
-        },
-        "light": {
-          "type": "array",
-          "items": {
-            "type": "number",
-            "format": "float"
-          },
-          "minItems": 3,
-          "maxItems": 3,
-          "description": "The direction toward the light, fixed in the world: shadows fall away from it."
-        },
-        "softness": {
-          "type": "number",
-          "format": "float",
-          "description": "How much a shadow spreads per unit of a caster's height: the light's size."
         },
         "lift": {
           "type": "number",
           "format": "float",
-          "description": "CSS pixels flat marks cast from, as if raised; in a diagram, how far a block's or a group's\nshadow falls below it, and as far again it softens."
+          "description": "How far a block's or a group's shadow falls below it, and as far again it softens."
         }
       },
-      "description": "How marks that cast shadows cast them onto the ground and onto faces."
+      "description": "How a diagram's blocks and groups drop shadows onto its sheet."
     },
     "Controls": {
       "anyOf": [
@@ -4335,7 +4304,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Draw calls the last frame recorded, shadows and labels with the marks."
+          "description": "Draw calls the last frame recorded, labels with the marks."
         },
         "instances": {
           "type": "integer",

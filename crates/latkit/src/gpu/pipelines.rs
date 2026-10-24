@@ -229,9 +229,6 @@ pub(crate) struct Pipelines {
     gpu: Weak<Shared>,
 }
 
-/// Shaders that draw into the shadow map, custom markers' included.
-const CASTERS: [Shader; 5] =
-    [Shader::PointsCast, Shader::StrokesCast, Shader::TrianglesCast, Shader::Shade, Shader::PointsCustomCast];
 /// The probe a frame of `samples` per pixel reads its depth with.
 pub(crate) fn probe(samples: u32) -> Shader {
     if samples > 1 { Shader::ProbeMultisampled } else { Shader::Probe }
@@ -241,53 +238,25 @@ pub(crate) fn probe(samples: u32) -> Shader {
 fn topology(shader: Shader) -> wgpu::PrimitiveTopology {
     // Custom markers draw as points do.
     match shader {
-        Shader::Backdrop | Shader::Triangles | Shader::TrianglesCast | Shader::Shade => {
-            wgpu::PrimitiveTopology::TriangleList
-        }
+        Shader::Backdrop | Shader::Triangles => wgpu::PrimitiveTopology::TriangleList,
         _ => wgpu::PrimitiveTopology::TriangleStrip,
     }
-}
-
-/// Whether a shader draws into the shadow map, which has no depth.
-fn casts(shader: Shader) -> bool {
-    CASTERS.contains(&shader)
 }
 
 /// How a render shader meets depth, which is reversed: the backdrop writes the globe's, triangles
 /// write theirs, the overlay and labels ignore it, and every other mark draws where nothing nearer
 /// was drawn.
-fn depth(shader: Shader) -> Option<wgpu::DepthStencilState> {
-    if casts(shader) {
-        return None;
-    }
+fn depth(shader: Shader) -> wgpu::DepthStencilState {
     let compare = match shader {
         Shader::Backdrop | Shader::Overlay | Shader::Glyphs => wgpu::CompareFunction::Always,
         _ => wgpu::CompareFunction::GreaterEqual,
     };
-    Some(wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
         format: DEPTH,
         depth_write_enabled: Some(matches!(shader, Shader::Triangles | Shader::Backdrop)),
         depth_compare: Some(compare),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
-    })
-}
-
-/// How a shader's fragments blend: premultiplied over what is drawn; casters keep the least of each
-/// channel; map levels replace.
-fn blend(shader: Shader) -> Option<wgpu::BlendState> {
-    let component = |src, dst, operation| wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation };
-    match shader {
-        Shader::Shade => None,
-        Shader::PointsCast | Shader::StrokesCast | Shader::TrianglesCast | Shader::PointsCustomCast => {
-            let least = component(wgpu::BlendFactor::One, wgpu::BlendFactor::One, wgpu::BlendOperation::Min);
-            Some(wgpu::BlendState { color: least, alpha: least })
-        }
-        _ => {
-            let over =
-                component(wgpu::BlendFactor::One, wgpu::BlendFactor::OneMinusSrcAlpha, wgpu::BlendOperation::Add);
-            Some(wgpu::BlendState { color: over, alpha: over })
-        }
     }
 }
 
@@ -644,7 +613,7 @@ impl Pipelines {
                 buffers: &[],
             },
             primitive: wgpu::PrimitiveState { topology: topology(shader), ..Default::default() },
-            depth_stencil: depth(shader),
+            depth_stencil: Some(depth(shader)),
             multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module,
@@ -652,7 +621,8 @@ impl Pipelines {
                 compilation_options: options(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: blend(shader),
+                    // Premultiplied over what is drawn.
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),

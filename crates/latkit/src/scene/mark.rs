@@ -67,7 +67,6 @@ pub(crate) struct Style {
     pub(crate) name: Option<Name>,
     pub(crate) interaction: Interaction,
     pub(crate) label: Option<Label>,
-    pub(crate) shadow: bool,
     /// A legend of the colors, under this title.
     pub(crate) legend: Option<Arc<str>>,
 }
@@ -141,7 +140,6 @@ impl Style {
             name: None,
             interaction: Interaction::default(),
             label: None,
-            shadow: false,
             legend: None,
         }
     }
@@ -401,22 +399,10 @@ impl Mark {
     }
 
     /// The first option of this mark only a diagram has, if any: ports, groups, nets, orthogonal
-    /// routes. A diagram's own refusals: shadows but blocks' and groups', and elevation.
+    /// routes, shadows. A diagram's own refusals: elevation, poles, and joins.
     pub(crate) fn misplaced(&self, diagram: bool) -> Option<(&'static str, &'static str)> {
-        const ONLY: &str = "only a diagram has ports, groups, nets, and orthogonal routes";
-        let style = self.style();
-        if let Mark::Areas(_) = self
-            && style.shadow
-        {
-            return Some(("shadow", "an area lies on the ground: it casts no shadow"));
-        }
+        const ONLY: &str = "only a diagram has ports, groups, nets, orthogonal routes, and shadows";
         if diagram {
-            if style.shadow && !matches!(self, Mark::Vertices(_)) {
-                return Some((
-                    "shadow",
-                    "a diagram's blocks and groups cast shadows onto its sheet; nothing else does",
-                ));
-            }
             if let Mark::Edges(e) = self
                 && e.poles
             {
@@ -437,6 +423,7 @@ impl Mark {
         match self {
             Mark::Vertices(v) if !v.ports.is_empty() => Some(("port", ONLY)),
             Mark::Vertices(v) if v.contains.is_some() => Some(("contains", ONLY)),
+            Mark::Vertices(v) if v.shadow => Some(("shadow", ONLY)),
             Mark::Edges(e) if e.ends.is_none() && !e.poles && e.joins.is_none() => Some(("ends", ONLY)),
             Mark::Edges(e) if e.route == Some(super::Route::Orthogonal) => Some(("route", ONLY)),
             _ => None,
@@ -475,9 +462,6 @@ impl Mark {
         if let Some(label) = &style.label {
             let priority = label.priority.as_ref().or(style.priority.as_ref());
             compile_label(label, priority, compiler, context.theme, &mut drawing).map_err(|e| e.at("label"))?;
-        }
-        if style.shadow {
-            drawing.flags |= wgsl::CASTS;
         }
         Ok(drawing)
     }
@@ -623,10 +607,6 @@ macro_rules! mark {
             drag: bool,
             /// Each row's text: a text field, or a label's options.
             label: Option<$crate::Label>,
-            /// Whether each row casts a shadow onto the ground and onto faces, away from the theme's
-            /// light.
-            #[serde(default)]
-            shadow: bool,
             /// A legend of the colors at the view's bottom right, under this title: the colormap across
             /// its domain, ticked; a cell for each category; or a swatch beside each name of a map's
             /// `categories`. The color maps through a colormap with a domain or named categories; a
@@ -645,7 +625,6 @@ macro_rules! mark {
                     name: self.name.clone(),
                     interaction: $crate::scene::mark::Interaction { pick: self.pick, select: self.select, drag: self.drag },
                     label: self.label.clone(),
-                    shadow: self.shadow,
                     legend: self.legend.clone(),
                 }
             }
@@ -736,14 +715,6 @@ macro_rules! style_methods {
             #[must_use]
             pub fn label(mut self, label: $crate::Label) -> Self {
                 self.style.label = Some(label);
-                self
-            }
-
-            /// Whether each row casts a shadow onto the ground and onto faces, away from the theme's
-            /// light.
-            #[must_use]
-            pub fn shadow(mut self, on: bool) -> Self {
-                self.style.shadow = on;
                 self
             }
 

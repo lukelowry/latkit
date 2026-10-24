@@ -590,7 +590,7 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
     .expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false).shadow(true))
+        .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false))
         .draw(Vertices::of("mesh", "Vertex").position("x", "y").elevation("z").radius(2.0).select(false).drag(true));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 58.0, bearing: 30.0 });

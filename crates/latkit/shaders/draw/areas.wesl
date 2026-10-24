@@ -8,7 +8,7 @@ import package::lib::bind::frame;
 import package::lib::project::culled;
 import package::lib::triangles::{triangle_corner, triangle_shown, corner_clip};
 import package::lib::focus::focus_of;
-import package::lib::shade::daylight;
+import package::lib::daylight::daylight;
 import package::lib::color::output;
 
 struct Varyings {

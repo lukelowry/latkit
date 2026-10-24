@@ -27,7 +27,7 @@
    },
    "load": {
     "uploaded": 200000,
-    "written": 5228,
+    "written": 4124,
     "evaluated": 10000,
     "packed": 0,
     "readbacks": 1,
@@ -35,7 +35,7 @@
     "texts": 0,
     "pipelines": 27,
     "late": 0,
-    "resident": 327680
+    "resident": 901120
    }
   }
  },
@@ -67,7 +67,7 @@
    },
    "load": {
     "uploaded": 20000,
-    "written": 5220,
+    "written": 4048,
     "evaluated": 1000,
     "packed": 0,
     "readbacks": 1,
@@ -75,11 +75,11 @@
     "texts": 0,
     "pipelines": 27,
     "late": 0,
-    "resident": 20480
+    "resident": 90112
    },
    "pan": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -87,11 +87,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 20480
+    "resident": 90112
    },
    "zoom": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -99,11 +99,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 20480
+    "resident": 90112
    },
    "revisit": {
     "uploaded": 0,
-    "written": 1216,
+    "written": 832,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -111,11 +111,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 20480
+    "resident": 90112
    },
    "restyle": {
     "uploaded": 0,
-    "written": 2788,
+    "written": 2384,
     "evaluated": 1000,
     "packed": 0,
     "readbacks": 0,
@@ -123,11 +123,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 20480
+    "resident": 90112
    },
    "one row": {
     "uploaded": 160000,
-    "written": 48960,
+    "written": 33600,
     "evaluated": 40000,
     "packed": 0,
     "readbacks": 0,
@@ -135,11 +135,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 184320
+    "resident": 253952
    },
    "every row": {
     "uploaded": 4000,
-    "written": 1224,
+    "written": 840,
     "evaluated": 1000,
     "packed": 0,
     "readbacks": 0,
@@ -147,11 +147,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 188416
+    "resident": 258048
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2440,
+    "written": 1672,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -159,11 +159,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 188416
+    "resident": 258048
    },
    "pick": {
     "uploaded": 0,
-    "written": 2440,
+    "written": 1672,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -171,11 +171,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 188416
+    "resident": 258048
    },
    "hover": {
     "uploaded": 0,
-    "written": 3752,
+    "written": 2600,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -183,11 +183,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 188416
+    "resident": 258048
    },
    "select": {
     "uploaded": 0,
-    "written": 3284,
+    "written": 2516,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -195,11 +195,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 188416
+    "resident": 258048
    },
    "append": {
     "uploaded": 816400,
-    "written": 72576,
+    "written": 56280,
     "evaluated": 40820,
     "packed": 0,
     "readbacks": 40,
@@ -207,7 +207,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1335296
+    "resident": 1409024
    }
   },
   "10000": {
@@ -237,7 +237,7 @@
    },
    "load": {
     "uploaded": 200000,
-    "written": 5228,
+    "written": 4124,
     "evaluated": 10000,
     "packed": 0,
     "readbacks": 1,
@@ -245,11 +245,11 @@
     "texts": 0,
     "pipelines": 27,
     "late": 0,
-    "resident": 327680
+    "resident": 901120
    },
    "pan": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -257,11 +257,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 327680
+    "resident": 901120
    },
    "zoom": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -269,11 +269,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 327680
+    "resident": 901120
    },
    "revisit": {
     "uploaded": 0,
-    "written": 1216,
+    "written": 832,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -281,11 +281,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 327680
+    "resident": 901120
    },
    "restyle": {
     "uploaded": 0,
-    "written": 2796,
+    "written": 2460,
     "evaluated": 10000,
     "packed": 0,
     "readbacks": 0,
@@ -293,23 +293,23 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 327680
+    "resident": 901120
    },
    "one row": {
-    "uploaded": 1600000,
-    "written": 49280,
-    "evaluated": 400000,
+    "uploaded": 655360,
+    "written": 33600,
+    "evaluated": 163840,
     "packed": 0,
     "readbacks": 0,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 2949120
+    "resident": 1556480
    },
    "every row": {
     "uploaded": 40000,
-    "written": 1232,
+    "written": 856,
     "evaluated": 10000,
     "packed": 0,
     "readbacks": 0,
@@ -317,11 +317,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3014656
+    "resident": 1597440
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2440,
+    "written": 1672,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -329,11 +329,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3014656
+    "resident": 1597440
    },
    "pick": {
     "uploaded": 0,
-    "written": 2440,
+    "written": 1672,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -341,11 +341,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3014656
+    "resident": 1597440
    },
    "hover": {
     "uploaded": 0,
-    "written": 3752,
+    "written": 2600,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -353,11 +353,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3014656
+    "resident": 1597440
    },
    "select": {
     "uploaded": 0,
-    "written": 3284,
+    "written": 2516,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -365,19 +365,19 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3014656
+    "resident": 1597440
    },
    "append": {
-    "uploaded": 8016400,
-    "written": 72896,
-    "evaluated": 400820,
+    "uploaded": 1462800,
+    "written": 57472,
+    "evaluated": 73140,
     "packed": 0,
     "readbacks": 40,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 16121856
+    "resident": 3235840
    }
   },
   "100000": {
@@ -407,7 +407,7 @@
    },
    "load": {
     "uploaded": 2000000,
-    "written": 6556,
+    "written": 5816,
     "evaluated": 100000,
     "packed": 0,
     "readbacks": 1,
@@ -415,11 +415,11 @@
     "texts": 0,
     "pipelines": 27,
     "late": 0,
-    "resident": 2621440
+    "resident": 8830976
    },
    "pan": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -427,11 +427,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 2621440
+    "resident": 8830976
    },
    "zoom": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -439,11 +439,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 2621440
+    "resident": 8830976
    },
    "revisit": {
     "uploaded": 0,
-    "written": 1216,
+    "written": 832,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -451,11 +451,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 2621440
+    "resident": 8830976
    },
    "restyle": {
     "uploaded": 0,
-    "written": 2908,
+    "written": 3320,
     "evaluated": 100000,
     "packed": 0,
     "readbacks": 0,
@@ -463,23 +463,23 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 2621440
+    "resident": 8830976
    },
    "one row": {
-    "uploaded": 10485760,
-    "written": 51360,
-    "evaluated": 2621440,
+    "uploaded": 655360,
+    "written": 33600,
+    "evaluated": 163840,
     "packed": 0,
     "readbacks": 0,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13107200
+    "resident": 9486336
    },
    "every row": {
     "uploaded": 400000,
-    "written": 1324,
+    "written": 1032,
     "evaluated": 100000,
     "packed": 0,
     "readbacks": 0,
@@ -487,11 +487,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13631488
+    "resident": 9887744
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2440,
+    "written": 1672,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -499,11 +499,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13631488
+    "resident": 9887744
    },
    "pick": {
     "uploaded": 0,
-    "written": 2440,
+    "written": 1672,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -511,11 +511,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13631488
+    "resident": 9887744
    },
    "hover": {
     "uploaded": 0,
-    "written": 3752,
+    "written": 2600,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -523,11 +523,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13631488
+    "resident": 9887744
    },
    "select": {
     "uploaded": 0,
-    "written": 3284,
+    "written": 2516,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -535,19 +535,19 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13631488
+    "resident": 9887744
    },
    "append": {
-    "uploaded": 27587600,
-    "written": 74656,
-    "evaluated": 1379380,
+    "uploaded": 1373200,
+    "written": 55232,
+    "evaluated": 68660,
     "packed": 0,
     "readbacks": 40,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 66060288
+    "resident": 11526144
    }
   },
   "1000000": {
@@ -577,7 +577,7 @@
    },
    "load": {
     "uploaded": 1638400,
-    "written": 7376,
+    "written": 5980,
     "evaluated": 81920,
     "packed": 409600,
     "readbacks": 1,
@@ -585,11 +585,11 @@
     "texts": 0,
     "pipelines": 27,
     "late": 0,
-    "resident": 1638400
+    "resident": 6094848
    },
    "pan": {
     "uploaded": 0,
-    "written": 48752,
+    "written": 33544,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -597,11 +597,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1638400
+    "resident": 2752512
    },
    "zoom": {
     "uploaded": 3932160,
-    "written": 62376,
+    "written": 58400,
     "evaluated": 196608,
     "packed": 983040,
     "readbacks": 0,
@@ -609,11 +609,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5570560
+    "resident": 20054016
    },
    "revisit": {
     "uploaded": 0,
-    "written": 1228,
+    "written": 1264,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -621,11 +621,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5570560
+    "resident": 20054016
    },
    "restyle": {
     "uploaded": 0,
-    "written": 2908,
+    "written": 2536,
     "evaluated": 16384,
     "packed": 0,
     "readbacks": 0,
@@ -633,11 +633,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5570560
+    "resident": 20054016
    },
    "one row": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -645,11 +645,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5570560
+    "resident": 6684672
    },
    "every row": {
     "uploaded": 65536,
-    "written": 1248,
+    "written": 864,
     "evaluated": 16384,
     "packed": 16384,
     "readbacks": 0,
@@ -657,11 +657,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5636096
+    "resident": 6750208
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2440,
+    "written": 1672,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -669,11 +669,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5636096
+    "resident": 6750208
    },
    "pick": {
     "uploaded": 0,
-    "written": 2440,
+    "written": 1672,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -681,11 +681,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5636096
+    "resident": 6750208
    },
    "hover": {
     "uploaded": 0,
-    "written": 3752,
+    "written": 2600,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -693,11 +693,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5636096
+    "resident": 6750208
    },
    "select": {
     "uploaded": 81920,
-    "written": 3776,
+    "written": 3024,
     "evaluated": 4096,
     "packed": 490,
     "readbacks": 1,
@@ -705,11 +705,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5718016
+    "resident": 7110656
    },
    "append": {
     "uploaded": 3358720,
-    "written": 73164,
+    "written": 57444,
     "evaluated": 167936,
     "packed": 119785,
     "readbacks": 40,
@@ -717,7 +717,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 9076736
+    "resident": 10747904
    }
   },
   "2000000": {
@@ -747,7 +747,7 @@
    },
    "load": {
     "uploaded": 1638400,
-    "written": 6160,
+    "written": 5148,
     "evaluated": 81920,
     "packed": 409600,
     "readbacks": 1,
@@ -755,11 +755,11 @@
     "texts": 0,
     "pipelines": 27,
     "late": 0,
-    "resident": 1638400
+    "resident": 6094848
    },
    "pan": {
     "uploaded": 0,
-    "written": 48752,
+    "written": 33544,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -767,11 +767,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1638400
+    "resident": 2752512
    },
    "zoom": {
     "uploaded": 4014080,
-    "written": 62404,
+    "written": 58624,
     "evaluated": 200704,
     "packed": 1003520,
     "readbacks": 0,
@@ -779,11 +779,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5652480
+    "resident": 20414464
    },
    "revisit": {
     "uploaded": 0,
-    "written": 1228,
+    "written": 1272,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -791,11 +791,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5652480
+    "resident": 20414464
    },
    "restyle": {
     "uploaded": 0,
-    "written": 2908,
+    "written": 2536,
     "evaluated": 16384,
     "packed": 0,
     "readbacks": 0,
@@ -803,11 +803,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5652480
+    "resident": 20414464
    },
    "one row": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -815,11 +815,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5652480
+    "resident": 6766592
    },
    "every row": {
     "uploaded": 65536,
-    "written": 1248,
+    "written": 864,
     "evaluated": 16384,
     "packed": 16384,
     "readbacks": 0,
@@ -827,11 +827,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5718016
+    "resident": 6832128
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2440,
+    "written": 1672,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -839,11 +839,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5718016
+    "resident": 6832128
    },
    "pick": {
     "uploaded": 0,
-    "written": 2440,
+    "written": 1672,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -851,11 +851,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5718016
+    "resident": 6832128
    },
    "hover": {
     "uploaded": 0,
-    "written": 3752,
+    "written": 2600,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -863,11 +863,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5718016
+    "resident": 6832128
    },
    "select": {
     "uploaded": 81920,
-    "written": 3776,
+    "written": 3024,
     "evaluated": 4096,
     "packed": 495,
     "readbacks": 1,
@@ -875,11 +875,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5799936
+    "resident": 7192576
    },
    "append": {
     "uploaded": 3276800,
-    "written": 72672,
+    "written": 56952,
     "evaluated": 163840,
     "packed": 234500,
     "readbacks": 40,
@@ -887,7 +887,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 9076736
+    "resident": 10747904
    }
   }
  },
@@ -919,7 +919,7 @@
    },
    "load": {
     "uploaded": 36352,
-    "written": 8036,
+    "written": 6484,
     "evaluated": 3008,
     "packed": 0,
     "readbacks": 2,
@@ -927,11 +927,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 36864
+    "resident": 180224
    },
    "pan": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 43520,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -939,11 +939,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 36864
+    "resident": 180224
    },
    "zoom": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 43520,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -951,11 +951,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 36864
+    "resident": 180224
    },
    "revisit": {
     "uploaded": 0,
-    "written": 1472,
+    "written": 1088,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -963,11 +963,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 36864
+    "resident": 180224
    },
    "one row": {
     "uploaded": 163840,
-    "written": 59200,
+    "written": 43840,
     "evaluated": 40960,
     "packed": 0,
     "readbacks": 0,
@@ -975,11 +975,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 200704
+    "resident": 344064
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -987,11 +987,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 200704
+    "resident": 344064
    },
    "pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -999,11 +999,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 200704
+    "resident": 344064
    },
    "hover": {
     "uploaded": 0,
-    "written": 4536,
+    "written": 3384,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -1011,11 +1011,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 200704
+    "resident": 344064
    },
    "append": {
     "uploaded": 835600,
-    "written": 69312,
+    "written": 52624,
     "evaluated": 41780,
     "packed": 0,
     "readbacks": 80,
@@ -1023,7 +1023,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1839104
+    "resident": 1986560
    }
   },
   "10000": {
@@ -1053,7 +1053,7 @@
    },
    "load": {
     "uploaded": 358400,
-    "written": 9532,
+    "written": 6664,
     "evaluated": 29800,
     "packed": 0,
     "readbacks": 2,
@@ -1061,11 +1061,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 589824
+    "resident": 1802240
    },
    "pan": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 43520,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -1073,11 +1073,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 589824
+    "resident": 1802240
    },
    "zoom": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 43520,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -1085,11 +1085,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 589824
+    "resident": 1802240
    },
    "revisit": {
     "uploaded": 0,
-    "written": 1472,
+    "written": 1088,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -1097,23 +1097,23 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 589824
+    "resident": 1802240
    },
    "one row": {
-    "uploaded": 1600000,
-    "written": 59520,
-    "evaluated": 400000,
+    "uploaded": 655360,
+    "written": 43840,
+    "evaluated": 163840,
     "packed": 0,
     "readbacks": 0,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3211264
+    "resident": 2457600
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1121,11 +1121,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3211264
+    "resident": 2457600
    },
    "pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1133,11 +1133,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3211264
+    "resident": 2457600
    },
    "hover": {
     "uploaded": 0,
-    "written": 4520,
+    "written": 3368,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -1145,19 +1145,19 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3211264
+    "resident": 2457600
    },
    "append": {
-    "uploaded": 8016400,
-    "written": 69312,
-    "evaluated": 400820,
+    "uploaded": 1462800,
+    "written": 53888,
+    "evaluated": 73140,
     "packed": 0,
     "readbacks": 80,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 16318464
+    "resident": 4096000
    }
   },
   "100000": {
@@ -1187,7 +1187,7 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 9848,
+    "written": 8692,
     "evaluated": 298936,
     "packed": 0,
     "readbacks": 2,
@@ -1195,11 +1195,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 4227072
+    "resident": 17661952
    },
    "pan": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 43520,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -1207,11 +1207,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 17661952
    },
    "zoom": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 43520,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -1219,11 +1219,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 17661952
    },
    "revisit": {
     "uploaded": 0,
-    "written": 1472,
+    "written": 1088,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -1231,23 +1231,23 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 17661952
    },
    "one row": {
-    "uploaded": 10485760,
-    "written": 61600,
-    "evaluated": 2621440,
+    "uploaded": 655360,
+    "written": 43840,
+    "evaluated": 163840,
     "packed": 0,
     "readbacks": 0,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 14712832
+    "resident": 18317312
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1255,11 +1255,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 14712832
+    "resident": 18317312
    },
    "pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1267,11 +1267,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 14712832
+    "resident": 18317312
    },
    "hover": {
     "uploaded": 0,
-    "written": 4520,
+    "written": 3368,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -1279,19 +1279,19 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 14712832
+    "resident": 18317312
    },
    "append": {
-    "uploaded": 27472400,
-    "written": 71072,
-    "evaluated": 1373620,
+    "uploaded": 1258000,
+    "written": 51648,
+    "evaluated": 62900,
     "packed": 0,
     "readbacks": 80,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 67141632
+    "resident": 19955712
    }
   },
   "1000000": {
@@ -1320,20 +1320,20 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 7913472,
-    "written": 18120,
-    "evaluated": 466944,
-    "packed": 1978368,
+    "uploaded": 5062656,
+    "written": 17084,
+    "evaluated": 294912,
+    "packed": 1265664,
     "readbacks": 3,
     "jobs": 2,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 7913472
+    "resident": 17842176
    },
    "pan": {
     "uploaded": 0,
-    "written": 62576,
+    "written": 48512,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 4,
@@ -1341,11 +1341,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 7913472
+    "resident": 17842176
    },
    "zoom": {
     "uploaded": 16285696,
-    "written": 88428,
+    "written": 101944,
     "evaluated": 1040384,
     "packed": 4071424,
     "readbacks": 14,
@@ -1353,11 +1353,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 24199168
+    "resident": 92815360
    },
    "revisit": {
     "uploaded": 0,
-    "written": 3760,
+    "written": 5448,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1365,11 +1365,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 24199168
+    "resident": 92815360
    },
    "one row": {
     "uploaded": 655360,
-    "written": 59200,
+    "written": 43840,
     "evaluated": 163840,
     "packed": 163840,
     "readbacks": 0,
@@ -1377,11 +1377,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 24854528
+    "resident": 93470720
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1389,11 +1389,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 24854528
+    "resident": 93470720
    },
    "pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1401,11 +1401,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 24854528
+    "resident": 93470720
    },
    "hover": {
     "uploaded": 0,
-    "written": 4520,
+    "written": 3368,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -1413,11 +1413,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 24854528
+    "resident": 93470720
    },
    "append": {
     "uploaded": 3276800,
-    "written": 69272,
+    "written": 57392,
     "evaluated": 163840,
     "packed": 119300,
     "readbacks": 80,
@@ -1425,7 +1425,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 28131328
+    "resident": 97026048
    }
   },
   "2000000": {
@@ -1454,20 +1454,20 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 8241152,
-    "written": 17980,
-    "evaluated": 483328,
-    "packed": 2060288,
+    "uploaded": 5308416,
+    "written": 20024,
+    "evaluated": 307200,
+    "packed": 1327104,
     "readbacks": 3,
     "jobs": 2,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 8241152
+    "resident": 18644992
    },
    "pan": {
     "uploaded": 0,
-    "written": 62576,
+    "written": 48576,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 4,
@@ -1475,11 +1475,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 8241152
+    "resident": 18644992
    },
    "zoom": {
     "uploaded": 23937024,
-    "written": 94040,
+    "written": 113720,
     "evaluated": 1425408,
     "packed": 5984256,
     "readbacks": 14,
@@ -1487,11 +1487,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 32178176
+    "resident": 127320064
    },
    "revisit": {
     "uploaded": 0,
-    "written": 3760,
+    "written": 6216,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1499,11 +1499,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 32178176
+    "resident": 127320064
    },
    "one row": {
     "uploaded": 589824,
-    "written": 59168,
+    "written": 43808,
     "evaluated": 147456,
     "packed": 147456,
     "readbacks": 0,
@@ -1511,11 +1511,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 32768000
+    "resident": 127909888
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1523,11 +1523,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 32768000
+    "resident": 127909888
    },
    "pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1535,11 +1535,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 32768000
+    "resident": 127909888
    },
    "hover": {
     "uploaded": 0,
-    "written": 4520,
+    "written": 3368,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -1547,11 +1547,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 32768000
+    "resident": 127909888
    },
    "append": {
     "uploaded": 3276800,
-    "written": 70792,
+    "written": 60188,
     "evaluated": 163840,
     "packed": 113700,
     "readbacks": 80,
@@ -1559,7 +1559,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 36044800
+    "resident": 131465216
    }
   }
  },
@@ -1591,39 +1591,39 @@
    },
    "load": {
     "uploaded": 240000,
-    "written": 838672,
+    "written": 712168,
     "evaluated": 10000,
     "packed": 0,
-    "readbacks": 10,
+    "readbacks": 6,
     "jobs": 0,
-    "texts": 214,
+    "texts": 187,
     "pipelines": 34,
     "late": 0,
-    "resident": 393216
+    "resident": 1269760
    },
    "pan": {
     "uploaded": 0,
-    "written": 3187496,
+    "written": 2125904,
     "evaluated": 0,
     "packed": 0,
-    "readbacks": 43,
+    "readbacks": 40,
     "jobs": 0,
-    "texts": 771,
+    "texts": 526,
     "pipelines": 0,
     "late": 0,
-    "resident": 393216
+    "resident": 1269760
    },
    "zoom": {
     "uploaded": 0,
-    "written": 5470912,
+    "written": 5144160,
     "evaluated": 0,
     "packed": 0,
-    "readbacks": 43,
+    "readbacks": 40,
     "jobs": 0,
-    "texts": 1296,
+    "texts": 1228,
     "pipelines": 0,
     "late": 0,
-    "resident": 393216
+    "resident": 1269760
    }
   },
   "100000": {
@@ -1653,39 +1653,39 @@
    },
    "load": {
     "uploaded": 2400000,
-    "written": 2473380,
+    "written": 1431616,
     "evaluated": 100000,
     "packed": 0,
-    "readbacks": 30,
+    "readbacks": 6,
     "jobs": 0,
-    "texts": 385,
+    "texts": 187,
     "pipelines": 34,
     "late": 0,
-    "resident": 3145728
+    "resident": 12443648
    },
    "pan": {
     "uploaded": 0,
-    "written": 5912000,
+    "written": 2350640,
     "evaluated": 0,
     "packed": 0,
-    "readbacks": 63,
+    "readbacks": 40,
     "jobs": 0,
-    "texts": 1292,
+    "texts": 572,
     "pipelines": 0,
     "late": 0,
-    "resident": 3145728
+    "resident": 12443648
    },
    "zoom": {
     "uploaded": 0,
-    "written": 8491440,
+    "written": 6726128,
     "evaluated": 0,
     "packed": 0,
-    "readbacks": 55,
+    "readbacks": 40,
     "jobs": 0,
-    "texts": 1881,
+    "texts": 1522,
     "pipelines": 0,
     "late": 0,
-    "resident": 3145728
+    "resident": 12443648
    }
   },
   "1000000": {
@@ -1715,39 +1715,39 @@
    },
    "load": {
     "uploaded": 1966080,
-    "written": 4312152,
+    "written": 2929204,
     "evaluated": 81920,
     "packed": 491520,
-    "readbacks": 37,
+    "readbacks": 15,
     "jobs": 1,
-    "texts": 569,
+    "texts": 338,
     "pipelines": 34,
     "late": 0,
-    "resident": 1966080
+    "resident": 3604480
    },
    "pan": {
     "uploaded": 0,
-    "written": 6503124,
+    "written": 4017904,
     "evaluated": 0,
     "packed": 0,
-    "readbacks": 43,
+    "readbacks": 40,
     "jobs": 0,
-    "texts": 1103,
+    "texts": 688,
     "pipelines": 0,
     "late": 0,
-    "resident": 1966080
+    "resident": 3604480
    },
    "zoom": {
     "uploaded": 4718592,
-    "written": 12752104,
+    "written": 11557552,
     "evaluated": 196608,
     "packed": 1179648,
-    "readbacks": 49,
+    "readbacks": 44,
     "jobs": 0,
-    "texts": 1607,
+    "texts": 1429,
     "pipelines": 0,
     "late": 0,
-    "resident": 6684672
+    "resident": 27983872
    }
   }
  },
@@ -1779,19 +1779,19 @@
    },
    "load": {
     "uploaded": 1456,
-    "written": 8452,
+    "written": 6524,
     "evaluated": 116,
     "packed": 0,
-    "readbacks": 3,
+    "readbacks": 1,
     "jobs": 0,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 2560
+    "resident": 8448
    },
    "pan": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 45392,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -1799,11 +1799,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 2560
+    "resident": 8448
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1811,11 +1811,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 2560
+    "resident": 8448
    },
    "pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1823,7 +1823,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 2560
+    "resident": 8448
    }
   },
   "1000": {
@@ -1853,19 +1853,19 @@
    },
    "load": {
     "uploaded": 12256,
-    "written": 8452,
+    "written": 5436,
     "evaluated": 1016,
     "packed": 0,
-    "readbacks": 3,
+    "readbacks": 1,
     "jobs": 0,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 13312
+    "resident": 51456
    },
    "pan": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 45392,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -1873,11 +1873,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13312
+    "resident": 51456
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1885,11 +1885,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13312
+    "resident": 51456
    },
    "pick": {
     "uploaded": 0,
-    "written": 2960,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -1897,7 +1897,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 13312
+    "resident": 51456
    }
   },
   "10000": {
@@ -1927,19 +1927,19 @@
    },
    "load": {
     "uploaded": 120256,
-    "written": 8460,
+    "written": 6580,
     "evaluated": 10016,
     "packed": 0,
-    "readbacks": 3,
+    "readbacks": 1,
     "jobs": 0,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 197632
+    "resident": 493824
    },
    "pan": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 45392,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -1947,31 +1947,31 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 197632
+    "resident": 493824
    },
    "first pick": {
     "uploaded": 0,
-    "written": 4448,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
-    "readbacks": 2,
+    "readbacks": 1,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 197632
+    "resident": 493824
    },
    "pick": {
     "uploaded": 0,
-    "written": 4448,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
-    "readbacks": 2,
+    "readbacks": 1,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 197632
+    "resident": 493824
    }
   },
   "100000": {
@@ -2001,19 +2001,19 @@
    },
    "load": {
     "uploaded": 1200256,
-    "written": 8864,
+    "written": 7632,
     "evaluated": 100016,
     "packed": 0,
-    "readbacks": 3,
+    "readbacks": 1,
     "jobs": 1,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 1573888
+    "resident": 4819200
    },
    "pan": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 45392,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -2021,31 +2021,31 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1573888
+    "resident": 4819200
    },
    "first pick": {
     "uploaded": 0,
-    "written": 4448,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
-    "readbacks": 2,
+    "readbacks": 1,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1573888
+    "resident": 4819200
    },
    "pick": {
     "uploaded": 0,
-    "written": 4448,
+    "written": 2192,
     "evaluated": 0,
     "packed": 0,
-    "readbacks": 2,
+    "readbacks": 1,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1573888
+    "resident": 4819200
    }
   }
  },
@@ -2077,7 +2077,7 @@
    },
    "load": {
     "uploaded": 1340368,
-    "written": 5072,
+    "written": 4728,
     "evaluated": 100,
     "packed": 0,
     "readbacks": 1,
@@ -2085,11 +2085,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 1344512
+    "resident": 1575424
    },
    "pan": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -2097,11 +2097,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1344512
+    "resident": 1575424
    },
    "zoom": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -2109,11 +2109,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1344512
+    "resident": 1575424
    },
    "one row": {
     "uploaded": 16000,
-    "written": 50880,
+    "written": 35520,
     "evaluated": 4000,
     "packed": 0,
     "readbacks": 0,
@@ -2121,11 +2121,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1364992
+    "resident": 1595904
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2432,
+    "written": 1664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -2133,11 +2133,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1364992
+    "resident": 1595904
    },
    "pick": {
     "uploaded": 0,
-    "written": 2432,
+    "written": 1664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -2145,7 +2145,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1364992
+    "resident": 1595904
    }
   },
   "1000": {
@@ -2175,7 +2175,7 @@
    },
    "load": {
     "uploaded": 4172168,
-    "written": 7720,
+    "written": 5768,
     "evaluated": 1000,
     "packed": 0,
     "readbacks": 1,
@@ -2183,11 +2183,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 4206592
+    "resident": 4218880
    },
    "pan": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -2195,11 +2195,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4206592
+    "resident": 4218880
    },
    "zoom": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -2207,11 +2207,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4206592
+    "resident": 4218880
    },
    "one row": {
     "uploaded": 160000,
-    "written": 50880,
+    "written": 35520,
     "evaluated": 40000,
     "packed": 0,
     "readbacks": 0,
@@ -2219,11 +2219,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4370432
+    "resident": 4382720
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2432,
+    "written": 1664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -2231,11 +2231,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4370432
+    "resident": 4382720
    },
    "pick": {
     "uploaded": 0,
-    "written": 2432,
+    "written": 1664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -2243,7 +2243,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4370432
+    "resident": 4382720
    }
   },
   "10000": {
@@ -2273,7 +2273,7 @@
    },
    "load": {
     "uploaded": 18104720,
-    "written": 11840,
+    "written": 9552,
     "evaluated": 10000,
     "packed": 0,
     "readbacks": 1,
@@ -2281,11 +2281,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 18284544
+    "resident": 18399232
    },
    "pan": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -2293,11 +2293,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 18284544
+    "resident": 18399232
    },
    "zoom": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -2305,23 +2305,23 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 18284544
+    "resident": 18399232
    },
    "one row": {
-    "uploaded": 1600000,
-    "written": 51200,
-    "evaluated": 400000,
+    "uploaded": 655360,
+    "written": 35520,
+    "evaluated": 163840,
     "packed": 0,
     "readbacks": 0,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 20905984
+    "resident": 19054592
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2432,
+    "written": 1664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -2329,11 +2329,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 20905984
+    "resident": 19054592
    },
    "pick": {
     "uploaded": 0,
-    "written": 2432,
+    "written": 1664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -2341,7 +2341,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 20905984
+    "resident": 19054592
    }
   },
   "30000": {
@@ -2371,7 +2371,7 @@
    },
    "load": {
     "uploaded": 40370040,
-    "written": 40248,
+    "written": 18468,
     "evaluated": 30000,
     "packed": 0,
     "readbacks": 1,
@@ -2379,11 +2379,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 40501248
+    "resident": 41369600
    },
    "pan": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -2391,11 +2391,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 40501248
+    "resident": 41369600
    },
    "zoom": {
     "uploaded": 0,
-    "written": 48640,
+    "written": 33280,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -2403,23 +2403,23 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 40501248
+    "resident": 41369600
    },
    "one row": {
-    "uploaded": 4800000,
-    "written": 52000,
-    "evaluated": 1200000,
+    "uploaded": 655360,
+    "written": 35520,
+    "evaluated": 163840,
     "packed": 0,
     "readbacks": 0,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 45744128
+    "resident": 42024960
    },
    "first pick": {
     "uploaded": 0,
-    "written": 2432,
+    "written": 1664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -2427,11 +2427,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 45744128
+    "resident": 42024960
    },
    "pick": {
     "uploaded": 0,
-    "written": 2432,
+    "written": 1664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -2439,7 +2439,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 45744128
+    "resident": 42024960
    }
   }
  },
@@ -2471,7 +2471,7 @@
    },
    "load": {
     "uploaded": 272064,
-    "written": 5068,
+    "written": 3528,
     "evaluated": 64,
     "packed": 0,
     "readbacks": 0,
@@ -2479,11 +2479,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 278784
+    "resident": 525312
    },
    "pan": {
     "uploaded": 2160192,
-    "written": 49848,
+    "written": 34024,
     "evaluated": 512,
     "packed": 0,
     "readbacks": 0,
@@ -2491,19 +2491,19 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 2706176
+    "resident": 3936512
    },
    "zoom": {
-    "uploaded": 2017824,
-    "written": 50208,
-    "evaluated": 1040,
+    "uploaded": 1951680,
+    "written": 34280,
+    "evaluated": 992,
     "packed": 0,
     "readbacks": 0,
-    "jobs": 23,
+    "jobs": 25,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5284096
+    "resident": 7089408
    }
   },
   "256": {
@@ -2532,20 +2532,20 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 635904,
-    "written": 5072,
-    "evaluated": 1024,
+    "uploaded": 788640,
+    "written": 4560,
+    "evaluated": 1280,
     "packed": 0,
     "readbacks": 0,
     "jobs": 4,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 659456
+    "resident": 934912
    },
    "pan": {
     "uploaded": 5062272,
-    "written": 50272,
+    "written": 34464,
     "evaluated": 8192,
     "packed": 0,
     "readbacks": 0,
@@ -2553,11 +2553,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 6070272
+    "resident": 7014400
    },
    "zoom": {
-    "uploaded": 5709024,
-    "written": 50736,
+    "uploaded": 5673696,
+    "written": 34908,
     "evaluated": 17152,
     "packed": 0,
     "readbacks": 0,
@@ -2565,7 +2565,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 12826624
+    "resident": 14147584
    }
   },
   "4096": {
@@ -2594,40 +2594,40 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 2703712,
-    "written": 7704,
+    "uploaded": 2638176,
+    "written": 4596,
     "evaluated": 16384,
     "packed": 0,
     "readbacks": 0,
-    "jobs": 5,
+    "jobs": 4,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 2752512
+    "resident": 3145728
    },
    "pan": {
-    "uploaded": 19818144,
-    "written": 51780,
-    "evaluated": 172032,
+    "uploaded": 4673184,
+    "written": 35984,
+    "evaluated": 77824,
     "packed": 0,
     "readbacks": 0,
-    "jobs": 12,
+    "jobs": 8,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 23396352
+    "resident": 8552448
    },
    "zoom": {
-    "uploaded": 17787104,
-    "written": 55320,
-    "evaluated": 208896,
+    "uploaded": 8880000,
+    "written": 41952,
+    "evaluated": 73728,
     "packed": 0,
     "readbacks": 0,
-    "jobs": 18,
+    "jobs": 10,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 43253760
+    "resident": 18726912
    }
   }
  },
@@ -2659,7 +2659,7 @@
    },
    "load": {
     "uploaded": 24240,
-    "written": 11508,
+    "written": 9156,
     "evaluated": 300,
     "packed": 0,
     "readbacks": 1,
@@ -2667,11 +2667,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 33792
+    "resident": 51200
    },
    "pan": {
     "uploaded": 0,
-    "written": 60352,
+    "written": 44608,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 39,
@@ -2679,11 +2679,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 33792
+    "resident": 51200
    },
    "edit": {
     "uploaded": 371960,
-    "written": 65376,
+    "written": 49632,
     "evaluated": 4000,
     "packed": 0,
     "readbacks": 40,
@@ -2691,11 +2691,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 537600
+    "resident": 555008
    },
    "arrange": {
     "uploaded": 19000,
-    "written": 4576,
+    "written": 3424,
     "evaluated": 100,
     "packed": 0,
     "readbacks": 1,
@@ -2703,7 +2703,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 564736
+    "resident": 582144
    }
   },
   "1000": {
@@ -2733,7 +2733,7 @@
    },
    "load": {
     "uploaded": 242960,
-    "written": 21652,
+    "written": 17444,
     "evaluated": 3000,
     "packed": 0,
     "readbacks": 1,
@@ -2741,11 +2741,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 335872
+    "resident": 475136
    },
    "pan": {
     "uploaded": 0,
-    "written": 60352,
+    "written": 44608,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 39,
@@ -2753,11 +2753,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 335872
+    "resident": 475136
    },
    "edit": {
     "uploaded": 3463800,
-    "written": 72544,
+    "written": 56800,
     "evaluated": 40000,
     "packed": 0,
     "readbacks": 40,
@@ -2765,11 +2765,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 6070272
+    "resident": 6209536
    },
    "arrange": {
     "uploaded": 178144,
-    "written": 4576,
+    "written": 3424,
     "evaluated": 1000,
     "packed": 0,
     "readbacks": 1,
@@ -2777,7 +2777,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 6352896
+    "resident": 6492160
    }
   },
   "10000": {
@@ -2807,7 +2807,7 @@
    },
    "load": {
     "uploaded": 2429800,
-    "written": 93932,
+    "written": 89792,
     "evaluated": 30000,
     "packed": 0,
     "readbacks": 1,
@@ -2815,11 +2815,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 3014656
+    "resident": 4751360
    },
    "pan": {
     "uploaded": 0,
-    "written": 60352,
+    "written": 44608,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 39,
@@ -2827,31 +2827,31 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3014656
+    "resident": 4751360
    },
    "edit": {
-    "uploaded": 34375160,
-    "written": 64992,
-    "evaluated": 400000,
+    "uploaded": 14099000,
+    "written": 51168,
+    "evaluated": 163840,
     "packed": 0,
     "readbacks": 40,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 42336256
+    "resident": 27688960
    },
    "arrange": {
-    "uploaded": 1711520,
-    "written": 4600,
-    "evaluated": 10000,
+    "uploaded": 721328,
+    "written": 3520,
+    "evaluated": 4096,
     "packed": 0,
     "readbacks": 1,
     "jobs": 2,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 44236800
+    "resident": 28819456
    }
   }
  },
@@ -2883,7 +2883,7 @@
    },
    "load": {
     "uploaded": 49152,
-    "written": 41216,
+    "written": 40064,
     "evaluated": 10,
     "packed": 0,
     "readbacks": 1,
@@ -2891,11 +2891,11 @@
     "texts": 22,
     "pipelines": 30,
     "late": 0,
-    "resident": 524288
+    "resident": 524800
    },
    "stream": {
     "uploaded": 48,
-    "written": 181696,
+    "written": 165952,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 40,
@@ -2903,11 +2903,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 524288
+    "resident": 524800
    },
    "scrub": {
     "uploaded": 0,
-    "written": 179136,
+    "written": 163776,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -2915,11 +2915,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 524288
+    "resident": 524800
    },
    "narrow": {
     "uploaded": 1872,
-    "written": 197596,
+    "written": 181852,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 40,
@@ -2927,11 +2927,11 @@
     "texts": 19,
     "pipelines": 0,
     "late": 0,
-    "resident": 524288
+    "resident": 524800
    },
    "hover": {
     "uploaded": 0,
-    "written": 11816,
+    "written": 10664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -2939,7 +2939,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 524288
+    "resident": 524800
    }
   },
   "100": {
@@ -2969,7 +2969,7 @@
    },
    "load": {
     "uploaded": 417792,
-    "written": 41232,
+    "written": 48528,
     "evaluated": 100,
     "packed": 0,
     "readbacks": 1,
@@ -2977,11 +2977,11 @@
     "texts": 22,
     "pipelines": 30,
     "late": 0,
-    "resident": 786432
+    "resident": 788992
    },
    "stream": {
     "uploaded": 408,
-    "written": 181696,
+    "written": 165952,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 40,
@@ -2989,11 +2989,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 786432
+    "resident": 788992
    },
    "scrub": {
     "uploaded": 0,
-    "written": 179136,
+    "written": 163776,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3001,11 +3001,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 786432
+    "resident": 788992
    },
    "narrow": {
     "uploaded": 15912,
-    "written": 197880,
+    "written": 182144,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 40,
@@ -3013,11 +3013,11 @@
     "texts": 19,
     "pipelines": 0,
     "late": 0,
-    "resident": 786432
+    "resident": 788992
    },
    "hover": {
     "uploaded": 0,
-    "written": 11816,
+    "written": 10664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -3025,7 +3025,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 786432
+    "resident": 788992
    }
   },
   "1000": {
@@ -3055,7 +3055,7 @@
    },
    "load": {
     "uploaded": 4104192,
-    "written": 41440,
+    "written": 40288,
     "evaluated": 1000,
     "packed": 0,
     "readbacks": 1,
@@ -3063,11 +3063,11 @@
     "texts": 22,
     "pipelines": 30,
     "late": 0,
-    "resident": 4456448
+    "resident": 4493312
    },
    "stream": {
     "uploaded": 4008,
-    "written": 181696,
+    "written": 165952,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 40,
@@ -3075,11 +3075,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4456448
+    "resident": 4493312
    },
    "scrub": {
     "uploaded": 0,
-    "written": 179136,
+    "written": 163776,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3087,11 +3087,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4456448
+    "resident": 4493312
    },
    "narrow": {
     "uploaded": 156312,
-    "written": 203272,
+    "written": 187648,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 40,
@@ -3099,11 +3099,11 @@
     "texts": 19,
     "pipelines": 0,
     "late": 0,
-    "resident": 4718592
+    "resident": 4755456
    },
    "hover": {
     "uploaded": 0,
-    "written": 11816,
+    "written": 10664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -3111,7 +3111,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4718592
+    "resident": 4755456
    }
   },
   "10000": {
@@ -3141,7 +3141,7 @@
    },
    "load": {
     "uploaded": 40968192,
-    "written": 48924,
+    "written": 47620,
     "evaluated": 10000,
     "packed": 0,
     "readbacks": 1,
@@ -3149,11 +3149,11 @@
     "texts": 22,
     "pipelines": 30,
     "late": 0,
-    "resident": 45088768
+    "resident": 41787392
    },
    "stream": {
     "uploaded": 40008,
-    "written": 195388,
+    "written": 172464,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 40,
@@ -3161,11 +3161,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 45088768
+    "resident": 42311680
    },
    "scrub": {
     "uploaded": 0,
-    "written": 179136,
+    "written": 163776,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3173,11 +3173,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 45088768
+    "resident": 42311680
    },
    "narrow": {
     "uploaded": 1560312,
-    "written": 252508,
+    "written": 235048,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 40,
@@ -3185,11 +3185,11 @@
     "texts": 19,
     "pipelines": 0,
     "late": 0,
-    "resident": 46923776
+    "resident": 43622400
    },
    "hover": {
     "uploaded": 0,
-    "written": 11816,
+    "written": 10664,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 2,
@@ -3197,7 +3197,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 46923776
+    "resident": 43622400
    }
   }
  },
@@ -3229,7 +3229,7 @@
    },
    "load": {
     "uploaded": 12000,
-    "written": 50088,
+    "written": 48936,
     "evaluated": 1,
     "packed": 0,
     "readbacks": 1,
@@ -3237,11 +3237,11 @@
     "texts": 26,
     "pipelines": 30,
     "late": 0,
-    "resident": 524288
+    "resident": 524800
    },
    "scrub": {
     "uploaded": 0,
-    "written": 179200,
+    "written": 163840,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3249,11 +3249,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 524288
+    "resident": 524800
    },
    "narrow": {
     "uploaded": 0,
-    "written": 198724,
+    "written": 182980,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 39,
@@ -3261,7 +3261,7 @@
     "texts": 19,
     "pipelines": 0,
     "late": 0,
-    "resident": 524288
+    "resident": 524800
    }
   },
   "10000": {
@@ -3291,7 +3291,7 @@
    },
    "load": {
     "uploaded": 20000,
-    "written": 52552,
+    "written": 51400,
     "evaluated": 1,
     "packed": 0,
     "readbacks": 1,
@@ -3299,11 +3299,11 @@
     "texts": 26,
     "pipelines": 30,
     "late": 0,
-    "resident": 786432
+    "resident": 786944
    },
    "scrub": {
     "uploaded": 0,
-    "written": 179200,
+    "written": 163840,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3311,11 +3311,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 786432
+    "resident": 786944
    },
    "narrow": {
     "uploaded": 120000,
-    "written": 198548,
+    "written": 182812,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 39,
@@ -3323,7 +3323,7 @@
     "texts": 16,
     "pipelines": 0,
     "late": 0,
-    "resident": 1310720
+    "resident": 1311232
    }
   },
   "100000": {
@@ -3353,7 +3353,7 @@
    },
    "load": {
     "uploaded": 224992,
-    "written": 59516,
+    "written": 53948,
     "evaluated": 1,
     "packed": 0,
     "readbacks": 1,
@@ -3361,11 +3361,11 @@
     "texts": 26,
     "pipelines": 30,
     "late": 0,
-    "resident": 1572864
+    "resident": 1573376
    },
    "scrub": {
     "uploaded": 0,
-    "written": 179200,
+    "written": 163840,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3373,11 +3373,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1572864
+    "resident": 1573376
    },
    "narrow": {
     "uploaded": 0,
-    "written": 205780,
+    "written": 190044,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 39,
@@ -3385,7 +3385,7 @@
     "texts": 16,
     "pipelines": 0,
     "late": 0,
-    "resident": 1572864
+    "resident": 1573376
    }
   },
   "1000000": {
@@ -3415,7 +3415,7 @@
    },
    "load": {
     "uploaded": 281248,
-    "written": 61856,
+    "written": 56288,
     "evaluated": 1,
     "packed": 0,
     "readbacks": 1,
@@ -3423,11 +3423,11 @@
     "texts": 26,
     "pipelines": 30,
     "late": 0,
-    "resident": 1572864
+    "resident": 1573376
    },
    "scrub": {
     "uploaded": 0,
-    "written": 179200,
+    "written": 163840,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3435,11 +3435,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1572864
+    "resident": 1573376
    },
    "narrow": {
     "uploaded": 0,
-    "written": 212348,
+    "written": 196612,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 39,
@@ -3447,7 +3447,7 @@
     "texts": 16,
     "pipelines": 0,
     "late": 0,
-    "resident": 1572864
+    "resident": 1573376
    }
   }
  },
@@ -3479,7 +3479,7 @@
    },
    "load": {
     "uploaded": 20000,
-    "written": 5220,
+    "written": 4048,
     "evaluated": 1000,
     "packed": 0,
     "readbacks": 1,
@@ -3487,11 +3487,11 @@
     "texts": 0,
     "pipelines": 27,
     "late": 0,
-    "resident": 20480
+    "resident": 90112
    },
    "move": {
     "uploaded": 20000,
-    "written": 75420,
+    "written": 50808,
     "evaluated": 2000,
     "packed": 0,
     "readbacks": 0,
@@ -3499,7 +3499,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 40960
+    "resident": 241664
    }
   },
   "10000": {
@@ -3529,7 +3529,7 @@
    },
    "load": {
     "uploaded": 200000,
-    "written": 5228,
+    "written": 4124,
     "evaluated": 10000,
     "packed": 0,
     "readbacks": 1,
@@ -3537,11 +3537,11 @@
     "texts": 0,
     "pipelines": 27,
     "late": 0,
-    "resident": 327680
+    "resident": 901120
    },
    "move": {
     "uploaded": 200000,
-    "written": 75436,
+    "written": 50888,
     "evaluated": 20000,
     "packed": 0,
     "readbacks": 0,
@@ -3549,7 +3549,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 655360
+    "resident": 2416640
    }
   },
   "100000": {
@@ -3579,7 +3579,7 @@
    },
    "load": {
     "uploaded": 2000000,
-    "written": 6556,
+    "written": 4984,
     "evaluated": 100000,
     "packed": 0,
     "readbacks": 1,
@@ -3587,11 +3587,11 @@
     "texts": 0,
     "pipelines": 27,
     "late": 0,
-    "resident": 2621440
+    "resident": 8830976
    },
    "move": {
     "uploaded": 2000000,
-    "written": 74416,
+    "written": 51768,
     "evaluated": 200000,
     "packed": 0,
     "readbacks": 0,
@@ -3599,7 +3599,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5242880
+    "resident": 23683072
    }
   },
   "1000000": {
@@ -3629,7 +3629,7 @@
    },
    "load": {
     "uploaded": 1638400,
-    "written": 391984,
+    "written": 630384,
     "evaluated": 98304,
     "packed": 409600,
     "readbacks": 1,
@@ -3637,11 +3637,11 @@
     "texts": 0,
     "pipelines": 27,
     "late": 0,
-    "resident": 1638400
+    "resident": 16904704
    },
    "move": {
     "uploaded": 655360,
-    "written": 227616,
+    "written": 253264,
     "evaluated": 49152,
     "packed": 163840,
     "readbacks": 0,
@@ -3649,7 +3649,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 2293760
+    "resident": 7110656
    }
   }
  },
@@ -3681,7 +3681,7 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 8328,
+    "written": 8644,
     "evaluated": 298936,
     "packed": 0,
     "readbacks": 1,
@@ -3689,11 +3689,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 4227072
+    "resident": 17661952
    },
    "pan": {
     "uploaded": 0,
-    "written": 58880,
+    "written": 43520,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3701,7 +3701,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 17661952
    }
   },
   "2": {
@@ -3731,7 +3731,7 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 18576,
+    "written": 17352,
     "evaluated": 597872,
     "packed": 0,
     "readbacks": 2,
@@ -3739,11 +3739,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "pan": {
     "uploaded": 0,
-    "written": 117760,
+    "written": 87040,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3751,7 +3751,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    }
   },
   "4": {
@@ -3781,7 +3781,7 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 30240,
+    "written": 35296,
     "evaluated": 1195744,
     "packed": 0,
     "readbacks": 4,
@@ -3789,11 +3789,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 4227072
+    "resident": 59809792
    },
    "pan": {
     "uploaded": 0,
-    "written": 235520,
+    "written": 174080,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3801,7 +3801,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 59809792
    }
   },
   "8": {
@@ -3831,7 +3831,7 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 59456,
+    "written": 75536,
     "evaluated": 2391488,
     "packed": 0,
     "readbacks": 8,
@@ -3839,11 +3839,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 4227072
+    "resident": 116006912
    },
    "pan": {
     "uploaded": 0,
-    "written": 471040,
+    "written": 348160,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3851,7 +3851,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 116006912
    }
   }
  },
@@ -3882,20 +3882,20 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 3915776,
-    "written": 10340,
-    "evaluated": 249856,
-    "packed": 978944,
+    "uploaded": 2686976,
+    "written": 9836,
+    "evaluated": 163840,
+    "packed": 671744,
     "readbacks": 1,
     "jobs": 2,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 3915776
+    "resident": 9027584
    },
    "pan": {
     "uploaded": 0,
-    "written": 61024,
+    "written": 49976,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3903,19 +3903,19 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3915776
+    "resident": 9027584
    },
    "zoom": {
-    "uploaded": 0,
-    "written": 62388,
-    "evaluated": 0,
-    "packed": 0,
+    "uploaded": 966656,
+    "written": 53996,
+    "evaluated": 77824,
+    "packed": 228944,
     "readbacks": 0,
     "jobs": 0,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3915776
+    "resident": 9568256
    }
   },
   "1000000": {
@@ -3944,20 +3944,20 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 5341184,
-    "written": 13052,
-    "evaluated": 323584,
-    "packed": 1335296,
+    "uploaded": 3670016,
+    "written": 10432,
+    "evaluated": 212992,
+    "packed": 917504,
     "readbacks": 1,
     "jobs": 2,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 5341184
+    "resident": 12795904
    },
    "pan": {
     "uploaded": 0,
-    "written": 61024,
+    "written": 48264,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3965,11 +3965,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5341184
+    "resident": 12795904
    },
    "zoom": {
     "uploaded": 0,
-    "written": 62388,
+    "written": 51216,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -3977,7 +3977,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5341184
+    "resident": 12795904
    }
   },
   "2000000": {
@@ -4006,20 +4006,20 @@
     "resident": 0
    },
    "load": {
-    "uploaded": 5914624,
-    "written": 14876,
-    "evaluated": 352256,
-    "packed": 1478656,
+    "uploaded": 3588096,
+    "written": 12688,
+    "evaluated": 208896,
+    "packed": 897024,
     "readbacks": 1,
     "jobs": 2,
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 5914624
+    "resident": 12435456
    },
    "pan": {
     "uploaded": 0,
-    "written": 61024,
+    "written": 48232,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -4027,11 +4027,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5914624
+    "resident": 12435456
    },
    "zoom": {
     "uploaded": 0,
-    "written": 62388,
+    "written": 51136,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -4039,7 +4039,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5914624
+    "resident": 12435456
    }
   }
  },
@@ -4071,7 +4071,7 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 15632,
+    "written": 16264,
     "evaluated": 597872,
     "packed": 0,
     "readbacks": 2,
@@ -4079,11 +4079,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "image": {
     "uploaded": 0,
-    "written": 8928,
+    "written": 6624,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -4091,11 +4091,11 @@
     "texts": 0,
     "pipelines": 1,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "png": {
     "uploaded": 0,
-    "written": 2944,
+    "written": 2176,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -4103,11 +4103,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "video": {
     "uploaded": 0,
-    "written": 97248,
+    "written": 71904,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 30,
@@ -4115,11 +4115,11 @@
     "texts": 0,
     "pipelines": 1,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "held": {
     "uploaded": 0,
-    "written": 5984,
+    "written": 4448,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -4127,7 +4127,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    }
   },
   "2073600": {
@@ -4157,7 +4157,7 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 18576,
+    "written": 16264,
     "evaluated": 597872,
     "packed": 0,
     "readbacks": 2,
@@ -4165,11 +4165,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "image": {
     "uploaded": 0,
-    "written": 8928,
+    "written": 6624,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -4177,11 +4177,11 @@
     "texts": 0,
     "pipelines": 1,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "png": {
     "uploaded": 0,
-    "written": 2944,
+    "written": 2176,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -4189,11 +4189,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "video": {
     "uploaded": 0,
-    "written": 97248,
+    "written": 71904,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 30,
@@ -4201,11 +4201,11 @@
     "texts": 0,
     "pipelines": 1,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "held": {
     "uploaded": 0,
-    "written": 5984,
+    "written": 4448,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -4213,7 +4213,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    }
   },
   "8294400": {
@@ -4243,7 +4243,7 @@
    },
    "load": {
     "uploaded": 3589760,
-    "written": 15632,
+    "written": 14088,
     "evaluated": 597872,
     "packed": 0,
     "readbacks": 2,
@@ -4251,11 +4251,11 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "image": {
     "uploaded": 0,
-    "written": 8928,
+    "written": 6624,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -4263,11 +4263,11 @@
     "texts": 0,
     "pipelines": 1,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "png": {
     "uploaded": 0,
-    "written": 2944,
+    "written": 2176,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 0,
@@ -4275,11 +4275,11 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "video": {
     "uploaded": 0,
-    "written": 97248,
+    "written": 71904,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 30,
@@ -4287,11 +4287,11 @@
     "texts": 0,
     "pipelines": 1,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    },
    "held": {
     "uploaded": 0,
-    "written": 5984,
+    "written": 4448,
     "evaluated": 0,
     "packed": 0,
     "readbacks": 1,
@@ -4299,7 +4299,7 @@
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 4227072
+    "resident": 31711232
    }
   }
  }

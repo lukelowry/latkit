@@ -284,7 +284,8 @@ const STATUS: u32 = 16u;
 const LABELED: u32 = 32u;
 const STEP_BEFORE: u32 = 64u;
 const STEP_AFTER: u32 = 128u;
-const CASTS: u32 = 256u;
+// A vertex mark whose blocks and groups drop shadows onto a diagram's sheet.
+const SHADOW: u32 = 256u;
 // A vertex mark whose rows hold rows: drawn as containers.
 const GROUP: u32 = 512u;
 
@@ -410,21 +411,6 @@ const LIST_HEADER: u32 = 12u;
 const SCAN_WORKGROUP: u32 = 256u;
 
 
-// How shadows fall: the light, how they darken and soften, and the ground the map covers.
-struct Shade {
-    color: vec4f,
-    // The direction toward the light, in world units, and how much shadows spread per unit of height.
-    light: vec4f,
-    // The ground the map covers: least x and y, greatest x and y, in world units.
-    rect: vec4f,
-    // World units flat marks cast from, world units per texel of the map, its levels, and whether
-    // anything casts.
-    lift: f32,
-    texel: f32,
-    levels: f32,
-    on: u32,
-}
-
 // What every draw and dispatch of a frame reads.
 struct Frame {
     center_hi: vec2f,
@@ -491,23 +477,22 @@ struct Frame {
     sun: vec4f,
     // The air glowing around the globe; clear where the earth has none.
     atmosphere: vec4f,
-    shade: Shade,
+    // What a diagram's blocks and groups drop their shadows in.
+    shadow: vec4f,
     theme: array<vec4u, 4>,
 }
 
-// What one pass draws through: the view, or the light casting shadows.
+// What a frame draws through: the view's camera.
 struct Eye {
     clip_from_world: mat4x4f,
     world_from_clip: mat4x4f,
     // The camera's position in world units.
     position: vec4f,
-    // The target's size in CSS pixels; the light's map counts CSS pixels of the view it serves.
+    // The target's size in CSS pixels.
     size: vec2f,
     px_per_unit: vec2f,
     // Target pixels per CSS pixel.
     pixel_ratio: f32,
-    // World units casters are raised by: the shadow's lift in the light's eye, 0 elsewhere.
-    lift: f32,
 }
 
 // One mark's parameters, at a 256-byte aligned dynamic offset.

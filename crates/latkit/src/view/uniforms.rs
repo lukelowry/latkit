@@ -1,7 +1,7 @@
 //! What a frame tells its shaders: the frame uniform, the eyes its passes draw through, and each
 //! mark's uniform.
 
-use glam::{DMat4, DVec3, DVec4};
+use glam::{DMat4, DVec3};
 
 use super::camera::{Projected, split};
 use super::marks::Shown;
@@ -19,9 +19,9 @@ fn vector(v: DVec3) -> [f32; 4] {
 }
 
 /// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels, showing
-/// axis coordinate `at`, `elapsed` seconds of motion into the view's clock. Pointer, probe, focus,
-/// and shade words start empty. In a diagram every length but glow and halo is a unit, so the
-/// theme's lengths scale with the zoom.
+/// axis coordinate `at`, `elapsed` seconds of motion into the view's clock. Pointer, probe, and
+/// focus words start empty. In a diagram every length but glow and halo is a unit, so the theme's
+/// lengths scale with the zoom.
 pub(crate) fn frame(
     scene: &Scene,
     projected: &Projected,
@@ -99,12 +99,12 @@ pub(crate) fn frame(
     frame.sun = sun.map_or([0.0; 4], |s| [s[0] as f32, s[1] as f32, s[2] as f32, theme.night.clamp(0.0, 1.0)]);
     frame.atmosphere = atmosphere.unwrap_or([0.0; 4]);
     frame.theme = theme_slots(theme);
-    frame.shade.color = theme.shadow.color.to_array();
+    frame.shadow = theme.shadow.color.to_array();
     frame
 }
 
 /// The world distance from the center a plane's grid fades out by: what the view shows looking
-/// straight down, and a little more. Shadows cover the same ground.
+/// straight down, and a little more.
 pub(crate) fn grid_fade(scene: &Scene, projected: &Projected, size: [f64; 2]) -> f64 {
     match &scene.space {
         Space::Plot(_) => 0.0,
@@ -122,31 +122,6 @@ pub(crate) fn eye(projected: &Projected, size: [f64; 2], pixel_ratio: f32) -> wg
     eye.size = [size[0] as f32, size[1] as f32];
     eye.px_per_unit = projected.px_per_unit.map(|v| v as f32);
     eye.pixel_ratio = pixel_ratio;
-    eye
-}
-
-/// The light's eye, looking down along `light` onto the square of ground `rect` (least x, y, greatest
-/// x, y, world units), and the casters' lift in world units. Its CSS pixels are the view's: a
-/// marker's quad keeps its size across the map.
-pub(crate) fn light_eye(view: &wgsl::Eye, light: DVec3, rect: [f64; 4], lift: f64, texels: u32) -> wgsl::Eye {
-    let [x0, y0, x1, y1] = rect;
-    let (sx, sy) = (2.0 / (x1 - x0), 2.0 / (y1 - y0));
-    let tilt = -light.truncate() / light.z.max(1e-3);
-    // Ground point along the light, mapped to clip space; z lifted first.
-    let cast = DMat4::from_cols(
-        DVec4::new(sx, 0.0, 0.0, 0.0),
-        DVec4::new(0.0, sy, 0.0, 0.0),
-        DVec4::new(tilt.x * sx, tilt.y * sy, 0.0, 0.0),
-        DVec4::new(-1.0 - x0 * sx, -1.0 - y0 * sy, 0.5, 1.0),
-    ) * DMat4::from_translation(DVec3::new(0.0, 0.0, lift));
-    let texels_per_unit = f64::from(texels) / (x1 - x0);
-    let px = texels_per_unit / f64::from(view.px_per_unit[0]).max(1e-30);
-    let mut eye = *view;
-    eye.clip_from_world = matrix(cast);
-    eye.world_from_clip = matrix(DMat4::IDENTITY);
-    eye.size = [(f64::from(texels) / px) as f32; 2];
-    eye.pixel_ratio = px as f32;
-    eye.lift = lift as f32;
     eye
 }
 

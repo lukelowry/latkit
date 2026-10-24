@@ -1,5 +1,5 @@
 // The backdrop under every mark: a plane's or a diagram's grid, or the earth's surface and graticule,
-// darkened where casters shadow the ground, lit by daylight, and on the globe ringed by its air. Lines
+// lit by daylight, and on the globe ringed by its air. Lines
 // are a pixel wide and antialiased per axis. Their spacing steps by tens, and the next step fades in as
 // the lines crowd, so no seam shows. They fade where the view grazes the ground, and on a plane away
 // from what the camera looks at. The round globe writes its depth a hair under its surface, so what
@@ -9,9 +9,7 @@ import package::lib::types::{SPACE_EARTH, SPACE_PLANE, SPACE_DIAGRAM, GRID_OFF, 
 import package::lib::bind::{frame, eye};
 import package::lib::color::output;
 import package::lib::project::{PI, NEAR_Z, FAR_Z, globe_center};
-import package::lib::shade::{lit, daylight};
-
-@group(2) @binding(10) var shadows: texture_2d<f32>;
+import package::lib::daylight::daylight;
 
 struct Varyings {
     @builtin(position) clip: vec4f,
@@ -74,18 +72,12 @@ fn blend(color: vec4f, over: vec4f, coverage: f32) -> vec4f {
     return vec4f(mix(color.rgb, over.rgb, coverage * over.a), color.a);
 }
 
-// `color` darkened where casters shadow ground point `g`.
-fn shaded(color: vec4f, g: vec3f, ahead: bool) -> vec4f {
-    let shadow = select(0.0, 1.0 - lit(shadows, g, true), ahead);
-    return vec4f(mix(color.rgb, frame.shade.color.rgb, shadow), color.a);
-}
-
 // The plane: its grid where the ray meets elevation 0 at `g`, faded where the ray grazes and away
 // from the center.
 fn plane(g: vec3f, d: vec3f, ahead: bool) -> vec4f {
     let p = g.xy + frame.center_hi + frame.center_lo;
     let w = fwidth(g.xy);
-    let ground = shaded(frame.background, g, ahead);
+    let ground = frame.background;
     if frame.grid_kind == GRID_OFF {
         return ground;
     }
@@ -130,11 +122,10 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
     var ground = frame.surface;
     if globe {
         p = globe_degrees(hit, radius);
-        ground = vec4f(ground.rgb * daylight(p), ground.a);
     } else {
         p = map_degrees(g);
-        ground = shaded(vec4f(ground.rgb * daylight(p), ground.a), g, ahead);
     }
+    ground = vec4f(ground.rgb * daylight(p), ground.a);
     var color = blend(frame.background, ground, covered);
     let facing = dot(normalize(hit - center), -d);
     if frame.graticule != 0u {

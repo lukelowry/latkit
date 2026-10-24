@@ -1,9 +1,9 @@
-// Points: where a vertex row's marker stands, how large, and in what color. Draws, casts, probes,
-// bounds, and labels all read a point through `point`.
+// Points: where a vertex row's marker stands, how large, and in what color. Draws, probes, bounds,
+// and labels all read a point through `point`.
 
 import package::lib::types::{
-    NONE, VISIBLE, PLACED, SIZED, STATUS, CASTS, HOVERED, VERTEX_HALF, VERTEX_WORDS, SIDE_LEFT, SIDE_RIGHT,
-    SIDE_TOP, PORT_WORDS, PORT_CODE, PORT_SHAPE, PORT_COLUMN, HALF_UNITS, OWN_HEIGHT, SPACE_DIAGRAM,
+    NONE, VISIBLE, PLACED, SIZED, STATUS, SHADOW, HOVERED, VERTEX_HALF, VERTEX_WORDS, SIDE_LEFT, SIDE_RIGHT,
+    SIDE_TOP, PORT_WORDS, PORT_CODE, PORT_SHAPE, PORT_COLUMN, HALF_UNITS, OWN_HEIGHT,
 };
 import package::lib::bind::{frame, eye, mark, program};
 import package::lib::state::{row_at, vertex_at, Vertex};
@@ -125,10 +125,10 @@ fn port_at(p: Point, k: u32) -> Port {
 }
 
 // CSS pixels a point's quad reaches past its center: the marker, its status ring when it has one,
-// its shadow on a diagram's sheet when it casts one, a target pixel of edge, and when `lit`, as the
+// its shadow on a diagram's sheet when it drops one, a target pixel of edge, and when `lit`, as the
 // focus draw draws it, its glow.
 fn reach(p: Point, lit: bool) -> vec2f {
     let ring = select(0.0, 3.0 * frame.unit, (mark.flags & STATUS) != 0u && p.status.a > 0.0);
-    let shadow = select(0.0, 2.0 * theme_lift(), (mark.flags & CASTS) != 0u && frame.space == SPACE_DIAGRAM);
+    let shadow = select(0.0, 2.0 * theme_lift(), (mark.flags & SHADOW) != 0u);
     return p.half + max(ring, shadow) + select(0.0, frame.glow, lit) + fringe();
 }

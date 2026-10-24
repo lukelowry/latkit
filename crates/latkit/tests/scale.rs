@@ -6,11 +6,27 @@
 
 mod common;
 
-use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane};
+use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane, step};
+use latkit::host::{Host, Job, Raster, TextRun};
 use latkit::{
-    Areas, Axis, Budget, Camera, Color, Data, Edges, Fit, Frame, Ids, Lines, Patch, Plot, Row, Scene, Table, Vertices,
-    View, field, when,
+    Areas, Axis, Budget, Camera, Color, Data, Edges, Fit, Frame, Ids, Lines, Patch, Pending, Plot, Row, Scene, Table,
+    Vertices, View, Waiting, field, when,
 };
+
+/// Jobs done on threads of their own, landing frames later, as a page's workers answer them.
+struct Threads;
+
+impl Host for Threads {
+    fn rasterize(&self, _: &TextRun) -> latkit::Result<Raster> {
+        Err(latkit::Error::Unsupported("these views set no text".into()))
+    }
+
+    fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
+        let (pending, resolver) = Pending::new();
+        std::thread::spawn(move || resolver.resolve(Ok(job.run())));
+        pending
+    }
+}
 
 /// A grid of `columns` by `rows` vertices a unit apart, from the origin, and an edge from each to
 /// the next in its row.
@@ -444,7 +460,7 @@ fn an_edge_kept_draws_between_its_ends() {
     let Some(gpu) = gpu() else { return };
     let budget = gpu.budget();
     // So little room that only the coarsest edges draw.
-    gpu.set_budget(Budget { bytes: 16 << 20, ..budget });
+    gpu.set_budget(Budget { bytes: 8 << 20, ..budget });
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)
@@ -629,6 +645,80 @@ fn a_tiny_budget_never_fails() {
     assert!(stats.drawn > 0 && stats.drawn < u64::from(n), "{} of {n} rows draw", stats.drawn);
     let Camera::Map { center, .. } = *view.camera() else { panic!("a map camera") };
     assert!((center[0] - 249.5).abs() < 5.0 && (center[1] - 199.5).abs() < 5.0, "a fit frames every row: {center:?}");
+}
+
+#[test]
+fn a_first_look_draws_within_its_plan_while_pyramids_are_worked_out() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 4 << 20 });
+    gpu.set_host(Threads);
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Edges::of("grid", "Line").ends("from", "to"))
+        .draw(Vertices::of("grid", "Bus").position("x", "y"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_data(lattice(1000, 500));
+    view.fit(Fit::All);
+    // Until the pyramids land, a sample draws, the ends of its edges among its vertices' rows: then
+    // what replaces it finds room beside it.
+    let mut settled = false;
+    for _ in 0..600 {
+        step(&gpu, &mut view);
+        if view.stats().waiting == Waiting::default() && !view.needs_render() {
+            settled = true;
+            break;
+        }
+        if !view.needs_render() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    assert!(errors(&mut view).is_empty(), "nothing fails");
+    assert!(settled, "what replaces the sample lands: {:?}", view.stats().waiting);
+    assert!(gpu.resident() <= 8 << 20, "{} bytes resident", gpu.resident());
+}
+
+#[test]
+fn edges_ending_too_far_apart_for_the_budget_tell_it_and_rest() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
+    // Each edge joins a vertex to one far off: none lands finer than the pyramid's root, which alone
+    // holds more than fits, and the ends of the fewest edges drawn lie in every page of the vertices,
+    // more than the budget holds.
+    let n = 250_000_u32;
+    let mut seed = 1_u64;
+    let far: Vec<u64> = (0..n)
+        .map(|_| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % u64::from(n)
+        })
+        .collect();
+    let mut data = Data::new("grid");
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Bus", Ids::count(n))
+                    .field("x", (0..n).map(|i| f64::from(i % 500)).collect::<Vec<_>>())
+                    .field("y", (0..n).map(|i| f64::from(i / 500)).collect::<Vec<_>>()),
+            )
+            .set(
+                Table::new("Line", Ids::count(n))
+                    .reference("from", "Bus", (0..u64::from(n)).collect::<Vec<_>>())
+                    .reference("to", "Bus", far),
+            ),
+    )
+    .expect("valid");
+    let scene = Scene::new(plane())
+        .theme(plain_theme())
+        .draw(Edges::of("grid", "Line").ends("from", "to"))
+        .draw(Vertices::of("grid", "Bus").position("x", "y"));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_data(data);
+    view.fit(Fit::All);
+    // The view settles: it waits for something to change, never spinning.
+    frame(&gpu, &mut view);
+    let told = errors(&mut view);
+    assert!(matches!(told[..], [latkit::Error::Limit(_)]), "it tells its data does not fit: {told:?}");
+    assert!(gpu.resident() <= 8 << 20, "{} bytes resident", gpu.resident());
 }
 
 #[test]

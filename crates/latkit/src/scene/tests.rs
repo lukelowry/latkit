@@ -55,14 +55,14 @@ fn faces_lines_and_controls_match_builders() {
         "space": "plane",
         "controls": { "turn": false, "pickRadius": 12 },
         "marks": [
-            { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false, "shadow": true } },
+            { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false } },
             { "lines": { "of": ["mesh", "Body"], "geometry": "outline", "color": "#66c7ff", "width": 2, "flow": 8 } },
             { "vertices": { "of": ["mesh", "Vertex"], "select": false, "drag": true, "ring": "#ff0000" } }
         ]
     }"##;
     let built = Scene::new(Plane::default())
         .controls(Controls { turn: false, pick_radius: 12.0, ..Controls::default() })
-        .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false).shadow(true))
+        .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false))
         .draw(
             Lines::of("mesh", "Body")
                 .geometry("outline")

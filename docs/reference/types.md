@@ -265,7 +265,8 @@ type Theme =
       edgeSpacing?: number;
       /**
        * Elsewhere, how far edges joining the same two vertices bow apart: each lane by this fraction of
-       * the edge's length at its middle. A bow is part of the drawing, so zooming never moves it.
+       * the edge's length at its middle, as wide as eight lanes at most, more packing closer. A bow is
+       * part of the drawing, so zooming never moves it.
        */
       laneBow?: number;
       /** How far an arrowhead reaches past its edge's width. */
@@ -282,7 +283,7 @@ type Theme =
       portSize?: number;
       /** The radius of an orthogonal wire's bends. */
       bend?: number;
-      /** How marks that cast shadows cast them. */
+      /** How a diagram's blocks and groups drop shadows onto its sheet. */
       shadow?: Shadow;
       /** The air glowing around the globe, where the earth has an atmosphere. */
       atmosphere?: Color;
@@ -321,18 +322,11 @@ interface Flow {
 ### Shadow
 
 ```ts
-/** How marks that cast shadows cast them onto the ground and onto faces. */
+/** How a diagram's blocks and groups drop shadows onto its sheet. */
 interface Shadow {
-  /** What a shadow darkens toward; its alpha is how dark a shadow at contact gets. */
+  /** What a shadow darkens toward; its alpha is how dark it gets under the block. */
   color?: Color;
-  /** The direction toward the light, fixed in the world: shadows fall away from it. */
-  light?: [number, number, number];
-  /** How much a shadow spreads per unit of a caster's height: the light's size. */
-  softness?: number;
-  /**
-   * CSS pixels flat marks cast from, as if raised; in a diagram, how far a block's or a group's
-   * shadow falls below it, and as far again it softens.
-   */
+  /** How far a block's or a group's shadow falls below it, and as far again it softens. */
   lift?: number;
 }
 ```
@@ -568,6 +562,11 @@ interface Vertices {
    * drawn as a container around them, its label a title in its header. Diagrams only.
    */
   contains?: [table: string, reference: string] | null;
+  /**
+   * Whether each row, a block or a group, drops a shadow onto the sheet, as the theme's `shadow`
+   * says. Diagrams only.
+   */
+  shadow?: boolean;
   /** Each row's color; the theme's unless set. */
   color?: ExprInput | null;
   /** Whether each row is drawn and picked. */
@@ -591,8 +590,6 @@ interface Vertices {
   drag?: boolean;
   /** Each row's text: a text field, or a label's options. */
   label?: Label | null;
-  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
-  shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
    * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.
@@ -668,8 +665,6 @@ interface Edges {
   drag?: boolean;
   /** Each row's text: a text field, or a label's options. */
   label?: Label | null;
-  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
-  shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
    * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.
@@ -733,8 +728,6 @@ interface Lines {
   drag?: boolean;
   /** Each row's text: a text field, or a label's options. */
   label?: Label | null;
-  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
-  shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
    * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.
@@ -782,8 +775,6 @@ interface Areas {
   drag?: boolean;
   /** Each row's text: a text field, or a label's options. */
   label?: Label | null;
-  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
-  shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
    * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.
@@ -833,8 +824,6 @@ interface Faces {
   drag?: boolean;
   /** Each row's text: a text field, or a label's options. */
   label?: Label | null;
-  /** Whether each row casts a shadow onto the ground and onto faces, away from the theme's light. */
-  shadow?: boolean;
   /**
    * A legend of the colors at the view's bottom right, under this title: the colormap across its
    * domain, ticked; a cell for each category; or a swatch beside each name of a map's `categories`.
@@ -1720,7 +1709,7 @@ interface Stats {
    * drawn through tiles.
    */
   drawn: number;
-  /** Draw calls the last frame recorded, shadows and labels with the marks. */
+  /** Draw calls the last frame recorded, labels with the marks. */
   draws: number;
   /**
    * Instances the last frame's draws drew: points, segments, triangles, glyphs; at most, for
@@ -1753,8 +1742,8 @@ interface Stats {
  * Work under way a frame stands in for: pipelines the scene draws with compiling, until which the
  * view draws nothing new (`compiling`); pages uploading or tables not yet built from them
  * (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or
- * texts not yet set (`labels`); a fit due or being measured (`fit`); row regions laid out again,
- * segment counts, or a transition beginning (`marks`). Empty once a frame is complete.
+ * texts not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a
+ * transition beginning (`marks`). Empty once a frame is complete.
  */
 type Waiting = ('compiling' | 'data' | 'derived' | 'labels' | 'fit' | 'marks')[];
 ```

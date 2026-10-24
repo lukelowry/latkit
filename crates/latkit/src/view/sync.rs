@@ -824,42 +824,31 @@ impl<'g> Builder<'g> {
         let slots = drawing.slot_count();
         match field {
             Some(Field::Values(values, _)) if column.words == Words::Codes => {
-                for s in 0..slots {
-                    self.held_page(drawing, s, &packing, Some(values), |gpu, rows| {
-                        let mut codes = gpu.dictionaries.field(data, &packing.table, &packing.field).rows(values, rows);
-                        codes.resize(wgsl::PAGE_ROWS as usize, wgsl::MISSING);
-                        codes
-                    });
-                }
+                let field = (packing.table.clone(), packing.field.clone());
+                self.held_pages(drawing, &packing, Some(values), |gpu, rows| {
+                    let mut codes = gpu.dictionaries.field(data, &field.0, &field.1).rows(values, rows);
+                    codes.resize(wgsl::PAGE_ROWS as usize, wgsl::MISSING);
+                    codes
+                });
             }
             Some(Field::Values(values, _)) if column.words == Words::Path => self.held_path(values, drawing, &packing),
             Some(Field::Values(values, _)) => {
                 let words = column.words;
-                for s in 0..slots {
-                    self.held_page(drawing, s, &packing, Some(values), |_, rows| {
-                        packed::values(values, rows, words, false)
-                    });
-                }
+                self.held_pages(drawing, &packing, Some(values), |_, rows| packed::values(values, rows, words, false));
                 if column.low {
                     d[wgsl::COLUMN_LOW as usize] = self.words.len() as u32;
                     let low = Packing { low: true, ..packing };
                     let listed = self.pages.take();
-                    for s in 0..slots {
-                        self.held_page(drawing, s, &low, Some(values), |_, rows| {
-                            packed::values(values, rows, words, true)
-                        });
-                    }
+                    self.held_pages(drawing, &low, Some(values), |_, rows| packed::values(values, rows, words, true));
                     self.pages = listed;
                 }
             }
             Some(Field::Reference(reference)) => {
                 let target = inputs.order_of(&reference.to);
                 let packing = Packing { reads: target.map_or(0, Order::id), ..packing };
-                for s in 0..slots {
-                    self.held_page(drawing, s, &packing, Some(&reference.rows), |_, rows| {
-                        packed::targets(reference, rows, target)
-                    });
-                }
+                self.held_pages(drawing, &packing, Some(&reference.rows), |_, rows| {
+                    packed::targets(reference, rows, target)
+                });
             }
             Some(Field::Sampled(samples, version)) if column.trace => {
                 self.pages = None;
@@ -906,33 +895,47 @@ impl<'g> Builder<'g> {
         }
     }
 
-    /// Appends the page of `packing` that slot `s` of `drawing` holds, packed from `source`, made by
-    /// `pack` from its rows the first time; or nothing for a free slot.
-    fn held_page(
+    /// Appends the page of `packing` each slot of `drawing` holds, packed from `source`, made by `pack`
+    /// from its rows the first time; nothing for a free slot. The pages of the order are found in one
+    /// look at the column, each page of rows kept on its own.
+    fn held_pages(
         &mut self,
         drawing: &Drawing,
-        s: usize,
         packing: &Packing,
         source: Option<&Column>,
-        pack: impl FnOnce(&mut Inner, &[u32]) -> Vec<u32>,
+        pack: impl Fn(&mut Inner, &[u32]) -> Vec<u32>,
     ) {
-        let Some((packing, page, source)) = slot_key(packing, drawing, source, s) else {
-            self.words.push(wgsl::NONE);
-            self.list(None);
-            return;
-        };
-        let id = self.gpu.packed.page(&packing, &drawing.order, source, page);
-        self.list(Some(id));
-        let key = PageKey::of(id, packing.words, packing.low);
-        let held = self.gpu.arena.holds(key, wgsl::PAGE_ROWS);
-        let words = if held {
-            Vec::new()
-        } else {
-            let rows = drawing.rows(s);
-            self.gpu.packed.count(rows.len());
-            pack(self.gpu, &rows)
-        };
-        self.push(key, wgsl::PAGE_ROWS, || Content::Computed(words));
+        let slots = drawing.slot_count();
+        let pages: Vec<u32> = (0..slots)
+            .filter_map(|s| match drawing.holds(s) {
+                Holds::Page(page) => Some(page),
+                _ => None,
+            })
+            .collect();
+        let mut ids = self.gpu.packed.pages_of(packing, &drawing.order, source, &pages).into_iter();
+        for s in 0..slots {
+            let id = match drawing.holds(s) {
+                Holds::Free => None,
+                Holds::Page(_) => ids.next(),
+                Holds::Kept(_) => slot_key(packing, drawing, source, s)
+                    .map(|(kept, page, source)| self.gpu.packed.page(&kept, &drawing.order, source, page)),
+            };
+            let Some(id) = id else {
+                self.words.push(wgsl::NONE);
+                self.list(None);
+                continue;
+            };
+            self.list(Some(id));
+            let key = PageKey::of(id, packing.words, packing.low);
+            let words = if self.gpu.arena.holds(key, wgsl::PAGE_ROWS) {
+                Vec::new()
+            } else {
+                let rows = drawing.rows(s);
+                self.gpu.packed.count(rows.len());
+                pack(self.gpu, &rows)
+            };
+            self.push(key, wgsl::PAGE_ROWS, || Content::Computed(words));
+        }
     }
 
     /// A join's table: a bits column of the mark's rows, the rows of the other table with their ids.
@@ -962,9 +965,7 @@ impl<'g> Builder<'g> {
                 low: false,
                 reads: stamp_of((source.table.structure, other.structure, other.order)),
             };
-            for s in 0..drawing.slot_count() {
-                self.held_page(drawing, s, &packing, None, |_, rows| packed::joined(source.table, rows, other));
-            }
+            self.held_pages(drawing, &packing, None, |_, rows| packed::joined(source.table, rows, other));
             return d;
         }
         for (id, words) in &join.pages {

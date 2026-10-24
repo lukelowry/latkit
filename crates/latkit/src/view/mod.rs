@@ -22,7 +22,6 @@ mod program;
 mod query;
 mod resources;
 mod rig;
-mod shadows;
 mod sync;
 mod timer;
 mod transition;
@@ -39,7 +38,7 @@ pub use camera::Camera;
 pub(crate) use camera::Projected;
 pub use event::{Cursor, End, Event, Fit, Hit, Phase, Sample, Stats, Trigger, Waiting};
 pub use input::{Button, Device, Input, Key, Modifiers};
-pub(crate) use resources::{DEPTH, SHADE};
+pub(crate) use resources::DEPTH;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub(crate) use variants::common;
 pub(crate) use wake::Signal;
@@ -109,9 +108,12 @@ pub struct View {
     drawings: crate::data::Keyed<(Name, Name), drawing::Drawn>,
     /// What replaces what the view draws of each dataset, its tables rebuilt, waiting for their pages.
     staged: crate::data::Keyed<Name, sync::Staged>,
-    /// Pages the view draws found no room this frame, and the next frame makes some: it grows the
-    /// arena, or plans less.
-    short: bool,
+    /// Whether the pages the view draws found room this frame, and how the next frame makes it where
+    /// some found none.
+    room: frame::Room,
+    /// Whether the view told that what it draws does not fit the budget: until a version of its data
+    /// publishes, finding no room, and a fit with nothing to measure, only wait.
+    limited: bool,
     /// What the view derives from the data and the scene: tables beside the tables it draws, row for
     /// row, which marks read like data.
     derived: Derivations,
@@ -154,8 +156,7 @@ pub struct View {
     arranging: Vec<crate::Resolver<Vec<Patch>>>,
     /// Whether the platform asks for reduced motion, which `Motion::System` follows.
     reduced_motion: bool,
-    /// The shadow map and the face normals, made from what they read.
-    shadow_map: Derived<()>,
+    /// The face normals, made from what they read.
     normals: Derived<()>,
     /// Measures what frames cost the GPU, where it can.
     timer: Option<timer::Timer>,
@@ -197,7 +198,8 @@ impl View {
             choices: crate::derive::tiled::Choices::default(),
             drawings: crate::data::Keyed::default(),
             staged: crate::data::Keyed::default(),
-            short: false,
+            room: frame::Room::Found,
+            limited: false,
             derived: Derivations::default(),
             marks: Vec::new(),
             camera,
@@ -222,7 +224,6 @@ impl View {
             texting: None,
             arranging: Vec::new(),
             reduced_motion: false,
-            shadow_map: Derived::default(),
             normals: Derived::default(),
             timer: timer::Timer::new(&gpu.0.device, &gpu.0.queue),
             focus: Focus::default(),
@@ -725,7 +726,7 @@ impl View {
             || self.signal.landed()
             || self.rig.easing()
             || (self.rig.orbit != 0.0 && moves)
-            || self.fitting.due()
+            || (self.fitting.due() && !self.limited)
             // Probes and queries wait for what answers them to compile, which wakes the view as it lands.
             || (self.answers() && (self.probing.due() || self.queries.due()))
             || self.answering.is_some_and(|seen| landed() != seen)
@@ -737,7 +738,7 @@ impl View {
             || (moves && self.marks.iter().any(|m| m.compiled.as_ref().is_some_and(|c| c.program.reads().intersects(Deps::TIME))))
             || (moves && self.flowing())
             || self.gpu.0.lock().arena.uploading()
-            || self.short
+            || self.room != frame::Room::Found
     }
 
     /// Whether the view wants a frame: one that would differ ([`needs_render`](View::needs_render)),
@@ -758,8 +759,8 @@ impl View {
     /// texts, fetches, and readbacks do as they land.
     fn due(&self, input: bool) -> bool {
         self.gpu.0.lock().arena.uploading()
-            || self.short
-            || self.fitting.due()
+            || self.room != frame::Room::Found
+            || (self.fitting.due() && !self.limited)
             || (input && self.answers() && (self.probing.due() || self.queries.due()))
             || self.marks.iter().any(|m| m.begin.is_some())
     }

@@ -286,6 +286,11 @@ impl Shown {
     /// Whether the mark has a program, rows it holds and pages of words for them, and columns synced
     /// at least once: a mark holding only the rows the ends of edges drawn name evaluates them, and
     /// draws none.
+    /// Whether the mark draws faces, which need normals.
+    pub(crate) fn faces(&self) -> bool {
+        self.kind() == MarkKind::Faces
+    }
+
     pub(crate) fn drawable(&self) -> bool {
         self.compiled.is_some() && self.held() > 0 && self.tables.synced() && self.pages_held()
     }

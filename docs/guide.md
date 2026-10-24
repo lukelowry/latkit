@@ -199,18 +199,18 @@ surface, graticule, daylight, atmosphere } }`, or `{ plot: { x, y } }`. A grid i
 ### Marks
 
 Every mark names its table, `of: [dataset, table]`, and takes `color`, `visible`, `priority`,
-`label`, `legend`, `shadow`, `name`, and `pick`, `select`, and `drag`. Unless `pick` says, rows
+`label`, `legend`, `name`, and `pick`, `select`, and `drag`. Unless `pick` says, rows
 that are things are hovered, clicked, and probed (vertices, edges, faces, a plot's traces) and
 geometry is not (areas, and lines along paths: coasts, borders, roads), so hovering probes none of
 it; `pick: true` makes a map's states or cells answer the pointer.
 
-| Mark       | Draws each row as                                                  | Its own options                                                      |
-| ---------- | ------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| `vertices` | a marker at `position` (or the point field `geometry`)             | `elevation`, `radius`, `size`, `marker`, `ring`, `ports`, `contains` |
-| `edges`    | a stroke between the rows two reference fields name                | `ends`, `bends`, `route`, `arrows`, `width`, `dash`, `flow`          |
-| `lines`    | a path field's stroke; on a plot, a sampled field traced over time | `geometry`, `trace`, `interpolation`, `width`, `dash`, `flow`        |
-| `areas`    | the area a polygon field covers                                    | `geometry`                                                           |
-| `faces`    | a triangle between three vertices                                  | `corners`                                                            |
+| Mark       | Draws each row as                                                  | Its own options                                                                |
+| ---------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `vertices` | a marker at `position` (or the point field `geometry`)             | `elevation`, `radius`, `size`, `marker`, `ring`, `ports`, `contains`, `shadow` |
+| `edges`    | a stroke between the rows two reference fields name                | `ends`, `bends`, `route`, `arrows`, `width`, `dash`, `flow`                    |
+| `lines`    | a path field's stroke; on a plot, a sampled field traced over time | `geometry`, `trace`, `interpolation`, `width`, `dash`, `flow`                  |
+| `areas`    | the area a polygon field covers                                    | `geometry`                                                                     |
+| `faces`    | a triangle between three vertices                                  | `corners`                                                                      |
 
 A `flow` sends comets along a stroke. In a diagram, vertices are blocks with `ports`, a vertex mark
 with `contains` draws groups around the rows that name it, and edges of a table without `ends` are

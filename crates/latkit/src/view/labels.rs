@@ -16,7 +16,6 @@ use web_time::Instant;
 
 use super::View;
 use super::passes::{dispatch, offset};
-use super::resources::EyeSlot;
 use super::sync::{Source, table_of};
 use super::words::Kept;
 use crate::Space;
@@ -405,7 +404,7 @@ impl View {
                 label: Some("latkit labels"),
                 timestamp_writes: None,
             });
-            pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
+            pass.set_bind_group(0, &groups.view, &[]);
             let marks: Vec<(usize, u32, u32)> =
                 labeled.iter().map(|&(i, _)| (i, self.marks[i].rows, self.marks[i].path())).collect();
             // Candidates are measured where their anchors put them, by a program made for each mark's

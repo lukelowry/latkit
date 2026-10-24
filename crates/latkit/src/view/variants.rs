@@ -11,7 +11,7 @@
 //! scene never uses is never asked for. A picture takes no input: it draws once all it draws, writes,
 //! changes, and lights rows with landed.
 
-use super::{SHADE, View};
+use super::View;
 use crate::gpu::Inner;
 use crate::gpu::pipelines::{self, Asked, Urgency, Variant};
 use crate::gpu::shaders::{PATH_ENDS, PATH_GEOMETRY, Shader};
@@ -170,9 +170,6 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     if any(|m| m.style().label.is_some()) && !diagram {
         stages.text.extend([compute(Shader::Labels, "clear_cells"), compute(Shader::Labels, "reset_cells")]);
     }
-    if any(|m| m.style().shadow) {
-        stages.draw.push(Asked::Shader(Variant::draw(Shader::Shade, SHADE, 1)));
-    }
     if any(Mark::flows) {
         stages.draw.push(compute(Shader::Evaluate, "travel"));
         stages.changes.push(compute(Shader::Evaluate, "carry"));
@@ -199,7 +196,7 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
     let style = mark.style();
     let primitive = mark.kind().primitive().code();
     let path = mark.path(&scene.space).unwrap_or(PATH_ENDS);
-    let (shader, cast, lit) = match mark {
+    let (shader, lit) = match mark {
         Mark::Vertices(v) => {
             if let Marker::Wgsl { source, .. } = &v.marker {
                 // A custom marker's WGSL follows its shader's.
@@ -207,25 +204,17 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
                     |shader, format, samples| Asked::Custom(source.clone(), Variant::draw(shader, format, samples));
                 stages.draw.push(custom(Shader::PointsCustom, format, samples));
                 stages.lit.push(custom(Shader::PointsCustomFocus, format, samples));
-                if style.shadow {
-                    stages.draw.push(custom(Shader::PointsCustomCast, SHADE, 1));
-                }
-                (None, None, None)
+                (None, None)
             } else {
-                (Some(Shader::Points), Some(Shader::PointsCast), Some(Shader::PointsFocus))
+                (Some(Shader::Points), Some(Shader::PointsFocus))
             }
         }
-        Mark::Faces(_) => (Some(Shader::Triangles), Some(Shader::TrianglesCast), None),
-        Mark::Areas(_) => (Some(Shader::Areas), None, Some(Shader::AreasFocus)),
-        Mark::Edges(_) | Mark::Lines(_) => {
-            (Some(Shader::Strokes), Some(Shader::StrokesCast), Some(Shader::StrokesFocus))
-        }
+        Mark::Faces(_) => (Some(Shader::Triangles), None),
+        Mark::Areas(_) => (Some(Shader::Areas), Some(Shader::AreasFocus)),
+        Mark::Edges(_) | Mark::Lines(_) => (Some(Shader::Strokes), Some(Shader::StrokesFocus)),
     };
     stages.draw.extend(shader.map(|s| Asked::Shader(draw(s).path(path))));
     stages.lit.extend(lit.map(|s| Asked::Shader(draw(s).path(path))));
-    if style.shadow {
-        stages.draw.extend(cast.map(|s| Asked::Shader(Variant::draw(s, SHADE, 1).path(path))));
-    }
     let bounds = match mark {
         Mark::Vertices(_) => "points",
         Mark::Areas(_) => "areas",

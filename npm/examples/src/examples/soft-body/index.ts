@@ -1,4 +1,9 @@
-import { theme } from '../../ui/theme.js';
+/**
+ * A soft bunny of springs in a room: hop, squash, poke, fling, or pop it, and replay or scrub what
+ * it did. Its faces darken turning from the light over soft footprints on the floor; its vertices,
+ * their dots hidden until the mesh shows, are what the pointer drags; and a plot traces its height,
+ * speed, and volume.
+ */
 import {
   Data,
   Patch,
@@ -6,9 +11,11 @@ import {
   reference,
   units,
   type ColormapName,
+  type Grid,
   type Scene,
 } from '../../latkit.js';
 import type { Stage } from '../../ui/stage.js';
+import { theme } from '../../ui/theme.js';
 import { Body, ROOM, STEP, type Controls } from './body.js';
 import { loadMesh } from './mesh.js';
 
@@ -62,8 +69,8 @@ const THEME = {
   shading: 0.7,
 } as const;
 
-// A soft floor footprint avoids self-shadow acne on deforming triangles in the packaged renderer.
-// This is a custom marker through the public JS scene API, with no renderer changes.
+// A soft footprint on the floor under the bunny and each of its pieces, darker the nearer they sit:
+// a marker of our own, in WGSL, its darkness read from each row's `opacity`.
 const CONTACT_SHADOW = `fn marker(f: MarkerFragment) -> MarkerColor {
   let p = f.p / max(f.half, vec2f(0.001));
   let d = length(p);
@@ -94,6 +101,17 @@ export default async function bunny(stage: Stage): Promise<void> {
     };
   let paint = 'solid';
   let inspect = false;
+  /** How faces turn from the light, the floor's grid, and the mesh's dots. */
+  const lit: { shading: number; grid: 'lines' | 'dots' | 'off'; dots: number } = {
+    shading: THEME.shading,
+    grid: 'lines',
+    dots: 1.5,
+  };
+  const GRIDS: Record<typeof lit.grid, Grid> = {
+    lines: { lines: { pitch: 1 } },
+    dots: { dots: { pitch: 0.5 } },
+    off: 'off',
+  };
   let fragments = false;
   let timeScale = 1;
   let carry = 0;
@@ -145,12 +163,13 @@ export default async function bunny(stage: Stage): Promise<void> {
 
   data.apply(new Patch().set('Shadow', { count: body.burst.chunks.length + 1 }, {}));
 
-  // Lit faces and soft contact shadows; the vertices remain pickable with inspection dots hidden.
+  // Faces lit from the camera over soft footprints; the vertices stay pickable, their dots hidden.
   const room = (live: boolean): Scene => {
     const p = PAINTS[paint]!;
     return {
-      space: { plane: { grid: { lines: { pitch: 1 } } } },
-      theme: THEME,
+      space: { plane: { grid: GRIDS[lit.grid] } },
+      // The mesh's dots and springs draw the theme's sizes.
+      theme: { ...THEME, shading: lit.shading, vertexRadius: inspect ? lit.dots : 0, edgeWidth: 1 },
       controls: { pickRadius: 14 },
       marks: [
         {
@@ -187,7 +206,6 @@ export default async function bunny(stage: Stage): Promise<void> {
             corners: ['a', 'b', 'c'],
             ...(paint === 'solid' ? { color: '#edccb4' } : {}),
             pick: false,
-            shadow: true,
           },
         },
         {
@@ -195,7 +213,6 @@ export default async function bunny(stage: Stage): Promise<void> {
             of: ['bunny', 'Spring'],
             ends: ['a', 'b'],
             color: '#ffffff14',
-            width: 1,
             pick: false,
             visible: inspect && !fragments,
           },
@@ -205,7 +222,6 @@ export default async function bunny(stage: Stage): Promise<void> {
             of: ['bunny', fragments ? 'ChunkVertex' : 'Vertex'],
             position: ['x', 'y'],
             elevation: 'z',
-            radius: inspect ? 1.6 : 0,
             color:
               paint === 'solid'
                 ? inspect
@@ -313,6 +329,36 @@ export default async function bunny(stage: Stage): Promise<void> {
     Object.entries(PAINTS).map(([key, p]) => [p.label, key] as const),
     paint,
     repaint,
+  );
+  const light = stage.section('Light', false);
+  light.range(
+    'Shading',
+    { min: 0, max: 1, step: 0.05, value: lit.shading, format: (v) => `${Math.round(v * 100)}%` },
+    (shading) => {
+      lit.shading = shading;
+      space.show(room(playback.mode === 'live'));
+    },
+  );
+  light.range(
+    'Mesh dots',
+    { min: 0.5, max: 4, step: 0.25, value: lit.dots, format: (v) => `${v.toFixed(2)} px` },
+    (dots) => {
+      lit.dots = dots;
+      space.show(room(playback.mode === 'live'));
+    },
+  );
+  light.choice(
+    'Floor',
+    [
+      ['Lines', 'lines'],
+      ['Dots', 'dots'],
+      ['Bare', 'off'],
+    ] as const,
+    lit.grid,
+    (grid) => {
+      lit.grid = grid;
+      space.show(room(playback.mode === 'live'));
+    },
   );
 
   const monitor = stage.section('History');

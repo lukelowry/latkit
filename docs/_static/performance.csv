@@ -1,15 +1,15 @@
 Scenario,Largest,Open (ms),Frame (ms),GPU (ms),Pick (ms)
-"A first visit: latkit, the GPU, and pipelines made without a shader cache","10,000 rows",454,,,
-"Vertices on a plane, colored through a colormap","2,000,000 rows",747,0.2,0.5,13.6
-"A lattice grid on the globe: buses, and the geodesic lines between them","2,000,000 buses","1,635",0.3,1.3,13.7
-"Every vertex labeled: placement, collisions, and the texts set","1,000,000 rows",784,1.7,1.1,
-Edges by the thousand between the same sixteen pairs of vertices,"100,000 edges",497,0.1,20.0,72.6
-"Polygons of 33 points on the mercator map, triangulated in jobs","30,000 polygons",705,0.1,1.2,6.1
-"Vector tiles fetched as the camera asks for them, from a local server","4,096 squares a tile",550,0.3,0.2,
-"Blocks with ports in trees of 64, laid out in layers, wires routed around them","10,000 blocks",594,0.1,0.2,
-"A plot of traces 1,024 frames long, fed a frame every animation frame","10,000 traces",561,0.3,24.0,22.1
-One trace with a long history: levels of detail,"1,000,000 frames",535,0.1,0.4,
-"Every row moving to a new place at once, easing over a second","1,000,000 rows",687,0.1,0.2,
-"Views of one GPU drawing one dataset: pages shared, not copied",8 views,555,0.3,2.8,
-"A 16 MiB budget: what draws fits, through tiles, and nothing fails","2,000,000 buses","1,573",0.2,0.2,
-"Pictures and video of two views of a 100,000-bus grid","8,294,400 pixels",652,,,
+"A first visit: latkit, the GPU, and pipelines made without a shader cache","10,000 rows",504,,,
+"Vertices on a plane, colored through a colormap","2,000,000 rows",769,0.1,0.5,12.3
+"A lattice grid on the globe: buses, and the geodesic lines between them","2,000,000 buses","1,619",0.4,1.3,15.8
+"Every vertex labeled: placement, collisions, and the texts set","1,000,000 rows",685,1.5,0.9,
+Edges by the thousand between the same sixteen pairs of vertices,"100,000 edges",530,0.1,0.2,6.3
+"Polygons of 33 points on the mercator map, triangulated in jobs","30,000 polygons",673,0.1,1.2,6.1
+"Vector tiles fetched as the camera asks for them, from a local server","4,096 squares a tile",507,0.2,0.2,
+"Blocks with ports in trees of 64, laid out in layers, wires routed around them","10,000 blocks",575,0.1,0.2,
+"A plot of traces 1,024 frames long, fed a frame every animation frame","10,000 traces",592,0.2,23.6,20.5
+One trace with a long history: levels of detail,"1,000,000 frames",578,0.2,0.4,
+"Every row moving to a new place at once, easing over a second","1,000,000 rows",730,0.2,0.2,
+"Views of one GPU drawing one dataset: pages shared, not copied",8 views,621,0.4,2.8,
+"A 16 MiB budget: what draws fits, through tiles, and nothing fails","2,000,000 buses","1,654",0.2,0.2,
+"Pictures and video of two views of a 100,000-bus grid","8,294,400 pixels",560,,,

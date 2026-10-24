@@ -1,7 +1,7 @@
 //! The graph: edges joining the same two vertices bow into lanes, edges bend through the points of
 //! a path field, edges end in arrowheads, and great circles settle while their vertices animate; in a
-//! diagram, nets join the ports of the vertices naming them, a block makes room for its ports, and
-//! orthogonal wires route around blocks.
+//! diagram, nets join the ports of the vertices naming them, a block makes room for its ports and
+//! drops its shadow onto the sheet, and orthogonal wires route around blocks.
 
 #![cfg(feature = "gpu")]
 
@@ -170,6 +170,36 @@ fn an_unlabeled_block_makes_room_for_its_ports() {
     assert!(lit(at(&pixels, C, C + 30)) && lit(at(&pixels, C, C - 30)), "tall enough for its ports");
     assert!(!lit(at(&pixels, C, C + 45)), "and no taller");
     assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn a_block_drops_its_shadow_onto_the_sheet_below_it() {
+    let Some(gpu) = gpu() else { return };
+    let gray = latkit::Color::rgb(0.5, 0.5, 0.5);
+    let theme = latkit::Theme {
+        background: gray,
+        shadow: latkit::Shadow { color: latkit::Color::BLACK.alpha(0.9), lift: 6.0 },
+        ..plain_theme()
+    };
+    let below = |shadow: bool| {
+        let mut data = Data::new("graph");
+        data.apply(Patch::new().set(nodes(vec![0.0], vec![0.0]))).expect("valid");
+        let block = Vertices::of("graph", "Node")
+            .position("x", "y")
+            .size(40.0, 24.0)
+            .marker(latkit::Marker::Block { corner: None })
+            .color(latkit::Color::WHITE)
+            .shadow(shadow);
+        let mut view = View::new(&gpu, Scene::new(diagram()).draw(block).theme(theme.clone())).expect("valid scene");
+        view.set_camera(camera());
+        view.set_data(data);
+        let pixels = frame(&gpu, &mut view);
+        assert_eq!(errors(&mut view), Vec::new());
+        // y runs down the sheet: just under the block's bottom edge, 12 units below its middle.
+        at(&pixels, C, C + 15)[0]
+    };
+    let (dropped, bare) = (below(true), below(false));
+    assert!(dropped + 20 < bare, "the shadow darkens the sheet below: {dropped} under {bare}");
 }
 
 #[test]

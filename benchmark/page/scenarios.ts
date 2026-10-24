@@ -42,12 +42,13 @@ export interface Built {
 
 /**
  * How a phase's cost may grow with size: 0 not at all, 1 no faster than linearly. `time` is a steady
- * phase's CPU per frame or an action's milliseconds; `bytes` is what it uploaded and what stays
- * resident. A measure left out is held only to the baselines.
+ * phase's CPU per frame or an action's milliseconds; `bytes` is what it uploaded, and unless
+ * `resident` says otherwise what stays resident. A measure left out is held only to the baselines.
  */
 export interface Order {
   time?: 0 | 1;
   bytes?: 0 | 1;
+  resident?: 0 | 1;
 }
 
 export interface Phase {
@@ -543,10 +544,11 @@ export const scenarios: Record<string, Scenario> = {
     unit: 'views',
     sizes: [1, 2, 4, 8],
     views: (n) => n,
-    // Room for eight views' own rows, which the views' shares of a budget hold together, so the
-    // bytes that grow would be pages copied.
+    // Room for eight views' own rows, which the views' shares of a budget hold together. What each
+    // view keeps per row is its own, so what stays resident grows with the views; the pages are
+    // shared, so what uploads does not.
     budget: { bytes: 1024 * 2 ** 20, uploadPerFrame: 32 * 2 ** 20 },
-    load: { time: 1, bytes: 0 },
+    load: { time: 1, bytes: 0, resident: 1 },
     build: () => ({ scene: grid('plane'), data: { g: make.lattice(1e5) } }),
     phases: [pan({ time: 1, bytes: 0 })],
   },

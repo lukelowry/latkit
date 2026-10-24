@@ -57,7 +57,6 @@ export default [
           "name": "load",
           "size": [12, { "units": 4 }],
           "marker": { "block": { "corner": 2 } },
-          "shadow": true,
           "color": { "scale": [0, 1], "value": { "field": "load", "of": ["weather", "Station"] } }
         }
       }
@@ -68,7 +67,7 @@ export default [
     "space": { "plane": { "grid": { "lines": { "pitch": 1 } } } },
     "controls": { "turn": false, "pickRadius": 14 },
     "marks": [
-      { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false, "shadow": true } },
+      { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false } },
       { "edges": { "of": ["mesh", "Spring"], "ends": ["a", "b"], "color": "#ffffff14" } },
       { "vertices": { "of": ["mesh", "Vertex"], "position": ["x", "y"], "elevation": "z", "select": false, "drag": true } }
     ],
@@ -76,7 +75,7 @@ export default [
   },
   {
     "space": { "plot": { "x": { "label": "Time (s)" } } },
-    "marks": [{ "lines": { "of": ["mesh", "Body"], "trace": "height", "color": "#66c7ff", "width": 2, "flow": 12, "shadow": true } }]
+    "marks": [{ "lines": { "of": ["mesh", "Body"], "trace": "height", "color": "#66c7ff", "width": 2, "flow": 12 } }]
   },
   {
     "space": { "plot": { "y": { "format": "engineering", "precision": 1, "ticks": [0, [0.5, "half"], 1] } } },
@@ -102,16 +101,16 @@ export default [
       { "vertices": { "of": ["grid", "Plant"], "marker": { "pie": { "slices": ["coal", "gas"], "colors": ["#333333", "#88aaff"], "hole": 0.4 } } } },
       { "vertices": { "of": ["grid", "Icon"], "marker": { "icon": { "images": [{ "size": [1, 1], "rgba": [255, 0, 0, 255] }], "index": 0 } } } },
       { "vertices": { "of": ["grid", "Custom"], "marker": { "wgsl": { "source": "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }", "inputs": ["load"] } } } },
-      { "edges": { "of": ["grid", "Branch"], "ends": ["from", "to"], "shadow": true } }
+      { "edges": { "of": ["grid", "Branch"], "ends": ["from", "to"] } }
     ],
-    "theme": { "edgeSpacing": 5, "arrow": 8, "halo": 2, "shadow": { "light": [-1, 1, 2], "softness": 0.2 } }
+    "theme": { "edgeSpacing": 5, "arrow": 8, "halo": 2 }
   },
   {
     "space": "diagram",
     "layout": { "stress": { "gap": 50 } },
     "controls": { "connect": true, "delete": true },
     "marks": [
-      { "vertices": { "of": ["plant", "Area"], "contains": ["Device", "area"], "label": "name" } },
+      { "vertices": { "of": ["plant", "Area"], "contains": ["Device", "area"], "label": "name", "shadow": true } },
       { "edges": { "of": ["plant", "Wire"], "ends": ["from", "to"], "bends": "path", "arrows": true } },
       { "edges": { "of": ["plant", "Net"], "route": "orthogonal", "arrows": true } },
       {
@@ -126,6 +125,6 @@ export default [
         }
       }
     ],
-    "theme": { "groupPadding": 16 }
+    "theme": { "groupPadding": 16, "shadow": { "color": "#00000040", "lift": 4 } }
   }
 ];

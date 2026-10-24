@@ -39,6 +39,9 @@ Vertices {
     /// Makes each row a group: it holds the rows of `table` whose reference field names it, and is
     /// drawn as a container around them, its label a title in its header. Diagrams only.
     contains: Option<(Name, Name)> as "[table: string, reference: string]",
+    /// Whether each row, a block or a group, drops a shadow onto the sheet, as the theme's `shadow`
+    /// says. Diagrams only.
+    shadow: bool,
 });
 
 impl Vertices {
@@ -55,6 +58,7 @@ impl Vertices {
             ring: None,
             ports: Vec::new(),
             contains: None,
+            shadow: false,
         }
     }
 
@@ -132,6 +136,14 @@ impl Vertices {
     #[must_use]
     pub fn ring(mut self, color: impl Into<Expr>) -> Vertices {
         self.ring = Some(color.into());
+        self
+    }
+
+    /// Whether each row, a block or a group, drops a shadow onto the sheet, as the theme's
+    /// [`shadow`](crate::Theme::shadow) says. Diagrams only.
+    #[must_use]
+    pub fn shadow(mut self, on: bool) -> Vertices {
+        self.shadow = on;
         self
     }
 
@@ -226,6 +238,9 @@ impl Vertices {
             flags |= wgsl::GROUP;
             drawing.markers.marker = wgsl::MARKER_SHAPE;
             drawing.markers.shape = wgsl::SHAPE_RECTANGLE;
+        }
+        if self.shadow {
+            flags |= wgsl::SHADOW;
         }
         drawing.flags = flags;
         drawing.extras = inputs.len() as u32;

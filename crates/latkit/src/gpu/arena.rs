@@ -343,7 +343,6 @@ impl Arena {
             return false;
         }
         for (key, (offset, class)) in placed {
-            self.resident += u64::from(class_words(class)) * 4;
             self.blocks.insert(key, Block { offset, class, written: 0, pins: 0, tick: 0 });
         }
         for (ask, held) in asks.iter_mut().zip(held) {
@@ -367,7 +366,6 @@ impl Arena {
     pub(crate) fn block(&mut self, device: &wgpu::Device, queue: &Queue, words: u32) -> Option<u32> {
         let class = class_of(words);
         let offset = self.allocate(device, queue, class)?;
-        self.resident += u64::from(class_words(class)) * 4;
         self.cleared.push((offset, class));
         Some(offset)
     }
@@ -539,6 +537,7 @@ impl Arena {
                 if chunk.live == slots(class) {
                     self.partial[class].remove(&k);
                 }
+                self.resident += u64::from(class_words(class)) * 4;
                 return Some(k * CHUNK_WORDS + slot * class_words(class));
             }
             if let Some(k) = self.free.pop_first() {

@@ -8,7 +8,7 @@ use web_time::Instant;
 
 use super::drawing::Drawn;
 use super::marks::{End, Holding, Shown};
-use super::resources::{EyeSlot, MARK_STRIDE, Resources};
+use super::resources::{MARK_STRIDE, Resources};
 use super::sync::{Inputs, Rebuilt, Rows, Source, Window, table_of};
 use super::transition::{bound, holds_alike, in_place, moved};
 use super::words::Kept;
@@ -21,6 +21,17 @@ use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
 use crate::{Error, Name, derive};
+
+/// Whether the pages a frame of a view draws found room: where some found none, the next frame makes
+/// it, growing the arena or planning less (`Short`), or where the arena is full and the plan draws as
+/// little as it may, letting go of what draws of the data waiting for room (`Starved`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Debug)]
+pub(super) enum Room {
+    #[default]
+    Found,
+    Short,
+    Starved,
+}
 
 /// The most seconds comets travel in one frame: after a pause they carry on, not leap.
 const TRAVEL: f64 = 0.1;
@@ -55,7 +66,7 @@ impl View {
         }
         let started = Instant::now();
         self.signal.clear();
-        self.short = false;
+        let starved = std::mem::take(&mut self.room) == Room::Starved;
         let dt = self.clock.tick(frame.time);
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
@@ -71,6 +82,10 @@ impl View {
         self.settle();
         self.advance(dt);
         let mut inner = gpu.0.lock();
+        // What it lets go of frees as the frame begins, before anything it records reads the pages.
+        if starved {
+            self.start_over(&mut inner);
+        }
         inner.begin_frame(self.id, device, queue);
         inner.atlas.tick();
         self.settle_labels(&mut inner);
@@ -108,22 +123,16 @@ impl View {
             uniform.query = words;
         }
         self.label_words(&mut uniform, dt);
-        let main = uniforms::eye(&projected, self.size, self.pixel_ratio);
-        let light = self.shade(&mut uniform, &main);
+        let eye = uniforms::eye(&projected, self.size, self.pixel_ratio);
         let sprites = self.overlay(&mut inner);
         self.lay_out_blocks();
-        self.write_uniforms(&uniform, &main, light.as_ref(), &sprites);
+        self.write_uniforms(&uniform, &eye, &sprites);
         if let Some(readback) = self.compute(encoder, &mut inner, measure.is_some(), travel > 0.0) {
             self.measuring_started(readback, measure.and_then(|m| m.fit));
         }
         self.count_found(encoder, &inner);
         let mut drawn = super::passes::Drawn::default();
-        if let Some(light) = &light {
-            self.cast(encoder, &mut inner, &mut drawn, light);
-        } else {
-            self.shadow_map.mark(0);
-        }
-        self.place_labels(encoder, &mut inner, &main);
+        self.place_labels(encoder, &mut inner, &eye);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
         self.draw(encoder, &mut inner, &mut drawn, frame, sprites.len() as u32, depth);
         self.stats.draws = drawn.draws;
@@ -261,20 +270,63 @@ impl View {
     }
 
     /// Pages the view draws found no room: what lacks them draws nothing until the next frame grows
-    /// the arena, or where it is full plans less, while it can.
+    /// the arena, or where it is full plans less, while it can, and else lets go of what draws of the
+    /// data waiting for room, unless doing so let go of nothing before.
     fn found_no_room(&mut self, inner: &Inner) {
-        self.short |= !inner.arena.full() || self.planning.overflowed();
+        let room = if !inner.arena.full() || self.planning.overflowed() {
+            Room::Short
+        } else if self.limited {
+            Room::Found
+        } else {
+            Room::Starved
+        };
+        self.room = self.room.max(room);
+    }
+
+    /// Lets go of what the view draws of each dataset waiting for room the arena, full, cannot make
+    /// though the plan draws as little as it may: its marks draw nothing until what replaces it lands
+    /// in the room freed. Where it held nothing to let go of, what it draws does not fit the budget:
+    /// it tells so once, and waits for a version of its data to publish.
+    fn start_over(&mut self, inner: &mut Inner) {
+        let mut freed = false;
+        for shown in &mut self.marks {
+            if !self.staged.contains_key(&shown.mark.style().data) || shown.holding.take().is_none() {
+                continue;
+            }
+            shown.release(inner);
+            (shown.rows, shown.exits, shown.before) = (0, 0, 0);
+            (shown.begin, shown.transition) = (None, None);
+            shown.packed = false;
+            freed = true;
+        }
+        for (key, drawn) in self.drawings.iter_mut() {
+            if self.staged.contains_key(&key.0) {
+                drawn.current = None;
+            }
+        }
+        if !freed {
+            self.limited = true;
+            let reason = "what the view draws does not fit the GPU's budget, though it draws as little as it may";
+            self.events.tell(Event::Error(Error::Limit(reason.into())));
+        }
     }
 
     /// Holds what the view draws to its share: what its tables pin, each page once, and the pages of
-    /// words its marks keep per row.
+    /// words its marks keep per row, but for the pages drawings keep from before only while their room
+    /// lasts, which a plan within less lets go of first.
     fn hold_to_share(&mut self, inner: &Inner) {
         let mut pins: Vec<crate::gpu::arena::PageKey> = self.marks.iter().flat_map(|m| m.tables.pins()).collect();
         pins.sort_unstable_by_key(|key| (key.page, key.piece, key.low, key.words as u8));
         pins.dedup();
         let pages: u64 = pins.into_iter().map(|key| inner.arena.bytes_of(key)).sum();
         let words: u64 = self.marks.iter().map(|m| m.words.bytes()).sum();
-        self.planning.held(pages + words);
+        let idle: f64 = self
+            .drawings
+            .iter()
+            .filter_map(|(key, drawn)| Some(self.planning.page_bytes(key, drawn.current.as_ref()?.idle)))
+            .sum();
+        let needed = ((pages + words) as f64 - idle).max(0.0);
+        self.planning.held(needed as u64, self.choices.values().any(|c| c.capped));
     }
 
     /// Takes what landed since the last frame: probes, fits, queries, the intents and keys waiting on
@@ -363,27 +415,15 @@ impl View {
         if answers { self.next_query() } else { None }
     }
 
-    /// Writes the frame's uniform, its eyes, every mark's uniform, and the overlay's sprites.
-    fn write_uniforms(
-        &mut self,
-        frame: &wgsl::Frame,
-        main: &wgsl::Eye,
-        light: Option<&wgsl::Eye>,
-        sprites: &[wgsl::Sprite],
-    ) {
+    /// Writes the frame's uniform, its eye, every mark's uniform, and the overlay's sprites.
+    fn write_uniforms(&mut self, frame: &wgsl::Frame, eye: &wgsl::Eye, sprites: &[wgsl::Sprite]) {
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         self.reveal();
         let marks = self.mark_uniforms();
         let resources = self.resources.as_mut().expect("created");
         queue.write_buffer(&resources.frame, 0, bytemuck::bytes_of(frame));
-        let mut eyes = vec![0_u8; 2 * MARK_STRIDE as usize];
-        let light_at = EyeSlot::Light.offset() as usize;
-        eyes[..size_of::<wgsl::Eye>()].copy_from_slice(bytemuck::bytes_of(main));
-        if let Some(light) = light {
-            eyes[light_at..light_at + size_of::<wgsl::Eye>()].copy_from_slice(bytemuck::bytes_of(light));
-        }
-        queue.write_buffer(resources.eyes(), 0, &eyes);
+        queue.write_buffer(resources.eye(), 0, bytemuck::bytes_of(eye));
         if !marks.is_empty() {
             queue.write_buffer(resources.marks(), 0, &marks);
         }
@@ -403,6 +443,7 @@ impl View {
         let uploaded = inner.arena.pump(&gpu.0.queue, inner.frame.upload);
         inner.frame.upload = inner.frame.upload.saturating_sub(uploaded);
         if self.publish(inner) {
+            self.limited = false;
             self.hold_to_share(inner);
         }
     }

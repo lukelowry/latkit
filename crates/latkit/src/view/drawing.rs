@@ -478,17 +478,46 @@ pub(crate) struct Ends {
     stamp: u64,
     /// Each page's rows when it was worked out, and the pages its ends lie in.
     pages: Vec<Option<(u32, Arc<[u32]>)>>,
+    /// What the edges held asked last, and the stamp of what it was worked out from.
+    asked: (u64, Arc<Ending>),
 }
 
 impl Ends {
-    /// The pages of `target`, the order the ends' table draws in, that edge page `page` of `order`
-    /// ends in, by `ends`, the edges' reference fields.
-    fn of(&mut self, order: &Order, target: &Order, ends: &[&Reference], page: u32) -> Arc<[u32]> {
-        let stamp = stamp_of((order.id(), target.id(), ends.iter().map(|r| r.version).collect::<Vec<_>>()));
+    /// What the edges `drawing` holds ask of the table they end at by `ends`, which draws in
+    /// `target`: the pages its ends lie in, and the rows the edges kept end at; worked out again only
+    /// where the pages the drawing holds or what it keeps changed.
+    fn ending(&mut self, drawing: &Drawing, target: &Order, ends: &[&Reference]) -> Arc<Ending> {
+        let stamp = stamp_of((drawing.order.id(), target.id(), ends.iter().map(|r| r.version).collect::<Vec<_>>()));
         if stamp != self.stamp {
             self.stamp = stamp;
             self.pages.clear();
         }
+        let asked = stamp_of((stamp, drawing.layout(), target.len()));
+        if asked == self.asked.0 {
+            return self.asked.1.clone();
+        }
+        let mut pages: Vec<u32> = Vec::new();
+        for page in drawing.held_pages() {
+            pages.extend(self.of(&drawing.order, target, ends, page).iter());
+        }
+        pages.sort_unstable();
+        pages.dedup();
+        // The rows the edges kept end at, kept whatever their pages.
+        let mut kept: Vec<u32> = Vec::new();
+        for row in drawing.kept() {
+            for reference in ends {
+                let t = reference.target_row(row as usize);
+                if t != UNWIRED && t < target.len() {
+                    kept.push(target.rank(t));
+                }
+            }
+        }
+        self.asked = (asked, Arc::new(Ending { pages, kept }));
+        self.asked.1.clone()
+    }
+
+    /// The pages of `target` that edge page `page` of `order` ends in, by `ends`.
+    fn of(&mut self, order: &Order, target: &Order, ends: &[&Reference], page: u32) -> Arc<[u32]> {
         if self.pages.len() <= page as usize {
             self.pages.resize(page as usize + 1, None);
         }
@@ -571,7 +600,7 @@ impl View {
         crate::order::by_key(&mut keys, |key| {
             u64::from(!matches!(self.planning.plans().get(*key).map(|p| &p.place), Some(Place::Ends(_))))
         });
-        let mut ends: crate::data::Keyed<(Name, Name), Ending> = crate::data::Keyed::default();
+        let mut ends: crate::data::Keyed<(Name, Name), Arc<Ending>> = crate::data::Keyed::default();
         for key in keys {
             let chosen = &choices[key];
             let ending = ends.remove(key).unwrap_or_default();
@@ -610,22 +639,7 @@ impl View {
             let Some(target) = choices.get(&target_key) else { continue };
             let drawn = self.drawings.get_mut(key).expect("laid out");
             let drawing = drawn.latest().expect("laid out").clone();
-            let mut kept: Vec<u32> = Vec::new();
-            for row in drawing.kept() {
-                for reference in &references {
-                    let t = reference.target_row(row as usize);
-                    if t != UNWIRED && t < target.order.len() {
-                        kept.push(target.order.rank(t));
-                    }
-                }
-            }
-            let mut pages: Vec<u32> = Vec::new();
-            for page in drawing.held_pages() {
-                pages.extend(drawn.ends.of(&drawing.order, &target.order, &references, page).iter());
-            }
-            pages.sort_unstable();
-            pages.dedup();
-            ends.insert(target_key, Ending { pages, kept });
+            ends.insert(target_key, drawn.ends.ending(&drawing, &target.order, &references));
         }
         self.choices = choices;
     }
@@ -714,7 +728,7 @@ mod tests {
     }
 
     fn chosen(order: &Order, ranges: &[Range<u32>]) -> Chosen {
-        Chosen { order: order.clone(), ranges: ranges.to_vec() }
+        Chosen { order: order.clone(), ranges: ranges.to_vec(), capped: false }
     }
 
     /// Rows drawn whatever their tiles: `places`.
@@ -724,7 +738,7 @@ mod tests {
 
     /// What draws one range of `order`.
     fn one(order: &Order, range: Range<u32>) -> Chosen {
-        Chosen { order: order.clone(), ranges: vec![range] }
+        Chosen { order: order.clone(), ranges: vec![range], capped: false }
     }
 
     #[test]
@@ -736,6 +750,7 @@ mod tests {
                 chosen: &chosen(&order, &[0..PAGE_ROWS, 3 * PAGE_ROWS..4 * PAGE_ROWS]),
                 pinned: &Pinned::default(),
                 ends: &[],
+
                 room: 0,
                 content: 0,
             },
@@ -750,6 +765,7 @@ mod tests {
                 chosen: &chosen(&order, &[3 * PAGE_ROWS..4 * PAGE_ROWS, 5 * PAGE_ROWS..6 * PAGE_ROWS]),
                 pinned: &Pinned::default(),
                 ends: &[],
+
                 room: 0,
                 content: 0,
             },
@@ -804,6 +820,7 @@ mod tests {
             chosen: &one(&order, PAGE_ROWS..PAGE_ROWS + 10),
             pinned: &pinned(&[3]),
             ends: &[],
+
             room: 0,
             content: 0,
         };

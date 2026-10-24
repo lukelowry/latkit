@@ -2,8 +2,7 @@
 // the stroke, or its comets where they are wider, and a pixel of edge; a small segment a later one covers in a crowded cell is left out. A
 // segment that ends a part of its path carries the arrowhead; in a diagram, a segment of no length is
 // a junction, drawn as a dot. The focus variant draws the pieces of the rows the mark's focus lights
-// again, over everything, reaching out to their glow. The cast variant draws the same quads through
-// the light's eye into the shadow map.
+// again, over everything, reaching out to their glow.
 
 import package::lib::types::{ARROWS, PATH_TRACE, SPACE_DIAGRAM};
 import package::lib::path::PATH;
@@ -15,8 +14,8 @@ import package::lib::path::{
 import package::lib::marker::{MarkerColor, glow};
 import package::lib::focus::focus_of;
 import package::lib::mark::fringe;
-import package::lib::stroke::{Stroke, covered, stroke, stroke_distance};
-import package::lib::shade::{caster, daylight};
+import package::lib::stroke::{Stroke, stroke, stroke_distance};
+import package::lib::daylight::daylight;
 import package::lib::color::output;
 
 struct Varyings {
@@ -28,13 +27,12 @@ struct Varyings {
     @location(3) color: vec4f,
     // Width, distance along at `a` and at `b`, flow.
     @location(4) @interpolate(flat) style: vec4f,
-    @location(5) height: f32,
     // Whether the segment ends in an arrowhead, then whether it dashes.
-    @location(6) @interpolate(flat) arrow: u32,
+    @location(5) @interpolate(flat) arrow: u32,
     // The row's focus bits, which the focus draw glows by.
-    @location(7) @interpolate(flat) focus: u32,
+    @location(6) @interpolate(flat) focus: u32,
     // Distance along at `a` and at `b` in length units, and how far the row's comets traveled.
-    @location(8) @interpolate(flat) comet: vec3f,
+    @location(7) @interpolate(flat) comet: vec3f,
 }
 
 // Whether this variant draws lit rows, its quads reaching out to their glow.
@@ -101,7 +99,6 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     out.style = vec4f(width, phase, style.flow);
     out.comet = vec3f(along, style.travel);
-    out.height = mix(ends[0].world.z, ends[1].world.z, f);
     out.arrow = u32(arrow) | (u32(style.dash && !junction) << 1u);
     out.focus = focus_of(s.row);
     return out;
@@ -119,7 +116,7 @@ fn segment_of(v: Varyings) -> Stroke {
     return Stroke(v.a, v.b, v.style.yz, v.comet.xy, v.style.x, v.color, v.style.w, v.comet.z, dash, (v.arrow & 1u) != 0u);
 }
 
-@if(!casts && !focused)
+@if(!focused)
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
     let c = stroke(pixel(v), segment_of(v));
@@ -132,15 +129,4 @@ fn fragment(v: Varyings) -> @location(0) vec4f {
     let s = segment_of(v);
     let p = pixel(v);
     return output(glow(MarkerColor(stroke(p, s), stroke_distance(p, s).x), v.focus));
-}
-
-@if(casts)
-@fragment
-fn fragment(v: Varyings) -> @location(0) vec4f {
-    let s = segment_of(v);
-    let alpha = s.color.a * covered(stroke_distance(pixel(v), s), s);
-    if alpha <= 0.01 {
-        discard;
-    }
-    return caster(alpha, v.height);
 }

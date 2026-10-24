@@ -107,12 +107,28 @@ impl Packed {
 
     /// The id of page `page` of `packing`, packed from `source` in `order`.
     pub(crate) fn page(&mut self, packing: &Packing, order: &Order, source: Option<&Column>, page: u32) -> PageId {
+        self.pages_of(packing, order, source, &[page])[0]
+    }
+
+    /// The ids of pages `wanted` of `packing`, packed from `source` in `order`: the column found once.
+    pub(crate) fn pages_of(
+        &mut self,
+        packing: &Packing,
+        order: &Order,
+        source: Option<&Column>,
+        wanted: &[u32],
+    ) -> Vec<PageId> {
         let pages = self.pages(packing, order, source);
-        let k = page as usize;
-        if pages.ids.len() <= k {
-            pages.ids.resize(k + 1, None);
-        }
-        *pages.ids[k].get_or_insert_with(PageId::next)
+        wanted
+            .iter()
+            .map(|&k| {
+                let k = k as usize;
+                if pages.ids.len() <= k {
+                    pages.ids.resize(k + 1, None);
+                }
+                *pages.ids[k].get_or_insert_with(PageId::next)
+            })
+            .collect()
     }
 
     /// Samples `samples`' rows `rows` hold, page `page` of `packing`, gathered once.

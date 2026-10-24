@@ -1,18 +1,26 @@
-import { random } from '../../random.js';
-import { theme } from '../../ui/theme.js';
+/**
+ * Thousands of signals streaming in, traced over a scrolling window: frames append as they arrive
+ * and the oldest are forgotten. Read the trace under the pointer, rank the largest changes with a
+ * query, color traces by area or by their value now, and strike a disturbance to watch it spread.
+ */
 import {
   Data,
   Patch,
   colormapCss,
   field,
   type ColormapName,
+  type Format,
   type Hit,
   type Id,
+  type Interpolation,
+  type Query,
   type Scene,
 } from '../../latkit.js';
+import { random } from '../../random.js';
 import { h } from '../../ui/dom.js';
 import { each } from '../../ui/rows.js';
 import type { Stage } from '../../ui/stage.js';
+import { theme } from '../../ui/theme.js';
 
 /** The areas signals belong to, in the colors tab10 gives them. */
 const AREAS = [
@@ -45,6 +53,35 @@ const QUANTITIES = {
 type Quantity = keyof typeof QUANTITIES;
 /** The colormaps a signal's value now may take. */
 const MAPS: readonly ColormapName[] = ['coolwarm', 'viridis', 'turbo', 'magma', 'icefire'];
+/** How often a signal reports nothing, when signals drop out. */
+const DROPOUT = 0.002;
+
+/**
+ * Patches sent as bytes through a stream, as a socket or a response body brings them, each in two
+ * pieces as the network splits it, and read back with `Patch.stream` as each one's last byte arrives.
+ */
+class Feed {
+  readonly #writer: WritableStreamDefaultWriter<Uint8Array>;
+
+  constructor(take: (patch: Patch) => void) {
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    this.#writer = writable.getWriter();
+    void (async () => {
+      for await (const patch of Patch.stream(readable)) take(patch);
+    })();
+  }
+
+  send(patch: Patch): void {
+    const bytes = patch.toBytes();
+    const half = bytes.length >> 1;
+    void this.#writer.write(bytes.subarray(0, half));
+    void this.#writer.write(bytes.subarray(half));
+  }
+
+  close(): void {
+    void this.#writer.close();
+  }
+}
 
 /**
  * Synthetic SCADA signals: each sits at its own offset, its area swings slowly, every signal
@@ -60,6 +97,9 @@ class Signals {
   readonly #random = random(11);
   /** The area struck by hand, and when. */
   #struck?: { area: number; at: number };
+
+  /** Whether signals now and then report nothing. */
+  dropouts = false;
 
   constructor(
     readonly count: number,
@@ -81,7 +121,7 @@ class Signals {
     this.#struck = { area, at: t };
   }
 
-  /** Every signal's value at `t`, into `out`. */
+  /** Every signal's value at `t`, into `out`: NaN where one reports nothing. */
   sample(t: number, out: Float32Array): void {
     const struck = Math.floor(t / EVERY) % AREAS.length;
     const dip = depth(t - Math.floor(t / EVERY) * EVERY);
@@ -94,6 +134,10 @@ class Signals {
       const noise = (this.#random() - 0.5) * this.#noise[i]!;
       const dips = (a === struck ? dip : 0) + (a === this.#struck?.area ? byHand : 0);
       const offset = this.#offset[i]!;
+      if (this.dropouts && this.#random() < DROPOUT) {
+        out[i] = NaN;
+        continue;
+      }
       out[i] =
         this.quantity === 'voltage'
           ? 1 + 0.03 * offset + 0.012 * swing + 0.003 * noise - dips
@@ -118,11 +162,16 @@ export default function page(stage: Stage): void {
   let quantity: Quantity = 'voltage';
   let window = 20;
   let rate = 50;
-  let steps = false;
+  let interpolation: Interpolation = 'linear';
   let auto = true;
-  let colorBy: 'area' | 'value' = 'area';
+  let colorBy: 'area' | 'value' | 'plain' = 'area';
   let colormap: ColormapName = 'coolwarm';
   let width = 1;
+  const axes = { format: 'fixed' as Format, grid: true, limits: false, time: true, title: false };
+  let dim = 0.15;
+  let playhead = '#ffb000cc';
+  let streamed = false;
+  let dropouts = false;
   let signals = new Signals(count, quantity);
   let values = new Float32Array(count);
   let data = new Data('scada');
@@ -132,14 +181,38 @@ export default function page(stage: Stage): void {
 
   const scene = (): Scene => {
     const { label, unit, range, digits } = shown();
+    const middle = (range[0] + range[1]) / 2;
     return {
       space: {
         plot: {
-          x: { label: 'Time (s)' },
-          y: { label: `${label} (${unit})`, format: 'fixed', precision: digits - 1 },
+          x: { label: 'Time (s)', grid: axes.grid, hidden: !axes.time },
+          y: {
+            label: `${label} (${unit})`,
+            format: axes.format,
+            precision: axes.format === 'auto' ? null : digits - 1,
+            grid: axes.grid,
+            // The range a signal keeps to, ticked at its ends and its middle.
+            ...(axes.limits
+              ? {
+                  ticks: [
+                    [range[0], 'low'],
+                    [middle, null],
+                    [range[1], 'high'],
+                  ] as const,
+                }
+              : {}),
+          },
         },
       },
-      theme: { ...theme, dim: 0.15 },
+      ...(axes.title
+        ? {
+            title: `${label} live`,
+            subtitle: `${count.toLocaleString()} signals · ${rate} samples a second`,
+          }
+        : {}),
+      // Traces draw the theme's line width, and plain, its line color; what a signal does not report
+      // reads as missing.
+      theme: { ...theme, dim, playhead, lineWidth: width, line: '#7fb3ff', missing: '#ff4fd8' },
       ease: 0,
       marks: [
         {
@@ -147,12 +220,15 @@ export default function page(stage: Stage): void {
             of: ['scada', 'Signal'],
             trace: 'value',
             // By value, each trace takes the color of its value at the time shown.
-            color:
-              colorBy === 'area'
-                ? field('area').colormap('tab10')
-                : field('value').colormap(colormap).domain(range[0], range[1]),
-            width,
-            interpolation: steps ? 'stepAfter' : 'linear',
+            ...(colorBy === 'plain'
+              ? {}
+              : {
+                  color:
+                    colorBy === 'area'
+                      ? field('area').colormap('tab10')
+                      : field('value').colormap(colormap).domain(range[0], range[1]),
+                }),
+            interpolation,
           },
         },
       ],
@@ -162,17 +238,33 @@ export default function page(stage: Stage): void {
     label: 'Live signals: hover a trace to read it, click it to pick it out',
   });
 
-  /** Frames what `at` shows: the window before it, or all that is kept. */
+  /** Frames what `at` shows: the window before it, filling from the record's start until the
+   * record is as long; or all that is kept. */
   const frame = (at: number) => {
-    const start = window === Infinity ? (data.span?.[0] ?? at) : at - window;
+    const first = data.span?.[0] ?? at;
+    const x: [number, number] =
+      window === Infinity
+        ? [first, at]
+        : [Math.max(first, at - window), Math.max(at, first + window)];
     const range = shown().range;
-    view.camera = { x: [start, at], y: auto ? null : [range[0], range[1]] };
+    view.camera = { x, y: auto ? null : [range[0], range[1]] };
   };
+
+  /** Takes a patch the feed brought: the record grows, and the view draws the next version. */
+  const take = (patch: Patch) => {
+    data.apply(patch);
+    view.setData(data);
+    playback.record(data.span!);
+  };
+  /** The stream patches come through when they come as bytes, made again with each record. */
+  let feed: Feed | undefined;
+  stage.signal.addEventListener('abort', () => feed?.close());
 
   /** Starts the record again: `n` signals measuring the quantity shown. */
   const restart = (n = count) => {
     count = n;
     signals = new Signals(n, quantity);
+    signals.dropouts = dropouts;
     values = new Float32Array(n);
     t = 0;
     carry = 0;
@@ -187,6 +279,10 @@ export default function page(stage: Stage): void {
     );
     view.select([]);
     view.setData(data);
+    // Patches of the record before arrive no more.
+    feed?.close();
+    const current = data;
+    feed = new Feed((patch) => data === current && take(patch));
     frame(0);
     detail();
     describe(null);
@@ -218,9 +314,9 @@ export default function page(stage: Stage): void {
         signals.sample(t, values);
         patch.append(t, 'Signal', { value: values });
       }
-      data.apply(patch.forget(t - HISTORY));
-      view.setData(data);
-      playback.record(data.span!);
+      patch.forget(t - HISTORY);
+      if (streamed) feed!.send(patch);
+      else take(patch);
     });
   });
 
@@ -232,13 +328,22 @@ export default function page(stage: Stage): void {
     const { unit, digits } = shown();
     return `${value.toFixed(digits)} ${unit}`;
   };
+  /** Signal `id`'s least and greatest values over the window shown, read from its levels of detail. */
+  const spread = (id: Id) => {
+    const camera = view.camera;
+    if (!('x' in camera) || !data.span) return '';
+    const { least, greatest } = data.envelope('Signal', 'value', camera.x, 1, [id]);
+    return Number.isNaN(least[0])
+      ? ''
+      : `; ${format(least[0]!)} to ${format(greatest[0]!)} in the window`;
+  };
   const describe = (hit: Hit | null) => {
     const picked = each(view.selection)
       .map((row) => name(row.id))
       .join(', ');
     const sample = hit?.sample;
     reading.textContent = sample
-      ? `${name(hit.row.id)} at ${sample.at.toFixed(2)} s: ${format(sample.value)}`
+      ? `${name(hit.row.id)} at ${sample.at.toFixed(2)} s: ${format(sample.value)}${spread(hit.row.id)}`
       : picked
         ? `Picked ${picked}.`
         : 'Hover a trace.';
@@ -249,22 +354,53 @@ export default function page(stage: Stage): void {
     list();
   });
 
-  // The signals furthest out at the time shown, read by a query: a pick, of every signal, in
-  // linear time.
+  // The signals furthest out at the time shown, read by a query: a pick, of every signal or of an
+  // area's, in linear time, a page of them at a time.
   const hottest = stage.section('Largest changes', false);
+  let inArea = -1;
+  let page = 0;
+  hottest.choice(
+    'Area',
+    [['All', -1] as const, ...AREAS.map(([label], i) => [label, i] as const)],
+    inArea,
+    (next) => {
+      inArea = next;
+      page = 0;
+      list();
+    },
+  );
+  const turn = (by: number) => () => {
+    page = Math.max(0, page + by);
+    list();
+  };
+  hottest.actions([
+    { label: 'Previous', run: turn(-1) },
+    { label: 'Next', run: turn(1) },
+  ]);
+  const paged = hottest.note();
   const hot = h('ol', { class: 'hot' });
   hottest.content.append(hot);
   const list = () => {
     listed = performance.now();
     if (!data.span) return;
     const { low, range } = shown();
-    const rows = data.query({
+    const query: Query = {
       of: 'Signal',
+      ...(inArea >= 0 ? { filter: field('area').eq(inArea) } : {}),
       sort: [['value', low ? 'ascending' : 'descending']],
       limit: HOT,
       select: { name: 'name', value: 'value' },
       at: view.at,
-    });
+    };
+    let rows = data.query({ ...query, offset: page * HOT });
+    // Past the last page, the last.
+    if (!rows.ids.length && page > 0) {
+      page = Math.max(0, Math.ceil(rows.total / HOT) - 1);
+      rows = data.query({ ...query, offset: page * HOT });
+    }
+    paged.textContent = rows.total
+      ? `${page * HOT + 1}–${page * HOT + rows.ids.length} of ${rows.total.toLocaleString()}`
+      : 'None';
     const names = rows.fields.name as readonly string[];
     const read = rows.fields.value as Float64Array;
     const picked = new Set(each(view.selection).map((row) => String(row.id)));
@@ -276,7 +412,7 @@ export default function page(stage: Stage): void {
         const button = h(
           'button',
           { type: 'button', 'aria-pressed': String(picked.has(String(id))) },
-          h('span', {}, String(k + 1).padStart(2, '0')),
+          h('span', {}, String(page * HOT + k + 1).padStart(2, '0')),
           h('span', {}, names[k] ?? `Signal ${id}`),
           h('span', {}, format(value)),
           h('span', { class: 'bar', style: `--score: ${(score * 100).toFixed(0)}%` }),
@@ -323,8 +459,24 @@ export default function page(stage: Stage): void {
       ['100 per second', 100],
     ],
     rate,
-    (r) => (rate = r),
+    (r) => {
+      rate = r;
+      restyle();
+    },
   );
+  record.choice(
+    'Feed',
+    [
+      ['In the page', false],
+      ['Streamed bytes', true],
+    ] as const,
+    streamed,
+    (next) => (streamed = next),
+  );
+  record.toggle('Dropouts', 'o', dropouts, (on) => {
+    dropouts = on;
+    signals.dropouts = on;
+  });
   record.actions([{ label: 'Reset', key: 'n', run: () => restart() }]);
 
   const show = stage.section('Display');
@@ -347,6 +499,7 @@ export default function page(stage: Stage): void {
     [
       ['Area', 'area'],
       ['Value now', 'value'],
+      ['Plain', 'plain'],
     ] as const,
     colorBy,
     (next) => {
@@ -358,19 +511,69 @@ export default function page(stage: Stage): void {
     'Width',
     { min: 0.5, max: 3, step: 0.5, value: width, format: (v) => `${v} px` },
     (next) => {
-      if (next === width) return;
       width = next;
       view.show(scene());
     },
   );
-  show.toggle('Steps', 's', steps, (on) => {
-    steps = on;
-    view.show(scene());
-  });
+  show.choice(
+    'Between samples',
+    [
+      ['Lines', 'linear'],
+      ['Steps after', 'stepAfter'],
+      ['Steps before', 'stepBefore'],
+    ] as const,
+    interpolation,
+    (next) => {
+      interpolation = next;
+      view.show(scene());
+    },
+  );
+  show.range(
+    'Dim the rest',
+    { min: 0, max: 1, step: 0.05, value: dim, format: (v) => `${Math.round(v * 100)}%` },
+    (next) => {
+      dim = next;
+      view.show(scene());
+    },
+  );
+  show.choice(
+    'Playhead',
+    [
+      ['Amber', '#ffb000cc'],
+      ['White', '#ffffffaa'],
+      ['Hidden', '#00000000'],
+    ] as const,
+    playhead,
+    (next) => {
+      playhead = next;
+      view.show(scene());
+    },
+  );
   show.toggle('Auto range', 'a', auto, (on) => {
     auto = on;
     frame(view.at);
   });
+  show.toggle('Title', undefined, axes.title, (on) => ((axes.title = on), view.show(scene())));
+  const axesSection = stage.section('Axes', false);
+  axesSection.choice(
+    'Values',
+    [
+      ['Fixed', 'fixed'],
+      ['Automatic', 'auto'],
+      ['Scientific', 'scientific'],
+      ['Engineering', 'engineering'],
+    ] as const,
+    axes.format,
+    (format) => ((axes.format = format), view.show(scene())),
+  );
+  axesSection.toggle('Grid', 'g', axes.grid, (on) => ((axes.grid = on), view.show(scene())));
+  axesSection.toggle('Limits', 'l', axes.limits, (on) => ((axes.limits = on), view.show(scene())));
+  axesSection.toggle(
+    'Time axis',
+    undefined,
+    axes.time,
+    (on) => ((axes.time = on), view.show(scene())),
+  );
   const areas = show.series(AREAS.map(([label, color]) => ({ label, color })));
   const maps = h('div', { class: 'swatches' });
   const swatches = MAPS.map((map) => {

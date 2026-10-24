@@ -381,7 +381,7 @@ impl View {
         let mut pass = encoder
             .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("latkit freeze"), timestamp_writes: None });
         pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &groups.view, &[0]);
+        pass.set_bind_group(0, &groups.view, &[]);
         pass.set_bind_group(2, &group, &[]);
         for &i in starting {
             pass.set_bind_group(1, &groups.mark, &[super::passes::offset(i)]);

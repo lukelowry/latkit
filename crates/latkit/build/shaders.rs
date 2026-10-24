@@ -41,18 +41,15 @@ const ENTRIES: &[Entry] = &[
         module: "draw::points",
         variants: &[
             ("main", &[]),
-            ("cast", &["casts"]),
             ("custom", &["custom"]),
-            ("custom_cast", &["custom", "casts"]),
             ("custom_focus", &["custom", "focused"]),
             ("ports", &["ports"]),
             ("focus", &["focused"]),
         ],
     },
-    Entry { module: "draw::strokes", variants: &[("main", &[]), ("cast", &["casts"]), ("focus", &["focused"])] },
-    Entry { module: "draw::triangles", variants: &[("main", &[]), ("cast", &["casts"])] },
+    Entry { module: "draw::strokes", variants: &[("main", &[]), ("focus", &["focused"])] },
+    Entry { module: "draw::triangles", variants: &[("main", &[])] },
     Entry { module: "draw::areas", variants: &[("main", &[]), ("focus", &["focused"])] },
-    Entry { module: "draw::shade", variants: &[("main", &[])] },
     Entry { module: "draw::glyphs", variants: &[("main", &[]), ("ports", &["ports"])] },
     Entry { module: "compute::candidates", variants: &[("main", &["writes"])] },
     Entry { module: "compute::labels", variants: &[("main", &["writes"])] },
@@ -61,13 +58,13 @@ const ENTRIES: &[Entry] = &[
     Entry { module: "compute::fields", variants: &[("main", &[])] },
 ];
 
-const FEATURES: &[&str] = &["writes", "atomic", "casts", "custom", "multisampled", "lists", "ports", "focused"];
+const FEATURES: &[&str] = &["writes", "atomic", "custom", "multisampled", "lists", "ports", "focused"];
 
 /// What a custom marker supplies, for validating its variant.
 const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";
 
-/// Uniforms bound at a dynamic offset: each mark's, each pass's eye, and each probe dispatch's step.
-const DYNAMIC: &[&str] = &["mark", "eye", "step"];
+/// Uniforms bound at a dynamic offset: each mark's, and each probe dispatch's step.
+const DYNAMIC: &[&str] = &["mark", "step"];
 
 /// The values each pipeline constant is made with, as constants of `lib/types.wesl` or booleans: the
 /// primitive a probe or a label's anchor reads, the path a stroke reads, and whether channels read

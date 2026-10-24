@@ -146,9 +146,8 @@ fn border(m: MarkerColor, d: f32, alpha: f32) -> MarkerColor {
 // again, in the theme's shadow color.
 fn dropped(m: MarkerColor, distance: f32, alpha: f32) -> MarkerColor {
     let lift = max(theme_lift(), 0.5);
-    let shade = frame.shade.color;
-    let a = shade.a * alpha * (1.0 - smoothstep(-lift, lift, distance));
-    return MarkerColor(over(m, MarkerColor(vec4f(shade.rgb, a), distance)).color, m.distance);
+    let a = frame.shadow.a * alpha * (1.0 - smoothstep(-lift, lift, distance));
+    return MarkerColor(over(m, MarkerColor(vec4f(frame.shadow.rgb, a), distance)).color, m.distance);
 }
 
 // A ring of the status color just outside the marker's outline, a part of the drawing in a diagram.

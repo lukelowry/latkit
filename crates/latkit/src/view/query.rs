@@ -12,7 +12,7 @@ use rustc_hash::FxHashSet;
 use super::View;
 use super::event::{Hit, Trigger};
 use super::probe::Drew;
-use super::resources::{EyeSlot, step};
+use super::resources::step;
 use crate::gpu::Inner;
 use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
@@ -210,7 +210,7 @@ impl View {
                 label: Some("latkit query"),
                 timestamp_writes: None,
             });
-            pass.set_bind_group(0, &groups.view, &[EyeSlot::Main.offset()]);
+            pass.set_bind_group(0, &groups.view, &[]);
             pass.set_bind_group(2, &group, &[step(ask.step())]);
             for f in &found {
                 self.probe_step(&mut pass, inner, shader, &groups.mark, f.mark, ask.step());

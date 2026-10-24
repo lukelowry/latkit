@@ -2,14 +2,13 @@
 //! a stamp of what it reads, so it works again only when that changes; work small enough for the
 //! frame done on it, within one budget all derivations share; larger work a host job answering a
 //! patch, kept only while what it was asked from still holds; and tables it writes beside the tables
-//! marks draw, row for row, which marks read like data. What the GPU works out (the shadow map,
-//! normals, segment counts, label placement) follows the same stamps, its answers read back.
+//! marks draw, row for row, which marks read like data. What the GPU works out (normals, segment
+//! counts, label placement) follows the same stamps, its answers read back.
 //!
 //! The derivations: a diagram's sheet (places, sizes, boxes, wires); elsewhere the lanes of edges
 //! sharing their ends, the stars of nets, and where the scene has a layout the places of vertex rows
-//! without positions;
-//! the triangles of every area; and the tiles the camera asks for, which patch datasets the view
-//! owns.
+//! without positions; the shapes of geometry fields; the triangles of every area; and the tiles the
+//! camera asks for, which patch datasets the view owns.
 
 pub(crate) mod graph;
 mod lanes;

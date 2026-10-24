@@ -1,11 +1,25 @@
-import { theme } from '../../ui/theme.js';
 /**
  * One record in two views on one canvas: a lattice of nodes on a tilted plane, each standing on a
  * pole as high as its signal, and the signals traced on a plot. One playhead moves both; play at a
- * speed or scrub, and read where each view stands.
+ * speed or scrub, and read where each view stands. Select nodes in either view and the other selects
+ * them too, their traces standing out.
  */
-import { Data, Patch, field, reference, type Scene, type View } from '../../latkit.js';
+import {
+  Data,
+  Patch,
+  field,
+  reference,
+  selected,
+  units,
+  when,
+  zoom,
+  type Rows,
+  type Scene,
+  type Size,
+  type View,
+} from '../../latkit.js';
 import type { Stage } from '../../ui/stage.js';
+import { theme } from '../../ui/theme.js';
 
 /** Nodes a side of the lattice, frames recorded, seconds between them, and a full signal's height. */
 const SIDE = 20;
@@ -55,43 +69,73 @@ function record(): Data {
 export default function page(stage: Stage): void {
   const duration = (FRAMES - 1) * STEP;
   let few = true;
-  const signal = field('signal').colormap('viridis').domain(0, 1);
-  const lattice: Scene = {
+  const look = {
+    height: HEIGHT,
+    poles: true,
+    /** Whether signals read their last sample as it was, rather than eased between samples. */
+    held: false,
+    size: 'pixels' as 'pixels' | 'zoom' | 'units',
+  };
+  /** Each node's signal: eased between samples, or held at the last one. */
+  const reading = () => (look.held ? field('signal').step() : field('signal'));
+  const signal = () => reading().colormap('viridis').domain(0, 1);
+  /** A node's radius: CSS pixels, grown with the zoom, or units of the plane kept within pixels. */
+  const radius = (): Size =>
+    look.size === 'zoom'
+      ? zoom().mul(0.9).clamp(1.5, 9)
+      : look.size === 'units'
+        ? units(0.18, { atLeast: 1.5, atMost: 24 })
+        : 3.4;
+  const lattice = (): Scene => ({
     space: { plane: { grid: 'off' } },
-    theme,
+    theme: { ...theme, dim: 0.25 },
     marks: [
       { edges: { of: ['signals', 'Link'], ends: ['from', 'to'], width: 1, color: '#3a4556' } },
-      { edges: { of: ['signals', 'Node'], poles: true, width: 1.5, color: signal } },
+      ...(look.poles
+        ? [
+            {
+              edges: {
+                of: ['signals', 'Node'] as [string, string],
+                poles: true,
+                width: 1.5,
+                color: signal(),
+              },
+            },
+          ]
+        : []),
       {
         vertices: {
           of: ['signals', 'Node'],
           position: ['x', 'y'],
-          elevation: field('signal').mul(HEIGHT),
-          radius: 3.4,
-          color: signal,
+          elevation: reading().mul(look.height),
+          radius: radius(),
+          color: signal(),
         },
       },
     ],
-  };
+  });
   const traces = (): Scene => ({
     space: {
-      plot: { x: { label: 'Time (s)' }, y: { label: 'Signal', format: 'fixed', precision: 1 } },
+      plot: { x: { label: 'Time (s)' }, y: { label: 'Signal', format: 'fixed', precision: 2 } },
     },
-    theme,
+    theme: { ...theme, dim: 0.2 },
     ease: 0,
     marks: [
       {
         lines: {
           of: ['signals', 'Node'],
           trace: 'signal',
-          color: signal,
-          width: few ? 1.5 : 0.8,
-          ...(few ? { visible: field('traced').gt(0.5) } : {}),
+          color: signal(),
+          // Selected nodes' traces stand out, the rest dim.
+          width: when(selected())
+            .then(3)
+            .otherwise(few ? 1.5 : 0.8),
+          ...(few ? { visible: field('traced').gt(0.5).or(selected()) } : {}),
         },
       },
     ],
   });
-  const [plane, plot] = stage.panels([lattice, traces()], {
+  const [plane, plot] = stage.panels([lattice(), traces()], {
     label: 'A lattice on poles beside its signals traced: one playhead moves both',
     panels: [
       [0, 0, 0.55, 1],
@@ -104,6 +148,20 @@ export default function page(stage: Stage): void {
   plane.camera = { center: [(SIDE - 1) / 2, (SIDE - 1) / 2, 0], zoom: 3, pitch: 50, bearing: 20 };
   plane.fit();
   plot.camera = { x: [0, duration], y: [0, 1] };
+  const restyle = () => {
+    plane.show(lattice());
+    plot.show(traces());
+  };
+
+  // What either view selects, the other selects too.
+  const same = (a: readonly Rows[], b: readonly Rows[]) => JSON.stringify(a) === JSON.stringify(b);
+  for (const [from, to] of [
+    [plane, plot],
+    [plot, plane],
+  ] as const)
+    from.on('select', () => {
+      if (!same(from.selection, to.selection)) to.select(from.selection);
+    });
 
   const views = [
     ['Lattice', plane],
@@ -136,7 +194,7 @@ export default function page(stage: Stage): void {
   play.choice(
     'Traces',
     [
-      [`${(SIDE * SIDE) / TRACED} nodes`, true],
+      [`${(SIDE * SIDE) / TRACED} and the selected`, true],
       [`All ${SIDE * SIDE}`, false],
     ] as const,
     few,
@@ -145,6 +203,28 @@ export default function page(stage: Stage): void {
       plot.show(traces());
     },
   );
+  play.toggle('Hold samples', 'h', look.held, (on) => ((look.held = on), restyle()));
+  const shape = stage.section('Lattice');
+  shape.range(
+    'Height',
+    { min: 0, max: 6, step: 0.25, value: look.height, format: (v) => `${v.toFixed(2)} units` },
+    (height) => {
+      look.height = height;
+      plane.show(lattice());
+    },
+  );
+  shape.choice(
+    'Node size',
+    [
+      ['Pixels', 'pixels'],
+      ['Grows with zoom', 'zoom'],
+      ['Units of the plane', 'units'],
+    ] as const,
+    look.size,
+    (size) => ((look.size = size), plane.show(lattice())),
+  );
+  shape.toggle('Poles', 'p', look.poles, (on) => ((look.poles = on), plane.show(lattice())));
+  shape.note('Select nodes on the lattice or traces on the plot: both views select them.');
   const legend = stage.legend('top');
   legend.ramp('viridis', 'Signal 0–1');
 

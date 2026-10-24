@@ -34,11 +34,17 @@ pub(crate) struct Lifted {
 }
 
 impl Lifted {
+    /// `rows` of a table of `len` rows lifted in a sample of `sample` rows, which they count toward;
+    /// and the step of the table's own even sample, which takes the rest.
+    pub(crate) fn within(rows: Vec<u32>, len: u32, sample: u32) -> (Lifted, u32) {
+        let rows = ascending(rows, len);
+        let step = len.div_ceil(sample.saturating_sub(rows.len() as u32).max(1)).max(1);
+        (Lifted::new(rows, len, step), step)
+    }
+
     /// `rows` of a table of `len` rows sampled every `step`th.
-    pub(crate) fn new(mut rows: Vec<u32>, len: u32, step: u32) -> Lifted {
-        rows.retain(|&r| r < len);
-        rows.sort_unstable();
-        rows.dedup();
+    fn new(rows: Vec<u32>, len: u32, step: u32) -> Lifted {
+        let rows = ascending(rows, len);
         let mut places: Vec<u32> = rows.iter().map(|&r| sample_rank(r, len, step)).collect();
         places.sort_unstable();
         let stamp = stamp_of(&rows);
@@ -48,6 +54,14 @@ impl Lifted {
     fn len(&self) -> u32 {
         self.rows.len() as u32
     }
+}
+
+/// `rows` of a table of `len` rows, ascending, each once.
+fn ascending(mut rows: Vec<u32>, len: u32) -> Vec<u32> {
+    rows.retain(|&r| r < len);
+    rows.sort_unstable();
+    rows.dedup();
+    rows
 }
 
 /// Where row `r` draws in an even sample of `rows` rows every `step`th: the sample first, then the

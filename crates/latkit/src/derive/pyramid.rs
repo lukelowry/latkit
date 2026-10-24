@@ -545,6 +545,21 @@ fn pages_past(ranges: &[(u8, Range<u32>)], last: Option<u32>) -> (u32, Option<u3
     (pages, reached)
 }
 
+/// The first `rows` rows of `ranges`, in their order: what draws of a level whose pages alone pass
+/// what fits, its pages one after another.
+fn first(ranges: Vec<(u8, Range<u32>)>, mut rows: u32) -> Vec<(u8, Range<u32>)> {
+    let mut out = Vec::new();
+    for (z, range) in ranges {
+        if rows == 0 {
+            break;
+        }
+        let n = range.len().min(rows as usize) as u32;
+        out.push((z, range.start..range.start + n));
+        rows -= n;
+    }
+    out
+}
+
 /// Sub-cell `cell` of tile `key`, numbered along the curve.
 fn sub_key(key: TileKey, cell: usize) -> TileKey {
     let (mut x, mut y) = (0, 0);
@@ -599,16 +614,22 @@ impl Pyramid {
     /// level, every tile its rows reach into what the camera shows from, a large one only where its
     /// sub-cells do, splitting while a tile draws larger than its size. A drawing holds whole pages of
     /// the order, so a level whose pages would hold more than `rows` rows goes, coarser ones drawing
-    /// whole in its place.
-    pub(crate) fn wanted(&self, sight: &Sight<'_>, domain: &Domain, rows: u32) -> Vec<(u8, Range<u32>)> {
-        if self.tiles.len() == 1 && self.tiles[0].key.z == 0 {
-            return vec![(0, self.tiles[0].rows.clone())];
+    /// whole in its place; the coarsest, where it alone would, draws as many of its first rows as fit,
+    /// as one whose rows cannot land finer does, edges spanning the square. And whether `rows` held
+    /// back any of what the camera asks for.
+    pub(crate) fn wanted(&self, sight: &Sight<'_>, domain: &Domain, rows: u32) -> (Vec<(u8, Range<u32>)>, bool) {
+        let fit = rows.div_ceil(PAGE_ROWS);
+        if let [tile] = &self.tiles[..]
+            && tile.key.z == 0
+            && tile.rows.len() as u32 <= fit * PAGE_ROWS
+        {
+            return (vec![(0, tile.rows.clone())], false);
         }
         let region: Region = sight.region();
         let focus = sight.focus();
         let limit = TILE_PX * 1.25;
         let mut out: Vec<(u8, Range<u32>)> = Vec::new();
-        let (fit, mut held, mut last) = (rows.div_ceil(PAGE_ROWS), 0_u32, None);
+        let (mut held, mut last) = (0_u32, None);
         let mut level = vec![TileKey { z: 0, x: 0, y: 0 }];
         while !level.is_empty() {
             let mut found = Vec::new();
@@ -648,14 +669,17 @@ impl Pyramid {
             }
             // A level whose pages would pass what fits goes: the coarser ones draw in its place.
             let (pages, reached) = pages_past(&found, last);
-            if held + pages > fit && !out.is_empty() {
-                break;
+            if held + pages > fit {
+                if out.is_empty() {
+                    out = first(found, fit * PAGE_ROWS);
+                }
+                return (out, true);
             }
             (held, last) = (held + pages, reached);
             out.extend(found);
             level = next;
         }
-        out
+        (out, false)
     }
 
     /// The pyramids a job answered, by the place of the table among those asked, as
@@ -837,6 +861,17 @@ mod tests {
         assert_eq!((pages, last), (2, Some(1)));
         let below = [(1, PAGE_ROWS + 20..3 * PAGE_ROWS + 1)];
         assert_eq!(pages_past(&below, last), (2, Some(3)), "pages 2 and 3; page 1 is held already");
+    }
+
+    #[test]
+    fn a_level_alone_past_what_fits_draws_its_first_rows() {
+        let ranges = vec![(0, 0..3 * PAGE_ROWS), (0, 5 * PAGE_ROWS..6 * PAGE_ROWS)];
+        assert_eq!(first(ranges.clone(), 2 * PAGE_ROWS), [(0, 0..2 * PAGE_ROWS)], "its first pages");
+        assert_eq!(
+            first(ranges, 4 * PAGE_ROWS),
+            [(0, 0..3 * PAGE_ROWS), (0, 5 * PAGE_ROWS..6 * PAGE_ROWS)],
+            "every range, where they fit"
+        );
     }
 
     #[test]

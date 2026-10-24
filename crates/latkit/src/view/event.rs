@@ -333,7 +333,7 @@ pub struct Stats {
     /// Rows every mark draws: every row of a table drawn whole, the rows of the tiles in view of one
     /// drawn through tiles.
     pub drawn: u64,
-    /// Draw calls the last frame recorded, shadows and labels with the marks.
+    /// Draw calls the last frame recorded, labels with the marks.
     pub draws: u64,
     /// Instances the last frame's draws drew: points, segments, triangles, glyphs; at most, for
     /// segments the GPU culls.

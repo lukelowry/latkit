@@ -1,25 +1,29 @@
-import { theme } from '../../ui/theme.js';
 /**
  * Grid operations: a state's transmission grid as a control room watches it. Each substation is a
- * gauge of its output sized by its capacity, a plant's round and a load's square; branches are as
- * wide as their rating, color by loading, carry comets along their flow, and bow apart where they
- * run in parallel. The flows come from a DC power flow solved every tick: push demand up or trip a
- * line, and overloaded branches trip in turn, flows swing onto what is left, and loads cut off from
- * every plant go dark. Each tick eases into place; what trips pulses until it is restored.
+ * gauge of its output sized by its capacity, a plant's round and a load's square, or a pie of it, or
+ * an icon of its kind; branches are as wide as their rating, color by loading, carry comets along
+ * their flow, bow apart where they run in parallel, and bend along their corridors. The flows come
+ * from a DC power flow solved every tick: push demand up or trip a line, and overloaded branches trip
+ * in turn, flows swing onto what is left, and loads cut off from every plant go dark. Each tick eases
+ * into place; what trips pulses until it is restored.
  */
 import {
   Data,
   Patch,
   elapsed,
   field,
+  icon,
   reference,
   when,
   type Hit,
+  type Marker,
   type Motion,
+  type RgbaImage,
   type Scene,
 } from '../../latkit.js';
 import { each } from '../../ui/rows.js';
 import type { Stage } from '../../ui/stage.js';
+import { theme } from '../../ui/theme.js';
 import { Grid, KINDS } from './grid.js';
 import texas from './texas.json';
 
@@ -61,6 +65,40 @@ const LOADING = field('loading')
 
 /** Seconds between ticks of the simulation. */
 const TICK = 0.5;
+
+/** An icon for each kind of substation, a tripped one's last: a disc of its color, its initial on it. */
+function icons(): RgbaImage[] {
+  const size = 48;
+  return [
+    ...KINDS.map((k) => [k.color, k.label[0]!.toUpperCase()] as const),
+    [LOOK.tripped, '×'] as const,
+  ].map(([color, letter]) => {
+    const canvas = new OffscreenCanvas(size, size);
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = color;
+    context.beginPath();
+    context.arc(size / 2, size / 2, size / 2 - 1, 0, 2 * Math.PI);
+    context.fill();
+    context.fillStyle = '#07090c';
+    context.font = `bold ${size * 0.55}px system-ui, sans-serif`;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(letter, size / 2, size / 2 + 2);
+    return context.getImageData(0, 0, size, size);
+  });
+}
+
+/** Where each branch bends: a point beside its middle, a tenth of its length out, sides alternating,
+ * as a corridor runs around what lies between its substations. */
+function corridors(): number[][][] {
+  const s = texas.substations;
+  return texas.branches.map((b, j) => {
+    const [a, c] = [s[b.from]!, s[b.to]!];
+    const [dx, dy] = [c.lon - a.lon, c.lat - a.lat];
+    const side = (j % 2 ? 1 : -1) * 0.1;
+    return [[(a.lon + c.lon) / 2 - dy * side, (a.lat + c.lat) / 2 + dx * side]];
+  });
+}
 /** The grid's state as a patch of the `grid` dataset's changing fields. */
 function patchOf(grid: Grid): Patch {
   const kind = Float32Array.from(grid.kind, (k, i) =>
@@ -129,6 +167,7 @@ export default async function page(stage: Stage): Promise<void> {
             Uint32Array.from(texas.branches, (b) => b.to),
           ),
           rating: grid.rating,
+          corridor: corridors(),
         },
       ),
   );
@@ -143,8 +182,19 @@ export default async function page(stage: Stage): Promise<void> {
     ),
   );
 
-  const state = { comets: true, labels: true, playing: true };
+  const state = {
+    comets: true,
+    labels: true,
+    playing: true,
+    markers: 'gauges' as 'gauges' | 'pies' | 'icons',
+    corridors: false,
+    legends: true,
+    labelColor: 'text' as 'text' | 'kind',
+    ownGlow: false,
+    ease: 0.45,
+  };
   let motion: Motion = 'system';
+  const ICONS = icons();
   /** What trips pulses: red to dark red and back, twice a second. */
   const pulse = elapsed()
     .mul(4 * Math.PI)
@@ -163,6 +213,19 @@ export default async function page(stage: Stage): Promise<void> {
     .when(field('flow').lt(0))
     .then(field('flow').mul(1.8).sub(0.45))
     .otherwise(field('flow').mul(1.8).add(0.45));
+  /** How a substation draws: a gauge of its output, a pie of output and headroom, or its kind's icon. */
+  const marker = (shape: 'ellipse' | 'rounded'): Marker =>
+    state.markers === 'pies'
+      ? {
+          pie: {
+            slices: [field('fill'), field('fill').neg().add(1)],
+            colors: [LOOK.comet, '#26313d'],
+            hole: 0.35,
+          },
+        }
+      : state.markers === 'icons'
+        ? icon(ICONS, field('kind'))
+        : { gauge: { fill: field('fill'), shape } };
   /** A substation mark: plants as round gauges, loads as square ones, in one table. */
   const substations = (name: string, load: number, shape: 'ellipse' | 'rounded') => ({
     vertices: {
@@ -172,12 +235,20 @@ export default async function page(stage: Stage): Promise<void> {
       visible: field('load').eq(load),
       // Both marks size every row alike, by its capacity, so branches stop at the outline that shows.
       radius: field('capacity').sqrt().scale(8, 17).domain(11, 46),
-      marker: { gauge: { fill: field('fill'), shape } },
+      marker: marker(shape),
       color: kinds,
       ring: when(field('alarm').gt(0.5)).then(pulse).otherwise('#00000000'),
-      shadow: true,
-      ...(load ? {} : { legend: 'Substations' }),
-      ...(state.labels ? { label: { text: 'name', size: 12, priority: 'capacity' } } : {}),
+      ...(load || !state.legends ? {} : { legend: 'Substations' }),
+      ...(state.labels
+        ? {
+            label: {
+              text: 'name',
+              size: 12,
+              priority: 'capacity',
+              ...(state.labelColor === 'kind' ? { color: kinds } : {}),
+            },
+          }
+        : {}),
     },
   });
   const scene = (): Scene => ({
@@ -186,7 +257,8 @@ export default async function page(stage: Stage): Promise<void> {
       ...theme,
       text: LOOK.text,
       hover: LOOK.hover,
-      selected: LOOK.hover,
+      // Selected rows glow blue, or each in its own color.
+      selected: state.ownGlow ? null : LOOK.hover,
       // Comets are part of the map, in degrees: they zoom with it and stay on their branches.
       flow: { color: LOOK.comet, spacing: 1.35, length: 0.6, width: 6, units: true },
       font: 'Jura, sans-serif',
@@ -195,7 +267,7 @@ export default async function page(stage: Stage): Promise<void> {
       glow: 6,
       laneBow: 0.22,
     },
-    ease: 0.45,
+    ease: state.ease,
     // Easing, pulses, and comets hold still where the system asks for reduced motion, unless set.
     controls: { motion },
     marks: [
@@ -205,10 +277,11 @@ export default async function page(stage: Stage): Promise<void> {
           of: ['grid', 'Branch'],
           ends: ['from', 'to'],
           route: 'straight',
+          ...(state.corridors ? { bends: 'corridor' } : {}),
           width: field('rating').scale(1.6, 3.6).domain(300, 800),
           color: when(field('alarm').gt(0.5)).then(pulse).otherwise(LOADING),
           dash: 'out',
-          legend: 'Loading, % of rating',
+          ...(state.legends ? { legend: 'Loading, % of rating' } : {}),
           ...(state.comets ? { flow: comets } : {}),
         },
       },
@@ -251,6 +324,36 @@ export default async function page(stage: Stage): Promise<void> {
   const layers = stage.section('Layers');
   layers.toggle('Flow', 'c', state.comets, (on) => ((state.comets = on), restyle()));
   layers.toggle('Labels', 'l', state.labels, (on) => ((state.labels = on), restyle()));
+  layers.toggle('Corridors', 'b', state.corridors, (on) => ((state.corridors = on), restyle()));
+  layers.toggle('Legends', 'g', state.legends, (on) => ((state.legends = on), restyle()));
+  layers.choice(
+    'Substations',
+    [
+      ['Gauges', 'gauges'],
+      ['Pies', 'pies'],
+      ['Icons', 'icons'],
+    ] as const,
+    state.markers,
+    (next) => ((state.markers = next), restyle()),
+  );
+  layers.choice(
+    'Label color',
+    [
+      ['Text', 'text'],
+      ['By kind', 'kind'],
+    ] as const,
+    state.labelColor,
+    (next) => ((state.labelColor = next), restyle()),
+  );
+  layers.choice(
+    'Selection glow',
+    [
+      ['Blue', false],
+      ['Its own color', true],
+    ] as const,
+    state.ownGlow,
+    (next) => ((state.ownGlow = next), restyle()),
+  );
   layers.choice(
     'Motion',
     [
@@ -260,6 +363,14 @@ export default async function page(stage: Stage): Promise<void> {
     ] as const,
     motion,
     (next) => ((motion = next), restyle()),
+  );
+  layers.range(
+    'Easing',
+    { min: 0, max: 1.5, step: 0.05, value: state.ease, format: (v) => `${v.toFixed(2)} s` },
+    (ease) => {
+      state.ease = ease;
+      restyle();
+    },
   );
 
   // ── Inspector ──

@@ -83,7 +83,7 @@ pub struct Theme {
     pub port_size: f32,
     /// The radius of an orthogonal wire's bends.
     pub bend: f32,
-    /// How marks that cast shadows cast them.
+    /// How a diagram's blocks and groups drop shadows onto its sheet.
     pub shadow: Shadow,
     /// The air glowing around the globe, where the earth has an atmosphere.
     pub atmosphere: Color,
@@ -111,19 +111,14 @@ pub struct Flow {
     pub units: bool,
 }
 
-/// How marks that cast shadows cast them onto the ground and onto faces.
+/// How a diagram's blocks and groups drop shadows onto its sheet.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = merged)]
 pub struct Shadow {
-    /// What a shadow darkens toward; its alpha is how dark a shadow at contact gets.
+    /// What a shadow darkens toward; its alpha is how dark it gets under the block.
     pub color: Color,
-    /// The direction toward the light, fixed in the world: shadows fall away from it.
-    pub light: [f32; 3],
-    /// How much a shadow spreads per unit of a caster's height: the light's size.
-    pub softness: f32,
-    /// CSS pixels flat marks cast from, as if raised; in a diagram, how far a block's or a group's
-    /// shadow falls below it, and as far again it softens.
+    /// How far a block's or a group's shadow falls below it, and as far again it softens.
     pub lift: f32,
 }
 
@@ -169,7 +164,7 @@ impl Theme {
             corner: 6.0,
             port_size: 7.0,
             bend: 6.0,
-            shadow: Shadow { color: Color::BLACK.alpha(0.45), light: [-0.35, 0.45, 1.0], softness: 0.15, lift: 3.0 },
+            shadow: Shadow { color: Color::BLACK.alpha(0.45), lift: 3.0 },
             atmosphere: Color::hex("#5aa9ff").expect("hex").alpha(0.55),
             night: 0.3,
         }
