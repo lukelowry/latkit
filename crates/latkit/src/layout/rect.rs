@@ -33,3 +33,8 @@ pub(crate) fn grow(r: Rect, by: f64) -> Rect {
 pub(crate) fn meets(a: &Rect, b: &Rect) -> bool {
     a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1]
 }
+
+/// Whether a box is finite and not inverted.
+pub(crate) fn valid(r: &Rect) -> bool {
+    r.iter().all(|v| v.is_finite()) && r[0] <= r[2] && r[1] <= r[3]
+}

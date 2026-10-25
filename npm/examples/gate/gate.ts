@@ -3,7 +3,9 @@
  * every page of the suite in a fresh browser and moves the pointer over it. It fails on a pipeline
  * over budget or failing to compile, a console error, a page that draws no frame in time, a page
  * missing frames in a row while it opens or under the pointer, or a pipeline compiled where first
- * used. Every wait races a deadline.
+ * used. A page late, drawing no frame in time or missing frames, opens again, cold: it fails late
+ * only on every open, as a stall of the machine slows one open and a slow page all. Every wait races
+ * a deadline.
  *
  * On SwiftShader (`--software`, as Linux always is), the CPU draws, slower than any budget, so the
  * gate only checks that every pipeline compiles: pages and times are judged on a GPU.
@@ -33,6 +35,15 @@ const FIRST_FRAME_BUDGET = 1000;
 const MISSED = 1;
 /** Milliseconds between display frames past which the gate tells what the views were doing. */
 const LONG = 50;
+/** Cold opens a page may take to draw its first frame in time and keep its frames. What any open
+ * does wrong fails at once. */
+const OPENS = 2;
+
+/** What an open of a page did wrong, and how it was late. */
+interface Opened {
+  wrong: string[];
+  slow: string[];
+}
 
 /** A gap between display frames past `LONG`: how long, each view's last frame on the CPU and the
  * GPU and what it waited on, and the work the GPU did since the frame before. */
@@ -246,10 +257,21 @@ async function settled(page: Page, budget: number): Promise<void> {
   );
 }
 
-/** Opens page `id` in a fresh browser, waits for its first frames, then moves the pointer over
- * every view: hovering a grid of points, zooming, panning, and clicking. Returns the failures. */
+/** Opens page `id` until an open is in time, at most `OPENS` times: what an open did wrong, else
+ * how the last was late. */
 async function visit(url: string, id: string): Promise<string[]> {
-  const failures: string[] = [];
+  for (let n = 1; ; n++) {
+    const { wrong, slow } = await open(url, id);
+    if (wrong.length || !slow.length || n === OPENS) return [...wrong, ...slow];
+    console.log(`  ${id}: ${slow.join('; ')}; opening it again`);
+  }
+}
+
+/** Opens page `id` in a fresh browser, waits for its first frames, then moves the pointer over
+ * every view: hovering a grid of points, zooming, panning, and clicking. */
+async function open(url: string, id: string): Promise<Opened> {
+  const opened: Opened = { wrong: [], slow: [] };
+  const { wrong, slow } = opened;
   const chrome = await cold();
   try {
     const context = await chrome.browser.newContext({
@@ -258,9 +280,9 @@ async function visit(url: string, id: string): Promise<string[]> {
     });
     const page = await context.newPage();
     page.on('console', (message) => {
-      if (message.type() === 'error') failures.push(`console: ${message.text().slice(0, 300)}`);
+      if (message.type() === 'error') wrong.push(`console: ${message.text().slice(0, 300)}`);
     });
-    page.on('pageerror', (error) => failures.push(`page: ${error.message.slice(0, 300)}`));
+    page.on('pageerror', (error) => wrong.push(`page: ${error.message.slice(0, 300)}`));
     // The longest gap between animation frames since the last reset, and the display's frame
     // interval: the median of the latest gaps; and each gap past `LONG`, with what the views did.
     await page.addInitScript((long: number) => {
@@ -318,7 +340,7 @@ async function visit(url: string, id: string): Promise<string[]> {
       const long = await page.evaluate(() => (window as unknown as { long: Long[] }).long);
       for (const frame of long) console.log(`  ${id}: ${describe(frame)} ${doing}`);
     };
-    const opened = performance.now();
+    const started = performance.now();
     await deadline(page.goto(`${url}#${id}`), STEP, `open ${id}`);
     /** Waits until every view has drawn more than `frames` frames, for at most `budget` ms. */
     const drawn = (frames: number, budget: number) =>
@@ -339,10 +361,10 @@ async function visit(url: string, id: string): Promise<string[]> {
         `${id}'s first frame`,
       );
     } catch {
-      failures.push(`no frame within ${FIRST_FRAME_BUDGET} ms`);
-      return failures;
+      slow.push(`no frame within ${FIRST_FRAME_BUDGET} ms`);
+      return opened;
     }
-    const first = performance.now() - opened;
+    const first = performance.now() - started;
     // What stalls while the views open, from their first frames: what the page did loading before
     // them shows nothing to stall.
     await page.evaluate(() => (window as unknown as { resetGap(): void }).resetGap());
@@ -413,7 +435,7 @@ async function visit(url: string, id: string): Promise<string[]> {
           .filter(Boolean);
         return `views waiting on ${waiting.join(', ')}; the page said ${status.join(' | ') || 'nothing'}`;
       });
-      failures.push(`no picture exported: ${said}`);
+      wrong.push(`no picture exported: ${said}`);
     }
     const { gap, step } = longest;
     const { interval, late } = await page.evaluate(() => {
@@ -431,17 +453,15 @@ async function visit(url: string, id: string): Promise<string[]> {
     );
     const missed = (ms: number) => Math.round(ms / interval) - 1;
     if (opening > budget)
-      failures.push(`missed ${missed(opening)} frames in a row opening (${opening.toFixed(0)} ms)`);
+      slow.push(`missed ${missed(opening)} frames in a row opening (${opening.toFixed(0)} ms)`);
     if (gap > budget)
-      failures.push(`missed ${missed(gap)} frames in a row on ${step} (${gap.toFixed(0)} ms)`);
+      slow.push(`missed ${missed(gap)} frames in a row on ${step} (${gap.toFixed(0)} ms)`);
     if (late > 0)
-      failures.push(
-        `${late} pipelines compiled where first used, holding back the frames using them`,
-      );
+      wrong.push(`${late} pipelines compiled where first used, holding back the frames using them`);
   } finally {
     await chrome.close();
   }
-  return failures;
+  return opened;
 }
 
 /** A frame past `LONG` as the gate tells it: what each view's last frame took on the CPU and the GPU

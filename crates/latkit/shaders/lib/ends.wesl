@@ -12,9 +12,10 @@ import package::lib::state::record_at;
 import package::lib::read::bits_value;
 
 // Where place `place` of the order a table is drawn in is held, by where the program lists its held
-// rows at `slots`: how many pages, then each one's slot; then how many rows it keeps whose pages it
-// does not hold, then each one's place and held row, ascending by place. NONE where it holds the
-// place nowhere; a table drawn whole, with no such list, holds every row as itself.
+// rows at `slots`: how many pages, then each one's slot; then the table of the rows it keeps whose
+// pages it does not hold: how many buckets, then each one's place and held row, NONE where empty, a
+// place in the first empty bucket from where its bits hash to, as `view/kept.rs` keeps them. NONE
+// where it holds the place nowhere; a table drawn whole, with no such list, holds every row as itself.
 fn held_of(slots: u32, place: u32) -> u32 {
     if slots == NONE || place == NONE {
         return place;
@@ -28,21 +29,37 @@ fn held_of(slots: u32, place: u32) -> u32 {
         }
     }
     let kept = slots + 1u + pages;
-    let count = program[kept];
-    var lo = 0u;
-    var hi = count;
-    while lo < hi {
-        let mid = (lo + hi) / 2u;
-        if program[kept + 1u + 2u * mid] < place {
-            lo = mid + 1u;
-        } else {
-            hi = mid;
+    let buckets = program[kept];
+    if buckets == 0u {
+        return NONE;
+    }
+    var b = home(place, buckets);
+    // At most four fifths of the buckets are full, so a probe meets an empty one within the table.
+    for (var probe = 0u; probe < buckets; probe++) {
+        let at = kept + 1u + 2u * b;
+        let held = program[at];
+        if held == place {
+            return program[at + 1u];
+        }
+        if held == NONE {
+            return NONE;
+        }
+        b += 1u;
+        if b == buckets {
+            b = 0u;
         }
     }
-    if lo < count && program[kept + 1u + 2u * lo] == place {
-        return program[kept + 2u + 2u * lo];
-    }
     return NONE;
+}
+
+// The bucket a probe for place `d` starts at among `buckets`, as `view/kept.rs` finds it: its bits
+// hashed.
+fn home(d: u32, buckets: u32) -> u32 {
+    var h = d ^ (d >> 16u);
+    h *= 0x7feb352du;
+    h ^= h >> 15u;
+    h *= 0x846ca68bu;
+    return (h ^ (h >> 16u)) % buckets;
 }
 
 // Writes where each end of live row `row` of the current mark is held: an edge's two, a face's three

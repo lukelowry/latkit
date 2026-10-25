@@ -128,7 +128,8 @@ impl Resources {
             frame: create(device, "latkit frame", uniform, size_of::<wgsl::Frame>() as u64),
             eye: create(device, "latkit eye", uniform, size_of::<wgsl::Eye>() as u64),
             marks: Grown::new(device, "latkit marks", uniform),
-            program: Grown::new(device, "latkit program", storage),
+            // A copy's source as it grows, keeping what it holds.
+            program: Grown::new(device, "latkit program", storage | wgpu::BufferUsages::COPY_SRC),
             lit: Grown::new(device, "latkit lit", storage),
             blocks: Grown::new(device, "latkit blocks", storage),
             remap: Grown::new(device, "latkit remap", storage),
@@ -198,6 +199,27 @@ impl Resources {
             self.generation += 1;
         }
         replaced
+    }
+
+    /// Makes room for `words` of program keeping its first `kept`: a buffer replaced has them copied
+    /// into the new one in `encoder`, so what is written into it this frame follows the copy. True when
+    /// it was replaced.
+    pub(crate) fn grow_program(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        words: u64,
+        kept: u64,
+    ) -> bool {
+        let old = self.program.buffer.clone();
+        if !self.program.ensure(device, (words + 1) * 4) {
+            return false;
+        }
+        if kept > 0 {
+            encoder.copy_buffer_to_buffer(&old, 0, &self.program.buffer, 0, kept * 4);
+        }
+        self.generation += 1;
+        true
     }
 
     /// Makes room for `words` probe words, what the running query finds included.

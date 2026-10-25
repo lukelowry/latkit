@@ -327,6 +327,13 @@ impl Values {
         }
     }
 
+    /// Points its geometries take as shaders read them: every coordinate, and a break between a row's
+    /// parts or rings; none where it holds no geometry.
+    pub(crate) fn points(&self) -> usize {
+        let Some(geometry) = self.geometry() else { return 0 };
+        (0..self.len()).filter(|&row| self.is_valid(row)).map(|row| geometry.row_points(row)).sum()
+    }
+
     /// Geometries as values, every one present.
     pub(crate) fn of_geometry(geometry: Geometry) -> Values {
         Values { array: Array::Geometry(geometry), valid: None }

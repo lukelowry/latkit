@@ -12,6 +12,7 @@ mod frame;
 mod gestures;
 mod graph;
 mod input;
+mod kept;
 mod labels;
 mod legends;
 mod lists;
@@ -420,11 +421,14 @@ impl View {
         Some(&self.snapshots[i])
     }
 
-    /// Takes what tiles brought since the last frame, and the latest version of every dataset given to
-    /// change in place, where it changed: before a frame asks what its marks read with, so a field a
-    /// version adds never reads through what was not asked for. A picture draws the versions the view
-    /// held when it began, while the tiles it waits on land.
+    /// Brings every source up to this frame before anything reads it: the tiles the camera and the
+    /// plot window ask for, with what landed for them, and the latest version of every dataset given
+    /// to change in place, where it changed. A frame's marks compile against, ask pipelines for,
+    /// derive from, and draw one version of each, so a field a version adds never reads through what
+    /// was not asked for. A picture draws the versions the view held when it began, while the tiles it
+    /// waits on land.
     fn refresh(&mut self, inner: &mut crate::gpu::Inner) {
+        self.update_tiles(inner);
         for data in self.derived.tiles.take_changed() {
             self.take_data(data, inner);
         }

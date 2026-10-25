@@ -15,6 +15,7 @@ use crate::derive::sight::Domain;
 use crate::geo::mvt::Kind as Geometry;
 use crate::geo::shapes::{earth_parts, triangles};
 use crate::geo::tiles::{Decoded, decode};
+use crate::layout::boxes::Boxes;
 use crate::layout::route::{Net, Terminal, route};
 use crate::layout::{layered::layered, levels::Graph, stress::stress};
 use crate::tiles::TileKey;
@@ -486,7 +487,7 @@ fn run_routes(input: &mut Reader<'_>) -> Option<Patch> {
             .collect::<Option<Vec<_>>>()?;
         nets.push(Net { terminals });
     }
-    let routes = route(&obstacles, &groups, &nets, &fixed, spacing);
+    let routes = route(&Boxes::new(obstacles), &groups, &nets, &fixed, spacing);
     Some(keyed(&keys, routes, |table, routes| table.field("route", routes)))
 }
 
@@ -765,7 +766,7 @@ mod tests {
             spacing: 2.0,
         };
         let answer = Job::routes(&wiring).run();
-        let want = route(&obstacles, &[], &nets, &[], 2.0).swap_remove(0);
+        let want = route(&Boxes::new(obstacles.to_vec()), &[], &nets, &[], 2.0).swap_remove(0);
         assert_eq!(answered(&answer, "Wire", 3, "route"), Some(Value::Parts(want)));
     }
 

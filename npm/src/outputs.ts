@@ -263,13 +263,18 @@ export type Waiting = ('compiling' | 'data' | 'derived' | 'labels' | 'fit' | 'ma
 export interface Work {
   /** Bytes of data pages uploaded. */
   uploaded: number;
+  /**
+   * Data pages, or pieces of them, uploaded: what a change uploads counts its pages here, and its
+   * bytes in `uploaded`.
+   */
+  uploads: number;
   /** Bytes written besides pages: uniforms, programs, label runs, the selection, textures. */
   written: number;
   /** Rows whose channels the GPU evaluated. */
   evaluated: number;
   /**
    * Rows of edges and faces whose ends the GPU found where their vertices are held: rows that
-   * changed, and every row held where the vertices they end at moved.
+   * changed, and every row of a page of them naming a vertex now held elsewhere.
    */
   resolved: number;
   /**

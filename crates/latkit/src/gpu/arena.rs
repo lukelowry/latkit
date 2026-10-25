@@ -72,11 +72,12 @@ impl PageKey {
 }
 
 /// The pieces of the geometry pages drawn lately, by each page's id: its rows' table, then its pieces
-/// of points, keyed by what they hold. A page drawn again finds its pieces without making them; one
-/// written again makes them, and uploads those the GPU lacks.
+/// of points, keyed by what they hold, and how many points it has. A page drawn again finds its
+/// pieces and its points without making or counting them; one written again makes them, and uploads
+/// those the GPU lacks.
 #[derive(Default)]
 pub(crate) struct Pieces {
-    keys: HashMap<PageId, Arc<[PageKey]>, FxBuildHasher>,
+    keys: HashMap<PageId, (Arc<[PageKey]>, usize), FxBuildHasher>,
     order: VecDeque<PageId>,
 }
 
@@ -84,14 +85,15 @@ pub(crate) struct Pieces {
 const PIECED_PAGES: usize = 1 << 14;
 
 impl Pieces {
-    /// The pieces of page `page`, when kept.
-    pub(crate) fn of(&self, page: PageId) -> Option<Arc<[PageKey]>> {
+    /// The pieces of page `page`, and its points, when kept.
+    pub(crate) fn of(&self, page: PageId) -> Option<(Arc<[PageKey]>, usize)> {
         self.keys.get(&page).cloned()
     }
 
-    /// Keeps `keys` as page `page`'s pieces, forgetting the page kept longest when too many are.
-    pub(crate) fn keep(&mut self, page: PageId, keys: Arc<[PageKey]>) {
-        if self.keys.insert(page, keys).is_none() {
+    /// Keeps `keys` as page `page`'s pieces, of `points` points, forgetting the page kept longest when
+    /// too many are.
+    pub(crate) fn keep(&mut self, page: PageId, keys: Arc<[PageKey]>, points: usize) {
+        if self.keys.insert(page, (keys, points)).is_none() {
             self.order.push_back(page);
         }
         while self.order.len() > PIECED_PAGES {
@@ -203,13 +205,6 @@ pub(crate) fn page_words(values: &Values, words: Words, low: bool) -> Vec<u32> {
         Words::Path => unreachable!("a geometry uploads in pieces"),
         Words::Codes => unreachable!("text codes upload as words"),
     }
-}
-
-/// Points a geometry page's rows take as shaders read them: every coordinate, and a break between a
-/// row's parts or rings.
-pub(crate) fn path_points(values: &Values) -> usize {
-    let Some(geometry) = values.geometry() else { return 0 };
-    (0..values.len()).filter(|&row| values.is_valid(row)).map(|row| geometry.row_points(row)).sum()
 }
 
 /// A geometry page as `lib/read.wesl` reads it: its rows' table, two words a row (the piece its
@@ -564,19 +559,22 @@ impl Arena {
         }
         // Pages placed side by side, as a column's pages are, upload in one write.
         writes.sort_unstable_by_key(|&(at, _)| at);
-        let mut run: Option<(u32, Vec<u32>)> = None;
+        let mut run: Option<(u32, Vec<u32>, u64)> = None;
         for (at, words) in writes {
             match &mut run {
-                Some((start, joined)) if *start + joined.len() as u32 == at => joined.extend_from_slice(&words),
+                Some((start, joined, pages)) if *start + joined.len() as u32 == at => {
+                    joined.extend_from_slice(&words);
+                    *pages += 1;
+                }
                 _ => {
-                    if let Some((start, joined)) = run.replace((at, words)) {
-                        queue.upload(&self.buffer, u64::from(start) * 4, bytemuck::cast_slice(&joined));
+                    if let Some((start, joined, pages)) = run.replace((at, words, 1)) {
+                        queue.upload(&self.buffer, u64::from(start) * 4, bytemuck::cast_slice(&joined), pages);
                     }
                 }
             }
         }
-        if let Some((start, joined)) = run {
-            queue.upload(&self.buffer, u64::from(start) * 4, bytemuck::cast_slice(&joined));
+        if let Some((start, joined, pages)) = run {
+            queue.upload(&self.buffer, u64::from(start) * 4, bytemuck::cast_slice(&joined), pages);
         }
         bytes
     }
@@ -716,7 +714,7 @@ mod tests {
         // The last row's two parts are broken by a missing point.
         assert_eq!(entry(&page, 2), (1, 10, 4));
         assert_eq!(page.pieces[1].len(), 2 * (10 + 4));
-        assert_eq!(path_points(&values), PIECE_POINTS + 10 + 4);
+        assert_eq!(values.points(), PIECE_POINTS + 10 + 4);
     }
 
     #[test]

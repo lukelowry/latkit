@@ -15,6 +15,7 @@ use std::sync::Arc;
 use rustc_hash::FxHashSet;
 
 use super::View;
+use super::kept::KeptTable;
 use crate::data::{Field, Name, Reference, UNWIRED, Version};
 use crate::derive::order::Order;
 use crate::derive::stamp_of;
@@ -71,9 +72,9 @@ pub(crate) struct Drawing {
     /// The rows kept whose pages it does not hold, by their place among the rows kept: each one's
     /// place in the order, `NONE` where a place is free.
     kept: Arc<[u32]>,
-    /// The rows kept by their place in the order, ascending, each with its held row: what the ends of
-    /// edges find kept vertices by.
-    pub(crate) kept_rows: Arc<[[u32; 2]]>,
+    /// The rows kept by their place in the order, with their held rows: what the ends of edges find
+    /// kept vertices by.
+    pub(crate) kept_table: KeptTable,
     /// The rows drawn whatever their tiles, as places in the order, ascending.
     pinned: Arc<[u32]>,
     pub(crate) runs: Vec<Run>,
@@ -100,9 +101,10 @@ pub(crate) struct Drawing {
     pub(crate) laid: u64,
     /// What tells it from every other drawing: what lists of its rows are kept by.
     pub(crate) made: Version,
-    /// What tells where it holds the rows edges end at: the drawing's before it while none of those
-    /// rows moved, so the edges naming them find them where they were.
-    pub(crate) held_ends: Version,
+    /// The places the edges held or the rows drawn whatever their tiles name that the drawing before
+    /// it held elsewhere, ascending: the rows naming them find their ends again. With what tells them
+    /// from the moves of the drawings before, the drawing's before it while none moved.
+    pub(crate) moved: (Version, Arc<[u32]>),
     /// What its rows kept were laid out from: the rows drawn whatever their tiles, what the edges held
     /// ask of it, and the pages it holds. A drawing laid out from the same keeps them where they were.
     kept_from: u64,
@@ -179,18 +181,7 @@ impl Drawing {
         };
         let kept_pages = kept.len().div_ceil(PAGE_ROWS as usize);
         let (slots, pages, kept_slots) = place(before, &held, kept_pages);
-        let kept_rows: Arc<[[u32; 2]]> = if let Some(b) = same {
-            b.kept_rows.clone()
-        } else {
-            let mut rows: Vec<[u32; 2]> = kept
-                .iter()
-                .enumerate()
-                .filter(|&(_, &d)| d != wgsl::NONE)
-                .map(|(i, &d)| [d, kept_slots[i / PAGE_ROWS as usize] * PAGE_ROWS + (i as u32) % PAGE_ROWS])
-                .collect();
-            rows.sort_unstable();
-            rows.into()
-        };
+        let kept_table = if let Some(b) = same { b.kept_table.clone() } else { keep_table(before, &kept, &kept_slots) };
         let lays = before.map_or(1, |b| b.lays + 1);
         let asked: Arc<[u64]> = slots
             .iter()
@@ -209,7 +200,7 @@ impl Drawing {
             slots: slots.into(),
             pages: pages.into(),
             kept,
-            kept_rows,
+            kept_table,
             pinned: lay.pinned.places.clone(),
             runs: Vec::new(),
             by_held: Vec::new(),
@@ -224,13 +215,16 @@ impl Drawing {
             content: lay.content,
             laid: lay.stamp(),
             made: Version::next(),
-            held_ends: before.map_or_else(Version::next, |b| b.held_ends),
+            moved: before.map_or_else(|| (Version::next(), Arc::default()), |b| b.moved.clone()),
             kept_from,
             layout: 0,
         };
         drawing.layout = stamp_of((drawing.order.id(), drawing.order.len(), &*drawing.slots, &*drawing.kept));
-        if before.is_some_and(|b| b.kept_from != kept_from && ends_moved(b, &drawing, lay.ends, &lay.pinned.places)) {
-            drawing.held_ends = Version::next();
+        if let Some(b) = before.filter(|b| b.kept_from != kept_from) {
+            let places = moved(b, &drawing, lay.ends, &lay.pinned.places);
+            if !places.is_empty() {
+                drawing.moved = (Version::next(), places.into());
+            }
         }
         drawing.run(&entering, &lay.pinned.places);
         drawing.fades = !entering.is_empty() || !drawing.leaving.is_empty();
@@ -348,8 +342,7 @@ impl Drawing {
         if slot != wgsl::NONE {
             return Some(slot * PAGE_ROWS + d % PAGE_ROWS);
         }
-        let i = self.kept_rows.partition_point(|&[place, _]| place < d);
-        self.kept_rows.get(i).filter(|&&[place, _]| place == d).map(|&[_, held]| held)
+        self.kept_table.held(d)
     }
 
     /// The held row of row `r` of its table, if it holds it.
@@ -419,30 +412,56 @@ fn asked<'r>(count: usize, ranges: impl Iterator<Item = &'r Range<u32>>, ends: &
     asked
 }
 
-/// Whether a row `ends` or `pinned` name, held in `before`, is held elsewhere in `now`: then the rows
-/// naming it find their ends again. A page held in both keeps its slot, and a row kept in both its
-/// place among the rows kept, so only rows of a page held in one alone move: those named of a page
-/// `before` held, and those `before` kept of a page `now` holds. A row `before` did not hold is named
-/// only by rows new to the edges, which find their ends as they arrive.
-fn ends_moved(before: &Drawing, now: &Drawing, ends: &Ending, pinned: &[u32]) -> bool {
-    let held = |drawing: &Drawing, page: usize| drawing.pages.get(page).is_some_and(|&slot| slot != wgsl::NONE);
-    // Whether any of `places`, ascending, lies in `page`.
-    let within = |places: &[u32], page: u32| {
-        let start = places.partition_point(|&d| d < page * PAGE_ROWS);
-        places.get(start).is_some_and(|&d| d < (page + 1) * PAGE_ROWS)
-    };
-    let kept_in = |page: u32| {
-        let start = before.kept_rows.partition_point(|&[place, _]| place < page * PAGE_ROWS);
-        before.kept_rows.get(start).is_some_and(|&[place, _]| place < (page + 1) * PAGE_ROWS)
-    };
-    (0..before.pages.len().max(now.pages.len())).any(|p| {
-        let page = p as u32;
-        match (held(before, p), held(now, p)) {
-            (true, false) => within(&ends.rows, page) || within(pinned, page),
-            (false, true) => kept_in(page),
-            _ => false,
+/// The table of the rows `kept`, by their places among the rows kept, held in the pages of rows kept
+/// `kept_slots` says, laid out from the one `before` keeps: the rows whose places changed come and go,
+/// and every other keeps its bucket.
+fn keep_table(before: Option<&Drawing>, kept: &[u32], kept_slots: &[u32]) -> KeptTable {
+    let held = |i: usize| kept_slots[i / PAGE_ROWS as usize] * PAGE_ROWS + (i as u32) % PAGE_ROWS;
+    let was: &[u32] = before.map_or(&[], |b| &b.kept);
+    let at = |list: &[u32], i: usize| list.get(i).copied().unwrap_or(wgsl::NONE);
+    let (mut gone, mut came) = (Vec::new(), Vec::new());
+    for i in 0..kept.len().max(was.len()) {
+        let (old, new) = (at(was, i), at(kept, i));
+        if old != new {
+            gone.extend((old != wgsl::NONE).then_some(old));
+            came.extend((new != wgsl::NONE).then(|| [new, held(i)]));
         }
-    })
+    }
+    let rows: Vec<[u32; 2]> =
+        kept.iter().enumerate().filter(|&(_, &d)| d != wgsl::NONE).map(|(i, &d)| [d, held(i)]).collect();
+    KeptTable::laid(before.map_or(&KeptTable::default(), |b| &b.kept_table), &rows, &gone, &came)
+}
+
+/// The places `ends` or `pinned` name that `before` held and `now` holds elsewhere or not at all,
+/// ascending: the rows naming them find their ends again. A page held in both keeps its slot, and a
+/// row kept in both its place among the rows kept, so only rows of a page held in one alone move:
+/// those named of a page `before` held, and those `before` kept of a page `now` holds. A row `before`
+/// did not hold is named only by rows new to the edges, which find their ends as they arrive.
+fn moved(before: &Drawing, now: &Drawing, ends: &Ending, pinned: &[u32]) -> Vec<u32> {
+    /// Those of `places`, ascending, lying in page `p`.
+    fn within(places: &[u32], p: u32) -> &[u32] {
+        let start = places.partition_point(|&d| d < p * PAGE_ROWS);
+        &places[start..places.partition_point(|&d| d < (p + 1) * PAGE_ROWS)]
+    }
+    let held = |drawing: &Drawing, page: usize| drawing.pages.get(page).is_some_and(|&slot| slot != wgsl::NONE);
+    let mut moved = Vec::new();
+    let mut gained = vec![false; now.pages.len()];
+    for p in 0..before.pages.len().max(now.pages.len()) {
+        if held(before, p) && !held(now, p) {
+            moved.extend_from_slice(within(&ends.rows, p as u32));
+            moved.extend_from_slice(within(pinned, p as u32));
+        }
+    }
+    for (p, gained) in gained.iter_mut().enumerate() {
+        *gained = held(now, p) && !held(before, p);
+    }
+    if gained.contains(&true) {
+        let gained = |d: u32| gained.get((d / PAGE_ROWS) as usize).copied().unwrap_or(false);
+        moved.extend(before.kept.iter().copied().filter(|&d| d != wgsl::NONE && gained(d)));
+    }
+    moved.sort_unstable();
+    moved.dedup();
+    moved
 }
 
 /// Holds the pages `before` held that are no longer `asked` for while `room` leaves room, those
@@ -598,6 +617,16 @@ impl Ends {
         self.asked.1.clone()
     }
 
+    /// Whether the ends of edge page `page` lie at any of `places`, ascending; so where the page was
+    /// never worked out.
+    fn lie_in(&self, page: u32, places: &[u32]) -> bool {
+        let Some(Some((_, found))) = self.pages.get(page as usize) else { return true };
+        // Each of the fewer looked for among the more.
+        let (few, many) =
+            if found.places.len() < places.len() { (&found.places[..], places) } else { (places, &found.places[..]) };
+        few.iter().any(|d| many.binary_search(d).is_ok())
+    }
+
     /// The places in `target` that edge page `page` of `order` ends at, by `ends`.
     fn of(&mut self, order: &Order, target: &Order, ends: &[&Reference], page: u32) -> Arc<Places> {
         if self.pages.len() <= page as usize {
@@ -681,6 +710,19 @@ impl Drawn {
     /// The drawing marks sync to: the one replacing what draws, else what draws.
     pub(crate) fn latest(&self) -> Option<&Arc<Drawing>> {
         self.next.as_ref().or(self.current.as_ref())
+    }
+
+    /// The slots of `drawing`, of this table's edges, whose rows end at any of `places` of the table
+    /// they end at, ascending: each page by where its ends lie, and every page of rows kept.
+    pub(crate) fn naming(&self, drawing: &Drawing, places: &[u32]) -> Vec<u32> {
+        (0..drawing.slot_count())
+            .filter(|&s| match drawing.holds(s) {
+                Holds::Page(page) => self.ends.lie_in(page, places),
+                Holds::Kept(_) => true,
+                Holds::Free => false,
+            })
+            .map(|s| s as u32)
+            .collect()
     }
 
     /// What every edge table drawn ending at it asks of it, as one; merged again only where any
@@ -998,19 +1040,35 @@ mod tests {
         let next = Drawing::lay(Some(&drawing), &Lay { ends: &more, ..lay }, false);
         assert_eq!(next.held_of(2 * PAGE_ROWS + 9), Some(2 * PAGE_ROWS + 1));
         assert_eq!(next.held_of(PAGE_ROWS), Some(2 * PAGE_ROWS + 2));
-        assert_eq!(next.held_ends, drawing.held_ends, "no row ends name moved");
+        assert_eq!(next.moved, drawing.moved, "no row ends name moved");
         // Rows appended to the order leave what the rows kept are laid out from: they stay as they were.
         let Order::Pyramid { pyramid, .. } = &order else { unreachable!("a pyramid") };
         let grown = Order::Pyramid { pyramid: pyramid.clone(), rows: 4 * PAGE_ROWS + 1 };
         let appended = Drawing::lay(Some(&next), &Lay { chosen: &one(&grown, 0..10), ends: &more, ..lay }, false);
-        assert!(Arc::ptr_eq(&appended.kept_rows, &next.kept_rows), "the rows kept as they were");
-        assert_eq!(appended.held_ends, next.held_ends);
+        assert!(Arc::ptr_eq(&appended.kept, &next.kept), "the rows kept as they were");
+        assert_eq!((&appended.kept_table, &appended.moved), (&next.kept_table, &next.moved));
         // Page 2 drawn: the rows of it held one at a time move into it, and the edges ending there find
-        // them again.
+        // them again; the row kept of page 1 stays where it was.
         let drawn = Lay { chosen: &chosen(&order, &[0..10, 2 * PAGE_ROWS..2 * PAGE_ROWS + 10]), ends: &more, ..lay };
         let paged = Drawing::lay(Some(&next), &drawn, false);
         assert_eq!(paged.held_of(2 * PAGE_ROWS + 9), Some(paged.pages[2] * PAGE_ROWS + 9));
-        assert_ne!(paged.held_ends, next.held_ends, "rows ends name moved");
+        assert_eq!(paged.held_of(PAGE_ROWS), next.held_of(PAGE_ROWS));
+        assert_ne!(paged.moved.0, next.moved.0);
+        assert_eq!(&*paged.moved.1, [2 * PAGE_ROWS + 5, 2 * PAGE_ROWS + 9], "the rows of page 2 named moved");
+    }
+
+    #[test]
+    fn edges_find_their_ends_again_where_their_pages_name_what_moved() {
+        let order = order(3 * PAGE_ROWS);
+        let whole = one(&order, 0..3 * PAGE_ROWS);
+        let lay = Lay { chosen: &whole, pinned: &Pinned::default(), ends: &Ending::default(), room: 0, content: 0 };
+        let edges = Drawing::lay(None, &lay, false);
+        let at = |places: &[u32]| Some((PAGE_ROWS, Arc::new(Places { places: places.to_vec(), runs: Vec::new() })));
+        let pages = vec![at(&[3, 9]), at(&[PAGE_ROWS + 1]), at(&[7, 2 * PAGE_ROWS])];
+        let drawn = Drawn { ends: Ends { pages, ..Ends::default() }, ..Drawn::default() };
+        assert_eq!(drawn.naming(&edges, &[9]), [0], "the page of edges ending there");
+        assert_eq!(drawn.naming(&edges, &[7, PAGE_ROWS + 1]), [1, 2]);
+        assert!(drawn.naming(&edges, &[5]).is_empty(), "no edge held ends there");
     }
 
     #[test]

@@ -22,7 +22,8 @@ use crate::expr::cpu::Rows;
 use crate::gpu::atlas;
 use crate::gpu::shaders::{HEADER_BAND, TEXT_BASE};
 use crate::host::{Job, Key, Placement, TextRun};
-use crate::layout::rect::{Rect, around, union};
+use crate::layout::boxes::Boxes;
+use crate::layout::rect::{EMPTY, Rect, around, union, valid};
 use crate::{Layout, Marker, Pending, Shape, Side, Theme, Vertices};
 
 /// Texts measured past which the sheet forgets them all.
@@ -38,14 +39,16 @@ pub(crate) struct Sheet {
     /// Places layouts gave rows without positions, kept by row, also after a row leaves, so undo
     /// puts it back where it was.
     places: FxHashMap<Row, [f64; 2]>,
-    /// Each orthogonal wire's route, by edge row.
-    routes: FxHashMap<Row, wires::Routed>,
+    /// Each orthogonal wire's route, by edge row, and those due to route again.
+    routes: wires::Routes,
     /// The size each run of text takes, as its host measured it.
     measured: FxHashMap<TextRun, [f64; 2]>,
     /// The box of every placed vertex row the last update made: what a change moved.
     boxes: FxHashMap<Row, [f64; 4]>,
-    /// The box holding every placed vertex and every wire the last update made.
-    extent: Option<[f64; 4]>,
+    /// Every vertex's box, y up, as routing avoids it, none for a group: refit as vertices move.
+    blocks: Boxes,
+    /// The groups' boxes, y up, which wires cross at a cost.
+    groups: Vec<Rect>,
     /// What the derived tables were last made from.
     stamp: u64,
     /// Bumps when places start over, so layouts asked before are dropped.
@@ -187,9 +190,13 @@ impl Sheet {
         self.boxes.get(row).copied()
     }
 
-    /// The box holding every placed vertex and every wire, units with y down, once anything is placed.
+    /// The box holding every placed vertex and every wire, units with y down, once anything is placed:
+    /// the boxes of its blocks, its groups, and its wires, as it keeps them.
     pub(crate) fn extent(&self) -> Option<[f64; 4]> {
-        self.extent
+        let wires = self.drawn.as_ref()?.wired.extent();
+        let up = self.groups.iter().fold(self.blocks.extent(), |extent, &group| union(extent, group));
+        let extent = union([up[0], -up[3], up[2], -up[1]], wires);
+        valid(&extent).then_some(extent)
     }
 
     /// Takes the answers that landed: places asked in the current generation, and routes.
@@ -247,12 +254,13 @@ impl Sheet {
             self.stand(v);
         }
         stand_groups(&mut vertices, &self.places, &header, padding);
+        self.blocks = Boxes::new(vertices.iter().map(obstacle).collect());
+        self.groups = groups(&vertices);
         self.place(&vertices, vertex_marks, edge_marks, &header, padding, input, jobs);
         let moved = wires::moved(&self.boxes, &vertices);
         let mut drawn = Drawn { vertices, wired: wires::Wired::default(), reads: Vec::new(), from: 0 };
         self.wire(&mut drawn, marks, &wires::Change { moved: &moved, touched: None }, input, jobs);
         self.boxes = drawn.vertices.iter().filter_map(|v| Some((v.key.clone(), v.bounds?))).collect();
-        self.extent = extent(&drawn);
         write(vertex_marks, &drawn.vertices, edge_marks, &drawn.wired.parts, &mut self.tables);
         drawn
     }
@@ -298,7 +306,16 @@ impl Sheet {
             touched.sort_unstable();
             touched.dedup();
         }
-        self.place(&drawn.vertices, vertex_marks, edge_marks, &header, padding, input, jobs);
+        for &v in &touched {
+            self.blocks.set(v, obstacle(&drawn.vertices[v]));
+        }
+        if touched.iter().any(|&v| drawn.vertices[v].group) {
+            self.groups = groups(&drawn.vertices);
+        }
+        // A layout places only rows without a place: an edit asks for one only where it took one away.
+        if touched.iter().any(|&v| drawn.vertices[v].bounds.is_none()) {
+            self.place(&drawn.vertices, vertex_marks, edge_marks, &header, padding, input, jobs);
+        }
         let written =
             self.wire(&mut drawn, marks, &wires::Change { moved: &moved, touched: Some(&touched) }, input, jobs);
         for &v in &touched {
@@ -308,7 +325,6 @@ impl Sheet {
                 None => self.boxes.remove(&vertex.key),
             };
         }
-        self.extent = extent(&drawn);
         if !write_rows(marks, &drawn, &touched, &written, &mut self.tables) {
             write(vertex_marks, &drawn.vertices, edge_marks, &drawn.wired.parts, &mut self.tables);
         }
@@ -341,6 +357,8 @@ impl Sheet {
             vertices: &drawn.vertices,
             marks: vertex_marks,
             edges: edge_marks,
+            blocks: &self.blocks,
+            groups: &self.groups,
             spacing: f64::from(theme.edge.spacing),
             bend: f64::from(theme.diagram.bend),
             port: f64::from(theme.diagram.port_size),
@@ -612,10 +630,15 @@ fn framing(vertex_marks: &[VertexMark<'_>], theme: &Theme) -> (Vec<f64>, f64) {
     (vertex_marks.iter().map(|vm| header(vm.mark, theme)).collect(), f64::from(theme.diagram.group_padding))
 }
 
-/// The box holding every placed vertex and every wire.
-fn extent(drawn: &Drawn) -> Option<Rect> {
-    let points = drawn.wired.parts.iter().flatten().flatten().flatten().map(|&[x, y]| [x, y, x, y]);
-    drawn.vertices.iter().filter_map(|v| v.bounds).chain(points).reduce(union)
+/// Vertex `v`'s box as routing avoids it, y up; none for a group, which holds wires rather than
+/// turning them away.
+fn obstacle(v: &Vertex) -> Rect {
+    v.bounds.filter(|_| !v.group).map_or(EMPTY, |b| [b[0], -b[3], b[2], -b[1]])
+}
+
+/// The groups' boxes, y up, which wires cross at a cost and keep off.
+fn groups(vertices: &[Vertex]) -> Vec<Rect> {
+    vertices.iter().filter(|v| v.group).filter_map(|v| v.bounds).map(|b| [b[0], -b[3], b[2], -b[1]]).collect()
 }
 
 /// The outline a vertex mark's markers draw: groups and blocks are boxes, the rest their shape.
@@ -824,7 +847,8 @@ mod tests {
     const BLOCKS: u64 = 24;
 
     /// Blocks with labels and ports, most in one of two groups, wired by orthogonal nets, straight
-    /// edges with lanes between the same two blocks, and orthogonal edges with ends.
+    /// edges with lanes between the same two blocks, and orthogonal edges with ends, some leaving one
+    /// block by the same side.
     fn diagram() -> (Scene, Data) {
         let scene = Scene::new(Diagram { grid: Grid::Off })
             .draw(Vertices::of("d", "G").contains("B", "group"))
@@ -860,7 +884,7 @@ mod tests {
                 .set(Table::new("N", (0..BLOCKS / 2).collect::<Vec<_>>()))
                 .set(blocks)
                 .set(pairs(vec![0, 0, 3, 7], vec![1, 1, 9, 15], "E"))
-                .set(pairs(vec![4, 5, 11, 20], vec![10, 17, 12, 21], "F")),
+                .set(pairs(vec![4, 5, 11, 20, 4, 4, 9], vec![10, 17, 12, 21, 11, 16, 4], "F")),
         )
         .expect("valid");
         (scene, data)
@@ -885,10 +909,57 @@ mod tests {
         None
     }
 
+    /// Brings `sheet` up to `data`, routing on the frame as while rows are dragged; whether it drew
+    /// only what an edit reached.
+    fn derive(sheet: &mut Sheet, scene: &Scene, data: &Data) -> bool {
+        let (counters, errors) = (Counters::default(), Arc::new(Mutex::new(Vec::new())));
+        let now = data.snapshot();
+        let input = Input {
+            scene,
+            scene_version: 1,
+            data: std::slice::from_ref(&now),
+            host: None,
+            dragging: true,
+            paged: None,
+        };
+        let edit = sheet.drawn.as_ref().is_some_and(|drawn| edited(drawn, &input, &marks(&input).0).is_some());
+        sheet.update(&input, &mut Jobs::new(None, Waker::noop(), &counters, &errors, crate::derive::FRAME_WORK));
+        edit
+    }
+
+    #[test]
+    fn a_wire_routes_again_around_a_block_moved_into_its_way() {
+        let scene = Scene::new(Diagram { grid: Grid::Off })
+            .draw(Edges::of("d", "F").ends("from", "to").route(Route::Orthogonal))
+            .draw(Vertices::of("d", "B").position("x", "y").label(Label::new("name")));
+        let blocks = Table::new("B", vec![0_u64, 1, 2])
+            .field("x", vec![0.0, 400.0, 200.0])
+            .field("y", vec![0.0, 0.0, 400.0])
+            .field("name", vec!["a", "b", "c"]);
+        let wire = Table::new("F", Ids::count(1)).reference("from", "B", vec![0_u64]).reference("to", "B", vec![1_u64]);
+        let data = Data::new("d");
+        data.apply(Patch::new().set(blocks).set(wire)).expect("valid");
+        let mut sheet = Sheet::default();
+        derive(&mut sheet, &scene, &data);
+        // The third block moves into the wire's way; the wire meets neither it nor anything it moved.
+        data.apply(Table::new("B", vec![2_u64]).field("y", vec![0.0])).expect("valid edit");
+        assert!(derive(&mut sheet, &scene, &data), "an edit");
+        let b = sheet.bounds(&Row { data: "d".into(), table: "B".into(), id: 2_u64.into() }).expect("placed");
+        let Some(Value::Parts(parts)) = sheet.tables.get(&("d".into(), "F".into())).and_then(|t| t.get(0_u64, "route"))
+        else {
+            panic!("a route");
+        };
+        for [p, q] in parts.iter().flat_map(|part| part.windows(2)).map(|pq| [pq[0], pq[1]]) {
+            for t in (0..=32).map(|t| f64::from(t) / 32.0) {
+                let [x, y] = [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
+                assert!(!(b[0] < x && x < b[2] && b[1] < y && y < b[3]), "{parts:?} runs through {b:?}");
+            }
+        }
+    }
+
     #[test]
     fn an_edit_derives_what_deriving_every_row_does() {
         let (scene, data) = diagram();
-        let (counters, errors) = (Counters::default(), Arc::new(Mutex::new(Vec::new())));
         let (mut edits, mut whole) = (Sheet::default(), Sheet::default());
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
         let mut random = |n: u64| {
@@ -921,27 +992,13 @@ mod tests {
                 }
                 data.apply(edit).expect("valid edit");
             }
-            let now = data.snapshot();
-            let input = Input {
-                scene: &scene,
-                scene_version: 1,
-                data: std::slice::from_ref(&now),
-                host: None,
-                dragging: true,
-                paged: None,
-            };
-            if let Some(drawn) = &edits.drawn {
-                redrawn += usize::from(edited(drawn, &input, &marks(&input).0).is_some());
-            }
+            redrawn += usize::from(derive(&mut edits, &scene, &data));
             whole.drawn = None;
-            for sheet in [&mut edits, &mut whole] {
-                sheet
-                    .update(&input, &mut Jobs::new(None, Waker::noop(), &counters, &errors, crate::derive::FRAME_WORK));
-            }
+            derive(&mut whole, &scene, &data);
             if let Some(difference) = differ(&edits.tables, &whole.tables) {
                 panic!("step {step}: {difference}");
             }
-            assert_eq!(edits.extent, whole.extent, "step {step}");
+            assert_eq!(edits.extent(), whole.extent(), "step {step}");
         }
         assert!(redrawn > 30, "edits derived only what they reached: {redrawn} of 60");
     }

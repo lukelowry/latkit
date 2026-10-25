@@ -55,12 +55,15 @@ macro_rules! work {
 work! {
     /// Bytes of data pages uploaded.
     uploaded: Uploaded,
+    /// Data pages, or pieces of them, uploaded: what a change uploads counts its pages here, and its
+    /// bytes in `uploaded`.
+    uploads: Uploads,
     /// Bytes written besides pages: uniforms, programs, label runs, the selection, textures.
     written: Written,
     /// Rows whose channels the GPU evaluated.
     evaluated: Evaluated,
     /// Rows of edges and faces whose ends the GPU found where their vertices are held: rows that
-    /// changed, and every row held where the vertices they end at moved.
+    /// changed, and every row of a page of them naming a vertex now held elsewhere.
     resolved: Resolved,
     /// Bytes of pages of words per row the GPU cleared: those read before anything writes them, and
     /// the normals faces sum afresh.
@@ -103,7 +106,8 @@ impl Queue {
         self.raw.write_buffer(buffer, offset, bytes);
     }
 
-    /// Writes in command order, so a reused scratch buffer keeps earlier passes' inputs intact.
+    /// Writes in command order, so a reused scratch buffer keeps earlier passes' inputs intact, and
+    /// what a copy recorded before puts in place is written over after it.
     pub(crate) fn write_buffer_in(
         &self,
         device: &wgpu::Device,
@@ -134,10 +138,12 @@ impl Queue {
         encoder.clear_buffer(buffer, offset, Some(size));
     }
 
-    /// Writes a data page's words into `buffer` at `offset`, counted as uploaded.
+    /// Writes the words of `pages` data pages, or pieces of them, side by side into `buffer` at
+    /// `offset`, counted as uploaded.
     #[expect(clippy::disallowed_methods, reason = "the counted upload")]
-    pub(crate) fn upload(&self, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
+    pub(crate) fn upload(&self, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8], pages: u64) {
         self.counters.add(Count::Uploaded, bytes.len() as u64);
+        self.counters.add(Count::Uploads, pages);
         self.raw.write_buffer(buffer, offset, bytes);
     }
 

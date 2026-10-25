@@ -23,7 +23,7 @@ use crate::data::{Field, Keyed, Name, Table};
 use crate::derive::tiled::{Draw, Place, Planned, Plans};
 use crate::derive::{Derived, stamp_of};
 use crate::expr::compile::Words;
-use crate::gpu::arena::{path_page_bytes, path_points, rounded};
+use crate::gpu::arena::{path_page_bytes, rounded};
 use crate::gpu::shaders as wgsl;
 use crate::gpu::{Ask, Ledger};
 use crate::scene::mark::MarkKind;
@@ -398,6 +398,5 @@ fn geometry_bytes(shown: &Shown, table: &Table) -> f64 {
     let Some(field) = geometry_of(&shown.mark) else { return 0.0 };
     let Some(Field::Values(column, _)) = table.field_named(&field) else { return 0.0 };
     let scale = if matches!(shown.mark, Mark::Areas(_)) { 3 } else { 1 };
-    let page = |values: &crate::data::Values| path_page_bytes(values.len(), path_points(values) * scale) as f64;
-    column.pages().iter().map(|p| page(&p.values)).sum()
+    column.pages().iter().map(|p| path_page_bytes(p.values.len(), p.points() * scale) as f64).sum()
 }

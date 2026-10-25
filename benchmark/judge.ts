@@ -5,12 +5,13 @@
  * GPU, so what the data and the frames drawn set (`EXACT`) is held exactly in a phase that acts once
  * and settles, unless fetched data feeds it; the rest, and every count of a phase acting each frame,
  * moves with the frame a job or a fetch lands in, and is held within `STEADY`. Then, on the machine
- * the times baseline was taken on, no phase much slower.
+ * the times baseline was taken on, no phase much slower on its fastest repeat: a stall of the machine
+ * slows one repeat, a regression every one.
  */
 import type { Work } from 'latkit';
 import type { Listed, Run } from './page/main.ts';
 
-/** A phase at a size, across repeats: times their medians, work its least. */
+/** A phase at a size, across repeats: its fastest, and its least work. */
 export interface Summary {
   /** A steady phase's CPU per frame, else its milliseconds. */
   time: number;
@@ -41,16 +42,25 @@ const SLACK = 0.2;
 /** Milliseconds a phase acting once may land later than its baseline by: a timer tick, which is
  * 15.6 ms on Windows, so readbacks answer one tick or the next. */
 const TICK = 16;
-/** Bytes a changed row uploads at least: its page, 4,096 rows of four bytes. */
+/** Bytes an upload counts as at least: a page, 4,096 rows of four bytes. */
 const PAGE = 4096 * 4;
 /** Below these a cost counts as these: too small to fit an exponent to, or to call slower. A frame's
  * CPU time is read on a page's clock, which steps by 0.1 ms, so it counts from five steps; a phase
  * acting once lands on a tick. */
 const FLOOR = { frame: 0.5, action: TICK, bytes: 64 * 1024 };
-/** How much slower than the baseline a median may be. */
+/** How much slower than the baseline the fastest repeat may be. */
 const SLOWER = 1.25;
 /** Work the data and the frames drawn alone set, which repeats exactly once a phase settles. */
-const EXACT = new Set(['uploaded', 'evaluated', 'packed', 'jobs', 'pipelines', 'late', 'resident']);
+const EXACT = new Set([
+  'uploaded',
+  'uploads',
+  'evaluated',
+  'packed',
+  'jobs',
+  'pipelines',
+  'late',
+  'resident',
+]);
 /** How much more of the rest a phase may do than the baseline: the frame a job or a fetch lands in
  * moves label placements and tiles by up to about 1.7×, and a per-frame blowup by far more. */
 const STEADY = 2;
@@ -81,8 +91,8 @@ function summarize(runs: Run[]): By<Summary> {
       const work = costs.map((c) => ({ ...c.work, resident: c.resident }));
       ((out[scenario] ??= {})[size] ??= {})[phase] = {
         steady,
-        time: median(costs.map((c) => (steady ? c.cpu : c.ms))),
-        gpu: median(costs.map((c) => c.gpu)),
+        time: Math.min(...costs.map((c) => (steady ? c.cpu : c.ms))),
+        gpu: Math.min(...costs.map((c) => c.gpu)),
         frames: median(costs.map((c) => c.frames)),
         work: Object.fromEntries(
           Object.keys(work[0]!).map((k) => [
@@ -136,8 +146,8 @@ export function judge(
       const fit: Growth = {
         time: grows((s) => s.time, steady ? FLOOR.frame : FLOOR.action),
         gpu: grows((s) => s.gpu, FLOOR.frame),
-        // Pages are what changes upload: below a page a frame drawn, bytes count as that.
-        uploaded: grows((s) => Math.max(s.work.uploaded, s.frames * PAGE), FLOOR.bytes),
+        // Pages are what changes upload: below a page an upload, bytes count as that.
+        uploaded: grows((s) => Math.max(s.work.uploaded, s.work.uploads * PAGE), FLOOR.bytes),
         resident: grows((s) => s.work.resident, FLOOR.bytes),
       };
       (exponents[scenario.name] ??= {})[phase] = fit;

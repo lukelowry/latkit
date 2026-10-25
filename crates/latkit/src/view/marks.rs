@@ -651,7 +651,7 @@ impl Default for Blocks {
 
 impl Blocks {
     /// Adds the blocks `blocks` names, or every block for `None`.
-    fn add(&mut self, blocks: Option<&[u32]>) {
+    pub(crate) fn add(&mut self, blocks: Option<&[u32]>) {
         match (&mut *self, blocks) {
             (Blocks::All, _) => {}
             (Blocks::Listed(listed), Some(more)) => listed.extend_from_slice(more),

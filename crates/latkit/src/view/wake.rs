@@ -26,9 +26,18 @@ impl Signal {
         self.landed.load(Ordering::Acquire)
     }
 
-    /// Takes what landed: the frame beginning settles it.
-    pub(crate) fn clear(&self) {
-        self.landed.store(false, Ordering::Release);
+    /// Takes what landed as a frame begins, before it takes anything: whether anything did. What
+    /// lands from then on, as work the frame starts and the host answers at once, wakes the next.
+    pub(crate) fn take(&self) -> bool {
+        self.landed.swap(false, Ordering::AcqRel)
+    }
+
+    /// Leaves what landed, `landed`, to the next frame: as a frame not ready to draw does, taking
+    /// none of it.
+    pub(crate) fn leave(&self, landed: bool) {
+        if landed {
+            self.landed.store(true, Ordering::Release);
+        }
     }
 
     pub(crate) fn set_waker(&self, waker: Waker) {

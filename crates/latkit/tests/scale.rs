@@ -673,8 +673,8 @@ fn a_first_look_draws_within_its_plan_while_pyramids_are_worked_out() {
     assert!(gpu.resident() <= 8 << 20, "{} bytes resident", gpu.resident());
 }
 
-/// A grid of 500 by 500 vertices a unit apart, and an edge from each to the vertex `far` says: what
-/// `far` gives each from a stream of random numbers.
+/// A grid of 500 by 500 vertices a unit apart, each of value 0, and an edge from each to the vertex
+/// `far` says: what `far` gives each from a stream of random numbers.
 fn far_apart(far: impl Fn(u32, u64) -> u64) -> Data {
     let n = 250_000_u32;
     let mut seed = 1_u64;
@@ -690,7 +690,8 @@ fn far_apart(far: impl Fn(u32, u64) -> u64) -> Data {
             .set(
                 Table::new("Bus", Ids::count(n))
                     .field("x", (0..n).map(|i| f64::from(i % 500)).collect::<Vec<_>>())
-                    .field("y", (0..n).map(|i| f64::from(i / 500)).collect::<Vec<_>>()),
+                    .field("y", (0..n).map(|i| f64::from(i / 500)).collect::<Vec<_>>())
+                    .field("v", vec![0.0; n as usize]),
             )
             .set(
                 Table::new("Line", Ids::count(n))
@@ -709,10 +710,11 @@ fn edges_ending_far_apart_hold_the_rows_they_end_at() {
     // Each edge joins a vertex to one far off: the ends of the fewest edges drawn lie in every page of
     // the vertices, more pages than the budget holds, so the rows they end at are held one at a time.
     let data = far_apart(|_, random| random % 250_000);
-    let scene = Scene::new(plane())
-        .theme(plain_theme())
-        .draw(Edges::of("grid", "Line").ends("from", "to"))
-        .draw(Vertices::of("grid", "Bus").position("x", "y"));
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(Edges::of("grid", "Line").ends("from", "to")).draw(
+        Vertices::of("grid", "Bus")
+            .position("x", "y")
+            .color(field("v").colormap(latkit::Colormap::GRAYS).domain(0.0..=1.0)),
+    );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_sources([&data]).expect("a source");
     view.fit(Fit::All);
@@ -722,6 +724,15 @@ fn edges_ending_far_apart_hold_the_rows_they_end_at() {
     assert!(view.stats().drawn > 0, "edges and vertices draw");
     assert!((gpu.work() - before).resolved > 0, "edges found where their ends are held");
     assert!(gpu.resident() <= 8 << 20, "{} bytes resident", gpu.resident());
+    // Every vertex's value changes and none moves: the rows held stay where they are, so no edge finds
+    // its ends again.
+    let before = gpu.work();
+    data.apply(Table::new("Bus", Ids::count(250_000)).field("v", vec![1.0; 250_000])).expect("valid");
+    frame(&gpu, &mut view);
+    assert_eq!(errors(&mut view), []);
+    let work = gpu.work() - before;
+    assert!(work.uploaded > 0, "the values upload");
+    assert_eq!(work.resolved, 0, "no end is found again");
 }
 
 #[test]
@@ -739,17 +750,29 @@ fn edges_ending_far_apart_draw_between_their_ends() {
         .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0).color(Color::rgb(0.0, 0.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     // Rows eight pixels apart, the middle row of pixels between two of them.
-    view.set_camera(Camera::Map { center: [250.0, 250.5, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
+    let near = Camera::Map { center: [250.0, 250.5, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 };
+    view.set_camera(near);
     view.set_sources([&data]).expect("a source");
+    let level = |pixels: &[[u8; 4]], when: &str| {
+        let center = SIZE / 2;
+        for x in 0..SIZE {
+            let between = at(pixels, x, center);
+            assert!(close(between, [0, 0, 0, 255]), "{when}: nothing crosses between the rows at {x}: {between:?}");
+        }
+        let along = (0..SIZE).filter(|&x| close(at(pixels, x, center + 4), [0, 255, 0, 255])).count();
+        assert!(along > 0, "{when}: edges run along a row");
+    };
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
-    let center = SIZE / 2;
-    for x in 0..SIZE {
-        let between = at(&pixels, x, center);
-        assert!(close(between, [0, 0, 0, 255]), "nothing crosses between the rows at {x}: {between:?}");
-    }
-    let along = (0..SIZE).filter(|&x| close(at(&pixels, x, center + 4), [0, 255, 0, 255])).count();
-    assert!(along > 0, "edges run along a row");
+    level(&pixels, "first");
+    // Farther out, the edges drawn end at more rows held one at a time: the table of them grows, and
+    // the program holding it with it. Back where it was, every edge still finds its ends.
+    view.set_camera(Camera::Map { center: [250.0, 250.5, 0.0], zoom: 1.0, pitch: 0.0, bearing: 0.0 });
+    frame(&gpu, &mut view);
+    view.set_camera(near);
+    let pixels = frame(&gpu, &mut view);
+    assert_eq!(errors(&mut view), []);
+    level(&pixels, "after the table grew");
 }
 
 #[test]

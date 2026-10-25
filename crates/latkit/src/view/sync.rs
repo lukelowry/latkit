@@ -32,7 +32,7 @@ use crate::derive::shapes::PagedShapes;
 use crate::derive::stamp_of;
 use crate::expr::compile::{ColumnUse, Program, Reads, Words};
 use crate::gpu::Inner;
-use crate::gpu::arena::{Ask, Content, PageKey, PathPage, path_pieces, path_points};
+use crate::gpu::arena::{Ask, Content, PageKey, PathPage, path_pieces};
 use crate::gpu::packed::{self, Packing};
 use crate::gpu::shaders as wgsl;
 use crate::gpu::work::Count;
@@ -995,8 +995,7 @@ impl<'g> Builder<'g> {
         self.words.resize(wgsl::PATH_PAGE_WORDS as usize * pages.len(), 0);
         for (p, page) in pages.iter().enumerate() {
             self.list(Some(page.id));
-            let points = path_points(&page.values);
-            self.path_page(p, page.id, points, page.values.len() as u32, || path_pieces(&page.values));
+            self.path_page(p, page.id, page.values.len() as u32, || page.points(), || path_pieces(&page.values));
         }
     }
 
@@ -1013,13 +1012,12 @@ impl<'g> Builder<'g> {
             };
             self.list(Some(id));
             let rows = drawing.rows(s);
-            let points = rows_points(column, &rows);
             let counters = self.gpu.packed.counters();
             let pieces = || {
                 counters.add(Count::Packed, rows.len() as u64);
                 path_pieces(&column.pick(&rows))
             };
-            self.path_page(s, id, points, rows.len() as u32, pieces);
+            self.path_page(s, id, rows.len() as u32, || rows_points(column, &rows), pieces);
         }
     }
 
@@ -1059,30 +1057,39 @@ impl<'g> Builder<'g> {
             self.list(Some(id));
             let rows = shaped.len() as u32;
             let counters = self.gpu.packed.counters();
-            let points = path_points(&shaped);
             let pieces = || {
                 counters.add(Count::Packed, u64::from(rows));
                 path_pieces(&shaped)
             };
-            self.path_page(s, id, points, rows, pieces);
+            self.path_page(s, id, rows, || shaped.points(), pieces);
         }
     }
 
-    /// Page `p` of a geometry column's table, `id`, of `points` points and `rows` rows: its rows'
-    /// table, then its pieces of points, each keyed by what it holds, so a page written again uploads
-    /// only the pieces whose rows' points changed. `pieces` makes them where the GPU lacks one.
-    fn path_page(&mut self, p: usize, id: PageId, points: usize, rows: u32, pieces: impl FnOnce() -> PathPage) {
+    /// Page `p` of a geometry column's table, `id`, of `rows` rows: its rows' table, then its pieces of
+    /// points, each keyed by what it holds, so a page written again uploads only the pieces whose
+    /// rows' points changed. `pieces` makes them where the GPU lacks one, and `points` counts its
+    /// points where the page's pieces are not kept.
+    fn path_page(
+        &mut self,
+        p: usize,
+        id: PageId,
+        rows: u32,
+        points: impl FnOnce() -> usize,
+        pieces: impl FnOnce() -> PathPage,
+    ) {
         let per = wgsl::PATH_PAGE_WORDS as usize;
-        self.points += points as u32;
         let arena = &self.gpu.arena;
-        let kept = self.gpu.pieces.of(id).filter(|keys| keys.iter().all(|&key| arena.holds(key, 1)));
+        let known = self.gpu.pieces.of(id);
+        let points = known.as_ref().map_or_else(points, |&(_, points)| points);
+        self.points += points as u32;
+        let kept = known.map(|(keys, _)| keys).filter(|keys| keys.iter().all(|&key| arena.holds(key, 1)));
         let (keys, mut made) = if let Some(keys) = kept {
             (keys, Vec::new())
         } else {
             let PathPage { rows, pieces } = pieces();
             let made: Vec<Vec<u32>> = std::iter::once(rows).chain(pieces).collect();
             let keys: Arc<[PageKey]> = made.iter().map(|words| PageKey::piece(words)).collect();
-            self.gpu.pieces.keep(id, keys.clone());
+            self.gpu.pieces.keep(id, keys.clone(), points);
             (keys, made)
         };
         let listed = self.words.len();

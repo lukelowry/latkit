@@ -4618,6 +4618,12 @@
           "minimum": 0,
           "description": "Bytes of data pages uploaded."
         },
+        "uploads": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Data pages, or pieces of them, uploaded: what a change uploads counts its pages here, and its\nbytes in `uploaded`."
+        },
         "written": {
           "type": "integer",
           "format": "uint64",
@@ -4634,7 +4640,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Rows of edges and faces whose ends the GPU found where their vertices are held: rows that\nchanged, and every row held where the vertices they end at moved."
+          "description": "Rows of edges and faces whose ends the GPU found where their vertices are held: rows that\nchanged, and every row of a page of them naming a vertex now held elsewhere."
         },
         "cleared": {
           "type": "integer",
@@ -4681,6 +4687,7 @@
       },
       "required": [
         "uploaded",
+        "uploads",
         "written",
         "evaluated",
         "resolved",

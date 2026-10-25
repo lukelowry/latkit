@@ -64,9 +64,6 @@ struct TileSet {
     drawing: Option<Drawing>,
     /// Whether the dataset changed since it was last taken.
     changed: bool,
-    /// The rows of vector tiles the view took last, with their shapes: the rows it draws, which a
-    /// later update may have moved past until the next frame takes them.
-    taken: Option<Snapshot>,
     /// Whether a failure was told: a source that went away tells it once.
     told: bool,
     /// Whether a piece the view wanted at the last update drew an ancestor, or nothing, instead.
@@ -81,7 +78,6 @@ impl TileSet {
             tiles,
             drawing: None,
             changed: false,
-            taken: None,
             told: false,
             standing_in: true,
         }
@@ -198,20 +194,18 @@ impl TileSets {
         self.sets.iter().any(|s| *s.tiles.name == *name)
     }
 
-    /// The rows of vector tiles of dataset `name` the view took, each table with the fields its
-    /// shapes are written as too: row for row the dataset it draws.
+    /// The rows vector tiles brought of dataset `name`, each table with the fields its shapes are
+    /// written as too: the view takes them as the frame begins, so row for row what it draws.
     pub(crate) fn shaped(&self, name: &str) -> Option<&Snapshot> {
-        self.sets.iter().find(|s| *s.tiles.name == *name)?.taken.as_ref()
+        let set = self.sets.iter().find(|s| *s.tiles.name == *name)?;
+        match &set.drawing {
+            Some(Drawing::Vector(vector)) => Some(vector.held()),
+            _ => None,
+        }
     }
 
-    /// The datasets the updates changed since last taken; the rows of vector tiles they hold become
-    /// those their shapes are taken from.
+    /// The datasets the updates changed since last taken.
     pub(crate) fn take_changed(&mut self) -> Vec<Snapshot> {
-        for set in self.sets.iter_mut().filter(|s| self.changed.iter().any(|d| d.name() == s.data.name())) {
-            if let Some(Drawing::Vector(vector)) = &set.drawing {
-                set.taken = Some(vector.held().clone());
-            }
-        }
         std::mem::take(&mut self.changed)
     }
 

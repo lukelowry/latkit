@@ -9,10 +9,11 @@
  * on the CPU, as Linux always does: its work counts the same, its times only report, and no shader
  * can hang the GPU.
  *
- * A scenario climbs its sizes while the last one's phases, grown as their orders say, fit a phase's
- * limit. A failure ends its scenario; a lost device, or a page that stopped answering, ends the
- * sweep, since the next scenario would meet a resetting driver, and resets in a row are what wedge
- * one. Every wait races a deadline.
+ * A scenario climbs its sizes while the last one's phases, each at its fastest repeat and grown as
+ * its order says, fit a phase's limit: a stall of the machine slows one repeat, a scenario too large
+ * for the next size every one. A failure ends its scenario; a lost device, or a page that stopped
+ * answering, ends the sweep, since the next scenario would meet a resetting driver, and resets in a
+ * row are what wedge one. Every wait races a deadline.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -73,12 +74,19 @@ function watched<T>(work: Promise<T>, heard: () => number, what: string): Promis
   return Promise.race([work, silent]).finally(() => clearInterval(timer));
 }
 
-/** The first phase of `last` that, grown to `size` as its order says (linearly where it says
- * nothing), would pass a phase's limit. */
-function outgrown(last: Run, size: number, orders: Listed['orders']): string | undefined {
-  const grown = ([phase, cost]: [string, Run['phases'][string]]) =>
-    cost.ms * (size / last.size) ** (orders[phase]?.time ?? 1);
-  return Object.entries(last.phases).find((entry) => grown(entry) > LIMIT)?.[0];
+/** The first phase of the repeats `last` at one size that, at its fastest and grown to `size` as its
+ * order says (linearly where it says nothing), would pass a phase's limit, and its fastest. */
+function outgrown(
+  last: Run[],
+  size: number,
+  orders: Listed['orders'],
+): [string, number] | undefined {
+  const from = last[0]!.size;
+  for (const phase of Object.keys(last[0]!.phases)) {
+    const ms = Math.min(...last.map((run) => run.phases[phase]?.ms ?? Infinity));
+    if (ms * (size / from) ** (orders[phase]?.time ?? 1) > LIMIT) return [phase, ms];
+  }
+  return undefined;
 }
 
 const server = await createServer({
@@ -170,23 +178,25 @@ try {
     try {
       // A first run fills the shader cache, so the measured ones load warm; `start` alone loads cold.
       if (!scenario.cold && !flags.quick) await measure(warm, scenario, sizes[0]!);
-      let last: Run | undefined;
+      let last: Run[] = [];
       for (const size of sizes) {
-        const phase = last && outgrown(last, size, scenario.orders);
-        if (last && phase) {
-          const ms = last.phases[phase]!.ms.toFixed(0);
+        const outgrew = last.length ? outgrown(last, size, scenario.orders) : undefined;
+        if (outgrew) {
+          const [phase, ms] = outgrew;
           notes.push(
-            `${scenario.name} stops before ${size}: its ${phase} took ${ms} ms at ${last.size}`,
+            `${scenario.name} stops before ${size}: its ${phase} took ${ms.toFixed(0)} ms at ${last[0]!.size}`,
           );
           break;
         }
+        last = [];
         for (let r = 0; r < repeats; r++) {
           const run = await measure(warm, scenario, size);
           console.log(
             `  ${scenario.name} at ${size}: loaded in ${run.phases.load?.ms.toFixed(0)} ms` +
               (run.errors.length ? `, ${run.errors.length} errors` : ''),
           );
-          runs.push((last = run));
+          runs.push(run);
+          last.push(run);
         }
       }
     } catch (error) {

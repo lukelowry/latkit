@@ -11,7 +11,8 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use super::rect::{EMPTY, Point, Rect, dot, grow, meets, union};
+use super::boxes::Boxes;
+use super::rect::{Point, Rect, dot, grow, meets, union, valid};
 use crate::scene::Side;
 
 /// Where a wire meets a vertex: the point on its boundary, the side it leaves by (None: any), and the
@@ -45,7 +46,7 @@ pub(crate) struct Net {
 /// than two terminals at finite points gets no polylines; obstacles with a non-finite or inverted box
 /// are left out.
 pub(crate) fn route(
-    obstacles: &[[f64; 4]],
+    obstacles: &Boxes,
     groups: &[[f64; 4]],
     nets: &[Net],
     fixed: &[Vec<[f64; 2]>],
@@ -118,9 +119,6 @@ const EPSILON: f64 = 1e-6;
 /// Points nearer than this are one point.
 const SAME: f64 = 1e-9;
 
-/// Children per index node.
-const NODE: usize = 16;
-
 /// Attach points a branch tries, nearest first.
 const ATTACHES: usize = 8;
 
@@ -181,11 +179,11 @@ struct Router<'a> {
 impl<'a> Router<'a> {
     /// A router among `boxes` and `groups`, tracks `spacing` apart; a negative or non-finite spacing
     /// is zero.
-    fn new(boxes: &'a [Rect], groups: &[Rect], spacing: f64) -> Router<'a> {
+    fn new(boxes: &'a Boxes, groups: &[Rect], spacing: f64) -> Router<'a> {
         let spacing = if spacing.is_finite() { spacing.max(0.0) } else { 0.0 };
         let clearance = spacing * CLEARANCE;
         let groups = Groups { boxes: groups.iter().copied().filter(valid).collect(), clearance };
-        Router { obstacles: Obstacles::new(boxes), groups, spacing, clearance, search: Search::new(2.0 * clearance) }
+        Router { obstacles: Obstacles { boxes }, groups, spacing, clearance, search: Search::new(2.0 * clearance) }
     }
 
     /// The shortest stub, and the least a track keeps a stub's end off its terminal.
@@ -1102,27 +1100,21 @@ impl Groups {
     }
 }
 
-/// The obstacles routing avoids, with an index over them.
+/// The obstacles routing avoids, as boxes kept indexed give them.
 struct Obstacles<'a> {
-    boxes: &'a [Rect],
-    index: Index,
+    boxes: &'a Boxes,
 }
 
-impl<'a> Obstacles<'a> {
-    /// The obstacles `boxes`, indexed.
-    fn new(boxes: &'a [Rect]) -> Obstacles<'a> {
-        Obstacles { boxes, index: Index::new(boxes) }
-    }
-
+impl Obstacles<'_> {
     /// The box of obstacle `owner`, when there is one.
     fn owned(&self, owner: Option<u32>) -> Option<Rect> {
-        owner.and_then(|owner| self.boxes.get(owner as usize)).copied().filter(valid)
+        owner.and_then(|owner| self.boxes.get(owner as usize))
     }
 
     /// Visits the obstacles meeting `region`, each grown by `by`, until `visit` returns true; whether
     /// it did.
     fn some(&self, region: Rect, by: f64, mut visit: impl FnMut(Rect) -> bool) -> bool {
-        self.index.some(region, &mut |item| visit(grow(self.boxes[item], by)))
+        self.boxes.some(region, &mut |item| visit(grow(self.boxes.get(item).expect("a box visited"), by)))
     }
 
     /// The obstacles meeting `region`, each grown by `by`.
@@ -1140,84 +1132,6 @@ impl<'a> Obstacles<'a> {
         let span = grow([a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])], by);
         !self.some(span, by, |obstacle| crosses(a, b, &obstacle))
     }
-}
-
-/// A packed R-tree over the valid boxes: leaves in Z-order of their middles, [`NODE`] children a
-/// node.
-struct Index {
-    /// The box at each leaf.
-    items: Vec<usize>,
-    /// Each node's box: the leaves, then each level up to the root.
-    nodes: Vec<Rect>,
-    /// Where each level's nodes start, leaves first; the last is the node count.
-    starts: Vec<usize>,
-}
-
-impl Index {
-    /// An index over `boxes`, leaving out those that are not [`valid`].
-    fn new(boxes: &[Rect]) -> Index {
-        let mut items: Vec<usize> = (0..boxes.len()).filter(|&item| valid(&boxes[item])).collect();
-        let extent = items.iter().fold(EMPTY, |extent, &item| union(extent, boxes[item]));
-        let cell =
-            |v: f64, lo: f64, hi: f64| if hi > lo { ((v - lo) / (hi - lo) * f64::from(u16::MAX)) as u32 } else { 0 };
-        crate::order::by_key(&mut items, |&item| {
-            let middle = [boxes[item][0].midpoint(boxes[item][2]), boxes[item][1].midpoint(boxes[item][3])];
-            let at = morton(cell(middle[0], extent[0], extent[2]), cell(middle[1], extent[1], extent[3]));
-            crate::order::pair(at, item as u32)
-        });
-        let mut nodes: Vec<Rect> = items.iter().map(|&item| boxes[item]).collect();
-        let mut starts = vec![0];
-        let mut level = 0;
-        loop {
-            let next = nodes.len();
-            starts.push(next);
-            for first in (level..next).step_by(NODE) {
-                let node = nodes[first..(first + NODE).min(next)].iter().fold(EMPTY, |node, child| union(node, *child));
-                nodes.push(node);
-            }
-            if nodes.len() - next <= 1 {
-                break;
-            }
-            level = next;
-        }
-        starts.push(nodes.len());
-        Index { items, nodes, starts }
-    }
-
-    /// Visits the boxes meeting `region` until `visit` returns true; whether it did.
-    fn some(&self, region: Rect, visit: &mut impl FnMut(usize) -> bool) -> bool {
-        let top = self.starts.len() - 2;
-        !self.items.is_empty()
-            && meets(&self.nodes[self.starts[top]], &region)
-            && self.descend(top, self.starts[top], region, visit)
-    }
-
-    /// [`Index::some`] below `node` of `level`.
-    fn descend(&self, level: usize, node: usize, region: Rect, visit: &mut impl FnMut(usize) -> bool) -> bool {
-        let first = self.starts[level - 1] + (node - self.starts[level]) * NODE;
-        let last = (first + NODE).min(self.starts[level]);
-        (first..last).any(|child| {
-            meets(&self.nodes[child], &region)
-                && if level > 1 { self.descend(level - 1, child, region, visit) } else { visit(self.items[child]) }
-        })
-    }
-}
-
-/// Position along a Z-order curve on a 65536² grid.
-fn morton(x: u32, y: u32) -> u32 {
-    let spread = |v: u32| {
-        let v = v & 0xffff;
-        let v = (v | (v << 8)) & 0x00ff_00ff;
-        let v = (v | (v << 4)) & 0x0f0f_0f0f;
-        let v = (v | (v << 2)) & 0x3333_3333;
-        (v | (v << 1)) & 0x5555_5555
-    };
-    spread(x) | (spread(y) << 1)
-}
-
-/// Whether a box is finite and not inverted.
-fn valid(r: &Rect) -> bool {
-    r.iter().all(|v| v.is_finite()) && r[0] <= r[2] && r[1] <= r[3]
 }
 
 /// Whether box `a` lies within box `b`.
@@ -1440,14 +1354,17 @@ mod tests {
     fn side_by_side_boxes_join_by_a_straight_run() {
         let boxes = [[0.0, 0.0, 20.0, 20.0], [100.0, 0.0, 120.0, 20.0]];
         let nets = [Net { terminals: vec![on([20.0, 10.0], Side::Right, 0), on([100.0, 10.0], Side::Left, 1)] }];
-        assert_eq!(route(&boxes, &[], &nets, &[], SPACING), vec![vec![vec![[20.0, 10.0], [100.0, 10.0]]]]);
+        assert_eq!(
+            route(&Boxes::new(boxes.to_vec()), &[], &nets, &[], SPACING),
+            vec![vec![vec![[20.0, 10.0], [100.0, 10.0]]]]
+        );
     }
 
     #[test]
     fn a_wire_bends_around_an_obstacle_between() {
         let boxes = [[0.0, 0.0, 20.0, 20.0], [200.0, 0.0, 220.0, 20.0], [80.0, -30.0, 140.0, 50.0]];
         let nets = [Net { terminals: vec![on([20.0, 10.0], Side::Right, 0), on([200.0, 10.0], Side::Left, 1)] }];
-        let wire = &route(&boxes, &[], &nets, &[], SPACING)[0];
+        let wire = &route(&Boxes::new(boxes.to_vec()), &[], &nets, &[], SPACING)[0];
         assert!(orthogonal(wire), "{wire:?}");
         assert!(segments(wire).len() > 2, "it bends: {wire:?}");
         assert!(outside(wire, &boxes), "{wire:?}");
@@ -1460,9 +1377,9 @@ mod tests {
         let boxes = [[20.0, 45.0, 40.0, 55.0], [160.0, 45.0, 180.0, 55.0]];
         let group = [90.0, 44.0, 110.0, 56.0];
         let nets = [Net { terminals: vec![on([40.0, 50.0], Side::Right, 0), on([160.0, 50.0], Side::Left, 1)] }];
-        let through = &route(&boxes, &[], &nets, &[], SPACING)[0];
+        let through = &route(&Boxes::new(boxes.to_vec()), &[], &nets, &[], SPACING)[0];
         assert_eq!(segments(through).len(), 1, "without the group, straight: {through:?}");
-        let around = &route(&boxes, &[group], &nets, &[], SPACING)[0];
+        let around = &route(&Boxes::new(boxes.to_vec()), &[group], &nets, &[], SPACING)[0];
         assert!(outside(around, &[group]), "with it, around: {around:?}");
         assert!(orthogonal(around) && one_tree(around, &nets[0].terminals), "{around:?}");
     }
@@ -1496,7 +1413,7 @@ mod tests {
             [100.0, -400.0, 120.0, 90.0],
         ];
         let nets = [Net { terminals: vec![on([20.0, 10.0], Side::Right, 0), on([200.0, 10.0], Side::Left, 1)] }];
-        let wire = &route(&boxes, &[], &nets, &[], SPACING)[0];
+        let wire = &route(&Boxes::new(boxes.to_vec()), &[], &nets, &[], SPACING)[0];
         assert!(orthogonal(wire) && outside(wire, &boxes), "{wire:?}");
     }
 
@@ -1512,7 +1429,7 @@ mod tests {
             Net { terminals: vec![on([10.0, 20.0], Side::Top, 0), on([100.0, 110.0], Side::Left, 1)] },
             Net { terminals: vec![on([10.0, 200.0], Side::Bottom, 2), on([120.0, -90.0], Side::Right, 3)] },
         ];
-        let routes = route(&boxes, &[], &nets, &[], SPACING);
+        let routes = route(&Boxes::new(boxes.to_vec()), &[], &nets, &[], SPACING);
         for (net, wire) in nets.iter().zip(&routes) {
             assert!(orthogonal(wire) && outside(wire, &boxes), "{wire:?}");
             for terminal in &net.terminals {
@@ -1535,7 +1452,7 @@ mod tests {
                 on([100.0, 70.0], Side::Left, 2),
             ],
         };
-        let wire = &route(&boxes, &[], std::slice::from_ref(&net), &[], SPACING)[0];
+        let wire = &route(&Boxes::new(boxes.to_vec()), &[], std::slice::from_ref(&net), &[], SPACING)[0];
         assert!(wire.len() >= 3, "a junction splits it: {wire:?}");
         assert!(orthogonal(wire) && outside(wire, &boxes), "{wire:?}");
         assert!(one_tree(wire, &net.terminals), "{wire:?}");
@@ -1549,7 +1466,7 @@ mod tests {
             Net { terminals: vec![on([20.0, 10.0], Side::Right, 0), on([100.0, 70.0], Side::Left, 2)] },
             Net { terminals: vec![on([20.0, 40.0], Side::Right, 1), on([100.0, 100.0], Side::Left, 3)] },
         ];
-        let routes = route(&boxes, &[], &nets, &[], SPACING);
+        let routes = route(&Boxes::new(boxes.to_vec()), &[], &nets, &[], SPACING);
         // A segment as the axis it runs along, its line, and its extent along it.
         let run = |[a, b]: [Point; 2]| {
             let axis = usize::from(a[0] == b[0]);
@@ -1581,7 +1498,7 @@ mod tests {
         let mut boxes = vec![[0.0, 0.0, 20.0, 20.0], [100.0, 0.0, 120.0, 20.0]];
         boxes.extend(ring);
         let nets = [Net { terminals: vec![on([20.0, 10.0], Side::Right, 0), on([100.0, 10.0], Side::Left, 1)] }];
-        let wire = &route(&boxes, &[], &nets, &[], SPACING)[0];
+        let wire = &route(&Boxes::new(boxes), &[], &nets, &[], SPACING)[0];
         assert!(orthogonal(wire) && one_tree(wire, &nets[0].terminals), "{wire:?}");
     }
 
@@ -1621,8 +1538,9 @@ mod tests {
                 Net { terminals }
             })
             .collect();
-        let routes = route(&boxes, &[], &nets, &[], SPACING);
-        assert_eq!(routes, route(&boxes, &[], &nets, &[], SPACING), "the same input routes the same");
+        let obstacles = Boxes::new(boxes.clone());
+        let routes = route(&obstacles, &[], &nets, &[], SPACING);
+        assert_eq!(routes, route(&obstacles, &[], &nets, &[], SPACING), "the same input routes the same");
         for (net, wire) in nets.iter().zip(&routes) {
             assert!(orthogonal(wire), "{wire:?}");
             assert!(one_tree(wire, &net.terminals), "{net:?}: {wire:?}");
@@ -1642,7 +1560,7 @@ mod tests {
             Net { terminals: vec![free] },
             Net { terminals: vec![free, Terminal { at: [f64::NAN, 0.0], ..free }] },
         ];
-        assert_eq!(route(&[], &[], &nets, &[], SPACING), vec![Vec::<Vec<Point>>::new(); 3]);
+        assert_eq!(route(&Boxes::default(), &[], &nets, &[], SPACING), vec![Vec::<Vec<Point>>::new(); 3]);
     }
 
     #[test]
@@ -1654,7 +1572,7 @@ mod tests {
                 Terminal { at: [100.0, 50.0], side: None, owner: None },
             ],
         }];
-        let wire = &route(&boxes, &[], &nets, &[], SPACING)[0];
+        let wire = &route(&Boxes::new(boxes.to_vec()), &[], &nets, &[], SPACING)[0];
         assert!(orthogonal(wire) && outside(wire, &boxes), "{wire:?}");
         assert_eq!(leaving(wire, [20.0, 10.0])[1], 10.0, "it leaves by the side it is on: {wire:?}");
     }

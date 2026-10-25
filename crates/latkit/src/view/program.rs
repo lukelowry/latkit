@@ -1,7 +1,9 @@
 //! The program buffer: each mark's descriptors, tables, ranges, code, constants, ends, and ports in a
 //! region of its own, rewritten alone when only that mark changed, and then only where its words
-//! changed. A region that outgrows its room moves to the end of the buffer; when the end passes the
-//! buffer, every region is laid out again.
+//! changed. A region that outgrows its room moves to the end of the buffer; a buffer too small for it
+//! grows, what it holds copied into the new one on the GPU, so no other region is written again. Once
+//! regions that moved leave more of the buffer behind than regions take, every region is laid out
+//! again, each writing only its own words.
 
 use super::{Event, View};
 use crate::gpu::Inner;
@@ -35,8 +37,9 @@ fn changed(was: &[u32], words: &[u32]) -> Vec<[usize; 2]> {
 }
 
 impl View {
-    /// Writes every mark whose words changed into its region of the program buffer.
-    pub(super) fn pack(&mut self, inner: &mut Inner) {
+    /// Writes every mark whose words changed into its region of the program buffer; a buffer grown
+    /// has what it held copied over in `encoder`, and what is written after follows the copy there.
+    pub(super) fn pack(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) {
         let gpu = self.gpu.clone();
         let font = self.scene.theme.text.font.clone();
         for shown in self.marks.iter_mut().filter(|m| !m.packed) {
@@ -55,29 +58,45 @@ impl View {
             }
         }
         let resources = self.resources.as_mut().expect("created before packing");
-        let capacity = resources.program_words() as u32;
+        let (device, queue) = (&gpu.0.device, &gpu.0.queue);
+        // Whether the buffer grew this frame: its words are copied in `encoder`, so writes follow there.
+        let mut grown = false;
+        let write = |encoder: &mut wgpu::CommandEncoder, grown: bool, buffer: &wgpu::Buffer, at: u32, words: &[u32]| {
+            let (at, bytes) = (u64::from(at) * 4, bytemuck::cast_slice(words));
+            if grown {
+                queue.write_buffer_in(device, encoder, buffer, at, bytes);
+            } else {
+                queue.write_buffer(buffer, at, bytes);
+            }
+        };
         if !self.regions.relayout {
+            // The room regions take; the rest of the buffer up to its end, regions that moved left.
+            let mut live: u32 = self.marks.iter().filter_map(|m| m.region).map(|[_, room]| room).sum();
             for shown in self.marks.iter_mut().filter(|m| !m.packed && m.compiled.is_some()) {
                 let len = shown.packed_len();
                 let start = match shown.region {
                     Some([start, room]) if len <= room => start,
-                    _ if self.regions.end + room(len) <= capacity => {
-                        let start = self.regions.end;
+                    region => {
+                        let (start, end) = (self.regions.end, self.regions.end + room(len));
+                        live = live - region.map_or(0, |[_, room]| room) + room(len);
+                        if end > 2 * live {
+                            self.regions.relayout = true;
+                            break;
+                        }
+                        if u64::from(end) > resources.program_words() {
+                            let kept = u64::from(self.regions.end);
+                            grown |= resources.grow_program(device, encoder, u64::from(end), kept);
+                        }
                         shown.region = Some([start, room(len)]);
                         shown.written.clear();
-                        self.regions.end += room(len);
+                        self.regions.end = end;
                         start
-                    }
-                    _ => {
-                        self.regions.relayout = true;
-                        break;
                     }
                 };
                 let mut words = Vec::with_capacity(len as usize);
                 shown.pack(start, &mut words);
                 for [from, to] in changed(&shown.written, &words) {
-                    let at = u64::from(start) * 4 + from as u64 * 4;
-                    gpu.0.queue.write_buffer(resources.program(), at, bytemuck::cast_slice(&words[from..to]));
+                    write(encoder, grown, resources.program(), start + from as u32, &words[from..to]);
                 }
                 shown.written = words;
                 shown.packed = true;
@@ -85,19 +104,21 @@ impl View {
         }
         if std::mem::take(&mut self.regions.relayout) {
             let total: u64 = self.marks.iter().map(|m| u64::from(room(m.packed_len()))).sum();
-            resources.fit_program(&gpu.0.device, total);
-            let mut words = Vec::with_capacity(total as usize);
+            resources.fit_program(device, total);
+            // Each region's own words, at the start of its room: the room past them, which nothing reads
+            // until the region grows into it and writes it, is not written.
+            let mut start = 0;
             for shown in self.marks.iter_mut().filter(|m| m.compiled.is_some()) {
-                let start = words.len() as u32;
                 let len = shown.packed_len();
+                let mut words = Vec::with_capacity(len as usize);
                 shown.pack(start, &mut words);
-                shown.written = words[start as usize..].to_vec();
-                words.resize((start + room(len)) as usize, 0);
+                write(encoder, grown, resources.program(), start, &words);
+                shown.written = words;
                 shown.region = Some([start, room(len)]);
                 shown.packed = true;
+                start += room(len);
             }
-            self.regions.end = words.len() as u32;
-            gpu.0.queue.write_buffer(resources.program(), 0, bytemuck::cast_slice(&words));
+            self.regions.end = start;
         }
     }
 }

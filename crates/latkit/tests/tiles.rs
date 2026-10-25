@@ -9,7 +9,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use common::{SIZE, at, errors, frame, gpu, plain_theme};
+use common::{SETTLE, SIZE, at, errors, frame, gpu, plain_theme, step};
 use latkit::Tiles;
 use latkit::host::{Host, Raster, Request, TextRun};
 use latkit::{
@@ -153,10 +153,19 @@ fn tiles_the_camera_asks_for_draw_as_a_dataset() {
     assert_eq!(served.fetched.lock().expect("unpoisoned").len(), asked, "fetched once for every view");
     assert_eq!(ids(&second), before, "the same rows");
     drop(second);
-    // Zooming in asks for finer tiles, which replace their ancestors.
+    // Zooming in asks for finer tiles, which replace their ancestors in the frame the last of them
+    // lands in.
     view.set_camera(Camera::Map { center: [10.0, 10.0, 0.0], zoom: 6.0, pitch: 0.0, bearing: 0.0 });
-    frame(&gpu, &mut view);
-    assert!(ids(&view).iter().all(|id| !before.contains(id)), "finer tiles' rows");
+    let mut loading = false;
+    for _ in 0..SETTLE {
+        step(&gpu, &mut view);
+        let now = view.stats().tiles_loading > 0;
+        if loading && !now {
+            break;
+        }
+        loading |= now;
+    }
+    assert!(ids(&view).iter().all(|id| !before.contains(id)), "finer tiles' rows, the frame they landed in");
     view.set_sources::<Source>([]).expect("no sources");
     assert!(view.snapshot("base").is_none(), "what no source gives goes");
 }

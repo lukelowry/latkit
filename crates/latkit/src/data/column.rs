@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use super::name::PageId;
 use super::values::{Kind, Picks, Value, Values};
@@ -13,13 +13,15 @@ pub(crate) const PAGE_MASK: usize = PAGE_ROWS - 1;
 /// Writes a page remembers back: past them, it reads as written whole.
 const REMEMBERED: u8 = 8;
 
-/// One page of a column: up to [`PAGE_ROWS`] values, the id of exactly these contents, and, when it
-/// was written over another page, which page and which rows.
+/// One page of a column: up to [`PAGE_ROWS`] values, the id of exactly these contents, when it was
+/// written over another page, which page and which rows, and the points its geometry takes.
 #[derive(Clone, Debug)]
 pub(crate) struct Page {
     pub(crate) id: PageId,
     pub(crate) values: Values,
     pub(crate) written: Option<Arc<Written>>,
+    /// Counted the first time they are asked for: a page never changes.
+    points: OnceLock<usize>,
 }
 
 /// What a page was written from: the page it copied, the rows written over it there, offsets into
@@ -34,7 +36,7 @@ pub(crate) struct Written {
 
 impl Page {
     pub(crate) fn new(values: Values) -> Page {
-        Page { id: PageId::next(), values, written: None }
+        Page { id: PageId::next(), values, written: None, points: OnceLock::new() }
     }
 
     /// `values`: page `old` with `rows` written over it, offsets into the page.
@@ -42,7 +44,12 @@ impl Page {
         let before = old.written.clone().filter(|w| w.depth < REMEMBERED);
         let depth = before.as_ref().map_or(1, |w| w.depth + 1);
         let written = Written { from: old.id, rows: rows.into(), before, depth };
-        Page { id: PageId::next(), values, written: Some(Arc::new(written)) }
+        Page { id: PageId::next(), values, written: Some(Arc::new(written)), points: OnceLock::new() }
+    }
+
+    /// The points its geometry takes as shaders read them, as [`Values::points`] counts them.
+    pub(crate) fn points(&self) -> usize {
+        *self.points.get_or_init(|| self.values.points())
     }
 
     /// The rows written since page `before`, offsets into the page, in order: `None` unless this page
@@ -404,6 +411,20 @@ mod tests {
         assert_eq!(written.changed_since(&column), vec![3, PAGE_ROWS + 4], "the rows whose values changed");
         let far = (0..REMEMBERED).fold(written, |c, _| c.write(c.len(), &[(3, 0)], &source).expect("numbers"));
         assert_eq!(far.changed_since(&column), vec![3, PAGE_ROWS + 4], "compared where the pages forgot");
+    }
+
+    #[test]
+    fn a_page_counts_its_points_once_and_a_page_written_over_it_its_own() {
+        let path = |n: usize| (0..n).map(|i| [i as f64, 0.0]).collect::<Vec<_>>();
+        let column = Column::new(&Values::from(vec![path(3), path(5)]));
+        let page = &column.pages()[0];
+        assert_eq!(page.points.get(), None, "nothing counted until asked");
+        assert_eq!(page.points(), 8);
+        assert_eq!(page.points.get(), Some(&8), "counted once, then kept");
+        assert_eq!(column.clone().pages()[0].points.get(), Some(&8), "a copy of the column shares the count");
+        let source = Column::new(&Values::from(vec![path(10)]));
+        let written = column.write(column.len(), &[(0, 0)], &source).expect("paths");
+        assert_eq!(written.pages()[0].points(), 15, "the page written over counts its own points");
     }
 
     #[test]

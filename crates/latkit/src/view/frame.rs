@@ -60,11 +60,17 @@ impl View {
             }
             return;
         }
+        // The frame's size first: the tiles its sources bring up are those it shows. What landed is
+        // taken before them, so what they start and lands at once wakes the next frame.
+        self.pixel_ratio = frame.pixel_ratio.max(0.01);
+        let ratio = f64::from(self.pixel_ratio);
+        self.size = [f64::from(frame.size[0]) / ratio, f64::from(frame.size[1]) / ratio];
+        let landed = self.signal.take();
         if !self.ready_for(frame.format, frame.pixel_ratio, input) {
+            self.signal.leave(landed);
             return;
         }
         let started = Instant::now();
-        self.signal.clear();
         let starved = std::mem::take(&mut self.room) == Room::Starved;
         let dt = self.clock.tick(frame.time);
         let gpu = self.gpu.clone();
@@ -75,9 +81,6 @@ impl View {
         // Runs the callbacks of finished readbacks; a no-op in browsers, which run them themselves.
         let _ = device.poll(wgpu::PollType::Poll);
         self.tell_gpu_errors();
-        self.pixel_ratio = frame.pixel_ratio.max(0.01);
-        let ratio = f64::from(self.pixel_ratio);
-        self.size = [f64::from(frame.size[0]) / ratio, f64::from(frame.size[1]) / ratio];
         self.measure_gutters();
         self.settle();
         self.advance(dt);
@@ -212,7 +215,7 @@ impl View {
         let domains = self.place_domains();
         let resources = self.resources.as_mut().expect("created");
         resources.fit(device, self.marks.len() as u64, domains);
-        self.pack(inner);
+        self.pack(encoder, inner);
         self.lay_out_labels(inner);
         fresh
     }
@@ -357,26 +360,18 @@ impl View {
     }
 
     /// Derives what marks read beside their data, from the data and the scene alone, handing the
-    /// host what the frame cannot afford. First the pieces of tiles the camera and the plot window
-    /// ask for; then the orders tables drawn in part draw in, and the ranges of them the camera asks
-    /// for; then every other derivation, from the data.
+    /// host what the frame cannot afford. First the orders tables drawn in part draw in, and the
+    /// ranges of them the camera asks for; then every other derivation, from the data.
     fn derive(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let projected = self.projected();
         let earth = matches!(self.scene.space, crate::Space::Earth(_));
         let placing = earth || matches!(self.scene.space, crate::Space::Plane(_));
         let sight = derive::sight::Sight { projected: &projected, size: self.size, earth };
-        // One budget for the frame: the tiles, what is drawn in part, then every other derivation.
+        // One budget for the frame: what is drawn in part, then every other derivation.
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
         let errors = self.gpu.0.errors.clone();
         let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, inner.frame.work);
-        let mut tiles = std::mem::take(&mut self.derived.tiles);
-        let reading = self.reading();
-        let asked = crate::tiles::Asked { sight: earth.then_some(&sight), reading: &reading };
-        // What the pieces change draws from the next frame, which takes it before asking what its
-        // marks read with.
-        tiles.update(&self.derive_input(host.as_deref()), &asked, &mut inner.tiles, &jobs);
-        self.derived.tiles = tiles;
         let budget = inner.budget.bytes;
         self.update_plan(&mut inner.ledger, budget);
         self.trace_columns = self.planning.trace_columns();
@@ -397,6 +392,24 @@ impl View {
         }
         self.derived = derived;
         inner.frame.work = jobs.left() as u32;
+    }
+
+    /// Brings every tile set up to what the camera and the plot window ask, from what the GPU's
+    /// cache holds, with what landed for them since. Their pieces fetch and decode as they land, so
+    /// nothing here spends the frame's work.
+    pub(super) fn update_tiles(&mut self, inner: &mut Inner) {
+        let host = inner.host.clone();
+        let projected = self.projected();
+        let earth = matches!(self.scene.space, crate::Space::Earth(_));
+        let sight = derive::sight::Sight { projected: &projected, size: self.size, earth };
+        let reading = self.reading();
+        let asked = crate::tiles::Asked { sight: earth.then_some(&sight), reading: &reading };
+        let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
+        let errors = self.gpu.0.errors.clone();
+        let jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, 0);
+        let mut tiles = std::mem::take(&mut self.derived.tiles);
+        tiles.update(&self.derive_input(host.as_deref()), &asked, &mut inner.tiles, &jobs);
+        self.derived.tiles = tiles;
     }
 
     /// What derivations read this frame.
