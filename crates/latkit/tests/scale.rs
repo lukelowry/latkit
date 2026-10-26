@@ -123,6 +123,36 @@ fn a_paged_table_draws_the_tiles_in_view_and_its_selected_rows() {
 }
 
 #[test]
+fn a_paged_table_on_the_globe_draws_its_finest_tiles_close_up() {
+    let Some(gpu) = gpu() else { return };
+    // 300,000 buses 0.0002° apart, all in one cell of the coarsest tiles, so only fine tiles hold
+    // the buses in view.
+    let (columns, rows) = (600_usize, 500_usize);
+    let n = columns * rows;
+    let data = Data::new("grid");
+    data.apply(
+        Table::new("Bus", Ids::count(n as u32))
+            .field("lon", (0..n).map(|i| -74.06 + 0.0002 * (i % columns) as f64).collect::<Vec<_>>())
+            .field("lat", (0..n).map(|i| 40.65 + 0.0002 * (i / columns) as f64).collect::<Vec<_>>()),
+    )
+    .expect("valid");
+    let earth = latkit::Earth { graticule: false, ..latkit::Earth::default() }.projection(latkit::Projection::Globe);
+    let scene = Scene::new(earth)
+        .theme(plain_theme())
+        .ease(std::time::Duration::ZERO)
+        .draw(Vertices::of("grid", "Bus").position("lon", "lat").radius(2.0).color(Color::WHITE));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    // So close that the camera's horizon is nearer than a sixty-fourth of the coarsest tile.
+    view.set_camera(Camera::Map { center: [-74.0, 40.7, 0.0], zoom: 15.0, pitch: 0.0, bearing: 0.0 });
+    view.set_sources([&data]).expect("a source");
+    let pixels = frame(&gpu, &mut view);
+    assert_eq!(errors(&mut view), []);
+    let lit = pixels.iter().filter(|p| p[0] > 128).count();
+    assert!(view.stats().drawn > 100, "the buses in view draw: {}", view.stats().drawn);
+    assert!(lit > 1000, "the buses in view show: {lit} lit pixels");
+}
+
+#[test]
 fn panning_a_paged_table_draws_every_row_in_view_as_tiles_change() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);

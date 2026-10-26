@@ -34,7 +34,7 @@
    "load": {
     "uploaded": 200000,
     "uploads": 15,
-    "written": 3124,
+    "written": 3956,
     "evaluated": 10000,
     "resolved": 0,
     "cleared": 40960,
@@ -507,7 +507,7 @@
    "load": {
     "uploaded": 2000000,
     "uploads": 125,
-    "written": 4660,
+    "written": 3828,
     "evaluated": 100000,
     "resolved": 0,
     "cleared": 401408,
@@ -1145,7 +1145,7 @@
    "load": {
     "uploaded": 36352,
     "uploads": 7,
-    "written": 7272,
+    "written": 8360,
     "evaluated": 3008,
     "resolved": 1984,
     "cleared": 12288,
@@ -1312,7 +1312,7 @@
    "load": {
     "uploaded": 358400,
     "uploads": 25,
-    "written": 8528,
+    "written": 7440,
     "evaluated": 29800,
     "resolved": 19800,
     "cleared": 122880,
@@ -1479,7 +1479,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 10376,
+    "written": 9288,
     "evaluated": 298936,
     "resolved": 199080,
     "cleared": 1204224,
@@ -1646,7 +1646,7 @@
    "load": {
     "uploaded": 4980736,
     "uploads": 304,
-    "written": 17280,
+    "written": 16192,
     "evaluated": 290816,
     "resolved": 69632,
     "cleared": 835584,
@@ -2012,14 +2012,14 @@
    "zoom": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 5151984,
+    "written": 5147672,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
     "packed": 0,
     "readbacks": 40,
     "jobs": 0,
-    "texts": 1230,
+    "texts": 1229,
     "pipelines": 0,
     "late": 0,
     "resident": 1269760
@@ -2059,7 +2059,7 @@
    "load": {
     "uploaded": 2400000,
     "uploads": 150,
-    "written": 1428688,
+    "written": 1431184,
     "evaluated": 100000,
     "resolved": 0,
     "cleared": 3612672,
@@ -2089,14 +2089,14 @@
    "zoom": {
     "uploaded": 0,
     "uploads": 0,
-    "written": 6721996,
+    "written": 6686612,
     "evaluated": 0,
     "resolved": 0,
     "cleared": 0,
     "packed": 0,
     "readbacks": 40,
     "jobs": 0,
-    "texts": 1522,
+    "texts": 1514,
     "pipelines": 0,
     "late": 0,
     "resident": 12443648
@@ -2136,7 +2136,7 @@
    "load": {
     "uploaded": 1966080,
     "uploads": 120,
-    "written": 2926340,
+    "written": 2929668,
     "evaluated": 81920,
     "resolved": 0,
     "cleared": 4653056,
@@ -2166,14 +2166,14 @@
    "zoom": {
     "uploaded": 4718592,
     "uploads": 288,
-    "written": 11551716,
+    "written": 11507124,
     "evaluated": 196608,
     "resolved": 0,
     "cleared": 12582912,
     "packed": 1179648,
     "readbacks": 44,
     "jobs": 0,
-    "texts": 1426,
+    "texts": 1420,
     "pipelines": 0,
     "late": 0,
     "resident": 27983872
@@ -2307,7 +2307,7 @@
    "load": {
     "uploaded": 12256,
     "uploads": 7,
-    "written": 6192,
+    "written": 7328,
     "evaluated": 1016,
     "resolved": 1000,
     "cleared": 4352,
@@ -2829,7 +2829,7 @@
    "load": {
     "uploaded": 18151952,
     "uploads": 645,
-    "written": 11664,
+    "written": 12496,
     "evaluated": 10000,
     "resolved": 0,
     "cleared": 40960,
@@ -2951,7 +2951,7 @@
    "load": {
     "uploaded": 40413432,
     "uploads": 1561,
-    "written": 21412,
+    "written": 27236,
     "evaluated": 30000,
     "resolved": 0,
     "cleared": 122880,
@@ -3075,7 +3075,7 @@
    "load": {
     "uploaded": 277592,
     "uploads": 12,
-    "written": 2932,
+    "written": 3764,
     "evaluated": 80,
     "resolved": 0,
     "cleared": 256,
@@ -3085,7 +3085,7 @@
     "texts": 0,
     "pipelines": 29,
     "late": 0,
-    "resident": 304896
+    "resident": 304640
    },
    "pan": {
     "uploaded": 437472,
@@ -3103,19 +3103,19 @@
     "resident": 781824
    },
    "zoom": {
-    "uploaded": 792992,
-    "uploads": 43,
-    "written": 36000,
-    "evaluated": 1136,
+    "uploaded": 746424,
+    "uploads": 39,
+    "written": 36088,
+    "evaluated": 1152,
     "resolved": 0,
     "cleared": 1024,
     "packed": 0,
     "readbacks": 0,
-    "jobs": 27,
+    "jobs": 25,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 1673472
+    "resident": 1621760
    }
   },
   "256": {
@@ -3165,8 +3165,8 @@
     "resident": 719872
    },
    "pan": {
-    "uploaded": 648192,
-    "uploads": 32,
+    "uploaded": 644096,
+    "uploads": 31,
     "written": 35288,
     "evaluated": 8192,
     "resolved": 0,
@@ -3180,19 +3180,19 @@
     "resident": 1449984
    },
    "zoom": {
-    "uploaded": 1103232,
-    "uploads": 77,
-    "written": 36600,
-    "evaluated": 18688,
+    "uploaded": 1134336,
+    "uploads": 79,
+    "written": 36476,
+    "evaluated": 18432,
     "resolved": 0,
     "cleared": 16384,
     "packed": 0,
     "readbacks": 0,
-    "jobs": 22,
+    "jobs": 21,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 3207168
+    "resident": 3264512
    }
   },
   "4096": {
@@ -3229,7 +3229,7 @@
    "load": {
     "uploaded": 2638176,
     "uploads": 258,
-    "written": 6632,
+    "written": 7640,
     "evaluated": 16384,
     "resolved": 0,
     "cleared": 65536,
@@ -3242,34 +3242,34 @@
     "resident": 3194880
    },
    "pan": {
-    "uploaded": 1948272,
-    "uploads": 192,
-    "written": 44912,
-    "evaluated": 77824,
+    "uploaded": 1286320,
+    "uploads": 128,
+    "written": 43048,
+    "evaluated": 57344,
     "resolved": 0,
-    "cleared": 114688,
+    "cleared": 98304,
     "packed": 0,
     "readbacks": 0,
     "jobs": 8,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 5464064
+    "resident": 4759552
    },
    "zoom": {
-    "uploaded": 1747792,
-    "uploads": 260,
-    "written": 52420,
-    "evaluated": 65536,
+    "uploaded": 2359152,
+    "uploads": 324,
+    "written": 53108,
+    "evaluated": 77824,
     "resolved": 0,
-    "cleared": 98304,
+    "cleared": 114688,
     "packed": 0,
     "readbacks": 0,
     "jobs": 11,
     "texts": 0,
     "pipelines": 0,
     "late": 0,
-    "resident": 8028160
+    "resident": 8060928
    }
   }
  },
@@ -3308,7 +3308,7 @@
    "load": {
     "uploaded": 25440,
     "uploads": 22,
-    "written": 9880,
+    "written": 7704,
     "evaluated": 300,
     "resolved": 0,
     "cleared": 5120,
@@ -3400,7 +3400,7 @@
    "load": {
     "uploaded": 254960,
     "uploads": 50,
-    "written": 16104,
+    "written": 18280,
     "evaluated": 3000,
     "resolved": 0,
     "cleared": 40960,
@@ -3492,7 +3492,7 @@
    "load": {
     "uploaded": 2484264,
     "uploads": 366,
-    "written": 89544,
+    "written": 90632,
     "evaluated": 30000,
     "resolved": 0,
     "cleared": 409600,
@@ -3586,7 +3586,7 @@
    "load": {
     "uploaded": 49152,
     "uploads": 2,
-    "written": 43948,
+    "written": 39916,
     "evaluated": 10,
     "resolved": 0,
     "cleared": 256,
@@ -4093,7 +4093,7 @@
    "load": {
     "uploaded": 20000,
     "uploads": 3,
-    "written": 51248,
+    "written": 55280,
     "evaluated": 1,
     "resolved": 0,
     "cleared": 256,
@@ -4512,7 +4512,7 @@
    "load": {
     "uploaded": 1638400,
     "uploads": 100,
-    "written": 630104,
+    "written": 629272,
     "evaluated": 98304,
     "resolved": 0,
     "cleared": 5296640,
@@ -4527,7 +4527,7 @@
    "move": {
     "uploaded": 655360,
     "uploads": 40,
-    "written": 249104,
+    "written": 253264,
     "evaluated": 49152,
     "resolved": 0,
     "cleared": 557056,
@@ -4700,7 +4700,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 36880,
+    "written": 41232,
     "evaluated": 1195744,
     "resolved": 796320,
     "cleared": 4816896,
@@ -4762,7 +4762,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 71568,
+    "written": 83536,
     "evaluated": 2391488,
     "resolved": 1592640,
     "cleared": 9666560,
@@ -4903,7 +4903,7 @@
    "load": {
     "uploaded": 3588096,
     "uploads": 219,
-    "written": 34672,
+    "written": 35760,
     "evaluated": 208896,
     "resolved": 49152,
     "cleared": 589824,
@@ -5166,7 +5166,7 @@
    "load": {
     "uploaded": 3589760,
     "uploads": 223,
-    "written": 15184,
+    "written": 19536,
     "evaluated": 597872,
     "resolved": 398160,
     "cleared": 2408448,

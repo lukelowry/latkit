@@ -123,6 +123,16 @@ impl Sight<'_> {
         (w - center).dot(self.projected.eye - w) > 0.0
     }
 
+    /// The part of `domain`'s square that one CSS pixel spans at the camera's scale: the earth's
+    /// square is a turn of longitude, and a plane's is `size` position units.
+    fn pixel(&self, domain: &Domain) -> f64 {
+        let square = match *domain {
+            Domain::Earth => std::f64::consts::TAU,
+            Domain::Plane { size, .. } => size,
+        };
+        1.0 / (square * self.projected.px_per_unit[0]).max(f64::MIN_POSITIVE)
+    }
+
     /// Where tiles draw largest: the camera's center, and the ground at the bottom middle of the
     /// view, which is the nearest ground when the camera is tilted.
     pub(crate) fn focus(&self) -> Vec<[f64; 2]> {
@@ -212,13 +222,14 @@ impl Sight<'_> {
     }
 
     /// How large tile `key` of `domain`'s square draws, in CSS pixels, at its point nearest each
-    /// focus, and how far that point is from the view's center. It steps 1/64 of the tile in the
-    /// square, where all tiles of a level are the same size, so on a flat map every tile of a level
-    /// measures the same wherever it lies.
+    /// focus, and how far that point is from the view's center. It scales up how far a step of at
+    /// most a pixel moves on screen there. A longer step from a large tile could pass the globe's
+    /// horizon, where nothing projects, once the camera is close to the ground. On a flat map every
+    /// tile of a level measures the same wherever it lies.
     pub(crate) fn measure(&self, focus: &[[f64; 2]], domain: &Domain, key: TileKey) -> (f64, f64) {
         let side = 1.0 / f64::from(1_u32 << key.z);
         let (west, north) = (f64::from(key.x) * side, f64::from(key.y) * side);
-        let step = side / 64.0;
+        let step = (side / 64.0).min(self.pixel(domain));
         let (mut size, mut distance) = (0.0_f64, f64::INFINITY);
         for &f in focus {
             let [fx, fy] = domain.unit(f);
@@ -226,8 +237,9 @@ impl Sight<'_> {
             let fx = if *domain == Domain::Earth { fx + (west + side / 2.0 - fx).round() } else { fx };
             let at = [fx.clamp(west, west + side - step), fy.clamp(north, north + side - step)];
             let Some(p) = self.project(domain.position(at)) else { continue };
-            let reach =
-                |q: [f64; 2]| self.project(domain.position(q)).map_or(0.0, |q| 64.0 * (q[0] - p[0]).hypot(q[1] - p[1]));
+            let reach = |q: [f64; 2]| {
+                self.project(domain.position(q)).map_or(0.0, |q| side / step * (q[0] - p[0]).hypot(q[1] - p[1]))
+            };
             size = size.max(reach([at[0] + step, at[1]])).max(reach([at[0], at[1] + step]));
             distance = distance.min((p[0] - self.size[0] / 2.0).hypot(p[1] - self.size[1] / 2.0));
         }
@@ -273,5 +285,28 @@ mod tests {
         assert!((u[0] - 0.5).abs() < 1e-12 && (u[1] - 0.5).abs() < 1e-12, "the middle of the data maps to 0.5");
         let b = plane.bounds(TileKey { z: 1, x: 0, y: 0 }, 0.0);
         assert!(b[0] < 0.0 && b[3] > 5.0, "the northwest quarter: {b:?}");
+    }
+
+    #[test]
+    fn tiles_under_the_focus_measure_their_size_on_the_globe_at_any_zoom() {
+        let globe = crate::Space::Earth(crate::Earth::default().projection(crate::Projection::Globe));
+        let size = [800.0, 600.0];
+        let center = [-74.0, 40.7];
+        // Past zoom 12 the camera's horizon is nearer than a sixty-fourth of the root tile.
+        for zoom in [3.0, 8.0, 13.0, 18.0, 22.0] {
+            let camera = crate::Camera::Map { center: [center[0], center[1], 0.0], zoom, pitch: 0.0, bearing: 0.0 };
+            let projected = Projected::new(&globe, &camera, size, [0.0, 0.0, size[0], size[1]], 1.0);
+            let sight = Sight { projected: &projected, size, earth: true };
+            let [u, v] = Domain::Earth.unit(center);
+            for z in [0_u8, 6, 12] {
+                let n = f64::from(1_u32 << z);
+                let key = TileKey { z, x: (u * n) as u32, y: (v * n) as u32 };
+                let (px, _) = sight.measure(&sight.focus(), &Domain::Earth, key);
+                // A large tile measures where it is largest: south of the center, a mercator step
+                // covers more of the globe.
+                let nominal = 256.0 * 2_f64.powf(zoom) / n;
+                assert!((0.95..1.3).contains(&(px / nominal)), "zoom {zoom}, level {z}: {px} px, not {nominal}");
+            }
+        }
     }
 }

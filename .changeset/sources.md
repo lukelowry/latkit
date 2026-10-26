@@ -29,4 +29,5 @@ Views draw from sources, every wait can be cancelled, colors and lengths are typ
 - Removed: the `'mercator'` and `'globe'` spaces (use `earth`); flat theme keys such as `vertexRadius`, `fontSize`, and `edgeSpacing`; reading a string as a color only when it begins with `#`; `Flow.units`; shadows on edges, lines, areas, and faces, and the theme's `shadow.light` and `shadow.softness`.
 - Fixed: a view whose next version does not fit releases what it draws so that version can load; when nothing fits, it reports a `limit` error and stops.
 - Fixed: on the earth, sizes in `units(n)` are degrees, as comet lengths already were, not mercator radians.
+- Fixed: zoomed in close on the globe, paged tables and vector tiles keep drawing their finer tiles; past about zoom 12 they fell back to the coarsest.
 - Fixed: a text the host cannot rasterize reports one error, not one every frame it shows, and a text with nothing to draw is no error.
