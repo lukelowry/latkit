@@ -7,22 +7,23 @@
 import * as bindings from '../pkg/latkit.js';
 import type { Failure } from './outputs.js';
 
-/**
- * The error latkit throws: an `Error` with a `code`, plus a `path` to the bad part of invalid
- * input, such as `marks[2].vertices.color`. The codes:
- *
- * - `invalid`: the input is malformed or does not fit; `path` says where.
- * - `unsupported`: the browser or device cannot do what was asked.
- * - `limit`: a budget or device limit would be exceeded.
- * - `io`: reading or writing external bytes failed, such as loading latkit or fetching a file.
- * - `device-lost`: the GPU device was lost; create a new `Gpu`.
- * - `cancelled`: the wait's signal aborted, or the work was cancelled.
- * - `timeout`: the wait's signal timed out.
- * - `unloaded`: the call needs WebAssembly, and `load()` has not finished.
- * - `destroyed`: the object was destroyed, so it can no longer be used.
- */
+/** The error latkit throws: an `Error` whose `code` says what kind of failure it is. */
 export interface LatkitError extends Error {
+  /**
+   * The kind of failure:
+   *
+   * - `invalid`: the input is malformed or does not fit; `path` says where.
+   * - `unsupported`: the browser or device cannot do what was asked.
+   * - `limit`: a budget or device limit would be exceeded.
+   * - `io`: reading or writing external bytes failed, such as loading latkit or fetching a file.
+   * - `device-lost`: the GPU device was lost; create a new `Gpu`.
+   * - `cancelled`: the wait's signal aborted, or the work was cancelled.
+   * - `timeout`: the wait's signal timed out.
+   * - `unloaded`: the call needs WebAssembly, and `load()` has not finished.
+   * - `destroyed`: the object was destroyed, so it can no longer be used.
+   */
   code: Failure['code'] | 'unloaded' | 'destroyed';
+  /** The invalid part of the input, such as `marks[2].vertices.color`, on `invalid` errors. */
   path?: string;
 }
 

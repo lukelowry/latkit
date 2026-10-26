@@ -339,21 +339,27 @@ kinds! {
     }
     /// View state of each row, such as whether it is selected.
     StateNode {
+        /// The state read.
         state: State,
     }
     /// A missing value. An option that evaluates to missing uses the theme's value.
     MissingNode {
+        /// Always `true`.
         #[schemars(extend("const" = true))]
         missing: bool,
     }
     /// A one-argument operation, such as `{ "op": "abs", "args": ["x"] }`.
     UnaryNode {
+        /// The operation.
         op: Unary,
+        /// Its argument.
         args: [Expr; 1],
     }
     /// A two-argument operation, such as `{ "op": "add", "args": ["a", 1] }`.
     BinaryNode {
+        /// The operation.
         op: Binary,
+        /// Its arguments, left and right.
         args: [Expr; 2],
     }
     /// The value of the first case whose condition holds, else `otherwise`.
@@ -364,33 +370,39 @@ kinds! {
         /// The value where no condition holds.
         otherwise: Expr,
     }
-    /// Whether a text field equals the text exactly.
+    /// Whether a text field equals a text exactly.
     IsNode {
+        /// The text field, and the text it must equal.
         #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
         is: (Expr, String),
     }
-    /// Whether a text field contains the text, ignoring case. In a mark, the field must belong to
-    /// the mark's own table.
+    /// Whether a text field contains a text, ignoring case. In a mark, the field must belong to the
+    /// mark's own table.
     ContainsNode {
+        /// The text field, and the text it must contain.
         #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
         contains: (Expr, String),
     }
-    /// `value` mapped linearly from `domain` onto the range `scale`, clamped to the range. Without
-    /// a `domain`, the extent of the values shown is used.
+    /// A value mapped linearly onto a range, clamped to the range.
     ScaleNode {
+        /// The range.
         #[schemars(extend("tsType" = "[low: number, high: number]"))]
         scale: [f64; 2],
+        /// The value mapped.
         value: Expr,
+        /// The values mapped to the range's ends; the extent of the values shown when unset.
         #[serde(default)]
         #[schemars(extend("tsType" = "[low: number, high: number]"))]
         domain: Option<[f64; 2]>,
     }
-    /// `value` mapped through `colormap` over `domain`, or without a `domain`, over the extent of
-    /// the values shown. A categorical map ignores the domain and bins values by their integer
-    /// part.
+    /// A value mapped through a colormap.
     ColormapNode {
+        /// The colormap.
         colormap: Colormap,
+        /// The value mapped. A categorical map takes each value's integer part as its category.
         value: Expr,
+        /// The values mapped to the colormap's ends; the extent of the values shown when unset. A
+        /// categorical map ignores it.
         #[serde(default)]
         #[schemars(extend("tsType" = "[low: number, high: number]"))]
         domain: Option<[f64; 2]>,
@@ -585,6 +597,7 @@ impl JsonSchema for Color {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct CustomColormap {
+    /// How the colors map values.
     kind: ColormapKind,
     /// The colors, blended in OKLab. Each is a color, spaced evenly between its neighbors as in a
     /// CSS gradient, or a `[place, color]` pair with a place from 0 to 1, in ascending order. A

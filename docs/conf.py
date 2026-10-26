@@ -11,7 +11,7 @@ release = json.loads((HERE.parent / "npm/package.json").read_text())["version"]
 
 extensions = ["myst_parser", "sphinx_copybutton"]
 exclude_patterns = ["_build", ".venv", "gallery"]
-myst_enable_extensions = ["colon_fence", "deflist"]
+myst_enable_extensions = ["attrs_block", "attrs_inline", "colon_fence", "deflist"]
 myst_heading_anchors = 3
 
 copybutton_prompt_text = r"^\$ "

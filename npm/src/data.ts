@@ -7,14 +7,17 @@ import { load } from './load.js';
 import type { Description, Value } from './outputs.js';
 import { framed, type Patch } from './patch.js';
 
-/**
- * The rows a query returns, as columns in the forms a patch takes: numbers as a `Float64Array`
- * (missing values NaN), other values as arrays (missing `null`), and a reference as the ids of the
- * rows it references.
- */
+/** The rows a query returns, as columns in the forms a patch takes. */
 export interface QueryResult {
+  /** The table read. */
   table: string;
+  /** The ids of the rows returned, in order. */
   ids: Id[];
+  /**
+   * Each selected field's column, by output name: numbers as a `Float64Array` with NaN for missing
+   * values, other values as an array with `null` for missing ones, and a reference as the table it
+   * references and the id of the row each row references.
+   */
   fields: Record<string, Float64Array | Value[] | { reference: string; ids: (Id | null)[] }>;
   /** How many rows matched the query before `offset` and `limit` applied. */
   total: number;
@@ -86,6 +89,7 @@ export class Data {
     return wrap(Data, await waited<bindings.Data>(read, options, 'reading a dataset'));
   }
 
+  /** The dataset's name, by which a mark's `data` option draws it. */
   get name(): string {
     return reads(this).name;
   }
@@ -149,6 +153,7 @@ export class Data {
     release<bindings.Data>(this)?.free();
   }
 
+  /** Calls {@link Data.destroy}, so a `using` declaration destroys it when its block ends. */
   [Symbol.dispose](): void {
     this.destroy();
   }
@@ -161,6 +166,7 @@ export class Data {
 export class Snapshot {
   private constructor() {}
 
+  /** The name of the dataset this is a version of. */
   get name(): string {
     return reads(this).name;
   }
@@ -214,6 +220,7 @@ export class Snapshot {
     release<bindings.Snapshot>(this)?.free();
   }
 
+  /** Calls {@link Snapshot.destroy}, so a `using` declaration destroys it when its block ends. */
   [Symbol.dispose](): void {
     this.destroy();
   }
@@ -234,11 +241,19 @@ export class Snapshot {
  *   `layer:lines`, or `layer:points` holds that kind regardless of the marks.
  */
 export class Tiles {
+  /** The name of the dataset the tiles are drawn as, by which a mark's `data` option draws it. */
+  readonly name: string;
+  /**
+   * Where the tiles are: a `frames.json` manifest, a PMTiles archive, a TileJSON document, or a
+   * `{z}/{x}/{y}` URL template.
+   */
+  readonly url: string;
+
   /** Tiles at `url`, drawn as the dataset named `name`. */
-  constructor(
-    readonly name: string,
-    readonly url: string,
-  ) {}
+  constructor(name: string, url: string) {
+    this.name = name;
+    this.url = url;
+  }
 }
 
 /** A dataset a view draws; views match it to the scene's marks by the dataset's name. */

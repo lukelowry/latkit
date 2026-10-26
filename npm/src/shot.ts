@@ -46,11 +46,19 @@ export interface ShotOptions {
  * ```
  */
 export class Shot {
+  /** The picture's size, `[width, height]` in pixels. */
+  readonly size: readonly [number, number];
+  /** How the picture is taken, and in `layout`, the panel each view is drawn into. */
+  readonly options: ShotOptions & { layout?: readonly Panel[] };
+
   /** Creates a shot of `size`, `[width, height]` in pixels, of the views in `options.layout`. */
   constructor(
-    readonly size: readonly [number, number],
-    readonly options: ShotOptions & { layout?: readonly Panel[] } = {},
-  ) {}
+    size: readonly [number, number],
+    options: ShotOptions & { layout?: readonly Panel[] } = {},
+  ) {
+    this.size = size;
+    this.options = options;
+  }
 
   /**
    * Draws the picture once every view is complete, as `capture` says, and resolves to the
@@ -64,18 +72,17 @@ export class Shot {
   }
 
   /**
-   * Starts a video of this shot: H.264 in MP4 at `fps` frames per second, written to `output` as
-   * frames are drawn. `bitrate` is in bits per second, about 0.15 bits per pixel per frame by
-   * default. The width is rounded down to a multiple of 4 and the height to a multiple of 2, as the
-   * encoder requires. Canvases showing the views keep their last frame until the video finishes or
-   * aborts. Aborting `signal` aborts the video and `output`; frames have no other time limit.
+   * Starts a video of this shot: H.264 in MP4 at `options.fps` frames per second, written to
+   * `options.output` as frames are drawn. `options.bitrate` is in bits per second, about 0.15 bits
+   * per pixel per frame by default. The width is rounded down to a multiple of 4 and the height to a
+   * multiple of 2, as the encoder requires. Canvases showing the views keep their last frame until
+   * the video finishes or aborts. Aborting `options.signal` aborts the video and its output; frames
+   * have no other time limit.
    */
-  video({
-    fps,
-    output,
-    bitrate,
-    signal,
-  }: { fps: number; output: WritableStream<Uint8Array>; bitrate?: number } & Wait): Video {
+  video(
+    options: { fps: number; output: WritableStream<Uint8Array>; bitrate?: number } & Wait,
+  ): Video {
+    const { fps, output, bitrate, signal } = options;
     signal?.throwIfAborted();
     const writer = output.getWriter();
     try {
@@ -160,6 +167,7 @@ export class Image {
     release<bindings.Image>(this)?.free();
   }
 
+  /** Calls {@link Image.destroy}, so a `using` declaration destroys it when its block ends. */
   [Symbol.dispose](): void {
     this.destroy();
   }

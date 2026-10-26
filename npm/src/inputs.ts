@@ -107,7 +107,9 @@ export type Binary =
 
 /** A two-argument operation, such as `{ "op": "add", "args": ["a", 1] }`. */
 export interface BinaryNode {
+  /** The operation. */
   op: Binary;
+  /** Its arguments, left and right. */
   args: [ExprInput, ExprInput];
 }
 
@@ -135,7 +137,10 @@ export interface Budget {
 
 /** Where a view looks. */
 export type Camera =
-  | {
+  /**
+   * A camera over the earth, a plane, or a diagram: the point it looks at and turns about, its zoom,
+   * its tilt, and its rotation. A diagram is always seen from straight above, upright.
+   */ | {
       /**
        * Longitude, latitude, and elevation on the earth; x, y, and elevation on a plane or a diagram. In
        * JSON, `[x, y]` is shorthand for elevation 0.
@@ -148,7 +153,7 @@ export type Camera =
       /** Degrees clockwise from north, or from up on a plane. Ignored in a diagram. */
       bearing: number;
     }
-  | {
+  | /** A plot camera: the x range shown, and the value range, or `null` to fit the values in view. */ {
       /** The x-axis range shown. */
       x: [number, number];
       /** The value range shown, or `null` to fit the values in view. */
@@ -168,7 +173,11 @@ export type Colormap = ColormapName | CustomColormap;
  * How a colormap maps values: `sequential` and `diverging` maps clamp, `cyclic` maps wrap, and
  * `categorical` maps give each integer its own color.
  */
-export type ColormapKind = 'sequential' | 'diverging' | 'cyclic' | 'categorical';
+export type ColormapKind =
+  | /** Low to high. */ 'sequential'
+  | /** Below and above a midpoint. */ 'diverging'
+  | /** Around a circle: values wrap. */ 'cyclic'
+  | /** Distinct colors for distinct integers. */ 'categorical';
 
 /** A colormap of the catalog. */
 export type ColormapName =
@@ -219,21 +228,25 @@ export type ColormapName =
   | 'tableau10'
   | 'turbo';
 
-/**
- * `value` mapped through `colormap` over `domain`, or without a `domain`, over the extent of the
- * values shown. A categorical map ignores the domain and bins values by their integer part.
- */
+/** A value mapped through a colormap. */
 export interface ColormapNode {
+  /** The colormap. */
   colormap: Colormap;
+  /** The value mapped. A categorical map takes each value's integer part as its category. */
   value: ExprInput;
+  /**
+   * The values mapped to the colormap's ends; the extent of the values shown when unset. A
+   * categorical map ignores it.
+   */
   domain?: [low: number, high: number] | null;
 }
 
 /**
- * Whether a text field contains the text, ignoring case. In a mark, the field must belong to the
+ * Whether a text field contains a text, ignoring case. In a mark, the field must belong to the
  * mark's own table.
  */
 export interface ContainsNode {
+  /** The text field, and the text it must contain. */
   contains: [field: ExprInput, text: string];
 }
 
@@ -309,13 +322,14 @@ export type Controls =
 
 /** A custom colormap: its kind, its colors, and for a categorical map, its category names. */
 export interface CustomColormap {
+  /** How the colors map values. */
   kind: ColormapKind;
   /**
    * The colors, blended in OKLab. Each is a color, spaced evenly between its neighbors as in a CSS
    * gradient, or a `[place, color]` pair with a place from 0 to 1, in ascending order. A categorical
    * map takes one color per category, without places, at most 256.
    */
-  colors: (Color | [number, Color])[];
+  colors: (/** A CSS color, such as `#ffb000` or `rebeccapurple`. */ Color | [number, Color])[];
   /** The category names in category order, shown in legends. Categorical maps only. */
   categories?: string[];
 }
@@ -352,7 +366,11 @@ export interface DiagramTheme {
 }
 
 /** A direction on screen. */
-export type Direction = 'right' | 'left' | 'down' | 'up';
+export type Direction =
+  | /** Toward the right. */ 'right'
+  | /** Toward the left. */ 'left'
+  | /** Toward the bottom. */ 'down'
+  | /** Toward the top. */ 'up';
 
 /**
  * The earth: positions are longitude and latitude in degrees. The ground takes the theme's `earth`
@@ -519,7 +537,7 @@ export interface EnvelopeRequest {
 export type ExprNode =
   | number
   | boolean
-  | string
+  | /** A field's name. */ string
   | FieldNode
   | ColorNode
   | StateNode
@@ -601,7 +619,7 @@ export interface FieldNode {
 
 /** The target of a view's fit. */
 export type Fit =
-  | 'all'
+  | /** Everything drawn. */ 'all'
   | {
       /** These rows. */
       rows: Rows[];
@@ -658,11 +676,15 @@ export interface FocusTheme {
 }
 
 /** How an axis formats its tick values. */
-export type Format = 'auto' | 'fixed' | 'scientific' | 'engineering';
+export type Format =
+  | /** Fixed decimals, scientific past a million or below a ten-thousandth. */ 'auto'
+  | /** Fixed decimals: `1500.0`. */ 'fixed'
+  | /** A significand and a power of ten: `1.5e3`. */ 'scientific'
+  | /** A significand and a power of ten that is a multiple of three: `1.5e3`, `150e-6`. */ 'engineering';
 
 /** A plane's or a diagram's grid: `"off"`, `{ lines: { pitch } }`, or `{ dots: { pitch, snap } }`. */
 export type Grid =
-  | 'off'
+  | /** No grid. */ 'off'
   | {
       /** Lines `pitch` units apart, thinned by factors of ten as the view zooms out. */
       lines: {
@@ -687,16 +709,28 @@ export type Grid =
 export type Id = number | string;
 
 /**
- * Row ids: numbers or texts, or `{count}` for rows 0 to count - 1. In a reference, null names no
- * row.
+ * Row ids: a list of numbers or texts, or `{count}` for rows 0 to count - 1. In a reference, null
+ * names no row.
  */
-export type Ids = (Id | null)[] | { count: number };
+export type Ids =
+  | (Id | null)[]
+  | {
+      /** The number of rows, whose ids are 0 to count - 1. */
+      count: number;
+    };
 
 /** How a line runs between its samples. */
-export type Interpolation = 'linear' | 'stepBefore' | 'stepAfter';
+export type Interpolation =
+  | /** Straight from each sample to the next. */ 'linear'
+  | /**
+     * Each value holds from the previous sample up to its own, so the line steps at the previous
+     * sample.
+     */ 'stepBefore'
+  | /** Each value holds until the next sample, where the line steps. */ 'stepAfter';
 
-/** Whether a text field equals the text exactly. */
+/** Whether a text field equals a text exactly. */
 export interface IsNode {
+  /** The text field, and the text it must equal. */
   is: [field: ExprInput, text: string];
 }
 
@@ -953,20 +987,32 @@ export type Marker =
 
 /** A missing value. An option that evaluates to missing uses the theme's value. */
 export interface MissingNode {
+  /** Always `true`. */
   missing: true;
 }
 
 /** How much a view animates on its own. */
-export type Motion = 'system' | 'full' | 'reduced';
+export type Motion =
+  | /** Follows the system: reduced when the user asked their system for less motion. */ 'system'
+  | /** All motion. */ 'full'
+  | /**
+     * Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits,
+     * labels appear without fading, and comets and options that read `elapsed` stay still.
+     */ 'reduced';
 
 /** Sort direction. Rows where the key has no value sort last in either direction. */
-export type Order = 'ascending' | 'descending';
+export type Order = /** Smallest first. */ 'ascending' | /** Largest first. */ 'descending';
 
 /**
  * A color for each row: a CSS color, a value through a colormap, or a conditional choosing between
  * colors.
  */
-export type PaintNode = Color | ColorNode | ColormapNode | WhenPaintNode | MissingNode;
+export type PaintNode =
+  | /** A CSS color, such as `#ffb000` or `rebeccapurple`. */ Color
+  | ColorNode
+  | ColormapNode
+  | WhenPaintNode
+  | MissingNode;
 
 /** A plane: positions are in plane units. */
 export interface Plane {
@@ -1015,7 +1061,7 @@ export type Port =
     };
 
 /** How the earth is projected. */
-export type Projection = 'mercator' | 'globe';
+export type Projection = /** Web mercator. */ 'mercator' | /** A sphere. */ 'globe';
 
 /** A size in CSS pixels, regardless of the space's unit. */
 export interface Px {
@@ -1056,7 +1102,13 @@ export interface Query {
 }
 
 /** How an edge runs between its ends. */
-export type Route = 'straight' | 'geodesic' | 'orthogonal';
+export type Route =
+  | /** A straight line on screen. */ 'straight'
+  | /** Along the great circle, on the earth. */ 'geodesic'
+  | /**
+     * Horizontal and vertical runs around vertices that leave and enter at their sides, with rounded
+     * bends. Diagrams only.
+     */ 'orthogonal';
 
 /**
  * One row, identified by dataset name, table name, and id. It stays valid across any change that
@@ -1084,13 +1136,13 @@ export interface Rows {
   ids: Id[];
 }
 
-/**
- * `value` mapped linearly from `domain` onto the range `scale`, clamped to the range. Without a
- * `domain`, the extent of the values shown is used.
- */
+/** A value mapped linearly onto a range, clamped to the range. */
 export interface ScaleNode {
+  /** The range. */
   scale: [low: number, high: number];
+  /** The value mapped. */
   value: ExprInput;
+  /** The values mapped to the range's ends; the extent of the values shown when unset. */
   domain?: [low: number, high: number] | null;
 }
 
@@ -1132,10 +1184,18 @@ export interface ShadowTheme {
 }
 
 /** A marker's outline. */
-export type Shape = 'ellipse' | 'rectangle' | 'rounded' | 'diamond';
+export type Shape =
+  | /** An ellipse: a circle when its width and height are equal. */ 'ellipse'
+  | /** A rectangle. */ 'rectangle'
+  | /** A rectangle with rounded corners. */ 'rounded'
+  | /** A diamond. */ 'diamond';
 
 /** A side of a marker. */
-export type Side = 'left' | 'right' | 'top' | 'bottom';
+export type Side =
+  | /** The left side. */ 'left'
+  | /** The right side. */ 'right'
+  | /** The top. */ 'top'
+  | /** The bottom. */ 'bottom';
 
 /**
  * A size: a value in the space's unit (units in a diagram, CSS pixels elsewhere), `{ px }` in CSS
@@ -1182,6 +1242,7 @@ export type State = 'selected' | 'hovered' | 'pointer' | 'elapsed' | 'zoom';
 
 /** View state of each row, such as whether it is selected. */
 export interface StateNode {
+  /** The state read. */
   state: State;
 }
 
@@ -1261,7 +1322,9 @@ export type Unary = 'neg' | 'not' | 'abs' | 'sqrt' | 'sin' | 'cos' | 'floor' | '
 
 /** A one-argument operation, such as `{ "op": "abs", "args": ["x"] }`. */
 export interface UnaryNode {
+  /** The operation. */
   op: Unary;
+  /** Its argument. */
   args: [ExprInput];
 }
 
@@ -1390,4 +1453,10 @@ export interface WhenPaintNode {
 }
 
 /** Which input zooms a view. */
-export type Zoom = 'wheel' | 'modifier' | 'off';
+export type Zoom =
+  | /** The wheel, pinching, and the keys. */ 'wheel'
+  | /**
+     * Pinching and the keys, and the wheel only with Control or Meta held (as trackpad pinches send
+     * it), so the plain wheel scrolls the page.
+     */ 'modifier'
+  | /** No input zooms. */ 'off';

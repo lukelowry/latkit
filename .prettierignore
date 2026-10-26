@@ -17,3 +17,8 @@ benchmark/baselines
 # Written by the schema test: LATKIT_BLESS=1 cargo test -p latkit --test schema.
 npm/schema.json
 docs/_static/theme.json
+# Written by node npm/docs.mjs and LATKIT_BLESS=1 cargo test -p latkit-cli, in MyST's definition
+# lists, which Prettier would break.
+docs/reference/api.md
+docs/reference/types.md
+docs/reference/cli.md

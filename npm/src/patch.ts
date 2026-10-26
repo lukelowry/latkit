@@ -37,12 +37,11 @@ export type Values =
   | readonly (string | null)[]
   | readonly (Geometry | null)[];
 
-/**
- * A reference field: for each row, the id of a row in table `reference`, or `null` to reference
- * none.
- */
+/** A reference field: for each row, a row of another table. */
 export interface Reference {
+  /** The table referenced. */
   reference: string;
+  /** For each row, the id of the row it references, or `null` to reference none. */
   ids: RowIds;
 }
 
@@ -56,6 +55,7 @@ export type Fields = Readonly<Record<string, Values | Reference>>;
 
 /** A byte stream: anything shaped like a browser or Node.js `ReadableStream` of `Uint8Array`. */
 export interface ReadableBytes {
+  /** A reader of the stream's chunks, which latkit reads to the end, or cancels. */
   getReader(): {
     read(): Promise<{ done: boolean; value?: Uint8Array }>;
     cancel(reason?: unknown): Promise<void>;

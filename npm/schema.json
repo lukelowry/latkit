@@ -731,7 +731,8 @@
       "additionalProperties": false,
       "properties": {
         "state": {
-          "$ref": "#/$defs/State"
+          "$ref": "#/$defs/State",
+          "description": "The state read."
         }
       },
       "required": [
@@ -756,6 +757,7 @@
       "properties": {
         "missing": {
           "type": "boolean",
+          "description": "Always `true`.",
           "const": true
         }
       },
@@ -769,7 +771,8 @@
       "additionalProperties": false,
       "properties": {
         "op": {
-          "$ref": "#/$defs/Unary"
+          "$ref": "#/$defs/Unary",
+          "description": "The operation."
         },
         "args": {
           "type": "array",
@@ -777,7 +780,8 @@
             "$ref": "#/$defs/Expr"
           },
           "minItems": 1,
-          "maxItems": 1
+          "maxItems": 1,
+          "description": "Its argument."
         }
       },
       "required": [
@@ -806,7 +810,8 @@
       "additionalProperties": false,
       "properties": {
         "op": {
-          "$ref": "#/$defs/Binary"
+          "$ref": "#/$defs/Binary",
+          "description": "The operation."
         },
         "args": {
           "type": "array",
@@ -814,7 +819,8 @@
             "$ref": "#/$defs/Expr"
           },
           "minItems": 2,
-          "maxItems": 2
+          "maxItems": 2,
+          "description": "Its arguments, left and right."
         }
       },
       "required": [
@@ -894,13 +900,14 @@
           ],
           "minItems": 2,
           "maxItems": 2,
+          "description": "The text field, and the text it must equal.",
           "tsType": "[field: ExprInput, text: string]"
         }
       },
       "required": [
         "is"
       ],
-      "description": "Whether a text field equals the text exactly."
+      "description": "Whether a text field equals a text exactly."
     },
     "ContainsNode": {
       "type": "object",
@@ -918,13 +925,14 @@
           ],
           "minItems": 2,
           "maxItems": 2,
+          "description": "The text field, and the text it must contain.",
           "tsType": "[field: ExprInput, text: string]"
         }
       },
       "required": [
         "contains"
       ],
-      "description": "Whether a text field contains the text, ignoring case. In a mark, the field must belong to\nthe mark's own table."
+      "description": "Whether a text field contains a text, ignoring case. In a mark, the field must belong to the\nmark's own table."
     },
     "ScaleNode": {
       "type": "object",
@@ -938,10 +946,12 @@
           },
           "minItems": 2,
           "maxItems": 2,
+          "description": "The range.",
           "tsType": "[low: number, high: number]"
         },
         "value": {
-          "$ref": "#/$defs/Expr"
+          "$ref": "#/$defs/Expr",
+          "description": "The value mapped."
         },
         "domain": {
           "type": [
@@ -954,6 +964,7 @@
           },
           "minItems": 2,
           "maxItems": 2,
+          "description": "The values mapped to the range's ends; the extent of the values shown when unset.",
           "tsType": "[low: number, high: number]"
         }
       },
@@ -961,17 +972,19 @@
         "scale",
         "value"
       ],
-      "description": "`value` mapped linearly from `domain` onto the range `scale`, clamped to the range. Without\na `domain`, the extent of the values shown is used."
+      "description": "A value mapped linearly onto a range, clamped to the range."
     },
     "ColormapNode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "colormap": {
-          "$ref": "#/$defs/Colormap"
+          "$ref": "#/$defs/Colormap",
+          "description": "The colormap."
         },
         "value": {
-          "$ref": "#/$defs/Expr"
+          "$ref": "#/$defs/Expr",
+          "description": "The value mapped. A categorical map takes each value's integer part as its category."
         },
         "domain": {
           "type": [
@@ -984,6 +997,7 @@
           },
           "minItems": 2,
           "maxItems": 2,
+          "description": "The values mapped to the colormap's ends; the extent of the values shown when unset. A\ncategorical map ignores it.",
           "tsType": "[low: number, high: number]"
         }
       },
@@ -991,7 +1005,7 @@
         "colormap",
         "value"
       ],
-      "description": "`value` mapped through `colormap` over `domain`, or without a `domain`, over the extent of\nthe values shown. A categorical map ignores the domain and bins values by their integer\npart."
+      "description": "A value mapped through a colormap."
     },
     "Colormap": {
       "description": "Colors for a range of values: a catalog name, or your own colors.",
@@ -1061,7 +1075,8 @@
       "additionalProperties": false,
       "properties": {
         "kind": {
-          "$ref": "#/$defs/ColormapKind"
+          "$ref": "#/$defs/ColormapKind",
+          "description": "How the colors map values."
         },
         "colors": {
           "type": "array",
@@ -3208,7 +3223,7 @@
       "description": "One change in a patch, keyed by the name of the `Patch` method that makes it."
     },
     "Ids": {
-      "description": "Row ids: numbers or texts, or `{count}` for rows 0 to count - 1. In a reference, null names no row.",
+      "description": "Row ids: a list of numbers or texts, or `{count}` for rows 0 to count - 1. In a reference, null names no row.",
       "anyOf": [
         {
           "type": "array",
@@ -3227,6 +3242,7 @@
           "type": "object",
           "properties": {
             "count": {
+              "description": "The number of rows, whose ids are 0 to count - 1.",
               "type": "integer",
               "minimum": 0,
               "maximum": 4294967295
@@ -4527,10 +4543,11 @@
       }
     },
     "Failure": {
-      "description": "What failed: its `code`, the message, and for invalid input the `path` to the part, such as `marks[2].vertices.color`.",
+      "description": "What failed, as JSON: the form of the npm package's `LatkitError`.",
       "type": "object",
       "properties": {
         "code": {
+          "description": "The kind of failure, as `LatkitError.code` describes it.",
           "enum": [
             "invalid",
             "unsupported",
@@ -4542,9 +4559,11 @@
           ]
         },
         "message": {
+          "description": "What failed, in words.",
           "type": "string"
         },
         "path": {
+          "description": "The invalid part of the input, such as `marks[2].vertices.color`, on `invalid` failures.",
           "type": "string"
         }
       },

@@ -93,12 +93,18 @@ impl schemars::JsonSchema for Error {
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "What failed: its `code`, the message, and for invalid input the `path` to the part, such as `marks[2].vertices.color`.",
+            "description": "What failed, as JSON: the form of the npm package's `LatkitError`.",
             "type": "object",
             "properties": {
-                "code": { "enum": ["invalid", "unsupported", "limit", "io", "device-lost", "cancelled", "timeout"] },
-                "message": { "type": "string" },
-                "path": { "type": "string" },
+                "code": {
+                    "description": "The kind of failure, as `LatkitError.code` describes it.",
+                    "enum": ["invalid", "unsupported", "limit", "io", "device-lost", "cancelled", "timeout"],
+                },
+                "message": { "description": "What failed, in words.", "type": "string" },
+                "path": {
+                    "description": "The invalid part of the input, such as `marks[2].vertices.color`, on `invalid` failures.",
+                    "type": "string",
+                },
             },
             "required": ["code", "message"],
         })

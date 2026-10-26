@@ -309,6 +309,7 @@ export class View {
     this.#released();
   }
 
+  /** Calls {@link View.destroy}, so a `using` declaration destroys it when its block ends. */
   [Symbol.dispose](): void {
     this.destroy();
   }

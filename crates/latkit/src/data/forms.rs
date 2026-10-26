@@ -133,12 +133,12 @@ impl JsonSchema for IdsForm {
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let id = generator.subschema_for::<Option<Id>>();
         json_schema!({
-            "description": "Row ids: numbers or texts, or `{count}` for rows 0 to count - 1. In a reference, null names no row.",
+            "description": "Row ids: a list of numbers or texts, or `{count}` for rows 0 to count - 1. In a reference, null names no row.",
             "anyOf": [
                 { "type": "array", "items": id },
                 {
                     "type": "object",
-                    "properties": { "count": { "type": "integer", "minimum": 0, "maximum": u32::MAX } },
+                    "properties": { "count": { "description": "The number of rows, whose ids are 0 to count - 1.", "type": "integer", "minimum": 0, "maximum": u32::MAX } },
                     "required": ["count"],
                     "additionalProperties": false,
                 },

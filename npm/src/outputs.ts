@@ -18,7 +18,11 @@ export interface Description {
 }
 
 /** The input device. */
-export type Device = 'mouse' | 'pen' | 'touch' | 'keyboard';
+export type Device =
+  | /** A mouse or a trackpad. */ 'mouse'
+  | /** A pen. */ 'pen'
+  | /** A finger: picks reach 8 CSS pixels farther. */ 'touch'
+  | /** The keyboard. */ 'keyboard';
 
 /** A vertex a connection ends at, and the port the connection meets, if any. */
 export interface End {
@@ -28,13 +32,13 @@ export interface End {
   port?: string;
 }
 
-/**
- * What failed: its `code`, the message, and for invalid input the `path` to the part, such as
- * `marks[2].vertices.color`.
- */
+/** What failed, as JSON: the form of the npm package's `LatkitError`. */
 export interface Failure {
+  /** The kind of failure, as `LatkitError.code` describes it. */
   code: 'invalid' | 'unsupported' | 'limit' | 'io' | 'device-lost' | 'cancelled' | 'timeout';
+  /** What failed, in words. */
   message: string;
+  /** The invalid part of the input, such as `marks[2].vertices.color`, on `invalid` failures. */
   path?: string;
 }
 
@@ -73,7 +77,15 @@ export interface Hit {
 
 /** The kind of values a field holds. */
 export type Kind =
-  'number' | 'bool' | 'text' | 'point' | 'path' | 'parts' | 'polygons' | 'reference' | 'sampled';
+  | /** Numbers. */ 'number'
+  | /** Booleans. */ 'bool'
+  | /** Texts. */ 'text'
+  | /** `[x, y]` points. */ 'point'
+  | /** Paths of points. */ 'path'
+  | /** Parts: the rings of a polygon, or the paths of a multi-path. */ 'parts'
+  | /** Polygons of rings. */ 'polygons'
+  | /** Rows of another table, by id. */ 'reference'
+  | /** Numbers sampled over the dataset's axis. */ 'sampled';
 
 /** Modifier keys held during an input. */
 export interface Modifiers {
@@ -88,7 +100,10 @@ export interface Modifiers {
 }
 
 /** The phase of a `Drag`. */
-export type Phase = 'start' | 'move' | 'end';
+export type Phase =
+  | /** The pointer moved far enough to drag. */ 'start'
+  | /** The pointer moved. */ 'move'
+  | /** The pointer was released, or the drag was cancelled. */ 'end';
 
 /** A sample of a traced field: its frame, the axis coordinate it was recorded at, and its value. */
 export interface Sample {
@@ -162,7 +177,7 @@ export type Value = number | boolean | string | null | [number, number] | unknow
 
 /** Something that happened in a view, as `view.on` reports it. */
 export type ViewEvent =
-  | {
+  | /** A row was clicked. */ {
       type: 'click';
       detail: {
         /** The row. */
@@ -171,7 +186,7 @@ export type ViewEvent =
         trigger: Trigger;
       };
     }
-  | {
+  | /** A row was double-clicked, or Enter was pressed on the row the keyboard points at. */ {
       type: 'open';
       detail: {
         /** The row. */
@@ -180,7 +195,10 @@ export type ViewEvent =
         trigger: Trigger;
       };
     }
-  | {
+  | /**
+     * A context menu was requested: by a secondary click, the menu key, or a touch or pen held still.
+     * Lists the rows under the trigger's point, for a menu of actions on them.
+     */ {
       type: 'menu';
       detail: {
         /** The rows under the point, nearest first. */
@@ -189,7 +207,10 @@ export type ViewEvent =
         trigger: Trigger;
       };
     }
-  | {
+  | /**
+     * A row of a draggable mark is dragged. The drag starts once the pointer moves more than 4 CSS
+     * pixels from where it pressed the row.
+     */ {
       type: 'drag';
       detail: {
         /** Whether the drag starts, moves, or ends. */
@@ -206,7 +227,10 @@ export type ViewEvent =
         trigger: Trigger;
       };
     }
-  | {
+  | /**
+     * A connection was drawn with `controls.connect` on: from a port, from a vertex with Alt held, or
+     * by dragging an edge's end off it.
+     */ {
       type: 'connect';
       detail: {
         /** The end it was drawn from: for an edge, the end that stayed. */
@@ -219,7 +243,7 @@ export type ViewEvent =
         trigger: Trigger;
       };
     }
-  | {
+  | /** Delete or Backspace was pressed with rows selected and `controls.delete` on. */ {
       type: 'delete';
       detail: {
         /** The rows selected. */
@@ -228,7 +252,7 @@ export type ViewEvent =
         trigger: Trigger;
       };
     }
-  | {
+  | /** The hovered row changed: `view.hovered`. */ {
       type: 'hovered';
       detail: {
         /** The row now hovered; `null` once no row is. */
@@ -237,7 +261,7 @@ export type ViewEvent =
         trigger: Trigger;
       };
     }
-  | {
+  | /** The selection changed: `view.selection`. */ {
       type: 'selection';
       detail: {
         /** The rows selected now. */
@@ -246,9 +270,18 @@ export type ViewEvent =
         trigger: Trigger | null;
       };
     }
-  | { type: 'camera'; detail: Camera }
-  | { type: 'waiting'; detail: Waiting }
-  | { type: 'error'; detail: Failure };
+  | /** The camera moved by a gesture, fit, flight, coast, or orbit: `view.camera`. */ {
+      type: 'camera';
+      detail: Camera;
+    }
+  | /** The work the last frame waited on changed; empty once frames are complete: `view.waiting`. */ {
+      type: 'waiting';
+      detail: Waiting;
+    }
+  | /**
+     * Something failed; reported once. A mark that no longer fits its data is also listed in
+     * `view.failures`.
+     */ { type: 'error'; detail: Failure };
 
 /**
  * What a frame still waits on: pipelines the scene draws with, which compile before the view draws

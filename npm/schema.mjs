@@ -113,16 +113,20 @@ function declare(defs, prefix, roots, declared) {
         return 'unknown';
     }
   };
-  // A union member's description moves onto the single key of a tagged variant, because TypeScript
-  // shows no documentation on union members.
+  // A union member's description moves onto the single key of a tagged variant, where editors show
+  // it. Any other member keeps its description as a doc comment before it, which the reference
+  // pages read: what each value of an enumeration means, and each form of a type with several.
   const members = (schemas) => {
     const parts = schemas.map((s) => {
       const keys = Object.keys(s.properties ?? {});
-      if (!s.description || keys.length !== 1 || s.properties[keys[0]].description) return type(s);
-      return type({
-        ...s,
-        properties: { [keys[0]]: { ...s.properties[keys[0]], description: s.description } },
-      });
+      if (!s.description) return type(s);
+      if (keys.length === 1 && !s.properties[keys[0]].description) {
+        return type({
+          ...s,
+          properties: { [keys[0]]: { ...s.properties[keys[0]], description: s.description } },
+        });
+      }
+      return `${doc(s.description).trimEnd()} ${type({ ...s, description: undefined })}`;
     });
     return [...new Set(parts)].join(' | ');
   };

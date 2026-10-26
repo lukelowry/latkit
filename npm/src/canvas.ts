@@ -10,6 +10,7 @@ export type Rect = readonly [x: number, y: number, width: number, height: number
 
 /** A view and the region of a canvas or picture it draws in. */
 export interface Panel {
+  /** The view drawn. */
   view: View;
   /** Where the view draws; the whole canvas or picture by default. */
   at?: Rect;
@@ -123,6 +124,7 @@ export class Canvas {
     this.#released();
   }
 
+  /** Calls {@link Canvas.destroy}, so a `using` declaration destroys it when its block ends. */
   [Symbol.dispose](): void {
     this.destroy();
   }

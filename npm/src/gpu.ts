@@ -148,6 +148,7 @@ export class Gpu {
     device.free();
   }
 
+  /** Calls {@link Gpu.destroy}, so a `using` declaration destroys it when its block ends. */
   [Symbol.dispose](): void {
     this.destroy();
   }

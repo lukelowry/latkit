@@ -37,9 +37,15 @@ const nodeOf = (input: ExprInput): ExprNode => (input instanceof Expr ? input.no
 
 /** A value for every row of a mark: a constant, a field, view state, or arithmetic on them. */
 export class Expr {
-  /** Wraps an expression's JSON form. The builders cover common cases. */
-  constructor(readonly node: ExprNode) {}
+  /** The expression's JSON form. */
+  readonly node: ExprNode;
 
+  /** Wraps an expression's JSON form. The builders cover common cases. */
+  constructor(node: ExprNode) {
+    this.node = node;
+  }
+
+  /** The JSON form, which `JSON.stringify` writes for the expression. */
   toJSON(): ExprNode {
     return this.node;
   }
@@ -57,66 +63,87 @@ export class Expr {
     return new Expr(mapFields(this.node, (f) => ({ ...f, step: true })));
   }
 
+  /** The sum of this value and `other`. */
   add(other: ExprInput): Expr {
     return binary('add', this, other);
   }
+  /** This value minus `other`. */
   sub(other: ExprInput): Expr {
     return binary('sub', this, other);
   }
+  /** The product of this value and `other`. */
   mul(other: ExprInput): Expr {
     return binary('mul', this, other);
   }
+  /** This value divided by `other`. Dividing by 0 gives a missing value. */
   div(other: ExprInput): Expr {
     return binary('div', this, other);
   }
+  /** The remainder of this value divided by `other`, with the sign of `other`: `-1 rem 3` is 2. */
   rem(other: ExprInput): Expr {
     return binary('rem', this, other);
   }
+  /** This value raised to the power `other`. */
   pow(other: ExprInput): Expr {
     return binary('pow', this, other);
   }
+  /** The smaller of this value and `other`. */
   min(other: ExprInput): Expr {
     return binary('min', this, other);
   }
+  /** The larger of this value and `other`. */
   max(other: ExprInput): Expr {
     return binary('max', this, other);
   }
+  /** This value limited to the range from `low` to `high`. */
   clamp(low: ExprInput, high: ExprInput): Expr {
     return this.max(low).min(high);
   }
+  /** 1 where this value is less than `other`, else 0. */
   lt(other: ExprInput): Expr {
     return binary('lt', this, other);
   }
+  /** 1 where this value is at most `other`, else 0. */
   le(other: ExprInput): Expr {
     return binary('le', this, other);
   }
+  /** 1 where this value is greater than `other`, else 0. */
   gt(other: ExprInput): Expr {
     return binary('gt', this, other);
   }
+  /** 1 where this value is at least `other`, else 0. */
   ge(other: ExprInput): Expr {
     return binary('ge', this, other);
   }
+  /** 1 where this value equals `other`, else 0. Colors compare too. */
   eq(other: ExprInput): Expr {
     return binary('eq', this, other);
   }
+  /** 1 where this value differs from `other`, else 0. Colors compare too. */
   ne(other: ExprInput): Expr {
     return binary('ne', this, other);
   }
+  /** 1 where this value and `other` are both above 0.5, else 0. */
   and(other: ExprInput): Expr {
     return binary('and', this, other);
   }
+  /** 1 where this value or `other` is above 0.5, else 0. */
   or(other: ExprInput): Expr {
     return binary('or', this, other);
   }
+  /** 1 where this value is at most 0.5, else 0. */
   not(): Expr {
     return unary('not', this);
   }
+  /** The value negated. */
   neg(): Expr {
     return unary('neg', this);
   }
+  /** The absolute value. */
   abs(): Expr {
     return unary('abs', this);
   }
+  /** The square root. Negative values give a missing value. */
   sqrt(): Expr {
     return unary('sqrt', this);
   }
@@ -128,12 +155,15 @@ export class Expr {
   cos(): Expr {
     return unary('cos', this);
   }
+  /** The largest whole number at most the value. */
   floor(): Expr {
     return unary('floor', this);
   }
+  /** The natural logarithm. Values at most 0 give a missing value. */
   ln(): Expr {
     return unary('ln', this);
   }
+  /** e raised to the value. */
   exp(): Expr {
     return unary('exp', this);
   }
@@ -181,9 +211,15 @@ export class Mapped extends Expr {
  * choosing between colors. Color options take a `Paint` or a CSS color string.
  */
 export class Paint {
-  /** Wraps a color's JSON form. The builders cover common cases. */
-  constructor(readonly node: PaintNode) {}
+  /** The color's JSON form. */
+  readonly node: PaintNode;
 
+  /** Wraps a color's JSON form. The builders cover common cases. */
+  constructor(node: PaintNode) {
+    this.node = node;
+  }
+
+  /** The JSON form, which `JSON.stringify` writes for the color. */
   toJSON(): PaintNode {
     return this.node;
   }
@@ -199,12 +235,15 @@ export class Colormapped extends Paint {
 
 /** A missing value, valid as a value or a color. An option given one uses the theme's value. */
 export class Missing extends Expr {
+  /** The missing value's JSON form, `{ missing: true }`. */
   declare readonly node: MissingNode;
 
+  /** A missing value. {@link missing} makes one too. */
   constructor() {
     super({ missing: true });
   }
 
+  /** The JSON form, which `JSON.stringify` writes for the missing value. */
   override toJSON(): MissingNode {
     return this.node;
   }
@@ -366,8 +405,11 @@ function colored(value: ExprInput | PaintInput): boolean {
 
 /** RGBA pixels with straight alpha, rows top to bottom. A browser `ImageData` has this shape. */
 export interface RgbaImage {
+  /** The width in pixels. */
   width: number;
+  /** The height in pixels. */
   height: number;
+  /** 4 bytes per pixel, red, green, blue, and alpha, row after row. */
   data: Uint8ClampedArray;
 }
 

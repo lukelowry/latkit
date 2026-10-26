@@ -10,7 +10,7 @@ use latkit::{ImageFormat, Pixels, Shot};
 #[derive(Parser)]
 #[command(name = "latkit", version, about = "Render scenes of JSON or binary data to images and videos")]
 pub(crate) struct Cli {
-    /// Format of errors and render progress on stderr. JSON writes one object per line
+    /// Format of errors and render progress on stderr
     #[arg(long, global = true, value_enum, default_value = "human")]
     pub(crate) diagnostics: Diagnostics,
     #[command(subcommand)]
@@ -19,7 +19,9 @@ pub(crate) struct Cli {
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Diagnostics {
+    /// Lines of text, for people
     Human,
+    /// One JSON object per line, for programs
     Json,
 }
 
@@ -31,7 +33,7 @@ pub(crate) enum Command {
     Validate(Job),
     /// Describe datasets as JSON: tables, row counts, fields with kinds, and the axis and its span
     Inspect {
-        /// Dataset files, each [NAME=]FILE (- reads stdin)
+        /// Dataset files, each `[NAME=]FILE` (`-` reads stdin)
         #[arg(required = true, value_name = "[NAME=]FILE")]
         data: Vec<Source>,
         /// The longest a dataset may take to load, in seconds
@@ -46,21 +48,21 @@ pub(crate) enum Command {
     },
     /// Print the rows a query selects, sorted and paged, as JSON Lines with one object per row
     Query {
-        /// The dataset, [NAME=]FILE (- reads stdin)
+        /// The dataset, `[NAME=]FILE` (`-` reads stdin)
         #[arg(value_name = "[NAME=]FILE")]
         data: Source,
-        /// The query as JSON, such as {"of":"Branch","filter":{"op":"gt","args":["loading",90]}},
-        /// or a file containing it (- reads stdin)
+        /// The query as JSON, such as `{"of":"Branch","filter":{"op":"gt","args":["loading",90]}}`,
+        /// or a file containing it (`-` reads stdin)
         #[arg(value_name = "QUERY")]
         query: String,
         /// The longest the dataset may take to load, in seconds
         #[arg(long, default_value = "30", value_parser = deadline)]
         deadline: Duration,
     },
-    /// Write a dataset as time tiles: frames.json (which --tiles opens), the dataset without its
+    /// Write a dataset as time tiles: `frames.json` (which `--tiles` opens), the dataset without its
     /// sampled fields' histories, and those histories in spans at every level of detail
     Tile {
-        /// The dataset, [NAME=]FILE (- reads stdin)
+        /// The dataset, `[NAME=]FILE` (`-` reads stdin)
         #[arg(value_name = "[NAME=]FILE")]
         data: Source,
         /// Directory to write the tiles to
@@ -78,18 +80,18 @@ pub(crate) enum Command {
 /// The inputs and output of `render` and `validate`.
 #[derive(Args)]
 pub(crate) struct Job {
-    /// Scene JSON files, one per panel (- reads stdin)
+    /// Scene JSON files, one per panel (`-` reads stdin)
     #[arg(required = true, value_name = "SCENE")]
     pub(crate) scenes: Vec<PathBuf>,
-    /// A dataset file: a JSON document, latkit bytes, or GeoJSON. NAME= sets its name, which
+    /// A dataset file: a JSON document, latkit bytes, or GeoJSON. `NAME=` sets its name, which
     /// GeoJSON requires
     #[arg(short, long, value_name = "[NAME=]FILE")]
     pub(crate) data: Vec<Source>,
-    /// Tiles every view fetches as dataset NAME: a time tiles frames.json, or a vector tiles
-    /// PMTiles file, TileJSON, or {z}/{x}/{y} template
+    /// Tiles every view fetches as dataset `NAME`: a time tiles `frames.json`, or a vector tiles
+    /// PMTiles file, TileJSON, or `{z}/{x}/{y}` template
     #[arg(long, value_name = "NAME=FILE")]
     pub(crate) tiles: Vec<Source>,
-    /// Output file, %d pattern for an image sequence, or - for stdout
+    /// Output file, `%d` pattern for an image sequence, or `-` for stdout
     #[arg(short, long, value_name = "FILE")]
     pub(crate) output: Option<PathBuf>,
     /// Output format. Defaults to the one the output's extension names, else PNG
@@ -98,13 +100,14 @@ pub(crate) struct Job {
     /// JPEG quality, from 1 (smallest) to 100 (sharpest)
     #[arg(long, default_value = "90", value_parser = clap::value_parser!(u8).range(1..=100))]
     pub(crate) quality: u8,
-    /// The picture's width and height in pixels, such as 1920x1080
+    /// The picture's width and height in pixels, such as `1920x1080`
     #[arg(long, default_value = "1600x900", value_parser = size)]
     pub(crate) size: [u32; 2],
     /// Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp
     #[arg(long, default_value = "1", value_parser = positive)]
     pub(crate) scale: f32,
-    /// A scene's panel of the picture, as X,Y,WIDTH,HEIGHT fractions. Give one per scene, in order
+    /// A scene's panel of the picture: its x, y, width, and height, as fractions. Give one per
+    /// scene, in order
     #[arg(long, value_name = "X,Y,W,H", value_parser = panel)]
     pub(crate) panel: Vec<[f32; 4]>,
     /// Keep alpha where the themes' backgrounds would be
@@ -116,10 +119,10 @@ pub(crate) struct Job {
     /// A TTF, OTF, or TTC font file. Repeat for fallbacks. Replaces the system fonts
     #[arg(long, value_name = "FILE")]
     pub(crate) font: Vec<PathBuf>,
-    /// A camera JSON file per scene, in scene order. Views without one use --fit
+    /// A camera JSON file per scene, in scene order. Views without one use `--fit`
     #[arg(long, value_name = "FILE")]
     pub(crate) camera: Vec<PathBuf>,
-    /// What views without a camera frame: "all", or a fit as JSON
+    /// What views without a camera frame: `all`, or a fit as JSON
     #[arg(long, default_value = "all", value_name = "FIT")]
     pub(crate) fit: String,
     /// CSS pixels to keep clear at the top, right, bottom, and left
@@ -131,7 +134,7 @@ pub(crate) struct Job {
     /// A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets
     #[arg(long, value_parser = seconds, conflicts_with = "frames")]
     pub(crate) elapsed: Option<Duration>,
-    /// Frames as JSON Lines, one line per output frame (- reads stdin)
+    /// Frames as JSON Lines, one line per output frame (`-` reads stdin)
     #[arg(long, value_name = "FILE")]
     pub(crate) frames: Option<PathBuf>,
     /// Output frames per second
@@ -164,9 +167,9 @@ pub(crate) enum Input {
 /// An output format.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Format {
-    /// PNG, lossless with alpha. One picture, or one per frame with a %d output pattern
+    /// PNG, lossless with alpha. One picture, or one per frame with a `%d` output pattern
     Png,
-    /// JPEG at --quality, without alpha. One picture, or one per frame
+    /// JPEG at `--quality`, without alpha. One picture, or one per frame
     Jpeg,
     /// Lossless WebP with alpha. One picture, or one per frame
     Webp,
@@ -370,29 +373,171 @@ fn insets(value: &str) -> Result<[f32; 4], String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::fmt::Write as _;
+
+    use clap::ArgAction;
+
     use super::*;
+
+    /// The command reference, `docs/reference/cli.md`, in the form of the JavaScript reference:
+    /// each command's usage and description, then its arguments and options, each a term over its
+    /// definition with an anchor of its own. Code spans that name a command or an option link to it.
+    fn reference() -> String {
+        let mut cli = Cli::command();
+        cli.build();
+        // Each command, with its name and anchor. Clap's `help` command and arguments are left out.
+        let mut commands = vec![("latkit".to_owned(), "cli-latkit".to_owned(), cli.clone())];
+        for command in cli.get_subcommands().filter(|c| c.get_name() != "help") {
+            let name = command.get_name();
+            commands.push((
+                format!("latkit {name}"),
+                format!("cli-{name}"),
+                command.clone().bin_name(format!("latkit {name}")),
+            ));
+        }
+        let shown = |top: bool, arg: &clap::Arg| {
+            let clap = matches!(
+                arg.get_action(),
+                ArgAction::Help | ArgAction::HelpShort | ArgAction::HelpLong | ArgAction::Version
+            );
+            !clap && !arg.is_hide_set() && (top || !arg.is_global_set())
+        };
+        let id =
+            |anchor: &str, arg: &clap::Arg| format!("{anchor}-{}", arg.get_long().unwrap_or(arg.get_id().as_str()));
+        // What code spans link to: each command, and each option, first in its own command.
+        let mut links = HashMap::new();
+        for (name, anchor, command) in &commands {
+            links.insert(name.clone(), anchor.clone());
+            for arg in command.get_arguments().filter(|a| shown(anchor == "cli-latkit", a)) {
+                if let Some(long) = arg.get_long() {
+                    links.entry(format!("--{long}")).or_insert_with(|| id(anchor, arg));
+                }
+            }
+        }
+        let mut text = String::from(
+            "# Command reference\n\nEvery command and option of the `latkit` command line, written from its help. The \
+             [command-line guide](../cli.md) shows them at work. `--help` prints a command's help in the terminal, and \
+             `latkit --version` prints the version.\n",
+        );
+        for (name, anchor, command) in &mut commands {
+            let top = anchor.as_str() == "cli-latkit";
+            let own = |arg: &clap::Arg| arg.get_long().map(|long| (format!("--{long}"), id(anchor, arg)));
+            let mut local = links.clone();
+            local.extend(command.get_arguments().filter(|a| shown(top, a)).filter_map(own));
+            let usage = command.render_usage().to_string();
+            let usage = usage.strip_prefix("Usage: ").expect("clap's usage");
+            assert!(!usage.contains('\n'), "{name}: one line of usage");
+            let about = command.get_long_about().or(command.get_about()).map(ToString::to_string).unwrap_or_default();
+            write!(
+                text,
+                "\n({anchor})=\n\n## `{name}`\n\n{{.signature}}\n`{usage}`\n\n{}\n",
+                linked(&sentence(&about), &local)
+            )
+            .unwrap();
+            if top {
+                text += "\n```{rubric} Commands\n```\n";
+                for sub in command.get_subcommands().filter(|c| c.get_name() != "help") {
+                    let about = sub.get_about().map(ToString::to_string).unwrap_or_default();
+                    let term = format!("[`latkit {0}`](#cli-{0})", sub.get_name());
+                    write!(text, "\n{}\n", item(None, &term, &linked(&sentence(&about), &local))).unwrap();
+                }
+            }
+            for (title, positional) in [("Arguments", true), ("Options", false)] {
+                let args: Vec<&clap::Arg> =
+                    command.get_arguments().filter(|a| shown(top, a) && a.is_positional() == positional).collect();
+                if args.is_empty() {
+                    continue;
+                }
+                write!(text, "\n```{{rubric}} {title}\n```\n").unwrap();
+                for arg in args {
+                    let id = id(anchor, arg);
+                    let mut about =
+                        sentence(&arg.get_long_help().or(arg.get_help()).map(ToString::to_string).unwrap_or_default());
+                    let defaults: Vec<String> =
+                        arg.get_default_values().iter().map(|v| format!("`{}`", v.to_string_lossy())).collect();
+                    if arg.get_action().takes_values() && !defaults.is_empty() {
+                        write!(about, " Defaults to {}.", defaults.join(", ")).unwrap();
+                    }
+                    if top && arg.is_global_set() {
+                        about += " Every command takes it.";
+                    }
+                    let mut definition = linked(&about, &local);
+                    let values = if arg.get_action().takes_values() { arg.get_possible_values() } else { Vec::new() };
+                    for value in values.iter().filter(|v| !v.is_hide_set()) {
+                        let help = value.get_help().map(ToString::to_string).unwrap_or_default();
+                        assert!(!help.is_empty(), "{name} {}: value {} has no help", id, value.get_name());
+                        let term = format!("**`{}`**", value.get_name());
+                        let value_id = format!("{id}-{}", value.get_name());
+                        write!(definition, "\n\n{}", item(Some(&value_id), &term, &linked(&sentence(&help), &local)))
+                            .unwrap();
+                    }
+                    write!(text, "\n{}\n", item(Some(&id), &term(arg), &definition)).unwrap();
+                }
+            }
+        }
+        text
+    }
+
+    /// An argument's or an option's term: `**<SCENE>...**`, or `-d, **--data** <[NAME=]FILE>`.
+    fn term(arg: &clap::Arg) -> String {
+        let value = arg
+            .get_value_names()
+            .and_then(|names| names.first())
+            .map_or_else(|| arg.get_id().as_str().to_uppercase(), ToString::to_string);
+        if arg.is_positional() {
+            let many = if arg.get_num_args().is_some_and(|n| n.max_values() > 1) { "..." } else { "" };
+            let value = if arg.is_required_set() { format!("<{value}>") } else { format!("[{value}]") };
+            return format!("**`{value}{many}`**");
+        }
+        let short = arg.get_short().map(|c| format!("`-{c},` ")).unwrap_or_default();
+        let long = arg.get_long().expect("every option has a long name");
+        let value = if arg.get_action().takes_values() { format!(" `<{value}>`") } else { String::new() };
+        format!("{short}**`--{long}`**{value}")
+    }
+
+    /// One item of a definition list: `term`, its permalink if it has an anchor, and `definition`,
+    /// its lines after the first indented to stay in the definition.
+    fn item(id: Option<&str>, term: &str, definition: &str) -> String {
+        let (attributes, permalink) = match id {
+            Some(id) => (format!("{{#{id} .member}}"), format!(" [¶](#{id}){{.headerlink}}")),
+            None => ("{.member}".to_owned(), String::new()),
+        };
+        let mut lines = definition.trim().lines();
+        let first = lines.next().unwrap_or_default();
+        let rest: String = lines.map(|l| if l.is_empty() { "\n".to_owned() } else { format!("\n  {l}") }).collect();
+        format!("{attributes}\n{term}{permalink}\n: {first}{rest}")
+    }
+
+    /// Help text as a sentence: trimmed, and ending in a period.
+    fn sentence(help: &str) -> String {
+        let help = help.trim();
+        if help.is_empty() || help.ends_with('.') { help.to_owned() } else { format!("{help}.") }
+    }
+
+    /// `text` with each code span that `links` names made a link to its anchor.
+    fn linked(text: &str, links: &HashMap<String, String>) -> String {
+        let parts: Vec<&str> = text.split('`').collect();
+        assert!(parts.len() % 2 == 1, "unpaired backtick in {text:?}");
+        parts
+            .iter()
+            .enumerate()
+            .map(|(i, part)| match links.get(*part) {
+                _ if i % 2 == 0 => (*part).to_owned(),
+                Some(anchor) => format!("[`{part}`](#{anchor})"),
+                None => format!("`{part}`"),
+            })
+            .collect()
+    }
 
     #[test]
     fn cli_reference_matches_help() {
-        use std::fmt::Write as _;
-
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         // This checks repository documentation, which is not part of the published CLI crate.
         if !root.join(".readthedocs.yaml").exists() {
             return;
         }
-        let mut cli = Cli::command();
-        let mut text = format!(
-            "# Command reference\n\nGenerated from Clap. See the [CLI guide](../cli.md) for examples.\n\n## latkit\n\n```text\n{}```\n",
-            cli.render_long_help()
-        );
-        for command in cli.get_subcommands_mut() {
-            let name = command.get_name().to_owned();
-            let command = command.clone().bin_name(format!("latkit {name}"));
-            let mut command = command;
-            write!(text, "\n## {name}\n\n```text\n{}```\n", command.render_long_help()).unwrap();
-        }
-        let text = text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n") + "\n";
+        let text = reference();
         let path = root.join("docs/reference/cli.md");
         if std::env::var_os("LATKIT_BLESS").is_some() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
