@@ -71,6 +71,6 @@ Serve WebAssembly as `application/wasm`, in a secure context for WebGPU.
 From the repository: `cargo xtask wasm --dev` builds the package for development, and
 `cargo xtask package` builds an optimized tarball under `target/npm`.
 
-LATK v1 uses 64-bit frame indexes. Sample values use `f32` and axis coordinates use `f64`.
-`Video.record()` cleans up on failure; manual recordings must finish or abort.
-See [deployment and platform support](https://latkit.readthedocs.io/en/latest/deployment.html).
+The binary format uses 64-bit frame indexes. Sample values use `f32` and axis coordinates use
+`f64`. `Video.record()` cleans up on failure; manual recordings must finish or abort.
+See [deploying](https://latkit.readthedocs.io/en/latest/guide.html#deploying).

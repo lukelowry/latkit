@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { Grid } from './grid.js';
 import texas from './texas.json';
 
-/** MW each substation sends out along its branches in service, by the flows solved. */
+/** The net MW each substation sends out along its branches, from the solved flows. */
 function sent(grid: Grid): Float64Array {
   const out = new Float64Array(grid.n);
   texas.branches.forEach((branch, j) => {
@@ -12,14 +12,14 @@ function sent(grid: Grid): Float64Array {
   return out;
 }
 
-/** The largest gap between what each substation injects and what its branches carry away. */
+/** The largest difference between a substation's injection and the net flow out on its branches. */
 function imbalance(grid: Grid): number {
   const out = sent(grid);
   return Math.max(...Array.from(out, (mw, i) => Math.abs(mw - grid.injection[i]!)));
 }
 
 describe('the DC power flow', () => {
-  test('balances every island: plants make what loads are served, and each bus sends on its injection', () => {
+  test('generation matches served load and each bus sends out its injection', () => {
     const grid = new Grid();
     const total = grid.injection.reduce((sum, mw) => sum + mw, 0);
     expect(Math.abs(total)).toBeLessThan(1e-6);

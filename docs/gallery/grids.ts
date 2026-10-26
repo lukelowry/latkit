@@ -1,8 +1,9 @@
 /**
- * The synthetic grid cases the example suite fetches from `npm/examples/public/grids`, read into one
- * dataset named `grid`: buses with their voltage level, branches between them, machines, and where
- * a case simulated a fault, each machine's speed frame by frame. The format is the suite's own: a
- * "LKG1" magic, a JSON header, and typed arrays it places.
+ * Reads the synthetic grid cases that the example suite fetches from `npm/examples/public/grids`
+ * into one dataset named `grid`. It holds buses with their voltage level, the branches between
+ * them, machines, and, for a case that simulated a fault, each machine's speed per frame. The file
+ * format is the suite's own: an "LKG1" magic, a JSON header, and typed arrays at the offsets the
+ * header gives.
  */
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -27,15 +28,17 @@ export interface Case {
   readonly name: string;
   readonly header: Header;
   readonly patch: Patch;
-  /** Each bus's longitude and latitude, back to back. */
+  /** Each bus's longitude and latitude, interleaved. */
   readonly positions: Float32Array;
   /** Each machine's bus row. */
   readonly machineBus: Uint32Array;
-  /** One of the case's arrays by name, such as `branch.reactance`. */
+  /** Returns one of the case's arrays by name, such as `branch.reactance`. Throws if it is
+   * missing. */
   readonly array: <T>(name: string, of: new (b: ArrayBuffer, o: number, l: number) => T) => T;
 }
 
-/** A voltage level: 0 below 100 kV, then 115–161, 230, 345, 500, and 765 kV. */
+/** The voltage level of `kv`: 0 below 100 kV, then 1 to 5 for 115–161, 230, 345, 500, and
+ * 765 kV. */
 export function levelOf(kv: number): number {
   return kv >= 700 ? 5 : kv >= 450 ? 4 : kv >= 300 ? 3 : kv >= 200 ? 2 : kv >= 100 ? 1 : 0;
 }
@@ -116,7 +119,7 @@ export function readCase(id: string): Case {
       },
     );
   if (header.frames !== undefined && header.dt !== undefined) {
-    // Per unit of 60 Hz, in mHz.
+    // Speeds are stored in per unit of 60 Hz. This scale converts them to mHz.
     const scale = (header.speedScale ?? 1) * 60_000;
     const speeds = Float32Array.from(array('machine.speed', Int16Array), (v) => v * scale);
     patch.axis('time', 's');

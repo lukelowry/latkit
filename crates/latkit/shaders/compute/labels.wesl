@@ -1,15 +1,18 @@
-// Label placement, once `compute/candidates.wesl` measured each label: rounds of `claim` (each
-// label wanting room takes the least key into every cell it covers, or drops if one is held),
-// `decide` (a label holding all its cells is placed), and `occupy` (placed labels hold their cells)
-// settle, with cells not held cleared between rounds. That places labels as greedily by key as a
-// sequential pass would. `ask` then asks for the texts of placed labels the atlas lacks and notes
-// those it holds, so it keeps them: texts are set only for labels that show, however many rows are in
-// view. `fade` eases each label in or out. Placement only decides which labels show; draws place them
-// from their anchors every frame.
+// Label placement, after `compute/candidates.wesl` measures each label. Placement runs rounds of
+// three steps. `claim`: each label needing room writes its key into every cell it covers, and each
+// cell keeps the least key; a label drops if a placed label occupies one of its cells. `decide`: a
+// label is placed if every cell it covers kept its key. `occupy`: placed labels occupy their cells.
+// Cells not occupied are cleared between rounds. The result matches a sequential greedy pass by
+// key.
+// `ask` then requests the texts of placed labels the atlas lacks, and marks the others as seen so
+// the atlas keeps them. Only shown labels get their text set, however many rows are in view. `fade`
+// eases each label in or out. Placement only decides which labels show; draws place them from their
+// anchors every frame.
 //
-// A mark that shows at most `label_max` labels keeps, of those wanting room, the ones of least key,
-// before any claims: keys are unique, so a radix select over three digits of 11, 11, and 10 bits finds
-// the greatest key kept exactly, each digit a pass over the candidates and one over its buckets.
+// A mark that shows at most `label_max` labels keeps, among those needing room, the ones with the
+// least keys, before any claims. Keys are unique, so a radix select over three digits of 11, 11,
+// and 10 bits finds the greatest kept key exactly. Each digit takes a pass over the candidates and
+// one over its buckets.
 
 import package::lib::types::{
     NONE, LABEL_CODE, CANDIDATE_BOX, CANDIDATE_KEY, CANDIDATE_STATE, CANDIDATE_ALPHA, WANTS, PLACED_LABEL, DROPPED,
@@ -21,11 +24,12 @@ import package::lib::read::missing_bits;
 import package::lib::placement::{labels, label_word, put_label, put, candidate, want, seen};
 import package::lib::drawn::held_row;
 
-// Buckets of a digit of the select capping labels.
+// Buckets per digit of the select that caps labels.
 const SELECT_BUCKETS: u32 = 2048u;
 
-// Word `k` of the select's state, past its buckets: the key's digits found, how many of the least
-// keys are still to keep, and the digit next counted (4 once fewer want room than the cap).
+// Word `k` of the select's state, after its buckets: 0, the key digits found so far; 1, how many of
+// the least keys remain to keep; 2, the digit counted next (4 once fewer labels need room than the
+// cap).
 fn select_word(k: u32) -> u32 {
     return mark.label_select + SELECT_BUCKETS + k;
 }
@@ -39,7 +43,7 @@ fn digit(d: u32) -> vec2u {
     }
 }
 
-// The held row of the drawn row invocation `id` covers, or NONE past the mark's live rows.
+// The held row of the drawn row invocation `id` covers, or NONE past the mark's drawn rows.
 fn labeled(id: vec3u) -> u32 {
     let i = item(id);
     return select(NONE, held_row(i), i < mark.rows);
@@ -74,7 +78,7 @@ fn select_count(@builtin(global_invocation_id) id: vec3u) {
     }
     let key = word(candidate(row) + CANDIDATE_KEY);
     let at = digit(d);
-    // Only keys whose higher digits are those found count.
+    // Only keys whose higher digits match those found so far count.
     let above = at.x + at.y;
     if above < 32u && (key >> above) != label_word(select_word(0u)) {
         return;
@@ -82,11 +86,11 @@ fn select_count(@builtin(global_invocation_id) id: vec3u) {
     atomicAdd(&labels[mark.label_select + ((key >> at.x) & (SELECT_BUCKETS - 1u))], 1u);
 }
 
-// The bucket holding the least key still to keep, clearing the buckets for the next digit.
+// Finds the bucket holding the greatest key to keep, and clears the buckets for the next digit.
 @compute @workgroup_size(1)
 fn select_find() {
     let d = label_word(select_word(2u));
-    // A cap of none keeps no label: the cut drops them all.
+    // A cap of 0 keeps no label: `select_cut` drops them all.
     if mark.label_max == NONE || mark.label_max == 0u || d >= 3u {
         return;
     }
@@ -104,7 +108,7 @@ fn select_find() {
         }
     }
     if found == SELECT_BUCKETS {
-        // Fewer want room than the cap: each keeps its chance.
+        // Fewer labels need room than the cap, so none is cut.
         put_label(select_word(2u), 4u);
         return;
     }
@@ -140,7 +144,7 @@ fn cell(x: u32, y: u32) -> u32 {
     return frame.cells + y * frame.cell_columns + x;
 }
 
-// Whether row `row`'s label still wants room this round.
+// Whether row `row`'s label still needs room this round.
 fn undecided(row: u32) -> bool {
     let s = word(candidate(row) + CANDIDATE_STATE);
     return (s & WANTS) != 0u && (s & (PLACED_LABEL | DROPPED)) == 0u;

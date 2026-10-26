@@ -1,4 +1,4 @@
-/** The body's numerical checks, run by vitest; no wasm build. */
+/** Numerical checks of the soft body, run by vitest without a wasm build. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'vitest';
@@ -101,7 +101,7 @@ test('body rests where it lands, hops at once, and ignores presses in the air', 
 });
 
 test('stands at any firmness, stays down once toppled, and wakes when poked', () => {
-  // Creeping as fast as before, a body would never count as still, and never rest.
+  // A body that kept creeping would never count as still, so it would never rest.
   for (const firmness of [0, 0.45, 1]) {
     const body = new Body(mesh);
     body.drop(true);
@@ -179,7 +179,7 @@ test('pop lifts every piece and visibly separates before gathering', () => {
   );
   assert.ok(separated.length >= 20, `${separated.length}/24 pieces left the original silhouette`);
   run(body, 0.6);
-  assert.ok(!body.burst.gathering, 'the full scatter has time to read before automatic return');
+  assert.ok(!body.burst.gathering, 'the pieces stay scattered long enough to see');
   run(body, 4);
   assert.ok(!body.burst.active, 'automatic assembly still completes');
 

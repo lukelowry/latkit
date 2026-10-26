@@ -1,9 +1,13 @@
-//! Lanes: outside a diagram, each edge row's lane among the edges joining the same two vertices, its
-//! family, so they bow apart instead of drawing over each other. A lane is data, made from the table's
-//! ends alone: the stroke bows in world space by its lane, so it never moves as the camera does. A row's
-//! lane and its family's size share one word: twice its lane, offset by `HALF`, above, and the size
-//! below. Derived again only when the table's rows or ends change: on the frame while that fits its
-//! budget, else in a job; a table whose edges share no ends derives nothing.
+//! Lanes of parallel edges, outside diagrams.
+//!
+//! Edges joining the same two vertices form a family. Each edge row gets a lane within its family,
+//! so the strokes bow apart instead of drawing over each other. Lanes depend only on the table's
+//! endpoints, and strokes bow in world space, so lanes never change as the camera moves.
+//!
+//! A row's lane and its family size share one 32-bit word: twice the lane plus `HALF` in the high
+//! 16 bits, the family size in the low 16. Lanes are recomputed only when the table's rows or
+//! endpoints change: on the frame when that fits the budget, else in a job. A table whose edges
+//! share no endpoints gets no lane field.
 
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 
@@ -13,20 +17,20 @@ use crate::Pending;
 use crate::data::{Field, Keyed, Name, Reference, Table, UNWIRED, Values};
 use crate::host::Job;
 
-/// Microseconds a row takes to find its lane, by estimate.
+/// Estimated microseconds to compute one row's lane.
 const LANE_COST: f64 = 0.06;
-/// What a lane word adds to twice the lane, so it is never negative; and the most a family's size
-/// says, past which it says this.
+/// The offset added to twice the lane, so the high half of a lane word is never negative.
 const HALF: u32 = 1 << 15;
+/// The largest family size a lane word stores; larger families store this.
 const MOST: u32 = (1 << 16) - 1;
 
-/// What a table's lanes were made from, and a job under way.
+/// The stamp a table's lanes were made from, and any pending job.
 type Made = Derived<(), Pending<Vec<u8>>>;
 
 #[derive(Default)]
 pub(crate) struct Lanes {
     tables: Tables,
-    /// Each table's lanes, made or making.
+    /// Each table's lane state: made, or pending in a job.
     made: Keyed<(Name, Name), Made>,
 }
 
@@ -84,8 +88,9 @@ impl Derive for Lanes {
     }
 }
 
-/// Keeps `lanes`, a lane word each row, beside `table` as its field `lane`, or drops its lanes when
-/// there are none; whether anything changed.
+/// Writes `lanes`, one lane word per row, as field `lane` of the table beside `table`. Drops that
+/// table when there are no lanes or their count differs from the rows. Returns whether it wrote or
+/// dropped a table.
 fn keep(tables: &mut Tables, key: (Name, Name), table: &Table, lanes: Option<Vec<u32>>) -> bool {
     match lanes.filter(|l| l.len() == table.len()) {
         Some(lanes) => {
@@ -106,13 +111,15 @@ fn reference<'t>(table: &'t Table, name: &str) -> Option<&'t Reference> {
     }
 }
 
-/// The lane words a lanes job answered, a little-endian `u32` each; none where it answered nothing.
+/// The lane words in a lanes job's answer, each a little-endian `u32`. `None` for an empty answer,
+/// which means no rows share endpoints.
 fn answered(bytes: &[u8]) -> Option<Vec<u32>> {
     (!bytes.is_empty()).then(|| bytes.as_chunks::<4>().0.iter().map(|&w| u32::from_le_bytes(w)).collect())
 }
 
-/// Each row's lane word, as shaders read it, from the rows' two ends: twice its lane offset by `HALF`
-/// above, its family's size below. `None` when no two rows share their ends.
+/// Each row's lane word, as shaders read it, from the rows' endpoints: twice the lane plus `HALF`
+/// in the high 16 bits, the family size (at most `MOST`) in the low 16. `None` when no two rows
+/// share endpoints.
 pub(crate) fn words(from: &[u32], to: &[u32]) -> Option<Vec<u32>> {
     let lanes = lanes(from, to)?;
     Some(
@@ -126,11 +133,12 @@ pub(crate) fn words(from: &[u32], to: &[u32]) -> Option<Vec<u32>> {
     )
 }
 
-/// Each row's lane among the rows joining the same two vertices, from the rows' two ends
-/// ([`UNWIRED`] where a reference names no row): offsets from the middle, signed so rows joining them
-/// either way bow apart, with how many rows join them. `None` when no two rows share their ends.
-/// Counts each pair once, then hands out lanes only to the pairs shared, so it allocates nothing per
-/// pair.
+/// Each row's lane among the rows joining the same two vertices, and the size of that family, from
+/// the rows' endpoints ([`UNWIRED`] where a reference is unset). A lane is an offset from the
+/// family's middle, negated for rows running the other way, so every row of a family bows apart.
+/// A row with no parallel rows (including unset rows and self-loops) gets lane 0 in a family of 1.
+/// `None` when no two rows share endpoints. It counts each pair in one map, then assigns lanes only
+/// to shared pairs, so it allocates nothing per pair.
 pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Option<Vec<(f32, u32)>> {
     let key = |r: usize| {
         let (a, b) = (from[r], to[r]);
@@ -164,8 +172,8 @@ pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Option<Vec<(f32, u32)>> {
     )
 }
 
-/// Each of `rows` rows' lane among the rows joining the same two ends, which `ends` names: the
-/// sheet's straight wires spread by it. `None` when no two share their ends.
+/// Each of `rows` rows' lane among the rows joining the same two vertices, where `ends` gives each
+/// row's endpoints. The sheet spreads straight wires by lane. `None` if no rows share endpoints.
 pub(crate) fn spread(rows: usize, ends: impl Fn(usize) -> Option<[usize; 2]>) -> Option<Vec<f64>> {
     let (from, to): (Vec<u32>, Vec<u32>) =
         (0..rows).map(|r| ends(r).map_or((UNWIRED, UNWIRED), |[a, b]| (a as u32, b as u32))).unzip();
@@ -177,20 +185,20 @@ mod tests {
     use super::{HALF, UNWIRED, lanes, words};
 
     #[test]
-    fn rows_joining_the_same_ends_bow_apart_either_way() {
+    fn edges_joining_the_same_vertices_bow_apart_in_either_direction() {
         // Rows 0, 1, and 3 join vertices 1 and 2, row 3 the other way; row 2 is alone.
-        let lanes = lanes(&[1, 1, 4, 2, UNWIRED], &[2, 2, 5, 1, 0]).expect("shared ends");
+        let lanes = lanes(&[1, 1, 4, 2, UNWIRED], &[2, 2, 5, 1, 0]).expect("rows share endpoints");
         assert_eq!(lanes, vec![(-1.0, 3), (0.0, 3), (0.0, 1), (-1.0, 3), (0.0, 1)]);
     }
 
     #[test]
-    fn a_lane_word_holds_twice_the_lane_and_the_family() {
-        let words = words(&[1, 1], &[2, 2]).expect("shared ends");
-        assert_eq!(words, vec![(HALF - 1) << 16 | 2, (HALF + 1) << 16 | 2], "lanes of half either side, of two");
+    fn a_lane_word_holds_twice_the_lane_and_the_family_size() {
+        let words = words(&[1, 1], &[2, 2]).expect("rows share endpoints");
+        assert_eq!(words, vec![(HALF - 1) << 16 | 2, (HALF + 1) << 16 | 2], "lanes -0.5 and 0.5 in a family of two");
     }
 
     #[test]
-    fn tables_sharing_no_ends_have_no_lanes() {
+    fn rows_sharing_no_endpoints_get_no_lanes() {
         assert_eq!(lanes(&[0, 1, 2], &[1, 2, 0]), None);
     }
 }

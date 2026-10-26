@@ -1,9 +1,9 @@
-/** Clifford: a strange attractor of a quarter million points, translucent, so density shows. */
+/** Clifford: a strange attractor of 260,000 translucent points, so density shows. */
 import { Patch } from 'latkit';
 import { THEME, framed, type Piece } from './look.ts';
 
 export default function clifford(): Piece {
-  // As many points as a view draws whole, past which it draws a dense table through tiles.
+  // Just under 2^18 = 262,144 rows, past which a view pages a table instead of drawing it whole.
   const n = 260_000;
   const [a, b, c, d] = [-1.4, 1.6, 1.0, 0.7];
   const x = new Float32Array(n);
@@ -16,7 +16,7 @@ export default function clifford(): Piece {
     if (i >= 0) {
       x[i] = nx * 300;
       y[i] = ny * 300;
-      // Where each step heads, around the circle: the attractor's flow, as a cyclic color.
+      // The step's direction as a fraction of a turn, for a cyclic colormap.
       turn[i] = (Math.atan2(ny - py, nx - px) / (2 * Math.PI) + 1) % 1;
     }
     [px, py] = [nx, ny];

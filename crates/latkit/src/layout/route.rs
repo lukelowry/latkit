@@ -1,12 +1,12 @@
-//! Orthogonal routes: wires in horizontal and vertical runs around obstacles.
+//! Orthogonal routes: wires of horizontal and vertical runs around obstacles.
 //!
-//! Each net grows as a tree from its first terminal. Every terminal leaves its vertex along its side
-//! by a stub, and each further terminal, nearest first, branches off the tree by the cheapest clear
-//! elbow, or else by an A* search over a sparse visibility graph: the free stretches of the lines
-//! through the nearby obstacles' corners, joined where they cross. Tracks then set apart the runs of
-//! different nets that share a line.
+//! Each net grows as a tree from its first terminal. Every terminal leaves its vertex by a short
+//! stub along its side. Each further terminal, nearest first, branches off the tree by the
+//! cheapest clear elbow, or else by an A* search over a sparse visibility graph: the free
+//! stretches of the lines through nearby obstacles' corners, joined where they cross. Finally,
+//! runs of different nets that share a line are spread onto separate tracks.
 //!
-//! Sides are in plane units with y up: a top side faces +y.
+//! Coordinates are plane units with y up: a top side faces +y.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -15,14 +15,14 @@ use super::boxes::Boxes;
 use super::rect::{Point, Rect, dot, grow, meets, union, valid};
 use crate::scene::Side;
 
-/// Where a wire meets a vertex: the point on its boundary, the side it leaves by (None: any), and the
-/// obstacle it belongs to (an index into `obstacles`), which its own wire may touch.
+/// Where a wire meets a vertex: the point on its boundary, the side it leaves by (`None`: any), and
+/// the obstacle it belongs to (an index into `obstacles`), which its own wire may touch.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Terminal {
     /// The point on the vertex's boundary.
     pub(crate) at: [f64; 2],
-    /// The side the wire leaves by; with none, the owner's side nearest `at`, or else the way toward
-    /// the rest of the net.
+    /// The side the wire leaves by. With none, the owner's side nearest `at`; without an owner, the
+    /// axis toward the rest of the net.
     pub(crate) side: Option<Side>,
     /// The obstacle the terminal belongs to.
     pub(crate) owner: Option<u32>,
@@ -35,16 +35,17 @@ pub(crate) struct Net {
     pub(crate) terminals: Vec<Terminal>,
 }
 
-/// Each net's route as polylines (a tree for nets of more than two terminals, sharing junction points),
-/// running in horizontal and vertical segments around `obstacles` (each `[min x, min y, max x, max y]`),
-/// leaving each terminal along its side, with parallel runs of different nets `spacing` apart. Runs of
-/// `fixed` polylines, wires already routed, keep their tracks, and the new runs take tracks beside
-/// them. A net whose route cannot avoid the obstacles still gets an orthogonal route through them.
+/// Each net's route as polylines: a tree for nets of more than two terminals, sharing junction
+/// points. Routes run in horizontal and vertical segments around `obstacles` (each
+/// `[min x, min y, max x, max y]`), leave each terminal along its side, and keep parallel runs of
+/// different nets `spacing` apart. Runs of `fixed` polylines (wires already routed) keep their
+/// tracks, and new runs take tracks beside them. A net whose route cannot avoid the obstacles
+/// still gets an orthogonal route through them.
 ///
-/// Wires keep twice `spacing` from obstacles where they can. `groups` are soft: wires cross their
-/// borders at a cost, so they enter and leave a group once, and keep off its borders. A net of fewer
-/// than two terminals at finite points gets no polylines; obstacles with a non-finite or inverted box
-/// are left out.
+/// Wires keep twice `spacing` from obstacles where they can. `groups` are soft obstacles: crossing
+/// a border costs extra, so wires enter and leave a group once and keep off its borders. A net
+/// with fewer than two terminals at finite points gets no polylines. Obstacles with a non-finite
+/// or inverted box are ignored.
 pub(crate) fn route(
     obstacles: &Boxes,
     groups: &[[f64; 4]],
@@ -61,13 +62,13 @@ pub(crate) fn route(
     trees.iter().map(|tree| tree.as_ref().map_or_else(Vec::new, Tree::polylines)).collect()
 }
 
-/// Arc points a rounded bend takes between its ends.
+/// Points a rounded bend's arc has between its ends.
 const ARC: usize = 3;
 
-/// A net's polylines as drawn: each bend between perpendicular runs rounded by up to `radius`, and
-/// each part ending where another starts doubled at its end, so that point draws as a junction and
-/// takes no arrowhead. No point repeats anywhere else, as where two bends' arcs meet on a short run:
-/// it would draw as a junction too.
+/// A net's polylines as drawn. Each bend between perpendicular runs is rounded with a radius of up
+/// to `radius`. A part ending where another starts repeats its last point, so that point draws as
+/// a junction without an arrowhead. No point repeats anywhere else (for example where two arcs
+/// meet on a short run), since a repeat would draw as a junction too.
 pub(crate) fn finish(lines: &[Vec<Point>], radius: f64) -> Vec<Vec<Point>> {
     lines
         .iter()
@@ -103,7 +104,7 @@ pub(crate) fn finish(lines: &[Vec<Point>], radius: f64) -> Vec<Vec<Point>> {
         .collect()
 }
 
-/// Pushes `p` onto `out` unless it is the last point there again.
+/// Pushes `p` onto `out` unless it repeats the last point (within `EPSILON`).
 fn push_new(out: &mut Vec<Point>, p: Point) {
     if out.last().is_none_or(|&q| manhattan(q, p) > EPSILON) {
         out.push(p);
@@ -113,37 +114,37 @@ fn push_new(out: &mut Vec<Point>, p: Point) {
 /// How far wires keep from obstacles, in spacings.
 const CLEARANCE: f64 = 2.0;
 
-/// Offsets below this are rounding: a point this near a box's side is on it.
+/// Offsets below this are rounding error: a point this near a box's side is on it.
 const EPSILON: f64 = 1e-6;
 
-/// Points nearer than this are one point.
+/// Points closer than this are the same point.
 const SAME: f64 = 1e-9;
 
-/// Attach points a branch tries, nearest first.
+/// How many attach points a branch tries, nearest first.
 const ATTACHES: usize = 8;
 
-/// Attach points a branch searches from when no elbow is clear.
+/// How many attach points a search starts from when no elbow is clear.
 const SEARCHED: usize = 3;
 
-/// Crossings past which a search gives up.
+/// The number of visibility-graph crossings beyond which a search gives up.
 const MAX_CROSSINGS: usize = 1 << 20;
 
-/// Steps a search takes before it gives up.
+/// The number of states a search expands before it gives up.
 const MAX_VISITS: usize = 1 << 17;
 
-/// Crossings a flood from a search's goal reaches before it takes the goal for open.
+/// How many crossings a flood from the goal must reach before the goal counts as open.
 const POCKET: usize = 256;
 
-/// Times a search widens its window over the obstacles that wall it in.
+/// How many times a search widens its window to cover the obstacles walling it in.
 const WIDENINGS: usize = 1;
 
-/// What crossing a group's border costs, in clearances of length.
+/// The cost of crossing a group's border, in clearances of length.
 const CROSSING: f64 = 4.0;
 
-/// No joint: the root's parent, or a joint without children.
+/// No joint: the root's parent, or the end of a child list.
 const NONE: usize = usize::MAX;
 
-/// No state: where a search starts.
+/// No state: marks a search's starting states.
 const NOWHERE: u32 = u32::MAX;
 
 impl Side {
@@ -158,14 +159,15 @@ impl Side {
     }
 }
 
-/// A terminal as routing reads it: where its wire meets the vertex, the way out, and its owner's box.
+/// A terminal resolved for routing: where its wire meets the vertex, its outward direction, and
+/// its owner's box.
 struct End {
     at: Point,
     normal: Point,
     owner: Option<Rect>,
 }
 
-/// Plans nets among the obstacles, then sets their runs apart.
+/// Routes nets among the obstacles, then spreads their shared runs onto tracks.
 struct Router<'a> {
     obstacles: Obstacles<'a>,
     groups: Groups,
@@ -177,8 +179,8 @@ struct Router<'a> {
 }
 
 impl<'a> Router<'a> {
-    /// A router among `boxes` and `groups`, tracks `spacing` apart; a negative or non-finite spacing
-    /// is zero.
+    /// A router among `boxes` and `groups`, with tracks `spacing` apart. A negative or non-finite
+    /// spacing counts as zero.
     fn new(boxes: &'a Boxes, groups: &[Rect], spacing: f64) -> Router<'a> {
         let spacing = if spacing.is_finite() { spacing.max(0.0) } else { 0.0 };
         let clearance = spacing * CLEARANCE;
@@ -186,13 +188,13 @@ impl<'a> Router<'a> {
         Router { obstacles: Obstacles { boxes }, groups, spacing, clearance, search: Search::new(2.0 * clearance) }
     }
 
-    /// The shortest stub, and the least a track keeps a stub's end off its terminal.
+    /// The shortest stub, and the least distance a track keeps a stub's end from its terminal.
     fn least(&self) -> f64 {
         self.spacing / 8.0
     }
 
-    /// A net's tree: the first terminal's stub, then each further terminal's branch, nearest first;
-    /// `None` for a net of fewer than two terminals at finite points.
+    /// A net's tree: the first terminal's stub, then each further terminal's branch, nearest
+    /// first. `None` for a net with fewer than two terminals at finite points.
     fn net(&mut self, net: &Net) -> Option<Tree> {
         let terminals: Vec<Terminal> =
             net.terminals.iter().filter(|terminal| terminal.at.iter().all(|v| v.is_finite())).copied().collect();
@@ -224,8 +226,8 @@ impl<'a> Router<'a> {
         Some(tree)
     }
 
-    /// How routing reads a terminal. Its way out is its side; else its owner's side nearest it; else
-    /// the axis toward `toward`.
+    /// Resolves a terminal for routing. Its outward direction is its side's normal; else that of
+    /// its owner's side nearest it; else the axis toward `toward`.
     fn end(&self, terminal: Terminal, toward: Point) -> End {
         let owner = self.obstacles.owned(terminal.owner);
         let at = terminal.at;
@@ -240,8 +242,8 @@ impl<'a> Router<'a> {
         End { at, normal, owner }
     }
 
-    /// Where a terminal's stub ends: clear of its owner by the clearance, or halfway to an obstacle
-    /// in the way.
+    /// Where a terminal's stub ends: past its owner by the clearance, or halfway to an obstacle in
+    /// the way, but at least `least` past the owner.
     fn stub(&self, end: &End) -> Point {
         let axis = usize::from(end.normal[0] == 0.0);
         let sign = end.normal[axis];
@@ -268,8 +270,8 @@ impl<'a> Router<'a> {
         point
     }
 
-    /// The cheapest clear way from the tree to a reader's stub end `end`: an elbow from one of the
-    /// nearest attach points; else a search around the obstacles at less and less clearance; else a
+    /// The cheapest clear path from the tree to a reader's stub end `end`: an elbow from one of the
+    /// nearest attach points; else a search around the obstacles at decreasing clearance; else a
     /// plain elbow through them.
     fn branch(&mut self, tree: &Tree, end: Point, reader: &End, root: &End) -> Branch {
         let mut attaches = tree.attaches(end);
@@ -286,13 +288,13 @@ impl<'a> Router<'a> {
             best.consider(&[from, [middle[0], from[1]], [middle[0], end[1]], end], attach, clear);
             best.consider(&[from, [from[0], middle[1]], [end[0], middle[1]], end], attach, clear);
         }
-        // An elbow that keeps out of every group it need not cross is as good as any search finds.
+        // An elbow with no group cost is as good as anything a search would find.
         match best.branch.take() {
             Some(branch) if branch.points.windows(2).all(|w| self.groups.cost(w[0], w[1]) == 0.0) => return branch,
             elbow => best.branch = elbow,
         }
-        // The window frames the boxes a branch may have to go around: its terminal's, and the root's
-        // when the branch may leave the root's stub.
+        // The search window frames the boxes a branch may have to go around: its terminal's owner,
+        // and the root's owner when the branch may leave from the root's stub.
         let searched = &attaches[..attaches.len().min(SEARCHED)];
         let from_root = searched.iter().any(|attach| attach.point == tree.points[1]);
         let owners: Vec<Rect> = [reader.owner, root.owner.filter(|_| from_root)].into_iter().flatten().collect();
@@ -311,10 +313,10 @@ impl<'a> Router<'a> {
         Branch { points: simplify(&[attach.point, [end[0], attach.point[1]], end]), attach }
     }
 
-    /// Sets apart the runs of different nets that share a line: each takes its own track, `spacing`
-    /// apart where the corridor between obstacles has room, ordered by where its ends turn so runs
-    /// nest rather than cross. A run carries its joints, so branches stay joined; terminals never
-    /// move, and stubs only grow.
+    /// Spreads runs of different nets that share a line onto separate tracks, `spacing` apart where
+    /// the corridor between obstacles has room. Tracks are ordered by where the runs' ends turn, so
+    /// runs nest rather than cross. A run moves its joints, so branches stay connected; terminals
+    /// never move, and stubs only grow.
     fn separate(&self, trees: &mut [Option<Tree>]) {
         let tolerance = self.spacing / 16.0;
         for axis in 0..2 {
@@ -358,8 +360,8 @@ impl<'a> Router<'a> {
             false
         });
         let mut order: Vec<&Run> = cluster.iter().collect();
-        // By turn, then length (longest first where ends turn lower), then start: the last key
-        // first, as each sort keeps the order of ties.
+        // Order by turn, then length (longest first where ends turn lower), then start. Sort by the
+        // last key first, since each sort is stable.
         crate::order::by_key(&mut order, |a| crate::order::number(a.along[0]));
         crate::order::by_wide_key(&mut order, |a| {
             let length = crate::order::number(a.along[1] - a.along[0]);
@@ -384,26 +386,26 @@ impl<'a> Router<'a> {
     }
 }
 
-/// The axis direction an offset from a box's middle leaves it by, measured across the box's `size`.
+/// The axis direction by which an offset from a box's center exits it, relative to its `size`.
 fn outward(offset: Point, size: Point) -> Point {
     let across = |k: usize| (offset[k] / size[k].max(f64::MIN_POSITIVE)).abs();
     let away = |v: f64| if v < 0.0 { -1.0 } else { 1.0 };
     if across(0) > across(1) { [away(offset[0]), 0.0] } else { [0.0, away(offset[1])] }
 }
 
-/// What a joint of a tree is, which says how far tracks may move it.
+/// The kind of a tree's joint, which limits how tracks may move it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Joint {
     /// A bend or a junction, free to move.
     Bend,
     /// A terminal, which never moves.
     Terminal,
-    /// A stub's outer end, whose stub from the terminal joint given only grows.
+    /// A stub's outer end. Its stub from the given terminal joint may only grow.
     Stub(usize),
 }
 
-/// A net while it is planned: joints, each joined to its parent by an axis-aligned segment. The
-/// first joint is the root's terminal.
+/// A net being routed: joints, each joined to its parent by an axis-aligned segment. The first
+/// joint is the root terminal.
 #[derive(Default)]
 struct Tree {
     points: Vec<Point>,
@@ -412,7 +414,7 @@ struct Tree {
 }
 
 impl Tree {
-    /// A wire already routed, as a chain of joints none of which moves: its runs hold their tracks.
+    /// A wire already routed, as a chain of joints that never move, so its runs keep their tracks.
     fn fixed(line: &[Point]) -> Tree {
         let mut tree = Tree::default();
         let mut parent = NONE;
@@ -430,14 +432,14 @@ impl Tree {
         self.points.len() - 1
     }
 
-    /// A joint at `point` on the segment from `child` to its parent.
+    /// Inserts a joint at `point` on the segment from `child` to its parent.
     fn split(&mut self, child: usize, point: Point) -> usize {
         let joint = self.add(point, self.parent[child], Joint::Bend);
         self.parent[child] = joint;
         joint
     }
 
-    /// Where a branch may attach, nearest `toward` first: each joint but a terminal, and each
+    /// Where a branch may attach, nearest to `toward` first: each joint except terminals, and each
     /// segment's nearest point to `toward`. Segments into terminals are stubs, which no branch
     /// attaches inside.
     fn attaches(&self, toward: Point) -> Vec<Attach> {
@@ -466,7 +468,8 @@ impl Tree {
         out
     }
 
-    /// The way from a joint `attach` is at along its stub into a terminal, which no branch leaves by.
+    /// When `attach` is at a joint with a stub into a terminal, the direction along that stub,
+    /// which no branch may leave by.
     fn stub_way(&self, attach: Attach) -> Option<Point> {
         if attach.interior {
             return None;
@@ -479,8 +482,8 @@ impl Tree {
             .map(|terminal| direction(attach.point, self.points[terminal]))
     }
 
-    /// Moves a path's start along the tree while its first step runs along a segment of the tree, so
-    /// the path attaches where it leaves the tree. Stubs, which no branch attaches inside, stop it.
+    /// Moves a path's start along the tree while its first step runs along a tree segment, so the
+    /// path attaches where it leaves the tree. Stubs stop it, since no branch attaches inside one.
     fn slide(&self, path: &mut Vec<Point>, mut attach: Attach) -> Attach {
         for _ in 0..self.points.len() {
             let [start, next, ..] = path[..] else { break };
@@ -555,7 +558,7 @@ struct Attach {
     interior: bool,
 }
 
-/// A branch from a tree to a terminal's stub end: its path, from where it attaches.
+/// A branch from a tree to a terminal's stub end: its path, starting where it attaches.
 struct Branch {
     points: Vec<Point>,
     attach: Attach,
@@ -564,9 +567,9 @@ struct Branch {
 /// The cheapest branch found so far.
 struct Best<'t> {
     tree: &'t Tree,
-    /// The way a branch enters the stub end: against the terminal's side.
+    /// The direction a branch enters the stub end: opposite the terminal's outward normal.
     into: Point,
-    /// What a bend costs, in length.
+    /// The cost of a bend, in length.
     bend: f64,
     groups: &'t Groups,
     cost: f64,
@@ -574,8 +577,8 @@ struct Best<'t> {
 }
 
 impl Best<'_> {
-    /// Keeps the path through `points` from `attach` when it turns well, costs less than the best so
-    /// far, and, with `clear`, keeps out of the obstacles grown by the clearance given.
+    /// Keeps the path through `points` from `attach` if it turns well, costs less than the best so
+    /// far, and, with `clear`, avoids the obstacles grown by the given clearance.
     fn consider(&mut self, points: &[Point], attach: Attach, clear: Option<(&Obstacles, f64)>) {
         let mut path = simplify(points);
         let attach = self.tree.slide(&mut path, attach);
@@ -595,9 +598,9 @@ impl Best<'_> {
         }
     }
 
-    /// Whether a path from the tree to the stub end turns well: it never doubles back along the
-    /// stub, leaves a segment it attaches inside across it, and leaves a joint along none of the
-    /// segments already there.
+    /// Whether a path from the tree to the stub end turns well: it does not double back along the
+    /// stub, it leaves a segment it attaches inside at a right angle, and it leaves a joint along
+    /// none of the joint's segments.
     fn fits(&self, path: &[Point], attach: Attach) -> bool {
         let (Some(&[start, next]), Some(&[before, last])) = (path.first_chunk(), path.last_chunk()) else {
             return path.len() == 1;
@@ -605,7 +608,8 @@ impl Best<'_> {
         direction(before, last) != [-self.into[0], -self.into[1]] && self.leaves_well(start, next, attach)
     }
 
-    /// Whether a path's first step, from `start` toward `next`, leaves the tree well.
+    /// Whether a path's first step, from `start` toward `next`, leaves the tree well: at a right
+    /// angle to a segment it attaches inside, or along none of a joint's segments.
     fn leaves_well(&self, start: Point, next: Point, attach: Attach) -> bool {
         let tree = self.tree;
         let parent = tree.parent[attach.child];
@@ -623,8 +627,8 @@ impl Best<'_> {
     }
 }
 
-/// What a search joins: the points it may leave from, each with a way it may not leave by, and the
-/// point it reaches, with a way it may not arrive moving.
+/// A search's ends: the points it may start from, each with a direction it may not leave by, and
+/// its goal, with a direction it may not arrive moving in.
 struct Leg<'p> {
     from: &'p [(Point, Option<Point>)],
     to: Point,
@@ -633,26 +637,27 @@ struct Leg<'p> {
 
 /// How a search over one window ended.
 enum Outcome {
-    /// The path found, from the leg's start given.
+    /// The path found, with the index of the leg's start it begins at.
     Found(usize, Vec<Point>),
-    /// No way inside the window, though a wider one may hold one.
+    /// No path inside the window, though a wider window may have one.
     Walled,
-    /// No way at all, or too much to look through.
+    /// No path at all, or too much to search.
     Unreachable,
 }
 
-/// What a flood from a search's goal found before the search spreads over the window.
+/// What a flood from the goal found before the full search.
 enum Reach {
-    /// A start, or more than a pocket: the search is worth running.
+    /// A start, or more than `POCKET` crossings: the search is worth running.
     Open,
-    /// A pocket without a start that reaches the window's edge: a wider window may join them.
+    /// A small region around the goal, without a start, touching the window's edge: a wider
+    /// window may reach a start.
     Apart,
-    /// A pocket without a start, walled in inside the window.
+    /// A small region around the goal, without a start, walled in inside the window.
     Enclosed,
 }
 
-/// A state waiting in a search: its estimated total cost, its cost so far, and the state, a crossing
-/// and the axis of the step that reached it.
+/// A state queued in a search: its estimated total cost, its cost so far, and the state (a
+/// crossing and the axis of the step that reached it).
 #[derive(Clone, Copy)]
 struct Step {
     estimate: f64,
@@ -661,7 +666,7 @@ struct Step {
 }
 
 impl Ord for Step {
-    // The heap pops its greatest: the least estimate, then the farthest along, then the first state.
+    // The max-heap pops the least estimate first, then the greatest cost, then the lowest state.
     fn cmp(&self, other: &Step) -> Ordering {
         other
             .estimate
@@ -685,7 +690,7 @@ impl PartialEq for Step {
 
 impl Eq for Step {}
 
-/// A free stretch of a line among a search's obstacles: the line's place across, and where the
+/// A free stretch of a line among a search's obstacles: the line's coordinate, and where the
 /// stretch starts and ends along it.
 #[derive(Clone, Copy, PartialEq)]
 struct Span {
@@ -700,17 +705,17 @@ struct Crossing {
     point: Point,
     /// The horizontal span, then the vertical one.
     spans: [u32; 2],
-    /// Its place in the search's columns.
+    /// Its index in the search's `columns`.
     place: u32,
 }
 
-/// Searches for orthogonal paths around obstacles over a sparse visibility graph: the free spans of
-/// the lines through the obstacles' corners, the path's two ends, and the window's edges, which meet
-/// where they cross. Its scratch is shared by every search, grown and never shrunk.
+/// Searches for orthogonal paths around obstacles over a sparse visibility graph: the free spans
+/// of the lines through the obstacles' corners, the path's ends, and the window's edges, with
+/// vertices where they cross. Every search reuses its scratch buffers, which never shrink.
 struct Search {
-    /// What a bend costs, in length.
+    /// The cost of a bend, in length.
     bend: f64,
-    /// How far a window reaches past what it frames.
+    /// How far a window extends past the points and boxes it frames.
     margin: f64,
     /// The graph's vertices: horizontal span by span, each from left to right.
     crossings: Vec<Crossing>,
@@ -718,18 +723,19 @@ struct Search {
     columns: Vec<u32>,
     /// Where each vertical span's crossings start in `columns`, then where the last ends.
     starts: Vec<u32>,
-    /// The cheapest cost found to each state: a crossing, and the axis of the step that reached it.
+    /// The cheapest cost found to each state (a crossing and the axis of the step that reached it).
     costs: Vec<f64>,
     /// The state each state was reached from.
     came: Vec<u32>,
     heap: BinaryHeap<Step>,
-    /// Which crossings a flood has reached, and the order it reached them in.
+    /// Which crossings a flood has reached.
     seen: Vec<bool>,
+    /// The crossings a flood reached, in the order it reached them.
     queue: Vec<usize>,
 }
 
 impl Search {
-    /// A search whose bends cost, and whose windows reach, `reach`.
+    /// A search where a bend costs `reach`, and windows extend `reach` past what they frame.
     fn new(reach: f64) -> Search {
         Search {
             bend: reach,
@@ -745,10 +751,10 @@ impl Search {
         }
     }
 
-    /// The cheapest orthogonal path for `leg` around the obstacles grown by `by`, from whichever start
-    /// is cheapest, in a window framing the leg and the boxes `around`. The window widens over
-    /// obstacles that wall it in. `None` when the leg's end or every start is inside an obstacle, or no
-    /// way is found.
+    /// The cheapest orthogonal path for `leg` around the obstacles grown by `by`, from the cheapest
+    /// start, within a window framing the leg and the boxes `around`. The window widens to cover
+    /// obstacles that wall it in. `None` when the goal or every start is inside an obstacle, or no
+    /// path is found.
     fn path(
         &mut self,
         obstacles: &Obstacles,
@@ -779,8 +785,8 @@ impl Search {
         None
     }
 
-    /// Builds the window's visibility graph through `ends` among `boxes`, the grown obstacles that
-    /// meet it; false when it holds too many crossings to search.
+    /// Builds the window's visibility graph through `ends` among `boxes` (the grown obstacles that
+    /// meet the window). Returns false when it has too many crossings to search.
     fn build(&mut self, boxes: &[Rect], window: Rect, ends: &[Point]) -> bool {
         let horizontal = spans(boxes, window, ends, 0);
         let vertical = spans(boxes, window, ends, 1);
@@ -799,7 +805,7 @@ impl Search {
                 return false;
             }
         }
-        // Each vertical span's crossings, which come bottom to top as the rows do.
+        // Index each vertical span's crossings; they come bottom to top, as the rows do.
         self.starts.clear();
         self.starts.resize(vertical.len() + 1, 0);
         for crossing in &self.crossings {
@@ -821,10 +827,10 @@ impl Search {
         true
     }
 
-    /// A* over the window's visibility graph for `leg` among `boxes`, the grown obstacles that meet
-    /// it, its steps costing their crossings of `groups`' borders: each state a crossing and the axis
-    /// of the step that reached it. The groups' lanes, just inside and outside their borders, are
-    /// lines of the graph too.
+    /// Runs A* over the window's visibility graph for `leg` among `boxes` (the grown obstacles that
+    /// meet the window). Each state is a crossing plus the axis of the step that reached it, and
+    /// each step also pays its `groups` border cost. The groups' lanes, just inside and outside
+    /// their borders, are lines of the graph too.
     fn graph(&mut self, boxes: &[Rect], groups: &Groups, window: Rect, leg: &Leg) -> Outcome {
         let groups = groups.within(window);
         let mut ends: Vec<Point> = leg.from.iter().map(|&(start, _)| start).chain([leg.to]).collect();
@@ -876,7 +882,7 @@ impl Search {
             }
             let crossing = self.crossings[vertex];
             edge |= on_edge(crossing.point, &window);
-            // A start's first step leaves by any way but its banned one.
+            // A start's first step may leave in any direction but its banned one.
             let first = self.came[state] == NOWHERE;
             let banned =
                 if first { sources.iter().find(|source| source.0 == vertex).and_then(|source| source.1) } else { None };
@@ -900,12 +906,13 @@ impl Search {
                 self.heap.push(Step { estimate, cost: value, state: reached as u32 });
             }
         }
-        // A start walled in short of the window's edge stays walled in however wide the window.
+        // If the search never reached the window's edge, a wider window would not help.
         if edge { Outcome::Walled } else { Outcome::Unreachable }
     }
 
-    /// The least a path can cost from `point`, reached along `axis` (`None` at a start, whose first
-    /// step turns for free), to `to`: its length, and a bend for the turn it still needs.
+    /// A lower bound on the cost from `point`, reached along `axis`, to `to`: the Manhattan
+    /// distance, plus a bend if a turn is still needed. `axis` is `None` at a start, whose first
+    /// step turns for free.
     fn estimate(&self, point: Point, axis: Option<usize>, to: Point) -> f64 {
         let turns = match ([point[0] != to[0], point[1] != to[1]], axis) {
             ([true, true], _) | ([true, false], Some(1)) | ([false, true], Some(0)) => 1.0,
@@ -930,8 +937,8 @@ impl Search {
         ]
     }
 
-    /// Floods the graph from `goal` for a pocket's worth of crossings, to fail fast where the goal is
-    /// walled in apart from every start.
+    /// Floods the graph from `goal` for up to `POCKET` crossings, to fail fast when the goal is
+    /// walled off from every start.
     fn flood(&mut self, goal: usize, sources: &[(usize, Option<Point>)], window: Rect) -> Reach {
         self.seen.clear();
         self.seen.resize(self.crossings.len(), false);
@@ -955,7 +962,7 @@ impl Search {
         if edge { Reach::Apart } else { Reach::Enclosed }
     }
 
-    /// The path that reached state `goal`, from the start.
+    /// The simplified path to state `goal`, from its start.
     fn trace(&self, goal: usize) -> Vec<Point> {
         let mut path = Vec::new();
         let mut state = goal;
@@ -971,15 +978,16 @@ impl Search {
     }
 }
 
-/// The free spans of lines running along `along` (0: x, 1: y) within `window`, among `boxes`, the
-/// grown obstacles that meet it: through each box's corners, or where its sides' lines enter the
-/// window, through each of `ends`, and every span along the window's edges. Sorted by line, then
-/// start.
+/// The free spans of lines running along axis `along` (0: x, 1: y) within `window`, among `boxes`
+/// (the grown obstacles that meet it). Lines pass through each box's corners (clamped into the
+/// window) and through each of `ends`, taking the free span at that point; lines along the
+/// window's edges take every free span. Sorted by line, then start.
 fn spans(boxes: &[Rect], window: Rect, ends: &[Point], along: usize) -> Vec<Span> {
     let held = 1 - along;
     let (start, end) = (window[along], window[along + 2]);
     let (low, high) = (window[held], window[held + 2]);
-    // A seed is a line and a point along it its span holds; NaN takes every span of the line.
+    // A seed is a line and a point along it, which selects the free span holding that point; NaN
+    // selects every free span of the line.
     let mut seeds: Vec<Point> = boxes
         .iter()
         .flat_map(|r| {
@@ -993,7 +1001,7 @@ fn spans(boxes: &[Rect], window: Rect, ends: &[Point], along: usize) -> Vec<Span
     crate::order::by_wide_key(&mut seeds, |a| {
         crate::order::wide(crate::order::number(a[0]), crate::order::number(a[1]))
     });
-    // A sweep across the lines: the boxes whose open stretch across holds the line, by start along.
+    // Sweep across the lines, keeping the boxes whose extent across contains the line, by start.
     let mut order: Vec<usize> = (0..boxes.len()).collect();
     crate::order::by_key(&mut order, |&a| crate::order::number(boxes[a][held]));
     let mut order = order.into_iter().peekable();
@@ -1007,7 +1015,7 @@ fn spans(boxes: &[Rect], window: Rect, ends: &[Point], along: usize) -> Vec<Span
             active.insert(at, r);
         }
         active.retain(|r| line < r[held + 2] - EPSILON);
-        // The stretches of the line inside an obstacle, merged where they meet.
+        // The stretches of the line inside obstacles, merged where they touch.
         merged.clear();
         for r in &active {
             match merged.last_mut() {
@@ -1051,13 +1059,13 @@ fn spans(boxes: &[Rect], window: Rect, ends: &[Point], along: usize) -> Vec<Span
 /// The groups wires route among: boxes they may cross, at a cost.
 struct Groups {
     boxes: Vec<Rect>,
-    /// How far wires keep from obstacles: a border's lanes lie half of it inside and outside.
+    /// How far wires keep from obstacles. A border's lanes lie half this inside and outside it.
     clearance: f64,
 }
 
 impl Groups {
-    /// What a run from `a` to `b` costs past its length: [`CROSSING`] clearances for each border it
-    /// crosses, and its length again where it runs along a border, nearer than half a clearance.
+    /// The cost of a run from `a` to `b` beyond its length: [`CROSSING`] clearances per border it
+    /// crosses, plus the length it runs along a border closer than half a clearance.
     fn cost(&self, a: Point, b: Point) -> f64 {
         let along = usize::from(a[0] == b[0]);
         let held = 1 - along;
@@ -1083,8 +1091,8 @@ impl Groups {
         Groups { boxes: self.boxes.iter().copied().filter(|r| meets(r, &window)).collect(), clearance: self.clearance }
     }
 
-    /// The corners of the lanes along every group's borders, half a clearance inside and outside each:
-    /// points the search's lines run through.
+    /// The corners of the lanes along every group's borders, half a clearance inside and outside,
+    /// which the search's lines pass through.
     fn lanes(&self) -> Vec<Point> {
         let half = self.clearance / 2.0;
         let mut out = Vec::new();
@@ -1100,7 +1108,7 @@ impl Groups {
     }
 }
 
-/// The obstacles routing avoids, as boxes kept indexed give them.
+/// The obstacles routing avoids, read from an index of boxes.
 struct Obstacles<'a> {
     boxes: &'a Boxes,
 }
@@ -1111,8 +1119,8 @@ impl Obstacles<'_> {
         owner.and_then(|owner| self.boxes.get(owner as usize))
     }
 
-    /// Visits the obstacles meeting `region`, each grown by `by`, until `visit` returns true; whether
-    /// it did.
+    /// Visits the obstacles meeting `region`, each grown by `by`, until `visit` returns true.
+    /// Returns whether it did.
     fn some(&self, region: Rect, by: f64, mut visit: impl FnMut(Rect) -> bool) -> bool {
         self.boxes.some(region, &mut |item| visit(grow(self.boxes.get(item).expect("a box visited"), by)))
     }
@@ -1127,7 +1135,7 @@ impl Obstacles<'_> {
         out
     }
 
-    /// Whether the axis-aligned segment from `a` to `b` keeps out of every obstacle grown by `by`.
+    /// Whether the axis-aligned segment from `a` to `b` avoids every obstacle grown by `by`.
     fn clear(&self, a: Point, b: Point, by: f64) -> bool {
         let span = grow([a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])], by);
         !self.some(span, by, |obstacle| crosses(a, b, &obstacle))
@@ -1144,14 +1152,14 @@ fn on_edge(p: Point, r: &Rect) -> bool {
     p[0] == r[0] || p[0] == r[2] || p[1] == r[1] || p[1] == r[3]
 }
 
-/// Whether a point is strictly inside a box.
+/// Whether a point is strictly inside a box, by more than `EPSILON`.
 fn inside(p: Point, r: &Rect) -> bool {
     p[0] > r[0] + EPSILON && p[0] < r[2] - EPSILON && p[1] > r[1] + EPSILON && p[1] < r[3] - EPSILON
 }
 
 /// Whether the axis-aligned segment from `a` to `b` passes through a box's interior.
 fn crosses(a: Point, b: Point, r: &Rect) -> bool {
-    // A vertical segment holds its x and runs along y; a horizontal one holds its y.
+    // A vertical segment has a fixed x and runs along y; a horizontal one has a fixed y.
     let held = usize::from(a[0] != b[0]);
     let runs = 1 - held;
     a[held] > r[held] + EPSILON
@@ -1165,7 +1173,7 @@ fn between(v: f64, a: f64, b: f64) -> bool {
     a.min(b) <= v && v <= a.max(b)
 }
 
-/// The length of an orthogonal path between two points.
+/// The Manhattan distance between two points: the length of an orthogonal path between them.
 fn manhattan(a: Point, b: Point) -> f64 {
     (a[0] - b[0]).abs() + (a[1] - b[1]).abs()
 }
@@ -1181,12 +1189,12 @@ fn sign(v: f64) -> f64 {
     }
 }
 
-/// The axis signs of the way from one point to another.
+/// The sign of each axis of the direction from `from` to `to`.
 fn direction(from: Point, to: Point) -> Point {
     [sign(to[0] - from[0]), sign(to[1] - from[1])]
 }
 
-/// A path's points without repeats or in-line middles.
+/// A path's points with repeats and collinear middle points removed.
 pub(crate) fn simplify(path: &[Point]) -> Vec<Point> {
     let mut out: Vec<Point> = Vec::with_capacity(path.len());
     for &p in path {
@@ -1206,27 +1214,27 @@ pub(crate) fn simplify(path: &[Point]) -> Vec<Point> {
 /// A net's chain of segments along one line, which a track moves as one.
 struct Run {
     net: usize,
-    /// The joints it carries.
+    /// The joints a track moves with it.
     joints: Vec<usize>,
     /// The line's coordinate on the axis tracks move it along.
     line: f64,
     /// Where it starts and ends along the line.
     along: [f64; 2],
-    /// Where its ends turn: below zero toward lower lines, above toward higher.
+    /// Which way its ends turn: negative toward lower lines, positive toward higher.
     turn: f64,
-    /// The lines tracks may move it between; one line for a run holding a terminal.
+    /// The lines tracks may move it between; a single line for a run holding a terminal.
     limits: [f64; 2],
 }
 
 impl Run {
-    /// Whether it holds a terminal, so no track moves it.
+    /// Whether its limits allow one line only (it holds a terminal), so no track moves it.
     fn held(&self) -> bool {
         self.limits[0] == self.limits[1]
     }
 }
 
-/// Every net's runs on lines across `axis`: maximal chains of segments along one line through
-/// joints. A stub's end keeps `least` off its terminal.
+/// Every net's runs whose line has a fixed `axis` coordinate: maximal chains of segments along one
+/// line. A stub's end keeps at least `least` from its terminal.
 fn runs(trees: &[Option<Tree>], axis: usize, least: f64) -> Vec<Run> {
     let mut runs = Vec::new();
     for (net, tree) in trees.iter().enumerate() {
@@ -1327,7 +1335,7 @@ mod tests {
         segments(wire).iter().all(|[a, b]| boxes.iter().all(|r| !crosses(*a, *b, r)))
     }
 
-    /// The point next to the terminal at `at` on its wire: the way the wire leaves it.
+    /// The point after the terminal at `at` on its wire, which shows the way the wire leaves it.
     fn leaving(wire: &[Vec<Point>], at: Point) -> Point {
         wire.iter()
             .find_map(|line| match line[..] {
@@ -1338,8 +1346,8 @@ mod tests {
             .expect("the wire ends at the terminal")
     }
 
-    /// Whether the polylines make one tree reaching every terminal: each starts at the first terminal
-    /// or where another ends.
+    /// Whether the polylines make one tree reaching every terminal: each starts at the first
+    /// terminal or where another ends.
     fn one_tree(wire: &[Vec<Point>], terminals: &[Terminal]) -> bool {
         let mut reached = vec![terminals[0].at];
         let mut joined = vec![false; wire.len()];
@@ -1373,7 +1381,8 @@ mod tests {
 
     #[test]
     fn wires_go_around_groups_they_do_not_join() {
-        // A thin group on the straight way between two blocks: through it is shorter, around keeps out.
+        // A thin group lies on the straight path between two blocks: going through is shorter,
+        // going around stays outside it.
         let boxes = [[20.0, 45.0, 40.0, 55.0], [160.0, 45.0, 180.0, 55.0]];
         let group = [90.0, 44.0, 110.0, 56.0];
         let nets = [Net { terminals: vec![on([40.0, 50.0], Side::Right, 0), on([160.0, 50.0], Side::Left, 1)] }];
@@ -1385,19 +1394,19 @@ mod tests {
     }
 
     #[test]
-    fn bends_meeting_on_a_short_run_repeat_no_point() {
+    fn bends_meeting_on_a_short_run_do_not_repeat_points() {
         // An S-bend whose middle run is shorter than two radii: the arcs of its bends meet halfway.
         let wire = finish(&[vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [40.0, 10.0]]], 8.0);
         let line = &wire[0];
-        assert!(line.windows(2).all(|w| manhattan(w[0], w[1]) > EPSILON), "no point twice: {line:?}");
+        assert!(line.windows(2).all(|w| manhattan(w[0], w[1]) > EPSILON), "no repeated point: {line:?}");
         assert_eq!((line[0], line[line.len() - 1]), ([0.0, 0.0], [40.0, 10.0]));
-        // A part ending where another starts still doubles its end: a junction.
+        // A part ending where another starts still repeats its last point: a junction.
         let tree = finish(&[vec![[0.0, 0.0], [10.0, 0.0]], vec![[10.0, 0.0], [10.0, 10.0]]], 8.0);
         assert_eq!(tree[0], [[0.0, 0.0], [10.0, 0.0], [10.0, 0.0]]);
     }
 
     #[test]
-    fn crossing_and_running_along_a_border_cost() {
+    fn crossing_or_running_along_a_group_border_adds_cost() {
         let groups = Groups { boxes: vec![[0.0, 0.0, 100.0, 90.0]], clearance: 2.0 * SPACING };
         assert_eq!(groups.cost([-10.0, 10.0], [10.0, 10.0]), CROSSING * 2.0 * SPACING, "a crossing");
         assert_eq!(groups.cost([10.0, 10.0], [20.0, 10.0]), 0.0, "inside, away from the border");
@@ -1405,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wall_too_long_for_the_window_is_gone_around() {
+    fn a_wall_longer_than_the_search_window_is_routed_around() {
         let boxes = [
             [0.0, 0.0, 20.0, 20.0],
             [200.0, 0.0, 220.0, 20.0],
@@ -1503,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn a_crowded_grid_routes_alike_every_time() {
+    fn a_crowded_grid_routes_the_same_every_time() {
         let mut boxes = Vec::new();
         for row in 0..30 {
             for column in 0..30 {
@@ -1553,7 +1562,7 @@ mod tests {
     }
 
     #[test]
-    fn nets_without_two_terminals_get_nothing() {
+    fn nets_without_two_valid_terminals_get_no_wire() {
         let free = Terminal { at: [0.0, 0.0], side: None, owner: None };
         let nets = [
             Net::default(),

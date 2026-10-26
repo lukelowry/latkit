@@ -1,12 +1,15 @@
 /**
- * Where a run happens, and the one way anything in it is measured. The stage steps every frame
- * itself, a sixtieth of a second apart on its own clock, and each frame waits for the GPU (its work
- * done, its readbacks landed, the pipelines asked for compiled), never for time: a run draws the same
- * frames however fast the device is, so what it counts repeats. A phase is an action, timed from when
- * it starts until everything settled: no view wants a frame, every view is complete, and no tile is
- * loading; work under way that wakes no frame is waited for as it lands. A steady phase acts before
- * each of a number of frames, so each act shows in its own frame, and its CPU and GPU time are per
- * frame. A lost device fails the phase at once, and every wait races a deadline.
+ * The stage a run happens on, and the single way anything in a run is measured.
+ *
+ * The stage steps every frame itself, 1/60 s apart on its own clock. Each frame waits for the GPU
+ * (its work done, its readbacks back, and the requested pipelines compiled), never for time. So a
+ * run draws the same frames however fast the device is, and its work counts repeat.
+ *
+ * A phase is an action, timed from its start until everything settles: no view wants a frame,
+ * every view is complete, and no tile is loading. Work in progress that wakes no frame is awaited
+ * until it finishes. A steady phase acts before each of a set number of frames, so each action
+ * shows in its own frame, and its CPU and GPU times are per frame. A lost device fails the phase at
+ * once, and every wait races a deadline.
  */
 import {
   Data,
@@ -22,42 +25,44 @@ import {
 /** Writes a dataset's rows into a patch, from arrays made beforehand. */
 export type Write = (patch: Patch) => Patch;
 
-/** What a phase cost. */
+/** The cost of a phase. */
 export interface Cost {
   /** Milliseconds from the action until everything settled. */
   ms: number;
-  /** Frames drawn meanwhile. */
+  /** Frames drawn in that time. */
   frames: number;
-  /** Milliseconds every view together took to record a frame on the CPU: median, 95th percentile. */
+  /** CPU milliseconds all views together took to record a frame: the median here, and the 95th
+   * percentile in `cpu95`. */
   cpu: number;
   cpu95: number;
-  /** Milliseconds a frame took on the GPU, median; 0 where the device cannot measure. */
+  /** Median GPU milliseconds per frame, or 0 where the device cannot measure it. */
   gpu: number;
-  /** What the GPU did until everything settled. */
+  /** The GPU work done until everything settled. */
   work: Work;
-  /** Bytes of data pages on the GPU afterwards. */
+  /** Bytes resident on the GPU afterwards: data pages, and each view's per-row data. */
   resident: number;
-  /** Whether it acted every frame, so `cpu` is its time; else `ms` is. */
+  /** Whether the phase acted every frame. If so, `cpu` is its time; otherwise `ms` is. */
   steady: boolean;
 }
 
-/** Milliseconds between stepped frames: a display's sixtieth of a second. */
+/** Milliseconds between stepped frames: 1/60 s, as on a 60 Hz display. */
 const FRAME = 1000 / 60;
-/** The most frames a phase may take to settle: ten seconds of a display's frames. */
+/** Maximum frames a phase may take to settle: 10 s at 60 frames a second. */
 const MOST = 600;
-/** Frames stepped once everything settled, in which nothing should draw. */
+/** Frames stepped after everything settled, in which nothing should draw. */
 const IDLE = 10;
-/** Milliseconds a frame, or work landing, may take: past it, something hangs. */
+/** Maximum milliseconds a frame, or a wait for work to finish, may take. Longer means a hang. */
 const DEADLINE = 30_000;
-/** The longest a phase may take; the runner grows sizes within it. */
+/** Milliseconds a phase should take at most. The runner stops growing a scenario's size once a
+ * phase would exceed it. */
 export const LIMIT = 10_000;
-/** Frames a steady phase takes before it measures. */
+/** Frames a steady phase runs before it starts measuring. */
 export const WARM = 10;
 
 const quantile = (xs: number[], q: number) =>
   xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(q * (xs.length - 1))]! : 0;
 
-/** `work`, or an error naming `what` once `ms` pass. */
+/** Races `work` against a timer that rejects after `ms` with an error naming `what`. */
 export function deadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
@@ -66,7 +71,7 @@ export function deadline<T>(work: Promise<T>, ms: number, what: string): Promise
   return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
-/** What the frames a phase stepped drew. */
+/** The frames a phase drew, and the CPU and GPU times of those measured. */
 interface Drawn {
   frames: number;
   cpu: number[];
@@ -79,15 +84,16 @@ export class Stage {
   /** The scenario's size. */
   readonly size: number;
   readonly views: View[] = [];
-  /** Errors the views told: a mark that does not fit its data fails the run. */
+  /** Errors the views reported. Any error, such as a mark that does not fit its data, fails the
+   * run. */
   readonly errors: string[] = [];
   readonly #data = new Map<string, Data>();
-  /** The stepped frames' clock, milliseconds. */
+  /** The clock of the stepped frames, in milliseconds. */
   #now = performance.now();
 
   constructor(gpu: Gpu, canvases: readonly HTMLCanvasElement[], size: number) {
     [this.gpu, this.canvases, this.size] = [gpu, canvases, size];
-    // Stepped from the start, so no animation frame draws while views load either.
+    // Step from the start, so no animation frame draws while the views load either.
     gpu.step(this.#now);
   }
 
@@ -116,12 +122,13 @@ export class Stage {
       .tables.find((t) => t.name === table)!.rows;
   }
 
-  /** The axis coordinates dataset `name` recorded. */
+  /** The range of axis coordinates dataset `name` recorded, or [0, 1] if none. */
   span(name: string): [number, number] {
     return this.#data.get(name)!.describe().span ?? [0, 1];
   }
 
-  /** Takes each dataset in: latkit's work alone, the arrays made beforehand. */
+  /** Applies each dataset to a new `Data`. The arrays are made beforehand, so this times latkit
+   * alone. */
   ingest(data: Record<string, Write>): Promise<Cost> {
     return this.once(() => {
       for (const [name, write] of Object.entries(data))
@@ -129,7 +136,8 @@ export class Stage {
     });
   }
 
-  /** Opens a view on each canvas and draws `scene`: from nothing to everything drawn. */
+  /** Opens a view on each canvas and draws `scene`, measuring from nothing until everything is
+   * drawn. */
   load(scene: Scene, tiles: Record<string, string> = {}, camera?: Camera): Promise<Cost> {
     const sources = [
       ...this.#data.values(),
@@ -154,12 +162,13 @@ export class Stage {
     for (const view of this.views) view.scene = scene;
   }
 
-  /** Writes a patch into dataset `name`, which every view draws from the next frame. */
+  /** Applies a patch to dataset `name`. Every view draws the change from the next frame. */
   apply(name: string, write: Write): void {
     this.#data.get(name)!.apply(write(new Patch()));
   }
 
-  /** Sends a pointer event at `point`, CSS pixels in the first view, as a person's would arrive. */
+  /** Dispatches a pointer event at `[x, y]`, in CSS pixels in the first view, as a real pointer
+   * would. */
   pointer(type: string, [x, y]: [number, number], buttons = 0): void {
     const canvas = this.canvases[0]!;
     const box = canvas.getBoundingClientRect();
@@ -176,7 +185,7 @@ export class Stage {
     );
   }
 
-  /** Acts once, and measures until everything settled. */
+  /** Performs `act` once and measures until everything settles. */
   once(act: () => unknown): Promise<Cost> {
     return this.#phase(false, async (drawn) => {
       await this.until(Promise.resolve().then(act), drawn, true);
@@ -184,8 +193,9 @@ export class Stage {
     });
   }
 
-  /** `answer`, stepping frames until it comes: what waits on a frame, as a pick or a hover told
-   * does, gets one, and what waits on work landing is waited for. */
+  /** Steps frames until `answer` settles, then returns it. A frame is stepped whenever a view wants
+   * one, as a pending pick or hover event does. Otherwise it waits for work to finish. Throws if
+   * the device is lost, or after `MOST` frames or `DEADLINE` ms. */
   async until<T>(
     answer: Promise<T>,
     drawn: Drawn = { frames: 0, cpu: [], gpu: [] },
@@ -211,7 +221,8 @@ export class Stage {
     return answer;
   }
 
-  /** Calls `act(i)` before each of `count` frames, and measures until everything settled. */
+  /** Calls `act(i)` before each of `count` frames, and measures until everything settles. Frames
+   * after the first `WARM` are measured. */
   steady(count: number, act: (i: number) => void): Promise<Cost> {
     return this.#phase(true, async (drawn) => {
       for (let i = 0; i < count; i++) {
@@ -222,7 +233,8 @@ export class Stage {
     });
   }
 
-  /** Frames drawn over `IDLE` frames stepped once everything settled: none, for views that sleep. */
+  /** Counts the frames drawn in `IDLE` frames stepped after everything settles. Views that sleep
+   * draw none. */
   async idle(): Promise<number> {
     const drawn: Drawn = { frames: 0, cpu: [], gpu: [] };
     await this.#settle(drawn, false);
@@ -253,8 +265,8 @@ export class Stage {
     };
   }
 
-  /** Steps one frame, once the GPU is done with the last, and counts what the views drew in it:
-   * their CPU and GPU time, when `measuring`. */
+  /** Steps one frame and waits for the GPU to finish it. Counts the frame if any view drew, and
+   * when `measuring` records the views' summed CPU and GPU times. */
   async #frame(drawn: Drawn, measuring: boolean): Promise<void> {
     if (this.gpu.lost) throw new Error('the GPU device was lost');
     const before = this.views.map((v) => v.stats.frames);
@@ -274,9 +286,9 @@ export class Stage {
     }
   }
 
-  /** Steps frames until everything settled: no view wants a frame, every view is complete, and no
-   * tile is loading. Work under way that wakes no frame, as a layout or a fetch, is waited for as it
-   * lands. What a once phase draws is `measuring`. */
+  /** Steps frames until everything settles: no view wants a frame, every view is complete, and no
+   * tile is loading. Work in progress that wakes no frame, such as a layout or a fetch, is awaited
+   * until it finishes. `measuring` is true for a once phase, whose every frame is measured. */
   async #settle(drawn: Drawn, measuring: boolean): Promise<void> {
     await deadline(this.gpu.done(), DEADLINE, 'the GPU');
     for (let frames = 0; frames < MOST;) {
@@ -287,14 +299,14 @@ export class Stage {
         continue;
       }
       if (this.views.every((v) => v.complete && !v.stats.tilesLoading)) return;
-      await deadline(this.gpu.landed(), DEADLINE, `${this.#waiting()} landing`);
+      await deadline(this.gpu.landed(), DEADLINE, `waiting on ${this.#waiting()}`);
     }
     throw new Error(
       `still drawing after ${MOST} frames: waiting on ${this.#waiting() || 'nothing'}`,
     );
   }
 
-  /** What the views wait on. */
+  /** Lists what the views are waiting on, including tiles. */
   #waiting(): string {
     const tiles = this.views.some((v) => v.stats.tilesLoading) ? ['tiles'] : [];
     return [...new Set(this.views.flatMap((v) => v.waiting)), ...tiles].join(', ');

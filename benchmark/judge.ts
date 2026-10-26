@@ -1,23 +1,26 @@
 /**
- * What the runs say. Rules that hold on any machine: no errors, nothing drawn idle, no pipeline
- * compiled where it was first used, resident data within its budget, every phase growing no faster
- * than its order, and no more work than the work baseline. Frames are stepped, each waiting for the
- * GPU, so what the data and the frames drawn set (`EXACT`) is held exactly in a phase that acts once
- * and settles, unless fetched data feeds it; the rest, and every count of a phase acting each frame,
- * moves with the frame a job or a fetch lands in, and is held within `STEADY`. Then, on the machine
- * the times baseline was taken on, no phase much slower on its fastest repeat: a stall of the machine
- * slows one repeat, a regression every one.
+ * Judges the runs. These rules hold on any machine: no errors, no frames drawn while idle, no
+ * pipeline compiled at first use, resident data within its budget, no phase growing faster than its
+ * order, and no more work than the work baseline.
+ *
+ * Frames are stepped, each waiting for the GPU. So in a phase that acts once and settles, the
+ * `EXACT` counts, which only the data and the frames drawn set, may not exceed the baseline at all,
+ * unless the scenario fetches its data. Other counts, and every count of a steady phase, vary with
+ * the frame a job or fetch finishes in, so they may reach `STEADY` times the baseline.
+ *
+ * On the machine the times baseline was taken on, no phase's fastest repeat may be much slower than
+ * its baseline. A machine stall slows one repeat, but a regression slows every one.
  */
 import type { Work } from 'latkit';
 import type { Listed, Run } from './page/main.ts';
 
-/** A phase at a size, across repeats: its fastest, and its least work. */
+/** A phase at one size, summarized across repeats: its fastest times and its least work. */
 export interface Summary {
-  /** A steady phase's CPU per frame, else its milliseconds. */
+  /** Milliseconds: CPU time per frame for a steady phase, else the whole phase. */
   time: number;
   gpu: number;
   steady: boolean;
-  /** Frames drawn, median. */
+  /** Median frames drawn. */
   frames: number;
   work: Work & { resident: number };
 }
@@ -33,24 +36,26 @@ export interface Verdict {
   failures: string[];
   notes: string[];
   summaries: By<Summary>;
-  /** The exponent each measure grows by, by scenario and phase. */
+  /** The fitted growth exponent of each measure, by scenario and phase. */
   exponents: Record<string, Record<string, Growth>>;
 }
 
-/** How far a fitted exponent may pass its order: noise, and a change of regime between sizes. */
+/** How far a fitted exponent may exceed its order, allowing for noise and a change of regime
+ * between sizes. */
 const SLACK = 0.2;
-/** Milliseconds a phase acting once may land later than its baseline by: a timer tick, which is
- * 15.6 ms on Windows, so readbacks answer one tick or the next. */
+/** Milliseconds a phase that acts once may finish later than its baseline: one timer tick. A tick
+ * is 15.6 ms on Windows, so a readback comes back on one tick or the next. */
 const TICK = 16;
-/** Bytes an upload counts as at least: a page, 4,096 rows of four bytes. */
+/** Minimum bytes an upload counts as: one page, 4,096 rows of four bytes. */
 const PAGE = 4096 * 4;
-/** Below these a cost counts as these: too small to fit an exponent to, or to call slower. A frame's
- * CPU time is read on a page's clock, which steps by 0.1 ms, so it counts from five steps; a phase
- * acting once lands on a tick. */
+/** Floors for costs too small to fit an exponent to or to call slower. Smaller costs count as
+ * these. A frame's CPU time comes from the page's clock, which steps by 0.1 ms, so its floor is
+ * five steps. A phase that acts once finishes on a timer tick. */
 const FLOOR = { frame: 0.5, action: TICK, bytes: 64 * 1024 };
-/** How much slower than the baseline the fastest repeat may be. */
+/** Factor by which the fastest repeat may be slower than the baseline. */
 const SLOWER = 1.25;
-/** Work the data and the frames drawn alone set, which repeats exactly once a phase settles. */
+/** Work counts that only the data and the frames drawn set. They repeat exactly once a phase
+ * settles. */
 const EXACT = new Set([
   'uploaded',
   'uploads',
@@ -61,10 +66,10 @@ const EXACT = new Set([
   'late',
   'resident',
 ]);
-/** How much more of the rest a phase may do than the baseline: the frame a job or a fetch lands in
- * moves label placements and tiles by up to about 1.7×, and a per-frame blowup by far more. */
+/** Factor by which other work counts may exceed the baseline. The frame a job or fetch finishes in
+ * changes label placements and tiles by up to about 1.7×. A per-frame blowup changes far more. */
 const STEADY = 2;
-/** Below these, work counts as these when it is held within `STEADY`: bytes, and other counts. */
+/** Minimum baseline values for work held within `STEADY`: one for byte counts, one for the rest. */
 const WORK_FLOOR = { bytes: 64 * 1024, count: 8 };
 const BYTES = new Set(['uploaded', 'written', 'resident']);
 
@@ -73,7 +78,7 @@ const median = (xs: number[]) =>
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 const mib = (n: number) => `${(n / 2 ** 20).toFixed(1)} MiB`;
 
-/** The least-squares slope of log cost against log size: the exponent the cost grows by. */
+/** The least-squares slope of log cost against log size, which is the cost's growth exponent. */
 function slope(points: (readonly [number, number])[]): number {
   const xs = points.map(([n]) => Math.log(n));
   const ys = points.map(([, c]) => Math.log(c));
@@ -120,7 +125,7 @@ export function judge(
     for (const [phase, { work }] of Object.entries(r.phases))
       if (work.late)
         failures.push(
-          `${at}, ${phase}: ${work.late} pipelines compiled where first used, not asked for ahead`,
+          `${at}, ${phase}: ${work.late} pipelines compiled at first use instead of ahead of time`,
         );
     const resident = Math.max(...Object.values(r.phases).map((c) => c.resident));
     if (resident > r.budget)
@@ -146,7 +151,7 @@ export function judge(
       const fit: Growth = {
         time: grows((s) => s.time, steady ? FLOOR.frame : FLOOR.action),
         gpu: grows((s) => s.gpu, FLOOR.frame),
-        // Pages are what changes upload: below a page an upload, bytes count as that.
+        // Changes upload whole pages, so each upload counts as at least a page of bytes.
         uploaded: grows((s) => Math.max(s.work.uploaded, s.work.uploads * PAGE), FLOOR.bytes),
         resident: grows((s) => s.work.resident, FLOOR.bytes),
       };
@@ -159,7 +164,7 @@ export function judge(
       };
       past('time', fit.time, order.time);
       past('uploaded bytes', fit.uploaded, order.bytes);
-      // What stays resident is the data's footprint, set by loading; later phases only add to it.
+      // Resident bytes are the data's footprint, which loading sets. Later phases only add to it.
       if (phase === 'load') past('resident bytes', fit.resident, order.resident ?? order.bytes);
       for (const n of at) {
         const now = bySize[n]![phase]!;
@@ -171,7 +176,7 @@ export function judge(
           const exact = !now.steady && !scenario.fetches && EXACT.has(k);
           const most = exact ? was : Math.max(was, floor) * STEADY;
           if (is > most) failures.push(`${where}: ${k} ${is}, was ${was}`);
-          else if (is < was) notes.push(`${where}: ${k} ${is}, was ${was}; --update keeps it`);
+          else if (is < was) notes.push(`${where}: ${k} ${is}, was ${was}; --update records it`);
         }
         const then = sameMachine ? base.times!.times[scenario.name]?.[n]?.[phase] : undefined;
         const floor = now.steady ? FLOOR.frame : TICK;
@@ -179,7 +184,7 @@ export function judge(
           failures.push(`${where}: ${now.time.toFixed(2)} ms, was ${then.time.toFixed(2)}`);
         else if (then && now.time < then.time / SLOWER)
           notes.push(
-            `${where}: ${now.time.toFixed(2)} ms, was ${then.time.toFixed(2)}; --update keeps it`,
+            `${where}: ${now.time.toFixed(2)} ms, was ${then.time.toFixed(2)}; --update records it`,
           );
       }
     }
@@ -200,8 +205,8 @@ const map = <T>(v: Verdict, read: (s: Summary) => T): By<T> =>
     ]),
   );
 
-/** `run` laid over `base`, scenario by size: each size this run measured replaces the base's, and
- * the rest stays. */
+/** Merges `run` into `base`. Each scenario size this run measured replaces the base's entry, and
+ * the rest is kept. */
 function over<T>(run: By<T>, base: By<T> = {}): By<T> {
   const out = structuredClone(base);
   for (const [scenario, bySize] of Object.entries(run))
@@ -209,13 +214,14 @@ function over<T>(run: By<T>, base: By<T> = {}): By<T> {
   return out;
 }
 
-/** The work baseline: this run's laid over `base`. */
+/** The new work baseline: this run's work merged into `base`. */
 export function work(v: Verdict, base?: WorkBaseline): WorkBaseline {
   const measured = map(v, (s) => s.work);
   return over(measured, base);
 }
 
-/** The times baseline of `machine`: this run's laid over `base`, where `base` was taken on it. */
+/** The new times baseline for `machine`: this run's times merged into `base` if `base` was taken
+ * on the same machine, else this run's times alone. */
 export function times(v: Verdict, machine: string, base?: TimeBaseline): TimeBaseline {
   const measured = map(v, (s) => ({ time: s.time, gpu: s.gpu }));
   return { machine, times: over(measured, base?.machine === machine ? base.times : undefined) };

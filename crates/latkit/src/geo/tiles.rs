@@ -1,35 +1,35 @@
-//! Vector tiles as data: where tiles come from, and a tile decoded into the rows of the tables marks
-//! draw from it, each with its shapes.
+//! Vector tiles as data: tile URL templates, and decoding a tile into table rows with their shapes.
 
 use super::mvt::{self, Kind, Property, Shape};
 use crate::data::{Ids, Name, Patch, Table, Values};
 use crate::host::Shaping;
 use crate::tiles::TileKey;
 
-/// Tiles fetched from a URL template, from a TileJSON document or given as one.
+/// A tile URL template with its zoom range and bounds, read from TileJSON or given directly.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Template {
     pub(crate) url: String,
     pub(crate) min_zoom: u8,
     pub(crate) max_zoom: u8,
-    /// West, south, east, north.
+    /// West, south, east, north, in degrees.
     pub(crate) bounds: [f64; 4],
-    /// Whether rows count from the south, as TMS has them.
+    /// Whether tile rows count from the south (the TMS scheme).
     pub(crate) tms: bool,
 }
 
-/// The whole earth web mercator reaches.
+/// Bounds of the web mercator world: west, south, east, north, in degrees.
 pub(crate) const WORLD: [f64; 4] = [-180.0, -85.051_128_78, 180.0, 85.051_128_78];
 
 impl Template {
-    /// The template `url`, its zooms and bounds as most sources serve them.
+    /// Template `url` with common defaults: zooms 0 to 14, world bounds, and XYZ row order.
     pub(crate) fn of(url: &str) -> Template {
         Template { url: url.to_owned(), min_zoom: 0, max_zoom: 14, bounds: WORLD, tms: false }
     }
 
-    /// The TileJSON document `bytes`, found at `base`.
+    /// Reads the TileJSON document `bytes` fetched from `base`, resolving its first tile URL
+    /// against `base`. Errors if it is not TileJSON, names no tiles, or names image tiles.
     pub(crate) fn tilejson(bytes: &[u8], base: &str) -> Result<Template, String> {
-        /// What a TileJSON document says that tiles draw by.
+        /// The TileJSON members read.
         #[derive(serde::Deserialize)]
         struct TileJson {
             #[serde(default)]
@@ -42,11 +42,11 @@ impl Template {
         }
         let text = std::str::from_utf8(bytes).map_err(|e| format!("{base} is not TileJSON: {e}"))?;
         let json = crate::from_json::<TileJson>(text).map_err(|e| format!("{base} is not TileJSON: {e}"))?;
-        let template = json.tiles.first().ok_or_else(|| format!("the TileJSON at {base} names no tiles"))?;
+        let template = json.tiles.first().ok_or_else(|| format!("the TileJSON at {base} lists no tile URLs"))?;
         if let Some(format) = json.format.as_deref()
             && ["png", "jpg", "jpeg", "webp", "avif"].contains(&format)
         {
-            return Err(format!("the TileJSON at {base} names image tiles; only vector tiles draw"));
+            return Err(format!("the TileJSON at {base} has image tiles; only vector tiles are supported"));
         }
         let zoom = |z: Option<f64>, or: u8| z.filter(|z| *z >= 0.0).map_or(or, |z| z.min(24.0) as u8);
         let bounds = json.bounds.as_deref().and_then(|b| <[f64; 4]>::try_from(b).ok()).unwrap_or(WORLD);
@@ -66,8 +66,8 @@ impl Template {
     }
 }
 
-/// A table a tile decodes into: its layer's features of one kind, as table `table`, and the shapes
-/// its marks draw of its geometry.
+/// A table decoded from each tile: the features of one `kind` in layer `layer`, as table `table`.
+/// `shapes` lists the derived shape fields its marks draw.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Decoded {
     pub(crate) layer: String,
@@ -76,21 +76,23 @@ pub(crate) struct Decoded {
     pub(crate) shapes: Vec<Shaping>,
 }
 
-/// Features a tile's table numbers at most; ids beyond its place in the tile never collide.
+/// Most rows one tile adds to a table; further rows are dropped. Row ids are the tile's id times
+/// this plus the row's index, so ids from different tiles never collide.
 pub(crate) const FEATURES: u64 = 1 << 20;
 
-/// The field a tile's rows hold their geometry as.
+/// Name of the field holding a tile row's geometry.
 const GEOMETRY: &str = "geometry";
 
-/// Whether field `name` of a tile's table holds its rows' shapes, which no property is read as.
+/// Whether `name` is a derived shape field of a tile's table. Properties of that name are skipped.
 pub(crate) fn shapes_field(name: &str) -> bool {
     [Shaping::Triangles { earth: true }, Shaping::Path].iter().any(|s| *s.field_of(GEOMETRY) == *name)
 }
 
-/// Tile `key`'s rows as a patch of every table of `tables`: each feature of the table's layer and
-/// kind a row (a multi-point a row per point), its geometry field `geometry`, the fields its shapes
-/// are written as, and its properties fields. A row's id is the tile's place along the Hilbert curve
-/// times [`FEATURES`], plus its own place among the table's rows. `None` when the bytes are no tile.
+/// Decodes tile `key` from `bytes`, optionally gzip-compressed, into a patch setting each table of
+/// `tables`. Each feature of the table's layer and kind becomes a row (a multi-point, a row per
+/// point) with field `geometry`, its derived shape fields, and a field per property. A row's id is
+/// the tile's Hilbert curve id times [`FEATURES`], plus the row's index. `None` if `bytes` are not
+/// a tile.
 pub(crate) fn decode(bytes: &[u8], key: TileKey, tables: &[Decoded]) -> Option<Patch> {
     let bytes = super::gunzipped(bytes).ok()?;
     let layers = mvt::decode(&bytes, key)?;
@@ -161,8 +163,8 @@ pub(crate) fn decode(bytes: &[u8], key: TileKey, tables: &[Decoded]) -> Option<P
     Some(patch)
 }
 
-/// A property's values as a field: numbers where every value present is one, booleans likewise,
-/// texts otherwise.
+/// Converts a property's values into a field: numbers if every present value is a number, booleans
+/// if every one is a boolean, and text otherwise.
 fn field(values: &[Option<&Property>]) -> Values {
     let present = || values.iter().flatten();
     if present().all(|v| matches!(v, Property::Number(_))) {
@@ -182,7 +184,7 @@ fn field(values: &[Option<&Property>]) -> Values {
     values.iter().map(|v| v.map(text)).collect::<Vec<Option<String>>>().into()
 }
 
-/// A property written as text.
+/// Formats a property as text.
 pub(crate) fn text(property: &Property) -> String {
     match property {
         Property::Text(t) => t.clone(),
@@ -213,7 +215,7 @@ mod tests {
         let id = crate::geo::pmtiles::tile_id(key) * FEATURES;
         assert_eq!(water.get(id, "name"), Some(Value::Text("bay".into())), "stable ids");
         assert!(matches!(water.get(id, "geometry"), Some(Value::Polygons(_))));
-        // Its shapes, the triangles areas draw: a label point and a triangle at least.
+        // The derived triangles field: a label point and at least one triangle.
         let triangles = water.get(id, "geometry.triangles");
         assert!(matches!(triangles, Some(Value::Path(points)) if points.len() >= 4));
         let other = [Decoded { layer: "water".into(), kind: Kind::Lines, table: "water".into(), shapes: Vec::new() }];
@@ -230,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn tile_bounds_meet_their_parents() {
+    fn tile_bounds_are_mercator_and_children_map_back_to_parents() {
         let key = TileKey { z: 1, x: 1, y: 0 };
         let [w, s, e, n] = key.bounds();
         assert_eq!([w, s, e], [0.0, 0.0, 180.0]);

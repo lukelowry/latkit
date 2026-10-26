@@ -1,6 +1,6 @@
-//! Reading datasets and patches: latkit's bytes, GeoJSON, and JSON, as their first bytes say. The
-//! JSON format is documented on [`Patch::read`], its forms in `forms.rs`; slices of binary files are
-//! fetched through a host.
+//! Reading datasets and patches from latkit's binary format, GeoJSON, or JSON, detected from the
+//! first bytes. The JSON format is documented on [`Patch::read`]; its serde forms are in
+//! `forms.rs`. Slices of binary files are fetched through a host.
 
 use serde::Deserialize;
 
@@ -13,24 +13,25 @@ use super::source::Data;
 use crate::resource::{Fetch, Request};
 use crate::{Error, Result};
 
-/// How [`Data::read`] and [`Patch::read`] read what they are given: the name a dataset takes, and
-/// where a JSON document lies, so its slices of files are fetched through `host` relative to it.
+/// Options for [`Data::read`] and [`Patch::read`]: the dataset's name, and the document's location
+/// and the host that fetches the file slices it references.
 #[derive(Clone, Copy, Default)]
 pub struct Reading<'a> {
-    /// The name the dataset takes: GeoJSON needs one; latkit's bytes and documents name their own
-    /// unless given one.
+    /// The dataset's name. Required for GeoJSON. latkit's bytes and JSON documents carry their own
+    /// name, which this overrides when set.
     pub name: Option<&'a str>,
-    /// The document's own path or URL: a slice's file is relative to it, or as it is where it is
-    /// empty or the file's is absolute.
+    /// The document's own path or URL. Slice file paths resolve in its directory, unless it is
+    /// empty or the file path is absolute.
     pub base: &'a str,
-    /// What fetches a document's slices of files.
+    /// Fetches the file slices a document references. Required when it references any.
     pub host: Option<&'a dyn Fetch>,
 }
 
 impl Patch {
-    /// The patch `bytes` hold: latkit's, one frame as [`Patch::to_bytes`] writes it, or its JSON,
-    /// what any language writes without latkit. The JSON is a list of the changes [`Patch`]'s methods
-    /// make, each named by its method with its parameters by name.
+    /// Reads a patch from `bytes`: either latkit's binary format, one frame as
+    /// [`Patch::to_bytes`] writes it, or JSON, which any language can write without latkit. The
+    /// JSON is a list of changes, each an object keyed by the [`Patch`] method that makes it, with
+    /// that method's parameters by name.
     ///
     /// ```json
     /// [
@@ -41,18 +42,23 @@ impl Patch {
     /// ]
     /// ```
     ///
-    /// - `replace` and `set` take `{table, ids, fields}`, `remove` `{table, ids}`, `append` `{table,
-    ///   at, fields, ids?}`, `forget` `{before}`, `axis` `{name, unit}`, and `frames` `{table, field,
-    ///   level?, first, at, values}`, as [`Patch::frames`] takes them.
-    /// - `ids` is a count naming rows `0..n`, or numbers or texts; `null` leaves a reference unwired.
-    /// - A field is an array of one kind of value, as [`Values`](crate::Values) takes them; `{"reference": table,
-    ///   "ids": ids}`; or a slice of a binary file, `{"file", "dtype", "offset", "count"}`: `count`
-    ///   values from byte `offset` (0 unless given) of dtype `f32le`, `f64le`, `i32le`, `u32le`,
-    ///   `u64le`, `u8` (numbers), or `bool` (a byte each, nonzero true).
-    /// - `append`'s `at` is one axis coordinate or several, as [`Patch::append`] takes them.
-    /// - An error names the path to what could not be read, such as `[2].set.fields.x`.
+    /// - `replace` and `set` take `{table, ids, fields}`; `remove` takes `{table, ids}`; `append`
+    ///   takes `{table, at, fields, ids?}`; `forget` takes `{before}`; `axis` takes
+    ///   `{name, unit}`; and `frames` takes `{table, field, level?, first, at, values}`, as
+    ///   [`Patch::frames`] does.
+    /// - `ids` is `{"count": n}` for rows `0..n`, or a list of numbers or texts; `null` leaves a
+    ///   reference unwired.
+    /// - A field is an array of one kind of value, as [`Values`](crate::Values) accepts;
+    ///   `{"reference": table, "ids": ids}`; or a slice of a binary file,
+    ///   `{"file", "dtype", "offset", "count"}`: `count` values starting at byte `offset`
+    ///   (default 0), with dtype `f32le`, `f64le`, `i32le`, `u32le`, `u64le`, `u8` (all read as
+    ///   numbers), or `bool` (one byte each, nonzero meaning true).
+    /// - `append`'s `at` is one axis coordinate or a list, as [`Patch::append`] takes.
+    /// - Errors name the path to the part that could not be read, such as `[2].set.fields.x`.
     ///
-    /// Slices are fetched through the reading's host, all at once, relative to its base.
+    /// Slices are fetched through `reading.host`, all requests issued together, with paths
+    /// relative to `reading.base`. Slices with no host are an
+    /// [`Error::Unsupported`](crate::Error::Unsupported).
     ///
     /// ```no_run
     /// # async fn example(host: &impl latkit::resource::Fetch) -> latkit::Result<()> {
@@ -65,23 +71,23 @@ impl Patch {
         if bytes.starts_with(b"LATK") {
             return Patch::from_bytes(bytes);
         }
-        let ops: Vec<OpForm> = crate::from_json(text(bytes, "a patch is latkit's bytes or JSON")?)?;
+        let ops: Vec<OpForm> = crate::from_json(text(bytes, "a patch must be latkit's bytes or JSON")?)?;
         build(ops, reading).await
     }
 }
 
 impl Data {
-    /// The dataset `bytes` hold, as their first bytes say:
+    /// Reads a dataset from `bytes`, detecting the format from the first bytes:
     ///
-    /// - latkit's own, as [`Snapshot::to_bytes`] writes them;
-    /// - GeoJSON, gzip-compressed or not: its features become rows of tables `points`, `lines`, and
-    ///   `polygons` by their geometry, each with its geometry as field `geometry` and its properties
-    ///   as fields;
-    /// - or its JSON document, `{"name": ..., "patch": [...]}`: its name and the patch that builds it,
-    ///   read as [`Patch::read`] reads one.
+    /// - latkit's binary format, as [`Snapshot::to_bytes`] writes it;
+    /// - GeoJSON, gzip-compressed or not: features become rows of tables `points`, `lines`, and
+    ///   `polygons` by geometry type, with the geometry in field `geometry` and each property as a
+    ///   field;
+    /// - a JSON document `{"name": ..., "patch": [...]}`: the dataset's name and the patch that
+    ///   builds it, read as [`Patch::read`] reads one.
     ///
-    /// The reading's name names the dataset, as GeoJSON needs; latkit's bytes and documents name their
-    /// own unless given one.
+    /// `reading.name` names the dataset and is required for GeoJSON. The other formats carry their
+    /// own name, which `reading.name` overrides when set.
     ///
     /// ```
     /// # use latkit::{Data, Reading};
@@ -97,13 +103,13 @@ impl Data {
         let read = if bytes.starts_with(b"LATK") {
             Snapshot::from_bytes(bytes)?
         } else if geojson(bytes) {
-            let name = reading.name.ok_or_else(|| Error::invalid("GeoJSON names its dataset").at("name"))?;
+            let name = reading.name.ok_or_else(|| Error::invalid("GeoJSON needs a dataset name").at("name"))?;
             return crate::geo::geojson(name, bytes).map(Data::from);
         } else {
             let form: DataForm =
-                crate::from_json(text(bytes, "a dataset is latkit's bytes, GeoJSON, or its JSON document")?)?;
+                crate::from_json(text(bytes, "a dataset must be latkit's bytes, GeoJSON, or a JSON document")?)?;
             if form.name.is_empty() {
-                return Err(Error::invalid("a dataset is named").at("name"));
+                return Err(Error::invalid("a dataset needs a name").at("name"));
             }
             let patch = build(form.patch, reading).await.map_err(|e| e.at("patch"))?;
             Snapshot::new(form.name).applied(patch)?
@@ -115,8 +121,8 @@ impl Data {
     }
 }
 
-/// Whether `bytes` hold GeoJSON rather than latkit's bytes or a dataset's document: gzip-compressed,
-/// or a JSON object whose first member is not one of a document's, `name` or `patch`.
+/// Whether `bytes` look like GeoJSON rather than latkit's binary format or a dataset document:
+/// gzip-compressed, or a JSON object whose first key is neither `name` nor `patch`.
 pub(crate) fn geojson(bytes: &[u8]) -> bool {
     if bytes.starts_with(&[0x1f, 0x8b]) {
         return true;
@@ -127,13 +133,18 @@ pub(crate) fn geojson(bytes: &[u8]) -> bool {
     key != b"name" && key != b"patch"
 }
 
-/// `bytes` as UTF-8 text, or an error saying what they should be.
+/// `bytes` as JSON text: UTF-8 that opens an object or an array. Anything else, such as an HTML
+/// page served in place of a missing file, is an error stating the `expected` format.
 fn text<'a>(bytes: &'a [u8], expected: &'static str) -> Result<&'a str> {
-    std::str::from_utf8(bytes).map_err(|_| Error::invalid(expected))
+    let text = std::str::from_utf8(bytes).map_err(|_| Error::invalid(expected))?;
+    match text.trim_start().as_bytes().first() {
+        Some(b'{' | b'[') => Ok(text),
+        _ => Err(Error::invalid(expected)),
+    }
 }
 
-/// Patches by dataset name, in the order written: what one step of a stream of changes carries, as
-/// JSON `{"grid": [...], "weather": [...]}`, each patch in [`Patch::read`]'s form.
+/// Patches keyed by dataset name, in the order written, such as one message of a stream of
+/// changes: JSON `{"grid": [...], "weather": [...]}`, each patch in [`Patch::read`]'s JSON form.
 #[derive(Default, Deserialize)]
 pub struct Patches(Ordered<Vec<OpForm>>);
 
@@ -150,8 +161,8 @@ impl schemars::JsonSchema for Patches {
 }
 
 impl Patches {
-    /// Each dataset's patch, in order, their slices fetched through the reading's host relative to its
-    /// base.
+    /// Builds each dataset's patch, in order, fetching file slices through `reading.host` relative
+    /// to `reading.base`.
     pub async fn read(self, reading: Reading<'_>) -> Result<Vec<(Name, Patch)>> {
         let mut patches = Vec::with_capacity(self.0.0.len());
         for (name, ops) in self.0.0 {
@@ -162,8 +173,8 @@ impl Patches {
     }
 }
 
-/// The patch `ops` make: their slices of files fetched through the reading's host at once, relative
-/// to its base, then each change built in order.
+/// Builds the patch for `ops`. Issues every file slice request through `reading.host` before
+/// awaiting any, relative to `reading.base`, then builds each change in order.
 async fn build(mut ops: Vec<OpForm>, reading: Reading<'_>) -> Result<Patch> {
     let mut slices: Vec<&mut Column> = ops
         .iter_mut()
@@ -180,7 +191,7 @@ async fn build(mut ops: Vec<OpForm>, reading: Reading<'_>) -> Result<Patch> {
             })
             .collect::<Result<Vec<_>>>()?,
         None if slices.is_empty() => Vec::new(),
-        None => return Err(Error::Unsupported("a document's slices of files are fetched through a host".into())),
+        None => return Err(Error::Unsupported("fetching a document's file slices needs a host".into())),
     };
     for (column, bytes) in slices.iter_mut().zip(fetching) {
         let Column::Slice(slice) = &**column else { unreachable!("slices only") };
@@ -198,7 +209,7 @@ mod tests {
     use super::*;
     use crate::{Kind, Pending, Row, Value};
 
-    /// A host fetching from files in memory, and counting what it fetched.
+    /// A host serving files from memory and recording each request.
     #[derive(Default)]
     struct Files(HashMap<String, Vec<u8>>, std::sync::Mutex<Vec<Request>>);
 
@@ -243,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn slices_fetch_at_once_relative_to_the_document_and_append_frames() {
+    fn slices_fetch_together_relative_to_the_document_and_append_frames() {
         let floats: Vec<u8> = [9_f32, 1.0, 2.0, 3.0, 4.0].into_iter().flat_map(f32::to_le_bytes).collect();
         let host = Files([("docs/v.f32".to_owned(), floats)].into(), std::sync::Mutex::default());
         let json = r#"{"name": "grid", "patch": [
@@ -261,18 +272,24 @@ mod tests {
     }
 
     #[test]
-    fn what_bytes_hold_says_how_they_read() {
+    fn the_format_is_detected_from_the_first_bytes() {
         let bytes = br#"{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}}"#;
         assert!(geojson(bytes) && geojson(b" {\"features\": []}") && geojson(&[0x1f, 0x8b, 8]));
         assert!(!geojson(br#"{"name": "grid", "patch": []}"#) && !geojson(b"[]") && !geojson(b"LATK"));
         let named = |name| Reading { name, ..Reading::default() };
         let error = pollster::block_on(Data::read(bytes, named(None))).unwrap_err();
-        assert_eq!(error.to_string(), "name: GeoJSON names its dataset");
+        assert_eq!(error.to_string(), "name: GeoJSON needs a dataset name");
         let read = pollster::block_on(Data::read(bytes, named(Some("city")))).unwrap();
         assert_eq!(read.name().as_str(), "city");
         let renamed = pollster::block_on(Data::read(&read.snapshot().to_bytes(), named(Some("town")))).unwrap();
-        assert_eq!(renamed.snapshot().table("points").map(crate::Table::len), Some(1), "its tables, renamed");
+        assert_eq!(renamed.snapshot().table("points").map(crate::Table::len), Some(1), "renaming keeps the tables");
         assert_eq!(renamed.name().as_str(), "town");
+        // A page served in place of a missing file is none of them, and the error says what is read.
+        let page = b"<!doctype html><html></html>";
+        let error = pollster::block_on(Data::read(page, named(None))).unwrap_err().to_string();
+        assert_eq!(error, "input: a dataset must be latkit's bytes, GeoJSON, or a JSON document");
+        let error = pollster::block_on(Patch::read(page, Reading::default())).map(|_| ()).unwrap_err().to_string();
+        assert_eq!(error, "input: a patch must be latkit's bytes or JSON");
     }
 
     #[test]
@@ -296,7 +313,7 @@ mod tests {
             .contains("dtype")
         );
         let missing = r#"[{"replace": {"table": "Bus", "ids": {"count": 1}, "fields": {"x": {"file": "f.bin", "dtype": "f64le", "count": 1}}}}]"#;
-        assert_eq!(error(missing), "io: f.bin: 0 bytes of the slice's 8");
+        assert_eq!(error(missing), "io: f.bin: read 0 of the slice's 8 bytes");
         let hostless = pollster::block_on(Patch::read(missing.as_bytes(), Reading::default()));
         assert!(matches!(hostless, Err(Error::Unsupported(_))), "a slice needs a host to fetch it");
         let invalid = read_data(

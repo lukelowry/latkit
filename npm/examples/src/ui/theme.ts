@@ -1,6 +1,6 @@
 ﻿import type { Scene } from 'latkit';
 
-/** Default canvas colors; examples only override what they demonstrate. */
+/** Default canvas colors. Examples override only the colors they demonstrate. */
 export const theme = {
   base: 'dark',
   background: '#101214',

@@ -1,6 +1,6 @@
-//! Groups: a diagram's vertex mark whose rows contain rows draws each as a container around its
-//! members, padded and with its title's header on top, the same at every zoom; lit, it glows about
-//! its border and hides nothing it holds.
+//! Groups: a diagram vertex mark whose rows contain other rows draws each row as a padded container
+//! around its members, with a title header on top. It scales only with the zoom. When lit, it glows
+//! around its border and hides none of its members.
 
 #![cfg(feature = "gpu")]
 
@@ -11,7 +11,7 @@ use latkit::{Camera, Color, Data, Edges, Ids, Patch, Scene, Table, Theme, Vertic
 
 const C: u32 = SIZE / 2;
 
-/// Two nodes in area 1 and one outside it, linked in a chain; y runs down.
+/// Two nodes in area 1 and one outside it, linked in a chain. Y points down.
 fn graph() -> Data {
     let data = Data::new("graph");
     data.apply(
@@ -54,11 +54,11 @@ fn blue(pixels: &[[u8; 4]], x: u32, y: u32) -> bool {
 }
 
 #[test]
-fn groups_stand_around_their_members() {
+fn groups_enclose_their_members() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, 0.0);
     let pixels = frame(&gpu, &mut view);
-    // Members span −19…19 across and −4…4 down; the group pads them by 10 units.
+    // Members span −19…19 across and −4…4 down. The group pads them by 10 units.
     assert!(blue(&pixels, C - 27, C) && blue(&pixels, C + 27, C) && blue(&pixels, C, C - 12), "around the members");
     assert!(!blue(&pixels, C - 31, C) && !blue(&pixels, C + 31, C) && !blue(&pixels, C, C + 16), "and no further");
     assert!(at(&pixels, C - 15, C)[0] > 120, "members draw over it");
@@ -66,11 +66,11 @@ fn groups_stand_around_their_members() {
 }
 
 #[test]
-fn a_lit_group_glows_about_its_border_and_hides_nothing() {
+fn a_lit_group_glows_around_its_border_and_hides_nothing() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, 0.0);
     frame(&gpu, &mut view);
-    // The pointer over the group's padding, away from its members: the group lights.
+    // Hovering the group's padding, away from its members, lights the group.
     let point = [C as f32 - 26.0, C as f32 + 12.0];
     let device = latkit::Device::Mouse;
     view.input(&latkit::Input::Move { pointer: 1, point, modifiers: latkit::Modifiers::default(), device }, 0.0);
@@ -85,9 +85,9 @@ fn a_lit_group_glows_about_its_border_and_hides_nothing() {
 }
 
 #[test]
-fn groups_scale_with_the_zoom_and_nothing_else() {
+fn groups_scale_only_with_the_zoom() {
     let Some(gpu) = gpu() else { return };
-    // At twice the zoom the container is twice as wide: the sheet is one fixed picture.
+    // At twice the zoom the container is twice as wide, since the sheet scales as one picture.
     let mut view = view(&gpu, 1.0);
     let pixels = frame(&gpu, &mut view);
     assert!(blue(&pixels, C - 56, C) && blue(&pixels, C + 56, C), "twice as far out");

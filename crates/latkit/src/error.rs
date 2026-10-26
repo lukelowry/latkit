@@ -7,30 +7,30 @@ use crate::Name;
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// An input does not fit what it describes; `path` names the part, such as `marks[2].vertices.color`.
+    /// An input is invalid. `path` names the invalid part, such as `marks[2].vertices.color`.
     #[error("{path}: {reason}")]
     Invalid {
-        /// Where in the input the problem is.
+        /// Location of the problem in the input.
         path: Path,
-        /// What is wrong there.
+        /// Why that part is invalid.
         reason: Cow<'static, str>,
     },
-    /// The platform or device cannot do what was asked.
+    /// The platform or device does not support the request.
     #[error("unsupported: {0}")]
     Unsupported(Cow<'static, str>),
     /// A budget or device limit would be exceeded.
     #[error("over limit: {0}")]
     Limit(Cow<'static, str>),
-    /// Reading or writing external bytes failed: a fetch, a file, a worker, an encoder.
+    /// Reading or writing external bytes failed, such as a fetch, file, worker, or encoder.
     #[error("io: {0}")]
     Io(Cow<'static, str>),
     /// The operation did not complete before its deadline.
     #[error("operation timed out")]
     Timeout,
-    /// The GPU device was lost; create a new `Gpu`.
+    /// The GPU device was lost. Create a new `Gpu`.
     #[error("GPU device lost")]
     DeviceLost,
-    /// The owner of pending work was destroyed before it could answer.
+    /// The owner of pending work was dropped before the work finished.
     #[error("operation cancelled")]
     Cancelled,
 }
@@ -58,7 +58,7 @@ impl Error {
         }
     }
 
-    /// Prefixes the path of an [`Error::Invalid`] with `step`; other errors pass through.
+    /// Prefixes the path of an [`Error::Invalid`] with `step`. Returns other errors unchanged.
     #[must_use]
     pub fn at(self, step: impl Into<Step>) -> Error {
         match self {
@@ -71,7 +71,7 @@ impl Error {
     }
 }
 
-/// The error as `{ code, message, path? }`: the shape the npm package's `LatkitError` takes.
+/// Serializes as `{ code, message, path? }`, the shape of the npm package's `LatkitError`.
 impl serde::Serialize for Error {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
@@ -85,7 +85,7 @@ impl serde::Serialize for Error {
     }
 }
 
-/// The error as it serializes: a failure, as plain data.
+/// Schema of the serialized error, named `Failure`.
 impl schemars::JsonSchema for Error {
     fn schema_name() -> Cow<'static, str> {
         "Failure".into()
@@ -109,7 +109,7 @@ impl schemars::JsonSchema for Error {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Path(pub Vec<Step>);
 
-/// One step of a [`Path`]: a named part or an index.
+/// One step of a [`Path`]: a named part or a list index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     /// A named part, such as a table, field, or option.

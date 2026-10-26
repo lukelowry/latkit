@@ -1,11 +1,13 @@
 /**
- * A grid at scale over the earth. Choose a synthetic grid, from WECC 240-bus to ACTIVSg70k, a
- * continent's grid of two million buses built in the page, or a lattice of up to a million buses,
- * and the map beneath it: coasts and borders, Natural Earth's states colored by the grid's figures,
- * or OpenStreetMap's planet as vector tiles. Play a simulated fault and watch the machines' speeds
- * swing; turn the globe at noon or now; find a bus by name; hover or click anything to inspect it.
- * The panels below change how buses, lines, and labels draw, how focus and comets look, and how the
- * view answers the pointer and the keys.
+ * A large power grid drawn over the earth. Choose a grid: a synthetic case from WECC 240-bus to
+ * ACTIVSg70k, a two-million-bus continental grid built in the page, or a lattice of up to a million
+ * buses. Choose the map beneath it: coasts and borders, Natural Earth's states colored by the
+ * grid's statistics, or OpenStreetMap's planet as vector tiles.
+ *
+ * Play a simulated fault and watch the machine speeds swing. Turn the globe, with daylight at noon
+ * or now. Find a bus by name, and hover or click anything to inspect it. The other panels change
+ * how buses, lines, and labels draw, how focus and comets look, and how the view responds to the
+ * pointer and keys.
  */
 import {
   Patch,
@@ -41,7 +43,7 @@ import { lattice } from './lattice.js';
 import { LOOK, MAPS, type Loaded, type MapChoice } from './maps.js';
 import { STATE_FIELDS, joinStates, type Joined, type StateField } from './states.js';
 
-/** The grids the page draws, synthetic cases first. */
+/** The grid choices as [label, id], case files first. */
 const GRIDS = [
   ['WECC 240', 'wecc240'],
   ['ACTIVSg2000', 'activsg2000'],
@@ -64,7 +66,7 @@ const BUS_COLORS = {
   generation: { label: 'generation', colormap: 'amber' },
 } as const satisfies Record<string, { label: string; colormap: ColormapName | undefined }>;
 type BusColor = keyof typeof BUS_COLORS;
-/** A label as an option shows it, its first letter a capital. */
+/** Capitalizes a label's first letter for display as an option. */
 const option = (label: string) => label[0]!.toUpperCase() + label.slice(1);
 const STATE_COLORMAPS: Readonly<Record<StateField, ColormapName>> = {
   buses: 'viridis',
@@ -72,45 +74,45 @@ const STATE_COLORMAPS: Readonly<Record<StateField, ColormapName>> = {
   generation: 'amber',
   swing: 'inferno',
 };
-/** How a bus's marker is drawn: a shape by name, or the shape option. */
+/** Bus marker choices, each a shape name or the `{ shape }` form of `Marker`. */
 const MARKERS = {
   circle: { shape: 'ellipse' },
   square: 'rectangle',
   rounded: 'rounded',
   diamond: 'diamond',
 } as const satisfies Record<string, Marker>;
-/** The fonts labels may be set in. */
+/** Label font choices, as CSS font families. */
 const FONTS = {
   sans: 'system-ui, sans-serif',
   serif: 'Georgia, serif',
   mono: 'ui-monospace, monospace',
 } as const;
-/** Degrees on a side of the squares buses are zoned by. */
+/** The side, in degrees, of the squares that group buses into zones. */
 const ZONE = 4;
-/** Fields the inspector leaves out: where a row is, which the view shows, and translations. */
+/** Fields the inspector hides: location fields, which the view already shows, and translations. */
 const HIDDEN = /^(lon|lat|geometry|position|zone|name_.*|name:.*)$/;
-/** Noon over the western US at midsummer, where the first grid lies: seconds after the epoch. */
+/** Noon at midsummer over the western US, where the first grid lies, in seconds since the epoch. */
 const NOON = Date.UTC(2026, 5, 21, 19) / 1000;
 const fixed = (value: number) => (value >= 100 ? value.toFixed(0) : value.toPrecision(2));
 
-/** A grid drawn: its dataset and counts, and the case it came from when it is one. */
+/** The grid being drawn: its dataset, its counts, and its case if it came from one. */
 interface Grid {
   readonly id: GridId;
   readonly label: string;
-  /** Its dataset; none for the map alone. */
+  /** Its dataset, absent when only the map is drawn. */
   readonly data?: Data;
   readonly buses: number;
   readonly lines: number;
   readonly summary: string;
   readonly case?: Case;
   readonly peaks: { readonly load: number; readonly generation: number; readonly power: number };
-  /** The box its buses stand in, which framing the grid shows; none for the map alone. */
+  /** The bounding box of its buses, which framing shows. Absent when only the map is drawn. */
   readonly bounds?: Fit;
-  /** Whether its buses are zoned: grouped by the square of the map they stand in. */
+  /** Whether its buses are grouped into zones by the map square they lie in. */
   readonly zoned: boolean;
 }
 
-/** The box a case's buses stand in. */
+/** The bounding box of a case's buses. */
 function extent(positions: Float32Array): Fit {
   const min: [number, number, number] = [Infinity, Infinity, 0];
   const max: [number, number, number] = [-Infinity, -Infinity, 0];
@@ -123,8 +125,9 @@ function extent(positions: Float32Array): Fit {
   return { bounds: { min, max } };
 }
 
-/** A case's buses zoned by the `ZONE`-degree square each stands in: a zone for each square, and a
- * reference from each bus to its zone, which an edges mark draws as a star joining its buses. */
+/** Groups a case's buses into zones by the `ZONE`-degree square each lies in. The patch adds a
+ * `Zone` row per square and a `zone` reference from each bus to its zone. An edges mark draws each
+ * zone as a star joining its buses. */
 function zones(found: Case): Patch {
   const ids = found.data.query({ of: 'Bus', select: {} }).ids;
   const squares = new Map<number, number>();
@@ -180,10 +183,10 @@ export default async function page(stage: Stage): Promise<void> {
     night: 0.28,
     comets: 'screen' as 'screen' | 'map',
     cometScale: 1,
-    /** The bus a search found, ringed. */
+    /** The name of the bus the last search found, which is ringed. */
     found: '',
   };
-  /** How the view answers the pointer and the keys. */
+  /** How the view responds to the pointer and keys. */
   const interaction = {
     preset: 'explore' as 'explore' | 'inspect' | 'none',
     zoom: 'wheel' as Zoom,
@@ -233,12 +236,12 @@ export default async function page(stage: Stage): Promise<void> {
       earth: { ground: LOOK.ground, atmosphere: '#5aa9ff99', night: look.night },
       text: { halo: look.halo },
       focus: { glow: look.glow, dim: look.dim, grow: look.grow },
-      // Marks without a color of their own take the theme's: plain buses and lines; lines set to
-      // blend take the colors of the buses they join.
+      // Marks without their own color use the theme's: plain buses and lines. A null edge color
+      // makes lines blend the colors of the buses they join.
       vertex: { color: '#d9e2ec' },
       edge: { color: look.lineColor === 'ends' ? null : '#8fa3b8', bow: look.bow },
-      // Comets kept soft, as rivers carry them across the map too: on screen, pixels apart; on the
-      // map, degrees apart, so they zoom with it.
+      // Comets stay soft, since rivers carry them across the map too. Their length and spacing are
+      // in pixels on screen, or in degrees on the map, so they scale with the zoom.
       flow:
         look.comets === 'map'
           ? {
@@ -258,7 +261,7 @@ export default async function page(stage: Stage): Promise<void> {
     marks: [...mapMarks(), ...gridMarks()],
   });
 
-  /** The map's marks, its states colored as chosen. */
+  /** The map's marks, with its states colored by the chosen field. */
   const mapMarks = (): Mark[] => {
     if (!map) return [];
     const by = state.statesBy;
@@ -269,27 +272,29 @@ export default async function page(stage: Stage): Promise<void> {
     return map.loaded.marks({ labels: state.mapLabels, ...(states ? { states } : {}) });
   };
 
-  /** A bus's radius, `base` CSS pixels, as the panel says: grown where it is hovered, selected, or
-   * near the pointer; grown with the zoom, or sized on the map and kept within pixels. */
+  /** A bus's radius from `base` CSS pixels, per the Buses panel. Emphasis enlarges hovered,
+   * selected, or nearby buses. The size mode keeps pixels, grows with the zoom, or sets the size in
+   * degrees on the map, kept within 1–16 CSS pixels: 0.06° per pixel of `base` matches the pixel
+   * size at the opening view. */
   const busRadius = (base: Expr | number): Size => {
     const emphasis = {
       none: 1,
       hovered: when(hovered()).then(2.2).otherwise(1),
       selected: when(selected()).then(2.2).otherwise(1),
-      // A lens: up to 2.6 times as large at the pointer, back to 1 eighty pixels out.
+      // A lens: 2.6 times as large at the pointer, easing back to normal size 80 pixels away.
       pointer: pointer().div(80).neg().add(1).max(0).mul(1.6).add(1),
     }[look.emphasis];
     const radius = typeof emphasis === 'number' ? base : emphasis.mul(base);
     if (look.size === 'zoom') return zoom().sub(3).mul(0.5).clamp(0.6, 3).mul(radius);
     if (look.size === 'units')
-      return units(typeof radius === 'number' ? radius * 0.03 : radius.mul(0.03), {
+      return units(typeof radius === 'number' ? radius * 0.06 : radius.mul(0.06), {
         atLeast: 1,
         atMost: 16,
       });
     return radius;
   };
 
-  /** What the grid draws, as the panel says. */
+  /** The grid's marks, per the panel settings. */
   const gridMarks = (): Mark[] => {
     if (!grid?.buses) return [];
     const marks: Mark[] = [];
@@ -334,7 +339,7 @@ export default async function page(stage: Stage): Promise<void> {
         edges: {
           of: ['grid', 'Line'],
           ends: ['from', 'to'],
-          // Lines of higher voltage draw on top, and stay drawn as the camera pulls back.
+          // Higher-voltage lines draw on top and stay visible as the camera zooms out.
           priority: 'level',
           ...(look.lineColor === 'level' ? { color: level } : {}),
           width: field('level')
@@ -360,7 +365,7 @@ export default async function page(stage: Stage): Promise<void> {
           of: ['grid', 'Bus'],
           position: ['lon', 'lat'],
           ...(busColor ? { color: busColor } : {}),
-          // Where buses crowd, those of higher voltage stand out, on top and from farther out.
+          // Where buses crowd, higher-voltage buses draw on top and stay visible from farther out.
           priority: 'level',
           radius: busRadius(
             big ? field('level').scale(0.8, 2.6).domain(0, 5) : grid.buses > 5000 ? 2 : 3,
@@ -420,15 +425,15 @@ export default async function page(stage: Stage): Promise<void> {
   const view = stage.view(scene(), {
     label: 'A grid over the earth: drag to pan, Shift-drag to turn, hover or click to inspect',
   });
-  // Fits keep clear of the readout over the view's top and the credit and legend over its foot.
+  // Fits leave room for the readout at the top and the credit and legend at the bottom.
   view.insets = [32, 16, 32, 16];
   const restyle = () => (view.scene = scene());
-  /** Frames the grid, whatever the map beneath it spans; the map alone, all of it. */
+  /** Frames the grid regardless of the map's extent, or the whole map when there is no grid. */
   const frame = () => view.fit(grid?.bounds ?? 'all');
   const legend = stage.legend();
   const credit = stage.credit();
   const canvas = stage.regions.main.querySelector('canvas')!;
-  // A search's first bus wears a tag on the map, which follows it as the camera moves.
+  // A tag labels the first bus a search finds and follows it as the camera moves.
   const tag = h('p', { class: 'callout', hidden: true });
   stage.regions.main.append(tag);
   let tagged: [number, number, number] | undefined;
@@ -509,7 +514,7 @@ export default async function page(stage: Stage): Promise<void> {
       const flat = state.projection === 'plane' || projection === 'plane';
       state.projection = projection;
       restyle();
-      // Between the earth and a plane, positions mean other units: frame the grid again.
+      // Positions have different units on the earth and on a plane, so switching reframes the grid.
       if (flat) return frame();
       const camera = view.camera;
       if ('center' in camera) view.fly({ ...camera, pitch: projection === 'tilt' ? 50 : 0 });
@@ -538,7 +543,7 @@ export default async function page(stage: Stage): Promise<void> {
   });
   viewSection.toggle('Orbit', 't', false, (on) => (view.orbit = on ? 4 : 0));
   viewSection.actions([{ label: 'Fit', key: 'f', run: frame }]);
-  // Where the pointer meets the ground, and where the camera stands, as the view tells it.
+  // Notes showing where the pointer meets the ground, and the camera's zoom, pitch, and bearing.
   const where = viewSection.note('Point at the map.');
   const camera = viewSection.note();
   const degrees = (value: number, [plus, minus]: string) =>
@@ -804,7 +809,7 @@ export default async function page(stage: Stage): Promise<void> {
     const fields = (table?.fields ?? []).map((f) => f.name).filter((name) => !HIDDEN.test(name));
     const name = fields.find((f) => /^name$/i.test(f));
     described.textContent = `${row.table} · ${name ? format(value(name)) : `#${row.id}`}${hoveredRow ? '' : ' · selected'}`;
-    // The grid's figures first, then the rest, leaving out what this row has no value for.
+    // The grid's statistics first, then the other fields, skipping fields without a value.
     const first = fields.filter((f) => f in STATE_FIELDS);
     let shown = 0;
     for (const f of [...first, ...fields.filter((f) => f !== name && !(f in STATE_FIELDS))]) {
@@ -825,13 +830,15 @@ export default async function page(stage: Stage): Promise<void> {
   });
   view.on('selection', inspect);
 
-  /** Puts the tag where its bus now stands on screen, or hides it where none shows. */
+  /** Moves the tag to its bus's screen position, or hides it when nothing is tagged or the bus is
+   * behind the camera. */
   function pin(): void {
     const point = tagged && view.screen(tagged);
     tag.hidden = !point;
     if (point) tag.style.translate = `${point[0]}px ${point[1]}px`;
   }
-  /** Selects every bus whose name holds `text`, frames them, and tags the first. */
+  /** Selects the buses whose names contain `text`, up to 200 of the highest voltage, frames them,
+   * and tags and rings the first. */
   function find(text: string): void {
     const data = grid?.data;
     tagged = undefined;
@@ -862,7 +869,7 @@ export default async function page(stage: Stage): Promise<void> {
     look.found = names[0]!;
     restyle();
     view.selection = rows;
-    // One found is brought into view as the camera stands; more are framed together.
+    // A single match is brought into view at the current zoom. Several are framed together.
     view.fit(found.ids.length === 1 ? { reveal: first } : { rows });
     tagged = [lon[0]!, lat[0]!, 0];
     tag.textContent = names[0]!;
@@ -892,8 +899,8 @@ export default async function page(stage: Stage): Promise<void> {
     legend.ramp(colormap, `${label} 0 – ${fixed(grid.peaks[state.color])} MW`);
   }
 
-  /** The grid's figures in the map's states, when it has states, and what they color by; and the
-   * view given what the map and the grid hold. */
+  /** Rewrites the grid's statistics into the map's states, when the map has states and a state
+   * color is chosen. Then updates the view's sources, marks, and legend. */
   function join(): void {
     if (joined) map?.loaded.states?.restore(joined.before);
     joined?.before.destroy();
@@ -946,7 +953,7 @@ export default async function page(stage: Stage): Promise<void> {
             stage.detail(`${label}: downloading ${megabytes(received, total)}`),
           );
       if (load.signal.aborted) return;
-      // Cases' buses are zoned by where they stand; a continent's are too many to zone in the page.
+      // Zone case files' buses by location. The continent has too many buses to zone here.
       const zoned = found.named;
       if (zoned) found.data.apply(zones(found));
       const peak = (values: Float32Array) => values.reduce((top, v) => Math.max(top, v), 0);
@@ -1028,7 +1035,7 @@ export default async function page(stage: Stage): Promise<void> {
   await Promise.all([loadGrid(GRIDS[0][1]), loadMap(MAPS[0])]);
 }
 
-/** A value read from a dataset, written for the inspector. */
+/** Formats a dataset value for the inspector. */
 function format(value: unknown): string {
   if (value === null || value === undefined) return '–';
   if (typeof value === 'number')

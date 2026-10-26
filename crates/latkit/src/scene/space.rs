@@ -3,21 +3,23 @@ use serde::{Deserialize, Deserializer};
 
 use super::form::{Presets, preset_or, presets};
 
-/// The coordinate space a scene's positions are in: a name, or `{ plane | diagram | earth | plot:
-/// options }`. Its own unit is what lengths are in unless they say theirs: units in a diagram, a flat
-/// sheet seen from straight above with y running down, a unit a CSS pixel at zoom 0; CSS pixels
-/// elsewhere. Only a diagram has ports, groups, nets, and orthogonal routes.
+/// The coordinate space of a scene's positions: a name, or
+/// `{ plane | diagram | earth | plot: options }`.
+///
+/// The space sets the unit of lengths that do not name their own: units in a diagram, where a unit
+/// is a CSS pixel at zoom 0, and CSS pixels elsewhere. Only a diagram has ports, groups, nets, and
+/// orthogonal routes.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = presets::<Space>)]
 pub enum Space {
     /// Longitude and latitude in degrees, on a flat map or a globe.
     Earth(Earth),
-    /// Plane units with elevation: graphs and scenes the camera turns and tilts around.
+    /// Plane units, with elevation; the camera can turn and tilt.
     Plane(Plane),
-    /// The data's axis across, values up.
+    /// The data's axis horizontally and values vertically.
     Plot(Plot),
-    /// A sheet for diagrams: x right and y down in units, every length a unit.
+    /// A flat sheet for diagrams: x right and y down, every length in units.
     Diagram(Diagram),
 }
 
@@ -75,24 +77,26 @@ impl From<Plot> for Space {
     }
 }
 
-/// The earth: positions are longitude and latitude in degrees, its ground in the theme's earth
+/// The earth: positions are longitude and latitude in degrees. The ground takes the theme's `earth`
 /// colors.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Earth {
-    /// A flat map or a globe; a flat map unless set.
+    /// A flat web mercator map (`mercator`, the default) or a globe (`globe`).
     pub projection: Projection,
-    /// Whether lines of longitude and latitude cross the ground, in the theme's grid color.
+    /// Whether lines of longitude and latitude cross the ground, in the theme's `grid` color.
+    /// Default `true`.
     pub graticule: bool,
-    /// Lit by the sun as it stands this many seconds after the Unix epoch, plus the view's axis
-    /// coordinate when it shows one: night falls on the ground and what stands on it, down to the
-    /// theme's night. Lit evenly unless set.
+    /// Lights the earth by the sun's position this many seconds after the Unix epoch, plus the
+    /// view's axis coordinate when it has one. The night side darkens the ground and everything on
+    /// it, down to the theme's `earth.night` brightness. Unset, the earth is lit evenly.
     pub daylight: Option<f64>,
-    /// Whether air glows around the globe, in the theme's atmosphere color, brighter where it is day.
+    /// Whether air glows around the globe, in the theme's `earth.atmosphere` color, brighter on the
+    /// day side. Default `false`.
     pub atmosphere: bool,
 }
 
-/// How the earth is drawn.
+/// How the earth is projected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Projection {
@@ -104,21 +108,22 @@ pub enum Projection {
 }
 
 impl Earth {
-    /// Drawn as `projection` shows it: a flat map or a globe.
+    /// Sets the projection: a flat map or a globe.
     #[must_use]
     pub fn projection(mut self, projection: Projection) -> Earth {
         self.projection = projection;
         self
     }
 
-    /// Lit by the sun as it stands `seconds` after the Unix epoch, plus the view's axis coordinate.
+    /// Lights the earth by the sun's position `seconds` after the Unix epoch, plus the view's axis
+    /// coordinate.
     #[must_use]
     pub fn daylight(mut self, seconds: f64) -> Earth {
         self.daylight = Some(seconds);
         self
     }
 
-    /// Whether air glows around the globe.
+    /// Sets whether air glows around the globe.
     #[must_use]
     pub fn atmosphere(mut self, on: bool) -> Earth {
         self.atmosphere = on;
@@ -126,11 +131,11 @@ impl Earth {
     }
 }
 
-/// The direction toward the sun `seconds` after the Unix epoch, in the earth's frame: x toward 0°
-/// longitude on the equator, y toward 90° east, z toward the north pole. The sun's place by the
-/// low-precision formulas of the Astronomical Almanac, to a hundredth of a degree.
+/// The unit direction toward the sun `seconds` after the Unix epoch, in earth-fixed coordinates: x
+/// toward 0° longitude on the equator, y toward 90° east, z toward the north pole. Uses the
+/// low-precision formulas of the Astronomical Almanac, accurate to about a hundredth of a degree.
 pub(crate) fn sun(seconds: f64) -> [f64; 3] {
-    // Days since noon, January 1, 2000.
+    // Days since noon UTC, January 1, 2000.
     let n = seconds / 86_400.0 - 10_957.5;
     let mean = (280.460 + 0.985_647_4 * n).rem_euclid(360.0);
     let anomaly = (357.528 + 0.985_600_3 * n).rem_euclid(360.0).to_radians();
@@ -144,17 +149,17 @@ pub(crate) fn sun(seconds: f64) -> [f64; 3] {
 }
 
 impl Default for Earth {
-    /// A web mercator map, its graticule drawn.
+    /// A web mercator map with a graticule, lit evenly, without atmosphere.
     fn default() -> Earth {
         Earth { projection: Projection::Mercator, graticule: true, daylight: None, atmosphere: false }
     }
 }
 
-/// A plane: positions are plane units.
+/// A plane: positions are in plane units.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Plane {
-    /// The grid under the marks.
+    /// The grid drawn under the marks; lines 10 units apart by default.
     pub grid: Grid,
 }
 
@@ -164,15 +169,16 @@ impl Default for Plane {
     }
 }
 
-/// A sheet for diagrams, flat and seen from straight above: the camera pans and zooms. Positions are
-/// units with y down, and lengths are units, a unit a CSS pixel at zoom 0 (sizes, padding, ports,
-/// strokes, text, and the theme's), but for what says `px`, a halo, focus's glow, and the pick
-/// radius. Zooming scales one fixed picture. Only a diagram has ports, groups, nets, and orthogonal
-/// routes; it lays out blocks.
+/// A flat sheet for diagrams, seen from straight above; the camera pans and zooms but does not
+/// turn. Positions are in units with y down. Lengths are in units too, a unit being a CSS pixel at
+/// zoom 0: sizes, padding, ports, strokes, text, and the theme's lengths. Sizes given with `px`,
+/// the text halo, the focus glow, and the pick radius stay in CSS pixels. Zooming scales the whole
+/// picture. Only a diagram has ports, groups, nets, and orthogonal routes, and the scene's layout
+/// places its blocks.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagram {
-    /// The grid under the marks.
+    /// The grid drawn under the marks; dots 20 units apart by default.
     pub grid: Grid,
 }
 
@@ -188,16 +194,16 @@ impl Default for Diagram {
 pub enum Grid {
     /// No grid.
     Off,
-    /// Lines `pitch` units apart, thinned by tens as the view zooms out.
+    /// Lines `pitch` units apart, thinned by factors of ten as the view zooms out.
     Lines {
         /// Units between lines.
         pitch: f64,
     },
-    /// Dots `pitch` units apart; drags snap to them when `snap`.
+    /// Dots `pitch` units apart; with `snap`, a diagram's drags snap to them.
     Dots {
         /// Units between dots.
         pitch: f64,
-        /// Whether moved vertices snap to the dots.
+        /// Whether drag positions snap to the dots, in a diagram. Default `false`.
         #[serde(default)]
         snap: bool,
     },
@@ -219,24 +225,24 @@ pub struct Plot {
 pub struct Axis {
     /// The axis title.
     pub label: Option<String>,
-    /// Whether grid lines cross the plot at the ticks.
+    /// Whether grid lines cross the plot at the ticks. Default `true`.
     pub grid: bool,
-    /// Whether the axis is hidden.
+    /// Whether the axis is hidden. Default `false`.
     pub hidden: bool,
-    /// Ticks at these values, each a value or `[value, label]`, their values written unless labeled;
-    /// round values unless set.
+    /// Tick positions, each a value or `[value, label]`; a tick without a label shows its value.
+    /// Unset, ticks fall at round values.
     #[serde(deserialize_with = "ticks")]
     #[schemars(with = "Option<Vec<Tick>>")]
     pub ticks: Ticks,
-    /// How tick values are written.
+    /// How tick values are formatted; `auto` by default.
     pub format: Format,
-    /// Decimals of fixed values, or of the significand of scientific and engineering ones; as many
-    /// as the ticks' step needs unless set.
+    /// Decimal places of fixed values, or of the significand in scientific and engineering formats,
+    /// at most 15. Unset, as many as the tick step needs.
     #[schemars(range(max = 15))]
     pub precision: Option<u8>,
 }
 
-/// A tick as written: a value, or `[value, label]`.
+/// A tick in JSON: a value, or `[value, label]`.
 #[derive(Deserialize, JsonSchema)]
 #[serde(untagged)]
 enum Tick {
@@ -244,7 +250,8 @@ enum Tick {
     Labeled(f64, Option<String>),
 }
 
-/// An axis's ticks: each a value, and the label written there unless its value is.
+/// An axis's ticks: each a value and an optional label, which replaces the value as the tick's
+/// text.
 type Ticks = Option<Vec<(f64, Option<String>)>>;
 
 fn ticks<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Ticks, D::Error> {
@@ -266,7 +273,7 @@ impl Default for Axis {
     }
 }
 
-/// How an axis writes its tick values.
+/// How an axis formats its tick values.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Format {
@@ -286,13 +293,14 @@ mod tests {
     use super::sun;
 
     #[test]
-    fn the_sun_stands_where_the_almanac_puts_it() {
-        // Noon UTC at the June solstice of 2026: over the tropic of Cancer, near the prime meridian.
+    fn sun_position_matches_the_almanac() {
+        // Noon UTC at the 2026 June solstice: the sun is over the Tropic of Cancer, near the prime
+        // meridian.
         let [x, y, z] = sun(1_782_043_200.0);
         let (declination, longitude) = (z.asin().to_degrees(), y.atan2(x).to_degrees());
         assert!((declination - 23.44).abs() < 0.05, "{declination}");
         assert!(longitude.abs() < 1.0, "{longitude}");
-        // Six hours on, it stands a quarter turn west.
+        // Six hours later, it is a quarter turn west.
         let [x, y, _] = sun(1_782_043_200.0 + 6.0 * 3600.0);
         assert!((y.atan2(x).to_degrees() + 90.0).abs() < 1.5);
     }

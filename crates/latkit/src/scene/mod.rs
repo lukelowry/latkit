@@ -1,5 +1,5 @@
-//! Scenes: what a view draws, as plain data. Marks name their datasets; the view draws them from the
-//! sources it is given.
+//! Scenes: plain-data descriptions of a view's content. Marks name their datasets, and the view
+//! draws them from the sources it is given.
 
 pub(crate) mod areas;
 pub(crate) mod compile;
@@ -43,9 +43,11 @@ pub use vertices::Vertices;
 
 use crate::{Error, Result, Snapshot, Source};
 
-/// What a view draws and how it answers input: a space, marks in drawing order, a layout, a theme,
-/// controls, how long changes ease, and the title written over it. Plain data: as JSON, each field by
-/// its name in camelCase, each mark `{ vertices | edges | faces | lines | areas: options }`.
+/// A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an
+/// ease duration, and an optional title.
+///
+/// A scene is plain data. In JSON, fields are camelCase and each mark is
+/// `{ vertices | edges | faces | lines | areas: options }`.
 ///
 /// ```
 /// # use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};
@@ -58,31 +60,34 @@ use crate::{Error, Result, Snapshot, Source};
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Scene {
+    /// The coordinate space positions are in.
     pub(crate) space: Space,
-    /// What the view draws, in drawing order.
+    /// The marks, in drawing order: each draws over the marks before it.
     #[serde(default)]
     pub(crate) marks: Vec<Mark>,
-    /// How the view places vertex rows without positions: a diagram's blocks, or points on a plane
-    /// or the earth, gaps in the space's units.
+    /// How the view places vertex rows that have no position: a diagram's blocks, or points on a
+    /// plane or the earth. `none` by default.
     #[serde(default)]
     pub(crate) layout: Layout,
+    /// Default colors and sizes, and the look of text, focus, and each space; `dark` by default.
     #[serde(default)]
     pub(crate) theme: Theme,
+    /// How the view responds to the pointer and keyboard.
     #[serde(default)]
     pub(crate) controls: Controls,
-    /// Seconds that changes ease over; 0.3 unless set.
+    /// Seconds over which scene and data changes animate; 0.3 by default, 0 for none.
     #[serde(default = "ease", deserialize_with = "form::seconds")]
     #[schemars(with = "f64")]
     pub(crate) ease: Duration,
-    /// Written at the view's top left, larger than the theme's text.
+    /// A title drawn at the view's top left, larger than the theme's text.
     #[serde(default)]
     pub(crate) title: Option<Arc<str>>,
-    /// Written under the title.
+    /// A subtitle drawn under the title.
     #[serde(default)]
     pub(crate) subtitle: Option<Arc<str>>,
 }
 
-/// How long changes ease unless set.
+/// The default ease duration.
 fn ease() -> Duration {
     Duration::from_millis(300)
 }
@@ -102,63 +107,67 @@ impl Scene {
         }
     }
 
-    /// Draws `mark` over the marks before it.
+    /// Adds `mark`, drawn over the marks added before it.
     #[must_use]
     pub fn draw(mut self, mark: impl Into<Mark>) -> Scene {
         self.marks.push(mark.into());
         self
     }
 
-    /// Places vertex rows that have no position: a diagram's blocks, or points on a plane or the earth.
+    /// Sets the layout that places vertex rows without a position: a diagram's blocks, or points on
+    /// a plane or the earth.
     #[must_use]
     pub fn layout(mut self, layout: impl Into<Layout>) -> Scene {
         self.layout = layout.into();
         self
     }
 
-    /// The theme.
+    /// Sets the theme.
     #[must_use]
     pub fn theme(mut self, theme: Theme) -> Scene {
         self.theme = theme;
         self
     }
 
-    /// How the view answers the pointer and keyboard.
+    /// Sets how the view responds to the pointer and keyboard.
     #[must_use]
     pub fn controls(mut self, controls: Controls) -> Scene {
         self.controls = controls;
         self
     }
 
-    /// How long changed descriptions and new data ease; zero changes at once.
+    /// Sets how long scene and data changes animate; zero applies them at once. Default 0.3 s.
     #[must_use]
     pub fn ease(mut self, over: Duration) -> Scene {
         self.ease = over;
         self
     }
 
-    /// Writes `title` at the view's top left, in the theme's text and font, larger.
+    /// Sets a title drawn at the view's top left, in the theme's text color and font but larger.
     #[must_use]
     pub fn title(mut self, title: impl Into<Arc<str>>) -> Scene {
         self.title = Some(title.into());
         self
     }
 
-    /// Writes `subtitle` under the title.
+    /// Sets a subtitle drawn under the title.
     #[must_use]
     pub fn subtitle(mut self, subtitle: impl Into<Arc<str>>) -> Scene {
         self.subtitle = Some(subtitle.into());
         self
     }
 
-    /// The space.
+    /// The scene's space.
     pub fn space(&self) -> &Space {
         &self.space
     }
 
-    /// Checks the scene against the sources a view would draw it from, without a GPU: the compiler a
-    /// view uses, every dataset and table drawn present, but for those tiles give, which a view
-    /// fetches as it draws, so their marks are checked as their pieces land.
+    /// Checks the scene against `sources` without a GPU, with the same compiler a view uses.
+    ///
+    /// Every drawn dataset and table must be present, except datasets that a [`Source::Tiles`]
+    /// gives: a view fetches those while drawing, so their marks are checked as tiles arrive.
+    /// Errors on duplicate source names, missing datasets or tables, options a mark cannot compile,
+    /// and anything else the scene itself gets wrong, such as two marks with one key.
     pub fn validate(&self, sources: &[Source]) -> Result<()> {
         self.check()?;
         for (i, source) in sources.iter().enumerate() {
@@ -180,7 +189,7 @@ impl Scene {
                 continue;
             }
             let dataset = snapshots.iter().find(|d| *d.name() == style.data).ok_or_else(|| {
-                mark.within(i, Error::invalid(format!("no source gives dataset '{}'", style.data)).at("of"))
+                mark.within(i, Error::invalid(format!("no source provides dataset '{}'", style.data)).at("of"))
             })?;
             if let Some(error) = mark.absent_from(dataset) {
                 return Err(mark.within(i, error));
@@ -195,16 +204,18 @@ impl Scene {
         Ok(())
     }
 
-    /// Two marks with one key would be indistinguishable across scenes; options a space does not have
-    /// are refused.
+    /// Checks the scene's own consistency, which needs no data. Errors when a plot has a layout,
+    /// when the theme's comet spacing and length use different units, when two marks share a key
+    /// (they would be indistinguishable across scenes), when a mark uses an option its space lacks,
+    /// and when a legend has no colormap with a fixed domain or named categories to show.
     pub(crate) fn check(&self) -> Result<()> {
         let diagram = matches!(self.space, Space::Diagram(_));
         if matches!(self.space, Space::Plot(_)) && self.layout != Layout::None {
-            return Err(Error::invalid("a plot lays out no vertices").at("layout"));
+            return Err(Error::invalid("a plot cannot have a layout").at("layout"));
         }
         let flow = &self.theme.flow;
         if !flow.spacing.alike(flow.length) {
-            let reason = "a comet's spacing and length are in one unit, which each row's flow is in too";
+            let reason = "comet spacing and length must use the same unit, which each row's flow also uses";
             return Err(Error::invalid(reason).at("length").at("flow").at("theme"));
         }
         for (i, mark) in self.marks.iter().enumerate() {
@@ -221,7 +232,7 @@ impl Scene {
                 None => false,
             };
             if style.legend.is_some() && !shown {
-                let reason = "a legend shows a color mapped through a colormap with a domain or named categories";
+                let reason = "a legend needs a color mapped through a colormap with a domain or named categories";
                 return Err(mark.within(i, Error::invalid(reason).at("legend")));
             }
         }

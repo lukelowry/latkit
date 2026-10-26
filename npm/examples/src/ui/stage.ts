@@ -6,17 +6,18 @@ import { Menu } from './menu.js';
 import { Meter } from './meter.js';
 import { Playback, type PlaybackOptions } from './playback.js';
 
-/** Where a page draws: the main view, the side panel, and the timeline. */
+/** The page regions an example fills: the main view, the side panel, and the timeline. */
 export interface Regions {
   main: HTMLElement;
   side: HTMLElement;
   timeline: HTMLElement;
 }
 
-/** What a page draws with. Everything made through it goes when the page closes. */
+/** Creates an example page's views, canvases, and controls. Everything made through it is
+ * destroyed when the page closes. */
 export class Stage {
   readonly #abort = new AbortController();
-  /** Aborted when the page closes: pass it to listeners the page adds itself. */
+  /** Aborted when the page closes. Pass it to any listener the page adds itself. */
   readonly signal = this.#abort.signal;
   readonly #views = new Set<View>();
   readonly #canvases: Canvas[] = [];
@@ -48,20 +49,21 @@ export class Stage {
     return [...this.#views];
   }
 
-  /** Every canvas the page shows its views in, in the order they were made. */
+  /** The page's canvases, in creation order. */
   get canvases(): readonly Canvas[] {
     return this.#canvases;
   }
 
-  /** A view in a canvas of its own, in `into`, the main region unless given. */
+  /** Creates a view in its own canvas, appended to `into` (the main region by default). */
   view(scene: Scene, options: { label: string; into?: HTMLElement; height?: number }): View {
     return this.panels([scene], options)[0]!;
   }
 
   /**
-   * Views sharing one canvas in `into`, the main region unless given: each `at` its x, y, width, and
-   * height as fractions of the canvas, side by side unless given, and on a narrow screen one above
-   * the other. Input goes to the view under it.
+   * Creates views that share one canvas, appended to `into` (the main region by default). Each
+   * view fills its `at` rectangle: x, y, width, and height as fractions of the canvas. By default
+   * the views sit side by side. On screens 700 px wide or less, each rectangle's axes swap, so the
+   * views stack. Input goes to the view under the pointer.
    */
   panels(
     scenes: readonly Scene[],
@@ -90,7 +92,8 @@ export class Stage {
     if (views.length > 1)
       narrow.addEventListener('change', () => (canvas.layout = layout()), { signal: this.signal });
     views.forEach((view) => {
-      // What could not be fetched only goes undrawn; anything else stops the page.
+      // A failed fetch (`io`) only leaves that data undrawn and is reported in the header. Any
+      // other error stops the page.
       view.on('error', (error) =>
         error.code === 'io' ? this.detail(error.message) : this.fail(error),
       );
@@ -99,7 +102,8 @@ export class Stage {
     return views;
   }
 
-  /** Calls `step` every frame before the views draw, with the seconds since the last, at most 0.1. */
+  /** Calls `step` every frame before the views draw, with the seconds since the previous frame,
+   * capped at 0.1. */
   frame(step: (dt: number) => void): void {
     let last: number | undefined;
     const stop = this.gpu.on('frame', (now) => {
@@ -114,46 +118,48 @@ export class Stage {
     this.signal.addEventListener('abort', stop);
   }
 
-  /** Runs `action` when `key` is pressed outside a text field. */
+  /** Runs `action` when `key` is pressed without modifiers, unless focus is in a form control. */
   key(key: string, action: () => void): void {
     this.#keys.set(key.toLowerCase(), action);
   }
 
-  /** A titled group of controls in the side panel. */
+  /** Adds a titled group of controls to the side panel. */
   section(title: string, open = true): Section {
     const section = new Section(this, title, open);
     this.regions.side.append(section.element);
     return section;
   }
 
-  /** The transport: live, paused, or playing a recorded span. */
+  /** Adds the playback controls: live, paused, or playing a recorded span. */
   playback(options: PlaybackOptions): Playback {
     return new Playback(this, options);
   }
 
-  /** A readout over `view`: frames per second, its frame time, and the page's own measures. */
+  /** Adds a performance readout for `view`, with frame rate, frame times, and the page's own
+   * measurements. */
   meter(view: View): Meter {
     return new Meter(this, view);
   }
 
-  /** A menu over the main view, opened where a view asks for one. */
+  /** Creates a context menu over the main view, to open where a view requests one. */
   menu(): Menu {
     return new Menu(this);
   }
 
-  /** A colormap ramp over the main view: at its foot, or its top over a plot's axes. */
+  /** Adds a colormap legend over the main view, at the bottom, or at the top (`'top'`) so it does
+   * not cover a plot's axes. */
   legend(place: 'foot' | 'top' = 'foot'): Legend {
     return new Legend(this, place);
   }
 
-  /** A line under the main view crediting where its data comes from. */
+  /** Adds a line under the main view that credits the data source. */
   credit(): HTMLElement {
     const line = h('p', { class: 'credit' });
     this.regions.main.append(line);
     return line;
   }
 
-  /** Compact dataset information in the shared header. */
+  /** Shows short dataset information in the shared header. */
   detail(text: string): void {
     this.line.textContent = text;
   }

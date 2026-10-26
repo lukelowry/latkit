@@ -5,10 +5,10 @@
 :class: picture
 ```
 
-Ridged mountains as faces between a grid of vertices: each face blends its corners' colors, lit by the normals the GPU works out, in three dimensions.
+Ridged mountains in three dimensions, as faces over a grid of vertices. Each face blends its corners' colors and is lit by normals the GPU computes.
 
-The picture is drawn by the `latkit` command line from this module, which writes its data with
-`Patch` and its scene as a typed `Scene`; `node docs/gallery/render.ts terrain` draws it again.
+The `latkit` command line draws this picture from the module below, which writes its data with
+`Patch` and its scene as a typed `Scene`. `node docs/gallery/render.ts terrain` draws it again.
 
 ```{literalinclude} ../gallery/terrain.ts
 :language: typescript

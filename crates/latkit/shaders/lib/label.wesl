@@ -1,8 +1,8 @@
-// Labels: where a labeled row's text hangs, how large it draws, and whether it can show. Draws place
-// every label from its anchor each frame, so labels follow the camera and the rows they name exactly;
-// placement measures the same box only to decide which labels give way. Text is a distance field set
-// at `TEXT_BASE`, drawn at any size: CSS pixels, or units in a diagram, where text scales with the
-// sheet and fades out once too small to read.
+// Labels: where a labeled row's text is anchored, its size, and whether it can show. Draws place
+// every label from its anchor each frame, so labels track the camera and their rows exactly.
+// Placement measures the same box only to decide which labels are dropped. Text is a distance field
+// set at `TEXT_BASE` and drawn at any size: in CSS pixels, or in a diagram in length units, where
+// text scales with the sheet and fades out once too small to read.
 
 import package::lib::types::{
     POINTS, STROKES, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, PATH_GEOMETRY, TEXT_BASE, TEXT_SPREAD, HEADER_BAND,
@@ -16,8 +16,8 @@ import package::lib::path::{PATH, Segment, segment_screen, path_count};
 import package::lib::triangles::{triangle_corner, area_anchor};
 import package::lib::drawn::held_row;
 
-// Where a row's label hangs, CSS pixels, how it aligns to that point (0 left or top, 0.5 centered),
-// the room it must fit in (none when zero), and whether its row shows.
+// A label's anchor point in CSS pixels, its alignment there (0 left or top, 0.5 centered), the room
+// it must fit in (no limit when zero), and whether its row shows.
 struct Anchor {
     at: vec2f,
     align: vec2f,
@@ -25,12 +25,12 @@ struct Anchor {
     shown: bool,
 }
 
-// CSS pixels a size in length units spans this frame.
+// A size in length units, in CSS pixels at this frame's zoom.
 fn length_px(size: f32) -> f32 {
     return size * frame.unit;
 }
 
-// Where drawn row `item`'s label hangs.
+// The label anchor of drawn row `item`.
 fn anchor(item: u32) -> Anchor {
     var a: Anchor;
     let row = held_row(item);
@@ -47,7 +47,7 @@ fn anchor(item: u32) -> Anchor {
                 a.align = vec2f(0.0, 0.5);
                 a.room = vec2f(2.0 * (p.half.x - frame.group_padding), header);
             } else if mark.marker == MARKER_BLOCK || (mark.flags & SIZED) != 0u {
-                // A block, or any marker given a width and height, holds its label while it fits.
+                // A block, or a marker with a width and height, shows its label inside if it fits.
                 a.at = center;
                 a.align = vec2f(0.5);
                 a.room = vec2f(2.0 * p.half.x - text, 2.0 * p.half.y);
@@ -74,7 +74,7 @@ fn anchor(item: u32) -> Anchor {
         default: {
             a.align = vec2f(0.5);
             if PATH == PATH_GEOMETRY {
-                // An area's label hangs inside its largest polygon, farthest from its edges.
+                // An area's label sits inside its largest polygon, farthest from its edges.
                 let c = area_anchor(row);
                 let clip = clip_of(c.world);
                 a.shown = c.shown && c.ahead && clip.w > 0.0;
@@ -95,8 +95,8 @@ fn anchor(item: u32) -> Anchor {
     return a;
 }
 
-// How much text `px` CSS pixels tall shows: in a diagram it fades out as the view zooms away from
-// it; elsewhere it is set at a size that reads.
+// Opacity of text `px` CSS pixels tall. In a diagram, text fades out as the view zooms out.
+// Elsewhere text has a fixed, readable size, so it always shows.
 fn legibility(px: f32) -> f32 {
     if frame.space != SPACE_DIAGRAM {
         return 1.0;
@@ -104,9 +104,8 @@ fn legibility(px: f32) -> f32 {
     return smoothstep(3.5, 6.0, px);
 }
 
-// A run of text placed on screen: the text's box and the quad around it, which reaches over the
-// distance field's spread, in CSS pixels; its corners in the atlas, texels; and CSS pixels per
-// texel.
+// A run of text placed on screen: the text's box and its quad, which extends over the distance
+// field's spread (both in CSS pixels); its atlas corners in texels; and CSS pixels per texel.
 struct Text {
     lo: vec2f,
     hi: vec2f,
@@ -117,12 +116,13 @@ struct Text {
     scale: f32,
 }
 
-// A rectangle's corner in the atlas: 16 bits of x, then 16 of y.
+// An atlas corner packed in one word: x in the low 16 bits, y in the high 16.
 fn corner(word: u32) -> vec2f {
     return vec2f(f32(word & 0xffffu), f32(word >> 16u));
 }
 
-// The run at atlas corners `uv0` and `uv1`, set `size` CSS pixels tall, hung at `at` by `align`.
+// The run at atlas corners `uv0` and `uv1`, drawn at size `size` in CSS pixels, aligned by `align`
+// at point `at`.
 fn text_at(uv0: u32, uv1: u32, size: f32, at: vec2f, align: vec2f) -> Text {
     var t: Text;
     t.uv_lo = corner(uv0);
@@ -137,12 +137,12 @@ fn text_at(uv0: u32, uv1: u32, size: f32, at: vec2f, align: vec2f) -> Text {
     return t;
 }
 
-// Whether text of extent `extent` fits `room`; no room holds any.
+// Whether text of extent `extent` fits `room`. A room of zero width fits any text.
 fn fits(extent: vec2f, room: vec2f) -> bool {
     return room.x <= 0.0 || all(extent <= room);
 }
 
-// Whether a box reaches into the view.
+// Whether a box overlaps the view.
 fn in_view(lo: vec2f, hi: vec2f) -> bool {
     return all(hi > vec2f(0.0)) && all(lo < eye.size);
 }

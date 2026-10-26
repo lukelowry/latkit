@@ -5,9 +5,10 @@ import type { Stage } from './stage.js';
 const MB = 1 << 20;
 
 /**
- * A readout over a view: frames per second, the view's frame time on the CPU and the GPU, draws,
- * instances, and tiles, what it waits on, the GPU's memory, and the page's own measures; and how
- * much memory and upload the GPU may take, which the page gives back when it closes.
+ * A performance readout for a view, in the side panel's Performance section. It shows frames per
+ * second, the view's CPU and GPU frame times, draws, instances, tiles, what the view is waiting on,
+ * GPU memory, marks that failed, and the page's own measurements. It also sets the GPU's memory and
+ * upload budgets, which are restored when the page closes.
  */
 export class Meter {
   readonly #line = h('p', { class: 'meter', 'aria-live': 'off' });
@@ -15,7 +16,7 @@ export class Meter {
   readonly #notes: (() => string)[] = [];
   #frames = 0;
   #since = performance.now();
-  /** What the view waits on, as it last told. */
+  /** What the view is waiting on, from its latest `waiting` event. */
   #waiting: string[] = [];
 
   constructor(stage: Stage, view: View) {
@@ -85,7 +86,7 @@ export class Meter {
     return result;
   }
 
-  /** A readout computed at each refresh. */
+  /** Adds a line that `read` computes at each refresh, about twice a second. */
   note(read: () => string): void {
     this.#notes.push(read);
   }

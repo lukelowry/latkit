@@ -107,6 +107,7 @@ test('abort interrupts a pending finish and is idempotent', async () => {
   await Promise.all([aborted, rejected]);
   assert.equal(stream.locked, false);
   assert.equal(calls.free, 1);
+  await assert.rejects(video.frame(), { code: 'cancelled', cause: 'stop' });
 });
 
 test('concurrent frames reject without disrupting the frame already drawing', async () => {
@@ -121,10 +122,11 @@ test('concurrent frames reject without disrupting the frame already drawing', as
     },
   );
   const frame = video.frame();
-  await assert.rejects(video.frame(), /one frame/);
+  await assert.rejects(video.frame(), { code: 'invalid', message: /one frame/ });
   resolveFrame(new Uint8Array());
   await frame;
   await video.finish();
+  await assert.rejects(video.frame(), { code: 'invalid' }, 'no frames after finish()');
 });
 
 test('locked outputs make no encoder, and failing to make one unlocks the output', () => {

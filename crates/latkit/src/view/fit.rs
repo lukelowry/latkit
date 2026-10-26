@@ -1,8 +1,10 @@
-//! Framing what is drawn. A box frames at once, and so does what the CPU already knows: a diagram's
-//! sheet holds every box and wire, and tiles hold the bounds of every row they draw. Anything else is
-//! measured on the GPU, read back, and framed a frame or two later. A plot without a value range
-//! measures its traces whenever they or the camera change, and grows its range with headroom so the
-//! axes stay still.
+//! Fits: moving the camera to frame what is drawn.
+//!
+//! A box fits at once, as does anything whose extent the CPU already knows: a diagram's sheet holds
+//! every box and wire, and tiles hold the bounds of every row they draw. Anything else is measured
+//! on the GPU, read back, and framed a frame or two later. A plot without a value range measures
+//! its traces whenever they or the camera change, and grows its range with headroom so the axes
+//! stay still.
 
 use super::View;
 use super::camera::Bounds;
@@ -17,7 +19,7 @@ use crate::{Camera, Space};
 pub(crate) struct Fitting {
     /// A fit waiting for its frame.
     pub(crate) wanted: Option<Fit>,
-    /// Extents in flight, and the fit they were measured for.
+    /// The extents readback in flight, and the fit it measures for.
     reading: Option<(Readback, Option<Fit>)>,
     /// Whether a plot's traces changed since they were last measured.
     pub(crate) plot_due: bool,
@@ -29,7 +31,7 @@ impl Fitting {
         self.reading.is_some()
     }
 
-    /// Whether a fit waits for a frame to measure it: none while extents are being read back.
+    /// Whether a fit is waiting to be measured; never while extents are being read back.
     pub(crate) fn due(&self) -> bool {
         self.wanted.is_some() && self.reading.is_none()
     }
@@ -47,7 +49,7 @@ pub(crate) struct Measure {
 }
 
 impl View {
-    /// Applies a box fit, a plot's fit, or measured extents that landed.
+    /// Applies a box fit, a plot's fit to its traces' span, or measured extents that arrived.
     pub(super) fn settle_fit(&mut self) {
         if self.size[0] <= 0.0 {
             return;
@@ -75,7 +77,7 @@ impl View {
         self.fitted();
     }
 
-    /// Lets go of the rows marked for a fit, once it framed them.
+    /// Clears the rows marked for a fit once it framed them.
     fn fitted(&mut self) {
         if !self.focus.fitting.is_empty() {
             self.focus.fitting.clear();
@@ -88,22 +90,22 @@ impl View {
         if self.fitting.reading.is_some() || self.size[0] <= 0.0 {
             return None;
         }
-        // A plot that traces frames everything by its traces' whole span, which settles once their
-        // data is drawn; measuring them first would frame only what shows up to the coordinate shown.
+        // A plot with traces fits everything to their whole span once their data is available.
+        // Measuring instead would frame only what is drawn up to the coordinate shown.
         let plot = matches!(self.scene.space, Space::Plot(_));
         if plot && matches!(self.fitting.wanted, Some(Fit::All)) && self.traces() {
             return None;
         }
-        // A fit frames what shows once data has streamed, its shapes are triangulated and bent, and any
-        // layout has placed it; in a diagram, once vertices stand where their sheet puts them.
+        // A fit waits until data has streamed, shapes are triangulated and bent, and any layout has
+        // placed it; in a diagram, until vertices stand where the sheet puts them.
         let easing = matches!(self.scene.space, Space::Diagram(_))
             && self
                 .marks
                 .iter()
                 .any(|m| m.kind() == MarkKind::Vertices && (m.transition.is_some() || m.begin.is_some()));
         let all = matches!(self.fitting.wanted, Some(Fit::All));
-        // Everything a table drawn through tiles holds frames by its rows' bounds, whatever is drawn. A
-        // mark with no rows has nothing to frame: it holds a fit only while no mark has rows.
+        // Fitting everything uses a tiled table's row bounds, regardless of what is drawn. A mark
+        // with no rows has nothing to frame; it only delays a fit while no mark has rows.
         let compiled = || self.marks.iter().filter(|m| m.compiled.is_some());
         let staged = |m: &Shown| self.staged.get(&m.mark.style().data).is_some_and(|s| !s.is_empty());
         let drawn = |m: &Shown| (m.drawable() && !staged(m)) || (all && self.tiled_bounds(m).is_some());
@@ -170,9 +172,9 @@ impl View {
         self.frame_fit(lo, hi, fit);
     }
 
-    /// The box `fit` frames when it is known without measuring, least x and y then greatest: in a
-    /// diagram once its sheet stands, its vertices and wires, or the boxes of the rows fitted; else,
-    /// with every mark `ready`, where only tables drawn through tiles are measured, their bounds.
+    /// The box `fit` frames if known without measuring, as `[min x, min y, max x, max y]`. In a
+    /// diagram whose sheet is placed: the sheet's extent, or the fitted rows' boxes. Otherwise, for
+    /// `Fit::All` once every mark is `ready` and only tiled tables are measured: their bounds.
     fn known(&self, fit: &Fit, ready: bool) -> Option<[f64; 4]> {
         let union = |a: [f64; 4], b: [f64; 4]| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])];
         let sheet = &self.derived.sheet;
@@ -190,8 +192,8 @@ impl View {
         measured().filter_map(|m| self.tiled_bounds(m)).reduce(union)
     }
 
-    /// Frames `lo..hi` as `fit` asks: without one, a plot's value range; to reveal a row, the camera
-    /// brought to it where it lies out of view; else the box.
+    /// Frames `lo..hi` as `fit` asks. With no fit, fits a plot's value range. For `Fit::Reveal`,
+    /// centers the camera on the row if it is out of view. Otherwise frames the box.
     fn frame_fit(&mut self, lo: [f64; 3], hi: [f64; 3], fit: Option<&Fit>) {
         if lo[0] > hi[0] {
             return;
@@ -219,14 +221,14 @@ impl View {
         }
     }
 
-    /// The bounds of every row `shown` draws through tiles, whatever tiles are drawn.
+    /// The bounds of every row of `shown`'s tiled table, regardless of which tiles are drawn.
     fn tiled_bounds(&self, shown: &Shown) -> Option<[f64; 4]> {
         let style = shown.mark.style();
         self.derived.tiled.bounds(&style.data, &style.table)
     }
 
-    /// Frames the box `min..max` at once. Framing everything sets how far the camera can go from it;
-    /// framing part of it widens that reach, never narrows it.
+    /// Frames the box `min..max` at once. Framing everything sets how far the camera can go from
+    /// it; framing part of it widens that reach, never narrows it.
     fn frame_box(&mut self, min: [f64; 3], max: [f64; 3], everything: bool) {
         let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.area());
         self.rig.hold();
@@ -242,8 +244,8 @@ impl View {
         self.move_camera(camera);
     }
 
-    /// Grows the value range a plot shows to hold `lo..hi` with headroom, and shrinks it once the
-    /// values fill less than a third of it.
+    /// Grows the value range a plot shows to hold `lo..hi` with 12% headroom on each side, and
+    /// shrinks it once the values fill less than a third of it.
     fn fit_values(&mut self, lo: f64, hi: f64) {
         let holds = self.plot_y.is_some_and(|[a, b]| lo >= a && hi <= b && (hi - lo) * 3.0 >= b - a);
         if !holds {
@@ -253,12 +255,12 @@ impl View {
         }
     }
 
-    /// The coordinates a plot's traces span.
     /// Whether a mark traces a sampled field.
     fn traces(&self) -> bool {
         self.marks.iter().any(|shown| matches!(&shown.mark, crate::Mark::Lines(lines) if lines.trace.is_some()))
     }
 
+    /// The axis range a plot's traces span, widened to a unit range around a single point.
     fn traced_span(&self) -> Option<[f64; 2]> {
         let spans = self.marks.iter().filter_map(|shown| {
             let crate::Mark::Lines(lines) = &shown.mark else { return None };
@@ -282,7 +284,7 @@ impl super::marks::Shown {
     }
 }
 
-/// The `f32` an ordered word stands for (see `lib/reduce.wesl`).
+/// The `f32` an order-preserving word encodes; `lib/reduce.wesl`'s `unordered`.
 fn unordered(u: u32) -> f32 {
     f32::from_bits(if u & 0x8000_0000 != 0 { u & 0x7fff_ffff } else { !u })
 }
@@ -291,7 +293,7 @@ fn unordered(u: u32) -> f32 {
 mod tests {
     use super::unordered;
 
-    /// The inverse of `lib/reduce.wesl`'s `ordered`.
+    /// `lib/reduce.wesl`'s `ordered`, the inverse of `unordered`.
     fn ordered(x: f32) -> u32 {
         let b = x.to_bits();
         if b & 0x8000_0000 != 0 { !b } else { b | 0x8000_0000 }

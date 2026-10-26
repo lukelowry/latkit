@@ -1,6 +1,6 @@
-//! Text on the GPU: each text field's distinct texts get codes in the order they are first seen.
-//! Codes only ever grow, so a page's codes never change and upload once. A page is coded once; one
-//! written over a page coded takes its codes and codes only the rows written.
+//! Text dictionaries: each text field's distinct texts get codes in the order they are first seen.
+//! Codes are never reassigned, so a page's codes never change and upload once. A page is coded
+//! once, and a page written over a coded page reuses its codes and codes only the rows written.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use crate::Name;
 use crate::data::{Column, Keyed, Page, PageId, Values};
 use crate::gpu::shaders::MISSING;
 
-/// Pages a dictionary keeps the codes of: past them, it forgets them all.
+/// Most pages a dictionary keeps codes for. Past this, it forgets all of them.
 const PAGES: usize = 256;
 
 #[derive(Default)]
@@ -24,7 +24,7 @@ pub(crate) struct Dictionary {
     codes: HashMap<Arc<str>, u32, FxBuildHasher>,
     /// Each code's text.
     texts: Vec<Arc<str>>,
-    /// The codes of pages coded, by page.
+    /// Codes of coded pages, by page.
     pages: HashMap<PageId, Arc<[u32]>, FxBuildHasher>,
 }
 
@@ -36,8 +36,8 @@ impl Dictionaries {
 }
 
 impl Dictionary {
-    /// The codes of `page`, its texts added: `f32` words, `MISSING` where missing. A page coded
-    /// before costs nothing; one written over a page coded costs the rows written.
+    /// The codes of `page` as `f32` words, `MISSING` where missing, adding its new texts. A page
+    /// coded before needs no work; one written over a coded page codes only the rows written.
     pub(crate) fn codes(&mut self, page: &Page) -> Arc<[u32]> {
         if let Some(codes) = self.pages.get(&page.id) {
             return codes.clone();
@@ -55,7 +55,7 @@ impl Dictionary {
         }
         let codes: Arc<[u32]> = match reused {
             Some((from, before, rows)) => {
-                // The page written over is usually written over no more.
+                // The old page is rarely written over again, so drop its codes.
                 self.pages.remove(&from);
                 let mut codes = before.to_vec();
                 for row in rows {
@@ -72,13 +72,14 @@ impl Dictionary {
         codes
     }
 
-    /// The codes of `column`'s rows `rows`, in that order, their texts added: what a page packed in a
-    /// table's order holds. Each row costs a lookup, however its pages were coded.
+    /// The codes of `column`'s rows `rows`, in that order, adding new texts: the contents of a
+    /// packed page of a paged table. Each row costs a lookup, regardless of how its pages were
+    /// coded.
     pub(crate) fn rows(&mut self, column: &Column, rows: &[u32]) -> Vec<u32> {
         rows.iter().map(|&r| column.at(r as usize).map_or(MISSING, |(values, i)| self.code(values, i))).collect()
     }
 
-    /// The code of value `i` of `values` as an `f32` word, its text added when it is new.
+    /// The code of value `i` of `values` as an `f32` word, adding its text if new.
     fn code(&mut self, values: &Values, i: usize) -> u32 {
         let Some(text) = values.text().filter(|_| values.is_valid(i)) else { return MISSING };
         let t = text.get(i);
@@ -94,7 +95,7 @@ impl Dictionary {
         (code as f32).to_bits()
     }
 
-    /// Codes given so far.
+    /// Number of codes assigned so far.
     pub(crate) fn len(&self) -> usize {
         self.texts.len()
     }
@@ -104,7 +105,7 @@ impl Dictionary {
         self.texts.get(code as usize)
     }
 
-    /// The code of `text` as an `f32` word; one no text has when it was never seen.
+    /// The code of `text` as an `f32` word, or NaN, which matches no text, if it was never seen.
     pub(crate) fn code_of(&self, text: &str) -> u32 {
         self.codes.get(text).map_or(f32::NAN.to_bits(), |&code| (code as f32).to_bits())
     }
@@ -116,7 +117,7 @@ mod tests {
     use crate::data::Column;
 
     #[test]
-    fn a_page_written_over_one_coded_codes_only_its_rows() {
+    fn rewriting_a_coded_page_codes_only_the_written_rows() {
         let column = Column::new(&Values::from(vec!["a", "b", "c"]));
         let mut dictionary = Dictionary::default();
         let first = dictionary.codes(&column.pages()[0]);

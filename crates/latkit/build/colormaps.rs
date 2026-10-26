@@ -1,5 +1,5 @@
-//! Bakes `colormaps/catalog.txt` into `OUT_DIR/colormaps.rs`: per map its name, label, kind, color
-//! count, and 256 sRGB texels, made by the crate's own `ramp`.
+//! Compiles `colormaps/catalog.txt` into `OUT_DIR/colormaps.rs`. Each map gets its name, label,
+//! kind, color count, and 256 sRGB texels computed by the crate's own `ramp`.
 
 use crate::ramp::{Spread, texels};
 use std::env;

@@ -1,8 +1,8 @@
-/** Terrain: ridged mountains as lit faces between a grid of vertices, colored by height. */
+/** Terrain: ridged mountains as lit triangles over a grid of vertices, colored by height. */
 import { Patch, reference } from 'latkit';
 import { THEME, floats, rows, type Piece } from './look.ts';
 
-/** Height at `x`, `y`: ridges of several directions and scales, sharpened, then summed. */
+/** The height at `x`, `y`: sharpened ridges at six directions and scales, summed. */
 function height(x: number, y: number): number {
   let h = 0;
   let amplitude = 1;
@@ -16,7 +16,7 @@ function height(x: number, y: number): number {
     h += amplitude * ridge * ridge;
     amplitude *= 0.48;
   }
-  // A valley across the middle, and the land falling away toward the edges.
+  // Cut a valley across the middle, and lower the land toward the edges.
   return (
     h *
     (0.35 + 0.65 * Math.min(1, Math.abs(y + 0.25 * x) / 260)) *
@@ -32,7 +32,8 @@ export default function terrain(): Piece {
   const py = (i: number) => (Math.floor(i / columns) / (lines - 1) - 0.5) * h;
   const z = floats(n, (i) => 150 * height(px(i), py(i)));
   const cells = (columns - 1) * (lines - 1);
-  // Two triangles a cell: its corners as rows of the grid.
+  // Two triangles per grid cell. Returns corner `k` (0 to 5) of the cell's triangles as a vertex
+  // row.
   const corner = (cell: number, k: number) => {
     const c = cell % (columns - 1);
     const r = Math.floor(cell / (columns - 1));

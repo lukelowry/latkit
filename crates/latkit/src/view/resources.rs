@@ -1,10 +1,11 @@
-//! A view's buffers, textures, and bind groups. Grown buffers grow by half again; replacing one bumps
-//! the generation, and bind groups are rebuilt when a generation they were built from changes.
+//! A view's buffers, textures, and bind groups. A buffer that runs out of room is replaced by one
+//! 1.5 times the size needed. Replacing a buffer increments the generation, and bind groups are
+//! rebuilt when a generation they were built from changes.
 //!
-//! Every shader's pass group (group 2) binds by one convention: 0 the pages (the data's, and what
-//! marks keep per row), 2 extents, 4 domains, 5 probe words and what queries find, 6 depth, 7 sprites,
-//! 8 the text atlas, 9 lists, 12 remap words, 13 labels, 15 icons, 16 the pages of rows each mark
-//! evaluates, 17 the probe's step.
+//! Every shader's pass group (group 2) uses the same bindings: 0 the arena pages (the data, and the
+//! marks' per-row words), 2 extents, 4 domains, 5 probe words and query results, 6 depth,
+//! 7 sprites, 8 the text atlas, 9 lists, 12 remap words, 13 labels, 15 icons, 16 the row blocks
+//! each mark evaluates, 17 the probe step.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -23,7 +24,8 @@ pub(crate) fn step(step: u32) -> u32 {
     (u64::from(step) * MARK_STRIDE) as u32
 }
 
-/// The probe's steps, each at its own dynamic offset: a dispatch binds the one it takes.
+/// A uniform buffer holding each probe step's code at its own dynamic offset. A dispatch binds the
+/// offset of its step.
 fn steps(device: &wgpu::Device) -> wgpu::Buffer {
     use wgpu::util::DeviceExt as _;
     let mut contents = vec![0_u8; step(wgsl::STEPS) as usize];
@@ -38,11 +40,11 @@ fn steps(device: &wgpu::Device) -> wgpu::Buffer {
     })
 }
 
-/// What the labels buffer is used as: atomics placement works in, and a copy's source when the texts
-/// placement asks for are read back.
+/// The labels buffer's usages: storage for the placement atomics, and copy source for reading back
+/// the texts placement requests.
 const LABELS: wgpu::BufferUsages = wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::COPY_SRC);
 
-/// A storage buffer that grows by half again when it runs out of room.
+/// A buffer that is replaced by one 1.5 times the size needed when it runs out of room.
 struct Grown {
     buffer: wgpu::Buffer,
     label: &'static str,
@@ -80,8 +82,8 @@ pub(crate) struct Groups {
     pub(crate) mark: wgpu::BindGroup,
 }
 
-/// What a frame draws into: multisampled color resolved into the target when it multisamples, and
-/// depth.
+/// The textures a frame draws into: multisampled color (resolved into the target) when it
+/// multisamples, and depth.
 struct Targets {
     color: Option<wgpu::TextureView>,
     depth: wgpu::TextureView,
@@ -97,24 +99,25 @@ pub(crate) struct Resources {
     program: Grown,
     /// The rows each mark's focus draw lights.
     lit: Grown,
-    /// The pages of rows each mark's evaluation covers this frame.
+    /// The row blocks each mark evaluates, and whose endpoints it resolves, this frame.
     blocks: Grown,
     remap: Grown,
     domains: Grown,
     extents: Grown,
-    /// The probe's words, then what the running query finds.
+    /// The probe's words, then the running query's results.
     probe: Grown,
     steps: wgpu::Buffer,
     sprites: Grown,
     lists: Grown,
     labels: wgpu::Buffer,
-    /// Changes whenever one of the buffers or textures above is replaced; and whenever the lists
-    /// buffer is, emptied.
+    /// Incremented whenever a buffer or texture above is replaced. `lists_generation` is also
+    /// incremented when the lists buffer is replaced, which empties it.
     generation: u64,
     lists_generation: u64,
-    /// Built from (arena, colormaps, icons, own) generations.
+    /// The shared bind groups, with the (arena, colormaps, icons, own) generations they were built
+    /// from.
     groups: Option<((u64, u64, u64, u64), Groups)>,
-    /// Pass groups, built at `passes_generation`: the arena's, the icons', and its own.
+    /// Pass groups by shader, built at `passes_generation`: the arena, icons, and own generations.
     passes: HashMap<Shader, wgpu::BindGroup>,
     passes_generation: (u64, u64, u64),
     targets: Option<Targets>,
@@ -128,7 +131,7 @@ impl Resources {
             frame: create(device, "latkit frame", uniform, size_of::<wgsl::Frame>() as u64),
             eye: create(device, "latkit eye", uniform, size_of::<wgsl::Eye>() as u64),
             marks: Grown::new(device, "latkit marks", uniform),
-            // A copy's source as it grows, keeping what it holds.
+            // A copy source, so growing keeps its contents.
             program: Grown::new(device, "latkit program", storage | wgpu::BufferUsages::COPY_SRC),
             lit: Grown::new(device, "latkit lit", storage),
             blocks: Grown::new(device, "latkit blocks", storage),
@@ -153,7 +156,7 @@ impl Resources {
         }
     }
 
-    /// Writes the pages of rows every mark's evaluation covers this frame.
+    /// Writes this frame's row-block lists for every mark.
     pub(crate) fn write_blocks(&mut self, device: &wgpu::Device, queue: &Queue, blocks: &[u32]) {
         if self.blocks.ensure(device, (blocks.len() as u64 + 1) * 4) {
             self.generation += 1;
@@ -201,8 +204,8 @@ impl Resources {
         replaced
     }
 
-    /// Makes room for `words` of program keeping its first `kept`: a buffer replaced has them copied
-    /// into the new one in `encoder`, so what is written into it this frame follows the copy. True when
+    /// Makes room for `words` of program, keeping its first `kept` words. A replaced buffer has
+    /// them copied over in `encoder`, so this frame's writes must follow the copy. Returns whether
     /// it was replaced.
     pub(crate) fn grow_program(
         &mut self,
@@ -222,7 +225,24 @@ impl Resources {
         true
     }
 
-    /// Makes room for `words` probe words, what the running query finds included.
+    /// Copies `words` program words from word `from` to word `to` in `encoder`, through a temporary
+    /// buffer, since a buffer cannot be copied into itself.
+    pub(crate) fn move_program(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        from: u32,
+        to: u32,
+        words: u32,
+    ) {
+        let size = u64::from(words) * 4;
+        let between = create(device, "latkit program move", wgpu::BufferUsages::COPY_SRC, size);
+        let program = &self.program.buffer;
+        encoder.copy_buffer_to_buffer(program, u64::from(from) * 4, &between, 0, size);
+        encoder.copy_buffer_to_buffer(&between, 0, program, u64::from(to) * 4, size);
+    }
+
+    /// Makes room for `words` probe words, including the running query's results.
     pub(crate) fn fit_probe(&mut self, device: &wgpu::Device, words: u32) {
         if self.probe.ensure(device, u64::from(words.max(wgsl::PROBE_WORDS)) * 4) {
             self.generation += 1;
@@ -236,8 +256,8 @@ impl Resources {
         }
     }
 
-    /// Makes the lists buffer hold `words`; replacing it, emptied, changes the lists generation, so
-    /// every list counts again.
+    /// Makes room for `words` in the lists buffer. Replacing it empties it and changes the lists
+    /// generation, so every list is counted again.
     pub(crate) fn fit_lists(&mut self, device: &wgpu::Device, words: u64) {
         if self.lists.ensure(device, (words + 1) * 4) {
             self.generation += 1;
@@ -287,7 +307,8 @@ impl Resources {
         &self.sprites.buffer
     }
 
-    /// Changes whenever the lists buffer is replaced, emptied, so every list counts again.
+    /// Changes whenever the lists buffer is replaced (which empties it), so every list is counted
+    /// again.
     pub(crate) fn lists_generation(&self) -> u64 {
         self.lists_generation
     }
@@ -333,7 +354,7 @@ impl Resources {
         groups
     }
 
-    /// `shader`'s pass group, binding what its WGSL declares.
+    /// `shader`'s pass group, cached until a generation it binds changes.
     pub(crate) fn pass(&mut self, device: &wgpu::Device, inner: &mut Inner, shader: Shader) -> wgpu::BindGroup {
         let generation = (inner.arena.generation, inner.icons.generation, self.generation);
         if self.passes_generation != generation {
@@ -348,7 +369,7 @@ impl Resources {
         group
     }
 
-    /// `shader`'s pass group, binding what its WGSL declares.
+    /// Builds `shader`'s pass group from the bindings its WGSL declares.
     fn bind(&self, device: &wgpu::Device, inner: &mut Inner, shader: Shader) -> wgpu::BindGroup {
         let layout = inner.pipelines.pass_layout(device, shader);
         let entries: Vec<wgpu::BindGroupEntry<'_>> = shader
@@ -388,8 +409,8 @@ impl Resources {
         })
     }
 
-    /// The color and depth a frame of `size` and `format` draws into with `samples` per pixel: color
-    /// is `None` without multisampling, when marks draw straight into the target.
+    /// The color and depth textures for a frame of `size` and `format` at `samples` per pixel.
+    /// Color is `None` without multisampling, when marks draw straight into the target.
     pub(crate) fn targets(
         &mut self,
         device: &wgpu::Device,

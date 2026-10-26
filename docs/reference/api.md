@@ -1,22 +1,26 @@
 # JavaScript API
 
 Generated from the shipped declarations. `load()` loads the WebAssembly that datasets, views,
-and pictures are made with; scenes, expressions, and patches need none. Options take the [scene
-and result types](types.md).
+and pictures need. Scenes, expressions, and patches do not need it. Options use the [scene and
+result types](types.md).
 
 ## Loading and waiting
 
-Load the WebAssembly once a page; every wait ends at its signal.
+Load the WebAssembly once per page. A wait ends when its signal aborts (30 s by default).
 
 ### load
 
 ```ts
 /**
- * Loads latkit's WebAssembly once a page: data, views, and pictures can be made once it resolves.
- * Concurrent calls share one load, and a failed one can be tried again; options given after the first
- * call must match it. Importing the package neither loads WebAssembly nor asks for a GPU; loading asks
- * for the page's GPU adapter while the WebAssembly compiles. `Gpu.create`, `Data.read`, and
- * `Patch.read` load it themselves.
+ * Loads latkit's WebAssembly, once per page. Datasets, views, and pictures can be created once it
+ * resolves. Later and concurrent calls share the first call's load. Options they pass must equal
+ * the first call's, or they reject with an `io` error. A failed load rejects with an `io` error and
+ * can be retried.
+ *
+ * Importing the package loads nothing and requests no GPU. `load()` requests a GPU adapter while
+ * the WebAssembly compiles, so the browser starts its GPU process early, then requests the first
+ * GPU device for `Gpu.create()`. `Gpu.create()` and `Data.read()` call `load()` themselves, as does
+ * `Patch.read()` for JSON.
  */
 function load(options?: LoadOptions): Promise<void>;
 ```
@@ -24,12 +28,17 @@ function load(options?: LoadOptions): Promise<void>;
 ### LoadOptions
 
 ```ts
-/** Loading latkit's WebAssembly: once a page, before data, views, and pictures can be made. */
-/** How latkit loads. Options left out keep what loading began with. */
+/** Options for {@link load}. Only the first call's options take effect. */
 interface LoadOptions {
-  /** The matching package's WASM asset, or an already compiled module. Defaults to the bundled asset. */
+  /**
+   * The URL of this package version's `latkit/wasm` asset, or that asset already compiled.
+   * Defaults to the bundled asset.
+   */
   wasm?: string | URL | WebAssembly.Module;
-  /** Makes a worker running the standalone `latkit/worker` bundle. Defaults to the bundled worker. */
+  /**
+   * Creates a worker that runs the standalone `latkit/worker` bundle. Defaults to the bundled
+   * worker.
+   */
   worker?: () => Worker;
 }
 ```
@@ -37,8 +46,13 @@ interface LoadOptions {
 ### Wait
 
 ```ts
-/** How long a promise may wait: until `signal` aborts, by default 30 seconds. */
+/** Options that bound how long a promise waits. */
 interface Wait {
+  /**
+   * Aborts the wait. A timeout rejects with a `timeout` error; any other abort rejects with a
+   * `cancelled` error whose `cause` is the abort reason. Either way, latkit cancels the call's
+   * pending work where it can. Without a signal, each wait times out after 30 seconds.
+   */
   signal?: AbortSignal;
 }
 ```
@@ -47,27 +61,37 @@ interface Wait {
 
 ```ts
 /**
- * What latkit throws: an `Error` with a `code`, and for invalid input the `path` to the part, such
- * as `marks[2].vertices.color`. `unloaded` is a call made before `await load()`.
+ * The error latkit throws: an `Error` with a `code`, plus a `path` to the bad part of invalid
+ * input, such as `marks[2].vertices.color`. The codes:
+ *
+ * - `invalid`: the input is malformed or does not fit; `path` says where.
+ * - `unsupported`: the browser or device cannot do what was asked.
+ * - `limit`: a budget or device limit would be exceeded.
+ * - `io`: reading or writing external bytes failed, such as loading latkit or fetching a file.
+ * - `device-lost`: the GPU device was lost; create a new `Gpu`.
+ * - `cancelled`: the wait's signal aborted, or the work was cancelled.
+ * - `timeout`: the wait's signal timed out.
+ * - `unloaded`: the call needs WebAssembly, and `load()` has not finished.
+ * - `destroyed`: the object was destroyed, so it can no longer be used.
  */
 interface LatkitError extends Error {
-  code: Failure['code'] | 'unloaded';
+  code: Failure['code'] | 'unloaded' | 'destroyed';
   path?: string;
 }
 ```
 
 ## Data and patches
 
-Datasets of named tables, changed by patches written without WebAssembly, and what views draw them from.
+Datasets of named tables, the patches that change them (written without WebAssembly), and the sources views draw.
 
 ### Data
 
 ````ts
 /**
- * A dataset that changes in place: named tables of columns, changed only by patches, every change
- * of one or none. A view given it draws its latest version, from the frame after a patch applies. A
- * snapshot keeps one version, sharing every page with it, so earlier versions kept, as an undo
- * history does, cost only the pages they hold apart.
+ * A dataset that changes in place: named tables of columns, changed only by patches. A patch
+ * applies completely or not at all. Views given a `Data` draw its latest version, from the frame
+ * after each patch. A {@link Snapshot} keeps one version and shares its pages with the dataset, so
+ * keeping earlier versions, as an undo history does, costs only the pages that differ.
  *
  * ```ts
  * const grid = new Data('grid').apply(new Patch().replace('Bus', [1, 2], { kv: [230, 115] }));
@@ -76,16 +100,22 @@ Datasets of named tables, changed by patches written without WebAssembly, and wh
  * ```
  */
 class Data {
-  /** An empty dataset named `name`. */
+  /** Creates an empty dataset named `name`. Throws an `unloaded` error before `load()` finishes. */
   constructor(name: string);
   /**
-   * The dataset `source` holds, as its first bytes say: latkit's bytes; GeoJSON, gzip-compressed or
-   * not, read in a worker, its points, line strings, and polygons rows of tables `points`, `lines`,
-   * and `polygons`, each with its geometry as field `geometry` and its properties as fields; or its
-   * JSON document, `{"name": ..., "patch": [...]}`, its patch read as `Patch.read` reads one. `source`
-   * is bytes, a `Blob`, a `Response`, a stream, a URL to fetch, or a document as a JSON value. `name`
-   * names it, as GeoJSON needs; `base` is what a document's slices of files are relative to, by
-   * default the URL it was fetched from.
+   * Reads a dataset from `source`, calling `load()` first. Its first bytes decide the format:
+   *
+   * - latkit's bytes, as `toBytes()` writes them.
+   * - GeoJSON, plain or gzip-compressed, read in a worker. Points, line strings, and polygons
+   *   become rows of tables `points`, `lines`, and `polygons`, with the geometry in field
+   *   `geometry` and each property as a field. GeoJSON requires `options.name`.
+   * - A dataset document, `{"name": ..., "patch": [...]}`, whose patch is read as
+   *   {@link Patch.read} reads one.
+   *
+   * `options.name` names the dataset, replacing the name in latkit's bytes or a document.
+   * `options.base` is the URL that a document's file slices are relative to; it defaults to the URL
+   * the source was fetched from. Rejects with an `invalid` error for bytes that are not a valid
+   * dataset, and with an `io` error when a fetch fails or answers an error status.
    */
   static read(
     source: DataSource,
@@ -95,15 +125,24 @@ class Data {
     } & Wait,
   ): Promise<Data>;
   get name(): string;
-  /** Applies every change of `patch`, or none when one is invalid. */
+  /**
+   * Applies every change in `patch` (a {@link Patch} or its bytes), or none of them when one is
+   * invalid, and returns this dataset. Views draw the new version from their next frame. Throws an
+   * `invalid` error whose `path` names the failing change, such as `patch[1].Bus.kv`, or when the
+   * patch names another dataset.
+   */
   apply(patch: Patch | Uint8Array): this;
-  /** The version it holds now, kept as it is while patches change it: O(1). */
+  /** The current version as a {@link Snapshot}, which later patches leave unchanged. O(1). */
   snapshot(): Snapshot;
-  /** Makes `snapshot`, a version of this dataset, the one it holds: what an undo does. */
+  /**
+   * Makes `snapshot`, a version of this dataset, the current version, as an undo does. Views draw
+   * it from their next frame. Throws an `invalid` error for a snapshot of a dataset with another
+   * name.
+   */
   restore(snapshot: Snapshot): this;
-  /** What it holds now: see {@link Snapshot.describe}. */
+  /** Describes the current version; see {@link Snapshot.describe}. */
   describe(): Description;
-  /** A value it holds now: see {@link Snapshot.get}. */
+  /** Reads one value of the current version; see {@link Snapshot.get}. */
   get(
     table: string,
     id: Id,
@@ -112,13 +151,16 @@ class Data {
       at?: number;
     },
   ): Value;
-  /** The rows a query keeps of what it holds now: see {@link Snapshot.query}. */
+  /** Queries the current version; see {@link Snapshot.query}. */
   query(query: Query): QueryResult;
-  /** Rows' extremes over spans of what it holds now: see {@link Snapshot.envelope}. */
+  /** Per-row minimums and maximums of the current version; see {@link Snapshot.envelope}. */
   envelope(request: EnvelopeRequest): Envelope;
-  /** What it holds now as latkit's bytes: the patch that builds it. */
+  /** The current version as latkit's bytes: a patch that builds it from an empty dataset. */
   toBytes(): Uint8Array;
-  /** Frees this handle; views drawing the dataset and its snapshots keep it. */
+  /**
+   * Frees this handle. Views drawing the dataset keep drawing it, and its snapshots stay usable.
+   * Other methods throw afterwards.
+   */
   destroy(): void;
   [Symbol.dispose](): void;
 }
@@ -127,12 +169,22 @@ class Data {
 ### Snapshot
 
 ```ts
-/** One version of a dataset, as it was when taken: O(1) to keep. A view given one draws it as it is. */
+/**
+ * One immutable version of a dataset, taken in O(1) by {@link Data.snapshot}. A view given a
+ * snapshot draws that version unchanged.
+ */
 class Snapshot {
   get name(): string;
-  /** What the dataset holds: tables, rows, fields and their kinds, the axis and its span. */
+  /**
+   * Describes the dataset: its tables and their row counts, each field and its kind, and the axis
+   * and the span its sampled fields cover.
+   */
   describe(): Description;
-  /** The value of `field` for the row with `id` in `table`, at axis coordinate `at` when given. */
+  /**
+   * Reads `field` of the row with `id` in `table`. A sampled field reads its last frame at or
+   * before `options.at`, or its last frame when `at` is omitted. A reference reads the referenced
+   * row's id. Returns `null` when the table, row, field, or value is missing.
+   */
   get(
     table: string,
     id: Id,
@@ -142,18 +194,24 @@ class Snapshot {
     },
   ): Value;
   /**
-   * The rows of a table `query` keeps, filtered, sorted, and paged, sampled fields read at its
-   * coordinate, on the CPU through the expressions marks draw with.
+   * Runs `query` on the CPU: reads a table's rows, filtered, sorted, and paged, through the same
+   * expressions marks use. Sampled fields are read at `query.at`. Throws an `invalid` error for an
+   * invalid query.
    */
   query(query: Query): QueryResult;
   /**
-   * Each row's least and greatest value of a sampled field over equal spans of a range, of every row
-   * or of the rows named: row after row, NaN where a span holds no frame. It reads the coarsest
-   * levels of detail that fit, so a span costs a few reads however many frames it covers.
+   * Computes each row's minimum and maximum of a sampled field over equal spans of an axis range,
+   * for every row or the rows `request.ids` lists. Each span reads the coarsest stored levels of
+   * detail that fit in it, so it costs a few reads regardless of how many frames it covers. Throws
+   * an `invalid` error for an unknown table or row, or a field that is not sampled, and a `limit`
+   * error when rows times spans exceeds 2^26.
    */
   envelope(request: EnvelopeRequest): Envelope;
-  /** The version as latkit's bytes: the patch that builds it. */
+  /** This version as latkit's bytes: a patch that builds it from an empty dataset. */
   toBytes(): Uint8Array;
+  /**
+   * Frees this handle. Views given the snapshot keep drawing it; other methods throw afterwards.
+   */
   destroy(): void;
   [Symbol.dispose](): void;
 }
@@ -163,23 +221,23 @@ class Snapshot {
 
 ```ts
 /**
- * A dataset fetched in pieces as views ask for them: plain data naming where they lie. Each view
- * draws the pieces its camera and plot window ask for as a dataset of its own, and every view of a
- * GPU shares what is fetched. The source's first bytes say what it holds.
+ * A dataset fetched in pieces as views need them. A `Tiles` is plain data: a dataset name and a
+ * URL. Each view draws the pieces its camera and plot window need as a dataset of its own, and all
+ * views of a GPU share the fetched pieces. The first bytes at `url` decide the kind of tiles:
  *
- * - Time tiles, a `frames.json` manifest as `latkit tile` writes it: a dataset whose sampled
- *   fields' histories are fetched in spans. A line tracing a field fetches the detail its plot
- *   window draws, a mark showing one the frames about the view's coordinate, and a span still
- *   loading draws the coarser span above it.
- * - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` template, fetched as
- *   the camera asks. Each layer is a table of its features of the kind marks draw it as (areas
- *   polygons, lines lines, vertices points), or named `layer:polygons`, `layer:lines`, or
- *   `layer:points`.
+ * - Time tiles: a `frames.json` manifest as `latkit tile` writes it, for a dataset whose sampled
+ *   fields' histories are fetched in spans. A line tracing a field fetches the level of detail its
+ *   plot window shows; other marks fetch the frames around the view's `at`. A span still loading
+ *   shows the coarser span that contains it.
+ * - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template, fetched
+ *   as the camera needs them. Each layer becomes a table of features of the kind its marks draw:
+ *   polygons for areas, lines for lines, points for vertices. A table named `layer:polygons`,
+ *   `layer:lines`, or `layer:points` holds that kind regardless of the marks.
  */
 class Tiles {
   readonly name: string;
   readonly url: string;
-  /** The tiles at `url`, drawn as dataset `name`. */
+  /** Tiles at `url`, drawn as the dataset named `name`. */
   constructor(name: string, url: string);
 }
 ```
@@ -187,14 +245,17 @@ class Tiles {
 ### Source
 
 ```ts
-/** What a view draws a dataset from, by its name. */
+/** A dataset a view draws; views match it to the scene's marks by the dataset's name. */
 type Source = Data | Snapshot | Tiles;
 ```
 
 ### DataSource
 
 ```ts
-/** What `Data.read` reads: latkit's bytes, GeoJSON, or a dataset's JSON document. */
+/**
+ * What {@link Data.read} accepts: bytes, a `Blob`, a `Response`, a byte stream, a URL to fetch as
+ * a string, or a parsed JSON value. The content is latkit's bytes, GeoJSON, or a dataset document.
+ */
 type DataSource =
   Uint8Array | ArrayBuffer | Blob | Response | ReadableStream<Uint8Array> | string | object;
 ```
@@ -203,8 +264,9 @@ type DataSource =
 
 ```ts
 /**
- * The rows a query keeps, in the forms a patch writes: numbers as a `Float64Array` (missing NaN),
- * other values as arrays (missing `null`), a reference as its target's ids.
+ * The rows a query returns, as columns in the forms a patch takes: numbers as a `Float64Array`
+ * (missing values NaN), other values as arrays (missing `null`), and a reference as the ids of the
+ * rows it references.
  */
 interface QueryResult {
   table: string;
@@ -218,7 +280,7 @@ interface QueryResult {
         ids: (Id | null)[];
       }
   >;
-  /** The rows the query kept before paging. */
+  /** How many rows matched the query before `offset` and `limit` applied. */
   total: number;
 }
 ```
@@ -226,10 +288,16 @@ interface QueryResult {
 ### Envelope
 
 ```ts
-/** Rows' least and greatest values over spans of the axis: `at` holds one more edge than spans. */
+/** Each row's minimum and maximum of a sampled field over equal spans of the axis. */
 interface Envelope {
+  /** The span boundaries on the axis: one more than the number of spans. */
   at: Float64Array;
+  /**
+   * Each row's minimum in each span: `spans` values per row, row after row. NaN where a span has
+   * no frame.
+   */
   least: Float32Array;
+  /** Each row's maximum in each span, laid out like `least`. */
   greatest: Float32Array;
 }
 ```
@@ -238,8 +306,10 @@ interface Envelope {
 
 ````ts
 /**
- * Changes to a dataset, applied in order and all at once by `Data.apply`: plain data, written as
- * latkit's bytes as it is built.
+ * A list of changes to a dataset, which `Data.apply` applies in order, all or none. The patch is
+ * encoded as latkit's bytes as it is built, without WebAssembly. Each method adds a change and
+ * returns the patch. For values it cannot encode, a method throws an `invalid` error with a `path`
+ * such as `Bus.kv`, and leaves the patch unchanged.
  *
  * ```ts
  * const patch = new Patch('grid')
@@ -248,18 +318,24 @@ interface Envelope {
  * ```
  */
 class Patch {
-  /** An empty patch: to dataset `data`, which it names, or to whichever it is applied to. */
+  /** Creates an empty patch for the dataset named `data`, or for any dataset when omitted. */
   constructor(data?: string);
-  /** The dataset the patch changes, when it names one; `Data.apply` refuses it for another. */
+  /**
+   * The name of the dataset this patch is for, if any. `Data.apply` rejects it for a dataset with
+   * another name.
+   */
   get data(): string | undefined;
   /**
-   * The patch `source` holds: latkit's bytes, one frame as `toBytes` writes it, or its JSON, what
-   * any language writes without latkit: a list of changes, each named by its method with its
-   * parameters by name, such as `{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}`.
-   * Slices of binary files, `{file, dtype, offset, count}`, are fetched at once relative to `base`,
-   * by default the URL the JSON was fetched from. `source` is bytes, a `Blob`, a `Response`, a URL
-   * to fetch, or the JSON as a value. Bytes read without WebAssembly; JSON loads it, as `load()`
-   * does. A frame longer than `limit` bytes (256 MiB unless given) is refused.
+   * Reads a patch from `source`: latkit's bytes, one frame as `toBytes()` writes it, or JSON that
+   * any language can write without latkit. The JSON is a list of changes. Each change is keyed by
+   * its method name and holds the method's parameters by name, such as
+   * `{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}`. A field may be a slice of a
+   * binary file, `{file, dtype, offset, count}`. Slices are fetched at once, relative to
+   * `options.base`, which defaults to the URL the JSON was fetched from.
+   *
+   * Bytes are read without WebAssembly; JSON calls `load()` first. Rejects with a `limit` error for
+   * a frame longer than `options.limit` bytes (256 MiB by default), with an `invalid` error for
+   * malformed input, and with an `io` error when a fetch fails or answers an error status.
    */
   static read(
     source: PatchSource,
@@ -269,10 +345,13 @@ class Patch {
     } & Wait,
   ): Promise<Patch>;
   /**
-   * The patches arriving back to back in `stream`, each as soon as its last byte does: a response
-   * body, a file, or a socket's messages. Each frame says its length up front, so a patch longer
-   * than `limit` bytes (256 MiB unless given) throws before allocating its body. The parser holds at most one frame, in addition to
-   * the input chunk and patches the caller retains. Breaking iteration cancels the reader.
+   * Yields each patch in `stream` as soon as its last byte arrives. The stream carries frames back
+   * to back, such as a response body, a file, or a socket's messages. Each frame states its length
+   * up front, so a frame longer than `options.limit` bytes (256 MiB by default) throws a `limit`
+   * error before its body is allocated. Besides the current chunk and the patches the caller keeps,
+   * at most one frame is buffered. Breaking out of the loop cancels the stream. Throws an `invalid`
+   * error for a `limit` that is not a whole number of at least 12 bytes, for bytes that are not
+   * latkit's, or for a stream that ends inside a frame.
    *
    * ```ts
    * for await (const patch of Patch.stream((await fetch('/feed')).body!)) data.apply(patch);
@@ -286,22 +365,27 @@ class Patch {
       limit?: number;
     },
   ): AsyncGenerator<Patch>;
-  /** Names the axis sampled fields are recorded over, such as `('time', 's')`. */
+  /**
+   * Sets the name and unit of the axis that sampled fields are recorded over, such as
+   * `axis('time', 's')`.
+   */
   axis(name: string, unit: string): this;
-  /** Replaces table `table` with these rows and fields, or adds it. */
+  /** Replaces table `table` with rows `ids` and `fields`, adding the table if it does not exist. */
   replace(table: string, ids: RowIds, fields?: Fields): this;
   /**
-   * Writes `fields` for rows `ids` of `table`: rows with known ids change, others are added, and
-   * fields left out keep their values. Adds the table when there is none of its name.
+   * Writes `fields` for rows `ids` of `table`. Rows with existing ids change, new ids add rows, and
+   * omitted fields keep their values. Adds the table if it does not exist.
    */
   set(table: string, ids: RowIds, fields?: Fields): this;
   /** Removes the rows of `table` with `ids`. */
   remove(table: string, ids: RowIds): this;
   /**
-   * Records a frame of `table` at each axis coordinate of `at`: for each field, a value per row at
-   * every coordinate, frame-major; of every row, or of rows `ids`, the rest holding their last
-   * values. A field's first frame makes it sampled. Appends of float arrays to the same fields of
-   * every row, one after another, write as one change, so a frame a call costs no more than one call.
+   * Records a frame of `table` at each axis coordinate in `at`. Each field gives a value per row
+   * per frame, frame by frame: every row of the first frame, then of the next. Frames cover every
+   * row, or only rows `options.ids`; other rows keep their last values. A field's first frame makes
+   * it a sampled field. Consecutive appends of `Float32Array` or `Float64Array` values to the same
+   * fields of every row are written as one change, so one frame per call costs no more than one
+   * call with every frame.
    */
   append(
     table: string,
@@ -313,15 +397,20 @@ class Patch {
       ids?: RowIds;
     },
   ): this;
-  /** Forgets every sampled field's frames before axis coordinate `before`. */
+  /** Drops every sampled field's frames before axis coordinate `before`. */
   forget(before: number): this;
   /**
-   * Holds a run of sampled field `field`'s entries of level `level` (0 unless given), numbered from
-   * `first`: what a time tile holds, as `latkit tile` writes them. At level 0 the entries are frames,
-   * each a coordinate in `at` and a value per row of `table` in `values`. At level `k` they are
-   * buckets of `8^k` frames, each its first and last frame's coordinates in `at`, and in `values`
-   * each row's least value over each bucket, then each row's greatest. NaN is missing. No entry may
-   * be held already; frames past the field's widen it.
+   * Stores a run of entries of sampled field `field` of `table`, at level of detail `level` (0 by
+   * default), numbered from `first`. This is what a time tile holds, as `latkit tile` writes it.
+   *
+   * At level 0 each entry is a frame: a coordinate in `at`, and a value per row in `values`, entry
+   * by entry. At level `k` each entry is a bucket of `8^k` frames: its first and last frames'
+   * coordinates in `at`. `values` then holds every bucket's per-row minimums, entry by entry,
+   * followed by every bucket's per-row maximums. NaN marks a missing value.
+   *
+   * None of the entries may be stored already. Entries past the field's last frame extend it.
+   * Throws an `invalid` error for a level outside 0 to 21, lengths of `at` and `values` that do not
+   * divide into whole entries and rows, or frame numbers that are not safe nonnegative integers.
    */
   frames(
     table: string,
@@ -338,9 +427,9 @@ class Patch {
       values: Float32Array | readonly number[];
     },
   ): this;
-  /** Appends `next`'s changes, to this patch's dataset. */
+  /** Appends `next`'s changes to this patch, which keeps its own dataset name. */
   extend(next: Patch): this;
-  /** The patch as bytes: one frame, naming its dataset when it has one. */
+  /** A copy of the patch as latkit's bytes: one frame, naming the dataset if the patch does. */
   toBytes(): Uint8Array;
 }
 ````
@@ -348,14 +437,21 @@ class Patch {
 ### PatchSource
 
 ```ts
-/** What `Patch.read` reads: latkit's bytes or a patch's JSON. */
-type PatchSource = Uint8Array | ArrayBuffer | Blob | Response | string | object;
+/**
+ * What {@link Patch.read} accepts: bytes, a `Blob`, a `Response`, a byte stream, a URL to fetch as a
+ * string, or a parsed JSON value. The content is latkit's bytes or a patch's JSON.
+ */
+type PatchSource =
+  Uint8Array | ArrayBuffer | Blob | Response | ReadableStream<Uint8Array> | string | object;
 ```
 
 ### RowIds
 
 ```ts
-/** Row ids as a patch takes them: listed, `{ count }` for rows `0..count`, or a typed array. */
+/**
+ * Row ids: a list of numbers or strings, `{ count }` for ids `0` to `count - 1`, or a `Uint32Array`
+ * or `Float64Array` of numbers.
+ */
 type RowIds = Ids | readonly (Id | null)[] | Uint32Array | Float64Array;
 ```
 
@@ -363,8 +459,9 @@ type RowIds = Ids | readonly (Id | null)[] | Uint32Array | Float64Array;
 
 ```ts
 /**
- * One field's values, a value per row; `null` is missing. Typed arrays copy at once: numbers, or
- * in a `Uint8Array` booleans, nonzero true. Booleans, texts, and geometries also as arrays.
+ * One field's values, one per row, with `null` for a missing value. Numbers come as a typed array
+ * or an array. A `Uint8Array` holds booleans, nonzero being true. Booleans, strings, and geometries
+ * also come as arrays. Values are copied when passed, so the arrays can be reused at once.
  */
 type Values =
   | Float64Array
@@ -381,14 +478,20 @@ type Values =
 ### Geometry
 
 ```ts
-/** A point `[x, y]`, or a list of geometries one level shallower: a path, its parts, or polygons. */
+/**
+ * A point `[x, y]`, or a nested list of points: a path (a list of points), parts (a list of paths,
+ * such as a polygon's rings), or polygons (a list of parts).
+ */
 type Geometry = readonly number[] | readonly Geometry[];
 ```
 
 ### Reference
 
 ```ts
-/** A field naming rows of another table by id: `null` leaves a row unwired. */
+/**
+ * A reference field: for each row, the id of a row in table `reference`, or `null` to reference
+ * none.
+ */
 interface Reference {
   reference: string;
   ids: RowIds;
@@ -398,21 +501,21 @@ interface Reference {
 ### reference
 
 ```ts
-/** Values of a field naming rows of `table` by id. */
+/** Builds a {@link Reference} field: for each row, the id of the row of `table` it references. */
 function reference(table: string, ids: RowIds): Reference;
 ```
 
 ### Fields
 
 ```ts
-/** A table's fields by name. */
+/** A table's fields by name: values, or a {@link Reference}. */
 type Fields = Readonly<Record<string, Values | Reference>>;
 ```
 
 ### ReadableBytes
 
 ```ts
-/** A byte stream, structurally compatible with the browser and Node ReadableStream. */
+/** A byte stream: anything shaped like a browser or Node.js `ReadableStream` of `Uint8Array`. */
 interface ReadableBytes {
   getReader(): {
     read(): Promise<{
@@ -427,20 +530,23 @@ interface ReadableBytes {
 
 ## Expressions
 
-What varies by row: builders writing the expressions and colors scenes take.
+Builders for the per-row expressions and colors that scene options take.
 
 ### Expr
 
 ```ts
-/** A value for every row of a mark: a constant, a field, view state, or arithmetic of them. */
+/** A value for every row of a mark: a constant, a field, view state, or arithmetic on them. */
 class Expr {
   readonly node: ExprNode;
-  /** An expression from its JSON form; use the builders for common operations. */
+  /** Wraps an expression's JSON form. The builders cover common cases. */
   constructor(node: ExprNode);
   toJSON(): ExprNode;
-  /** Reads this expression's fields from `table` of dataset `data`, joined by row id. */
+  /** Reads this expression's fields from table `table` of dataset `data`, joined by row id. */
   from(data: string, table: string): Expr;
-  /** Reads sampled fields at their last frame without interpolating. */
+  /**
+   * Reads this expression's sampled fields at the last frame at or before the view's `at`, instead
+   * of interpolating toward the next frame.
+   */
   step(): Expr;
   add(other: ExprInput): Expr;
   sub(other: ExprInput): Expr;
@@ -463,18 +569,29 @@ class Expr {
   neg(): Expr;
   abs(): Expr;
   sqrt(): Expr;
+  /** The sine of the value, an angle in radians. */
   sin(): Expr;
+  /** The cosine of the value, an angle in radians. */
   cos(): Expr;
   floor(): Expr;
   ln(): Expr;
   exp(): Expr;
   /** Whether a text field equals `text`. */
   is(text: string): Expr;
-  /** Whether a text field holds `text`, ignoring case: in a mark, a field of its own table. */
+  /**
+   * Whether a text field contains `text`, ignoring case. In a mark, the field must be in the mark's
+   * own table.
+   */
   contains(text: string): Expr;
-  /** The value through `map`, a color for every row: a catalog name, or your own colors. */
+  /**
+   * Maps the value to a color for every row through `map`, a catalog name or custom colors. The
+   * domain fits the values shown unless set with {@link Colormapped.domain}.
+   */
   colormap(map: Colormap): Colormapped;
-  /** The value mapped linearly onto `[low, high]`, clamped. */
+  /**
+   * Maps the value linearly onto `[low, high]`, clamped. The domain fits the values shown unless
+   * set with {@link Mapped.domain}.
+   */
   scale(low: number, high: number): Mapped;
 }
 ```
@@ -482,16 +599,16 @@ class Expr {
 ### ExprInput
 
 ```ts
-/** What a value is written as: an {@link Expr}, or its JSON form, in which a string names a field. */
+/** A value option: an {@link Expr}, or its JSON form, in which a string is a field name. */
 type ExprInput = Expr | ExprNode;
 ```
 
 ### Mapped
 
 ```ts
-/** A value mapped onto a range, whose domain can be set. */
+/** A value mapped linearly onto a range, with an input domain that can be set. */
 class Mapped extends Expr {
-  /** The input values that map to the ends; it fits the values shown unless set. */
+  /** Sets the input values that map to the range's ends, instead of fitting the values shown. */
   domain(low: number, high: number): Mapped;
 }
 ```
@@ -499,7 +616,7 @@ class Mapped extends Expr {
 ### Missing
 
 ```ts
-/** A missing value, which options take the theme's for: a value and a color alike. */
+/** A missing value, valid as a value or a color. An option given one uses the theme's value. */
 class Missing extends Expr {
   readonly node: MissingNode;
   constructor();
@@ -511,12 +628,12 @@ class Missing extends Expr {
 
 ```ts
 /**
- * A color for every row of a mark: a CSS color, a value through a colormap, or a conditional choosing
- * between colors. Color options take one, or a CSS color as it is.
+ * A color for every row of a mark: a constant, a value mapped through a colormap, or a conditional
+ * choosing between colors. Color options take a `Paint` or a CSS color string.
  */
 class Paint {
   readonly node: PaintNode;
-  /** A color from its JSON form; use the builders for common colors. */
+  /** Wraps a color's JSON form. The builders cover common cases. */
   constructor(node: PaintNode);
   toJSON(): PaintNode;
 }
@@ -526,8 +643,8 @@ class Paint {
 
 ```ts
 /**
- * What a color is written as: a CSS color, a {@link Paint}, or its JSON form. A string is a CSS
- * color here; a field reads with {@link field}.
+ * A color option: a CSS color, a {@link Paint}, or its JSON form. A string here is always a CSS
+ * color, never a field name; map a field to colors with `field(name).colormap(map)`.
  */
 type PaintInput = Color | Paint | PaintNode;
 ```
@@ -535,9 +652,9 @@ type PaintInput = Color | Paint | PaintNode;
 ### Colormapped
 
 ```ts
-/** A value through a colormap, whose domain can be set. */
+/** A value mapped through a colormap, with an input domain that can be set. */
 class Colormapped extends Paint {
-  /** The input values that map to the ends; it fits the values shown unless set. */
+  /** Sets the input values that map to the colormap's ends, instead of fitting the values shown. */
   domain(low: number, high: number): Colormapped;
 }
 ```
@@ -545,28 +662,30 @@ class Colormapped extends Paint {
 ### Color
 
 ```ts
-/** A CSS color, such as `'#ffb000'` or `'rebeccapurple'`: what a string is in a color option. */
+/**
+ * A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. In a color option, a string is a color.
+ */
 type Color = string;
 ```
 
 ### field
 
 ```ts
-/** The field `name` of each row. */
+/** Reads field `name` of each row. */
 const field: (name: string) => Expr;
 ```
 
 ### color
 
 ```ts
-/** A color constant. */
+/** A constant color, from a CSS color string. */
 const color: (css: Color) => Paint;
 ```
 
 ### missing
 
 ```ts
-/** A missing value: options that read one take the theme's. */
+/** A missing value: an option given one uses the theme's value. */
 const missing: () => Missing;
 ```
 
@@ -574,8 +693,10 @@ const missing: () => Missing;
 
 ```ts
 /**
- * Starts a conditional: `when(c).then(a).when(d).then(b).otherwise(e)`. Its values are colors, a
- * string a CSS color, where its first is one; else values.
+ * Starts a conditional. `when(c).then(a).when(d).then(b).otherwise(e)` takes the value of the first
+ * case whose condition holds, else `e`. If the first `then` gets a color (a CSS string, a
+ * {@link Paint}, a missing value, or a color's JSON form), every value of the conditional is a
+ * color, and strings are CSS colors. Otherwise every value is an expression.
  */
 function when(condition: ExprInput): When;
 ```
@@ -583,11 +704,11 @@ function when(condition: ExprInput): When;
 ### When
 
 ```ts
-/** A conditional's first case, waiting for its value where the condition holds. */
+/** A conditional's first condition, awaiting its value from `then`. */
 class When {
-  /** The color where the condition holds: every value of the conditional is a color. */
+  /** Sets the color where the condition holds; every value of the conditional is then a color. */
   then(value: PaintInput): Then<Paint>;
-  /** The value where the condition holds. */
+  /** Sets the value where the condition holds. */
   then(value: ExprInput): Then<Expr>;
 }
 ```
@@ -595,11 +716,11 @@ class When {
 ### Then
 
 ```ts
-/** A conditional's cases so far, waiting for another or the value where none holds. */
+/** A conditional's cases so far, awaiting another `when` case or the `otherwise` fallback. */
 class Then<T extends Expr | Paint> {
-  /** Another case, tried when those before it do not hold. */
+  /** Adds a case, tried when no earlier condition holds. */
   when(condition: ExprInput): Next<T>;
-  /** The value where no case holds. */
+  /** Sets the value where no condition holds, and returns the finished conditional. */
   otherwise(value: InputOf<T>): T;
 }
 ```
@@ -607,9 +728,9 @@ class Then<T extends Expr | Paint> {
 ### Next
 
 ```ts
-/** A conditional's next case, waiting for its value where the condition holds. */
+/** A conditional's next condition, awaiting its value from `then`. */
 class Next<T extends Expr | Paint> {
-  /** The value where the condition holds. */
+  /** Sets the value where this condition holds. */
   then(value: InputOf<T>): Then<T>;
 }
 ```
@@ -617,7 +738,7 @@ class Next<T extends Expr | Paint> {
 ### InputOf
 
 ```ts
-/** What a conditional's values are written as, a value's or a color's. */
+/** A conditional's value input: {@link PaintInput} for colors, else {@link ExprInput}. */
 type InputOf<T> = T extends Paint ? PaintInput : ExprInput;
 ```
 
@@ -625,8 +746,9 @@ type InputOf<T> = T extends Paint ? PaintInput : ExprInput;
 
 ```ts
 /**
- * A size in CSS pixels, whatever the space's own unit: a stroke keeps its width on screen as a
- * diagram zooms. A number makes a theme's length too.
+ * A size in CSS pixels regardless of the space's unit, so it stays the same on screen as the view
+ * zooms: `px(1)` keeps a diagram's stroke 1 pixel wide at any zoom. Given a number, the result also
+ * works as a theme length.
  */
 function px(size: number): {
   px: number;
@@ -638,10 +760,10 @@ function px(size: ExprInput): Px;
 
 ```ts
 /**
- * A size in position units, whatever the space's own unit, so it scales as the view zooms, kept
- * within `atLeast` and `atMost` CSS pixels when given: `units('r', { atLeast: 2 })` grows with the map
- * and never vanishes. A marker keeps its proportions, its larger side held. A number alone makes a
- * theme's length too.
+ * A size in position units (degrees on the earth) regardless of the space's unit, so it scales as
+ * the view zooms. `within` limits its on-screen size in CSS pixels: `units('r', { atLeast: 2 })`
+ * grows with the map and never shrinks below 2 pixels. A marker keeps its proportions, with the
+ * limits applied to its larger side. Given only a number, the result also works as a theme length.
  */
 function units(size: number): {
   units: number;
@@ -652,11 +774,11 @@ function units(size: ExprInput, within?: Within): Units;
 ### Within
 
 ```ts
-/** The CSS pixels a size in position units keeps within. */
+/** On-screen limits, in CSS pixels, for a size given in position units. */
 interface Within {
-  /** CSS pixels it keeps at least, however far the view zooms out. */
+  /** The smallest size in CSS pixels, however far the view zooms out. */
   atLeast?: number;
-  /** CSS pixels it keeps at most, however far the view zooms in. */
+  /** The largest size in CSS pixels, however far the view zooms in. */
   atMost?: number;
 }
 ```
@@ -678,7 +800,7 @@ const hovered: () => Expr;
 ### pointer
 
 ```ts
-/** CSS pixels from a vertex to the pointer. */
+/** CSS pixels from a vertex to the pointer. Vertex marks only, and not in a vertex's position. */
 const pointer: () => Expr;
 ```
 
@@ -692,21 +814,24 @@ const zoom: () => Expr;
 ### elapsed
 
 ```ts
-/** Seconds since the view was created. */
+/** Seconds since the view was created. A mark that reads it redraws every frame. */
 const elapsed: () => Expr;
 ```
 
 ### icon
 
 ```ts
-/** An icon marker showing one of `images` for each row, picked by `index`. */
+/**
+ * An icon marker: each row shows `images[index]`, fitted in the marker's box, with `index` counting
+ * from 0. The pixels are copied into the marker.
+ */
 function icon(images: readonly RgbaImage[], index: ExprInput): Marker;
 ```
 
 ### RgbaImage
 
 ```ts
-/** Straight-alpha RGBA pixels, compatible with browser ImageData and server-produced pixels. */
+/** RGBA pixels with straight alpha, rows top to bottom. A browser `ImageData` has this shape. */
 interface RgbaImage {
   width: number;
   height: number;
@@ -718,8 +843,10 @@ interface RgbaImage {
 
 ```ts
 /**
- * A CSS gradient through `map`, a catalog name or colors of your own, toward `direction`: the colors
- * the GPU draws, a band each for a categorical map's categories.
+ * Returns a CSS `linear-gradient(...)` with the colors the GPU draws for `map`, a catalog name or a
+ * custom colormap. `direction` is the gradient's CSS direction, `'to right'` by default. A
+ * categorical map gives one solid band per category. Needs `await load()` first, and throws an
+ * `invalid` error for an invalid `map`.
  */
 function colormapCss(map: Colormap, direction?: string): string;
 ```
@@ -731,55 +858,77 @@ A GPU makes views, and canvases that show them.
 ### Gpu
 
 ```ts
-/** The GPU device views draw with. Views of one GPU draw in one animation frame, sharing its memory. */
+/**
+ * A WebGPU device that views draw with. The views and canvases of one `Gpu` share its memory and
+ * draw together in each animation frame, so linked views always show the same moment.
+ */
 class Gpu {
-  /** Asks for a WebGPU device, loading latkit first: the first call takes the one made as it loaded. */
+  /**
+   * Requests a WebGPU device, calling `load()` first. The first call reuses the device that
+   * `load()` requested. Rejects with an `unsupported` error when the browser has no WebGPU device.
+   */
   static create(): Promise<Gpu>;
   /**
-   * A view of `scene`, drawing the datasets its `sources` give. A {@link Canvas} shows it, and a
-   * {@link Shot} draws it with or without one.
+   * Creates a view that draws `scene` from the datasets in `options.sources`. Show it in a
+   * {@link Canvas}, or draw it into pictures with a `Shot`, with or without a canvas. Throws an
+   * `invalid` error for an invalid scene.
    */
   view(scene: Scene, options?: ViewOptions): View;
   /**
-   * A canvas showing views as `layout` places them in `target`: a `<canvas>` element, which sizes
-   * itself to its CSS box and passes each view the input landing on it, or an `OffscreenCanvas` in a
-   * worker, which keeps the size it is given at `pixelRatio` pixels a CSS pixel.
+   * Creates a canvas that shows views in `target`, placed by `options.layout`. A `<canvas>` element
+   * sizes itself to its CSS box at the device pixel ratio, and passes pointer, wheel, and key input
+   * to the views in its panels. An `OffscreenCanvas`, as in a worker, keeps the size it is given at
+   * `options.pixelRatio` pixels per CSS pixel, and takes no input. Throws an `invalid` error for an
+   * invalid layout, such as a view already shown in another panel.
    */
   canvas(target: HTMLCanvasElement | OffscreenCanvas, options?: CanvasOptions): Canvas;
   /**
-   * Calls `listener` with the frame's timestamp every animation frame, before the views draw, so
-   * what it changes shows in that frame. Returns a function that stops it.
+   * Calls `listener` every animation frame with the frame's timestamp in milliseconds, before the
+   * views draw, so changes it makes show in that frame. While any listener is registered, a frame
+   * runs every animation frame. Returns a function that removes the listener.
    */
   on(type: 'frame', listener: (now: number) => void): () => void;
-  /** Whether the device was lost; a new `Gpu` is needed. */
+  /** Whether the device was lost. Drawing then does nothing; create a new `Gpu`. */
   get lost(): boolean;
-  /** How much GPU memory data takes. */
+  /**
+   * The GPU memory budget for data, shared by every view of this GPU; see {@link Budget}. Defaults
+   * to half the device's largest storage buffer, and 32 MiB uploaded per frame.
+   */
   get budget(): Budget;
   set budget(budget: Budget);
-  /** What this GPU did since it was created, counted exactly; see {@link Work}. */
+  /**
+   * Exact counts of the work this GPU has done since it was created; see {@link Work}. The counts
+   * repeat for the same budget, device limits, and frames, so tests and benchmarks can assert them.
+   */
   get work(): Work;
-  /** Bytes on the GPU every view of it draws from: data, and what each view keeps per row. */
+  /**
+   * Bytes of GPU memory the views of this GPU draw from: data pages, and each view's per-row data.
+   */
   get resident(): number;
-  /** Bytes waiting to upload, for every view of this GPU. */
+  /** Bytes waiting to upload to the GPU, across every view of this GPU. */
   get uploading(): number;
   /**
-   * Draws one frame now at `now`, milliseconds on the clock animation frames give: the frame
-   * listeners, then every canvas that needs a frame. From the first step no animation frames are
-   * asked for: a harness, as tests and benchmarks are, steps every frame itself, so a run draws the
-   * same frames however fast the device is.
+   * Draws one frame immediately at time `now`, in milliseconds on the `requestAnimationFrame`
+   * clock: it runs the frame listeners, then draws every canvas that needs a frame. After the first
+   * call, this GPU stops requesting animation frames. A test or benchmark that steps every frame
+   * itself then draws the same frames on any device.
    */
   step(now: number): void;
   /**
-   * Resolves once the GPU finished the work submitted to it, every readback landed, and every
-   * pipeline a view or shot asked for compiled: a frame stepped then draws all of it.
+   * Resolves once the GPU has finished all submitted work, every readback has arrived, and every
+   * pipeline a view or shot requested has compiled. A frame stepped after that uses all of it.
    */
   done(wait?: Wait): Promise<void>;
   /**
-   * Resolves when work a view waits on lands after this call (a readback, a compile, a job, a text,
-   * a fetch), or a view asks for a frame.
+   * Resolves when, after this call, work a view is waiting on arrives (a readback, a pipeline
+   * compile, a job, a label text, or a fetch), or a view requests a frame. A harness that steps
+   * frames awaits it to know when to step again.
    */
   landed(wait?: Wait): Promise<void>;
-  /** Releases this GPU's canvases, views, and frame listeners. Other GPUs and data stay usable. */
+  /**
+   * Destroys this GPU's canvases, views, and frame listeners, then frees the device. Other GPUs and
+   * datasets stay usable. Calling it again does nothing; other methods throw afterwards.
+   */
   destroy(): void;
   [Symbol.dispose](): void;
 }
@@ -788,62 +937,100 @@ class Gpu {
 ### View
 
 ````ts
-/** A scene drawn from the sources it is given: shown by a canvas, which passes it input, or drawn by shots. */
+/**
+ * A scene drawn from its sources; created by `Gpu.view()`. A canvas shows it and passes it input,
+ * and a `Shot` draws it into pictures.
+ */
 class View {
-  /** The scene drawn; setting an invalid one throws and keeps the scene drawn. */
+  /**
+   * The scene drawn. Marks that match a mark of the previous scene by kind, dataset, table, and
+   * name keep their state and ease to their new options. Setting an invalid scene throws an
+   * `invalid` error and keeps the current one.
+   */
   get scene(): Scene;
   set scene(scene: Scene);
   /**
-   * What the view draws, each a dataset by name: a `Data`, its latest version from the frame after
-   * each patch applies; a `Snapshot`, as it is; `Tiles`, the pieces the view asks for. A mark its
-   * dataset no longer fits draws nothing, and the next frame tells why. Two sources of one name are
-   * invalid.
+   * The datasets the view draws, matched to marks by dataset name. The view draws a `Data` at its
+   * latest version, from the frame after each patch; a `Snapshot` unchanged; and `Tiles` as the
+   * pieces it needs. A mark whose dataset no longer fits it draws nothing; it is listed in
+   * `failures`, and the next frame emits an `error` event. Setting two sources with the same name
+   * throws an `invalid` error.
    */
   get sources(): readonly Source[];
   set sources(sources: readonly Source[]);
-  /** The axis coordinate shown: sampled fields read their last frame at or before it. */
+  /**
+   * The axis coordinate shown, such as a time. Marks read sampled fields at it, interpolating
+   * between the frame at or before it and the next, unless an expression uses `step()`.
+   */
   get at(): number;
   set at(at: number);
-  /** Where the view looks; setting it looks there at once. */
+  /**
+   * Where the view looks. Setting it moves the camera at once; use {@link View.fly} to ease. A
+   * camera of the wrong kind for the space, such as a plot camera on a map, is ignored.
+   */
   get camera(): Camera;
   set camera(camera: Camera);
-  /** CSS pixels kept clear at the top, right, bottom, and left, as when panels cover the view. */
+  /**
+   * CSS pixels kept clear at the top, right, bottom, and left, such as where page panels cover the
+   * view. The camera centers and fits within the rest.
+   */
   get insets(): Insets;
   set insets(insets: Insets);
-  /** Degrees per second a map or plane turns around its center; 0 stops it. A diagram never turns. */
+  /**
+   * Degrees per second the camera turns about its center on a map or plane; 0 stops it. A diagram
+   * never turns.
+   */
   get orbit(): number;
   set orbit(degreesPerSecond: number);
-  /** The rows selected, a set per table; setting it selects those and no others. */
+  /** The selected rows, one set per table. Setting it selects exactly those rows. */
   get selection(): readonly Rows[];
   set selection(rows: readonly Rows[]);
-  /** What the user points at: the row under the pointer, or the row the keys stepped to. */
+  /** The row under the pointer, or the row keyboard navigation moved to; `null` if none. */
   get hovered(): Hit | null;
-  /** The work under way the last frame stood in for; empty once it is complete. */
-  get waiting(): Waiting;
   /**
-   * Whether the last frame drew everything as the data, scene, and camera say, with nothing standing
-   * in for work under way: what `waiting` lists. A shot waits for it.
+   * The kinds of pending work that kept the last frame from being complete; empty when it was
+   * complete. See {@link Waiting}.
    */
+  get waiting(): Waiting;
+  /** Whether the last frame was complete, with nothing in `waiting` pending. Shots wait for it. */
   get complete(): boolean;
-  /** Every mark that draws nothing because its data no longer fits it, and why. */
+  /**
+   * An error for each mark that draws nothing because its data no longer fits it, such as a missing
+   * table. Each error's `path` names the mark.
+   */
   get failures(): readonly LatkitError[];
-  /** What the view does each frame. */
+  /** Counts and timings of the view's frames; see {@link Stats}. */
   get stats(): Stats;
-  /** Whether the view wants a frame: it changed, or work it waited on landed. */
+  /** Whether the view needs a frame, because it changed or work it was waiting on arrived. */
   get wantsFrame(): boolean;
-  /** Frames what `fit` names on the next frame, keeping pitch and bearing. */
+  /**
+   * Frames what `fit` names, every row by default, keeping pitch and bearing. It takes effect on
+   * the next frame, or a frame or two later when the extent must be measured on the GPU.
+   */
   fit(fit?: Fit): void;
-  /** Eases to `camera`. */
+  /**
+   * Eases the camera to `camera` over twice the scene's ease time, or at once when motion is
+   * reduced. A camera of the wrong kind for the space is ignored.
+   */
   fly(camera: Camera): void;
-  /** Where `position` lands on screen; `null` behind the camera. */
+  /**
+   * Projects `position` to a point on screen with the current camera, for anchoring HTML overlays;
+   * `null` when it is behind the camera.
+   */
   screen(position: Position): Point | null;
-  /** The position on the ground under screen point `point`; `null` where the view shows none there. */
+  /**
+   * The position on the ground under screen point `point`: at elevation 0 on a plane, on the map or
+   * globe on the earth, the values there on a plot. `null` where the point looks past the ground.
+   */
   position(point: Point): Position | null;
-  /** Where `row` lies on screen, or `null` when no mark draws it in view, once a frame draws the view. */
+  /**
+   * Resolves to where `row` is on screen once a frame draws the view, or `null` when no mark draws
+   * it in view. A diagram's vertices resolve at once.
+   */
   screenOf(row: Row, wait?: Wait): Promise<Point | null>;
   /**
-   * Every row of a mark that picks within `radius` CSS pixels (0 unless given) of `point`, nearest
-   * first, once a frame draws the view.
+   * Resolves, once a frame draws the view, to every row of a pickable mark within `options.radius`
+   * CSS pixels (0 by default) of `point`, nearest first.
    */
   pick(
     point: Point,
@@ -852,15 +1039,16 @@ class View {
     } & Wait,
   ): Promise<Hit[]>;
   /**
-   * The rows joined to `row`, a set per table: a vertex's neighbors across edges and nets, or an
-   * edge's or a net's vertices.
+   * The rows connected to `row`, one set per table: a vertex's neighbors across edges and nets, or
+   * an edge's or a net's vertices. The cost is proportional to the row's degree.
    */
   neighbors(row: Row): Rows[];
   /**
-   * Lays every vertex row without a position out again by the scene's layout: a diagram's blocks, or
-   * points on a plane or the earth. Places a layout gave otherwise hold, so rows added later are
-   * placed around the rest. Once the layout lands, answers a patch to each dataset writing each row
-   * laid out into its mark's position fields; applied, the places are the data's own.
+   * Runs the scene's layout again for every vertex row without a position: a diagram's blocks, or
+   * points on a plane or the earth. Otherwise a layout keeps the places it gave, so rows added
+   * later are placed around the rest. Resolves, once the layout finishes, to one patch per dataset
+   * that writes each laid-out row's place into its mark's position fields. Applying the patches
+   * makes the places part of the data. Marks whose position is not read from fields are left out.
    *
    * ```ts
    * for (const patch of await view.arrange()) if (patch.data === grid.name) grid.apply(patch);
@@ -868,16 +1056,21 @@ class View {
    */
   arrange(wait?: Wait): Promise<Patch[]>;
   /**
-   * The version of dataset `name` the view draws: the latest version of a `Data` it took, a snapshot
-   * given, or what it holds of `Tiles`, the pieces its camera asked for.
+   * The version of dataset `name` the view draws, or `undefined` if it draws none of that name: the
+   * latest version of a `Data` the view has taken, a given snapshot, or the pieces of `Tiles`
+   * fetched for its camera.
    */
   snapshot(name: string): Snapshot | undefined;
   /**
-   * Calls `listener` with each event of `type` told while it listens; returns a function that stops
-   * it. What lasts is state to read, as the property each change is named for.
+   * Calls `listener` with each event of `type` emitted while it is registered, and returns a
+   * function that removes it. Past events are not replayed; read the current state from the
+   * property a change event is named after.
    */
   on<T extends keyof ViewEvents>(type: T, listener: (event: ViewEvents[T]) => void): () => void;
-  /** Frees the view, rejecting what it was asked and has not answered; a canvas showing it keeps its last frame. */
+  /**
+   * Frees the view and rejects its unanswered queries. A canvas showing it keeps its last frame.
+   * Calling it again does nothing; other methods throw afterwards.
+   */
   destroy(): void;
   [Symbol.dispose](): void;
 }
@@ -886,8 +1079,9 @@ class View {
 ### ViewOptions
 
 ```ts
-/** What a view is made with: the sources of the datasets its scene names. */
+/** Options for `Gpu.view()`. */
 interface ViewOptions {
+  /** The datasets the scene draws; see {@link View.sources}. */
   sources?: readonly Source[];
 }
 ```
@@ -896,10 +1090,11 @@ interface ViewOptions {
 
 ```ts
 /**
- * What a view tells its listeners, by type. Intents (`click`, `open`, `menu`, `drag`, `connect`,
- * `delete`) are told once each, in the order the user acted. Changes (`hovered`, `selection`,
- * `camera`, `waiting`) are named like the property they changed, and tell only their latest. A view
- * tells only what the application did not do itself: its setters change state silently.
+ * The events a view emits, by type, mapped to each event's detail. Intents (`click`, `open`,
+ * `menu`, `drag`, `connect`, `delete`) are emitted once each, in the order the user acted. Changes
+ * (`hovered`, `selection`, `camera`, `waiting`) are named after the property that changed and carry
+ * only its latest value. An `error` event's detail is a {@link LatkitError}. Setters emit nothing,
+ * so events report only what the application did not do itself.
  */
 type ViewEvents = {
   [E in ViewEvent as E['type']]: E extends {
@@ -920,14 +1115,17 @@ type Insets = [top: number, right: number, bottom: number, left: number];
 ### Point
 
 ```ts
-/** A point on screen: CSS pixels from the top left. */
+/** A point on screen, in CSS pixels from the view's top left corner. */
 type Point = [x: number, y: number];
 ```
 
 ### Position
 
 ```ts
-/** A position in the space's coordinates: x, y, and elevation. */
+/**
+ * A position in the space's coordinates: x, y, and elevation. On the earth, x and y are longitude
+ * and latitude; on a plot, the axis coordinate and the value.
+ */
 type Position = [x: number, y: number, elevation: number];
 ```
 
@@ -935,24 +1133,29 @@ type Position = [x: number, y: number, elevation: number];
 
 ```ts
 /**
- * Views shown in a `<canvas>` element, which sizes itself to its CSS box and passes each view the
- * input landing on its panel, or an `OffscreenCanvas` in a worker, which keeps the size it is given.
+ * Shows views in a `<canvas>` element or an `OffscreenCanvas`, each in its layout panel; created by
+ * `Gpu.canvas()`. A frame redraws only the views that need it, or every view after a resize or a
+ * layout change.
  */
 class Canvas {
-  /** What it draws into. */
+  /** The `<canvas>` element or `OffscreenCanvas` it draws into. */
   get element(): HTMLCanvasElement | OffscreenCanvas;
   /**
-   * The views shown and where, a later panel over an earlier one; setting it shows those in place of
-   * the ones shown. A view shows in one panel of one canvas at a time.
+   * The views shown and their regions; later panels draw over earlier ones. Setting it replaces the
+   * shown views. A view can show in only one panel of one canvas at a time. Setting a layout that
+   * breaks this, or that has a panel covering no pixels, throws an `invalid` error.
    */
   get layout(): readonly Panel[];
   set layout(layout: readonly Panel[]);
   /**
-   * A picture of exactly what the canvas shows: its views as its layout places them, at its size in
-   * CSS pixels times `scale`.
+   * Returns a {@link Shot} of exactly what the canvas shows: its views in its layout, at the
+   * canvas's CSS size times `options.scale` (1 by default) in pixels.
    */
   shot(options?: ShotOptions): Shot;
-  /** Stops drawing; the views remain, and the element keeps its last frame. */
+  /**
+   * Stops drawing and frees the canvas. The views stay usable, and the element keeps its last
+   * frame. Calling it again does nothing.
+   */
   destroy(): void;
   [Symbol.dispose](): void;
 }
@@ -961,11 +1164,14 @@ class Canvas {
 ### CanvasOptions
 
 ```ts
-/** How a canvas shows its views. */
+/** Options for `Gpu.canvas()`. */
 interface CanvasOptions {
-  /** The views shown and where; a later panel draws over an earlier one. */
+  /** The views shown and their regions; later panels draw over earlier ones. None by default. */
   layout?: readonly Panel[];
-  /** Pixels a CSS pixel of an `OffscreenCanvas`; an element follows its device. */
+  /**
+   * Pixels per CSS pixel of an `OffscreenCanvas`, 1 by default; it must be positive. A `<canvas>`
+   * element uses the device pixel ratio instead.
+   */
   pixelRatio?: number;
 }
 ```
@@ -973,9 +1179,10 @@ interface CanvasOptions {
 ### Panel
 
 ```ts
-/** A view's place in a canvas or a picture: where it draws, all of it unless `at` says. */
+/** A view and the region of a canvas or picture it draws in. */
 interface Panel {
   view: View;
+  /** Where the view draws; the whole canvas or picture by default. */
   at?: Rect;
 }
 ```
@@ -983,7 +1190,7 @@ interface Panel {
 ### Rect
 
 ```ts
-/** `[x, y, width, height]` as fractions of a canvas or a picture. */
+/** A region `[x, y, width, height]` in fractions of a canvas or picture, from its top left. */
 type Rect = readonly [x: number, y: number, width: number, height: number];
 ```
 
@@ -995,9 +1202,9 @@ Shots draw views into images and video.
 
 ````ts
 /**
- * A picture of views, each drawn into its panel of `size` pixels as `layout` places it: drawn while a
- * canvas showing it holds its last frame, each view's data as it was when the picture began. A
- * canvas's `shot()` takes one of what it shows.
+ * A picture of views, `size` pixels in all, each view drawn into its layout panel. While a shot
+ * draws a view, a canvas showing that view keeps its last frame. An image draws each view's data as
+ * it was when the picture began. A canvas's `shot()` makes a shot of what the canvas shows.
  *
  * ```ts
  * const png = await (await canvas.shot({ scale: 2 }).image()).encode('png');
@@ -1008,20 +1215,25 @@ class Shot {
   readonly options: ShotOptions & {
     layout?: readonly Panel[];
   };
-  /** A picture `size` pixels wide and high, of the views of `options.layout`. */
+  /** Creates a shot of `size`, `[width, height]` in pixels, of the views in `options.layout`. */
   constructor(
     size: readonly [number, number],
     options?: ShotOptions & {
       layout?: readonly Panel[];
     },
   );
-  /** The picture, once every view is complete as `capture` says. */
+  /**
+   * Draws the picture once every view is complete, as `capture` says, and resolves to the
+   * {@link Image}. Rejects with an `invalid` error for invalid options or a view in two panels, and
+   * with the first error a view reports while drawing.
+   */
   image(wait?: Wait): Promise<Image>;
   /**
-   * A video of these pictures at `fps` frames a second, H.264 in MP4, written to `output` as it is
-   * drawn, at `bitrate` bits a second or about 0.15 bits a pixel a frame. Its width rounds down to a
-   * multiple of 4 and its height of 2, the blocks H.264 takes. `signal` aborts it: the output is
-   * aborted and the views are given back.
+   * Starts a video of this shot: H.264 in MP4 at `fps` frames per second, written to `output` as
+   * frames are drawn. `bitrate` is in bits per second, about 0.15 bits per pixel per frame by
+   * default. The width is rounded down to a multiple of 4 and the height to a multiple of 2, as the
+   * encoder requires. Canvases showing the views keep their last frame until the video finishes or
+   * aborts. Aborting `signal` aborts the video and `output`; frames have no other time limit.
    */
   video({
     fps,
@@ -1039,19 +1251,25 @@ class Shot {
 ### ShotOptions
 
 ```ts
-/** How a picture is taken. */
+/** Options for a {@link Shot}. */
 interface ShotOptions {
-  /** Pixels per CSS pixel: a view lays out `size / scale` CSS pixels, so 2 draws twice as sharp. 1 unless given. */
+  /**
+   * Pixels per CSS pixel, 1 by default. Views lay out at `size / scale` CSS pixels, so 2 draws the
+   * same layout twice as sharp.
+   */
   scale?: number;
-  /** Keeps alpha where the themes' backgrounds would be. */
+  /** Leaves the background transparent where the theme's background color would be. */
   transparent?: boolean;
   /**
-   * When the picture is taken: once its views are complete and still, transitions, flights, and
-   * label fades run on until they land (`still`, the default); or once they are complete, as they
-   * stand now, what moves held where it is (`now`).
+   * When the picture is taken. `'still'`, the default, waits until every view is complete and
+   * still: transitions, camera flights, and label fades run until they finish. `'now'` waits only
+   * until every view is complete, and freezes anything moving where it is.
    */
   capture?: 'still' | 'now';
-  /** A still's effect time in seconds, where elapsed time and flowing comets read it. */
+  /**
+   * The time in seconds that `elapsed()` expressions and flowing comets show in a still picture. By
+   * default they follow the view's clock.
+   */
   elapsed?: number;
 }
 ```
@@ -1059,15 +1277,19 @@ interface ShotOptions {
 ### Image
 
 ```ts
-/** RGBA pixels, straight alpha, rows top to bottom. */
+/** A picture's RGBA pixels, with straight alpha, rows top to bottom. */
 class Image {
+  /** Width in pixels. */
   get width(): number;
+  /** Height in pixels. */
   get height(): number;
-  /** The pixels, copied. */
+  /** A copy of the pixels: 4 bytes per pixel, `width * height * 4` bytes in all. */
   get rgba(): Uint8Array;
   /**
-   * The image as a file, written in a worker: PNG, lossless with alpha; JPEG at `quality` from 1 to
-   * 100 (90 by default), small, its alpha dropped; or WebP, lossless with alpha, smaller than PNG.
+   * Encodes the image as a file, in a worker. PNG is lossless with alpha. JPEG uses
+   * `options.quality` from 1 to 100 (90 by default) and drops alpha. WebP is lossless with alpha
+   * and smaller than PNG. Rejects with an `invalid` error for a quality outside 1 to 100 or an
+   * unknown format.
    */
   encode(
     format: ImageFormat,
@@ -1075,6 +1297,7 @@ class Image {
       quality?: number;
     } & Wait,
   ): Promise<Uint8Array>;
+  /** Frees the pixels. Other methods throw afterwards. */
   destroy(): void;
   [Symbol.dispose](): void;
 }
@@ -1083,29 +1306,53 @@ class Image {
 ### ImageFormat
 
 ```ts
-/** How an image is written as a file. */
+/** An image file format for {@link Image.encode}. */
 type ImageFormat = 'png' | 'jpeg' | 'webp';
 ```
 
 ### Video
 
 ```ts
-/** A video being drawn, encoded, and written. */
+/**
+ * A video being drawn, encoded, and written; created by {@link Shot.video}. Draw frames with
+ * {@link Video.frame} or {@link Video.record}, then call {@link Video.finish}.
+ */
 class Video {
-  /** Seconds into the video the next frame shows at; kept once it is done. */
+  /** The time in seconds at which the next frame shows. Still readable after the video ends. */
   get time(): number;
-  /** Frames drawn or held so far; kept once it is done. */
+  /**
+   * Frames recorded so far, including frames repeated because nothing moved. Still readable after
+   * the video ends.
+   */
   get frames(): number;
-  /** Draws and writes one frame, waiting for the output's backpressure. One frame draws at a time. */
+  /**
+   * Draws the next frame once its views are complete, and writes its bytes, waiting on the
+   * output's backpressure. Calls must not overlap: a call made before the previous one resolves,
+   * or after `finish()`, rejects with an `invalid` error, and a call after `abort()` with a
+   * `cancelled` error. A failure aborts the video.
+   */
   frame(): Promise<void>;
-  /** Records until `step(time)` returns false; any step, drawing, output, or progress error aborts it. */
+  /**
+   * Records frames until `step(time)` returns false, then finishes the video. `step` gets the next
+   * frame's time in seconds and can change the views before that frame is drawn. `onProgress` is
+   * called after each frame. An error from `step`, drawing, the output, or `onProgress` aborts the
+   * video and is rethrown.
+   */
   record(
     step: (time: number) => boolean | Promise<boolean>,
     onProgress?: (progress: { frames: number; time: number }) => void,
   ): Promise<void>;
-  /** Finishes pending work, writes the end of the file, and closes and unlocks the output. Idempotent. */
+  /**
+   * Waits for the frame in progress, encodes the remaining frames, writes the end of the file, and
+   * closes and unlocks the output. Later calls return the same promise. Rejects with a `cancelled`
+   * error if the video was aborted.
+   */
   finish(): Promise<void>;
-  /** Cancels drawing and encoding, aborts the output, and unlocks it once pending writes settle. Idempotent. */
+  /**
+   * Cancels drawing and encoding, aborts the output with `reason`, and unlocks it once pending
+   * writes settle. Later calls return the same promise. After `finish()` completes, it does
+   * nothing.
+   */
   abort(reason?: unknown): Promise<void>;
 }
 ```

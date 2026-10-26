@@ -1,12 +1,13 @@
-//! Fragmented MP4: one H.264 track written as it goes. `ftyp` and a `moov` with no samples come first, built from the
-//! first keyframe's SPS and PPS. Then each run of frames from a keyframe up to the next becomes one fragment: a `moof`
-//! that times, sizes, and flags its samples, and an `mdat` that holds them. Only the run being gathered is held, so a
-//! video of any length streams to its output with memory for one fragment.
+//! Fragmented MP4 muxing: one H.264 track written as it streams. `ftyp` and a `moov` with no
+//! samples come first, built from the first keyframe's SPS and PPS. Then each run of frames from
+//! one keyframe up to the next becomes a fragment: a `moof` with its samples' durations, sizes, and
+//! flags, and an `mdat` holding them. Only the current run is kept in memory, so a video of any
+//! length streams out using memory for one fragment.
 //!
-//! A frame lasts until the next one shows, so a video that skips frames where nothing moved pays nothing for them
-//! (variable frame rate). Each fragment's decode time is its first frame's own time, so durations never drift from the
-//! caller's clock. A sample is its NAL units with 4-byte lengths in place of start codes, access unit delimiters left
-//! out and SPS and PPS kept in band.
+//! A frame lasts until the next one shows, so frames skipped because nothing moved take no space
+//! (variable frame rate). Each fragment's decode time is its first frame's own time, so durations
+//! never drift from the caller's clock. A sample is its NAL units with 4-byte lengths in place of
+//! start codes, with access unit delimiters dropped and SPS and PPS kept in band.
 
 use super::Unit;
 
@@ -20,20 +21,20 @@ const PPS: u8 = 8;
 const AUD: u8 = 9;
 /// Sample flags of a keyframe: it depends on no other.
 const KEY: u32 = 0x0200_0000;
-/// Sample flags of a frame between keyframes: it depends on others, and is no sync sample.
+/// Sample flags of a frame between keyframes: it depends on others and is not a sync sample.
 const DELTA: u32 = 0x0101_0000;
 /// The identity transform, in 16.16 and 2.30 fixed point.
 const MATRIX: [u32; 9] = [0x0001_0000, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000];
 
-/// A fragmented MP4 muxer for one H.264 track, taking access units and handing back the bytes to write.
+/// A fragmented MP4 muxer for one H.264 track: takes access units and returns the bytes to write.
 pub(crate) struct Muxer {
     size: [u32; 2],
     timescale: u32,
-    /// Whether `ftyp` and `moov` were handed out.
+    /// Whether `ftyp` and `moov` were written.
     headed: bool,
-    /// How many fragments were handed out.
+    /// How many fragments were written.
     sequence: u32,
-    /// The frames of the fragment being gathered, the first its keyframe.
+    /// The frames of the current fragment, starting with its keyframe.
     run: Vec<Sample>,
     /// Their NAL units, length-prefixed: the fragment's `mdat` payload.
     data: Vec<u8>,
@@ -41,28 +42,30 @@ pub(crate) struct Muxer {
     last: Option<u64>,
 }
 
-/// A frame of the fragment being gathered.
+/// A frame of the current fragment.
 struct Sample {
-    /// Ticks at which it shows.
+    /// Presentation time in ticks.
     time: u64,
-    /// Its bytes in the `mdat` payload.
+    /// Its size in bytes in the `mdat` payload.
     size: u32,
 }
 
 impl Muxer {
-    /// A muxer for one H.264 track of `size` pixels whose frame times are `timescale` ticks a second.
+    /// A muxer for one H.264 track of `size` pixels, with frame times in ticks of `timescale` per
+    /// second.
     pub(crate) fn new(size: [u32; 2], timescale: u32) -> Muxer {
         Muxer { size, timescale, headed: false, sequence: 0, run: Vec::new(), data: Vec::new(), last: None }
     }
 
-    /// Takes one access unit; returns the bytes ready to write next, in order: `ftyp` and `moov` before
-    /// the first keyframe's fragment, and a fragment (`moof` + `mdat`) whenever a keyframe closes the
-    /// run of frames before it. A frame lasts until the next frame's time, so frames a video skipped
-    /// because nothing moved cost nothing (variable frame rate). Units before the first keyframe are
-    /// dropped. Returns `Err` (a `String` reason) when the first keyframe holds no SPS and PPS.
+    /// Takes one access unit and returns the bytes to write next, in order: `ftyp` and `moov`
+    /// before the first keyframe's fragment, and a fragment (`moof` + `mdat`) whenever a keyframe
+    /// closes the run of frames before it. A frame lasts until the next frame's time, so frames
+    /// skipped because nothing moved take no space (variable frame rate). Units before the first
+    /// keyframe are dropped. Errors with a reason when the first keyframe lacks an SPS and PPS, or
+    /// its SPS is too short.
     ///
-    /// A unit whose time does not pass the last one's shows a tick after it. A unit holding no NAL units but
-    /// delimiters is dropped, and the frame before it lasts on.
+    /// A unit whose time is not after the last one's is shown one tick after it. A unit holding
+    /// only access unit delimiters is dropped, and the previous frame lasts longer.
     pub(crate) fn push(&mut self, unit: &Unit) -> Result<Vec<u8>, String> {
         let mut out = Vec::new();
         if self.run.is_empty() && !unit.key {
@@ -96,8 +99,8 @@ impl Muxer {
         Ok(out)
     }
 
-    /// Ends the video at `end` ticks: the last frame lasts until then (at least one tick). Returns
-    /// the last fragment's bytes, or nothing when no frame was pushed.
+    /// Ends the video at `end` ticks; the last frame lasts until then, at least one tick. Returns
+    /// the last fragment's bytes, or nothing if no frame is pending.
     pub(crate) fn finish(&mut self, end: u64) -> Vec<u8> {
         let mut out = Vec::new();
         if let Some(last) = self.run.last().map(|sample| sample.time) {
@@ -106,7 +109,8 @@ impl Muxer {
         out
     }
 
-    /// Writes `ftyp`, and the `moov` that describes the track by its first keyframe's `sps` and `pps`.
+    /// Writes `ftyp` and the `moov` describing the track, built from the first keyframe's `sps` and
+    /// `pps`.
     fn header(&self, sps: &[u8], pps: &[u8], out: &mut Vec<u8>) {
         boxed(out, *b"ftyp", |o| {
             o.extend_from_slice(b"isom");
@@ -117,7 +121,7 @@ impl Muxer {
             full(o, *b"mvhd", 0, 0, |o| {
                 o.extend([0; 8]); // creation and modification times
                 o.extend(self.timescale.to_be_bytes());
-                o.extend([0; 4]); // duration: the fragments hold it
+                o.extend([0; 4]); // duration: set by the fragments
                 o.extend(0x0001_0000_u32.to_be_bytes()); // rate
                 o.extend(0x0100_u16.to_be_bytes()); // volume
                 o.extend([0; 10]);
@@ -177,15 +181,15 @@ impl Muxer {
         full(o, *b"tkhd", 0, 3, |o| {
             o.extend([0; 8]);
             o.extend(TRACK.to_be_bytes());
-            o.extend([0; 24]); // duration, layer, group, and volume, all none
+            o.extend([0; 24]); // duration, layer, group, and volume, all zero
             matrix(o);
             o.extend((w << 16).to_be_bytes());
             o.extend((h << 16).to_be_bytes());
         });
     }
 
-    /// Writes the `avc1` sample entry: the picture's size, its decoder configuration from `sps` and `pps`, and its
-    /// colors, BT.709 in limited range.
+    /// Writes the `avc1` sample entry: the picture size, the decoder configuration from `sps` and
+    /// `pps`, and the colors, BT.709 limited range.
     fn avc1(&self, sps: &[u8], pps: &[u8], o: &mut Vec<u8>) {
         let [w, h] = self.size;
         boxed(o, *b"avc1", |o| {
@@ -197,7 +201,7 @@ impl Muxer {
             o.extend(0x0048_0000_u32.to_be_bytes()); // 72 dpi across
             o.extend(0x0048_0000_u32.to_be_bytes()); // and down
             o.extend([0; 4]);
-            o.extend(1_u16.to_be_bytes()); // frames a sample
+            o.extend(1_u16.to_be_bytes()); // frames per sample
             o.extend([0; 32]); // compressor name
             o.extend(0x18_u16.to_be_bytes()); // depth
             o.extend((-1_i16).to_be_bytes());
@@ -210,17 +214,18 @@ impl Muxer {
                 o.extend((pps.len() as u16).to_be_bytes());
                 o.extend_from_slice(pps);
                 if matches!(sps[1], 100 | 110 | 122 | 144) {
-                    o.extend([0xfd, 0xf8, 0xf8, 0]); // 4:2:0, 8-bit luma and chroma, no SPS extensions
+                    o.extend([0xfd, 0xf8, 0xf8, 0]); // 4:2:0, 8-bit, no SPS extensions
                 }
             });
             boxed(o, *b"colr", |o| {
                 o.extend_from_slice(b"nclx");
-                o.extend([0, 1, 0, 1, 0, 1, 0]); // primaries, transfer, and matrix BT.709; limited range
+                o.extend([0, 1, 0, 1, 0, 1, 0]); // BT.709 primaries/transfer/matrix, limited range
             });
         });
     }
 
-    /// Writes the fragment of the frames gathered, the last lasting until `end`, and empties the run for the next.
+    /// Writes a fragment of the current run, the last frame lasting until `end`, and clears the
+    /// run.
     fn fragment(&mut self, end: u64, out: &mut Vec<u8>) {
         self.sequence += 1;
         out.reserve(100 + 12 * self.run.len() + self.data.len());
@@ -253,7 +258,7 @@ impl Muxer {
     }
 }
 
-/// Writes a box of type `kind` whose body `body` writes, its size filled in after.
+/// Writes a box of type `kind` with the body `body` writes, filling in its size afterwards.
 fn boxed(out: &mut Vec<u8>, kind: [u8; 4], body: impl FnOnce(&mut Vec<u8>)) {
     let start = out.len();
     out.extend([0; 4]);
@@ -278,8 +283,8 @@ fn matrix(out: &mut Vec<u8>) {
     }
 }
 
-/// The NAL units of Annex B `bytes`: what lies between start codes, less the zero bytes that lead a 4-byte start code
-/// (a NAL unit never ends in one).
+/// The NAL units of Annex B `bytes`: the bytes between start codes, minus trailing zero bytes,
+/// which belong to a following 4-byte start code (a NAL unit never ends in a zero byte).
 pub(crate) fn nals(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut rest = start_code(bytes).map_or(&[][..], |at| &bytes[at + 3..]);
     std::iter::from_fn(move || {
@@ -313,7 +318,7 @@ mod tests {
     const IDR: &[u8] = &[0x65, 0x88, 0x84, 0x00, 0x21];
     const SLICE: &[u8] = &[0x41, 0x9a, 0x00, 0x03, 0x01, 0x7f];
 
-    /// NAL units in Annex B form, their start codes 4 and 3 bytes by turns.
+    /// NAL units in Annex B form, with start codes alternating between 4 and 3 bytes.
     fn annex_b(nals: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         for (i, nal) in nals.iter().enumerate() {
@@ -323,12 +328,12 @@ mod tests {
         out
     }
 
-    /// A keyframe at `time`, delimited, with its SPS and PPS.
+    /// A keyframe at `time` with an access unit delimiter, SPS, and PPS.
     fn key(time: u64) -> Unit {
         Unit { time, key: true, annex_b: annex_b(&[AUD_NAL, SPS_NAL, PPS_NAL, IDR]) }
     }
 
-    /// A frame between keyframes at `time`, delimited.
+    /// A frame between keyframes at `time`, with an access unit delimiter.
     fn delta(time: u64) -> Unit {
         Unit { time, key: false, annex_b: annex_b(&[AUD_NAL, SLICE]) }
     }
@@ -337,7 +342,7 @@ mod tests {
         u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap())
     }
 
-    /// The boxes `bytes` holds, each its type and its body.
+    /// The boxes in `bytes`, each as its type and body.
     fn boxes(mut bytes: &[u8]) -> Vec<([u8; 4], &[u8])> {
         let mut out = Vec::new();
         while !bytes.is_empty() {
@@ -348,7 +353,7 @@ mod tests {
         out
     }
 
-    /// The body of the box of type `kind` among those `bytes` holds past its first `skip` bytes.
+    /// The body of the box of type `kind` in `bytes`, after skipping its first `skip` bytes.
     fn child(bytes: &[u8], skip: usize, kind: [u8; 4]) -> &[u8] {
         let found = boxes(&bytes[skip..]).into_iter().find(|(k, _)| *k == kind);
         found.unwrap_or_else(|| panic!("no {}", String::from_utf8_lossy(&kind))).1
@@ -358,7 +363,7 @@ mod tests {
         boxes(bytes).iter().map(|(kind, _)| String::from_utf8_lossy(kind).into_owned()).collect()
     }
 
-    /// A fragment read back.
+    /// A parsed fragment.
     struct Fragment {
         sequence: u32,
         time: u64,
@@ -412,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn the_header_comes_with_the_first_keyframe_and_a_fragment_with_each_next() {
+    fn the_header_comes_with_the_first_keyframe_and_fragments_with_later_ones() {
         let mut mp4 = Muxer::new([640, 360], 90_000);
         let mut file = Vec::new();
         let head = mp4.push(&key(0)).unwrap();
@@ -502,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn late_times_take_a_tick_and_empty_units_are_dropped() {
+    fn late_units_move_a_tick_past_the_last_and_empty_units_are_dropped() {
         let mut mp4 = Muxer::new([64, 64], 1000);
         let mut file = mp4.push(&key(100)).unwrap();
         for unit in [delta(100), delta(50), Unit { time: 300, key: false, annex_b: annex_b(&[AUD_NAL]) }, delta(400)] {

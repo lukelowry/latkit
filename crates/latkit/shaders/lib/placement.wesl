@@ -1,7 +1,6 @@
-// What label placement works in: each labeled row's candidate, in pages the page table at
-// `mark.candidates` lists; and the labels buffer, with the texts each mark asks the host to set and
-// those its labels show, its run table, the select capping its labels, and the cells of the screen
-// labels claim.
+// Label placement storage. Each labeled row's candidate lives in pages listed by the page table at
+// `mark.candidates`. The labels buffer holds each mark's requested and shown text codes, run table,
+// and the select that caps its labels, plus the grid of screen cells that labels claim.
 
 import package::lib::types::{CANDIDATE_WORDS, WANTED};
 import package::lib::bind::{mark, pages};
@@ -22,7 +21,7 @@ fn candidate(row: u32) -> u32 {
     return record_at(mark.candidates, CANDIDATE_WORDS, row);
 }
 
-// Writes word `at` of the pages: a candidate's.
+// Writes word `at` of the pages, such as a candidate word.
 fn put(at: u32, value: u32) {
     pages[at] = value;
 }
@@ -35,7 +34,7 @@ fn want(code: u32) {
     }
 }
 
-// Notes that a label shows the text of `code`, so the atlas keeps it.
+// Marks the text of `code` as shown, so the atlas keeps it.
 fn seen(code: u32) {
     atomicOr(&labels[mark.seen + code / 32u], 1u << (code % 32u));
 }

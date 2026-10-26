@@ -1,8 +1,8 @@
 /**
- * One record in two views on one canvas: a lattice of nodes on a tilted plane, each standing on a
- * pole as high as its signal, and the signals traced on a plot. One playhead moves both; play at a
- * speed or scrub, and read where each view stands. Select nodes in either view and the other selects
- * them too, their traces standing out.
+ * One recording in two views on one canvas: a lattice of nodes on a tilted plane, each on a pole as
+ * high as its signal, and a plot tracing the signals over time. One playhead moves both views. Play
+ * at a chosen speed or scrub, and read each view's time and stats. Nodes selected in either view
+ * are selected in the other too, and their traces stand out.
  */
 import {
   Data,
@@ -21,17 +21,18 @@ import {
 import type { Stage } from '../../ui/stage.js';
 import { theme } from '../../ui/theme.js';
 
-/** Nodes a side of the lattice, frames recorded, seconds between them, and a full signal's height. */
+/** Nodes per side of the lattice, frames recorded, seconds between frames, and the height of a
+ * full signal in plane units. */
 const SIDE = 20;
 const FRAMES = 1201;
 const STEP = 0.05;
 const HEIGHT = 3;
-/** Every `TRACED`th node, from the middle of the first run, is traced when few are. */
+/** When only a few traces show, every `TRACED`th node is traced, starting at node 10. */
 const TRACED = 25;
 
 /**
- * The record: nodes at whole x and y, linked to their neighbors right and down, each a signal
- * rippling across the lattice, `0.5 + 0.45 sin(0.37 x + 1.3 t) cos(0.31 y - 0.7 t)`.
+ * Builds the recording: nodes at integer x and y, linked to their neighbors at +x and +y, each with
+ * a signal rippling across the lattice, `0.5 + 0.45 sin(0.37 x + 1.3 t) cos(0.31 y - 0.7 t)`.
  */
 function record(): Data {
   const n = SIDE * SIDE;
@@ -55,7 +56,7 @@ function record(): Data {
       { count: from.length },
       { from: reference('Node', from), to: reference('Node', to) },
     );
-  // Every frame in one append, frame by frame.
+  // One append holds every frame, with the samples laid out frame after frame.
   const times = Array.from({ length: FRAMES }, (_, f) => f * STEP);
   const signal = new Float32Array(FRAMES * n);
   times.forEach((t, f) => {
@@ -72,14 +73,15 @@ export default function page(stage: Stage): void {
   const look = {
     height: HEIGHT,
     poles: true,
-    /** Whether signals read their last sample as it was, rather than eased between samples. */
+    /** Whether signals hold their last sample instead of easing between samples. */
     held: false,
     size: 'pixels' as 'pixels' | 'zoom' | 'units',
   };
-  /** Each node's signal: eased between samples, or held at the last one. */
+  /** Each node's signal, eased between samples or held at the last one. */
   const reading = () => (look.held ? field('signal').step() : field('signal'));
   const signal = () => reading().colormap('viridis').domain(0, 1);
-  /** A node's radius: CSS pixels, grown with the zoom, or units of the plane kept within pixels. */
+  /** A node's radius: fixed CSS pixels, growing with the zoom, or plane units clamped to a range of
+   * pixels. */
   const radius = (): Size =>
     look.size === 'zoom'
       ? zoom().mul(0.9).clamp(1.5, 9)
@@ -126,7 +128,7 @@ export default function page(stage: Stage): void {
           of: ['signals', 'Node'],
           trace: 'signal',
           color: signal(),
-          // Selected nodes' traces stand out, the rest dim.
+          // Selected nodes' traces are drawn wider, and the rest dim.
           width: when(selected())
             .then(3)
             .otherwise(few ? 1.5 : 0.8),
@@ -136,7 +138,7 @@ export default function page(stage: Stage): void {
     ],
   });
   const [plane, plot] = stage.panels([lattice(), traces()], {
-    label: 'A lattice on poles beside its signals traced: one playhead moves both',
+    label: 'A lattice on poles beside a plot of its signals: one playhead moves both',
     at: [
       [0, 0, 0.55, 1],
       [0.55, 0, 0.45, 1],
@@ -152,7 +154,7 @@ export default function page(stage: Stage): void {
     plot.scene = traces();
   };
 
-  // What either view selects, the other selects too.
+  // Copy each view's selection to the other.
   const same = (a: readonly Rows[], b: readonly Rows[]) => JSON.stringify(a) === JSON.stringify(b);
   for (const [from, to] of [
     [plane, plot],
@@ -174,7 +176,8 @@ export default function page(stage: Stage): void {
   });
   playback.record([0, duration]);
 
-  // Where each view stands: both draw in the canvas's one frame, so they never part.
+  // Each view's time and stats. Both views draw in the canvas's single frame, so their times always
+  // match.
   const where = stage.section('View stats', false);
   const lines = views.map(() => where.note());
   let read = 0;

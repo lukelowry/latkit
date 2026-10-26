@@ -1,5 +1,6 @@
-//! Icons on the GPU: every image an icon marker shows, as a layer of one texture array of a common
-//! size, scaled to fit. Markers name their images; the same image shares its layer.
+//! Icons on the GPU: each image an icon marker shows is a layer of one texture array, scaled to fit
+//! a common size. Markers reference their images, and markers showing the same image share its
+//! layer.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,7 +13,8 @@ const SIZE: u32 = 64;
 pub(crate) struct Icons {
     texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
-    /// Each image's layer, by the address of its pixels.
+    /// Each image's layer, keyed by the address of its pixels, which are kept alive so the address
+    /// is not reused.
     layers: HashMap<usize, (Arc<[u8]>, u32)>,
     capacity: u32,
     /// Changes whenever the texture is replaced, so views rebind it.
@@ -93,7 +95,7 @@ impl Icons {
     }
 }
 
-/// `image` scaled to `SIZE` square by its nearest texels, centered with its aspect kept.
+/// Scales `image` into a `SIZE` square by nearest texel, centered with its aspect ratio kept.
 fn fit(image: &crate::Image) -> Vec<u8> {
     let [w, h] = image.size.map(|v| v.max(1));
     let scale = f64::from(w.max(h)) / f64::from(SIZE);

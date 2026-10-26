@@ -1,8 +1,8 @@
-/** Globe: routes between the world's great cities along great circles, comets flowing on them. */
+/** Globe: routes between world cities along great circles, with comets flowing along them. */
 import { Patch, reference, units } from 'latkit';
 import { THEME, worldMap, type Piece } from './look.ts';
 
-/** Cities: name, longitude, latitude, and people in millions, about. */
+/** Cities as `[name, longitude, latitude, population in millions]`. Populations are approximate. */
 const CITIES: readonly (readonly [string, number, number, number])[] = [
   ['Tokyo', 139.69, 35.69, 37],
   ['Delhi', 77.21, 28.61, 32],
@@ -46,7 +46,7 @@ const CITIES: readonly (readonly [string, number, number, number])[] = [
   ['Reykjavík', -21.94, 64.15, 0.2],
 ];
 
-/** Long hauls between hubs, besides each city's nearest neighbors. */
+/** Long-haul routes between hubs, added to the routes to each city's three nearest neighbors. */
 const HAULS = [
   ['London', 'New York'],
   ['New York', 'Los Angeles'],
@@ -71,7 +71,7 @@ const HAULS = [
   ['Santiago', 'Auckland'],
 ] as const;
 
-/** Degrees of the great circle between two cities. */
+/** The great-circle distance between two cities, in degrees, by the haversine formula. */
 function arc(
   a: readonly [string, number, number, number],
   b: readonly [string, number, number, number],

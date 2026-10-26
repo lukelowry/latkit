@@ -1,6 +1,6 @@
-// The overlay: lines, boxes, filled rectangles, and runs of text in CSS pixels over every mark, such
-// as a plot's axes, a scene's title and legends, a selection box, and a connection being drawn. Text
-// is the atlas's distance field, its quad reaching over the field's spread.
+// The overlay: lines, boxes, filled rectangles, and runs of text in CSS pixels, drawn over every
+// mark. It draws a plot's axes, a scene's title and legends, a selection box, and a connection
+// being drawn. Text samples the atlas's distance field, and its quad covers the field's spread.
 
 import package::lib::types::{Sprite, SPRITE_TEXT, SPRITE_BOX, SPRITE_FILL, TEXT_SPREAD};
 import package::lib::bind::{eye, ramp};

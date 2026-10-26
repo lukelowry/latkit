@@ -1,9 +1,10 @@
-//! What a view tells the application. An intent asks something of it: a click, an open, a menu, a
-//! drag, a connection, a deletion, each told once, in the order the user acted. A change tells that
-//! state the view keeps moved, named as the state is: `hovered`, `selection`, `camera`, `waiting`.
-//! Only the latest change of each is told, and the state can always be read, so a listener added
-//! late reads what it missed. A view tells only what the application did not do itself: its setters
-//! change state silently.
+//! Events a view reports to the application.
+//!
+//! An intent asks the application to act: a click, open, menu, drag, connection, or deletion. Each
+//! is reported once, in the order the user acted. A change reports that view state moved and is
+//! named after that state: `hovered`, `selection`, `camera`, `waiting`. Only the latest change of
+//! each is reported, and the state can always be read, so a late listener can catch up. A view
+//! reports only what the application did not do itself: its setters change state silently.
 
 use std::collections::VecDeque;
 
@@ -11,8 +12,7 @@ use super::Camera;
 use super::input::{Device, Modifiers};
 use crate::{Error, Name, Pending, Row, Rows};
 
-/// What happened in a view, for the application to act on, as [`View::events`](crate::View::events)
-/// tells it.
+/// Something that happened in a view, as [`View::events`](crate::View::events) reports it.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(tag = "type", content = "detail", rename_all = "lowercase")]
 #[schemars(rename = "ViewEvent")]
@@ -25,57 +25,58 @@ pub enum Event {
         /// How the user clicked it.
         trigger: Trigger,
     },
-    /// A row was double clicked, or Enter pressed on the row the keys point at.
+    /// A row was double-clicked, or Enter was pressed on the row the keyboard points at.
     Open {
         /// The row.
         hit: Hit,
         /// How the user opened it.
         trigger: Trigger,
     },
-    /// The secondary button clicked, or the menu key pressed: what lies under the trigger's point,
-    /// for a menu of what to do with it.
+    /// A context menu was requested: by a secondary click, the menu key, or a touch or pen held
+    /// still. Lists the rows under the trigger's point, for a menu of actions on them.
     Menu {
-        /// What lies under the point, nearest first.
+        /// The rows under the point, nearest first.
         hits: Vec<Hit>,
         /// How the user asked.
         trigger: Trigger,
     },
-    /// A row of a draggable mark follows the pointer: the drag starts once the pointer moves a few
+    /// A row of a draggable mark is dragged. The drag starts once the pointer moves more than 4 CSS
     /// pixels from where it pressed the row.
     Drag {
         /// Whether the drag starts, moves, or ends.
         phase: Phase,
         /// The row dragged, as it was hit.
         hit: Hit,
-        /// Where the row goes, in the space's coordinates: where it was hit, moved as the pointer moved
-        /// since the press, at the depth the drag started; a vertex keeps where it was grabbed. On a
-        /// diagram's dots when its grid snaps.
+        /// The row's new position in the space's coordinates: the hit point moved with the pointer
+        /// since the press, at the depth where the drag started, so a vertex keeps its grab offset.
+        /// Snapped to a diagram's dots when its grid snaps.
         position: [f64; 3],
         /// The pointer.
         trigger: Trigger,
     },
-    /// A connection was drawn with [`Controls::connect`](crate::Controls): from a port, a vertex
-    /// with Alt held, or an edge whose end was dragged off it.
+    /// A connection was drawn with [`Controls::connect`](crate::Controls) on: from a port, from a
+    /// vertex with Alt held, or by dragging an edge's end off it.
     Connect {
         /// The end it was drawn from: for an edge, the end that stayed.
         from: End,
         /// The vertex it was released over, if any.
         to: Option<End>,
-        /// The edge whose other end was dragged, which `to` replaces.
+        /// The edge whose end was dragged off; `to` replaces that end.
         edge: Option<Row>,
         /// Where it was released.
         trigger: Trigger,
     },
-    /// Delete or Backspace with rows selected and [`Controls::delete`](crate::Controls) on.
+    /// Delete or Backspace was pressed with rows selected and [`Controls::delete`](crate::Controls)
+    /// on.
     Delete {
         /// The rows selected.
         rows: Vec<Rows>,
         /// The key.
         trigger: Trigger,
     },
-    /// What the user points at changed: [`View::hovered`](crate::View::hovered).
+    /// The hovered row changed: [`View::hovered`](crate::View::hovered).
     Hovered {
-        /// The row now pointed at; `None` once it left every row.
+        /// The row now hovered; `None` once no row is.
         hit: Option<Hit>,
         /// The pointer, or the keys.
         trigger: Trigger,
@@ -87,31 +88,31 @@ pub enum Event {
         /// How the user changed it; `None` when the data dropped rows from it.
         trigger: Option<Trigger>,
     },
-    /// The camera moved by a gesture, a fit, a flight, coasting, or an orbit:
+    /// The camera moved by a gesture, fit, flight, coast, or orbit:
     /// [`View::camera`](crate::View::camera).
     Camera(Camera),
-    /// What the last frame stood in for changed; nothing once it is complete:
+    /// The work the last frame waited on changed; empty once frames are complete:
     /// [`View::waiting`](crate::View::waiting).
     Waiting(Waiting),
-    /// Something failed, told once. A mark its data no longer fits also lists in
+    /// Something failed; reported once. A mark that no longer fits its data is also listed in
     /// [`View::failures`](crate::View::failures).
     Error(Error),
 }
 
-/// Where, with what keys, and with what the user acted. For keys, the point is the row they point
-/// at, else the pointer, else the view's middle.
+/// Where the user acted, with which modifier keys, and with which device. For keyboard input, the
+/// point is the row the keys point at, else the pointer, else the view's middle.
 #[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, schemars::JsonSchema)]
 pub struct Trigger {
     /// CSS pixels from the top left.
     pub point: [f32; 2],
-    /// The keys held.
+    /// The modifier keys held.
     pub modifiers: Modifiers,
-    /// What acted.
+    /// The device used.
     pub device: Device,
 }
 
 impl Event {
-    /// Whether it asks something of the application, so keeps its place among intents.
+    /// Whether it is an intent, which keeps its order among intents.
     fn intent(&self) -> bool {
         matches!(
             self,
@@ -124,8 +125,8 @@ impl Event {
         )
     }
 
-    /// Whether it leaves `older`, still untold, nothing to say: a change replaces the change of the
-    /// same state, a drag's move the move before it, an error the same error.
+    /// Whether it makes the unreported `older` redundant: a change replaces an earlier change of
+    /// the same state, a drag move the previous move, and an error an identical error.
     fn replaces(&self, older: &Event) -> bool {
         match (self, older) {
             (Event::Drag { phase: Phase::Move, .. }, Event::Drag { phase: Phase::Move, .. }) => true,
@@ -138,19 +139,19 @@ impl Event {
     }
 }
 
-/// What a view has yet to tell, in the order it happened. An intent waiting on a pick holds its
-/// place, and the intents after it wait behind it; changes and errors never wait.
+/// The events a view has yet to report, in order. An intent waiting on a pick holds its place, and
+/// later intents wait behind it; changes and errors never wait.
 #[derive(Default)]
 pub(crate) struct Events(VecDeque<Slot>);
 
 enum Slot {
     Ready(Event),
     Picking(Pending<Vec<Hit>>, Awaited),
-    /// A pick that made nothing, dropped once settled.
+    /// A pick that produced no event, removed once settled.
     Gone,
 }
 
-/// What an intent waits on a pick for.
+/// An intent waiting for its pick's hits.
 #[derive(Clone)]
 pub(crate) enum Awaited {
     Menu(Trigger),
@@ -159,8 +160,8 @@ pub(crate) enum Awaited {
         edge: Option<Row>,
         trigger: Trigger,
     },
-    /// A click again where nothing moved: the selection moves to the row under the point after
-    /// `after`.
+    /// A repeated click where nothing moved: the selection moves to the next row under the point
+    /// after `after`.
     Cycle {
         after: Option<Row>,
         trigger: Trigger,
@@ -168,18 +169,19 @@ pub(crate) enum Awaited {
 }
 
 impl Events {
-    /// Queues `event`, dropping what it leaves nothing to say.
+    /// Queues `event`, dropping the unreported events it makes redundant.
     pub(crate) fn tell(&mut self, event: Event) {
         self.0.retain(|slot| !matches!(slot, Slot::Ready(older) if event.replaces(older)));
         self.0.push_back(Slot::Ready(event));
     }
 
-    /// Queues the intent `awaited` makes once `hits` answers.
+    /// Queues the intent `awaited` produces once `hits` resolves.
     pub(crate) fn tell_after(&mut self, hits: Pending<Vec<Hit>>, awaited: Awaited) {
         self.0.push_back(Slot::Picking(hits, awaited));
     }
 
-    /// Makes, in place, each event whose pick answered; one that makes nothing leaves no place.
+    /// Turns each intent whose pick resolved into its event, in place. One that produces no event
+    /// is removed.
     pub(crate) fn settle(&mut self, mut make: impl FnMut(Vec<Hit>, Awaited) -> Option<Event>) {
         let mut made = false;
         for slot in &mut self.0 {
@@ -198,7 +200,7 @@ impl Events {
         }
     }
 
-    /// The first error untold: a shot fails on it, and it stays for the view's owner.
+    /// The first unreported error. A shot fails on it and leaves it queued for the view's owner.
     pub(crate) fn error(&self) -> Option<&Error> {
         self.0.iter().find_map(|slot| match slot {
             Slot::Ready(Event::Error(error)) => Some(error),
@@ -206,7 +208,8 @@ impl Events {
         })
     }
 
-    /// Takes what can be told: all but the intents behind one still waiting on its pick.
+    /// Takes every event ready to report, except intents queued behind one still waiting on its
+    /// pick.
     pub(crate) fn drain(&mut self) -> std::vec::IntoIter<Event> {
         let (mut told, mut held) = (Vec::new(), VecDeque::new());
         for slot in self.0.drain(..) {
@@ -226,7 +229,7 @@ impl Extend<Event> for Events {
     }
 }
 
-/// A vertex a connection ends at, and its port when it has the one the connection meets.
+/// A vertex a connection ends at, and the port the connection meets, if any.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct End {
     /// The vertex.
@@ -241,14 +244,14 @@ pub struct End {
 pub struct Hit {
     /// The row.
     pub row: Row,
-    /// The name of the mark that drew it, when it has one: what tells two marks of one table apart.
+    /// The name of the mark that drew it, if named. It tells two marks of one table apart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mark: Option<Name>,
     /// The index of the mark in the scene the frame drew.
     #[serde(skip)]
     pub(crate) index: usize,
-    /// The point of the row nearest the probe, CSS pixels from the top left: a vertex's or a port's
-    /// middle, the nearest point of a stroke or a triangle.
+    /// The row's point nearest the probe, in CSS pixels from the top left: a vertex's or port's
+    /// middle, or the nearest point of a stroke or triangle.
     pub point: [f32; 2],
     /// That point in the space's coordinates: x, y, and elevation.
     pub position: [f64; 3],
@@ -283,13 +286,13 @@ pub enum Phase {
     Start,
     /// The pointer moved.
     Move,
-    /// The pointer let go, or the drag was cancelled.
+    /// The pointer was released, or the drag was cancelled.
     End,
 }
 
 /// What [`View::fit`](crate::View::fit) frames.
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
-#[schemars(description = "What a view's fit frames.")]
+#[schemars(description = "The target of a view's fit.")]
 #[serde(rename_all = "camelCase")]
 pub enum Fit {
     /// Everything drawn.
@@ -307,7 +310,7 @@ pub enum Fit {
     },
 }
 
-/// The pointer a view asks for over what it shows.
+/// The cursor a view wants shown over it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Cursor {
     /// The platform's default.
@@ -315,15 +318,15 @@ pub enum Cursor {
     Default,
     /// Over a row a click selects.
     Pointer,
-    /// Over a row that drags.
+    /// Over a draggable row.
     Grab,
     /// While dragging a row or the camera.
     Grabbing,
-    /// While selecting a box.
+    /// While selecting a box or drawing a connection.
     Crosshair,
 }
 
-/// What a view does each frame.
+/// Counters describing a view's frames.
 #[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Stats {
@@ -331,13 +334,13 @@ pub struct Stats {
     pub frames: u64,
     /// Rows of every mark's table.
     pub rows: u64,
-    /// Rows every mark draws: every row of a table drawn whole, the rows of the tiles in view of one
-    /// drawn through tiles.
+    /// Rows every mark draws: every row of a table drawn whole, and the rows of the tiles in view
+    /// of a paged table.
     pub drawn: u64,
-    /// Draw calls the last frame recorded, labels with the marks.
+    /// Draw calls the last frame recorded, label draws included.
     pub draws: u64,
-    /// Instances the last frame's draws drew: points, segments, triangles, glyphs; at most, for
-    /// segments the GPU culls.
+    /// Instances the last frame's draws drew: points, segments, triangles, and glyphs. An upper
+    /// bound for segments, which the GPU may cull.
     pub instances: u64,
     /// Fetched tiles the view draws, of every tile source.
     pub tiles: u64,
@@ -345,21 +348,22 @@ pub struct Stats {
     pub tiles_loading: u64,
     /// Milliseconds the last frame took to record on the CPU.
     pub cpu_ms: f32,
-    /// Milliseconds the GPU takes on a frame: the median of the last frames it measured; 0 where the
+    /// Milliseconds the GPU takes per frame: the median of recently measured frames; 0 if the
     /// device cannot measure.
     pub gpu_ms: f32,
 }
 
-/// The work under way a frame stood in for, by kind; nothing when the frame was complete.
+/// The work a frame was still waiting on, by kind; empty when the frame was complete.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Waiting {
-    /// Pipelines the scene draws with still compiling: until they land the view draws nothing new.
+    /// Pipelines the view uses are still compiling. Until those it draws with finish, the view
+    /// draws nothing new.
     pub compiling: bool,
-    /// Pages its marks draw still uploading, or tables not yet built from them.
+    /// Pages its marks draw are still uploading, or tables are not yet built from them.
     pub data: bool,
     /// Layouts, routes, lanes, shapes, tiles, or pyramids under way.
     pub derived: bool,
-    /// A label placement being read back, or texts asked for and not yet set.
+    /// A label placement being read back, or texts requested and not yet set.
     pub labels: bool,
     /// A fit due or being measured.
     pub fit: bool,
@@ -373,7 +377,7 @@ impl Waiting {
         *self == Waiting::default()
     }
 
-    /// The names of what it waits on, as its fields are named.
+    /// The names of the fields that are set.
     pub fn names(&self) -> impl Iterator<Item = &'static str> {
         let Waiting { compiling, data, derived, labels, fit, marks } = *self;
         [
@@ -395,7 +399,7 @@ impl std::fmt::Display for Waiting {
     }
 }
 
-/// The names of what it waits on, as [`Waiting::names`] gives them.
+/// Serializes as the list of names [`Waiting::names`] gives.
 impl serde::Serialize for Waiting {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(self.names())
@@ -409,7 +413,7 @@ impl schemars::JsonSchema for Waiting {
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "Work under way a frame stands in for: pipelines the scene draws with compiling, until which the view draws nothing new (`compiling`); pages uploading or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); a label placement or texts not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition beginning (`marks`). Empty once a frame is complete.",
+            "description": "What a frame still waits on: pipelines the scene draws with, which compile before the view draws anything new (`compiling`); pages uploading, or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label placement, or text not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting (`marks`). Empty once the frame is complete.",
             "type": "array",
             "items": { "enum": ["compiling", "data", "derived", "labels", "fit", "marks"] },
         })
@@ -461,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn a_change_replaces_the_one_still_untold() {
+    fn a_change_replaces_the_undelivered_one() {
         let mut events = Events::default();
         let mut waiting = Waiting { data: true, ..Waiting::default() };
         events.tell(Event::Waiting(waiting));

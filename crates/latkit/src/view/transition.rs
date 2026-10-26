@@ -1,19 +1,22 @@
 //! Transitions: a mark whose description, static data, or rows change eases from what it showed.
 //!
-//! When one starts, what each row shows is frozen into the mark's frozen words at the row's new
-//! place: where it was when the rows are the same, gathered by id when rows were added, removed, or
-//! reordered. Rows that left are frozen past the new rows and fade out there. While the mark eases,
-//! its channels store into its settled words once per change; each frame the clock moves, the ease
-//! pass writes what every row shows from its frozen and settled words by the mark's progress, and
-//! which rows fade, so draws, probes, bounds, and shadows read eased state without knowing a
-//! transition runs, and no channel runs to ease. Where no row is the same as one shown before, as when
-//! another dataset replaces the one drawn, every row enters, shows what it evaluated, and only fades.
-//! The frozen and settled words are pages like the state's, kept only while a transition runs. A
-//! stroke's geometry column keeps the table it had as the transition began, and its paths morph from
-//! it point by point.
+//! When a transition starts, each row's shown state is frozen into the mark's frozen words at the
+//! row's new index: from the same index when no row moved, or gathered by id when rows were added,
+//! removed, or reordered. Rows that left are frozen after the new rows and fade out there.
 //!
-//! Without an ease, a flowing mark whose rows moved still begins a transition, of no length: it
-//! shows the new state at once, and its comets carry their travel over to the rows' new places.
+//! While the mark eases, its channels write its settled words, once per change. Each frame the
+//! clock moves, the ease pass writes every row's shown state from its frozen and settled words by
+//! the mark's progress, and sets which rows fade. So draws, probes, and bounds read eased state
+//! without knowing a transition runs, and no channel runs just to ease. When no row matches one
+//! shown before, as when another dataset replaces the drawn one, every row enters with its
+//! evaluated state and only fades in.
+//!
+//! The frozen and settled words are paged like the state, and kept only while a transition runs. A
+//! stroke's geometry column keeps its table from the start of the transition, and its paths morph
+//! from it point by point.
+//!
+//! Without an ease, a flowing mark whose rows moved still begins a zero-length transition: it shows
+//! the new state at once, and its comets carry their travel over to the rows' new places.
 
 use std::sync::Arc;
 
@@ -28,7 +31,7 @@ use crate::gpu::shaders::PAGE_ROWS;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::MarkKind;
 
-/// A mark easing from what it showed, begun at a time on the view's clock.
+/// A running transition: its start on the view's clock and its length in seconds.
 pub(crate) struct Transition {
     start: f64,
     seconds: f64,
@@ -36,14 +39,15 @@ pub(crate) struct Transition {
 
 /// A transition waiting for the frame that freezes it.
 pub(crate) struct Begin {
-    /// Each new row's old row, then each exit's, when rows moved; `None` when they kept their places.
+    /// Each new row's old row, then each exit's old row, when rows moved; `None` when every row
+    /// kept its index.
     sources: Option<Vec<u32>>,
-    /// Whether no row was shown before, so rows only fade in and out.
+    /// Whether no new row matches one shown before, so rows only fade in and out.
     fades: bool,
 }
 
 impl Transition {
-    /// Eased progress on `clock`, `0..=1`; a transition of no length is done as it begins.
+    /// Eased progress on `clock`, from 0 to 1. A zero-length transition is at 1 from the start.
     pub(crate) fn motion(&self, clock: &Clock) -> f32 {
         if self.seconds <= 0.0 { 1.0 } else { clock.eased(self.start, self.seconds) as f32 }
     }
@@ -54,14 +58,14 @@ impl Transition {
 }
 
 /// How rows moved from `old` to `new`: each new row's old row (`NONE` if it entered), and the old
-/// rows that left. `None` when every row kept its place.
+/// rows that left. `None` when every row kept its index.
 pub(crate) fn remap(old: &Table, new: &Table) -> Option<(Vec<u32>, Vec<u32>)> {
     if old.structure == new.structure && old.order == new.order {
         return None;
     }
     if old.order == new.order && new.len() >= old.len() {
-        // Rows kept in place, those of pages rewritten aside: there a row whose id changed enters, and
-        // the row it replaces leaves.
+        // Rows keep their index, except in rewritten pages: there a row whose id changed enters,
+        // and the row it replaced leaves.
         let mut sources: Vec<u32> = (0..new.len()).map(|r| if r < old.len() { r as u32 } else { wgsl::NONE }).collect();
         let mut exits = Vec::new();
         for block in rewritten(old, new).unwrap_or_default() {
@@ -98,9 +102,9 @@ pub(crate) fn remap(old: &Table, new: &Table) -> Option<(Vec<u32>, Vec<u32>)> {
     Some((sources, exits))
 }
 
-/// The row blocks of `new` whose rows `old` did not hold where `new` does, every other row kept in
-/// place: those whose ids' pages changed, and those past `old`'s rows. `None` where that does not
-/// tell, as between ids counted and ids listed.
+/// The row blocks of `new` holding rows that `old` did not hold at the same index, assuming every
+/// other row kept its index: blocks whose id pages changed, and blocks past `old`'s rows. `None`
+/// when the ids cannot tell, as between counted and listed ids.
 pub(crate) fn rewritten(old: &Table, new: &Table) -> Option<Vec<u32>> {
     let pages = |len: usize| (len as u32).div_ceil(PAGE_ROWS);
     match (&old.ids, &new.ids) {
@@ -113,9 +117,9 @@ pub(crate) fn rewritten(old: &Table, new: &Table) -> Option<Vec<u32>> {
     }
 }
 
-/// How rows moved from what `old` held to what `new` holds: each new held row's old held row
-/// (`NONE` if it entered), and the old rows drawn that left. `None` when every row kept its place, as
-/// a table drawn in part keeps its rows' places while its order serves, whatever the camera draws.
+/// How held rows moved from `old` to `new`: each new held row's old held row (`NONE` if it
+/// entered), and the old drawn rows that left. `None` when every row kept its held row, as in a
+/// paged table whose order is unchanged, regardless of what the camera draws.
 pub(crate) fn moved(old: &Holding, new: &Holding) -> Option<(Vec<u32>, Vec<u32>)> {
     if old.origin != new.origin {
         // Another dataset of the same name: every row enters, and every row drawn leaves.
@@ -128,12 +132,12 @@ pub(crate) fn moved(old: &Holding, new: &Holding) -> Option<(Vec<u32>, Vec<u32>)
     }
 }
 
-/// Rows held by the table's own order or a drawing's.
+/// Held rows: the table's rows, or its drawing's live held rows.
 fn held(holding: &Holding) -> u32 {
     holding.drawing.as_ref().map_or(holding.table.len() as u32, |d| d.live())
 }
 
-/// The held rows `holding` draws, but those fading out with their tiles.
+/// The held rows `holding` draws, except those fading out with their tiles.
 fn drawn(holding: &Holding) -> Vec<u32> {
     match &holding.drawing {
         None => (0..holding.table.len() as u32).collect(),
@@ -146,8 +150,8 @@ fn drawn(holding: &Holding) -> Vec<u32> {
     }
 }
 
-/// How rows moved between holdings of different orders: each row followed to where `old` held it,
-/// by id where rows came or went.
+/// How rows moved between holdings with different orders: each new held row is traced to its old
+/// held row, by index while the table's row order is unchanged, else by id.
 fn follow(old: &Holding, new: &Holding) -> (Vec<u32>, Vec<u32>) {
     let same = old.table.order == new.table.order;
     let source = |h: u32| match &new.drawing {
@@ -178,13 +182,13 @@ fn follow(old: &Holding, new: &Holding) -> (Vec<u32>, Vec<u32>) {
     (sources, exits)
 }
 
-/// Whether every new row is where it was, or entered.
+/// Whether every new row kept its index or entered.
 pub(crate) fn in_place(sources: &[u32]) -> bool {
     sources.iter().enumerate().all(|(r, &s)| s == r as u32 || s == wgsl::NONE)
 }
 
-/// The slots of `new` holding rows `old` did not hold there: every slot holding a page without one
-/// before, those whose page took rows appended since, and those of rows kept that changed.
+/// The slots of `new` holding rows that `old` did not hold there: slots whose page is new to them,
+/// slots whose page gained appended rows, and slots of kept rows that changed.
 pub(crate) fn bound(old: Option<&Drawing>, new: &Drawing) -> Vec<u32> {
     let grown = old.map_or(u32::MAX, |old| old.order.len() / PAGE_ROWS);
     let appended = old.is_some_and(|o| o.order.len() != new.order.len());
@@ -200,7 +204,8 @@ pub(crate) fn bound(old: Option<&Drawing>, new: &Drawing) -> Vec<u32> {
         .collect()
 }
 
-/// Whether two holdings hold the same rows the same way: the same table's rows, laid out alike.
+/// Whether two holdings hold the same rows in the same layout: the same origin, row structure, row
+/// order, and drawing.
 pub(crate) fn holds_alike(a: &Holding, b: &Holding) -> bool {
     let same_drawing = match (&a.drawing, &b.drawing) {
         (None, None) => true,
@@ -211,7 +216,7 @@ pub(crate) fn holds_alike(a: &Holding, b: &Holding) -> bool {
 }
 
 impl Shown {
-    /// Takes over the rows `before` holds and their words, as a changed description of the same mark.
+    /// Takes over `before`'s held rows and their words, as a changed description of the same mark.
     pub(crate) fn inherit(&mut self, before: &mut Shown) {
         self.words = std::mem::take(&mut before.words);
         self.before = before.before;
@@ -221,7 +226,8 @@ impl Shown {
         self.place_version = before.place_version + 1;
     }
 
-    /// Starts easing from what the mark shows: its rows moved as `moved` says, if they did.
+    /// Begins a transition from what the mark shows, with rows moved as `moved` says, if they
+    /// moved. Does nothing when the mark showed no rows.
     pub(crate) fn begin(&mut self, moved: Option<(Vec<u32>, Vec<u32>)>) {
         if self.before == 0 {
             return;
@@ -239,30 +245,30 @@ impl Shown {
         self.all_dirty();
     }
 
-    /// Starts the running transition over from what the mark shows, as slots `bound` of held rows
-    /// take pages of rows that enter: the rest ease on toward where they settle, which their channels
-    /// evaluated already, and rows that left go on fading out past the live ones.
+    /// Restarts the running transition from what the mark shows, as slots `bound` receive pages of
+    /// entering rows. Other rows keep easing toward their settled state, which their channels
+    /// already evaluated, and exits keep fading out after the live rows.
     pub(crate) fn restart(&mut self, bound: &[u32]) {
         let mut sources: Vec<u32> = (0..self.live()).collect();
         for &slot in bound {
             let rows = slot * PAGE_ROWS..((slot + 1) * PAGE_ROWS).min(sources.len() as u32);
             sources[rows.start as usize..rows.end as usize].fill(wgsl::NONE);
         }
-        // The rows that left lay past the live rows when the frame began.
+        // Exits were held after the live rows when the frame began.
         sources.extend(self.before.saturating_sub(self.exits)..self.before);
         self.begin = Some(Begin { sources: Some(sources), fades: false });
     }
 }
 
 impl View {
-    /// Freezes every transition starting this frame and advances the running ones; true while any
-    /// runs.
+    /// Freezes every transition starting this frame and advances the running ones. Returns whether
+    /// any is running.
     pub(super) fn transitions(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> bool {
         // A drag moves rows at once.
         let seconds = if self.dragging() { 0.0 } else { self.ease().as_secs_f64() };
         let mut starting: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].begin.is_some()).collect();
         if seconds == 0.0 {
-            // Without an ease only a flowing mark whose rows moved begins one, for its comets.
+            // Without an ease, only a flowing mark whose rows moved begins one, for its comets.
             starting.retain(|&i| {
                 let shown = &mut self.marks[i];
                 let carries =
@@ -284,9 +290,10 @@ impl View {
         let mut running = false;
         for (i, shown) in self.marks.iter_mut().enumerate() {
             let Some(transition) = &shown.transition else { continue };
-            // One that begins this frame runs through it, as one of no length must for its comets.
+            // A transition beginning this frame runs through it, as a zero-length one must for its
+            // comets.
             if transition.done(&self.clock) && !starting.contains(&i) {
-                // One more evaluation writes every row's settled state.
+                // One more evaluation writes every row's final state.
                 shown.transition = None;
                 shown.exits = 0;
                 shown.all_dirty();
@@ -296,21 +303,22 @@ impl View {
                 }
             } else {
                 running = true;
-                // Rows ease as the clock moves, and only then: their channels evaluated once.
+                // Rows ease only when the clock moves; their channels evaluated once already.
                 shown.easing = self.clock.moved();
             }
         }
         running
     }
 
-    /// Records what each starting mark shows into its frozen words: the remap words say, for each, the
-    /// pages its rows' words were in as the frame began, how many rows showed, where each new row was
-    /// where rows moved, and where the vertices its ends name moved where those did.
+    /// Records each starting mark's shown state into its frozen words. The remap words give, per
+    /// mark: its state pages as the frame began, how many rows showed, each new row's old row when
+    /// rows moved, and where the vertices its endpoints reference moved, if they did.
     fn freeze(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, starting: &[usize]) {
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         let mut words: Vec<u32> = Vec::new();
-        // Where each vertex mark's rows moved: how many it held, then where each went.
+        // For each starting vertex mark whose rows moved: how many it held, then each one's new
+        // row.
         let mut moves = vec![wgsl::NONE; self.marks.len()];
         for &i in starting {
             let m = &self.marks[i];
@@ -333,7 +341,7 @@ impl View {
             let begin = shown.begin.take().expect("starting");
             let before = shown.words.state_before().clone();
             let width = shown.stride() + shown.extras();
-            // Rows whose words took another shape show nothing to ease from: they enter, and fade in.
+            // If the row width changed, there is nothing to ease from: every row enters, fading in.
             let sources =
                 if before.width == width { begin.sources } else { Some(vec![wgsl::NONE; shown.held() as usize]) };
             shown.carry = sources.is_some();
@@ -350,8 +358,8 @@ impl View {
                 }
                 None => wgsl::NONE,
             };
-            // Each end, held in the kind word of its number, follows its vertex where that vertex's
-            // mark's rows moved.
+            // Each endpoint, stored in the kind word of its number, follows its vertex where the
+            // vertex mark's rows moved.
             let ends: Vec<(u32, u32)> = (0..shown.ends.len())
                 .filter_map(|k| Some((k as u32, moves[shown.ends[k].mark?])))
                 .filter(|&(_, moved)| moved != wgsl::NONE)
@@ -375,7 +383,7 @@ impl View {
         let groups = resources.groups(&gpu.0, inner);
         let group = resources.pass(device, inner, Shader::Freeze);
         let pipeline = inner.pipelines.compute(device, Shader::Freeze, "gather");
-        // The marks' uniforms this frame writes before it submits hold each mark's remap offset.
+        // The mark uniforms this frame writes before submitting hold each mark's remap offset.
         let mut pass = encoder
             .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("latkit freeze"), timestamp_writes: None });
         pass.set_pipeline(&pipeline);
@@ -387,9 +395,9 @@ impl View {
         }
     }
 
-    /// Gives each mark whose transition starts or runs frozen and settled words for every row it
-    /// holds, and lets them go once it ends; a transition finding no room for them does not start, and
-    /// its rows show what they evaluate at once.
+    /// Allocates frozen and settled words for every held row of each mark whose transition starts
+    /// or runs, and frees them once it ends. A transition without room for them is cancelled, and
+    /// its rows show their evaluated state at once.
     pub(super) fn fit_easing(&mut self, inner: &mut Inner) {
         let gpu = self.gpu.clone();
         let device = (&gpu.0.device, &gpu.0.queue);

@@ -1,25 +1,25 @@
-//! Pages on the GPU: one pool of 128 Ki-word chunks in one storage buffer, which doubles as it fills,
-//! up to the budget. It holds the data's pages, which upload, and the pages of words each view's marks
-//! keep per row, which the GPU writes. A chunk is carved into blocks of one power-of-two size, and no
-//! page is larger than a chunk: a geometry's points split into pieces of a group of rows each. So the
-//! room any page leaves serves any other: a chunk whose blocks all come back is carved again for
-//! another size. Few sizes in few chunks leave little room unused in chunks partly used, which a small
-//! budget feels.
+//! GPU memory for pages: one pool of 128 Ki-word chunks in a single storage buffer, which doubles
+//! as it fills, up to the budget. It holds uploaded data pages and the per-row word pages each
+//! view's marks keep, which the GPU writes.
 //!
-//! A data page is identified by its id and the words of it a program reads; a geometry's pieces by
-//! what they hold, so a page written again finds the pieces of its rows that kept their points
-//! already on the GPU. What a view draws next reserves every page it reads at once, or none: those in
-//! the pool are pinned, and those
-//! it lacks take blocks then, evicting the least recently used unpinned pages, so nothing is partly
+//! Each chunk is carved into blocks of one power-of-two size, and no page is larger than a chunk; a
+//! geometry's points are split into pieces of one row group each. So space any page frees can serve
+//! any other: a chunk whose blocks are all freed can be carved again for another size. Few sizes in
+//! few chunks waste little space in partly used chunks, which matters with a small budget.
+//!
+//! A data page is keyed by its id and the words a program reads from it. Geometry pieces are keyed
+//! by content, so a rewritten page finds the pieces of its unchanged rows already resident. A view
+//! reserves all the pages its next draw reads at once, or none: resident pages are pinned, and
+//! missing ones get blocks, evicting the least recently used unpinned pages. So nothing is partly
 //! pinned and no page waits for room. Page tables pin the pages they reference, so a page in use is
-//! never evicted; unpinned pages stay cached. Uploads stream within a per-frame byte budget into the
-//! blocks reserved. Views plan what they draw to fit the pool, so a reservation finding no room is
-//! rare: it waits for the next frame, which grows the pool by what it lacked.
+//! never evicted, and unpinned pages stay cached. Uploads stream into the reserved blocks within a
+//! per-frame byte budget. Views plan their drawing to fit the pool, so a reservation rarely finds
+//! no room; when it does, it waits for the next frame, which grows the pool by the shortfall.
 //!
-//! A page of words per row is a block of its own: cleared as it is handed out where it is read before
-//! anything writes it, and freed only once the frame that let it go is done with it. The pool grows only before a
-//! frame records writes to the pages, since growing copies what they hold: a block a frame finds no
-//! room for then waits for the next.
+//! A per-row word page is a block of its own. It is cleared when handed out if it is read before
+//! anything writes it, and freed only once the frame that released it is done. The pool grows only
+//! before a frame records writes to the pages, since growing copies the buffer; a block that finds
+//! no room after that waits for the next frame.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -32,29 +32,30 @@ use crate::expr::compile::Words;
 use crate::gpu::shaders::{MISSING, NONE, POINT_BITS};
 use crate::gpu::work::Queue;
 
-/// Words in a chunk, as a shift: the largest block, and the largest page.
+/// Words in a chunk, as a power of two. A chunk is also the largest block and the largest page.
 const CHUNK_BITS: u32 = 17;
 pub(crate) const CHUNK_WORDS: u32 = 1 << CHUNK_BITS;
 /// Bytes in a chunk.
 pub(crate) const CHUNK_BYTES: u64 = CHUNK_WORDS as u64 * 4;
 const MIN_CLASS_BITS: u32 = 6;
 const CLASSES: usize = (CHUNK_BITS - MIN_CLASS_BITS + 1) as usize;
-/// Words of a chunk's free bits: a bit for each block of the least class.
+/// 64-bit words in a chunk's free bitmap, one bit per block of the smallest class.
 const FREE_WORDS: usize = 1 << (CHUNK_BITS - MIN_CLASS_BITS - 6);
 const INITIAL_CHUNKS: u32 = 8;
-/// Points a piece of a geometry's points holds at most, as x and y words.
+/// Most points a geometry piece holds, each stored as an x and a y word.
 pub(crate) const PIECE_POINTS: usize = 1 << POINT_BITS;
 const _: () = assert!(2 * PIECE_POINTS <= CHUNK_WORDS as usize, "a piece of points fits a chunk");
-/// Rows a piece of a geometry's points begins at, at least: a piece holds the points of a group of this
-/// many rows, or fewer where it fills, so a row written again changes only its group's piece.
+/// Rows per group. A geometry piece holds the points of one group of this many rows, or fewer when
+/// it fills, so rewriting a row changes only its group's piece.
 const GROUP_ROWS: usize = 64;
 
-/// A page as a program reads it.
+/// Key of a resident page: the page and how a program reads it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct PageKey {
     pub(crate) page: PageId,
     pub(crate) words: Words,
-    /// The part `f32` drops of an `f64`, rather than the value.
+    /// Whether the page holds the low part of `f64` values (what `f32` drops) instead of the
+    /// values.
     pub(crate) low: bool,
 }
 
@@ -63,7 +64,7 @@ impl PageKey {
         PageKey { page, words, low }
     }
 
-    /// A piece of a geometry, `words`, keyed by what it holds.
+    /// The key of geometry piece `words`, from a hash of its content.
     pub(crate) fn piece(words: &[u32]) -> PageKey {
         let mut hasher = FxHasher::default();
         words.hash(&mut hasher);
@@ -71,27 +72,28 @@ impl PageKey {
     }
 }
 
-/// The pieces of the geometry pages drawn lately, by each page's id: its rows' table, then its pieces
-/// of points, keyed by what they hold, and how many points it has. A page drawn again finds its
-/// pieces and its points without making or counting them; one written again makes them, and uploads
-/// those the GPU lacks.
+/// Piece keys of recently drawn geometry pages, by page id: the key of the page's row table, then
+/// the content keys of its point pieces, with its point count. A page drawn again reuses them
+/// without rebuilding or recounting. A rewritten page rebuilds them and uploads the pieces the GPU
+/// lacks.
 #[derive(Default)]
 pub(crate) struct Pieces {
     keys: HashMap<PageId, (Arc<[PageKey]>, usize), FxBuildHasher>,
     order: VecDeque<PageId>,
 }
 
-/// Geometry pages whose pieces are kept: a page past them makes its pieces again when it is drawn.
+/// Most geometry pages whose piece keys are kept. A page forgotten past this rebuilds its pieces
+/// when drawn.
 const PIECED_PAGES: usize = 1 << 14;
 
 impl Pieces {
-    /// The pieces of page `page`, and its points, when kept.
+    /// The piece keys and point count of page `page`, if kept.
     pub(crate) fn of(&self, page: PageId) -> Option<(Arc<[PageKey]>, usize)> {
         self.keys.get(&page).cloned()
     }
 
-    /// Keeps `keys` as page `page`'s pieces, of `points` points, forgetting the page kept longest when
-    /// too many are.
+    /// Keeps `keys` as page `page`'s piece keys, with `points` points. Beyond [`PIECED_PAGES`]
+    /// pages, forgets the oldest.
     pub(crate) fn keep(&mut self, page: PageId, keys: Arc<[PageKey]>, points: usize) {
         if self.keys.insert(page, (keys, points)).is_none() {
             self.order.push_back(page);
@@ -103,21 +105,21 @@ impl Pieces {
     }
 }
 
-/// A page a reservation asks for: what it is, the words it must hold, and, where the pool does not
-/// hold them, what it uploads.
+/// A page in a reservation: its key, the words it must hold, and the content to upload if the pool
+/// lacks them.
 pub(crate) struct Ask {
     pub(crate) key: PageKey,
     pub(crate) need: u32,
     pub(crate) content: Option<Content>,
 }
 
-/// What to upload for a page.
+/// The content uploaded for a page.
 pub(crate) enum Content {
-    /// Static values, converted to words for `words`.
+    /// Static values, converted to words as `words` reads them.
     Values { values: Values, words: Words, low: bool },
-    /// A page of samples; one an append opened grows, and only its new tail uploads.
+    /// A page of samples. A page an append opened grows, and only its new tail uploads.
     Frames(FramePage),
-    /// A page of where a level's entries draw along the axis; it grows like a page of samples.
+    /// A page of axis positions for a level's entries. It grows like a page of samples.
     Axis(AxisPage),
     /// Words computed on the CPU: text codes, join rows, a geometry's pieces.
     Computed(Vec<u32>),
@@ -136,7 +138,7 @@ impl Content {
         len as u32
     }
 
-    /// The page's words from word `from` on: a growing page uploads only its new tail.
+    /// The page's words from word `from` on, so a growing page uploads only its new tail.
     fn words(&self, from: usize) -> Vec<u32> {
         match self {
             Content::Values { values, words, low } => page_words(values, *words, *low).split_off(from),
@@ -148,8 +150,8 @@ impl Content {
         }
     }
 
-    /// The class of the block it takes: a growing page takes a block of the most words a page of its
-    /// kind holds, to grow into.
+    /// The block class the page takes. A growing page takes a block of its kind's largest page
+    /// size, to grow into.
     fn class(&self, words: u32) -> usize {
         match self {
             Content::Frames(page) if page.grows() => class_of(FRAME_PAGE_WORDS as u32),
@@ -159,12 +161,13 @@ impl Content {
     }
 }
 
-/// Words of the block that holds `words`.
+/// Words in the block that holds `words`.
 pub(crate) fn rounded(words: u32) -> u32 {
     class_words(class_of(words))
 }
 
-/// The class of a block holding `words`: the power of two at least that large.
+/// The class of a block holding `words`: the smallest power of two at least that large, and at
+/// least 64.
 fn class_of(words: u32) -> usize {
     let bits = words.max(1).next_power_of_two().trailing_zeros().max(MIN_CLASS_BITS);
     (bits - MIN_CLASS_BITS) as usize
@@ -179,8 +182,9 @@ fn slots(class: usize) -> u32 {
     CHUNK_WORDS / class_words(class)
 }
 
-/// What a page uploads as `words` reads it: numbers as `f32`, the low part of `f64`s, point
-/// components, or reference rows as `u32`. Missing values are `MISSING`, or `NONE` for rows.
+/// The words a page uploads for `words`: numbers as `f32` (with `low`, the low part of each `f64`),
+/// point components, or reference rows as `u32`. Missing values become `MISSING`, or `NONE` for
+/// rows.
 pub(crate) fn page_words(values: &Values, words: Words, low: bool) -> Vec<u32> {
     let n = values.len();
     let word = |x: f64| {
@@ -207,18 +211,18 @@ pub(crate) fn page_words(values: &Values, words: Words, low: bool) -> Vec<u32> {
     }
 }
 
-/// A geometry page as `lib/read.wesl` reads it: its rows' table, two words a row (the piece its
-/// points begin in, among the page's, shifted up by `POINT_BITS` over its first point there; and how
-/// many points it has); then its pieces of points, every point an x and a y word.
+/// A geometry page as `lib/read.wesl` reads it. The row table has two words per row: the index of
+/// the piece where its points begin, shifted left by `POINT_BITS` over its first point's index in
+/// that piece; and its point count. Then come the pieces, each point an x and a y word.
 pub(crate) struct PathPage {
     pub(crate) rows: Vec<u32>,
     pub(crate) pieces: Vec<Vec<u32>>,
 }
 
-/// A geometry page's rows' table and pieces. A group of rows begins a piece, as does a row its piece
-/// has no room for, so a row written again changes only its group's piece; a row larger than a piece
-/// begins one and fills as many as it takes. A row's parts, or its polygons' rings, are broken by a
-/// missing point.
+/// Builds a geometry page's row table and pieces. Each group of rows starts a new piece, as does a
+/// row that does not fit in the current one, so rewriting a row changes only its group's piece. A
+/// row larger than a piece starts one and fills as many as it needs. A missing point separates a
+/// row's parts, or its polygons' rings.
 pub(crate) fn path_pieces(values: &Values) -> PathPage {
     let mut rows = Vec::with_capacity(2 * values.len());
     let mut pieces: Vec<Vec<u32>> = Vec::new();
@@ -262,8 +266,8 @@ pub(crate) fn path_pieces(values: &Values) -> PathPage {
     PathPage { rows, pieces }
 }
 
-/// Bytes the arena holds a geometry page of `rows` rows and `points` points in, about: its rows'
-/// table, and its points in pieces of a group of rows each, or full pieces where rows hold more.
+/// Approximate arena bytes for a geometry page of `rows` rows and `points` points: its row table,
+/// plus its points in one piece per row group, or in full pieces when groups hold more.
 pub(crate) fn path_page_bytes(rows: usize, points: usize) -> u64 {
     let groups = rows.div_ceil(GROUP_ROWS).max(1);
     let per_group = points.div_ceil(groups);
@@ -282,12 +286,12 @@ struct Block {
     /// Words uploaded so far.
     written: u32,
     pins: u32,
-    /// When it was last unpinned, its place in the LRU.
+    /// When it was last unpinned: its position in the LRU order.
     tick: u64,
 }
 
-/// A chunk of the pool: free, or carved into blocks of one class with a bit for each that is free;
-/// the class is the one whose chunks list it.
+/// A chunk of the pool: free, or carved into blocks of one class with a bit per free block. The
+/// chunk does not store its class; `Arena::partial` lists it under its class while it has room.
 #[derive(Clone, Copy)]
 struct Chunk {
     live: u32,
@@ -310,11 +314,12 @@ impl Chunk {
 pub(crate) struct Arena {
     buffer: wgpu::Buffer,
     chunks: Vec<Chunk>,
-    /// The most chunks the pool grows to.
+    /// Most chunks the pool may grow to.
     limit: u32,
     /// Changes whenever the buffer is replaced, so views rebind it.
     pub(crate) generation: u64,
-    /// Free chunks, and each class's chunks with a free block, lowest first so blocks gather low.
+    /// Free chunks, and each class's chunks with a free block. The lowest is used first, so blocks
+    /// gather at low offsets.
     free: BTreeSet<u32>,
     partial: [BTreeSet<u32>; CLASSES],
     blocks: HashMap<PageKey, Block, FxBuildHasher>,
@@ -325,18 +330,18 @@ pub(crate) struct Arena {
     contents: HashMap<PageKey, Content, FxBuildHasher>,
     /// Bytes of allocated blocks.
     resident: u64,
-    /// Blocks of their own handed out and not yet cleared; and those let go, freed once the frame is
-    /// done with them.
+    /// Per-row blocks handed out and not yet cleared. `freed` holds released ones, freed when the
+    /// next frame begins.
     cleared: Vec<(u32, usize)>,
     freed: Vec<(u32, usize)>,
-    /// Whether this frame recorded writes to the pages, after which the pool keeps its buffer; and the
-    /// words of blocks it found no room for, which the next frame grows the pool by.
+    /// Whether this frame recorded writes to the pages, after which the pool keeps its buffer.
+    /// `short` counts the words of blocks that found no room; the next frame grows the pool by it.
     writing: bool,
     short: u64,
 }
 
 impl Arena {
-    /// A pool that grows to at most `bytes`, within what the device binds.
+    /// A pool that grows to at most `bytes`, within what the device can bind.
     pub(crate) fn new(device: &wgpu::Device, bytes: u64) -> Arena {
         let limit = limit_of(device, bytes);
         let chunks = INITIAL_CHUNKS.min(limit);
@@ -360,8 +365,9 @@ impl Arena {
         }
     }
 
-    /// Begins a frame of every view drawing from the pool: frees the blocks the last one let go, and
-    /// grows the pool by what it found no room for, before anything this frame writes the pages.
+    /// Begins a frame for all views drawing from the pool. Frees the blocks the last frame released
+    /// and grows the pool to cover its shortfall, at least doubling it, before anything this frame
+    /// writes the pages.
     pub(crate) fn begin_frame(&mut self, device: &wgpu::Device, queue: &Queue) {
         for (offset, class) in std::mem::take(&mut self.freed) {
             self.release(offset, class);
@@ -374,13 +380,13 @@ impl Arena {
         }
     }
 
-    /// Reserves every page `asks` names, or none: pins those the pool holds, and gives those it lacks
-    /// blocks of their size, evicting the least recently used unpinned pages but never these, queuing
-    /// what they upload, as for one the pool holds fewer words of than asked. `false` where a page
-    /// finds no room, or lacks what it uploads: nothing is pinned, and the next frame grows the pool by
-    /// what it lacked.
+    /// Reserves every page in `asks`, or none. Pins the resident ones and gives the missing ones
+    /// blocks, evicting least recently used unpinned pages but never these. Queues uploads for new
+    /// pages and for resident pages holding fewer words than asked. Returns `false`, pinning
+    /// nothing, if a missing page has no content to upload or finds no room; for no room, the next
+    /// frame grows the pool by the shortfall.
     pub(crate) fn reserve(&mut self, device: &wgpu::Device, queue: &Queue, asks: &mut [Ask]) -> bool {
-        // Pages held are pinned first, so placing the rest evicts none of them.
+        // Pin resident pages first, so placing the rest evicts none of them.
         let held: Vec<bool> = asks.iter().map(|ask| self.blocks.contains_key(&ask.key)).collect();
         for ask in asks.iter().zip(&held).filter(|&(_, &held)| held).map(|(ask, _)| ask) {
             self.pin(ask.key);
@@ -425,9 +431,9 @@ impl Arena {
         true
     }
 
-    /// A block of its own holding `words`, for a page of words per row, with `cleared` cleared by the
-    /// next [`clear`](Arena::clear); `None` where the pool has no room now, which the next frame grows
-    /// it by.
+    /// Allocates a separate block of `words` for a per-row word page. With `cleared`, the next
+    /// [`clear`](Arena::clear) zeroes it. `None` if the pool has no room now; the next frame grows
+    /// it.
     pub(crate) fn block(&mut self, device: &wgpu::Device, queue: &Queue, words: u32, cleared: bool) -> Option<u32> {
         let class = class_of(words);
         let offset = self.allocate(device, queue, class)?;
@@ -437,13 +443,13 @@ impl Arena {
         Some(offset)
     }
 
-    /// Lets go of block `offset` of `words`, which [`block`](Arena::block) handed out: freed once
-    /// this frame is done with it.
+    /// Releases block `offset` of `words` from [`block`](Arena::block). It is freed when the next
+    /// frame begins, once this frame is done with it.
     pub(crate) fn free(&mut self, offset: u32, words: u32) {
         self.freed.push((offset, class_of(words)));
     }
 
-    /// Clears the blocks handed out since the last clearing, at once: before anything this frame
+    /// Clears the blocks handed out since the last clear, immediately, before anything this frame
     /// records or writes into them.
     pub(crate) fn clear(&mut self, device: &wgpu::Device, queue: &Queue) {
         if self.cleared.is_empty() {
@@ -457,8 +463,8 @@ impl Arena {
         queue.submit([encoder.finish()]);
     }
 
-    /// Notes that this frame records writes to the pages: from now on it keeps the pool's buffer, which
-    /// growing would copy before they run.
+    /// Notes that this frame records writes to the pages. From now on the pool keeps its buffer,
+    /// since growing would copy it before those writes run.
     pub(crate) fn written(&mut self) {
         self.writing = true;
     }
@@ -472,38 +478,38 @@ impl Arena {
         self.chunks.len() as u32 >= self.limit
     }
 
-    /// Lets the pool grow to at most `bytes` from now on; it never shrinks.
+    /// Lets the pool grow to at most `bytes` from now on. It never shrinks.
     pub(crate) fn set_limit(&mut self, device: &wgpu::Device, bytes: u64) {
         self.limit = limit_of(device, bytes).max(self.chunks.len() as u32);
     }
 
-    /// The block holding at least `need` words of `key`, if one does.
+    /// The offset of the block holding at least `need` words of `key`, if any.
     pub(crate) fn offset(&self, key: PageKey, need: u32) -> Option<u32> {
         self.blocks.get(&key).filter(|b| b.written >= need).map(|b| b.offset)
     }
 
-    /// Bytes of the block `key` takes, or none.
+    /// Bytes of the block `key` occupies, or 0.
     pub(crate) fn bytes_of(&self, key: PageKey) -> u64 {
         self.blocks.get(&key).map_or(0, |b| u64::from(class_words(b.class)) * 4)
     }
 
-    /// Whether the pool holds, or is uploading, at least `need` words of `key`: a reservation asks
-    /// for what it uploads only where not.
+    /// Whether the pool holds, or is uploading, at least `need` words of `key`. A reservation
+    /// supplies content to upload only when it does not.
     pub(crate) fn holds(&self, key: PageKey, need: u32) -> bool {
         self.offset(key, need).is_some() || (self.blocks.contains_key(&key) && self.contents.contains_key(&key))
     }
 
-    /// Keeps `key`, which the pool holds, while pinned; pins nest.
+    /// Pins resident page `key` so it is not evicted. Pins nest.
     fn pin(&mut self, key: PageKey) {
-        let block = self.blocks.get_mut(&key).expect("a page reserved");
+        let block = self.blocks.get_mut(&key).expect("a resident page");
         if block.pins == 0 {
             self.unpinned.remove(&block.tick);
         }
         block.pins += 1;
     }
 
-    /// Lets go of a pin a reservation took. A page no longer pinned stays cached, but one still
-    /// uploading, which nothing waits for now: it goes, and its upload with it.
+    /// Releases a pin a reservation took. A page no longer pinned stays cached, unless it is still
+    /// uploading: nothing waits for it now, so it is freed and its upload dropped.
     pub(crate) fn unpin(&mut self, key: PageKey) {
         let Some(block) = self.blocks.get_mut(&key) else { return };
         block.pins -= 1;
@@ -511,7 +517,7 @@ impl Arena {
             return;
         }
         if self.contents.remove(&key).is_some() {
-            let block = self.blocks.remove(&key).expect("held");
+            let block = self.blocks.remove(&key).expect("a resident page");
             self.release(block.offset, block.class);
             return;
         }
@@ -535,11 +541,11 @@ impl Arena {
         self.resident
     }
 
-    /// Uploads queued pages into the blocks reserved for them, at least one and at most `budget` bytes;
-    /// returns the bytes uploaded.
+    /// Uploads queued pages into their reserved blocks until `budget` bytes are reached, always at
+    /// least one page unless `budget` is 0. Returns the bytes uploaded.
     pub(crate) fn pump(&mut self, queue: &Queue, budget: u64) -> u64 {
         let mut bytes = 0;
-        // Views drawn earlier in the frame spent it.
+        // Views drawn earlier in the frame spent the budget.
         if budget == 0 {
             return 0;
         }
@@ -557,7 +563,7 @@ impl Arena {
                 writes.push((offset + written, tail));
             }
         }
-        // Pages placed side by side, as a column's pages are, upload in one write.
+        // Adjacent pages, such as a column's, upload in one write.
         writes.sort_unstable_by_key(|&(at, _)| at);
         let mut run: Option<(u32, Vec<u32>, u64)> = None;
         for (at, words) in writes {
@@ -595,10 +601,10 @@ impl Arena {
         self.resident -= u64::from(class_words(class)) * 4;
     }
 
-    /// A block of `class`: a free one of its size, a free chunk carved, the pool grown while this
-    /// frame has not written the pages, or room the least recently used unpinned blocks leave,
-    /// whatever their size; `None` when every block left is pinned or a block of its own, and the
-    /// next frame grows the pool by it.
+    /// Allocates a block of `class`. Tries, in order: a free block of that class, a newly carved
+    /// free chunk, growing the pool (only before this frame writes the pages), then evicting least
+    /// recently used unpinned blocks of any size. `None` when every remaining block is pinned or a
+    /// per-row block; the next frame then grows the pool by the shortfall.
     fn allocate(&mut self, device: &wgpu::Device, queue: &Queue, class: usize) -> Option<u32> {
         loop {
             if let Some(&k) = self.partial[class].first() {
@@ -629,12 +635,13 @@ impl Arena {
                 return None;
             };
             self.unpinned.remove(&tick);
-            let block = self.blocks.remove(&key).expect("listed");
+            let block = self.blocks.remove(&key).expect("an unpinned page is resident");
             self.release(block.offset, block.class);
         }
     }
 
-    /// Grows the buffer to `chunks`, at most the limit, copying what it holds.
+    /// Grows the buffer to `chunks`, capped at the limit, copying its contents. Returns whether it
+    /// grew.
     fn grow(&mut self, device: &wgpu::Device, queue: &Queue, chunks: u32) -> bool {
         let before = self.chunks.len() as u32;
         let chunks = chunks.min(self.limit);
@@ -654,7 +661,8 @@ impl Arena {
     }
 }
 
-/// Chunks a pool of at most `bytes` holds, within what the device binds: at least the first ones.
+/// Chunks in a pool of at most `bytes`, within what the device can bind, and at least
+/// `INITIAL_CHUNKS`.
 fn limit_of(device: &wgpu::Device, bytes: u64) -> u32 {
     let limits = device.limits();
     let bytes = bytes.min(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size);
@@ -696,7 +704,7 @@ mod tests {
         assert!((back - (1.0 + 1e-9)).abs() < 1e-15);
     }
 
-    /// Row `row`'s piece, first point, and count, as a page's rows' table holds them.
+    /// Row `row`'s piece index, first point, and point count, from a page's row table.
     fn entry(page: &PathPage, row: usize) -> (u32, u32, u32) {
         let [entry, count] = [page.rows[2 * row], page.rows[2 * row + 1]];
         (entry >> POINT_BITS, entry & ((1 << POINT_BITS) - 1), count)
@@ -710,27 +718,27 @@ mod tests {
         let page = path_pieces(&values);
         assert_eq!(entry(&page, 0), (0, 0, (PIECE_POINTS + 10) as u32), "the long row begins the first piece");
         assert_eq!(page.pieces[0].len(), 2 * PIECE_POINTS, "and fills it");
-        assert_eq!(entry(&page, 1), (1, 10, 0), "an empty row holds no point where the next begins");
-        // The last row's two parts are broken by a missing point.
+        assert_eq!(entry(&page, 1), (1, 10, 0), "an empty row has no points and starts where the next begins");
+        // A missing point separates the last row's two parts.
         assert_eq!(entry(&page, 2), (1, 10, 4));
         assert_eq!(page.pieces[1].len(), 2 * (10 + 4));
         assert_eq!(values.points(), PIECE_POINTS + 10 + 4);
     }
 
     #[test]
-    fn a_row_written_again_changes_only_its_group_s_piece() {
+    fn rewriting_a_row_changes_only_the_piece_of_its_group() {
         let rows = |nudge: f64| {
             let path =
                 |r: usize| (0..5).map(|k| [r as f64, f64::from(k) + if r == 70 { nudge } else { 0.0 }]).collect();
             Values::from((0..200).map(|r| vec![path(r)]).collect::<Vec<Vec<Vec<[f64; 2]>>>>())
         };
         let (before, after) = (path_pieces(&rows(0.0)), path_pieces(&rows(0.5)));
-        assert_eq!(before.pieces.len(), 4, "a piece a group of 64 rows");
-        assert_eq!(entry(&before, 64), (1, 0, 5), "each group begins a piece");
+        assert_eq!(before.pieces.len(), 4, "one piece per group of 64 rows");
+        assert_eq!(entry(&before, 64), (1, 0, 5), "each group starts a new piece");
         let keys = |page: &PathPage| page.pieces.iter().map(|p| PageKey::piece(p)).collect::<Vec<_>>();
         let changed: Vec<bool> = keys(&before).iter().zip(keys(&after)).map(|(a, b)| *a != b).collect();
         assert_eq!(changed, [false, true, false, false], "row 70 lies in the second group");
-        assert_eq!(before.rows, after.rows, "the rows' table holds where points lie, not what they are");
-        assert!(path_page_bytes(200, 1000) < 16 * 1024, "a page's estimate counts pieces as they are cut");
+        assert_eq!(before.rows, after.rows, "the row table stores where points are, not their values");
+        assert!(path_page_bytes(200, 1000) < 16 * 1024, "the estimate counts one piece per row group");
     }
 }

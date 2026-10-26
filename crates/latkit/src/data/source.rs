@@ -1,5 +1,5 @@
-//! What views draw from: a [`Data`] changing in place, which every view drawing it follows; a
-//! [`Snapshot`], one version kept as it is; or [`Tiles`](crate::Tiles), fetched in pieces.
+//! Dataset sources for views: a [`Data`] that changes in place and that views follow, a fixed
+//! [`Snapshot`], or [`Tiles`](crate::Tiles) fetched in pieces.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::Waker;
@@ -10,8 +10,9 @@ use super::snapshot::Snapshot;
 use crate::{Error, Result};
 
 /// A dataset that changes in place: named tables of columns, changed only by patches. Clones share
-/// it, and a view drawing it draws its latest version from the frame after a patch applies. A
-/// [`Snapshot`] keeps one version as it was, which costs only the pages later versions write.
+/// the same dataset. A view drawing it shows the latest version from the frame after a patch
+/// applies. A [`Snapshot`] keeps one version unchanged, costing only the pages that later versions
+/// rewrite.
 ///
 /// ```
 /// # use latkit::{Data, Ids, Patch, Table};
@@ -33,7 +34,8 @@ pub struct Data(Arc<Shared>);
 struct Shared {
     name: Name,
     current: Mutex<Snapshot>,
-    /// What wakes each view drawing the dataset, by view: a patch applied asks each for a frame.
+    /// A waker per view drawing the dataset, keyed by view id. Applying a patch wakes each one to
+    /// request a frame.
     watchers: Mutex<Vec<(u64, Waker)>>,
 }
 
@@ -48,8 +50,8 @@ impl Data {
         &self.0.name
     }
 
-    /// Applies every change in `patch`, or none of them when one is invalid. A patch to another
-    /// dataset is an error. Every view drawing the dataset draws the new version from its next frame.
+    /// Applies every change in `patch`, or none if any is invalid. A patch for another dataset is
+    /// an error. Views drawing the dataset show the new version from their next frame.
     ///
     /// The error's path names the change and part, such as `patch[1].Bus.kv`.
     pub fn apply(&self, patch: impl Into<Patch>) -> Result<()> {
@@ -60,13 +62,14 @@ impl Data {
         Ok(())
     }
 
-    /// The version the dataset holds now, kept as it is while patches change the dataset: O(1).
+    /// The current version, which later patches do not change. O(1).
     pub fn snapshot(&self) -> Snapshot {
         self.current().clone()
     }
 
-    /// Makes `snapshot`, a version of this dataset, the one it holds: what an undo does. Every view
-    /// drawing the dataset draws it from its next frame. A snapshot of another dataset is an error.
+    /// Makes `snapshot`, a version of this dataset, the current version, as an undo does. Views
+    /// drawing the dataset show it from their next frame. A snapshot of another dataset (by name)
+    /// is an error.
     pub fn restore(&self, snapshot: &Snapshot) -> Result<()> {
         if snapshot.name() != self.name() {
             return Err(Error::invalid(format!("a snapshot of '{}' restored to '{}'", snapshot.name(), self.name())));
@@ -76,7 +79,8 @@ impl Data {
         Ok(())
     }
 
-    /// Asks view `view` for a frame through `waker` whenever a patch applies.
+    /// Registers `waker` to request a frame from view `view` whenever a patch applies, replacing
+    /// that view's previous waker.
     #[cfg(feature = "gpu")]
     pub(crate) fn watch(&self, view: u64, waker: Waker) {
         let mut watchers = self.0.watchers.lock().unwrap_or_else(PoisonError::into_inner);
@@ -84,7 +88,7 @@ impl Data {
         watchers.push((view, waker));
     }
 
-    /// Stops asking view `view` for frames.
+    /// Removes view `view`'s waker.
     #[cfg(feature = "gpu")]
     pub(crate) fn unwatch(&self, view: u64) {
         self.0.watchers.lock().unwrap_or_else(PoisonError::into_inner).retain(|(v, _)| *v != view);
@@ -94,7 +98,7 @@ impl Data {
         self.0.current.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Asks every view drawing the dataset for a frame.
+    /// Wakes every view drawing the dataset to request a frame.
     fn wake(&self) {
         let wakers: Vec<Waker> =
             self.0.watchers.lock().unwrap_or_else(PoisonError::into_inner).iter().map(|(_, w)| w.clone()).collect();
@@ -105,7 +109,7 @@ impl Data {
 }
 
 impl From<Snapshot> for Data {
-    /// A dataset holding `snapshot`, which patches change from there.
+    /// A dataset whose current version is `snapshot`; patches apply from there.
     fn from(snapshot: Snapshot) -> Data {
         Data(Arc::new(Shared {
             name: snapshot.name().clone(),
@@ -121,23 +125,23 @@ impl std::fmt::Debug for Data {
     }
 }
 
-/// What a view draws a dataset from, by the dataset's name: a [`Data`], drawn as it changes; a
-/// [`Snapshot`], drawn as it is; or [`Tiles`](crate::Tiles), fetched in pieces as the view asks for
+/// Where a view gets a dataset, matched by the dataset's name: a [`Data`], drawn as it changes; a
+/// [`Snapshot`], drawn unchanged; or [`Tiles`](crate::Tiles), fetched in pieces as the view needs
 /// them.
 #[cfg(feature = "gpu")]
 #[derive(Clone, Debug)]
 pub enum Source {
     /// A dataset drawn as it changes.
     Data(Data),
-    /// A version drawn as it is.
+    /// A fixed version, drawn unchanged.
     Snapshot(Snapshot),
-    /// Pieces fetched as the view asks for them.
+    /// Pieces fetched as the view needs them.
     Tiles(crate::Tiles),
 }
 
 #[cfg(feature = "gpu")]
 impl Source {
-    /// The name of the dataset it gives.
+    /// The name of the dataset it provides.
     pub fn name(&self) -> &Name {
         match self {
             Source::Data(data) => data.name(),

@@ -1,22 +1,30 @@
 /**
- * Patches as latkit's bytes, written here without WebAssembly: a page, a worker, or a server builds
- * them alike. The layout is `crates/latkit/src/data/bytes.rs`'s: a frame of `LATK`, its length, the
- * dataset it changes, and its operations, little endian throughout.
+ * Patches written directly as latkit's bytes, without WebAssembly, so a page, a worker, or a
+ * server can build them. The format matches `crates/latkit/src/data/bytes.rs`: a frame with a
+ * 12-byte header (the magic `LATK` and the frame's length), the name of the dataset it changes, an
+ * operation count, and the operations, all little endian.
  */
 
 import type { Id, Ids } from './inputs.js';
-import { waited, wasm, type Wait } from './internal.js';
+import { bytesOf, thrown, waited, wasm, type Wait } from './internal.js';
 import { load } from './load.js';
 
-/** Row ids as a patch takes them: listed, `{ count }` for rows `0..count`, or a typed array. */
+/**
+ * Row ids: a list of numbers or strings, `{ count }` for ids `0` to `count - 1`, or a `Uint32Array`
+ * or `Float64Array` of numbers.
+ */
 export type RowIds = Ids | readonly (Id | null)[] | Uint32Array | Float64Array;
 
-/** A point `[x, y]`, or a list of geometries one level shallower: a path, its parts, or polygons. */
+/**
+ * A point `[x, y]`, or a nested list of points: a path (a list of points), parts (a list of paths,
+ * such as a polygon's rings), or polygons (a list of parts).
+ */
 export type Geometry = readonly number[] | readonly Geometry[];
 
 /**
- * One field's values, a value per row; `null` is missing. Typed arrays copy at once: numbers, or
- * in a `Uint8Array` booleans, nonzero true. Booleans, texts, and geometries also as arrays.
+ * One field's values, one per row, with `null` for a missing value. Numbers come as a typed array
+ * or an array. A `Uint8Array` holds booleans, nonzero being true. Booleans, strings, and geometries
+ * also come as arrays. Values are copied when passed, so the arrays can be reused at once.
  */
 export type Values =
   | Float64Array
@@ -29,21 +37,24 @@ export type Values =
   | readonly (string | null)[]
   | readonly (Geometry | null)[];
 
-/** A field naming rows of another table by id: `null` leaves a row unwired. */
+/**
+ * A reference field: for each row, the id of a row in table `reference`, or `null` to reference
+ * none.
+ */
 export interface Reference {
   reference: string;
   ids: RowIds;
 }
 
-/** Values of a field naming rows of `table` by id. */
+/** Builds a {@link Reference} field: for each row, the id of the row of `table` it references. */
 export function reference(table: string, ids: RowIds): Reference {
   return { reference: table, ids };
 }
 
-/** A table's fields by name. */
+/** A table's fields by name: values, or a {@link Reference}. */
 export type Fields = Readonly<Record<string, Values | Reference>>;
 
-/** A byte stream, structurally compatible with the browser and Node ReadableStream. */
+/** A byte stream: anything shaped like a browser or Node.js `ReadableStream` of `Uint8Array`. */
 export interface ReadableBytes {
   getReader(): {
     read(): Promise<{ done: boolean; value?: Uint8Array }>;
@@ -53,28 +64,33 @@ export interface ReadableBytes {
 }
 
 const MAGIC = [0x4c, 0x41, 0x54, 0x4b]; // LATK
-/** The magic and the frame's length. */
-const HEADER = 16;
-const VERSION = 1;
+/** Header bytes: the magic and the frame's length. */
+const HEADER = 12;
 const OP = { axis: 0, replace: 1, set: 2, remove: 3, append: 4, forget: 5, frames: 6 } as const;
-/** Levels of detail kept above frames. */
+/** The highest level of detail; level 0 is frames. */
 const LEVELS = 21;
 const FIELD_VALUES = 0;
 const FIELD_REFERENCE = 1;
 const STORE = { f64: 0, f32: 1, i32: 2, u32: 3, u64: 4, bool: 5, text: 6, geometry: 7 } as const;
-/** The largest whole number a JavaScript number holds exactly. */
+/** The largest integer a JavaScript number represents exactly, 2^53 - 1. */
 const SAFE = Number.MAX_SAFE_INTEGER;
 const utf8 = new TextEncoder();
 
-/** What `Patch.read` reads: latkit's bytes or a patch's JSON. */
-export type PatchSource = Uint8Array | ArrayBuffer | Blob | Response | string | object;
+/**
+ * What {@link Patch.read} accepts: bytes, a `Blob`, a `Response`, a byte stream, a URL to fetch as a
+ * string, or a parsed JSON value. The content is latkit's bytes or a patch's JSON.
+ */
+export type PatchSource =
+  Uint8Array | ArrayBuffer | Blob | Response | ReadableStream<Uint8Array> | string | object;
 
-/** @internal The frame `patch` writes, without copying it: read at once, before the patch changes. */
+/** @internal Returns `patch`'s frame without copying it. Read it before the patch changes again. */
 export let framed: (patch: Patch) => Uint8Array;
 
 /**
- * Changes to a dataset, applied in order and all at once by `Data.apply`: plain data, written as
- * latkit's bytes as it is built.
+ * A list of changes to a dataset, which `Data.apply` applies in order, all or none. The patch is
+ * encoded as latkit's bytes as it is built, without WebAssembly. Each method adds a change and
+ * returns the patch. For values it cannot encode, a method throws an `invalid` error with a `path`
+ * such as `Bus.kv`, and leaves the patch unchanged.
  *
  * ```ts
  * const patch = new Patch('grid')
@@ -90,60 +106,50 @@ export class Patch {
   #data: string | undefined;
   #writer: Writer;
   #count = 0;
-  /** Where the operations start: after the header, the name, and their count. */
+  /** Byte offset of the first operation: after the header, dataset name, and operation count. */
   #ops: number;
-  /** Appends of float frames to the same fields of every row of one table, waiting to be written as
-   * one: a field records its frames in one write, however many calls made them. */
+  /**
+   * Consecutive appends of float frames to the same fields of every row of one table, not yet
+   * written. They are written as one append, so each field records all their frames in one write.
+   */
   #run: Appends | undefined;
 
-  /** An empty patch: to dataset `data`, which it names, or to whichever it is applied to. */
+  /** Creates an empty patch for the dataset named `data`, or for any dataset when omitted. */
   constructor(data?: string) {
     this.#data = data || undefined;
     this.#writer = new Writer();
     this.#writer.bytes(MAGIC);
-    this.#writer.u16(VERSION);
-    this.#writer.u16(0);
     this.#writer.zeros(8);
     this.#writer.str(this.#data ?? '');
     this.#writer.u32(0);
     this.#ops = this.#writer.length;
   }
 
-  /** The dataset the patch changes, when it names one; `Data.apply` refuses it for another. */
+  /**
+   * The name of the dataset this patch is for, if any. `Data.apply` rejects it for a dataset with
+   * another name.
+   */
   get data(): string | undefined {
     return this.#data;
   }
 
   /**
-   * The patch `source` holds: latkit's bytes, one frame as `toBytes` writes it, or its JSON, what
-   * any language writes without latkit: a list of changes, each named by its method with its
-   * parameters by name, such as `{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}`.
-   * Slices of binary files, `{file, dtype, offset, count}`, are fetched at once relative to `base`,
-   * by default the URL the JSON was fetched from. `source` is bytes, a `Blob`, a `Response`, a URL
-   * to fetch, or the JSON as a value. Bytes read without WebAssembly; JSON loads it, as `load()`
-   * does. A frame longer than `limit` bytes (256 MiB unless given) is refused.
+   * Reads a patch from `source`: latkit's bytes, one frame as `toBytes()` writes it, or JSON that
+   * any language can write without latkit. The JSON is a list of changes. Each change is keyed by
+   * its method name and holds the method's parameters by name, such as
+   * `{"set": {"table": "Bus", "ids": [1], "fields": {"kv": [345]}}}`. A field may be a slice of a
+   * binary file, `{file, dtype, offset, count}`. Slices are fetched at once, relative to
+   * `options.base`, which defaults to the URL the JSON was fetched from.
+   *
+   * Bytes are read without WebAssembly; JSON calls `load()` first. Rejects with a `limit` error for
+   * a frame longer than `options.limit` bytes (256 MiB by default), with an `invalid` error for
+   * malformed input, and with an `io` error when a fetch fails or answers an error status.
    */
   static async read(
     source: PatchSource,
     options: { base?: string; limit?: number } & Wait = {},
   ): Promise<Patch> {
-    let base = '';
-    if (typeof source === 'string') {
-      source = await waited(
-        fetch(source, { signal: options.signal }),
-        options,
-        `fetching ${source}`,
-      );
-    }
-    if (source instanceof Response) {
-      if (!source.ok) throw new Error(`${source.url}: ${source.status} ${source.statusText}`);
-      base = source.url;
-      source = await source.arrayBuffer();
-    }
-    if (source instanceof Blob) source = await source.arrayBuffer();
-    if (source instanceof ArrayBuffer) source = new Uint8Array(source);
-    const bytes =
-      source instanceof Uint8Array ? source : new TextEncoder().encode(JSON.stringify(source));
+    const { bytes, base } = await bytesOf(source, options);
     if (MAGIC.every((byte, i) => bytes[i] === byte))
       return Patch.#owning(bytes.slice(), options.limit);
     await load();
@@ -151,7 +157,10 @@ export class Patch {
     return Patch.#owning(await waited<Uint8Array>(read, options, 'reading a patch'), options.limit);
   }
 
-  /** The patch the frame `bytes` hold, keeping them. */
+  /**
+   * Wraps frame `bytes` as a patch without copying them. Throws unless they are exactly one valid
+   * frame of at most `limit` bytes.
+   */
   static #owning(bytes: Uint8Array, limit = 1 << 28): Patch {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const length = frameLength(bytes, limit);
@@ -165,7 +174,7 @@ export class Patch {
         bytes.subarray(HEADER + 4, start - 4),
       );
     } catch {
-      throw malformed('text is not UTF-8');
+      throw malformed('the dataset name is not UTF-8');
     }
     const patch = new Patch();
     patch.#data = name || undefined;
@@ -176,10 +185,13 @@ export class Patch {
   }
 
   /**
-   * The patches arriving back to back in `stream`, each as soon as its last byte does: a response
-   * body, a file, or a socket's messages. Each frame says its length up front, so a patch longer
-   * than `limit` bytes (256 MiB unless given) throws before allocating its body. The parser holds at most one frame, in addition to
-   * the input chunk and patches the caller retains. Breaking iteration cancels the reader.
+   * Yields each patch in `stream` as soon as its last byte arrives. The stream carries frames back
+   * to back, such as a response body, a file, or a socket's messages. Each frame states its length
+   * up front, so a frame longer than `options.limit` bytes (256 MiB by default) throws a `limit`
+   * error before its body is allocated. Besides the current chunk and the patches the caller keeps,
+   * at most one frame is buffered. Breaking out of the loop cancels the stream. Throws an `invalid`
+   * error for a `limit` that is not a whole number of at least 12 bytes, for bytes that are not
+   * latkit's, or for a stream that ends inside a frame.
    *
    * ```ts
    * for await (const patch of Patch.stream((await fetch('/feed')).body!)) data.apply(patch);
@@ -190,7 +202,7 @@ export class Patch {
     { limit = 1 << 28 }: { limit?: number } = {},
   ): AsyncGenerator<Patch> {
     if (!Number.isSafeInteger(limit) || limit < HEADER)
-      throw new RangeError(`limit must be a safe integer of at least ${HEADER} bytes`);
+      throw invalid('limit', `a whole number of at least ${HEADER} bytes, not ${limit}`);
     let buffer = new Uint8Array(HEADER);
     let used = 0;
     let length: number | undefined;
@@ -219,7 +231,10 @@ export class Patch {
     if (used !== 0) throw malformed('the stream ended inside a patch');
   }
 
-  /** Names the axis sampled fields are recorded over, such as `('time', 's')`. */
+  /**
+   * Sets the name and unit of the axis that sampled fields are recorded over, such as
+   * `axis('time', 's')`.
+   */
   axis(name: string, unit: string): this {
     return this.#op(OP.axis, (w) => {
       w.str(name);
@@ -227,14 +242,14 @@ export class Patch {
     });
   }
 
-  /** Replaces table `table` with these rows and fields, or adds it. */
+  /** Replaces table `table` with rows `ids` and `fields`, adding the table if it does not exist. */
   replace(table: string, ids: RowIds, fields: Fields = {}): this {
     return this.#op(OP.replace, (w) => writeTable(w, table, ids, fields));
   }
 
   /**
-   * Writes `fields` for rows `ids` of `table`: rows with known ids change, others are added, and
-   * fields left out keep their values. Adds the table when there is none of its name.
+   * Writes `fields` for rows `ids` of `table`. Rows with existing ids change, new ids add rows, and
+   * omitted fields keep their values. Adds the table if it does not exist.
    */
   set(table: string, ids: RowIds, fields: Fields = {}): this {
     return this.#op(OP.set, (w) => writeTable(w, table, ids, fields));
@@ -249,10 +264,12 @@ export class Patch {
   }
 
   /**
-   * Records a frame of `table` at each axis coordinate of `at`: for each field, a value per row at
-   * every coordinate, frame-major; of every row, or of rows `ids`, the rest holding their last
-   * values. A field's first frame makes it sampled. Appends of float arrays to the same fields of
-   * every row, one after another, write as one change, so a frame a call costs no more than one call.
+   * Records a frame of `table` at each axis coordinate in `at`. Each field gives a value per row
+   * per frame, frame by frame: every row of the first frame, then of the next. Frames cover every
+   * row, or only rows `options.ids`; other rows keep their last values. A field's first frame makes
+   * it a sampled field. Consecutive appends of `Float32Array` or `Float64Array` values to the same
+   * fields of every row are written as one change, so one frame per call costs no more than one
+   * call with every frame.
    */
   append(
     table: string,
@@ -291,18 +308,23 @@ export class Patch {
     return this.#op(OP.append, (w) => writeAppend(w, table, ids, frames, entries));
   }
 
-  /** Forgets every sampled field's frames before axis coordinate `before`. */
+  /** Drops every sampled field's frames before axis coordinate `before`. */
   forget(before: number): this {
     return this.#op(OP.forget, (w) => w.f64(before));
   }
 
   /**
-   * Holds a run of sampled field `field`'s entries of level `level` (0 unless given), numbered from
-   * `first`: what a time tile holds, as `latkit tile` writes them. At level 0 the entries are frames,
-   * each a coordinate in `at` and a value per row of `table` in `values`. At level `k` they are
-   * buckets of `8^k` frames, each its first and last frame's coordinates in `at`, and in `values`
-   * each row's least value over each bucket, then each row's greatest. NaN is missing. No entry may
-   * be held already; frames past the field's widen it.
+   * Stores a run of entries of sampled field `field` of `table`, at level of detail `level` (0 by
+   * default), numbered from `first`. This is what a time tile holds, as `latkit tile` writes it.
+   *
+   * At level 0 each entry is a frame: a coordinate in `at`, and a value per row in `values`, entry
+   * by entry. At level `k` each entry is a bucket of `8^k` frames: its first and last frames'
+   * coordinates in `at`. `values` then holds every bucket's per-row minimums, entry by entry,
+   * followed by every bucket's per-row maximums. NaN marks a missing value.
+   *
+   * None of the entries may be stored already. Entries past the field's last frame extend it.
+   * Throws an `invalid` error for a level outside 0 to 21, lengths of `at` and `values` that do not
+   * divide into whole entries and rows, or frame numbers that are not safe nonnegative integers.
    */
   frames(
     table: string,
@@ -321,7 +343,7 @@ export class Patch {
   ): this {
     const path = `${table}.${field}`;
     if (!Number.isInteger(level) || level < 0 || level > LEVELS)
-      throw invalid(path, `levels run from 0 to ${LEVELS}`);
+      throw invalid(path, `the level must be a whole number from 0 to ${LEVELS}`);
     const per = level === 0 ? 1 : 2;
     const coordinates = Float64Array.from(at);
     const numbers = values instanceof Float32Array ? values : Float32Array.from(values);
@@ -330,7 +352,7 @@ export class Patch {
     if (!Number.isInteger(entries) || !Number.isInteger(rows))
       throw invalid(
         path,
-        `${coordinates.length} coordinates and ${numbers.length} values make no run`,
+        `${coordinates.length} coordinates and ${numbers.length} values do not divide evenly`,
       );
     if (
       !Number.isSafeInteger(first) ||
@@ -350,7 +372,7 @@ export class Patch {
     });
   }
 
-  /** Appends `next`'s changes, to this patch's dataset. */
+  /** Appends `next`'s changes to this patch, which keeps its own dataset name. */
   extend(next: Patch): this {
     this.#flush();
     next.#flush();
@@ -359,22 +381,22 @@ export class Patch {
     return this;
   }
 
-  /** The patch as bytes: one frame, naming its dataset when it has one. */
+  /** A copy of the patch as latkit's bytes: one frame, naming the dataset if the patch does. */
   toBytes(): Uint8Array {
     return this.#frame().slice();
   }
 
-  /** The frame, without copying it: read at once, before the patch changes. */
+  /** Completes the header and returns the frame uncopied. Read it before the patch changes. */
   #frame(): Uint8Array {
     this.#flush();
     const view = this.#writer.view();
     const data = new DataView(view.buffer, view.byteOffset, view.byteLength);
-    data.setBigUint64(8, BigInt(view.length), true);
+    data.setBigUint64(MAGIC.length, BigInt(view.length), true);
     data.setUint32(this.#ops - 4, this.#count, true);
     return view;
   }
 
-  /** Writes the appends waiting as one, before anything after them. */
+  /** Writes the pending merged appends as one operation, before any later operation. */
   #flush(): void {
     const run = this.#run;
     if (!run) return;
@@ -383,7 +405,7 @@ export class Patch {
     this.#op(OP.append, (w) => writeAppend(w, run.table, undefined, run.at, entries));
   }
 
-  /** Writes an operation, or nothing when `body` throws. */
+  /** Writes an operation tagged `tag`. If `body` throws, removes what it wrote and rethrows. */
   #op(tag: number, body: (w: Writer) => void): this {
     this.#flush();
     const mark = this.#writer.length;
@@ -401,14 +423,14 @@ export class Patch {
 
 type Floats = Float64Array | Float32Array;
 
-/** Frames of the same fields of every row of a table: coordinates, and each field's values. */
+/** Pending merged appends to one table: the frames' coordinates and each field's value chunks. */
 interface Appends {
   table: string;
   at: number[];
   fields: { name: string; parts: Floats[] }[];
 }
 
-/** `parts` one after another, in the first's storage. */
+/** Concatenates `parts` into one array of the first part's type. */
 function joined(parts: readonly Floats[]): Floats {
   if (parts.length === 1) return parts[0]!;
   const length = parts.reduce((n, p) => n + p.length, 0);
@@ -422,7 +444,10 @@ function joined(parts: readonly Floats[]): Floats {
   return out;
 }
 
-/** An append: its table, its rows or every row, its frames' coordinates, and its fields' values. */
+/**
+ * Writes an append's body: the table, its rows or a flag for every row, the frames' coordinates,
+ * and each field's values.
+ */
 function writeAppend(
   w: Writer,
   table: string,
@@ -445,10 +470,10 @@ function writeAppend(
   }
 }
 
-/** A table: its name, its ids, and its fields, each values or a reference. */
+/** Writes a table's body: its name, its ids, and its fields, each values or a reference. */
 function writeTable(w: Writer, table: string, ids: RowIds, fields: Fields): void {
   const entries = Object.entries(fields);
-  // Room for the typed columns at once, rather than doubling past them.
+  // Reserve room for every typed-array column up front, instead of doubling the buffer repeatedly.
   const typed = (v: unknown) => (ArrayBuffer.isView(v) ? v.byteLength : 0);
   w.room(entries.reduce((n, [, f]) => n + typed(isReference(f) ? f.ids : f), typed(ids)));
   w.str(table);
@@ -472,37 +497,38 @@ function isReference(field: Values | Reference): field is Reference {
   return !ArrayBuffer.isView(field) && !Array.isArray(field) && 'reference' in field;
 }
 
-/** The length a frame's header says, once `bytes` hold it; an error for what is no frame. */
+/**
+ * Returns the frame length from the header, or `undefined` until `bytes` hold a whole header.
+ * Throws for bytes that are not a frame, or a frame longer than `limit`.
+ */
 function frameLength(bytes: Uint8Array, limit: number): number | undefined {
   for (let i = 0; i < Math.min(bytes.length, 4); i++)
     if (bytes[i] !== MAGIC[i]) throw malformed('not latkit bytes');
   if (bytes.length < HEADER) return undefined;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (view.getUint16(4, true) !== VERSION) throw malformed('unsupported LATK version');
-  if (view.getUint16(6, true) !== 0) throw malformed('unsupported LATK flags');
-  const encoded = view.getBigUint64(8, true);
+  const encoded = view.getBigUint64(MAGIC.length, true);
   if (encoded > BigInt(Number.MAX_SAFE_INTEGER))
     throw malformed('frame length is not a safe integer');
   const length = Number(encoded);
   if (length > limit)
-    throw Object.assign(new Error(`a patch longer than ${limit} bytes`), { code: 'limit' });
-  if (length < HEADER) throw malformed('a frame shorter than its header');
+    throw thrown({ code: 'limit', message: `the patch is longer than ${limit} bytes` });
+  if (length < HEADER) throw malformed('the frame is shorter than its header');
   return length;
 }
 
 function malformed(reason: string): Error {
-  return Object.assign(new Error(`bytes: ${reason}`), { code: 'invalid', path: 'bytes' });
+  return invalid('bytes', reason);
 }
 
 function invalid(path: string, reason: string): Error {
-  return Object.assign(new Error(`${path}: ${reason}`), { code: 'invalid', path });
+  return thrown({ code: 'invalid', message: `${path}: ${reason}`, path });
 }
 
-/** Rows' ids: `u8 0` and a count, or `u8 1` and their values. */
+/** Writes row ids: `u8 0` and a count, or `u8 1` and the ids as values. */
 function writeIds(w: Writer, ids: RowIds, path: string): void {
   if (!ArrayBuffer.isView(ids) && !Array.isArray(ids) && 'count' in ids) {
     if (!Number.isInteger(ids.count) || ids.count < 0 || ids.count > 0xffffffff)
-      throw invalid(path, 'a count of ids is a whole number from 0');
+      throw invalid(path, 'a count of ids must be a whole number from 0 to 2^32 - 1');
     w.u8(0);
     w.u32(ids.count);
     return;
@@ -512,8 +538,8 @@ function writeIds(w: Writer, ids: RowIds, path: string): void {
 }
 
 /**
- * Ids as values: numbers as `u32` when every one fits, which latkit reads as the `u64` it keeps,
- * else as `u64`; texts when any is one; `null` missing.
+ * Writes ids as values: as text if any id is a string, else as `u32` when every id fits (latkit
+ * widens them to the `u64` it stores), else as `u64`. `null` marks a missing id.
  */
 function writeIdValues(w: Writer, ids: RowIds, path: string): void {
   if (ids instanceof Uint32Array) {
@@ -536,7 +562,7 @@ function writeIdValues(w: Writer, ids: RowIds, path: string): void {
     if (id === null || id === undefined) missing = true;
     else if (typeof id === 'string') texts = true;
     else if (!Number.isInteger(id) || id < 0 || id > SAFE)
-      throw invalid(path, `id ${id}: a numeric id is a whole number from 0 to 2^53 - 1`);
+      throw invalid(path, `id ${id} is not a whole number from 0 to 2^53 - 1`);
     else if (id > 0xffffffff) wide = true;
   }
   if (texts) {
@@ -545,7 +571,7 @@ function writeIdValues(w: Writer, ids: RowIds, path: string): void {
       Array.from(list, (id) => (id === null || id === undefined ? null : String(id))),
     );
   } else {
-    // Each id as one little-endian word, or two, low then high.
+    // One little-endian u32 per id, or two when wide: the low word, then the high.
     const words = new Uint32Array(wide ? n * 2 : n);
     for (let i = 0; i < n; i++) {
       const id = (list[i] as number | null) ?? 0;
@@ -559,11 +585,11 @@ function writeIdValues(w: Writer, ids: RowIds, path: string): void {
   writeValidity(w, n, missing ? (i) => list[i] !== null && list[i] !== undefined : null);
 }
 
-/** Whether an array value is present: `null`, `undefined`, and an empty geometry are missing. */
+/** Whether a value is present. `null`, `undefined`, and an empty geometry count as missing. */
 const present = (v: unknown): boolean =>
   v !== null && v !== undefined && !(Array.isArray(v) && v.length === 0);
 
-/** Values as one storage, a validity mask after them when any is missing. */
+/** Writes values in one storage type, followed by a validity mask when any value is missing. */
 function writeValues(w: Writer, values: Values, path: string): void {
   if (ArrayBuffer.isView(values)) {
     if (values instanceof Uint8Array) {
@@ -582,7 +608,7 @@ function writeValues(w: Writer, values: Values, path: string): void {
                 ? STORE.u32
                 : undefined;
       if (store === undefined)
-        throw invalid(path, `${values.constructor.name} is not a column's typed array`);
+        throw invalid(path, `${values.constructor.name} is not a supported typed array`);
       w.u8(store);
       w.u32(values.length);
       w.bytes(new Uint8Array(values.buffer, values.byteOffset, values.byteLength));
@@ -628,12 +654,12 @@ function writeValues(w: Writer, values: Values, path: string): void {
       writeGeometry(w, list as readonly (Geometry | null)[], path);
       break;
     default:
-      throw invalid(path, `a field holds numbers, booleans, texts, or geometries, not ${kind}`);
+      throw invalid(path, `a field holds numbers, booleans, strings, or geometries, not ${kind}`);
   }
   writeValidity(w, n, missing ? (i) => present(list[i]) : null);
 }
 
-/** Texts: their byte offsets, then their UTF-8; a missing text is empty. */
+/** Writes texts as `n + 1` byte offsets, then their UTF-8 bytes. A missing text is empty. */
 function writeTexts(w: Writer, texts: readonly (string | null)[]): void {
   const n = texts.length;
   let chars = 0;
@@ -655,24 +681,28 @@ function writeTexts(w: Writer, texts: readonly (string | null)[]): void {
   w.bytes(bytes.subarray(0, at));
 }
 
-/** Geometries: their depth, each level's offsets into the next, then their `[x, y]` points. */
+/**
+ * Writes geometries: their nesting depth, each level's offsets into the next level, then the
+ * `[x, y]` points as `f64`.
+ */
 function writeGeometry(w: Writer, rows: readonly (Geometry | null)[], path: string): void {
   const depthOf = (g: Geometry): number =>
     typeof g[0] === 'number' ? 0 : Array.isArray(g[0]) ? 1 + depthOf(g[0] as Geometry) : 1;
   const first = rows.find((g) => present(g));
   const depth = first ? depthOf(first) : 0;
-  if (depth > 3) throw invalid(path, 'geometries nest at most polygons of rings of [x, y] points');
+  if (depth > 3)
+    throw invalid(path, 'geometry nests deeper than polygons of rings of [x, y] points');
   const levels: number[][] = Array.from({ length: depth }, () => [0]);
   const coords: number[] = [];
   const push = (g: Geometry, level: number): void => {
     if (level === depth) {
       if (typeof g[0] !== 'number' || typeof g[1] !== 'number')
-        throw invalid(path, `geometries nest alike: ${depth} levels deep`);
+        throw invalid(path, `every geometry must nest ${depth} levels deep, like the first`);
       coords.push(g[0], g[1]);
       return;
     }
     if (typeof g[0] === 'number')
-      throw invalid(path, `geometries nest alike: ${depth} levels deep`);
+      throw invalid(path, `every geometry must nest ${depth} levels deep, like the first`);
     for (const item of g as readonly Geometry[]) push(item, level + 1);
     const next = level + 1 < depth ? levels[level + 1]!.length - 1 : coords.length / 2;
     levels[level]!.push(next);
@@ -693,20 +723,20 @@ function writeGeometry(w: Writer, rows: readonly (Geometry | null)[], path: stri
   w.bytes(new Uint8Array(Float64Array.from(coords).buffer));
 }
 
-/** `n` bits, `bit(i)` each, in `u64` words, low bit first. */
+/** Writes `n` bits, bit `i` being `bit(i)`, packed into `u64` words, lowest bit first. */
 function writeBits(w: Writer, n: number, bit: (i: number) => boolean): void {
   const words = new Uint8Array(Math.ceil(n / 64) * 8);
   for (let i = 0; i < n; i++) if (bit(i)) words[i >> 3]! |= 1 << (i & 7);
   w.bytes(words);
 }
 
-/** `u8 0`, or `u8 1` and the bits of which of `n` values are present. */
+/** Writes `u8 0` when every value is present, else `u8 1` and a bit per value, set if present. */
 function writeValidity(w: Writer, n: number, valid: ((i: number) => boolean) | null): void {
   w.u8(valid ? 1 : 0);
   if (valid) writeBits(w, n, valid);
 }
 
-/** Bytes written little endian into a buffer that doubles as it fills. */
+/** A little-endian byte writer over a buffer that doubles in size as it fills. */
 class Writer {
   #buffer: Uint8Array;
   #data: DataView;
@@ -722,7 +752,7 @@ class Writer {
     this.length = owned?.length ?? 0;
   }
 
-  /** Room for `n` more bytes past the end. */
+  /** Ensures capacity for `n` more bytes past the end. */
   room(n: number): void {
     if (this.length + n <= this.#buffer.length) return;
     const grown = new Uint8Array(Math.max(2 * this.#buffer.length, this.length + n));
@@ -754,20 +784,16 @@ class Writer {
   }
 
   u32(v: number): void {
-    if (!Number.isInteger(v) || v < 0 || v > 0xffffffff) throw new RangeError(`${v} is no u32`);
+    if (!Number.isInteger(v) || v < 0 || v > 0xffffffff)
+      throw thrown({ code: 'limit', message: `${v} does not fit in a 32-bit count` });
     this.room(4);
     this.#data.setUint32(this.length, v, true);
     this.length += 4;
   }
 
-  u16(v: number): void {
-    this.room(2);
-    this.#data.setUint16(this.length, v, true);
-    this.length += 2;
-  }
-
   u64(v: number): void {
-    if (!Number.isSafeInteger(v) || v < 0) throw new RangeError(`${v} is no safe unsigned integer`);
+    if (!Number.isSafeInteger(v) || v < 0)
+      throw thrown({ code: 'invalid', message: `${v} is not a safe nonnegative integer` });
     this.room(8);
     this.#data.setBigUint64(this.length, BigInt(v), true);
     this.length += 8;
@@ -786,7 +812,10 @@ class Writer {
   }
 }
 
-/** The chunks of a stream, read with a reader where async iteration is missing. */
+/**
+ * Yields the chunks of `stream`, through `getReader()` when it has one, else by async iteration.
+ * Stopping early cancels the reader.
+ */
 async function* chunks(
   stream: ReadableBytes | AsyncIterable<Uint8Array>,
 ): AsyncGenerator<Uint8Array> {

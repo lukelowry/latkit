@@ -1,10 +1,13 @@
-//! Views in a browser. A [`PageView`] is a view the page holds: the page reads and changes it, hears
-//! what it tells, and lends it to shots, with or without a canvas showing it. A [`Canvas`] shows views
-//! as its layout places them in a `<canvas>` element, or in an `OffscreenCanvas` in a worker, and
-//! feeds each view the pointer, wheel, and keys that land on its panel. Every canvas of one [`Gpu`]
-//! draws in one animation frame, into one command buffer, after the frame listeners of [`on_frame`]
-//! run: linked views always show the same moment, and an application's per-frame work lands in the
-//! frame it was done for.
+//! Views in a browser.
+//!
+//! A [`PageView`] is a view owned by the page. The page reads and changes it, listens to its
+//! events, and lends it to shots, whether or not a canvas shows it. A [`Canvas`] shows views in
+//! the panels of its layout, in a `<canvas>` element or in an `OffscreenCanvas` in a worker. It
+//! feeds each view the pointer, wheel, and key input for its panel.
+//!
+//! Every canvas of one [`Gpu`] draws in the same animation frame and command buffer, after the
+//! [`on_frame`] listeners run. So linked views always show the same moment, and an application's
+//! per-frame work appears in the frame it was done for.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -28,7 +31,7 @@ use crate::{Image, Shot, Video};
 pub struct Listener(Option<Box<dyn FnOnce()>>);
 
 impl Listener {
-    /// Keeps listening for as long as what it listens to lives.
+    /// Keeps the listener running for as long as its source lives, instead of stopping it on drop.
     pub fn forget(mut self) {
         self.0 = None;
     }
@@ -45,8 +48,8 @@ impl Drop for Listener {
 type FrameListener = Rc<RefCell<dyn FnMut(f64)>>;
 type EventListener = Rc<RefCell<dyn FnMut(&[Event])>>;
 
-/// The animation frames of one `Gpu`: its listeners, then every canvas that needs a frame, then what
-/// each of its views told.
+/// The animation frames of one `Gpu`. Each frame runs the listeners, then draws every canvas that
+/// needs a frame, then dispatches each view's events.
 struct Frames {
     gpu: Gpu,
     canvases: Vec<Weak<RefCell<Painted>>>,
@@ -54,15 +57,15 @@ struct Frames {
     listeners: Vec<(u64, FrameListener)>,
     next: u64,
     scheduled: Option<i32>,
-    /// Whether a harness steps the frames itself ([`step`]): no animation frame is asked for.
+    /// Whether a harness steps the frames itself with [`step`], so no animation frame is requested.
     stepped: bool,
-    /// What waits for work a view waits on to land ([`landed`]), woken as it asks for a frame, and
-    /// how many times that was.
+    /// Wakers of [`landed`] futures, woken whenever a frame is requested, and the number of such
+    /// wakes.
     landing: Vec<std::task::Waker>,
     wakes: u64,
     tick: Option<Closure<dyn FnMut(f64)>>,
-    /// The page's `prefers-reduced-motion`, which each view is told, and what draws again when it
-    /// changes; none in a worker.
+    /// The page's `prefers-reduced-motion` query, passed to each view, and the closure that
+    /// requests a frame when it changes. `None` in a worker.
     reduced: Option<(web_sys::MediaQueryList, Closure<dyn FnMut()>)>,
 }
 
@@ -112,7 +115,7 @@ fn frames_of(gpu: &Gpu) -> Rc<RefCell<Frames>> {
     })
 }
 
-/// The page's or the worker's global scope, which hands out animation frames.
+/// The page's or worker's global scope, which provides animation frames.
 enum Scope {
     Window(web_sys::Window),
     Worker(web_sys::DedicatedWorkerGlobalScope),
@@ -126,8 +129,8 @@ fn scope() -> Option<Scope> {
     global.dyn_ref::<web_sys::DedicatedWorkerGlobalScope>().map(|worker| Scope::Worker(worker.clone()))
 }
 
-/// Asks for an animation frame, unless one is asked for or a harness steps the frames, and wakes what
-/// waits for work to land.
+/// Requests an animation frame, unless one is already requested or a harness steps the frames. Also
+/// wakes every [`landed`] future.
 fn schedule(frames: &Rc<RefCell<Frames>>) {
     let landing = {
         let mut f = frames.borrow_mut();
@@ -170,7 +173,7 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("latkit") });
     let shown: Vec<wgpu::SurfaceTexture> =
         canvases.iter().filter_map(|c| c.borrow_mut().record(&mut encoder, now / 1000.0)).collect();
-    // A frame no canvas drew submits nothing: listeners alone keep frames coming.
+    // A frame in which no canvas drew submits nothing. Listeners alone still keep frames coming.
     if !shown.is_empty() {
         gpu.queue().submit([encoder.finish()]);
     }
@@ -191,7 +194,8 @@ fn tick(frames: &Rc<RefCell<Frames>>, now: f64) {
     }
 }
 
-/// Releases the registry's GPU and cancels its frame as soon as its final owner disappears.
+/// Removes the `Gpu`'s frames from the registry and cancels its requested frame once no canvas,
+/// view, or listener remains.
 fn release_idle(frames: &Rc<RefCell<Frames>>) {
     let mut f = frames.borrow_mut();
     f.canvases.retain(|c| c.strong_count() > 0);
@@ -210,14 +214,14 @@ fn release_idle(frames: &Rc<RefCell<Frames>>) {
     FRAMES.with(|all| all.borrow_mut().retain(|f| !Rc::ptr_eq(f, frames)));
 }
 
-/// Asks for an animation frame of the `Gpu` whose shared state lies at `gpu`, waking what waits for
-/// its work to land: what a view's waker does when work it waited on lands, always on the page's one
-/// thread.
+/// A view's waker. When work the view waited on arrives, it requests an animation frame of the
+/// `Gpu` whose shared state is at address `gpu`, and wakes its [`landed`] futures. It always runs
+/// on the page's single thread.
 struct Wakes {
     gpu: usize,
 }
 
-/// What wakes `gpu`'s frames, and what waits for its work to land ([`landed`]), as work lands.
+/// A waker that, when work arrives, requests a frame of `gpu` and wakes its [`landed`] futures.
 pub(crate) fn waker(gpu: &Gpu) -> std::task::Waker {
     std::task::Waker::from(Arc::new(Wakes { gpu: Arc::as_ptr(&gpu.0) as usize }))
 }
@@ -236,8 +240,9 @@ impl std::task::Wake for Wakes {
     }
 }
 
-/// Calls `listener` with the frame's timestamp, milliseconds as `requestAnimationFrame` gives it,
-/// every animation frame before `gpu`'s canvases draw, until the returned listener is dropped.
+/// Calls `listener` every animation frame, before `gpu`'s canvases draw, with the frame's timestamp
+/// in milliseconds as `requestAnimationFrame` gives it. Stops when the returned [`Listener`] is
+/// dropped.
 pub fn on_frame(gpu: &Gpu, listener: impl FnMut(f64) + 'static) -> Listener {
     let frames = frames_of(gpu);
     let id = {
@@ -257,10 +262,12 @@ pub fn on_frame(gpu: &Gpu, listener: impl FnMut(f64) + 'static) -> Listener {
     })))
 }
 
-/// Draws one frame of `gpu` now, at `now`, milliseconds as an animation frame's timestamp: its
-/// listeners, then every canvas that needs a frame, then what its views told. From the first step
-/// `gpu` asks for no animation frames: a harness steps every frame itself, so a run draws the same
-/// frames however fast the device is, and work landing wakes [`landed`] alone.
+/// Draws one frame of `gpu` immediately, with `now` as its timestamp in milliseconds. Runs the
+/// frame listeners, draws every canvas that needs a frame, then dispatches the views' events.
+///
+/// After the first call, `gpu` requests no animation frames. The harness steps every frame itself,
+/// so a run draws the same frames regardless of device speed, and arriving work only wakes
+/// [`landed`].
 pub fn step(gpu: &Gpu, now: f64) {
     let frames = frames_of(gpu);
     let scheduled = {
@@ -278,9 +285,9 @@ pub fn step(gpu: &Gpu, now: f64) {
     tick(&frames, now);
 }
 
-/// Waits until work a view of `gpu` waits on lands after this call: a readback, a compile, a job, a
-/// text, a fetch; or until a view asks for a frame. What lands between the call and the first wait
-/// counts, as a view a harness changes right after asking does.
+/// Waits until work a view of `gpu` depends on arrives after this call, such as a readback,
+/// compile, job, text, or fetch, or until a view requests a frame. Arrivals between this call and
+/// the first poll count, so a harness may change a view right after calling it.
 pub fn landed(gpu: &Gpu) -> impl Future<Output = ()> + 'static {
     let frames = frames_of(gpu);
     let seen = frames.borrow().wakes;
@@ -294,8 +301,8 @@ pub fn landed(gpu: &Gpu) -> impl Future<Output = ()> + 'static {
     })
 }
 
-/// Waits until `gpu` finished the work submitted to it, every readback of it mapped, and every
-/// pipeline asked of it compiled: a frame stepped then draws all that landed.
+/// Waits until `gpu` has finished its submitted work, mapped every readback, and compiled every
+/// requested pipeline. A frame stepped afterwards draws all the results.
 pub async fn done(gpu: &Gpu) {
     let (submitted, finished) = crate::Pending::new();
     gpu.queue().on_submitted_work_done(move || finished.resolve(Ok(())));
@@ -312,26 +319,26 @@ pub async fn done(gpu: &Gpu) {
     }
 }
 
-/// A view the page holds: it reads and changes the view, hears what it tells, shows it in a canvas,
-/// and lends it to shots. Changing it asks its canvas for a frame.
+/// A view owned by the page, which reads and changes it, listens to its events, shows it in a
+/// canvas, and lends it to shots. Changing it requests a frame.
 #[derive(Clone)]
 pub struct PageView(Rc<RefCell<Held>>);
 
 struct Held {
     view: View,
     frames: Rc<RefCell<Frames>>,
-    /// Whether it was changed since it last drew.
+    /// Whether the view changed since it last drew.
     due: bool,
     listeners: Vec<(u64, EventListener)>,
     next: u64,
 }
 
 impl PageView {
-    /// Holds `view` for the page. Its `Gpu` must come from [`Gpu::new`]; it sets text with the
-    /// browser's fonts unless it was given a host.
+    /// Wraps `view` for the page. Its `Gpu` must come from [`Gpu::new`]. Unless the `Gpu` already
+    /// has a host, text is set with the browser's fonts.
     pub fn new(mut view: View) -> PageView {
         let gpu = view.gpu().clone();
-        // The view sleeps while it waits; what it waits on asks for the next frame as it lands.
+        // The view sleeps while it waits. The work it waits on requests the next frame on arrival.
         view.set_waker(waker(&gpu));
         if gpu.0.lock().host.is_none() {
             gpu.set_host(crate::host::Browser);
@@ -343,7 +350,7 @@ impl PageView {
         PageView(held)
     }
 
-    /// Calls `f` with the view, then draws a frame when it needs one.
+    /// Calls `f` with the view, then requests a frame to draw any change.
     pub fn with<R>(&self, f: impl FnOnce(&mut View) -> R) -> R {
         let result = f(&mut self.0.borrow_mut().view);
         self.0.borrow_mut().due = true;
@@ -352,7 +359,7 @@ impl PageView {
         result
     }
 
-    /// Calls `f` with the view, to read it without asking for a frame.
+    /// Calls `f` with the view to read it, without requesting a frame.
     pub fn read<R>(&self, f: impl FnOnce(&View) -> R) -> R {
         f(&self.0.borrow().view)
     }
@@ -362,9 +369,9 @@ impl PageView {
         self.0.borrow().view.gpu().clone()
     }
 
-    /// Calls `listener` with what the view tells, a batch at a time and in order, until the returned
-    /// listener is dropped. A listener hears what is told while it listens; what lasts is state the
-    /// view reads out.
+    /// Calls `listener` with the view's events, in order, one batch per call, until the returned
+    /// [`Listener`] is dropped. A listener receives only the events sent while it listens. Read
+    /// lasting state from the view itself.
     pub fn on(&self, listener: impl FnMut(&[Event]) + 'static) -> Listener {
         let id = {
             let mut held = self.0.borrow_mut();
@@ -381,7 +388,7 @@ impl PageView {
         })))
     }
 
-    /// Hands what the view told to its listeners, one batch.
+    /// Sends the view's pending events to its listeners as one batch.
     fn dispatch(&self) {
         let (events, listeners) = {
             let mut held = self.0.borrow_mut();
@@ -398,8 +405,8 @@ impl PageView {
         }
     }
 
-    /// Whether it wants a frame and no shot holds it: it changed, or its view wants one. While what
-    /// it draws with compiles, only a compile landing does.
+    /// Whether it needs a frame and is not lent to a shot: it changed, or its view wants one. While
+    /// its pipelines compile, a change waits until they finish.
     pub fn wants_frame(&self) -> bool {
         let held = self.0.borrow();
         !held.view.lent() && (held.view.wants_frame() || (held.due && !held.view.compiling()))
@@ -410,31 +417,31 @@ impl PageView {
         self.0.borrow_mut().view.ready(format, pixel_ratio)
     }
 
-    /// Whether a shot holds it.
+    /// Whether it is lent to a shot.
     fn lent(&self) -> bool {
         self.0.borrow().view.lent()
     }
 }
 
-/// A view's place in a canvas: the view, and where it draws, `[x, y, width, height]` as fractions of
-/// the canvas. A later panel draws over an earlier one.
+/// A view's panel in a canvas. Later panels draw over earlier ones.
 #[derive(Clone)]
 pub struct Panel {
     /// The view shown.
     pub view: PageView,
-    /// Where it draws.
+    /// Where it draws: `[x, y, width, height]` as fractions of the canvas, from its top left.
     pub at: [f32; 4],
 }
 
-/// Views shown in a `<canvas>` element or an `OffscreenCanvas`, as its layout places them. An
-/// element sizes itself to its CSS box at the device's pixel ratio and passes each view the pointer,
-/// wheel, and keys that land on its panel; an offscreen canvas keeps the size it is given and takes
-/// no input. A frame draws only the views that need one, or all of them when the canvas changes size
-/// or layout.
+/// Views shown in a `<canvas>` element or an `OffscreenCanvas`, in the panels of its layout.
+///
+/// An element canvas sizes itself to its CSS box at the device pixel ratio, and passes each view
+/// the pointer, wheel, and key input for its panel. An offscreen canvas keeps the size it is given
+/// and takes no input. A frame redraws only the views that need it, or all of them when the canvas
+/// changes size or layout.
 #[derive(Clone)]
 pub struct Canvas(Rc<RefCell<Painted>>);
 
-/// What a canvas draws into.
+/// The canvas a [`Canvas`] draws into: an element, or an offscreen canvas and its pixel ratio.
 enum Target {
     Element(HtmlCanvasElement),
     Offscreen { canvas: OffscreenCanvas, pixel_ratio: f32 },
@@ -446,13 +453,14 @@ struct Painted {
     frames: Rc<RefCell<Frames>>,
     panels: Panels,
     views: Vec<PageView>,
-    /// Each panel's texture while the canvas composes several views, and its size.
+    /// Each panel's texture and its size, used when the canvas shows several views.
     textures: Vec<Option<(wgpu::Texture, [u32; 2])>>,
-    /// Each panel in CSS pixels, as last drawn: what input lands on.
+    /// Each panel in CSS pixels as last drawn, used to route input.
     rects: Vec<[f32; 4]>,
-    /// Whether every view draws in the next frame: the canvas changed size or layout.
+    /// Whether every view draws in the next frame, because the canvas changed size or layout.
     due: bool,
-    /// The panel each pointer down went to, the panel under the pointer, and the panel keys go to.
+    /// The panel that captured each pressed pointer, the panel under the pointer, and the panel
+    /// that receives keys.
     captured: Vec<(u32, usize)>,
     hovered: Option<usize>,
     focus: usize,
@@ -461,19 +469,18 @@ struct Painted {
     resize: Option<Resizing>,
 }
 
-/// A listener of one kind of the element's events.
+/// A listener for one kind of element event.
 type Handler = (&'static str, Closure<dyn FnMut(web_sys::Event)>);
-/// What follows the element's size.
+/// The observer that tracks the element's size, and its callback.
 type Resizing = (ResizeObserver, Closure<dyn FnMut(JsValue)>);
 
 impl Canvas {
-    /// A canvas showing views in `element` as `layout` places them. The `Gpu` must come from
-    /// [`Gpu::new`].
+    /// A canvas showing the views of `layout` in `element`. The `Gpu` must come from [`Gpu::new`].
     pub fn new(gpu: &Gpu, element: &HtmlCanvasElement, layout: Vec<Panel>) -> Result<Canvas> {
         let size = [element.width(), element.height()];
         let surface = Surface::new(gpu, wgpu::SurfaceTarget::Canvas(element.clone()), size)?;
         let _ = element.style().set_property("touch-action", "none");
-        // Keys reach the views without the page's help.
+        // Make the element focusable so keys reach the views directly.
         if !element.has_attribute("tabindex") {
             element.set_tab_index(0);
         }
@@ -494,11 +501,12 @@ impl Canvas {
         Ok(canvas)
     }
 
-    /// A canvas showing views in `canvas` as `layout` places them, `pixel_ratio` of its pixels a CSS
-    /// pixel: in a worker, or wherever no page feeds it input. It keeps the size the canvas is given.
+    /// A canvas showing the views of `layout` in `canvas`, at `pixel_ratio` pixels per CSS pixel.
+    /// Use it in a worker, or wherever the page does not feed it input. It keeps the size it is
+    /// given.
     pub fn offscreen(gpu: &Gpu, canvas: &OffscreenCanvas, layout: Vec<Panel>, pixel_ratio: f32) -> Result<Canvas> {
         if !(pixel_ratio.is_finite() && pixel_ratio > 0.0) {
-            return Err(Error::invalid("a canvas's pixel ratio is positive").at("pixelRatio"));
+            return Err(Error::invalid("a canvas's pixel ratio must be positive").at("pixelRatio"));
         }
         let size = [canvas.width(), canvas.height()];
         let surface = Surface::new(gpu, wgpu::SurfaceTarget::OffscreenCanvas(canvas.clone()), size)?;
@@ -531,8 +539,8 @@ impl Canvas {
         Canvas(state)
     }
 
-    /// Shows the views of `layout` where it places them, in place of those it showed. A view shows in
-    /// one panel of one canvas at a time; a panel covering no pixels is invalid.
+    /// Replaces the shown views with those of `layout`. A view shows in one panel of one canvas
+    /// at a time. Fails if a view repeats or shows in another canvas, or a panel covers no pixels.
     pub fn set_layout(&self, layout: Vec<Panel>) -> Result<()> {
         let views: Vec<&PageView> = layout.iter().map(|panel| &panel.view).collect();
         let twice = views.iter().enumerate().any(|(i, a)| views[i + 1..].iter().any(|b| Rc::ptr_eq(&a.0, &b.0)));
@@ -542,7 +550,7 @@ impl Canvas {
                 && other.borrow().views.iter().any(|shown| views.iter().any(|v| Rc::ptr_eq(&v.0, &shown.0)))
         });
         if twice || elsewhere {
-            return Err(Error::invalid("a view shows in one panel of one canvas").at("layout"));
+            return Err(Error::invalid("a view can show in only one panel of one canvas").at("layout"));
         }
         let panels = Panels::from(layout.iter().map(|panel| panel.at).collect::<Vec<_>>());
         panels.rects([1 << 16, 1 << 16], [1, 1]).map_err(|e| e.at("layout"))?;
@@ -569,7 +577,7 @@ impl Canvas {
 }
 
 impl Painted {
-    /// The canvas's size in pixels and pixels a CSS pixel.
+    /// The canvas's size in pixels, and its pixels per CSS pixel.
     fn measure(&self) -> ([u32; 2], f32) {
         match &self.target {
             Target::Element(element) => {
@@ -583,16 +591,16 @@ impl Painted {
         }
     }
 
-    /// Whether a frame is due: the canvas changed, or a view it shows wants to draw; never while shots
-    /// hold every view it shows, whose last frames it keeps.
+    /// Whether a frame is due: the canvas changed, or a view it shows wants to draw. Never while
+    /// every view it shows is lent to a shot, since it keeps their last frames.
     fn wants_frame(&self) -> bool {
         self.views.iter().any(|v| !v.lent()) && (self.due || self.views.iter().any(PageView::wants_frame))
     }
 
-    /// Records a frame when one is needed, sizing the canvas to its box first: each view that needs
-    /// to draws into its panel, straight into the canvas when one view fills it. A view a shot holds,
-    /// or whose scene's pipelines still compile, draws nothing new and keeps its panel; while no view
-    /// it shows can draw, the canvas keeps the frame it shows.
+    /// Records a frame if one is needed, first sizing the canvas to its CSS box. Each view that
+    /// needs to draw renders into its panel, or straight into the canvas when one view fills it. A
+    /// view lent to a shot, or whose pipelines still compile, keeps its panel's previous contents.
+    /// While no view can draw, the canvas keeps its current frame.
     fn record(&mut self, encoder: &mut wgpu::CommandEncoder, time: f64) -> Option<wgpu::SurfaceTexture> {
         let (size, ratio) = self.measure();
         let resized = size != self.surface.size();
@@ -627,7 +635,7 @@ impl Painted {
                 if fresh {
                     self.textures[i] = Some((panel_texture(self.surface.gpu.device(), format, rect.size), rect.size));
                 }
-                let (panel, _) = self.textures[i].as_ref().expect("made");
+                let (panel, _) = self.textures[i].as_ref().expect("the panel texture exists");
                 let mut held = self.views[i].0.borrow_mut();
                 if ready[i] && (fresh || self.due || held.due || held.view.needs_render()) {
                     let target = panel.create_view(&wgpu::TextureViewDescriptor::default());
@@ -651,7 +659,7 @@ impl Painted {
         Some(texture)
     }
 
-    /// Sets the element's cursor to the one the view under the pointer asks for.
+    /// Sets the element's cursor to the one the view under the pointer requests.
     fn show_cursor(&mut self) {
         let Target::Element(element) = &self.target else { return };
         let cursor = self.hovered.and_then(|i| self.views.get(i)).map_or(Cursor::Default, |v| v.read(View::cursor));
@@ -668,9 +676,9 @@ impl Painted {
         }
     }
 
-    /// The panels `input` goes to, each with the input in its own CSS pixels: a pointer goes to the
-    /// panel it pressed until it lets go, else to the panel under it, which hears when it leaves; keys
-    /// go to the panel pressed last.
+    /// The panels `input` goes to, each with the input in that panel's CSS pixels. A pressed
+    /// pointer goes to the panel it pressed until release. Otherwise it goes to the panel under
+    /// it, which receives a leave when the pointer moves off. Keys go to the panel pressed last.
     fn route(&mut self, input: Input) -> Vec<(usize, Input)> {
         let rects = if self.rects.is_empty() { self.css_rects() } else { self.rects.clone() };
         let under = |point: [f32; 2]| {
@@ -717,7 +725,8 @@ impl Painted {
         routed
     }
 
-    /// Each panel in CSS pixels, from the canvas's size now: before its first frame records them.
+    /// Each panel in CSS pixels at the canvas's current size, used before the first frame records
+    /// them.
     fn css_rects(&self) -> Vec<[f32; 4]> {
         let (size, ratio) = self.measure();
         self.panels.rects(size, [1, 1]).map(|rects| rects.iter().map(|r| css(*r, ratio)).collect()).unwrap_or_default()
@@ -731,7 +740,7 @@ fn css(rect: Rect, ratio: f32) -> [f32; 4] {
     [x, y, w, h]
 }
 
-/// `input` with its point taken from `origin`, so it reads from its panel's top left.
+/// `input` with its point made relative to `origin`, its panel's top left.
 fn within(input: Input, origin: [f32; 2]) -> Input {
     let at = |point: [f32; 2]| [point[0] - origin[0], point[1] - origin[1]];
     match input {
@@ -747,7 +756,7 @@ fn within(input: Input, origin: [f32; 2]) -> Input {
     }
 }
 
-/// A panel's texture: views draw into it, and the canvas copies it into place.
+/// A panel's texture. A view draws into it, and the canvas copies it into place.
 fn panel_texture(device: &wgpu::Device, format: wgpu::TextureFormat, size: [u32; 2]) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("latkit panel"),
@@ -761,9 +770,9 @@ fn panel_texture(device: &wgpu::Device, format: wgpu::TextureFormat, size: [u32;
     })
 }
 
-/// A canvas's surface: in the one format views draw in wherever the browser offers it, so canvases and
-/// shots share their pipelines; alpha premultiplied; panels copied into it; configured again whenever
-/// its size changes.
+/// A canvas's surface. It uses the views' standard format when the browser offers it, so canvases
+/// and shots share pipelines. Alpha is premultiplied where supported, panels are copied in, and the
+/// surface is reconfigured whenever its size changes.
 struct Surface {
     gpu: Gpu,
     raw: wgpu::Surface<'static>,
@@ -771,10 +780,10 @@ struct Surface {
 }
 
 impl Surface {
-    /// The surface of `target`, `size` pixels, drawn with `gpu`, which must come from [`Gpu::new`].
+    /// Creates the surface of `target` at `size` pixels. `gpu` must come from [`Gpu::new`].
     fn new(gpu: &Gpu, target: wgpu::SurfaceTarget<'static>, size: [u32; 2]) -> Result<Surface> {
         let (Some(instance), Some(adapter)) = (gpu.instance(), gpu.adapter()) else {
-            return Err(Error::Unsupported("a canvas draws with a Gpu made by Gpu::new".into()));
+            return Err(Error::Unsupported("a canvas needs a Gpu created by Gpu::new".into()));
         };
         let raw =
             instance.create_surface(target).map_err(|e| Error::Unsupported(format!("no WebGPU canvas: {e}").into()))?;
@@ -786,14 +795,15 @@ impl Surface {
                 .formats
                 .first()
                 .copied()
-                .ok_or_else(|| Error::Unsupported("the canvas offers no format".into()))?
+                .ok_or_else(|| Error::Unsupported("the canvas supports no texture format".into()))?
         };
         let alpha_mode = if capabilities.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
             wgpu::CompositeAlphaMode::PreMultiplied
         } else {
             wgpu::CompositeAlphaMode::Auto
         };
-        // Panels are drawn apart and copied in: a WebGPU canvas takes copies, whatever wgpu reports.
+        // Panels are drawn separately and copied in. A WebGPU canvas accepts copies, regardless of
+        // what wgpu reports.
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
             format,
@@ -809,13 +819,13 @@ impl Surface {
         Ok(Surface { gpu: gpu.clone(), raw, config })
     }
 
-    /// Its width and height in pixels, as last configured.
+    /// Width and height in pixels, as last configured.
     fn size(&self) -> [u32; 2] {
         [self.config.width, self.config.height]
     }
 
-    /// The texture to draw a frame of `size` pixels into, configuring the surface again first when
-    /// its size changed; `None` when the surface had none to give, which a later frame tries again.
+    /// The texture for a frame of `size` pixels, reconfiguring the surface first if its size
+    /// changed. `None` if the surface has no texture available. A later frame tries again.
     fn texture(&mut self, size: [u32; 2]) -> Option<wgpu::SurfaceTexture> {
         let size = size.map(|v| v.max(1));
         if size != self.size() {
@@ -834,16 +844,16 @@ impl Surface {
     }
 }
 
-/// Views the page holds, lent to a shot a step at a time, so the page reads them between steps and
-/// hears what each step told.
+/// Page views lent to a shot one step at a time, so the page can read them between steps and
+/// receives each step's events.
 struct Lending<'a>(&'a [PageView]);
 
 impl Lending<'_> {
-    /// The views, each once.
+    /// Lends `views`. Fails if a view appears twice.
     fn of(views: &[PageView]) -> Result<Lending<'_>> {
         let twice = views.iter().enumerate().any(|(i, a)| views[i + 1..].iter().any(|b| Rc::ptr_eq(&a.0, &b.0)));
         if twice {
-            return Err(Error::invalid("a shot draws each view in one panel"));
+            return Err(Error::invalid("a view can appear in only one panel of a shot"));
         }
         Ok(Lending(views))
     }
@@ -863,14 +873,14 @@ impl Views for Lending<'_> {
     }
 }
 
-/// The picture `shot` takes of `views`, one per panel, once they are complete and still. Canvases
-/// showing them hold their last frames meanwhile.
+/// Takes `shot`'s picture of `views`, one per panel, once they are complete as its
+/// [`Capture`](crate::Capture) says. Canvases showing them keep their last frames meanwhile.
 pub async fn image(shot: &Shot, views: &[PageView]) -> Result<Image> {
     shot.image_of(&mut Lending::of(views)?).await
 }
 
-/// Draws `video`'s next frame of `views`, one per panel. Canvases showing them hold their last frames
-/// until the video is finished or dropped.
+/// Draws `video`'s next frame of `views`, one per panel. Canvases showing them keep their last
+/// frames until the video is finished or dropped.
 pub async fn frame<S: crate::Sink>(video: &mut Video<S>, views: &[PageView]) -> Result<()> {
     video.frame_of(&mut Lending::of(views)?).await
 }
@@ -889,7 +899,7 @@ impl Drop for Painted {
     }
 }
 
-/// Feeds the element's pointer, wheel, and keys to the views of the panels they land on.
+/// Feeds the element's pointer, wheel, and key events to the views of the panels they target.
 fn listen(state: &Rc<RefCell<Painted>>, element: &HtmlCanvasElement) -> Result<()> {
     let add = |kind: &'static str, handle: fn(&HtmlCanvasElement, &web_sys::Event) -> Option<Input>| {
         let weak = Rc::downgrade(state);
@@ -907,7 +917,7 @@ fn listen(state: &Rc<RefCell<Painted>>, element: &HtmlCanvasElement) -> Result<(
                     view.dispatch();
                 }
             }
-            // A wheel a view zooms with does not scroll the page; a key it uses does not either.
+            // A wheel or key event a view used must not also scroll the page.
             if used && matches!(kind, "wheel" | "keydown") {
                 event.prevent_default();
             }
@@ -921,7 +931,7 @@ fn listen(state: &Rc<RefCell<Painted>>, element: &HtmlCanvasElement) -> Result<(
                 handler.as_ref().unchecked_ref(),
                 &options,
             )
-            .map_err(|_| Error::Unsupported("the canvas takes no input".into()))?;
+            .map_err(|_| Error::Unsupported("cannot listen for input on the canvas".into()))?;
         state.borrow_mut().handlers.push((kind, handler));
         Ok::<(), Error>(())
     };
@@ -981,7 +991,7 @@ fn point(element: &HtmlCanvasElement, event: &web_sys::MouseEvent) -> [f32; 2] {
     ]
 }
 
-/// The keys a key or mouse event says are held.
+/// The modifier keys a key or mouse event reports as held.
 macro_rules! modifiers {
     ($event:expr) => {
         Modifiers {
@@ -994,7 +1004,7 @@ macro_rules! modifiers {
 }
 use modifiers;
 
-/// A pointer press, focusing the element and capturing the pointer.
+/// Reads a pointer press, focusing the element and capturing the pointer.
 fn pressed(element: &HtmlCanvasElement, event: &web_sys::Event) -> Option<Input> {
     let event = event.dyn_ref::<PointerEvent>()?;
     let button = match event.button() {
@@ -1014,7 +1024,7 @@ fn pressed(element: &HtmlCanvasElement, event: &web_sys::Event) -> Option<Input>
     })
 }
 
-/// What a pointer event's pointer is.
+/// The kind of device behind a pointer event.
 fn device(event: &PointerEvent) -> Device {
     match event.pointer_type().as_str() {
         "touch" => Device::Touch,
@@ -1023,7 +1033,7 @@ fn device(event: &PointerEvent) -> Device {
     }
 }
 
-/// A key going down or up.
+/// Reads a key press or release.
 fn keyed(event: &web_sys::Event) -> Option<Input> {
     let event = event.dyn_ref::<KeyboardEvent>()?;
     let key = match event.key().as_str() {

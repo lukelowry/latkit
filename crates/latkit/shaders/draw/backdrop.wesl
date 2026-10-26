@@ -1,9 +1,9 @@
-// The backdrop under every mark: a plane's or a diagram's grid, or the earth's ground and graticule,
-// lit by daylight, and on the globe ringed by its air. Lines
-// are a pixel wide and antialiased per axis. Their spacing steps by tens, and the next step fades in as
-// the lines crowd, so no seam shows. They fade where the view grazes the ground, and on a plane away
-// from what the camera looks at. The round globe writes its depth a hair under the ground, so what
-// lies behind it hides and what lies on it draws.
+// The backdrop under every mark: a plane's or diagram's grid, or the earth's ground and graticule,
+// lit by daylight, with the atmosphere around the globe. Lines are one pixel wide and antialiased
+// per axis. Their spacing steps by powers of ten, and the next coarser spacing fades in as lines
+// get dense, so no seam shows. Lines fade where the view grazes the ground, and on a plane, with
+// distance from where the camera looks. The round globe writes its depth slightly below the ground,
+// so marks behind it are hidden and marks on it still draw.
 
 import package::lib::types::{SPACE_EARTH, SPACE_PLANE, SPACE_DIAGRAM, GRID_OFF, GRID_DOTS};
 import package::lib::bind::{frame, eye};
@@ -16,11 +16,11 @@ struct Varyings {
     @location(0) ndc: vec2f,
 }
 
-// How far under the ground the globe's depth lies, in its radii: deeper than a chord of a few
-// degrees sags, so paths and areas on the ground draw over it.
+// How far below the ground the globe's depth is written, in globe radii. It exceeds the sag of a
+// chord a few degrees long, so paths and areas on the ground draw over the globe.
 const GROUND_BIAS: f32 = 1e-3;
 
-// What a pixel of the backdrop draws: its color, and the depth of the ground there.
+// A backdrop pixel: its color, and the ground's depth there.
 struct Ground {
     color: vec4f,
     depth: f32,
@@ -38,8 +38,8 @@ fn vertex(@builtin(vertex_index) i: u32) -> Varyings {
     return Varyings(vec4f(ndc, 0.0, 1.0), ndc);
 }
 
-// Coverage of lines `pitch` apart through `p`, which moves `w` per pixel: a pixel wide, fading out as
-// their cells shrink to a few pixels.
+// Coverage of grid lines `pitch` apart at `p`, where `p` changes by `w` per pixel. Lines are a
+// pixel wide and fade out as their cells shrink to a few pixels.
 fn lines(p: vec2f, w: vec2f, pitch: f32) -> f32 {
     let cells = max(w / pitch, vec2f(1e-12));
     let px = abs(fract(p / pitch + 0.5) - 0.5) / cells;
@@ -47,16 +47,17 @@ fn lines(p: vec2f, w: vec2f, pitch: f32) -> f32 {
     return max(c.x, c.y);
 }
 
-// Dots `pitch` apart through `p`, which moves `w` per pixel: a CSS pixel across on any screen, fading
-// out as their cells shrink to a few pixels.
+// Coverage of grid dots `pitch` apart at `p`, where `p` changes by `w` per pixel. Dots are a CSS
+// pixel across on any screen and fade out as their cells shrink to a few pixels.
 fn dots(p: vec2f, w: vec2f, pitch: f32) -> f32 {
     let cells = max(w / pitch, vec2f(1e-12));
     let px = abs(fract(p / pitch + 0.5) - 0.5) / cells;
     return saturate(eye.pixel_ratio + 0.5 - length(px)) * (1.0 - smoothstep(0.08, 0.25, max(cells.x, cells.y)));
 }
 
-// Lines spaced `pitch` times a power of ten, from the `lowest` power to the `highest`: the spacing
-// nearest twenty pixels draws, and the next coarser one fades in as it crowds.
+// Grid lines spaced `pitch` times a power of ten, with the power between `lowest` and `highest`.
+// Lines draw at the spacing just under 20 pixels, and the next coarser spacing fades in as that one
+// gets denser.
 fn grid(p: vec2f, w: vec2f, pitch: f32, lowest: f32, highest: f32, dotted: bool) -> f32 {
     let level = clamp(log2(max(max(w.x, w.y) * 20.0 / pitch, 1e-30)) * 0.30103, lowest, highest);
     let k = floor(level);
@@ -72,8 +73,8 @@ fn blend(color: vec4f, over: vec4f, coverage: f32) -> vec4f {
     return vec4f(mix(color.rgb, over.rgb, coverage * over.a), color.a);
 }
 
-// The plane: its grid where the ray meets elevation 0 at `g`, faded where the ray grazes and away
-// from the center.
+// The plane's grid at `g`, where the view ray meets elevation 0, faded where the ray grazes the
+// plane and away from the center.
 fn plane(g: vec3f, d: vec3f, ahead: bool) -> vec4f {
     let p = g.xy + frame.center_hi + frame.center_lo;
     let w = fwidth(g.xy);
@@ -102,10 +103,10 @@ fn globe_degrees(w: vec3f, radius: f32) -> vec2f {
     return vec2f(lon, degrees(asin(clamp(v.y, -1.0, 1.0))));
 }
 
-// The earth: the mercator band or the globe's disc, eased between as the projection morphs, lit by
-// daylight, the graticule on it, and around the globe its air.
+// The earth: the Mercator band or the globe's disc, blended as the projection morphs, lit by
+// daylight, with the graticule on it and the atmosphere around the globe.
 fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
-    // The flat map ends where web mercator does, at y = ±π.
+    // The flat map ends where Web Mercator does, at y = ±π.
     let band = PI - abs(g.y + frame.mercator_y);
     let flat = saturate(band / max(fwidth(band), 1e-9) + 0.5) * f32(ahead);
     let center = globe_center();
@@ -129,15 +130,16 @@ fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
     var color = blend(frame.background, ground, covered);
     let facing = dot(normalize(hit - center), -d);
     if frame.graticule != 0u {
-        // Longitude jumps where it wraps; its other wrapping steadies the derivative there.
+        // Longitude jumps where it wraps. A second, shifted wrapping keeps the derivative steady
+        // there.
         let wrapped = fract(p.x / 360.0) * 360.0;
         let w = vec2f(min(fwidth(p.x), fwidth(wrapped)), fwidth(p.y));
         let fade = select(smoothstep(0.02, 0.15, abs(d.z)), smoothstep(0.0, 0.3, facing), globe);
         color = blend(color, frame.grid_color, grid(p, w, 1.0, -2.0, 1.0, false) * fade * covered);
     }
     if frame.atmosphere.a > 0.0 && frame.globe > 0.0 {
-        // A thin rim of air over the globe's edge and a halo just past it, as thick as the air is
-        // beside the earth, lit where the sun is up over the ground the ray passes nearest.
+        // A thin rim of atmosphere over the globe's edge, and a halo out to 1.045 globe radii. It
+        // is lit where the sun is up over the ground nearest the view ray.
         let rim = pow(1.0 - saturate(facing), 6.0) * round;
         let halo = pow(1.0 - smoothstep(radius, radius * 1.045, off), 2.0) * (1.0 - round) * f32(along > 0.0);
         let below = daylight(globe_degrees(o + d * along, radius));

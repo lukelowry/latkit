@@ -37,27 +37,28 @@ pub(crate) enum Field {
     Sampled(Samples, Version),
 }
 
-/// A field naming rows of another table by id. Row indices derive from the ids and the target's rows.
+/// A field referencing rows of another table by id. Target row numbers are resolved from the ids
+/// against the target table.
 #[derive(Clone)]
 pub(crate) struct Reference {
     pub(crate) to: Name,
     pub(crate) ids: Column,
-    /// Target row of each row as `u32`; missing where unwired or the id names no row. Its pages align
-    /// with the pages of `ids`.
+    /// Target row of each row as `u32`; missing where unwired or the id names no row. Its pages
+    /// align with the pages of `ids`.
     pub(crate) rows: Column,
-    /// What each page of `rows` was resolved from.
+    /// The inputs each page of `rows` was resolved from, used to detect stale pages.
     pub(crate) resolved: Arc<[Resolved]>,
     pub(crate) version: Version,
-    /// The rows naming each target row, built on first use from `rows`, and shared by every snapshot
-    /// holding them.
+    /// The rows that reference each target row. Built from `rows` on first use and shared by every
+    /// snapshot with the same `rows`.
     pub(crate) inverse: Arc<OnceLock<Inverse>>,
 }
 
-/// A reference row's target where it names no row.
+/// The target row of a reference row that names no row.
 pub(crate) const UNWIRED: u32 = u32::MAX;
 
-/// The rows naming each target row of a reference: target `t`'s are `rows[starts[t]..starts[t + 1]]`,
-/// in row order.
+/// The rows that reference each target row: target `t`'s are `rows[starts[t]..starts[t + 1]]`, in
+/// row order.
 #[derive(Default)]
 pub(crate) struct Inverse {
     starts: Vec<u32>,
@@ -65,7 +66,7 @@ pub(crate) struct Inverse {
 }
 
 impl Inverse {
-    /// The rows naming target row `target`.
+    /// The rows that reference target row `target`.
     pub(crate) fn of(&self, target: usize) -> &[u32] {
         match (self.starts.get(target), self.starts.get(target + 1)) {
             (Some(&start), Some(&end)) => &self.rows[start as usize..end as usize],
@@ -101,8 +102,8 @@ impl Field {
         }
     }
 
-    /// The field of rows `rows`, in that order: a reference names the same targets by id, resolved
-    /// again once applied; samples keep every frame.
+    /// The field for rows `rows`, in that order. A reference keeps its target ids, and its target
+    /// rows are resolved again when the result is applied; samples keep every frame.
     pub(crate) fn gather(&self, rows: &[usize]) -> Field {
         match self {
             Field::Values(column, _) => Field::Values(column.gather(rows), Version::next()),
@@ -123,7 +124,7 @@ impl Reference {
         Reference { to, ids, rows, resolved: Arc::new([]), version: Version::next(), inverse: Arc::default() }
     }
 
-    /// The target row row `row` names.
+    /// The target row that row `row` references, if it is wired.
     pub(crate) fn target(&self, row: usize) -> Option<u32> {
         match self.rows.get(row)? {
             Value::Number(n) => Some(n as u32),
@@ -131,8 +132,8 @@ impl Reference {
         }
     }
 
-    /// The row row `row` names, [`UNWIRED`] where it names none or lies past the rows: read where its
-    /// page stores it, as [`targets`](Reference::targets) reads every row.
+    /// The target row that row `row` references, or [`UNWIRED`] if none or past the rows. Reads the
+    /// page's `u32` storage directly, as [`targets`](Reference::targets) does for every row.
     pub(crate) fn target_row(&self, row: usize) -> u32 {
         let Some((values, i)) = self.rows.at(row) else { return UNWIRED };
         match (&values.array, &values.valid) {
@@ -148,7 +149,8 @@ impl Reference {
         }
     }
 
-    /// Every row's target row, [`UNWIRED`] where it names none: read page by page, not value by value.
+    /// Every row's target row, or [`UNWIRED`] where it names none. Reads page by page rather than
+    /// value by value.
     pub(crate) fn targets(&self) -> Vec<u32> {
         let mut out = Vec::with_capacity(self.rows.len());
         for page in self.rows.pages() {
@@ -167,8 +169,8 @@ impl Reference {
         out
     }
 
-    /// The rows naming each target row: counted, the counts summed, then each row written at its
-    /// target's place.
+    /// The rows that reference each target row. Built once by counting the rows per target,
+    /// prefix-summing the counts, then writing each row into its target's range.
     pub(crate) fn inverse(&self) -> &Inverse {
         self.inverse.get_or_init(|| {
             let targets = self.targets();
@@ -203,7 +205,7 @@ impl Reference {
                 .any(|(page, r)| r.ids != page.id || r.order != order || (r.dangling && r.structure != structure))
     }
 
-    /// Resolves the pages whose inputs changed against `target`.
+    /// Resolves against `target` the pages whose inputs changed, reusing the rest.
     pub(crate) fn resolve(&self, target: &Table) -> Result<Reference> {
         let index = target.index()?;
         let (order, structure) = (target.order, target.structure);
@@ -237,7 +239,8 @@ impl Reference {
 }
 
 impl Table {
-    /// A table named `name` with rows `ids`: a count for rows `0..n`, or a list of numbers or texts.
+    /// A table named `name` with rows `ids`: a count for rows `0..n`, or a list of numbers or
+    /// texts.
     pub fn new(name: impl Into<Name>, ids: impl Into<Ids>) -> Table {
         let version = Version::next();
         Table {
@@ -250,7 +253,8 @@ impl Table {
         }
     }
 
-    /// Adds or replaces field `name`: one value per row.
+    /// Adds or replaces field `name`, with one value per row. A length mismatch is an error when
+    /// the table is applied.
     #[must_use]
     pub fn field(mut self, name: impl Into<Name>, values: impl Into<Values>) -> Table {
         let column = Column::new(&values.into());
@@ -258,7 +262,9 @@ impl Table {
         self
     }
 
-    /// Adds or replaces field `name` naming rows of table `to` by id; `None` leaves a row unwired.
+    /// Adds or replaces field `name`, referencing rows of table `to` by id, one id per row. `None`
+    /// leaves a row unwired. A missing table `to` is an error when the table is applied; an id that
+    /// matches no row stays unwired until such a row exists.
     #[must_use]
     pub fn reference(mut self, name: impl Into<Name>, to: impl Into<Name>, ids: impl Into<Ids>) -> Table {
         let ids = match RowIds::new(&ids.into()) {
@@ -289,25 +295,25 @@ impl Table {
         (0..self.len()).filter_map(|row| self.ids.id(row))
     }
 
-    /// Every field's name and kind, by name.
+    /// Every field's name and kind, sorted by name.
     pub fn fields(&self) -> impl Iterator<Item = (&Name, Kind)> + '_ {
         self.fields.iter().map(|(name, field)| (name, field.kind()))
     }
 
-    /// What field `name` holds.
+    /// The kind of field `name`, if it exists.
     pub fn kind(&self, name: &str) -> Option<Kind> {
         self.field_named(name).map(Field::kind)
     }
 
-    /// The value of `field` for the row with `id`. A sampled field reads its last frame; a reference
-    /// reads the target's id.
+    /// The value of `field` for the row with `id`, or `None` if missing. A sampled field reads its
+    /// last frame; a reference returns the target's id.
     pub fn get(&self, id: impl Into<Id>, field: &str) -> Option<Value> {
         let row = self.row(id.into().as_ref())?;
         self.value(row, field, f64::INFINITY)
     }
 
-    /// Every row's value of `field`, in row order: a reference's as the target ids, a sampled
-    /// field's at its last frame.
+    /// Every row's value of `field`, in row order: target ids for a reference, the last frame for
+    /// a sampled field.
     pub fn values(&self, field: &str) -> Option<Values> {
         Some(match self.field_named(field)? {
             Field::Values(column, _) => column.values(),
@@ -327,8 +333,7 @@ impl Table {
         }
     }
 
-    /// The table of rows `rows` of this one, in that order, with every field: what removing rows
-    /// keeps, and what a query reads back.
+    /// A table of rows `rows` of this one, in that order, with every field. Removing rows uses it.
     pub(crate) fn rows(&self, rows: &[usize]) -> Table {
         let version = Version::next();
         Table {
@@ -366,7 +371,8 @@ impl Table {
         }
     }
 
-    /// Checks that every field has one value per row and the ids are present and unique.
+    /// Checks that the table has a name, every row has a unique id, and every field except a
+    /// sampled one has one value per row.
     pub(crate) fn check(&self) -> Result<()> {
         if self.name.is_empty() {
             return Err(Error::invalid("a table needs a name"));

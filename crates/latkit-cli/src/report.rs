@@ -1,7 +1,7 @@
-//! What a command tells on stderr. As JSON, one object a line, `{ "type", "detail" }` as a view's
-//! events cross to JavaScript: `progress` after each frame, `stats` once done, and `error` with the
-//! library's `{ code, message, path }` and the file it came from. For people, an error a line, and on
-//! a terminal a line of progress that rewrites itself.
+//! Diagnostics on stderr. As JSON, one `{ "type", "detail" }` object per line, the shape of a
+//! view's events in JavaScript: `progress` after each frame, `stats` when done, and `error` with
+//! the library's `{ code, message, path }` and the source file. For people, one line per error,
+//! and on a terminal a progress line that rewrites itself.
 
 use std::io::{self, IsTerminal, Write};
 use std::time::Instant;
@@ -14,10 +14,10 @@ use crate::args::Diagnostics;
 
 pub(crate) struct Report {
     json: bool,
-    /// Whether people read stderr on a terminal: then progress shows.
+    /// Whether stderr is a terminal, where progress is shown.
     terminal: bool,
     started: Instant,
-    /// Whether a progress line is showing.
+    /// Whether a progress line is on screen.
     showing: bool,
 }
 
@@ -31,7 +31,7 @@ impl Report {
         }
     }
 
-    /// `frames` drawn, the next showing at `time` seconds.
+    /// Reports `frames` drawn, with the next at `time` seconds of video.
     pub(crate) fn progress(&mut self, frames: u64, time: f64) {
         if self.json {
             Report::line(&json!({"type": "progress", "detail": {"frames": frames, "time": time}}));
@@ -42,7 +42,7 @@ impl Report {
         }
     }
 
-    /// What was drawn, and what it took.
+    /// Reports the frames drawn and the time, stats, and GPU work they took.
     pub(crate) fn done(&mut self, frames: u64, views: &[View], gpu: &Gpu) {
         let seconds = self.started.elapsed().as_secs_f64();
         if self.json {
@@ -59,7 +59,7 @@ impl Report {
         }
     }
 
-    /// Why the command failed.
+    /// Reports why the command failed.
     pub(crate) fn error(&mut self, failure: &Failure) {
         if self.json {
             let mut detail = serde_json::to_value(&failure.error).unwrap_or(Value::Null);

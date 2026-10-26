@@ -1,6 +1,6 @@
-//! What JSON writes for data, decoded once: a patch's changes, a table's fields, values, and ids. A
-//! slice of a file is the one form read later, by [`Patch::read`] through a host; everything else is
-//! decoded as it is read. JavaScript writes the byte frames instead.
+//! Serde forms for data written as JSON: a patch's changes, a table's fields, values, and ids.
+//! Everything decodes in one pass except a slice of a binary file, which [`Patch::read`] fetches
+//! through a host afterwards. JavaScript sends the binary frames instead of JSON.
 
 use std::fmt;
 use std::sync::Arc;
@@ -18,12 +18,12 @@ use super::table::Table;
 use super::values::{Value, Values};
 use crate::{Error, Result};
 
-/// The largest whole number a number names an id by when written with a fraction: 2^53 − 1.
+/// The largest float accepted as a numeric id, 2^53 − 1. Larger floats may already be rounded.
 const SAFE: f64 = 9_007_199_254_740_991.0;
 
-const NUMERIC_ID: &str = "a numeric id is a whole number from 0 to 2^53 - 1";
+const NUMERIC_ID: &str = "a numeric id must be a whole number from 0 to 2^53 - 1";
 
-/// A dataset: its name and the patch that builds it.
+/// A dataset's JSON document: its name and the patch that builds it.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DataForm {
@@ -32,23 +32,23 @@ pub(crate) struct DataForm {
     pub(crate) patch: Vec<OpForm>,
 }
 
-/// One change of a patch, named by the method that makes it.
+/// One change in a patch, keyed by the name of the `Patch` method that makes it.
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 #[schemars(rename = "Change")]
 pub(crate) enum OpForm {
-    /// Names the axis sampled fields are recorded over, such as `time` in `s`.
+    /// Sets the axis that sampled fields are recorded over, such as `time` in `s`.
     Axis { name: String, unit: String },
     /// Replaces a table with these rows and fields, or adds it.
     Replace(TableForm),
-    /// Writes fields for these rows: rows with known ids change, others are added, and fields left
-    /// out keep their values.
+    /// Writes fields for these rows. Rows with existing ids are updated, new ids add rows, and
+    /// fields left out keep their values. A missing table is added.
     Set(TableForm),
-    /// Removes the rows with these ids.
+    /// Removes the rows with these ids; ids that match no row are ignored.
     Remove { table: String, ids: IdsForm },
-    /// Records a frame at each axis coordinate of `at`: for each field, a value per row at every
-    /// coordinate, frame-major; of every row, or of the rows `ids` names, the rest holding their last
-    /// values.
+    /// Records a frame at each axis coordinate in `at`. Each field gives one value per row per
+    /// coordinate, frame-major. Covers every row, or only the rows `ids` names; other rows keep
+    /// their last values.
     Append {
         at: At,
         table: String,
@@ -58,10 +58,11 @@ pub(crate) enum OpForm {
     },
     /// Forgets every sampled field's frames before axis coordinate `before`.
     Forget { before: f64 },
-    /// Holds a run of sampled field `field`'s entries of level `level`, numbered from `first`: at
-    /// level 0 frames, each a coordinate in `at` and a value per row in `values`; at level `k` buckets
-    /// of `8^k` frames, each its first and last frame's coordinates, and each row's least value over
-    /// each bucket, then each row's greatest. Null is missing.
+    /// Inserts a run of entries of sampled field `field` at level `level`, numbered from `first`,
+    /// as time tiles store them. At level 0 each entry is a frame: one coordinate in `at` and one
+    /// value per row in `values`. At level `k` each entry is a bucket of `8^k` frames: its first
+    /// and last frame's coordinates in `at`, and in `values` every bucket's least value per row,
+    /// followed by every bucket's greatest. Null is missing.
     Frames {
         table: String,
         field: String,
@@ -103,7 +104,7 @@ impl JsonSchema for super::source::Data {
     }
 }
 
-/// A patch's JSON: its changes in order.
+/// A patch's JSON form: its changes, in order.
 impl JsonSchema for Patch {
     fn schema_name() -> Cow<'static, str> {
         "Patch".into()
@@ -132,7 +133,7 @@ impl JsonSchema for IdsForm {
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let id = generator.subschema_for::<Option<Id>>();
         json_schema!({
-            "description": "Row ids: numbers or texts (null leaves a reference unwired), or `{count}` naming rows 0..count.",
+            "description": "Row ids: numbers or texts, or `{count}` for rows 0 to count - 1. In a reference, null names no row.",
             "anyOf": [
                 { "type": "array", "items": id },
                 {
@@ -208,7 +209,7 @@ impl JsonSchema for Geometry {
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let geometry = generator.subschema_for::<Geometry>();
         json_schema!({
-            "description": "A point `[x, y]` (a third coordinate is read past), or a list of geometries one level shallower: a path, its parts, or polygons.",
+            "description": "A point `[x, y]` (a third coordinate is ignored), or a list of geometries one level down: a path is a list of points, parts a list of paths, and polygons a list of parts.",
             "anyOf": [
                 { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "items": { "type": "number" }, "minItems": 2, "maxItems": 3 },
                 { "type": "array", "items": geometry },
@@ -217,22 +218,22 @@ impl JsonSchema for Geometry {
     }
 }
 
-/// A patch deserializes from its JSON: every change but a slice of a file, which [`Patch::read`]
-/// reads.
+/// Deserializes a patch from its JSON form. A field given as a slice of a binary file is an error
+/// here; [`Patch::read`] fetches those.
 impl<'de> Deserialize<'de> for Patch {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Patch, D::Error> {
         patch(Vec::<OpForm>::deserialize(deserializer)?).map_err(de::Error::custom)
     }
 }
 
-/// Ids deserialize from a list of numbers and texts, or `{count}`.
+/// Deserializes ids from a list of numbers or texts, or from `{count}`.
 impl<'de> Deserialize<'de> for Ids {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Ids, D::Error> {
         IdsForm::deserialize(deserializer).map(|form| form.0)
     }
 }
 
-/// An id is a whole number from 0, or a text.
+/// An id's schema: a non-negative whole number, or a text.
 impl schemars::JsonSchema for Id {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "Id".into()
@@ -246,15 +247,16 @@ impl schemars::JsonSchema for Id {
     }
 }
 
-/// An id deserializes from a whole number from 0 to 2^53 − 1, or a text.
+/// Deserializes an id from a non-negative whole number or a text. A number parsed as a float must
+/// be at most 2^53 − 1. Null is an error.
 impl<'de> Deserialize<'de> for Id {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Id, D::Error> {
-        Key::deserialize(deserializer)?.0.ok_or_else(|| de::Error::custom("an id is a whole number or a text"))
+        Key::deserialize(deserializer)?.0.ok_or_else(|| de::Error::custom("an id must be a whole number or a text"))
     }
 }
 
 impl OpForm {
-    /// The columns its fields are written as.
+    /// The field columns of a replace, set, or append; empty for other changes.
     pub(crate) fn columns(&mut self) -> &mut [(String, Column)] {
         match self {
             OpForm::Replace(TableForm { fields, .. })
@@ -265,7 +267,7 @@ impl OpForm {
     }
 }
 
-/// The patch `ops` make, every slice of a file read already.
+/// Builds the patch for `ops`. Every slice of a file must already be replaced by its values.
 pub(crate) fn patch(ops: Vec<OpForm>) -> Result<Patch> {
     let mut patch = Patch::new();
     for (i, op) in ops.into_iter().enumerate() {
@@ -320,7 +322,7 @@ impl TableForm {
     }
 }
 
-/// A field's column as written: values, a reference, or a slice of a file.
+/// A field's column as written in JSON: values, a reference, or a slice of a binary file.
 pub(crate) enum Column {
     Values(Values),
     Reference { to: String, ids: Ids },
@@ -336,25 +338,26 @@ pub(crate) struct Slice {
 }
 
 impl Slice {
-    /// The byte after the slice.
+    /// The offset just past the slice's last byte. Errors on overflow.
     pub(crate) fn end(&self) -> Result<u64> {
         let length =
             self.count.checked_mul(self.dtype.width()).ok_or_else(|| Error::invalid("the slice is too long"))?;
-        self.offset.checked_add(length).ok_or_else(|| Error::invalid("the slice ends past every file"))
+        self.offset.checked_add(length).ok_or_else(|| Error::invalid("the slice's end offset overflows"))
     }
 
-    /// The values its fetched `bytes` hold.
+    /// Decodes the slice's fetched `bytes`. Errors unless exactly the slice's length arrived.
     pub(crate) fn read(&self, bytes: &[u8]) -> Result<Values> {
         let length = self.end()? - self.offset;
         if bytes.len() as u64 != length {
             let file = &self.file;
-            return Err(Error::Io(format!("{file}: {} bytes of the slice's {length}", bytes.len()).into()));
+            return Err(Error::Io(format!("{file}: read {} of the slice's {length} bytes", bytes.len()).into()));
         }
         Ok(self.dtype.decode(bytes))
     }
 }
 
-/// How a slice's bytes hold values: little endian; `bool` a byte each, nonzero true.
+/// The value type of a slice's bytes. Numbers are little endian; `bool` is one byte each, nonzero
+/// meaning true.
 #[derive(Clone, Copy, Deserialize, JsonSchema)]
 enum Dtype {
     #[serde(rename = "f32le")]
@@ -382,7 +385,7 @@ impl Dtype {
         }
     }
 
-    /// The values little-endian `bytes` hold, whole values only.
+    /// Decodes little-endian `bytes`, ignoring a trailing partial value.
     fn decode(self, bytes: &[u8]) -> Values {
         macro_rules! decode {
             ($t:ty, $n:literal) => {
@@ -402,13 +405,13 @@ impl Dtype {
 }
 
 impl Column {
-    /// The values, read already: a slice of a file is read by [`Patch::read`].
+    /// The column's values. Errors for a slice of a file, which only [`Patch::read`] can fetch.
     fn values(self) -> Result<Values> {
         match self {
             Column::Values(values) => Ok(values),
-            Column::Reference { .. } => unreachable!("references are fields of their own"),
+            Column::Reference { .. } => unreachable!("callers handle reference columns first"),
             Column::Slice(slice) => {
-                Err(Error::invalid(format!("{}: a slice of a file is read by Patch::read", slice.file)))
+                Err(Error::invalid(format!("{}: a slice of a file must be read with Patch::read", slice.file)))
             }
         }
     }
@@ -430,7 +433,7 @@ impl<'de> Deserialize<'de> for Fields {
                 let mut fields = Vec::new();
                 while let Some(name) = map.next_key::<String>()? {
                     if fields.iter().any(|(n, _)| *n == name) {
-                        return Err(de::Error::custom(format!("field {name} is written twice")));
+                        return Err(de::Error::custom(format!("field {name} appears twice")));
                     }
                     let column = map.next_value_seed(ColumnSeed(&name))?;
                     fields.push((name, column));
@@ -442,7 +445,7 @@ impl<'de> Deserialize<'de> for Fields {
     }
 }
 
-/// A column, named for its errors.
+/// Deserializes a column, naming its field in errors.
 struct ColumnSeed<'a>(&'a str);
 
 impl<'de> DeserializeSeed<'de> for ColumnSeed<'_> {
@@ -490,21 +493,21 @@ impl<'de> Visitor<'de> for ColumnVisitor<'_> {
         let missing = |what: &str| de::Error::custom(format!("field {}: {what}", self.0));
         match (reference, file) {
             (Some(to), None) if dtype.is_none() && offset.is_none() && count.is_none() => {
-                Ok(Column::Reference { to, ids: ids.ok_or_else(|| missing("a reference names its ids"))? })
+                Ok(Column::Reference { to, ids: ids.ok_or_else(|| missing("a reference needs ids"))? })
             }
             (None, Some(file)) if ids.is_none() => Ok(Column::Slice(Slice {
                 file,
-                dtype: dtype.ok_or_else(|| missing("a slice names its dtype"))?,
+                dtype: dtype.ok_or_else(|| missing("a slice needs a dtype"))?,
                 offset: offset.unwrap_or(0),
-                count: count.ok_or_else(|| missing("a slice names its count"))?,
+                count: count.ok_or_else(|| missing("a slice needs a count"))?,
             })),
-            _ => Err(missing("an object is {reference, ids} or {file, dtype, offset, count}")),
+            _ => Err(missing("an object must be {reference, ids} or {file, dtype, offset, count}")),
         }
     }
 }
 
-/// One value of an array column: a number, boolean, text, or `[x, y]` geometry; `null`, or an empty
-/// geometry, missing.
+/// One value of an array column: a number, boolean, text, or geometry of `[x, y]` points. `null`
+/// and an empty geometry are missing.
 struct Element(Option<Value>);
 
 impl<'de> Deserialize<'de> for Element {
@@ -551,7 +554,8 @@ enum Geometry {
 }
 
 impl Geometry {
-    /// How deep it nests below its points: 0 a point, 1 a path, 2 parts, 3 polygons.
+    /// Its nesting depth, following the first item at each level: 0 a point, 1 a path, 2 parts,
+    /// 3 polygons.
     fn depth(&self) -> usize {
         match self {
             Geometry::Point(_) => 0,
@@ -573,7 +577,8 @@ impl Geometry {
         }
     }
 
-    /// The value it writes: `None` when it is empty.
+    /// The geometry as a [`Value`]; `None` when it is empty. Errors when nested deeper than
+    /// polygons.
     fn value(self) -> std::result::Result<Option<Value>, &'static str> {
         if matches!(&self, Geometry::List(items) if items.is_empty()) {
             return Ok(None);
@@ -583,7 +588,7 @@ impl Geometry {
             1 => Value::Path(self.list(Geometry::point)),
             2 => Value::Parts(self.list(|path| path.list(Geometry::point))),
             3 => Value::Polygons(self.list(|parts| parts.list(|path| path.list(Geometry::point)))),
-            _ => return Err("geometries nest at most polygons of rings of [x, y] points"),
+            _ => return Err("geometry nests deeper than polygons of rings of [x, y] points"),
         }))
     }
 }
@@ -600,7 +605,7 @@ impl<'de> Visitor<'de> for GeometryVisitor {
         match first {
             Part::Number(x) => {
                 let y: f64 = seq.next_element()?.ok_or_else(|| de::Error::custom("a point is [x, y]"))?;
-                // A third coordinate, elevation in GeoJSON, is read past.
+                // Skip a third coordinate (GeoJSON elevation) and any after it.
                 while seq.next_element::<IgnoredAny>()?.is_some() {}
                 Ok(Geometry::Point([x, y]))
             }
@@ -655,7 +660,8 @@ impl<'de> Deserialize<'de> for Part {
     }
 }
 
-/// Ids as written: numbers or texts with `null` for none, as [`Ids`] takes them, or `{count}`.
+/// Ids as written in JSON: a list of numbers or texts with `null` for none, as [`Ids`] takes them,
+/// or `{count}`.
 pub(crate) struct IdsForm(pub(crate) Ids);
 
 impl<'de> Deserialize<'de> for IdsForm {
@@ -674,7 +680,7 @@ impl<'de> Deserialize<'de> for IdsForm {
                         other => return Err(de::Error::custom(format!("ids: unknown key {other}"))),
                     }
                 }
-                count.map(|n| IdsForm(Ids::count(n))).ok_or_else(|| de::Error::custom("ids as a count are {count}"))
+                count.map(|n| IdsForm(Ids::count(n))).ok_or_else(|| de::Error::custom("an ids object must be {count}"))
             }
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<IdsForm, A::Error> {
                 let mut ids = Vec::with_capacity(seq.size_hint().unwrap_or(0));
@@ -688,7 +694,7 @@ impl<'de> Deserialize<'de> for IdsForm {
     }
 }
 
-/// One id as written.
+/// One id as written in JSON; `null` is `None`.
 struct Key(Option<Id>);
 
 impl<'de> Deserialize<'de> for Key {
@@ -732,7 +738,7 @@ mod tests {
     use crate::{Data, Id, Ids, Patch, Value};
 
     #[test]
-    fn patches_decode_as_written() {
+    fn patches_decode_from_json() {
         let ops = serde_json::json!([
             {"replace": {"table": "Bus", "ids": [7, 9], "fields": {
                 "kv": [1.5, 2.5],
@@ -753,12 +759,12 @@ mod tests {
     }
 
     #[test]
-    fn forms_refuse_what_they_cannot_read_now() {
+    fn forms_refuse_file_slices_bare_counts_and_invalid_ids() {
         let slice = serde_json::json!([{"replace": {"table": "Bus", "ids": {"count": 1}, "fields": {
             "kv": {"file": "kv.f64", "dtype": "f64le", "count": 1}}}}]);
         let error = serde_json::from_value::<Patch>(slice).expect_err("a slice needs Patch::read").to_string();
         assert!(error.contains("Patch::read"), "{error}");
-        assert!(serde_json::from_value::<Ids>(serde_json::json!(3)).is_err(), "a bare number is no count");
+        assert!(serde_json::from_value::<Ids>(serde_json::json!(3)).is_err(), "a bare number is not a count");
         assert_eq!(serde_json::from_value::<Ids>(serde_json::json!({"count": 3})).expect("a count").len(), 3);
         assert_eq!(serde_json::from_value::<Id>(serde_json::json!(3)).expect("an id"), Id::Number(3));
         assert!(serde_json::from_value::<Id>(serde_json::json!(1.5)).is_err());

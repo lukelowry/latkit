@@ -1,5 +1,6 @@
-// Reductions with atomics: an `f32` as `u32` bits that sort in the same order, so `atomicMax` of
-// `ordered(x)` keeps the greatest value and `atomicMax` of `~ordered(x)` the least.
+// Atomic reductions over `f32`. `ordered` maps an `f32` to `u32` bits that sort in the same
+// order, so `atomicMax` of `ordered(x)` keeps the greatest value, and `atomicMax` of `~ordered(x)`
+// keeps the least.
 
 fn ordered(x: f32) -> u32 {
     let b = bitcast<u32>(x);

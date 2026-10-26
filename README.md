@@ -64,12 +64,12 @@ view.fit();
 grid.apply(new Patch().set('Bus', [102], { kv: [345] })); // drawn the next frame
 ```
 
-Scenes, expressions, and patches are plain data, typed from latkit's schema, and build without
-loading WebAssembly: in a worker or on a server too.
+Scenes, expressions, and patches are plain data with types generated from latkit's schema. Building
+them needs no WebAssembly, so they also work in a worker or on a server.
 
 ## On the command line
 
-The same scene and data, as JSON, render to a picture, or with `--frames` to video:
+The same scene and data, written as JSON, render to a picture, or to video with `--frames`:
 
 ```sh
 latkit render scene.json --data grid.json --output grid.png
@@ -127,12 +127,12 @@ latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --outpu
   <a href="https://latkit.readthedocs.io/en/latest/examples/clifford.html"><img src="docs/images/clifford.png" width="32%" alt="A Clifford strange attractor of 260,000 translucent points, colored by the way each step turns"></a>
 </p>
 
-Every picture is drawn by latkit; [the examples](https://latkit.readthedocs.io/en/latest/examples/) hold them all with the code that draws them.
+latkit drew every picture here; [the examples](https://latkit.readthedocs.io/en/latest/examples/) show each one with the code that draws it.
 
 ## Documentation
 
-Guides, examples, and the reference are on [Read the Docs](https://latkit.readthedocs.io); the Rust
-API is on [docs.rs](https://docs.rs/latkit). [Contributing](CONTRIBUTING.md) covers the repository and
-how to build it.
+Guides, examples, and the reference are on [Read the Docs](https://latkit.readthedocs.io), and the
+Rust API is on [docs.rs](https://docs.rs/latkit). [Contributing](CONTRIBUTING.md) covers the
+repository and how to build it.
 
 Created by [Luke Lowery](https://lukelowry.github.io/). [MIT License](LICENSE).

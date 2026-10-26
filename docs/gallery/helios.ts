@@ -1,4 +1,4 @@
-/** Helios: flow through a synthetic network of five rings, its edges carrying comets. */
+/** Helios: a synthetic network of five rings, with comets flowing along its edges. */
 import { Patch, reference } from 'latkit';
 import { TAU, THEME, framed, type Piece } from './look.ts';
 
@@ -23,7 +23,7 @@ export default function helios(): Piece {
       radius.push(hub ? 5 : 2.3);
       name.push(hub && ring === rings - 1 ? `S${String(node / 12 + 1).padStart(2, '0')}` : '');
       const here = ring * around + node;
-      // Around each ring, inward across rings, and chords across the core.
+      // Branches run around each ring, inward to the ring inside it, and as chords across the core.
       from.push(here);
       to.push(ring * around + ((node + 1) % around));
       if (ring > 0) {

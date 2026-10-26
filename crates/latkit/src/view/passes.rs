@@ -1,8 +1,11 @@
-//! A frame's passes: compute evaluates dirty channels over the row blocks that changed, eases what
-//! marks show toward what changed, reduces fitted domains, numbers segments, sums
-//! face normals when their corners moved, and measures extents when asked; render draws the
-//! backdrop, every mark's primitive and ports in scene order with depth, the labels, and the
-//! overlay; a probe, when one waits, reads what the frame drew through the same geometry.
+//! A frame's GPU passes.
+//!
+//! The compute pass expands paged marks' drawn rows from their runs, evaluates dirty channels over
+//! the changed row blocks (reducing fitted domains first), resolves endpoints, eases marks in
+//! transition, moves comets, numbers segments, sums face normals when their corners moved, and
+//! measures extents when asked. The render pass draws the backdrop, then every mark's primitive and
+//! ports in scene order with depth, then the labels and the overlay. A pending probe then reads
+//! what the frame drew, through the same geometry.
 
 use super::resources::MARK_STRIDE;
 use super::sync::{Source, table_of};
@@ -21,10 +24,11 @@ use crate::gpu::work::Count;
 use crate::scene::mark::{MarkKind, Primitive};
 
 const WORKGROUP: u32 = 256;
-/// Workgroups one dimension of a dispatch holds on every device.
+/// The most workgroups per dispatch dimension that every device supports.
 const MAX_GROUPS: u32 = 65_535;
 
-/// The target pixels of `area`: a plot's lines draw only inside its axes.
+/// The scissor rectangle `[x, y, width, height]`, in target pixels, covering `area`. A plot's lines
+/// draw only inside its axes.
 fn scissor(area: super::camera::Area, frame: &Frame<'_>) -> [u32; 4] {
     let [w, h] = frame.size.map(f64::from);
     let r = f64::from(frame.pixel_ratio);
@@ -35,8 +39,8 @@ fn scissor(area: super::camera::Area, frame: &Frame<'_>) -> [u32; 4] {
     [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32]
 }
 
-/// The main render pass: cleared to `background`, multisampled into `view` and resolved into
-/// `resolve` when there is one, its depth kept when `probing` reads it.
+/// Begins the main render pass: cleared to `background`, drawn into `view` and resolved into
+/// `resolve` when multisampling, with depth stored only when `probing` reads it.
 fn main_pass<'e>(
     encoder: &'e mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
@@ -71,8 +75,8 @@ fn main_pass<'e>(
     })
 }
 
-/// The draws a frame recorded, and the instances they draw: at most, for a draw its segment list
-/// counts on the GPU.
+/// The draws a frame recorded and the instances they draw. For a draw whose segment list counts its
+/// instances on the GPU, the count is an upper bound.
 #[derive(Clone, Copy, Default, Debug)]
 pub(super) struct Drawn {
     pub(super) draws: u64,
@@ -80,7 +84,7 @@ pub(super) struct Drawn {
 }
 
 impl Drawn {
-    /// Draws `instances` of `corners` corners each, counted.
+    /// Draws and counts `instances` instances of `corners` vertices each.
     pub(super) fn draw(&mut self, pass: &mut wgpu::RenderPass<'_>, corners: u32, instances: u32) {
         pass.draw(0..corners, 0..instances);
         self.count(instances);
@@ -92,8 +96,8 @@ impl Drawn {
     }
 }
 
-/// What every mark's draw in the main pass shares: the device and target, the bind groups, the
-/// lists buffer, and a plot's axes, which its lines clip to.
+/// State that every mark's draw in the main pass shares: the device and target, the bind groups,
+/// the lists buffer, and the plot area that lines clip to.
 struct Marks<'a> {
     device: &'a wgpu::Device,
     format: wgpu::TextureFormat,
@@ -106,7 +110,7 @@ struct Marks<'a> {
 }
 
 impl Marks<'_> {
-    /// Draws mark `i`, `shown`: every instance, or with `lit` the rows its focus lights, glowing.
+    /// Draws mark `i`: every instance, or with `lit`, only the rows its focus lights, glowing.
     fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -129,7 +133,7 @@ impl Marks<'_> {
             (Primitive::Triangles, false) if areas => (Shader::Areas, 3),
             (Primitive::Triangles, false) => (Shader::Triangles, 3),
             (Primitive::Triangles, true) if areas => (Shader::AreasFocus, 3),
-            // A face lights by its color alone.
+            // A face shows focus by its color alone, so it has no lit draw.
             (Primitive::Triangles, true) => return,
         };
         let pipeline = if let Some(source) = &compiled.drawing.markers.custom {
@@ -157,8 +161,8 @@ impl Marks<'_> {
         }
     }
 
-    /// Draws the ports of every row of mark `i`, `shown`, where its rows have them: after its rows, and
-    /// again after the rows its focus lights, which they sit on.
+    /// Draws the ports of every row of mark `i`, if its rows have ports. Called after its rows, and
+    /// again after its lit rows, since ports sit on top of them.
     fn ports(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -179,26 +183,27 @@ impl Marks<'_> {
     }
 }
 
-/// What a frame's compute pass does.
+/// The marks each step of a frame's compute pass covers.
 struct Work {
     evaluated: Vec<usize>,
-    /// Marks whose rows find their ends where those changed.
+    /// Marks whose rows resolve changed endpoints.
     resolved: Vec<usize>,
-    /// Marks whose ease pass writes what they show from their frozen and settled state.
+    /// Marks whose ease pass writes their shown state from their frozen and settled words.
     eased: Vec<usize>,
     segments: Vec<usize>,
     faces: Vec<usize>,
     measured: Vec<usize>,
-    /// Marks whose comets carry their travel over to rows a transition moved, and that travel.
+    /// Marks whose comets carry their travel over to rows a transition moved; `travelled`, marks
+    /// whose comets move this frame.
     carried: Vec<usize>,
     travelled: Vec<usize>,
-    /// Marks whose drawn rows' words are expanded from their runs again.
+    /// Marks whose drawn rows' words are rebuilt from their runs.
     expanded: Vec<usize>,
 }
 
-/// Dispatches a workgroup for every `WORKGROUP` of `items`, if there are any; past one dimension's
-/// workgroups, runs of `DISPATCH_ROWS` items along the second, as `item` in `lib/types.wesl` reads
-/// them.
+/// Dispatches one workgroup per `WORKGROUP` items, if there are any. Past one dimension's limit, it
+/// dispatches rows of `DISPATCH_ROWS` items along the second dimension, as `item` in
+/// `lib/types.wesl` expects.
 pub(super) fn dispatch(pass: &mut wgpu::ComputePass<'_>, items: u32) {
     let groups = items.div_ceil(WORKGROUP);
     if groups > MAX_GROUPS {
@@ -208,8 +213,8 @@ pub(super) fn dispatch(pass: &mut wgpu::ComputePass<'_>, items: u32) {
     }
 }
 
-/// The row blocks `shown` evaluates: those its channels changed over, and those whose state words
-/// start over, which `FRESH` marks.
+/// The row blocks `shown` evaluates: those its dirty channels cover, and those whose state words
+/// start over, flagged with `FRESH`.
 fn listed(shown: &super::marks::Shown) -> Vec<u32> {
     let count = shown.live().div_ceil(wgsl::PAGE_ROWS);
     let mut fresh: Vec<u32> = shown.fresh.iter().copied().filter(|&b| b < count).collect();
@@ -227,7 +232,8 @@ fn listed(shown: &super::marks::Shown) -> Vec<u32> {
     blocks
 }
 
-/// Dispatches over `blocks` listed row blocks of a mark of `rows` held rows: a block's rows wide.
+/// Dispatches over `blocks` listed row blocks of a mark with `rows` held rows: x spans one block's
+/// rows, and y the blocks.
 pub(super) fn dispatch_blocks(pass: &mut wgpu::ComputePass<'_>, rows: u32, blocks: u32) {
     let wide = rows.min(wgsl::PAGE_ROWS).div_ceil(WORKGROUP);
     if wide > 0 && blocks > 0 {
@@ -240,8 +246,9 @@ pub(super) fn offset(index: usize) -> u32 {
     (index as u64 * MARK_STRIDE) as u32
 }
 
-/// `input`'s least and greatest value over `rows`, as `lib/reduce.wesl` keeps them: the complement
-/// of the least's ordered bits, then the greatest's; nothing where no row has one.
+/// The least and greatest finite value of `input` over `rows`, encoded as `lib/reduce.wesl` keeps
+/// them: the complement of the least's order-preserving bits, then the greatest's bits. `[0, 0]`
+/// when no row has a finite value.
 fn fit(rows: &Rows<'_>, input: &crate::Expr) -> [u32; 2] {
     let ordered = |x: f32| {
         let b = x.to_bits();
@@ -257,8 +264,8 @@ fn fit(rows: &Rows<'_>, input: &crate::Expr) -> [u32; 2] {
 }
 
 impl super::marks::Shown {
-    /// Whether its fitted domains fit over every row of the table it draws in part, on the CPU: it
-    /// draws a table in part, and they read only its own data, nothing the view shows or derives.
+    /// Whether its fitted domains are computed on the CPU over every row of its paged table: it has
+    /// a drawing, and the domains read only its own data, nothing the view shows or derives.
     pub(crate) fn fits_data(&self) -> bool {
         let Some(compiled) = &self.compiled else { return false };
         let program = &compiled.program;
@@ -275,20 +282,20 @@ impl super::marks::Shown {
             && program.domains.iter().all(|reads| !reads.deps.intersects(viewed) && !derived(reads))
     }
 
-    /// Segments of each row's path, for strokes whose rows all have as many.
+    /// Segments per row, for strokes whose rows all have the same count.
     pub(crate) fn segments_per_row(&self) -> u32 {
         if self.compiled.is_none() {
             return 0;
         }
         match self.kind() {
-            // A trace's points count the corners steps make.
+            // A trace's point count includes the corners its steps make.
             MarkKind::Lines => self.tables.traced().saturating_sub(1),
             _ => 1,
         }
     }
 
-    /// Instances its primitive draws: rows and exits, or every segment of their paths; at most what
-    /// its segment list keeps.
+    /// Instances its primitive draws: rows and exits, or every segment of their paths. With a
+    /// segment list, the entries the list keeps, an upper bound.
     pub(crate) fn instances(&self) -> u32 {
         if let Some(list) = &self.segments.list {
             return list.kept;
@@ -301,7 +308,7 @@ impl super::marks::Shown {
         }
     }
 
-    /// Instances a probe or a measure reaches: live rows and their ports only.
+    /// Instances that probes and measures cover: live rows and their ports, not exits.
     pub(crate) fn live_instances(&self) -> u32 {
         if let Some(list) = &self.segments.list {
             return list.kept;
@@ -319,7 +326,7 @@ impl super::marks::Shown {
         self.compiled.as_ref().map_or(0, |c| c.drawing.primitive.code())
     }
 
-    /// Records the draw of its instances: as many as its segment list holds, when it has one.
+    /// Records the draw of its instances, indirect from its segment list when it has one.
     pub(super) fn record(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -338,9 +345,9 @@ impl super::marks::Shown {
 }
 
 impl View {
-    /// Evaluates the dirty channels of marks `work`, each over its dirty pages of rows, its fitted
-    /// domains reduced first where they changed: into its state, or while it eases into its settled
-    /// words. `state` is the expression machine's pass group.
+    /// Evaluates the dirty channels of marks `work` over their dirty row blocks, first reducing the
+    /// fitted domains that changed. Channels write a mark's state, or its settled words while it
+    /// eases. `state` is the expression machine's pass group.
     fn evaluate(
         &mut self,
         pass: &mut wgpu::ComputePass<'_>,
@@ -360,10 +367,10 @@ impl View {
             pass.set_pipeline(&inner.pipelines.compute_pipeline(device, Variant::channels(shown.reads())));
             pass.set_bind_group(1, group, &[offset(i)]);
             let rows = shown.live();
-            // A domain changing evaluates every block, so the reductions run over the blocks listed;
-            // a table drawn in part fits domains reading only its data on the CPU, over every row.
+            // A changed domain dirties every block, so the reductions run over the listed blocks. A
+            // paged table whose domains read only its data fits them on the CPU, over every row.
             if shown.reduce && rows > 0 && !shown.fits_data() {
-                debug_assert_eq!(shown.blocks, super::marks::Blocks::All, "a domain changing changes every row");
+                debug_assert_eq!(shown.blocks, super::marks::Blocks::All, "a changed domain dirties every block");
                 pass.set_bind_group(2, into, &[step(wgsl::STEP_REDUCE)]);
                 dispatch_blocks(pass, rows, shown.block_count);
             }
@@ -380,9 +387,9 @@ impl View {
         pass.set_bind_group(2, state, &[step(wgsl::STEP_CHANNELS)]);
     }
 
-    /// Evaluates dirty channels, and sums face normals when what they rest on changed; with
-    /// `measure`, also measures every measured mark's extents and reads them back. With `travel`,
-    /// comets travel on by the frame's step.
+    /// Records the frame's compute pass: evaluates dirty channels, and sums face normals when their
+    /// inputs changed. With `measure`, it also measures the extents of every measured mark and
+    /// returns their readback. With `travel`, comets move by the frame's step.
     pub(super) fn compute(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -406,7 +413,7 @@ impl View {
         }
         inner.arena.written();
         if !faces.is_empty() {
-            // Faces sum their normals afresh into the pages of the vertex marks they attach to.
+            // Faces sum their normals from zero into the pages of the vertex marks they attach to.
             let words = u64::from(wgsl::PAGE_ROWS * wgsl::NORMAL_WORDS) * 4;
             for shown in &self.marks {
                 for &block in shown.words.pages(Kept::Normals).blocks.iter() {
@@ -434,7 +441,7 @@ impl View {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &groups.view, &[]);
-            // Each drawn row's word first: every pass after reads it.
+            // Each drawn row's word first: every later pass reads it.
             if let Some(group) = &lists_group {
                 pass.set_bind_group(2, group, &[]);
                 self.expand_runs(&mut pass, inner, &groups.mark, &expanded);
@@ -442,11 +449,11 @@ impl View {
             pass.set_bind_group(2, &evaluate_group, &[super::resources::step(wgsl::STEP_CHANNELS)]);
             self.every_row(&mut pass, inner, &groups.mark, "carry", &carried);
             self.evaluate(&mut pass, inner, &groups.mark, &evaluate_group, &work);
-            // Before anything reading where rows' ends are held.
+            // Before anything that reads where rows' endpoints are held.
             self.resolve_ends(&mut pass, inner, &groups.mark, &evaluate_group, &resolved);
-            // After evaluating, so what a mark shows eases toward what it evaluated this frame.
+            // After evaluating, so marks ease toward this frame's values.
             self.every_row(&mut pass, inner, &groups.mark, "ease", &eased);
-            // After evaluating, so comets travel at the flow this frame shows.
+            // After evaluating, so comets travel at this frame's flow.
             self.every_row(&mut pass, inner, &groups.mark, "travel", &travelled);
             if let Some(group) = &lists_group {
                 pass.set_bind_group(2, group, &[]);
@@ -481,8 +488,8 @@ impl View {
         })
     }
 
-    /// Starts the fitted domains marks `work` reduce: those a table drawn in part fits over all its rows
-    /// on the CPU written, the rest cleared for the GPU to fit.
+    /// Prepares the fitted domains that marks `work` reduce. Domains computed on the CPU over a
+    /// paged table's rows are written; the rest are cleared for the GPU to fit.
     fn start_domains(&mut self, encoder: &mut wgpu::CommandEncoder, work: &[usize]) {
         let mut fitted: Vec<(usize, Vec<u32>)> = Vec::new();
         for &i in work {
@@ -504,12 +511,12 @@ impl View {
         }
     }
 
-    /// What this frame's compute pass does: the marks it evaluates and whose ends it finds, the
-    /// segment lists it counts, the faces whose normals it sums, the marks it measures, and with
-    /// `travel` the marks whose comets travel.
+    /// Chooses the marks each compute step covers this frame: evaluation, endpoint resolution,
+    /// easing, segment counting, face normals, measuring, comet carry, run expansion, and with
+    /// `travel`, comet travel.
     fn work(&mut self, measure: bool, travel: bool) -> Work {
         for shown in &mut self.marks {
-            // A mark without rows has nothing to evaluate, nor ends to find.
+            // A mark without rows has nothing to evaluate and no endpoints to resolve.
             if shown.held() == 0 && shown.tables.synced() {
                 shown.dirty = 0;
                 shown.reduce = false;
@@ -526,7 +533,7 @@ impl View {
                 shown.place_version += 1;
             }
         }
-        // A mark easing toward a change writes what it shows as the clock moves, and as it evaluates.
+        // A mark in transition rewrites its shown state when the clock moves and when it evaluates.
         let eased: Vec<usize> = (0..self.marks.len())
             .filter(|&i| {
                 let shown = &self.marks[i];
@@ -555,9 +562,9 @@ impl View {
         Work { evaluated: work, resolved, eased, segments, faces, measured, carried, travelled, expanded }
     }
 
-    /// Lists the row blocks each mark evaluates this frame where its uniform finds them: every block of
-    /// a mark some channel of which changed for every row, else the blocks of the pages that changed;
-    /// and the row blocks whose ends it finds.
+    /// Writes the blocks buffer, which each mark's uniform points into. For each mark, it lists the
+    /// row blocks it evaluates this frame (every block when a channel changed for every row, else
+    /// the changed pages), then the row blocks whose endpoints it resolves.
     pub(super) fn lay_out_blocks(&mut self) {
         let mut words = Vec::new();
         for shown in &mut self.marks {
@@ -576,7 +583,7 @@ impl View {
         resources.write_blocks(&gpu.0.device, &gpu.0.queue, &words);
     }
 
-    /// Writes each drawn row's word of each of `marks`, those that left included, from its runs.
+    /// Writes the word of each drawn row of `marks`, exits included, from their runs.
     fn expand_runs(
         &self,
         pass: &mut wgpu::ComputePass<'_>,
@@ -594,8 +601,8 @@ impl View {
         }
     }
 
-    /// Runs the expression machine's entry point `entry` over every held row of each of `marks`, those
-    /// that left included.
+    /// Runs the expression machine's entry point `entry` over every held row of `marks`, exits
+    /// included.
     fn every_row(
         &self,
         pass: &mut wgpu::ComputePass<'_>,
@@ -614,7 +621,7 @@ impl View {
         }
     }
 
-    /// Records the count → scan → write of each of `marks`' segment lists.
+    /// Records the count, scan, and write steps of each of `marks`' segment lists.
     fn count_segments(
         &self,
         pass: &mut wgpu::ComputePass<'_>,
@@ -637,9 +644,10 @@ impl View {
         }
     }
 
-    /// The words of mark `i`'s fitted domains as `lib/reduce.wesl` keeps them, each fitted over every
-    /// row of the table it draws in part, so a domain stays put however little of the table the
-    /// camera shows. Each is kept by what it read: a camera move fits none again.
+    /// The words of mark `i`'s fitted domains, as `lib/reduce.wesl` keeps them, each computed on
+    /// the CPU over every row of its paged table. So a domain stays fixed however little of the
+    /// table the camera shows. Each is cached by the stamp of its inputs, so a camera move refits
+    /// none.
     fn data_domains(&mut self, i: usize) -> Vec<u32> {
         let shown = &self.marks[i];
         let Some(compiled) = &shown.compiled else { return Vec::new() };
@@ -671,8 +679,8 @@ impl View {
         words
     }
 
-    /// Whether face normals must be summed again: a face mark or a vertex mark wrote its state since
-    /// they were, or the globe turned under them.
+    /// Whether face normals need summing again: a face or vertex mark wrote its state since the
+    /// last sum, or the globe turned.
     fn normals_due(&mut self) -> bool {
         let faces = self.marks.iter().any(|m| m.drawable() && m.faces());
         if !faces {
@@ -696,8 +704,10 @@ impl View {
         true
     }
 
-    /// Draws the backdrop, every drawable mark in scene order, then `sprites` overlay sprites, counted
-    /// in `drawn`, once the text set this frame has its fields. Depth is kept when `probing` reads it.
+    /// Records the main render pass, counting draws in `drawn`: the backdrop, every drawable mark
+    /// in scene order, and the lit rows. Once the text pipelines are ready, it also builds the
+    /// distance fields of text set this frame, and draws the labels and `sprites` overlay sprites.
+    /// Depth is stored when `probing` reads it.
     pub(super) fn draw(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -770,8 +780,8 @@ impl View {
             marks.draw(&mut pass, drawn, inner, i, shown, false);
             marks.ports(&mut pass, drawn, inner, i, shown);
         }
-        // The rows focus lights draw again over every mark but labels, glowing: nothing covers them but
-        // the ports they carry. They draw once what draws them compiled.
+        // Lit rows draw again, glowing, over every mark but labels; only their own ports cover
+        // them. They draw once their pipelines have compiled.
         for (i, shown) in self.marks.iter().enumerate() {
             if self.answers() && shown.drawable() && shown.lit.rows > 0 {
                 marks.draw(&mut pass, drawn, inner, i, shown, true);
@@ -790,13 +800,13 @@ impl View {
         }
     }
 
-    /// Finds the row nearest the probe among what the frame drew, and the nearest depth drawn there,
-    /// and reads them back.
+    /// Records the probe pass: finds the drawn row nearest the probe point and the nearest depth
+    /// drawn there, and returns their readback.
     pub(super) fn probe(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> Readback {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let probed: Vec<usize> = (0..self.marks.len()).filter(|&i| self.marks[i].probed()).collect();
-        // Every mark drawn has its probe program, which reads the depth under the probe as well as any.
+        // Any drawn mark's probe program can read the depth under the probe; the first one does.
         let under = self.marks.iter().position(super::marks::Shown::drawable);
         let resources = self.resources.as_mut().expect("created before passes");
         let shader = crate::gpu::pipelines::probe(resources.samples());
@@ -811,8 +821,8 @@ impl View {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &groups.view, &[]);
-            // Each step over every mark before the next: the nearest key, then its topmost instance,
-            // then where that lies.
+            // Each step runs over every mark before the next: the nearest key, then its topmost
+            // instance, then where that lies.
             for step in [wgsl::STEP_NEAREST, wgsl::STEP_TOPMOST, wgsl::STEP_DESCRIBE] {
                 pass.set_bind_group(2, &group, &[super::resources::step(step)]);
                 for &i in &probed {
@@ -836,8 +846,9 @@ impl View {
         )
     }
 
-    /// Records step `step` of mark `i`'s probe program, `shader`, the step's pass group bound: over
-    /// every instance it reaches, or once for a step that reads one thing.
+    /// Records step `step` of mark `i`'s probe program `shader`, with the step's pass group bound.
+    /// It dispatches over every instance probes cover, or a single workgroup for a step that reads
+    /// one result.
     pub(super) fn probe_step(
         &self,
         pass: &mut wgpu::ComputePass<'_>,

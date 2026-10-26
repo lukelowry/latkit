@@ -1,9 +1,9 @@
-/** Sets of rows, as a view selects and tells them, and the rows in them. */
+/** Conversions between single rows and the row sets that views select and report. */
 import type { Row, Rows } from 'latkit';
 
-/** Each row of `sets`, in order. */
+/** Flattens `sets` into single rows, in order. */
 export const each = (sets: readonly Rows[]): Row[] =>
   sets.flatMap(({ data, table, ids }) => ids.map((id) => ({ data, table, id })));
 
-/** `row` as a set of rows. */
+/** Wraps `row` in a set of one row. */
 export const one = ({ data, table, id }: Row): Rows => ({ data, table, ids: [id] });

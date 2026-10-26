@@ -2,14 +2,14 @@ import type { Scene, View } from 'latkit';
 import { h } from './dom.js';
 import type { Stage } from './stage.js';
 
-/** A button that runs `run`, and the key that runs it too, if any. */
+/** A button that calls `run`, with an optional `key` that also calls it. */
 export interface Action {
   label: string;
   key?: string;
   run: () => void;
 }
 
-/** A key as its button shows it, if any. */
+/** The key label shown on a button, if there is a key. */
 const kbd = (key: string | undefined) =>
   key ? [h('kbd', {}, key === ' ' ? 'Space' : key.toUpperCase())] : [];
 
@@ -17,7 +17,7 @@ const kbd = (key: string | undefined) =>
 export class Section {
   readonly element: HTMLElement;
   readonly content = h('div', { class: 'section-body' });
-  /** The row toggles share, made on first use. */
+  /** The row that holds the toggles, created on first use. */
   #toggles?: HTMLElement;
 
   constructor(
@@ -28,7 +28,7 @@ export class Section {
     this.element = h('details', { class: 'section', open }, h('summary', {}, title), this.content);
   }
 
-  /** Buttons in a grid, each also run by its key. */
+  /** Adds a grid of buttons. Each button's key, if any, also runs it. */
   actions(actions: readonly Action[]): void {
     const row = h('div', { class: 'actions' });
     for (const { label, key, run } of actions) {
@@ -40,8 +40,8 @@ export class Section {
     this.content.append(row);
   }
 
-  /** A button that stays pressed, also flipped by its key, if any. Returns a setter for outside
-   * changes. */
+  /** Adds a toggle button, which its key, if any, also flips. Returns a setter for changes made
+   * elsewhere. */
   toggle(
     label: string,
     key: string | undefined,
@@ -62,8 +62,8 @@ export class Section {
     return set;
   }
 
-  /** A slider with its value shown through `format`, calling `change` as it moves; returns the
-   * input, for outside changes. */
+  /** Adds a slider that shows its value through `format` and calls `change` as it moves. Returns
+   * the input so the page can change it. */
   range(
     label: string,
     o: { min: number; max: number; step: number; value: number; format: (value: number) => string },
@@ -89,7 +89,7 @@ export class Section {
     return input;
   }
 
-  /** One of several options; returns the select, for outside changes. */
+  /** Adds a dropdown of labeled `options`. Returns the select so the page can change it. */
   choice<T>(
     label: string,
     options: readonly (readonly [string, T])[],
@@ -108,7 +108,7 @@ export class Section {
     return select;
   }
 
-  /** Swatches naming the series a view draws. */
+  /** Adds color swatches that label the series a view draws. */
   series(items: readonly { label: string; color: string }[]): HTMLElement {
     const swatches = items.map(({ label, color }) =>
       h('span', { style: `--swatch: ${color}` }, label),
@@ -118,19 +118,19 @@ export class Section {
     return line;
   }
 
-  /** A line of text the page keeps up to date. */
+  /** Adds a line of text for the page to keep up to date. */
   note(text = ''): HTMLParagraphElement {
     const line = h('p', { class: 'note' }, text);
     this.content.append(line);
     return line;
   }
 
-  /** A view inside this section. */
+  /** Creates a view inside this section. */
   view(scene: Scene, options: { label: string; height?: number }): View {
     return this.stage.view(scene, { ...options, into: this.content });
   }
 
-  /** Standard playback speed control. */
+  /** Adds the standard playback speed control. */
   speed(rates: readonly number[], value: number, change: (value: number) => void): void {
     this.choice(
       'Speed',
@@ -140,7 +140,7 @@ export class Section {
     );
   }
 
-  /** A labeled text field, such as a selected item's name. */
+  /** Adds a labeled text field, such as for a selected item's name. */
   text(label: string, change: (value: string) => void): HTMLInputElement {
     const input = h('input', { type: 'text' });
     input.addEventListener('change', () => change(input.value), { signal: this.stage.signal });

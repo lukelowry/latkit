@@ -1,42 +1,42 @@
-//! Input as a view reads it, from any platform: a browser canvas translates its events into these.
+//! Platform-independent input: a browser canvas translates its events into these.
 
 /// A pointer, wheel, or key event, with points in CSS pixels from the view's top left.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Input {
-    /// A pointer pressed.
+    /// A pointer was pressed.
     Down {
-        /// Tells pointers apart while several are down.
+        /// Identifies the pointer while several are down.
         pointer: u32,
-        /// Where.
+        /// Where it was pressed.
         point: [f32; 2],
         /// Which button.
         button: Button,
-        /// Keys held.
+        /// Modifier keys held.
         modifiers: Modifiers,
-        /// What pressed: a finger's picks reach farther.
+        /// The device that pressed; a finger's picks reach farther.
         device: Device,
     },
     /// A pointer moved.
     Move {
         /// Which pointer.
         pointer: u32,
-        /// Where to.
+        /// Where it moved to.
         point: [f32; 2],
-        /// Keys held.
+        /// Modifier keys held.
         modifiers: Modifiers,
-        /// What moved.
+        /// The device that moved.
         device: Device,
     },
-    /// A pointer let go.
+    /// A pointer was released.
     Up {
         /// Which pointer.
         pointer: u32,
-        /// Where.
+        /// Where it was released.
         point: [f32; 2],
-        /// Keys held.
+        /// Modifier keys held.
         modifiers: Modifiers,
     },
-    /// The platform took a pointer away.
+    /// The platform cancelled a pointer.
     Cancel {
         /// Which pointer.
         pointer: u32,
@@ -47,7 +47,7 @@ pub enum Input {
         point: [f32; 2],
         /// How far.
         delta: [f32; 2],
-        /// Keys held.
+        /// Modifier keys held.
         modifiers: Modifiers,
     },
     /// A key went down or up while the view had focus.
@@ -56,7 +56,7 @@ pub enum Input {
         key: Key,
         /// Whether it went down.
         down: bool,
-        /// Keys held.
+        /// Modifier keys held.
         modifiers: Modifiers,
     },
     /// The pointer left the view.
@@ -68,13 +68,13 @@ pub enum Input {
 pub enum Button {
     /// The main button: left, or a touch.
     Primary,
-    /// The context button: right.
+    /// The context-menu button: right.
     Secondary,
     /// The middle button or wheel press.
     Middle,
 }
 
-/// What the user acts with.
+/// The input device.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Device {
@@ -85,11 +85,11 @@ pub enum Device {
     Pen,
     /// A finger: picks reach 8 CSS pixels farther.
     Touch,
-    /// The keys.
+    /// The keyboard.
     Keyboard,
 }
 
-/// Keys held during an input.
+/// Modifier keys held during an input.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, schemars::JsonSchema)]
 pub struct Modifiers {
     /// Shift.
@@ -109,7 +109,7 @@ impl Modifiers {
     }
 }
 
-/// The keys a view answers.
+/// The keys a view responds to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
     /// Escape.

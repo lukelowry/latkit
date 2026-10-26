@@ -1,6 +1,6 @@
 use std::fmt;
 
-/// An sRGB color with straight alpha, each channel in `0..=1`, as in CSS.
+/// An sRGB color with straight (not premultiplied) alpha, each channel in `0..=1`, as in CSS.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Color {
     /// Red.
@@ -31,7 +31,7 @@ impl Color {
         Color { r, g, b, a: 1.0 }
     }
 
-    /// A color from `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa`.
+    /// A color from `#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa`; `None` for any other text.
     pub fn hex(hex: &str) -> Option<Color> {
         let digits = hex.strip_prefix('#')?;
         if !digits.is_ascii() {
@@ -50,7 +50,8 @@ impl Color {
         Some(Color::from_bytes([r, g, b, a]))
     }
 
-    /// A color from CSS: hex, `rgb(…)`, `rgba(…)`, or a named color.
+    /// A color from CSS: hex, `rgb(…)` or `rgba(…)` (channels 0 to 255 or percentages, alpha 0 to 1
+    /// or a percentage), a named color, or `transparent`. Case-insensitive; `None` if unrecognized.
     pub fn css(css: &str) -> Option<Color> {
         let css = css.trim();
         if css.starts_with('#') {
@@ -92,7 +93,7 @@ impl Color {
         Color::rgba(red, green, blue, alpha)
     }
 
-    /// Red, green, blue, and alpha as bytes.
+    /// Red, green, blue, and alpha as bytes, clamped and rounded.
     pub fn to_rgba8(self) -> [u8; 4] {
         let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         [q(self.r), q(self.g), q(self.b), q(self.a)]

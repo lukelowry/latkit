@@ -1,12 +1,12 @@
-//! The end table: where each end of an edge or face row is held. A row's ends name places in the
-//! order the vertices' table draws in, which stay put as the camera moves; the vertex mark drawing
-//! that table holds its pages, and the rows it keeps whose pages it does not hold, where its drawing
-//! lays them out, which moves as the camera does, a row at a time where the vertices the edges end at
-//! lie sparse. So no channel stores where an end is held: a step of the expression machine
-//! (`lib/ends.wesl`) finds it for the rows whose ends changed and the rows naming the vertices the
-//! vertex mark's drawing says moved, and for every row once another mark or order holds them, and
-//! writes it into the row's kind word of the end's number, where draws, probes, and normals read it
-//! in one step.
+//! The end table: where each endpoint of an edge or face row is held on the GPU.
+//!
+//! A row's ends reference places in the vertex table's order, which do not change as the camera
+//! moves. The held row of a place does change: the vertex mark's drawing assigns resident pages to
+//! slots and keeps sparse endpoints individually. So no channel stores held rows. Instead an
+//! expression-machine step (`lib/ends.wesl`) resolves them and writes each into the row's kind
+//! word for that end, where draws, probes, and normals read it directly. The step runs for rows
+//! whose ends changed, for rows that reference vertices the drawing moved, and for every row when
+//! another mark or another order holds the vertices.
 
 use std::sync::Arc;
 
@@ -23,10 +23,10 @@ use crate::gpu::pipelines::Variant;
 use crate::gpu::shaders as wgsl;
 use crate::gpu::work::Count;
 
-/// Where the rows an end of a mark's rows names are held: the vertex mark drawing their table, the
-/// pages of its rows' words and how many words a row has, and the pages of the normals faces sum at
-/// them; and where it holds each page of the order it draws that table in, and each row it keeps whose
-/// page it does not hold, by its place in the order, and the places its drawing moved.
+/// Where the vertices that one end of a mark's rows references are held: the vertex mark drawing
+/// their table (`mark`), its state pages and words per row (`state`, `stride`), and its pages of
+/// the normals faces sum into (`normals`). For a paged vertex table, also its order's id, each
+/// page's slot (`pages`), the kept rows by order place (`kept`), and the places its drawing moved.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct End {
     pub(crate) mark: Option<usize>,
@@ -40,7 +40,7 @@ pub(crate) struct End {
 }
 
 impl End {
-    /// An end no vertex mark draws the table of.
+    /// An end whose table no vertex mark draws.
     pub(crate) fn unattached() -> End {
         End {
             mark: None,
@@ -54,14 +54,14 @@ impl End {
         }
     }
 
-    /// Whether every vertex it names is held elsewhere than `before` holds it: by another mark, or in
-    /// another order. Where only the vertex mark's pages of words, or the rows its drawing moved,
-    /// changed, the rest are held where they were.
+    /// Whether every referenced vertex may be held elsewhere than in `before`: another mark or
+    /// another order holds them. If only the vertex mark's word pages or its drawing's moved places
+    /// changed, the other vertices stay where they were.
     fn moved_whole(&self, before: &End) -> bool {
         self.mark != before.mark || self.order != before.order
     }
 
-    /// The places its drawing moved since `before` was attached, if any; where it moved none, none.
+    /// The places its drawing moved since `before` was attached; empty if none moved.
     fn moved_since(&self, before: &End) -> &[u32] {
         match (&self.moved, &before.moved) {
             (Some((version, places)), Some((was, _))) if version != was => places,
@@ -69,8 +69,8 @@ impl End {
         }
     }
 
-    /// Words it takes in a mark's program past its `END_WORDS`: its page table, where pages and rows
-    /// kept are held, and its page table of normals.
+    /// Words its tables take in a mark's program beyond its `END_WORDS`: the state page table, the
+    /// page slots and kept-row table, and the normals page table.
     fn tables(&self) -> usize {
         let kept = |k: &KeptTable| 2 * k.buckets().len();
         self.state.len()
@@ -79,8 +79,8 @@ impl End {
     }
 }
 
-/// The end before end `c` of `ends` that holds its rows where it does, whose tables it shares: as the
-/// two ends of an edge between vertices of one mark do.
+/// An earlier end of `ends` equal to end `c`, whose tables `c` shares, as both ends of an edge
+/// between vertices of one mark do.
 fn shared(ends: &[End], c: usize) -> Option<usize> {
     ends[..c].iter().position(|e| *e == ends[c])
 }
@@ -92,11 +92,10 @@ pub(super) fn words(ends: &[End]) -> usize {
         .sum()
 }
 
-/// Appends the words of a mark's `ends`, which the program's `uses` name, starting at word `at` of
-/// the program buffer: `END_WORDS` an end, then each end's tables: the page table of its vertex mark's
-/// words; its pages, how many, then each one's slot, and the table of the rows it keeps, how many
-/// buckets, then each one's place and held row; and the page table of normals. Ends holding their rows
-/// alike share tables.
+/// Appends the words of a mark's `ends`, whose columns `uses` gives, starting at word `at` of the
+/// program buffer. First `END_WORDS` per end, then each end's tables: the state page table of its
+/// vertex mark; the page count, then each page's slot; the kept-row bucket count, then each
+/// bucket's place and held row; and the normals page table. Equal ends share tables.
 pub(super) fn pack(ends: &[End], uses: &[EndUse], at: u32, out: &mut Vec<u32>) {
     let mut heads: Vec<[u32; wgsl::END_WORDS as usize]> = Vec::with_capacity(ends.len());
     let mut table = at + wgsl::END_WORDS * ends.len() as u32;
@@ -140,10 +139,10 @@ pub(super) fn pack(ends: &[End], uses: &[EndUse], at: u32, out: &mut Vec<u32>) {
 }
 
 impl View {
-    /// Points every edge and face mark's ends at the vertex marks drawing their tables. Where another
-    /// mark or another order holds the vertices an end names, every row finds its ends again; where
-    /// the vertex mark's drawing moved some, the rows naming them; where only a vertex mark's pages of
-    /// words moved, the ends read them where they are, and nothing runs.
+    /// Points every edge and face mark's ends at the vertex marks drawing their tables. If another
+    /// mark or order now holds an end's vertices, every row resolves its endpoints again. If the
+    /// vertex drawing moved some vertices, only the rows that reference them do. If only the vertex
+    /// mark's word pages moved, the ends read the new pages and nothing is resolved.
     pub(super) fn attach_ends(&mut self) {
         for i in 0..self.marks.len() {
             let ends = ends(&self.marks, i);
@@ -171,9 +170,9 @@ impl View {
         }
     }
 
-    /// The row blocks of mark `i` whose rows end at any of `places` of the vertices its ends attach
-    /// to, ascending: its drawing's pages whose ends lie there; `None` for a table drawn whole, whose
-    /// rows end wherever.
+    /// The row blocks of mark `i` whose rows end at any of `places` in the attached vertex table,
+    /// ascending: the slots of its drawing whose endpoints include them. `None` for a table drawn
+    /// whole, which keeps no per-page endpoints, so every block resolves.
     fn naming(&self, i: usize, places: &[u32]) -> Option<Vec<u32>> {
         let shown = &self.marks[i];
         let style = shown.mark.style();
@@ -181,8 +180,9 @@ impl View {
         Some(drawn.naming(shown.drawing()?, places))
     }
 
-    /// Finds where the ends of `marks`' rows whose ends changed are held, each over the row blocks it
-    /// lists for them, with the expression machine each mark's channels run on; `group` is its group.
+    /// Resolves the held rows of the ends of `marks`' unresolved rows, over the row blocks each
+    /// lists, by running the end step on the pipeline each mark's channels use. `group` is the
+    /// expression machine's step group, left set to the channel step.
     pub(super) fn resolve_ends(
         &mut self,
         pass: &mut wgpu::ComputePass<'_>,
@@ -206,7 +206,7 @@ impl View {
             let resolved = blocks.iter().map(|&b| u64::from((rows - b * wgsl::PAGE_ROWS).min(wgsl::PAGE_ROWS)));
             self.gpu.0.counters.add(Count::Resolved, resolved.sum());
             shown.unresolved = Blocks::default();
-            // Its state changed where its ends did, and what its rows' ends place with it.
+            // Resolving writes its state and can move where its rows stand, which places labels.
             shown.version += 1;
             shown.place_version += 1;
         }
@@ -214,10 +214,10 @@ impl View {
     }
 }
 
-/// Where each of mark `i`'s ends finds its vertices: the vertex mark it attaches to, the pages of
-/// that mark's rows' words and of the normals faces sum at them, and where it holds the pages of the
-/// order it draws its table in, if in part. An end attaches to the unnamed vertex mark drawing its
-/// table, else to the first one, while that mark has pages for the rows it holds.
+/// Where each of mark `i`'s ends finds its vertices: the vertex mark it attaches to, that mark's
+/// state and normals pages, and for a paged table, its drawing's page slots and kept rows. An end
+/// attaches to the unnamed vertex mark drawing its table, else the first one, but only while that
+/// mark has word pages for all its held rows.
 fn ends(marks: &[Shown], i: usize) -> Vec<End> {
     let Some(compiled) = &marks[i].compiled else { return Vec::new() };
     let data = &marks[i].mark.style().data;
@@ -226,7 +226,7 @@ fn ends(marks: &[Shown], i: usize) -> Vec<End> {
         .ends
         .iter()
         .map(|end| match super::graph::end_mark(marks, data, &end.table) {
-            // A vertex mark without pages for its rows draws nothing, and nothing ends at it.
+            // A vertex mark without word pages for its rows draws nothing; nothing attaches to it.
             Some(m) if marks[m].pages_held() => {
                 let (state, normals) = (marks[m].words.pages(Kept::State), marks[m].words.pages(Kept::Normals));
                 End {

@@ -1,54 +1,74 @@
-/** Pictures and videos of views: images to encode, and H.264 video written as it is drawn. */
+/** Pictures of views: images to encode as files, and H.264 video written as frames are drawn. */
 
 import type * as bindings from '../pkg/latkit.js';
 import { placed, type Panel } from './canvas.js';
-import { hold, inner, release, thrown, waited, wasm, type Wait } from './internal.js';
+import {
+  hold,
+  inner,
+  release,
+  thrown,
+  waited,
+  wasm,
+  type LatkitError,
+  type Wait,
+} from './internal.js';
 import { handleOf } from './view.js';
 
-/** How a picture is taken. */
+/** Options for a {@link Shot}. */
 export interface ShotOptions {
-  /** Pixels per CSS pixel: a view lays out `size / scale` CSS pixels, so 2 draws twice as sharp. 1 unless given. */
+  /**
+   * Pixels per CSS pixel, 1 by default. Views lay out at `size / scale` CSS pixels, so 2 draws the
+   * same layout twice as sharp.
+   */
   scale?: number;
-  /** Keeps alpha where the themes' backgrounds would be. */
+  /** Leaves the background transparent where the theme's background color would be. */
   transparent?: boolean;
   /**
-   * When the picture is taken: once its views are complete and still, transitions, flights, and
-   * label fades run on until they land (`still`, the default); or once they are complete, as they
-   * stand now, what moves held where it is (`now`).
+   * When the picture is taken. `'still'`, the default, waits until every view is complete and
+   * still: transitions, camera flights, and label fades run until they finish. `'now'` waits only
+   * until every view is complete, and freezes anything moving where it is.
    */
   capture?: 'still' | 'now';
-  /** A still's effect time in seconds, where elapsed time and flowing comets read it. */
+  /**
+   * The time in seconds that `elapsed()` expressions and flowing comets show in a still picture. By
+   * default they follow the view's clock.
+   */
   elapsed?: number;
 }
 
 /**
- * A picture of views, each drawn into its panel of `size` pixels as `layout` places it: drawn while a
- * canvas showing it holds its last frame, each view's data as it was when the picture began. A
- * canvas's `shot()` takes one of what it shows.
+ * A picture of views, `size` pixels in all, each view drawn into its layout panel. While a shot
+ * draws a view, a canvas showing that view keeps its last frame. An image draws each view's data as
+ * it was when the picture began. A canvas's `shot()` makes a shot of what the canvas shows.
  *
  * ```ts
  * const png = await (await canvas.shot({ scale: 2 }).image()).encode('png');
  * ```
  */
 export class Shot {
-  /** A picture `size` pixels wide and high, of the views of `options.layout`. */
+  /** Creates a shot of `size`, `[width, height]` in pixels, of the views in `options.layout`. */
   constructor(
     readonly size: readonly [number, number],
     readonly options: ShotOptions & { layout?: readonly Panel[] } = {},
   ) {}
 
-  /** The picture, once every view is complete as `capture` says. */
+  /**
+   * Draws the picture once every view is complete, as `capture` says, and resolves to the
+   * {@link Image}. Rejects with an `invalid` error for invalid options or a view in two panels, and
+   * with the first error a view reports while drawing.
+   */
   async image(wait: Wait = {}): Promise<Image> {
     const taken = wasm().image(this.#json(this.size), this.#views());
-    const image = await waited<bindings.Image>(taken, wait, 'a picture');
+    const image = await waited<bindings.Image>(taken, wait, 'taking a picture');
     return Image.made(image);
   }
 
   /**
-   * A video of these pictures at `fps` frames a second, H.264 in MP4, written to `output` as it is
-   * drawn, at `bitrate` bits a second or about 0.15 bits a pixel a frame. Its width rounds down to a
-   * multiple of 4 and its height of 2, the blocks H.264 takes. `signal` aborts it: the output is
-   * aborted and the views are given back.
+   * Starts a video of this shot: H.264 in MP4 at `fps` frames per second, written to `output` as
+   * frames are drawn. `bitrate` is in bits per second, about 0.15 bits per pixel per frame by
+   * default. The width is rounded down to a multiple of 4 and the height to a multiple of 2, as the
+   * encoder requires. Canvases showing the views keep their last frame until the video finishes or
+   * aborts. Aborting `signal` aborts the video and `output`; frames have no other time limit.
    */
   video({
     fps,
@@ -76,7 +96,7 @@ export class Shot {
     }
   }
 
-  /** The shot of `size` pixels as the bindings read it: JSON, times in seconds. */
+  /** The shot as JSON for the bindings, at `size` pixels, with times in seconds. */
   #json(size: readonly [number, number]): string {
     const {
       scale = 1,
@@ -95,42 +115,47 @@ export class Shot {
   }
 }
 
-/** RGBA pixels, straight alpha, rows top to bottom. */
+/** A picture's RGBA pixels, with straight alpha, rows top to bottom. */
 export class Image {
   private constructor(image: bindings.Image) {
     hold(this, image);
   }
 
-  /** @internal An image of the bindings' `image`. */
+  /** @internal Wraps a bindings image. */
   static made(image: bindings.Image): Image {
     return new Image(image);
   }
 
+  /** Width in pixels. */
   get width(): number {
     return pixels(this).width;
   }
 
+  /** Height in pixels. */
   get height(): number {
     return pixels(this).height;
   }
 
-  /** The pixels, copied. */
+  /** A copy of the pixels: 4 bytes per pixel, `width * height * 4` bytes in all. */
   get rgba(): Uint8Array {
     return pixels(this).rgba;
   }
 
   /**
-   * The image as a file, written in a worker: PNG, lossless with alpha; JPEG at `quality` from 1 to
-   * 100 (90 by default), small, its alpha dropped; or WebP, lossless with alpha, smaller than PNG.
+   * Encodes the image as a file, in a worker. PNG is lossless with alpha. JPEG uses
+   * `options.quality` from 1 to 100 (90 by default) and drops alpha. WebP is lossless with alpha
+   * and smaller than PNG. Rejects with an `invalid` error for a quality outside 1 to 100 or an
+   * unknown format.
    */
   encode(format: ImageFormat, options: { quality?: number } & Wait = {}): Promise<Uint8Array> {
     return waited<Uint8Array>(
       pixels(this).encode(format, options.quality),
       options,
-      'writing an image',
+      'encoding an image',
     );
   }
 
+  /** Frees the pixels. Other methods throw afterwards. */
   destroy(): void {
     release<bindings.Image>(this)?.free();
   }
@@ -144,10 +169,13 @@ function pixels(owner: Image): bindings.Image {
   return inner<bindings.Image>(owner, 'Image');
 }
 
-/** How an image is written as a file. */
+/** An image file format for {@link Image.encode}. */
 export type ImageFormat = 'png' | 'jpeg' | 'webp';
 
-/** A video being drawn, encoded, and written. */
+/**
+ * A video being drawn, encoded, and written; created by {@link Shot.video}. Draw frames with
+ * {@link Video.frame} or {@link Video.record}, then call {@link Video.finish}.
+ */
 export class Video {
   #state: 'open' | 'finishing' | 'aborting' | 'closed' = 'open';
   #operation?: Promise<void>;
@@ -178,7 +206,7 @@ export class Video {
     }
   }
 
-  /** @internal A video of the bindings' `video`, written to `writer`. */
+  /** @internal Wraps a bindings video whose bytes go to `writer`. */
   static made(
     video: bindings.Video,
     writer: WritableStreamDefaultWriter<Uint8Array>,
@@ -191,30 +219,47 @@ export class Video {
   #check(): bindings.Video {
     const video =
       this.#state === 'aborting' || this.#state === 'closed' ? undefined : encoder(this);
-    if (!video)
-      throw Object.assign(
-        thrown({ code: 'cancelled', message: 'this Video was finished or aborted' }),
-        {
-          cause: this.#reason,
-        },
-      );
+    if (!video) throw this.#ended();
     return video;
   }
 
-  /** Seconds into the video the next frame shows at; kept once it is done. */
+  /**
+   * The error for a call after the video ended: `cancelled` with the abort reason as its `cause`
+   * once aborted, else `invalid`.
+   */
+  #ended(): LatkitError {
+    return this.#aborted
+      ? Object.assign(thrown({ code: 'cancelled', message: 'this Video was aborted' }), {
+          cause: this.#reason,
+        })
+      : thrown({ code: 'invalid', message: 'a Video draws no frames after finish()' });
+  }
+
+  /** The time in seconds at which the next frame shows. Still readable after the video ends. */
   get time(): number {
     return this.frames / this.#fps;
   }
 
-  /** Frames drawn or held so far; kept once it is done. */
+  /**
+   * Frames recorded so far, including frames repeated because nothing moved. Still readable after
+   * the video ends.
+   */
   get frames(): number {
     return encoder(this)?.frames ?? this.#frames;
   }
 
-  /** Draws and writes one frame, waiting for the output's backpressure. One frame draws at a time. */
+  /**
+   * Draws the next frame once its views are complete, and writes its bytes, waiting on the
+   * output's backpressure. Calls must not overlap: a call made before the previous one resolves,
+   * or after `finish()`, rejects with an `invalid` error, and a call after `abort()` with a
+   * `cancelled` error. A failure aborts the video.
+   */
   frame(): Promise<void> {
-    if (this.#state !== 'open' || this.#operation)
-      return Promise.reject(new Error('a Video draws one frame at a time, before it finishes'));
+    if (this.#state !== 'open') return Promise.reject(this.#ended());
+    if (this.#operation)
+      return Promise.reject(
+        thrown({ code: 'invalid', message: 'a Video draws one frame at a time' }),
+      );
     const operation = (async () => {
       const bytes = (await this.#check().frame()) as Uint8Array;
       this.#frames = this.#check().frames;
@@ -231,7 +276,12 @@ export class Video {
       });
   }
 
-  /** Records until `step(time)` returns false; any step, drawing, output, or progress error aborts it. */
+  /**
+   * Records frames until `step(time)` returns false, then finishes the video. `step` gets the next
+   * frame's time in seconds and can change the views before that frame is drawn. `onProgress` is
+   * called after each frame. An error from `step`, drawing, the output, or `onProgress` aborts the
+   * video and is rethrown.
+   */
   async record(
     step: (time: number) => boolean | Promise<boolean>,
     onProgress?: (progress: { frames: number; time: number }) => void,
@@ -248,10 +298,14 @@ export class Video {
     }
   }
 
-  /** Finishes pending work, writes the end of the file, and closes and unlocks the output. Idempotent. */
+  /**
+   * Waits for the frame in progress, encodes the remaining frames, writes the end of the file, and
+   * closes and unlocks the output. Later calls return the same promise. Rejects with a `cancelled`
+   * error if the video was aborted.
+   */
   finish(): Promise<void> {
     if (this.#finished) return this.#finished;
-    if (this.#state !== 'open') return Promise.reject(new Error('this Video was aborted'));
+    if (this.#state !== 'open') return Promise.reject(this.#ended());
     this.#state = 'finishing';
     const frame = this.#operation;
     const operation = (async () => {
@@ -274,7 +328,11 @@ export class Video {
     return this.#finished;
   }
 
-  /** Cancels drawing and encoding, aborts the output, and unlocks it once pending writes settle. Idempotent. */
+  /**
+   * Cancels drawing and encoding, aborts the output with `reason`, and unlocks it once pending
+   * writes settle. Later calls return the same promise. After `finish()` completes, it does
+   * nothing.
+   */
   abort(reason?: unknown): Promise<void> {
     if (this.#aborted) return this.#aborted;
     if (this.#state === 'closed') return Promise.resolve();
@@ -298,7 +356,7 @@ export class Video {
   }
 }
 
-/** The video's encoder, while it has one. */
+/** The video's bindings object, or `undefined` once it is released. */
 function encoder(owner: Video): bindings.Video | undefined {
   try {
     return inner<bindings.Video>(owner, 'Video');

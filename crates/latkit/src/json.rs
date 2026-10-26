@@ -1,5 +1,5 @@
-//! JSON as latkit reads it: any input from its text, an error naming the path to what it could not
-//! read, such as `marks[2].vertices.color`.
+//! Reading inputs from JSON. Errors name the path to the part that could not be read, such as
+//! `marks[2].vertices.color`.
 
 use std::fmt::Display;
 
@@ -8,8 +8,8 @@ use serde_path_to_error::Segment;
 
 use crate::{Error, Path, Result, Step};
 
-/// What JSON `text` holds, read as `T`: a scene, a camera, a fit, a query, rows, a budget, a shot, or
-/// any type that deserializes. An error names the path to what could not be read.
+/// Deserializes JSON `text` as `T`, such as a scene, camera, fit, query, rows, budget, or shot.
+/// Fails with [`Error::Invalid`], whose path names the part that could not be read.
 ///
 /// ```
 /// # #[cfg(feature = "gpu")] {
@@ -26,7 +26,7 @@ pub fn from_json<T: DeserializeOwned>(text: &str) -> Result<T> {
     Ok(value)
 }
 
-/// What `deserializer` holds, read as `T`, an error naming the path to what could not be read.
+/// Deserializes `T` from `deserializer`. Errors name the path to the part that could not be read.
 pub(crate) fn read<'de, T: Deserialize<'de>, D: Deserializer<'de>>(deserializer: D) -> Result<T>
 where
     D::Error: Display,

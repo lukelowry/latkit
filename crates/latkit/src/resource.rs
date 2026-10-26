@@ -3,7 +3,7 @@ use crate::Pending;
 use std::ops::Range;
 use std::sync::Arc;
 
-/// A source of bytes used by JSON data documents and their binary slices.
+/// A source of bytes for JSON data documents and their binary slices.
 pub trait Fetch: Send + Sync {
     /// Resolves to the requested bytes, or an error. A missing resource returns empty bytes.
     fn fetch(&self, request: &Request) -> Pending<Vec<u8>>;
@@ -16,22 +16,22 @@ impl<T: crate::host::Host + ?Sized> Fetch for T {
     }
 }
 
-/// Bytes to fetch: a URL, and the range of its bytes, or all of them.
+/// Bytes to fetch: a URL and an optional byte range.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Request {
     /// The URL.
     pub url: Arc<str>,
-    /// Bytes `start..end`; `None` fetches every byte.
+    /// Bytes `start..end`. `None` fetches every byte.
     pub range: Option<Range<u64>>,
 }
 
 impl Request {
-    /// Every byte at `url`.
+    /// A request for every byte at `url`.
     pub fn new(url: impl Into<Arc<str>>) -> Request {
         Request { url: url.into(), range: None }
     }
 
-    /// Bytes `range` at `url`.
+    /// A request for bytes `range` at `url`.
     pub fn range(url: impl Into<Arc<str>>, range: Range<u64>) -> Request {
         Request { url: url.into(), range: Some(range) }
     }

@@ -1,6 +1,6 @@
-//! Expressions, colors, sizes, and colormaps as JSON. A number or boolean is a constant, a string a
-//! field, and an object one node, named by its key; in a color option, a [`Paint`], a string is a CSS
-//! color instead, and a conditional's values are colors:
+//! JSON forms of expressions, colors, sizes, and colormaps. A number or boolean is a constant, a
+//! string is a field name, and an object is one node whose key names its kind. In a color option (a
+//! [`Paint`]), a string is a CSS color instead, and a conditional's values are colors:
 //!
 //! | Form                                                          | Builder                           |
 //! | ------------------------------------------------------------- | --------------------------------- |
@@ -16,9 +16,9 @@
 //! | `{ "px": a }` (sizes only)                                    | `px(a)`                           |
 //! | `{ "units": a, "atLeast": 2, "atMost": 20 }` (sizes only)     | `units(a).at_least(..)`           |
 //!
-//! Each object is its kind's form exactly: a key another kind has is refused. A map is a catalog name
-//! or `{ "kind": "sequential", "colors": ["black", [0.2, "red"], "white"] }`, a color placed as a
-//! `[place, color]` pair, and `categories` naming a categorical map's colors.
+//! An object may have only its kind's keys; a key of another kind is an error. A colormap is a
+//! catalog name or `{ "kind": "sequential", "colors": ["black", [0.2, "red"], "white"] }`, where a
+//! `[place, color]` pair places a color and `categories` names a categorical map's colors.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -44,9 +44,9 @@ impl<'de> Deserialize<'de> for Paint {
     }
 }
 
-/// What an expression, a color, a size, or a label is written as, read where it is written: a
-/// constant, a text, or an object, whose keys say what it is once all are read. Where it is read says
-/// what a text is: a field's name, or in a color option a CSS color.
+/// The JSON of an expression, color, size, or label, before its meaning is known: a constant, a
+/// string, or an object whose keys decide its kind once all are read. The caller decides what a
+/// string means: a field name, or in a color option a CSS color.
 pub(crate) enum Written {
     Constant(Expr),
     Text(String),
@@ -54,7 +54,7 @@ pub(crate) enum Written {
 }
 
 impl Written {
-    /// The expression it writes: a text names a field.
+    /// The expression this JSON describes; a string names a field.
     pub(crate) fn expr(self) -> Result<Expr, String> {
         match self {
             Written::Constant(expr) => Ok(expr),
@@ -63,14 +63,14 @@ impl Written {
         }
     }
 
-    /// The color it writes, as a color option reads it: a text is a CSS color, and a conditional's
-    /// values are colors.
+    /// The color this JSON describes, as a color option reads it: a string is a CSS color, and a
+    /// conditional's values are colors.
     pub(crate) fn paint(self) -> Result<Expr, String> {
         match self {
             Written::Constant(expr) => Ok(expr),
             Written::Text(css) => Color::css(&css)
                 .map(Expr::from)
-                .ok_or_else(|| format!("not a CSS color: {css:?}; a field is field({css:?})")),
+                .ok_or_else(|| format!("not a CSS color: {css:?}; for a field, use field({css:?})")),
             Written::Object(form) => form.paint(),
         }
     }
@@ -116,8 +116,8 @@ impl<'de> Visitor<'de> for Reading {
     }
 }
 
-/// Every key an expression object, a size, or a label's options hold; each kind's own alone make it.
-/// A conditional's values are read as where it is read says.
+/// Every key that an expression object, a size, or label options can have; each kind accepts only
+/// its own keys. A conditional's values are read as the caller decides.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Form {
@@ -150,7 +150,7 @@ pub(crate) struct Form {
 }
 
 impl Form {
-    /// The keys it holds, as written.
+    /// The keys present, as JSON spells them.
     fn held(&self) -> Vec<&'static str> {
         [
             ("field", self.field.is_some()),
@@ -185,10 +185,10 @@ impl Form {
         .collect()
     }
 
-    /// Why it is not `what`, holding only `keys`: the first other key it holds.
+    /// Errors unless every key present is one of `keys`, naming `what` and the first other key.
     pub(crate) fn only(&self, what: &str, keys: &[&str]) -> Result<(), String> {
         match self.held().into_iter().find(|key| !keys.contains(key)) {
-            Some(key) => Err(format!("{what} has no {key}")),
+            Some(key) => Err(format!("{what} takes no {key}")),
             None => Ok(()),
         }
     }
@@ -198,8 +198,8 @@ impl Form {
         self.color.take().map(Written::paint).transpose()
     }
 
-    /// The color it writes, as a color option reads it: a conditional's values are colors; anything
-    /// else is the expression it writes, which must make a color.
+    /// The color this object describes, as a color option reads it: a conditional's values are
+    /// colors, and any other object is an expression, which must produce a color.
     pub(crate) fn paint(self) -> Result<Expr, String> {
         if self.when.is_none() {
             return self.expr();
@@ -207,21 +207,22 @@ impl Form {
         self.conditional(Written::paint)
     }
 
-    /// The conditional it writes, each of its values read by `value`.
+    /// The conditional this object describes, each value read by `value`.
     fn conditional(self, value: fn(Written) -> Result<Expr, String>) -> Result<Expr, String> {
         self.only("when", &["when", "otherwise"])?;
         let otherwise = value(self.otherwise.ok_or("when needs otherwise")?)?;
-        let cases = self.when.expect("held");
+        let cases = self.when.expect("present");
         cases.into_iter().rev().try_fold(otherwise, |rest, (c, v)| Ok(node(Node::When(c, value(v)?, rest))))
     }
 
-    /// The expression it writes: the first kind it holds, and only that kind's keys.
+    /// The expression this object describes. Its kind is that of its first kind key, and it may
+    /// have only that kind's keys.
     pub(crate) fn expr(self) -> Result<Expr, String> {
         let held = self.held();
         let Some(own) = held.iter().find_map(|key| KINDS.iter().find(|keys| keys[0] == *key)) else {
             let mut kinds: Vec<&str> = KINDS.iter().map(|keys| keys[0]).collect();
             kinds.dedup();
-            return Err(format!("an expression object has one of {}", kinds.join(", ")));
+            return Err(format!("an expression object needs one of {}", kinds.join(", ")));
         };
         let kind = own[0];
         self.only(kind, own)?;
@@ -232,7 +233,7 @@ impl Form {
         let needs = |key: &str| format!("{kind} needs {key}");
         Ok(match kind {
             "field" => {
-                let expr = super::field(field.expect("held"));
+                let expr = super::field(field.expect("present"));
                 let expr = match self.from {
                     Some((data, table)) => expr.from_table(data, table),
                     None => expr,
@@ -241,17 +242,17 @@ impl Form {
             }
             "color" => match color {
                 Some(Written::Text(css)) => Color::css(&css).ok_or_else(|| format!("not a CSS color: {css:?}"))?.into(),
-                _ => return Err("a color is a CSS color".to_owned()),
+                _ => return Err("color must be a CSS color".to_owned()),
             },
-            "state" => node(Node::State(state.expect("held"))),
+            "state" => node(Node::State(state.expect("present"))),
             "missing" => {
                 if missing != Some(true) {
-                    return Err("missing is true".to_owned());
+                    return Err("missing must be true".to_owned());
                 }
                 Expr::missing()
             }
             "op" => {
-                let op = op.expect("held");
+                let op = op.expect("present");
                 let args = self.args.ok_or_else(|| needs("args"))?;
                 let name = || IntoDeserializer::<de::value::Error>::into_deserializer(op.as_str());
                 if let Ok(unary) = Unary::deserialize(name()) {
@@ -266,26 +267,26 @@ impl Form {
                 }
             }
             "is" => {
-                let (a, text) = is.expect("held");
+                let (a, text) = is.expect("present");
                 a.is(&text)
             }
             "contains" => {
-                let (a, text) = contains.expect("held");
+                let (a, text) = contains.expect("present");
                 a.contains(&text)
             }
             "scale" => {
-                let [lo, hi] = scale.expect("held");
+                let [lo, hi] = scale.expect("present");
                 domained(self.value.ok_or_else(|| needs("a value"))?.scale(lo..=hi), self.domain)
             }
             _ => {
                 let value = self.value.ok_or_else(|| needs("a value"))?;
-                domained(value.colormap(colormap.expect("held")), self.domain)
+                domained(value.colormap(colormap.expect("present")), self.domain)
             }
         })
     }
 }
 
-/// `mapped` with `domain` when given, else fitting the values shown.
+/// `mapped` with `domain` when given, else fitted to the values shown.
 fn domained(mapped: super::Mapped, domain: Option<[f64; 2]>) -> Expr {
     match domain {
         Some([lo, hi]) => mapped.domain(lo..=hi).into(),
@@ -293,24 +294,24 @@ fn domained(mapped: super::Mapped, domain: Option<[f64; 2]>) -> Expr {
     }
 }
 
-/// Each kind of expression object, declared once: the schema of its JSON, which reading never builds,
-/// and the keys reading lets an object of that kind hold, its own key first.
+/// Declares each kind of expression object once: a struct for its JSON schema, never built because
+/// reading goes through `Form`, and the keys an object of that kind may have, its own key first.
 macro_rules! kinds {
     ($($(#[$meta:meta])* $node:ident { $($(#[$attr:meta])* $key:ident: $ty:ty),+ $(,)? })+) => {
         $(
             $(#[$meta])*
             #[derive(JsonSchema)]
-            #[expect(dead_code, reason = "its schema alone: expressions read through `Form`")]
+            #[expect(dead_code, reason = "used for its schema only; `Form` reads expressions")]
             #[serde(deny_unknown_fields)]
             struct $node {
                 $($(#[$attr])* $key: $ty,)+
             }
         )+
 
-        /// Each kind's keys, its own first, in the order an object's keys name its kind.
+        /// Each kind's keys, its own key first.
         const KINDS: &[&[&str]] = &[$(&[$(stringify!($key)),+]),+];
 
-        /// Each kind's schema, in that order.
+        /// Each kind's schema, in `KINDS` order.
         fn kinds(generator: &mut SchemaGenerator) -> Vec<Schema> {
             vec![$(generator.subschema_for::<$node>()),+]
         }
@@ -318,55 +319,64 @@ macro_rules! kinds {
 }
 
 kinds! {
-    /// A field of each row: of the mark's own table, or from another dataset's table joined by row id.
+    /// A field's value in each row: from the mark's own table, or with `from`, from another
+    /// dataset's table joined by row id.
     FieldNode {
+        /// The field's name.
         field: Name,
         /// The dataset and table the field is read from, joined by row id.
         #[serde(default)]
         #[schemars(extend("tsType" = "[data: string, table: string]"))]
         from: Option<(Name, Name)>,
-        /// Reads a sampled field at its last frame without interpolating.
+        /// For a sampled field, reads the last frame at or before the shown coordinate instead of
+        /// interpolating. Default `false`.
         #[serde(default)]
         step: bool,
     }
+    /// A constant color.
     ColorNode {
         color: Color,
     }
-    /// What the view knows of each row.
+    /// View state of each row, such as whether it is selected.
     StateNode {
         state: State,
     }
-    /// A missing value: options that read one take the theme's.
+    /// A missing value. An option that evaluates to missing uses the theme's value.
     MissingNode {
         #[schemars(extend("const" = true))]
         missing: bool,
     }
+    /// A one-argument operation, such as `{ "op": "abs", "args": ["x"] }`.
     UnaryNode {
         op: Unary,
         args: [Expr; 1],
     }
+    /// A two-argument operation, such as `{ "op": "add", "args": ["a", 1] }`.
     BinaryNode {
         op: Binary,
         args: [Expr; 2],
     }
     /// The value of the first case whose condition holds, else `otherwise`.
     WhenNode {
+        /// The cases, as `[condition, value]` pairs tried in order.
         #[schemars(extend("tsType" = "[condition: ExprInput, value: ExprInput][]"))]
         when: Vec<(Expr, Expr)>,
+        /// The value where no condition holds.
         otherwise: Expr,
     }
-    /// Whether a text field equals the text.
+    /// Whether a text field equals the text exactly.
     IsNode {
         #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
         is: (Expr, String),
     }
-    /// Whether a text field holds the text, ignoring case: in a mark, a field of its own table.
+    /// Whether a text field contains the text, ignoring case. In a mark, the field must belong to
+    /// the mark's own table.
     ContainsNode {
         #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
         contains: (Expr, String),
     }
-    /// `value` mapped linearly onto the range `scale`, clamped: from its `domain`, else from the extent of
-    /// the values shown.
+    /// `value` mapped linearly from `domain` onto the range `scale`, clamped to the range. Without
+    /// a `domain`, the extent of the values shown is used.
     ScaleNode {
         #[schemars(extend("tsType" = "[low: number, high: number]"))]
         scale: [f64; 2],
@@ -375,7 +385,9 @@ kinds! {
         #[schemars(extend("tsType" = "[low: number, high: number]"))]
         domain: Option<[f64; 2]>,
     }
-    /// `value` through `colormap`: from its `domain`, else from the extent of the values shown.
+    /// `value` mapped through `colormap` over `domain`, or without a `domain`, over the extent of
+    /// the values shown. A categorical map ignores the domain and bins values by their integer
+    /// part.
     ColormapNode {
         colormap: Colormap,
         value: Expr,
@@ -385,33 +397,35 @@ kinds! {
     }
 }
 
-/// A size in CSS pixels, whatever the space's own unit.
+/// A size in CSS pixels, regardless of the space's unit.
 #[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: sizes read through `Form`")]
+#[expect(dead_code, reason = "used for its schema only; `Form` reads sizes")]
 #[serde(deny_unknown_fields)]
 struct Px {
+    /// The size, in CSS pixels.
     px: Expr,
 }
 
-/// A size in position units, whatever the space's own unit, so it scales as the view zooms, kept
-/// within CSS pixels when given.
+/// A size in position units (degrees on the earth), regardless of the space's unit, so it scales
+/// as the view zooms. `atLeast` and `atMost` bound it in CSS pixels.
 #[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: sizes read through `Form`")]
+#[expect(dead_code, reason = "used for its schema only; `Form` reads sizes")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(clippy::struct_field_names, reason = "its JSON is `{units, atLeast, atMost}`")]
 struct Units {
+    /// The size, in position units.
     units: Expr,
-    /// CSS pixels it keeps at least, however far the view zooms out.
+    /// The minimum on-screen size in CSS pixels, however far the view zooms out.
     #[serde(default)]
     #[schemars(range(min = 0))]
     at_least: Option<f32>,
-    /// CSS pixels it keeps at most, however far the view zooms in.
+    /// The maximum on-screen size in CSS pixels, however far the view zooms in.
     #[serde(default)]
     #[schemars(range(min = 0))]
     at_most: Option<f32>,
 }
 
-/// An expression is its JSON, `ExprNode`; TypeScript also takes the builders that write it.
+/// An expression's schema is `ExprNode`; its TypeScript type also accepts the builders.
 impl JsonSchema for Expr {
     fn schema_name() -> Cow<'static, str> {
         "Expr".into()
@@ -424,7 +438,7 @@ impl JsonSchema for Expr {
     }
 }
 
-/// The JSON an expression is written as.
+/// The JSON form of an expression.
 struct ExprNode;
 
 impl JsonSchema for ExprNode {
@@ -441,23 +455,25 @@ impl JsonSchema for ExprNode {
         ];
         any.extend(forms);
         json_schema!({
-            "description": "A value for every row of a mark: a constant, a field, view state, or arithmetic of them.",
+            "description": "A value for each row: a number, a boolean, a field's name, or a node that computes one.",
             "anyOf": any,
         })
     }
 }
 
-/// A conditional's color: the first case's whose condition holds, else `otherwise`'s.
+/// A conditional color: the color of the first case whose condition holds, else `otherwise`.
 #[derive(JsonSchema)]
-#[expect(dead_code, reason = "its schema alone: colors read through `Form`")]
+#[expect(dead_code, reason = "used for its schema only; `Form` reads colors")]
 #[serde(deny_unknown_fields)]
 struct WhenPaintNode {
+    /// The cases, as `[condition, color]` pairs tried in order.
     #[schemars(extend("tsType" = "[condition: ExprInput, color: PaintInput][]"))]
     when: Vec<(Expr, Paint)>,
+    /// The color where no condition holds.
     otherwise: Paint,
 }
 
-/// A color is its JSON, `PaintNode`; TypeScript also takes the builders that write it.
+/// A color option's schema is `PaintNode`; its TypeScript type also accepts the builders.
 impl JsonSchema for Paint {
     fn schema_name() -> Cow<'static, str> {
         "Paint".into()
@@ -470,7 +486,7 @@ impl JsonSchema for Paint {
     }
 }
 
-/// The JSON a color option is written as.
+/// The JSON form of a color option.
 struct PaintNode;
 
 impl JsonSchema for PaintNode {
@@ -487,7 +503,7 @@ impl JsonSchema for PaintNode {
             generator.subschema_for::<MissingNode>(),
         ];
         json_schema!({
-            "description": "A color for every row of a mark: a CSS color, a value through a colormap, or a conditional choosing between colors.",
+            "description": "A color for each row: a CSS color, a value through a colormap, or a conditional choosing between colors.",
             "anyOf": any,
         })
     }
@@ -498,12 +514,12 @@ impl<'de> Deserialize<'de> for Size {
         let size = |written: Written| match written {
             Written::Object(form) if form.px.is_some() => {
                 form.only("a size in CSS pixels", &["px"])?;
-                Ok(Size { expr: form.px.expect("held"), unit: Some(Unit::Px), px: Size::ANY })
+                Ok(Size { expr: form.px.expect("present"), unit: Some(Unit::Px), px: Size::ANY })
             }
             Written::Object(form) if form.units.is_some() => {
                 form.only("a size in units", &["units", "atLeast", "atMost"])?;
                 let px = [form.at_least.unwrap_or(0.0).max(0.0), form.at_most.unwrap_or(f32::INFINITY)];
-                Ok(Size { expr: form.units.expect("held"), unit: Some(Unit::Units), px })
+                Ok(Size { expr: form.units.expect("present"), unit: Some(Unit::Units), px })
             }
             written => written.expr().map(Size::from),
         };
@@ -521,7 +537,7 @@ impl JsonSchema for Size {
         let px = generator.subschema_for::<Px>();
         let units = generator.subschema_for::<Units>();
         json_schema!({
-            "description": "A size, in the space's unit unless it says its own: units in a diagram, CSS pixels elsewhere; `px` keeps CSS pixels, and `units` takes position units, which scale as the view zooms.",
+            "description": "A size: a value in the space's unit (units in a diagram, CSS pixels elsewhere), `{ px }` in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow on screen as the view zooms in.",
             "anyOf": [expr, px, units],
         })
     }
@@ -534,7 +550,8 @@ impl<'de> Deserialize<'de> for Color {
     }
 }
 
-/// A color writes as CSS `rgba(…)`, read back exactly: whole channels as bytes, alpha as it is.
+/// Writes a color as CSS `rgba(…)` that reads back exactly: channels as byte values, fractional
+/// where needed, and alpha unchanged.
 impl serde::Serialize for Color {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let channel = |v: f32| {
@@ -564,15 +581,16 @@ impl JsonSchema for Color {
     }
 }
 
-/// Your own colormap: its kind, its colors, and for a categorical map its categories' names.
+/// A custom colormap: its kind, its colors, and for a categorical map, its category names.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct CustomColormap {
     kind: ColormapKind,
-    /// Colors blended in OKLab, each at its `[place, color]` from 0 to 1 or evenly between its
-    /// neighbors, as in a CSS gradient; a categorical map's, one per category.
+    /// The colors, blended in OKLab. Each is a color, spaced evenly between its neighbors as in a
+    /// CSS gradient, or a `[place, color]` pair with a place from 0 to 1, in ascending order. A
+    /// categorical map takes one color per category, without places, at most 256.
     colors: Vec<Stop>,
-    /// The categories' names, in order, for a legend: a categorical map's alone.
+    /// The category names in category order, shown in legends. Categorical maps only.
     #[serde(default)]
     categories: Vec<String>,
 }
@@ -722,7 +740,7 @@ mod tests {
         assert_eq!(size(r#"{"px": 3}"#), crate::px(3.0));
         assert_eq!(size(r#"{"units": 3}"#), crate::units(3.0));
         assert_eq!(size(r#"{"units": 3, "atLeast": 2, "atMost": 20}"#), crate::units(3.0).at_least(2.0).at_most(20.0));
-        assert!(serde_json::from_str::<Size>(r#"{"px": 3, "atLeast": 2}"#).is_err(), "pixels hold no pixel range");
+        assert!(serde_json::from_str::<Size>(r#"{"px": 3, "atLeast": 2}"#).is_err(), "px sizes take no bounds");
         let map: Colormap =
             serde_json::from_str(r#"{"kind": "sequential", "colors": ["black", [0.25, "red"], "white"]}"#)
                 .expect("a map");
@@ -736,16 +754,17 @@ mod tests {
         assert_eq!(paint("\"red\""), Ok(red.clone()));
         assert_eq!(paint("\"#ff0000\""), Ok(red.clone()));
         let error = paint("\"kv\"").expect_err("a field's name");
-        assert!(error.starts_with(r#"not a CSS color: "kv"; a field is field("kv")"#), "{error}");
-        // A conditional's values are colors, its conditions values; a colormap's input is a value.
+        assert!(error.starts_with(r#"not a CSS color: "kv"; for a field, use field("kv")"#), "{error}");
+        // A conditional's values are colors and its conditions are values; a colormap's input is a
+        // value.
         let chosen = paint(r#"{"when": [["on", "red"]], "otherwise": {"colormap": "viridis", "value": "kv"}}"#);
         let mapped = field("kv").colormap(Colormap::VIRIDIS);
         assert_eq!(chosen, Ok(when(field("on")).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(mapped)));
-        assert_eq!(paint(r#"{"field": "kv"}"#), Ok(field("kv")), "a field, which makes no color, fails as it compiles");
+        assert_eq!(paint(r#"{"field": "kv"}"#), Ok(field("kv")), "a field parses here and must compile to a color");
     }
 
     #[test]
-    fn errors_name_what_is_wrong() {
+    fn errors_name_the_offending_part() {
         let error = serde_json::from_str::<Expr>(r#"{"field": "a", "color": "red"}"#).expect_err("two kinds");
         assert!(error.to_string().contains("color"), "{error}");
         let error = serde_json::from_str::<Expr>(r#"{"field": "a", "map": "viridis"}"#).expect_err("a stray key");

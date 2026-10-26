@@ -1,7 +1,7 @@
 /**
  * A block diagram on a sheet: blocks with ports, wires routed around them, and groups drawn around
- * their members. Add, drag, connect, arrange, and undo; open a preset or a JSON file; restyle the
- * sheet, its blocks, and its wires.
+ * their members. You can add, drag, connect, arrange, and undo, open a preset or a saved `.latk`
+ * file, and restyle the sheet, its blocks, and its wires.
  */
 import {
   Data,
@@ -29,8 +29,8 @@ import type { Stage } from '../../ui/stage.js';
 import { theme } from '../../ui/theme.js';
 
 /**
- * Kinds of block: the marker each draws as, its fill on the dark and the light sheet, and its ports,
- * each naming the signal it is plugged into.
+ * The block kinds. Each has a marker, a fill for the dark and the light sheet, and ports given as
+ * name, side, and direction. Each port is a reference field naming the signal plugged into it.
  */
 const KINDS = {
   Input: { marker: 'rounded', fill: ['#173836', '#e2f3ef'], ports: [['out', 'right', 'out']] },
@@ -62,8 +62,8 @@ const KINDS = {
 >;
 type Kind = keyof typeof KINDS;
 const kinds = Object.keys(KINDS) as Kind[];
-/** Each kind as a shape of its own: inputs round, processes square, controls diamonds, outputs a
- * block with deeply rounded corners. */
+/** A distinct shape per kind, used when Shapes is on: inputs are ellipses, processes rectangles,
+ * controls diamonds, and outputs blocks with deeply rounded corners. */
 const SHAPES = {
   Input: 'ellipse',
   Process: 'rectangle',
@@ -71,7 +71,7 @@ const SHAPES = {
   Output: { block: { corner: 18 } },
 } as const satisfies Record<Kind, Marker>;
 
-/** A port of a block, by the reference field naming its signal. */
+/** A block's port. `port` names the reference field that holds the port's signal. */
 interface Plug {
   kind: Kind;
   id: Id;
@@ -81,8 +81,9 @@ interface Plug {
 const direction = (kind: Kind, port: string) =>
   KINDS[kind].ports.find(([name]) => name === port)?.[2];
 
-/** A kind's ports as the scene declares them: outputs drive their signals, and a feedback port is
- * named. As dots, a plain input is its side alone; as diamonds, each port is ordered on its side. */
+/** Declares a kind's ports for the scene. Outputs drive their signals, and the feedback port gets
+ * a label. With dot ports, a plain input is declared by its side alone. With diamond ports, every
+ * port also gets a shape and an order on its side. */
 const ports = (kind: Kind, diamonds: boolean): [string, Port][] =>
   KINDS[kind].ports.map(([name, side, way], order): [string, Port] => [
     name,
@@ -97,9 +98,9 @@ const ports = (kind: Kind, diamonds: boolean): [string, Port][] =>
   ]);
 
 /**
- * A diagram drawn up as rows: blocks of each kind, the signals their ports plug into, and the groups
- * holding Process blocks, themselves held by stations. Positions, x right and y down, are optional:
- * blocks without one are placed by the layout.
+ * Builds a diagram's rows: blocks of each kind, the signals their ports plug into, groups of
+ * Process blocks, and stations that contain groups. Positions (x right, y down) are optional. The
+ * layout places blocks without one.
  */
 class Sketch {
   readonly blocks = new Map<
@@ -110,7 +111,7 @@ class Sketch {
   readonly signals: { id: number; name: string }[] = [];
   readonly groups: { id: number; name: string; station?: number }[] = [];
   readonly stations: { id: number; name: string }[] = [];
-  /** Blocks whose status ring shows. */
+  /** Blocks whose status ring is shown. */
   readonly alarms = new Set<number>();
   next = 1;
 
@@ -122,7 +123,8 @@ class Sketch {
     return { kind, id, port: 'out' };
   }
 
-  /** A signal driven by `from`'s output (or the port it names) and read by each of `to`'s inputs. */
+  /** Adds a signal driven by the `out` port of each block in `from` and read by each of `to`, on
+   * its `in` port or on the port paired with it. */
   wire(name: string, from: Plug | Plug[], ...to: (Plug | [Plug, string])[]): void {
     const id = this.next++;
     this.signals.push({ id, name });
@@ -145,7 +147,7 @@ class Sketch {
     return id;
   }
 
-  /** The dataset. */
+  /** Builds the dataset from the rows. */
   data(): Data {
     const patch = new Patch().set(
       'Signal',
@@ -205,15 +207,15 @@ class Sketch {
   }
 }
 
-/** The colors groups may take, on the dark and the light sheet. */
+/** Group colors, for the dark and the light sheet. */
 const GROUP_COLORS = {
   slate: ['#1a2230', '#e6ebf2'],
   teal: ['#14302f', '#dcefec'],
   plum: ['#2a1f33', '#efe6f4'],
 } as const;
 
-/** A pipeline written as a JSON document, as `Data.read` reads one: a change per method, with its
- * parameters by name. */
+/** A small pipeline written as a JSON document for `Data.read`. Each change is an object keyed by
+ * its method, with the method's parameters by name. */
 const PIPELINE = {
   name: 'studio',
   patch: [
@@ -261,8 +263,8 @@ const PIPELINE = {
   ],
 };
 
-/** The presets: a water plant laid out in ranks, then four drawn where they stand, and one written
- * as a JSON document. */
+/** The presets: a water plant placed in ranks by the layout, four with fixed positions, and one
+ * written as a JSON document. */
 const PRESETS: readonly (readonly [string, () => Data | Promise<Data>])[] = [
   [
     'Water plant',
@@ -364,14 +366,14 @@ const PRESETS: readonly (readonly [string, () => Data | Promise<Data>])[] = [
 ];
 
 /**
- * Earlier versions of the data, to step back to and forward again: snapshots, freed once
- * forgotten.
+ * Undo and redo history, kept as snapshots of the data. It keeps up to 100 undo steps and destroys
+ * each snapshot once it can no longer be restored.
  */
 class History {
   readonly #undo: Snapshot[] = [];
   #redo: Snapshot[] = [];
 
-  /** Remembers `before`, a snapshot of the version an edit started from. */
+  /** Records `before`, a snapshot taken before an edit, and clears the redo steps. */
   commit(before: Snapshot): void {
     this.#undo.push(before);
     if (this.#undo.length > 100) this.#undo.shift()!.destroy();
@@ -379,7 +381,8 @@ class History {
     this.#redo = [];
   }
 
-  /** The version before `current`, which redo then steps forward to. */
+  /** Returns the snapshot before `current` and keeps `current` for redo. When there is nothing to
+   * undo, it destroys `current` and returns undefined. */
   undo(current: Snapshot): Snapshot | undefined {
     const before = this.#undo.pop();
     if (before) this.#redo.push(current);
@@ -410,7 +413,8 @@ export default function page(stage: Stage): void {
   type Sheet = 'dots' | 'snap' | 'lines' | 'off';
   let grid: Sheet = 'dots';
   let light = false;
-  /** How the sheet, its blocks, ports, and wires look, and how the view answers keys and presses. */
+  /** Settings for how the sheet, blocks, ports, and wires look, and how the view responds to keys
+   * and presses. */
   const style = {
     shapes: false,
     diamonds: false,
@@ -439,7 +443,7 @@ export default function page(stage: Stage): void {
     off: 'off',
   };
 
-  /** The tables the diagram holds now. */
+  /** The names of the tables the data has now. */
   const held = () => new Set(data.describe().tables.map((t) => t.name));
   /** Every id of `table`. */
   const ids = (table: string) => data.query({ of: table, select: {} }).ids;
@@ -447,8 +451,8 @@ export default function page(stage: Stage): void {
   const scene = (): Scene => {
     const tables = held();
     const marks: Mark[] = [];
-    // Containers take the theme's group color, tinted by how deep they sit; their titles head them, and
-    // they and the blocks they hold lift off the sheet.
+    // Containers take the theme's group color, tinted by nesting depth. Their titles sit at the
+    // top, and they and the blocks inside them cast shadows on the sheet.
     const title = { text: 'name', size: 11, color: light ? '#5b6b7d' : '#7f93a8' };
     if (tables.has('Station')) {
       marks.push({
@@ -470,7 +474,8 @@ export default function page(stage: Stage): void {
         },
       });
     }
-    // Comets run from each signal's driver to its readers; a feedback signal is dashed.
+    // With Flow on, comets run from each signal's driver to its readers. A signal named Feedback
+    // is dashed.
     marks.push({
       edges: {
         of: ['studio', 'Signal'],
@@ -484,7 +489,7 @@ export default function page(stage: Stage): void {
           : {}),
       },
     });
-    // A mark for each kind of block the data holds; a table the data lacks would fail.
+    // One mark per block kind in the data. A mark of a table the data lacks would fail.
     for (const kind of kinds.filter((k) => tables.has(k))) {
       // Without a size, a block fits its label and ports.
       marks.push({
@@ -530,14 +535,15 @@ export default function page(stage: Stage): void {
       marks,
     };
   };
-  /** An id no row of the data has yet. */
+  /** An id that no row in the data uses yet. */
   const fresh = () =>
     1 + Math.max(0, ...[...held()].flatMap((t) => ids(t).map((id) => Number(id) || 0)));
   const view = stage.view(scene(), {
     label: 'A diagram: drag blocks, drag from a port to wire it, Delete removes',
   });
 
-  /** Takes what the data holds now: a mark for each kind of block it holds, and its description. */
+  /** Refreshes after a data change. The scene is rebuilt only if the set of tables changed, so each
+   * block kind in the data has a mark. The description is always updated. */
   let kindsShown = [...held()].join();
   const changed = () => {
     const kindsHeld = [...held()].join();
@@ -547,14 +553,14 @@ export default function page(stage: Stage): void {
     }
     describe();
   };
-  /** Applies `patch` as one edit that undo steps back over. */
+  /** Applies `patch` as one undoable edit and shows `said`. */
   const edit = (patch: Patch, said: string) => {
     history.commit(data.snapshot());
     data.apply(patch);
     changed();
     note(said);
   };
-  /** Shows `next`, a diagram of its own: nothing to undo back to. */
+  /** Replaces the diagram with `next`, clears the undo history, and fits the view to it. */
   const open = (next: Data, said: string) => {
     history.clear();
     data.destroy();
@@ -580,7 +586,7 @@ export default function page(stage: Stage): void {
     (data.get(row.table, row.id, 'name') as string | null) ?? `${row.table} ${row.id}`;
   const isBlock = (table: string): table is Kind => table in KINDS;
 
-  // Moving: a block goes where the drag says, moves at once, and lands as one edit.
+  // Dragging moves a block immediately, and the whole drag is recorded as one undoable edit.
   let before: Snapshot | undefined;
   view.on('drag', ({ phase, hit, position }) => {
     if (!isBlock(hit.row.table)) return;
@@ -601,8 +607,9 @@ export default function page(stage: Stage): void {
     }
   });
 
-  // Wiring: an output and an input join on the output's signal, made when it has none; an input
-  // wired elsewhere leaves the signal it was on. A plugged port let go over nothing is unplugged.
+  // Wiring joins an output and an input on the output's signal, creating the signal if the output
+  // has none. An input wired elsewhere leaves its old signal. Dropping a plugged port over empty
+  // space unplugs it.
   view.on('connect', ({ from, to }) => {
     if (!to) {
       const plugged =
@@ -638,7 +645,7 @@ export default function page(stage: Stage): void {
     edit(patch, `Wired ${name(from.row)} and ${name(to.row)}.`);
   });
 
-  /** Removes `rows` as one edit. */
+  /** Removes `rows` as one undoable edit. */
   const remove = (rows: readonly Rows[]) => {
     const patch = new Patch();
     for (const { table, ids } of rows) patch.remove(table, ids);
@@ -646,7 +653,7 @@ export default function page(stage: Stage): void {
   };
   view.on('delete', ({ rows }) => remove(rows));
 
-  /** Selects `row` and what it joins, and frames them. */
+  /** Selects `row` and its neighbors, and fits the view to them. */
   const reveal = (row: Row) => {
     const joined = view.neighbors(row);
     const near = [one(row), ...joined];
@@ -655,7 +662,7 @@ export default function page(stage: Stage): void {
     describe();
     note(`${name(row)} and ${each(joined).length} joined to it.`);
   };
-  /** Selects `row` and puts its name up for editing. */
+  /** Selects `row` and focuses its name for editing. */
   const rename = (row: Row) => {
     view.selection = [one(row)];
     describe();
@@ -665,7 +672,7 @@ export default function page(stage: Stage): void {
   const named = (row: Row) =>
     isBlock(row.table) || row.table === 'Group' || row.table === 'Station';
 
-  // Opening a row renames it; the menu names what can be done with the row under it.
+  // Opening a row renames it. The context menu lists actions for the row under the pointer.
   view.on('open', ({ hit }) => named(hit.row) && rename(hit.row));
   const menu = stage.menu();
   view.on('menu', ({ hits, trigger }) => {
@@ -720,8 +727,8 @@ export default function page(stage: Stage): void {
     {
       label: 'Arrange',
       key: 'a',
-      // Every block lets go of its position, the layout places them all again, and the places it
-      // answers become the blocks' positions: one edit undo steps back over.
+      // Clears every block's position so the layout places them all again, then writes the
+      // computed places back as positions. One undo reverts the whole arrangement.
       run: () => {
         const patch = new Patch(data.name);
         const tables = held();
@@ -735,7 +742,7 @@ export default function page(stage: Stage): void {
         changed();
         view.fit();
         void view.arrange().then((patches) => {
-          // The places of every table, written as one change.
+          // Merges the computed places of every table into one patch.
           const placed = patches
             .filter((p) => p.data === data.name)
             .reduce((all, p) => all.extend(p), new Patch(data.name));
@@ -749,7 +756,8 @@ export default function page(stage: Stage): void {
     { label: 'Zoom in', key: '=', run: () => zoom(0.5) },
     { label: 'Zoom out', key: '-', run: () => zoom(-0.5) },
   ]);
-  /** Eases the camera in by `by` steps of doubling. */
+  /** Flies the camera in by `by` zoom levels, where each level doubles the scale. Negative zooms
+   * out. */
   const zoom = (by: number) => {
     const camera = view.camera;
     if ('center' in camera) view.fly({ ...camera, zoom: camera.zoom + by });
@@ -760,7 +768,7 @@ export default function page(stage: Stage): void {
       label: kind,
       key: String(i + 1),
       run: () => {
-        // New blocks land where the camera looks; nothing else moves.
+        // New blocks appear at the camera's center, and nothing else moves.
         const camera = view.camera;
         const [x, y] = 'center' in camera ? camera.center : [0, 0];
         const id = fresh();
@@ -835,7 +843,7 @@ export default function page(stage: Stage): void {
     (next) => ((grid = next), restyle()),
   );
 
-  // The sheet's theme: how blocks, groups, ports, wires, and shadows look.
+  // Theme settings for blocks, groups, ports, wires, and shadows.
   const sheet = stage.section('Sheet', false);
   const knob = (
     label: string,
@@ -883,7 +891,7 @@ export default function page(stage: Stage): void {
   sheet.toggle('Shadows', undefined, style.shadows, (on) => ((style.shadows = on), restyle()));
   sheet.toggle('Outlines', undefined, style.outline, (on) => ((style.outline = on), restyle()));
 
-  // How the view answers keys and presses.
+  // How the view responds to keys and presses.
   const answers = stage.section('Interaction', false);
   answers.toggle('Keys', undefined, style.keyboard, (on) => ((style.keyboard = on), restyle()));
   answers.toggle('Cycle picks', undefined, style.cycle, (on) => ((style.cycle = on), restyle()));
@@ -899,7 +907,8 @@ export default function page(stage: Stage): void {
   );
   answers.note('Keys: Tab steps through blocks, Enter renames, Space selects, Delete removes.');
 
-  // The diagram as a file: latkit's bytes, the patch that builds it, read back as they were.
+  // Saves the diagram as a `.latk` file, the patch that builds it in latkit's binary format.
+  // Opening the file restores the diagram unchanged.
   const file = stage.section('File', false);
   const picker = h('input', { type: 'file', accept: '.latk', hidden: true });
   file.content.append(picker);
@@ -932,7 +941,7 @@ export default function page(stage: Stage): void {
   ]);
   const described = file.note();
 
-  // The selected block's name, editable.
+  // An editable name field for the selected row.
   const selected = stage.section('Selection');
   const input = selected.text('Name', (value) => {
     const [row] = each(view.selection);
@@ -946,7 +955,7 @@ export default function page(stage: Stage): void {
   input.disabled = true;
   const told = selected.note();
   const note = (text: string) => (told.textContent = text);
-  // The selected block wears a tag where the view located it; it goes when the camera moves.
+  // A tag labels the selected block at its screen position. It hides when the camera moves.
   const tag = h('p', { class: 'callout', hidden: true });
   stage.regions.main.append(tag);
   view.on('camera', () => (tag.hidden = true));
@@ -963,7 +972,7 @@ export default function page(stage: Stage): void {
         tag.style.translate = `${point[0]}px ${point[1] - 18}px`;
         tag.hidden = false;
       });
-    // What the data holds, as it describes itself.
+    // Row counts per table, from `data.describe()`.
     described.textContent = data
       .describe()
       .tables.map((t) => `${t.name} ${t.rows.toLocaleString()}`)

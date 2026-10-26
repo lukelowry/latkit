@@ -1,12 +1,12 @@
 /**
- * A grid's figures for each state it reaches, written into the states dataset as fields its areas
- * color by: buses, load, and generation counted where each bus stands, and where the grid was
- * simulated, how far its machines' speeds swing in each state, frame by frame.
+ * Per-state statistics of a grid, written into the states dataset as fields the state areas can be
+ * colored by. Each bus adds to the bus count, load, and generation of the state it lies in. For a
+ * simulated grid, each state also gets its machines' largest speed swing, frame by frame.
  */
 import { Patch, type Data, type Id, type Snapshot } from 'latkit';
 import type { Case } from './cases.js';
 
-/** What each state's figures hold, and in what unit. */
+/** The per-state fields, with their labels and units. */
 export const STATE_FIELDS = {
   buses: { label: 'buses', unit: '' },
   load: { label: 'load', unit: ' MW' },
@@ -16,11 +16,11 @@ export const STATE_FIELDS = {
 export type StateField = keyof typeof STATE_FIELDS;
 
 export interface Joined {
-  /** The states as they were before the grid's figures were written into them. */
+  /** A snapshot of the states from before the grid's statistics were written, for restoring. */
   readonly before: Snapshot;
-  /** How many states the grid reaches. */
+  /** The number of states that contain a bus of the grid. */
   readonly states: number;
-  /** Each figure's largest value in any state. */
+  /** Each field's largest value in any state. */
   readonly peaks: Readonly<Record<StateField, number>>;
 }
 
@@ -33,7 +33,8 @@ interface State {
   readonly rings: readonly Ring[];
 }
 
-/** Whether a point lies inside a state: crossing its rings an odd number of times, holes included. */
+/** Whether a point lies inside a state, by the even-odd rule: a ray from the point crosses the
+ * state's rings, holes included, an odd number of times. */
 function inside(state: State, x: number, y: number): boolean {
   const [w, s, e, n] = state.bounds;
   if (x < w || x > e || y < s || y > n) return false;
@@ -47,7 +48,8 @@ function inside(state: State, x: number, y: number): boolean {
   return crossings % 2 === 1;
 }
 
-/** Writes the grid's figures into `states` for every state it reaches, keeping what they were. */
+/** Writes the grid's statistics into `states` for every state the grid reaches. The result keeps a
+ * snapshot of the states from before, for restoring them. */
 export function joinStates(states: Data, grid: Case): Joined {
   const { positions, simulation } = grid;
   const extent = [Infinity, Infinity, -Infinity, -Infinity];
@@ -77,7 +79,7 @@ export function joinStates(states: Data, grid: Case): Joined {
       bounds[3] >= extent[1]!;
     if (meets) found.push({ row, bounds, rings });
   });
-  // Each degree cell's states, so a bus tests only those near it.
+  // Index the states by one-degree cell, so each bus tests only the states near it.
   const cells = new Map<number, State[]>();
   const cell = (x: number, y: number) => Math.floor(x + 180) * 180 + Math.floor(y + 90);
   for (const state of found) {
@@ -115,7 +117,7 @@ export function joinStates(states: Data, grid: Case): Joined {
   const patch = new Patch().set('polygons', ids as number[], { buses, load, generation });
   const peaks = { buses: peak(buses), load: peak(load), generation: peak(generation), swing: 0 };
   if (simulation) {
-    // Each frame, the largest swing of a state's machines either way.
+    // For each frame, the largest absolute speed deviation among each state's machines.
     const g = grid.machines;
     const swing = new Float32Array(rows);
     for (let f = 0; f < simulation.frames; f++) {

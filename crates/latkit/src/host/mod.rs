@@ -1,10 +1,12 @@
-//! What the platform does for latkit: set and measure text in its fonts, do jobs off the frame, fetch
-//! bytes (tiles, and the files JSON documents name), and encode video with its [`Encoder`]. A
-//! [`Gpu`](crate::Gpu) is given its host with [`Gpu::set_host`](crate::Gpu::set_host); without one,
-//! views draw no text, do their jobs at once, fetch nothing, and encode no video. A browser's host is
-//! `Browser`, built with the `web` feature for `wasm32`. Natively, the `native` feature supplies
-//! `Native`: lazy fonts, a worker pool doing jobs and reading files, and Media Foundation's H.264 on
-//! Windows, without a window or network client.
+//! The host: platform services latkit uses. A host rasterizes and measures text in the platform's
+//! fonts, runs jobs in the background, fetches bytes (tiles, and files that JSON documents name),
+//! and encodes video with an [`Encoder`].
+//!
+//! A [`Gpu`](crate::Gpu) gets its host from [`Gpu::set_host`](crate::Gpu::set_host). Without one,
+//! views draw no text, run jobs immediately, fetch nothing, and encode no video. In a browser the
+//! host is `Browser` (the `web` feature on `wasm32`). Natively, the `native` feature supplies
+//! `Native`: fonts loaded on first use, a worker pool that runs jobs and reads files, and Media
+//! Foundation H.264 on Windows. It needs no window or network client.
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod browser;
@@ -29,77 +31,79 @@ use crate::Encoding;
 pub use crate::resource::Request;
 use crate::{Error, Pending, Result};
 
-/// Ticks of a second an encoder's times count.
+/// Ticks per second of encoder times.
 pub const TIMESCALE: u32 = 90_000;
 
-/// A platform's H.264 encoder: NV12 pictures (BT.709, limited range) in, Annex B units out, no
-/// B-frames, so every platform's encoder fits and the muxer never reorders.
+/// A platform's H.264 encoder: NV12 pictures (BT.709, limited range) in, Annex B units out. It uses
+/// no B-frames, so every platform's encoder can comply and the muxer never reorders frames.
 pub trait Encoder {
-    /// Encodes one NV12 picture at `time` ticks, a keyframe when `key`; resolves, once it has room
-    /// for another picture, to the units it finished since the last call, in order.
+    /// Encodes one NV12 picture at `time` ticks, as a keyframe when `key`. Resolves, once the
+    /// encoder can take another picture, to the units finished since the last call, in order.
     fn encode(&mut self, nv12: Vec<u8>, time: u64, key: bool) -> Pending<Vec<Unit>>;
 
-    /// Resolves to the units it still holds once every picture given is encoded.
+    /// Resolves to the remaining units once every picture given has been encoded.
     fn finish(&mut self) -> Pending<Vec<Unit>>;
 }
 
-/// One encoded access unit of H.264: Annex B bytes, at `time` ticks of [`TIMESCALE`], decode order
-/// equal to display order.
+/// One encoded H.264 access unit: Annex B bytes at `time` ticks of [`TIMESCALE`]. Decode order
+/// equals display order.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Unit {
-    /// Ticks at which this frame shows.
+    /// Presentation time in ticks of [`TIMESCALE`].
     pub time: u64,
-    /// Whether it is a keyframe, which carries its parameter sets in band.
+    /// Whether this is a keyframe. Keyframes carry their parameter sets in band.
     pub key: bool,
-    /// Its NAL units, each after a start code.
+    /// NAL units, each preceded by a start code.
     pub annex_b: Vec<u8>,
 }
 
-/// The platform services a view uses.
+/// Platform services for text, background jobs, fetching, and video encoding.
 pub trait Host: Send + Sync + 'static {
-    /// Sets `run` as coverage, reporting unavailable fonts or failed rasterization.
+    /// Rasterizes `run` to a coverage mask. Errors if its font is unavailable or rasterization
+    /// fails.
     fn rasterize(&self, run: &TextRun) -> Result<Raster>;
 
-    /// The width and height `run` takes once set, in pixels; by default what setting it takes.
+    /// The width and height of `run` once rasterized, in pixels. By default, rasterizes it to find
+    /// out.
     fn measure(&self, run: &TextRun) -> Result<[f32; 2]> {
         self.rasterize(run).map(|raster| raster.size.map(|v| v as f32))
     }
 
-    /// Does `job` off the frame, resolving to what [`Job::run`] answers; by default at once, on the
-    /// calling thread.
+    /// Runs `job` in the background, resolving to the result of [`Job::run`]. By default it runs
+    /// immediately on the calling thread.
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         Pending::ready(Ok(job.run()))
     }
 
-    /// Fetches `request`, resolving to its bytes; to no bytes where there is nothing at its URL, and
-    /// to an error where it cannot be read. By default a host fetches nothing.
+    /// Fetches `request`, resolving to its bytes. Resolves to no bytes if nothing exists at the
+    /// URL, and to an error if it cannot be read. By default, fails as unsupported.
     fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
         let _ = request;
-        Pending::ready(Err(Error::Unsupported("this host does not fetch".into())))
+        Pending::ready(Err(Error::Unsupported("this host cannot fetch".into())))
     }
 
-    /// An H.264 encoder for pictures as `encoding` says, hardware where the platform has one: what an
-    /// [`Mp4`](crate::Mp4) encodes with. By default a host encodes no video.
+    /// An H.264 encoder for `encoding`, in hardware where the platform has one. [`Mp4`](crate::Mp4)
+    /// encodes with it. By default, fails as unsupported.
     fn encoder(&self, encoding: &Encoding) -> crate::Result<Box<dyn Encoder>> {
         let _ = encoding;
-        Err(Error::Unsupported("this host encodes no video".into()))
+        Err(Error::Unsupported("this host cannot encode video".into()))
     }
 }
 
-/// A line of text to set.
+/// Text to rasterize: one line, or a paragraph wrapped at `max_width`.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct TextRun {
     /// The text.
     pub text: Arc<str>,
     /// A CSS font family list.
     pub font: Arc<str>,
-    /// The size in pixels.
+    /// Font size in pixels.
     pub size_px: u32,
-    /// Pixels a line runs to before it wraps at a space; `None` keeps one line.
+    /// Width in pixels at which lines wrap at a space. `None` keeps a single line.
     pub max_width: Option<u32>,
 }
 
-/// Text set as coverage: one byte per pixel, rows top to bottom.
+/// Rasterized text as a coverage mask: one byte per pixel, rows top to bottom.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Raster {
     /// Width and height in pixels.

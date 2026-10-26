@@ -1,4 +1,4 @@
-//! One schema compiler for validation and interactive rendering.
+//! Compiles marks against dataset schemas, for both validation and views.
 
 use std::sync::Arc;
 
@@ -13,7 +13,9 @@ pub(crate) struct Compiled {
     pub(crate) schemas: Vec<(Name, u64)>,
 }
 
-/// Missing data stays pending in a live view; validation requires it before calling this.
+/// Compiles `mark` against the schemas in `all`. Returns `None` while the mark's dataset or table
+/// is missing: a view keeps such a mark pending, and validation reports the absence before calling
+/// this. Errors when an option fails to compile or the mark compiles to more than 32 channels.
 pub(crate) fn compile(mark: &Mark, all: &[Snapshot], context: Context<'_>) -> Result<Option<Compiled>> {
     let style = mark.style();
     let Some(data) = all.iter().find(|d| *d.name() == style.data) else { return Ok(None) };

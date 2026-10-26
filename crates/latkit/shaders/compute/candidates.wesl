@@ -1,9 +1,10 @@
-// The first step of label placement: each labeled row's label measured where its anchor puts it, by
-// the size of its text, as set or as measured while it is not, and keyed by its priority,
-// then whether it showed before, then its id: a label that arrives later still displaces lesser
-// ones, and among equals those shown keep their place. `compute/labels.wesl` places them. Made for
-// one primitive, it holds only that one's anchors. A diagram's labels scale with its sheet, so they
-// need no placement: only this step runs there, to ask for the texts of labels in view.
+// The first step of label placement. It measures each labeled row's label box at its anchor, from
+// its text's size (as set, or as measured until it is set). Each label gets a key: its priority,
+// then whether it was placed in the previous frame, then its id. A label that arrives later still
+// displaces lower-priority ones, and among equals, labels already shown keep their place.
+// `compute/labels.wesl` places them. Each pipeline is made for one primitive and compiles only that
+// primitive's anchors. A diagram's labels scale with its sheet and need no placement, so only this
+// step runs there, to request the texts of labels in view.
 
 import package::lib::types::{
     VISIBLE, LABEL_CODE, LABEL_PRIORITY, CANDIDATE_BOX, CANDIDATE_KEY, CANDIDATE_STATE, WANTS, PLACED_LABEL,
@@ -30,7 +31,7 @@ fn candidates(@builtin(global_invocation_id) id: vec3u) {
     let code_bits = word(extra_at(row, mark.label + LABEL_CODE));
     var next = select(0u, STICKY, sticky);
     let flags = word(row_at(row) + mark.stride - 1u);
-    // A row whose tile leaves keeps no label.
+    // A row whose tile is leaving gets no label.
     if missing_bits(code_bits) || (flags & VISIBLE) == 0u || drawn.leaving {
         put(at + CANDIDATE_STATE, next);
         return;
@@ -43,8 +44,8 @@ fn candidates(@builtin(global_invocation_id) id: vec3u) {
     let diagram = frame.space == SPACE_DIAGRAM;
     let unset = (uv0 & TEXT_UNSET) != 0u;
     if (uv0 == 0u && uv1 == 0u) || (unset && diagram) {
-        // The atlas lacks this text, and the label cannot wait for placement to ask for it: ask now,
-        // if it could show, legible and near the view.
+        // The atlas lacks this text, and the label cannot wait for placement to request it. Request
+        // it now if the label could show: legible and near the view.
         let near = 0.25 * eye.size;
         if a.shown && legibility(size) > 0.0 && in_view(a.at - near, a.at + near) {
             want(code);
@@ -57,7 +58,7 @@ fn candidates(@builtin(global_invocation_id) id: vec3u) {
     }
     let t = text_at(uv0 & ~TEXT_UNSET, uv1, size, a.at, a.align);
     if a.shown && in_view(t.lo, t.hi) {
-        // A diagram shows every label in view that fits; elsewhere `ask` notes those placed.
+        // A diagram marks every label in view as seen here; elsewhere `ask` marks placed ones.
         if diagram {
             seen(code);
         }

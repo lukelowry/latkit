@@ -1,11 +1,12 @@
-// What marks draw, measured for fitting: the least and greatest x, y, and z of each mark's shown
-// instances in position units, as ordered words, through the same geometry the draws use: a vertex
-// as its box, a stroke as its points, an area as its triangles' corners. While a fit measures chosen
-// rows, only rows marked FIT count.
+// Extents for fitting: the least and greatest x, y, and z of each mark's shown instances, in
+// position units, as order-preserving words. It uses the same geometry as the draws: a vertex's
+// box, a stroke's points, and an area's triangle corners. While a fit measures chosen rows, only
+// rows marked `FIT` count.
 
 import package::lib::types::{NONE, FIT, PATH_ENDS, PATH_GEOMETRY, EXTENT_WORDS, VERTEX_POSITION, HALF_UNITS, item};
-import package::lib::bind::{frame, eye, mark};
+import package::lib::bind::{frame, mark};
 import package::lib::focus::focus_of;
+import package::lib::mark::px_per_length;
 import package::lib::reduce::ordered;
 import package::lib::state::{row_at, vertex_at};
 import package::lib::points::{placed, vertex_half};
@@ -43,11 +44,11 @@ fn points(@builtin(global_invocation_id) id: vec3u) {
     if (v.flags & 1u) == 0u || !placed(v) {
         return;
     }
-    // A marker sized in units is part of the box. One sized in pixels is that size at any zoom, so
-    // it counts as its position, and the fit's padding holds its pixels: measured at the zoom shown,
-    // its pixels would stand for any number of units.
+    // A marker sized in units is part of the box. A marker sized in pixels has that size at any
+    // zoom, so only its position counts, and the fit's padding covers its pixels. Measured at the
+    // current zoom, its pixels could correspond to any number of units.
     let units = (v.flags & HALF_UNITS) != 0u;
-    let half = select(vec2f(0.0), vertex_half(v) / eye.px_per_unit.x, units);
+    let half = select(vec2f(0.0), vertex_half(v) / px_per_length(), units);
     let p = v.hi + v.lo;
     extend(vec3f(p - half, v.elevation));
     extend(vec3f(p + half, v.elevation));

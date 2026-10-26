@@ -1,6 +1,6 @@
-//! H.264 through Windows Media Foundation: the platform's encoder transform, hardware where the
-//! machine has one and the software encoder otherwise, on a thread of its own so encoding overlaps
-//! drawing. NV12 pictures in, Annex B units out, no B-frames, keyframes where asked.
+//! H.264 encoding through Windows Media Foundation. Uses the machine's hardware encoder transform
+//! if it has one, else the software encoder. The transform runs on its own thread so encoding
+//! overlaps drawing. NV12 pictures in, Annex B units out, no B-frames, keyframes on request.
 
 use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
@@ -33,27 +33,27 @@ use crate::video::nals;
 use crate::{Encoding, Error, Pending, Resolver, Result};
 use tell::Tell;
 
-/// The longest the transform may take to start, to want a picture, or to drain.
+/// Timeout for the transform to start, to accept a picture, or to drain.
 const STALL: Duration = Duration::from_secs(20);
-/// Seconds between the keyframes the encoder places itself; the video asks for its own besides.
+/// Seconds between the keyframes the encoder inserts on its own. The video also requests some.
 const KEYFRAMES: f64 = 2.0;
-/// 100-nanosecond ticks a second, Media Foundation's clock.
+/// Media Foundation clock ticks (100 ns) per second.
 const HNS: u64 = 10_000_000;
 
-/// An encoder on a thread of its own, where Media Foundation lives.
+/// An encoder whose Media Foundation objects live on a thread of their own.
 struct MediaFoundation {
     work: Option<Sender<Work>>,
 }
 
-/// What the encoder's thread is handed: a picture, with what tells the encoder it has room for
-/// another; or the end.
+/// Work for the encoder's thread: a picture, whose `room` resolves once the encoder can take
+/// another; or the request to finish.
 enum Work {
     Picture { nv12: Vec<u8>, time: u64, key: bool, room: Resolver<Vec<Unit>> },
     Finish(Resolver<Vec<Unit>>),
 }
 
-/// An encoder for pictures as `encoding` says: the machine's hardware encoder where one starts, else
-/// Windows' software encoder.
+/// An encoder for `encoding`: the machine's hardware encoder if one starts, else Windows' software
+/// encoder.
 pub(super) fn encoder(encoding: &Encoding) -> Result<Box<dyn Encoder>> {
     open(*encoding, &[hardware(), software()]).map(|e| Box::new(e) as Box<dyn Encoder>)
 }
@@ -66,7 +66,8 @@ fn software() -> MFT_ENUM_FLAG {
     MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER
 }
 
-/// An encoder from the first transform of `kinds`, in order, that starts.
+/// Opens an encoder with the first transform of `kinds`, tried in order, that starts. Times out if
+/// starting takes longer than [`STALL`].
 fn open(encoding: Encoding, kinds: &[MFT_ENUM_FLAG]) -> Result<MediaFoundation> {
     let (started, ready) = mpsc::channel();
     let (work, pictures) = mpsc::channel();
@@ -104,9 +105,9 @@ impl Encoder for MediaFoundation {
     }
 }
 
-/// The encoder's thread: starts Media Foundation and the transform, then encodes what it is handed
-/// until it finishes or the encoder is dropped. Taking a picture tells there is room for another,
-/// with the units finished before it; after an error, every picture is answered with it.
+/// The encoder's thread. It starts Media Foundation and the transform, then encodes pictures until
+/// told to finish or the encoder is dropped. Taking a picture resolves its `room` with the units
+/// finished before it. After an error, every later picture resolves with that error.
 fn run(encoding: Encoding, kinds: &[MFT_ENUM_FLAG], started: &Sender<Result<()>>, work: &Receiver<Work>) {
     let session = match Session::new() {
         Ok(session) => session,
@@ -155,12 +156,12 @@ fn run(encoding: Encoding, kinds: &[MFT_ENUM_FLAG], started: &Sender<Result<()>>
     drop(session);
 }
 
-/// A failed Media Foundation call, named.
+/// The error for a failed Media Foundation call, naming the call.
 fn failed(call: &str, error: &windows::core::Error) -> Error {
-    Error::Unsupported(format!("the Media Foundation encoder's {call}: {error}").into())
+    Error::Unsupported(format!("the Media Foundation encoder's {call} failed: {error}").into())
 }
 
-/// COM and Media Foundation, started on this thread and shut down with it.
+/// COM and Media Foundation, started on the current thread and shut down when the session drops.
 struct Session {
     media: bool,
 }
@@ -179,7 +180,7 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // SAFETY: every transform, sample, and buffer of this thread was released before.
+        // SAFETY: every transform, sample, and buffer on this thread was already released.
         unsafe {
             if self.media {
                 let _ = MFShutdown();
@@ -189,25 +190,27 @@ impl Drop for Session {
     }
 }
 
-/// One H.264 encoder transform, streaming.
+/// One streaming H.264 encoder transform.
 struct Transform {
     activate: IMFActivate,
     mft: IMFTransform,
     codec: Option<ICodecAPI>,
-    /// An asynchronous transform's events: hardware encoders are asynchronous.
+    /// An asynchronous transform's events. Hardware encoders are asynchronous.
     events: Option<Events>,
-    /// Inputs an asynchronous transform asked for and was not given.
+    /// Inputs an asynchronous transform requested and has not yet received.
     wanted: u32,
     input: u32,
     output: u32,
-    /// Whether the transform makes its output samples; else, how large a buffer it takes.
+    /// Whether the transform allocates its output samples. If not, `output_size` is the size of
+    /// the buffer to allocate.
     provides: bool,
     output_size: u32,
-    /// The times of the pictures given and not yet encoded, in order: no B-frames reorder them.
+    /// Times of pictures given but not yet encoded, in order. Without B-frames, output order
+    /// matches input order.
     times: VecDeque<u64>,
-    /// The SPS and PPS, Annex B, for keyframes that leave them out.
+    /// The SPS and PPS in Annex B, added to keyframes that lack them.
     header: Vec<u8>,
-    /// Parameter sets the transform gave as units of their own, for the next picture.
+    /// Parameter sets the transform output as separate units, prepended to the next picture.
     prefix: Vec<u8>,
     encoding: Encoding,
 }
@@ -260,7 +263,7 @@ impl Transform {
                 (transform.input, transform.output) = (inputs[0], outputs[0]);
             }
             if let Some(codec) = &transform.codec {
-                // What an encoder cannot set it does without: these only shape its output.
+                // Settings an encoder rejects are skipped; they only tune its output.
                 let gop = (encoding.fps * KEYFRAMES).round().max(1.0) as u32;
                 let rate = eAVEncCommonRateControlMode_UnconstrainedVBR.0 as u32;
                 for (api, value) in [
@@ -284,7 +287,7 @@ impl Transform {
             transform.mft.SetOutputType(transform.output, &output, 0).map_err(|e| {
                 if e.code() == MF_E_INVALIDMEDIATYPE {
                     Error::Unsupported(
-                        format!("this H.264 encoder takes no {width}×{height} pictures at {num}/{den} fps").into(),
+                        format!("this H.264 encoder rejects {width}×{height} pictures at {num}/{den} fps").into(),
                     )
                 } else {
                     failed("SetOutputType", &e)
@@ -306,7 +309,7 @@ impl Transform {
         }
     }
 
-    /// The NV12 input type: the transform's own where it offers one, else a type of ours.
+    /// The NV12 input type: the one the transform offers, if any, else one built here.
     fn input_type(&self, width: u32, height: u32, num: u32, den: u32) -> Result<IMFMediaType> {
         // SAFETY: owned COM handles only.
         unsafe {
@@ -327,7 +330,7 @@ impl Transform {
         }
     }
 
-    /// Whether the transform makes its own output samples, and how large ours must be otherwise.
+    /// Reads whether the transform allocates its output samples, and the buffer size otherwise.
     fn output_info(&mut self) -> Result<()> {
         // SAFETY: owned COM handles only.
         let info =
@@ -338,8 +341,8 @@ impl Transform {
         Ok(())
     }
 
-    /// Encodes one NV12 picture at `time` ticks, a keyframe when `key`: the units the transform
-    /// finished meanwhile.
+    /// Encodes one NV12 picture at `time` ticks, as a keyframe when `key`. Returns the units the
+    /// transform finished meanwhile.
     fn encode(&mut self, nv12: &[u8], time: u64, key: bool) -> Result<Vec<Unit>> {
         let sample = self.sample(nv12, time)?;
         if key && let Some(codec) = &self.codec {
@@ -355,7 +358,7 @@ impl Transform {
             }
             self.wanted -= 1;
             self.input(&sample)?;
-            // Whatever it told meanwhile: outputs ready, and inputs wanted.
+            // Handle the events queued meanwhile: outputs ready and inputs requested.
             while self.event(false, &mut units)? {}
         } else {
             let started = Instant::now();
@@ -372,7 +375,7 @@ impl Transform {
         Ok(units)
     }
 
-    /// The units the transform still holds once every picture given is encoded.
+    /// Drains the transform, returning its remaining units once every picture given is encoded.
     fn finish(&mut self) -> Result<Vec<Unit>> {
         let mut units = Vec::new();
         // SAFETY: plain messages to an owned transform.
@@ -396,14 +399,15 @@ impl Transform {
         Ok(units)
     }
 
-    /// Gives a synchronous transform `sample`, or an asynchronous one that asked for it.
+    /// Passes `sample` to the transform. An asynchronous transform must have requested input.
     fn input(&self, sample: &IMFSample) -> Result<()> {
         // SAFETY: an owned sample, borrowed for the call.
         unsafe { self.mft.ProcessInput(self.input, sample, 0) }.map_err(|e| failed("ProcessInput", &e))
     }
 
-    /// Handles the asynchronous transform's next event, waiting for it, up to the stall, when `wait`:
-    /// an input wanted is counted, an output ready is taken into `units`. Whether there was one.
+    /// Handles the asynchronous transform's next event, waiting up to [`STALL`] when `wait`. An
+    /// input request is counted, and a ready output is taken into `units`. Returns whether there
+    /// was an event.
     fn event(&mut self, wait: bool, units: &mut Vec<Unit>) -> Result<bool> {
         let events = self.events.as_mut().expect("an asynchronous transform");
         match events.next(wait)? {
@@ -421,12 +425,12 @@ impl Transform {
         Ok(())
     }
 
-    /// Takes the output an asynchronous transform said it has.
+    /// Takes the output an asynchronous transform reported ready.
     fn drain_one(&mut self, units: &mut Vec<Unit>) -> Result<()> {
         self.output(units).map(|_| ())
     }
 
-    /// Takes one output into `units`: whether there was one, rather than a want of input.
+    /// Takes one output into `units`. Returns `false` if the transform needs more input instead.
     fn output(&mut self, units: &mut Vec<Unit>) -> Result<bool> {
         for _ in 0..4 {
             let sample = if self.provides { None } else { Some(empty(self.output_size)?) };
@@ -437,7 +441,7 @@ impl Transform {
                 pEvents: ManuallyDrop::new(None),
             };
             let mut status = 0;
-            // SAFETY: the buffer's sample and events are taken back below, whatever the result.
+            // SAFETY: the buffer's sample and events are taken back below, on success or failure.
             let result = unsafe { self.mft.ProcessOutput(0, std::slice::from_mut(&mut buffer), &raw mut status) };
             let sample = unsafe { ManuallyDrop::take(&mut buffer.pSample) };
             drop(unsafe { ManuallyDrop::take(&mut buffer.pEvents) });
@@ -454,7 +458,8 @@ impl Transform {
                         self.mft.SetOutputType(self.output, &changed, 0).map_err(|e| failed("SetOutputType", &e))?;
                         self.output_info()?;
                     }
-                    // An asynchronous transform says when the output is ready in its new type.
+                    // An asynchronous transform sends another event once output in the new type is
+                    // ready.
                     if self.events.is_some() {
                         return Ok(true);
                     }
@@ -462,11 +467,11 @@ impl Transform {
                 }
                 Err(e) => return Err(failed("ProcessOutput", &e)),
             }
-            let Some(sample) = sample else { return Err(Error::Io("the encoder gave no sample".into())) };
+            let Some(sample) = sample else { return Err(Error::Io("the encoder returned no sample".into())) };
             let bytes = bytes(&sample)?;
             let types: Vec<u8> = nals(&bytes).map(|nal| nal[0] & 0x1f).collect();
             if !types.iter().any(|t| (1..=5).contains(t)) {
-                // Parameter sets alone: they lead the next picture.
+                // Only parameter sets: prepend them to the next picture.
                 self.prefix.extend_from_slice(&bytes);
                 return Ok(true);
             }
@@ -476,14 +481,14 @@ impl Transform {
                 annex_b.extend_from_slice(&self.header);
             }
             annex_b.extend_from_slice(&bytes);
-            let time = self.times.pop_front().ok_or_else(|| Error::Io("the encoder gave more than given".into()))?;
+            let time = self.times.pop_front().ok_or_else(|| Error::Io("the encoder returned extra pictures".into()))?;
             units.push(Unit { time, key, annex_b });
             return Ok(true);
         }
-        Err(Error::Io("the encoder kept changing its output".into()))
+        Err(Error::Io("the encoder kept changing its output type".into()))
     }
 
-    /// A sample of NV12 `bytes` showing at `time` ticks for a frame's duration.
+    /// A sample of NV12 `bytes` at `time` ticks, lasting one frame.
     fn sample(&self, bytes: &[u8], time: u64) -> Result<IMFSample> {
         let length = u32::try_from(bytes.len()).map_err(|_| Error::invalid("the picture is too large to encode"))?;
         let sample = empty(length)?;
@@ -517,12 +522,12 @@ fn empty(length: u32) -> Result<IMFSample> {
 
 impl Drop for Transform {
     fn drop(&mut self) {
-        // SAFETY: an asynchronous transform is shut down through what activated it, once.
+        // SAFETY: the transform is shut down once, through the activation object that created it.
         let _ = unsafe { self.activate.ShutdownObject() };
     }
 }
 
-/// The transforms encoding NV12 into H.264 of `kind`, the best first.
+/// The transforms of `kind` that encode NV12 into H.264, best first.
 fn activates(kind: MFT_ENUM_FLAG) -> Result<Vec<IMFActivate>> {
     let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
     let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
@@ -549,7 +554,8 @@ fn activates(kind: MFT_ENUM_FLAG) -> Result<Vec<IMFActivate>> {
     }
 }
 
-/// Sets what a picture is on `kind`: its size and rate, progressive, square pixels, BT.709 limited.
+/// Sets the picture format on media type `kind`: size, frame rate, progressive, square pixels, and
+/// BT.709 limited range.
 fn picture(kind: &IMFMediaType, width: u32, height: u32, num: u32, den: u32) -> Result<()> {
     // SAFETY: owned COM handles, values borrowed for each call.
     unsafe {
@@ -568,7 +574,8 @@ fn picture(kind: &IMFMediaType, width: u32, height: u32, num: u32, den: u32) -> 
     Ok(())
 }
 
-/// The SPS and PPS the transform's output type carries, Annex B; none where it carries them in band.
+/// The SPS and PPS in Annex B from the transform's output type. Empty if the type has no Annex B
+/// sequence header, in which case they come in band.
 fn header(mft: &IMFTransform, output: u32) -> Vec<u8> {
     // SAFETY: owned COM handles; the blob is copied into a buffer of its size.
     unsafe {
@@ -582,12 +589,12 @@ fn header(mft: &IMFTransform, output: u32) -> Vec<u8> {
     }
 }
 
-/// An asynchronous transform's events, told as they come to the callback each request names.
+/// Events from an asynchronous transform, delivered to the callback passed with each request.
 struct Events {
     generator: IMFMediaEventGenerator,
     callback: IMFAsyncCallback,
     told: Receiver<windows::core::Result<u32>>,
-    /// Whether an event was asked for and not yet told.
+    /// Whether an event was requested and has not yet arrived.
     asked: bool,
 }
 
@@ -598,8 +605,8 @@ impl Events {
         Events { generator, callback, told, asked: false }
     }
 
-    /// The type of the next event: waiting for it up to the stall when `wait`, else `None` while
-    /// none was told.
+    /// The type of the next event. With `wait`, waits up to [`STALL`] and errors on timeout.
+    /// Otherwise returns `None` if no event has arrived.
     fn next(&mut self, wait: bool) -> Result<Option<u32>> {
         if !self.asked {
             // SAFETY: owned COM handles; the callback outlives the request it answers.
@@ -619,9 +626,9 @@ impl Events {
     }
 }
 
-/// What a transform tells its next event to: a COM object of ours, as `windows::core::implement`
-/// writes one.
-#[allow(clippy::ref_as_ptr, clippy::inline_always, reason = "what windows::core::implement writes")]
+/// The callback a transform sends its next event to: a COM object generated by
+/// `windows::core::implement`.
+#[allow(clippy::ref_as_ptr, clippy::inline_always, reason = "code generated by windows::core::implement")]
 mod tell {
     use std::sync::mpsc::Sender;
 
@@ -637,7 +644,7 @@ mod tell {
 
     impl IMFAsyncCallback_Impl for Tell_Impl {
         fn GetParameters(&self, _: *mut u32, _: *mut u32) -> windows::core::Result<()> {
-            // E_NOTIMPL: the default work queue calls back.
+            // E_NOTIMPL: call back on the default work queue.
             Err(windows::core::Error::from_hresult(windows::core::HRESULT(0x8000_4001_u32 as i32)))
         }
 
@@ -701,16 +708,16 @@ mod tests {
         assert!(units[0].key, "the first is a keyframe");
         let first: Vec<u8> = nals(&units[0].annex_b).map(|nal| nal[0] & 0x1f).collect();
         assert!(first.contains(&7) && first.contains(&8), "the first keyframe carries its parameter sets: {first:?}");
-        assert!(units[6].key, "a keyframe where asked");
+        assert!(units[6].key, "a keyframe where requested");
     }
 
     #[test]
-    fn the_software_encoder_gives_a_unit_a_picture() {
+    fn the_software_encoder_returns_a_unit_per_picture() {
         encodes_a_short_video(&[software()]);
     }
 
     #[test]
-    fn the_hardware_encoder_gives_a_unit_a_picture() {
+    fn the_hardware_encoder_returns_a_unit_per_picture() {
         encodes_a_short_video(&[hardware()]);
     }
 }

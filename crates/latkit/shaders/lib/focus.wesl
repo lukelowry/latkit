@@ -1,5 +1,5 @@
-// Selection and hover: one word of bits per held row, in pages the page table at `mark.focus` lists;
-// and how present a row is while its mark eases.
+// Selection and hover: one word of focus bits per held row, in pages listed by the page table at
+// `mark.focus`. Also how much of a row shows during a transition.
 
 import package::lib::types::{SELECTED, HOVERED, FADE_IN, FADE_OUT};
 import package::lib::bind::{frame, mark, word};
@@ -21,7 +21,7 @@ fn is_hovered(row: u32) -> bool {
     return (focus_of(row) & HOVERED) != 0u;
 }
 
-// How much of a row shows while its mark eases: rows appearing fade in, rows leaving fade out.
+// A row's opacity factor during a transition: appearing rows fade in, leaving rows fade out.
 fn presence(flags: u32) -> f32 {
     if (flags & FADE_IN) != 0u {
         return mark.motion;
@@ -32,8 +32,8 @@ fn presence(flags: u32) -> f32 {
     return 1.0;
 }
 
-// How large a row shows while its mark eases: rows appearing grow from nothing. Draws grow them, so
-// a mark whose rows only appear evaluates once.
+// A row's scale factor during a transition: appearing rows grow from nothing. Draws apply it, so a
+// mark whose rows only appear evaluates once.
 fn growth(flags: u32) -> f32 {
     return select(1.0, mark.motion, (flags & FADE_IN) != 0u);
 }

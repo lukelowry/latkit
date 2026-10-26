@@ -1,10 +1,10 @@
-//! What a mark keeps per row, in pages of the arena: for each page of held rows, a block of each kind
-//! of words it keeps, holding as many rows as the page has. A row's state is its kind words then its
-//! extra words; beside it are its focus word, its label's candidate, the normals faces sum at a vertex,
-//! and while the mark eases, its state as it showed when the transition began and as it settles. A
-//! page keeps its blocks while the mark holds rows there, so rows keep their words as the camera moves
-//! and nothing moves as a mark holds more rows; every kind is counted in the GPU's budget with the
-//! data.
+//! A mark's per-row words, in pages of the arena. For each page of held rows, the mark has one
+//! arena block per kind of words, sized for the page's rows. A row's state is its kind words, then
+//! its extra words. Beside the state are the row's focus word, its label candidate, the normals
+//! faces sum at a vertex, and while the mark eases, its frozen state (as shown when the transition
+//! began) and its settled state. A page keeps its blocks while the mark holds rows there, so rows
+//! keep their words as the camera moves, and holding more rows moves none. Every kind counts toward
+//! the GPU budget along with the data.
 
 use std::sync::Arc;
 
@@ -25,16 +25,15 @@ pub(crate) enum Kept {
 const KINDS: [Kept; 6] = [Kept::State, Kept::Focus, Kept::Candidates, Kept::Normals, Kept::Frozen, Kept::Settled];
 
 impl Kept {
-    /// Whether a page of it is cleared as it is handed out: where it is read before anything writes
-    /// it. A row's state starts over as evaluation first writes it, its frozen words as a transition
-    /// freezes them, and the normals faces sum as they sum them afresh.
+    /// Whether a new block of this kind is cleared on allocation, because something reads it before
+    /// anything writes it. State and frozen words need no clearing, since evaluation and freezing
+    /// write them first, and normals are cleared before each sum.
     fn cleared(self) -> bool {
         matches!(self, Kept::Focus | Kept::Candidates | Kept::Settled)
     }
 }
 
-/// One kind's pages: the words each row takes, and each page's block in the arena and the words it
-/// holds.
+/// One kind's pages: the words per row, and each page's arena block and its size in words.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Pages {
     pub(crate) width: u32,
@@ -52,7 +51,8 @@ impl Default for Pages {
 #[derive(Default)]
 pub(crate) struct Words {
     pages: [Pages; KINDS.len()],
-    /// The state's pages before this frame changed them, while the frame is done with what they held.
+    /// The state pages from before this frame changed them, kept until the frame is recorded: a
+    /// transition starting this frame freezes rows from them.
     before: Option<Pages>,
 }
 
@@ -61,20 +61,20 @@ impl Words {
         &self.pages[kept as usize]
     }
 
-    /// The state's pages as the frame began: what a transition starting freezes rows from.
+    /// The state pages as the frame began, which a starting transition freezes rows from.
     pub(crate) fn state_before(&self) -> &Pages {
         self.before.as_ref().unwrap_or(&self.pages[Kept::State as usize])
     }
 
-    /// Forgets the state's pages as the frame began, once the frame is recorded.
+    /// Drops the frame-start state pages once the frame is recorded.
     pub(crate) fn settle(&mut self) {
         self.before = None;
     }
 
-    /// Fits `kept`'s pages to hold `rows[p]` rows on page `p`, of `width` words each, or none at
-    /// `width` 0: a page whose block cannot hold its rows takes a new block, as every page does where a
-    /// row's words changed width; blocks it no longer has are let go. The pages given new blocks, whose
-    /// words start over; `None` where the arena has no room for them now, and nothing changed.
+    /// Fits `kept`'s pages to hold `rows[p]` rows on page `p`, at `width` words per row; `width` 0
+    /// frees them all. A page whose block is too small gets a new block, as does every page when
+    /// the width changes. Blocks no longer used are freed. Returns the pages given new blocks,
+    /// whose words start over, or `None` (with nothing changed) when the arena has no room now.
     pub(crate) fn fit(
         &mut self,
         kept: Kept,
@@ -123,7 +123,7 @@ impl Words {
         Some(new)
     }
 
-    /// Lets go of every page, as a mark does when it goes.
+    /// Frees every page, as when the mark is removed.
     pub(crate) fn release(&mut self, arena: &mut Arena) {
         for kept in KINDS {
             let pages = std::mem::take(&mut self.pages[kept as usize]);
@@ -134,7 +134,7 @@ impl Words {
         self.before = None;
     }
 
-    /// The page tables the program holds: each kind it keeps, and its blocks.
+    /// The page tables the program buffer holds: each kind the mark keeps, with its blocks.
     pub(crate) fn tables(&self) -> impl Iterator<Item = (Kept, &[u32])> {
         KINDS
             .into_iter()

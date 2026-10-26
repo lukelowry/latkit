@@ -1,14 +1,18 @@
-//! A diagram's sheet: where every vertex row stands and how large it is, the boxes groups draw
-//! around their members, and the paths wires run along, in units with y down. It is made from the
-//! data and the scene alone, never from what was drawn, so the camera, hover, and motion never
-//! change it. Places persist by row, so adding a row moves nothing else, and a row that loses its
-//! position stays where it stood; layouts place only rows without one, until arranging lays every
-//! row out again, and a wire routes again only when its terminals move or a box near it changes.
-//! Superlinear work too large for the frame (layouts, many routes) is a host job answering with a
-//! patch. The sheet is a derivation: it writes a table beside each table it draws, row for row,
-//! which marks read like data. An edit of the values rows are sized and placed by derives only the
-//! rows it wrote and what they reach: their boxes, the groups around them, and the wires they move.
+//! A diagram's sheet: each vertex row's place and size, group boxes around their members, and
+//! wire paths, in units with y down.
+//!
+//! The sheet depends only on the data and the scene, never on what was drawn, so the camera,
+//! hover, and motion never change it. Places persist by row: adding a row moves nothing else, and
+//! a row that loses its position stays where it was. Layouts place only rows without a place until
+//! `arrange` lays out every row without a position again. A wire routes again only when its
+//! terminals move or a box near it changes. Superlinear work too large for the frame (layouts,
+//! many routes) runs as a host job that answers with a patch.
+//!
+//! The sheet is a derivation: it writes a table beside each table it draws, row for row, which
+//! marks read like data. An edit of the values that size and place rows recomputes only the rows
+//! it wrote and what they affect: their boxes, the groups around them, and the wires they move.
 
+mod groups;
 mod wires;
 
 use std::hash::{Hash, Hasher};
@@ -26,51 +30,51 @@ use crate::layout::boxes::Boxes;
 use crate::layout::rect::{EMPTY, Rect, around, union, valid};
 use crate::{Layout, Marker, Pending, Shape, Side, Theme, Vertices};
 
-/// Texts measured past which the sheet forgets them all.
+/// The number of measured texts beyond which the sheet clears its measurement cache.
 const MEASURED: usize = 1 << 16;
 
 /// The sheet of a diagram's view.
 #[derive(Default)]
 pub(crate) struct Sheet {
-    /// Failures to tell: texts its host could not measure.
+    /// Errors to report: texts the host could not measure.
     errors: Vec<crate::Error>,
     /// The derived table beside each table it draws.
     tables: Tables,
-    /// Places layouts gave rows without positions, kept by row, also after a row leaves, so undo
+    /// Places layouts gave rows without positions, by row. Kept after a row is removed, so undo
     /// puts it back where it was.
     places: FxHashMap<Row, [f64; 2]>,
-    /// Each orthogonal wire's route, by edge row, and those due to route again.
+    /// Each orthogonal wire's route, by edge row, and the rows due to route again.
     routes: wires::Routes,
-    /// The size each run of text takes, as its host measured it.
+    /// The size of each text run, as the host measured it.
     measured: FxHashMap<TextRun, [f64; 2]>,
-    /// The box of every placed vertex row the last update made: what a change moved.
+    /// The box of every placed vertex row as of the last update, to find the boxes a change moved.
     boxes: FxHashMap<Row, [f64; 4]>,
-    /// Every vertex's box, y up, as routing avoids it, none for a group: refit as vertices move.
+    /// Each vertex's routing-obstacle box, y up (`EMPTY` for a group), refit as vertices move.
     blocks: Boxes,
-    /// The groups' boxes, y up, which wires cross at a cost.
-    groups: Vec<Rect>,
-    /// What the derived tables were last made from.
+    /// The groups, refit as their members move.
+    groups: groups::Groups,
+    /// The stamp the derived tables were last made from.
     stamp: u64,
-    /// Bumps when places start over, so layouts asked before are dropped.
+    /// Bumps when places start over, so answers to earlier layouts are dropped.
     generation: u64,
-    /// Whether every row without a position is to be laid out again, standing where it is until
-    /// the layout answers.
+    /// Whether every row without a position is to be laid out again. Rows stay where they are
+    /// until the layout answers.
     arranging: bool,
-    /// What the last arranging laid out, until the view takes it.
+    /// The result of the last arrange, until the view takes it.
     arranged: Option<Vec<(Row, [f64; 2])>>,
-    /// The layout places were made by.
+    /// The layout the places were made with.
     layout: Option<Layout>,
     placing: Option<Placing>,
     routing: Option<wires::Routing>,
-    /// Bumps whenever an answer lands.
+    /// Bumps whenever an answer arrives.
     landed: u64,
-    /// What the last update drew, which an edit derives from.
+    /// The state of the last draw, which an edit updates incrementally.
     drawn: Option<Drawn>,
 }
 
-/// What the sheet last drew: every vertex row as it stood, what wiring keeps, what the structure of
-/// the marks read, and a stamp of the scene, the host, the answers landed, and the generation of
-/// places it was drawn from.
+/// The sheet's last drawn state: every vertex row, the wiring state, the marks' structure inputs,
+/// and a stamp of the scene version, whether there is a host, the answers received, and the
+/// places generation.
 struct Drawn {
     vertices: Vec<Vertex>,
     wired: wires::Wired,
@@ -78,36 +82,38 @@ struct Drawn {
     from: u64,
 }
 
-/// What the structure of the marks read when the sheet was drawn: a table's rows, or a field.
+/// An input to the marks' structure as of the last draw: a table's rows, or a field.
 enum Seen {
     Rows { key: (Name, Name), structure: Version, order: Version },
     Field { key: (Name, Name, Name), field: Option<Box<Field>> },
 }
 
-/// A layout under way: the generation of places it was asked in, and the row each key it answers
-/// for names.
+/// A pending layout job: the places generation it was started in, and the row each answer key
+/// names.
 struct Placing {
     pending: Pending<Vec<u8>>,
     generation: u64,
     rows: FxHashMap<Key, Row>,
 }
 
-// A vertex row of the diagram.
+/// A vertex row of the diagram.
 pub(crate) struct Vertex {
-    /// The vertex mark drawing it.
+    /// The index of the vertex mark drawing it.
     pub(crate) mark: usize,
     pub(crate) key: Row,
-    /// Half its width and height, units; a group's while it holds nothing placed.
+    /// Half its width and height, in units. For a group, its size when it holds nothing placed.
     pub(crate) half: [f64; 2],
     /// The position its data gives it.
     pub(crate) pin: Option<[f64; 2]>,
     /// Its box, least x and y then greatest, once it has a place.
     pub(crate) bounds: Option<[f64; 4]>,
-    /// The group holding it, and how many groups hold it.
+    /// The group holding it, by vertex index.
     pub(crate) parent: Option<usize>,
+    /// How many groups hold it.
     pub(crate) depth: u32,
-    /// Whether it is a group, and how many rows it holds.
+    /// Whether it is a group.
     pub(crate) group: bool,
+    /// As a group, how many rows it directly holds.
     pub(crate) members: u32,
     pub(crate) shape: Shape,
 }
@@ -119,7 +125,7 @@ impl Vertex {
 }
 
 impl Derive for Sheet {
-    /// Brings the sheet up to `input`, writing each drawn table's derived table.
+    /// Updates the sheet to `input`, writing each drawn table's derived table.
     fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool {
         if self.layout != Some(input.scene.layout) {
             if self.layout.is_some() {
@@ -128,7 +134,7 @@ impl Derive for Sheet {
             self.layout = Some(input.scene.layout);
         }
         let mut changed = false;
-        // A job its host does at once is taken before the frame draws.
+        // Repeat so a job the host finishes at once is taken before the frame draws.
         for _ in 0..4 {
             self.settle();
             let stamp = stamp(input, self.landed, self.generation);
@@ -142,7 +148,7 @@ impl Derive for Sheet {
         changed
     }
 
-    /// Whether a layout or routes are under way.
+    /// Whether a layout or routing job is pending.
     fn busy(&self) -> bool {
         self.placing.is_some() || self.routing.is_some()
     }
@@ -151,8 +157,8 @@ impl Derive for Sheet {
         &self.tables
     }
 
-    /// Forgets the tables but keeps places and routes: a scene that is a diagram again finds its rows
-    /// where they stood.
+    /// Drops the tables but keeps places and routes, so when the scene is a diagram again, rows
+    /// return to where they were.
     fn clear(&mut self) {
         self.tables.clear();
         self.drawn = None;
@@ -165,13 +171,13 @@ impl Derive for Sheet {
 }
 
 impl Sheet {
-    /// Whether a layout is under way, which a fit waits for.
+    /// Whether a layout job is pending; a fit waits for it.
     pub(crate) fn placing(&self) -> bool {
         self.placing.is_some()
     }
 
-    /// Lays every row without a position out again; until the layout answers, rows stand where they
-    /// are.
+    /// Lays out every row without a position again. Rows stay where they are until the layout
+    /// answers.
     pub(crate) fn arrange(&mut self) {
         self.arranging = true;
         self.placing = None;
@@ -179,27 +185,28 @@ impl Sheet {
         self.stamp = 0;
     }
 
-    /// What the last arranging laid out, once it landed: each row placed, and where, units with y
-    /// down.
+    /// Takes the result of the last `arrange` once it arrives: each row laid out and its position,
+    /// in units with y down.
     pub(crate) fn take_arranged(&mut self) -> Option<Vec<(Row, [f64; 2])>> {
         self.arranged.take()
     }
 
-    /// Row `row`'s box, units with y down, once it has one.
+    /// Row `row`'s box, in units with y down, once it has one.
     pub(crate) fn bounds(&self, row: &Row) -> Option<[f64; 4]> {
         self.boxes.get(row).copied()
     }
 
-    /// The box holding every placed vertex and every wire, units with y down, once anything is placed:
-    /// the boxes of its blocks, its groups, and its wires, as it keeps them.
+    /// The box around every placed vertex and every wire, in units with y down; `None` until
+    /// something is placed. Read from the indexes the sheet keeps of blocks, groups, and wires.
     pub(crate) fn extent(&self) -> Option<[f64; 4]> {
         let wires = self.drawn.as_ref()?.wired.extent();
-        let up = self.groups.iter().fold(self.blocks.extent(), |extent, &group| union(extent, group));
+        let up = union(self.blocks.extent(), self.groups.extent());
         let extent = union([up[0], -up[3], up[2], -up[1]], wires);
         valid(&extent).then_some(extent)
     }
 
-    /// Takes the answers that landed: places asked in the current generation, and routes.
+    /// Takes the answers of finished jobs: a layout's places, if it was started in the current
+    /// generation, and routes.
     fn settle(&mut self) {
         if let Some(answer) = self.placing.as_ref().and_then(|p| p.pending.take()) {
             let placing = self.placing.take().expect("a layout under way");
@@ -209,7 +216,7 @@ impl Sheet {
                     if let (Some(row), [Some(Value::Number(x)), Some(Value::Number(y))]) =
                         (placing.rows.get(&key), &values[..])
                     {
-                        // Layouts lay out with y up.
+                        // Layouts are y up; the sheet is y down.
                         self.places.insert(row.clone(), [*x, -*y]);
                         placed.push((row.clone(), [*x, -*y]));
                     }
@@ -229,8 +236,9 @@ impl Sheet {
         }
     }
 
-    /// Makes the derived tables again: sizes, places, group boxes, then wires. After an edit of only
-    /// values rows are sized and placed by, each by its own row's, only what the rows it wrote reach.
+    /// Rebuilds the derived tables: sizes, places, group boxes, then wires. After an edit that only
+    /// changed values sizing or placing rows (each by its own row's value), it redraws only what
+    /// the written rows affect.
     fn build(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) {
         let marks = marks(input);
         let from = stamp_of((input.scene_version, input.host.is_some(), self.landed, self.generation));
@@ -253,9 +261,9 @@ impl Sheet {
         for v in vertices.iter_mut().filter(|v| !v.group) {
             self.stand(v);
         }
-        stand_groups(&mut vertices, &self.places, &header, padding);
+        let framing = groups::Framing { header: &header, padding, places: &self.places };
+        self.groups = groups::Groups::new(&mut vertices, &framing);
         self.blocks = Boxes::new(vertices.iter().map(obstacle).collect());
-        self.groups = groups(&vertices);
         self.place(&vertices, vertex_marks, edge_marks, &header, padding, input, jobs);
         let moved = wires::moved(&self.boxes, &vertices);
         let mut drawn = Drawn { vertices, wired: wires::Wired::default(), reads: Vec::new(), from: 0 };
@@ -265,8 +273,8 @@ impl Sheet {
         drawn
     }
 
-    /// Draws again what an edit reaches: the rows `touched` sized and placed again, the groups around
-    /// them, and the wires meeting them or near what they moved.
+    /// Redraws what an edit affects: sizes and places rows `touched` again, refits the groups
+    /// around them, and recomputes the wires meeting them or near the boxes they moved.
     fn redraw(
         &mut self,
         mut drawn: Drawn,
@@ -289,7 +297,7 @@ impl Sheet {
                 self.stand(vertex);
             }
         }
-        // The boxes the edit moved, added, or took away among the blocks wires route around.
+        // The block boxes the edit moved, added, or removed, which wires route around.
         let mut moved = Vec::new();
         for (&v, &was) in touched.iter().zip(&before) {
             let vertex = &drawn.vertices[v];
@@ -297,22 +305,18 @@ impl Sheet {
                 moved.extend(was.into_iter().chain(vertex.bounds));
             }
         }
-        // Groups stand around their members again; a group that moved is touched too.
-        if touched.iter().any(|&v| drawn.vertices[v].group || drawn.vertices[v].parent.is_some()) {
-            let groups: Vec<(usize, Option<Rect>)> =
-                drawn.vertices.iter().enumerate().filter(|(_, v)| v.group).map(|(g, v)| (g, v.bounds)).collect();
-            stand_groups(&mut drawn.vertices, &self.places, &header, padding);
-            touched.extend(groups.into_iter().filter(|&(g, was)| drawn.vertices[g].bounds != was).map(|(g, _)| g));
+        // Refit the groups above the touched rows; a group whose box changed counts as touched.
+        let framing = groups::Framing { header: &header, padding, places: &self.places };
+        let regrouped = self.groups.refit(&mut drawn.vertices, &touched, &framing);
+        if !regrouped.is_empty() {
+            touched.extend(regrouped);
             touched.sort_unstable();
             touched.dedup();
         }
         for &v in &touched {
             self.blocks.set(v, obstacle(&drawn.vertices[v]));
         }
-        if touched.iter().any(|&v| drawn.vertices[v].group) {
-            self.groups = groups(&drawn.vertices);
-        }
-        // A layout places only rows without a place: an edit asks for one only where it took one away.
+        // Layouts place only rows without a place, so start one only if the edit removed a place.
         if touched.iter().any(|&v| drawn.vertices[v].bounds.is_none()) {
             self.place(&drawn.vertices, vertex_marks, edge_marks, &header, padding, input, jobs);
         }
@@ -331,8 +335,8 @@ impl Sheet {
         drawn
     }
 
-    /// Stands vertex `v`, not a group, where its data or a layout places it. A row that lost its
-    /// position keeps standing where it stood.
+    /// Places vertex `v` (not a group) where its data or a layout puts it. A row that lost its
+    /// position stays where it was.
     fn stand(&mut self, v: &mut Vertex) {
         if v.pin.is_none()
             && !self.places.contains_key(&v.key)
@@ -343,7 +347,7 @@ impl Sheet {
         v.bounds = v.pin.or_else(|| self.places.get(&v.key).copied()).map(|center| around(center, v.half));
     }
 
-    /// Works out the wires `change` reaches; the edge rows worked out, by edge mark.
+    /// Computes the wires `change` affects. Returns the edge rows computed, by edge mark.
     fn wire(
         &mut self,
         drawn: &mut Drawn,
@@ -358,7 +362,7 @@ impl Sheet {
             marks: vertex_marks,
             edges: edge_marks,
             blocks: &self.blocks,
-            groups: &self.groups,
+            groups: self.groups.boxes(),
             spacing: f64::from(theme.edge.spacing),
             bend: f64::from(theme.diagram.bend),
             port: f64::from(theme.diagram.port_size),
@@ -391,8 +395,9 @@ impl Sheet {
         vertices
     }
 
-    /// Half the width and height of `vm`'s row `row`, units: its size, its radius, or with neither a
-    /// box fitting its label and ports. A group's is what it takes holding nothing: its title.
+    /// Half the width and height of `vm`'s row `row`, in units: from its size, its radius, or else
+    /// a box fitting its label and ports. A group's is its size when it holds nothing: room for its
+    /// title.
     fn half(&mut self, vm: &VertexMark<'_>, rows: &Rows<'_>, row: usize, input: &Input<'_>) -> [f64; 2] {
         let theme = &input.scene.theme;
         let radius = f64::from(theme.vertex.radius);
@@ -420,7 +425,7 @@ impl Sheet {
         }
         let size = text.map_or(f64::from(theme.text.size), |(_, size)| size);
         let [w, h] = text.map_or([0.0; 2], |(box_, _)| box_);
-        // A round or pointed outline holds its text's box inside it.
+        // Scale up so a round or pointed outline contains its text's box.
         let fit = match shape_of(vm.mark) {
             Shape::Ellipse => std::f64::consts::SQRT_2,
             Shape::Diamond => 2.0,
@@ -431,7 +436,8 @@ impl Sheet {
         } else {
             (2.0 * radius, 2.0 * radius)
         };
-        // Room for its ports: a pitch apiece along each side, and their labels across from each other.
+        // Room for its ports: one pitch per port along each side, and width for the left and right
+        // port labels on either side of the label.
         let port = f64::from(theme.diagram.port_size);
         let pitch = (2.0 * port).max(1.4 * size);
         let count = |side: Side| ports.iter().filter(|(_, p)| p.side == side).count() as f64;
@@ -450,9 +456,8 @@ impl Sheet {
         if labels > 0.0 {
             width = width.max(w + labels + 3.0 * port + 1.6 * size);
         }
-        // A port named on the top or the bottom takes a line of its own between its side and the
-        // label, and as much on the other side, so the label stays in the middle; and its share of
-        // the side holds its name.
+        // A named port on the top or bottom needs a line between its side and the label, and as
+        // much on the other side to keep the label centered. Its share of the side fits its name.
         let mut stacked = false;
         for side in [Side::Top, Side::Bottom] {
             let name = widest(side);
@@ -467,7 +472,7 @@ impl Sheet {
         [width / 2.0, height / 2.0]
     }
 
-    /// The width and height of row `row`'s label in units, and its size; `None` without one.
+    /// The width and height of row `row`'s label in units, and its font size; `None` if no label.
     fn label(&mut self, mark: &Vertices, rows: &Rows<'_>, row: usize, input: &Input<'_>) -> Option<([f64; 2], f64)> {
         let label = mark.style.label.as_ref()?;
         let text = rows.text(&label.text, row)?;
@@ -479,8 +484,8 @@ impl Sheet {
         Some((measured.map(|v| v * f64::from(size) / f64::from(TEXT_BASE)), f64::from(size)))
     }
 
-    /// The width and height `run` takes, base pixels: as its host measures it, once, or an estimate
-    /// without one.
+    /// The width and height of `run` in base pixels: measured once by the host and cached, or
+    /// estimated when there is no host or measuring fails.
     fn measure(&mut self, run: TextRun, input: &Input<'_>) -> [f64; 2] {
         if let Some(&size) = self.measured.get(&run) {
             return size;
@@ -504,8 +509,8 @@ impl Sheet {
         size
     }
 
-    /// Asks the scene's layout, once none is under way, to place every row without a place: blocks,
-    /// and groups holding nothing; while arranging, every row without a position. The rest hold;
+    /// Starts a layout job, unless one is pending, to place every block, and every group holding
+    /// nothing, that has no place (while arranging, no position). Other rows are pinned, and
     /// groups lay out around their members.
     #[allow(clippy::too_many_arguments, reason = "one layout request")]
     fn place(
@@ -526,13 +531,13 @@ impl Sheet {
             return;
         }
         if matches!(layout, Layout::None) || !vertices.iter().any(wanted) {
-            // Nothing to lay out: the arranging is done as asked.
+            // Nothing to lay out: the arrange finishes with no rows.
             if std::mem::take(&mut self.arranging) {
                 self.arranged = Some(Vec::new());
             }
             return;
         }
-        // Layouts lay out with y up: a group's header is its top.
+        // Layouts are y up, so a group's header pads its top.
         let sizes: Vec<[f64; 2]> = vertices.iter().map(|v| v.half.map(|h| 2.0 * h)).collect();
         let pinned: Vec<Option<[f64; 2]>> = vertices
             .iter()
@@ -557,8 +562,8 @@ impl Sheet {
     }
 }
 
-/// What the sheet reads, stamped: the scene, whether a host measures text, answers landed, the
-/// generation of places, whether rows are being dragged, and what the marks' structure reads.
+/// A stamp of the sheet's inputs: the scene version, whether a host measures text, the answers
+/// received, the places generation, whether rows are being dragged, and the marks' structure.
 fn stamp(input: &Input<'_>, landed: u64, generation: u64) -> u64 {
     let mut hasher = FxHasher::default();
     (input.scene_version, input.host.is_some(), landed, generation, input.dragging).hash(&mut hasher);
@@ -569,7 +574,7 @@ fn stamp(input: &Input<'_>, landed: u64, generation: u64) -> u64 {
 /// The diagram's vertex marks and edge marks.
 type Marks<'a> = (Vec<VertexMark<'a>>, Vec<EdgeMark<'a>>);
 
-/// What the structure of the marks reads now.
+/// The current inputs to the marks' structure.
 fn seen(input: &Input<'_>) -> Vec<Seen> {
     let mut seen = Vec::new();
     input.reads(&mut |read| {
@@ -585,8 +590,9 @@ fn seen(input: &Input<'_>) -> Vec<Seen> {
     seen
 }
 
-/// The vertex rows written since `drawn`, by vertex, in order: `None` unless the same tables hold the
-/// same rows and nothing changed but values rows are sized and placed by, each by its own row's.
+/// The vertex rows written since `drawn`, as sorted vertex indices. `None` unless the same tables
+/// hold the same rows and the only changes are to values that size or place each row by its own
+/// value.
 fn edited(drawn: &Drawn, input: &Input<'_>, vertex_marks: &[VertexMark<'_>]) -> Option<Vec<usize>> {
     let mut seen = drawn.reads.iter();
     let mut rows = Vec::new();
@@ -625,23 +631,18 @@ fn edited(drawn: &Drawn, input: &Input<'_>, vertex_marks: &[VertexMark<'_>]) -> 
     })
 }
 
-/// The band across the top of each vertex mark's groups, and the padding around their members.
+/// The height of each vertex mark's group header band, and the padding around group members.
 fn framing(vertex_marks: &[VertexMark<'_>], theme: &Theme) -> (Vec<f64>, f64) {
     (vertex_marks.iter().map(|vm| header(vm.mark, theme)).collect(), f64::from(theme.diagram.group_padding))
 }
 
-/// Vertex `v`'s box as routing avoids it, y up; none for a group, which holds wires rather than
-/// turning them away.
+/// Vertex `v`'s box as a routing obstacle, y up. `EMPTY` for a group, which wires may pass through.
 fn obstacle(v: &Vertex) -> Rect {
     v.bounds.filter(|_| !v.group).map_or(EMPTY, |b| [b[0], -b[3], b[2], -b[1]])
 }
 
-/// The groups' boxes, y up, which wires cross at a cost and keep off.
-fn groups(vertices: &[Vertex]) -> Vec<Rect> {
-    vertices.iter().filter(|v| v.group).filter_map(|v| v.bounds).map(|b| [b[0], -b[3], b[2], -b[1]]).collect()
-}
-
-/// The outline a vertex mark's markers draw: groups and blocks are boxes, the rest their shape.
+/// The outline a vertex mark's markers draw: a rectangle for groups, blocks, icons, and WGSL
+/// markers, an ellipse for pies, else the marker's shape.
 fn shape_of(mark: &Vertices) -> Shape {
     if mark.contains.is_some() {
         return Shape::Rectangle;
@@ -653,8 +654,8 @@ fn shape_of(mark: &Vertices) -> Shape {
     }
 }
 
-/// The band across the top of a group mark's containers its titles sit in, units; none for other
-/// marks, or without titles.
+/// The height in units of the band across the top of a group mark's boxes, where titles sit; 0 for
+/// other marks, or without labels.
 fn header(mark: &Vertices, theme: &Theme) -> f64 {
     match (&mark.contains, &mark.style.label) {
         (Some(_), Some(label)) => f64::from(label.size.unwrap_or(theme.text.size) * HEADER_BAND),
@@ -662,9 +663,9 @@ fn header(mark: &Vertices, theme: &Theme) -> f64 {
     }
 }
 
-/// Names each row's group: the rows of the table a group mark contains, through the reference
-/// naming the group; then how many groups hold each row, cycles cut where a walk up closes; then
-/// how many rows each group holds.
+/// Sets each row's group: the rows of a group mark's contained table belong to the group their
+/// reference names. Then sets how many groups hold each row, dropping the group of a row whose
+/// walk up the groups cycles, and how many rows each group directly holds.
 fn hold(vertex_marks: &[VertexMark<'_>], vertices: &mut [Vertex]) {
     for vm in vertex_marks {
         let Some((table, reference)) = &vm.mark.contains else { continue };
@@ -702,40 +703,14 @@ fn hold(vertex_marks: &[VertexMark<'_>], vertices: &mut [Vertex]) {
     }
 }
 
-/// Stands every group around its members, innermost first: their bounds grown by `padding`, with
-/// its header across the top. A group holding nothing placed stands at its own place.
-fn stand_groups(vertices: &mut [Vertex], places: &FxHashMap<Row, [f64; 2]>, header: &[f64], padding: f64) {
-    let mut order: Vec<usize> = (0..vertices.len()).filter(|&v| vertices[v].group).collect();
-    crate::order::by_key(&mut order, |&v| !u64::from(vertices[v].depth));
-    let mut held: Vec<Option<[f64; 4]>> = vec![None; vertices.len()];
-    for v in vertices.iter().filter(|v| !v.group) {
-        if let (Some(p), Some(b)) = (v.parent, v.bounds) {
-            held[p] = Some(held[p].map_or(b, |h| union(h, b)));
-        }
-    }
-    for g in order {
-        let top = header[vertices[g].mark];
-        let own = if let Some(b) = held[g] {
-            Some([b[0] - padding, b[1] - padding - top, b[2] + padding, b[3] + padding])
-        } else {
-            let center = vertices[g].pin.or_else(|| places.get(&vertices[g].key).copied());
-            center.map(|c| around(c, vertices[g].half))
-        };
-        vertices[g].bounds = own;
-        if let (Some(p), Some(b)) = (vertices[g].parent, own) {
-            held[p] = Some(held[p].map_or(b, |h| union(h, b)));
-        }
-    }
-}
-
 /// A derived table to write: its dataset and table, the table it stands beside, and its fields.
 type Writing<'a> = ((Name, Name), &'a Table, Vec<(&'static str, Values)>);
 
-/// A derived field of a vertex table, and its value for a vertex.
+/// A derived field of a vertex table: its name, and its value for a vertex.
 type VertexField = (&'static str, fn(&Vertex) -> Option<f64>);
 
-/// A vertex table's derived fields, each a vertex's: its center and half sizes, then how many groups
-/// hold it, which only groups gaining or losing members change.
+/// A vertex table's derived fields: center, half sizes, then depth (how many groups hold it).
+/// Depth changes only when group membership does.
 const VERTEX_FIELDS: [VertexField; 5] = [
     ("x", |v| v.center().map(|c| c[0])),
     ("y", |v| v.center().map(|c| c[1])),
@@ -744,9 +719,9 @@ const VERTEX_FIELDS: [VertexField; 5] = [
     ("depth", |v| Some(f64::from(v.depth))),
 ];
 
-/// Writes each drawn table's derived table, dropping those of tables no longer drawn: a vertex
-/// table's centers, half sizes, and depths; an edge table's paths. A field equal to the one before
-/// keeps its column, so nothing uploads again.
+/// Writes each drawn table's derived table, and drops those of tables no longer drawn: a vertex
+/// table's centers, half sizes, and depths; an edge table's paths. A field equal to the previous
+/// one keeps its column, so nothing uploads again.
 fn write(
     vertex_marks: &[VertexMark<'_>],
     vertices: &[Vertex],
@@ -780,9 +755,9 @@ fn write(
     }
 }
 
-/// Writes what an edit reached over the derived tables, row by row: the center and half sizes of each
-/// vertex row `touched` names, and the parts of each edge row `written` names, so only the pages they
-/// fall on change. False where a derived table lacks a field to write over.
+/// Writes an edit's results into the derived tables row by row: the center and half sizes of each
+/// vertex in `touched`, and the parts of each edge row in `written`, so only the pages they fall on
+/// change. Returns false when a derived table lacks a field to write.
 fn write_rows(
     (vertex_marks, edge_marks): &Marks<'_>,
     drawn: &Drawn,
@@ -798,7 +773,7 @@ fn write_rows(
             continue;
         }
         let Some(table) = derived.get_mut(&(vm.data.name().clone(), vm.table.name().clone())) else { return false };
-        // An edit leaves which groups hold each row, and so its depth.
+        // An edit does not change group membership, so depth stays unchanged.
         for &(name, value) in &VERTEX_FIELDS[..4] {
             let values =
                 Values::from(rows.iter().map(|&row| value(&drawn.vertices[vm.first + row])).collect::<Vec<_>>());
@@ -820,8 +795,9 @@ fn write_rows(
     true
 }
 
-/// Writes `values` over rows `rows` of field `name` of `table`, but where a row holds its value already,
-/// so a page changes only when a value on it does; false where it holds no such column.
+/// Writes `values` over rows `rows` of field `name` of `table`, skipping rows that already hold
+/// their value, so a page changes only when one of its values does. Returns false when `table` has
+/// no such values column or the write fails.
 fn write_field(table: &mut Table, name: &str, rows: &[usize], values: &Values) -> bool {
     let Some(Field::Values(column, _)) = table.field_named(name) else { return false };
     let writes: Vec<(usize, usize)> =
@@ -846,11 +822,12 @@ mod tests {
 
     const BLOCKS: u64 = 24;
 
-    /// Blocks with labels and ports, most in one of two groups, wired by orthogonal nets, straight
-    /// edges with lanes between the same two blocks, and orthogonal edges with ends, some leaving one
-    /// block by the same side.
+    /// Blocks with labels and ports, most in one of two groups inside one outer group. They are
+    /// wired by orthogonal nets, by straight edges with lanes between the same two blocks, and by
+    /// orthogonal edges with endpoints, some leaving one block by the same side.
     fn diagram() -> (Scene, Data) {
         let scene = Scene::new(Diagram { grid: Grid::Off })
+            .draw(Vertices::of("d", "H").contains("G", "outer"))
             .draw(Vertices::of("d", "G").contains("B", "group"))
             .draw(Edges::of("d", "N").route(Route::Orthogonal))
             .draw(Edges::of("d", "E").ends("from", "to"))
@@ -880,7 +857,8 @@ mod tests {
         let data = Data::new("d");
         data.apply(
             Patch::new()
-                .set(Table::new("G", vec![1_u64, 2]))
+                .set(Table::new("H", vec![1_u64]))
+                .set(Table::new("G", vec![1_u64, 2]).reference("outer", "H", vec![Some(1_u64), Some(1)]))
                 .set(Table::new("N", (0..BLOCKS / 2).collect::<Vec<_>>()))
                 .set(blocks)
                 .set(pairs(vec![0, 0, 3, 7], vec![1, 1, 9, 15], "E"))
@@ -909,8 +887,8 @@ mod tests {
         None
     }
 
-    /// Brings `sheet` up to `data`, routing on the frame as while rows are dragged; whether it drew
-    /// only what an edit reached.
+    /// Updates `sheet` to `data`, routing on the frame as during a drag. Returns whether it redrew
+    /// only what an edit affected.
     fn derive(sheet: &mut Sheet, scene: &Scene, data: &Data) -> bool {
         let (counters, errors) = (Counters::default(), Arc::new(Mutex::new(Vec::new())));
         let now = data.snapshot();
@@ -928,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wire_routes_again_around_a_block_moved_into_its_way() {
+    fn a_wire_reroutes_around_a_block_moved_into_its_path() {
         let scene = Scene::new(Diagram { grid: Grid::Off })
             .draw(Edges::of("d", "F").ends("from", "to").route(Route::Orthogonal))
             .draw(Vertices::of("d", "B").position("x", "y").label(Label::new("name")));
@@ -941,9 +919,10 @@ mod tests {
         data.apply(Patch::new().set(blocks).set(wire)).expect("valid");
         let mut sheet = Sheet::default();
         derive(&mut sheet, &scene, &data);
-        // The third block moves into the wire's way; the wire meets neither it nor anything it moved.
+        // The third block moves into the wire's path. The wire does not end at it, so only the
+        // moved box near the wire makes it route again.
         data.apply(Table::new("B", vec![2_u64]).field("y", vec![0.0])).expect("valid edit");
-        assert!(derive(&mut sheet, &scene, &data), "an edit");
+        assert!(derive(&mut sheet, &scene, &data), "only what the edit affects is redrawn");
         let b = sheet.bounds(&Row { data: "d".into(), table: "B".into(), id: 2_u64.into() }).expect("placed");
         let Some(Value::Parts(parts)) = sheet.tables.get(&("d".into(), "F".into())).and_then(|t| t.get(0_u64, "route"))
         else {
@@ -958,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_derives_what_deriving_every_row_does() {
+    fn edits_derive_the_same_tables_as_a_full_rebuild() {
         let (scene, data) = diagram();
         let (mut edits, mut whole) = (Sheet::default(), Sheet::default());
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
@@ -983,7 +962,7 @@ mod tests {
                         .field("y", rows.iter().map(|_| random(600) as f64).collect::<Vec<_>>()),
                     _ => Table::new("B", rows.clone()).field("x", vec![None::<f64>; rows.len()]),
                 };
-                // A row named twice in one edit takes the last value.
+                // Skip edits that name a row twice; the last value would win.
                 let mut unique = rows.clone();
                 unique.sort_unstable();
                 unique.dedup();
@@ -1000,6 +979,6 @@ mod tests {
             }
             assert_eq!(edits.extent(), whole.extent(), "step {step}");
         }
-        assert!(redrawn > 30, "edits derived only what they reached: {redrawn} of 60");
+        assert!(redrawn > 30, "most steps redraw only what the edit affects: {redrawn} of 60");
     }
 }

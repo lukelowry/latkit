@@ -1,19 +1,20 @@
-//! What the camera sees, as tiles: the one place derivations read the camera. Tiles split a
-//! square of the space four ways a level, the earth's web mercator square or a square of a plane; a
-//! tile is wanted where it meets what the camera shows, and splits while it draws larger than its
-//! size where it lies nearest the camera's focus.
+//! The camera's view as tiles; the only place derivations read the camera.
+//!
+//! Tiles split a square of the space four ways per level: the earth's Web Mercator square, or a
+//! square of a plane. A tile is needed where it meets the region in sight, and splits while it
+//! draws larger than its nominal size (`TILE_PX`) where it lies nearest the camera's focus.
 
 use glam::DVec3;
 
 use crate::tiles::TileKey;
 use crate::view::Projected;
 
-/// CSS pixels a tile spans drawn at its own level.
+/// CSS pixels a tile spans when drawn at its own level.
 pub(crate) const TILE_PX: f64 = 512.0;
-/// The latitude web mercator reaches, north and south.
+/// The latitude Web Mercator reaches, north and south, in degrees.
 const MAX_LATITUDE: f64 = 85.051_128_779_806_59;
 
-/// Where a space's tiles lie: the earth's web mercator square, or a square of a plane.
+/// The square a space's tiles divide: the earth's Web Mercator square, or a square of a plane.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Domain {
     Earth,
@@ -25,8 +26,8 @@ pub(crate) enum Domain {
 }
 
 impl Domain {
-    /// The square holding positions within `bounds` (west, south, east, north) on a plane, with a
-    /// little room so nothing lies on its edge.
+    /// The plane square containing `bounds` (west, south, east, north), centered on them and 2%
+    /// larger so nothing lies on its edge. Inverted bounds give the unit square.
     pub(crate) fn plane(bounds: [f64; 4]) -> Domain {
         let [w, s, e, n] = if bounds[0] <= bounds[2] { bounds } else { [0.0, 0.0, 1.0, 1.0] };
         let size = (e - w).max(n - s).max(1e-9) * 1.02;
@@ -34,7 +35,8 @@ impl Domain {
         Domain::Plane { min: [center[0] - size / 2.0, center[1] - size / 2.0], size }
     }
 
-    /// Where position `p` lies across the square, 0 to 1 from the west and from the north.
+    /// Where position `p` lies in the square, 0 to 1 from the west and from the north. On the
+    /// earth, latitude is clamped to Web Mercator's range and longitude wraps.
     pub(crate) fn unit(&self, p: [f64; 2]) -> [f64; 2] {
         match *self {
             Domain::Earth => {
@@ -46,7 +48,7 @@ impl Domain {
         }
     }
 
-    /// The position at `u` across the square.
+    /// The position at `u` in the square; the inverse of `unit`.
     pub(crate) fn position(&self, u: [f64; 2]) -> [f64; 2] {
         match *self {
             Domain::Earth => {
@@ -57,8 +59,8 @@ impl Domain {
         }
     }
 
-    /// West, south, east, and north of tile `key`, grown on every side by `grow` across the square,
-    /// within the square.
+    /// West, south, east, and north of tile `key` in position units, grown on every side by `grow`
+    /// (a fraction of the square) and clamped to the square.
     pub(crate) fn bounds(&self, key: TileKey, grow: f64) -> [f64; 4] {
         let n = f64::from(1_u32 << key.z);
         let (x, y) = (f64::from(key.x), f64::from(key.y));
@@ -72,20 +74,20 @@ impl Domain {
     }
 }
 
-/// What the camera sees: where tiles are wanted and how large they draw.
+/// The camera's view, for choosing tiles and measuring how large they draw.
 pub(crate) struct Sight<'a> {
     pub(crate) projected: &'a Projected,
-    /// The view's size, CSS pixels.
+    /// The view's size, in CSS pixels.
     pub(crate) size: [f64; 2],
     pub(crate) earth: bool,
 }
 
-/// West, south, east, north boxes, in position units: what the camera shows, in one box, or on the
-/// earth two where it wraps the antimeridian.
+/// The region in sight as west, south, east, north boxes in position units: one box, or on the
+/// earth two where the region crosses the antimeridian.
 pub(crate) type Region = Vec<[f64; 4]>;
 
 impl Sight<'_> {
-    /// Where position `p` lands on screen, if it shows.
+    /// Where position `p` appears on screen; `None` when it does not show.
     fn project(&self, p: [f64; 2]) -> Option<[f64; 2]> {
         let w = self.projected.world([p[0], p[1], 0.0]);
         if !self.facing(w) {
@@ -101,7 +103,7 @@ impl Sight<'_> {
         Some([x, y])
     }
 
-    /// The center of the globe the earth is, and its radius, in world units.
+    /// The globe's center and radius, in world units.
     fn sphere(&self) -> (DVec3, f64) {
         let radius = 1.0 / self.projected.center[1].to_radians().cos();
         (DVec3::new(0.0, 0.0, -radius), radius)
@@ -111,7 +113,8 @@ impl Sight<'_> {
         self.earth && self.projected.globe >= 0.5
     }
 
-    /// Whether world point `w` faces the camera: always on a map, on the globe its near side.
+    /// Whether world point `w` faces the camera: always on a flat map; on the globe, only on the
+    /// near side.
     fn facing(&self, w: DVec3) -> bool {
         if !self.globe() {
             return true;
@@ -120,14 +123,15 @@ impl Sight<'_> {
         (w - center).dot(self.projected.eye - w) > 0.0
     }
 
-    /// Where tiles draw largest: where the camera looks, and tilted, the nearest ground it shows.
+    /// Where tiles draw largest: the camera's center, and the ground at the bottom middle of the
+    /// view, which is the nearest ground when the camera is tilted.
     pub(crate) fn focus(&self) -> Vec<[f64; 2]> {
         let center = [self.projected.center[0], self.projected.center[1]];
         let near = self.ground([self.size[0] / 2.0, self.size[1]]);
         std::iter::once(center).chain(near).collect()
     }
 
-    /// The ground the camera shows, sampled on a grid of points across the view.
+    /// The ground in sight, sampled on a grid of points across the view.
     pub(crate) fn region(&self) -> Region {
         const SAMPLES: usize = 7;
         let globe = self.globe();
@@ -142,7 +146,7 @@ impl Sight<'_> {
                     missed = true;
                     continue;
                 };
-                // Longitudes kept beside the center's, so a view across the antimeridian is one span.
+                // Keep longitudes near the center's, so a view across the antimeridian is one span.
                 let x = if globe { center[0] + turn(center[0], x) } else { x };
                 (w, e, s, n) = (w.min(x), e.max(x), s.min(y), n.max(y));
             }
@@ -152,7 +156,8 @@ impl Sight<'_> {
                 return Vec::new();
             }
             if missed {
-                // A tilted plane past its horizon: everything toward it.
+                // Some samples miss a tilted plane, which shows its horizon: grow the region by
+                // four times its size on each side to cover the ground toward it.
                 let size = (e - w).max(n - s) * 4.0;
                 return vec![[w - size, s - size, e + size, n + size]];
             }
@@ -177,7 +182,8 @@ impl Sight<'_> {
             return vec![[-180.0, -90.0, 180.0, 90.0]];
         }
         if missed {
-            // A tilted map past its horizon: everything toward it.
+            // Some samples miss a tilted map, which shows its horizon: grow the region by four
+            // times its size on each side to cover the ground toward it.
             let size = (e - w).max(n - s) * 4.0;
             return boxes(w - size, e + size, s - size, n + size);
         }
@@ -188,7 +194,7 @@ impl Sight<'_> {
         vec![[(w - pad_x).max(-180.0), (s - pad_y).max(-90.0), (e + pad_x).min(180.0), (n + pad_y).min(90.0)]]
     }
 
-    /// The cap of the globe the camera can see past its horizon.
+    /// The cap of the globe the camera can see, out to its horizon.
     fn cap(&self) -> Region {
         let (center, radius) = self.sphere();
         let out = self.projected.eye - center;
@@ -205,9 +211,10 @@ impl Sight<'_> {
         boxes(lon - half, lon + half, south, north)
     }
 
-    /// How large tile `key` of `domain`'s square draws where it lies nearest each focus, and how far
-    /// from the view's middle that lands. It steps across the tile in the square, where the tiles of a
-    /// level are alike, so on a flat map they all measure the same wherever they lie.
+    /// How large tile `key` of `domain`'s square draws, in CSS pixels, at its point nearest each
+    /// focus, and how far that point is from the view's center. It steps 1/64 of the tile in the
+    /// square, where all tiles of a level are the same size, so on a flat map every tile of a level
+    /// measures the same wherever it lies.
     pub(crate) fn measure(&self, focus: &[[f64; 2]], domain: &Domain, key: TileKey) -> (f64, f64) {
         let side = 1.0 / f64::from(1_u32 << key.z);
         let (west, north) = (f64::from(key.x) * side, f64::from(key.y) * side);
@@ -215,7 +222,7 @@ impl Sight<'_> {
         let (mut size, mut distance) = (0.0_f64, f64::INFINITY);
         for &f in focus {
             let [fx, fy] = domain.unit(f);
-            // The earth's square wraps: the focus a turn either way, whichever lies nearer the tile.
+            // The earth's square wraps: shift the focus a turn either way, whichever is nearer.
             let fx = if *domain == Domain::Earth { fx + (west + side / 2.0 - fx).round() } else { fx };
             let at = [fx.clamp(west, west + side - step), fy.clamp(north, north + side - step)];
             let Some(p) = self.project(domain.position(at)) else { continue };
@@ -228,12 +235,13 @@ impl Sight<'_> {
     }
 }
 
-/// The shortest turn from longitude `from` to `to`, in degrees.
+/// The shortest signed turn from longitude `from` to `to`, in degrees.
 fn turn(from: f64, to: f64) -> f64 {
     (to - from + 540.0).rem_euclid(360.0) - 180.0
 }
 
-/// The boxes of a longitude range that may wrap, and a latitude range.
+/// The boxes covering a longitude range that may wrap the antimeridian, and a latitude range
+/// clamped to ±90°.
 fn boxes(west: f64, east: f64, south: f64, north: f64) -> Region {
     let (s, n) = (south.max(-90.0), north.min(90.0));
     if east - west >= 360.0 {
@@ -244,7 +252,7 @@ fn boxes(west: f64, east: f64, south: f64, north: f64) -> Region {
     if e <= 180.0 { vec![[w, s, e, n]] } else { vec![[w, s, 180.0, n], [-180.0, s, e - 360.0, n]] }
 }
 
-/// Whether box `b` meets what the camera shows.
+/// Whether box `b` meets the region in sight.
 pub(crate) fn meets(region: &Region, b: [f64; 4]) -> bool {
     region.iter().any(|r| b[0] <= r[2] && b[2] >= r[0] && b[1] <= r[3] && b[3] >= r[1])
 }
@@ -254,7 +262,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn domains_place_positions_across_their_square() {
+    fn domains_map_positions_into_their_unit_square() {
         let earth = Domain::Earth;
         let u = earth.unit([0.0, 0.0]);
         assert!((u[0] - 0.5).abs() < 1e-12 && (u[1] - 0.5).abs() < 1e-12);
@@ -262,7 +270,7 @@ mod tests {
         assert!((back[0] + 97.5).abs() < 1e-9 && (back[1] - 30.25).abs() < 1e-9);
         let plane = Domain::plane([0.0, 0.0, 10.0, 5.0]);
         let u = plane.unit([5.0, 2.5]);
-        assert!((u[0] - 0.5).abs() < 1e-12 && (u[1] - 0.5).abs() < 1e-12, "the middle of the data");
+        assert!((u[0] - 0.5).abs() < 1e-12 && (u[1] - 0.5).abs() < 1e-12, "the middle of the data maps to 0.5");
         let b = plane.bounds(TileKey { z: 1, x: 0, y: 0 }, 0.0);
         assert!(b[0] < 0.0 && b[3] > 5.0, "the northwest quarter: {b:?}");
     }

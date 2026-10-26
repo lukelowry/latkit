@@ -1,6 +1,7 @@
-//! What a GPU fetched of each source of tiles, by URL: opened once, its pieces fetched and decoded
-//! once for every set drawing them, and let go of once none does. Work landing for the source wakes
-//! every set drawing it, so a piece one view fetched draws in each.
+//! The tile cache: each tile source a GPU's views draw, by URL. A source is opened once, its pieces
+//! are fetched and decoded once for every set drawing them, and it is released once no set draws
+//! it. Work finishing for a source wakes every set drawing it, so a piece one view fetched draws in
+//! all of them.
 
 use std::collections::hash_map::Entry;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -14,29 +15,29 @@ use crate::derive::Jobs;
 use crate::host::Request;
 use crate::{Error, Pending};
 
-/// Bytes read first of a source that is an archive, as a URL ending in `.pmtiles` names: its header,
-/// and in most archives the root directory after it. Any other source is read whole.
+/// Bytes first read from an archive source (a URL ending in `.pmtiles`): its header, and in most
+/// archives the root directory after it. Other sources are read whole.
 const ARCHIVE_FIRST: u64 = 16_384;
 
-/// Every source of tiles a GPU's views draw, by URL.
+/// Every tile source a GPU's views draw, by URL.
 #[derive(Default)]
 pub(crate) struct Cache {
     sources: FxHashMap<Arc<str>, Fetched>,
 }
 
-/// One source of tiles: how far it opened, and what wakes the sets drawing it.
+/// One tile source: its open state, and the waker for the sets drawing it.
 pub(crate) struct Fetched {
     pub(crate) state: State,
     sets: Arc<Sets>,
     waker: Waker,
 }
 
-/// How far a source opened.
+/// A source's open state.
 pub(crate) enum State {
-    /// Its first bytes are being fetched; they say what it holds.
+    /// Its first bytes are being fetched; they determine what it holds.
     Opening(Pending<Vec<u8>>),
     Open(Holds),
-    /// It could not be opened, and why.
+    /// It could not be opened, with the reason.
     Failed(Error),
 }
 
@@ -46,7 +47,7 @@ pub(crate) enum Holds {
     Vector(Box<vector::Fetched>),
 }
 
-/// The sets drawing a source, each with what wakes it: work landing for the source wakes them all.
+/// The sets drawing a source, each with its waker. Work finishing for the source wakes them all.
 #[derive(Default)]
 struct Sets(Mutex<Vec<(u64, Waker)>>);
 
@@ -65,8 +66,9 @@ impl Wake for Sets {
 }
 
 impl Cache {
-    /// The source at `url`, with set `set` drawing it and woken by `jobs`'s waker as its work lands:
-    /// opened as far as what landed allows, its first bytes asked for where no set drew it before.
+    /// The source at `url`, registering set `set` as drawing it, to be woken by `jobs`'s waker as
+    /// the source's work finishes. Starts opening the source if no set drew it before, and opens it
+    /// as far as finished work allows.
     pub(crate) fn open(&mut self, url: &Arc<str>, set: u64, jobs: &Jobs<'_>) -> &mut Fetched {
         let fetched = match self.sources.entry(url.clone()) {
             Entry::Occupied(entry) => entry.into_mut(),
@@ -87,7 +89,7 @@ impl Cache {
         fetched
     }
 
-    /// Fetches and decodes under way for the source at `url`.
+    /// Fetches and decodes in progress for the source at `url`.
     pub(crate) fn under_way(&self, url: &str) -> usize {
         self.sources.get(url).map_or(0, |fetched| match &fetched.state {
             State::Opening(_) => 1,
@@ -97,7 +99,8 @@ impl Cache {
         })
     }
 
-    /// Lets go of what set `set` drew of the source at `url`; once no set draws it, of the source.
+    /// Releases what set `set` drew of the source at `url`, and the source itself once no set draws
+    /// it.
     pub(crate) fn release(&mut self, url: &str, set: u64) {
         let Some(fetched) = self.sources.get_mut(url) else { return };
         let left = {
@@ -118,12 +121,12 @@ impl Cache {
 }
 
 impl Fetched {
-    /// What wakes every set drawing the source.
+    /// The waker for every set drawing the source.
     pub(crate) fn waker(&self) -> &Waker {
         &self.waker
     }
 
-    /// Opens the source once its first bytes landed: time tiles where they hold a manifest, else
+    /// Opens the source once its first bytes arrive: as time tiles if they hold a manifest, else as
     /// vector tiles.
     fn settle(&mut self, url: &Arc<str>, jobs: &Jobs<'_>) {
         let State::Opening(pending) = &self.state else { return };
@@ -144,8 +147,8 @@ impl Fetched {
     }
 }
 
-/// How the source at `url` starts opening: a URL template holds vector tiles at once; an archive is
-/// read in ranges, from its header; a document is read whole.
+/// Starts opening the source at `url`. A URL template is vector tiles, open at once. An archive is
+/// read in ranges, starting with its header. A document is read whole.
 fn start(url: &Arc<str>, jobs: &Jobs<'_>) -> State {
     if url.contains("{z}") {
         return State::Open(Holds::Vector(Box::new(vector::Fetched::template(url))));

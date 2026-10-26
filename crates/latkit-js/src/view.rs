@@ -1,5 +1,5 @@
-//! Views: a scene drawn from the sources it is given, telling its events from the start; its state
-//! read and set between frames, its questions answered by the frames that draw it.
+//! Views: a scene drawn from its sources, sending its events from the start. Its state is read and
+//! set between frames, and its queries are answered by the frames that draw it.
 
 use wasm_bindgen::prelude::*;
 
@@ -8,7 +8,7 @@ use crate::data::{Snapshot, Source};
 use crate::pending::{Task, task};
 use crate::{Error, json, to_json};
 
-/// A view of a scene, telling its events from the start.
+/// A view of a scene, sending its events from the start.
 #[wasm_bindgen]
 pub struct View {
     pub(crate) view: latkit::web::PageView,
@@ -17,14 +17,14 @@ pub struct View {
 
 #[wasm_bindgen]
 impl View {
-    /// Draws `scene` (JSON) instead; an invalid scene changes nothing.
+    /// Replaces the scene with `scene` (JSON). An invalid scene changes nothing.
     #[wasm_bindgen(js_name = setScene)]
     pub fn set_scene(&self, scene: &str) -> Result<(), Error> {
         let scene = json("scene", scene)?;
         Ok(self.view.with(|v| v.set_scene(scene))?)
     }
 
-    /// Draws the datasets `sources` give, in place of those given before.
+    /// Replaces the view's sources with `sources`.
     #[wasm_bindgen(js_name = setSources)]
     pub fn set_sources(&self, sources: Vec<Source>) -> Result<(), Error> {
         Ok(self.view.with(|v| v.set_sources(sources.into_iter().map(|s| s.0)))?)
@@ -51,7 +51,7 @@ impl View {
         self.view.read(|v| to_json(v.camera()))
     }
 
-    /// Looks through the camera (JSON) at once.
+    /// Switches to `camera` (JSON) immediately.
     #[wasm_bindgen(js_name = setCamera)]
     pub fn set_camera(&self, camera: &str) -> Result<(), Error> {
         let camera = json("camera", camera)?;
@@ -59,7 +59,7 @@ impl View {
         Ok(())
     }
 
-    /// Eases to the camera (JSON).
+    /// Eases to `camera` (JSON).
     pub fn fly(&self, camera: &str) -> Result<(), Error> {
         let camera = json("camera", camera)?;
         self.view.with(|v| v.fly(camera));
@@ -73,8 +73,8 @@ impl View {
         Ok(())
     }
 
-    /// Lays every vertex row without a position out again by the scene's layout: the bytes of a patch
-    /// to each dataset, writing the places into the data.
+    /// Lays out every vertex row without a position again, using the scene's layout. Resolves to
+    /// one patch per dataset, as bytes, that writes the computed positions into the data.
     pub fn arrange(&self) -> Task {
         let pending = self.view.with(latkit::View::arrange);
         task(async move {
@@ -83,7 +83,7 @@ impl View {
         })
     }
 
-    /// Where `position` (x, y, elevation) lands on screen, CSS pixels from the top left.
+    /// The screen point of `position` (x, y, elevation), in CSS pixels from the top left.
     pub fn screen(&self, position: &[f64]) -> Option<Vec<f32>> {
         let position: [f64; 3] = position.try_into().ok()?;
         self.view.read(|v| v.screen(position)).map(Vec::from)
@@ -102,7 +102,8 @@ impl View {
 
     #[wasm_bindgen(setter)]
     pub fn set_insets(&self, insets: &[f32]) -> Result<(), Error> {
-        let insets: [f32; 4] = insets.try_into().map_err(|_| latkit::Error::invalid("four insets").at("insets"))?;
+        let insets: [f32; 4] =
+            insets.try_into().map_err(|_| latkit::Error::invalid("expected four numbers").at("insets"))?;
         self.view.with(|v| v.set_insets(insets));
         Ok(())
     }
@@ -117,13 +118,13 @@ impl View {
         self.view.with(|v| v.set_orbit(degrees_per_second));
     }
 
-    /// The rows selected, as JSON sets of rows.
+    /// The selected rows, as JSON sets of rows.
     #[wasm_bindgen(getter)]
     pub fn selection(&self) -> String {
         self.view.read(|v| to_json(&v.selection()))
     }
 
-    /// Selects the rows (JSON sets of rows), and no others.
+    /// Selects exactly `rows` (JSON sets of rows).
     #[wasm_bindgen(js_name = setSelection)]
     pub fn set_selection(&self, rows: &str) -> Result<(), Error> {
         let rows: Vec<latkit::Rows> = json("rows", rows)?;
@@ -131,19 +132,19 @@ impl View {
         Ok(())
     }
 
-    /// What the user points at, as a JSON hit or `null`.
+    /// The row the user points at, as a JSON hit or `null`.
     #[wasm_bindgen(getter)]
     pub fn hovered(&self) -> String {
         self.view.read(|v| to_json(&v.hovered()))
     }
 
-    /// The work under way the last frame stood in for, as JSON.
+    /// The pending work the last frame drew placeholders for, as JSON.
     #[wasm_bindgen(getter)]
     pub fn waiting(&self) -> String {
         to_json(&self.view.read(latkit::View::waiting))
     }
 
-    /// Whether the last frame drew everything as the data, scene, and camera say.
+    /// Whether the last frame was complete, with nothing in `waiting` still pending.
     #[wasm_bindgen(getter)]
     pub fn complete(&self) -> bool {
         self.view.read(latkit::View::complete)
@@ -155,13 +156,13 @@ impl View {
         self.view.read(|v| to_json(&v.failures().collect::<Vec<_>>()))
     }
 
-    /// What the view does each frame, as JSON.
+    /// The view's per-frame statistics, as JSON.
     #[wasm_bindgen(getter)]
     pub fn stats(&self) -> String {
         to_json(&self.view.read(latkit::View::stats))
     }
 
-    /// Whether the view wants a frame: it changed, or work it waited on landed.
+    /// Whether the view needs a frame: it changed, or work it waited on arrived.
     #[wasm_bindgen(getter, js_name = wantsFrame)]
     pub fn wants_frame(&self) -> bool {
         self.view.wants_frame()
@@ -169,12 +170,13 @@ impl View {
 
     /// Every row within `radius` CSS pixels of `point`, nearest first, as JSON hits.
     pub fn pick(&self, point: &[f32], radius: f32) -> Result<Task, Error> {
-        let point: [f32; 2] = point.try_into().map_err(|_| latkit::Error::invalid("a point is [x, y]").at("point"))?;
+        let point: [f32; 2] = point.try_into().map_err(|_| latkit::Error::invalid("expected [x, y]").at("point"))?;
         let pending = self.view.with(|v| v.pick(point, radius));
         Ok(task(async move { Ok(JsValue::from_str(&to_json(&pending.await?))) }))
     }
 
-    /// Where the row (JSON) lies on screen, `[x, y]`, or `null`.
+    /// The screen point of `row` (JSON), as `[x, y]` in CSS pixels, or `null` if no mark draws it
+    /// in view.
     #[wasm_bindgen(js_name = screenOf)]
     pub fn screen_of(&self, row: &str) -> Result<Task, Error> {
         let row: latkit::Row = json("row", row)?;
@@ -185,14 +187,14 @@ impl View {
         }))
     }
 
-    /// The rows joined to the row (JSON), as JSON sets of rows: a vertex's neighbors across edges and
-    /// nets, or an edge's or a net's vertices.
+    /// The rows connected to `row` (JSON), as JSON sets of rows: a vertex's neighbors across edges
+    /// and nets, or an edge's or net's vertices.
     pub fn neighbors(&self, row: &str) -> Result<String, Error> {
         let row: latkit::Row = json("row", row)?;
         Ok(self.view.read(|v| to_json(&v.neighbors(&row))))
     }
 
-    /// The view, for a canvas to show or a shot to draw.
+    /// A handle to the view, for a canvas to show or a shot to draw.
     pub fn handle(&self) -> Handle {
         Handle(self.view.clone())
     }

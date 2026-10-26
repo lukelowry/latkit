@@ -1,7 +1,7 @@
 /**
- * Views: a scene drawn from the sources it is given. What a view keeps is a property, read and set
- * alike, setters silent; what the user changes is told by an event named like its property; what the
- * view is asked is a method, answered by the frames that draw it.
+ * Views: a scene drawn from the given sources. A view's state is a set of properties, and setting
+ * one emits no event. When the user changes that state, the view emits an event named after the
+ * property. Queries are methods, answered by the frames that draw the view.
  */
 
 import type * as bindings from '../pkg/latkit.js';
@@ -12,30 +12,38 @@ import type { Failure, Hit, Stats, ViewEvent, Waiting } from './outputs.js';
 import { Patch } from './patch.js';
 
 /**
- * What a view tells its listeners, by type. Intents (`click`, `open`, `menu`, `drag`, `connect`,
- * `delete`) are told once each, in the order the user acted. Changes (`hovered`, `selection`,
- * `camera`, `waiting`) are named like the property they changed, and tell only their latest. A view
- * tells only what the application did not do itself: its setters change state silently.
+ * The events a view emits, by type, mapped to each event's detail. Intents (`click`, `open`,
+ * `menu`, `drag`, `connect`, `delete`) are emitted once each, in the order the user acted. Changes
+ * (`hovered`, `selection`, `camera`, `waiting`) are named after the property that changed and carry
+ * only its latest value. An `error` event's detail is a {@link LatkitError}. Setters emit nothing,
+ * so events report only what the application did not do itself.
  */
 export type ViewEvents = {
   [E in ViewEvent as E['type']]: E extends { type: 'error' } ? LatkitError : E['detail'];
 };
 
-/** What a view is made with: the sources of the datasets its scene names. */
+/** Options for `Gpu.view()`. */
 export interface ViewOptions {
+  /** The datasets the scene draws; see {@link View.sources}. */
   sources?: readonly Source[];
 }
 
 /** CSS pixels kept clear at the top, right, bottom, and left. */
 export type Insets = [top: number, right: number, bottom: number, left: number];
 
-/** A point on screen: CSS pixels from the top left. */
+/** A point on screen, in CSS pixels from the view's top left corner. */
 export type Point = [x: number, y: number];
 
-/** A position in the space's coordinates: x, y, and elevation. */
+/**
+ * A position in the space's coordinates: x, y, and elevation. On the earth, x and y are longitude
+ * and latitude; on a plot, the axis coordinate and the value.
+ */
 export type Position = [x: number, y: number, elevation: number];
 
-/** A scene drawn from the sources it is given: shown by a canvas, which passes it input, or drawn by shots. */
+/**
+ * A scene drawn from its sources; created by `Gpu.view()`. A canvas shows it and passes it input,
+ * and a `Shot` draws it into pictures.
+ */
 export class View {
   #listeners = new Map<keyof ViewEvents, Set<(event: never) => void>>();
   #scene: Scene;
@@ -51,12 +59,16 @@ export class View {
     this.#released = released;
   }
 
-  /** @internal A view of `scene` drawn with `device`, which calls `released` once destroyed. */
+  /** @internal Creates a view of `scene` on `device`; `released` is called once it is destroyed. */
   static made(device: bindings.Gpu, scene: Scene, released: () => void): View {
     return new View(device, scene, released);
   }
 
-  /** The scene drawn; setting an invalid one throws and keeps the scene drawn. */
+  /**
+   * The scene drawn. Marks that match a mark of the previous scene by kind, dataset, table, and
+   * name keep their state and ease to their new options. Setting an invalid scene throws an
+   * `invalid` error and keeps the current one.
+   */
   get scene(): Scene {
     return this.#scene;
   }
@@ -67,10 +79,11 @@ export class View {
   }
 
   /**
-   * What the view draws, each a dataset by name: a `Data`, its latest version from the frame after
-   * each patch applies; a `Snapshot`, as it is; `Tiles`, the pieces the view asks for. A mark its
-   * dataset no longer fits draws nothing, and the next frame tells why. Two sources of one name are
-   * invalid.
+   * The datasets the view draws, matched to marks by dataset name. The view draws a `Data` at its
+   * latest version, from the frame after each patch; a `Snapshot` unchanged; and `Tiles` as the
+   * pieces it needs. A mark whose dataset no longer fits it draws nothing; it is listed in
+   * `failures`, and the next frame emits an `error` event. Setting two sources with the same name
+   * throws an `invalid` error.
    */
   get sources(): readonly Source[] {
     return this.#sources;
@@ -81,7 +94,10 @@ export class View {
     this.#sources = [...sources];
   }
 
-  /** The axis coordinate shown: sampled fields read their last frame at or before it. */
+  /**
+   * The axis coordinate shown, such as a time. Marks read sampled fields at it, interpolating
+   * between the frame at or before it and the next, unless an expression uses `step()`.
+   */
   get at(): number {
     return view(this).at;
   }
@@ -90,7 +106,10 @@ export class View {
     view(this).at = at;
   }
 
-  /** Where the view looks; setting it looks there at once. */
+  /**
+   * Where the view looks. Setting it moves the camera at once; use {@link View.fly} to ease. A
+   * camera of the wrong kind for the space, such as a plot camera on a map, is ignored.
+   */
   get camera(): Camera {
     return JSON.parse(view(this).camera) as Camera;
   }
@@ -99,7 +118,10 @@ export class View {
     view(this).setCamera(JSON.stringify(camera));
   }
 
-  /** CSS pixels kept clear at the top, right, bottom, and left, as when panels cover the view. */
+  /**
+   * CSS pixels kept clear at the top, right, bottom, and left, such as where page panels cover the
+   * view. The camera centers and fits within the rest.
+   */
   get insets(): Insets {
     const [top, right, bottom, left] = view(this).insets;
     return [top!, right!, bottom!, left!];
@@ -109,7 +131,10 @@ export class View {
     view(this).insets = Float32Array.from(insets);
   }
 
-  /** Degrees per second a map or plane turns around its center; 0 stops it. A diagram never turns. */
+  /**
+   * Degrees per second the camera turns about its center on a map or plane; 0 stops it. A diagram
+   * never turns.
+   */
   get orbit(): number {
     return view(this).orbit;
   }
@@ -118,7 +143,7 @@ export class View {
     view(this).orbit = degreesPerSecond;
   }
 
-  /** The rows selected, a set per table; setting it selects those and no others. */
+  /** The selected rows, one set per table. Setting it selects exactly those rows. */
   get selection(): readonly Rows[] {
     return JSON.parse(view(this).selection) as Rows[];
   }
@@ -127,88 +152,107 @@ export class View {
     view(this).setSelection(JSON.stringify(rows));
   }
 
-  /** What the user points at: the row under the pointer, or the row the keys stepped to. */
+  /** The row under the pointer, or the row keyboard navigation moved to; `null` if none. */
   get hovered(): Hit | null {
     return JSON.parse(view(this).hovered) as Hit | null;
   }
 
-  /** The work under way the last frame stood in for; empty once it is complete. */
+  /**
+   * The kinds of pending work that kept the last frame from being complete; empty when it was
+   * complete. See {@link Waiting}.
+   */
   get waiting(): Waiting {
     return JSON.parse(view(this).waiting) as Waiting;
   }
 
-  /**
-   * Whether the last frame drew everything as the data, scene, and camera say, with nothing standing
-   * in for work under way: what `waiting` lists. A shot waits for it.
-   */
+  /** Whether the last frame was complete, with nothing in `waiting` pending. Shots wait for it. */
   get complete(): boolean {
     return view(this).complete;
   }
 
-  /** Every mark that draws nothing because its data no longer fits it, and why. */
+  /**
+   * An error for each mark that draws nothing because its data no longer fits it, such as a missing
+   * table. Each error's `path` names the mark.
+   */
   get failures(): readonly LatkitError[] {
     return (JSON.parse(view(this).failures) as Failure[]).map(thrown);
   }
 
-  /** What the view does each frame. */
+  /** Counts and timings of the view's frames; see {@link Stats}. */
   get stats(): Stats {
     return JSON.parse(view(this).stats) as Stats;
   }
 
-  /** Whether the view wants a frame: it changed, or work it waited on landed. */
+  /** Whether the view needs a frame, because it changed or work it was waiting on arrived. */
   get wantsFrame(): boolean {
     return view(this).wantsFrame;
   }
 
-  /** Frames what `fit` names on the next frame, keeping pitch and bearing. */
+  /**
+   * Frames what `fit` names, every row by default, keeping pitch and bearing. It takes effect on
+   * the next frame, or a frame or two later when the extent must be measured on the GPU.
+   */
   fit(fit: Fit = 'all'): void {
     view(this).fit(JSON.stringify(fit));
   }
 
-  /** Eases to `camera`. */
+  /**
+   * Eases the camera to `camera` over twice the scene's ease time, or at once when motion is
+   * reduced. A camera of the wrong kind for the space is ignored.
+   */
   fly(camera: Camera): void {
     view(this).fly(JSON.stringify(camera));
   }
 
-  /** Where `position` lands on screen; `null` behind the camera. */
+  /**
+   * Projects `position` to a point on screen with the current camera, for anchoring HTML overlays;
+   * `null` when it is behind the camera.
+   */
   screen(position: Position): Point | null {
     const point = view(this).screen(Float64Array.from(position));
     return point ? [point[0]!, point[1]!] : null;
   }
 
-  /** The position on the ground under screen point `point`; `null` where the view shows none there. */
+  /**
+   * The position on the ground under screen point `point`: at elevation 0 on a plane, on the map or
+   * globe on the earth, the values there on a plot. `null` where the point looks past the ground.
+   */
   position(point: Point): Position | null {
     const position = view(this).position(Float32Array.from(point));
     return position ? [position[0]!, position[1]!, position[2]!] : null;
   }
 
-  /** Where `row` lies on screen, or `null` when no mark draws it in view, once a frame draws the view. */
+  /**
+   * Resolves to where `row` is on screen once a frame draws the view, or `null` when no mark draws
+   * it in view. A diagram's vertices resolve at once.
+   */
   screenOf(row: Row, wait: Wait = {}): Promise<Point | null> {
     return waited<Point | null>(view(this).screenOf(JSON.stringify(row)), wait, 'locating a row');
   }
 
   /**
-   * Every row of a mark that picks within `radius` CSS pixels (0 unless given) of `point`, nearest
-   * first, once a frame draws the view.
+   * Resolves, once a frame draws the view, to every row of a pickable mark within `options.radius`
+   * CSS pixels (0 by default) of `point`, nearest first.
    */
   async pick(point: Point, options: { radius?: number } & Wait = {}): Promise<Hit[]> {
     const hits = view(this).pick(Float32Array.from(point), options.radius ?? 0);
-    return JSON.parse(await waited<string>(hits, options, 'a pick')) as Hit[];
+    return JSON.parse(await waited<string>(hits, options, 'picking')) as Hit[];
   }
 
   /**
-   * The rows joined to `row`, a set per table: a vertex's neighbors across edges and nets, or an
-   * edge's or a net's vertices.
+   * The rows connected to `row`, one set per table: a vertex's neighbors across edges and nets, or
+   * an edge's or a net's vertices. The cost is proportional to the row's degree.
    */
   neighbors(row: Row): Rows[] {
     return JSON.parse(view(this).neighbors(JSON.stringify(row))) as Rows[];
   }
 
   /**
-   * Lays every vertex row without a position out again by the scene's layout: a diagram's blocks, or
-   * points on a plane or the earth. Places a layout gave otherwise hold, so rows added later are
-   * placed around the rest. Once the layout lands, answers a patch to each dataset writing each row
-   * laid out into its mark's position fields; applied, the places are the data's own.
+   * Runs the scene's layout again for every vertex row without a position: a diagram's blocks, or
+   * points on a plane or the earth. Otherwise a layout keeps the places it gave, so rows added
+   * later are placed around the rest. Resolves, once the layout finishes, to one patch per dataset
+   * that writes each laid-out row's place into its mark's position fields. Applying the patches
+   * makes the places part of the data. Marks whose position is not read from fields are left out.
    *
    * ```ts
    * for (const patch of await view.arrange()) if (patch.data === grid.name) grid.apply(patch);
@@ -220,8 +264,9 @@ export class View {
   }
 
   /**
-   * The version of dataset `name` the view draws: the latest version of a `Data` it took, a snapshot
-   * given, or what it holds of `Tiles`, the pieces its camera asked for.
+   * The version of dataset `name` the view draws, or `undefined` if it draws none of that name: the
+   * latest version of a `Data` the view has taken, a given snapshot, or the pieces of `Tiles`
+   * fetched for its camera.
    */
   snapshot(name: string): Snapshot | undefined {
     const snapshot = view(this).snapshot(name);
@@ -229,8 +274,9 @@ export class View {
   }
 
   /**
-   * Calls `listener` with each event of `type` told while it listens; returns a function that stops
-   * it. What lasts is state to read, as the property each change is named for.
+   * Calls `listener` with each event of `type` emitted while it is registered, and returns a
+   * function that removes it. Past events are not replayed; read the current state from the
+   * property a change event is named after.
    */
   on<T extends keyof ViewEvents>(type: T, listener: (event: ViewEvents[T]) => void): () => void {
     let set = this.#listeners.get(type);
@@ -239,7 +285,7 @@ export class View {
     return () => set.delete(listener);
   }
 
-  /** Hands a batch of the view's events to the listeners of each one's type. */
+  /** Dispatches a JSON batch of the view's events to the listeners of each event's type. */
   #tell(json: string): void {
     if (this.#listeners.size === 0) return;
     for (const told of JSON.parse(json) as ViewEvent[]) {
@@ -250,7 +296,10 @@ export class View {
     }
   }
 
-  /** Frees the view, rejecting what it was asked and has not answered; a canvas showing it keeps its last frame. */
+  /**
+   * Frees the view and rejects its unanswered queries. A canvas showing it keeps its last frame.
+   * Calling it again does nothing; other methods throw afterwards.
+   */
   destroy(): void {
     const freed = release<bindings.View>(this);
     if (!freed) return;
@@ -269,7 +318,7 @@ function view(owner: View): bindings.View {
   return inner<bindings.View>(owner, 'View');
 }
 
-/** @internal The view as a canvas shows it or a shot draws it, each time anew. */
+/** @internal Returns a new bindings handle to the view, for a canvas to show or a shot to draw. */
 export function handleOf(owner: View): bindings.Handle {
   return view(owner).handle();
 }

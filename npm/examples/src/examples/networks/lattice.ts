@@ -1,7 +1,7 @@
 /**
- * Square lattices of buses over most of the globe: the stress cases, past any synthetic case in
- * size. Each bus joins its right and lower neighbours, and a few lines span the whole box as great
- * circles. Built in time linear in the bus count.
+ * Square lattices of buses over most of the globe, used as stress cases larger than any synthetic
+ * case. Each bus connects to its east and north neighbours, and a few lines span the whole box,
+ * which the geodesic route draws as great circles. Built in time linear in the bus count.
  */
 import { Data, Patch, reference, type Fit } from 'latkit';
 
@@ -39,8 +39,8 @@ export const LATTICES: Readonly<Record<string, Spec>> = {
   },
 };
 
-/** The lattice `id` as dataset `grid`, buses colored by their distance from the box's middle, and
- * the box. */
+/** Builds lattice `id` as dataset `grid`, with its counts and bounding box. Each bus's `load` is
+ * its distance from the box's center, scaled to 0–1, for coloring. Throws for an unknown id. */
 export function lattice(id: string): { data: Data; buses: number; lines: number; bounds: Fit } {
   const spec = LATTICES[id];
   if (!spec) throw new Error(`No lattice ${id}`);

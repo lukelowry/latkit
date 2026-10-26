@@ -1,23 +1,23 @@
-// Points: where a vertex row's marker stands, how large, and in what color. Draws, probes, bounds,
-// and labels all read a point through `point`.
+// Points: a vertex row's marker position, size, and color. Draws, probes, bounds, and labels all
+// read a point through `point`.
 
 import package::lib::types::{
     NONE, VISIBLE, PLACED, SIZED, STATUS, SHADOW, HOVERED, VERTEX_HALF, VERTEX_WORDS, SIDE_LEFT, SIDE_RIGHT,
     SIDE_TOP, PORT_WORDS, PORT_CODE, PORT_SHAPE, PORT_COLUMN, HALF_UNITS, OWN_HEIGHT,
 };
-import package::lib::bind::{frame, eye, mark, program};
+import package::lib::bind::{frame, mark, program};
 import package::lib::state::{row_at, vertex_at, Vertex};
 import package::lib::project::{world, clip_of, shows, to_screen};
 import package::lib::focus::{focus_of, faded, growth};
 import package::lib::read::bits_value;
-import package::lib::mark::{px, fringe, within};
+import package::lib::mark::{px, px_per_length, fringe, within};
 import package::lib::marker::{theme_port_size, theme_lift};
 import package::lib::drawn::drawn_row;
 
 struct Point {
     clip: vec4f,
     world: vec3f,
-    // Where it stands, in position units.
+    // Its position, in position units.
     position: vec2f,
     // Half the marker's width and height, CSS pixels.
     half: vec2f,
@@ -34,8 +34,8 @@ fn placed(v: Vertex) -> bool {
     return (v.flags & PLACED) != 0u;
 }
 
-// The marker of row `row` of the current vertex mark. A hovered marker sized in pixels grows; one
-// sized in units is part of the drawing, and only glows.
+// The marker of the current vertex mark's held row `row`. A hovered marker sized in pixels grows.
+// One sized in units is part of the drawing, so it only glows.
 fn point(row: u32) -> Point {
     let v = vertex_at(row_at(row));
     var half = vec2f(px(v.half.x, VERTEX_HALF));
@@ -61,7 +61,7 @@ fn point(row: u32) -> Point {
     return p;
 }
 
-// The marker of drawn row `item`, faded and grown as its tile comes and goes.
+// The marker of drawn row `item`, faded and scaled while its tile fades in or out.
 fn shown_point(item: u32) -> Point {
     let d = drawn_row(item);
     var p = point(d.row);
@@ -70,18 +70,19 @@ fn shown_point(item: u32) -> Point {
     return p;
 }
 
-// Half the marker of the vertex in any slot, CSS pixels: its flags say whether its size is in
-// position units and whether it has its own height.
+// Half the size of a vertex's marker in CSS pixels, for a vertex of any mark. Its flags say whether
+// its size is in position units and whether it has its own height.
 fn vertex_half(v: Vertex) -> vec2f {
     var half = vec2f(v.half.x, select(v.half.x, v.half.y, (v.flags & OWN_HEIGHT) != 0u));
     if (v.flags & HALF_UNITS) != 0u {
-        half *= eye.px_per_unit.x;
+        half *= px_per_length();
     }
     return within(half, v.range);
 }
 
-// Where a port sits on a marker of half size `half`, CSS pixels from its center, y down: its side in
-// the code's low two bits, then its place among the ports on that side and how many share it.
+// A port's offset from the center of a marker of half size `half`, in CSS pixels with y down. The
+// code holds the side in its low two bits, then the port's index on that side and the number of
+// ports there.
 fn port_place(half: vec2f, code: u32) -> vec2f {
     let along = (f32((code >> 2u) & 255u) + 1.0) / (f32((code >> 10u) & 255u) + 1.0) * 2.0 - 1.0;
     switch code & 3u {
@@ -92,7 +93,7 @@ fn port_place(half: vec2f, code: u32) -> vec2f {
     }
 }
 
-// The way into a marker from a port on its side, y down.
+// The unit direction from a port into its marker, y down.
 fn port_inward(code: u32) -> vec2f {
     switch code & 3u {
         case SIDE_LEFT: { return vec2f(1.0, 0.0); }
@@ -104,12 +105,12 @@ fn port_inward(code: u32) -> vec2f {
 
 struct Port {
     center: vec2f,
-    // Half its size, CSS pixels: never past a quarter of its marker's shorter side, so a small
+    // Half its size in CSS pixels, at most a quarter of the marker's shorter side, so a small
     // marker still shows under its ports.
     half: f32,
     shape: u32,
     code: u32,
-    // Whether its reference names a net: a free port draws hollow.
+    // Whether its reference names a net. An unconnected port draws hollow.
     wired: bool,
 }
 
@@ -124,9 +125,9 @@ fn port_at(p: Point, k: u32) -> Port {
     return Port(center, half, program[info + PORT_SHAPE], code, wired);
 }
 
-// CSS pixels a point's quad reaches past its center: the marker, its status ring when it has one,
-// its shadow on a diagram's sheet when it drops one, a target pixel of edge, and when `lit`, as the
-// focus draw draws it, its glow.
+// How far a point's quad extends from its center, in CSS pixels. It covers the marker, its status
+// ring or its shadow on a diagram's sheet, one target pixel of antialiased edge, and when `lit` (in
+// the focus draw), its glow.
 fn reach(p: Point, lit: bool) -> vec2f {
     let ring = select(0.0, 3.0 * frame.unit, (mark.flags & STATUS) != 0u && p.status.a > 0.0);
     let shadow = select(0.0, 2.0 * theme_lift(), (mark.flags & SHADOW) != 0u);

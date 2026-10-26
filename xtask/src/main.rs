@@ -1,24 +1,29 @@
 //! Repository tasks, run as `cargo xtask <task>`.
 //!
-//! - `check`: CI's checks in its order, GPU tests required: format, lint, test, document, and package
-//!   the crates, check that `native` stays out of browser builds, then format, lint, type-check, and
-//!   test the npm workspace over a fresh `wasm --dev`; then the browser gate.
-//! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`: every
-//!   shader variant's pipelines compile in Chrome within budget, and every example page draws and
-//!   answers the pointer without errors or stalls. On `SwiftShader`, as Linux always is, only that
-//!   every pipeline compiles: pages and times need a GPU.
-//! - `bench [--quick] [--only a,b] [--repeats n] [--update] [--software]`: the
-//!   benchmark (`benchmark/`) over a release `wasm`: every scenario up its sizes in Chrome while the
-//!   last one fits, each phase's time, GPU time, stalls, and exact work, held to how it may grow with
-//!   size, to the committed work, and to the times taken on this machine; a lost device stops the
-//!   sweep. `--quick` runs each scenario once at its smallest size. See `benchmark/run.ts`.
-//! - `wasm [--dev]`: build `latkit-js`, bind it with the `wasm-bindgen` CLI matching `Cargo.lock`,
-//!   and compile the npm wrapper. `--dev` builds faster, without link-time optimization.
-//! - `version`: give the crates the npm package's version, as changesets set it.
-//! - `package`: build an isolated, optimized npm tarball, the one `pnpm release` publishes, and
-//!   report its sizes and hashes.
-//! - `package-test`: install the latest tarball into a consumer and verify it in Chrome.
-//! - `examples [--open]`: `wasm --dev`, then serve the example suite at <http://127.0.0.1:5200>;
+//! - `check`: CI's checks in CI's order, with GPU tests required. Formats, lints, tests, documents,
+//!   and packages the crates, and checks that `native` stays out of browser builds. Then formats,
+//!   lints, type-checks, and tests the npm workspace over a fresh `wasm --dev`, and runs the
+//!   browser gate.
+//! - `browser`: the browser gate (`npm/examples/gate/gate.ts`) over a fresh `wasm --dev`. Checks
+//!   that every shader variant's pipelines compile in Chrome within budget, and that every example
+//!   page draws and responds to the pointer without errors or stalls. On `SwiftShader`, which Linux
+//!   always uses, checks only that every pipeline compiles, since pages and times need a GPU.
+//! - `bench [--quick] [--only a,b] [--repeats n] [--update] [--software]`: the benchmark
+//!   (`benchmark/`) over a release `wasm`. Runs every scenario at increasing sizes in Chrome while
+//!   the last size stays within budget. Measures each phase's time, GPU time, stalls, and exact
+//!   work, and judges them against their allowed growth with size, the committed work, and this
+//!   machine's times. A lost device stops the sweep. `--quick` runs each scenario once at its
+//!   smallest size. See `benchmark/run.ts`.
+//! - `wasm [--dev]`: builds `latkit-js`, binds it with the `wasm-bindgen` CLI version in
+//!   `Cargo.lock`, and compiles the npm wrapper. `--dev` builds faster, without link-time
+//!   optimization.
+//! - `version`: sets the crates' version to the npm package's, as changesets set it.
+//! - `package`: builds an isolated, optimized npm tarball, the one `pnpm release` publishes, and
+//!   reports its sizes and hashes.
+//! - `package-test`: installs the latest tarball into a consumer and verifies it in Chrome.
+//! - `release`: runs `npm/release.mjs`, which verifies or publishes each artifact, then tags the
+//!   release.
+//! - `examples [--open]`: `wasm --dev`, then serves the example suite at <http://127.0.0.1:5200>.
 //!   `--open` opens it in the browser once it is ready.
 
 use std::path::{Path, PathBuf};
@@ -67,7 +72,7 @@ fn main() -> ExitCode {
 type Result<T = ()> = std::result::Result<T, String>;
 
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask sits in the workspace root").to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask is in the workspace root").to_path_buf()
 }
 
 fn run(program: &str, args: &[&str]) -> Result {
@@ -90,7 +95,7 @@ fn pnpm(args: &[&str]) -> Result {
     run(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" }, args)
 }
 
-/// What `.github/workflows/ci.yml` checks, in its order, then the browser gate.
+/// Runs the checks of `.github/workflows/ci.yml` in its order, then the browser gate.
 fn check() -> Result {
     let gpu = [("LATKIT_REQUIRE_GPU", "1")];
     cargo(&["fmt", "--all", "--check"])?;
@@ -104,7 +109,7 @@ fn check() -> Result {
         &["doc", "--locked", "-p", "latkit", "--no-deps", "--all-features"],
         &[("RUSTDOCFLAGS", "-D warnings")],
     )?;
-    // CI's tree is clean; here uncommitted work is packaged as it stands.
+    // CI's tree is clean. Locally, package uncommitted work as is.
     cargo(&["package", "--locked", "--allow-dirty", "-p", "latkit"])?;
     cargo(&[
         "package",
@@ -127,7 +132,7 @@ fn check() -> Result {
     browser_gate()
 }
 
-/// Builds the package for the browser, then runs the gate over the shaders the build linked.
+/// Builds the wasm package, then runs the browser gate over the shaders the build linked.
 fn browser() -> Result {
     wasm(true)?;
     browser_gate()
@@ -138,7 +143,7 @@ fn browser_gate() -> Result {
     run("node", &["npm/examples/gate/gate.ts", &shaders])
 }
 
-/// The directory `latkit`'s build script wrote the linked shaders and `shaders.json` to.
+/// The directory where `latkit`'s build script wrote the linked shaders and `shaders.json`.
 fn shaders_dir() -> Result<String> {
     eprintln!("$ cargo check --locked -p latkit --message-format=json-render-diagnostics");
     let output = Command::new(env!("CARGO"))
@@ -200,7 +205,7 @@ fn package() -> Result {
 }
 
 fn package_test() -> Result {
-    // Preparation prints the isolated consumer path into a stable manifest for the browser runner.
+    // Creates an isolated consumer and adds its path to the package report for the browser runner.
     run("node", &["npm/build.mjs", "consumer"])?;
     let report = std::fs::read_to_string(root().join("target/npm/package.json")).map_err(|e| e.to_string())?;
     let report: serde_json::Value = serde_json::from_str(&report).map_err(|e| e.to_string())?;
@@ -224,8 +229,8 @@ fn package_test() -> Result {
     run("node", &["npm/build.mjs", "verified"])
 }
 
-/// Gives the crates the npm package's version, which changesets sets: one version for everything
-/// released together.
+/// Sets the crates' version to the npm package's, which changesets sets, so everything released
+/// together shares one version.
 fn version() -> Result {
     let manifest = std::fs::read_to_string(root().join("npm/package.json")).map_err(|e| format!("npm: {e}"))?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest).map_err(|e| format!("npm: {e}"))?;

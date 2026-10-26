@@ -1,8 +1,10 @@
-//! Lists on the GPU: each item counts its entries, a scan turns the counts into where each item's
-//! entries start, and each item writes its entries there. The total lands in the list's header as
-//! indirect draw and dispatch arguments, so nothing waits on a readback to know it. After the
-//! segment lists lie the words of the rows each mark drawing a table in part draws: which held row
-//! each is, expanded from its runs when they change, so every pass reads a drawn row in one word.
+//! Lists on the GPU: each item counts its entries, a scan turns the counts into start offsets, and
+//! each item writes its entries there. The total goes into the list's header as indirect draw and
+//! dispatch arguments, so nothing waits on a readback for it.
+//!
+//! After the segment lists lie the drawn-row words of each mark drawing a paged table: the held
+//! row of each row drawn, expanded from the drawing's runs when they change, so every pass reads a
+//! drawn row in one word.
 
 use super::View;
 use super::marks::Shown;
@@ -13,11 +15,11 @@ use crate::gpu::readback::Readback;
 use crate::gpu::shaders::{self as wgsl, Shader};
 use crate::scene::mark::MarkKind;
 
-/// A stroke mark's segment list, when its rows' paths have different numbers of segments: where it
-/// lies, a stamp of what it was last built from (the list, the paths, and for great circles where
-/// the vertices are drawn), and its count. Each entry is a segment's row and how far along its path it
-/// starts. A curved mark's count is read back, one at a time, and its list makes room for what it
-/// found.
+/// A listed mark's segment list (see `Shown::listed`), used when its rows have different numbers
+/// of segments, or for areas, of triangles: where it lies, a stamp of its last build's inputs (the
+/// list, the paths, and for great circles where the vertices are drawn), and its count. Each entry
+/// is a segment's row and how far along its path it starts. A curved mark's count is read back,
+/// one readback at a time, and its list grows to fit what was found.
 #[derive(Default)]
 pub(crate) struct Segments {
     pub(crate) list: Option<List>,
@@ -28,9 +30,8 @@ pub(crate) struct Segments {
 /// Words a segment list keeps per segment: its row, and its distance along.
 const SEGMENT_WORDS: u32 = 2;
 
-/// Where the words of the rows a mark drawing a table in part draws lie in the lists buffer,
-/// `[start, room]` in words, and the stamp of what they were last expanded from: the drawing, where
-/// they lie, and the buffer.
+/// Where a paged mark's drawn-row words lie in the lists buffer, `[start, room]` in words, and the
+/// stamp of their last expansion's inputs: the drawing, their location, and the buffer.
 #[derive(Default)]
 pub(crate) struct DrawnRows {
     pub(crate) at: Option<[u32; 2]>,
@@ -43,7 +44,7 @@ pub(crate) struct List {
     pub(crate) header: u32,
     pub(crate) items: u32,
     pub(crate) entries: u32,
-    /// Entries kept, and words per entry.
+    /// The most entries it keeps, and words per entry.
     pub(crate) kept: u32,
     pub(crate) stride: u32,
     sums: u32,
@@ -69,7 +70,7 @@ impl List {
         items.div_ceil(wgsl::SCAN_WORKGROUP).max(1) + items + 1
     }
 
-    /// Where the scan leaves the list's total, before it is held to what the list keeps.
+    /// Where the scan writes the list's total, before it is capped at `kept`.
     pub(crate) fn total(&self) -> u32 {
         self.counts + self.items
     }
@@ -90,8 +91,8 @@ impl List {
 }
 
 impl View {
-    /// Lays out every listed stroke mark's segment list at the front of the lists buffer, taking
-    /// counts read back: a list too small for what its rows were found to have grows.
+    /// Lays out every listed mark's segment list at the front of the lists buffer, using counts
+    /// read back: a list smaller than its rows were found to need grows, with a quarter to spare.
     pub(super) fn lay_out_segments(&mut self) {
         let mut at = 0;
         for shown in &mut self.marks {
@@ -117,7 +118,7 @@ impl View {
             at += List::front_words(list.kept, SEGMENT_WORDS) + List::back_words(items);
             shown.segments.list = Some(list);
         }
-        // Then a word for each row a mark drawing a table in part draws, those that left included.
+        // Then one word per row each paged mark draws, rows that left included.
         for shown in &mut self.marks {
             if shown.drawing().is_none() {
                 shown.drawn_rows.at = None;
@@ -134,8 +135,8 @@ impl View {
         self.list_words = at;
     }
 
-    /// The marks whose drawn rows' words are written again this frame: where their drawing, where
-    /// the words lie, or the lists buffer changed.
+    /// The marks whose drawn-row words are rewritten this frame: those whose drawing, rows, word
+    /// location, or lists buffer changed.
     pub(super) fn drawn_rows_due(&mut self) -> Vec<usize> {
         let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
         let mut due = Vec::new();
@@ -151,14 +152,14 @@ impl View {
         due
     }
 
-    /// The marks whose segment lists build again this frame: their list, the lists buffer, or their
-    /// paths changed, or, on great circles, where the vertices their rows join are drawn. A color
-    /// changing every frame builds none.
+    /// The marks whose segment lists rebuild this frame: those whose list, lists buffer, paths, or
+    /// drawing changed, or, along great circles or lanes, where the vertices their rows join are
+    /// drawn. A color changing every frame rebuilds none.
     pub(super) fn segments_due(&mut self) -> Vec<usize> {
         let vertices: Vec<(bool, u64)> =
             self.marks.iter().filter(|m| m.kind() == MarkKind::Vertices).map(Shown::places_drawn).collect();
         let generation = self.resources.as_ref().map_or(0, super::resources::Resources::lists_generation);
-        // Lanes draw as the screen shows them: they count again as the camera moves.
+        // Lanes are laid out on screen, so they count again whenever the camera moves.
         let projected = self.projected();
         let sight = (projected.clip_from_world.to_cols_array().map(f64::to_bits), self.size.map(f64::to_bits));
         let mut due = Vec::new();
@@ -177,9 +178,10 @@ impl View {
         due
     }
 
-    /// Reads back how many segments each mark along great circles holds, so a list too small grows:
-    /// one count at a time, never dropped for a newer list, which is counted once it lands. A mark
-    /// bowed into lanes alone has room for every piece of every lane, and reads back nothing.
+    /// Reads back how many segments each great-circle mark needs, so a list too small grows. Each
+    /// mark has one readback at a time: a newer list does not cancel it, and is counted after it
+    /// arrives. A mark only bowed into lanes always has room for every piece of every lane, so it
+    /// reads back nothing.
     pub(super) fn count_found(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &Inner) {
         let gpu = self.gpu.clone();
         let Some(resources) = &self.resources else { return };
@@ -199,7 +201,7 @@ impl View {
 }
 
 impl Shown {
-    /// Whether how many segments its list holds is being read back, or is due to be.
+    /// Whether its segment count is being read back, or is due to be.
     pub(crate) fn counting(&self) -> bool {
         let found = &self.segments.found;
         found.busy() || (self.curved() && self.geodesic && self.drawable() && found.due(self.segments.built))

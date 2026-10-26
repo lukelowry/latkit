@@ -1,4 +1,5 @@
-//! Patches applied to a dataset agree with a plain model of rows, whatever the sequence.
+//! Dataset tests, including a property test that any sequence of patches leaves a dataset matching
+//! a plain model of its rows.
 
 use proptest::prelude::*;
 
@@ -134,7 +135,7 @@ fn a_failed_patch_changes_nothing() {
 }
 
 #[test]
-fn appends_one_after_another_record_as_one_and_name_their_own_errors() {
+fn consecutive_appends_merge_and_report_their_own_errors() {
     let table = || Table::new("Bus", vec![1_u64, 2]).field("kv", vec![230.0, 115.0]);
     let one = Data::new("grid");
     one.apply(Patch::new().replace(table()).append(
@@ -150,7 +151,7 @@ fn appends_one_after_another_record_as_one_and_name_their_own_errors() {
         patch = patch.append("Bus", [f64::from(f)], [("vm", vec![v + 1.0, v + 2.0])]);
     }
     each.apply(patch).expect("valid");
-    assert_eq!(each.snapshot().to_bytes(), one.snapshot().to_bytes(), "a frame a change records as the frames in one");
+    assert_eq!(each.snapshot().to_bytes(), one.snapshot().to_bytes(), "appends of one frame each merge into one");
     let error = each
         .apply(
             Patch::new()
@@ -158,7 +159,7 @@ fn appends_one_after_another_record_as_one_and_name_their_own_errors() {
                 .append("Bus", [4.0], [("vm", vec![1.0_f32])])
                 .append("Bus", [5.0], [("vm", vec![1.0_f32, 1.0])]),
         )
-        .expect_err("a frame short of a row");
+        .expect_err("a frame missing a row's value");
     assert!(error.to_string().starts_with("patch[1].Bus.vm"), "{error}");
 }
 
@@ -185,7 +186,7 @@ fn references_to_unknown_tables_are_refused() {
 }
 
 #[test]
-fn dangling_references_wire_up_when_the_row_arrives() {
+fn dangling_references_resolve_once_the_row_exists() {
     let data = Data::new("grid");
     data.apply(Patch::new().set(Table::new("Bus", vec![1_u64])).set(Table::new("Branch", Ids::count(1)).reference(
         "to",
@@ -225,13 +226,13 @@ fn inverses_follow_every_change_and_snapshots_keep_theirs() {
     let now = data.snapshot();
     assert_eq!((inverse(&now, 0), inverse(&now, 2)), (vec![0, 2], vec![1, 3]));
     data.apply(Patch::new().remove("Bus", vec![1_u64])).expect("valid");
-    // Bus 1 left: what named it names nothing, and the rest moved up a row.
+    // Bus 1 is gone: the rows that referenced it are unwired, and the later buses moved up a row.
     let now = data.snapshot();
     assert_eq!((inverse(&now, 0), inverse(&now, 1)), (vec![], vec![1, 3]));
     assert_eq!(inverse(&before, 0), vec![0, 2]);
 }
 
-/// A dataset of `rows` rows of `Line` with a `flow` sampled over `frames` frames, one a second.
+/// A dataset of `rows` rows of `Line` with a `flow` sampled over `frames` frames, one per second.
 fn sampled(rows: usize, frames: usize) -> Snapshot {
     let data = Data::new("grid");
     let at: Vec<f64> = (0..frames).map(|f| f as f64).collect();
@@ -265,7 +266,7 @@ fn describe_names_tables_fields_and_spans() {
 }
 
 #[test]
-fn envelopes_read_levels_as_frames_would() {
+fn envelopes_match_a_scan_of_the_frames() {
     let (rows, frames) = (3, 700);
     let data = sampled(rows, frames);
     let envelope = |field: &str, range: [f64; 2], spans: usize, ids: Option<Vec<u32>>| {
@@ -340,7 +341,7 @@ fn queries_filter_sort_page_and_select() {
     .expect("a query");
     assert_eq!(names(&data.query(&json).expect("a query")), [text("b"), text("d")]);
     let named = data.query(&Query::of("Branch").ids([3_u64, 1, 9])).expect("by ids");
-    assert_eq!(names(&named), [text("d"), text("b")], "in the order named, unknown ids passed over");
+    assert_eq!(names(&named), [text("d"), text("b")], "in the order given, unknown ids skipped");
     let lake = data.query(&Query::of("Branch").filter(field("name").contains("C"))).expect("contains");
     assert_eq!(names(&lake), [text("c")], "ignoring case");
     assert!(data.query(&Query::of("Nope")).is_err());
@@ -360,7 +361,7 @@ fn queries_read_sampled_fields_at_a_coordinate() {
 }
 
 #[test]
-fn ids_too_large_for_json_numbers_cross_as_text() {
+fn ids_too_large_for_json_numbers_are_written_as_text() {
     let big = (1_u64 << 53) + 1;
     let data = Data::new("grid");
     data.apply(Table::new("Bus", vec![big, 7]).field("kv", vec![1.0, 2.0])).expect("valid");
@@ -368,7 +369,7 @@ fn ids_too_large_for_json_numbers_cross_as_text() {
     assert_eq!(serde_json::to_string(&Id::Number(7)).expect("an id"), "7");
     let now = data.snapshot();
     let text = Id::from(big.to_string());
-    assert_eq!(now.get("Bus", text, "kv", None), Some(Value::Number(1.0)), "the text names the row");
+    assert_eq!(now.get("Bus", text, "kv", None), Some(Value::Number(1.0)), "the decimal text finds the row");
     assert_eq!(now.get("Bus", big, "kv", None), Some(Value::Number(1.0)));
     let counted = Table::new("Count", Ids::count(3)).field("x", vec![0.0, 1.0, 2.0]);
     data.apply(counted).expect("valid");
@@ -387,7 +388,7 @@ fn schema_changes_only_with_fields() {
 }
 
 #[test]
-fn rows_appended_by_id_leave_the_rest_holding() {
+fn appending_by_id_keeps_other_rows_last_values() {
     let data = Data::new("grid");
     data.apply(Patch::new().set(Table::new("Bus", [10_u64, 20, 30])).append(
         "Bus",
@@ -397,19 +398,19 @@ fn rows_appended_by_id_leave_the_rest_holding() {
     .expect("valid");
     data.apply(Patch::new().append_rows("Bus", [1.0], [("vm", vec![0.9])], [30_u64])).expect("by id");
     let vm = |id: u64| data.snapshot().get("Bus", id, "vm", 1.0);
-    assert_eq!(vm(10), Some(Value::Number(1.0)), "held");
+    assert_eq!(vm(10), Some(Value::Number(1.0)), "other rows keep their last value");
     assert_eq!(vm(30), Some(Value::Number(f64::from(0.9_f32))), "recorded");
     let error = data.apply(Patch::new().append_rows("Bus", [2.0], [("vm", vec![1.0])], [40_u64]));
-    assert!(error.is_err_and(|e| e.to_string().contains("no row")), "rows appended to are rows the table holds");
+    assert!(error.is_err_and(|e| e.to_string().contains("no row")), "appending to an unknown id fails");
 }
 
 #[test]
-fn a_patch_to_a_dataset_changes_it_alone() {
+fn a_patch_applies_only_to_its_named_dataset() {
     let grid = Data::new("grid");
-    grid.apply(Patch::to("grid").set(Table::new("Bus", Ids::count(1)))).expect("its own");
+    grid.apply(Patch::to("grid").set(Table::new("Bus", Ids::count(1)))).expect("its own dataset");
     let error = grid.apply(Patch::to("weather").set(Table::new("Cell", Ids::count(1))));
     assert!(error.is_err_and(|e| e.to_string().contains("weather")));
     let bytes = grid.snapshot().to_bytes();
     assert_eq!(Patch::from_bytes(&bytes).expect("a patch").data().map(crate::Name::as_str), Some("grid"));
-    assert!(Snapshot::from_bytes(&Patch::new().to_bytes()).is_err(), "a dataset is a patch to one");
+    assert!(Snapshot::from_bytes(&Patch::new().to_bytes()).is_err(), "dataset bytes must name the dataset");
 }

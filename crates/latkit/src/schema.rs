@@ -1,20 +1,21 @@
-//! What latkit reads and writes, as JSON Schema: scenes, datasets, patches, queries, cameras, fits,
-//! budgets, and shots in; events, hits, stats, work, and descriptions out. Each type serializes or
-//! deserializes as itself and its schema derives from the same declaration, so the code and its
-//! schema never part. `latkit schema` prints them, and npm's types are written from them.
+//! JSON Schemas for latkit's inputs and outputs. Inputs are scenes, datasets, patches, queries,
+//! cameras, fits, budgets, and shots. Outputs are events, hits, stats, work, and descriptions.
+//!
+//! Each schema derives from the same declaration as its type's serde code, so the two cannot drift
+//! apart. `latkit schema` prints them, and the npm package's types are generated from them.
 
 use schemars::generate::SchemaSettings;
 use schemars::transform::RecursiveTransform;
 
-/// The settings every schema is made with: draft 2020-12, saying what is read or written and not
-/// latkit's defaults, which descriptions say.
+/// Settings for every schema: draft 2020-12 with `default` keywords removed, since descriptions
+/// state latkit's defaults.
 fn settings() -> SchemaSettings {
     SchemaSettings::draft2020_12().with_transform(RecursiveTransform(|schema: &mut schemars::Schema| {
         schema.remove("default");
     }))
 }
 
-/// The JSON Schema of what `T` deserializes from, its definitions under `$defs`.
+/// The JSON Schema `T` deserializes from, with its definitions under `$defs`.
 ///
 /// ```
 /// let data = latkit::schema::<latkit::Data>();
@@ -24,9 +25,11 @@ pub fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
     settings().into_generator().into_root_schema_for::<T>().to_value()
 }
 
-/// Every input's JSON Schema in one document, each under its name in `$defs` with what it is built
-/// of: `Scene`, `Data` (a dataset's document), `Patch`, `Query`, `Camera`, `Fit`, `Budget`, `Shot`.
-/// What latkit writes is under `outputs`, as it serializes: `ViewEvent`, `Stats`, `Work`,
+/// Every input and output JSON Schema in one document.
+///
+/// Inputs, and the types they are built from, are under `$defs` by name: `Scene`, `Data` (a
+/// dataset's document), `Patch`, `Query`, `EnvelopeRequest`, `Camera`, `Fit`, `Budget`, and `Shot`.
+/// Outputs, in their serialized form, are under `outputs`: `ViewEvent`, `Stats`, `Work`,
 /// `Description`, `Rows`, `Camera`, `Budget`, `Value`, and `Failure` (an error).
 ///
 /// ```

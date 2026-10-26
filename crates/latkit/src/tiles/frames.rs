@@ -1,9 +1,9 @@
-//! Time tiles: sampled fields' histories fetched in spans as the sets drawing them ask, from the
-//! files [`Snapshot::to_tiles`](crate::Snapshot::to_tiles) writes. Every field wants its coarsest
-//! spans, which stand in for any span still loading; a line tracing it wants the spans of the level of
-//! detail its plot window draws at, middle first; a mark showing it at the view's coordinate wants the
-//! frames about that coordinate. A span drawn puts its entries in the set's dataset; one no longer
-//! drawn lets them go.
+//! Time tiles: sampled fields' histories fetched in spans as the sets drawing them need, from the
+//! files [`Snapshot::to_tiles`](crate::Snapshot::to_tiles) writes. Every field needs its coarsest
+//! spans, which are drawn as placeholders for any span still loading. A line tracing a field needs
+//! the spans of the level of detail its plot window draws at, middle first. A mark showing a field
+//! at the view's coordinate needs the frames around that coordinate. A drawn span adds its entries
+//! to the set's dataset, and a span no longer drawn removes them.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -20,21 +20,21 @@ use crate::derive::Jobs;
 use crate::host::Request;
 use crate::{Error, Pending};
 
-/// Spans a line wants at most, middle first: those its plot window draws need far fewer.
+/// Most spans a line needs, middle first. A plot window normally needs far fewer.
 const MAX_SPANS: usize = 64;
 
-/// Sampled fields' spans of one manifest, as every set drawing them shares them: the dataset without
-/// their entries, and each field's spans fetched and decoded.
+/// The spans of one manifest's sampled fields, shared by every set drawing them: the base dataset
+/// without their entries, and each field's fetched and decoded spans.
 pub(crate) struct Fetched {
     manifest: Manifest,
-    /// Where each span lies, resolved against the manifest's URL.
+    /// The spans' URL template, resolved against the manifest's URL.
     url: String,
     base: Base,
-    /// Per field listed, its spans.
+    /// Each listed field's spans.
     fields: Vec<Tiling<Span>>,
 }
 
-/// The dataset without its sampled fields' entries, as it lands.
+/// The base dataset, without its sampled fields' entries, as it arrives.
 enum Base {
     Fetching(Pending<Vec<u8>>),
     Landed(Snapshot),
@@ -42,7 +42,8 @@ enum Base {
 }
 
 impl Fetched {
-    /// The fields `manifest`, found at `url`, lists; their dataset is fetched at once.
+    /// Opens the fields that `manifest`, fetched from `url`, lists. Their base dataset is fetched
+    /// immediately.
     pub(crate) fn open(url: &str, manifest: Manifest, jobs: &Jobs<'_>) -> Fetched {
         let base = jobs.fetch(&Request::new(crate::url::resolve(url, &manifest.data)));
         Fetched {
@@ -53,19 +54,19 @@ impl Fetched {
         }
     }
 
-    /// Fetches and decodes under way.
+    /// Fetches and decodes in progress.
     pub(crate) fn under_way(&self) -> usize {
         usize::from(matches!(self.base, Base::Fetching(_))) + self.fields.iter().map(Tiling::under_way).sum::<usize>()
     }
 
-    /// Lets go of what set `set` drew.
+    /// Releases what set `set` drew.
     pub(crate) fn release(&mut self, set: u64) {
         for tiling in &mut self.fields {
             tiling.release(set);
         }
     }
 
-    /// Takes the dataset without the fields' entries, once it landed.
+    /// Takes the base dataset once it arrives.
     fn settle(&mut self) {
         let Base::Fetching(pending) = &self.base else { return };
         let Some(landed) = pending.take() else { return };
@@ -76,8 +77,8 @@ impl Fetched {
     }
 }
 
-/// What one set draws of time tiles: whether its dataset holds the one without the fields' entries
-/// yet, and per field listed, the spans it draws with the runs each put in.
+/// What one set draws of time tiles: whether its dataset holds the base dataset yet, and for each
+/// listed field, the spans it draws with the runs each added.
 pub(crate) struct Drawing {
     based: bool,
     fields: Vec<FxHashMap<Span, Vec<Run>>>,
@@ -93,8 +94,9 @@ impl Drawing {
         self.fields.iter().map(FxHashMap::len).sum()
     }
 
-    /// Brings `data`, set `set`'s dataset `name`, up to what `reading` reads of it, from what
-    /// `fetched` holds: whether it changed, whether a span stands in, and a failure to tell.
+    /// Updates `data`, set `set`'s dataset `name`, to what `reading` reads of it, from what
+    /// `fetched` holds. Returns whether it changed, whether any wanted span still shows a
+    /// placeholder, and a failure to report.
     pub(crate) fn update(
         &mut self,
         set: u64,
@@ -122,8 +124,8 @@ impl Drawing {
         for (k, listed) in manifest.fields.iter().enumerate() {
             let reads = reading.reads(name, &listed.table, &listed.field);
             let (tiling, drawn_spans) = (&mut fields[k], &mut self.fields[k]);
-            // Spans drawn may tell more finely where the window lies, which may want finer spans: ask
-            // again until what is wanted settles, so what stands in is never taken for what draws.
+            // Drawn spans may locate the window more precisely, which may need finer spans. Repeat
+            // until the wanted spans stop changing, so a placeholder is never mistaken for data.
             let (mut asked, mut standing) = (Vec::new(), false);
             for _ in 0..=MAX_LEVEL {
                 let wanted =
@@ -143,8 +145,8 @@ impl Drawing {
     }
 }
 
-/// Makes `data`'s field `field` of `table` hold the entries of spans `drawn` and of no other, of
-/// those `tiling` decoded; `spans` holds the runs each span put in. Whether it changed.
+/// Makes field `field` of `table` in `data` hold exactly the entries of spans `drawn`, from those
+/// `tiling` decoded. `spans` records the runs each span added. Returns whether it changed.
 fn draw(
     spans: &mut FxHashMap<Span, Vec<Run>>,
     tiling: &Tiling<Span>,
@@ -177,7 +179,8 @@ fn draw(
     changed
 }
 
-/// Puts the runs of field `field` of `table` that `tile` holds in `samples`: those it put.
+/// Inserts the runs of field `field` of `table` from `tile` into `samples`, returning the runs
+/// inserted.
 fn held(tile: &Patch, table: &Name, field: &Name, samples: &mut Samples) -> Vec<Run> {
     let mut runs = Vec::new();
     for op in &tile.ops {
@@ -194,7 +197,7 @@ fn held(tile: &Patch, table: &Name, field: &Name, samples: &mut Samples) -> Vec<
     runs
 }
 
-/// The samples `data` holds of the field `listed` names.
+/// The samples `data` holds for the field `listed` names.
 fn sampled<'a>(data: &'a Snapshot, listed: &Listed) -> Option<&'a Samples> {
     match data.table(&listed.table)?.field_named(&listed.field)? {
         Field::Sampled(samples, _) => Some(samples),
@@ -202,10 +205,11 @@ fn sampled<'a>(data: &'a Snapshot, listed: &Listed) -> Option<&'a Samples> {
     }
 }
 
-/// The spans of a field reading `frames` a view wants, nearest first: those of its coarsest level
-/// holding any entry always; where a mark shows it, `(_, true)`, the frames about the coordinate shown;
-/// where a line traces it, `(true, _)`, those of the level of detail the plot window draws at, middle
-/// first. Where the window lies among the frames, what is held tells, as finely as it is held.
+/// The spans a view needs of a field covering `frames`, nearest first. These are always the spans
+/// of its coarsest level holding any entry; when a mark shows it (`(_, true)`), the frames around
+/// the shown coordinate; and when a line traces it (`(true, _)`), the spans of the level of detail
+/// the plot window draws at, middle first. The window's position among the frames comes from the
+/// samples already held, as precisely as they allow.
 fn wanted(
     frames: &Range<u64>,
     samples: Option<&Samples>,
@@ -214,10 +218,10 @@ fn wanted(
     chunk: u32,
     levels: u32,
 ) -> Vec<Span> {
-    // The entries of each level a history of `frames` holds: whole buckets only.
+    // The bucket indices at each level within `frames`: whole buckets only.
     let chunk = u64::from(chunk);
     let entries = |level: u32| frames.start >> (3 * level)..frames.end >> (3 * level);
-    // The spans of `level` holding its entries over frames `window`.
+    // The spans of `level` covering its entries within frames `window`.
     let spans = |level: u32, window: &Range<u64>| {
         let (held, span) = (entries(level), bucket_frames(level));
         let first = (window.start / span).max(held.start);
@@ -240,7 +244,8 @@ fn wanted(
         let (held, span) = (entries(level), bucket_frames(level));
         let first = (window.start / span).max(held.start) / chunk;
         let end = window.end.div_ceil(span).min(held.end).div_ceil(chunk);
-        // Choose nearest spans before allocating: an absolute-index range may be enormous and sparse.
+        // Choose the nearest spans before allocating: an absolute-index range may be enormous and
+        // sparse.
         let count = end.saturating_sub(first);
         let middle = first + count.saturating_sub(1) / 2;
         wanted.extend((0..count.min(MAX_SPANS as u64)).map(|offset| {
@@ -253,7 +258,7 @@ fn wanted(
     wanted
 }
 
-/// Where a field's spans lie: the field's place in the manifest, in the spans' URL template.
+/// Locates a field's spans: the spans' URL template and the field's index in the manifest.
 struct At<'a> {
     url: &'a str,
     field: usize,

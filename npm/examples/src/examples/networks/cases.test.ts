@@ -5,7 +5,7 @@ import { readCase } from './cases.js';
 
 const CASES = ['wecc240', 'activsg2000', 'activsg10k', 'activsg25k', 'activsg70k'] as const;
 
-/** Case `id` as the page reads it, from the file it fetches. */
+/** Reads case `id` from the file the page fetches, inflating it if it is gzip-compressed. */
 function read(id: string) {
   const raw = readFileSync(`npm/examples/public/grids/${id}.bin`);
   const bytes = raw[0] === 0x1f && raw[1] === 0x8b ? gunzipSync(raw) : raw;
@@ -13,7 +13,7 @@ function read(id: string) {
 }
 
 describe('grid cases', () => {
-  test.each(CASES)('%s reads into buses, lines, and machines that stand on the earth', (id) => {
+  test.each(CASES)('%s reads into buses, lines, and machines positioned on the earth', (id) => {
     const found = read(id);
     const rows = Object.fromEntries(
       found.data.describe().tables.map((table) => [table.name, table.rows]),
@@ -24,7 +24,7 @@ describe('grid cases', () => {
       expect(Math.abs(found.positions[i]!)).toBeLessThanOrEqual(180);
       expect(Math.abs(found.positions[i + 1]!)).toBeLessThanOrEqual(90);
     }
-    // Every line's ends name buses of the case.
+    // Every line's `from` and `to` reference a bus of the case, and every machine's bus row exists.
     const lines = found.data.query({ of: 'Line', select: { from: 'from', to: 'to' } });
     const ends = lines.fields as Record<string, { ids: (number | string | null)[] }>;
     expect(ends.from!.ids.every((id) => id !== null)).toBe(true);
@@ -40,7 +40,7 @@ describe('grid cases', () => {
     expect(speeds.some((mhz) => Math.abs(mhz) > 0)).toBe(true);
   });
 
-  test('bytes that are no case are refused', () => {
+  test('bytes that are not a grid case are rejected', () => {
     expect(() => readCase('nothing', new ArrayBuffer(16))).toThrow('not a grid case');
   });
 });

@@ -1,7 +1,10 @@
-//! Stars outside diagrams: a net's edges. Each row of an edge mark that `joins` a table is a net
-//! joining the vertex rows whose reference field names it, drawn from their middle to each, as the
-//! vertex mark drawing them places them. The star of each net row is a path field beside the net
-//! table, which the mark draws as any geometry; it works again only when the data or scene change.
+//! Stars of nets, outside diagrams.
+//!
+//! Each row of an edge mark with `joins` is a net joining the vertex rows whose reference field
+//! names it. The net draws as a star: a segment from the members' centroid to each member, at the
+//! places their vertex mark gives them. Stars are a `route` path field beside the net table, which
+//! the mark draws like any geometry. They are recomputed only when the data, the scene, or the
+//! layout's places change.
 
 use super::graph::{VertexMark, marks, position};
 use super::{Input, Tables, beside, kept};
@@ -16,8 +19,8 @@ pub(crate) struct Stars {
 }
 
 impl Stars {
-    /// Brings the stars up to `input`, the members placed by their data or by `places`, the layout's
-    /// places beside their tables; whether a table changed.
+    /// Updates the stars to `input`. A member is at its data's position, else at its place in the
+    /// layout's `places` beside its table. Returns whether a table changed.
     pub(crate) fn update(&mut self, input: &Input<'_>, places: &Tables) -> bool {
         let joining = input.scene.marks.iter().any(|m| matches!(m, Mark::Edges(e) if e.joins.is_some()));
         if matches!(input.scene.space, Space::Diagram(_)) || !joining {
@@ -82,7 +85,7 @@ impl Stars {
     }
 }
 
-/// Where member row `row` stands: as its data positions it, else where the layout placed it.
+/// The position of member row `row`: its data's position, else the layout's place for it.
 fn place(vm: &VertexMark<'_>, rows: &Rows<'_>, row: usize, placed: Option<&crate::Table>) -> Option<[f64; 2]> {
     position(vm.mark, rows, row).or_else(|| {
         let table = placed?;
@@ -93,7 +96,7 @@ fn place(vm: &VertexMark<'_>, rows: &Rows<'_>, row: usize, placed: Option<&crate
     })
 }
 
-/// A net's star: a path from the middle of `members` to each; none for fewer than two.
+/// A net's star: a path from the centroid of `members` to each member; empty for fewer than two.
 fn star(members: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
     if members.len() < 2 {
         return Vec::new();

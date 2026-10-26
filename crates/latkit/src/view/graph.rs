@@ -1,5 +1,5 @@
-//! The graph a view's data holds: the rows joined to a row across edges and nets, the row a reference
-//! names, and which vertex mark an end attaches to.
+//! Graph queries over a view's data: a row's neighbors across edges and nets, the row a reference
+//! names, and the vertex mark an end attaches to.
 
 use rustc_hash::FxHashSet;
 
@@ -18,9 +18,9 @@ fn reference<'t>(table: &'t Table, name: &str) -> Option<&'t Reference> {
 }
 
 impl View {
-    /// The rows joined to `row`: a vertex's neighbors across edges and nets, or an edge's or a net's
-    /// vertices, a set per table. It reads the references' inverses, so it costs what the row's degree
-    /// does.
+    /// The rows joined to `row`: a vertex's neighbors across edges and nets, or an edge's or net's
+    /// vertices, grouped by table. It reads the references' inverses, so its cost is proportional
+    /// to the row's degree.
     pub fn neighbors(&self, row: &Row) -> Vec<Rows> {
         let mut found: Vec<Row> = Vec::new();
         let Some(data) = self.snapshot(&row.data) else { return Vec::new() };
@@ -72,7 +72,8 @@ impl View {
         Rows::group(found)
     }
 
-    /// Every vertex mark's port reference field that names rows of net mark `i`'s table.
+    /// Each vertex mark's port reference fields that point at net mark `i`'s table, as
+    /// `(mark, field)`.
     fn ports_naming(&self, i: usize) -> Vec<(usize, Name)> {
         let style = self.marks[i].mark.style();
         let Some(data) = self.snapshot(&style.data) else { return Vec::new() };
@@ -102,7 +103,8 @@ impl View {
         Some(Row { data: row.data.clone(), table: r.to.clone(), id })
     }
 
-    /// Marks each edge mark on the earth whose route is not straight as following great circles.
+    /// Whether `shown` follows great circles: an edge mark with ends, on the earth, whose route is
+    /// unset or geodesic.
     pub(super) fn geodesic(&self, shown: &Shown) -> bool {
         let Space::Earth(_) = self.scene.space else { return false };
         match &shown.mark {

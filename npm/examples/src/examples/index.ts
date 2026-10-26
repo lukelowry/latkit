@@ -1,6 +1,6 @@
 ﻿import type { Page } from '../ui/shell.js';
 
-/** Names and modules for the example picker. IDs keep existing links working. */
+/** The example picker's pages. Their IDs keep older names so existing links still work. */
 export const examples: readonly Page[] = [
   { id: 'bunny', title: 'Soft body', load: () => import('./soft-body/index.js') },
   { id: 'network', title: 'Networks', load: () => import('./networks/index.js') },

@@ -4,17 +4,17 @@ use crate::gpu::shaders as wgsl;
 use crate::{Error, Name, Result};
 
 mark!(
-/// Rows drawn as triangles between the vertices three reference fields name: meshes, surfaces, and
-/// fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen from
-/// above shows its exact colors.
+/// Rows drawn as triangles between the vertices named by three reference fields: meshes, surfaces,
+/// and fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen
+/// from above shows its exact colors.
 ///
 /// ```
 /// # use latkit::Faces;
 /// let surface = Faces::of("mesh", "Face").corners("a", "b", "c");
 /// ```
 Faces {
-    /// The reference fields naming each row's three vertices. Without a color, a face blends the
-    /// colors of its corners.
+    /// The reference fields naming each row's three vertices; required. Without a color, a face
+    /// blends the colors of its corners.
     corners: Option<[Name; 3]> as "[a: string, b: string, c: string]",
 });
 
@@ -24,8 +24,8 @@ impl Faces {
         Faces { style: Style::new(data.into(), table.into()), corners: None }
     }
 
-    /// The reference fields naming each row's three vertices. Without a color, a face blends the
-    /// colors of its corners.
+    /// Sets the reference fields naming each row's three vertices; required. Without a color, a
+    /// face blends the colors of its corners.
     #[must_use]
     pub fn corners(mut self, a: impl Into<Name>, b: impl Into<Name>, c: impl Into<Name>) -> Faces {
         self.corners = Some([a.into(), b.into(), c.into()]);

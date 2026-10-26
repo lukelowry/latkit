@@ -1,8 +1,11 @@
-//! One frame, in order: tick the clock, settle readbacks, advance the camera, derive what marks read
-//! beside their data, sync columns, stream uploads, give marks pages of words for their rows, freeze
-//! transitions, pack the program buffer, write focus and uniforms, then record the compute, shadow,
-//! label, render, and probe passes into the caller's encoder. Nothing here submits but the clearing of
-//! pages handed out, which runs before anything the frame records.
+//! One frame, in order: tick the clock, settle readbacks, advance the camera, derive the tables
+//! marks read beside their data, lay out drawings, sync columns, stream uploads, give marks word
+//! pages for their rows, freeze transitions, pack the program buffer, write focus words and
+//! uniforms, then record the compute, label, render, probe, and query passes into the caller's
+//! encoder.
+//!
+//! The frame submits nothing itself except setup that must run before its recorded passes:
+//! clearing newly handed-out pages, and copying buffers that grew.
 
 use web_time::Instant;
 
@@ -21,9 +24,9 @@ use crate::gpu::shaders as wgsl;
 use crate::scene::mark::MarkKind;
 use crate::{Error, Name, derive};
 
-/// Whether the pages a frame of a view draws found room: where some found none, the next frame makes
-/// it, growing the arena or planning less (`Short`), or where the arena is full and the plan draws as
-/// little as it may, letting go of what draws of the data waiting for room (`Starved`).
+/// Whether a frame's pages found room in the arena. If some did not, the next frame makes room:
+/// `Short` grows the arena or plans less; `Starved`, when the arena is full and the plan is already
+/// minimal, releases what the view draws of datasets waiting for room.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Debug)]
 pub(super) enum Room {
     #[default]
@@ -32,22 +35,22 @@ pub(super) enum Room {
     Starved,
 }
 
-/// The most seconds comets travel in one frame: after a pause they carry on, not leap.
+/// The most seconds comets travel in one frame, so after a pause they resume instead of jumping.
 const TRAVEL: f64 = 0.1;
 
 impl View {
     /// Records `frame` of the scene into `encoder`; the caller submits it. Until the view is
-    /// [ready](View::ready) for the frame's target it records nothing, and the target keeps what it
-    /// holds.
+    /// [ready](View::ready) for the frame's target, it records nothing and the target keeps its
+    /// contents.
     ///
-    /// Uploads stream within the GPU's budget per frame. A mark shows a new data version once all of
-    /// its changed pages are on the GPU, and keeps drawing the previous one until then.
+    /// Uploads stream within the GPU's per-frame budget. A mark shows a new data version once all
+    /// of its changed pages are on the GPU, and draws the previous version until then.
     pub fn render(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>) {
         self.record(encoder, frame, true);
     }
 
-    /// Records `frame` for a picture, which takes no input: it asks for what it draws and changes
-    /// with alone.
+    /// Records `frame` for a picture. Pictures take no input, so they compile only what they draw
+    /// and change with, never the pipelines that probes and queries use.
     pub(crate) fn render_picture(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &Frame<'_>) {
         self.record(encoder, frame, false);
     }
@@ -60,8 +63,9 @@ impl View {
             }
             return;
         }
-        // The frame's size first: the tiles its sources bring up are those it shows. What landed is
-        // taken before them, so what they start and lands at once wakes the next frame.
+        // Set the frame's size first, so the tiles sources bring up are those this frame shows.
+        // Clear the arrival flag before that, so work they start that finishes at once wakes the
+        // next frame.
         self.pixel_ratio = frame.pixel_ratio.max(0.01);
         let ratio = f64::from(self.pixel_ratio);
         self.size = [f64::from(frame.size[0]) / ratio, f64::from(frame.size[1]) / ratio];
@@ -85,7 +89,7 @@ impl View {
         self.settle();
         self.advance(dt);
         let mut inner = gpu.0.lock();
-        // What it lets go of frees as the frame begins, before anything it records reads the pages.
+        // Release before `begin_frame`, which frees the pages before this frame reads any of them.
         if starved {
             self.start_over(&mut inner);
         }
@@ -104,8 +108,8 @@ impl View {
             self.resources.as_mut().expect("created").write_lit(device, queue, &rows);
         }
         let measure = self.measuring();
-        // A picture takes no input; frames that do probe and answer queries once what those use
-        // compiled.
+        // A picture takes no input. Other frames probe and answer queries once the pipelines those
+        // use have compiled.
         let answers = input && self.answers();
         let probe = self.probe_point(answers);
         let query = self.lay_out_lists(answers);
@@ -160,15 +164,15 @@ impl View {
         self.end(started, input);
     }
 
-    /// The time effects show this frame, and the seconds comets travel to it. What reads the clock
-    /// shows anything new only when it moved; a frame drawn again at the same instant, as a shot
-    /// draws while it waits, evaluates none of it. Under reduced motion the effect clock holds where
-    /// it first stood; a picture's still sets it.
+    /// The effect time for this frame, and the seconds comets travel to reach it. Channels reading
+    /// the clock re-evaluate only when it moved, so a frame redrawn at the same instant (as a shot
+    /// draws while it waits) evaluates none of them. Under reduced motion the effect time stays at
+    /// its first value. A shot's fixed time overrides both.
     fn effect_clock(&mut self) -> (f64, f64) {
         let held = !self.moves() && !self.effect_time.is_nan();
         let elapsed = self.signal.elapsed().unwrap_or_else(|| if held { self.effect_time } else { self.clock.now() });
-        // Comets travel the clock's step since the last frame: none at first or back in time, and
-        // never more than a pause's worth.
+        // Comets travel the clock's step since the last frame: none on the first frame or when time
+        // runs backward, and at most `TRAVEL`.
         let travel = if self.effect_time.is_nan() { 0.0 } else { (elapsed - self.effect_time).clamp(0.0, TRAVEL) };
         if self.effect_time != elapsed {
             self.effect_time = elapsed;
@@ -179,9 +183,10 @@ impl View {
         (elapsed, travel)
     }
 
-    /// Ends a frame begun at `started`: what it stood in for, what it took, and the next frame its
-    /// work asks for, as work landing between frames does. A frame taking no `input`, a picture's,
-    /// asks none for probes and queries, which only frames that take input run.
+    /// Ends a frame begun at `started`: reports what it still waits on, records its stats, and
+    /// requests the next frame if work remains, as work arriving between frames does. A frame
+    /// without `input` (a picture's) requests none for probes and queries, which only input frames
+    /// run.
     fn end(&mut self, started: Instant, input: bool) {
         let waiting = self.under_way();
         if waiting != self.waiting {
@@ -196,9 +201,9 @@ impl View {
         }
     }
 
-    /// Lays the frame out: every mark's pages of words for its rows, the transitions starting, the
-    /// ends edges attach to, fitted domains, the buffers they fit, the program, and the labels; whether
-    /// pages of focus words are new.
+    /// Lays out the frame: each mark's word pages, starting transitions, edge end attachments,
+    /// fitted domains and the buffers sized for them, the program buffer, and labels. Returns
+    /// whether any focus word pages are new.
     fn lay_out(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) -> bool {
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
@@ -220,10 +225,10 @@ impl View {
         fresh
     }
 
-    /// Gives every mark pages of words for the rows it holds: its state, its focus words, its labels'
-    /// candidates, and at a vertex mark faces attach to, the normals they sum. Rows whose state words
-    /// took another shape evaluate again; a mark the arena has no room for now draws nothing until it
-    /// has. Whether pages of focus words are new.
+    /// Gives every mark word pages for its held rows: state, focus words, label candidates, and,
+    /// for a vertex mark that faces attach to, the normals they sum. Rows in new state pages
+    /// evaluate from scratch. A mark the arena has no room for draws nothing until it has. Returns
+    /// whether any focus word pages are new.
     fn fit_words(&mut self, inner: &mut Inner) -> bool {
         let gpu = self.gpu.clone();
         let device = (&gpu.0.device, &gpu.0.queue);
@@ -258,7 +263,7 @@ impl View {
                 shown.packed = false;
                 changed = true;
                 fresh |= kept == Kept::Focus;
-                // Rows whose state starts over evaluate every channel again, every word written first.
+                // Rows in new state pages evaluate every channel, writing every word first.
                 if kept == Kept::State {
                     shown.slots_bound(&new);
                     shown.fresh.extend(&new);
@@ -274,9 +279,10 @@ impl View {
         fresh
     }
 
-    /// Pages the view draws found no room: what lacks them draws nothing until the next frame grows
-    /// the arena, or where it is full plans less, while it can, and else lets go of what draws of the
-    /// data waiting for room, unless doing so let go of nothing before.
+    /// Records that some pages found no room; what lacks them draws nothing until the next frame
+    /// makes room. If the arena can grow, or the plan can shrink (it shrinks here), that is
+    /// `Short`. Otherwise it is `Starved`, which releases what the view draws of datasets waiting
+    /// for room, unless an earlier release freed nothing (`limited`).
     fn found_no_room(&mut self, inner: &Inner) {
         let room = if !inner.arena.full() || self.planning.overflowed() {
             Room::Short
@@ -288,10 +294,10 @@ impl View {
         self.room = self.room.max(room);
     }
 
-    /// Lets go of what the view draws of each dataset waiting for room the arena, full, cannot make
-    /// though the plan draws as little as it may: its marks draw nothing until what replaces it lands
-    /// in the room freed. Where it held nothing to let go of, what it draws does not fit the budget:
-    /// it tells so once, and waits for a version of its data to publish.
+    /// Releases what the view draws of each dataset waiting for room, when the arena is full and
+    /// the plan is already minimal. Its marks draw nothing until the staged replacement arrives in
+    /// the freed room. If nothing was released, what the view draws does not fit the budget: it
+    /// reports a `Limit` error once and waits for a new data version to publish.
     fn start_over(&mut self, inner: &mut Inner) {
         let mut freed = false;
         for shown in &mut self.marks {
@@ -311,14 +317,14 @@ impl View {
         }
         if !freed {
             self.limited = true;
-            let reason = "what the view draws does not fit the GPU's budget, though it draws as little as it may";
+            let reason = "the view does not fit the GPU's budget, even drawing as little as possible";
             self.events.tell(Event::Error(Error::Limit(reason.into())));
         }
     }
 
-    /// Holds what the view draws to its share: what its tables pin, each page once, and the pages of
-    /// words its marks keep per row, but for the pages drawings keep from before only while their room
-    /// lasts, which a plan within less lets go of first.
+    /// Keeps what the view draws within its share of the budget. It counts each page its tables pin
+    /// once, plus the word pages its marks keep per row, minus idle pages, which stay only while
+    /// there is room and go first when the plan shrinks.
     fn hold_to_share(&mut self, inner: &Inner) {
         let mut pins: Vec<crate::gpu::arena::PageKey> = self.marks.iter().flat_map(|m| m.tables.pins()).collect();
         pins.sort_unstable_by_key(|key| (key.page, key.low, key.words as u8));
@@ -328,14 +334,14 @@ impl View {
         let idle: f64 = self
             .drawings
             .iter()
-            .filter_map(|(key, drawn)| Some(self.planning.page_bytes(key, drawn.current.as_ref()?.idle)))
+            .filter_map(|(key, drawn)| Some(self.planning.page_bytes(key, drawn.current.as_ref()?.idle.len() as u32)))
             .sum();
         let needed = ((pages + words) as f64 - idle).max(0.0);
         self.planning.held(needed as u64, self.choices.values().any(|c| c.capped));
     }
 
-    /// Takes what landed since the last frame: probes, fits, queries, the intents and keys waiting on
-    /// picks.
+    /// Takes the results that arrived since the last frame: GPU timing, fits, probes, queries, and
+    /// the intents and key steps waiting on picks.
     fn settle(&mut self) {
         if let Some(ms) = self.timer.as_mut().and_then(timer::Timer::landed) {
             self.stats.gpu_ms = ms;
@@ -346,8 +352,9 @@ impl View {
         self.settle_gestures();
     }
 
-    /// Tells, once, why marks the data drawn does not fit failed: once the frame took the latest
-    /// versions, so a dataset filled between frames tells nothing of the version before.
+    /// Reports, once each, why marks failed against the data drawn. Runs after the frame takes the
+    /// latest data versions, so a dataset filled between frames reports nothing about the version
+    /// before.
     fn tell_failures(&mut self) {
         for (i, shown) in self.marks.iter_mut().enumerate() {
             if let Some((error, told)) = &mut shown.failure
@@ -359,16 +366,16 @@ impl View {
         }
     }
 
-    /// Derives what marks read beside their data, from the data and the scene alone, handing the
-    /// host what the frame cannot afford. First the orders tables drawn in part draw in, and the
-    /// ranges of them the camera asks for; then every other derivation, from the data.
+    /// Derives the tables marks read beside their data, from the data and scene alone, handing the
+    /// host whatever the frame cannot afford. First come the orders of paged tables and the ranges
+    /// of them the camera needs, then every other derivation.
     fn derive(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let projected = self.projected();
         let earth = matches!(self.scene.space, crate::Space::Earth(_));
         let placing = earth || matches!(self.scene.space, crate::Space::Plane(_));
         let sight = derive::sight::Sight { projected: &projected, size: self.size, earth };
-        // One budget for the frame: what is drawn in part, then every other derivation.
+        // One work budget for the frame, spent on paged tables first, then on other derivations.
         let (waker, counters) = (self.waker.clone(), self.gpu.0.counters.clone());
         let errors = self.gpu.0.errors.clone();
         let mut jobs = derive::Jobs::new(host.as_deref(), &waker, &counters, &errors, inner.frame.work);
@@ -394,9 +401,9 @@ impl View {
         inner.frame.work = jobs.left() as u32;
     }
 
-    /// Brings every tile set up to what the camera and the plot window ask, from what the GPU's
-    /// cache holds, with what landed for them since. Their pieces fetch and decode as they land, so
-    /// nothing here spends the frame's work.
+    /// Brings every tile set up to date with what the camera and plot window need, from the GPU's
+    /// tile cache and what arrived since. Tiles fetch and decode as they arrive, so this spends
+    /// none of the frame's work budget.
     pub(super) fn update_tiles(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let projected = self.projected();
@@ -412,7 +419,7 @@ impl View {
         self.derived.tiles = tiles;
     }
 
-    /// What derivations read this frame.
+    /// The input derivations read this frame.
     fn derive_input<'a>(&'a self, host: Option<&'a dyn crate::host::Host>) -> derive::Input<'a> {
         derive::Input {
             scene: &self.scene,
@@ -424,9 +431,9 @@ impl View {
         }
     }
 
-    /// Lays out the lists buffer, the marks' segment lists, and takes this frame's query when it
-    /// `answers` them, returning its words and whether it reads depth. A buffer replaced empty counts
-    /// every segment again.
+    /// Lays out the lists buffer and the marks' segment lists. If the frame `answers` queries,
+    /// takes this frame's query, returning its words and whether it reads depth. A replaced buffer
+    /// starts empty, so every segment is counted again.
     fn lay_out_lists(&mut self, answers: bool) -> Option<([f32; 4], bool)> {
         self.lay_out_segments();
         let device = &self.gpu.0.device;
@@ -452,9 +459,9 @@ impl View {
         }
     }
 
-    /// Lays out what each table drawn in part draws, syncs every mark's columns to it, streams the
-    /// pages they need within what the GPU's frame has left to upload, and swaps in each dataset
-    /// whose pages have all landed, those that just did included.
+    /// Lays out each paged table's drawing, syncs every mark's columns, uploads the pages they need
+    /// within the frame's remaining upload budget, and swaps in each dataset whose pages have all
+    /// arrived, including those that just did.
     fn stream(&mut self, inner: &mut Inner) {
         let gpu = self.gpu.clone();
         self.lay_out_drawings();
@@ -478,7 +485,8 @@ impl View {
         marks
     }
 
-    /// Tells errors the device reported outside any scope, once each.
+    /// Reports errors the device raised outside any error scope, and custom pipeline errors, once
+    /// each.
     pub(super) fn tell_gpu_errors(&mut self) {
         let errors: Vec<Error> =
             std::mem::take(&mut *self.gpu.0.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
@@ -487,8 +495,8 @@ impl View {
         self.events.extend(custom.into_iter().map(Event::Error));
     }
 
-    /// The plot window lines trace across, and the pixel columns it spans within what the plan
-    /// affords.
+    /// The plot's x range that traces span, and its width in device pixel columns, capped by the
+    /// plan.
     fn trace_window(&self) -> (Option<[f64; 2]>, u32) {
         let across = match self.camera {
             Camera::Plot { x, .. } => Some(x),
@@ -498,8 +506,9 @@ impl View {
         (across, (((area[2] - area[0]) * f64::from(self.pixel_ratio)).max(1.0) as u32).min(self.trace_columns))
     }
 
-    /// What marks read of sampled fields, for time tiles to fetch: the plot window, the coordinate
-    /// shown, and each field a mark's program reads, with whether a line traces it.
+    /// What marks read of sampled fields, for time tiles to fetch: the plot window and its pixel
+    /// columns, the coordinate shown, and each field a mark's program reads, with whether a line
+    /// traces it.
     fn reading(&self) -> crate::tiles::Reading {
         let (across, columns) = self.trace_window();
         let mut fields = Vec::new();
@@ -514,14 +523,14 @@ impl View {
         crate::tiles::Reading { across, columns, at: self.at, fields }
     }
 
-    /// Syncs every mark's columns to its data, and for a table drawn in part to the drawing replacing
-    /// what draws: tables whose inputs changed are rebuilt once and staged with their dataset's, which
-    /// reserves every page they read at once, or waits for room.
+    /// Syncs every mark's columns to its data and, for a paged table, to its latest drawing. Column
+    /// tables whose inputs changed are rebuilt once and staged with their dataset, which reserves
+    /// every page they read at once or waits for room.
     fn sync(&mut self, inner: &mut Inner) {
         let at = self.at;
         let (across, columns) = self.trace_window();
         let window = Window { across, columns, steps: 0 };
-        // The order each table drawn in part draws in, by dataset.
+        // Each paged table's order, by dataset.
         let mut orders: Keyed<Name, Vec<(Name, Order)>> = Keyed::default();
         for ((data, table), drawn) in &self.drawings {
             if let Some(drawing) = drawn.latest() {
@@ -555,10 +564,10 @@ impl View {
         }
     }
 
-    /// Swaps in what each dataset draws once all of it is ready: every mark's rebuilt tables, and
-    /// the drawing of each of its tables drawn in part, together, so edges never end at another
-    /// drawing's vertices and a data version appears whole; and every mark has room for the pages of
-    /// rows new to it. Whether any tables were swapped in.
+    /// Swaps in each dataset once all of it is ready and every mark has room for word pages of its
+    /// new rows. A dataset's rebuilt tables and its paged tables' drawings swap in together, so
+    /// edges never end at another drawing's vertices and a data version appears whole. Returns
+    /// whether any tables were swapped in.
     fn publish(&mut self, inner: &mut Inner) -> bool {
         let mut datasets: Vec<Name> =
             self.marks.iter().filter(|m| m.compiled.is_some()).map(|m| m.mark.style().data.clone()).collect();
@@ -598,8 +607,8 @@ impl View {
         published
     }
 
-    /// Whether mark `i` has pages of words for the pages of rows it holds once its dataset publishes,
-    /// giving it those it lacks: the pages it holds stay as they are until then.
+    /// Whether mark `i` has word pages for the rows it will hold once its dataset publishes,
+    /// allocating any it lacks. Its existing pages stay unchanged until then.
     fn room_for(&mut self, i: usize, inner: &mut Inner) -> bool {
         let shown = &self.marks[i];
         let style = shown.mark.style();
@@ -609,8 +618,8 @@ impl View {
             Some(drawing) => drawing.live(),
             None => self.snapshot(&key.0).and_then(|d| d.table(&key.1)).map_or(0, |t| t.len() as u32),
         };
-        // Pages new to it hold its next rows as `page_rows` will: a slot's whole page, or the table's
-        // rows a page at a time.
+        // Size new pages as `page_rows` will: a whole page per slot of a paged table, else the
+        // table's own rows, a page at a time.
         let held = live + shown.exits;
         let mut rows = shown.page_rows();
         let had = rows.len();
@@ -637,12 +646,11 @@ impl View {
         })
     }
 
-    /// Takes what mark `i` draws now its dataset is published: its rebuilt tables, its table's
-    /// drawing, and the rows they hold. Changed columns dirty the channels reading them; rows that
-    /// came, went, or moved evaluate every channel, and with changed static values begin a
-    /// transition.
+    /// Updates mark `i` after its dataset publishes: its rebuilt tables, its table's drawing, and
+    /// the rows they hold. Changed columns dirty the channels reading them. Rows that came, went,
+    /// or moved evaluate every channel. Moved rows or changed static values begin a transition.
     fn took(&mut self, i: usize, rebuilt: Option<Rebuilt>, inner: &mut Inner) {
-        // A drag moves rows at once.
+        // During a drag, rows move without easing.
         let easing = !self.ease().is_zero() && !self.dragging();
         let shown = &mut self.marks[i];
         let Some(compiled) = &shown.compiled else { return };
@@ -659,18 +667,18 @@ impl View {
         let before = shown.holding.take();
         let alike = before.as_ref().is_some_and(|old| holds_alike(old, &holding));
         let moved = before.as_ref().and_then(|old| moved(old, &holding));
-        // A path morphs from the one its row ran through only while every row keeps its place;
-        // rows that moved, as rows do between orders, fade instead.
+        // A path morphs from its previous shape only while every row keeps its place. Rows that
+        // moved, as they do between orders, fade instead.
         let kept = moved.as_ref().is_none_or(|(sources, exits)| exits.is_empty() && in_place(sources));
-        // Slots given pages of other rows: their rows evaluate every channel, and their labels start
-        // over.
+        // Slots now holding pages of other rows: their rows evaluate every channel, and their
+        // labels restart.
         let bound = match &drawing {
             Some(new) => bound(before.as_ref().and_then(|h| h.drawing.as_deref()).filter(|_| moved.is_none()), new),
             None => Vec::new(),
         };
         match &before {
-            // Rows that came, went, or moved evaluate every channel, constants included: where every
-            // row kept its place, over the row blocks rewritten; else over every row.
+            // Rows that came, went, or moved evaluate every channel, constants included: over the
+            // rewritten row blocks if every row kept its place, else over every row.
             Some(old) if old.drawing.is_none() && drawing.is_none() => {
                 if moved.is_some() || shown.rows != table.len() as u32 {
                     let rewritten = old.table.len() <= table.len() && moved.as_ref().is_none_or(|(s, _)| in_place(s));
@@ -685,7 +693,7 @@ impl View {
         }
         shown.rows = drawing.as_ref().map_or(table.len() as u32, |d| d.items);
         shown.holding = Some(holding);
-        // Without an ease, a flowing mark whose rows moved still begins, a transition of no length,
+        // Without an ease, a flowing mark whose rows moved still begins a zero-length transition,
         // so its comets follow the rows.
         let carries = shown.mark.flows() && moved.is_some();
         let eased = published.as_ref().is_some_and(|p| shown.static_columns(p.data));
@@ -694,14 +702,14 @@ impl View {
         } else if moved.is_some() {
             shown.exits = 0;
         } else if shown.transition.is_some() && !bound.is_empty() {
-            // Rows of slots bound while the mark eases enter; the rest ease on from what they show.
+            // Rows in slots rebound mid-transition enter; the rest keep easing from what they show.
             shown.restart(&bound);
         }
         if !kept || (shown.begin.is_none() && shown.transition.is_none()) {
             shown.tables.thaw(inner);
         }
-        // Where rows draw changed: what follows it, shadows, normals, labels, and segment lists, follows.
-        // A column changed alone evaluates the channels reading it, which moves them as it must.
+        // If where rows draw changed, bump the versions so normals, labels, and segment lists
+        // follow. A changed column alone evaluates the channels reading it, which bump them.
         if !alike {
             shown.version += 1;
             shown.place_version += 1;
@@ -722,13 +730,14 @@ impl View {
         if shown.kind() == MarkKind::Lines {
             self.fitting.plot_due = true;
         }
-        // Rows may have moved under the focus.
+        // Rows may have moved under the focus words.
         if !alike {
             self.focus.dirty = true;
         }
     }
 
-    /// Where each mark's fitted domains start; returns how many there are.
+    /// Assigns each mark the index of its first fitted domain, dirtying marks whose index moved.
+    /// Returns the total number of domains.
     fn place_domains(&mut self) -> u64 {
         let mut domains = 0;
         for shown in &mut self.marks {

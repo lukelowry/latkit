@@ -1,8 +1,8 @@
-/** Diagram: a microgrid's controller as blocks in groups, wired port to port and laid out by latkit. */
+/** Diagram: a microgrid controller as blocks in groups, wired port to port, laid out by latkit. */
 import { Patch, reference, type Marker, type Mark, type Port, type Side } from 'latkit';
 import { THEME, type Piece } from './look.ts';
 
-/** Kinds of block: the marker each draws as, its fill, and its ports. */
+/** Block kinds: each kind's marker, fill color, and ports as `[name, side, output]`. */
 const KINDS = {
   Source: { marker: 'rounded', color: '#173836', ports: [['out', 'right', true]] },
   Process: {
@@ -54,7 +54,8 @@ export default function diagram(): Piece {
     blocks.push(b);
     return b;
   };
-  // A signal driven by `from`'s output and read by each of `to`, through its input or the port named.
+  // Adds a signal driven by the `out` port of each block in `from`. Each block in `to` reads it
+  // through its `in` port, or through the port named with it.
   const wire = (name: string, from: Block | Block[], ...to: (Block | [Block, string])[]) => {
     const id = next++;
     signals.push({ id, name });
@@ -77,7 +78,7 @@ export default function diagram(): Piece {
   const filter = block('Process', 'Filter', sensing);
   const estimator = block('Process', 'State estimator', sensing);
   const dispatch = block('Process', 'Dispatch', control);
-  // The controller closing the loop sits between the groups it joins.
+  // The controller that closes the loop is in no group, so it sits between the groups it joins.
   const droop = block('Control', 'Droop');
   const limiter = block('Process', 'Limiter', control);
   const inverter = block('Process', 'Inverter', power, true);

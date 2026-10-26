@@ -23,7 +23,7 @@ fn validation_requires_unique_datasets_and_drawn_tables() {
     assert!(scene.validate(&[data(), data()]).unwrap_err().to_string().contains("two sources named"));
     assert!(scene.validate(&[Data::new("grid").into()]).unwrap_err().to_string().contains("Bus"));
     let tiles = [Tiles::new("grid", "history/frames.json").into()];
-    assert!(scene.validate(&tiles).is_ok(), "tiles' marks are checked once they land");
+    assert!(scene.validate(&tiles).is_ok(), "tiles' marks are checked once the tiles arrive");
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn diagrams_allow_positions_to_be_derived_by_layout() {
 }
 
 #[test]
-fn shadows_drop_onto_a_diagram_sheet_alone() {
+fn shadows_are_valid_only_on_a_diagram() {
     let block = Vertices::of("grid", "Bus").position("x", "y").shadow(true);
     let on_a_plane = Scene::new(Plane::default()).draw(block.clone()).validate(&[data()]);
     assert!(on_a_plane.unwrap_err().to_string().contains("only a diagram has"), "refused on a plane");

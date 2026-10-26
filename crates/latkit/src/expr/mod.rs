@@ -1,4 +1,5 @@
-//! Per-row values: expressions over fields and view state, compiled to bytecode the GPU runs.
+//! Expressions: per-row values computed from fields and view state, compiled to bytecode the GPU
+//! runs.
 
 mod color;
 mod colormap;
@@ -18,9 +19,9 @@ pub use colormap::{Colormap, ColormapKind, Stop};
 
 use crate::Name;
 
-/// A value for every row of a mark: a constant, a field, view state, or arithmetic of them.
+/// A per-row value of a mark: a constant, a field, view state, or arithmetic on them.
 ///
-/// A `&str` converts to the field of that name, so options read fields by name:
+/// A `&str` converts to the field of that name, so options can take field names directly:
 ///
 /// ```
 /// # use latkit::{field, when, selected, Colormap, Color};
@@ -30,13 +31,13 @@ use crate::Name;
 /// let high_voltage = field("kv").ge(230.0) & field("kind").is("substation");
 /// ```
 ///
-/// Expressions compile to bytecode; changing one never compiles a shader.
+/// Expressions compile to bytecode, so changing one never recompiles a shader.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Expr(pub(crate) Arc<Node>);
 
-/// A color for every row of a mark: a color, or an expression making one, such as a value through a
-/// colormap or a conditional choosing between colors. Color options take one; as JSON a string is a
-/// CSS color, and a field reads as `{"field": name}`.
+/// A per-row color of a mark: a fixed color, or an expression that yields one, such as a value
+/// through a colormap or a conditional choosing between colors. Color options take a `Paint`. In
+/// JSON a string is a CSS color, and a field is written `{"field": name}`.
 ///
 /// ```
 /// # use latkit::{field, Color, Colormap, Paint};
@@ -63,17 +64,19 @@ pub(crate) enum Node {
     Colormap { input: Expr, colormap: Colormap, domain: Domain },
 }
 
-/// A field read: of the mark's own table, or from another dataset's table joined by row id.
+/// A field reference: a field of the mark's own table, or of another dataset's table joined by row
+/// id.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct FieldRef {
     pub(crate) name: Name,
     pub(crate) from: Option<(Name, Name)>,
     pub(crate) step: bool,
-    /// For a point geometry: 0 for x, 1 for y.
+    /// The component read from a point field: 0 for x, 1 for y.
     pub(crate) component: Option<u8>,
 }
 
-/// What the view knows of each row.
+/// View state of each row: `selected`, `hovered`, `pointer` (CSS pixels from a vertex to the
+/// pointer), `elapsed` (seconds since the view was created), or `zoom` (the camera's zoom).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum State {
@@ -84,7 +87,8 @@ pub(crate) enum State {
     Zoom,
 }
 
-/// An operation of one value.
+/// An operation on one value. `sin` and `cos` take radians; `not` treats values above 0.5 as
+/// true.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Unary {
@@ -99,7 +103,9 @@ pub(crate) enum Unary {
     Exp,
 }
 
-/// An operation of two values.
+/// An operation on two values: arithmetic, `min` and `max`, comparisons (1 for true, 0 for
+/// false), and logic. `rem` is a floored remainder, which takes the sign of the divisor. `and` and
+/// `or` treat values above 0.5 as true.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Binary {
@@ -123,7 +129,7 @@ pub(crate) enum Binary {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Domain {
-    /// The extent of the values shown, reduced on the GPU.
+    /// Fitted to the extent of the values shown, computed by a reduction on the GPU.
     Fit,
     Fixed([f64; 2]),
 }
@@ -132,8 +138,8 @@ pub(crate) fn node(node: Node) -> Expr {
     Expr(Arc::new(node))
 }
 
-/// Whether `text` holds `needle`, ignoring case, `needle` lowercased already: what `contains` asks,
-/// in a query and a mark alike.
+/// Whether `text` contains `needle`, ignoring case. `needle` must already be lowercase. Queries and
+/// marks share this test for `contains`.
 pub(crate) fn holds(text: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
@@ -144,7 +150,7 @@ pub(crate) fn holds(text: &str, needle: &str) -> bool {
     text.to_lowercase().contains(needle)
 }
 
-/// The field `name` of each row.
+/// The value of field `name` in each row.
 pub fn field(name: impl Into<Name>) -> Expr {
     node(Node::Field(FieldRef { name: name.into(), from: None, step: false, component: None }))
 }
@@ -159,12 +165,12 @@ pub fn selected() -> Expr {
     node(Node::State(State::Selected))
 }
 
-/// Whether the pointer is over the row.
+/// Whether the row is hovered, by the pointer or by keyboard stepping.
 pub fn hovered() -> Expr {
     node(Node::State(State::Hovered))
 }
 
-/// CSS pixels from a vertex to the pointer; for vertices only, and not in their position.
+/// CSS pixels from each vertex to the pointer. Use it only in vertex marks, and not in a position.
 pub fn pointer() -> Expr {
     node(Node::State(State::Pointer))
 }
@@ -174,20 +180,20 @@ pub fn elapsed() -> Expr {
     node(Node::State(State::Elapsed))
 }
 
-/// The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. Options
-/// that read it change with the view, as levels of detail do.
+/// The camera's zoom: the web mercator zoom level on the earth, log₂ of CSS pixels per unit
+/// elsewhere. Options that read it update as the camera zooms, as levels of detail do.
 pub fn zoom() -> Expr {
     node(Node::State(State::Zoom))
 }
 
-/// A size in position units, whatever the space's own: it scales as the view zooms, and
-/// [`Size::at_least`] and [`Size::at_most`] keep it within CSS pixels.
+/// A size in position units (degrees on the earth), regardless of the space's unit. It scales as
+/// the view zooms; [`Size::at_least`] and [`Size::at_most`] bound it in CSS pixels.
 pub fn units(size: impl Into<Expr>) -> Size {
     Size { expr: size.into(), unit: Some(Unit::Units), px: Size::ANY }
 }
 
-/// A size in CSS pixels, whatever the space's own: a stroke keeps its width on screen as a diagram
-/// zooms.
+/// A size in CSS pixels, regardless of the space's unit, so it keeps its on-screen size as the view
+/// zooms. In a diagram, this keeps a stroke's width constant on screen.
 pub fn px(size: impl Into<Expr>) -> Size {
     Size { expr: size.into(), unit: Some(Unit::Px), px: Size::ANY }
 }
@@ -213,7 +219,7 @@ macro_rules! binary {
 }
 
 impl Expr {
-    /// A missing value: options that read one take the theme's value.
+    /// A missing value. An option that evaluates to missing uses the theme's value.
     pub fn missing() -> Expr {
         node(Node::Missing)
     }
@@ -223,11 +229,11 @@ impl Expr {
         abs => Abs,
         /// The square root.
         sqrt => Sqrt,
-        /// The sine of radians.
+        /// The sine of an angle in radians.
         sin => Sin,
-        /// The cosine of radians.
+        /// The cosine of an angle in radians.
         cos => Cos,
-        /// The largest integer at most the value.
+        /// The largest integer not greater than the value.
         floor => Floor,
         /// The natural logarithm.
         ln => Ln,
@@ -236,9 +242,9 @@ impl Expr {
     );
 
     binary!(
-        /// The smaller value.
+        /// The smaller of the value and `other`.
         min => Min,
-        /// The larger value.
+        /// The larger of the value and `other`.
         max => Max,
         /// The value raised to `other`.
         pow => Pow,
@@ -270,14 +276,14 @@ impl Expr {
         t.clone() * t.clone() * (3.0 - 2.0 * t)
     }
 
-    /// Whether a text field equals `text`.
+    /// Whether a text field equals `text` exactly.
     #[must_use]
     pub fn is(self, text: &str) -> Expr {
         node(Node::Is(self, text.into()))
     }
 
-    /// Whether a text field holds `text`, ignoring case: of the mark's own table in a mark, which the
-    /// view works out on the CPU as the field changes.
+    /// Whether a text field contains `text`, ignoring case. In a mark, the field must belong to the
+    /// mark's own table; the view recomputes matches on the CPU when the field changes.
     #[must_use]
     pub fn contains(self, text: &str) -> Expr {
         node(Node::Contains(self, text.into()))
@@ -297,14 +303,14 @@ impl Expr {
         self.map_fields(&|f| FieldRef { step: true, ..f.clone() })
     }
 
-    /// The value through `colormap`; the domain fits the values shown unless set by
-    /// [`Mapped::domain`].
+    /// The value mapped through `colormap`. The domain fits the values shown unless set with
+    /// [`Mapped::domain`]; a categorical map ignores it and bins values by their integer part.
     pub fn colormap(self, colormap: impl Into<Colormap>) -> Mapped {
         Mapped(node(Node::Colormap { input: self, colormap: colormap.into(), domain: Domain::Fit }))
     }
 
-    /// The value mapped linearly onto `range`, clamped; the domain fits the values shown unless set
-    /// by [`Mapped::domain`].
+    /// The value mapped linearly onto `range`, clamped. The domain fits the values shown unless set
+    /// with [`Mapped::domain`].
     pub fn scale(self, range: RangeInclusive<f64>) -> Mapped {
         let range = [*range.start(), *range.end()];
         Mapped(node(Node::Scale { input: self, domain: Domain::Fit, range }))
@@ -332,7 +338,8 @@ impl Expr {
         }
     }
 
-    /// Calls `f` with every text field the expression asks whether it holds a text, and the text.
+    /// Calls `f` with each field that a `contains` in the expression tests, and the text it looks
+    /// for.
     pub(crate) fn for_each_contains<'e>(&'e self, f: &mut impl FnMut(&'e FieldRef, &'e str)) {
         match &*self.0 {
             Node::Contains(a, text) => {
@@ -378,7 +385,8 @@ impl Expr {
         }
     }
 
-    /// Whether a domain fits the values of every row: each row's value then reads them all.
+    /// Whether the expression has a fitted domain, which makes each row's value depend on every
+    /// row.
     pub(crate) fn fits(&self) -> bool {
         match &*self.0 {
             Node::Scale { domain: Domain::Fit, .. } | Node::Colormap { domain: Domain::Fit, .. } => true,
@@ -393,7 +401,7 @@ impl Expr {
         }
     }
 
-    /// The field's name, when the expression is a field of its own table read as it is.
+    /// The field's name, when the expression is a plain field of the mark's own table.
     pub(crate) fn field_name(&self) -> Option<&Name> {
         match &*self.0 {
             Node::Field(f) if f.from.is_none() && f.component.is_none() => Some(&f.name),
@@ -401,8 +409,8 @@ impl Expr {
         }
     }
 
-    /// The first colormap a color maps through, and its domain when set: what a legend shows. A
-    /// conditional's general case, its `otherwise`, comes before the cases it makes exceptions for.
+    /// The first colormap the expression maps through, with its domain when fixed; a legend shows
+    /// it. A conditional's `otherwise` is searched before its cases, since it is the general case.
     pub(crate) fn colormap_of(&self) -> Option<(&Colormap, Option<[f64; 2]>)> {
         match &*self.0 {
             Node::Colormap { colormap, domain, .. } => {
@@ -422,7 +430,7 @@ impl Expr {
 pub struct Mapped(Expr);
 
 impl Mapped {
-    /// The input values that map to the ends of the range or colormap.
+    /// Sets the input values that map to the ends of the range or colormap.
     #[must_use]
     pub fn domain(self, domain: RangeInclusive<f64>) -> Mapped {
         let fixed = Domain::Fixed([*domain.start(), *domain.end()]);
@@ -462,13 +470,15 @@ impl From<Color> for Paint {
     }
 }
 
-/// The open cases of a [`when`].
+/// A conditional started by [`when`], waiting for [`then`](When::then) to give the value for its
+/// latest condition.
 pub struct When {
     cases: Vec<(Expr, Expr)>,
     condition: Expr,
 }
 
-/// The cases of a [`when`], waiting for another case or the value otherwise.
+/// A conditional started by [`when`], waiting for another case or for
+/// [`otherwise`](Then::otherwise).
 pub struct Then {
     cases: Vec<(Expr, Expr)>,
 }
@@ -493,46 +503,48 @@ impl Then {
     }
 }
 
-/// A size, in the space's unit unless it says its own: a bare value is in units in a diagram and in
-/// CSS pixels elsewhere; [`px`] keeps it CSS pixels and [`units`] makes it position units, which
-/// scale as the view zooms. It keeps within a range of CSS pixels.
+/// A size. A bare value is in the space's unit: units in a diagram, CSS pixels elsewhere. [`px`]
+/// makes it CSS pixels and [`units`] makes it position units, which scale as the view zooms.
+/// [`Size::at_least`] and [`Size::at_most`] bound it in CSS pixels.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Size {
     pub(crate) expr: Expr,
-    /// The unit it says it is in; the space's unless set.
+    /// Its explicit unit; `None` for the space's unit.
     pub(crate) unit: Option<Unit>,
-    /// The CSS pixels it keeps within, at any zoom.
+    /// The CSS pixel bounds it stays within at any zoom.
     pub(crate) px: [f32; 2],
 }
 
-/// The unit a length says it is in.
+/// An explicit unit for a length.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Unit {
-    /// CSS pixels, whatever the zoom.
+    /// CSS pixels, at any zoom.
     Px,
     /// Position units, which scale as the view zooms.
     Units,
 }
 
 impl Size {
-    /// Any number of CSS pixels.
+    /// No bounds: from 0 to infinitely many CSS pixels.
     pub(crate) const ANY: [f32; 2] = [0.0, f32::INFINITY];
 
-    /// Whether it is in position units, in a space whose own unit is position units, as a diagram's
-    /// is, or CSS pixels.
+    /// Whether the size is in position units. `space_units` says whether the space's own unit is
+    /// position units, as a diagram's is.
     pub(crate) fn in_units(&self, space_units: bool) -> bool {
         self.unit.map_or(space_units, |unit| unit == Unit::Units)
     }
 
-    /// Keeps at least `px` CSS pixels however far the view zooms out: `units(field("r")).at_least(2.0)`
-    /// grows with the map and never vanishes. A marker keeps its proportions, its larger side held.
+    /// Sets a minimum on-screen size of `px` CSS pixels, however far the view zooms out:
+    /// `units(field("r")).at_least(2.0)` scales with the map but never shrinks below 2 pixels. A
+    /// marker is bounded on its larger side and keeps its proportions. Negative values count as 0.
     #[must_use]
     pub fn at_least(mut self, px: f32) -> Size {
         self.px[0] = px.max(0.0);
         self
     }
 
-    /// Keeps at most `px` CSS pixels however far the view zooms in.
+    /// Sets a maximum on-screen size of `px` CSS pixels, however far the view zooms in. Negative
+    /// values count as 0.
     #[must_use]
     pub fn at_most(mut self, px: f32) -> Size {
         self.px[1] = px.max(0.0);
@@ -652,14 +664,14 @@ mod tests {
     }
 
     #[test]
-    fn domain_applies_to_the_mapping_whatever_the_order() {
+    fn domain_applies_to_the_mapping_regardless_of_order() {
         let a: Expr = field("vm").colormap(Colormap::BALANCE).domain(0.9..=1.1).into();
         let Node::Colormap { domain, .. } = &*a.0 else { panic!("a colormap") };
         assert_eq!(*domain, Domain::Fixed([0.9, 1.1]));
     }
 
     #[test]
-    fn a_join_reaches_every_field() {
+    fn a_join_applies_to_every_field() {
         let e = (field("a") + field("b")).from_table("weather", "Station");
         let Node::Binary(_, a, b) = &*e.0 else { panic!("a sum") };
         for side in [a, b] {

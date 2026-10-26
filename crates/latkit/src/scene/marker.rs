@@ -8,51 +8,53 @@ use super::mark::Markers;
 use crate::gpu::shaders as wgsl;
 use crate::{Color, Expr, Image};
 
-/// How a vertex is drawn: a shape's name, `"block"`, or `{ shape | block | gauge | pie | icon | wgsl:
-/// options }`.
+/// How a vertex is drawn: a shape's name, `"block"`, or
+/// `{ shape | block | gauge | pie | icon | wgsl: options }`. An ellipse by default.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = presets::<Marker>)]
 pub enum Marker {
     /// A filled shape.
     Shape(Shape),
-    /// A block: a rectangle with rounded corners, sized for diagrams.
+    /// A rectangle with rounded corners that holds its label inside, as a diagram's blocks do.
     Block {
-        /// Corner radius, CSS pixels, or units in a diagram; the theme's `corner` unless set.
+        /// Corner radius in the space's unit (units in a diagram, CSS pixels elsewhere); the
+        /// theme's `diagram.corner` unless set.
         #[serde(default)]
         corner: Option<f32>,
     },
-    /// A shape's outline, filled to `fill` from 0 to 1: around a circle, up other shapes.
+    /// A shape's outline, filled to `fill` from 0 to 1: around a circle, or upward in other shapes.
     Gauge {
-        /// How full each row's gauge is.
+        /// How full each row's gauge is, from 0 to 1.
         fill: Expr,
-        /// The outline.
+        /// The outline's shape; an ellipse by default.
         #[serde(default)]
         shape: Shape,
     },
-    /// A circle cut into slices, each as large as its value.
+    /// A circle divided into slices sized in proportion to their values.
     Pie {
         /// Each slice's value.
         slices: Vec<Expr>,
         /// Each slice's color.
         colors: Vec<Color>,
-        /// The hole in the middle, as a fraction of the radius.
+        /// The hole in the middle, as a fraction of the radius; 0 by default.
         #[serde(default)]
         hole: f32,
     },
-    /// One of `images`, fitted in the marker's box; `index` picks which for each row.
+    /// One of `images`, fitted to the marker's box; `index` picks the image for each row.
     Icon {
         /// The images.
         images: Vec<Image>,
-        /// Each row's image, from 0.
+        /// Each row's image index, from 0.
         index: Expr,
     },
-    /// A marker in WGSL: `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`, reading up to
-    /// eight `inputs` as `f.input[i]`. It compiles once, when the view first draws it.
+    /// A custom marker in WGSL. `source` defines `fn marker(f: MarkerFragment) -> MarkerColor`,
+    /// which can read up to eight `inputs` as `f.input[i]`. It compiles once, when the view first
+    /// draws it.
     Wgsl {
-        /// The function's source.
+        /// The WGSL source of the `marker` function.
         source: Arc<str>,
-        /// Each row's inputs.
+        /// Each row's inputs, at most eight.
         #[serde(default)]
         inputs: Vec<Expr>,
     },
@@ -111,7 +113,7 @@ impl From<Shape> for Marker {
 }
 
 impl Marker {
-    /// A block with the theme's corners.
+    /// A block with the theme's corner radius.
     pub fn block() -> Marker {
         Marker::Block { corner: None }
     }
@@ -127,13 +129,13 @@ impl Marker {
         }
     }
 
-    /// How the mark's markers draw; inputs start at extra word `input`.
+    /// How the mark's markers draw, with their inputs starting at extra word `input`.
     pub(crate) fn markers(&self, input: u32) -> Markers {
         let inputs = self.inputs().len() as u32;
         let base = Markers { inputs, input, ..Markers::default() };
         match self {
             Marker::Shape(shape) => Markers { marker: wgsl::MARKER_SHAPE, shape: shape.code(), ..base },
-            // A negative corner takes the theme's.
+            // A negative corner means the theme's corner radius.
             Marker::Block { corner } => Markers {
                 marker: wgsl::MARKER_BLOCK,
                 shape: wgsl::SHAPE_ROUNDED,

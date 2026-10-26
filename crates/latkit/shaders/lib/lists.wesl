@@ -1,4 +1,5 @@
-// Lists: per-item counts, scanned in place to where each item's entries start, then the entries.
+// Lists: per-item counts, then entries. A scan turns the counts in place into each item's first
+// entry.
 
 import package::lib::types::{LIST_ITEMS, LIST_COUNTS, LIST_ENTRIES, LIST_DRAW, LIST_KEPT};
 
@@ -17,9 +18,9 @@ fn list_entry(header: u32, i: u32) -> u32 {
     return lists[header + LIST_ENTRIES] + i;
 }
 
-// Where item `i`'s entries start among those the list at `header` keeps: where it counted them, or,
-// when the items counted more than the list keeps, as far in proportion, so every item keeps a share
-// of its entries instead of the last items losing all of theirs.
+// Where item `i`'s entries start among those the list at `header` keeps. When the items counted
+// more entries than the list keeps, the starts scale down in proportion, so every item keeps a
+// share of its entries instead of the last items losing all of theirs.
 fn list_start(header: u32, i: u32) -> u32 {
     let counts = lists[header + LIST_COUNTS];
     let total = lists[counts + lists[header + LIST_ITEMS]];

@@ -1,7 +1,7 @@
 use std::ops::{Deref, Range};
 use std::sync::Arc;
 
-/// A shared, immutable slice: making one from a vector, cloning it, and slicing it never copy.
+/// A shared, immutable slice. Creating one from a `Vec`, cloning, and slicing never copy elements.
 pub(crate) struct Buffer<T> {
     data: Arc<Vec<T>>,
     start: usize,

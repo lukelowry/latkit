@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use super::buffer::Buffer;
 
-/// A shared, immutable bit vector, used for booleans and validity.
+/// A shared, immutable bit vector for booleans and validity. Cloning and slicing share the words.
 #[derive(Clone, Default)]
 pub(crate) struct Bits {
     words: Buffer<u64>,
@@ -29,7 +29,7 @@ impl Bits {
         Bits { words: self.words.slice(first..last.max(first)), offset: bit & 63, len: range.end - range.start }
     }
 
-    /// `len` bits, bit `i` being `bit(i)`, packed a word at a time.
+    /// `len` bits where bit `i` is `bit(i)`, packed 64 to a word.
     pub(crate) fn from_fn(len: usize, bit: impl Fn(usize) -> bool) -> Bits {
         let words = (0..len.div_ceil(64))
             .map(|w| {
@@ -49,7 +49,8 @@ impl Bits {
         self.words[..full].iter().all(|&w| w == u64::MAX) && (rest == 0 || self.words[full] & mask == mask)
     }
 
-    /// The bits as little-endian words starting at bit 0, for byte encoding.
+    /// The bits as words starting at bit 0, least significant bit first, with the unused high bits
+    /// of the last word cleared. This is the byte encoding's layout.
     pub(crate) fn to_words(&self) -> Vec<u64> {
         if self.offset == 0 {
             let mut words = self.words[..self.len.div_ceil(64)].to_vec();
@@ -90,7 +91,7 @@ impl std::fmt::Debug for Bits {
     }
 }
 
-/// Builds [`Bits`] one bit at a time, keeping the word it fills apart.
+/// Builds [`Bits`] one bit at a time. The partly filled word is kept separately until it is full.
 pub(crate) struct BitsBuilder {
     words: Vec<u64>,
     word: u64,

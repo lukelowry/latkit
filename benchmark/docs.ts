@@ -1,8 +1,11 @@
 /**
- * The documentation's performance table, from a committed baseline: each scenario at the largest
- * size it ran, what opening took, and what a frame took while it moved and was picked from.
+ * Writes the documentation's performance table, docs/_static/performance.csv, from a committed
+ * times baseline. Each row is a scenario at the largest size it ran: its `load` time, the slowest
+ * CPU and GPU frame times among its moving phases, and its slowest pick or hover.
  *
  *   node benchmark/docs.ts [baselines/MACHINE.json]
+ *
+ * Without an argument it reads the last machine baseline in sorted file name order.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,7 +35,7 @@ const file =
   );
 const baseline = JSON.parse(fs.readFileSync(file, 'utf8')) as Baseline;
 
-/** Phases that run every frame, as the view moves or plays. */
+/** Phases that act every frame while the view moves or plays. */
 const MOVING = ['pan', 'zoom', 'move', 'scrub', 'narrow', 'stream'];
 /** Phases that answer the pointer. */
 const PICKING = ['pick', 'hover'];

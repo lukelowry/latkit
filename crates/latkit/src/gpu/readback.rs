@@ -1,6 +1,6 @@
-//! Bytes read back from the GPU: copied in a frame's encoder and mapped when the caller submits it,
-//! so reading never stalls a frame and never submits on its own; once mapped, it wakes what waits on
-//! it. Map buffers come from a pool and go back to it once read, so hovering allocates nothing.
+//! Readbacks from the GPU. Bytes are copied in a frame's encoder and mapped when the caller submits
+//! it, so reading never stalls a frame or submits on its own. Once mapped, a readback wakes its
+//! waker. Map buffers come from a pool and return to it once read, so hovering allocates nothing.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -9,8 +9,9 @@ use std::task::Waker;
 use super::work::{Count, Counters};
 use crate::{Error, Result};
 
-/// Map buffers no readback holds, by size, what counts the readbacks made from them, and how many
-/// are still mapping. Every pool says whether it counts, so none stops counting by default.
+/// A pool of free map buffers, with the counters for readbacks made from it and how many are still
+/// mapping. Each pool is created explicitly as counted or uncounted, so none skips counting by
+/// default.
 #[derive(Clone)]
 pub(crate) struct Readbacks {
     free: Arc<Mutex<Vec<wgpu::Buffer>>>,
@@ -19,17 +20,17 @@ pub(crate) struct Readbacks {
 }
 
 impl Readbacks {
-    /// A pool whose readbacks `counters` counts: the `Gpu`'s.
+    /// A pool whose readbacks `counters` counts, as the `Gpu`'s pool does.
     pub(crate) fn counted(counters: Arc<Counters>) -> Readbacks {
         Readbacks { free: Arc::default(), counters: Some(counters), mapping: Arc::default() }
     }
 
-    /// A pool whose readbacks count as no work: the frame timer's, which only some devices have.
+    /// A pool whose readbacks are not counted: the frame timer's, which only some devices support.
     pub(crate) fn uncounted() -> Readbacks {
         Readbacks { free: Arc::default(), counters: None, mapping: Arc::default() }
     }
 
-    /// Readbacks of this pool the GPU has yet to map.
+    /// Readbacks from this pool the GPU has not mapped yet.
     #[cfg(all(feature = "web", target_arch = "wasm32"))]
     pub(crate) fn mapping(&self) -> u64 {
         self.mapping.load(Ordering::Acquire)
@@ -53,7 +54,7 @@ impl Readbacks {
     }
 }
 
-/// Where a readback's map stands.
+/// The state of a readback's mapping.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mapping {
     Waiting,
@@ -70,8 +71,8 @@ pub(crate) struct Readback {
 }
 
 impl Readback {
-    /// Copies `size` bytes of `source` from `offset`, to read once `encoder` is submitted; `waker`
-    /// wakes once they can be read.
+    /// Copies `size` bytes of `source` from `offset`, to read once `encoder` is submitted. `waker`
+    /// wakes when they can be read.
     pub(crate) fn new(
         pool: &Readbacks,
         device: &wgpu::Device,
@@ -97,7 +98,8 @@ impl Readback {
         Readback { buffer: Some(buffer), size, pool: pool.clone(), mapping }
     }
 
-    /// The bytes once mapped, or `None` while the GPU has not finished or they were taken.
+    /// The bytes once mapped, or `None` while the GPU has not finished or after they were taken.
+    /// Errors with `DeviceLost` if mapping failed.
     pub(crate) fn take(&self) -> Option<Result<Vec<u8>>> {
         let mut mapping = self.mapping.lock().unwrap_or_else(PoisonError::into_inner);
         let buffer = self.buffer.as_ref()?;
@@ -120,7 +122,7 @@ impl Readback {
 impl Drop for Readback {
     fn drop(&mut self) {
         let Some(buffer) = self.buffer.take() else { return };
-        // A buffer still mapping cannot go back yet; it is dropped instead.
+        // A buffer still mapping cannot return to the pool, so it is dropped instead.
         let mapping = *self.mapping.lock().unwrap_or_else(PoisonError::into_inner);
         if mapping == Mapping::Ready {
             buffer.unmap();

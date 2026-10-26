@@ -1,6 +1,7 @@
-//! Labels show beside their rows once the host sets their texts, or inside a block while they fit;
-//! where two would overlap, the one of higher priority shows, and only labels that show have their
-//! texts set. A diagram's labels scale with the sheet and fade out once too small to read.
+//! Labels show beside their rows once the host rasterizes their text, or inside a block while they
+//! fit. Where two would overlap, the higher-priority one shows, and only shown labels have their
+//! text rasterized. A cap keeps only the highest priorities. A diagram's labels scale with the
+//! sheet and fade out once too small to read.
 
 #![cfg(feature = "gpu")]
 
@@ -14,7 +15,7 @@ use latkit::Ids;
 use latkit::host::{Host, Raster, TextRun};
 use latkit::{Camera, Color, Data, Label, Marker, Scene, Table, Vertices, View, field};
 
-/// Sets a text as a solid box six tenths of its size wide per character, as tall as its size.
+/// A host that rasterizes text as a solid box, 0.6 × size wide per character and `size` tall.
 struct Boxes;
 
 impl Host for Boxes {
@@ -24,7 +25,7 @@ impl Host for Boxes {
     }
 }
 
-/// Boxes, counting the texts it sets.
+/// `Boxes`, counting the texts it rasterizes.
 struct Counted(Arc<AtomicUsize>);
 
 impl Host for Counted {
@@ -33,7 +34,7 @@ impl Host for Counted {
         Boxes.rasterize(run)
     }
 
-    // Measuring sets no text.
+    // Measuring rasterizes nothing, so it is not counted.
     fn measure(&self, run: &TextRun) -> latkit::Result<[f32; 2]> {
         Boxes.measure(run)
     }
@@ -77,7 +78,7 @@ fn labels_show_beside_their_rows() {
     let mut view = view(&gpu, vec![-50.0, 10.0], vec![0.0, 0.0]);
     let pixels = frame(&gpu, &mut view);
     let c = SIZE / 2;
-    // A label starts four pixels past its marker's right edge, centered on it.
+    // A label starts four pixels past its marker's right edge, vertically centered on it.
     let first = at(&pixels, c - 50 + 12, c);
     let second = at(&pixels, c + 10 + 12, c);
     assert!(first[0] > 200 && first[2] < 60, "the first row's label: {first:?}");
@@ -88,7 +89,8 @@ fn labels_show_beside_their_rows() {
 #[test]
 fn a_color_changing_every_frame_leaves_labels_placed() {
     let Some(gpu) = gpu() else { return };
-    // A pulse reads the clock, so the mark evaluates every frame; nothing that places its labels moved.
+    // A pulse reads the clock, so the mark evaluates every frame, but nothing that places its
+    // labels moves.
     let pulse = latkit::elapsed().sin().colormap(latkit::Colormap::VIRIDIS).domain(-1.0..=1.0);
     let mut view = shown(&gpu, vec![-50.0, 10.0], vec![0.0, 0.0], |v| v.radius(2.0).color(pulse.clone()));
     for _ in 0..30 {
@@ -98,11 +100,11 @@ fn a_color_changing_every_frame_leaves_labels_placed() {
 }
 
 #[test]
-fn a_block_holds_its_label_while_it_fits() {
+fn a_block_shows_its_label_inside_while_it_fits() {
     let Some(gpu) = gpu() else { return };
     let c = SIZE / 2;
     let green = Color::rgb(0.0, 1.0, 0.0);
-    // The label is 36 by 10 pixels: a 60 by 20 block holds it, a 20 by 20 one does not.
+    // The label is 36 by 10 pixels. A 60 by 20 block fits it, and a 20 by 20 block does not.
     let mut wide = shown(&gpu, vec![0.0], vec![0.0], |v| v.size(60.0, 20.0).color(green));
     let middle = at(&frame(&gpu, &mut wide), c, c);
     assert!(middle[0] > 200 && middle[1] < 60, "the label inside: {middle:?}");
@@ -112,7 +114,7 @@ fn a_block_holds_its_label_while_it_fits() {
 }
 
 #[test]
-fn overlapping_labels_give_way_by_priority() {
+fn overlapping_labels_show_the_higher_priority_one() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, vec![0.0, 4.0], vec![1.0, 5.0]);
     let pixels = frame(&gpu, &mut view);
@@ -120,15 +122,15 @@ fn overlapping_labels_give_way_by_priority() {
     let shared = at(&pixels, c + 20, c);
     assert!(shared[2] > 200 && shared[0] < 60, "the higher priority label shows: {shared:?}");
     let only_first = at(&pixels, c + 7, c);
-    assert!(only_first[0] < 60, "the lower one gave way: {only_first:?}");
+    assert!(only_first[0] < 60, "the lower one is hidden: {only_first:?}");
 }
 
 #[test]
-fn only_labels_that_show_have_their_texts_set() {
+fn only_shown_labels_have_their_text_rasterized() {
     let Some(gpu) = gpu() else { return };
     let set = Arc::new(AtomicUsize::new(0));
     gpu.set_host(Counted(set.clone()));
-    // Two thousand rows in view, each named apart: far more labels than fit.
+    // Two thousand rows in view, each with a distinct name: far more labels than fit.
     let n = 2000;
     let x: Vec<f64> = (0..n).map(|i| f64::from((i * 37) % 120) - 60.0).collect();
     let y: Vec<f64> = (0..n).map(|i| f64::from((i * 53) % 120) - 60.0).collect();
@@ -148,7 +150,7 @@ fn only_labels_that_show_have_their_texts_set() {
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     let count = set.load(Ordering::Relaxed);
-    assert!(count > 0 && count < 200, "texts set: {count}");
+    assert!(count > 0 && count < 200, "texts rasterized: {count}");
     let red = pixels.iter().filter(|p| p[0] > 200 && p[1] < 60).count();
     assert!(red > 200, "labels show: {red} pixels");
     assert_eq!(errors(&mut view), Vec::new());
@@ -185,7 +187,7 @@ fn diagram_labels_scale_with_the_sheet() {
     let Some(gpu) = gpu() else { return };
     let c = SIZE / 2;
     let red = |p: [u8; 4]| p[0] > 200 && p[1] < 60;
-    // At zoom 0 the label is 36 by 10 pixels; at zoom 1 twice that, still inside its block.
+    // At zoom 0 the label is 36 by 10 pixels. At zoom 1 it is twice that, still inside its block.
     let near = diagram_block(&gpu, 0.0);
     assert!(red(at(&near, c + 15, c)) && !red(at(&near, c + 21, c)), "36 wide at zoom 0");
     let closer = diagram_block(&gpu, 1.0);
@@ -196,7 +198,7 @@ fn diagram_labels_scale_with_the_sheet() {
 fn diagram_labels_fade_once_too_small_to_read() {
     let Some(gpu) = gpu() else { return };
     let c = SIZE / 2;
-    // At zoom −2 the text is 2.5 pixels tall: past reading, it is gone, and the block shows.
+    // At zoom −2 the text is 2.5 pixels tall, too small to read, so it hides and the block shows.
     let far = diagram_block(&gpu, -2.0);
     let middle = at(&far, c, c);
     assert!(middle[1] > 120 && middle[0] < 60, "only the block: {middle:?}");
@@ -207,7 +209,7 @@ fn a_cap_shows_only_the_labels_of_highest_priority() {
     let Some(gpu) = gpu() else { return };
     let set = Arc::new(AtomicUsize::new(0));
     gpu.set_host(Counted(set.clone()));
-    // Four rows one above another, apart enough that none would give way, priorities rising upward.
+    // Four rows stacked vertically, far enough apart not to overlap, priority rising upward.
     let ys = [-45.0, -15.0, 15.0, 45.0];
     let data = Data::new("d");
     data.apply(
@@ -226,13 +228,13 @@ fn a_cap_shows_only_the_labels_of_highest_priority() {
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     let c = SIZE / 2;
-    // The plane runs y up; each label starts beside its marker.
+    // Y points up on the plane. Each label starts beside its marker.
     let labeled = |y: f64| {
         let row = (f64::from(c) - y) as u32;
         (c - 30 + 4..c - 30 + 20).any(|x| at(&pixels, x, row)[0] > 200)
     };
     assert!(labeled(45.0) && labeled(15.0), "the two of highest priority show");
-    assert!(!labeled(-15.0) && !labeled(-45.0), "the rest give way to the cap");
-    assert_eq!(set.load(Ordering::Relaxed), 2, "only the labels shown have their texts set");
+    assert!(!labeled(-15.0) && !labeled(-45.0), "the cap hides the rest");
+    assert_eq!(set.load(Ordering::Relaxed), 2, "only the shown labels are rasterized");
     assert_eq!(errors(&mut view), Vec::new());
 }

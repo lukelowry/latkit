@@ -1,5 +1,6 @@
-//! Layouts on the CPU: layered drawing and stress over nested graphs, packing of parts, overlap
-//! removal, and a diagram's orthogonal routes. Each is pure, so it runs as well in a host's job.
+//! CPU graph layouts: layered and stress layouts of nested graphs, packing of disconnected parts,
+//! overlap removal, orthogonal wire routing for diagrams, and an R-tree of boxes. Each is a pure
+//! function, so it runs the same on the frame or in a host job.
 pub(crate) mod boxes;
 pub(crate) mod layered;
 pub(crate) mod levels;

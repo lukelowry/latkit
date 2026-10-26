@@ -1,5 +1,5 @@
-//! What a job reads: scenes, datasets, cameras, fits, and frames. Datasets and frames' patches read
-//! as the library reads them, through the host, which reads the files their documents name.
+//! Reading a job's inputs: scenes, datasets, cameras, fits, and frames. Datasets and frame patches
+//! load through the library and its host, which reads the files their documents reference.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
@@ -15,10 +15,10 @@ use serde::de::DeserializeOwned;
 use crate::args::{Source, is_stdio};
 use crate::{Failure, block};
 
-/// Frames read and loaded ahead of the one drawing.
+/// Number of frames read and loaded ahead of the one being drawn.
 const AHEAD: usize = 2;
 
-/// The bytes at `path`, or stdin's for `-`.
+/// Reads the bytes at `path`, or stdin for `-`.
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>, Failure> {
     let mut bytes = Vec::new();
     let result = if is_stdio(path) {
@@ -30,36 +30,36 @@ pub(crate) fn read(path: &Path) -> Result<Vec<u8>, Failure> {
     Ok(bytes)
 }
 
-/// What paths in the document at `path` are relative to: the document, or nothing for stdin.
+/// The base for relative paths in the document at `path`: the document's path, or empty for stdin.
 fn base(path: &Path) -> String {
     if is_stdio(path) { String::new() } else { path.to_string_lossy().into_owned() }
 }
 
-/// What the JSON document at `path` holds, read as a `T`.
+/// Reads the JSON document at `path` as a `T`.
 pub(crate) fn document<T: DeserializeOwned>(path: &Path) -> Result<T, Failure> {
     let bytes = read(path)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| Failure::at(Error::invalid("not UTF-8 text"), path))?;
     latkit::from_json(text).map_err(|e| Failure::at(e, path))
 }
 
-/// A scene from its JSON.
+/// Reads a scene from its JSON file.
 pub(crate) fn scene(path: &Path) -> Result<Scene, Failure> {
     document(path)
 }
 
-/// A camera from its JSON.
+/// Reads a camera from its JSON file.
 pub(crate) fn camera(path: &Path) -> Result<Camera, Failure> {
     document(path)
 }
 
-/// A fit: `all`, or one as JSON.
+/// Parses a fit: a bare name such as `all`, or JSON.
 pub(crate) fn fit(text: &str) -> Result<Fit, Failure> {
     let json = if text.trim_start().starts_with(['{', '"', '[']) { text.to_owned() } else { format!("\"{text}\"") };
     latkit::from_json(&json).map_err(|e| Failure::from(e.at("--fit")))
 }
 
-/// The dataset `source` names: latkit's bytes, GeoJSON, or a JSON document whose files `host`
-/// reads, named as it says.
+/// Loads the dataset `source` names: latkit bytes, GeoJSON, or a JSON document whose referenced
+/// files `host` reads. The name `source` gives, if any, names the dataset.
 pub(crate) fn dataset(source: &Source, host: &Native, deadline: Duration) -> Result<Data, Failure> {
     let path = &source.path;
     let bytes = read(path)?;
@@ -68,28 +68,28 @@ pub(crate) fn dataset(source: &Source, host: &Native, deadline: Duration) -> Res
     block(deadline, Data::read(&bytes, reading)).map_err(|e| Failure::at(e, path))
 }
 
-/// One output frame's changes, as a line of the frames file says.
+/// One output frame's changes, from one line of a frames file.
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Frame {
     /// The axis coordinate every view shows.
     pub(crate) at: Option<f64>,
-    /// Patches by dataset name, in the order written.
+    /// Patches by dataset name, applied in the order written.
     #[serde(default)]
     patch: Patches,
-    /// Where views look at once: one camera for every view it fits, or one per view.
+    /// Cameras views switch to at once: one for every view whose space it fits, or one per view.
     pub(crate) camera: Option<Each<Camera>>,
-    /// Where views ease to.
+    /// Cameras views ease to, given like `camera`.
     pub(crate) fly: Option<Each<Camera>>,
-    /// What views frame.
+    /// What views fit: one fit for every view, or one per view.
     pub(crate) fit: Option<Each<Fit>>,
     /// CSS pixels every view keeps clear: top, right, bottom, left.
     pub(crate) insets: Option<[f32; 4]>,
-    /// Degrees a second every map or plane turns.
+    /// Degrees per second every map or plane turns.
     pub(crate) orbit: Option<f64>,
 }
 
-/// One value for every view, or one for each in order, `null` leaving a view as it is.
+/// One value for every view, or one per view in order. `null` leaves a view unchanged.
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 #[schemars(inline)]
@@ -108,10 +108,10 @@ impl<T: Clone> Each<T> {
     }
 }
 
-/// A frame's index, what it changes, and its patches by dataset, loaded.
+/// A frame's index, its changes, and its loaded patches by dataset name.
 pub(crate) type Next = (usize, Frame, Vec<(Name, Patch)>);
 
-/// The lines of a frames file, each a frame, its patches loaded through the host.
+/// Reads a frames file, one frame per line, loading each frame's patches through the host.
 pub(crate) struct Frames {
     path: PathBuf,
     lines: io::Lines<Box<dyn BufRead + Send>>,
@@ -130,7 +130,7 @@ impl Frames {
         Ok(Frames { path: path.to_path_buf(), lines: input.lines(), index: 0, host, deadline })
     }
 
-    /// The next frame, its patches loaded; `None` at the end. Blank lines are skipped.
+    /// The next frame, with its patches loaded. `None` at the end. Skips blank lines.
     pub(crate) fn next(&mut self) -> Result<Option<Next>, Failure> {
         loop {
             let Some(line) = self.lines.next() else { return Ok(None) };
@@ -143,7 +143,7 @@ impl Frames {
             let at = |error: Error| Failure::at(error.at(index).at("frames"), &self.path);
             let mut frame: Frame = latkit::from_json(&line).map_err(at)?;
             if frame.at.is_some_and(|a| !a.is_finite()) {
-                return Err(at(Error::invalid("at is finite").at("at")));
+                return Err(at(Error::invalid("expected a finite number").at("at")));
             }
             let base = base(&self.path);
             let reading = Reading { base: &base, host: Some(&self.host), name: None };
@@ -153,8 +153,8 @@ impl Frames {
         }
     }
 
-    /// The frames read and loaded on a thread of their own, a few ahead of the one taken, so their
-    /// files are read while frames draw.
+    /// Reads and loads frames on a separate thread, a few ahead of the one taken, so their files
+    /// load while frames draw.
     pub(crate) fn ahead(mut self) -> Ahead {
         let (send, frames) = mpsc::sync_channel(AHEAD);
         std::thread::spawn(move || {
@@ -211,19 +211,19 @@ mod tests {
         let geo = r#"{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}}"#;
         std::fs::write(dir.path().join("p.geojson"), geo).unwrap();
         let geo_path = dir.path().join("p.geojson").to_string_lossy().into_owned();
-        assert!(load(&geo_path).is_err(), "GeoJSON names its dataset");
+        assert!(load(&geo_path).is_err(), "GeoJSON needs a name");
         let places = load(&format!("places={geo_path}")).unwrap();
         assert_eq!(rows(&places, "points"), Some(1));
     }
 
     #[test]
-    fn frames_keep_their_patches_order_and_apply_to_every_view_or_each() {
+    fn frames_keep_patch_order_and_take_one_value_or_one_per_view() {
         let frame: Frame = latkit::from_json(r#"{"patch": {"b": [], "a": []}}"#).unwrap();
         let host = Native::new();
         let patches = block(deadline(), frame.patch.read(Reading { host: Some(&host), ..Reading::default() })).unwrap();
         let names: Vec<&str> = patches.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["b", "a"]);
-        assert!(latkit::from_json::<Frame>(r#"{"patch": {"a": [], "a": []}}"#).is_err(), "a dataset patched twice");
+        assert!(latkit::from_json::<Frame>(r#"{"patch": {"a": [], "a": []}}"#).is_err(), "a dataset named twice fails");
         let error = latkit::from_json::<Frame>(r#"{"patch": {"a": [[]]}}"#).map(drop).unwrap_err();
         assert!(error.to_string().starts_with("patch.a[0]"), "{error}");
         let one: Each<f64> = latkit::from_json("2").unwrap();

@@ -1,9 +1,9 @@
 /**
- * A DC power flow: each bus's voltage angle from what it injects, through branches weighted by
- * their susceptance, and how the angles shift when one branch opens.
+ * A DC power flow. It computes each bus's voltage angle from its injection, with branches weighted
+ * by their susceptance, and how the angles shift when one branch opens.
  */
 
-/** Buses and the branches between them, each branch's reactance in per unit. */
+/** A network of buses and the branches between them. Reactance is in per unit. */
 export interface Network {
   readonly buses: number;
   readonly from: Uint32Array;
@@ -11,10 +11,11 @@ export interface Network {
   readonly reactance: Float32Array;
 }
 
-/** The smallest reactance a branch is taken to have, so none is infinitely stiff. */
+/** The smallest reactance magnitude a branch is given, so no susceptance is infinite. */
 const STIFFEST = 1e-4;
 
-/** The network's susceptance matrix, row by row, and each bus's island. */
+/** The network's susceptance matrix in compressed sparse rows, with the diagonal stored separately,
+ * and each bus's island. */
 class Susceptance {
   readonly start: Uint32Array;
   readonly column: Uint32Array;
@@ -46,7 +47,7 @@ class Susceptance {
       this.diagonal[a]! += w;
       this.diagonal[c]! += w;
     }
-    // Islands, so each balances on its own.
+    // Find the islands with union-find, so each one is balanced separately.
     const root = Uint32Array.from({ length: buses }, (_, b) => b);
     const find = (b: number): number => {
       while (root[b] !== b) b = root[b] = root[root[b]!]!;
@@ -56,12 +57,13 @@ class Susceptance {
     this.island = Uint32Array.from({ length: buses }, (_, b) => find(b));
   }
 
-  /** A branch's susceptance: its reactance's inverse, series capacitors taken at their size. */
+  /** A branch's susceptance: the inverse of its reactance's magnitude, so series capacitors
+   * (negative reactance) count by their size. */
   susceptance(e: number): number {
     return 1 / Math.max(Math.abs(this.net.reactance[e]!), STIFFEST);
   }
 
-  /** `B·v` into `out`. */
+  /** Writes `B·v` into `out`. */
   times(v: Float64Array, out: Float64Array): void {
     for (let b = 0; b < v.length; b++) {
       let sum = this.diagonal[b]! * v[b]!;
@@ -71,7 +73,7 @@ class Susceptance {
     }
   }
 
-  /** `p` less its island's mean, so every island's injections sum to zero. */
+  /** Returns `p` minus its island's mean, so every island's injections sum to zero. */
   balanced(p: Float64Array): Float64Array {
     const sum = new Float64Array(p.length);
     const count = new Float64Array(p.length);
@@ -83,7 +85,8 @@ class Susceptance {
     return p.map((v, b) => v - mean[this.island[b]!]!);
   }
 
-  /** The angles `θ` with `B·θ = p`, by conjugate gradients with each bus's own scale. */
+  /** Solves `B·θ = p` for the angles `θ`, after balancing `p` per island, by conjugate gradients
+   * with a diagonal (Jacobi) preconditioner. */
   solve(injection: Float64Array, tolerance = 1e-10): Float64Array {
     const n = injection.length;
     const p = this.balanced(injection);
@@ -116,14 +119,15 @@ class Susceptance {
   }
 }
 
-/** Each bus's angle in radians, from its injection in per unit. */
+/** Returns each bus's angle in radians, given its injection in per unit. */
 export function angles(net: Network, injection: Float64Array): Float64Array {
   return new Susceptance(net).solve(injection);
 }
 
 /**
- * How each bus's angle shifts when `branch` opens, from the angles before: the flow the branch
- * carried moves onto the rest of the network as if injected at one end and drawn at the other.
+ * Returns how each bus's angle shifts when `branch` opens, given the angles `theta` before. The
+ * branch's flow moves onto the rest of the network, as if injected at one end and withdrawn at the
+ * other.
  */
 export function shifts(net: Network, theta: Float64Array, branch: number): Float64Array {
   const b = new Susceptance(net);

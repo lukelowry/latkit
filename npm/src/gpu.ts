@@ -1,4 +1,4 @@
-/** The GPU: the device views draw with, the memory they share, and the frames they draw in. */
+/** The GPU device: it creates views and canvases, owns their shared memory, and runs frames. */
 
 import type * as bindings from '../pkg/latkit.js';
 import { Canvas, type CanvasOptions } from './canvas.js';
@@ -8,7 +8,10 @@ import { firstDevice, load } from './load.js';
 import type { Work } from './outputs.js';
 import { View, type ViewOptions } from './view.js';
 
-/** The GPU device views draw with. Views of one GPU draw in one animation frame, sharing its memory. */
+/**
+ * A WebGPU device that views draw with. The views and canvases of one `Gpu` share its memory and
+ * draw together in each animation frame, so linked views always show the same moment.
+ */
 export class Gpu {
   #views = new Set<View>();
   #canvases = new Set<Canvas>();
@@ -18,15 +21,19 @@ export class Gpu {
     hold(this, device);
   }
 
-  /** Asks for a WebGPU device, loading latkit first: the first call takes the one made as it loaded. */
+  /**
+   * Requests a WebGPU device, calling `load()` first. The first call reuses the device that
+   * `load()` requested. Rejects with an `unsupported` error when the browser has no WebGPU device.
+   */
   static async create(): Promise<Gpu> {
     await load();
     return new Gpu(await (firstDevice() ?? wasm().Gpu.create()));
   }
 
   /**
-   * A view of `scene`, drawing the datasets its `sources` give. A {@link Canvas} shows it, and a
-   * {@link Shot} draws it with or without one.
+   * Creates a view that draws `scene` from the datasets in `options.sources`. Show it in a
+   * {@link Canvas}, or draw it into pictures with a `Shot`, with or without a canvas. Throws an
+   * `invalid` error for an invalid scene.
    */
   view(scene: Scene, options: ViewOptions = {}): View {
     const view = View.made(inner<bindings.Gpu>(this, 'Gpu'), scene, () => this.#views.delete(view));
@@ -36,9 +43,11 @@ export class Gpu {
   }
 
   /**
-   * A canvas showing views as `layout` places them in `target`: a `<canvas>` element, which sizes
-   * itself to its CSS box and passes each view the input landing on it, or an `OffscreenCanvas` in a
-   * worker, which keeps the size it is given at `pixelRatio` pixels a CSS pixel.
+   * Creates a canvas that shows views in `target`, placed by `options.layout`. A `<canvas>` element
+   * sizes itself to its CSS box at the device pixel ratio, and passes pointer, wheel, and key input
+   * to the views in its panels. An `OffscreenCanvas`, as in a worker, keeps the size it is given at
+   * `options.pixelRatio` pixels per CSS pixel, and takes no input. Throws an `invalid` error for an
+   * invalid layout, such as a view already shown in another panel.
    */
   canvas(target: HTMLCanvasElement | OffscreenCanvas, options: CanvasOptions = {}): Canvas {
     const canvas = Canvas.made(inner<bindings.Gpu>(this, 'Gpu'), target, options, () =>
@@ -49,8 +58,9 @@ export class Gpu {
   }
 
   /**
-   * Calls `listener` with the frame's timestamp every animation frame, before the views draw, so
-   * what it changes shows in that frame. Returns a function that stops it.
+   * Calls `listener` every animation frame with the frame's timestamp in milliseconds, before the
+   * views draw, so changes it makes show in that frame. While any listener is registered, a frame
+   * runs every animation frame. Returns a function that removes the listener.
    */
   on(type: 'frame', listener: (now: number) => void): () => void {
     const handle = inner<bindings.Gpu>(this, 'Gpu').onFrame(listener);
@@ -61,12 +71,15 @@ export class Gpu {
     return stop;
   }
 
-  /** Whether the device was lost; a new `Gpu` is needed. */
+  /** Whether the device was lost. Drawing then does nothing; create a new `Gpu`. */
   get lost(): boolean {
     return inner<bindings.Gpu>(this, 'Gpu').lost;
   }
 
-  /** How much GPU memory data takes. */
+  /**
+   * The GPU memory budget for data, shared by every view of this GPU; see {@link Budget}. Defaults
+   * to half the device's largest storage buffer, and 32 MiB uploaded per frame.
+   */
   get budget(): Budget {
     return JSON.parse(inner<bindings.Gpu>(this, 'Gpu').budget) as Budget;
   }
@@ -75,48 +88,57 @@ export class Gpu {
     inner<bindings.Gpu>(this, 'Gpu').setBudget(JSON.stringify(budget));
   }
 
-  /** What this GPU did since it was created, counted exactly; see {@link Work}. */
+  /**
+   * Exact counts of the work this GPU has done since it was created; see {@link Work}. The counts
+   * repeat for the same budget, device limits, and frames, so tests and benchmarks can assert them.
+   */
   get work(): Work {
     return JSON.parse(inner<bindings.Gpu>(this, 'Gpu').work) as Work;
   }
 
-  /** Bytes on the GPU every view of it draws from: data, and what each view keeps per row. */
+  /**
+   * Bytes of GPU memory the views of this GPU draw from: data pages, and each view's per-row data.
+   */
   get resident(): number {
     return inner<bindings.Gpu>(this, 'Gpu').resident;
   }
 
-  /** Bytes waiting to upload, for every view of this GPU. */
+  /** Bytes waiting to upload to the GPU, across every view of this GPU. */
   get uploading(): number {
     return inner<bindings.Gpu>(this, 'Gpu').uploading;
   }
 
   /**
-   * Draws one frame now at `now`, milliseconds on the clock animation frames give: the frame
-   * listeners, then every canvas that needs a frame. From the first step no animation frames are
-   * asked for: a harness, as tests and benchmarks are, steps every frame itself, so a run draws the
-   * same frames however fast the device is.
+   * Draws one frame immediately at time `now`, in milliseconds on the `requestAnimationFrame`
+   * clock: it runs the frame listeners, then draws every canvas that needs a frame. After the first
+   * call, this GPU stops requesting animation frames. A test or benchmark that steps every frame
+   * itself then draws the same frames on any device.
    */
   step(now: number): void {
     inner<bindings.Gpu>(this, 'Gpu').step(now);
   }
 
   /**
-   * Resolves once the GPU finished the work submitted to it, every readback landed, and every
-   * pipeline a view or shot asked for compiled: a frame stepped then draws all of it.
+   * Resolves once the GPU has finished all submitted work, every readback has arrived, and every
+   * pipeline a view or shot requested has compiled. A frame stepped after that uses all of it.
    */
   async done(wait: Wait = {}): Promise<void> {
-    await waited<void>(inner<bindings.Gpu>(this, 'Gpu').done(), wait, 'the GPU');
+    await waited<void>(inner<bindings.Gpu>(this, 'Gpu').done(), wait, 'waiting for the GPU');
   }
 
   /**
-   * Resolves when work a view waits on lands after this call (a readback, a compile, a job, a text,
-   * a fetch), or a view asks for a frame.
+   * Resolves when, after this call, work a view is waiting on arrives (a readback, a pipeline
+   * compile, a job, a label text, or a fetch), or a view requests a frame. A harness that steps
+   * frames awaits it to know when to step again.
    */
   async landed(wait: Wait = {}): Promise<void> {
-    await waited<void>(inner<bindings.Gpu>(this, 'Gpu').landed(), wait, 'work landing');
+    await waited<void>(inner<bindings.Gpu>(this, 'Gpu').landed(), wait, 'waiting for work');
   }
 
-  /** Releases this GPU's canvases, views, and frame listeners. Other GPUs and data stay usable. */
+  /**
+   * Destroys this GPU's canvases, views, and frame listeners, then frees the device. Other GPUs and
+   * datasets stay usable. Calling it again does nothing; other methods throw afterwards.
+   */
   destroy(): void {
     const device = release<bindings.Gpu>(this);
     if (!device) return;

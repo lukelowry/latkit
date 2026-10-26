@@ -10,11 +10,12 @@ use super::table::{Field, Table};
 use super::values::Value;
 use crate::{Error, Result};
 
-/// One version of a dataset: immutable, O(1) to keep, and sharing every page with the versions
-/// before and after it. [`Data::snapshot`](crate::Data::snapshot) takes one; a view given one draws
-/// it as it is.
+/// One immutable version of a dataset. Taking one is O(1), and it shares unchanged pages with the
+/// versions before and after it. [`Data::snapshot`](crate::Data::snapshot) takes one; a view given
+/// one draws that version unchanged.
 ///
-/// It reads alike whatever came of it since: what it holds described, values, queries, and envelopes.
+/// Later changes to the dataset never affect it: its description, values, queries, and envelopes
+/// stay the same.
 ///
 /// ```
 /// # use latkit::{Data, Patch, Table, Value};
@@ -36,10 +37,12 @@ pub(crate) struct Inner {
     /// Sorted by name.
     pub(crate) tables: Vec<Table>,
     pub(crate) version: Version,
-    /// The version the dataset began at, which every version applied from it shares: a view eases
-    /// rows from one of them to the next, and replaces the rows of another dataset of the same name.
+    /// The version the dataset started from, shared by every version patches derive from it. A
+    /// view matches rows across versions with the same origin to animate them; for a same-named
+    /// dataset with another origin, every old row leaves and every new row enters.
     pub(crate) origin: Version,
-    /// Changes when a table, field, or kind is added or changed; marks recompile only then.
+    /// A hash of the table names and the fields' names, kinds, and targets. Marks recompile only
+    /// when it changes.
     pub(crate) schema: u64,
 }
 
@@ -67,7 +70,7 @@ impl Snapshot {
         self.0.axis.as_ref().map(|(name, unit)| (name.as_str(), unit.as_str()))
     }
 
-    /// Every table, by name.
+    /// Every table, sorted by name.
     pub(crate) fn tables(&self) -> impl Iterator<Item = &Table> + '_ {
         self.0.tables.iter()
     }
@@ -77,7 +80,7 @@ impl Snapshot {
         self.0.table(name)
     }
 
-    /// The axis coordinates the sampled fields span.
+    /// The first and last axis coordinates held by any sampled field.
     pub(crate) fn span(&self) -> Option<[f64; 2]> {
         let spans = self.0.tables.iter().flat_map(|t| &t.fields).filter_map(|(_, field)| match field {
             Field::Sampled(samples, _) => samples.span(),
@@ -86,9 +89,9 @@ impl Snapshot {
         spans.reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])])
     }
 
-    /// The value of `field` for the row of `table` with `id`; `None` where it is missing. A sampled
-    /// field reads its last frame at or before axis coordinate `at`, its last frame unless given; a
-    /// reference reads the row it names.
+    /// The value of `field` for the row of `table` with `id`, or `None` if the table, row, field,
+    /// or value is missing. A sampled field reads its last frame at or before axis coordinate `at`,
+    /// or its last frame when `at` is `None`. A reference returns the [`Row`] it names.
     pub fn get(&self, table: &str, id: impl Into<Id>, field: &str, at: impl Into<Option<f64>>) -> Option<Value> {
         let rows = self.table(table)?;
         let index = rows.row(id.into().as_ref())?;
@@ -102,9 +105,9 @@ impl Snapshot {
         }
     }
 
-    /// The version `patch` makes of this one: every change in it, or none of them when one is invalid,
-    /// as an error whose path names the change and part, such as `patch[1].Bus.kv`. A patch to another
-    /// dataset is an error.
+    /// The version `patch` makes from this one. Applies every change or, if one is invalid, none,
+    /// returning an error whose path names the change and part, such as `patch[1].Bus.kv`. A patch
+    /// for another dataset is an error.
     pub(crate) fn applied(&self, patch: Patch) -> Result<Snapshot> {
         if let Some(data) = &patch.data
             && *data != self.0.name
@@ -118,7 +121,7 @@ impl Snapshot {
         let mut ops = patch.ops.into_iter().enumerate().peekable();
         while let Some((i, op)) = ops.next() {
             let op = match op {
-                // A run of appends to the same fields of every row of a table records as one.
+                // Merge consecutive appends to the same fields of every row of a table into one.
                 Op::Append { table, at, ids: None, fields } => {
                     let rows = next.table(&table).map(Table::len);
                     let mut run = Appends::new(table, at, fields);
@@ -140,7 +143,7 @@ impl Snapshot {
         Ok(Snapshot(Arc::new(next)))
     }
 
-    /// The patch to this dataset that builds it from an empty one.
+    /// The patch that builds this dataset from an empty one. It names this dataset.
     pub fn to_patch(&self) -> Patch {
         let mut patch = Patch::to(self.0.name.clone());
         if let Some((name, unit)) = &self.0.axis {
@@ -149,27 +152,29 @@ impl Snapshot {
         self.0.tables.iter().fold(patch, |patch, table| patch.replace(table.clone()))
     }
 
-    /// The dataset as bytes: the patch to it that builds it.
+    /// Encodes the dataset as bytes: its [`to_patch`](Snapshot::to_patch), encoded.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.to_patch().to_bytes()
     }
 
-    /// The dataset the bytes of a patch to a dataset build.
+    /// Decodes a dataset from bytes written by [`to_bytes`](Snapshot::to_bytes). Errors unless the
+    /// bytes hold a patch that names a dataset.
     pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Snapshot> {
         let patch = Patch::from_bytes(bytes)?;
         let Some(name) = patch.data.clone() else {
-            return Err(Error::invalid("the bytes hold a patch to no dataset").at("bytes"));
+            return Err(Error::invalid("the bytes hold a patch that names no dataset").at("bytes"));
         };
         Snapshot::new(name).applied(patch)
     }
 
-    /// The same tables as dataset `name`: another dataset, which views draw apart from this one.
+    /// The same tables as a new dataset named `name`, with a new origin, so views treat it as a
+    /// separate dataset.
     pub(crate) fn renamed(&self, name: impl Into<Name>) -> Snapshot {
         let version = Version::next();
         Snapshot(Arc::new(Inner { name: name.into(), version, origin: version, ..(*self.0).clone() }))
     }
 
-    /// Which version of its dataset this is: two snapshots of the same version are the same.
+    /// This snapshot's version. Snapshots with the same version are equal.
     pub(crate) fn version(&self) -> Version {
         self.0.version
     }
@@ -178,14 +183,15 @@ impl Snapshot {
         self.0.schema
     }
 
-    /// The version the dataset began at; see [`Inner::origin`].
+    /// The version the dataset started from; see [`Inner::origin`].
     pub(crate) fn origin(&self) -> Version {
         self.0.origin
     }
 
-    /// Changes sampled field `field` of table `table` with `change`, starting it empty where the table
-    /// has no field of its name: what time tiles put in and let go of. Whether anything changed: not
-    /// where `change` says so, or where there is no such table or the field holds no samples.
+    /// Updates sampled field `field` of table `table` with `change`, starting from empty samples if
+    /// the field does not exist. Time tiles use it to insert and remove spans. Returns whether
+    /// anything changed: false if `change` returns false, the table does not exist, or the field is
+    /// not sampled.
     pub(crate) fn sampled(&mut self, table: &str, field: &str, change: impl FnOnce(&mut Samples) -> bool) -> bool {
         let Ok(i) = self.0.position(table) else { return false };
         let mut samples = match self.0.tables[i].field_named(field) {
@@ -245,7 +251,7 @@ impl Inner {
         Ok(())
     }
 
-    /// A deterministic digest of every table's name and every field's name, kind, and target.
+    /// A deterministic hash of every table's name and every field's name, kind, and target.
     fn signature(&self) -> u64 {
         let mut hasher = FxHasher::default();
         for table in &self.tables {

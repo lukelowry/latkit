@@ -1,7 +1,7 @@
-// Reading columns: page tables in `program` point at blocks of `pages`. A column's pages are its
-// data's, or for a mark drawing a table in part the pages of it the mark holds, a slot each; every
-// page holds `PAGE_ROWS` rows. Values stay `u32` bits until arithmetic needs them, so
-// a missing value is never an `f32` constant (WGSL cannot represent NaN constants).
+// Reading columns. Page tables in `program` point at blocks of `pages`, each page holding
+// `PAGE_ROWS` rows. A column's pages are its data's pages, or for a paged table the mark's resident
+// pages, one per slot. Values stay `u32` bits until arithmetic needs them, because WGSL cannot
+// express a missing value as an `f32` constant (NaN).
 
 import package::lib::types::{
     NONE, MISSING, COLUMN_WORDS, COLUMN_FLAGS, COLUMN_ROWS, COLUMN_TABLE, COLUMN_LOW, COLUMN_JOIN, COLUMN_T,
@@ -9,12 +9,13 @@ import package::lib::types::{
 };
 import package::lib::bind::{program, mark, word};
 
-// Whether a pipeline's marks read fields of other tables by row id, and fields sampled over an axis
-// at the shown coordinate: set when it is made, so a scene doing neither compiles neither.
+// Whether a pipeline's marks read fields of other tables through a join, and fields sampled over
+// the axis. Both are set when the pipeline is created, so a scene that uses neither compiles
+// neither.
 override JOINED: bool = true;
 override TIMED: bool = true;
 
-// Whether `x` is NaN or infinite: missing.
+// Whether `x` is missing: NaN or infinite.
 fn missing(x: f32) -> bool {
     return missing_bits(bitcast<u32>(x));
 }
@@ -39,7 +40,7 @@ fn page_of(row: u32) -> vec2u {
     return vec2u(row >> PAGE_BITS, row & PAGE_MASK);
 }
 
-// A static column's value as (high, low) bits: the low part carries what f32 drops of an f64.
+// A static column's value as (high, low) bits. The low part holds what f32 loses of an f64.
 fn static_value(column: u32, row: u32) -> vec2u {
     let at = page_of(row);
     let page = at.x;
@@ -53,8 +54,9 @@ fn static_value(column: u32, row: u32) -> vec2u {
     return vec2u(hi, page_word(program[low + page], local, 0u));
 }
 
-// A sampled column's value at the shown coordinate, as bits. Each page of rows has a cursor of six
-// words: block and word of this frame, block and word of the next frame, and both frames' row counts.
+// A sampled column's value at the shown coordinate, as bits. Each page of rows has a six-word
+// cursor: the block and word of the frame at the shown coordinate, the same for the next frame, and
+// both frames' row counts.
 fn sample_value(column: u32, row: u32) -> u32 {
     let at = page_of(row);
     let cursor = column_word(column, COLUMN_TABLE) + at.x * 6u;
@@ -75,7 +77,7 @@ fn sample_value(column: u32, row: u32) -> u32 {
     return bitcast<u32>(mix(bitcast<f32>(a), bitcast<f32>(b), t));
 }
 
-// A bits column's word: row indices of a reference, NONE where unwired.
+// A bits column's word, such as a reference's row index; NONE where unwired.
 fn bits_value(column: u32, row: u32) -> u32 {
     if row >= column_word(column, COLUMN_ROWS) {
         return NONE;
@@ -106,17 +108,17 @@ fn column_value(column: u32, row: u32) -> vec2u {
     return static_value(column, r);
 }
 
-// One row's points in a geometry column: where the piece its points begin in is listed in `program`,
-// its first point in that piece, and how many. Parts are broken by a missing point.
+// One row's points in a geometry column: where its first piece is listed in `program`, its first
+// point in that piece, and its point count. A missing point separates parts.
 struct Points {
     blocks: u32,
     first: u32,
     count: u32,
 }
 
-// Row `row`'s points of geometry column `column`, as its page's rows' table says. A piece holds up to
-// `1 << POINT_BITS` points as x and y bits; a row larger than a piece begins one and fills those after
-// it.
+// Row `row`'s points in geometry column `column`, from its page's row table. A piece holds up to
+// `1 << POINT_BITS` points as x and y bits. A row larger than a piece continues into the pieces
+// after its first.
 fn points_of(column: u32, row: u32) -> Points {
     if column == NONE || row >= column_word(column, COLUMN_ROWS) {
         return Points(0u, 0u, 0u);

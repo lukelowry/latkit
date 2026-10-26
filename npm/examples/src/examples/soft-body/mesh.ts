@@ -1,16 +1,18 @@
 /**
- * The Stanford bunny, from the Stanford 3D Scanning Repository (graphics.stanford.edu/data/3Dscanrep),
- * as the public-domain `bunny` package ships it: a closed low-resolution reconstruction. The file
- * holds its vertex and triangle counts as two uint32s, then float32 x, y, z per vertex with y up, then
- * uint16 triangles wound outward.
+ * The Stanford bunny, from the Stanford 3D Scanning Repository
+ * (graphics.stanford.edu/data/3Dscanrep), as shipped by the public-domain `bunny` package: a
+ * closed, low-resolution reconstruction.
+ *
+ * The file holds the vertex and triangle counts as two uint32s, then float32 x, y, z per vertex
+ * with y up, then uint16 triangles wound outward.
  */
 export interface Mesh {
   readonly count: number;
   /** x, y, z per vertex in meters, z up, resting on z = 0 and centered over the origin. */
   readonly positions: Float64Array;
-  /** Each outward triangle's three corners, a column each. */
+  /** The three corners of each outward-wound triangle, one column per corner. */
   readonly faces: { readonly a: Uint32Array; readonly b: Uint32Array; readonly c: Uint32Array };
-  /** Each triangle side once: the springs, and the wireframe. */
+  /** Every triangle edge, listed once. They are the springs and the wireframe. */
   readonly springs: { readonly a: Uint32Array; readonly b: Uint32Array };
 }
 
@@ -21,7 +23,7 @@ export async function loadMesh(url: URL, height = 2.4): Promise<Mesh> {
   const [count, faces] = new Uint32Array(bytes, 0, 2) as unknown as [number, number];
   const scan = new Float32Array(bytes, 8, count * 3);
   const triangles = new Uint16Array(bytes, 8 + count * 12, faces * 3);
-  // The scan is y up; turn it z up, which keeps its triangles wound outward.
+  // The scan is y up. Rotate it to z up, which keeps its triangles wound outward.
   const positions = new Float64Array(count * 3);
   const lo = [Infinity, Infinity, Infinity];
   const hi = [-Infinity, -Infinity, -Infinity];

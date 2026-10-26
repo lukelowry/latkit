@@ -1,8 +1,8 @@
 /**
- * Writes `opening.frequency.gz`, what the line opening's picture lifts each bus by: its frequency
- * deviation from 60 Hz at one instant of the branch-opening study's recording
- * (`crates/latkit-cli/examples/branch-opening`), in ACTIVSg70k's bus order, as 16-bit integers of
- * 10 µHz. The recording is 168 MB and stays out of the repository; this instant is 140 kB.
+ * Writes `opening.frequency.gz`, which sets each bus's height in the line opening picture. It holds
+ * each bus's frequency deviation from 60 Hz at one instant of the branch-opening study's recording
+ * (`crates/latkit-cli/examples/branch-opening`), in ACTIVSg70k's bus order, as 16-bit integers in
+ * units of 10 µHz. The recording is 168 MB, too large for the repository. One instant is 140 kB.
  *
  *   node docs/gallery/record.ts [seconds] [study]
  */

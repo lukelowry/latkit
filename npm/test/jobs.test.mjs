@@ -69,7 +69,7 @@ test('failed startup, malformed messages, and timeouts reject instead of hanging
   const message = assert.rejects(run(new Uint8Array()), /read worker/);
   workers[1].onmessageerror();
   await message;
-  const timeout = assert.rejects(run(new Uint8Array()), /timed out/);
+  const timeout = assert.rejects(run(new Uint8Array()), { code: 'timeout' });
   t.mock.timers.tick(60_000);
   await timeout;
   assert(workers.every((worker) => worker.terminated));
@@ -94,7 +94,7 @@ test('worker construction failure rejects, and later calls can recover', async (
   t.mock.timers.tick(30_000);
 });
 
-test('jobs at once get a worker each; a failed one rejects only its job; idle ones are reused', async (t) => {
+test('concurrent jobs run on separate workers, fail alone, and reuse idle ones', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const workers = [];
   const run = jobs(module, () => {
@@ -104,7 +104,7 @@ test('jobs at once get a worker each; a failed one rejects only its job; idle on
   });
   const lost = assert.rejects(run(new Uint8Array([0])), /lost worker/);
   const kept = run(new Uint8Array([1]));
-  assert.equal(workers.length, 2, 'nothing waits in the page: latkit hands over only what runs');
+  assert.equal(workers.length, 2, 'latkit hands over only jobs that can run, so none queue here');
   workers[0].onerror({ preventDefault() {}, message: 'lost worker' });
   await lost;
   workers[1].answer({ ready: true });

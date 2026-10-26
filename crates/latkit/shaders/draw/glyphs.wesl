@@ -1,7 +1,7 @@
-// Glyphs: every labeled row's text, placed from its anchor each frame and shown as placement decided,
-// over a halo of the background so it reads over whatever lies under it. The ports variant draws
-// each port's label beside it, inside its marker. Text is a distance field: edges stay crisp at any
-// size, and the halo is a wider threshold of the same field.
+// Glyphs: every labeled row's text, placed from its anchor each frame and shown as placement
+// decided. A halo of the background color keeps text readable over anything below it. The ports
+// variant draws each port's label beside it, inside its marker. Text is a distance field, so edges
+// stay crisp at any size, and the halo is a wider threshold of the same field.
 
 import package::lib::types::{
     CANDIDATE_WORDS, CANDIDATE_ALPHA, LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, SIDE_LEFT,
@@ -32,7 +32,7 @@ struct Varyings {
 fn quad(t: Text, corner: u32, color: vec4f) -> Varyings {
     var out: Varyings;
     let q = vec2f(f32(corner & 1u), f32(corner >> 1u));
-    // Snapped to whole target pixels while it is set at its own size, so text stays crisp.
+    // Outside a diagram, text has a fixed size; snapping to whole target pixels keeps it crisp.
     var p = mix(t.quad_lo, t.quad_hi, q);
     if frame.space != SPACE_DIAGRAM {
         p = round(p * eye.pixel_ratio) / eye.pixel_ratio;
@@ -73,7 +73,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let a = anchor(instance);
     let size = length_px(mark.label_size);
     let t = text_at(uv0, uv1, size, a.at, a.align);
-    // A diagram's labels show while they fit and read; elsewhere as placement decided.
+    // A diagram's labels show while they fit and are legible. Elsewhere, placement decides.
     var alpha = bitcast<f32>(word(record_at(mark.candidates, CANDIDATE_WORDS, row) + CANDIDATE_ALPHA));
     if frame.space == SPACE_DIAGRAM {
         alpha = f32(a.shown && fits(t.hi - t.lo, a.room)) * legibility(size);
@@ -87,8 +87,8 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     return quad(t, corner, vec4f(color.rgb, color.a * alpha));
 }
 
-// A port's label: beside the port, inside its marker, aligned away from the side it sits on. It
-// shows while it reads and keeps clear of the ports across from it.
+// A port's label: beside the port, inside its marker, aligned away from the port's side. It shows
+// while legible and while it fits its side's share of the marker, clear of the opposite ports.
 @if(ports)
 @vertex
 fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance: u32) -> Varyings {
@@ -140,7 +140,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     return quad(t, corner, vec4f(text.rgb, text.a * alpha));
 }
 
-// The distance field at `uv`: texels past the text's edge, inside positive.
+// The distance field at `uv`, in texels from the text's edge, positive inside.
 fn inside(uv: vec2f) -> f32 {
     let d = textureSampleLevel(atlas, ramp, uv / vec2f(textureDimensions(atlas)), 0.0).r;
     return (d - 0.5) * 2.0 * TEXT_SPREAD;
@@ -148,7 +148,7 @@ fn inside(uv: vec2f) -> f32 {
 
 @fragment
 fn fragment(v: Varyings) -> @location(0) vec4f {
-    // Target pixels past the edge.
+    // Distance from the edge in target pixels.
     let d = inside(v.uv) * v.scale * eye.pixel_ratio;
     let a_text = clamp(0.5 + d, 0.0, 1.0) * v.color.a;
     let back = frame.background;

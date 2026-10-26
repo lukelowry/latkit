@@ -31,7 +31,7 @@ pub(crate) enum Array {
     Geometry(Geometry),
 }
 
-/// What a field holds.
+/// The kind of values a field holds.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -51,12 +51,13 @@ pub enum Kind {
     Polygons,
     /// Rows of another table, by id.
     Reference,
-    /// Numbers sampled over the data's axis.
+    /// Numbers sampled over the dataset's axis.
     Sampled,
 }
 
 impl Kind {
-    /// The geometry of `depth` levels below its points: 0 a point, 1 a path, 2 parts, 3 polygons.
+    /// The geometry kind of nesting depth `depth`: 0 a point, 1 a path, 2 parts, 3 or more
+    /// polygons.
     pub(crate) fn geometry(depth: u8) -> Kind {
         match depth {
             0 => Kind::Point,
@@ -66,7 +67,7 @@ impl Kind {
         }
     }
 
-    /// How many levels a geometry nests below its points; `None` for any other kind.
+    /// A geometry kind's nesting depth; `None` for other kinds.
     pub(crate) fn depth(self) -> Option<u8> {
         match self {
             Kind::Point => Some(0),
@@ -99,8 +100,8 @@ pub enum Value {
     Row(Row),
 }
 
-/// A value writes as JSON: a number (`null` when not finite), boolean, or text; a geometry as nested
-/// `[x, y]` points; a reference as the id of the row it names.
+/// Serializes as JSON: a number (`null` when not finite), boolean, or text; a geometry as nested
+/// `[x, y]` points; a reference as its target row's id.
 impl serde::Serialize for Value {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
@@ -117,7 +118,7 @@ impl serde::Serialize for Value {
     }
 }
 
-/// A value as JSON writes it.
+/// The schema of a value's JSON form.
 impl schemars::JsonSchema for Value {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "Value".into()
@@ -135,15 +136,15 @@ impl schemars::JsonSchema for Value {
     }
 }
 
-/// Where each value an assembly makes comes from, among its sources: the first, then pages of
-/// [`PAGE_ROWS`](super::column::PAGE_ROWS) rows each. A concrete type rather than a closure, so
-/// [`Values::assemble`] is compiled once.
+/// Where each output value of [`Values::assemble`] comes from. Source 0 is the first source; the
+/// sources after it are pages of [`PAGE_ROWS`](super::column::PAGE_ROWS) rows, addressed by row. A
+/// concrete type rather than a closure, so [`Values::assemble`] is compiled only once.
 #[derive(Clone, Copy)]
 pub(crate) enum Picks<'a> {
     /// Value `i` is row `rows[i]` of the pages.
     Rows(&'a [usize]),
-    /// Value `i` is row `from[i]` of the pages where it is written, else row `i` of the first source
-    /// while `i < kept`, else missing.
+    /// Value `i` is row `from[i]` of the pages where it is written, else row `i` of the first
+    /// source while `i < kept`, else missing.
     Writes { from: &'a [Option<usize>], kept: usize },
 }
 
@@ -168,8 +169,8 @@ impl Picks<'_> {
         }
     }
 
-    /// The values in runs, in order: each a source and the first of its rows one after another, or
-    /// `None` for missing values, and how many.
+    /// The picks grouped into runs, in order. Each run is a source and its first row (consecutive
+    /// rows follow), or `None` for missing values, with the run's length.
     fn runs(self) -> Vec<(Option<(usize, usize)>, usize)> {
         let mut runs: Vec<(Option<(usize, usize)>, usize)> = Vec::new();
         for i in 0..self.len() {
@@ -204,7 +205,7 @@ impl Values {
         self.len() == 0
     }
 
-    /// What the values are.
+    /// The kind of the values.
     pub fn kind(&self) -> Kind {
         match &self.array {
             Array::F64(_) | Array::F32(_) | Array::I32(_) | Array::U32(_) | Array::U64(_) => Kind::Number,
@@ -214,7 +215,7 @@ impl Values {
         }
     }
 
-    /// Whether value `i` is present.
+    /// Whether value `i` exists and is not missing.
     pub fn is_valid(&self, i: usize) -> bool {
         i < self.len() && self.valid.as_ref().is_none_or(|v| v.get(i))
     }
@@ -232,7 +233,8 @@ impl Values {
         })
     }
 
-    /// Value `i` as a row id, exactly: `None` when missing, or neither a whole number nor a text.
+    /// Value `i` as a row id: `None` when missing, or when the values are not stored as `u64`
+    /// numbers or texts.
     pub fn id(&self, i: usize) -> Option<super::name::Id> {
         super::ids::key(self, i).map(super::name::IdRef::to_id)
     }
@@ -242,7 +244,7 @@ impl Values {
         (self.kind() == Kind::Number).then(|| self.map_numbers(|x| x.unwrap_or(f64::NAN)))
     }
 
-    /// A zero-copy slice.
+    /// A slice of the values, without copying. Panics if `range` is out of bounds.
     #[must_use]
     pub fn slice(&self, range: Range<usize>) -> Values {
         let array = match &self.array {
@@ -258,8 +260,8 @@ impl Values {
         Values { array, valid: self.valid.as_ref().map(|v| v.slice(range)) }
     }
 
-    /// Every value as `number` reads it, `None` where missing, mapped by `f`: a loop per storage, so
-    /// the storage is matched once rather than per value.
+    /// Maps every value, read as by `number` (`None` where missing), through `f`. One loop per
+    /// storage type, so the storage is matched once rather than per value.
     pub(crate) fn map_numbers<T>(&self, mut f: impl FnMut(Option<f64>) -> T) -> Vec<T> {
         macro_rules! each {
             ($v:expr, $number:expr) => {
@@ -279,8 +281,8 @@ impl Values {
         }
     }
 
-    /// Calls `f` with every value as `number` reads it, `None` where missing: a loop per storage,
-    /// allocating nothing.
+    /// Calls `f` with every value, read as by `number` (`None` where missing). One loop per storage
+    /// type, with no allocation.
     pub(crate) fn each_number(&self, mut f: impl FnMut(Option<f64>)) {
         macro_rules! each {
             ($v:expr, $number:expr) => {
@@ -300,7 +302,7 @@ impl Values {
         }
     }
 
-    /// Value `i` as a number; booleans are 0 or 1, others NaN.
+    /// Value `i` as a number; booleans are 0 or 1, texts and geometries NaN.
     pub(crate) fn number(&self, i: usize) -> f64 {
         match &self.array {
             Array::F64(v) => v[i],
@@ -327,14 +329,14 @@ impl Values {
         }
     }
 
-    /// Points its geometries take as shaders read them: every coordinate, and a break between a row's
-    /// parts or rings; none where it holds no geometry.
+    /// The number of points shaders read for the present geometries: every coordinate, plus one
+    /// break between a row's parts or rings. 0 for values that are not geometries.
     pub(crate) fn points(&self) -> usize {
         let Some(geometry) = self.geometry() else { return 0 };
         (0..self.len()).filter(|&row| self.is_valid(row)).map(|row| geometry.row_points(row)).sum()
     }
 
-    /// Geometries as values, every one present.
+    /// Values holding `geometry`, none missing.
     pub(crate) fn of_geometry(geometry: Geometry) -> Values {
         Values { array: Array::Geometry(geometry), valid: None }
     }
@@ -350,7 +352,7 @@ impl Values {
         if let Some(other) = sources.iter().find(|s| s.kind() != kind) {
             return Err(Error::invalid(format!("{:?} values for a {kind:?} field", other.kind())));
         }
-        // Rows one after another in one source copy as a run.
+        // Consecutive rows from one source copy as a run.
         let runs = picks.runs();
         macro_rules! numbers {
             ($variant:ident, $t:ty, $store:expr) => {{
@@ -404,7 +406,8 @@ impl Values {
                 Array::Geometry(builder.finish())
             }
         };
-        // Every value present where every source's is and none is missing.
+        // No validity bits are needed when no pick is missing and no picked source has missing
+        // values.
         let gaps = runs.iter().any(|(run, _)| run.is_none_or(|(s, _)| sources[s].valid.is_some()));
         if !gaps {
             return Ok(Values { array, valid: None });
@@ -421,8 +424,8 @@ impl Values {
         Ok(Values { array, valid: (!all).then(|| bits.finish()) })
     }
 
-    /// Whether `other` holds exactly these values in the same storage, compared where they are stored:
-    /// floats by their bits, so a NaN equals itself, and no value is made to compare it.
+    /// Whether `other` holds exactly these values in the same storage. Compares the stored
+    /// representation without building any [`Value`]: floats by their bits, so NaN equals itself.
     pub(crate) fn same(&self, other: &Values) -> bool {
         let len = self.len();
         if other.len() != len || (0..len).any(|i| self.is_valid(i) != other.is_valid(i)) {
@@ -442,9 +445,8 @@ impl Values {
         }
     }
 
-    /// Whether value `i` and `other`'s value `j` are the same, compared where they are stored: floats by
-    /// their bits, so a NaN equals itself, and missing values alike; values in different storages
-    /// differ.
+    /// Whether value `i` equals `other`'s value `j` as stored: floats by their bits, so NaN equals
+    /// itself. Two missing values are equal; values in different storages differ.
     pub(crate) fn same_row(&self, i: usize, other: &Values, j: usize) -> bool {
         let valid = self.is_valid(i);
         if valid != other.is_valid(j) {
@@ -466,8 +468,8 @@ impl Values {
         }
     }
 
-    /// `parts` one after another, in the first part's storage: what a column's pages make, a copy per
-    /// part with nothing picked. Every part holds the first's kind.
+    /// `parts` concatenated in the first part's storage, converting numbers from other storages.
+    /// Joins a column's pages by copying each part whole. Every part must have the first's kind.
     pub(crate) fn concat(parts: &[&Values]) -> Values {
         let first = parts.first().expect("a part");
         debug_assert!(parts.iter().all(|p| p.kind() == first.kind()));
@@ -704,9 +706,10 @@ impl From<Vec<Vec<Vec<Vec<[f64; 2]>>>>> for Values {
     }
 }
 
-/// A column of values of one kind, `None` missing, as JSON and JavaScript arrays give them: the first
-/// present value decides what the rest are, numbers, booleans, texts, or geometries nesting alike.
-/// A column of nothing present is numbers; a missing point is NaN, a missing path or polygon empty.
+/// Builds a column from values of one kind, with `None` for missing, as JSON and JavaScript arrays
+/// provide them. The first present value sets the kind: numbers, booleans, texts, or geometries of
+/// equal nesting. A column with no present values is numbers. A missing point becomes NaN, and a
+/// missing path, parts, or polygons value becomes empty. Mixed kinds and [`Value::Row`] are errors.
 impl TryFrom<Vec<Option<Value>>> for Values {
     type Error = Error;
 
@@ -714,7 +717,7 @@ impl TryFrom<Vec<Option<Value>>> for Values {
         fn all<T>(values: Vec<Option<Value>>, of: impl Fn(Value) -> Option<T>) -> Result<Vec<Option<T>>> {
             let mixed = || {
                 Error::invalid(
-                    "a column holds one kind of value: numbers, booleans, texts, or geometries nesting alike",
+                    "a column must hold one kind of value: numbers, booleans, texts, or geometries of one depth",
                 )
             };
             values.into_iter().map(|v| v.map(|v| of(v).ok_or_else(mixed)).transpose()).collect()
@@ -743,7 +746,7 @@ impl TryFrom<Vec<Option<Value>>> for Values {
                 let polygons = all(values, |v| if let Value::Polygons(p) = v { Some(p) } else { None })?;
                 polygons.into_iter().map(Option::unwrap_or_default).collect::<Vec<_>>().into()
             }
-            Value::Row(_) => return Err(Error::invalid("a column names rows as a reference: {reference, ids}")),
+            Value::Row(_) => return Err(Error::invalid("rows must be written as a reference: {reference, ids}")),
         })
     }
 }
@@ -784,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn same_compares_what_is_stored() {
+    fn same_compares_the_stored_representation() {
         let a = Values::from(vec![Some(1.0_f64), None, Some(f64::NAN)]);
         assert!(a.same(&a.slice(0..3)), "a NaN equals itself");
         assert!(!a.same(&Values::from(vec![Some(1.0_f64), Some(0.0), Some(f64::NAN)])), "missing differs");

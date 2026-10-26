@@ -1,9 +1,9 @@
-//! Pages packed in an order: a column of a table drawn in part, a page of its order at a time, the
-//! first time a view draws that page, as the words its marks read. Each is kept by what it was
-//! packed from, so views drawing a table alike share its pages, a page the camera comes back to is
-//! the one it left, and a write repacks only the pages its rows draw in. A table drawn in its own
-//! order reads its data's pages as they are, but a reference to a table drawn in another order, whose
-//! pages are packed through that order's ranks.
+//! Packed pages of paged tables. A column of a paged table is packed one page of its draw order at
+//! a time, the first time a view draws that page, as the words its marks read. Packed pages are
+//! keyed by their source, so views drawing a table the same way share its pages, a page the camera
+//! returns to is the same page, and a write repacks only the pages its rows draw in. A table drawn
+//! in its own order reads its data's pages directly, except for a reference to a table drawn in
+//! another order, whose pages are packed through that order's ranks.
 
 use std::sync::Arc;
 
@@ -17,12 +17,12 @@ use crate::gpu::shaders::PAGE_ROWS;
 use crate::gpu::shaders::{MISSING, NONE};
 use crate::gpu::work::{Count, Counters};
 
-/// Columns of pages kept at most: past them, the half used least recently is forgotten.
+/// Most packed columns kept. Past this, the least recently used half is forgotten.
 const KEPT: usize = 4096;
 
-/// What one column of pages packed in an order is: the order, the dataset and table, the field and
-/// how it is read, and what else its words read (a reference's target order, the frame of samples
-/// shown, the rows a join reads).
+/// The key of one packed column: the order, the dataset (`origin`) and table, the field and how it
+/// is read, and anything else its words depend on (`reads`: a reference's target order, the frame
+/// of samples shown, or the rows a join reads).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Packing {
     pub(crate) order: u64,
@@ -34,8 +34,8 @@ pub(crate) struct Packing {
     pub(crate) reads: u64,
 }
 
-/// A column's pages: what they were packed from, each page's id once packed, the samples a traced
-/// page was gathered as, and when they were last used.
+/// A column's packed pages: their source column, each page's id once packed, the samples gathered
+/// for each traced page, and when they were last used.
 struct Pages {
     source: Option<Column>,
     ids: Vec<Option<PageId>>,
@@ -43,13 +43,12 @@ struct Pages {
     used: u64,
 }
 
-/// Every column of pages packed in an order, on the GPU's views' behalf, and what counts the rows
-/// packed.
+/// Every packed column, shared by the GPU's views, and the counters for rows packed.
 pub(crate) struct Packed {
     counters: Arc<Counters>,
     columns: FxHashMap<Packing, Pages>,
-    /// Pages of a table's own order whose reference rows are packed through the ranks of the order
-    /// their table draws in, by the page and that order.
+    /// Reference pages of tables drawn in their own order, packed through the ranks of the order
+    /// their target table draws in, keyed by page and that order.
     ranked: FxHashMap<(PageId, u64), (PageId, u64)>,
     uses: u64,
 }
@@ -64,14 +63,14 @@ impl Packed {
         self.counters.add(Count::Packed, rows as u64);
     }
 
-    /// What counts the rows packed, for packing that may happen later.
+    /// The counters for rows packed, for packing done later.
     pub(crate) fn counters(&self) -> Arc<Counters> {
         self.counters.clone()
     }
 
-    /// The pages of `packing`, packed from `source` as it is now: each kept while no row it holds was
-    /// written since, `page_of` saying which page holds a row. Without a source, kept while `packing`
-    /// is the same.
+    /// The pages of `packing`, packed from the current `source`. A page is kept while none of its
+    /// rows was written since; `page_of` maps a row to its page. Without a source, pages are kept
+    /// as long as `packing` matches.
     fn pages(
         &mut self,
         packing: &Packing,
@@ -115,7 +114,8 @@ impl Packed {
         self.pages_of(packing, order, source, &[page])[0]
     }
 
-    /// The ids of pages `wanted` of `packing`, packed from `source` in `order`: the column found once.
+    /// The ids of pages `wanted` of `packing`, packed from `source` in `order`, looking the column
+    /// up once.
     pub(crate) fn pages_of(
         &mut self,
         packing: &Packing,
@@ -136,8 +136,8 @@ impl Packed {
             .collect()
     }
 
-    /// The id of a page of rows kept, of `packing`, packed from `source`: kept while none of the rows
-    /// it holds, which `holds` tells, was written since.
+    /// The id of `packing`'s page of kept rows, packed from `source`. The page is kept while none
+    /// of its rows (those `holds` accepts) was written since.
     pub(crate) fn kept(&mut self, packing: &Packing, source: Option<&Column>, holds: impl Fn(u32) -> bool) -> PageId {
         let pages = self.pages(packing, source, |row| holds(row).then_some(0));
         if pages.ids.is_empty() {
@@ -146,7 +146,7 @@ impl Packed {
         *pages.ids[0].get_or_insert_with(PageId::next)
     }
 
-    /// Samples `samples`' rows `rows` hold, page `page` of `packing`, gathered once.
+    /// The samples of `samples`' rows `rows`, for page `page` of `packing`, gathered once.
     pub(crate) fn samples(&mut self, packing: &Packing, page: u32, rows: &[u32], samples: &Samples) -> Samples {
         let counters = self.counters.clone();
         let pages = self.pages(packing, None, |_| None);
@@ -163,8 +163,8 @@ impl Packed {
             .clone()
     }
 
-    /// The id of reference page `page` of a table drawn in its own order, packed through the ranks of
-    /// the order `order` its target draws in.
+    /// The id of reference page `page` of a table drawn in its own order, packed through the ranks
+    /// of order `order`, which its target draws in.
     pub(crate) fn ranked(&mut self, page: PageId, order: u64) -> PageId {
         self.uses += 1;
         if self.ranked.len() >= KEPT && !self.ranked.contains_key(&(page, order)) {
@@ -177,7 +177,7 @@ impl Packed {
     }
 }
 
-/// Drops the half of `kept` used least recently, by when `used` says each was.
+/// Drops the least recently used half of `kept`, by the use time `used` returns.
 fn forget<K: Clone + Eq + std::hash::Hash, V>(kept: &mut FxHashMap<K, V>, used: impl Fn(&V) -> u64) {
     let mut uses: Vec<u64> = kept.values().map(&used).collect();
     let half = uses.len() / 2;
@@ -185,15 +185,16 @@ fn forget<K: Clone + Eq + std::hash::Hash, V>(kept: &mut FxHashMap<K, V>, used: 
     kept.retain(|_, v| used(v) > cut);
 }
 
-/// The words `column`'s rows `rows` are read as, a page of them, missing past the rows.
+/// A page of words for `column`'s rows `rows`, padded with missing values past the rows.
 pub(crate) fn values(column: &Column, rows: &[u32], words: Words, low: bool) -> Vec<u32> {
     let mut out = page_words(&column.pick(rows), words, low);
     out.resize(PAGE_ROWS as usize, if words == Words::Bits { NONE } else { MISSING });
     out
 }
 
-/// Words of the rows `reference` names for rows `rows`, a page of them: where each draws in `rank`,
-/// the order its table draws in, or as it is in a table drawn whole; `NONE` where a row names none.
+/// A page of the target rows `reference` gives for rows `rows`: each target's place in `rank`, its
+/// table's draw order, or the row itself when that table is drawn whole. `NONE` where a row
+/// references nothing.
 pub(crate) fn targets(reference: &Reference, rows: &[u32], rank: Option<&Order>) -> Vec<u32> {
     let mut out: Vec<u32> = rows
         .iter()
@@ -206,8 +207,8 @@ pub(crate) fn targets(reference: &Reference, rows: &[u32], rank: Option<&Order>)
     out
 }
 
-/// The words of reference page `page` of a table drawn in its own order: the rows it names, as
-/// `rank`, the order their table draws in, places them.
+/// The words of reference page `page` of a table drawn in its own order: each target row's place
+/// in `rank`, its table's draw order.
 pub(crate) fn ranked_page(reference: &Reference, page: usize, rank: &Order) -> Vec<u32> {
     let start = page * PAGE_ROWS as usize;
     let len = reference.rows.pages().get(page).map_or(0, |p| p.values.len());
@@ -219,7 +220,7 @@ pub(crate) fn ranked_page(reference: &Reference, page: usize, rank: &Order) -> V
         .collect()
 }
 
-/// Values of `samples`' rows `rows` at frame `frame`, a page of them, missing past the rows.
+/// A page of the values of `samples`' rows `rows` at frame `frame`, padded with missing values.
 pub(crate) fn frame(samples: &Samples, rows: &[u32], frame: Option<u64>) -> Vec<u32> {
     let mut out: Vec<u32> = rows
         .iter()
@@ -229,7 +230,8 @@ pub(crate) fn frame(samples: &Samples, rows: &[u32], frame: Option<u64>) -> Vec<
     out
 }
 
-/// The rows of `other` with the ids of `table`'s rows `rows`, a page of them; `NONE` where none.
+/// A page of the rows of `other` with the ids of `table`'s rows `rows`. `NONE` where `other` has
+/// no such row.
 pub(crate) fn joined(table: &Table, rows: &[u32], other: &Table) -> Vec<u32> {
     let mut out: Vec<u32> = rows
         .iter()
@@ -273,9 +275,9 @@ mod tests {
         let ids: Vec<PageId> = (0..3).map(|p| packed.page(&packing, &order, Some(&column), p)).collect();
         let written = column.write(n, &[(5, 0)], &Column::new(&Values::from(vec![-1.0_f64]))).expect("numbers");
         let after: Vec<PageId> = (0..3).map(|p| packed.page(&packing, &order, Some(&written), p)).collect();
-        assert_eq!((after[0], after[1]), (ids[0], ids[1]), "pages not drawing row 5 are kept");
-        assert_ne!(after[2], ids[2], "row 5 draws in the last page, which packs again");
+        assert_eq!((after[0], after[1]), (ids[0], ids[1]), "pages without row 5 are reused");
+        assert_ne!(after[2], ids[2], "row 5 is in the last page, which is repacked");
         let words = values(&written, &order.page(2), Words::Values, false);
-        assert_eq!(f32::from_bits(words[PAGE_ROWS as usize - 1 - 5]), -1.0, "row 5 packed where it draws");
+        assert_eq!(f32::from_bits(words[PAGE_ROWS as usize - 1 - 5]), -1.0, "row 5 is packed at its place");
     }
 }

@@ -1,7 +1,7 @@
-// Drawn rows: which held row each row a mark draws is, and how present it is while tiles come and go.
-// A table drawn whole draws each of its rows as the held row of its number. For one drawn in part,
-// the program lists the runs it draws, and an expansion of them (`compute/lists.wesl`) leaves each
-// drawn row's word in the lists at `mark.drawn`: its held row, and whether its tile fades in or out.
+// Drawn rows: the held row behind each row a mark draws, and its fade while tiles enter and leave.
+// A table drawn whole draws held row `i` as drawn row `i`. For a paged table, the program lists the
+// runs the mark draws, and `expand_runs` (`compute/lists.wesl`) writes each drawn row's word to the
+// lists at `mark.drawn`: its held row, and whether its tile fades in or out.
 
 import package::lib::types::{NONE, DRAWN_ROW, DRAWN_ENTERING, DRAWN_LEAVING};
 import package::lib::bind::mark;
@@ -9,10 +9,10 @@ import package::lib::lists::lists;
 
 struct DrawnRow {
     row: u32,
-    // How much of it shows, and how large it grows, as its tile fades in or out; 1 when steady.
+    // Opacity and scale factors while its tile fades in or out; 1 otherwise.
     presence: f32,
     growth: f32,
-    // Whether its tile is leaving: it no longer answers the pointer.
+    // Whether its tile is leaving. A leaving row ignores the pointer.
     leaving: bool,
 }
 
@@ -28,7 +28,7 @@ fn drawn_row(i: u32) -> DrawnRow {
     return DrawnRow(word & DRAWN_ROW, presence, select(1.0, mark.reveal, entering), leaving);
 }
 
-// The held row drawn row `i` of the current mark is.
+// The held row of the current mark's drawn row `i`.
 fn held_row(i: u32) -> u32 {
     if mark.drawn == NONE {
         return i;

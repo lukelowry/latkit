@@ -20,7 +20,7 @@ test('installed package imports without WASM, retries failures, and shares initi
   );
   assert.equal(requests, 0);
   assert.deepEqual(field('x').toJSON(), { field: 'x' });
-  // Patches are written without WASM; datasets wait for it.
+  // Writing a patch needs no WASM. Creating a dataset throws until WASM is loaded.
   const patch = new Patch().replace('Node', { count: 1 }, { x: [42] });
   assert.throws(() => new Data('early'), { code: 'unloaded' });
   assert.equal(requests, 0);
@@ -47,7 +47,7 @@ test('installed package imports without WASM, retries failures, and shares initi
   assert.equal(data.get('Node', 0, 'x'), 7);
   data.destroy();
   data.destroy();
-  assert.throws(() => data.name, /destroyed/);
+  assert.throws(() => data.name, { code: 'destroyed' });
   assert.equal(kept.get('Node', 0, 'x'), 42, 'a snapshot outlives its source');
   kept.destroy();
   kept.destroy();

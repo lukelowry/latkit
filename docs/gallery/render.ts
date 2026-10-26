@@ -1,10 +1,10 @@
 /**
- * The documentation's gallery, drawn by latkit. Each piece writes its datasets with `Patch`, as
- * latkit's bytes, and its scene as a typed `Scene`; the `latkit` command line draws it into
- * `docs/images/NAME.png`, with nothing done to the picture after.
+ * Draws the documentation's gallery with latkit. Each piece builds its datasets with `Patch`, saved
+ * in latkit's binary format, and its scene as a typed `Scene`. The `latkit` CLI draws each piece to
+ * `docs/images/NAME.png`, with no editing of the picture afterwards.
  *
  *   cargo build --locked -p latkit-cli --profile cli
- *   cargo xtask wasm                  # the package `latkit` comes from
+ *   cargo xtask wasm                  # builds the `latkit` package the pieces import
  *   node docs/gallery/render.ts [name...]
  */
 import { execFileSync } from 'node:child_process';

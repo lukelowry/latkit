@@ -1,5 +1,6 @@
-// Vertex normals for faces: each face adds its unit normal to its three corners' normal words, in
-// pages of the vertex mark its corners attach to, in fixed point, so the sums are exact in any order.
+// Vertex normals for faces. Each face adds its unit normal, in fixed point, to the normal words of
+// its three corner vertices, in pages of the vertex mark they belong to. Fixed point makes the sums
+// exact in any order.
 
 import package::lib::types::{NONE, item};
 import package::lib::bind::{mark, pages};

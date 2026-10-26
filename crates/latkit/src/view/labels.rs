@@ -1,12 +1,17 @@
-//! Labels: each labeled mark keeps a candidate per row, in pages of candidates, and in the labels
-//! buffer a run table from its text codes to where the atlas holds each text, or, until the text is
-//! set, its size, measured from its font's characters. Draws place every label from its anchor each frame. Placement decides which show: it runs
-//! on the GPU when the camera, a labeled mark's state, or a run table changed, as candidates, then
-//! rounds of claim and decide on a grid of cells, and labels fade in and out after it. Only placed
-//! labels ask for their texts, so the host sets no more texts than fit on screen however many rows
-//! are labeled. A diagram's labels scale with the sheet and show wherever they fit, so there
-//! placement only gathers the texts the atlas lacks. Those are read back, with the texts of labels
-//! shown, which the atlas keeps; the host sets a few each frame, and they show the frame after.
+//! Labels.
+//!
+//! Each labeled mark keeps one candidate per row, in candidate pages. In the labels buffer it keeps
+//! a run table mapping its text codes to where the atlas holds each text, or, until the text is
+//! set, its size measured from its font's characters. Draws place every label from its anchor each
+//! frame.
+//!
+//! Placement decides which labels show. It runs on the GPU when the camera, a labeled mark's state,
+//! or a run table changes: candidates are measured, then rounds of claim and decide on a grid of
+//! cells pick the labels shown, and labels fade in and out after it. Only placed labels request
+//! their texts, so the host sets no more texts than fit on screen, however many rows are labeled.
+//! A diagram's labels scale with the sheet and show wherever they fit, so there placement only
+//! gathers the texts the atlas lacks. Requested texts are read back along with the texts of shown
+//! labels, which the atlas keeps; the host sets a few each frame, and they show the frame after.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -29,14 +34,15 @@ use crate::host::TextRun;
 
 /// Rounds of claim and decide each placement runs.
 const ROUNDS: u32 = 6;
-/// Words of the select capping a mark's labels: a digit's buckets, then its state.
+/// Words of the radix select that caps a mark's labels: one digit's 2048 buckets, then 3 words of
+/// state.
 const SELECT_WORDS: u32 = 2048 + 3;
-/// Digits of a key the select finds, one pass each.
+/// Digits of a key the select resolves, one pass each.
 const DIGITS: u32 = 3;
 /// Seconds labels fade in or out over.
 const FADE: f64 = 0.2;
-/// Texts the host sets per frame at most, and the time setting them and making their distance
-/// fields may take.
+/// The most texts the host sets per frame, and the most time setting them and building their
+/// distance fields may take.
 const BUDGET: usize = 48;
 const BUDGET_TIME: Duration = Duration::from_millis(4);
 
@@ -48,7 +54,7 @@ pub(crate) struct Slots {
     pub(crate) seen: u32,
     /// The select capping the mark's labels, or `NONE` without a cap.
     pub(crate) select: u32,
-    /// Codes the slots hold.
+    /// Codes its run table and seen bits have room for.
     codes: u32,
 }
 
@@ -60,17 +66,18 @@ pub(crate) struct Labels {
     /// The cell grid: where it starts, its columns, and its rows.
     pub(crate) cells: [u32; 3],
     words: u32,
-    /// What placement last ran from, and the readback of the texts it asked for.
+    /// The stamp placement last ran from, and the readback of the texts it requested.
     placed: Derived<()>,
-    /// The labeled marks' slots when placement asked.
+    /// The labeled marks' slots when placement requested texts.
     asked: Vec<(usize, Slots)>,
     /// Labels fade until then, on the view's clock.
     fading: Option<f64>,
-    /// Whether the last placement that landed asked for texts, which the next one shows.
+    /// Whether the last placement read back led to texts being set (or left to set), which the
+    /// next placement shows.
     wanting: bool,
-    /// Each labeled mark's written codes, with the run and where it lay.
+    /// Each labeled mark's codes whose texts are set, with the run and its glyphs in the atlas.
     written: HashMap<usize, HashMap<u32, (TextRun, Glyphs)>>,
-    /// Each labeled mark's codes whose run table entries hold a run or an estimate.
+    /// How many of each labeled mark's codes have run table entries, set or estimated.
     estimated: HashMap<usize, u32>,
     evictions: u64,
     /// Bumps whenever a run table changes.
@@ -78,8 +85,8 @@ pub(crate) struct Labels {
 }
 
 impl Labels {
-    /// Whether every label placed shows its text: no placement is read back, and the last asked
-    /// for no text it lacked.
+    /// Whether every placed label shows its text: no placement is being read back, and the last
+    /// one requested no missing text.
     pub(crate) fn complete(&self) -> bool {
         !self.placed.busy() && !self.wanting
     }
@@ -100,8 +107,8 @@ impl Labels {
 }
 
 impl View {
-    /// The run each code of mark `i`'s label text is set as: at the base size, whatever size it shows
-    /// at, as a diagram's sheet measures it.
+    /// The text run for code `code` of mark `i`'s label text, at the base size regardless of the
+    /// size it shows at, as a diagram's sheet measures it.
     fn run_of(&self, i: usize, code: u32, inner: &mut Inner) -> Option<TextRun> {
         let shown = &self.marks[i];
         let compiled = shown.compiled.as_ref()?;
@@ -129,8 +136,8 @@ impl View {
         inner.dictionaries.field(d, &t.name, &column.name).len() as u32
     }
 
-    /// Sets the texts a placement asked for, within the frame's budget; placement asks again for
-    /// those left.
+    /// Sets the texts the last placement requested, within the frame's budget. The next placement
+    /// requests any left over.
     pub(super) fn settle_labels(&mut self, inner: &mut Inner) {
         let Some((_, bytes)) = self.labels.placed.landed() else { return };
         let asked = std::mem::take(&mut self.labels.asked);
@@ -142,7 +149,7 @@ impl View {
                 continue;
             }
             let first = self.labels.slots.iter().flatten().map(|s| s.wanted).min().unwrap_or(0);
-            // Texts labels show stay in the atlas.
+            // Touch the texts shown labels use, so the atlas keeps them.
             let seen = (slots.seen - first) as usize;
             if let (Some(bits), Some(written)) =
                 (words.get(seen..seen + (slots.codes / 32) as usize), self.labels.written.get(&i))
@@ -191,8 +198,9 @@ impl View {
         self.labels.written.entry(i).or_default().insert(code, (run, glyphs));
     }
 
-    /// Lays each labeled mark's slots out in the labels buffer, starting it over when they moved;
-    /// drops run table entries the atlas evicted.
+    /// Lays out each labeled mark's slots in the labels buffer, replacing the buffer and starting
+    /// labels over when the layout changed, and fixes run table entries whose texts the atlas
+    /// evicted.
     pub(super) fn lay_out_labels(&mut self, inner: &mut Inner) {
         let mut slots: Vec<Option<Slots>> = vec![None; self.marks.len()];
         let labeled: Vec<usize> = (0..self.marks.len())
@@ -200,8 +208,8 @@ impl View {
                 self.marks[i].drawable() && self.marks[i].compiled.as_ref().is_some_and(|c| c.drawing.label.is_some())
             })
             .collect();
-        // Wanted codes, then seen codes, so one copy reads them all; then the cells; then each mark's
-        // run table.
+        // Every mark's wanted codes, then every mark's seen bits, so one copy reads them all; then
+        // the cells; then each mark's run table, and its select if capped.
         let mut at = 0;
         let codes: Vec<u32> = labeled.iter().map(|&i| self.codes_of(i, inner).next_power_of_two().max(64)).collect();
         for &i in &labeled {
@@ -248,7 +256,7 @@ impl View {
         if inner.atlas.evictions != self.labels.evictions {
             self.labels.evictions = inner.atlas.evictions;
             self.drop_evicted(inner);
-            // Port labels look for their texts again where the atlas holds them now.
+            // Repack port labels so they find their texts where the atlas now holds them.
             for shown in self.marks.iter_mut().filter(|m| m.port_count() > 0) {
                 shown.packed = false;
             }
@@ -256,8 +264,8 @@ impl View {
         self.estimate_runs(inner);
     }
 
-    /// Writes the run table entries of each labeled mark's codes new since the last frame: where the
-    /// atlas holds a text, else its size as measured, so its label is placed before it is set.
+    /// Writes run table entries for each labeled mark's codes new since the last frame: where the
+    /// atlas holds the text, else its measured size, so the label is placed before its text is set.
     fn estimate_runs(&mut self, inner: &mut Inner) {
         for i in 0..self.labels.slots.len() {
             let Some(slots) = self.labels.slots[i] else { continue };
@@ -276,8 +284,8 @@ impl View {
         }
     }
 
-    /// The run table words of mark `i`'s codes `codes`: where the atlas holds each text set, and the
-    /// size of the rest, as measured.
+    /// The run table words for mark `i`'s `codes`: where the atlas holds each text already set, and
+    /// the measured size of the rest.
     fn run_words(&self, i: usize, codes: Range<u32>, inner: &mut Inner) -> Vec<u32> {
         let shown = &self.marks[i];
         let written = self.labels.written.get(&i);
@@ -310,8 +318,8 @@ impl View {
         words
     }
 
-    /// Puts measured sizes back in run table entries whose runs the atlas no longer holds where they
-    /// were.
+    /// Restores measured sizes in run table entries whose texts the atlas no longer holds where
+    /// they were.
     fn drop_evicted(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let mut cleared = Vec::new();
@@ -336,7 +344,7 @@ impl View {
         self.labels.changes += 1;
     }
 
-    /// The labels' words of the frame uniform, the clock having moved `dt` seconds.
+    /// Writes the labels' fields of the frame uniform, after the clock moved `dt` seconds.
     pub(super) fn label_words(&mut self, frame: &mut wgsl::Frame, dt: f64) {
         let [cells, columns, rows] = self.labels.cells;
         frame.cells = cells;
@@ -345,8 +353,8 @@ impl View {
         frame.label_fade = if self.moves() { (dt / FADE).min(1.0) as f32 } else { 1.0 };
     }
 
-    /// Starts over the labels of rows whose slots took pages of other rows: their candidates hold
-    /// nothing placed before, and fade in from nothing.
+    /// Restarts the labels of rows whose slots now hold pages of other rows: their candidates are
+    /// cleared, so they fade in from nothing.
     fn clear_bound(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) {
         let words = u64::from(wgsl::PAGE_ROWS * wgsl::CANDIDATE_WORDS) * 4;
         let queue = &self.gpu.0.queue;
@@ -360,8 +368,8 @@ impl View {
         }
     }
 
-    /// Places labels when what they would show changed, and fades them; reads back the texts
-    /// placement asked for. Labels wait for what places them to compile.
+    /// Places labels when their inputs changed, and fades them; reads back the texts placement
+    /// requested. Labels wait until the placement pipelines have compiled.
     pub(super) fn place_labels(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, eye: &wgsl::Eye) {
         self.clear_bound(encoder, inner);
         if !self.texts() {
@@ -372,11 +380,11 @@ impl View {
         if labeled.is_empty() {
             return;
         }
-        // A diagram's labels follow the camera without placement; the camera only says which texts
-        // they ask for.
+        // A diagram's labels follow the camera without placement; the camera only decides which
+        // texts they request.
         let diagram = matches!(self.scene.space, Space::Diagram(_));
-        // What places labels: a color changing every frame moves none, and a fit about to move the
-        // camera places them once it did.
+        // What placement depends on: a color changing every frame moves no label, and a pending fit
+        // delays placement until the camera has moved.
         let versions: Vec<u64> = labeled.iter().map(|&(i, _)| self.marks[i].place_version).collect();
         let stamp = stamp_of((bytemuck::bytes_of(eye), self.labels.changes, versions));
         let due = self.labels.placed.due(stamp) && !self.labels.placed.busy() && !self.fitting.framing();
@@ -408,8 +416,8 @@ impl View {
             pass.set_bind_group(0, &groups.view, &[]);
             let marks: Vec<(usize, u32, u32)> =
                 labeled.iter().map(|&(i, _)| (i, self.marks[i].rows, self.marks[i].path())).collect();
-            // Candidates are measured where their anchors put them, by a program made for each mark's
-            // primitive; placement reads what it wrote.
+            // Measure candidates at their anchors, with a pipeline for each mark's primitive;
+            // placement reads the result.
             if due {
                 pass.set_bind_group(2, &measuring, &[]);
                 for &(i, rows, path) in &marks {
@@ -445,7 +453,7 @@ impl View {
                 dispatch(pass, columns * rows);
             };
             if due && let Some([clear, reset]) = &cleared {
-                // A capped mark's labels past its cap give up their room before any claims.
+                // A capped mark's labels past its cap drop out before any claims.
                 if let Some(pipelines) = &selecting {
                     select(&mut pass, pipelines, &groups.mark, &capped);
                 }
@@ -467,7 +475,7 @@ impl View {
         }
     }
 
-    /// Clears the texts each of `labeled` asked for and showed, before a placement asks again.
+    /// Clears the texts each of `labeled` requested and showed, before a placement requests again.
     fn forget_asked(&self, encoder: &mut wgpu::CommandEncoder, labeled: &[(usize, Slots)]) {
         let labels = self.resources.as_ref().expect("created before labels").labels();
         for &(_, slots) in labeled {
@@ -476,7 +484,7 @@ impl View {
         }
     }
 
-    /// Reads back the texts the placement of `labeled`, from `stamp`, asked for.
+    /// Reads back the texts the placement of `labeled` (from `stamp`) requested.
     fn read_placed(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -495,8 +503,8 @@ impl View {
     }
 }
 
-/// Keeps each `capped` mark's labels to its cap, those of the highest keys: a radix select over the
-/// candidates' keys, a digit at a time, then a cut of those below.
+/// Limits each `capped` mark's labels to its cap, keeping the highest keys: a radix select over
+/// the candidates' keys, one digit per pass, then a cut of those below.
 fn select(
     pass: &mut wgpu::ComputePass<'_>,
     [start, count, find, cut]: &[wgpu::ComputePipeline; 4],
@@ -522,9 +530,9 @@ fn select(
 }
 
 impl View {
-    /// Draws every labeled mark's labels, then every vertex mark's port labels: `glyphs` are the
-    /// pass groups of the labels' and the port labels' shaders.
-    #[allow(clippy::too_many_arguments, reason = "the main pass's state, as it draws")]
+    /// Draws every labeled mark's labels, then every vertex mark's port labels. `glyphs` holds the
+    /// shader and pass bind group for labels, then for port labels.
+    #[allow(clippy::too_many_arguments, reason = "the main pass's draw state")]
     pub(super) fn draw_labels(
         &self,
         pass: &mut wgpu::RenderPass<'_>,

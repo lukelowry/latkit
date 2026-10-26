@@ -1,5 +1,5 @@
-//! Named entries in the order written: what a JSON object means where order matters, such as a
-//! patch's fields or a query's selected columns.
+//! JSON objects read as named entries in the order written, for objects whose key order matters,
+//! such as a query's selected fields or a message's patches by dataset.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -18,7 +18,7 @@ impl<V> Default for Ordered<V> {
     }
 }
 
-/// Named entries as an object of them.
+/// The schema is an object of `V` values by name.
 impl<V: schemars::JsonSchema> schemars::JsonSchema for Ordered<V> {
     fn inline_schema() -> bool {
         true
@@ -40,14 +40,14 @@ impl<'de, V: Deserialize<'de>> Deserialize<'de> for Ordered<V> {
             type Value = Ordered<V>;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("an object, each name once")
+                f.write_str("an object with unique names")
             }
 
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Ordered<V>, A::Error> {
                 let mut entries: Vec<(Name, V)> = Vec::new();
                 while let Some(name) = map.next_key::<String>()? {
                     if entries.iter().any(|(n, _)| n.as_str() == name) {
-                        return Err(de::Error::custom(format!("{name} is named twice")));
+                        return Err(de::Error::custom(format!("{name} appears twice")));
                     }
                     entries.push((name.into(), map.next_value()?));
                 }

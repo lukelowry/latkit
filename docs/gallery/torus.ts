@@ -4,7 +4,8 @@ import { TAU, THEME, floats, rows, type Piece } from './look.ts';
 
 type Vec = [number, number, number];
 
-/** The knot's centerline at `t`: around the torus twice while it winds through three times. */
+/** The knot's centerline at `t`. It goes around the torus twice while winding through the hole
+ * three times. */
 function knot(t: number): Vec {
   const r = 100 + 42 * Math.cos(3 * t);
   return [r * Math.cos(2 * t), r * Math.sin(2 * t), 42 * Math.sin(3 * t)];
@@ -33,7 +34,7 @@ export default function torus(): Piece {
   const h = 1e-3;
   for (let s = 0; s < samples; s++) {
     const t = (s / samples) * TAU;
-    // The centerline's frame: its tangent, the way it bends, and their cross.
+    // The centerline's Frenet frame: tangent, normal (the direction it bends), and binormal.
     const tangent = unit(sub(knot(t + h), knot(t - h)));
     const ahead = unit(sub(knot(t + 2 * h), knot(t)));
     const behind = unit(sub(knot(t), knot(t - 2 * h)));

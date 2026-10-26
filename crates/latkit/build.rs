@@ -1,4 +1,5 @@
-//! Generates the Rust side of the GPU contract from the WESL shaders, and bakes the colormap catalog.
+//! Build script: generates Rust mirrors of the WESL shaders' types and bind layouts, and
+//! precomputes the colormap catalog.
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");

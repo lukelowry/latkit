@@ -1,8 +1,8 @@
 /**
- * The colormap catalog on a field of hexagons: each cell an area colored on the GPU through the
- * chosen colormap, beside the same colormap as a CSS ramp, so the two can be compared. Choose a
- * colormap, a field to show and how many cells, how the value is transformed on its way to the map,
- * and which cells show; hover a cell to read it, or brush over the field to read what lies under it.
+ * The colormap catalog on a field of hexagons. Each cell is an area colored on the GPU through the
+ * chosen colormap, shown beside the same colormap as a CSS ramp for comparison. Choose a colormap,
+ * the field and number of cells, a transform applied to values before the colormap, and which cells
+ * show. Hover a cell to read its value, or brush over the field to read the cells under the brush.
  */
 import {
   Data,
@@ -20,21 +20,21 @@ import type { Stage } from '../../ui/stage.js';
 import { theme } from '../../ui/theme.js';
 
 /**
- * Maps of our own: clear to a placed, half-clear blue, then an opaque amber, whose alpha shows the
- * plane's grid through the cells; a diverging one from teal through a light middle to rust; and a
- * cyclic one, whose ends meet.
+ * Custom colormaps. `custom` runs from transparent to a semi-transparent blue at a placed stop,
+ * then to opaque amber, so the plane's grid shows through the cells. `diverging` runs from teal
+ * through a light middle to rust. `cyclic` ends where it starts.
  */
 const CUSTOM = {
   custom: { kind: 'sequential', colors: ['#2a6fdb00', [0.55, '#2a6fdb99'], '#ffb000'] },
   diverging: { kind: 'diverging', colors: ['#00727a', '#e8e4d8', '#b5462a'] },
   cyclic: { kind: 'cyclic', colors: ['#3b5bdb', '#e64980', '#fab005', '#3b5bdb'] },
 } as const satisfies Record<string, Colormap>;
-/** A colormap of the catalog, or one of ours. */
+/** A catalog colormap's name, or a key of `CUSTOM`. */
 type Choice = ColormapName | keyof typeof CUSTOM;
 const mapOf = (choice: Choice): Colormap =>
   choice in CUSTOM ? CUSTOM[choice as keyof typeof CUSTOM] : (choice as ColormapName);
 
-/** How a cell's value, 0 to 1, is carried to the colormap, each again 0 to 1. */
+/** Transforms from a cell's value, 0 to 1, to the colormap's input, also 0 to 1, with labels. */
 const TRANSFORMS: Record<string, [label: string, (v: Expr) => Expr]> = {
   none: ['As is', (v) => v],
   sqrt: ['Square root', (v) => v.sqrt()],
@@ -66,12 +66,12 @@ const TRANSFORMS: Record<string, [label: string, (v: Expr) => Expr]> = {
   peaks: ['Peaks only', (v) => v.sub(0.6).max(0).div(0.4)],
 };
 type Transform = keyof typeof TRANSFORMS;
-/** Which cells show: a band of values, or of classes. */
+/** Which cells show: all of them, or those selected by a band of values or by class. */
 type Show = 'all' | 'inside' | 'outside' | 'not' | 'class' | 'others';
-/** A checkerboard under a ramp, so what is clear in it shows. */
+/** A checkerboard behind each ramp, so a colormap's transparent parts are visible. */
 const CHECKS = 'repeating-conic-gradient(#888 0 25%, #ccc 0 50%) 0 0 / 8px 8px';
 
-/** Every catalog colormap by kind, then ours. */
+/** Every catalog colormap grouped by kind, then the custom ones. */
 const CATALOG: readonly (readonly [string, readonly Choice[]])[] = [
   [
     'Sequential',
@@ -126,7 +126,8 @@ const CATALOG: readonly (readonly [string, readonly Choice[]])[] = [
 const CATEGORICAL = new Set<Choice>(CATALOG.find(([kind]) => kind === 'Categorical')![1]);
 const KINDS = ['All', ...CATALOG.map(([kind]) => kind)] as const;
 
-/** What the cells show, each a value from 0 to 1 at a point; categorical maps read classes. */
+/** Fields the cells can show, each a value from 0 to 1 at a point. Categorical colormaps show the
+ * value's class instead. */
 const FIELDS = {
   waves: (x: number, y: number) =>
     0.5 + 0.3 * Math.sin(x * 0.11) * Math.cos(y * 0.09) + 0.2 * Math.sin((x + y) * 0.035),
@@ -141,8 +142,8 @@ const FIELDS = {
 } as const;
 type FieldName = keyof typeof FIELDS;
 
-/** A field of `columns` by `rows` hexagons of side 1, pointy side up, as a patch replacing table
- * `Cell`: each cell's polygon, its value, its class of ten, and its value written. */
+/** A patch that replaces table `Cell` with `columns` by `rows` pointy-top hexagons of side 1. Each
+ * cell has its polygon, its value, its class from 0 to 9, and its value as label text. */
 function hexagons(columns: number, rows: number, value: FieldName): Patch {
   const count = columns * rows;
   const width = columns * Math.sqrt(3);
@@ -182,11 +183,12 @@ export default function page(stage: Stage): void {
   let classed = 5;
   let labels = false;
   let ownLegend = false;
-  /** One dataset, replaced field by field: the view eases each cell from its color to the next. */
+  /** One dataset, replaced whenever the field or cell count changes. The view eases each cell from
+   * its old color to its new one. */
   const data = new Data('colors');
   stage.signal.addEventListener('abort', () => data.destroy());
 
-  /** Whether a cell shows, as the panel says. */
+  /** Whether each cell shows, from the Show setting. */
   const visible = (): Expr | boolean => {
     const v = field('value');
     const c = field('class');
@@ -222,20 +224,20 @@ export default function page(stage: Stage): void {
         ]
       : [];
     return {
-      // Lines under the cells show through what a map leaves clear.
+      // Grid lines under the cells show through a colormap's transparent parts.
       space: { plane: { grid: colormap === 'custom' ? { lines: { pitch: 4 } } : 'off' } },
-      // The base themes by name.
+      // A built-in theme, by name.
       theme: light ? 'light' : 'dark',
       ease: 0.25,
       marks: [
         {
-          // The cells are what the page reads: hovering one reads its value.
+          // The cells are pickable, so hovering one reads its value.
           areas: {
             of: ['colors', 'Cell'],
             color: categorical ? mapped : reversed ? mapped.domain(1, 0) : mapped.domain(0, 1),
             visible: visible(),
             pick: true,
-            // Where values matter most, their cells are labeled first.
+            // Cells with higher values take priority, so they are labeled first.
             priority: 'value',
             ...(labels ? { label: { text: 'label', size: 10, max: 60 } } : {}),
             ...(ownLegend ? { legend: TRANSFORMS[transform]![0] } : {}),
@@ -331,7 +333,7 @@ export default function page(stage: Stage): void {
       rebuild();
     },
   );
-  // By columns: a field three rows for every two columns wide.
+  // Sized by column count, with two rows for every three columns.
   shown.choice(
     'Cells',
     [
@@ -389,7 +391,8 @@ export default function page(stage: Stage): void {
     reading.textContent = `Cell ${hit.row.id}: ${v?.toFixed(3) ?? '–'}`;
   });
 
-  // A brush: the cells within its reach of the pointer, read by a pick, and their mean value.
+  // A brush: a pick finds the cells within `reach` CSS pixels of the pointer, and the note shows
+  // their mean value.
   let reach = 24;
   shown.range(
     'Brush',
@@ -418,8 +421,8 @@ export default function page(stage: Stage): void {
     { signal: stage.signal },
   );
 
-  // The catalog as CSS ramps: the colors the GPU draws, drawn by the browser over checks, so
-  // what a map leaves clear shows.
+  // The catalog as CSS ramps: the same colors the GPU draws, drawn by the browser over a
+  // checkerboard so transparent parts show.
   const catalog = stage.section('Catalog');
   const groups: [string, HTMLElement[]][] = [];
   catalog.choice(

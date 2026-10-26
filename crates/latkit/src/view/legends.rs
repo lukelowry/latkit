@@ -1,7 +1,9 @@
-//! A scene's title and its marks' legends, written over the marks: the title and subtitle at the top
-//! left, and the legends stacked up from the bottom right, each under its title: a bar of its mark's
-//! colormap across the domain, ticked; a cell of color for each category; or, where categories are
-//! named, a swatch beside each name. Rebuilt each frame as overlay sprites, O(legends).
+//! A scene's title and its marks' legends, drawn over the marks.
+//!
+//! The title and subtitle sit at the top left. Legends stack upward from the bottom right, each
+//! under its title: a ticked bar of the mark's colormap across its domain, a color cell per
+//! category, or, for named categories, a swatch beside each name. Rebuilt each frame as overlay
+//! sprites, in O(legends).
 
 use std::sync::Arc;
 
@@ -11,7 +13,7 @@ use crate::gpu::Inner;
 use crate::gpu::shaders as wgsl;
 use crate::{Axis, Color, Colormap, ColormapKind, Theme};
 
-/// CSS pixels between the view's edge and what is written there.
+/// CSS pixels between the view's inset edge and the title or legends.
 const MARGIN: f64 = 16.0;
 /// A legend's bar: width and height, CSS pixels.
 const BAR: [f64; 2] = [220.0, 8.0];
@@ -21,16 +23,17 @@ const CELLS: usize = 64;
 const CATEGORIES: usize = 24;
 /// The most names a column of a legend lists.
 const ROWS: usize = 8;
-/// The size of what a legend writes beside its colors, ticks and names, for the theme's text size.
+/// Text scale of a legend's tick labels and names, relative to the theme's text size.
 const SMALL: f64 = 0.9;
-/// The sizes of the title and subtitle for the theme's text size, and the line each takes for its size.
+/// Text scales of the title and subtitle, relative to the theme's text size, and their line height
+/// relative to their own size.
 const TITLE: f64 = 1.75;
 const SUBTITLE: f64 = 1.1;
 const LEADING: f64 = 1.35;
 
 impl View {
-    /// CSS pixels the scene's title and subtitle take below the top inset, with the margin above them
-    /// and half of it below: none when it has neither.
+    /// CSS pixels the title and subtitle take below the top inset, including the margin above them
+    /// and half a margin below; 0 when the scene has neither.
     pub(super) fn title_band(&self) -> f64 {
         let font = f64::from(self.scene.theme.text.size);
         let lines: f64 = [(self.scene.title.is_some(), TITLE), (self.scene.subtitle.is_some(), SUBTITLE)]
@@ -84,9 +87,9 @@ impl View {
     }
 }
 
-/// Draws a legend of `colormap`'s named categories ending at `corner`, its right edge at its x and its
-/// bottom at its y: a swatch of each category's color beside its name, in columns of up to
-/// `ROWS`, under `title`, placed whole on pixels of `ratio`. How tall it is.
+/// Draws a legend of `colormap`'s named categories with its bottom-right corner at `corner`: a
+/// swatch of each category's color beside its name, in columns of up to `ROWS`, under `title`,
+/// snapped to device pixels of `ratio`. Returns its height.
 fn categories(
     sprites: &mut Vec<wgsl::Sprite>,
     theme: &Theme,
@@ -103,7 +106,7 @@ fn categories(
     let rows = names.len().min(ROWS);
     let top = corner[1] - rows as f64 * row;
     let start = sprites.len();
-    // Laid out from x = 0, each column clear of the names before it, then moved into place.
+    // Lay out from x = 0, each column clear of the names before it, then shift it all into place.
     let mut x = 0.0;
     for (column, names) in names.chunks(ROWS).enumerate() {
         let mut right = x;
@@ -135,8 +138,8 @@ fn categories(
     height
 }
 
-/// Draws a legend whose bar ends at `corner`'s x, its tick labels' bottom at its y: `colormap` across
-/// `domain` under `title`. How tall it is.
+/// Draws a bar legend of `colormap` across `domain`, under `title`, with the bar's right end at
+/// `corner`'s x and the tick labels' bottom at its y. Returns its height.
 fn legend(
     sprites: &mut Vec<wgsl::Sprite>,
     theme: &Theme,

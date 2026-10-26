@@ -1,10 +1,11 @@
 import { random } from '../../random.js';
 /**
- * A synthetic grid the size of a continent's. Buses cluster around North America's cities as a real
- * grid's do: every substation feeds radial distribution feeders, which hold most of the buses; each
- * city's substations mesh at 115 and 230 kV; and cities join along 345 to 765 kV corridors through
- * switching stations, the busiest by double or triple circuits, with rural substations and power
- * plants along the way. Seeded, so every build draws the same grid, in time linear in its size.
+ * A synthetic grid the size of a continent's. Its buses cluster around North America's cities, as a
+ * real grid's do. Each substation feeds radial distribution feeders, which hold most of the buses.
+ * Each city's substations form a mesh at 115 and 230 kV. Cities connect along 230 to 765 kV
+ * corridors through switching stations, with double or triple circuits on the busiest, and rural
+ * substations and power plants along the way. The generator is seeded, so every build produces the
+ * same grid, in time linear in its size.
  */
 import { Data, Patch, reference } from 'latkit';
 import { levelOf, type Case } from './cases.js';
@@ -186,13 +187,14 @@ const STATION_SPACING = 90;
 /** The share of buses fed along corridors rather than in cities. */
 const RURAL = 0.12;
 
-/** Kilometres between two points, near enough for a continent. */
+/** Approximate kilometres between two points, accurate enough at the scale of a continent. */
 function km(lon0: number, lat0: number, lon1: number, lat1: number): number {
   const across = (lon1 - lon0) * Math.cos(((lat0 + lat1) * Math.PI) / 360);
   return Math.hypot(across, lat1 - lat0) * KM;
 }
 
-/** Buses and lines as they are made, in typed arrays that grow by half again. */
+/** Collects buses and lines in typed arrays that grow by half when full, and machines in plain
+ * arrays. */
 class Builder {
   lon = new Float64Array(1024);
   lat = new Float64Array(1024);
@@ -268,8 +270,8 @@ class Builder {
   }
 }
 
-/** The cheapest tree joining `n` points, by Prim's algorithm on squared distance: each point's parent
- * in it, the first point's being -1. */
+/** The minimum spanning tree of `n` points under `distance`, by Prim's algorithm in O(n²). Returns
+ * each point's parent, with -1 for point 0, the root. */
 function spanning(n: number, distance: (a: number, b: number) => number): Int32Array {
   const parent = new Int32Array(n).fill(-1);
   const best = new Float64Array(n).fill(Infinity);
@@ -291,8 +293,8 @@ function spanning(n: number, distance: (a: number, b: number) => number): Int32A
   return parent;
 }
 
-/** Feeds `count` distribution buses from substation bus `root`: radial feeders that run outward from
- * it and branch, steps of `step` degrees apart. */
+/** Adds `count` 13.8 kV distribution buses fed from substation bus `root`, on radial feeders that
+ * run outward and branch, with buses about `step` degrees apart. */
 function feed(grid: Builder, rng: () => number, root: number, count: number, step: number): void {
   const feeders = Math.max(3, Math.round((count / 50) * (0.8 + 0.4 * rng())));
   const lat0 = grid.lat[root]!;
@@ -304,13 +306,13 @@ function feed(grid: Builder, rng: () => number, root: number, count: number, ste
         ? left
         : Math.min(left, Math.round((count / feeders) * (0.6 + 0.8 * rng())));
     left -= size;
-    // The feeder's buses, and the way each one's line ran.
+    // The feeder's first bus, and the heading of the line to each of its buses.
     const first = grid.buses;
     const headings = new Float32Array(size);
     let heading = (2 * Math.PI * (f + rng())) / feeders;
     let parent = root;
     for (let k = 0; k < size; k++) {
-      // Mostly the trunk runs on; now and then a lateral branches off a bus already fed.
+      // Usually the trunk continues. Sometimes (18%) a lateral branches off an earlier bus.
       if (k > 0 && rng() < 0.18) {
         const from = Math.floor(rng() * k);
         parent = first + from;
@@ -329,12 +331,13 @@ function feed(grid: Builder, rng: () => number, root: number, count: number, ste
   }
 }
 
-/** The synthetic grids, by id, and the buses each is built to. */
+/** The target bus count of each synthetic grid, by id. */
 export const CONTINENTS: Readonly<Record<string, number>> = {
   'continent-2m': 2_000_000,
 };
 
-/** The synthetic grid `id` as a case named `grid`, as the case files are read. */
+/** Builds synthetic grid `id` as a `Case` with a dataset named `grid`, in the form `readCase`
+ * returns. Throws for an unknown id. */
 export function continent(id: string): Case {
   const target = CONTINENTS[id];
   if (!target) throw new Error(`No synthetic grid ${id}`);
@@ -343,8 +346,8 @@ export function continent(id: string): Case {
   const weights = CITIES.map(([, , , people]) => people ** 0.85);
   const total = weights.reduce((a, b) => a + b, 0);
 
-  // Corridors first, as a graph of cities: the cheapest tree joining them all, and each city's two
-  // nearest neighbours within 700 km.
+  // Plan the corridors first, as a graph of cities: a minimum spanning tree joining them all, plus
+  // links from each city to its two nearest neighbours within 700 km.
   const n = CITIES.length;
   const distance = (a: number, b: number) =>
     km(CITIES[a]![1], CITIES[a]![2], CITIES[b]![1], CITIES[b]![2]);
@@ -360,7 +363,8 @@ export function continent(id: string): Case {
     for (const b of near) if (distance(a, b) < 700) corridors.add(pair(a, b));
   }
 
-  // Each city: substations meshing at 115 and 230 kV, each feeding its share of the city's buses.
+  // In each city, substations form a mesh at 115 and 230 kV, and each feeds its share of the
+  // city's buses.
   const hubs = new Map<number, number>();
   const substations: number[][] = [];
   for (let c = 0; c < n; c++) {
@@ -388,7 +392,7 @@ export function continent(id: string): Case {
       const [a, b] = [subs[p]!, subs[s]!];
       grid.line(a, b, Math.min(grid.kv[a]!, grid.kv[b]!), grid.kv[a] !== grid.kv[b]);
     });
-    // A mesh as well as a tree: each substation also joins one more near it.
+    // Links beyond the tree make a mesh: each substation also joins a random other one nearby.
     for (let s = 1; s < count; s++) {
       const other = Math.floor(rng() * count);
       if (other !== s && other !== parent[s]) {
@@ -399,13 +403,14 @@ export function continent(id: string): Case {
           grid.line(a, b, Math.min(grid.kv[a]!, grid.kv[b]!), grid.kv[a] !== grid.kv[b]);
       }
     }
-    // Feeders run shorter where people crowd closer.
+    // Feeder spans are shorter in bigger cities, where people live closer together.
     const step = 0.0012 + 0.002 / Math.sqrt(1 + people);
     for (let s = 0; s < count; s++)
       feed(grid, rng, subs[s]!, Math.max(0, Math.floor(buses / count) - 1), step);
   }
 
-  /** City `c`'s bus at `kv`, made on first use and joined to its central substation. */
+  /** City `c`'s bus at `kv`, created on first use and connected through a transformer to the
+   * city's central substation. */
   const hub = (c: number, kv: number) => {
     const key = c * 1000 + kv;
     const found = hubs.get(key);
@@ -419,8 +424,8 @@ export function continent(id: string): Case {
     return bus;
   };
 
-  // Corridors: each a chain of switching stations, its circuits as many as its cities need, with a
-  // rural substation and its feeders off every station, and a power plant at some.
+  // Each corridor is a chain of switching stations, with one to three circuits by the population
+  // of its two cities. Every station feeds a rural substation, and some have a power plant.
   let stations = 0;
   const links = [...corridors].map((p) => [Math.floor(p / n), p % n] as const);
   for (const [a, b] of links) stations += Math.floor(distance(a, b) / STATION_SPACING);
@@ -441,7 +446,7 @@ export function continent(id: string): Case {
     const circuits = people > 14 ? 3 : people > 6 ? 2 : 1;
     const length = distance(a, b);
     const hops = Math.floor(length / STATION_SPACING) + 1;
-    // The corridor bends a little off the straight line, the same way along its whole length.
+    // The corridor bows slightly to one side of the straight line along its whole length.
     const bend = (rng() - 0.5) * 0.12;
     let previous = hub(a, kv);
     for (let h = 1; h <= hops; h++) {

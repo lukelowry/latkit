@@ -1,11 +1,14 @@
 /**
- * Grid operations: a state's transmission grid as a control room watches it. Each substation is a
- * gauge of its output sized by its capacity, a plant's round and a load's square, or a pie of it, or
- * an icon of its kind; branches are as wide as their rating, color by loading, carry comets along
- * their flow, bow apart where they run in parallel, and bend along their corridors. The flows come
- * from a DC power flow solved every tick: push demand up or trip a line, and overloaded branches trip
- * in turn, flows swing onto what is left, and loads cut off from every plant go dark. Each tick eases
- * into place; what trips pulses until it is restored.
+ * Grid operations: a state's transmission grid as a control room watches it.
+ *
+ * Each substation is a gauge of its output sized by its capacity (round for a plant, square for a
+ * load), a pie, or an icon of its kind. A branch's width shows its rating and its color shows its
+ * loading. Comets travel along each branch's flow, parallel branches bow apart, and branches can
+ * bend along their corridors.
+ *
+ * A DC power flow is solved every tick. Push demand up or trip a line, and overloaded branches trip
+ * in turn, flows shift onto the remaining branches, and loads cut off from every plant go dark.
+ * Each tick eases into place, and tripped equipment pulses until it is restored.
  */
 import {
   Data,
@@ -28,7 +31,7 @@ import { theme } from '../../ui/theme.js';
 import { Grid, KINDS } from './grid.js';
 import texas from './texas.json';
 
-/** The control room's dark theme: a quiet network, its alarms and flows bright. */
+/** The control room's dark palette: a muted network with bright alarms and flows. */
 const LOOK = {
   background: '#07090c',
   ground: '#10161d',
@@ -41,8 +44,8 @@ const LOOK = {
   tripped: '#ff1915',
 } as const;
 
-/** A branch's color by its loading, % of its rating: calm blues to 80%, then amber at 90% through
- * red where its protection trips it. */
+/** A branch's color by its loading in % of its rating: blues up to 80%, then amber at 90%, turning
+ * red around the trip setting. */
 const LOADING = field('loading')
   .colormap({
     kind: 'sequential',
@@ -67,7 +70,8 @@ const LOADING = field('loading')
 /** Seconds between ticks of the simulation. */
 const TICK = 0.5;
 
-/** An icon for each kind of substation, a tripped one's last: a disc of its color, its initial on it. */
+/** Draws an icon per substation kind: a disc in the kind's color with its initial. The last icon,
+ * a red disc marked ×, is for substations that are tripped or dark. */
 function icons(): RgbaImage[] {
   const size = 48;
   return [
@@ -89,8 +93,8 @@ function icons(): RgbaImage[] {
   });
 }
 
-/** Where each branch bends: a point beside its middle, a tenth of its length out, sides alternating,
- * as a corridor runs around what lies between its substations. */
+/** Each branch's corridor bend: one point beside its midpoint, a tenth of its length out, on
+ * alternating sides, like a corridor routed around obstacles between its substations. */
 function corridors(): number[][][] {
   const s = texas.substations;
   return texas.branches.map((b, j) => {
@@ -100,7 +104,7 @@ function corridors(): number[][][] {
     return [[(a.lon + c.lon) / 2 - dy * side, (a.lat + c.lat) / 2 + dx * side]];
   });
 }
-/** The grid's state as a patch of the `grid` dataset's changing fields. */
+/** A patch of the `grid` dataset's changing fields, from the grid's current state. */
 function patchOf(grid: Grid): Patch {
   const kind = Float32Array.from(grid.kind, (k, i) =>
     grid.tripped(i) || (grid.load[i] && grid.fill[i]! < 0.05) ? KINDS.length : k,
@@ -133,7 +137,7 @@ function patchOf(grid: Grid): Patch {
 }
 
 export default async function page(stage: Stage): Promise<void> {
-  // Labels set in Jura once it has loaded.
+  // Labels use the Jura font, so load it first.
   const jura = new FontFace(
     'Jura',
     `url(${import.meta.env.BASE_URL}fonts/jura-latin-400-normal.woff2)`,
@@ -196,7 +200,7 @@ export default async function page(stage: Stage): Promise<void> {
   };
   let motion: Motion = 'system';
   const ICONS = icons();
-  /** What trips pulses: red to dark red and back, twice a second. */
+  /** The pulse of tripped equipment: red to dark red and back, twice a second. */
   const pulse = elapsed()
     .mul(4 * Math.PI)
     .sin()
@@ -207,14 +211,15 @@ export default async function page(stage: Stage): Promise<void> {
     colors: [...KINDS.map((k) => k.color), LOOK.tripped],
     categories: [...KINDS.map((k) => k.label), 'tripped or dark'],
   });
-  // Comets run with the flow, in degrees a second, faster the nearer its rating, and never on a
-  // branch out.
+  // Comet speed in degrees per second. Comets move in the flow's direction, faster as the loading
+  // rises. A speed of 0 draws none, so an out branch has no comets.
   const comets = when(field('out').gt(0.5))
     .then(0)
     .when(field('flow').lt(0))
     .then(field('flow').mul(1.8).sub(0.45))
     .otherwise(field('flow').mul(1.8).add(0.45));
-  /** How a substation draws: a gauge of its output, a pie of output and headroom, or its kind's icon. */
+  /** A substation's marker: a gauge of its output, a pie of output and headroom, or its kind's
+   * icon. */
   const marker = (shape: 'ellipse' | 'rounded'): Marker =>
     state.markers === 'pies'
       ? {
@@ -227,14 +232,16 @@ export default async function page(stage: Stage): Promise<void> {
       : state.markers === 'icons'
         ? icon(ICONS, field('kind'))
         : { gauge: { fill: field('fill'), shape } };
-  /** A substation mark: plants as round gauges, loads as square ones, in one table. */
+  /** A mark for the plants (round gauges) or the loads (square ones). Both marks draw the one
+   * `Substation` table. */
   const substations = (name: string, load: number, shape: 'ellipse' | 'rounded') => ({
     vertices: {
       of: ['grid', 'Substation'] as [string, string],
       name,
       position: ['lon', 'lat'] as [string, string],
       visible: field('load').eq(load),
-      // Both marks size every row alike, by its capacity, so branches stop at the outline that shows.
+      // Both marks give every row the same radius from its capacity, so branches stop at the
+      // outline that is shown.
       radius: field('capacity').sqrt().scale(8, 17).domain(11, 46),
       marker: marker(shape),
       color: kinds,
@@ -260,12 +267,14 @@ export default async function page(stage: Stage): Promise<void> {
       text: { color: LOOK.text, font: 'Jura, sans-serif', size: 12, halo: 3 },
       // Selected rows glow blue, or each in its own color.
       focus: { hover: LOOK.hover, selected: state.ownGlow ? null : LOOK.hover, glow: 6 },
-      // Comets are part of the map, in degrees: they zoom with it and stay on their branches.
+      // Comet spacing and length are in map units (degrees), so comets zoom with the map and stay
+      // on their branches.
       flow: { color: LOOK.comet, spacing: units(1.35), length: units(0.6), width: 6 },
       edge: { bow: 0.22 },
     },
     ease: state.ease,
-    // Easing, pulses, and comets hold still where the system asks for reduced motion, unless set.
+    // With `motion` at 'system', easing, pulses, and comets stop when the system asks for reduced
+    // motion.
     controls: { motion },
     marks: [
       { lines: { of: ['state', 'Border'], width: 1.25, color: LOOK.border } },
@@ -400,7 +409,7 @@ export default async function page(stage: Stage): Promise<void> {
   const meter = stage.meter(view);
   meter.note(() => `${grid.trips} trips`);
 
-  /** Shows the grid as it stands. */
+  /** Shows the grid's current state in the view, the totals, and the inspector. */
   function show(): void {
     data.apply(patchOf(grid));
     const served = grid.injection.reduce((sum, p, i) => sum + (grid.load[i] ? -p : 0), 0);

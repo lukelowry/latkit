@@ -1,8 +1,8 @@
 # Examples
 
-Every picture here is drawn by latkit from the module on its page: data written with `Patch`, a
-typed `Scene`, and the `latkit` command line. The
-[example suite](https://github.com/lukelowry/latkit/tree/main/npm/examples) runs the same features
+The `latkit` command line draws every picture here from the module on its page, which writes its
+data with `Patch` and its scene as a typed `Scene`. The
+[example suite](https://github.com/lukelowry/latkit/tree/main/npm/examples) shows the same features
 live in the browser.
 
 :::{container} cards

@@ -1,8 +1,10 @@
 # Benchmark
 
-Each scenario's phases, up its sizes, in Chrome: time, GPU time, and the work the GPU did, held to
-committed baselines. The page steps every frame itself, each waiting for the GPU rather than the
-clock, so a run draws the same frames on any device; how frames pace a page is the gate's to judge.
+The benchmark runs each scenario in Chrome at increasing sizes and measures each phase's time, GPU
+time, and GPU work, checked against committed baselines. The page steps every frame itself, starting
+each one when the GPU has finished the last rather than on the display's clock, so a run draws the
+same frames on any device. Frame pacing is judged by the browser gate (`npm/examples/gate/gate.ts`)
+instead.
 
 ```sh
 cargo xtask bench --quick            # each scenario once at its smallest size: phases and work
@@ -14,18 +16,20 @@ cargo xtask bench --update           # lay this run's results over the baselines
 
 A run fails on:
 
-- an error, a frame drawn while nothing changed, a pipeline compiled where it was first used
-  (`late`), or resident data over its budget;
-- a phase growing with size faster than its order, its uploads counted in pages (`uploads`), each at
-  least a page of bytes;
-- more work than `baselines/work.json`: exactly for what the data sets (`uploaded`, `uploads`,
-  `evaluated`, `packed`, `jobs`, `pipelines`, `late`, `resident`) in a phase that acts once, and
-  within 2× for what moves with the frame a job or a fetch lands in (`written`, `readbacks`, `texts`,
-  every count of a phase acting each frame, and all of a scenario fed by fetches);
-- in a full sweep, on the machine `baselines/<machine>.json` was taken on, a phase whose fastest
-  repeat is over 1.25× slower, and for a phase acting once, later by over a timer tick (16 ms): a
-  stall of the machine slows one repeat, a regression every one.
+- An error, a frame drawn while nothing changed, a pipeline compiled where it was first used
+  (`late`), or resident data over its budget.
+- A phase whose time or uploaded bytes (and, for loading, resident bytes) grow with size faster
+  than its declared order. Each upload (`uploads`) counts as at least a page of bytes.
+- More work than `baselines/work.json`. In a phase that acts once, the counts the data alone sets
+  (`uploaded`, `uploads`, `evaluated`, `packed`, `jobs`, `pipelines`, `late`, `resident`) may not
+  exceed the baseline. The other counts (`written`, `resolved`, `cleared`, `readbacks`, `texts`),
+  every count of a phase that acts each frame, and every count of a scenario fed by fetches may
+  reach 2× the baseline, since they depend on which frame a job or fetch finishes in.
+- In a full sweep on the machine that recorded `baselines/<machine>.json`, a phase whose fastest
+  repeat is more than 1.25× slower than its baseline, plus one timer tick (16 ms) for a phase that
+  acts once. Judging the fastest repeat means a stall of the machine, which slows one repeat, does
+  not fail the run; a regression slows every repeat.
 
-On a machine with two GPUs, Chrome draws on the fast one. Reports and results land in
-`target/bench/`. Scenarios are in `page/scenarios.ts`, the data they draw in `page/data.ts`, and how
-a phase is measured in `page/stage.ts`.
+On a machine with two GPUs, Chrome is made to draw on the faster one. Reports and results are
+written to `target/bench/`. Scenarios are defined in `page/scenarios.ts`, the data they draw in
+`page/data.ts`, and how a phase is measured in `page/stage.ts`.

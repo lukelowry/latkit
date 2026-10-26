@@ -1,9 +1,10 @@
-//! Tilings: what a source holds, fetched in pieces by key as the sets drawing it ask for them, decoded
-//! into patches, and held under a budget of bytes, the least recently drawn going first. Every set
-//! drawing one source shares its tiling, so what one fetched another draws; each decodes for a stamp
-//! of what its decoding reads. A key wanted draws once it is decoded for that stamp; until then its
-//! nearest decoded ancestor stands in, and what is missing is fetched, nearest first. Tiles of the
-//! earth and spans of a sampled field's history share it.
+//! Tilings: a source's pieces, fetched by key as the sets drawing it need them, decoded into
+//! patches, and kept within a byte budget, evicting the least recently drawn first. Every set
+//! drawing one source shares its tiling, so a piece one set fetched draws in another. Each set
+//! decodes for a stamp that identifies what its decoding reads. A wanted key draws once it is
+//! decoded for that stamp; until then its nearest decoded ancestor is drawn as a placeholder, and
+//! missing pieces are fetched, nearest first. Earth tiles and spans of a sampled field's history
+//! both use it.
 
 use std::sync::Arc;
 
@@ -15,66 +16,69 @@ use crate::derive::Jobs;
 use crate::host::Request;
 use crate::{Error, Pending};
 
-/// Fetches, and decodes, a tiling has under way at once.
+/// Most fetches, and separately most decodes, a tiling runs at once.
 const REQUESTS: usize = 8;
-/// Bytes of fetched pieces a tiling keeps, past which the least recently drawn go.
+/// Bytes of fetched pieces a tiling keeps. Past this, the least recently drawn are evicted.
 const KEPT_BYTES: usize = 64 << 20;
 
 /// How a source fetches a piece.
 pub(crate) enum Requested {
-    /// The bytes `request` answers.
+    /// Fetch the bytes `request` returns.
     Fetch(Request),
-    /// Not yet: the source first fetches what finds the piece, as an archive its directories.
+    /// Not yet: the source must first fetch what locates the piece, such as an archive's
+    /// directories.
     Wait,
-    /// Nowhere: the source holds no such piece, which draws nothing.
+    /// The source has no such piece, which draws nothing.
     Missing,
 }
 
-/// What a piece's bytes become, the patch it draws: at once, or the answer of a job.
+/// How a piece's bytes become its patch: immediately, or as a job's result.
 pub(crate) enum Decoding {
     Now(Patch),
     Job(Pending<Vec<u8>>),
 }
 
-/// Where a tiling's pieces come from, and what they become.
+/// Fetches and decodes a tiling's pieces.
 pub(crate) trait Pieces<K: Key> {
     /// How to fetch `key`.
     fn request(&mut self, key: K, jobs: &Jobs<'_>) -> Requested;
 
-    /// What `key`'s fetched `bytes`, never empty, decode into.
+    /// Decodes `key`'s fetched `bytes`, which are never empty.
     fn decode(&self, key: K, bytes: &Arc<Vec<u8>>, jobs: &Jobs<'_>) -> Decoding;
 }
 
-/// What an update draws: each wanted key decoded, else its nearest decoded ancestor, each once; and
-/// whether any key stands in, by an ancestor or by nothing.
+/// The result of an update: each wanted key if decoded, else its nearest decoded ancestor, each
+/// listed once; and whether any wanted key shows a placeholder (an ancestor, or nothing).
 pub(crate) struct Drawn<K> {
     pub(crate) keys: Vec<K>,
     pub(crate) standing_in: bool,
-    /// A failure to tell: a piece that could not be fetched.
+    /// A failure to report: a piece that could not be fetched.
     pub(crate) failure: Option<Error>,
 }
 
-/// What one set draws of a tiling: the stamp it decodes for, and the keys whose decodes it keeps,
-/// those it draws, wants, and the ancestors of those it wants, which stand in for them.
+/// One set's claim on a tiling: the stamp it decodes for, and the keys whose decodes it keeps.
+/// Those are the keys it draws, the keys it wants, and their ancestors, which serve as
+/// placeholders.
 struct Claim<K> {
     stamp: u64,
     keys: FxHashSet<K>,
 }
 
-/// A source's pieces: their fetched bytes, and the patches they decoded into for each stamp of what
-/// decoding reads.
+/// A source's pieces: their fetched bytes, and the patches decoded from them for each decoding
+/// stamp.
 pub(crate) struct Tiling<K: Key> {
-    /// Fetched bytes, as fetched, and when each last drew; empty where the source holds no piece.
+    /// Fetched bytes and the tick each piece last drew at. Empty bytes mean the source has no such
+    /// piece or the fetch failed.
     held: FxHashMap<K, (Arc<Vec<u8>>, u64)>,
     fetching: FxHashMap<K, Pending<Vec<u8>>>,
-    /// Decodes under way and done, by key and the stamp each was asked for.
+    /// Decodes in progress (`decoding`) and finished (`decoded`), by key and stamp.
     decoding: FxHashMap<(K, u64), Pending<Vec<u8>>>,
     decoded: FxHashMap<(K, u64), Patch>,
-    /// What each set drawing the tiling draws of it, by set.
+    /// Each drawing set's claim, by set.
     claims: FxHashMap<u64, Claim<K>>,
-    /// The first piece that could not be fetched: every set drawing the tiling tells it once.
+    /// The first fetch failure. Every set drawing the tiling reports it once.
     failure: Option<Error>,
-    /// Counts updates, for drawn pieces to note when they last drew.
+    /// Update counter, recording when each piece last drew.
     tick: u64,
 }
 
@@ -93,8 +97,8 @@ impl<K: Key> Default for Tiling<K> {
 }
 
 impl<K: Key> Tiling<K> {
-    /// Brings the pieces up to what set `set` wants, nearest first, decoding for `stamp`: what it
-    /// draws.
+    /// Updates the pieces for what set `set` wants, nearest first, decoding for `stamp`. Returns
+    /// what the set draws.
     pub(crate) fn update(
         &mut self,
         set: u64,
@@ -105,8 +109,8 @@ impl<K: Key> Tiling<K> {
     ) -> Drawn<K> {
         self.tick += 1;
         self.land();
-        // Keys not decoded yet decode once held, and so do the held ancestors of those still
-        // loading, to stand in for them; the rest fetch. A piece decoded at once draws at once.
+        // Decode wanted keys once fetched, and the fetched ancestors of keys still loading, as
+        // placeholders; fetch the rest. A piece decoded immediately draws immediately.
         let mut decode: Vec<K> = Vec::new();
         for &key in wanted {
             if self.ready(key, stamp) {
@@ -143,8 +147,9 @@ impl<K: Key> Tiling<K> {
                 *used = tick;
             }
         }
-        // The set keeps what it draws and wants decoded, and every ancestor of what it wants, which
-        // stands in as it zooms; the walk up stops where another wanted key's walk passed.
+        // The set keeps the decodes of what it draws and wants, plus every ancestor of what it
+        // wants, which serves as a placeholder while zooming. Each walk up stops where an earlier
+        // wanted key's walk passed.
         let mut keys: FxHashSet<K> = drawn.iter().copied().collect();
         let mut walked: FxHashSet<K> = FxHashSet::default();
         for &key in wanted {
@@ -160,22 +165,22 @@ impl<K: Key> Tiling<K> {
         Drawn { keys: drawn, standing_in, failure: self.failure.clone() }
     }
 
-    /// The patch `key` decoded into for `stamp`, once it did.
+    /// The patch decoded from `key` for `stamp`, once ready.
     pub(crate) fn decoded(&self, key: &K, stamp: u64) -> Option<&Patch> {
         self.decoded.get(&(*key, stamp))
     }
 
-    /// Fetches and decodes under way.
+    /// Fetches and decodes in progress.
     pub(crate) fn under_way(&self) -> usize {
         self.fetching.len() + self.decoding.len()
     }
 
-    /// Keeps `error` as the tiling's failure, unless it kept one already.
+    /// Records `error` as the tiling's failure, unless one is recorded already.
     pub(crate) fn fail(&mut self, error: Error) {
         self.failure.get_or_insert(error);
     }
 
-    /// Lets go of what set `set` drew: pieces no other set draws may go.
+    /// Releases set `set`'s claim, so pieces no other set draws may be evicted.
     pub(crate) fn release(&mut self, set: u64) {
         if self.claims.remove(&set).is_some() {
             self.evict();
@@ -187,7 +192,8 @@ impl<K: Key> Tiling<K> {
         self.decoded.contains_key(&(key, stamp))
     }
 
-    /// Takes fetches and decodes that landed, keeping the first failure.
+    /// Collects finished fetches and decodes, keeping the first failure. A decode is kept only if
+    /// some set still decodes for its stamp.
     fn land(&mut self) {
         let fetched: Vec<_> = self.fetching.iter().filter_map(|(key, p)| p.take().map(|r| (*key, r))).collect();
         for (key, result) in fetched {
@@ -208,7 +214,7 @@ impl<K: Key> Tiling<K> {
         }
     }
 
-    /// Starts fetching `key`, within the requests under way at once.
+    /// Starts fetching `key`, unless [`REQUESTS`] fetches are already in progress.
     fn fetch(&mut self, key: K, pieces: &mut impl Pieces<K>, jobs: &Jobs<'_>) {
         if self.fetching.contains_key(&key) || self.fetching.len() >= REQUESTS {
             return;
@@ -224,7 +230,8 @@ impl<K: Key> Tiling<K> {
         }
     }
 
-    /// Starts decoding `key` for `stamp`, within the decodes under way at once.
+    /// Starts decoding `key` for `stamp`, unless [`REQUESTS`] decodes are already in progress.
+    /// Empty bytes decode to an empty patch immediately.
     fn decode(&mut self, key: K, stamp: u64, pieces: &impl Pieces<K>, jobs: &Jobs<'_>) {
         if self.decoding.contains_key(&(key, stamp)) || self.decoding.len() >= REQUESTS {
             return;
@@ -244,8 +251,8 @@ impl<K: Key> Tiling<K> {
         }
     }
 
-    /// Lets go of the least recently drawn pieces' bytes no set draws or wants, past the budget, and
-    /// of decodes no set keeps.
+    /// While over budget, evicts the bytes of the least recently drawn pieces no set claims. Drops
+    /// decodes no set keeps.
     fn evict(&mut self) {
         let claims = &self.claims;
         let claimed = |key: &K| claims.values().any(|claim| claim.keys.contains(key));

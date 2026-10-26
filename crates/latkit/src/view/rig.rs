@@ -1,32 +1,33 @@
-//! How the camera moves. A gesture moves it at once, about the point under the pointer. The wheel,
-//! the keys, and a released drag leave motion owed about such a point, which the next frames pay out
-//! exponentially, so a fling coasts and a wheel notch glides by the same rule. A flight eases over a
-//! set time, an orbit turns steadily, and what a fit framed bounds how far the rest can take it. All
-//! of it moves by the view's clock.
+//! Camera motion. A gesture moves the camera at once, about the point under the pointer. The wheel,
+//! the keys, and a released drag add pending motion about such a point, which the following frames
+//! apply with exponential decay, so a fling coasts and a wheel notch glides by the same rule. A
+//! flight eases over a set time, and an orbit turns steadily. The bounds of the last fit limit how
+//! far gestures and pending motion can move the camera. All of it runs on the view's clock.
 
 use super::camera::{Bounds, Camera};
 use super::{Event, View};
 
-/// Seconds over which owed motion pays out: a fling's pan and turn coast longer than a zoom glides.
+/// Time constants, in seconds, for applying pending motion: a fling's pan and turn coast longer
+/// than a zoom glides.
 const COAST: f64 = 0.3;
 const GLIDE: f64 = 0.1;
 
 #[derive(Default)]
 pub(crate) struct Rig {
-    /// The point owed motion moves about.
+    /// The point pending motion moves about.
     anchor: [f64; 3],
-    /// Motion owed: CSS pixels of pan, degrees of bearing and pitch, levels of zoom.
+    /// Pending motion: CSS pixels of pan, degrees of bearing and pitch, and levels of zoom.
     pan: [f64; 2],
     turn: [f64; 2],
     zoom: f64,
     flight: Option<Flight>,
     /// Degrees of bearing per second.
     pub(crate) orbit: f64,
-    /// What the last fit framed.
+    /// The bounds the last fit framed.
     pub(crate) bounds: Option<Bounds>,
 }
 
-/// A flight from one camera to another, begun at a time on the view's clock.
+/// A flight from one camera to another, started at `start` on the view's clock.
 struct Flight {
     from: Camera,
     to: Camera,
@@ -35,7 +36,7 @@ struct Flight {
 }
 
 impl Rig {
-    /// Whether the camera eases toward where it goes: a flight, or motion owed. An orbit never settles.
+    /// Whether the camera is easing to a rest: a flight or pending motion. An orbit never settles.
     pub(crate) fn easing(&self) -> bool {
         self.flight.is_some() || self.owed()
     }
@@ -44,7 +45,7 @@ impl Rig {
         self.pan != [0.0; 2] || self.turn != [0.0; 2] || self.zoom != 0.0
     }
 
-    /// Drops motion owed and any flight: a gesture takes the camera.
+    /// Drops pending motion and any flight, as when a gesture takes the camera.
     pub(crate) fn hold(&mut self) {
         self.pan = [0.0; 2];
         self.turn = [0.0; 2];
@@ -52,7 +53,8 @@ impl Rig {
         self.flight = None;
     }
 
-    /// Owes `pan`, `turn`, and `zoom` more about `anchor`.
+    /// Adds `pan`, `turn`, and `zoom` to the pending motion, now about `anchor`, and cancels any
+    /// flight.
     pub(crate) fn owe(&mut self, anchor: [f64; 3], pan: [f64; 2], turn: [f64; 2], zoom: f64) {
         self.flight = None;
         self.anchor = anchor;
@@ -61,7 +63,8 @@ impl Rig {
         self.zoom += zoom;
     }
 
-    /// Owes what a drag released at `velocity` coasts: its velocity over the coasting time.
+    /// Adds the motion a drag released with velocities `pan` and `turn` coasts: each velocity times
+    /// the coasting time constant.
     pub(crate) fn fling(&mut self, anchor: [f64; 3], pan: [f64; 2], turn: [f64; 2]) {
         self.owe(anchor, pan.map(|v| v * COAST), turn.map(|v| v * COAST), 0.0);
     }
@@ -74,12 +77,13 @@ impl Rig {
 }
 
 impl View {
-    /// The zooms gestures and the rig keep the camera within: what the last fit framed allows.
+    /// The zoom range that gestures and pending motion keep the camera within, from the last fit's
+    /// bounds.
     pub(super) fn zoom_limits(&self) -> Option<[f64; 2]> {
         self.rig.bounds.map(|bounds| bounds.zooms())
     }
 
-    /// Moves the camera by a gesture or the rig, kept within reach of what was fitted.
+    /// Moves the camera for a gesture or pending motion, kept within the last fit's bounds.
     pub(super) fn steer(&mut self, camera: Camera) {
         let camera = match &self.rig.bounds {
             Some(bounds) => camera.within(bounds),
@@ -88,8 +92,8 @@ impl View {
         self.move_camera(camera);
     }
 
-    /// Pays out the share of motion owed for the `dt` seconds the clock moved, advances a flight,
-    /// and orbits.
+    /// Applies the share of pending motion due for the `dt` seconds the clock moved, advances a
+    /// flight, and orbits.
     pub(super) fn advance(&mut self, dt: f64) {
         if let Some(flight) = &self.rig.flight {
             let eased = self.clock.eased(flight.start, flight.seconds);
@@ -103,7 +107,7 @@ impl View {
             return;
         }
         if self.rig.owed() {
-            // Without motion of its own, what is owed is paid at once.
+            // When motion is disabled, pending motion applies at once.
             let moves = self.moves();
             let coast = if moves { 1.0 - (-dt / COAST).exp() } else { 1.0 };
             let glide = if moves { 1.0 - (-dt / GLIDE).exp() } else { 1.0 };
@@ -128,14 +132,15 @@ impl View {
         }
     }
 
-    /// Moves the camera by a gesture, a fit, or a motion over frames, telling the application.
+    /// Moves the camera for a gesture, a fit, or an animation, and emits a `Camera` event.
     pub(super) fn move_camera(&mut self, camera: Camera) {
         if self.place_camera(camera) {
             self.events.tell(Event::Camera(camera));
         }
     }
 
-    /// Moves the camera, evaluating again what reads it; whether it moved.
+    /// Moves the camera and dirties the channels that read the camera or the pointer. Returns
+    /// whether it moved.
     pub(super) fn place_camera(&mut self, camera: Camera) -> bool {
         if camera == self.camera {
             return false;

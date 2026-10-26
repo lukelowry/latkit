@@ -1,13 +1,19 @@
-//! Wires: the path each edge row of a diagram runs along, in units with y down. An edge with ends
-//! runs between its two vertices; a net joins every port naming it, from its outputs. A straight wire
-//! runs between outlines, set apart in lanes where edges join the same two vertices, or as a star
-//! through a net's middle; bends run through the points of a path field; an orthogonal wire routes
-//! around every block. A route holds until its terminals move or a box near it changes. Then it
-//! routes again on the frame when few do or rows are being dragged, else in a host job, keeping its
-//! old path while its terminals hold, or an elbow while they moved, until the job answers. After an
-//! edit of a few vertices, only the wires meeting them, those leaving by a side it changed, and those
-//! near what it moved are worked out: the sides, every route's box, and every wire's are kept as
-//! edits change them, so neither finding those wires nor the box around them all walks every wire.
+//! Wires: the path of each edge row of a diagram, in units with y down.
+//!
+//! An edge with endpoints runs between its two vertices; a net joins every port that references
+//! it, from its outputs. A straight wire runs between outlines, spread into lanes where edges join
+//! the same two vertices; a straight net is a star through its middle. A wire with bends runs
+//! through the points of a path field. An orthogonal wire routes around every block.
+//!
+//! A route stays until its terminals move or a box near it changes. It then routes again on the
+//! frame when few wires need it or rows are being dragged, else in a host job. Until the job
+//! answers, the wire keeps its old path if its terminals are unchanged, or draws an elbow if they
+//! moved.
+//!
+//! After an edit of a few vertices, only some wires are recomputed: those meeting the vertices,
+//! those leaving by a side the edit changed, and those near the boxes it moved. The sides, every
+//! route's box, and every wire's box are kept current across edits, so neither finding those wires
+//! nor computing the extent of all wires walks every wire.
 
 use std::hash::{Hash, Hasher};
 
@@ -23,20 +29,21 @@ use crate::layout::rect::{EMPTY, Point, Rect, dot, grow, meets, union};
 use crate::layout::route::{Net, Terminal, finish, route, simplify};
 use crate::{Pending, Route, Shape, Side};
 
-/// Microseconds a wire takes to route, by estimate: what it spends of the frame's budget. A batch
-/// that does not fit routes in a host job.
+/// Estimated microseconds to route one wire, charged to the frame's budget. A batch that does not
+/// fit routes in a host job.
 const ROUTE_COST: u64 = 160;
-/// Wires routed on the frame at most while rows are dragged, whatever the budget; the rest route
-/// once the drag ends.
+/// The most wires routed on the frame per update while rows are dragged, regardless of budget.
+/// The rest stay due and route in later updates; once the drag ends, those left route within the
+/// frame's budget or in a host job.
 const DRAGGED: usize = 256;
-/// How far wires keep from blocks, in tracks: as far as routes keep.
+/// How far wires keep from blocks, in tracks; the same clearance the router keeps.
 const CLEARANCE: f64 = 2.0;
 
-/// A wire's parts.
+/// A wire's parts: its polylines.
 pub(crate) type Parts = Vec<Vec<Point>>;
 
-/// A route: its polylines, y down, before bends round; a stamp of the terminals it joins; and the box
-/// it spans.
+/// A route: its polylines (y down, bends not yet rounded), a stamp of the terminals it joins, and
+/// the box it spans.
 pub(crate) struct Routed {
     lines: Parts,
     terminals: u64,
@@ -49,15 +56,15 @@ impl Routed {
         Routed { lines, terminals, reach }
     }
 
-    /// A wire waiting for its first route, in nothing's way.
+    /// A wire waiting for its first route; its empty box meets nothing.
     fn waiting() -> Routed {
         Routed { lines: Vec::new(), terminals: 0, reach: EMPTY }
     }
 }
 
-/// Every orthogonal wire's route, by edge row, each in a slot of its own; the box each spans, by slot,
-/// indexed, which finds the routes a box that moved is near; and the rows due to route again: near a
-/// box that moved, or due before and not routed since.
+/// Every orthogonal wire's route by edge row, each in its own slot; an index of each route's box by
+/// slot, to find the routes near a box that moved; and the rows due to route again (near a box that
+/// moved, or due before and not routed since).
 #[derive(Default)]
 pub(crate) struct Routes {
     by_row: FxHashMap<Row, (Routed, usize)>,
@@ -74,13 +81,14 @@ impl Routes {
         self.by_row.get(row).map(|(routed, _)| routed)
     }
 
-    /// Row `row` routes along `routed`, due no longer.
+    /// Stores `routed` as row `row`'s route, and clears the row's due mark.
     fn routed(&mut self, row: Row, routed: Routed) {
         self.due.remove(&row);
         self.put(row, routed);
     }
 
-    /// Row `row` routes again: until it does, it keeps its route, or waits for its first.
+    /// Marks row `row` due to route again. Until then it keeps its route, or a waiting placeholder
+    /// if it has none.
     fn due(&mut self, row: &Row) {
         if !self.by_row.contains_key(row) {
             self.put(row.clone(), Routed::waiting());
@@ -88,7 +96,7 @@ impl Routes {
         self.due.insert(row.clone());
     }
 
-    /// Row `row`'s route is `routed`, in its slot, or in a free one.
+    /// Stores `routed` as row `row`'s route, in the row's slot or a free one.
     fn put(&mut self, row: Row, routed: Routed) {
         let reach = routed.reach;
         let slot = if let Some((was, slot)) = self.by_row.get_mut(&row) {
@@ -106,7 +114,7 @@ impl Routes {
         self.reaches.set(slot, reach);
     }
 
-    /// Forgets the routes of the rows `kept` does not hold.
+    /// Drops the routes of rows for which `kept` returns false.
     fn retain(&mut self, kept: impl Fn(&Row) -> bool) {
         let gone: Vec<Row> = self.by_row.keys().filter(|row| !kept(row)).cloned().collect();
         for row in gone {
@@ -130,9 +138,9 @@ impl Routes {
     }
 }
 
-/// What wiring keeps between updates, so an edit works out only the wires it reaches: each edge mark's
-/// rows' parts and the boxes they run within, indexed, the edge and net rows meeting each vertex, each
-/// edge mark's lanes, and the sides orthogonal edges with ends leave their vertices by.
+/// Wiring state kept between updates, so an edit recomputes only the wires it affects: each edge
+/// mark's rows' parts and an index of their boxes, the edge and net rows meeting each vertex, each
+/// edge mark's lanes, and the sides orthogonal edges with endpoints leave their vertices by.
 #[derive(Default)]
 pub(crate) struct Wired {
     pub(crate) parts: Vec<Vec<Parts>>,
@@ -151,16 +159,16 @@ impl Wired {
         self.boxes.extent()
     }
 
-    /// The box edge mark `e`'s row `row` runs within, y down: its parts' points.
+    /// The box around edge mark `e`'s row `row`, y down: the bounds of its parts' points.
     fn bounds(&self, e: usize, row: usize) -> Rect {
         self.parts[e][row].iter().flatten().fold(EMPTY, |b, &p| union(b, dot(p)))
     }
 }
 
-/// Where each orthogonal edge with ends leaves its two vertices, and by vertex and side the ends
-/// leaving there, ordered along it by where their other ends lie, so wires leave a side without
-/// crossing. Kept between edits, so an edit orders again only the sides it changed, and works out
-/// again only the edges leaving by them.
+/// Where each orthogonal edge with endpoints leaves its two vertices, and for each vertex side, the
+/// ends leaving there, ordered by where their other ends lie so wires leave a side without
+/// crossing. Kept between edits, so an edit reorders only the sides it changed and recomputes only
+/// the edges leaving by them.
 #[derive(Default)]
 struct Sides {
     /// How each edge leaves its vertex at either end.
@@ -180,7 +188,7 @@ type Facing = (usize, Side, f64);
 type Leaving = (f64, Edge, usize);
 
 impl Sides {
-    /// The sides each of `edges`, between the vertices it names, leaves them by.
+    /// The sides each of `edges` leaves its two vertices by.
     fn new(edges: impl Iterator<Item = (Edge, Option<[usize; 2]>)>, vertices: &[Vertex]) -> Sides {
         let mut sides = Sides::default();
         for (edge, ends) in edges {
@@ -196,16 +204,15 @@ impl Sides {
         sides
     }
 
-    /// Edge `edge`, between the vertices `ends` names, leaves them by the sides they face each other
-    /// by now: out of the sides it left by, into these. The sides it left and joined go into
-    /// `changed`.
+    /// Moves edge `edge` (between vertices `ends`) from the sides it left by to the sides the
+    /// vertices now face each other by. Adds the sides it left and joined to `changed`.
     fn face(&mut self, edge: Edge, ends: Option<[usize; 2]>, vertices: &[Vertex], changed: &mut Vec<(usize, Side)>) {
         let now = facings(ends, vertices);
         if self.of.get(&edge).copied() == now {
             return;
         }
         for (end, (v, side, along)) in self.of.remove(&edge).into_iter().flatten().enumerate() {
-            let leaving = self.at.get_mut(&(v, side)).expect("an end leaves by its side");
+            let leaving = self.at.get_mut(&(v, side)).expect("a recorded end is listed at its side");
             let it = (along, edge, end);
             leaving.remove(leaving.partition_point(|x| order(x) < order(&it)));
             if leaving.is_empty() {
@@ -239,14 +246,14 @@ impl Sides {
     }
 }
 
-/// Where an end lies along its side, then its edge: within a side, no edge leaves twice, as its ends
-/// stand at two vertices.
+/// The sort key of an end on a side: where its other end lies, then its edge. No edge appears
+/// twice on one side, since its ends are at two different vertices.
 fn order(&(along, (e, row), _): &Leaving) -> u128 {
     crate::order::wide(crate::order::number(along), crate::order::pair(e as u32, row as u32))
 }
 
-/// How an edge between vertices `ends` leaves each: by the sides they face each other by, where the
-/// other end lies along each; `None` unless both stand, apart.
+/// How an edge between vertices `ends` leaves each: by the sides facing each other, with where the
+/// other end lies along each. `None` unless both vertices are placed and distinct.
 fn facings(ends: Option<[usize; 2]>, vertices: &[Vertex]) -> Option<[Facing; 2]> {
     let [a, b] = ends.filter(|[a, b]| a != b)?;
     let (ba, bb) = (vertices[a].bounds?, vertices[b].bounds?);
@@ -258,21 +265,20 @@ fn facings(ends: Option<[usize; 2]>, vertices: &[Vertex]) -> Option<[Facing; 2]>
     Some([(a, side_a, along(side_a, bb)), (b, side_b, along(side_b, ba))])
 }
 
-/// Whether an edge mark routes orthogonal edges with ends, which share the sides they leave by.
+/// Whether an edge mark routes orthogonal edges with endpoints, whose ends share vertex sides.
 fn sided(em: &EdgeMark<'_>) -> bool {
     em.mark.route == Some(Route::Orthogonal) && em.mark.ends.is_some()
 }
 
-/// What changed since wires were last worked out: the boxes that moved, added, or went, and after an
-/// edit of a few rows the vertices it touched; with none, every row is worked out.
+/// What changed since wires were last computed: the boxes moved, added, or removed, and after an
+/// edit, the vertices it touched. With no `touched`, every row is recomputed.
 pub(crate) struct Change<'a> {
     pub(crate) moved: &'a [Rect],
     pub(crate) touched: Option<&'a [usize]>,
 }
 
-/// Routes a host job works out: each row it answers for by its key, with the stamp of its terminals
-/// when asked; the boxes that moved since, which the routes it answers may cross; and how far wires
-/// keep from them.
+/// A pending routing job: each row it answers, by key, with its terminals' stamp when requested;
+/// the boxes that moved since, which its routes may cross; and how far wires keep from them.
 pub(crate) struct Routing {
     pub(crate) pending: Pending<Vec<u8>>,
     rows: FxHashMap<Key, (Row, u64)>,
@@ -280,9 +286,9 @@ pub(crate) struct Routing {
     clearance: f64,
 }
 
-/// What wires are worked out from: the diagram's vertices, vertex marks, and edge marks; the blocks
-/// wires route around, by vertex, and the groups they route among, y up; and in units how far apart
-/// parallel wires run, how round their bends are, and how wide ports are.
+/// The inputs to wiring: the diagram's vertices, vertex marks, and edge marks; the blocks wires
+/// route around (by vertex) and the groups they route among, y up; and, in units, the spacing of
+/// parallel wires, the bend radius, and the port size.
 pub(crate) struct Context<'a> {
     pub(crate) vertices: &'a [Vertex],
     pub(crate) marks: &'a [VertexMark<'a>],
@@ -294,8 +300,9 @@ pub(crate) struct Context<'a> {
     pub(crate) port: f64,
 }
 
-/// Where a wire meets a vertex: the point, y down, the side it leaves by, the vertex, and how far out
-/// the port there reaches, 0 where none is: a wire stops at a port's rim, so its arrowhead shows.
+/// Where a wire meets a vertex: the point (y down), the side it leaves by, the vertex, and how far
+/// the port there reaches from its center (0 for none). A wire stops at a port's rim so its
+/// arrowhead shows.
 #[derive(Clone, Copy)]
 struct End {
     at: Point,
@@ -304,8 +311,8 @@ struct End {
     rim: f64,
 }
 
-/// An orthogonal wire to route: its edge mark and row, the row, its ends with the root first, and how
-/// many of its first ends drive it.
+/// An orthogonal wire to route: its edge mark index and row, the row's key, its ends with the root
+/// first, and how many leading ends are outputs.
 struct Ask {
     mark: usize,
     row: usize,
@@ -314,8 +321,8 @@ struct Ask {
     outputs: usize,
 }
 
-/// Takes a routing job's answer: each route it worked out, as routed from the terminals it was asked
-/// for; one near a box that moved since it was asked routes again.
+/// Takes a routing job's answer, storing each route stamped with the terminals it was requested
+/// for. A route near a box that moved since the request is marked due again.
 pub(crate) fn land(routes: &mut Routes, routing: &Routing, bytes: &[u8]) {
     for (key, values) in answers(bytes, &["route"]) {
         let (Some((row, terminals)), Some(Some(Value::Parts(lines)))) =
@@ -332,8 +339,9 @@ pub(crate) fn land(routes: &mut Routes, routing: &Routing, bytes: &[u8]) {
     }
 }
 
-/// The boxes a change moved, added, or took away among the blocks wires route around: where each was,
-/// and where it is.
+/// The block boxes a change moved, added, or removed: the old and new box of each moved block, each
+/// new block's box, and the old box of each vertex removed or left without a place. Groups that
+/// move are skipped.
 pub(crate) fn moved(before: &FxHashMap<Row, Rect>, vertices: &[Vertex]) -> Vec<Rect> {
     let mut moved = Vec::new();
     let mut now: FxHashSet<&Row> = FxHashSet::default();
@@ -353,9 +361,10 @@ pub(crate) fn moved(before: &FxHashMap<Row, Rect>, vertices: &[Vertex]) -> Vec<R
     moved
 }
 
-/// Each edge mark's rows' paths, y down, into `wired`: worked out at once where straight or bent,
-/// routed where orthogonal: on the frame while the budget lasts, else in a job, `routes` holding what
-/// was routed and the job under way. After an edit, only the rows it reaches; the rows worked out.
+/// Computes each edge mark's rows' paths, y down, into `wired`. Straight and bent wires are
+/// computed at once. Orthogonal ones are routed on the frame while the budget lasts, else in a
+/// job; `routes` holds the routes made and the pending job. After an edit, only the affected rows
+/// are computed. Returns the rows computed, by edge mark.
 pub(crate) fn paths(
     context: &Context<'_>,
     input: &Input<'_>,
@@ -380,7 +389,7 @@ pub(crate) fn paths(
     } else {
         every_row(context, &joins, wired)
     };
-    // Which vertices each row meets is told once, as every row is worked out.
+    // Record which vertices each row meets only when every row is computed.
     let telling = change.touched.is_none();
     let mut asks: Vec<Ask> = Vec::new();
     for (e, em) in edge_marks.iter().enumerate() {
@@ -416,7 +425,7 @@ pub(crate) fn paths(
                     wired.meeting[v].push(meeting);
                 }
             }
-            // A net: its ends at the ports naming it, outputs first.
+            // A net: its ends are the ports that reference it, outputs first.
             let mut ends: Vec<(End, bool)> = terminals
                 .into_iter()
                 .filter_map(|(v, code, output)| {
@@ -444,7 +453,7 @@ pub(crate) fn paths(
         }
     }
     wire(context, input, jobs, &asks, change, (routes, routing), &mut wired.parts);
-    // The box each row worked out runs within, which the extent of every wire is kept from.
+    // Update the box of each computed row; the extent of all wires is kept from these boxes.
     if telling {
         let boxes = (0..edge_marks.len()).flat_map(|e| (0..edge_marks[e].table.len()).map(move |row| (e, row)));
         wired.boxes = Boxes::new(boxes.map(|(e, row)| wired.bounds(e, row)).collect());
@@ -459,9 +468,9 @@ pub(crate) fn paths(
     rows
 }
 
-/// Every row of every edge mark, by edge mark, with `wired` started over for them: no parts yet, each
-/// mark's lanes, where its rows start among them all, and the sides its orthogonal edges with ends
-/// leave by.
+/// Every row of every edge mark, by edge mark, after resetting `wired` for them: no parts yet,
+/// each mark's lanes, where each mark's rows start among all rows, and the sides its orthogonal
+/// edges with endpoints leave by.
 fn every_row(context: &Context<'_>, joins: &[Joins<'_>], wired: &mut Wired) -> Vec<Vec<usize>> {
     let edge_marks = context.edges;
     wired.parts = edge_marks.iter().map(|em| vec![Vec::new(); em.table.len()]).collect();
@@ -487,9 +496,9 @@ fn every_row(context: &Context<'_>, joins: &[Joins<'_>], wired: &mut Wired) -> V
     edge_marks.iter().map(|em| (0..em.table.len()).collect()).collect()
 }
 
-/// The rows an edit of vertices `touched` reaches, by edge mark, in order: those meeting them; the
-/// orthogonal edges with ends leaving by a side whose ends it changed; and the orthogonal wires due to
-/// route again, or asked of the job under way.
+/// The rows an edit of vertices `touched` affects, by edge mark, sorted: rows meeting them;
+/// orthogonal edges with endpoints leaving by a side whose ends changed; and orthogonal wires due
+/// to route again or requested from the pending job.
 fn reached(
     context: &Context<'_>,
     joins: &[Joins<'_>],
@@ -503,8 +512,8 @@ fn reached(
     for &[e, row] in touched.iter().flat_map(|&v| &wired.meeting[v]) {
         rows[e as usize].push(row as usize);
     }
-    // An edge with ends meeting what the edit moved leaves by other sides, or from other places along
-    // them: so do the edges leaving by a side it left or joined.
+    // An edge meeting a vertex the edit touched may now leave by other sides, or from other places
+    // along them; so may the edges leaving by a side it left or joined.
     let mut changed = Vec::new();
     for (e, rows) in rows.iter_mut().enumerate().filter(|(e, _)| sided(&edge_marks[*e])) {
         rows.sort_unstable();
@@ -530,14 +539,14 @@ fn reached(
     rows
 }
 
-/// The edge mark and row drawing edge row `row`.
+/// The edge mark index and row index of edge row `row`.
 fn drawing(context: &Context<'_>, row: &Row) -> Option<(usize, usize)> {
     let e = context.edges.iter().position(|em| *em.data.name() == row.data && *em.table.name() == row.table)?;
     Some((e, context.edges[e].table.row(row.id.as_ref())?))
 }
 
-/// Routes the orthogonal wires that are due, and writes the parts of every orthogonal wire `asks`
-/// holds: its route, bends rounded; an elbow while its terminals moved and a job routes it.
+/// Routes the orthogonal wires that are due, and writes the parts of every wire in `asks`: its
+/// route with bends rounded, or an elbow while its terminals moved and a job routes it.
 fn wire(
     context: &Context<'_>,
     input: &Input<'_>,
@@ -550,7 +559,7 @@ fn wire(
     if let Some(routing) = routing.as_mut() {
         routing.moved.extend_from_slice(change.moved);
     }
-    // Routes of rows no longer drawn are forgotten, once every row is worked out.
+    // When every row is computed, drop the routes of rows no longer drawn.
     if change.touched.is_none() {
         let drawn: FxHashSet<&Row> = asks.iter().map(|ask| &ask.key).collect();
         routes.retain(|row| drawn.contains(row));
@@ -570,7 +579,7 @@ fn wire(
         .collect();
     let asked = |k: &usize| routing.as_ref().is_some_and(|r| r.rows.contains_key(&key_of(&asks[*k].key)));
     if routing.is_some() && !input.dragging {
-        // Wires a job under way routes wait for it.
+        // Wires the pending job is routing wait for it.
         due.retain(|k| !asked(k));
     }
     if !due.is_empty() {
@@ -610,7 +619,8 @@ fn wire(
             let rows = keys.into_iter().zip(&due).map(|(key, &k)| (key, (asks[k].key.clone(), stamps[k]))).collect();
             *routing = Some(Routing { pending, rows, moved: Vec::new(), clearance });
         }
-        // Wires still due route later; until then they keep their routes while their terminals hold.
+        // Wires still due route later; until then they keep their routes if their terminals are
+        // unchanged.
         for &k in &due {
             routes.due(&asks[k].key);
         }
@@ -622,7 +632,7 @@ fn wire(
             _ => rest.iter().map(|end| elbow(root, end, clearance)).collect(),
         };
         let mut parts = finish(&lines, context.bend);
-        // A part reaching another output ends there without an arrowhead.
+        // A part reaching another output repeats its end there, so it draws without an arrowhead.
         let outputs = &rest[..(ask.outputs - 1).min(rest.len())];
         for part in &mut parts {
             if let Some(&end) = part.last()
@@ -636,8 +646,8 @@ fn wire(
     }
 }
 
-/// Where a port of code `code` sits on box `b`, y down: on its side, spread by its place among the
-/// ports there, as the port draws.
+/// Where a port with code `code` sits on box `b`, y down: on its side, spaced by its place among
+/// that side's ports, matching how the port draws.
 fn port_point(b: Rect, code: u32) -> Point {
     let (place, count) = (f64::from((code >> 2) & 255), f64::from((code >> 10) & 255));
     let along = (place + 1.0) / (count + 1.0) * 2.0 - 1.0;
@@ -650,14 +660,14 @@ fn port_point(b: Rect, code: u32) -> Point {
     }
 }
 
-/// How far a port `size` across on box `b` reaches from its middle: at most half the box's smaller
-/// side.
+/// How far a port `size` across reaches from its center on box `b`: half its size, capped at a
+/// quarter of the box's smaller side, so the port is at most half that side wide.
 fn port_reach(b: Rect, size: f64) -> f64 {
     (size / 2.0).min((b[2] - b[0]).min(b[3] - b[1]) / 4.0)
 }
 
-/// The ends of orthogonal edge `edge`, as `sides` gives them: on the sides of its vertices facing each
-/// other, spread along each by where the other ends lie.
+/// The ends of orthogonal edge `edge`, from `sides`: on the facing sides of its vertices, spread
+/// along each in order of where the other ends lie.
 fn faced(sides: &Sides, edge: Edge, vertices: &[Vertex]) -> Vec<End> {
     (0..2)
         .filter_map(|end| {
@@ -693,7 +703,7 @@ fn stamp(ends: &[End], vertices: &[Vertex]) -> u64 {
     hasher.finish().max(1)
 }
 
-/// The net routing `ask`, y up: each end owned by its vertex's block, which a group has none of.
+/// The net for routing `ask`, y up: each end is owned by its vertex's block (none for a group).
 fn net(ask: &Ask, vertices: &[Vertex]) -> Net {
     let terminal = |end: &End| Terminal {
         at: [end.at[0], -end.at[1]],
@@ -703,8 +713,8 @@ fn net(ask: &Ask, vertices: &[Vertex]) -> Net {
     Net { terminals: ask.ends.iter().map(terminal).collect() }
 }
 
-/// The routes of the wires near those about to route, which keep their tracks, y up: within `reach`
-/// of the ends of the wires `routed`, in the order the edge marks draw them.
+/// The routes, y up, of wires within `reach` of the ends of the wires `routed`, which keep their
+/// tracks while those route; ordered by edge mark, then row.
 fn fixed(context: &Context<'_>, asks: &[Ask], routed: &[usize], routes: &Routes, reach: f64) -> Parts {
     let region = routed.iter().flat_map(|&k| &asks[k].ends).fold(EMPTY, |region, end| union(region, dot(end.at)));
     let routing: FxHashSet<&Row> = routed.iter().map(|&k| &asks[k].key).collect();
@@ -718,7 +728,8 @@ fn fixed(context: &Context<'_>, asks: &[Ask], routed: &[usize], routes: &Routes,
     near.into_iter().flat_map(|(_, r)| flipped(&r.lines)).collect()
 }
 
-/// An orthogonal path from `a` to `b` that leaves and enters along their sides, `stub` out from each.
+/// An orthogonal path from `a` to `b` that leaves and enters along their sides, with a stub of
+/// length `stub` at each end.
 fn elbow(a: &End, b: &End, stub: f64) -> Vec<Point> {
     let out = |end: &End| {
         let n = normal(end.side);
@@ -743,7 +754,7 @@ fn elbow(a: &End, b: &End, stub: f64) -> Vec<Point> {
     simplify(&path)
 }
 
-/// The way out of a side, y down.
+/// The outward direction of a side, y down; zero for no side.
 fn normal(side: Option<Side>) -> Point {
     match side {
         Some(Side::Left) => [-1.0, 0.0],
@@ -754,8 +765,8 @@ fn normal(side: Option<Side>) -> Point {
     }
 }
 
-/// A straight wire from `a` to `b` through the points `through`, from outline to outline; without
-/// bends, shifted `shift` across into its lane.
+/// A straight wire from `a` to `b` through the points `through`, from outline to outline. Without
+/// bend points, it is shifted `shift` sideways into its lane.
 fn straight(a: &Vertex, b: &Vertex, through: &[Point], shift: f64) -> Option<Vec<Point>> {
     let (ca, cb) = (a.center()?, b.center()?);
     if let (Some(&first), Some(&last)) = (through.first(), through.last()) {
@@ -772,7 +783,7 @@ fn straight(a: &Vertex, b: &Vertex, through: &[Point], shift: f64) -> Option<Vec
     Some(vec![add(pa, d, outline(a, d).min(room)), add(pb, d, -outline(b, d).min(room))])
 }
 
-/// How far `v`'s outline lies from its middle along the unit direction `d`.
+/// The distance from `v`'s center to its outline along unit direction `d`.
 fn outline(v: &Vertex, d: Point) -> f64 {
     let Some(b) = v.bounds else { return 0.0 };
     let (w, h) = ((b[2] - b[0]) / 2.0, (b[3] - b[1]) / 2.0);
@@ -786,9 +797,9 @@ fn outline(v: &Vertex, d: Point) -> f64 {
     }
 }
 
-/// A straight net: two ends joined, or more joined through their middle, outputs into it and from
-/// it out to inputs. Parts into the middle end doubled there, a junction without an arrowhead; parts
-/// stop at the rims of the ports they join.
+/// A straight net: two ends joined directly, or more joined through their centroid, with parts
+/// from outputs into it and from it out to inputs. A part into the centroid repeats its end there,
+/// a junction without an arrowhead. Parts stop at the rims of the ports they join.
 fn star(ends: &[End], outputs: usize) -> Parts {
     if let [a, b] = ends {
         let mut part = vec![rim_point(a, b.at), rim_point(b, a.at)];
@@ -805,9 +816,9 @@ fn star(ends: &[End], outputs: usize) -> Parts {
     ends.iter().enumerate().map(part).collect()
 }
 
-/// Moves a routed part's ends at ports back to the ports' rims, as a straight net's stop: its first
-/// point toward the next, and its last, doubled where it reaches an output, toward the one before.
-/// The router joins the ports themselves, on their boxes' sides.
+/// Moves a routed part's ends at ports back to the ports' rims, as straight nets stop: its first
+/// point toward the next, and its last point (with any repeats at an output) toward the one
+/// before. The router itself joins the port centers on the boxes' sides.
 fn stop_at_rims(part: &mut [Point], ends: &[End]) {
     let port = |p: Point| ends.iter().find(|end| end.rim > 0.0 && end.at == p);
     let last = part.len().saturating_sub(1);
@@ -825,12 +836,12 @@ fn stop_at_rims(part: &mut [Point], ends: &[End]) {
     }
 }
 
-/// `end`'s point on the way to `toward`: its port's rim, at most halfway there.
+/// `end`'s point toward `toward`: on its port's rim, at most halfway there.
 fn rim_point(end: &End, toward: Point) -> Point {
     unit(end.at, toward).map_or(end.at, |(d, length)| add(end.at, d, end.rim.min(length / 2.0)))
 }
 
-/// The points of row `row`'s path field `field`, y down.
+/// The finite points of row `row`'s path field `field`, y down.
 fn bends(table: &Table, field: &str, row: usize) -> Vec<Point> {
     match table.value(row, field, f64::INFINITY) {
         Some(Value::Path(points)) => points.into_iter().filter(|p| p.iter().all(|v| v.is_finite())).collect(),
@@ -838,7 +849,7 @@ fn bends(table: &Table, field: &str, row: usize) -> Vec<Point> {
     }
 }
 
-// Lines with y up as y down, or back.
+/// Lines flipped between y up and y down.
 fn flipped(lines: &[Vec<Point>]) -> Parts {
     lines.iter().map(|line| line.iter().map(|p| [p[0], -p[1]]).collect()).collect()
 }
@@ -847,7 +858,7 @@ fn center(b: Rect) -> Point {
     [b[0].midpoint(b[2]), b[1].midpoint(b[3])]
 }
 
-/// The unit direction from `a` to `b`, and the distance; `None` where they meet.
+/// The unit direction from `a` to `b`, and the distance; `None` where they coincide.
 fn unit(a: Point, b: Point) -> Option<(Point, f64)> {
     let d = [b[0] - a[0], b[1] - a[1]];
     let length = d[0].hypot(d[1]);
@@ -884,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn ports_sit_where_they_draw() {
+    fn port_points_are_where_ports_draw() {
         let b = [0.0, 0.0, 40.0, 20.0];
         // The second of three on the left: halfway down, y down.
         assert_eq!(port_point(b, Side::Left.code() | 1 << 2 | 3 << 10), [0.0, 10.0]);
@@ -896,8 +907,8 @@ mod tests {
     fn stars_join_outputs_to_inputs_through_their_middle() {
         let ends = [end([0.0, 0.0], Side::Right), end([30.0, 0.0], Side::Left), end([30.0, 30.0], Side::Left)];
         let parts = star(&ends, 1);
-        assert_eq!(parts[0], vec![[0.0, 0.0], [20.0, 10.0], [20.0, 10.0]], "into the middle, a junction");
-        assert_eq!(parts[2], vec![[20.0, 10.0], [30.0, 30.0]], "out to an input, an arrowhead");
+        assert_eq!(parts[0], vec![[0.0, 0.0], [20.0, 10.0], [20.0, 10.0]], "into the middle, ending in a junction");
+        assert_eq!(parts[2], vec![[20.0, 10.0], [30.0, 30.0]], "out to an input, ending in an arrowhead");
     }
 
     #[test]
@@ -918,7 +929,7 @@ mod tests {
         let mut part = vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [40.0, 20.0]];
         stop_at_rims(&mut part, &ends);
         assert_eq!(part, [[4.0, 0.0], [20.0, 0.0], [20.0, 20.0], [36.0, 20.0]], "routed between the ports");
-        // A branch from a junction into an output, doubled there: the junction stays.
+        // A branch from a junction into an output, its end repeated there: the junction stays.
         let mut part = vec![[20.0, 0.0], [20.0, 20.0], [40.0, 20.0], [40.0, 20.0]];
         stop_at_rims(&mut part, &ends);
         assert_eq!(part, [[20.0, 0.0], [20.0, 20.0], [36.0, 20.0], [36.0, 20.0]]);

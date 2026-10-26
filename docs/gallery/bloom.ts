@@ -1,4 +1,4 @@
-/** Golden bloom: seeds a golden angle apart, colored by a wave turning through them. */
+/** Golden bloom: seeds placed a golden angle apart, colored by an eight-armed spiral wave. */
 import { Patch } from 'latkit';
 import { THEME, floats, framed, type Piece } from './look.ts';
 
@@ -7,7 +7,7 @@ export default function bloom(): Piece {
   const golden = Math.PI * (3 - Math.sqrt(5));
   const r = (i: number) => 2.2 * Math.sqrt(i);
   const angle = (i: number) => i * golden;
-  // Where a seed lies around the center, unwound from its golden angle.
+  // The seed's polar angle around the center, in [0, 2π).
   const polar = (i: number) => angle(i) % (2 * Math.PI);
   const data = new Patch('bloom').replace(
     'Seed',
@@ -15,7 +15,7 @@ export default function bloom(): Piece {
     {
       x: floats(seeds, (i) => r(i) * Math.cos(angle(i))),
       y: floats(seeds, (i) => r(i) * Math.sin(angle(i))),
-      // Eight arms winding outward through the seeds, dark between them.
+      // Eight spiral arms winding outward, with dark gaps between them.
       wave: floats(seeds, (i) => (0.5 + 0.5 * Math.sin(r(i) * 0.05 - 8 * polar(i))) ** 1.6),
       size: floats(seeds, (i) => 0.5 + 0.85 * Math.sqrt(i / seeds)),
     },

@@ -4,19 +4,21 @@ import type { Stage } from './stage.js';
 export interface PlaybackOptions {
   /** Shows coordinate `at` in every view. */
   show(at: number): void;
-  /** Whether the data records as it plays: live follows its end. Otherwise playing loops. */
+  /** Whether the data is recorded while it plays (default true). Live playback follows the end of
+   * the data. Otherwise playing loops. */
   live?: boolean;
-  /** Seconds of data a second of playing shows. */
+  /** Seconds of data shown per second of playback (default 1). */
   rate?: number;
-  /** Instant replay: how many seconds back from the end, and at what rate. */
+  /** Instant replay: how many seconds back from the end to start, and the playback rate. */
   replay?: { seconds: number; rate: number };
-  /** Called as playback goes live or leaves it. */
+  /** Called when playback goes live or stops being live. */
   change?(live: boolean): void;
-  /** Coordinate `at` as the transport writes it; seconds unless given. */
+  /** Formats coordinate `at` for the transport. Defaults to seconds. */
   format?(at: number): string;
 }
 
-/** Live, paused, or playing a recorded span, with the transport that drives it. */
+/** Playback state (live, paused, or playing a recorded span) and the transport controls that drive
+ * it. */
 export class Playback {
   mode: 'live' | 'playing' | 'paused';
   start = 0;
@@ -80,32 +82,33 @@ export class Playback {
     return this.#at;
   }
 
-  /** Hides the transport, as while there is nothing to play. */
+  /** Hides the transport, for example while there is nothing to play. */
   set hidden(hidden: boolean) {
     this.#transport.hidden = hidden;
     this.#slider.hidden = hidden;
   }
 
-  /** Seconds of data a second of playing shows, from now on. */
+  /** Sets the seconds of data shown per second of playback, from now on. */
   set rate(rate: number) {
     this.options.rate = rate;
     if (this.mode === 'playing') this.#rate = rate;
   }
 
-  /** Whether the data records as it plays, from now on: live follows its end; otherwise it pauses,
-   * and playing loops. */
+  /** Sets whether the data is recorded while it plays. Going live follows the end of the data.
+   * Otherwise playback pauses, and playing then loops. */
   set live(live: boolean) {
     this.#live = live;
     this.#set(live ? 'live' : 'paused');
   }
 
-  /** Shows coordinate `at`, paused. */
+  /** Pauses and shows coordinate `at`. */
   seek(at: number): void {
     this.#set('paused');
     this.#show(at);
   }
 
-  /** The recorded span changed; live playback shows its end. */
+  /** Updates the recorded span. Live playback jumps to its end, and a position before its start
+   * moves to the start. */
   record([start, end]: readonly [number, number]): void {
     this.start = start;
     this.end = end;
@@ -115,7 +118,7 @@ export class Playback {
     else if (this.#at < start) this.#show(start);
   }
 
-  /** Goes live, or for recorded data plays on from where it is. */
+  /** Goes live, or, for recorded data, plays on from the current position. */
   play(): void {
     this.#rate = this.options.rate ?? 1;
     this.#set(this.#live ? 'live' : 'playing');
@@ -126,7 +129,7 @@ export class Playback {
     this.#set('paused');
   }
 
-  /** Plays the last seconds again, slowly, then goes live. */
+  /** Plays the last `replay.seconds` again at `replay.rate`, then goes live if the data is live. */
   replay(): void {
     const replay = this.options.replay;
     if (!replay) return;

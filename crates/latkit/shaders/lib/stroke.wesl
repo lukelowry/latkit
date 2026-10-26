@@ -7,15 +7,15 @@ import package::lib::types::{FLOW_PX, FLOW_UNITS};
 struct Stroke {
     a: vec2f,
     b: vec2f,
-    // Distance along the whole line at `a` and at `b`, CSS pixels: dashes and comets run on across
-    // segments.
+    // Distance along the whole line at `a` and at `b`, in CSS pixels, so dashes and comets continue
+    // across segments.
     phase: vec2f,
-    // The same in length units, as far along as the line's own points: comets drawn in position
-    // units run along it.
+    // The same distances in position units, measured along the line's own points. Comets spaced in
+    // position units use them.
     along: vec2f,
     width: f32,
     color: vec4f,
-    // Comet speed, negative backward, 0 for none; and how far the row's comets traveled.
+    // Comet speed (negative runs backward, 0 for none), and how far the row's comets have traveled.
     flow: f32,
     travel: f32,
     dash: bool,
@@ -23,7 +23,7 @@ struct Stroke {
     arrow: bool,
 }
 
-// The arrowhead at `b` pointing along `dir`: a triangle `frame.arrow` long, as a signed distance.
+// Signed distance to the arrowhead at `b`, a triangle `frame.arrow + width` long along `dir`.
 fn head_distance(p: vec2f, b: vec2f, dir: vec2f, width: f32) -> f32 {
     let length = frame.arrow + width;
     let q = p - b;
@@ -36,8 +36,8 @@ fn head_distance(p: vec2f, b: vec2f, dir: vec2f, width: f32) -> f32 {
     return max(max(flank, along), -along - length);
 }
 
-// (distance outside the stroke's edge, distance along the line, fraction of the way from `a` to `b`)
-// for pixel `p`.
+// For pixel `p`: (distance outside the stroke's edge, distance along the line, fraction of the way
+// from `a` to `b`).
 fn stroke_distance(p: vec2f, s: Stroke) -> vec3f {
     let ab = s.b - s.a;
     let len = length(ab);
@@ -54,7 +54,7 @@ fn stroke_distance(p: vec2f, s: Stroke) -> vec3f {
     return vec3f(d, mix(s.phase.x, s.phase.y, along), along);
 }
 
-// How much of the pixel at `d`, from `stroke_distance`, the line of stroke `s` covers, dashed.
+// Coverage of the pixel at `d` (from `stroke_distance`) by stroke `s`'s line, with its dashes.
 fn covered(d: vec3f, s: Stroke) -> f32 {
     var alpha = coverage(d.x);
     if s.dash {
@@ -63,16 +63,15 @@ fn covered(d: vec3f, s: Stroke) -> f32 {
     return alpha;
 }
 
-// How much of the pixel at `d` a comet covers: comets `frame.flow_spacing` apart, moved on by stroke
-// `s`'s travel, each a round head `frame.flow_width` wide, never narrower than the stroke, brightest
-// at its middle, trailing a tail `frame.flow_length` long that thins and fades.
+// Coverage of the pixel at `d` by comets. Comets are `frame.flow_spacing` apart, offset by stroke
+// `s`'s travel. Each has a round head `frame.flow_width` wide (at least the stroke's width),
+// brightest at its middle, and a tail `frame.flow_length` long that thins and fades.
 fn comet(d: vec3f, s: Stroke) -> f32 {
     if s.flow == 0.0 || frame.flow.a <= 0.0 {
         return 0.0;
     }
-    // Where the pixel lies along the line in the comets' lengths, and CSS pixels per length: position
-    // units where comets are part of the drawing, CSS pixels where they keep to the screen, else the
-    // space's lengths.
+    // The pixel's distance along the line in the comet unit, and CSS pixels per comet unit:
+    // position units (`FLOW_UNITS`), CSS pixels (`FLOW_PX`), or else the space's length unit.
     var along = d.y / frame.unit;
     var px = frame.unit;
     if frame.flow_unit == FLOW_UNITS {
@@ -83,7 +82,8 @@ fn comet(d: vec3f, s: Stroke) -> f32 {
         px = 1.0;
     }
     let spacing = max(frame.flow_spacing, 1e-6);
-    // How far the pixel leads the head behind it, the way comets run, and trails the head ahead.
+    // How far the pixel is ahead of the comet head behind it, in the direction comets run, and how
+    // far it is behind the head in front of it.
     let lead = fract(sign(s.flow) * (along - s.travel) / spacing) * spacing;
     let trail = spacing - lead;
     let across = d.x + 0.5 * s.width;
@@ -94,7 +94,7 @@ fn comet(d: vec3f, s: Stroke) -> f32 {
     return fade * fade * (1.0 - smoothstep(0.35 * reach, reach, distance));
 }
 
-// Stroke `s` at pixel `p`, comets over its line; a comet fades with its row.
+// Stroke `s`'s color at pixel `p`, with comets over its line. Comets fade with the row's opacity.
 fn stroke(p: vec2f, s: Stroke) -> vec4f {
     let d = stroke_distance(p, s);
     let line = s.color.a * covered(d, s);

@@ -1,8 +1,11 @@
 /**
- * What the map beneath the grid draws: Natural Earth's coasts and borders as lines, shipped with the
- * page; Natural Earth's states and provinces as areas the grid's figures color, from Natural Earth's
- * repository; or OpenStreetMap's planet as OpenFreeMap's vector tiles. GeoJSON downloads as bytes
- * and is read in a worker; tiles are fetched as the camera asks for them.
+ * The maps drawn beneath the grid:
+ * - Natural Earth's coasts and borders as lines, shipped with the page;
+ * - Natural Earth's states and provinces as areas colored by the grid's statistics, downloaded from
+ *   Natural Earth's repository;
+ * - OpenStreetMap's planet as OpenFreeMap's vector tiles.
+ *
+ * GeoJSON downloads as bytes and is read in a worker. Tiles are fetched as the camera needs them.
  */
 import { Data, Tiles, field, type ColormapName, type Mark, type Source } from 'latkit';
 import { download, megabytes } from './cases.js';
@@ -22,19 +25,20 @@ export const LOOK = {
   place: '#c3ccd8',
 } as const;
 
-/** How the map draws: whether its areas are labeled, and what its states color by. */
+/** Map style options: whether areas are labeled, and which field colors the states. */
 export interface Styling {
   readonly labels: boolean;
   readonly states?: { readonly by: string; readonly peak: number; readonly colormap: ColormapName };
 }
 
-/** A map, loaded: its marks, drawn under the grid, what they draw, and its states when it has them. */
+/** A loaded map: a summary for the status line, its marks (drawn under the grid), its sources, and
+ * its states dataset if it has one. */
 export interface Loaded {
   readonly summary: string;
   marks(styling: Styling): Mark[];
   /** The datasets its marks draw. */
   readonly sources: readonly Source[];
-  /** The dataset of states the grid's figures color, its rows in table `polygons`. */
+  /** The states dataset, colored by the grid's statistics. Its rows are in table `polygons`. */
   readonly states?: Data;
 }
 
@@ -42,7 +46,7 @@ export interface MapChoice {
   readonly id: string;
   readonly label: string;
   readonly attribution: string;
-  /** Loads the map, telling `progress` how it goes. */
+  /** Loads the map, reporting status text to `progress`. */
   load(signal: AbortSignal, progress: (status: string) => void): Promise<Loaded>;
 }
 
@@ -50,7 +54,7 @@ const NE = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/maste
 const NATURAL_EARTH = 'Natural Earth · public domain';
 const seconds = (since: number) => `${((performance.now() - since) / 1000).toFixed(1)} s`;
 
-/** Natural Earth's coasts, land borders, and province borders at 1:50M: datasets of lines. */
+/** Natural Earth's coastlines, country borders, and province borders at 1:50M, drawn as lines. */
 const borders: MapChoice = {
   id: 'borders',
   label: 'Coasts and borders',
@@ -81,7 +85,7 @@ const borders: MapChoice = {
   },
 };
 
-/** Natural Earth's states and provinces at `scale`: areas the grid's figures color. */
+/** Natural Earth's states and provinces at `scale`, as areas colored by the grid's statistics. */
 function states(scale: '50m' | '10m', label: string): MapChoice {
   return {
     id: `states-${scale}`,
@@ -102,7 +106,7 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
         summary: `${(received / 1e6).toFixed(1)} MB in ${seconds(started)}, read in ${seconds(fetched)}`,
         marks: ({ labels, states }) => [
           {
-            // Each state holds the grid's figures: hovering one inspects them.
+            // Each state carries the grid's statistics, which hovering it shows in the inspector.
             areas: {
               of: ['states', 'polygons'],
               color: states
@@ -127,16 +131,17 @@ const planet: MapChoice = {
   load() {
     return Promise.resolve({
       sources: [new Tiles('base', 'https://tiles.openfreemap.org/planet')],
-      summary: 'tiles fetch as the camera asks for them',
+      summary: 'tiles fetched as the camera needs them',
       marks: ({ labels }) => [
         { areas: { of: ['base', 'landcover'], color: LOOK.landcover } },
         { areas: { of: ['base', 'park'], color: LOOK.park } },
         { areas: { of: ['base', 'water'], color: LOOK.water } },
-        // Rivers carry comets downstream, as their ways run.
+        // Comets run along rivers in the direction of their OpenStreetMap ways: downstream.
         { lines: { of: ['base', 'waterway'], color: LOOK.waterway, width: 0.8, flow: 10 } },
         { lines: { of: ['base', 'transportation'], color: LOOK.road, width: 0.7 } },
         { lines: { of: ['base', 'boundary'], color: LOOK.line, width: 1, dash: true } },
-        // Places by rank, 1 the most important; a tile holds only the points inside it, so none repeat.
+        // Place labels by rank, where 1 is the most important. A tile holds only the points inside
+        // it, so no label repeats.
         ...(labels
           ? [
               {

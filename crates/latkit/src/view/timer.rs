@@ -1,15 +1,16 @@
-//! The GPU's time on frames, where the device writes timestamps: an empty pass begins a frame and
-//! another ends it, and what lies between is the frame's. Each measure is resolved and read back
-//! without stalling, a few at a time, and the time told is the median of the last frames measured, so
-//! it holds steady while a frame now and then does more.
+//! GPU time per frame, on devices that support timestamp queries. An empty pass writes a timestamp
+//! at the start of a frame and another at its end. Each measurement is resolved and read back
+//! without stalling, a few at a time. The reported time is the median of the last frames measured,
+//! so it stays steady when an occasional frame does more work.
 
 use crate::gpu::readback::{Readback, Readbacks};
 
-/// Measures under way at most, and frames the time told is the median of.
+/// The most measurements in flight.
 const SLOTS: usize = 4;
+/// Frames the reported median covers.
 const KEPT: usize = 15;
 
-/// A query set measuring one frame, and its readback while under way.
+/// A query set measuring one frame, and its readback while in flight.
 struct Slot {
     set: wgpu::QuerySet,
     resolved: wgpu::Buffer,
@@ -24,12 +25,12 @@ pub(crate) struct Timer {
     period: f64,
     /// Milliseconds of the last frames measured, oldest first.
     measured: Vec<f32>,
-    /// Its own map buffers, whose readbacks count as no work: only some devices have a timer.
+    /// Its own readback buffers, left out of the work counts, since only some devices have a timer.
     pool: Readbacks,
 }
 
 impl Timer {
-    /// A timer, where the device writes timestamps.
+    /// A timer, or `None` where the device lacks timestamp queries.
     pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Timer> {
         if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             return None;
@@ -57,7 +58,7 @@ impl Timer {
         })
     }
 
-    /// Begins measuring the frame `encoder` records, while a slot is free.
+    /// Starts measuring the frame `encoder` records, if a slot is free.
     pub(crate) fn begin(&mut self, encoder: &mut wgpu::CommandEncoder) {
         self.current = self.slots.iter().position(|s| s.pending.is_none());
         if let Some(i) = self.current {
@@ -65,7 +66,7 @@ impl Timer {
         }
     }
 
-    /// Ends the measure this frame began, reading it back once submitted.
+    /// Ends this frame's measurement and records its readback, which completes after submission.
     pub(crate) fn end(&mut self, encoder: &mut wgpu::CommandEncoder, device: &wgpu::Device) {
         let Some(i) = self.current.take() else { return };
         let slot = &mut self.slots[i];
@@ -75,7 +76,8 @@ impl Timer {
         slot.pending = Some(Readback::new(&self.pool, device, encoder, &slot.resolved, 0, 16, waker));
     }
 
-    /// The median milliseconds of the last frames measured, once a measure landed since last asked.
+    /// The median milliseconds of the last frames measured, if a measurement arrived since the last
+    /// call.
     pub(crate) fn landed(&mut self) -> Option<f32> {
         let mut landed = false;
         for slot in &mut self.slots {
@@ -103,7 +105,7 @@ fn elapsed_ms(bytes: &[u8], period: f64) -> Option<f32> {
     Some((ticks as f64 * period / 1e6) as f32)
 }
 
-/// An empty pass writing timestamp `beginning` as it begins or `end` as it ends.
+/// Records an empty pass that writes timestamp `beginning` at its start, or `end` at its end.
 fn mark(set: &wgpu::QuerySet, encoder: &mut wgpu::CommandEncoder, beginning: Option<u32>, end: Option<u32>) {
     encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some("latkit timer"),

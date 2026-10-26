@@ -1,28 +1,30 @@
-/** The grid: ACTIVSg70k's buses and branches over the states they stand in, drawn by voltage. */
+/** The grid: ACTIVSg70k's buses and branches over the US states, colored and sized by voltage. */
 import { fileURLToPath } from 'node:url';
 import type { CustomColormap, Mark, Size } from 'latkit';
 import { THEME, type Piece } from './look.ts';
 import { readCase } from './grids.ts';
 
-/** The states of the United States, which the CLI reads as GeoJSON. */
+/** Path of the US states as GeoJSON, which the CLI reads directly. */
 export const STATES = fileURLToPath(
   new URL('../../crates/latkit-cli/examples/branch-opening/states.geojson', import.meta.url),
 );
 
-/** Colors of the voltage levels, from below 100 kV to 765 kV: the higher, the hotter. */
+/** Colormap of the voltage levels, from below 100 kV to 765 kV. Higher levels are hotter colors. */
 export const LEVELS: CustomColormap = {
   kind: 'sequential',
   colors: ['#1c2e44', '#22507a', '#2d80b3', '#58bde6', '#ffcf73', '#fff4dc'],
 };
 
-/** Widths by voltage level, growing with its square: the backbone stands out of the rest. */
+/** Line width by voltage level, growing with the level's square so the high-voltage backbone
+ * stands out. */
 export const WIDTHS: Size = {
   scale: [0.3, 2.3],
   value: { op: 'mul', args: ['level', 'level'] },
   domain: [0, 25],
 };
 
-/** The states drawn beneath a grid: filled a shade above the ground, outlined faintly. */
+/** Marks that draw the states beneath a grid: filled slightly lighter than the ground, with faint
+ * outlines. */
 export function states(outline = '#26364a'): Mark[] {
   return [
     { areas: { of: ['states', 'polygons'], color: '#0f1720', pick: false } },
@@ -36,7 +38,7 @@ export default function grid(): Piece {
     name: 'grid',
     alt: 'Seventy thousand buses of a synthetic grid on the United States, its lines colored and widened by voltage',
     data: [c.patch, { name: 'states', file: STATES }],
-    // Over the grid from the south, tilted, so the backbone recedes toward the Great Lakes.
+    // A tilted view from the south, so the backbone recedes toward the Great Lakes.
     camera: { center: [-84.2, 37.2], zoom: 4.38, pitch: 42, bearing: -8 },
     scene: {
       space: { earth: { graticule: false } },

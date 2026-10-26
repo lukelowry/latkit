@@ -1,5 +1,5 @@
-//! Native text, a small, lazily started worker pool, local files, and the platform's H.264 encoder.
-//! No window or async runtime is needed.
+//! The native host: text, a small worker pool started on first use, local file reads, and the
+//! platform's H.264 encoder. It needs no window or async runtime.
 
 #[cfg(windows)]
 #[allow(unsafe_code, reason = "Media Foundation is COM: the FFI stays in this module, behind Encoder")]
@@ -16,12 +16,13 @@ use super::{Host, Job, Raster, Request, TextRun};
 use crate::Encoding;
 use crate::{Error, Pending, Resolver, Result};
 
-/// Native platform services: shaped text, background jobs, local files, and video. A handle: clones
-/// share its fonts and workers. System fonts are discovered only on the first text request;
-/// [`from_fonts`](Self::from_fonts) uses only the supplied font bytes. A pool of at most four
-/// workers starts on the first job or fetch; a fetch reads a file path, or a `file://` URL, on it.
-/// Video encodes with Media Foundation on Windows, hardware where the machine has it; elsewhere this
-/// host encodes none.
+/// Native platform services: shaped text, background jobs, local files, and video.
+///
+/// `Native` is a handle; clones share its fonts and workers. System fonts are discovered on the
+/// first text request, while [`from_fonts`](Self::from_fonts) uses only the supplied font bytes. A
+/// pool of at most four workers starts on the first job or fetch. A fetch reads a file path or a
+/// `file://` URL on a worker. Video is encoded with Media Foundation on Windows, in hardware where
+/// the machine has it. Other platforms encode no video.
 #[derive(Clone, Default)]
 pub struct Native(Arc<Services>);
 
@@ -32,13 +33,15 @@ struct Services {
 }
 
 impl Native {
-    /// A host that discovers system fonts lazily. Constructing it does no I/O and starts no threads.
+    /// A host that discovers system fonts on first use. Constructing it does no I/O and starts no
+    /// threads.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A host using only these TTF/OTF/TTC bytes, in order; the first family is the generic fallback.
-    /// No system fonts are discovered. Each item must contain at least one usable face.
+    /// A host using only these TTF/OTF/TTC font bytes, in order. The first family is the fallback
+    /// for the generic families. No system fonts are discovered. Errors if no fonts are given or an
+    /// item has no usable face.
     pub fn from_fonts(fonts: impl IntoIterator<Item = Vec<u8>>) -> Result<Self> {
         let mut db = fontdb::Database::new();
         for (i, font) in fonts.into_iter().enumerate() {
@@ -71,7 +74,7 @@ impl Native {
         f(text)
     }
 
-    /// Does `work` on a worker, resolving to what it answers.
+    /// Runs `work` on a worker, resolving to its result.
     fn work(&self, work: impl FnOnce() -> Result<Vec<u8>> + Send + 'static) -> Pending<Vec<u8>> {
         let workers = match self.0.workers.get_or_init(Workers::new) {
             Ok(workers) => workers,
@@ -128,20 +131,21 @@ impl Host for Native {
         {
             let _ = encoding;
             Err(Error::Unsupported(
-                "native H.264 encoding is Windows' (Media Foundation); this platform has none".into(),
+                "native H.264 encoding is available only on Windows, through Media Foundation".into(),
             ))
         }
     }
 }
 
-/// The bytes `request` names of a local file: none where there is no file.
+/// Reads the local file, or its byte range, that `request` names by path or `file://` URL. Returns
+/// no bytes if the file does not exist. Errors on other URL schemes.
 fn read(request: &Request) -> Result<Vec<u8>> {
     let url = &*request.url;
     let path = if url.starts_with("file:") {
         crate::url::file_path(url).ok_or_else(|| Error::invalid(format!("invalid file URL: {url}")))?
     } else {
         if url.contains("://") {
-            return Err(Error::Unsupported(format!("the native host reads files, not {url}").into()));
+            return Err(Error::Unsupported(format!("the native host reads only local files, not {url}").into()));
         }
         std::path::PathBuf::from(url)
     };
@@ -233,10 +237,10 @@ impl Text {
     }
 }
 
-/// Points each generic family at an installed one. fontdb names a generic after fontconfig's last
-/// alias for it, installed or not: stock Ubuntu's last `sans-serif` alias prefers `FreeSans`, which
-/// it does not ship. A generic naming nothing installed takes the first installed of its common
-/// families, else any installed family.
+/// Points each generic family at an installed family. fontdb names a generic after fontconfig's
+/// last alias for it, installed or not. On stock Ubuntu, the last `sans-serif` alias prefers
+/// `FreeSans`, which Ubuntu does not ship. A generic naming no installed family gets the first
+/// installed of its common families, else any installed family.
 fn installed_generics(db: &mut fontdb::Database) {
     fn has(db: &fontdb::Database, family: Family<'_>) -> bool {
         db.query(&fontdb::Query { families: &[family], ..Default::default() }).is_some()
@@ -367,7 +371,7 @@ mod tests {
         let url = path.to_string_lossy().into_owned();
         assert_eq!(fetch(Request::new(url.as_str())).unwrap(), b"0123456789");
         assert_eq!(fetch(Request::range(format!("file://{url}"), 3..6)).unwrap(), b"345");
-        assert_eq!(fetch(Request::range(url.as_str(), 8..20)).unwrap(), b"89", "a range past the end");
+        assert_eq!(fetch(Request::range(url.as_str(), 8..20)).unwrap(), b"89", "a range past the end is cut short");
         assert_eq!(fetch(Request::new(dir.join("none").to_string_lossy().into_owned())).unwrap(), b"");
         assert!(fetch(Request::new("https://example.com/tiles")).is_err());
         std::fs::remove_dir_all(dir).unwrap();

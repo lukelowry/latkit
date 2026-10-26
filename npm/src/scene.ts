@@ -1,6 +1,6 @@
 /**
- * The builders that write scenes' options. A scene is plain data the view reads, its types written
- * from the forms latkit reads (`inputs.ts`); nothing here needs WebAssembly.
+ * Builders for the expressions and colors that scene options take. A scene is plain data, typed in
+ * `inputs.ts`; nothing here needs WebAssembly.
  */
 
 import type {
@@ -19,35 +19,40 @@ import type {
   Units,
 } from './inputs.js';
 
-/** A CSS color, such as `'#ffb000'` or `'rebeccapurple'`: what a string is in a color option. */
+/**
+ * A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. In a color option, a string is a color.
+ */
 export type Color = string;
 
-/** What a value is written as: an {@link Expr}, or its JSON form, in which a string names a field. */
+/** A value option: an {@link Expr}, or its JSON form, in which a string is a field name. */
 export type ExprInput = Expr | ExprNode;
 
 /**
- * What a color is written as: a CSS color, a {@link Paint}, or its JSON form. A string is a CSS
- * color here; a field reads with {@link field}.
+ * A color option: a CSS color, a {@link Paint}, or its JSON form. A string here is always a CSS
+ * color, never a field name; map a field to colors with `field(name).colormap(map)`.
  */
 export type PaintInput = Color | Paint | PaintNode;
 
 const nodeOf = (input: ExprInput): ExprNode => (input instanceof Expr ? input.node : input);
 
-/** A value for every row of a mark: a constant, a field, view state, or arithmetic of them. */
+/** A value for every row of a mark: a constant, a field, view state, or arithmetic on them. */
 export class Expr {
-  /** An expression from its JSON form; use the builders for common operations. */
+  /** Wraps an expression's JSON form. The builders cover common cases. */
   constructor(readonly node: ExprNode) {}
 
   toJSON(): ExprNode {
     return this.node;
   }
 
-  /** Reads this expression's fields from `table` of dataset `data`, joined by row id. */
+  /** Reads this expression's fields from table `table` of dataset `data`, joined by row id. */
   from(data: string, table: string): Expr {
     return new Expr(mapFields(this.node, (f) => ({ ...f, from: [data, table] })));
   }
 
-  /** Reads sampled fields at their last frame without interpolating. */
+  /**
+   * Reads this expression's sampled fields at the last frame at or before the view's `at`, instead
+   * of interpolating toward the next frame.
+   */
   step(): Expr {
     return new Expr(mapFields(this.node, (f) => ({ ...f, step: true })));
   }
@@ -115,9 +120,11 @@ export class Expr {
   sqrt(): Expr {
     return unary('sqrt', this);
   }
+  /** The sine of the value, an angle in radians. */
   sin(): Expr {
     return unary('sin', this);
   }
+  /** The cosine of the value, an angle in radians. */
   cos(): Expr {
     return unary('cos', this);
   }
@@ -136,36 +143,45 @@ export class Expr {
     return new Expr({ is: [this.node, text] });
   }
 
-  /** Whether a text field holds `text`, ignoring case: in a mark, a field of its own table. */
+  /**
+   * Whether a text field contains `text`, ignoring case. In a mark, the field must be in the mark's
+   * own table.
+   */
   contains(text: string): Expr {
     return new Expr({ contains: [this.node, text] });
   }
 
-  /** The value through `map`, a color for every row: a catalog name, or your own colors. */
+  /**
+   * Maps the value to a color for every row through `map`, a catalog name or custom colors. The
+   * domain fits the values shown unless set with {@link Colormapped.domain}.
+   */
   colormap(map: Colormap): Colormapped {
     return new Colormapped({ colormap: map, value: this.node });
   }
 
-  /** The value mapped linearly onto `[low, high]`, clamped. */
+  /**
+   * Maps the value linearly onto `[low, high]`, clamped. The domain fits the values shown unless
+   * set with {@link Mapped.domain}.
+   */
   scale(low: number, high: number): Mapped {
     return new Mapped({ scale: [low, high], value: this.node });
   }
 }
 
-/** A value mapped onto a range, whose domain can be set. */
+/** A value mapped linearly onto a range, with an input domain that can be set. */
 export class Mapped extends Expr {
-  /** The input values that map to the ends; it fits the values shown unless set. */
+  /** Sets the input values that map to the range's ends, instead of fitting the values shown. */
   domain(low: number, high: number): Mapped {
     return new Mapped({ ...(this.node as ScaleNode), domain: [low, high] });
   }
 }
 
 /**
- * A color for every row of a mark: a CSS color, a value through a colormap, or a conditional choosing
- * between colors. Color options take one, or a CSS color as it is.
+ * A color for every row of a mark: a constant, a value mapped through a colormap, or a conditional
+ * choosing between colors. Color options take a `Paint` or a CSS color string.
  */
 export class Paint {
-  /** A color from its JSON form; use the builders for common colors. */
+  /** Wraps a color's JSON form. The builders cover common cases. */
   constructor(readonly node: PaintNode) {}
 
   toJSON(): PaintNode {
@@ -173,15 +189,15 @@ export class Paint {
   }
 }
 
-/** A value through a colormap, whose domain can be set. */
+/** A value mapped through a colormap, with an input domain that can be set. */
 export class Colormapped extends Paint {
-  /** The input values that map to the ends; it fits the values shown unless set. */
+  /** Sets the input values that map to the colormap's ends, instead of fitting the values shown. */
   domain(low: number, high: number): Colormapped {
     return new Colormapped({ ...(this.node as ColormapNode), domain: [low, high] });
   }
 }
 
-/** A missing value, which options take the theme's for: a value and a color alike. */
+/** A missing value, valid as a value or a color. An option given one uses the theme's value. */
 export class Missing extends Expr {
   declare readonly node: MissingNode;
 
@@ -198,7 +214,7 @@ const unary = (op: Unary, a: ExprInput): Expr => new Expr({ op, args: [nodeOf(a)
 const binary = (op: Binary, a: ExprInput, b: ExprInput): Expr =>
   new Expr({ op, args: [nodeOf(a), nodeOf(b)] });
 
-/** `node` with every field read through `f`. */
+/** Returns `input`'s JSON form with every field node replaced by `f(field)`. */
 function mapFields(input: ExprInput, f: (field: FieldNode) => FieldNode): ExprNode {
   const node = nodeOf(input);
   if (typeof node === 'string') return f({ field: node });
@@ -218,34 +234,35 @@ function mapFields(input: ExprInput, f: (field: FieldNode) => FieldNode): ExprNo
 
 const state = (name: State): Expr => new Expr({ state: name });
 
-/** The field `name` of each row. */
+/** Reads field `name` of each row. */
 export const field = (name: string): Expr => new Expr({ field: name });
-/** A color constant. */
+/** A constant color, from a CSS color string. */
 export const color = (css: Color): Paint => new Paint({ color: css });
 /** Whether the row is selected. */
 export const selected = (): Expr => state('selected');
 /** Whether the pointer is over the row. */
 export const hovered = (): Expr => state('hovered');
-/** CSS pixels from a vertex to the pointer. */
+/** CSS pixels from a vertex to the pointer. Vertex marks only, and not in a vertex's position. */
 export const pointer = (): Expr => state('pointer');
-/** Seconds since the view was created. */
+/** Seconds since the view was created. A mark that reads it redraws every frame. */
 export const elapsed = (): Expr => state('elapsed');
 /** The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. */
 export const zoom = (): Expr => state('zoom');
-/** A missing value: options that read one take the theme's. */
+/** A missing value: an option given one uses the theme's value. */
 export const missing = (): Missing => new Missing();
 
-/** The CSS pixels a size in position units keeps within. */
+/** On-screen limits, in CSS pixels, for a size given in position units. */
 export interface Within {
-  /** CSS pixels it keeps at least, however far the view zooms out. */
+  /** The smallest size in CSS pixels, however far the view zooms out. */
   atLeast?: number;
-  /** CSS pixels it keeps at most, however far the view zooms in. */
+  /** The largest size in CSS pixels, however far the view zooms in. */
   atMost?: number;
 }
 
 /**
- * A size in CSS pixels, whatever the space's own unit: a stroke keeps its width on screen as a
- * diagram zooms. A number makes a theme's length too.
+ * A size in CSS pixels regardless of the space's unit, so it stays the same on screen as the view
+ * zooms: `px(1)` keeps a diagram's stroke 1 pixel wide at any zoom. Given a number, the result also
+ * works as a theme length.
  */
 export function px(size: number): { px: number };
 export function px(size: ExprInput): Px;
@@ -254,10 +271,10 @@ export function px(size: ExprInput): Px {
 }
 
 /**
- * A size in position units, whatever the space's own unit, so it scales as the view zooms, kept
- * within `atLeast` and `atMost` CSS pixels when given: `units('r', { atLeast: 2 })` grows with the map
- * and never vanishes. A marker keeps its proportions, its larger side held. A number alone makes a
- * theme's length too.
+ * A size in position units (degrees on the earth) regardless of the space's unit, so it scales as
+ * the view zooms. `within` limits its on-screen size in CSS pixels: `units('r', { atLeast: 2 })`
+ * grows with the map and never shrinks below 2 pixels. A marker keeps its proportions, with the
+ * limits applied to its larger side. Given only a number, the result also works as a theme length.
  */
 export function units(size: number): { units: number };
 export function units(size: ExprInput, within?: Within): Units;
@@ -265,28 +282,30 @@ export function units(size: ExprInput, within: Within = {}): Units {
   return { units: nodeOf(size), ...within };
 }
 
-/** A case of a conditional: its condition, and its value or color. */
+/** One case of a conditional: a condition, and the value or color it selects. */
 type Case = [ExprNode, ExprNode | PaintNode];
 
-/** What a conditional's values are written as, a value's or a color's. */
+/** A conditional's value input: {@link PaintInput} for colors, else {@link ExprInput}. */
 type InputOf<T> = T extends Paint ? PaintInput : ExprInput;
 
 /**
- * Starts a conditional: `when(c).then(a).when(d).then(b).otherwise(e)`. Its values are colors, a
- * string a CSS color, where its first is one; else values.
+ * Starts a conditional. `when(c).then(a).when(d).then(b).otherwise(e)` takes the value of the first
+ * case whose condition holds, else `e`. If the first `then` gets a color (a CSS string, a
+ * {@link Paint}, a missing value, or a color's JSON form), every value of the conditional is a
+ * color, and strings are CSS colors. Otherwise every value is an expression.
  */
 export function when(condition: ExprInput): When {
   return new When(nodeOf(condition));
 }
 
-/** A conditional's first case, waiting for its value where the condition holds. */
+/** A conditional's first condition, awaiting its value from `then`. */
 class When {
   /** @internal */
   constructor(private readonly condition: ExprNode) {}
 
-  /** The color where the condition holds: every value of the conditional is a color. */
+  /** Sets the color where the condition holds; every value of the conditional is then a color. */
   then(value: PaintInput): Then<Paint>;
-  /** The value where the condition holds. */
+  /** Sets the value where the condition holds. */
   then(value: ExprInput): Then<Expr>;
   then(value: PaintInput | ExprInput): Then<Paint> | Then<Expr> {
     const cases: Case[] = [[this.condition, written(value)]];
@@ -296,7 +315,7 @@ class When {
   }
 }
 
-/** A conditional's cases so far, waiting for another or the value where none holds. */
+/** A conditional's cases so far, awaiting another `when` case or the `otherwise` fallback. */
 class Then<T extends Expr | Paint> {
   /** @internal */
   constructor(
@@ -304,18 +323,18 @@ class Then<T extends Expr | Paint> {
     private readonly make: (node: object) => T,
   ) {}
 
-  /** Another case, tried when those before it do not hold. */
+  /** Adds a case, tried when no earlier condition holds. */
   when(condition: ExprInput): Next<T> {
     return new Next(this.cases, nodeOf(condition), this.make);
   }
 
-  /** The value where no case holds. */
+  /** Sets the value where no condition holds, and returns the finished conditional. */
   otherwise(value: InputOf<T>): T {
     return this.make({ when: this.cases, otherwise: written(value) });
   }
 }
 
-/** A conditional's next case, waiting for its value where the condition holds. */
+/** A conditional's next condition, awaiting its value from `then`. */
 class Next<T extends Expr | Paint> {
   /** @internal */
   constructor(
@@ -324,20 +343,20 @@ class Next<T extends Expr | Paint> {
     private readonly make: (node: object) => T,
   ) {}
 
-  /** The value where the condition holds. */
+  /** Sets the value where this condition holds. */
   then(value: InputOf<T>): Then<T> {
     return new Then([...this.cases, [this.condition, written(value)]], this.make);
   }
 }
 
-/** `value` as it is written. */
+/** The JSON form of `value`. */
 function written(value: ExprInput | PaintInput): ExprNode | PaintNode {
   return value instanceof Expr || value instanceof Paint ? value.node : value;
 }
 
 /**
- * Whether a conditional's first value makes it choose colors, as the types say: a CSS color, a color,
- * a missing value, or a color's own form.
+ * Whether a conditional's first value makes it a color conditional: a CSS string, a
+ * {@link Paint}, a missing value, or a color's JSON form.
  */
 function colored(value: ExprInput | PaintInput): boolean {
   if (typeof value === 'string' || value instanceof Paint || value instanceof Missing) return true;
@@ -345,14 +364,17 @@ function colored(value: ExprInput | PaintInput): boolean {
   return 'color' in value || 'colormap' in value || 'missing' in value;
 }
 
-/** Straight-alpha RGBA pixels, compatible with browser ImageData and server-produced pixels. */
+/** RGBA pixels with straight alpha, rows top to bottom. A browser `ImageData` has this shape. */
 export interface RgbaImage {
   width: number;
   height: number;
   data: Uint8ClampedArray;
 }
 
-/** An icon marker showing one of `images` for each row, picked by `index`. */
+/**
+ * An icon marker: each row shows `images[index]`, fitted in the marker's box, with `index` counting
+ * from 0. The pixels are copied into the marker.
+ */
 export function icon(images: readonly RgbaImage[], index: ExprInput): Marker {
   return {
     icon: {

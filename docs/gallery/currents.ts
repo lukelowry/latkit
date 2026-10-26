@@ -1,8 +1,8 @@
-/** Currents: streamlines through a field of vortices, as a wind map draws them, colored by speed. */
+/** Currents: streamlines through a field of vortices, as on a wind map, colored by speed. */
 import { Patch } from 'latkit';
 import { THEME, framed, type Piece } from './look.ts';
 
-/** Vortices: where each turns, how strongly, and which way. */
+/** Vortices as `[x, y, strength]`. The sign of the strength sets the direction of spin. */
 const VORTICES = [
   [-380, 120, 1.0],
   [-120, -170, -0.8],
@@ -13,7 +13,8 @@ const VORTICES = [
   [560, 250, -0.5],
 ] as const;
 
-/** The flow at `x`, `y`: a steady drift east, and each vortex's swirl falling off from its center. */
+/** The flow velocity at `x`, `y`: a steady eastward drift plus each vortex's swirl, which falls off
+ * with distance from its center. */
 function flow(x: number, y: number): [number, number] {
   let [u, v] = [0.35, 0.05];
   for (const [cx, cy, s] of VORTICES) {
@@ -29,9 +30,10 @@ export default function currents(): Piece {
   const [w, h] = [1300, 720];
   const geometry: [number, number][][] = [];
   const speed: number[] = [];
-  // Seeds on a grid, jittered by a fixed hash, so the field is covered evenly every time.
+  // Streamlines start on a grid, jittered by a fixed hash, so they cover the field evenly and the
+  // same way on every run.
   const jitter = (i: number) => (Math.sin(i * 12.9898) * 43758.5453) % 1;
-  // Inside an ellipse, so the field ends softly rather than at a frame.
+  // Streamlines stay inside an ellipse, so the field has a soft edge rather than a rectangular one.
   const inside = (x: number, y: number) => (x / (w / 2)) ** 2 + (y / (h / 2)) ** 2 < 1;
   for (let i = 0; i < 52 * 30; i++) {
     let x = (((i % 52) + 0.5 + 0.8 * jitter(i)) / 52 - 0.5) * w;
@@ -40,7 +42,7 @@ export default function currents(): Piece {
     const path: [number, number][] = [[x, y]];
     let travelled = 0;
     for (let s = 0; s < 70; s++) {
-      // A midpoint step, so curves stay curves.
+      // A midpoint step, which follows curves more closely than an Euler step.
       const [u0, v0] = flow(x, y);
       const [u, v] = flow(x + 2.5 * u0, y + 2.5 * v0);
       const length = Math.hypot(u, v);

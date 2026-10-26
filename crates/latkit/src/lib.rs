@@ -1,16 +1,16 @@
-//! Columnar data drawn as vertices, edges, lines, and areas on the GPU.
+//! Columnar data drawn on the GPU as vertices, edges, lines, and areas.
 //!
-//! A [`Data`] is a named collection of [`Table`]s, changed in place by [`Patch`]es; a [`Snapshot`]
-//! keeps one version of it, O(1). A [`Scene`] describes what to draw and how it answers input: marks
-//! that name tables of datasets, in a space, with a theme and controls. A [`View`] draws a scene into
-//! any wgpu frame from the [`Source`]s it is given, each a dataset by name, and turns platform
-//! [`Input`] into [`Event`]s.
+//! A [`Data`] is a named collection of [`Table`]s, changed in place by [`Patch`]es. A [`Snapshot`]
+//! is one immutable version of a `Data`, taken in O(1). A [`Scene`] describes what to draw and how
+//! it responds to input: marks that reference tables of datasets, a space, a theme, and controls. A
+//! [`View`] draws a scene into any wgpu frame from its [`Source`]s, one per dataset name, and turns
+//! platform [`Input`] into [`Event`]s.
 //!
-//! Every input is plain data that deserializes: [`from_json`] reads one from JSON text, an error
-//! naming the path to what it could not read, and [`schema`] gives its JSON Schema.
+//! Every input is plain data that deserializes. [`from_json`] reads one from JSON text and reports
+//! errors with the path to the part it could not read. [`schema`] returns its JSON Schema.
 
-// Without `gpu`, what only drawing reads of the data, expressions, and sorts has no reader; builds
-// with it, which lint every feature, find what nothing reads.
+// Without `gpu`, the parts of data, expressions, and sorts that only drawing uses are dead code.
+// Builds with `gpu` lint every feature, so they still catch code nothing uses.
 #![cfg_attr(not(feature = "gpu"), allow(dead_code))]
 
 mod data;

@@ -1,7 +1,7 @@
-// Evaluated rows: each mark's words per row, in pages of `PAGE_ROWS` held rows. A row's words are its
-// kind words, `mark.stride` of them, then its extra words (labels, marker inputs), `mark.extras`; the
-// page table at `mark.state` says where each page of them lies. A mark reads the vertices its ends name
-// through the page tables of the vertex marks drawing them, which its ends list.
+// Reading evaluated rows. Each mark keeps its per-row words in pages of `PAGE_ROWS` held rows,
+// listed by the page table at `mark.state`. A row has `mark.stride` kind words, then `mark.extras`
+// extra words (labels, marker inputs). An edge or face mark reads its vertices through the page
+// tables of the vertex marks that draw them, which its ends list.
 
 import package::lib::types::{
     NONE, PAGE_BITS, PAGE_MASK, END_WORDS, END_STATE, END_STRIDE, END_NORMALS, VERTEX_POSITION, VERTEX_COLOR,
@@ -20,7 +20,7 @@ struct Vertex {
     half: vec2f,
     elevation: f32,
     depth: f32,
-    // The CSS pixels its marker's half keeps within.
+    // The range of CSS pixels its marker's half size is clamped to.
     range: vec2f,
     flags: u32,
 }
@@ -54,8 +54,8 @@ struct Area {
     flags: u32,
 }
 
-// A range of CSS pixels in one word: each end in sixteenths of a pixel, up to 4095, the top value
-// meaning no end.
+// Packs a range of CSS pixels into one word: each end in 16 bits, in 1/16 pixel, up to 4095.9375
+// pixels. An upper end of 65535 means no upper bound.
 fn pack_range(range: vec2f) -> u32 {
     let ends = vec2u(round(clamp(range, vec2f(0.0), vec2f(4095.9375)) * 16.0));
     let top = select(ends.y, 65535u, range.y > 4095.9375);
@@ -64,7 +64,7 @@ fn pack_range(range: vec2f) -> u32 {
 
 fn unpack_range(word: u32) -> vec2f {
     let ends = vec2f(f32(word & 65535u), f32(word >> 16u)) / 16.0;
-    // The top of what a word holds is no end at all.
+    // The top value means no upper bound.
     return vec2f(ends.x, select(ends.y, 3.4e38, (word >> 16u) == 65535u));
 }
 
@@ -72,17 +72,17 @@ fn float_at(at: u32) -> f32 {
     return bitcast<f32>(word(at));
 }
 
-// Where the words of `row` start among the pages page table `table` lists, `stride` words a row.
+// Where `row`'s words start in the pages, given page table `table` and `stride` words per row.
 fn record_at(table: u32, stride: u32, row: u32) -> u32 {
     return program[table + (row >> PAGE_BITS)] + (row & PAGE_MASK) * stride;
 }
 
-// The first kind word of `row` of the current mark.
+// Where the first kind word of the current mark's `row` lies in the pages.
 fn row_at(row: u32) -> u32 {
     return record_at(mark.state, mark.stride + mark.extras, row);
 }
 
-// Extra word `w` of `row` of the current mark.
+// Where extra word `w` of the current mark's `row` lies in the pages.
 fn extra_at(row: u32, w: u32) -> u32 {
     return row_at(row) + mark.stride + w;
 }
@@ -102,19 +102,19 @@ fn vertex_at(at: u32) -> Vertex {
     );
 }
 
-// The vertex held row `held` of the vertex mark drawing the table end `end` of the current mark names.
+// Vertex `held` of end `end`: a held row of the vertex mark that draws the end's table.
 fn end_vertex(end: u32, held: u32) -> Vertex {
     let e = mark.ends + END_WORDS * end;
     return vertex_at(record_at(program[e + END_STATE], program[e + END_STRIDE], held));
 }
 
-// Whether ends `a` and `b` of an edge, held rows of the vertex marks its two ends attach to, are one
-// vertex.
+// Whether an edge's ends `a` and `b`, held rows of the vertex marks its two ends attach to, are the
+// same vertex.
 fn same_vertex(a: u32, b: u32) -> bool {
     return a == b && program[mark.ends + END_STATE] == program[mark.ends + END_WORDS + END_STATE];
 }
 
-// Where the normal faces sum at the vertex held row `held` names through end `end` lies, or NONE.
+// Where the face normal sum for vertex `held` of end `end` lies, or NONE.
 fn end_normal(end: u32, held: u32) -> u32 {
     let table = program[mark.ends + END_WORDS * end + END_NORMALS];
     if table == NONE {
@@ -150,8 +150,8 @@ fn line_at(at: u32) -> Line {
     );
 }
 
-// The current mark's words for how far a stroke row's comets traveled and for its flow; NONE for a
-// mark that draws no strokes.
+// The current mark's word indices for a stroke row's comet travel and its flow; NONE for a mark
+// that draws no strokes.
 fn travel_words() -> vec2u {
     switch mark.kind {
         case MARK_EDGES: { return vec2u(EDGE_TRAVEL, EDGE_FLOW); }

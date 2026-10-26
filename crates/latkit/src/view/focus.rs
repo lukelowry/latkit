@@ -1,8 +1,10 @@
-//! Selection, hover, and the rows a fit measures, as focus words: one per held row of every mark, in
-//! its pages of focus words, written only where they change. The selection keeps only rows a pickable
-//! mark shows. The ends of a selected or hovered edge are lit too. Each mark's lit rows are listed, as
-//! the rows it draws, for its focus draw, which draws them again over everything, glowing. Hover is
-//! state either way, which expressions read; whether it glows is the controls' to say.
+//! Focus words: selection, hover, and the rows a fit measures, as bits in one word per held row of
+//! every mark, kept in its focus word pages and written only where they change.
+//!
+//! The selection keeps only rows a pickable mark shows. The endpoints of a selected or hovered edge
+//! are lit too. Each mark's lit rows are listed by draw index for its focus draw, which draws them
+//! again over everything with a glow. Hover is always state that expressions can read; the controls
+//! decide whether it glows.
 
 use rustc_hash::FxHashMap;
 
@@ -17,7 +19,8 @@ use crate::gpu::work::Queue;
 use crate::scene::mark::Primitive;
 use crate::{Row, Rows};
 
-/// Words alike between two changed ones of a page, past which they are written apart.
+/// The row gap at which two changed words of a page are written separately; closer ones share one
+/// write, along with the unchanged words between them.
 const GAP: u32 = 16;
 
 /// A focus word's mark and held row.
@@ -26,19 +29,19 @@ type At = (usize, u32);
 #[derive(Default)]
 pub(crate) struct Focus {
     pub(crate) selection: Vec<Row>,
-    /// What the user points at, as it was hit.
+    /// The hovered row, as hit.
     pub(crate) hovered: Option<Hit>,
     /// Rows a fit measures.
     pub(crate) fitting: Vec<Row>,
-    /// Words written, by mark and held row.
+    /// The words last written, by mark and held row.
     written: FxHashMap<At, u32>,
     pub(crate) dirty: bool,
-    /// Every mark's lit rows, laid out since they were last written.
+    /// Every mark's lit rows, if laid out since last taken.
     lit: Option<Vec<u32>>,
 }
 
 impl Focus {
-    /// The lit rows laid out since they were last taken, to write.
+    /// Takes the lit rows laid out since last taken, for writing to the lit buffer.
     pub(crate) fn take_lit(&mut self) -> Option<Vec<u32>> {
         self.lit.take()
     }
@@ -53,9 +56,9 @@ pub(crate) struct Lit {
 }
 
 impl View {
-    /// Writes the focus words that changed into the pages `pages` holds; after `fresh`, pages of focus
-    /// words new or moved, every word. Channels reading selection or hover evaluate again, and every
-    /// mark's lit rows are laid out again.
+    /// Writes changed focus words into `pages`, or every word when `fresh` (focus word pages new or
+    /// moved). Channels reading focus evaluate again where words changed, and every mark's lit rows
+    /// are laid out again.
     pub(super) fn write_focus(&mut self, queue: &Queue, pages: &wgpu::Buffer, fresh: bool) {
         if fresh {
             self.focus.written.clear();
@@ -79,7 +82,7 @@ impl View {
         let set = words.iter().filter(|(at, b)| self.focus.written.get(at) != Some(b)).map(|(&at, _)| at);
         let mut changes: Vec<At> = cleared.chain(set).collect();
         changes.sort_unstable();
-        // A page's changed words go in runs, the words between them as they are.
+        // Write each page's changed words in runs, unchanged words between them included.
         for run in changes.chunk_by(|a, b| a.0 == b.0 && a.1 >> wgsl::PAGE_BITS == b.1 >> wgsl::PAGE_BITS) {
             let (mark, page) = (run[0].0, run[0].1 >> wgsl::PAGE_BITS);
             let Some(&block) = self.marks[mark].words.pages(Kept::Focus).blocks.get(page as usize) else { continue };
@@ -96,22 +99,23 @@ impl View {
             }
         }
         if !changes.is_empty() {
-            // Channels reading focus evaluate the pages of the rows whose words changed; every row
-            // where pages of focus words are new.
+            // Channels reading focus evaluate the pages of rows whose words changed, or every row
+            // when the focus word pages are new.
             for (i, shown) in self.marks.iter_mut().enumerate() {
                 let pages: Vec<u32> =
                     changes.iter().filter(|&&(mark, _)| mark == i).map(|&(_, row)| row / wgsl::PAGE_ROWS).collect();
                 shown.dirty_rows(shown.channels_reading(Deps::FOCUS), (!fresh).then_some(&pages[..]));
             }
         }
-        // Rows lit only by hover draw no glow when it does not glow.
+        // When hover does not glow, rows lit only by hover are left out of the focus draw.
         self.lay_out_lit(&words, if glows { wgsl::LIT } else { wgsl::LIT & !wgsl::HOVERED });
         self.focus.written = words;
     }
 
-    /// Sets `bit` in the focus words of `rows` in every mark holding them (with `picked`, every
-    /// pickable one), and with `ends` lights the ends of each edge among them; returns the rows some
-    /// mark shows. A row its data holds stays shown while a table drawn in part holds no page of it.
+    /// Sets `bit` in the focus words of `rows` in every mark drawing their table (only pickable
+    /// marks with `picked`), and with `ends` also lights the endpoints of each edge among them.
+    /// Returns the rows some mark shows. A row in the data stays shown even while its paged table
+    /// has no resident page for it.
     fn focus_rows(&self, rows: &[Row], bit: u32, picked: bool, ends: bool, words: &mut FxHashMap<At, u32>) -> Vec<Row> {
         let mut kept = Vec::new();
         for row in rows {
@@ -141,7 +145,8 @@ impl View {
         kept
     }
 
-    /// Lights the row `reference` names for row `index` in every vertex mark holding its table's.
+    /// Sets the `END` bit of the vertex `reference` names for row `index`, in every vertex mark
+    /// holding it.
     fn light_end(&self, data: &crate::Name, reference: &Reference, index: usize, words: &mut FxHashMap<At, u32>) {
         let Some(target) = reference.target(index) else { return };
         for (i, shown) in self.marks.iter().enumerate() {
@@ -156,8 +161,8 @@ impl View {
         }
     }
 
-    /// Lists every mark's drawn rows with a bit of `glowing` set for its focus draw, with the
-    /// instances each takes.
+    /// Lists each mark's drawn rows with any `glowing` bit set, by draw index, for its focus draw,
+    /// with the instances each takes.
     fn lay_out_lit(&mut self, words: &FxHashMap<At, u32>, glowing: u32) {
         let mut all = Vec::new();
         for i in 0..self.marks.len() {
@@ -180,9 +185,9 @@ impl View {
         self.focus.lit = Some(all);
     }
 
-    /// Instances mark `i`'s focus draw takes for each of its lit held rows `lit`: a point one; a path
-    /// as many as the longest of theirs has pieces, past which a row's own draw nothing; none for
-    /// faces.
+    /// Instances each lit row takes in mark `i`'s focus draw, for lit held rows `lit`: one for a
+    /// point; for paths and areas, enough for the longest lit row's pieces, past which a shorter
+    /// row's instances draw nothing; none for faces.
     fn pieces(&self, i: usize, lit: &[u32]) -> u32 {
         let shown = &self.marks[i];
         let Some(compiled) = &shown.compiled else { return 0 };
@@ -196,8 +201,8 @@ impl View {
         }
     }
 
-    /// The most points any of mark `i`'s held rows `lit` has in its geometry column: its path, its
-    /// bends, or its triangles.
+    /// The most points any of mark `i`'s lit held rows `lit` has in its geometry column: path
+    /// points, bends, or triangle corners.
     fn longest(&self, i: usize, lit: &[u32]) -> u32 {
         let shown = &self.marks[i];
         let Some(compiled) = &shown.compiled else { return 0 };

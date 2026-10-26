@@ -1,10 +1,10 @@
 /**
- * The grid a control room watches, as a model: plants dispatch to meet demand, a DC power flow sets
- * every branch's flow, protection trips what runs past its rating, and islands balance alone.
+ * A model of the grid a control room watches. Plants dispatch to meet demand, a DC power flow sets
+ * every branch's flow, protection trips overloaded branches, and each island balances on its own.
  */
 import texas from './texas.json';
 
-/** What each substation is, in the order its color index counts them. */
+/** The kinds of substation, in color index order. `fuels` lists the categories of each kind. */
 export const KINDS = [
   { label: 'nuclear', color: '#a181ef', fuels: ['Nuclear Steam'] },
   {
@@ -16,7 +16,8 @@ export const KINDS = [
   { label: 'solar', color: '#ffca29', fuels: ['Solar PV'] },
   { label: 'load', color: '#8a93a0', fuels: ['Load'] },
 ] as const;
-/** How far past its rating a branch runs before its protection trips it, and for how many ticks. */
+/** Protection trips a branch loaded over `TRIP_AT` times its rating for `TRIP_AFTER` ticks in a
+ * row. */
 export const TRIP_AT = 1.15;
 export const TRIP_AFTER = 3;
 /** Seconds a tripped branch stays out before it recloses. */
@@ -26,19 +27,19 @@ export const REACTANCE = 0.0004;
 
 type Substation = (typeof texas.substations)[number];
 
-/** Each substation's kind, by index into `KINDS`. */
+/** A substation's kind, as an index into `KINDS`. */
 const kindOf = (s: Substation) =>
   KINDS.findIndex((k) => (k.fuels as readonly string[]).includes(s.category));
 
 /**
- * The grid's state and its physics: plants dispatch to meet demand, a DC power flow sets every
- * branch's flow from the injections, protection trips branches held past their rating, and each
- * island balances on its own plants, its loads dark where it has none.
+ * The grid's state and physics. Plants dispatch to meet demand, and a DC power flow sets every
+ * branch's flow from the injections. Protection trips branches that stay over their rating. Each
+ * island balances on its own plants, and its loads go dark if it has none.
  */
 export class Grid {
   readonly n = texas.substations.length;
   readonly m = texas.branches.length;
-  /** What each plant can make and each load asks for, MW. */
+  /** Each plant's capacity, or each load's size, in MW. */
   readonly capacity = Float64Array.from(texas.substations, (s) =>
     s.units.reduce((a, b) => a + b, 0),
   );
@@ -46,19 +47,22 @@ export class Grid {
   readonly kind = Float32Array.from(texas.substations, kindOf);
   readonly rating = Float64Array.from(texas.branches, (b) => b.pmax);
   readonly #x: Float64Array;
-  /** Each substation's output, or each load's demand served, as a share; MW injected. */
+  /** Each plant's output as a share of its capacity, or each load's share of demand served.
+   * `injection` holds the MW each substation injects. */
   readonly fill = new Float32Array(this.n);
   readonly injection = new Float64Array(this.n);
-  /** Each branch's flow in MW, from its first end to its second; its loading; whether it is out. */
+  /** Each branch's flow in MW from its `from` end to its `to` end, its loading as a share of its
+   * rating, and whether it is out. */
   readonly flow = new Float64Array(this.m);
   readonly loading = new Float64Array(this.m);
   readonly out = new Uint8Array(this.m);
-  /** Ticks each branch has run past its trip setting, and when an out branch recloses. */
+  /** Consecutive ticks each branch has been over its trip setting, and when an out branch
+   * recloses. */
   readonly #over = new Uint8Array(this.m);
   readonly #reclose = new Float64Array(this.m);
-  /** Plants out of service until a time. */
+  /** For each plant, the time until which it is out of service. */
   readonly #plantOut = new Float64Array(this.n);
-  /** Demand as a share of the loads' size, and the time. */
+  /** Demand as a share of the loads' size, and the simulated time in seconds. */
   demand = 0.78;
   t = 0;
   /** Branches tripped since the last restore, and loads dark now. */
@@ -76,7 +80,7 @@ export class Grid {
     this.step(0);
   }
 
-  /** Trips the branch loaded nearest its rating, as a fault would. */
+  /** Trips the most heavily loaded branch in service, as a fault would. */
   tripWorst(): void {
     let worst = -1;
     for (let j = 0; j < this.m; j++)
@@ -100,13 +104,14 @@ export class Grid {
     this.trips++;
   }
 
-  /** Advances `dt` seconds: dispatch, flow, protection. */
+  /** Advances `dt` seconds, then dispatches, solves the flows, and runs protection. A `dt` of 0
+   * solves again without tripping anything. */
   step(dt: number): void {
     this.t += dt;
     const { n, m, t } = this;
     for (let j = 0; j < m; j++)
       if (this.out[j] && t >= this.#reclose[j]! && this.#reclose[j]! > 0) this.out[j] = 0;
-    // What each load asks for, swinging through the day, and what each plant could give.
+    // Each load's demand, which swings through the day, and each plant's available output.
     const want = new Float64Array(n);
     const can = new Float64Array(n);
     for (let i = 0; i < n; i++) {
@@ -114,7 +119,7 @@ export class Grid {
       if (this.load[i])
         want[i] = this.capacity[i]! * Math.min(1.4, Math.max(0, this.demand + wave));
       else if (t >= this.#plantOut[i]!) {
-        // Wind and sun come and go; the rest follow dispatch.
+        // Wind and solar output vary with the weather. Other plants follow dispatch.
         const k = this.kind[i]!;
         const weather =
           k === 2
@@ -125,7 +130,8 @@ export class Grid {
         can[i] = this.capacity[i]! * weather;
       }
     }
-    // Islands of the branches in service, each balanced on its own plants.
+    // Split the grid into islands joined by branches in service, and balance each on its own
+    // plants.
     const island = this.#islands();
     this.dark = 0;
     for (const members of island) {
@@ -145,7 +151,7 @@ export class Grid {
       }
       this.#solve(members);
     }
-    // Protection: a branch held past its trip setting trips; a plant now and then does too.
+    // Protection trips a branch that stays over its trip setting. Now and then a plant trips too.
     for (let j = 0; j < m; j++) {
       this.loading[j] = this.out[j] ? 0 : Math.abs(this.flow[j]!) / this.rating[j]!;
       this.#over[j] = this.loading[j]! > TRIP_AT ? this.#over[j]! + 1 : 0;
@@ -163,7 +169,7 @@ export class Grid {
     return !this.load[i] && this.t < this.#plantOut[i]!;
   }
 
-  /** Substations joined by branches in service, island by island. */
+  /** Groups the substations into islands joined by branches in service. */
   #islands(): number[][] {
     const seen = new Uint8Array(this.n);
     const near: number[][] = Array.from({ length: this.n }, () => []);
@@ -189,8 +195,9 @@ export class Grid {
     return islands;
   }
 
-  /** The DC power flow of one island: angles from its injections, its first member the reference,
-   * then each branch's flow. */
+  /** Solves the DC power flow of one island. Bus angles come from the injections (per unit on a
+   * 100 MVA base), with the first member as the reference bus. Branch flows follow from the
+   * angles. */
   #solve(members: number[]): void {
     const size = members.length - 1;
     const at = new Map(members.slice(1).map((bus, k) => [bus, k]));
@@ -208,7 +215,7 @@ export class Grid {
       }
     });
     members.slice(1).forEach((bus, k) => (b[k]![size] = this.injection[bus]! / 100));
-    // Gaussian elimination with partial pivoting; the island is small.
+    // Gaussian elimination with partial pivoting, which is fast enough for an island this small.
     for (let c = 0; c < size; c++) {
       let pivot = c;
       for (let r = c + 1; r < size; r++)

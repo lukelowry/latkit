@@ -1,15 +1,15 @@
-// The expression machine: every row of a mark runs the mark's channels, which store into the row's
-// state words. All rows run the same instructions, so control flow stays uniform across a workgroup.
-// A dispatch covers the pages of rows the mark lists, only those whose rows changed when only those
-// did.
+// The expression machine: each row of a mark runs the mark's channels, which store into the row's
+// state words. All rows run the same instructions, so control flow stays uniform across a
+// workgroup. A dispatch covers the row pages the mark lists: only the changed pages, when only some
+// rows changed.
 //
-// Evaluating knows nothing of transitions: while a mark eases, its channels store into its settled
-// words, and each frame `ease` writes what every row shows from its frozen and settled words by the
-// mark's progress: numbers and colors mix, positions move by their offset, a row whose visibility
-// flipped fades, rows past the live ones left and fade out, and the rest show as evaluated. No
-// channel runs to ease. Every row here is a held row, its words in pages its mark's page tables list.
-// Where an edge's or a face's vertices are held is no channel's to store: a step of its own finds it
-// (`lib/ends.wesl`).
+// Evaluation ignores transitions. During a transition, channels store into the settled words, and
+// each frame `ease` computes what every row shows from its frozen and settled words by the mark's
+// progress. Numbers and colors mix, positions move by their offset, rows whose visibility flipped
+// fade, rows past the live ones (which left) fade out, and other words show as evaluated. Easing
+// runs no channels. Every row here is a held row, whose words lie in pages listed by its mark's
+// page tables. Resolving an edge's or face's vertices to held rows is a separate step
+// (`lib/ends.wesl`), not a channel.
 
 import package::lib::types::{
     NONE, MISSING, MISSING_COLOR, STACK, VISIBLE, PLACED, FADE_IN, FADE_OUT, ENTERING, PAGE_ROWS, FRESH, item,
@@ -22,7 +22,7 @@ import package::lib::types::{
     OP_SELECT, OP_SCALE, OP_COLORMAP, OP_STORE, OP_STORE_COLOR, OP_STORE_FLAG, OP_STORE_POSITION,
     OP_POSITION, OP_STORE_CODE, OP_REDUCE,
 };
-import package::lib::bind::{frame, program, mark, pages};
+import package::lib::bind::{frame, program, mark, pages, theme_word};
 import package::lib::state::{travel_words, pack_range, record_at};
 import package::lib::read::{column_value, missing, missing_bits};
 import package::lib::focus::{is_selected, is_hovered};
@@ -31,17 +31,19 @@ import package::lib::project::{project, to_screen};
 import package::lib::reduce::{ordered, unordered};
 import package::lib::ends::resolve;
 
-// Per fitted domain: the order-preserving bits of its least and greatest value.
+// Two words per fitted domain: the complement of its least value's order-preserving bits, then its
+// greatest value's bits (see `lib/reduce.wesl`).
 @group(2) @binding(4) var<storage, read_write> domains: array<atomic<u32>>;
-// Each mark's row blocks a dispatch covers: those its channels evaluate listed at `mark.block`, those
-// whose state words start over marked `FRESH`; and those whose ends it finds at `mark.end_block`.
+// Each mark's row blocks a dispatch covers. At `mark.block`: the blocks its channels evaluate, with
+// `FRESH` on those whose state words start over. At `mark.end_block`: the blocks whose ends are
+// resolved.
 @group(2) @binding(16) var<storage, read> blocks: array<u32>;
-// What a dispatch of `evaluate` runs: the mark's channels over its listed blocks, the reductions
-// fitting its domains over every row, or where the rows of its blocks listed for it hold their ends.
+// The step a dispatch of `evaluate` runs: the mark's channels over its listed blocks, the
+// reductions that fit its domains over every row, or end resolution over the blocks listed for it.
 @group(2) @binding(17) var<uniform> step: u32;
 
-// Whether the pipeline's marks read the view: selection, hover, the pointer, the zoom. Only those
-// made for marks that do compile it.
+// Whether the pipeline's marks read view state: selection, hover, the pointer, or the zoom. Only
+// pipelines made for marks that do compile those reads.
 override VIEWED: bool = true;
 
 // The row invocation `id` evaluates: row `id.x` of the mark's `id.y`th listed page.
@@ -54,7 +56,7 @@ fn fresh(id: vec3u) -> bool {
     return (blocks[mark.block + id.y] & FRESH) != 0u;
 }
 
-// Rows of the mark that are live: those past them left and fade out.
+// The mark's live row count. Rows past it left and are fading out.
 fn live() -> u32 {
     return mark.held - mark.exits;
 }
@@ -67,7 +69,8 @@ fn constant_float(i: u32) -> f32 {
     return bitcast<f32>(constant(i));
 }
 
-// A domain record in constants: fitted flag, least, greatest, reduction index.
+// The domain whose record starts at constant `at`: a fitted flag, least, greatest, and reduction
+// index. A fitted domain reads its reduction, and is (0, 1) while no row has a value.
 fn domain(at: u32) -> vec2f {
     if constant(at) == 0u {
         return vec2f(constant_float(at + 1u), constant_float(at + 2u));
@@ -80,12 +83,8 @@ fn domain(at: u32) -> vec2f {
     return vec2f(unordered(~atomicLoad(&domains[d])), unordered(high));
 }
 
-fn theme_word(slot: u32) -> u32 {
-    return frame.theme[slot / 4u][slot % 4u];
-}
-
-// Where word `w` of `row` lies among the pages page table `table` lists: a kind word, or past the
-// kind words an extra word.
+// Where word `w` of `row` lies, given page table `table`. Words from `mark.stride` on are extra
+// words.
 fn word_in(table: u32, row: u32, w: u32) -> u32 {
     return record_at(table, mark.stride + mark.extras, row) + w;
 }
@@ -94,8 +93,8 @@ fn easing() -> bool {
     return mark.frozen != NONE;
 }
 
-// Where channels store word `w` of `row`: while the mark eases, among the words it settles to, which
-// `ease` reads.
+// Where channels store word `w` of `row`: in the settled words during a transition (which `ease`
+// reads), else in the state words.
 fn word_at(row: u32, w: u32) -> u32 {
     return word_in(select(mark.state, mark.settled, easing()), row, w);
 }
@@ -108,22 +107,22 @@ fn store(row: u32, w: u32, value: u32) {
     pages[word_at(row, w)] = value;
 }
 
-// Word `w` of `row` as it was drawn when the transition began.
+// Word `w` of `row` as drawn when the transition began.
 fn was(row: u32, w: u32) -> u32 {
     return pages[word_in(mark.frozen, row, w)];
 }
 
-// Word `w` of `row` as its channels evaluated it, where it settles.
+// Word `w` of `row` as its channels evaluated it: the value the transition settles on.
 fn settled(row: u32, w: u32) -> u32 {
     return pages[word_in(mark.settled, row, w)];
 }
 
-// Where word `w` of `row` shows.
+// Where the shown value of word `w` of `row` lies.
 fn shown_at(row: u32, w: u32) -> u32 {
     return word_in(mark.state, row, w);
 }
 
-// Whether `row` has nothing to ease from: it entered with this change.
+// Whether `row` entered with this change, leaving nothing to ease from.
 fn entering(row: u32, flags: u32) -> bool {
     return (was(row, flags) & ENTERING) != 0u;
 }
@@ -149,8 +148,8 @@ fn pointer_distance(row: u32) -> f32 {
     return distance(to_screen(project(hi, lo, z)), frame.pointer);
 }
 
-// What the view knows of `row` and of itself, as op `code` reads it: whether it is selected or
-// hovered, how far it is from the pointer, the zoom.
+// The view state op `code` reads for `row`: whether it is selected or hovered, its distance to the
+// pointer, or the zoom.
 fn viewed(code: u32, row: u32) -> u32 {
     if !VIEWED {
         return MISSING;
@@ -205,7 +204,7 @@ fn fallback(x: u32, slot: u32) -> u32 {
     return x;
 }
 
-// A number eased from what `row` showed; a row that entered shows its own at once, and appears as
+// A number eased from the value `row` showed. A row that entered shows its new value at once, and
 // its draw grows it in.
 fn ease_number(row: u32, w: u32, now: u32, flags: u32) -> u32 {
     if !easing() || missing_bits(now) || entering(row, flags) {
@@ -225,8 +224,8 @@ fn ease_color(row: u32, w: u32, now: u32, flags: u32) -> u32 {
     return pack4x8unorm(mix(unpack4x8unorm(was(row, w)), unpack4x8unorm(now), mark.motion));
 }
 
-// A position's high word `w` (x or y) eased by its offset from what the row showed, so the
-// destination keeps its precision; its low word, two after it, shows as evaluated.
+// A position's high word `w` (x or y), moved by the remaining offset from the old position, so the
+// destination keeps its precision. Its low word, two words later, shows as evaluated.
 fn ease_position(row: u32, w: u32, now: u32, flags: u32) -> u32 {
     if !easing() || entering(row, flags) || (was(row, flags) & PLACED) == 0u {
         return now;
@@ -236,8 +235,9 @@ fn ease_position(row: u32, w: u32, now: u32, flags: u32) -> u32 {
     return bits(number(now) + offset * (1.0 - mark.motion));
 }
 
-// The flags `row` shows while its mark eases: as evaluated, but a row whose visibility flipped stays
-// drawn and fades, in where it became visible or entered, out where it stopped being.
+// The flags `row` shows during a transition: as evaluated, except that a row whose visibility
+// flipped stays drawn and fades. It fades in if it became visible or entered, and out if it stopped
+// being visible.
 fn faded(row: u32, flags: u32) -> u32 {
     let now = settled(row, flags) & ~(FADE_IN | FADE_OUT);
     let fresh = entering(row, flags);
@@ -252,14 +252,15 @@ fn faded(row: u32, flags: u32) -> u32 {
     return now;
 }
 
-// Sets or clears `bit` of the flags at word `w`; whether the row fades is the ease's to show.
+// Sets or clears `bit` of the flags at word `w`. It also clears `ENTERING` and the fade bits, which
+// only transitions set.
 fn store_flag(row: u32, w: u32, bit: u32, on: bool) {
     let stored = load(row, w);
     store(row, w, select(stored & ~bit, stored | bit, on) & ~(ENTERING | FADE_IN | FADE_OUT));
 }
 
-// A position, from data or in a diagram from its sheet, as high and low parts of x and y; a row
-// without one is not placed.
+// Stores a position (from data, or in a diagram from its sheet) as the high and low parts of x and
+// y, and sets `PLACED`. A missing x or y clears `PLACED` instead.
 fn position(row: u32, w: u32, x: vec2u, y: vec2u) {
     let flags = w + VERTEX_FLAGS - VERTEX_POSITION;
     if missing_bits(x.x) || missing_bits(y.x) {
@@ -345,8 +346,8 @@ fn run(row: u32, start: u32, end: u32) {
     }
 }
 
-// A row that left fades out with its mark's transition; its frozen state is what it showed, but for
-// its comets, which travel on.
+// A row that left fades out during the transition. It shows its frozen words, except its comet
+// travel, which keeps advancing.
 fn fade_exit(row: u32, flags: u32) {
     let travel = travel_words().x;
     for (var w = 0u; w < mark.stride; w++) {
@@ -359,7 +360,7 @@ fn fade_exit(row: u32, flags: u32) {
 
 @compute @workgroup_size(256)
 fn evaluate(@builtin(global_invocation_id) id: vec3u) {
-    // Ends are found over the blocks listed for them; a row that left shows the ends it had.
+    // Ends are resolved over the blocks listed for them. A row that left keeps the ends it had.
     if step == STEP_ENDS {
         let row = blocks[mark.end_block + id.y] * PAGE_ROWS + id.x;
         if row < live() {
@@ -367,15 +368,15 @@ fn evaluate(@builtin(global_invocation_id) id: vec3u) {
         }
         return;
     }
-    // Reductions run over every live block, channels over the blocks listed and only those the mask
-    // names. One loop runs either, since a backend compiles each call of the machine whole.
+    // Reductions run over every live block, which a domain change lists. Channels run over the
+    // listed blocks, and only the channels the mask selects. One loop runs either, because a
+    // backend compiles each call of the machine in full.
     let reducing = step == STEP_REDUCE;
     let row = row_of(id);
     if row >= live() {
         return;
     }
-    // A row whose words start over shows nothing but what its channels write: what none writes reads
-    // as zero.
+    // A row whose words start over is zeroed first, so a word no channel writes reads as zero.
     if !reducing && fresh(id) {
         for (var w = 0u; w < mark.stride + mark.extras; w++) {
             pages[shown_at(row, w)] = 0u;
@@ -399,9 +400,9 @@ fn evaluate(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
-// Each frame a mark eases toward its settled state: every word a channel stores shows the frozen
-// state moved toward the settled one by the mark's progress, as the program says each eases, and the
-// flags show rows fading; rows that left fade out. No channel runs.
+// Writes what every row shows, each frame of a transition. Each word a channel stores moves from
+// its frozen value toward its settled value by the mark's progress, as its blend says, and the
+// flags show fading rows. Rows that left fade out. No channel runs.
 @compute @workgroup_size(256)
 fn ease(@builtin(global_invocation_id) id: vec3u) {
     let row = item(id);
@@ -430,9 +431,9 @@ fn ease(@builtin(global_invocation_id) id: vec3u) {
     pages[shown_at(row, flags)] = faded(row, flags);
 }
 
-// Comets travel on by each stroke row's flow over the frame's step, so a flow that changes carries
-// on from where its comets are. Wrapped at their spacing, travel keeps its precision however long
-// they run.
+// Advances each stroke row's comets by its flow times the frame's time step, so a changed flow
+// continues from where the comets are. Travel wraps at the comet spacing, so it keeps its precision
+// however long comets run.
 @compute @workgroup_size(256)
 fn travel(@builtin(global_invocation_id) id: vec3u) {
     let row = item(id);
@@ -445,12 +446,12 @@ fn travel(@builtin(global_invocation_id) id: vec3u) {
     let spacing = max(frame.flow_spacing, 1e-6);
     var moved = number(pages[at]) + select(flow, 0.0, missing(flow)) * frame.flow_step;
     moved -= spacing * floor(moved / spacing);
-    // Words a row never held read as no travel.
+    // A result outside [0, spacing], such as NaN from a word never written, reads as no travel.
     pages[at] = bits(select(0.0, moved, moved >= 0.0 && moved <= spacing));
 }
 
-// Where a transition moved rows, their comets carry on from where they were: each row takes the
-// travel its frozen state holds.
+// When a transition moves rows, their comets continue from where they were: each row takes the
+// travel from its frozen words.
 @compute @workgroup_size(256)
 fn carry(@builtin(global_invocation_id) id: vec3u) {
     let row = item(id);

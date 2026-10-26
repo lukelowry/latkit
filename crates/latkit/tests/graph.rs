@@ -1,7 +1,8 @@
-//! The graph: edges joining the same two vertices bow into lanes, edges bend through the points of
-//! a path field, edges end in arrowheads, and great circles settle while their vertices animate; in a
-//! diagram, nets join the ports of the vertices naming them, a block makes room for its ports and
-//! drops its shadow onto the sheet, and orthogonal wires route around blocks.
+//! Graphs. Edges between the same two vertices bow into lanes, edges bend through the points of a
+//! path field, edges end in arrowheads, and great-circle edges settle while their vertices animate.
+//! In a diagram, nets join the ports of the vertices that reference them, a block grows to fit its
+//! ports and drops its shadow onto the sheet, and orthogonal wires route around blocks. Ports pick
+//! by name, and neighbors follow edges and nets.
 
 #![cfg(feature = "gpu")]
 
@@ -32,7 +33,7 @@ fn nodes(x: Vec<f64>, y: Vec<f64>) -> Table {
     Table::new("Node", ids).field("x", x).field("y", y)
 }
 
-/// Renders frames until `pending` resolves, within the settle deadline.
+/// Renders frames until `pending` resolves, within `SETTLE` frames.
 fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
     let mut pending = pin!(pending);
     let mut context = Context::from_waker(Waker::noop());
@@ -61,8 +62,8 @@ fn edges_joining_the_same_vertices_bow_into_lanes_in_world_units() {
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(latkit::Color::WHITE))
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(2.0));
     let mut view = view(&gpu, scene, &data);
-    // Half a lane each way, bowing 0.12 of the edges' 80 units a lane: 4.8 units off at the middle,
-    // which zooming in scales as it does the rest of the drawing.
+    // The two edges bow half a lane each way. A lane is 0.12 of their 80-unit length, so each is
+    // 4.8 units off center at the middle. Zooming scales that like the rest of the drawing.
     for (zoom, off) in [(0.0, 5), (1.0, 10)] {
         view.set_camera(latkit::Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
         let pixels = frame(&gpu, &mut view);
@@ -104,7 +105,7 @@ fn edges_bend_through_their_points_and_pick_there() {
 }
 
 #[test]
-fn nets_join_the_ports_naming_them() {
+fn nets_join_the_ports_that_reference_them() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(
@@ -145,7 +146,7 @@ fn nets_of_more_than_two_meet_at_a_junction() {
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(2.0).port("net", Side::Left));
     let mut view = view(&gpu, scene, &data);
     let pixels = frame(&gpu, &mut view);
-    // The junction sits at the middle of the three ports, 15 units down and 2 left.
+    // The junction sits at the center of the three ports, 15 units down and 2 left.
     assert!(lit(at(&pixels, C - 2, C + 15)), "at the junction");
     assert!(lit(at(&pixels, C - 2, C + 30)), "to the third terminal");
     assert!(!lit(at(&pixels, C, C - 20)), "nothing above");
@@ -166,7 +167,7 @@ fn an_unlabeled_block_makes_room_for_its_ports() {
         .fold(Vertices::of("graph", "Node").position("x", "y"), |v, port| v.port(port, Side::Left));
     let mut view = view(&gpu, Scene::new(diagram()).draw(block), &data);
     let pixels = frame(&gpu, &mut view);
-    // Four ports a pitch apart down its left side, a pitch to spare: about 77 units tall.
+    // Four ports one pitch apart down its left side, plus a pitch of margin: about 77 units tall.
     assert!(lit(at(&pixels, C, C + 30)) && lit(at(&pixels, C, C - 30)), "tall enough for its ports");
     assert!(!lit(at(&pixels, C, C + 45)), "and no taller");
     assert_eq!(errors(&mut view), Vec::new());
@@ -193,11 +194,12 @@ fn a_block_drops_its_shadow_onto_the_sheet_below_it() {
         view.set_sources([&data]).expect("a source");
         let pixels = frame(&gpu, &mut view);
         assert_eq!(errors(&mut view), Vec::new());
-        // y runs down the sheet: just under the block's bottom edge, 12 units below its middle.
+        // Y points down the sheet. Sample just under the block's bottom edge, 12 units below its
+        // center.
         at(&pixels, C, C + 15)[0]
     };
     let (dropped, bare) = (below(true), below(false));
-    assert!(dropped + 20 < bare, "the shadow darkens the sheet below: {dropped} under {bare}");
+    assert!(dropped + 20 < bare, "the shadow darkens the sheet below: {dropped} with, {bare} without");
 }
 
 #[test]
@@ -218,7 +220,8 @@ fn edges_along_great_circles_settle_while_their_vertices_pulse() {
             )),
     )
     .expect("valid");
-    // The vertices' color reads the clock, so they evaluate every frame; nothing their arcs bend by moves.
+    // The vertices' color reads the clock, so they evaluate every frame, but nothing the arcs
+    // depend on moves.
     let pulse = latkit::elapsed().sin().colormap(latkit::Colormap::VIRIDIS).domain(-1.0..=1.0);
     let scene = Scene::new(latkit::Earth {
         graticule: false,
@@ -322,14 +325,14 @@ fn orthogonal_routes_run_around_vertices() {
     let mut view = view(&gpu, scene, &data);
     let pixels = frame(&gpu, &mut view);
     let green = |y: u32| at(&pixels, C, y)[1] > 120 && at(&pixels, C, y)[0] < 60;
-    // A straight edge would run under node 3, hidden; the route goes over or under it.
+    // A straight edge would run hidden under node 3. The route goes above or below it.
     let around = (C - 45..C - 11).chain(C + 11..C + 45).any(green);
     assert!(around, "around the vertex between");
     assert_eq!(errors(&mut view), Vec::new());
 }
 
 #[test]
-fn many_routes_route_in_a_job_and_land() {
+fn many_routes_route_in_a_job_and_arrive() {
     let Some(gpu) = gpu() else { return };
     let links = |n: usize| {
         let data = Data::new("graph");
@@ -348,7 +351,7 @@ fn many_routes_route_in_a_job_and_land() {
         .draw(Vertices::of("graph", "Node").position("x", "y").size(20.0, 20.0).marker(latkit::Shape::Rectangle));
     let mut view = view(&gpu, scene, &links(1));
     frame(&gpu, &mut view);
-    // More wires than route on the frame: they draw as elbows until the job's routes land.
+    // More wires than one frame routes: they draw as elbows until the job's routes arrive.
     view.set_sources([links(64)]).expect("a source");
     for _ in 0..4 {
         step(&gpu, &mut view);

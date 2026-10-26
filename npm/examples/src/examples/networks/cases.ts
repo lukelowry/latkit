@@ -1,13 +1,16 @@
 /**
- * Synthetic grid cases, as the page fetches them from `public/grids`, each gzip-compressed.
+ * Synthetic grid cases. The page fetches them gzip-compressed from `public/grids`.
  *
- * A case file holds a "LKG1" magic and a u32 header length, then a JSON header naming the case and
- * its counts, then typed arrays on eight-byte boundaries past the header, where its `arrays` place
- * them as [type, offset, length]: each bus's number, name, kV, longitude and latitude, load and
- * generation in MW; each branch's two bus rows, reactance, and whether it transforms; each machine's
- * bus row, name, rating, and output. Simulated cases also hold each machine's speed deviation, frame
- * by frame as int16 of `speedScale` per unit, `dt` seconds apart, and the fault the simulation
- * applied.
+ * A case file starts with the magic "LKG1" and a u32 header length, followed by a JSON header with
+ * the case's name and counts. Typed arrays follow on eight-byte boundaries. The header's `arrays`
+ * gives each as [type, offset, length], with the offset in bytes from the first eight-byte boundary
+ * after the header and the length in elements. The arrays hold:
+ * - per bus: number, name, kV, longitude and latitude, and load and generation in MW;
+ * - per branch: its two bus rows, reactance, and whether it is a transformer;
+ * - per machine: bus row, name, rating, and output.
+ *
+ * Simulated cases also hold each machine's speed deviation for every frame, `dt` seconds apart, as
+ * int16 in steps of `speedScale` per unit, and the fault the simulation applied.
  */
 import { Data, Patch, reference } from 'latkit';
 
@@ -25,14 +28,14 @@ interface Header {
   >;
 }
 
-/** A case's simulation: each machine's speed deviation over the seconds simulated. */
+/** A case's simulation: each machine's speed deviation over the simulated time. */
 export interface Simulation {
   readonly frames: number;
   readonly dt: number;
   readonly duration: number;
-  /** Speed deviation in mHz, frame by frame, a value per machine. */
+  /** Speed deviation in mHz, one value per machine for each frame, frame-major. */
   readonly speeds: Float32Array;
-  /** The largest deviation, in mHz, either way. */
+  /** The largest deviation either way, in mHz: the int16 maximum at the file's `speedScale`. */
   readonly largest: number;
   readonly fault?: { readonly bus: string; readonly on: number; readonly off: number };
 }
@@ -45,19 +48,20 @@ export interface Case {
   readonly machines: number;
   /** Bytes downloaded, compressed. */
   readonly bytes: number;
-  /** Whether its buses have names, which labels show. */
+  /** Whether its buses have names, which labels and search use. */
   readonly named: boolean;
-  /** Each bus's longitude and latitude, and its load and generation in MW. */
+  /** Each bus's longitude and latitude, interleaved. `load` and `generation` are per bus, in MW. */
   readonly positions: Float32Array;
   readonly load: Float32Array;
   readonly generation: Float32Array;
-  /** Each machine's bus row, and its output in MW. */
+  /** Each machine's bus row. `machinePower` is each machine's output in MW. */
   readonly machineBus: Uint32Array;
   readonly machinePower: Float32Array;
   readonly simulation?: Simulation;
 }
 
-/** A bus's or line's voltage level: 0 below 100 kV, then 115–161, 230, 345, 500, and 765 kV. */
+/** The voltage level of a bus or line, an index into `LEVELS`: 0 below 100 kV, then 115–161, 230,
+ * 345, 500, and 765 kV. */
 export function levelOf(kv: number): number {
   return kv >= 700 ? 5 : kv >= 450 ? 4 : kv >= 300 ? 3 : kv >= 200 ? 2 : kv >= 100 ? 1 : 0;
 }
@@ -66,7 +70,8 @@ export const LEVELS = ['< 100 kV', '115–161 kV', '230 kV', '345 kV', '500 kV',
 const MAGIC = 0x31474b4c;
 const text = new TextDecoder();
 
-/** A case file's bytes, read into one dataset named `grid`: buses, lines, machines, and the fault. */
+/** Reads a case file into a dataset named `grid` with tables `Bus`, `Line`, `Machine`, and, for a
+ * simulated fault, `Fault`. Throws if the bytes are not a case. */
 export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.byteLength): Case {
   const view = new DataView(buffer);
   if (buffer.byteLength < 8 || view.getUint32(0, true) !== MAGIC)
@@ -162,7 +167,7 @@ export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.by
   if (simulated) {
     const frames = header.frames!;
     const dt = header.dt!;
-    // Per unit of 60 Hz, in mHz.
+    // Converts int16 steps to mHz: a step is `speedScale` per unit, and 1 per unit is 60 Hz.
     const scale = (header.speedScale ?? 1) * 60_000;
     const speeds = Float32Array.from(array('machine.speed', Int16Array), (value) => value * scale);
     patch.axis('time', 's');
@@ -198,17 +203,17 @@ export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.by
   };
 }
 
-/** How far a download has come: bytes received, of how many when the response says. */
+/** Reports download progress: the bytes received so far, and the total if the response gives it. */
 export type Progress = (received: number, total: number | undefined) => void;
 
-/** Megabytes received, of how many when known, for a status line. */
+/** Formats download progress in megabytes for a status line, with the total when known. */
 export const megabytes = (received: number, total: number | undefined) =>
   `${(received / 1e6).toFixed(1)}${total ? ` of ${(total / 1e6).toFixed(1)}` : ''} MB`;
 
 /**
- * A file's bytes, inflated where they arrive gzip-compressed, and how many arrived; `progress`
- * hears of each chunk. A total the response gives that counts fewer bytes than arrive, as a
- * compressed transfer's does, goes untold.
+ * Downloads a file. Returns its bytes, inflated if they arrive gzip-compressed, and the number of
+ * bytes received before inflating. `progress` is called for each chunk. It gets no total once the
+ * bytes received exceed the response's length, as they do when the transfer is compressed.
  */
 export async function download(
   url: string,
@@ -218,7 +223,7 @@ export async function download(
   const response = await fetch(url, {
     signal: AbortSignal.any([signal, AbortSignal.timeout(180_000)]),
   });
-  if (!response.ok || !response.body) throw new Error(`${url} answered ${response.status}`);
+  if (!response.ok || !response.body) throw new Error(`${url}: HTTP ${response.status}`);
   const total = Number(response.headers.get('content-length')) || undefined;
   const chunks: Uint8Array[] = [];
   let received = 0;

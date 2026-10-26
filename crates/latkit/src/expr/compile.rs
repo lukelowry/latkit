@@ -1,7 +1,7 @@
-//! Expressions to bytecode: each channel of a mark is a range of ops that ends in a store.
+//! Compiles expressions to bytecode. Each channel of a mark is a range of ops ending in a store.
 //!
-//! Compilation type-checks against the data's fields and records what each channel depends on, so
-//! the view evaluates a channel only when one of its inputs changes.
+//! Compilation type-checks expressions against the data's fields and records each channel's
+//! inputs, so the view re-evaluates a channel only when one of its inputs changes.
 
 use std::ops::BitOr;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use super::{Binary, Colormap, ColormapKind, Domain, Expr, FieldRef, Node, State,
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Kind, Name, Result};
 
-/// What a channel reads, so the view knows when to evaluate it again.
+/// The kinds of input a channel reads, so the view knows when to re-evaluate it.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Deps(u8);
 
@@ -49,19 +49,19 @@ pub(crate) enum Words {
     Values,
     /// Text as dictionary codes.
     Codes,
-    /// Reference rows as `u32`, `NONE` where unwired.
+    /// Referenced rows as `u32`, `NONE` where the reference is unset.
     Bits,
     /// A point's x.
     X,
     /// A point's y.
     Y,
-    /// A geometry's points per row: a page's row count, each row's first point and the end, then
-    /// every point's x and y; parts are broken by a missing point.
+    /// A geometry's points per row: the page's row count, each row's first point index and the end
+    /// index, then every point's x and y. A missing point separates parts.
     Path,
 }
 
-/// A column a program reads: of the mark's own table, of another dataset's table joined by row id,
-/// or of the table the view derives beside the mark's own, row for row.
+/// A column a program reads: from the mark's own table, from another dataset's table joined by row
+/// id, or from the derived table the view keeps alongside the mark's table, row for row.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ColumnUse {
     pub(crate) from: Option<(Name, Name)>,
@@ -70,9 +70,9 @@ pub(crate) struct ColumnUse {
     pub(crate) words: Words,
     pub(crate) sampled: bool,
     pub(crate) step: bool,
-    /// Also read the part `f32` drops of an `f64`, for positions.
+    /// Also read the low part that `f32` loses from an `f64`, for full-precision positions.
     pub(crate) low: bool,
-    /// Read every frame in view, as a line tracing the field does.
+    /// Read at every frame in view, as a line tracing the field does.
     pub(crate) trace: bool,
 }
 
@@ -97,15 +97,15 @@ impl ColumnUse {
     }
 }
 
-/// An end of each row of a mark: the table whose row it names, and the program column of the
-/// reference field naming it, `NONE` where the end is the row's own vertex, as a pole's.
+/// One end of each row of a mark: the vertex table it references, and the program column of the
+/// reference field, or `NONE` when the end is the row's own vertex, as for a pole.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct EndUse {
     pub(crate) table: Name,
     pub(crate) column: u32,
 }
 
-/// A constant holding a text's dictionary code in a column; the view writes it.
+/// A constant that holds `text`'s dictionary code in `column`; the view fills it in.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct TextUse {
     pub(crate) constant: u32,
@@ -113,7 +113,7 @@ pub(crate) struct TextUse {
     pub(crate) text: Arc<str>,
 }
 
-/// A mark's compiled channels and what they read.
+/// A mark's compiled channels and their inputs.
 #[derive(Clone, Default, PartialEq, Debug)]
 pub(crate) struct Program {
     pub(crate) code: Vec<[u32; 4]>,
@@ -121,26 +121,28 @@ pub(crate) struct Program {
     /// Op ranges of every channel, then of every reduction.
     pub(crate) ranges: Vec<[u32; 2]>,
     pub(crate) channels: Vec<Channel>,
-    /// What each fitted domain's input reads, and the input: a table drawn in part fits a domain
-    /// reading only its data over all its rows on the CPU.
+    /// The [`Reads`] of each fitted domain's input, then the inputs themselves. For a paged table,
+    /// a domain whose input reads only data (no view state or derived fields) is fitted on the CPU
+    /// over all rows.
     pub(crate) domains: Vec<Reads>,
     pub(crate) fitted: Vec<Expr>,
     pub(crate) columns: Vec<ColumnUse>,
     pub(crate) texts: Vec<TextUse>,
-    /// Colormap ops, whose layer the view writes.
+    /// Each colormap op's index in `code`, with its colormap; the view writes the op's texture
+    /// layer.
     pub(crate) colormaps: Vec<(u32, Colormap)>,
-    /// Each row's ends, by number: where each is held, the end pass writes into the kind word of its
-    /// number.
+    /// Each row's ends, in order. The end pass writes the GPU row holding end `i` into kind word
+    /// `i`.
     pub(crate) ends: Vec<EndUse>,
-    /// State words stored in position units.
+    /// Bit mask of the state words stored in position units.
     pub(crate) units: u32,
 }
 
-/// What a channel or a fitted domain reads: kinds of input, and which of the program's columns.
+/// The inputs of a channel or a fitted domain: kinds of input, and which of the program's columns.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(crate) struct Reads {
     pub(crate) deps: Deps,
-    /// Bit `i` for column `i`; the last bit stands for every column past it.
+    /// Bit `i` for column `i`; bit 63 also covers every column after it.
     pub(crate) columns: u64,
 }
 
@@ -157,7 +159,7 @@ pub(crate) struct Channel {
 }
 
 impl Program {
-    /// What all channels read together.
+    /// The kinds of input all channels read together.
     pub(crate) fn reads(&self) -> Deps {
         self.channels.iter().fold(Deps::default(), |all, c| all | c.reads.deps)
     }
@@ -176,7 +178,7 @@ pub(crate) enum Store {
 pub(crate) trait Fields {
     /// The kind of `name` in the mark's table, or in `from`'s table.
     fn kind(&self, from: Option<&(Name, Name)>, name: &str) -> Option<Kind>;
-    /// The table a reference field of the mark's table names.
+    /// The table that reference field `name` of the mark's table points to.
     fn target(&self, name: &str) -> Option<Name>;
 }
 
@@ -246,8 +248,8 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles a position channel reading the place the view derives for each row, at full
-    /// precision.
+    /// Compiles a position channel that reads each row's derived position (from a diagram's sheet
+    /// or the scene's layout), at full precision.
     pub(crate) fn derived_position(&mut self, word: u32) -> Result<()> {
         let start = self.begin();
         let [x, y] =
@@ -269,7 +271,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// The program column of the derived field `field`, read as words.
+    /// The program column of the derived field `field`, read as `u32` words.
     pub(crate) fn derived_bits(&mut self, field: &str) -> u32 {
         self.column(ColumnUse::derived(field, Words::Bits))
     }
@@ -284,7 +286,8 @@ impl<'a> Compiler<'a> {
         self.column(ColumnUse::own(field, Words::Path))
     }
 
-    /// The program column of the mark's reference field `name`, read as the rows it names.
+    /// The program column of the mark's reference field `name`, read as the rows it references.
+    /// Errors if `name` is not a reference field.
     pub(crate) fn bits(&mut self, name: &str) -> Result<u32> {
         if self.fields.kind(None, name) != Some(Kind::Reference) {
             return Err(invalid("not a reference field"));
@@ -292,27 +295,27 @@ impl<'a> Compiler<'a> {
         Ok(self.column(ColumnUse::own(name, Words::Bits)))
     }
 
-    /// Refuses `expr` for option `name` when it reads anything but static fields: the CPU works it
-    /// out from the data alone, as it does a row's priority.
+    /// Errors if `expr`, given for option `name`, reads anything but static fields. Options such as
+    /// a row's priority are computed on the CPU from the data alone.
     pub(crate) fn check_data(&self, name: &str, expr: &Expr) -> Result<()> {
         match self.unstructural(expr) {
-            Some(reason) => Err(invalid(format!("{name} reads data only, not {reason}")).at(name)),
+            Some(reason) => Err(invalid(format!("{name} can read only data, not {reason}")).at(name)),
             None => Ok(()),
         }
     }
 
-    /// Refuses `exprs` for option `name` when they read anything but static fields: where a
-    /// diagram's rows stand and how large they are is its structure, made from the data alone.
+    /// Errors if any of `exprs`, given for option `name`, reads anything but static fields. A
+    /// diagram's positions and sizes are its structure, which the sheet computes from data alone.
     pub(crate) fn check_structure<'e>(&self, name: &str, exprs: impl IntoIterator<Item = &'e Expr>) -> Result<()> {
         for expr in exprs {
             if let Some(reason) = self.unstructural(expr) {
-                return Err(invalid(format!("a diagram's {name} reads data only, not {reason}")).at(name));
+                return Err(invalid(format!("a diagram's {name} can read only data, not {reason}")).at(name));
             }
         }
         Ok(())
     }
 
-    /// What `expr` reads that structure cannot: view state or a sampled field.
+    /// The first input of `expr` that structure cannot depend on: view state or a sampled field.
     fn unstructural(&self, expr: &Expr) -> Option<&'static str> {
         match &*expr.0 {
             Node::State(State::Selected | State::Hovered) => Some("selection or hover"),
@@ -332,7 +335,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Adds the next end of each row: the vertex the reference field `name` names.
+    /// Adds the next end of each row: the vertex that reference field `name` references.
     pub(crate) fn end(&mut self, name: &str) -> Result<()> {
         if self.fields.kind(None, name) != Some(Kind::Reference) {
             return Err(invalid("not a reference field").at(name));
@@ -343,16 +346,16 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Adds the next end of each row: the row itself, as the vertex mark drawing the mark's own table
-    /// holds it, row for row, as a pole stands on.
+    /// Adds the next end of each row: the row's own vertex, as placed by the vertex mark that draws
+    /// `table`, the mark's own table. A pole stands on it.
     pub(crate) fn own_end(&mut self, table: &Name) {
         self.program.ends.push(EndUse { table: table.clone(), column: wgsl::NONE });
     }
 
-    /// Compiles channel `name` storing the code of text field `expr` at `word`, and returns the
-    /// program column whose dictionary names the codes.
+    /// Compiles channel `name`, storing the dictionary code of text field `expr` at `word`. Returns
+    /// the program column whose dictionary decodes the codes.
     pub(crate) fn text(&mut self, name: &str, expr: &Expr, word: u32) -> Result<u32> {
-        let Node::Field(f) = &*expr.0 else { return Err(invalid("a label's text is a text field").at(name)) };
+        let Node::Field(f) = &*expr.0 else { return Err(invalid("a label's text must be a text field").at(name)) };
         if self.fields.kind(f.from.as_ref(), &f.name) != Some(Kind::Text) {
             return Err(invalid("not a text field").at(&f.name).at(name));
         }
@@ -364,7 +367,8 @@ impl<'a> Compiler<'a> {
         Ok(column)
     }
 
-    /// The column of sampled field `name` that a line traces over the axis.
+    /// The column of sampled field `name` that a line traces over the axis. Errors if `name` is not
+    /// a sampled field.
     pub(crate) fn trace(&mut self, name: &str) -> Result<u32> {
         if self.fields.kind(None, name) != Some(Kind::Sampled) {
             return Err(invalid("not a sampled field").at(name));
@@ -446,7 +450,7 @@ impl<'a> Compiler<'a> {
 
     fn coordinate(&mut self, e: &Expr) -> Result<()> {
         if mentions_pointer(e) {
-            return Err(invalid("pointer() cannot place a position"));
+            return Err(invalid("a position cannot use pointer()"));
         }
         self.expect(e, Ty::Number)
     }
@@ -493,8 +497,8 @@ impl<'a> Compiler<'a> {
             Node::Binary(op, a, b) => self.binary(*op, a, b),
             Node::When(c, a, b) => {
                 self.expect(c, Ty::Bool).map_err(|e| e.at("when"))?;
-                // A missing value takes the other branch's type, so it goes last: a missing first
-                // branch swaps the branches and negates the condition.
+                // A missing value takes the other branch's type, so it must compile second. A
+                // missing first branch swaps the branches and negates the condition.
                 let (a, b) = match (&*a.0, &*b.0) {
                     (Node::Missing, Node::Missing) => (a, b),
                     (Node::Missing, _) => {
@@ -512,17 +516,17 @@ impl<'a> Compiler<'a> {
                 let ty = match (ta, self.emit(b)?) {
                     (a, b) if a == b => a,
                     (Ty::Bool, Ty::Number) | (Ty::Number, Ty::Bool) => Ty::Number,
-                    (a, b) => return Err(invalid(format!("when chooses between {} and {}", ty_name(a), ty_name(b)))),
+                    (a, b) => return Err(invalid(format!("when mixes {} and {}", ty_name(a), ty_name(b)))),
                 };
                 self.op(wgsl::OP_SELECT, 0, 0, 0, 3, 1)?;
                 Ok(ty)
             }
             Node::Contains(a, text) => {
-                // The view works out on the CPU whether each row's text holds the text, as a field
-                // derived beside the mark's own table.
-                let Node::Field(f) = &*a.0 else { return Err(invalid("contains reads a text field")) };
+                // The view computes each row's match on the CPU, as a derived field alongside the
+                // mark's own table.
+                let Node::Field(f) = &*a.0 else { return Err(invalid("contains needs a text field")) };
                 if f.from.is_some() || self.fields.kind(None, &f.name) != Some(Kind::Text) {
-                    return Err(invalid("contains reads a text field of the mark's own table").at(&f.name));
+                    return Err(invalid("contains needs a text field of the mark's own table").at(&f.name));
                 }
                 let name = crate::derive::matches::contains_of(&f.name, text);
                 let column = self.column(ColumnUse::derived(name, Words::Values));
@@ -531,9 +535,9 @@ impl<'a> Compiler<'a> {
                 Ok(Ty::Bool)
             }
             Node::Is(a, text) => {
-                let Node::Field(f) = &*a.0 else { return Err(invalid("is compares a text field")) };
+                let Node::Field(f) = &*a.0 else { return Err(invalid("is needs a text field")) };
                 if self.fields.kind(f.from.as_ref(), &f.name) != Some(Kind::Text) {
-                    return Err(invalid("is compares a text field").at(&f.name));
+                    return Err(invalid("is needs a text field").at(&f.name));
                 }
                 let column = self.field_column(f, Words::Codes, false);
                 self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
@@ -582,7 +586,7 @@ impl<'a> Compiler<'a> {
             (Kind::Sampled, None) => (Words::Values, Ty::Number, true),
             (Kind::Point, Some(0)) => (Words::X, Ty::Number, false),
             (Kind::Point, Some(1)) => (Words::Y, Ty::Number, false),
-            (Kind::Reference, _) => return Err(invalid("a reference names rows; read it as an end").at(&f.name)),
+            (Kind::Reference, _) => return Err(invalid("a reference field holds rows, not values").at(&f.name)),
             _ => return Err(invalid("not a number, boolean, or text field").at(&f.name)),
         };
         let column = self.field_column(f, words, sampled);
@@ -637,7 +641,8 @@ impl<'a> Compiler<'a> {
         Ok(ty)
     }
 
-    /// A domain record in the constants; a fitted one adds a reduction of its input.
+    /// Adds a domain record to the constants and returns its index. A fitted domain also compiles a
+    /// reduction of its input.
     fn domain(&mut self, input: &Expr, domain: Domain) -> Result<u32> {
         let at = self.program.constants.len() as u32;
         match domain {
@@ -646,7 +651,7 @@ impl<'a> Compiler<'a> {
             }
             Domain::Fit => {
                 if self.reducing {
-                    return Err(invalid("a fitted domain's input cannot fit another domain; set one with domain"));
+                    return Err(invalid("nested fitted domains are not supported; give the inner one a domain"));
                 }
                 let index = self.program.domains.len() as u32;
                 self.program.domains.push(Reads::default());

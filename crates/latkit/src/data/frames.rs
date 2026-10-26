@@ -1,15 +1,17 @@
-//! Time tiles: a dataset written as the files a view fetches its sampled fields' histories from, in
-//! spans, as it asks for them. A span of level `k` holds `chunk` entries of the level: frames at level
-//! 0, else buckets of `8^k` frames. Eight spans make the one a level up, as four map tiles make the
-//! tile a zoom out, so a span still loading draws the nearest span above it that has landed.
+//! Time tiles: a dataset written as files from which a view fetches its sampled fields' histories
+//! in spans, on demand. A span of level `k` holds `chunk` entries of that level: frames at level 0,
+//! buckets of `8^k` frames above. One span covers the same frames as eight spans of the level
+//! below, as one map tile covers four tiles one zoom level in. While a span loads, the view draws
+//! the nearest coarser span that has arrived.
 //!
-//! | File          | What it holds                                                                   |
-//! | ------------- | ------------------------------------------------------------------------------- |
-//! | `frames.json` | the manifest: `data`, `chunk`, `url`, and `frames`, each sampled field's table, |
-//! |               | name, and the frames it reads, `[first, end]`                                   |
-//! | `base.latk`   | the dataset with every sampled field reading its frames but holding none        |
-//! | spans         | at `url`, `{field}` the field's place in `frames`: a patch holding the span's   |
-//! |               | entries, one `frames` change for each run of them                               |
+//! | File          | Contents                                                                     |
+//! | ------------- | ---------------------------------------------------------------------------- |
+//! | `frames.json` | the manifest: `data`, `chunk`, `url`, and `frames`, which lists each sampled |
+//! |               | field's `table`, `field`, `levels` (highest level stored), and `frames`      |
+//! |               | (`[first, end]`)                                                             |
+//! | `base.latk`   | the dataset with each sampled field's frame range but none of its entries    |
+//! | spans         | at `url`, with `{field}` the field's index in `frames`: a patch with one     |
+//! |               | `frames` change per run of the span's entries                                |
 
 use std::ops::Range;
 
@@ -20,14 +22,15 @@ use super::snapshot::Snapshot;
 use super::table::Field;
 use crate::{Error, Result};
 
-/// The manifest's name.
+/// The manifest's file name.
 pub(crate) const MANIFEST: &str = "frames.json";
-/// The dataset without its sampled fields' entries.
+/// The file name of the dataset without its sampled fields' entries.
 const BASE: &str = "base.latk";
-/// Where each span lies, beside the manifest.
+/// The path template of each span, relative to the manifest.
 const URL: &str = "{field}/{level}/{index}.latk";
 
-/// A sampled field a manifest lists: its table and name, and the frames it reads, `[first, end]`.
+/// A sampled field listed in a manifest: its table and name, its highest stored level, and the
+/// frames it covers, written `[first, end]`.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Listed {
     pub(crate) table: Name,
@@ -37,8 +40,8 @@ pub(crate) struct Listed {
     pub(crate) frames: Range<u64>,
 }
 
-/// What a manifest says: where the dataset without its sampled fields' entries lies, the entries a
-/// span holds, where each span lies, and the fields listed.
+/// The contents of `frames.json`: the path of the base dataset (`data`), the entries per span
+/// (`chunk`), the span path template (`url`), and the listed fields.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Manifest {
     pub(crate) data: String,
@@ -48,7 +51,7 @@ pub(crate) struct Manifest {
     pub(crate) fields: Vec<Listed>,
 }
 
-/// Frames `first..end`, written `[first, end]`.
+/// Serializes frames `first..end` as `[first, end]`.
 mod range {
     use std::ops::Range;
 
@@ -61,15 +64,16 @@ mod range {
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Range<u64>, D::Error> {
         match <[u64; 2]>::deserialize(d)? {
             [first, end] if first <= end => Ok(first..end),
-            _ => Err(de::Error::custom("frames are [first, end], the first at most the end")),
+            _ => Err(de::Error::custom("frames must be [first, end] with first at most end")),
         }
     }
 }
 
 impl Manifest {
-    /// The manifest `bytes` hold; `None` where they hold none, being no JSON object listing `frames`.
+    /// Parses a manifest. Returns `None` when `bytes` are not a JSON object with a `frames` list,
+    /// so other tile formats can be tried, and an error when they are one but invalid.
     pub(crate) fn from_bytes(bytes: &[u8]) -> Option<Result<Manifest>> {
-        /// What any manifest holds, whatever else it does.
+        /// The key every manifest has, used to recognize one.
         #[derive(serde::Deserialize)]
         struct Listing {
             #[serde(rename = "frames")]
@@ -79,11 +83,11 @@ impl Manifest {
         crate::from_json::<Listing>(text).ok()?;
         let manifest = crate::from_json::<Manifest>(text).and_then(|m| {
             if !chunks(m.chunk) {
-                return Err(Error::invalid("a span holds a multiple of 8 entries, 8 to 2^20").at("chunk"));
+                return Err(Error::invalid("a span must hold a multiple of 8 entries, from 8 to 2^20").at("chunk"));
             }
             for (i, field) in m.fields.iter().enumerate() {
                 if field.levels > super::samples::MAX_LEVEL {
-                    return Err(Error::invalid("sample levels run from 0 to 21").at("levels").at(i).at("frames"));
+                    return Err(Error::invalid("sample levels must be from 0 to 21").at("levels").at(i).at("frames"));
                 }
             }
             Ok(m)
@@ -91,7 +95,8 @@ impl Manifest {
         Some(manifest.map_err(|e| e.at(MANIFEST)))
     }
 
-    /// Where span `index` of `level` of the field listed `field`th lies, `url` its template.
+    /// The path of span `index` at `level` of the field at index `field` in the manifest, from
+    /// template `url`.
     pub(crate) fn span(url: &str, field: usize, level: u32, index: u64) -> String {
         url.replace("{field}", &field.to_string())
             .replace("{level}", &level.to_string())
@@ -99,24 +104,29 @@ impl Manifest {
     }
 }
 
-/// Whether a span may hold `chunk` entries: a multiple of 8, so a bucket a level up never straddles two.
+/// Whether `chunk` is a valid number of entries per span: from 8 to 2^20 and a multiple of 8, so a
+/// bucket one level up never straddles two spans.
 fn chunks(chunk: u32) -> bool {
     (8..=1 << 20).contains(&chunk) && chunk.is_multiple_of(8)
 }
 
 impl Snapshot {
-    /// The dataset as time tiles, each file's path and bytes handed to `write`: `frames.json`, the
-    /// manifest a view's tiles open; `base.latk`, the dataset with its sampled fields reading their
-    /// frames but holding none; and a patch for each span of `chunk` entries of each level of each
-    /// sampled field that holds any, at `{field}/{level}/{index}.latk`. A view given the manifest as
-    /// [`Tiles`](crate::Tiles) fetches the spans its lines draw, at the level of detail its plot
-    /// window asks, and those about the coordinate it shows; until a span lands, the span above it
-    /// draws.
+    /// Writes the dataset as time tiles, passing each file's path and bytes to `write`:
     ///
-    /// The manifest is written last, so a reader finding it finds every file it names.
+    /// - `frames.json`, the manifest;
+    /// - `base.latk`, the dataset with each sampled field's frame range but none of its entries;
+    /// - `{field}/{level}/{index}.latk`, a patch for each span of `chunk` entries, for every level
+    ///   of every sampled field that has entries there.
+    ///
+    /// A view given the manifest as [`Tiles`](crate::Tiles) fetches the spans its lines draw, at
+    /// the level of detail its plot window needs, and the frames around the coordinate it shows.
+    /// Until a span arrives, the coarser span above it is drawn.
+    ///
+    /// The manifest is written last, so a reader that finds it finds every file it names. Errors if
+    /// `chunk` is not a multiple of 8 from 8 to 2^20, or if `write` fails.
     pub fn to_tiles(&self, chunk: u32, mut write: impl FnMut(&str, &[u8]) -> Result<()>) -> Result<()> {
         if !chunks(chunk) {
-            return Err(Error::invalid("a span holds a multiple of 8 entries, 8 to 2^20").at("chunk"));
+            return Err(Error::invalid("a span must hold a multiple of 8 entries, from 8 to 2^20").at("chunk"));
         }
         let entries_per_span = u64::from(chunk);
         let mut base = self.clone();
@@ -132,7 +142,8 @@ impl Snapshot {
                     levels: samples.levels(),
                     frames: samples.start()..samples.end(),
                 });
-                // Runs come level by level, in order, so each span is whole once the next begins.
+                // Runs come level by level in entry order, so a span is complete once the next one
+                // begins.
                 let mut span: Option<((u32, u64), Patch)> = None;
                 for run in samples.runs() {
                     for index in run.entries.start / entries_per_span..run.entries.end.div_ceil(entries_per_span) {
@@ -177,7 +188,7 @@ mod tests {
     use crate::{Data, Ids, Table};
 
     #[test]
-    fn a_history_writes_as_spans_a_manifest_names() {
+    fn a_history_writes_as_spans_listed_in_a_manifest() {
         let grid = Data::new("grid");
         grid.apply(
             Patch::new().axis("time", "s").replace(Table::new("Bus", Ids::count(2)).field("kv", vec![1.0, 2.0])),
@@ -195,7 +206,8 @@ mod tests {
         .expect("tiles");
         let manifest = Manifest::from_bytes(&files[MANIFEST]).expect("a manifest").expect("valid");
         assert_eq!(manifest.fields, [Listed { table: "Bus".into(), field: "vm".into(), levels: 2, frames: 0..100 }]);
-        // 100 frames: 7 spans of 16 at level 0; 12 buckets of 8 in 1 span at level 1; 1 of 64 at level 2.
+        // 100 frames: 7 spans of 16 at level 0; 12 buckets of 8 in 1 span at level 1; 1 bucket of
+        // 64 at level 2.
         let spans: Vec<&str> = files
             .keys()
             .map(String::as_str)
@@ -205,10 +217,10 @@ mod tests {
         let back = Data::from(Snapshot::from_bytes(&files[BASE]).expect("the base"));
         assert_eq!(back.snapshot().describe().span, None, "the base holds no entries");
         for path in &spans {
-            back.apply(Patch::from_bytes(&files[*path]).expect("a span")).expect("held once");
+            back.apply(Patch::from_bytes(&files[*path]).expect("a span")).expect("each span applies once");
         }
-        assert_eq!(back.snapshot().to_bytes(), data.to_bytes(), "every span put back makes the history again");
-        assert!(Manifest::from_bytes(br#"{"tiles": []}"#).is_none(), "TileJSON is no manifest");
+        assert_eq!(back.snapshot().to_bytes(), data.to_bytes(), "applying every span rebuilds the history");
+        assert!(Manifest::from_bytes(br#"{"tiles": []}"#).is_none(), "TileJSON is not a manifest");
         let backwards =
             br#"{"data": "b", "chunk": 16, "url": "u", "frames": [{"table": "t", "field": "f", "levels": 0, "frames": [3, 1]}]}"#;
         let error = Manifest::from_bytes(backwards).expect("a manifest").unwrap_err();

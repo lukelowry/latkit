@@ -1,9 +1,9 @@
 /**
- * Thousands of signals streaming in, traced over a scrolling window: frames append as they arrive
- * and the oldest are forgotten. Read the trace under the pointer, rank the largest changes with a
- * query, color traces by area or by their value now, and strike a disturbance to watch it spread.
- * Or draw a recorded day instead, fetched as time tiles a span at a time, at the detail the window
- * draws.
+ * Thousands of streaming signals traced over a scrolling window. Frames are appended as they
+ * arrive, and the oldest are forgotten. Read the trace under the pointer, rank the largest changes
+ * with a query, color traces by area or by their current value, and strike a disturbance to watch
+ * it spread. Or draw a recorded day instead, fetched span by span as time tiles, at the detail the
+ * window needs.
  */
 import {
   Data,
@@ -26,7 +26,7 @@ import { each } from '../../ui/rows.js';
 import type { Stage } from '../../ui/stage.js';
 import { theme } from '../../ui/theme.js';
 
-/** The areas signals belong to, in the colors tab10 gives them. */
+/** The signal areas, with the colors tab10 gives them. */
 const AREAS = [
   ['North', '#1f77b4'],
   ['South', '#ff7f0e'],
@@ -35,22 +35,23 @@ const AREAS = [
   ['Coast', '#9467bd'],
   ['Valley', '#8c564b'],
 ] as const;
-/** Seconds of history kept; older frames are forgotten. */
+/** Seconds of history kept. Older frames are forgotten. */
 const HISTORY = 120;
-/** Seconds between disturbances, and how long one lasts: long enough to have died away. */
+/** Seconds between automatic disturbances, and how long each lasts (long enough to die away). */
 const EVERY = 25;
 const LASTS = 6;
-/** Signals the hot list names, and how often it reads them again. */
+/** Signals per page of the hot list, and how often it refreshes, in milliseconds. */
 const HOT = 12;
 const HOT_EVERY = 250;
-/** The recorded day: time tiles `scripts/history.ts` writes, of 64 buses' voltages every 15 s. */
+/** The recorded day, as time tiles of 64 buses' voltages every 15 s. `scripts/history.ts` writes
+ * them. */
 const RECORDED = '/history/frames.json';
-/** Seconds of the recorded day a second of playing shows. */
+/** Seconds of the recorded day shown per second of playback. */
 const DAY_RATE = 600;
 
 /**
- * What the signals measure: each its unit, the range it keeps to, the digits it reads to, and
- * whether its low values are the ones to watch.
+ * The quantities the signals can measure. Each has a unit, a normal range, the decimal places to
+ * show, and whether its low values (rather than high) are the ones to watch.
  */
 const QUANTITIES = {
   voltage: { label: 'Voltage', unit: 'pu', range: [0.92, 1.04], digits: 4, low: true },
@@ -59,14 +60,15 @@ const QUANTITIES = {
   temperature: { label: 'Temperature', unit: '°C', range: [20, 110], digits: 1, low: false },
 } as const;
 type Quantity = keyof typeof QUANTITIES;
-/** The colormaps a signal's value now may take. */
+/** The colormaps offered for coloring traces by current value. */
 const MAPS: readonly ColormapName[] = ['coolwarm', 'viridis', 'turbo', 'magma', 'icefire'];
-/** How often a signal reports nothing, when signals drop out. */
+/** The chance per sample that a signal reports nothing, when dropouts are on. */
 const DROPOUT = 0.002;
 
 /**
- * Patches sent as bytes through a stream, as a socket or a response body brings them, each in two
- * pieces as the network splits it, and read back with `Patch.stream` as each one's last byte arrives.
+ * Sends patches as bytes through a stream, as a socket or a response body would deliver them. Each
+ * patch is written in two pieces, as a network may split it. `Patch.stream` reads each patch back
+ * once its last byte arrives.
  */
 class Feed {
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>;
@@ -92,10 +94,9 @@ class Feed {
 }
 
 /**
- * Synthetic SCADA signals: each sits at its own offset, its area swings slowly, every signal
- * carries its own noise, and every `EVERY` seconds one area is disturbed and recovers, as is an
- * area struck by hand. A disturbance pulls voltages and the system's frequency down, and pushes
- * loading and temperature up.
+ * Synthetic SCADA signals. Each signal has its own offset and noise, and each area swings slowly.
+ * Every `EVERY` seconds one area is disturbed and recovers, and so does an area struck by hand. A
+ * disturbance pulls voltages and the system frequency down, and pushes loading and temperature up.
  */
 class Signals {
   readonly area: Float64Array;
@@ -106,7 +107,7 @@ class Signals {
   /** The area struck by hand, and when. */
   #struck?: { area: number; at: number };
 
-  /** Whether signals now and then report nothing. */
+  /** Whether signals occasionally report nothing. */
   dropouts = false;
 
   constructor(
@@ -124,17 +125,17 @@ class Signals {
     }
   }
 
-  /** Strikes area `area` at `t`: it is disturbed and recovers as the timed disturbances do. */
+  /** Strikes area `area` at time `t`. It is disturbed and recovers like a timed disturbance. */
   strike(area: number, t: number): void {
     this.#struck = { area, at: t };
   }
 
-  /** Every signal's value at `t`, into `out`: NaN where one reports nothing. */
+  /** Writes every signal's value at `t` into `out`, with NaN for a signal that reports nothing. */
   sample(t: number, out: Float32Array): void {
     const struck = Math.floor(t / EVERY) % AREAS.length;
     const dip = depth(t - Math.floor(t / EVERY) * EVERY);
     const byHand = this.#struck && t >= this.#struck.at ? depth(t - this.#struck.at) : 0;
-    // The system's frequency falls with any disturbance, wherever it strikes.
+    // The system frequency falls with a disturbance in any area.
     const system = 60 + 0.01 * Math.sin(t * 0.21) - 2 * Math.max(dip, byHand);
     for (let i = 0; i < this.count; i++) {
       const a = this.area[i]!;
@@ -158,14 +159,15 @@ class Signals {
   }
 }
 
-/** How far a disturbance has pulled values, `since` seconds after it struck. */
+/** How far a disturbance has pulled values, `since` seconds after it started. It is zero once
+ * `LASTS` seconds have passed. */
 function depth(since: number): number {
   return since < LASTS
     ? 0.06 * Math.exp(-since * 1.4) * Math.sin(Math.min(since, 0.5) * Math.PI)
     : 0;
 }
 
-/** Second `at` of a day as a clock reads it. */
+/** Formats second `at` of a day as a clock time, hh:mm:ss. */
 function clock(at: number): string {
   const s = Math.max(0, Math.round(at));
   const two = (n: number) => String(n).padStart(2, '0');
@@ -192,7 +194,7 @@ export default function page(stage: Stage): void {
   let signals = new Signals(count, quantity);
   let values = new Float32Array(count);
   let data = new Data('scada');
-  /** The span of the recorded day that landed. */
+  /** The span of the recorded day that has arrived so far. */
   let day: [number, number] | undefined;
   let t = 0;
   let carry = 0;
@@ -210,7 +212,7 @@ export default function page(stage: Stage): void {
             format: axes.format,
             precision: axes.format === 'auto' ? null : digits - 1,
             grid: axes.grid,
-            // The range a signal keeps to, ticked at its ends and its middle.
+            // Limits: ticks at the ends and the middle of the quantity's normal range.
             ...(axes.limits
               ? {
                   ticks: [
@@ -232,8 +234,8 @@ export default function page(stage: Stage): void {
                 : '64 buses · a sample every 15 s',
           }
         : {}),
-      // Traces draw the theme's line width, and plain, its line color; what a signal does not report
-      // reads as missing.
+      // Traces use the theme's line width, and its line color when plain. Samples a signal did not
+      // report are drawn in the `missing` color.
       theme: {
         ...theme,
         focus: { dim },
@@ -247,7 +249,7 @@ export default function page(stage: Stage): void {
           lines: {
             of: ['scada', 'Signal'],
             trace: 'value',
-            // By value, each trace takes the color of its value at the time shown.
+            // Colored by value, each trace takes the color of its value at the time shown.
             ...(colorBy === 'plain'
               ? {}
               : {
@@ -267,8 +269,8 @@ export default function page(stage: Stage): void {
   });
 
   /**
-   * `f` of what the view draws of the signals now: the live record, or what it fetched of the
-   * recorded day; `undefined` before it has any.
+   * Applies `f` to the signal data the view draws now: the live record, or the fetched part of the
+   * recorded day. Returns `undefined` before any of the day has arrived.
    */
   const read = <T>(f: (held: Data | Snapshot) => T): T | undefined => {
     if (source === 'live') return f(data);
@@ -281,8 +283,9 @@ export default function page(stage: Stage): void {
     }
   };
 
-  /** Frames what `at` shows: the window before it, filling from the record's start until the
-   * record is as long; or all that is kept. */
+  /** Points the camera at time `at`: the window ending at `at`, or everything kept when the window
+   * is unlimited. Until the record is as long as the window, the window starts at the record's
+   * start. With Auto range off, y spans the quantity's normal range. */
   const frame = (at: number) => {
     const first = read((held) => held.describe().span?.[0]) ?? at;
     const span = source === 'live' ? window : dayWindow;
@@ -294,20 +297,21 @@ export default function page(stage: Stage): void {
     view.camera = { x, y: auto ? null : [range[0], range[1]] };
   };
 
-  /** Takes a patch the feed brought: the record grows, and the view draws it the next frame. */
+  /** Applies a patch from the feed. The record grows, and the view draws it the next frame. */
   const take = (patch: Patch) => {
     data.apply(patch);
     playback.record(data.describe().span!);
   };
-  /** The stream patches come through when they come as bytes, made again with each record. */
+  /** The byte stream that patches go through when they are streamed. It is rebuilt with each
+   * record. */
   let feed: Feed | undefined;
   stage.signal.addEventListener('abort', () => feed?.close());
 
-  /** Draws the source chosen: a live record started again, of `n` signals measuring the quantity
-   * shown; or the recorded day, drawn as the tiles of it the window asks for land. */
+  /** Draws the chosen source: a new live record of `n` signals measuring the current quantity, or
+   * the recorded day, drawn as the tiles the window needs arrive. */
   const restart = (n = count) => {
     count = n;
-    // Patches of the record before arrive no more.
+    // Stop the previous record's feed.
     feed?.close();
     feed = undefined;
     data.destroy();
@@ -334,7 +338,7 @@ export default function page(stage: Stage): void {
     values = new Float32Array(n);
     t = 0;
     carry = 0;
-    // The record starts with its first frame, so the value field is there from the start.
+    // The record starts with its first frame, so the value field exists from the start.
     signals.sample(0, values);
     data = new Data('scada').apply(
       new Patch()
@@ -370,8 +374,8 @@ export default function page(stage: Stage): void {
   let spanned = 0;
   stage.frame((dt) => {
     if (performance.now() - listed > HOT_EVERY) list();
-    // The recorded day spans what of it landed, growing as its spans do: until the transport is
-    // moved, it shows to the end.
+    // The recorded day's span grows as more of it arrives. A playhead at the end follows the new
+    // end.
     if (source === 'recorded' && performance.now() - spanned > HOT_EVERY) {
       spanned = performance.now();
       const span = read((held) => held.describe().span);
@@ -410,7 +414,7 @@ export default function page(stage: Stage): void {
     return `${value.toFixed(digits)} ${unit}`;
   };
   const when = (at: number) => (source === 'live' ? `${at.toFixed(2)} s` : clock(at));
-  /** Signal `id`'s least and greatest values over the window shown, read from its levels of detail. */
+  /** Signal `id`'s least and greatest values in the window, from its levels of detail. */
   const spread = (id: Id) => {
     const camera = view.camera;
     if (!('x' in camera)) return '';
@@ -439,8 +443,9 @@ export default function page(stage: Stage): void {
     list();
   });
 
-  // The signals furthest out at the time shown, read by a query: a pick, of every signal or of an
-  // area's, in linear time, a page of them at a time.
+  // The signals with the most extreme values at the time shown (lowest or highest, depending on
+  // the quantity), among all signals or one area's. The query selects them in linear time and
+  // returns them page by page.
   const hottest = stage.section('Largest changes', false);
   let inArea = -1;
   let page = 0;
@@ -479,7 +484,7 @@ export default function page(stage: Stage): void {
     const found = read((held) => {
       if (!held.describe().span) return undefined;
       let rows = held.query({ ...query, offset: page * HOT });
-      // Past the last page, the last.
+      // Past the last page, show the last page instead.
       if (!rows.ids.length && page > 0) {
         page = Math.max(0, Math.ceil(rows.total / HOT) - 1);
         rows = held.query({ ...query, offset: page * HOT });
@@ -746,7 +751,7 @@ export default function page(stage: Stage): void {
     stage.detail(
       source === 'live'
         ? `${count.toLocaleString()} signals · ${shown().label.toLowerCase()} · ${HISTORY} s kept`
-        : '64 buses · voltage · a recorded day, fetched as the window draws it',
+        : '64 buses · voltage · a recorded day, fetched as the window needs it',
     );
   restart();
 }

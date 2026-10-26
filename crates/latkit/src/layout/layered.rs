@@ -5,31 +5,33 @@ use super::pack;
 use super::rect::union;
 use crate::scene::{Direction, Layered};
 
-/// Width over height of the rows that parts nothing pins pack into.
+/// The target width over height of the rows that parts with no pinned vertex pack into.
 const ASPECT: f64 = 16.0 / 9.0;
 /// Crossing-reduction sweeps, alternately down and up the ranks.
 const SWEEPS: usize = 8;
 
-/// Every vertex's center: pinned vertices where they are; the others in ranks along `options.flow`
-/// (`Direction::Up` toward +y), `options.gap` apart within a rank and `options.rank_gap` between
-/// ranks, ordered to cross few links, each pointing from one vertex to another; cycles are broken.
-/// Each connected part is laid out alone, and parts nothing pins pack into rows (aspect 16:9) beside
-/// the pinned ones. Across the flow, each vertex lines up with its sources; in a part nothing pins,
-/// each source then settles amid the vertices it fans out to. Groups nest as [`nested`] lays them
-/// out.
+/// Every vertex's center from a layered layout. Pinned vertices stay put. The others go in ranks
+/// along `options.flow` (`Direction::Up` is toward +y), `options.gap` apart within a rank and
+/// `options.rank_gap` between ranks, ordered to reduce crossings. Links are directed; cycles are
+/// broken.
+///
+/// Each connected part is laid out separately, and parts with no pinned vertex pack into rows
+/// (aspect 16:9) below the pinned ones. Across the flow, each vertex lines up with its sources; in
+/// a part with no pinned vertex, each source then centers among the vertices it fans out to. Groups
+/// nest as [`nested`] lays them out.
 pub(crate) fn layered(graph: &Graph<'_>, options: &Layered) -> Vec<[f64; 2]> {
     nested(graph, |level| arrange(level, options))
 }
 
-/// Places one level: each part that its links join laid out alone in ranks, then the parts nothing
-/// pins packed in rows below the pinned ones, tallest first.
+/// Places one level: lays out each connected part in ranks, then packs the parts with no pinned
+/// vertex in rows below the pinned ones, tallest first.
 fn arrange(level: &Level, options: &Layered) -> Vec<[f64; 2]> {
     let (sizes, pins) = (&level.sizes, &level.pinned);
     let mut centers = vec![[0.0; 2]; sizes.len()];
     let (part, count) = parts(sizes.len(), &level.links);
     let inside = Runs::new(count, (0..sizes.len()).map(|i| (part[i] as usize, i as u32)));
     let joins = Runs::new(count, level.links.iter().map(|&link| (part[link[0] as usize] as usize, link)));
-    // Each member's place in its part, whose members run in index order.
+    // Each member's index within its part; a part's members are in index order.
     let mut slot = vec![0_u32; sizes.len()];
     for p in 0..count {
         for (s, &i) in inside.get(p).iter().enumerate() {
@@ -71,7 +73,7 @@ fn arrange(level: &Level, options: &Layered) -> Vec<[f64; 2]> {
     if loose.is_empty() {
         return centers;
     }
-    // Tallest first, then by first member, so like parts line up.
+    // Tallest first, ties in part order (by first member), so similar parts line up.
     crate::order::by_key(&mut loose, |a| !crate::order::number(a.1[3] - a.1[1]));
     let boxes: Vec<[f64; 2]> = loose.iter().map(|(_, b)| [b[2] - b[0], b[3] - b[1]]).collect();
     let gap = options.rank_gap;
@@ -87,8 +89,8 @@ fn arrange(level: &Level, options: &Layered) -> Vec<[f64; 2]> {
     centers
 }
 
-/// Each of `count` vertices' part, the parts that `links` join numbered by their first vertex, and how many parts
-/// there are.
+/// Each of `count` vertices' connected part under `links`, with parts numbered in order of their
+/// first vertex, and the number of parts.
 fn parts(count: usize, links: &[[u32; 2]]) -> (Vec<u32>, usize) {
     fn find(root: &mut [u32], mut vertex: u32) -> u32 {
         while root[vertex as usize] != vertex {
@@ -122,8 +124,8 @@ fn parts(count: usize, links: &[[u32; 2]]) -> (Vec<u32>, usize) {
     (part, parts)
 }
 
-/// Plane coordinates turned so `flow` runs along the first: `[along, across]`, across running down a sideways flow and
-/// rightward across an upward or downward one.
+/// Plane coordinates rotated so `flow` runs along the first axis: `[along, across]`. Across runs
+/// down for a sideways flow, and right for an upward or downward one.
 fn to_flow(flow: Direction, [x, y]: [f64; 2]) -> [f64; 2] {
     match flow {
         Direction::Right => [x, -y],
@@ -151,8 +153,9 @@ fn extent(flow: Direction, [width, height]: [f64; 2]) -> [f64; 2] {
     }
 }
 
-/// One part's centers in flow coordinates (see [`to_flow`]). `extents` are each vertex's length along the flow and
-/// span across it, `pins` the centers of those that stay, and `links` point from one vertex to another.
+/// One part's centers in flow coordinates (see [`to_flow`]). `extents` are each vertex's length
+/// along the flow and span across it, `pins` the centers of pinned vertices, and `links` are
+/// directed.
 fn ranked(
     extents: &[[f64; 2]],
     pins: &[Option<[f64; 2]>],
@@ -164,7 +167,8 @@ fn ranked(
     let rank = ranks(count, links);
     let rank_count = rank.iter().max().map_or(0, |&last| last as usize + 1);
     let mut layers = Runs::new(rank_count, (0..count).map(|i| (rank[i] as usize, i as u32)));
-    // Each link as its end in the earlier rank, then its end in the later; ranking leaves none within a rank.
+    // Each link as its end in the earlier rank, then its end in the later. Ranking leaves no link
+    // within a rank.
     let ends = |&[from, to]: &[u32; 2]| if rank[from as usize] < rank[to as usize] { [from, to] } else { [to, from] };
     let above = Runs::new(count, links.iter().map(ends).map(|[early, late]| (late as usize, early)));
     let below = Runs::new(count, links.iter().map(ends).map(|[early, late]| (early as usize, late)));
@@ -184,8 +188,9 @@ fn ranked(
     centers
 }
 
-/// Each vertex's rank: the longest path to it from a vertex nothing points to, once the links that close cycles are
-/// set aside. A walk depth first from the vertices nothing points to finds those links.
+/// Each vertex's rank: the longest path to it from a source (a vertex no link points to), ignoring
+/// the links that close cycles. A depth-first walk from the sources, then from any vertex left,
+/// finds those links.
 fn ranks(count: usize, links: &[[u32; 2]]) -> Vec<u32> {
     const NEW: u8 = 0;
     const WALKING: u8 = 1;
@@ -247,9 +252,9 @@ fn ranks(count: usize, links: &[[u32; 2]]) -> Vec<u32> {
     rank
 }
 
-/// Orders each rank to cross few edges. Barycenter sweeps run alternately down the ranks, sorting each by where its
-/// vertices' neighbors in earlier ranks sit, and up them by their neighbors in later ranks; the order that crosses the
-/// fewest edges between adjacent ranks stays.
+/// Orders each rank to reduce edge crossings. Barycenter sweeps alternate: down the ranks, sorting
+/// each by the mean position of its vertices' neighbors in earlier ranks, then up, by neighbors in
+/// later ranks. The order with the fewest crossings between adjacent ranks is kept.
 fn reorder(layers: &mut Runs<u32>, above: &Runs<u32>, below: &Runs<u32>, adjacent: &Runs<[u32; 2]>) {
     let mut position = vec![0_u32; above.len()];
     for k in 0..layers.len() {
@@ -294,18 +299,18 @@ fn settle(layer: &[u32], position: &mut [u32]) {
     }
 }
 
-/// Counts edges crossing between adjacent ranks, keeping its buffers from one count to the next.
+/// Counts edge crossings between adjacent ranks, reusing its buffers from one count to the next.
 #[derive(Default)]
 struct Crossings {
-    /// Where each edge between two ranks starts and ends in them.
+    /// Each edge's position in the earlier rank and in the later rank.
     ends: Vec<(u32, u32)>,
-    /// A Fenwick tree of how many edges so far end at each place of the later rank.
+    /// A Fenwick tree counting the edges seen so far that end at each position of the later rank.
     ended: Vec<u32>,
 }
 
 impl Crossings {
-    /// Edges between adjacent ranks that cross, given where each vertex sits in its rank: once sorted by where they
-    /// start, each edge crosses the earlier ones ending past it.
+    /// The number of crossing edge pairs between adjacent ranks, given each vertex's position in
+    /// its rank. With edges sorted by start, each edge crosses the earlier ones that end after it.
     fn count(&mut self, layers: &Runs<u32>, position: &[u32], adjacent: &Runs<[u32; 2]>) -> u64 {
         let mut total = 0;
         for k in 1..layers.len() {
@@ -337,10 +342,11 @@ impl Crossings {
     }
 }
 
-/// Each vertex's center in flow coordinates. Ranks run `rank_gap` apart along the flow, each vertex centered in its
-/// rank's band; across it, each vertex sits in line with the median of its neighbors in earlier ranks unless that
-/// would bring it within `gap` of the vertex before it in its rank. A rank holding pinned vertices starts where they
-/// do, and vertices step past the pinned ones they would come within `gap` of.
+/// Each vertex's center in flow coordinates. Ranks run `rank_gap` apart along the flow, each
+/// vertex centered in its rank's band. Across the flow, each vertex lines up with the median of
+/// its neighbors in earlier ranks, unless that brings it within `gap` of the previous vertex in its
+/// rank. A rank holding pinned vertices starts where they do, and vertices step past pinned ones
+/// they would come within `gap` of.
 fn coordinates(
     extents: &[[f64; 2]],
     pins: &[Option<[f64; 2]>],
@@ -358,7 +364,7 @@ fn coordinates(
         layers.get(k).iter().filter_map(|&i| pins[i as usize].map(|pin| pin[0] - length_of(i) / 2.0)).reduce(f64::min)
     };
     let first = (0..layers.len()).find_map(|k| lead(k).map(|at| (k, at)));
-    // Ranks before the first pinned one end where it starts.
+    // Ranks before the first rank with a pinned vertex end where that rank starts.
     let mut major = first.map_or(0.0, |(k, at)| at - bands[..k].iter().map(|band| band + rank_gap).sum::<f64>());
     let mut obstacles = first.map(|_| Obstacles::new(extents, pins, [gap.min(rank_gap), gap]));
     let mut wanted: Vec<f64> = Vec::new();
@@ -403,9 +409,9 @@ fn coordinates(
     centers
 }
 
-/// Moves each vertex across the flow toward the middle of its neighbors in later ranks, the last ranks first, as far
-/// as the vertices beside it in its rank allow, `gap` apart: a source settles amid the vertices it fans out to, and a
-/// chain stays in line.
+/// Moves each vertex across the flow toward the median of its neighbors in later ranks, last ranks
+/// first, as far as its neighbors in its rank allow at `gap` apart. A source centers among the
+/// vertices it fans out to, and a chain stays in line.
 fn balance(centers: &mut [[f64; 2]], extents: &[[f64; 2]], layers: &Runs<u32>, below: &Runs<u32>, gap: f64) {
     let mut across: Vec<f64> = Vec::new();
     let mut goals: Vec<Option<f64>> = Vec::new();
@@ -455,7 +461,7 @@ fn balance(centers: &mut [[f64; 2]], extents: &[[f64; 2]], layers: &Runs<u32>, b
 struct Obstacles {
     /// A cell's side.
     cell: f64,
-    /// The room boxes keep between them along the flow and across it.
+    /// The clearance boxes keep between them, along the flow and across it.
     room: [f64; 2],
     /// Each box: its least along and across, then its greatest.
     boxes: Vec<[f64; 4]>,
@@ -464,7 +470,8 @@ struct Obstacles {
 }
 
 impl Obstacles {
-    /// The pinned vertices' boxes, keeping `room` between boxes. Cells span a few vertices, so a box reaches few.
+    /// Obstacles holding the pinned vertices' boxes, keeping `room` between boxes. Cells span a few
+    /// vertices, so each box reaches few cells.
     fn new(extents: &[[f64; 2]], pins: &[Option<[f64; 2]>], room: [f64; 2]) -> Obstacles {
         let largest = extents.iter().flatten().fold(0.0, |largest: f64, &side| largest.max(side));
         let cell = (room[1] * 8.0).max(largest * 2.0);
@@ -491,7 +498,7 @@ impl Obstacles {
         }
     }
 
-    /// The greatest across of the boxes that `query` comes within room of, if any.
+    /// The greatest across edge among the boxes that `query` comes within `room` of, if any.
     fn reach(&self, query: [f64; 4]) -> Option<f64> {
         let [along, across] = self.room;
         let grown = [query[0] - along, query[1] - across, query[2] + along, query[3] + across];
@@ -540,8 +547,8 @@ mod tests {
     }
 
     impl Columns {
-        /// `count` vertices of [`SIZE`] joined by `edges`, none pinned or grouped; a group pads its members by
-        /// half a gap.
+        /// `count` vertices of [`SIZE`] joined by `edges`, none pinned or grouped. A group pads its
+        /// members by half a gap.
         fn new(count: usize, edges: &[[u32; 2]]) -> Columns {
             Columns {
                 sizes: vec![SIZE; count],
@@ -584,7 +591,7 @@ mod tests {
         (a - b).abs() < 1e-9
     }
 
-    /// Edges that cross between vertices in the same two ranks of a rightward flow.
+    /// How many edge pairs cross between the same two ranks of a rightward flow.
     fn crossings(edges: &[[u32; 2]], centers: &[[f64; 2]]) -> usize {
         let mut count = 0;
         for (k, first) in edges.iter().enumerate() {
@@ -624,7 +631,7 @@ mod tests {
     fn a_source_centers_on_its_fan() {
         // 0 fans out to 1, 2, and 3; 3 runs on to 4.
         let centers = Columns::new(5, &[[0, 1], [0, 2], [0, 3], [3, 4]]).layout(&options(Direction::Down));
-        assert!(near(centers[0][0], centers[2][0]), "the source sits amid its fan: {centers:?}");
+        assert!(near(centers[0][0], centers[2][0]), "the source is centered on its fan: {centers:?}");
         assert!(near(centers[3][0], centers[4][0]), "a chain stays in line: {centers:?}");
         assert!(centers[1][0] < centers[2][0] && centers[2][0] < centers[3][0], "{centers:?}");
     }
@@ -671,7 +678,8 @@ mod tests {
 
     #[test]
     fn sweeps_untangle_crossings() {
-        // A K2,2 short of one edge in two ranks of two, and three ranks of three; both cross in index order.
+        // A K2,2 minus one edge in two ranks of two, and a graph in three ranks of three. Both
+        // cross when laid out in index order.
         let small = [[0, 3], [1, 2], [1, 3]];
         let large = [[0, 5], [1, 4], [2, 3], [2, 4], [3, 8], [4, 7], [5, 6]];
         for (count, width, edges) in [(4, 2, &small[..]), (9, 3, &large[..])] {
@@ -683,8 +691,9 @@ mod tests {
     }
 
     #[test]
-    fn groups_hold_their_members_apart_from_the_rest() {
-        // Group 0 holds 1 → 2 → 3 and group 6, which holds 7 → 8; 4 feeds the group and 5 drains it.
+    fn groups_contain_their_members_and_keep_other_vertices_out() {
+        // Group 0 holds 1 → 2 → 3 and group 6, which holds 7 → 8. Vertex 4 feeds group 0, and 5
+        // drains it.
         let mut graph = Columns::new(9, &[[1, 2], [2, 3], [4, 1], [3, 5], [2, 7], [7, 8]]);
         graph.groups = vec![None, Some(0), Some(0), Some(0), None, None, Some(0), Some(6), Some(6)];
         let options = options(Direction::Right);
@@ -707,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pinned_member_holds_its_group_and_a_pinned_group_carries_its_members() {
+    fn a_pinned_member_fixes_its_group_and_a_pinned_group_moves_its_members() {
         let mut graph = Columns::new(7, &[[1, 2], [3, 0], [5, 6], [4, 5]]);
         graph.groups = vec![None, Some(0), Some(0), None, None, Some(4), Some(4)];
         graph.pinned[1] = Some([300.0, 200.0]);
@@ -723,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn large_graphs_lay_out_apart() {
+    fn large_graphs_lay_out_without_overlaps() {
         // Fifty groups of twenty, and edges joining random vertices, many against the flow.
         let count = 10_000;
         let mut seed = 0x9e37_79b9_u32;

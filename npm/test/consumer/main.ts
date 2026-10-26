@@ -12,8 +12,8 @@ function destroyed(action: () => unknown): void {
     action();
   } catch (error) {
     check(
-      String(error).includes('destroyed'),
-      `unexpected disposed-handle error: ${String(error)}`,
+      error instanceof Error && 'code' in error && error.code === 'destroyed',
+      `unexpected error from a destroyed handle: ${String(error)}`,
     );
     return;
   }
@@ -82,7 +82,7 @@ async function run(custom: boolean, compiled: boolean) {
   const decoded = await Data.read(data.toBytes());
   const kept = decoded.snapshot();
 
-  // Data reads back; patches stream back to back.
+  // Queries read data back, and patches apply from a stream split into small chunks.
   const grid = new Data('grid').apply(
     new Patch()
       .axis('time', 's')
@@ -124,7 +124,7 @@ async function run(custom: boolean, compiled: boolean) {
   gpu.canvas(canvas('first'), { layout: [{ view: first }] });
   gpu.canvas(canvas('second'), { layout: [{ view: second }] });
   secondGpu.canvas(canvas('third'), { layout: [{ view: third }] });
-  // A view no canvas shows still draws in shots.
+  // A view that no canvas shows still draws in shots.
   const headless = gpu.view(scene);
   for (const view of [first, second, third, headless]) {
     view.on('error', (error) => {
@@ -132,7 +132,7 @@ async function run(custom: boolean, compiled: boolean) {
     });
     view.sources = view === third ? [kept] : [decoded];
   }
-  decoded.destroy(); // views keep the dataset
+  decoded.destroy(); // the views keep their own reference to the dataset
   kept.destroy();
   await until(() =>
     [first, second, third].every((view) => view.stats.frames > 0 && view.stats.drawn === 1),

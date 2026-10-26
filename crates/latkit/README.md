@@ -28,7 +28,8 @@ fn main() -> Result<(), latkit::Error> {
 `cargo install latkit-cli` installs the `latkit` executable. `npm install latkit` installs
 the browser runtime and plain-data builders.
 
-LATK v1 uses 64-bit absolute frame indexes. Sampled values use `f32`; coordinates use `f64`.
-See the [format specification](https://latkit.readthedocs.io/en/latest/formats.html).
+The binary format uses 64-bit absolute frame indexes. Sampled values are `f32`; coordinates are
+`f64`.
+See the [format specification](https://latkit.readthedocs.io/en/latest/guide.html#bytes).
 
-MIT licensed. Notices are included in `THIRD_PARTY.md` and `colormaps/NOTICES.md`.
+MIT licensed. Third-party notices are in `THIRD_PARTY.md` and `colormaps/NOTICES.md`.

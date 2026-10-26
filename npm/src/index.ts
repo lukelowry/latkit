@@ -1,8 +1,11 @@
 /// <reference lib="esnext.disposable" preserve="true" />
 /**
- * latkit: columnar data drawn with WebGPU. Scenes, expressions, and patches are plain data, usable
- * anywhere; `await load()` loads the WebAssembly that datasets, views, and pictures are made with.
- * Its handles dispose with `using`, whatever library a project compiles against.
+ * latkit: columnar data drawn with WebGPU.
+ *
+ * Scenes, expressions, and patches are plain data and need no WebAssembly. Datasets, views,
+ * pictures, and `colormapCss` need it, so `await load()` first. Every class with `destroy()` also
+ * works with `using`; the reference above makes `Symbol.dispose` typecheck whatever a project's
+ * `lib` setting.
  */
 export type * from './inputs.js';
 export type * from './outputs.js';

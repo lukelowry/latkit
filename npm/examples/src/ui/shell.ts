@@ -5,7 +5,7 @@ import { Stage } from './stage.js';
 
 declare global {
   interface Window {
-    /** Active example, exposed for the browser gate. */
+    /** The active example's stage, exposed for the browser gate. */
     stage?: Stage;
   }
 }
@@ -16,7 +16,8 @@ export interface Page {
   load(): Promise<{ default: (stage: Stage) => Promise<void> | void }>;
 }
 
-/** Navigation, controls, and a full-window canvas shared by every example. */
+/** The page layout every example shares: a header with the example picker, the main view, the
+ * controls panel, and the timeline. It shows the example named in the URL hash. */
 export class Shell {
   readonly #picker = h('select', { 'aria-label': 'Example' });
   readonly #detail = h('p', { class: 'detail' });

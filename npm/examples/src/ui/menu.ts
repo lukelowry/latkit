@@ -2,15 +2,15 @@ import type { View } from 'latkit';
 import { h } from './dom.js';
 import type { Stage } from './stage.js';
 
-/** An item of a menu: what it says, and what it does; a disabled one shows but does nothing. */
+/** A menu item. A disabled item is shown but cannot be chosen. */
 export interface Item {
   label: string;
   run: () => void;
   disabled?: boolean;
 }
 
-/** A menu over the main view where a view asked for one; gone once an item runs, on Escape, or on a
- * press elsewhere. */
+/** A context menu shown over the main view where a view requested one. It closes when an item runs,
+ * on Escape, or on a press outside it. */
 export class Menu {
   readonly #element = h('div', { class: 'menu', role: 'menu', hidden: true });
 
@@ -27,7 +27,8 @@ export class Menu {
     addEventListener('keydown', (event) => event.key === 'Escape' && this.close(), { signal });
   }
 
-  /** Opens `items` at `point`, CSS pixels over `view`, kept inside the main view. */
+  /** Opens `items` at `point`, in CSS pixels from the top left of `view`, kept at least 8 px inside
+   * the main view. */
   open(view: View, point: [number, number], items: readonly Item[]): void {
     const canvas = this.stage.canvases.find((c) => c.layout.some((p) => p.view === view));
     const panel = canvas?.layout.find((p) => p.view === view)?.at ?? [0, 0, 1, 1];

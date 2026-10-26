@@ -11,16 +11,16 @@ Usage: latkit [OPTIONS] <COMMAND>
 
 Commands:
   render    Draw scenes of datasets into an image, image sequence, raw frames, or a video
-  validate  Check everything render reads, frames included, without a GPU
-  inspect   Describe datasets as JSON: tables, rows, fields and their kinds, the axis and its span
-  schema    Print the JSON Schema of what latkit reads: every input, or one of them
-  query     Read rows back as JSON Lines, an object a row: those a query keeps, sorted and paged
-  tile      Write a dataset as time tiles: frames.json, which --tiles opens, the dataset without its sampled fields' histories, and their spans at every level of detail
+  validate  Check every input render reads, including frames, without a GPU
+  inspect   Describe datasets as JSON: tables, row counts, fields with kinds, and the axis and its span
+  schema    Print the JSON Schema of every input latkit reads, or of one input
+  query     Print the rows a query selects, sorted and paged, as JSON Lines with one object per row
+  tile      Write a dataset as time tiles: frames.json (which --tiles opens), the dataset without its sampled fields' histories, and those histories in spans at every level of detail
   help      Print this message or the help of the given subcommand(s)
 
 Options:
       --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+          Format of errors and render progress on stderr. JSON writes one object per line
 
           [default: human]
           [possible values: human, json]
@@ -41,37 +41,37 @@ Usage: latkit render [OPTIONS] <SCENE>...
 
 Arguments:
   <SCENE>...
-          Scene JSON files, one per panel; - reads stdin
+          Scene JSON files, one per panel (- reads stdin)
 
 Options:
   -d, --data <[NAME=]FILE>
-          A dataset: JSON document, latkit bytes, or GeoJSON (which needs a NAME); NAME= renames it
+          A dataset file: a JSON document, latkit bytes, or GeoJSON. NAME= sets its name, which GeoJSON requires
 
       --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+          Format of errors and render progress on stderr. JSON writes one object per line
 
           [default: human]
           [possible values: human, json]
 
       --tiles <NAME=FILE>
-          Tiles every view fetches as dataset NAME: time tiles' frames.json, or vector tiles' PMTiles file, TileJSON, or {z}/{x}/{y} template
+          Tiles every view fetches as dataset NAME: a time tiles frames.json, or a vector tiles PMTiles file, TileJSON, or {z}/{x}/{y} template
 
   -o, --output <FILE>
-          Image file, %d pattern for an image sequence, or - for stdout
+          Output file, %d pattern for an image sequence, or - for stdout
 
       --format <FORMAT>
-          What to write; otherwise the output's extension says, or PNG for stdout
+          Output format. Defaults to the one the output's extension names, else PNG
 
           Possible values:
-          - png:  PNG, lossless with alpha: one picture, or one a frame where the output has a %d pattern
-          - jpeg: JPEG at --quality, its alpha dropped: one picture, or one a frame
-          - webp: WebP, lossless with alpha: one picture, or one a frame
-          - rgba: Raw RGBA, straight alpha, frames back to back
-          - y4m:  YUV4MPEG2: 4:2:0 BT.709 limited range, for any encoder
+          - png:  PNG, lossless with alpha. One picture, or one per frame with a %d output pattern
+          - jpeg: JPEG at --quality, without alpha. One picture, or one per frame
+          - webp: Lossless WebP with alpha. One picture, or one per frame
+          - rgba: Raw RGBA with straight alpha, frames back to back
+          - y4m:  YUV4MPEG2 (4:2:0, BT.709 limited range), which any encoder reads
           - mp4:  H.264 in fragmented MP4, from the platform's encoder
 
       --quality <QUALITY>
-          A JPEG's quality, from 1, smallest, to 100, sharpest
+          JPEG quality, from 1 (smallest) to 100 (sharpest)
 
           [default: 90]
 
@@ -81,51 +81,51 @@ Options:
           [default: 1600x900]
 
       --scale <SCALE>
-          Pixels per CSS pixel: views lay out size / scale CSS pixels, so 2 draws twice as sharp
+          Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp
 
           [default: 1]
 
       --panel <X,Y,W,H>
-          A scene's panel of the picture, X,Y,WIDTH,HEIGHT as fractions; one per scene, in order
+          A scene's panel of the picture, as X,Y,WIDTH,HEIGHT fractions. Give one per scene, in order
 
       --transparent
           Keep alpha where the themes' backgrounds would be
 
       --deadline <DEADLINE>
-          The longest a picture, or a video frame, may take, in seconds
+          The longest a picture or video frame may take, in seconds
 
           [default: 30]
 
       --font <FILE>
-          TTF/OTF/TTC file; repeat for fallbacks; replaces system fonts
+          A TTF, OTF, or TTC font file. Repeat for fallbacks. Replaces the system fonts
 
       --camera <FILE>
-          Camera JSON for a scene, in scene order; a view without one fits
+          A camera JSON file per scene, in scene order. Views without one use --fit
 
       --fit <FIT>
-          What a view without a camera frames: "all", or a fit as JSON
+          What views without a camera frame: "all", or a fit as JSON
 
           [default: all]
 
       --insets <T,R,B,L>
-          CSS pixels kept clear at the top, right, bottom, and left, T,R,B,L
+          CSS pixels to keep clear at the top, right, bottom, and left
 
       --at <AT>
-          The axis coordinate shown; sampled fields read their last frame at or before it
+          The axis coordinate to show. Sampled fields show their last frame at or before it
 
       --elapsed <ELAPSED>
-          A still's effect time in seconds, where elapsed time and flowing comets read it
+          A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets
 
       --frames <FILE>
-          Frames as JSON Lines, one per output frame, or - for stdin
+          Frames as JSON Lines, one line per output frame (- reads stdin)
 
       --fps <FPS>
-          Output frames a second
+          Output frames per second
 
           [default: 60]
 
       --bitrate <BITRATE>
-          MP4 bits a second; about 0.15 bits a pixel a frame otherwise
+          MP4 bitrate in bits per second. Defaults to about 0.15 bits per pixel per frame
 
   -h, --help
           Print help (see a summary with '-h')
@@ -134,43 +134,43 @@ Options:
 ## validate
 
 ```text
-Check everything render reads, frames included, without a GPU
+Check every input render reads, including frames, without a GPU
 
 Usage: latkit validate [OPTIONS] <SCENE>...
 
 Arguments:
   <SCENE>...
-          Scene JSON files, one per panel; - reads stdin
+          Scene JSON files, one per panel (- reads stdin)
 
 Options:
   -d, --data <[NAME=]FILE>
-          A dataset: JSON document, latkit bytes, or GeoJSON (which needs a NAME); NAME= renames it
+          A dataset file: a JSON document, latkit bytes, or GeoJSON. NAME= sets its name, which GeoJSON requires
 
       --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+          Format of errors and render progress on stderr. JSON writes one object per line
 
           [default: human]
           [possible values: human, json]
 
       --tiles <NAME=FILE>
-          Tiles every view fetches as dataset NAME: time tiles' frames.json, or vector tiles' PMTiles file, TileJSON, or {z}/{x}/{y} template
+          Tiles every view fetches as dataset NAME: a time tiles frames.json, or a vector tiles PMTiles file, TileJSON, or {z}/{x}/{y} template
 
   -o, --output <FILE>
-          Image file, %d pattern for an image sequence, or - for stdout
+          Output file, %d pattern for an image sequence, or - for stdout
 
       --format <FORMAT>
-          What to write; otherwise the output's extension says, or PNG for stdout
+          Output format. Defaults to the one the output's extension names, else PNG
 
           Possible values:
-          - png:  PNG, lossless with alpha: one picture, or one a frame where the output has a %d pattern
-          - jpeg: JPEG at --quality, its alpha dropped: one picture, or one a frame
-          - webp: WebP, lossless with alpha: one picture, or one a frame
-          - rgba: Raw RGBA, straight alpha, frames back to back
-          - y4m:  YUV4MPEG2: 4:2:0 BT.709 limited range, for any encoder
+          - png:  PNG, lossless with alpha. One picture, or one per frame with a %d output pattern
+          - jpeg: JPEG at --quality, without alpha. One picture, or one per frame
+          - webp: Lossless WebP with alpha. One picture, or one per frame
+          - rgba: Raw RGBA with straight alpha, frames back to back
+          - y4m:  YUV4MPEG2 (4:2:0, BT.709 limited range), which any encoder reads
           - mp4:  H.264 in fragmented MP4, from the platform's encoder
 
       --quality <QUALITY>
-          A JPEG's quality, from 1, smallest, to 100, sharpest
+          JPEG quality, from 1 (smallest) to 100 (sharpest)
 
           [default: 90]
 
@@ -180,51 +180,51 @@ Options:
           [default: 1600x900]
 
       --scale <SCALE>
-          Pixels per CSS pixel: views lay out size / scale CSS pixels, so 2 draws twice as sharp
+          Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp
 
           [default: 1]
 
       --panel <X,Y,W,H>
-          A scene's panel of the picture, X,Y,WIDTH,HEIGHT as fractions; one per scene, in order
+          A scene's panel of the picture, as X,Y,WIDTH,HEIGHT fractions. Give one per scene, in order
 
       --transparent
           Keep alpha where the themes' backgrounds would be
 
       --deadline <DEADLINE>
-          The longest a picture, or a video frame, may take, in seconds
+          The longest a picture or video frame may take, in seconds
 
           [default: 30]
 
       --font <FILE>
-          TTF/OTF/TTC file; repeat for fallbacks; replaces system fonts
+          A TTF, OTF, or TTC font file. Repeat for fallbacks. Replaces the system fonts
 
       --camera <FILE>
-          Camera JSON for a scene, in scene order; a view without one fits
+          A camera JSON file per scene, in scene order. Views without one use --fit
 
       --fit <FIT>
-          What a view without a camera frames: "all", or a fit as JSON
+          What views without a camera frame: "all", or a fit as JSON
 
           [default: all]
 
       --insets <T,R,B,L>
-          CSS pixels kept clear at the top, right, bottom, and left, T,R,B,L
+          CSS pixels to keep clear at the top, right, bottom, and left
 
       --at <AT>
-          The axis coordinate shown; sampled fields read their last frame at or before it
+          The axis coordinate to show. Sampled fields show their last frame at or before it
 
       --elapsed <ELAPSED>
-          A still's effect time in seconds, where elapsed time and flowing comets read it
+          A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets
 
       --frames <FILE>
-          Frames as JSON Lines, one per output frame, or - for stdin
+          Frames as JSON Lines, one line per output frame (- reads stdin)
 
       --fps <FPS>
-          Output frames a second
+          Output frames per second
 
           [default: 60]
 
       --bitrate <BITRATE>
-          MP4 bits a second; about 0.15 bits a pixel a frame otherwise
+          MP4 bitrate in bits per second. Defaults to about 0.15 bits per pixel per frame
 
   -h, --help
           Print help (see a summary with '-h')
@@ -233,13 +233,13 @@ Options:
 ## inspect
 
 ```text
-Describe datasets as JSON: tables, rows, fields and their kinds, the axis and its span
+Describe datasets as JSON: tables, row counts, fields with kinds, and the axis and its span
 
 Usage: latkit inspect [OPTIONS] <[NAME=]FILE>...
 
 Arguments:
   <[NAME=]FILE>...
-          Dataset files, each [NAME=]FILE; - reads stdin
+          Dataset files, each [NAME=]FILE (- reads stdin)
 
 Options:
       --deadline <DEADLINE>
@@ -248,7 +248,7 @@ Options:
           [default: 30]
 
       --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+          Format of errors and render progress on stderr. JSON writes one object per line
 
           [default: human]
           [possible values: human, json]
@@ -260,26 +260,26 @@ Options:
 ## schema
 
 ```text
-Print the JSON Schema of what latkit reads: every input, or one of them
+Print the JSON Schema of every input latkit reads, or of one input
 
 Usage: latkit schema [OPTIONS] [INPUT]
 
 Arguments:
   [INPUT]
-          One input's schema
+          Print only this input's schema
 
           Possible values:
           - scene:  A scene
           - data:   A dataset's JSON document
-          - patch:  A patch's JSON
-          - query:  A query of `latkit query`
-          - camera: A camera of `--camera`
-          - fit:    A fit of `--fit`
-          - frames: A line of `--frames`
+          - patch:  A patch
+          - query:  A query for `latkit query`
+          - camera: A camera for `--camera`
+          - fit:    A fit for `--fit`
+          - frames: One line of a `--frames` file
 
 Options:
       --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+          Format of errors and render progress on stderr. JSON writes one object per line
 
           [default: human]
           [possible values: human, json]
@@ -291,16 +291,16 @@ Options:
 ## query
 
 ```text
-Read rows back as JSON Lines, an object a row: those a query keeps, sorted and paged
+Print the rows a query selects, sorted and paged, as JSON Lines with one object per row
 
 Usage: latkit query [OPTIONS] <[NAME=]FILE> <QUERY>
 
 Arguments:
   <[NAME=]FILE>
-          The dataset, [NAME=]FILE; - reads stdin
+          The dataset, [NAME=]FILE (- reads stdin)
 
   <QUERY>
-          The query: JSON such as {"of":"Branch","filter":{"op":"gt","args":["loading",90]}}, or a file of it
+          The query as JSON, such as {"of":"Branch","filter":{"op":"gt","args":["loading",90]}}, or a file containing it (- reads stdin)
 
 Options:
       --deadline <DEADLINE>
@@ -309,7 +309,7 @@ Options:
           [default: 30]
 
       --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+          Format of errors and render progress on stderr. JSON writes one object per line
 
           [default: human]
           [possible values: human, json]
@@ -321,26 +321,26 @@ Options:
 ## tile
 
 ```text
-Write a dataset as time tiles: frames.json, which --tiles opens, the dataset without its sampled fields' histories, and their spans at every level of detail
+Write a dataset as time tiles: frames.json (which --tiles opens), the dataset without its sampled fields' histories, and those histories in spans at every level of detail
 
 Usage: latkit tile [OPTIONS] --output <DIR> <[NAME=]FILE>
 
 Arguments:
   <[NAME=]FILE>
-          The dataset, [NAME=]FILE; - reads stdin
+          The dataset, [NAME=]FILE (- reads stdin)
 
 Options:
       --diagnostics <DIAGNOSTICS>
-          Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+          Format of errors and render progress on stderr. JSON writes one object per line
 
           [default: human]
           [possible values: human, json]
 
   -o, --output <DIR>
-          The directory the tiles go in
+          Directory to write the tiles to
 
       --chunk <CHUNK>
-          Entries a span holds: frames, or buckets of a level of detail; a multiple of 8
+          Entries per span: frames at full detail, buckets at coarser levels. A multiple of 8
 
           [default: 256]
 

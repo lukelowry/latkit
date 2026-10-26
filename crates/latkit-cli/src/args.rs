@@ -1,5 +1,5 @@
-//! The command line: what `render`, `validate`, `inspect`, `query`, `tile`, and `schema` take, and the
-//! checks that fail as usage errors before anything is read.
+//! Command-line arguments of `render`, `validate`, `inspect`, `query`, `tile`, and `schema`, and
+//! the checks that report usage errors before any input is read.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -10,7 +10,7 @@ use latkit::{ImageFormat, Pixels, Shot};
 #[derive(Parser)]
 #[command(name = "latkit", version, about = "Render scenes of JSON or binary data to images and videos")]
 pub(crate) struct Cli {
-    /// Diagnostics on stderr: errors, and progress while rendering; JSON is one object a line
+    /// Format of errors and render progress on stderr. JSON writes one object per line
     #[arg(long, global = true, value_enum, default_value = "human")]
     pub(crate) diagnostics: Diagnostics,
     #[command(subcommand)]
@@ -27,46 +27,46 @@ pub(crate) enum Diagnostics {
 pub(crate) enum Command {
     /// Draw scenes of datasets into an image, image sequence, raw frames, or a video
     Render(Job),
-    /// Check everything render reads, frames included, without a GPU
+    /// Check every input render reads, including frames, without a GPU
     Validate(Job),
-    /// Describe datasets as JSON: tables, rows, fields and their kinds, the axis and its span
+    /// Describe datasets as JSON: tables, row counts, fields with kinds, and the axis and its span
     Inspect {
-        /// Dataset files, each [NAME=]FILE; - reads stdin
+        /// Dataset files, each [NAME=]FILE (- reads stdin)
         #[arg(required = true, value_name = "[NAME=]FILE")]
         data: Vec<Source>,
         /// The longest a dataset may take to load, in seconds
         #[arg(long, default_value = "30", value_parser = deadline)]
         deadline: Duration,
     },
-    /// Print the JSON Schema of what latkit reads: every input, or one of them
+    /// Print the JSON Schema of every input latkit reads, or of one input
     Schema {
-        /// One input's schema
+        /// Print only this input's schema
         #[arg(value_enum)]
         input: Option<Input>,
     },
-    /// Read rows back as JSON Lines, an object a row: those a query keeps, sorted and paged
+    /// Print the rows a query selects, sorted and paged, as JSON Lines with one object per row
     Query {
-        /// The dataset, [NAME=]FILE; - reads stdin
+        /// The dataset, [NAME=]FILE (- reads stdin)
         #[arg(value_name = "[NAME=]FILE")]
         data: Source,
-        /// The query: JSON such as {"of":"Branch","filter":{"op":"gt","args":["loading",90]}}, or a
-        /// file of it
+        /// The query as JSON, such as {"of":"Branch","filter":{"op":"gt","args":["loading",90]}},
+        /// or a file containing it (- reads stdin)
         #[arg(value_name = "QUERY")]
         query: String,
         /// The longest the dataset may take to load, in seconds
         #[arg(long, default_value = "30", value_parser = deadline)]
         deadline: Duration,
     },
-    /// Write a dataset as time tiles: frames.json, which --tiles opens, the dataset without its
-    /// sampled fields' histories, and their spans at every level of detail
+    /// Write a dataset as time tiles: frames.json (which --tiles opens), the dataset without its
+    /// sampled fields' histories, and those histories in spans at every level of detail
     Tile {
-        /// The dataset, [NAME=]FILE; - reads stdin
+        /// The dataset, [NAME=]FILE (- reads stdin)
         #[arg(value_name = "[NAME=]FILE")]
         data: Source,
-        /// The directory the tiles go in
+        /// Directory to write the tiles to
         #[arg(short, long, value_name = "DIR")]
         output: PathBuf,
-        /// Entries a span holds: frames, or buckets of a level of detail; a multiple of 8
+        /// Entries per span: frames at full detail, buckets at coarser levels. A multiple of 8
         #[arg(long, default_value = "256")]
         chunk: u32,
         /// The longest the dataset may take to load, in seconds
@@ -75,103 +75,104 @@ pub(crate) enum Command {
     },
 }
 
-/// What a render draws and where it goes.
+/// The inputs and output of `render` and `validate`.
 #[derive(Args)]
 pub(crate) struct Job {
-    /// Scene JSON files, one per panel; - reads stdin
+    /// Scene JSON files, one per panel (- reads stdin)
     #[arg(required = true, value_name = "SCENE")]
     pub(crate) scenes: Vec<PathBuf>,
-    /// A dataset: JSON document, latkit bytes, or GeoJSON (which needs a NAME); NAME= renames it
+    /// A dataset file: a JSON document, latkit bytes, or GeoJSON. NAME= sets its name, which
+    /// GeoJSON requires
     #[arg(short, long, value_name = "[NAME=]FILE")]
     pub(crate) data: Vec<Source>,
-    /// Tiles every view fetches as dataset NAME: time tiles' frames.json, or vector tiles' PMTiles
-    /// file, TileJSON, or {z}/{x}/{y} template
+    /// Tiles every view fetches as dataset NAME: a time tiles frames.json, or a vector tiles
+    /// PMTiles file, TileJSON, or {z}/{x}/{y} template
     #[arg(long, value_name = "NAME=FILE")]
     pub(crate) tiles: Vec<Source>,
-    /// Image file, %d pattern for an image sequence, or - for stdout
+    /// Output file, %d pattern for an image sequence, or - for stdout
     #[arg(short, long, value_name = "FILE")]
     pub(crate) output: Option<PathBuf>,
-    /// What to write; otherwise the output's extension says, or PNG for stdout
+    /// Output format. Defaults to the one the output's extension names, else PNG
     #[arg(long, value_enum)]
     pub(crate) format: Option<Format>,
-    /// A JPEG's quality, from 1, smallest, to 100, sharpest
+    /// JPEG quality, from 1 (smallest) to 100 (sharpest)
     #[arg(long, default_value = "90", value_parser = clap::value_parser!(u8).range(1..=100))]
     pub(crate) quality: u8,
     /// The picture's width and height in pixels, such as 1920x1080
     #[arg(long, default_value = "1600x900", value_parser = size)]
     pub(crate) size: [u32; 2],
-    /// Pixels per CSS pixel: views lay out size / scale CSS pixels, so 2 draws twice as sharp
+    /// Pixels per CSS pixel. Views lay out size / scale CSS pixels, so 2 draws twice as sharp
     #[arg(long, default_value = "1", value_parser = positive)]
     pub(crate) scale: f32,
-    /// A scene's panel of the picture, X,Y,WIDTH,HEIGHT as fractions; one per scene, in order
+    /// A scene's panel of the picture, as X,Y,WIDTH,HEIGHT fractions. Give one per scene, in order
     #[arg(long, value_name = "X,Y,W,H", value_parser = panel)]
     pub(crate) panel: Vec<[f32; 4]>,
     /// Keep alpha where the themes' backgrounds would be
     #[arg(long)]
     pub(crate) transparent: bool,
-    /// The longest a picture, or a video frame, may take, in seconds
+    /// The longest a picture or video frame may take, in seconds
     #[arg(long, default_value = "30", value_parser = deadline)]
     pub(crate) deadline: Duration,
-    /// TTF/OTF/TTC file; repeat for fallbacks; replaces system fonts
+    /// A TTF, OTF, or TTC font file. Repeat for fallbacks. Replaces the system fonts
     #[arg(long, value_name = "FILE")]
     pub(crate) font: Vec<PathBuf>,
-    /// Camera JSON for a scene, in scene order; a view without one fits
+    /// A camera JSON file per scene, in scene order. Views without one use --fit
     #[arg(long, value_name = "FILE")]
     pub(crate) camera: Vec<PathBuf>,
-    /// What a view without a camera frames: "all", or a fit as JSON
+    /// What views without a camera frame: "all", or a fit as JSON
     #[arg(long, default_value = "all", value_name = "FIT")]
     pub(crate) fit: String,
-    /// CSS pixels kept clear at the top, right, bottom, and left, T,R,B,L
+    /// CSS pixels to keep clear at the top, right, bottom, and left
     #[arg(long, value_name = "T,R,B,L", value_parser = insets)]
     pub(crate) insets: Option<[f32; 4]>,
-    /// The axis coordinate shown; sampled fields read their last frame at or before it
+    /// The axis coordinate to show. Sampled fields show their last frame at or before it
     #[arg(long, value_parser = finite, allow_hyphen_values = true)]
     pub(crate) at: Option<f64>,
-    /// A still's effect time in seconds, where elapsed time and flowing comets read it
+    /// A still's fixed effect time in seconds, for elapsed-time expressions and flowing comets
     #[arg(long, value_parser = seconds, conflicts_with = "frames")]
     pub(crate) elapsed: Option<Duration>,
-    /// Frames as JSON Lines, one per output frame, or - for stdin
+    /// Frames as JSON Lines, one line per output frame (- reads stdin)
     #[arg(long, value_name = "FILE")]
     pub(crate) frames: Option<PathBuf>,
-    /// Output frames a second
+    /// Output frames per second
     #[arg(long, default_value = "60", value_parser = fps)]
     pub(crate) fps: f64,
-    /// MP4 bits a second; about 0.15 bits a pixel a frame otherwise
+    /// MP4 bitrate in bits per second. Defaults to about 0.15 bits per pixel per frame
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     pub(crate) bitrate: Option<u32>,
 }
 
-/// An input `schema` describes.
+/// An input whose schema `schema` prints.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub(crate) enum Input {
     /// A scene
     Scene,
     /// A dataset's JSON document
     Data,
-    /// A patch's JSON
+    /// A patch
     Patch,
-    /// A query of `latkit query`
+    /// A query for `latkit query`
     Query,
-    /// A camera of `--camera`
+    /// A camera for `--camera`
     Camera,
-    /// A fit of `--fit`
+    /// A fit for `--fit`
     Fit,
-    /// A line of `--frames`
+    /// One line of a `--frames` file
     Frames,
 }
 
-/// What an output is.
+/// An output format.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Format {
-    /// PNG, lossless with alpha: one picture, or one a frame where the output has a %d pattern
+    /// PNG, lossless with alpha. One picture, or one per frame with a %d output pattern
     Png,
-    /// JPEG at --quality, its alpha dropped: one picture, or one a frame
+    /// JPEG at --quality, without alpha. One picture, or one per frame
     Jpeg,
-    /// WebP, lossless with alpha: one picture, or one a frame
+    /// Lossless WebP with alpha. One picture, or one per frame
     Webp,
-    /// Raw RGBA, straight alpha, frames back to back
+    /// Raw RGBA with straight alpha, frames back to back
     Rgba,
-    /// YUV4MPEG2: 4:2:0 BT.709 limited range, for any encoder
+    /// YUV4MPEG2 (4:2:0, BT.709 limited range), which any encoder reads
     Y4m,
     /// H.264 in fragmented MP4, from the platform's encoder
     Mp4,
@@ -192,14 +193,14 @@ impl std::str::FromStr for Source {
         });
         Ok(match named {
             Some((name, path)) if !path.is_empty() => Source { name: Some(name.into()), path: path.into() },
-            Some(_) => return Err("NAME= names a file".into()),
+            Some(_) => return Err("expected a file after NAME=".into()),
             None => Source { name: None, path: value.into() },
         })
     }
 }
 
 impl Format {
-    /// The bytes its pictures compose into.
+    /// The pixel layout its pictures compose into.
     pub(crate) fn pixels(self) -> Pixels {
         match self {
             Format::Mp4 | Format::Y4m => Pixels::Nv12,
@@ -207,7 +208,7 @@ impl Format {
         }
     }
 
-    /// The image file it writes, at `quality` for a JPEG; `None` for raw frames and video.
+    /// The image format it writes, with `quality` for JPEG. `None` for raw frames and video.
     pub(crate) fn image(self, quality: u8) -> Option<ImageFormat> {
         match self {
             Format::Png => Some(ImageFormat::Png),
@@ -219,7 +220,7 @@ impl Format {
 }
 
 impl Job {
-    /// What the output is: `--format`, else its extension, else PNG.
+    /// The output format: `--format`, else the one the output's extension names, else PNG.
     pub(crate) fn format(&self) -> Format {
         self.format.unwrap_or_else(|| {
             let extension = self.output.as_deref().and_then(Path::extension).and_then(|e| e.to_str());
@@ -234,19 +235,20 @@ impl Job {
         })
     }
 
-    /// The picture the job takes: its size, scale, panels, alpha, and deadline.
+    /// The job's shot: its size, scale, panels, transparency, and deadline.
     pub(crate) fn shot(&self) -> Shot {
         let shot = Shot::new(self.size).scale(self.scale).deadline(Some(self.deadline)).panels(self.panel.clone());
         if self.transparent { shot.transparent() } else { shot }
     }
 
-    /// Whether the output names one file a frame: a `%d` or `%0Nd` pattern.
+    /// Whether the output is a `%d` or `%0Nd` pattern that names one file per frame.
     pub(crate) fn sequence(&self) -> bool {
         self.output.as_deref().is_some_and(|p| pattern(p).is_some())
     }
 }
 
-/// The `%d` or `%0Nd` of a path's file name, and its width.
+/// The byte range of the `%d` or `%0Nd` at the last `%` in `path`, and its zero-padded width (0
+/// for `%d`).
 pub(crate) fn pattern(path: &Path) -> Option<(std::ops::Range<usize>, usize)> {
     let text = path.to_str()?;
     let at = text.rfind('%')?;
@@ -260,8 +262,8 @@ pub(crate) fn pattern(path: &Path) -> Option<(std::ops::Range<usize>, usize)> {
 }
 
 impl Cli {
-    /// The checks clap cannot make, failing as usage errors: one reader of stdin, an output a render
-    /// can write, and a panel for each scene.
+    /// Checks clap cannot express, reported as usage errors: at most one input reads stdin, the
+    /// output is one a render can write, and each scene has a panel.
     pub(crate) fn check(&self) -> clap::error::Result<()> {
         let invalid = |message: &str| Self::command().error(ErrorKind::InvalidValue, message);
         let job = match &self.command {
@@ -288,13 +290,13 @@ impl Cli {
             return Err(invalid("--tiles takes NAME=FILE"));
         }
         if job.scenes.len() > 1 && job.panel.len() != job.scenes.len() {
-            return Err(invalid("a shot of several scenes takes a --panel for each"));
+            return Err(invalid("several scenes need one --panel each"));
         }
         if job.scenes.len() == 1 && job.panel.len() > 1 {
-            return Err(invalid("one scene fills one panel"));
+            return Err(invalid("one scene takes at most one --panel"));
         }
         if job.camera.len() > job.scenes.len() {
-            return Err(invalid("--camera is one per scene"));
+            return Err(invalid("at most one --camera per scene"));
         }
         let Some(output) = &job.output else {
             if matches!(self.command, Command::Render(_)) {
@@ -307,7 +309,7 @@ impl Cli {
         let known = matches!(extension.as_deref(), Some("png" | "jpg" | "jpeg" | "webp" | "mp4" | "y4m" | "rgba"));
         if job.format.is_none() && !is_stdio(output) && !known {
             return Err(invalid(
-                "--output ends in .png, .jpg, .webp, .mp4, .y4m, or .rgba, or --format says what it is",
+                "--output must end in .png, .jpg, .webp, .mp4, .y4m, or .rgba, unless --format is set",
             ));
         }
         let video = matches!(format, Format::Mp4 | Format::Y4m);
@@ -315,7 +317,7 @@ impl Cli {
             return Err(invalid("a video or an image sequence takes --frames"));
         }
         if job.sequence() && (format.image(job.quality).is_none() || is_stdio(output)) {
-            return Err(invalid("a %d pattern names an image file a frame"));
+            return Err(invalid("a %d pattern needs an image format: png, jpeg, or webp"));
         }
         job.shot().check(format.pixels()).map_err(|e| invalid(&e.to_string()))
     }
@@ -339,16 +341,16 @@ fn seconds(value: &str) -> Result<Duration, String> {
 }
 
 fn deadline(value: &str) -> Result<Duration, String> {
-    seconds(value).and_then(|d| if d.is_zero() { Err("a deadline is longer than zero".into()) } else { Ok(d) })
+    seconds(value).and_then(|d| if d.is_zero() { Err("expected more than zero seconds".into()) } else { Ok(d) })
 }
 
 fn fps(value: &str) -> Result<f64, String> {
-    finite(value).and_then(|f| if (1.0..=240.0).contains(&f) { Ok(f) } else { Err("1 to 240 frames a second".into()) })
+    finite(value).and_then(|f| if (1.0..=240.0).contains(&f) { Ok(f) } else { Err("expected 1 to 240 fps".into()) })
 }
 
 fn size(value: &str) -> Result<[u32; 2], String> {
     let (w, h) = value.split_once(['x', 'X']).ok_or("expected WIDTHxHEIGHT")?;
-    let side = |v: &str| v.trim().parse::<u32>().ok().filter(|n| *n > 0).ok_or("a side is a positive whole number");
+    let side = |v: &str| v.trim().parse::<u32>().ok().filter(|n| *n > 0).ok_or("expected positive whole numbers");
     Ok([side(w)?, side(h)?])
 }
 
@@ -363,7 +365,7 @@ fn panel(value: &str) -> Result<[f32; 4], String> {
 
 fn insets(value: &str) -> Result<[f32; 4], String> {
     numbers::<4>(value)
-        .and_then(|n| if n.iter().all(|v| *v >= 0.0) { Ok(n) } else { Err("insets are not negative".into()) })
+        .and_then(|n| if n.iter().all(|v| *v >= 0.0) { Ok(n) } else { Err("expected nonnegative insets".into()) })
 }
 
 #[cfg(test)]

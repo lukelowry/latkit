@@ -1,6 +1,6 @@
-//! Areas: polygons filled through the triangles the view derives for them, holes left open, picked
-//! where they cover, framed by a fit, outlined by lines along their rings; on the earth whole across
-//! the antimeridian, and shaped in a job when too large for the frame.
+//! Areas: polygons filled through triangles the view derives, with holes left open. Areas pick
+//! where they cover, a fit frames them, and lines trace their rings. On the earth they stay whole
+//! across the antimeridian, and polygons too large for one frame are triangulated in a job.
 
 #![cfg(feature = "gpu")]
 
@@ -29,7 +29,7 @@ fn dark(pixel: [u8; 4]) -> bool {
     pixel[0].max(pixel[1]).max(pixel[2]) < 30
 }
 
-/// A dataset of one table of polygons, each row its rings.
+/// A dataset with one table of polygons, each row a list of rings.
 fn polygons(rows: Vec<Vec<Ring>>) -> Data {
     let ids: Vec<u64> = (1..=rows.len() as u64).collect();
     let data = Data::new("map");
@@ -44,7 +44,7 @@ fn view(gpu: &latkit::Gpu, scene: Scene, data: &Data) -> View {
     view
 }
 
-/// Renders frames until `pending` resolves, within the settle deadline.
+/// Renders frames until `pending` resolves, within `SETTLE` frames.
 fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
     let mut pending = pin!(pending);
     let mut context = Context::from_waker(Waker::noop());
@@ -71,10 +71,10 @@ fn areas_fill_their_polygons_and_leave_their_holes() {
 }
 
 #[test]
-fn areas_asked_to_pick_pick_their_rows_and_frame_a_fit() {
+fn pickable_areas_return_their_rows_and_a_fit_frames_them() {
     let Some(gpu) = gpu() else { return };
     let data = polygons(vec![vec![square(100.0, 100.0, 40.0)], vec![square(300.0, 100.0, 40.0)]]);
-    // Areas are geometry: they answer the pointer only when asked to.
+    // Areas respond to the pointer only when `pick` is on.
     let areas = Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")).pick(true);
     let scene = Scene::new(plane()).draw(areas);
     let mut view = view(&gpu, scene, &data);
@@ -119,7 +119,7 @@ fn earth_areas_stay_whole_across_the_antimeridian() {
 #[test]
 fn large_areas_triangulate_in_a_job_and_then_draw() {
     let Some(gpu) = gpu() else { return };
-    // A ring of 40,000 points: past what a frame triangulates.
+    // A ring of 40,000 points, more than one frame triangulates.
     let ring: Ring = (0..=40_000)
         .map(|k| {
             let a = f64::from(k) / 40_000.0 * std::f64::consts::TAU;
@@ -130,12 +130,12 @@ fn large_areas_triangulate_in_a_job_and_then_draw() {
     let scene = Scene::new(plane()).draw(Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")));
     let mut view = view(&gpu, scene, &data);
     let pixels = frame(&gpu, &mut view);
-    assert!(red(at(&pixels, C, C)), "drawn once the job lands: {:?}", at(&pixels, C, C));
+    assert!(red(at(&pixels, C, C)), "drawn once the job finishes: {:?}", at(&pixels, C, C));
     assert_eq!(errors(&mut view), Vec::new());
 }
 
 #[test]
-fn a_polygon_field_is_what_areas_fill() {
+fn areas_require_a_polygon_field() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("map");
     data.apply(
@@ -144,5 +144,5 @@ fn a_polygon_field_is_what_areas_fill() {
     .expect("valid");
     let mut view = view(&gpu, Scene::new(plane()), &data);
     let refused = view.set_scene(Scene::new(plane()).draw(Areas::of("map", "Zone")));
-    assert!(refused.is_err(), "a path field is no polygon field");
+    assert!(refused.is_err(), "areas reject a path field");
 }

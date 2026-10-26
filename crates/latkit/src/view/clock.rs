@@ -1,11 +1,12 @@
-//! A view's clock: seconds of motion, moved by the steps between the times its frames give. Every
-//! ease, flight, fade, coast, orbit, and `elapsed()` reads it, never the wall, so whatever draws the
-//! frames decides when they are: an animation frame's timestamp, a video frame's time, a test's
-//! step. A shot may fix the time read by elapsed expressions and drawing effects while this clock
-//! keeps advancing finite transitions.
+//! A view's clock: seconds of motion, advanced by the time between frames.
+//!
+//! Every ease, flight, fade, coast, orbit, and `elapsed()` reads this clock, never wall time, so
+//! whatever draws the frames sets the timeline: an animation frame's timestamp, a video frame's
+//! time, or a test's step. A shot may fix the time that `elapsed()` expressions and drawing effects
+//! read while this clock keeps advancing finite transitions.
 
-/// The longest step the clock takes between two frames: a driver that slept, or switched from one
-/// timeline to another, never makes motion jump or run back.
+/// The longest step between two frames, in seconds. A driver that slept or switched timelines
+/// never makes motion jump or run backward.
 const STEP: f64 = 0.25;
 
 #[derive(Default)]
@@ -19,7 +20,8 @@ pub(crate) struct Clock {
 }
 
 impl Clock {
-    /// Takes a frame's `time`; the seconds the view moves by.
+    /// Advances to a frame's `time`, returning the step in seconds. A non-finite `time` moves
+    /// nothing.
     pub(crate) fn tick(&mut self, time: f64) -> f64 {
         let dt = match self.last {
             Some(last) if time.is_finite() => (time - last).clamp(0.0, STEP),
@@ -33,7 +35,7 @@ impl Clock {
         dt
     }
 
-    /// Whether the last frame moved the clock: what reads it shows anything new only then.
+    /// Whether the last frame moved the clock. Anything reading the clock changes only then.
     pub(crate) fn moved(&self) -> bool {
         self.step > 0.0
     }
@@ -43,8 +45,8 @@ impl Clock {
         self.now
     }
 
-    /// How far an ease of `seconds` begun at `start` has come, smoothed, from 0 to 1: the one ease
-    /// flights and transitions share.
+    /// Progress of an ease of `seconds` begun at `start`, from 0 to 1 with smoothstep easing.
+    /// Flights and transitions share it.
     pub(crate) fn eased(&self, start: f64, seconds: f64) -> f64 {
         let t = ((self.now - start) / seconds.max(1e-3)).clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
@@ -61,11 +63,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn steps_follow_the_driver_and_never_jump_or_run_back() {
+    fn steps_follow_the_driver_and_never_jump_or_run_backward() {
         let mut clock = Clock::default();
         assert_eq!(clock.tick(100.0), 0.0, "the first frame starts the clock");
-        assert!((clock.tick(100.5) - STEP).abs() < 1e-12, "a long gap moves it one step");
-        assert_eq!(clock.tick(3.0), 0.0, "another timeline never runs it back");
+        assert!((clock.tick(100.5) - STEP).abs() < 1e-12, "a long gap moves it at most one step");
+        assert_eq!(clock.tick(3.0), 0.0, "an earlier time never moves it backward");
         assert!((clock.tick(3.1) - 0.1).abs() < 1e-12);
         assert!((clock.now() - (STEP + 0.1)).abs() < 1e-12);
     }

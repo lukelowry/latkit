@@ -1,6 +1,7 @@
-//! The expression machine on the CPU, for what a diagram's sheet reads (where rows stand, how large
-//! they are, and the texts its blocks fit) and what a query keeps, sorts, and selects. The GPU runs
-//! the same expressions for everything drawn; here they read fields, sampled ones at a coordinate.
+//! Evaluates expressions on the CPU, for work done from the data alone: a diagram's sheet
+//! (positions, sizes, and block label texts), layouts, row priorities, fitted domains of paged
+//! tables, and queries (filters, sort keys, and selections). The GPU evaluates the same expressions
+//! for drawing. Here they read only fields, with sampled fields read at one axis coordinate.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -15,9 +16,10 @@ use crate::data::{Field, Geometry, Snapshot, Table, Value};
 pub(crate) struct Rows<'a> {
     pub(crate) table: &'a Table,
     pub(crate) all: &'a [Snapshot],
-    /// The axis coordinate sampled fields are read at: their last frame by default.
+    /// The axis coordinate at which sampled fields are read; infinity, their last frame, by
+    /// default.
     at: f64,
-    /// Fitted domains already reduced, by the input they reduce.
+    /// Fitted domains already computed, keyed by their input node.
     fitted: RefCell<FxHashMap<*const Node, [f64; 2]>>,
     /// The texts `contains` looks for, lowercased once.
     lowered: RefCell<FxHashMap<Arc<str>, Arc<str>>>,
@@ -28,25 +30,26 @@ impl<'a> Rows<'a> {
         Rows { table, all, at: f64::INFINITY, fitted: RefCell::default(), lowered: RefCell::default() }
     }
 
-    /// `text` lowercased, as `contains` looks for it.
+    /// `text` lowercased for `contains`, cached.
     fn lowered(&self, text: &Arc<str>) -> Arc<str> {
         self.lowered.borrow_mut().entry(text.clone()).or_insert_with(|| text.to_lowercase().into()).clone()
     }
 
-    /// The rows with sampled fields read at axis coordinate `at`.
+    /// These rows, with sampled fields read at axis coordinate `at`.
     pub(crate) fn at(mut self, at: f64) -> Rows<'a> {
         self.at = at;
         self
     }
 
-    /// `expr` for `row` as a number; `None` where it reads missing, or holds no number.
+    /// `expr` evaluated for `row`; `None` where the result is missing or not a finite number.
     pub(crate) fn number(&self, expr: &Expr, row: usize) -> Option<f64> {
         let v = self.eval(expr, row);
         v.is_finite().then_some(v)
     }
 
-    /// `expr` for every row, NaN where it reads missing, each made into a `T` by `make`: a plain
-    /// field read page by page, anything else row by row.
+    /// `expr` evaluated for every row and converted by `make`, with NaN for missing values. A
+    /// constant fills every row, and a plain field of the table is read page by page; anything else
+    /// is evaluated for each row individually.
     pub(crate) fn numbers<T>(&self, expr: &Expr, mut make: impl FnMut(f64) -> T) -> Vec<T> {
         let n = self.table.len();
         let mut out = Vec::with_capacity(n);
@@ -83,7 +86,7 @@ impl<'a> Rows<'a> {
         out
     }
 
-    /// The text field `expr` names, for `row`.
+    /// The value of text field `expr` in `row`.
     pub(crate) fn text(&self, expr: &Expr, row: usize) -> Option<Arc<str>> {
         let Node::Field(f) = &*expr.0 else { return None };
         match self.value(f, row)? {
@@ -92,7 +95,8 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// Field `f`'s value for `row`: of the table, or of a joined one by the row's id.
+    /// Field `f`'s value in `row`: from the table, or for a join, from the joined table's row with
+    /// the same id.
     fn value(&self, f: &FieldRef, row: usize) -> Option<Value> {
         let value = match &f.from {
             None => self.table.value(row, &f.name, self.at)?,
@@ -108,7 +112,7 @@ impl<'a> Rows<'a> {
         })
     }
 
-    /// `expr` as the GPU computes it, NaN standing for missing.
+    /// `expr` computed as the GPU computes it, with NaN for missing.
     fn eval(&self, expr: &Expr, row: usize) -> f64 {
         match &*expr.0 {
             Node::Number(v) => *v,
@@ -153,7 +157,8 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// The extent of `input` over every row, as a fitted domain reduces it.
+    /// The extent of `input` over every row, as a fitted domain computes it; `[0, 1]` when no row
+    /// has a value.
     fn fit(&self, input: &Expr) -> [f64; 2] {
         let key = Arc::as_ptr(&input.0);
         if let Some(&extent) = self.fitted.borrow().get(&key) {
@@ -216,7 +221,7 @@ mod tests {
     use crate::{Ids, Table, field, when};
 
     #[test]
-    fn numbers_follow_the_gpu() {
+    fn cpu_evaluation_matches_the_gpu() {
         let table = Table::new("T", Ids::count(3))
             .field("w", vec![Some(10.0), None, Some(30.0)])
             .field("on", vec![true, false, true]);

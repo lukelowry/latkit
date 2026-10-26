@@ -1,23 +1,25 @@
-//! Matches: whether each row's text field holds a text a mark asks about, `field.contains(text)`,
-//! ignoring case, as fields derived beside the mark's own table, which the GPU reads as booleans.
-//! Texts stay on the CPU, so the view works them out here: again only when the field or the rows
-//! change, and a page whose matches held keeps its column page, so only what changed uploads.
+//! Text matches: for each `field.contains(text)` a mark uses, whether each row's text field
+//! contains `text`, ignoring case. The results are boolean fields of a table beside the mark's own
+//! table, which the GPU reads. Texts stay on the CPU, so matches are computed here, again only when
+//! the field or the rows change. A page whose matches are unchanged keeps its column page, so only
+//! changed pages upload.
 
 use std::sync::Arc;
 
 use super::{Derive, Input, Jobs, Tables, beside, kept};
 use crate::data::{Field, Keyed, Name, Table, Values, Version};
 
-/// The derived field holding whether each row's text field `field` holds `text`, ignoring case.
+/// The name of the derived field holding whether each row's text field `field` contains `text`,
+/// ignoring case.
 pub(crate) fn contains_of(field: &str, text: &str) -> Name {
     format!("{field}.contains({text})").into()
 }
 
-/// What a table's matches were made from: its rows, and each field and text asked about with the
-/// field's version.
+/// What a table's matches were made from: its structure version, and each field and text tested,
+/// with the field's version.
 type Made = (Version, Vec<(Name, Arc<str>, Option<Version>)>);
 
-/// The fields of each table asked whether they hold a text, and the texts, in the order its marks ask.
+/// For each table, the distinct field and text pairs its marks test with `contains`, in mark order.
 type Asked = Keyed<(Name, Name), Vec<(Name, Arc<str>)>>;
 
 #[derive(Default)]
@@ -83,8 +85,9 @@ impl Derive for Matches {
     }
 }
 
-/// Whether each row of `table`'s text field `field` holds `text`, ignoring case; a missing text, or a
-/// field that holds none, holds nothing. Read page by page, each text in place.
+/// Whether each row of `table`'s text field `field` contains `text`, ignoring case. Missing
+/// values, and fields that are missing or not text, match nothing. Reads page by page without
+/// copying texts.
 fn holds(table: &Table, field: &str, text: &str) -> Values {
     let needle = text.to_lowercase();
     let mut out = Vec::with_capacity(table.len());
@@ -112,7 +115,7 @@ mod tests {
     use crate::{Ids, Value};
 
     #[test]
-    fn rows_hold_a_text_ignoring_case() {
+    fn rows_contain_a_text_ignoring_case() {
         let names = vec![Some("Lake Travis"), None, Some("LAKE"), Some("Café")];
         let table = Table::new("Lake", Ids::count(4)).field("name", names);
         let rows =

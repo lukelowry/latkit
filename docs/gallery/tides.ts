@@ -1,4 +1,4 @@
-/** Tides: closed contours swelling outward, each deformed by harmonics that drift with its level. */
+/** Tides: nested closed contours, each rippled by harmonics whose phases shift with its level. */
 import { Patch } from 'latkit';
 import { TAU, THEME, framed, type Piece } from './look.ts';
 

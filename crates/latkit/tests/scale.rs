@@ -1,6 +1,6 @@
-//! Scale: what a view draws always fits. Tables too large to draw whole draw the tiles in view,
-//! traces too large thin in time, what matters more draws on top, a page never outgrows a chunk, and
-//! a view sleeps while it waits.
+//! Scale: a view's drawing always fits its budget. Paged tables draw the tiles in view, traces too
+//! large thin in time, higher-priority rows draw on top, a path longer than an arena chunk still
+//! draws whole, and a view sleeps while it waits.
 
 #![cfg(feature = "gpu")]
 
@@ -13,12 +13,12 @@ use latkit::{
     Vertices, View, Waiting, field, when,
 };
 
-/// Jobs done on threads of their own, landing frames later, as a page's workers answer them.
+/// A host that runs jobs on separate threads, finishing frames later, as a page's workers do.
 struct Threads;
 
 impl Host for Threads {
     fn rasterize(&self, _: &TextRun) -> latkit::Result<Raster> {
-        Err(latkit::Error::Unsupported("these views set no text".into()))
+        Err(latkit::Error::Unsupported("these views draw no text".into()))
     }
 
     fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
@@ -28,8 +28,8 @@ impl Host for Threads {
     }
 }
 
-/// A grid of `columns` by `rows` vertices a unit apart, from the origin, and an edge from each to
-/// the next in its row.
+/// A grid of `columns` by `rows` vertices one unit apart, starting at the origin, each with
+/// `v` = 0, and an edge from each vertex to the next in its row.
 fn lattice(columns: usize, rows: usize) -> Data {
     let n = columns * rows;
     let x: Vec<f64> = (0..n).map(|i| (i % columns) as f64).collect();
@@ -38,7 +38,8 @@ fn lattice(columns: usize, rows: usize) -> Data {
     let from: Vec<u64> = links.iter().map(|&i| i as u64).collect();
     let to: Vec<u64> = links.iter().map(|&i| i as u64 + 1).collect();
     let data = Data::new("grid");
-    data.apply(Patch::new().set(Table::new("Bus", Ids::count(n as u32)).field("x", x).field("y", y)).set(
+    let buses = Table::new("Bus", Ids::count(n as u32)).field("x", x).field("y", y).field("v", vec![0.0; n]);
+    data.apply(Patch::new().set(buses).set(
         Table::new("Line", Ids::count(links.len() as u32)).reference("from", "Bus", from).reference("to", "Bus", to),
     ))
     .expect("valid");
@@ -46,7 +47,7 @@ fn lattice(columns: usize, rows: usize) -> Data {
 }
 
 #[test]
-fn what_matters_more_draws_on_top() {
+fn higher_priority_rows_draw_on_top() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(
@@ -94,7 +95,7 @@ fn a_table_that_starts_empty_draws_its_rows() {
 }
 
 #[test]
-fn a_dense_table_draws_the_tiles_in_view_and_keeps_what_is_selected() {
+fn a_paged_table_draws_the_tiles_in_view_and_its_selected_rows() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);
     let data = lattice(columns, rows);
@@ -118,35 +119,36 @@ fn a_dense_table_draws_the_tiles_in_view_and_keeps_what_is_selected() {
     view.set_selection([far.clone().into()]);
     frame(&gpu, &mut view);
     assert_eq!(view.selection(), [latkit::Rows::from(far)]);
-    assert_eq!(view.stats().drawn, stats.drawn + 1, "the selected row draws whatever its tile");
+    assert_eq!(view.stats().drawn, stats.drawn + 1, "the selected row draws regardless of its tile");
 }
 
 #[test]
-fn panning_a_dense_table_draws_every_row_in_view_as_tiles_come_and_go() {
+fn panning_a_paged_table_draws_every_row_in_view_as_tiles_change() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);
-    // Without an ease, rows arriving draw at once.
+    // Without an ease, arriving rows draw at once.
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)
         .draw(Edges::of("grid", "Line").ends("from", "to").width(2.0).color(Color::rgb(0.0, 1.0, 0.0)))
         .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
-    view.set_sources([lattice(columns, rows)]).expect("a source");
+    let data = lattice(columns, rows);
+    view.set_sources([&data]).expect("a source");
     let center = SIZE / 2;
     let camera = |x: f64| Camera::Map { center: [x, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 };
     let mut whole = 0;
     for step in 0..6 {
         view.set_camera(camera(100.0 + 60.0 * f64::from(step)));
-        // Every frame that waits on no page draws every row in view: what a camera move draws shows
-        // whole, the edges with their ends.
+        // Every frame not waiting on a page draws every row in view. After a camera move, the
+        // view is complete, with edges and their endpoints.
         for _ in 0..4 {
             let pixels = common::step(&gpu, &mut view);
             let waiting = view.waiting();
             if step > 0 && !waiting.data && !waiting.marks {
                 let pixel = |dx: u32, dy: u32| at(&pixels, center + dx, center + dy);
-                assert!(close(pixel(0, 0), [255, 255, 255, 255]), "step {step}, as it lands: {:?}", pixel(0, 0));
-                assert!(close(pixel(4, 0), [0, 255, 0, 255]), "step {step}, as it lands: {:?}", pixel(4, 0));
+                assert!(close(pixel(0, 0), [255, 255, 255, 255]), "step {step}, as pages arrive: {:?}", pixel(0, 0));
+                assert!(close(pixel(4, 0), [0, 255, 0, 255]), "step {step}, as pages arrive: {:?}", pixel(4, 0));
                 whole += 1;
             }
         }
@@ -160,26 +162,30 @@ fn panning_a_dense_table_draws_every_row_in_view_as_tiles_come_and_go() {
         assert!(close(pixel(4, 4), [0, 0, 0, 255]), "step {step}: none between rows: {:?}", pixel(4, 4));
         assert!(close(pixel(4, 0), [0, 255, 0, 255]), "step {step}: an edge between two: {:?}", pixel(4, 0));
     }
-    assert!(whole > 0, "frames drew as their pages landed");
-    // Back where the camera began: its pages are held still, so nothing packs, uploads, or evaluates
-    // again.
+    assert!(whole > 0, "frames drew as their pages arrived");
+    // A row written far from the camera's starting point leaves the pages there resident.
+    let last = (columns * rows - 1) as u64;
+    data.apply(Table::new("Bus", vec![last]).field("v", vec![1.0])).expect("valid");
+    frame(&gpu, &mut view);
+    // Back at the starting point, its pages are still resident, so nothing packs, uploads, or
+    // evaluates again.
     let before = gpu.work();
     view.set_camera(camera(100.0));
     let pixels = frame(&gpu, &mut view);
     let work = gpu.work() - before;
-    assert_eq!((work.packed, work.uploaded, work.evaluated), (0, 0, 0), "the way back costs nothing");
+    assert_eq!((work.packed, work.uploaded, work.evaluated), (0, 0, 0), "returning needs no work");
     assert!(close(at(&pixels, center, center), [255, 255, 255, 255]), "{:?}", at(&pixels, center, center));
-    // A row picked by id is found among the rows drawn.
+    // A row selected by id is found among the drawn rows.
     let selected = Row::new("grid", "Bus", (250 * columns + 400) as u64);
     view.set_selection([selected.clone().into()]);
     view.set_camera(camera(380.0));
     frame(&gpu, &mut view);
-    assert_eq!(view.selection(), [latkit::Rows::from(selected)], "what is selected stays so");
+    assert_eq!(view.selection(), [latkit::Rows::from(selected)], "the selected row stays selected");
     assert_eq!(errors(&mut view), []);
 }
 
 #[test]
-fn appending_to_a_table_drawn_through_tiles_never_thins_it() {
+fn appending_to_a_paged_table_never_thins_it() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);
     let data = lattice(columns, rows);
@@ -191,12 +197,12 @@ fn appending_to_a_table_drawn_through_tiles_never_thins_it() {
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
-    assert!(view.complete(), "its pyramid serves");
+    assert!(view.complete(), "complete, drawing from its pyramid");
     let drawn = view.stats().drawn;
     let center = SIZE / 2;
     let before = gpu.work();
     for added in 0..4_u32 {
-        // A row a step, far from the view: until a pyramid holds it, it draws after the rest.
+        // One row per step, far from the view. Until a pyramid includes it, it draws last.
         let id = (columns * rows) as u64 + u64::from(added);
         let row = Table::new("Bus", vec![id]).field("x", vec![-50.0]).field("y", vec![f64::from(added)]);
         data.apply(row).expect("valid");
@@ -207,17 +213,17 @@ fn appending_to_a_table_drawn_through_tiles_never_thins_it() {
         assert!(close(pixel(8), [255, 255, 255, 255]), "append {added}: and its neighbor: {:?}", pixel(8));
         assert!(view.stats().drawn >= drawn, "append {added}: {} drawn, {drawn} before", view.stats().drawn);
     }
-    // The pyramid serves the rows appended as they come, and only the page they land in evaluates.
+    // The pyramid serves appended rows as they arrive, and only the page they join evaluates.
     let work = gpu.work() - before;
-    assert_eq!(work.jobs, 0, "rows appended level nothing until they are many");
-    assert!(work.evaluated <= 4 << 12, "a page each: {}", work.evaluated);
+    assert_eq!(work.jobs, 0, "a few appended rows start no job");
+    assert!(work.evaluated <= 4 << 12, "at most a page per append evaluates: {}", work.evaluated);
 }
 
 #[test]
 fn a_change_to_one_rows_color_moves_no_row() {
     let Some(gpu) = gpu() else { return };
-    // A grid on the globe, drawn in part: its lines are great circles, whose pieces follow where the
-    // buses lie.
+    // A grid on the globe, drawn as a paged table. Its lines are great circles whose pieces depend
+    // on the bus positions.
     let (columns, rows) = (600, 500);
     let n = columns * rows;
     let links: Vec<usize> = (0..n).filter(|i| i % columns + 1 < columns).collect();
@@ -251,16 +257,16 @@ fn a_change_to_one_rows_color_moves_no_row() {
     view.set_sources([&data]).expect("a source");
     frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
-    assert!(view.stats().drawn < view.stats().rows / 4, "the grid draws in part");
-    // One bus far off view, one in it: neither moves a line's pieces, so nothing is read back.
+    assert!(view.stats().drawn < view.stats().rows / 4, "the grid is paged");
+    // One bus far out of view, one in it. Neither changes a line's pieces, so nothing is read back.
     for id in [0, 250 * columns + 300] {
         let before = gpu.work();
         data.apply(Table::new("Bus", vec![id as u64]).field("v", vec![1.0])).expect("valid");
         frame(&gpu, &mut view);
         let work = gpu.work() - before;
         assert_eq!(work.readbacks, 0, "bus {id}: no line counts its pieces again");
-        assert!(work.evaluated <= 1 << 12, "bus {id}: a page at most evaluates: {}", work.evaluated);
-        assert_eq!(work.resolved, 0, "bus {id}: no line finds its ends again");
+        assert!(work.evaluated <= 1 << 12, "bus {id}: at most a page evaluates: {}", work.evaluated);
+        assert_eq!(work.resolved, 0, "bus {id}: no line resolves its endpoints again");
     }
 }
 
@@ -276,28 +282,28 @@ fn a_frame_waiting_for_pages_packs_nothing_again() {
     view.set_sources([lattice(600, 500)]).expect("a source");
     frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
-    // Pages trickle up a few at a time: what the camera moves to waits for them.
+    // Pages upload a few at a time, so the area the camera moves to waits for them.
     gpu.set_budget(Budget { upload_per_frame: 16 << 10, ..budget });
     view.set_camera(Camera::Map { center: [80.0, 60.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
     let before = gpu.work();
     common::step(&gpu, &mut view);
     let packed = (gpu.work() - before).packed;
-    assert!(packed > 0 && view.waiting().data, "the pages it moved to pack, and wait to upload");
+    assert!(packed > 0 && view.waiting().data, "the pages at the new camera pack, then wait to upload");
     let mut waited = 0;
     while view.waiting().data && waited < common::SETTLE {
         common::step(&gpu, &mut view);
         waited += 1;
     }
-    assert!(waited > 1, "it waited for pages over frames");
-    assert_eq!((gpu.work() - before).packed, packed, "frames waiting packed nothing again");
+    assert!(waited > 1, "it waited several frames for pages");
+    assert_eq!((gpu.work() - before).packed, packed, "the waiting frames packed nothing again");
     gpu.set_budget(budget);
 }
 
 #[test]
-fn a_fitted_domain_holds_however_little_of_its_table_draws() {
+fn a_fitted_domain_covers_every_row_of_a_paged_table() {
     let Some(gpu) = gpu() else { return };
-    // A lattice whose rows hold v = x / 600, and one more far in a corner holding 10, the lowest
-    // priority, so it lands among the finest rows, which no page drawn about the middle holds.
+    // A lattice whose rows have v = x / 600, plus one far in a corner with v = 10 and the lowest
+    // priority. It falls among the finest rows, in no page drawn around the center.
     let (columns, rows) = (600_usize, 500_usize);
     let n = columns * rows;
     let mut x: Vec<f64> = (0..n).map(|i| (i % columns) as f64).collect();
@@ -310,7 +316,7 @@ fn a_fitted_domain_holds_however_little_of_its_table_draws() {
     let data = Data::new("grid");
     data.apply(Table::new("Bus", Ids::count(n as u32 + 1)).field("x", x).field("y", y).field("v", v).field("p", p))
         .expect("valid");
-    // A blue ground, so a gray row tells from no row.
+    // A blue background, so a gray row is distinguishable from no row.
     let theme = latkit::Theme { background: Color::rgb(0.0, 0.0, 1.0), ..plain_theme() };
     let scene = Scene::new(plane()).theme(theme).ease(std::time::Duration::ZERO).draw(
         Vertices::of("grid", "Bus")
@@ -324,21 +330,21 @@ fn a_fitted_domain_holds_however_little_of_its_table_draws() {
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
-    assert!(view.stats().drawn < view.stats().rows / 4, "the table draws in part");
-    // Fitted over every row, 0 to 10: the middle row's half draws near black, not the gray it would
-    // over the rows held about the view.
+    assert!(view.stats().drawn < view.stats().rows / 4, "the table is paged");
+    // The domain is fitted over every row, 0 to 10, so the center row's 0.5 draws near black, not
+    // the mid gray a domain fitted to the resident rows would give.
     let center = at(&pixels, SIZE / 2, SIZE / 2);
     let gray = center[0].abs_diff(center[2]) <= 3 && center[1].abs_diff(center[2]) <= 3;
-    assert!(gray && center[0] < 90, "the middle row draws {center:?}");
+    assert!(gray && center[0] < 90, "the middle row draws near black: {center:?}");
 }
 
 #[test]
-fn a_join_into_a_table_drawn_in_part_reads_every_row() {
+fn a_join_into_a_paged_table_reads_every_row() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);
     let n = columns * rows;
     let data = lattice(columns, rows);
-    // Bus 7 lies far from the view; a probe in the middle reads its value by id.
+    // Bus 7 lies far from the view. A probe at the center reads its value by id.
     let v: Vec<f64> = (0..n).map(|i| if i == 7 { 1.0 } else { 0.0 }).collect();
     data.apply(
         Patch::new()
@@ -361,14 +367,14 @@ fn a_join_into_a_table_drawn_in_part_reads_every_row() {
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
-    assert!(view.stats().drawn < view.stats().rows / 4, "the buses draw in part");
+    assert!(view.stats().drawn < view.stats().rows / 4, "the buses are paged");
     let probe = view.screen([300.5, 250.5, 0.0]).expect("in view");
     let pixel = at(&pixels, probe[0] as u32, probe[1] as u32);
-    assert!(close(pixel, [255, 255, 255, 255]), "bus 7's value, though no tile in view holds it: {pixel:?}");
+    assert!(close(pixel, [255, 255, 255, 255]), "bus 7's value, though no tile in view contains it: {pixel:?}");
 }
 
 #[test]
-fn pages_held_while_rows_ease_enter_as_the_rest_ease_on() {
+fn pages_made_resident_mid_ease_enter_as_the_rest_keep_easing() {
     let Some(gpu) = gpu() else { return };
     let camera = |zoom: f64| Camera::Map { center: [300.0, 250.0, 0.0], zoom, pitch: 0.0, bearing: 0.0 };
     let view = |zoom: f64| {
@@ -382,22 +388,22 @@ fn pages_held_while_rows_ease_enter_as_the_rest_ease_on() {
     };
     let mut pulled = view(1.0);
     let want = frame(&gpu, &mut pulled);
-    // A sample draws first; then the pyramid lands, and its rows ease in from it...
+    // A sample draws first. Then the pyramid arrives, and its rows ease in from the sample...
     let mut easing = view(3.0);
     common::step(&gpu, &mut easing);
     common::step(&gpu, &mut easing);
-    // ...as the camera pulls back, holding more pages than were held before.
+    // ...while the camera pulls back, needing more resident pages than before.
     easing.set_camera(camera(1.0));
     let pixels = frame(&gpu, &mut easing);
     assert_eq!(errors(&mut easing), []);
     let differ = pixels.iter().zip(&want).filter(|(a, b)| !close(**a, **b)).count();
-    assert_eq!(differ, 0, "settles to what the camera pulled back at once draws");
+    assert_eq!(differ, 0, "settles to the frame of a view pulled back at once");
 }
 
 #[test]
-fn areas_drawn_in_part_fill_the_pages_drawn_as_the_camera_moves() {
+fn paged_areas_fill_the_drawn_pages_as_the_camera_moves() {
     let Some(gpu) = gpu() else { return };
-    // A lattice of cells a unit apart, each a square half a unit across: too many to draw whole.
+    // A lattice of cells one unit apart, each a square half a unit across: too many to draw whole.
     let (columns, rows) = (600_usize, 500_usize);
     let cells: Vec<Vec<Vec<[f64; 2]>>> = (0..columns * rows)
         .map(|i| {
@@ -419,8 +425,8 @@ fn areas_drawn_in_part_fill_the_pages_drawn_as_the_camera_moves() {
         let pixels = frame(&gpu, &mut view);
         assert_eq!(errors(&mut view), []);
         let stats = view.stats();
-        assert!(stats.drawn < stats.rows / 4, "the cells draw in part: {} of {}", stats.drawn, stats.rows);
-        // The cell at the middle fills, and the gap beside it does not.
+        assert!(stats.drawn < stats.rows / 4, "the cells are paged: {} of {} draw", stats.drawn, stats.rows);
+        // The cell at the center fills, and the gap beside it does not.
         let center = SIZE / 2;
         assert!(close(at(&pixels, center, center), [255, 0, 0, 255]), "at {x}, {y}: {:?}", at(&pixels, center, center));
         assert!(
@@ -432,7 +438,7 @@ fn areas_drawn_in_part_fill_the_pages_drawn_as_the_camera_moves() {
 }
 
 #[test]
-fn rows_kept_off_screen_hold_pages_of_their_own() {
+fn selected_rows_off_screen_pack_into_kept_row_pages() {
     let Some(gpu) = gpu() else { return };
     let scene = Scene::new(plane())
         .theme(plain_theme())
@@ -443,21 +449,21 @@ fn rows_kept_off_screen_hold_pages_of_their_own() {
     view.set_sources([lattice(600, 500)]).expect("a source");
     frame(&gpu, &mut view);
     let (drawn, before) = (view.stats().drawn, gpu.work());
-    // A hundred rows along the grid's foot, far from the view, each in another page of the order.
+    // A hundred rows near the grid's bottom, far from the view, each in its own page of the order.
     let ids: Vec<latkit::Id> = (0..100_u64).map(|i| latkit::Id::from(600 * (i % 50) + i * 6)).collect();
     view.set_selection([latkit::Rows { data: "grid".into(), table: "Bus".into(), ids }]);
     frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
-    assert_eq!(view.stats().drawn, drawn + 100, "every row kept draws");
+    assert_eq!(view.stats().drawn, drawn + 100, "every kept row draws");
     let packed = (gpu.work() - before).packed;
-    assert!(packed < 4096, "rows kept pack together, not a page of the order each: {packed} rows packed");
+    assert!(packed < 4096, "kept rows pack together, not one order page each: {packed} rows packed");
 }
 
 #[test]
-fn an_edge_kept_draws_between_its_ends() {
+fn a_kept_edge_draws_between_its_endpoints() {
     let Some(gpu) = gpu() else { return };
     let budget = gpu.budget();
-    // So little room that only the coarsest edges draw.
+    // So small a budget that only the coarsest edges draw.
     gpu.set_budget(Budget { bytes: 8 << 20, ..budget });
     let scene = Scene::new(plane())
         .theme(plain_theme())
@@ -471,7 +477,8 @@ fn an_edge_kept_draws_between_its_ends() {
     let green = |p: [u8; 4]| p[1] > 150 && p[0] < 100 && p[2] < 100;
     let before = frame(&gpu, &mut view);
     assert!(!green(at(&before, center, center)), "the edge is not drawn: {:?}", at(&before, center, center));
-    // Line 150050 runs from bus 150300 to bus 150301, (300, 250) to (301, 250): kept, with its ends.
+    // Line 150050 runs from bus 150300 to bus 150301, (300, 250) to (301, 250). Selecting it keeps
+    // it and its endpoints.
     view.set_selection([Row::new("grid", "Line", 150_050_u64).into()]);
     let after = frame(&gpu, &mut view);
     gpu.set_budget(budget);
@@ -480,9 +487,9 @@ fn an_edge_kept_draws_between_its_ends() {
 }
 
 #[test]
-fn lanes_standing_in_for_a_table_drawn_in_part_read_missing_past_their_rows() {
+fn placeholder_lanes_of_a_paged_table_read_missing_past_its_rows() {
     let Some(gpu) = gpu() else { return };
-    // Two buses joined twice: their lanes derive on the frame.
+    // Two buses joined twice: their lanes are derived during the frame.
     let pair = Data::new("grid");
     pair.apply(
         Patch::new().set(Table::new("Bus", Ids::count(2)).field("x", vec![0.0, 1.0]).field("y", vec![0.0, 0.0])).set(
@@ -503,21 +510,21 @@ fn lanes_standing_in_for_a_table_drawn_in_part_read_missing_past_their_rows() {
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&pair]).expect("a source");
     frame(&gpu, &mut view);
-    // A grid too large to draw whole replaces it: its lanes take a job, and until it lands the pair's
-    // stand in, holding none of its rows past the first two.
+    // A grid too large to draw whole replaces it. Its lanes take a job, and until the job finishes
+    // the pair's lanes are the placeholder, covering none of the grid's rows past the first two.
     view.set_sources([lattice(600, 500)]).expect("a source");
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
-    assert!(view.stats().drawn < view.stats().rows / 4, "the grid draws in part");
+    assert!(view.stats().drawn < view.stats().rows / 4, "the grid is paged");
     let pixel = at(&pixels, SIZE / 2 + 4, SIZE / 2);
     assert!(close(pixel, [0, 255, 0, 255]), "an edge between two buses: {pixel:?}");
 }
 
 #[test]
-fn a_change_to_one_row_drawn_in_part_writes_that_row_alone() {
+fn a_change_to_one_row_of_a_paged_table_updates_only_its_page() {
     let Some(gpu) = gpu() else { return };
-    // Four pages of rows drawn whole in priority order, so each is drawn far from its place in the
-    // table; every row lies off view but one, at the middle.
+    // 200,000 rows (49 pages) drawn whole in priority order, so each row draws far from its place
+    // in the table. Every row lies out of view except one, at the center.
     let (rows, middle) = (200_000_u32, 12_345_u32);
     let n = rows as usize;
     let off = |r: usize| if r == middle as usize { 0.0 } else { 1000.0 };
@@ -549,15 +556,16 @@ fn a_change_to_one_row_drawn_in_part_writes_that_row_alone() {
     let work = gpu.work() - before;
     let center = SIZE / 2;
     assert!(close(at(&pixels, center, center), [255, 255, 255, 255]), "{:?}", at(&pixels, center, center));
-    assert!(work.evaluated <= 1 << 16, "one page of the rows drawn evaluates: {}", work.evaluated);
-    assert!(work.uploaded <= 8 << 16, "one page of the field drawn uploads: {} bytes", work.uploaded);
+    // A page is 4,096 rows; the field takes 8 bytes a row.
+    assert!(work.evaluated <= 4096, "only one page evaluates: {}", work.evaluated);
+    assert!(work.uploaded <= 8 * 4096, "only one page of the field uploads: {} bytes", work.uploaded);
 }
 
 #[test]
-fn a_field_drawn_in_part_that_changes_kind_gathers_afresh() {
+fn a_field_of_a_paged_table_that_changes_kind_is_gathered_again() {
     let Some(gpu) = gpu() else { return };
-    // Two marks of one table drawn in part: one reads `v` as a number, the other as a text, so `v` is
-    // read before and after it changes kind.
+    // Two marks of one paged table. One reads `v` as a number and the other as text, so `v` is read
+    // both before and after it changes kind.
     let n = 1000_usize;
     let table = |v: latkit::Values| {
         Table::new("P", Ids::count(n as u32))
@@ -592,7 +600,7 @@ fn a_field_drawn_in_part_that_changes_kind_gathers_afresh() {
 }
 
 #[test]
-fn edges_drawn_through_tiles_show_with_their_ends() {
+fn paged_edges_draw_with_their_endpoints() {
     let Some(gpu) = gpu() else { return };
     let data = lattice(600, 500);
     let scene = Scene::new(plane())
@@ -605,8 +613,8 @@ fn edges_drawn_through_tiles_show_with_their_ends() {
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     assert!(view.stats().drawn < view.stats().rows / 4, "edges and vertices both draw the tiles in view");
-    // Half a unit up from the middle, between rows of edges; at the middle's row, an edge between
-    // two vertices.
+    // The center pixel row lies half a unit above a row of vertices, between rows of edges. Four
+    // pixels down, on that row, an edge runs between two vertices.
     let center = SIZE / 2;
     assert!(close(at(&pixels, center + 4, center + 4), [0, 255, 0, 255]), "{:?}", at(&pixels, center + 4, center + 4));
     assert!(close(at(&pixels, center + 4, center), [0, 0, 0, 255]), "{:?}", at(&pixels, center + 4, center));
@@ -644,7 +652,7 @@ fn a_tiny_budget_never_fails() {
 }
 
 #[test]
-fn a_first_look_draws_within_its_plan_while_pyramids_are_worked_out() {
+fn a_first_look_stays_within_budget_while_pyramids_are_computed() {
     let Some(gpu) = gpu() else { return };
     gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 4 << 20 });
     gpu.set_host(Threads);
@@ -655,8 +663,8 @@ fn a_first_look_draws_within_its_plan_while_pyramids_are_worked_out() {
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_sources([lattice(1000, 500)]).expect("a source");
     view.fit(Fit::All);
-    // Until the pyramids land, a sample draws, the ends of its edges among its vertices' rows: then
-    // what replaces it finds room beside it.
+    // Until the pyramids arrive, a sample draws, with its edges' endpoints among its vertex rows.
+    // Then its replacement finds room beside it.
     let mut settled = false;
     for _ in 0..600 {
         step(&gpu, &mut view);
@@ -669,12 +677,12 @@ fn a_first_look_draws_within_its_plan_while_pyramids_are_worked_out() {
         }
     }
     assert!(errors(&mut view).is_empty(), "nothing fails");
-    assert!(settled, "what replaces the sample lands: {:?}", view.waiting());
+    assert!(settled, "the sample's replacement arrives: {:?}", view.waiting());
     assert!(gpu.resident() <= 8 << 20, "{} bytes resident", gpu.resident());
 }
 
-/// A grid of 500 by 500 vertices a unit apart, each of value 0, and an edge from each to the vertex
-/// `far` says: what `far` gives each from a stream of random numbers.
+/// A grid of 500 by 500 vertices one unit apart, each with `v` = 0, and an edge from each vertex
+/// `i` to vertex `far(i, random)`, with `random` drawn from a seeded stream.
 fn far_apart(far: impl Fn(u32, u64) -> u64) -> Data {
     let n = 250_000_u32;
     let mut seed = 1_u64;
@@ -704,11 +712,11 @@ fn far_apart(far: impl Fn(u32, u64) -> u64) -> Data {
 }
 
 #[test]
-fn edges_ending_far_apart_hold_the_rows_they_end_at() {
+fn edges_ending_far_apart_make_their_endpoints_kept_rows() {
     let Some(gpu) = gpu() else { return };
     gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
-    // Each edge joins a vertex to one far off: the ends of the fewest edges drawn lie in every page of
-    // the vertices, more pages than the budget holds, so the rows they end at are held one at a time.
+    // Each edge joins a vertex to a far one. Even the fewest edges drawn end in every vertex page,
+    // more pages than the budget allows, so their endpoints become kept rows.
     let data = far_apart(|_, random| random % 250_000);
     let scene = Scene::new(plane()).theme(plain_theme()).draw(Edges::of("grid", "Line").ends("from", "to")).draw(
         Vertices::of("grid", "Bus")
@@ -720,27 +728,27 @@ fn edges_ending_far_apart_hold_the_rows_they_end_at() {
     view.fit(Fit::All);
     let before = gpu.work();
     frame(&gpu, &mut view);
-    assert_eq!(errors(&mut view), [], "what draws fits");
+    assert_eq!(errors(&mut view), [], "the drawing fits the budget");
     assert!(view.stats().drawn > 0, "edges and vertices draw");
-    assert!((gpu.work() - before).resolved > 0, "edges found where their ends are held");
+    assert!((gpu.work() - before).resolved > 0, "edges resolve their endpoints");
     assert!(gpu.resident() <= 8 << 20, "{} bytes resident", gpu.resident());
-    // Every vertex's value changes and none moves: the rows held stay where they are, so no edge finds
-    // its ends again.
+    // Every vertex's value changes but none moves. The kept rows stay in place, so no edge resolves
+    // its endpoints again.
     let before = gpu.work();
     data.apply(Table::new("Bus", Ids::count(250_000)).field("v", vec![1.0; 250_000])).expect("valid");
     frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     let work = gpu.work() - before;
     assert!(work.uploaded > 0, "the values upload");
-    assert_eq!(work.resolved, 0, "no end is found again");
+    assert_eq!(work.resolved, 0, "no edge resolves its endpoints again");
 }
 
 #[test]
 fn edges_ending_far_apart_draw_between_their_ends() {
     let Some(gpu) = gpu() else { return };
     gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
-    // Each edge runs along its row to a vertex of it far off, so every edge is level: one whose end
-    // were found at another vertex would slant across the gaps between the rows.
+    // Each edge runs along its row to a far vertex in the same row, so every edge is horizontal. An
+    // edge whose endpoint resolved to the wrong vertex would slant across the gaps between rows.
     let data = far_apart(|i, random| u64::from(i - i % 500) + random % 500);
     let green = Color::rgb(0.0, 1.0, 0.0);
     let scene = Scene::new(plane())
@@ -749,7 +757,7 @@ fn edges_ending_far_apart_draw_between_their_ends() {
         .draw(Edges::of("grid", "Line").ends("from", "to").width(2.0).color(green))
         .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0).color(Color::rgb(0.0, 0.0, 1.0)));
     let mut view = View::new(&gpu, scene).expect("valid scene");
-    // Rows eight pixels apart, the middle row of pixels between two of them.
+    // Rows are eight pixels apart, and the center pixel row lies between two of them.
     let near = Camera::Map { center: [250.0, 250.5, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 };
     view.set_camera(near);
     view.set_sources([&data]).expect("a source");
@@ -765,8 +773,9 @@ fn edges_ending_far_apart_draw_between_their_ends() {
     let pixels = frame(&gpu, &mut view);
     assert_eq!(errors(&mut view), []);
     level(&pixels, "first");
-    // Farther out, the edges drawn end at more rows held one at a time: the table of them grows, and
-    // the program holding it with it. Back where it was, every edge still finds its ends.
+    // Zoomed out, the drawn edges end at more kept rows, so the end table grows, and so does the
+    // program buffer that holds it. Back at the first camera, every edge still resolves its
+    // endpoints.
     view.set_camera(Camera::Map { center: [250.0, 250.5, 0.0], zoom: 1.0, pitch: 0.0, bearing: 0.0 });
     frame(&gpu, &mut view);
     view.set_camera(near);
@@ -779,7 +788,7 @@ fn edges_ending_far_apart_draw_between_their_ends() {
 fn traces_too_large_for_the_budget_thin_in_time() {
     let Some(gpu) = gpu() else { return };
     gpu.set_budget(Budget { bytes: 8 << 20, upload_per_frame: 32 << 20 });
-    // Every frame of every row would take 12 MB: past the budget, so the traces draw coarser.
+    // Every frame of every row would take 12 MB, over the budget, so the traces draw coarser.
     let (rows, frames) = (20_000_usize, 150_u32);
     let mut patch = Patch::new().set(Table::new("Signal", Ids::count(rows as u32)));
     for t in 0..frames {
@@ -806,7 +815,7 @@ fn traces_too_large_for_the_budget_thin_in_time() {
 }
 
 #[test]
-fn a_path_written_again_uploads_its_group_of_rows_alone() {
+fn a_rewritten_path_uploads_only_its_group_of_rows() {
     let Some(gpu) = gpu() else { return };
     let rows = 2000_u32;
     let path = |r: u32, lift: f64| -> Vec<[f64; 2]> {
@@ -828,8 +837,9 @@ fn a_path_written_again_uploads_its_group_of_rows_alone() {
     data.apply(Table::new("Road", [700_u64]).field("geometry", vec![path(700, 0.5)])).expect("valid");
     frame(&gpu, &mut view);
     let work = gpu.work() - before;
-    // The page's points take 96 KB, its rows' table 16 KB; the piece of the row's group of 64 rows, 3 KB.
-    assert!(work.uploaded <= 4 << 10, "the piece the row lies in uploads alone: {} bytes", work.uploaded);
+    // The page's points take 96 KB and its row table 16 KB. The 64-row group holding the changed
+    // row takes 3 KB.
+    assert!(work.uploaded <= 4 << 10, "only the row's 64-row group uploads: {} bytes", work.uploaded);
 }
 
 #[test]
@@ -893,5 +903,5 @@ fn a_view_sleeps_while_it_waits() {
     gpu.queue().submit([encoder.finish()]);
     assert!(!view.needs_render(), "while the answer is read back, the view sleeps");
     common::finish(&gpu);
-    assert!(view.needs_render(), "the answer landing wakes it");
+    assert!(view.needs_render(), "the answer arriving wakes it");
 }

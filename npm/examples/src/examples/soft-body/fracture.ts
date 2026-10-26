@@ -15,7 +15,7 @@ export interface Piece {
 
 const EPS = 1e-7;
 
-/** Split the closed mesh into independently capped solids, once at page load. */
+/** Splits the closed mesh into `count` separately capped solids. Runs once, at page load. */
 export function fracture(mesh: Mesh, count = 24): Piece[] {
   const first: Piece = {
     vertices: Array.from({ length: mesh.count }, (_, i) => ({
@@ -26,7 +26,7 @@ export function fracture(mesh: Mesh, count = 24): Piece[] {
   };
   const pieces = [first];
   while (pieces.length < count) {
-    // Cut the largest bounding volume, with stable ordering for repeatable pieces.
+    // Cut the piece with the largest bounding box. Stable ordering makes the pieces repeatable.
     const bounds = pieces.map((piece) => {
       const lo = [Infinity, Infinity, Infinity];
       const hi = [-Infinity, -Infinity, -Infinity];
@@ -104,7 +104,8 @@ function split(piece: Piece, axis: number, at: number): [Piece, Piece] {
     if (cut.size === 2) segments.push([...cut] as [number, number]);
   }
 
-  // Each cut boundary is a loop; triangulate concave loops instead of a center fan.
+  // Each cut boundary is a loop. Cap it by ear clipping, which handles concave loops that a
+  // center fan would not.
   const neighbors = new Map<number, number[]>();
   for (const [a, b] of segments) {
     neighbors.set(a, [...(neighbors.get(a) ?? []), b]);
@@ -136,7 +137,8 @@ function split(piece: Piece, axis: number, at: number): [Piece, Piece] {
   return sides.map(compact) as [Piece, Piece];
 }
 
-/** Counterclockwise triangles viewed along the positive cut axis. */
+/** Caps a cut loop by ear clipping. The triangles are counterclockwise viewed along the positive
+ * cut axis. */
 function cap(loop: number[], vertices: CutVertex[], axis: number): [number, number, number][] {
   const u = (axis + 1) % 3;
   const v = (axis + 2) % 3;

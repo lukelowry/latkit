@@ -1,6 +1,6 @@
-//! Tiles: the vector tiles the camera asks for and the time tiles a plot window asks for, fetched from
-//! the host once for every view, decoded, and drawn as a dataset of each view's own; GeoJSON read as
-//! data.
+//! Tiles: the vector tiles the camera needs and the time tiles a plot window needs are fetched
+//! from the host once for all views, decoded, and drawn as a dataset in each view. GeoJSON reads
+//! as data.
 
 #![cfg(feature = "gpu")]
 
@@ -19,7 +19,7 @@ use latkit::{
 
 const C: u32 = SIZE / 2;
 
-/// Protocol buffer fields, written.
+/// Writes protocol buffer fields.
 #[derive(Default)]
 struct Writer(Vec<u8>);
 
@@ -51,15 +51,15 @@ fn zig(v: i64) -> u32 {
     ((v << 1) ^ (v >> 63)) as u32
 }
 
-/// A tile whose layer `water` holds a square covering it and reaching into its buffer, named `bay`:
-/// clipped, it covers the tile exactly.
+/// A tile whose layer `water` has a square named `bay` that covers the tile and extends into its
+/// buffer. Clipped, it covers the tile exactly.
 fn tile() -> Vec<u8> {
     let (x, side) = (-64_i64, 4224_i64);
     tile_of(&[9, zig(x), zig(x), 26, zig(side), 0, 0, zig(side), zig(-side), 0, 15])
 }
 
-/// A tile whose layer `water` holds a feature of 2,025 small squares named `bay`: more points than a
-/// frame affords to shape.
+/// A tile whose layer `water` has a feature named `bay` of 2,025 small squares: more points than a
+/// frame can afford to shape.
 fn dense_tile() -> Vec<u8> {
     let (step, side) = (90_i64, 80_i64);
     let mut geometry = Vec::new();
@@ -75,7 +75,7 @@ fn dense_tile() -> Vec<u8> {
     tile_of(&geometry)
 }
 
-/// A tile whose layer `water` holds one polygon feature of `geometry`, named `bay`.
+/// A tile whose layer `water` has one polygon feature named `bay` with `geometry`.
 fn tile_of(geometry: &[u32]) -> Vec<u8> {
     let mut feature = Writer::default();
     feature.packed(2, &[0, 0]);
@@ -94,15 +94,15 @@ fn tile_of(geometry: &[u32]) -> Vec<u8> {
     tile.0
 }
 
-/// A host serving every tile of `tiles/{z}/{x}/{y}` as [`tile`], or with `dense` as [`dense_tile`],
-/// counting the fetches.
+/// A host serving every `tiles/{z}/{x}/{y}` tile as [`tile`], or as [`dense_tile`] with `dense`,
+/// and recording the fetches.
 #[derive(Default)]
 struct Served {
     fetched: Mutex<Vec<String>>,
     dense: bool,
 }
 
-/// What the GPU is given as its host: the served tiles, shared with the test.
+/// The host given to the GPU: the served tiles, shared with the test.
 struct Serving(Arc<Served>);
 
 impl Host for Serving {
@@ -118,7 +118,7 @@ impl Host for Serving {
 }
 
 #[test]
-fn tiles_the_camera_asks_for_draw_as_a_dataset() {
+fn tiles_the_camera_needs_draw_as_a_dataset() {
     let Some(gpu) = gpu() else { return };
     let served = Arc::new(Served::default());
     gpu.set_host(Serving(served.clone()));
@@ -144,7 +144,7 @@ fn tiles_the_camera_asks_for_draw_as_a_dataset() {
     assert_eq!((stats.tiles, stats.tiles_loading), (before.len() as u64, 0), "stats count the tiles drawn");
     assert!(at(&pixels, C + 8, C + 8)[0] > 150, "filled: {:?}", at(&pixels, C + 8, C + 8));
     assert_eq!(errors(&mut view), Vec::new());
-    // A second view of the same tiles draws what the first fetched, fetching none again.
+    // A second view of the same tiles draws what the first fetched, without fetching again.
     let mut second = View::new(&gpu, scene).expect("valid scene");
     second.set_camera(camera);
     second.set_sources([&tiles]).expect("a source");
@@ -153,8 +153,8 @@ fn tiles_the_camera_asks_for_draw_as_a_dataset() {
     assert_eq!(served.fetched.lock().expect("unpoisoned").len(), asked, "fetched once for every view");
     assert_eq!(ids(&second), before, "the same rows");
     drop(second);
-    // Zooming in asks for finer tiles, which replace their ancestors in the frame the last of them
-    // lands in.
+    // Zooming in needs finer tiles, which replace their ancestors in the frame where the last of
+    // them arrives.
     view.set_camera(Camera::Map { center: [10.0, 10.0, 0.0], zoom: 6.0, pitch: 0.0, bearing: 0.0 });
     let mut loading = false;
     for _ in 0..SETTLE {
@@ -165,13 +165,13 @@ fn tiles_the_camera_asks_for_draw_as_a_dataset() {
         }
         loading |= now;
     }
-    assert!(ids(&view).iter().all(|id| !before.contains(id)), "finer tiles' rows, the frame they landed in");
+    assert!(ids(&view).iter().all(|id| !before.contains(id)), "finer tiles replace their ancestors on arrival");
     view.set_sources::<Source>([]).expect("no sources");
-    assert!(view.snapshot("base").is_none(), "what no source gives goes");
+    assert!(view.snapshot("base").is_none(), "a dataset no source provides is removed");
 }
 
 #[test]
-fn tiles_land_shaped_by_the_jobs_decoding_them() {
+fn tiles_arrive_shaped_by_the_jobs_that_decode_them() {
     let Some(gpu) = gpu() else { return };
     let served = Arc::new(Served { dense: true, ..Served::default() });
     gpu.set_host(Serving(served.clone()));
@@ -182,26 +182,26 @@ fn tiles_land_shaped_by_the_jobs_decoding_them() {
     view.set_camera(camera(2.0));
     view.set_sources([&Tiles::new("base", "tiles/{z}/{x}/{y}.pbf")]).expect("a source");
     frame(&gpu, &mut view);
-    // As the camera zooms in and out, tiles come and go: a job decodes each, shaping its rows as it
-    // does, and none shapes them again, though a frame draws the rows the one before took.
+    // As the camera zooms in and out, tiles come and go. A job decodes each tile and shapes its
+    // rows, and no frame shapes them again, even when it draws rows an earlier frame loaded.
     let fetches = || served.fetched.lock().expect("unpoisoned").len() as u64;
     let (jobs, asked) = (gpu.work().jobs, fetches());
     for zoom in [6.0, 0.0] {
         view.set_camera(camera(zoom));
         frame(&gpu, &mut view);
     }
-    assert!(fetches() > asked, "tiles came");
-    assert_eq!(gpu.work().jobs - jobs, fetches() - asked, "a job a tile");
+    assert!(fetches() > asked, "tiles were fetched");
+    assert_eq!(gpu.work().jobs - jobs, fetches() - asked, "one job per tile");
     assert_eq!(errors(&mut view), Vec::new());
 }
 
-/// A host serving files by path, keeping the paths asked for.
+/// A host serving files by path, recording the requested paths.
 struct Files {
     files: BTreeMap<String, Vec<u8>>,
     asked: Mutex<Vec<String>>,
 }
 
-/// What the GPU is given as its host: the files, shared with the test.
+/// The host given to the GPU: the files, shared with the test.
 struct ServingFiles(Arc<Files>);
 
 impl Host for ServingFiles {
@@ -216,7 +216,7 @@ impl Host for ServingFiles {
 }
 
 #[test]
-fn time_tiles_draw_the_spans_a_plot_window_asks_for() {
+fn time_tiles_draw_the_spans_a_plot_window_needs() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("signals");
     data.apply(Patch::new().axis("time", "s").set(Table::new("Signal", Ids::count(1)))).expect("valid");
@@ -249,7 +249,7 @@ fn time_tiles_draw_the_spans_a_plot_window_asks_for() {
     let pixels = frame(&gpu, &mut tiled);
     assert_eq!(errors(&mut tiled), Vec::new());
     let stats = tiled.stats();
-    assert_eq!(stats.tiles_loading, 0, "every span asked for landed");
+    assert_eq!(stats.tiles_loading, 0, "every requested span arrived");
     let differing = pixels.iter().zip(&expected).filter(|(a, b)| !common::close(**a, **b)).count();
     if differing > SIZE as usize {
         let ascii = |p: &[[u8; 4]]| {
@@ -266,7 +266,7 @@ fn time_tiles_draw_the_spans_a_plot_window_asks_for() {
     assert!(differing <= SIZE as usize, "the window draws as the whole history does: {differing} pixels differ");
     assert!(pixels.iter().any(|p| p[0] > 200), "the trace draws");
     let asked = served.asked.lock().expect("unpoisoned").clone();
-    assert!(asked.len() * 8 < written, "only the spans the window draws: {asked:?} of {written}");
+    assert!(asked.len() * 8 < written, "only the spans the window draws are fetched: {asked:?} of {written}");
 }
 
 #[test]

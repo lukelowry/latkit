@@ -1,8 +1,9 @@
-// The scan of a list: each block of 256 counts scans in its workgroup and leaves its total, one
-// workgroup scans the totals, and every count adds its block's offset. Counts become where each
-// item's entries start, the total follows them, and the header's indirect arguments take the
-// entries the list keeps. Each count is held to its share of a u32, so the total never wraps.
-// Reduce-then-scan needs no forward progress between workgroups, so it is safe on every device.
+// The scan of a list. Each block of 256 counts is scanned in its workgroup, which writes the
+// block's total. One workgroup then scans the totals, and every count adds its block's offset. The
+// counts become each item's first entry, followed by the total, and the header's indirect arguments
+// get the number of entries the list keeps. Each count is capped at its share of a u32, so the
+// total never wraps. Reduce-then-scan needs no forward-progress guarantee between workgroups, so it
+// is safe on every device.
 
 import package::lib::bind::{mark, program};
 import package::lib::types::{
@@ -16,7 +17,7 @@ import package::lib::drawn::held_row;
 var<workgroup> tile: array<u32, 256>;
 var<workgroup> shared_items: u32;
 
-// The list this dispatch scans: the mark's.
+// The list this dispatch scans: the current mark's.
 fn header() -> u32 {
     return mark.list;
 }
@@ -36,10 +37,11 @@ fn scan_blocks(@builtin(local_invocation_id) l: vec3u, @builtin(workgroup_id) g:
     let h = header();
     let n = lists[h + LIST_ITEMS];
     let counts = lists[h + LIST_COUNTS];
-    // Past one dimension's workgroups, runs of DISPATCH_ROWS items step along the second.
+    // Beyond one dimension's workgroups, each step along the second covers `DISPATCH_ROWS` items.
     let block = g.y * (DISPATCH_ROWS / 256u) + g.x;
     let i = block * 256u + l.x;
-    // Whatever the counts, the starts climb, so every item's writes end.
+    // Capping each count at its share keeps the starts increasing for any counts, so every item's
+    // write loop ends.
     let share = 0xffffffffu / max(n, 1u);
     let own = select(0u, min(lists[counts + min(i, max(n, 1u) - 1u)], share), i < n);
     tile[l.x] = own;
@@ -93,9 +95,9 @@ fn add_sums(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
-// Each drawn row's word, from the runs the program lists: its held row, in the last run starting at
-// or before it, and whether that run's tile fades in or out. What every pass drawing or answering for
-// the mark reads in one word, written when the runs change.
+// Writes each drawn row's word from the program's run list: its held row, found in the last run
+// starting at or before it, and whether that run's tile fades in or out. Every pass that draws or
+// probes the mark reads this one word. It runs when the runs change.
 @compute @workgroup_size(256)
 fn expand_runs(@builtin(global_invocation_id) id: vec3u) {
     let i = item(id);
@@ -119,9 +121,9 @@ fn expand_runs(@builtin(global_invocation_id) id: vec3u) {
     lists[mark.drawn + i] = (program[run + 1u] + (i - program[run])) | entering | leaving;
 }
 
-// A mark's segments, numbered by its list: each drawn row counts the segments of its path, then
-// writes its number at each of their places, with how far along its path each starts, so a segment's instance
-// finds its row, its index in it, and where dashes and comets stand at its start.
+// A mark's segment list. `count_segments` counts each drawn row's segments. After the scan,
+// `write_segments` writes each segment's drawn row and its distance along the path, so a segment
+// instance finds its row, its index in the row, and where dashes and comets are at its start.
 @compute @workgroup_size(256)
 fn count_segments(@builtin(global_invocation_id) id: vec3u) {
     let i = item(id);
@@ -139,7 +141,7 @@ fn write_segments(@builtin(global_invocation_id) id: vec3u) {
     let at = list_start(mark.list, i);
     let end = list_start(mark.list, i + 1u);
     let entries = lists[mark.list + LIST_ENTRIES];
-    // An area's triangles have no distance along.
+    // An area's triangles and a trace's segments have no distance along.
     let measured = mark.primitive != TRIANGLES && PATH != PATH_TRACE;
     var along = 0.0;
     let row = held_row(i);

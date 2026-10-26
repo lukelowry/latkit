@@ -1,4 +1,4 @@
-/** Texas: ACTIVSg2000's generators sized by output, its highest-voltage lines carrying comets. */
+/** Texas: ACTIVSg2000's generators sized by output, with comets on its lines of 345 kV and up. */
 import { units } from 'latkit';
 import { THEME, type Piece } from './look.ts';
 import { readCase } from './grids.ts';

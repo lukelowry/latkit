@@ -3,20 +3,25 @@
 import package::lib::types::{Frame, Eye, Mark};
 
 @group(0) @binding(0) var<uniform> frame: Frame;
-// Compiled marks: column descriptors, page tables, code, constants, ends.
+// Every mark's compiled program: column descriptors, page tables, code, constants, ends.
 @group(0) @binding(1) var<storage, read> program: array<u32>;
 @group(0) @binding(2) var colormaps: texture_2d_array<f32>;
 @group(0) @binding(3) var ramp: sampler;
-// What the pass draws through, at a dynamic offset.
+// The camera the pass draws through.
 @group(0) @binding(4) var<uniform> eye: Eye;
-// The rows each mark's focus draw lights: every mark's, at its `focused`.
+// The drawn rows each mark's focus draw lights, starting at the mark's `focused`.
 @group(0) @binding(5) var<storage, read> focused: array<u32>;
 
 @group(1) @binding(0) var<uniform> mark: Mark;
 
-// The pages, in blocks the arena hands out: data pages, column values as f32 or u32 words; and each
-// mark's pages of words per row, which compute passes write and render passes read. A pass summing
-// into them binds them as atomics.
+// The theme's word in slot `slot`, one of the `THEME_*` slots.
+fn theme_word(slot: u32) -> u32 {
+    return frame.theme[slot / 4u][slot % 4u];
+}
+
+// All pages, in blocks allocated by the arena. Data pages hold column values as f32 or u32 words.
+// Each mark's pages hold its per-row words, which compute passes write and render passes read. A
+// pass that sums into them binds them as atomics.
 @if(atomic)
 @group(2) @binding(0) var<storage, read_write> pages: array<atomic<u32>>;
 @elif(writes)

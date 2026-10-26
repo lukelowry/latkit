@@ -1,11 +1,11 @@
-//! Panels: where views draw in a target they share. A canvas showing several views and a picture or
-//! video composing them lay their views out the same way.
+//! Panels: the region of a shared target each view draws in. A canvas with several views and a
+//! picture or video composed from them use the same layout.
 
 use crate::{Error, Result};
 
-/// Where each of several views draws in a target: x, y, width, and height as fractions of it, a
-/// panel per view, in order; a later panel draws over an earlier one. None given is one view filling
-/// the target.
+/// The region of a shared target each view draws in, one panel per view, in order. A panel is
+/// `[x, y, width, height]` as fractions of the target, from its top left. Later panels draw over
+/// earlier ones. With no panels, one view fills the target.
 ///
 /// ```
 /// use latkit::Panels;
@@ -18,17 +18,18 @@ use crate::{Error, Result};
 pub struct Panels(Vec<[f32; 4]>);
 
 impl Panels {
-    /// How many views the panels take: one when none are given.
+    /// Number of views the panels lay out. One when no panels are given.
     pub fn len(&self) -> usize {
         self.0.len().max(1)
     }
 
-    /// Whether no parts were given, so one view fills the target.
+    /// Whether no panels were given, so one view fills the target.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// The pixels of a target of `size` each view draws in, edges on multiples of `align`.
+    /// Each view's pixel rectangle in a target of `size`, with edges rounded to multiples of
+    /// `align`. Fails if a panel covers no pixels.
     pub(crate) fn rects(&self, size: [u32; 2], align: [u32; 2]) -> Result<Vec<Rect>> {
         let whole = [[0.0, 0.0, 1.0, 1.0]];
         let parts = if self.0.is_empty() { &whole[..] } else { &self.0[..] };
@@ -62,7 +63,7 @@ impl<const N: usize> From<[[f32; 4]; N]> for Panels {
     }
 }
 
-/// A view's panel of a target in pixels: its top left corner and its size.
+/// A view's panel in target pixels: its top left corner and its size.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Rect {
     pub(crate) origin: [u32; 2],
@@ -83,7 +84,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn panels_split_a_target_on_whole_blocks() {
+    fn panel_edges_round_to_multiples_of_the_alignment() {
         let panels = Panels::from([[0.0, 0.0, 1.0, 0.7], [0.0, 0.7, 1.0, 0.3]]);
         let rects = panels.rects([1920, 1080], [4, 2]).expect("valid");
         assert_eq!(rects, [Rect { origin: [0, 0], size: [1920, 756] }, Rect { origin: [0, 756], size: [1920, 324] }]);

@@ -1,17 +1,17 @@
-//! Links every WESL entry, validates it with naga, and writes `OUT_DIR/shaders.rs`:
+//! Links every WESL entry, validates it with naga, and writes `OUT_DIR/shaders.rs`, containing:
 //!
-//! - every constant and struct of `lib/types.wesl`, as Rust constants and `#[repr(C)]` mirrors whose
-//!   size is checked against WGSL;
-//! - the shared bind group layouts of `lib/bind.wesl` (group 0 per view, group 1 per mark);
-//! - per shader and variant: its declarations, entry points, the layout of its pass group (group 2),
-//!   and whether it reads the shared groups at all.
+//! - Every constant and struct of `lib/types.wesl`, as Rust constants and `#[repr(C)]` mirrors
+//!   whose sizes are checked against WGSL.
+//! - The shared bind group layouts of `lib/bind.wesl` (group 0 per view, group 1 per mark).
+//! - Per shader variant: its declarations, pipeline constant names, pass group layout (group 2),
+//!   and whether it uses the shared groups.
 //!
-//! Variants share most of what they link, so each distinct top-level declaration is stored once, in
-//! `OUT_DIR/shaders.wgsl`, and a variant is the list of its declarations, which join back into exactly
-//! the module it linked.
+//! Variants share most of their linked code, so each distinct top-level declaration is stored once
+//! in `OUT_DIR/shaders.wgsl`. A variant is a list of declaration indices that join back into
+//! exactly the module it linked.
 //!
-//! It also writes each variant's whole module and `OUT_DIR/shaders.json`, every variant's file, entry
-//! points, and the pipeline constants it is made with, from which the browser gate times each
+//! It also writes each variant's full module, and `OUT_DIR/shaders.json` listing every variant's
+//! file, entry points, and pipeline constant values. The browser gate reads it to time each
 //! pipeline in Chrome.
 
 use std::collections::{BTreeMap, HashMap};
@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use naga::{AddressSpace, ArraySize, ImageClass, ImageDimension, ScalarKind, StorageAccess, TypeInner, VectorSize};
 
-/// A shader module and the variants it is linked in: each variant turns on its WESL features.
+/// A shader module and its variants. Each variant enables its listed WESL features.
 struct Entry {
     module: &'static str,
     variants: &'static [(&'static str, &'static [&'static str])],
@@ -60,15 +60,15 @@ const ENTRIES: &[Entry] = &[
 
 const FEATURES: &[&str] = &["writes", "atomic", "custom", "multisampled", "lists", "ports", "focused"];
 
-/// What a custom marker supplies, for validating its variant.
+/// A placeholder custom marker function, appended to validate the custom variants.
 const CUSTOM_MARKER: &str = "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }";
 
-/// Uniforms bound at a dynamic offset: each mark's, and each probe dispatch's step.
+/// Uniforms bound at a dynamic offset: the per-mark uniform and each probe dispatch's step.
 const DYNAMIC: &[&str] = &["mark", "step"];
 
-/// The values each pipeline constant is made with, as constants of `lib/types.wesl` or booleans: the
-/// primitive a probe or a label's anchor reads, the path a stroke reads, and whether channels read
-/// joins, samples, and the view.
+/// The values pipelines use for each pipeline constant, as `lib/types.wesl` constants or booleans.
+/// `PRIMITIVE` is the primitive a probe or label anchor reads, and `PATH` the path a stroke reads.
+/// The booleans say whether channels read joins, samples, and the view.
 const OVERRIDES: &[(&str, &[&str])] = &[
     ("PRIMITIVE", &["POINTS", "STROKES", "TRIANGLES"]),
     ("PATH", &["PATH_ENDS", "PATH_TRACE", "PATH_GEOMETRY", "PATH_POLES"]),
@@ -101,7 +101,7 @@ pub(crate) fn generate() {
     for entry in ENTRIES {
         for &(variant, features) in entry.variants {
             let source = link(&root, entry.module, features, false);
-            // A custom marker's variant lacks the marker an application supplies; a stand-in validates it.
+            // Custom variants lack the application's marker, so validation appends a placeholder.
             let custom = features.contains(&"custom");
             let checked = if custom { format!("{source}\n{CUSTOM_MARKER}") } else { source.clone() };
             let (module, info) = validate(&format!("{}.{variant}", entry.module), &checked);
@@ -127,7 +127,7 @@ pub(crate) fn generate() {
     fs::write(out.join("shaders.wgsl"), &pieces.text).unwrap();
     writeln!(
         rust,
-        "/// Where each declaration lies in `shaders.wgsl`.\npub(crate) static PIECES: &[(u32, u32)] = &{:?};\n",
+        "/// Each declaration's byte range in `shaders.wgsl`.\npub(crate) static PIECES: &[(u32, u32)] = &{:?};\n",
         pieces.ranges
     )
     .unwrap();
@@ -137,7 +137,7 @@ pub(crate) fn generate() {
     fs::write(out.join("shaders.json"), format!("[\n{}\n]\n", manifest.join(",\n"))).unwrap();
 }
 
-/// Top-level declarations, each stored once: their text back to back, and where each lies.
+/// Deduplicated top-level declarations: their concatenated text and each one's byte range.
 #[derive(Default)]
 struct Pieces {
     text: String,
@@ -146,8 +146,8 @@ struct Pieces {
 }
 
 impl Pieces {
-    /// The declarations of `source`, as indices, storing those not stored yet; they join back into
-    /// `source` exactly.
+    /// Splits `source` into declarations and returns their indices, storing new ones. The
+    /// declarations join back into exactly `source`.
     fn add(&mut self, source: &str) -> Vec<u16> {
         let refs: Vec<u16> = source
             .split(SEPARATOR)
@@ -169,11 +169,12 @@ impl Pieces {
     }
 }
 
-/// What separates top-level declarations in a linked module, and joins them back.
+/// The separator between top-level declarations in a linked module, used to split and rejoin them.
 const SEPARATOR: &str = "\n\n";
 
-/// A variant as JSON: its file, whether it draws, its compute entry points, every combination of the
-/// pipeline constants it declares, and the WGSL appended to make it whole (a custom marker's stand-in).
+/// A variant as JSON: its file, whether it draws, its compute entry points, every combination of
+/// its pipeline constants that pipelines use, and the WGSL to append to complete it (the
+/// placeholder custom marker).
 fn manifest_entry(shader: &str, file: &str, module: &naga::Module, types: &naga::Module, custom: bool) -> String {
     let compute: Vec<String> = module
         .entry_points
@@ -215,9 +216,9 @@ fn manifest_entry(shader: &str, file: &str, module: &naga::Module, types: &naga:
     )
 }
 
-/// Whether a pipeline of `module` is ever made with `constants`: only channels go without joins or
-/// samples; faces read their ends and areas their geometry; a pipeline made for points reads no path,
-/// so it keeps the default one, and one made for triangles reads a face's ends or an area's geometry.
+/// Whether any pipeline of `module` uses `constants`. Only channel evaluation (`compute::evaluate`)
+/// runs without joins or samples. Faces read their ends, and areas their geometry. Points read no
+/// path, so they keep the default `PATH_ENDS`. Triangles read a face's ends or an area's geometry.
 fn made(module: &str, constants: &[(&str, u32)], types: &naga::Module) -> bool {
     let value = |name: &str| constants.iter().find(|(n, _)| *n == name).map(|&(_, v)| v);
     if module != "compute::evaluate" && (value("JOINED") == Some(0) || value("TIMED") == Some(0)) {
@@ -281,7 +282,7 @@ fn validate(name: &str, source: &str) -> (naga::Module, ModuleInfo) {
     (module, info)
 }
 
-/// Every `const` of a scalar type, as a Rust constant.
+/// Writes every `u32`, `i32`, and `f32` constant as a Rust constant.
 fn mirror_consts(module: &naga::Module, rust: &mut String) {
     for (_, constant) in module.constants.iter() {
         let Some(name) = &constant.name else { continue };
@@ -296,7 +297,7 @@ fn mirror_consts(module: &naga::Module, rust: &mut String) {
     rust.push('\n');
 }
 
-/// Every struct as a `#[repr(C)]` mirror with explicit padding.
+/// Writes every struct as a `#[repr(C)]` mirror with explicit padding and a size assertion.
 fn mirror_structs(module: &naga::Module, rust: &mut String) {
     for (_, ty) in module.types.iter() {
         let (Some(name), TypeInner::Struct { members, span }) = (&ty.name, &ty.inner) else { continue };
@@ -352,7 +353,8 @@ fn rust_type(module: &naga::Module, ty: naga::Handle<naga::Type>) -> (String, u3
     }
 }
 
-/// The bindings of `group` as `Binding` literals; with `info`, visibility is where entry points use them.
+/// The bindings of `group` as `Binding` literals. With `info`, each binding is visible to the
+/// stages whose entry points use it. Without `info`, every stage sees it.
 fn bindings(module: &naga::Module, info: Option<&ModuleInfo>, group: u32) -> Vec<String> {
     let mut found = BTreeMap::new();
     for (handle, global) in module.global_variables.iter() {
@@ -400,12 +402,12 @@ fn bindings(module: &naga::Module, info: Option<&ModuleInfo>, group: u32) -> Vec
         let dynamic = global.name.as_deref().is_some_and(|name| DYNAMIC.contains(&name));
         let entry =
             format!("Binding {{ slot: {}, kind: {kind}, stages: {stages}, dynamic: {dynamic} }}", binding.binding);
-        assert!(found.insert(binding.binding, entry).is_none(), "binding {group}.{} twice", binding.binding);
+        assert!(found.insert(binding.binding, entry).is_none(), "binding {group}.{} declared twice", binding.binding);
     }
     found.into_values().collect()
 }
 
-/// Every group 0 and 1 binding a shader declares must match the shared declaration.
+/// Asserts that every group 0 and 1 binding a shader declares matches the shared declaration.
 fn check_shared(module: &naga::Module, shared: &naga::Module, name: &str) {
     for (_, global) in module.global_variables.iter() {
         let Some(binding) = &global.binding else { continue };

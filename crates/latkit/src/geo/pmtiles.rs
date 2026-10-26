@@ -1,50 +1,51 @@
-//! PMTiles archives, version 3: a header, directories of tile entries along the Hilbert curve, and
-//! the tiles, each found by range requests.
+//! PMTiles version 3 archives: a header, directories of tile entries in Hilbert curve order, and
+//! the tile data, each read with range requests.
 
 use crate::tiles::TileKey;
 
-/// Bytes a header takes.
+/// Size of the header in bytes.
 pub(crate) const HEADER: usize = 127;
 const MAGIC: &[u8] = b"PMTiles";
-/// How deep directories nest at most.
+/// Maximum directory nesting depth.
 pub(crate) const DEPTH: usize = 4;
 
-/// What an archive's header says.
+/// An archive's header.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Header {
     pub(crate) root: (u64, u64),
     pub(crate) metadata: (u64, u64),
     pub(crate) leaves: u64,
     pub(crate) data: u64,
-    /// Whether directories, and tiles, are gzip-compressed.
+    /// Whether directories are gzip-compressed. `gzip_tiles` is the same for tiles.
     pub(crate) gzip_directories: bool,
     pub(crate) gzip_tiles: bool,
     pub(crate) vector: bool,
     pub(crate) min_zoom: u8,
     pub(crate) max_zoom: u8,
-    /// West, south, east, north.
+    /// West, south, east, north, in degrees.
     pub(crate) bounds: [f64; 4],
 }
 
-/// Whether `bytes` begin a PMTiles archive.
+/// Whether `bytes` start with the PMTiles magic number.
 pub(crate) fn is_archive(bytes: &[u8]) -> bool {
     bytes.starts_with(MAGIC)
 }
 
-/// The header at the start of `bytes`: a version 3 archive's, with compression read or none.
+/// Parses the header at the start of `bytes`. Errors unless it is a version 3 archive whose
+/// directories and tiles are uncompressed or gzip-compressed.
 pub(crate) fn header(bytes: &[u8]) -> Result<Header, String> {
     if !is_archive(bytes) || bytes.len() < HEADER {
         return Err("these bytes are not a PMTiles archive".into());
     }
     if bytes[7] != 3 {
-        return Err(format!("PMTiles version {} is not read; version 3 is", bytes[7]));
+        return Err(format!("unsupported PMTiles version {}; only version 3 is supported", bytes[7]));
     }
     let u64_at = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"));
     let degrees = |at: usize| f64::from(i32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))) / 1e7;
     let compression = |code: u8, what: &str| match code {
         0 | 1 => Ok(false),
         2 => Ok(true),
-        other => Err(format!("the archive's {what} use compression {other}; only gzip is read")),
+        other => Err(format!("the archive's {what} use compression {other}; only gzip or none is supported")),
     };
     Ok(Header {
         root: (u64_at(8), u64_at(16)),
@@ -60,8 +61,8 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header, String> {
     })
 }
 
-/// A directory's entries, sorted by tile id: each one's id, run length (0 for a leaf directory),
-/// offset, and length.
+/// A directory's entries, sorted by tile id: id, run length (0 for a leaf directory), offset, and
+/// length.
 #[derive(Clone, Default, Debug)]
 pub(crate) struct Directory {
     ids: Vec<u64>,
@@ -70,17 +71,17 @@ pub(crate) struct Directory {
     lengths: Vec<u32>,
 }
 
-/// Where a directory sends a tile.
+/// The location a directory gives for a tile.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Entry {
-    /// The tile's bytes: offset from the data section, and length.
+    /// The tile's data: offset from the start of the data section, and length.
     Tile(u64, u64),
-    /// A leaf directory: offset from the leaf section, and length.
+    /// A leaf directory to search next: offset from the start of the leaf section, and length.
     Leaf(u64, u64),
 }
 
 impl Directory {
-    /// The directory in `bytes`, decompressed.
+    /// Decodes a directory from already decompressed `bytes`. `None` if malformed.
     pub(crate) fn decode(bytes: &[u8]) -> Option<Directory> {
         let mut at = 0;
         let mut next = || -> Option<u64> {
@@ -123,7 +124,8 @@ impl Directory {
         Some(Directory { ids, runs, offsets, lengths })
     }
 
-    /// Where the entry holding tile id `id` sends it, if any does.
+    /// Looks up tile `id`: the tile entry whose run covers it, or the leaf directory that may hold
+    /// it. `None` if neither.
     pub(crate) fn find(&self, id: u64) -> Option<Entry> {
         let i = match self.ids.binary_search(&id) {
             Ok(i) => i,
@@ -139,7 +141,8 @@ impl Directory {
     }
 }
 
-/// Tile `key`'s id along the Hilbert curve, counting every tile of the zooms before it.
+/// Tile `key`'s PMTiles id: its Hilbert curve index within its zoom, plus the number of tiles at
+/// all lower zooms.
 pub(crate) fn tile_id(key: TileKey) -> u64 {
     let z = u32::from(key.z);
     let before: u64 = (0..z).map(|k| 1_u64 << (2 * k)).sum();
@@ -170,7 +173,7 @@ mod tests {
     #[test]
     fn tile_ids_follow_the_hilbert_curve() {
         assert_eq!(tile_id(TileKey { z: 0, x: 0, y: 0 }), 0);
-        // Zoom 1 goes around its four tiles from the top left, down, then right.
+        // Zoom 1 visits its four tiles from the top left: down, right, then up.
         let ids: Vec<u64> = [(0, 0), (0, 1), (1, 1), (1, 0)].map(|(x, y)| tile_id(TileKey { z: 1, x, y })).to_vec();
         assert_eq!(ids, vec![1, 2, 3, 4]);
         assert_eq!(tile_id(TileKey { z: 2, x: 0, y: 0 }), 5);
@@ -178,8 +181,8 @@ mod tests {
 
     #[test]
     fn directories_find_tiles_and_leaves() {
-        // Entries: ids 0 (a run of 2 tiles), 5 (a leaf); offsets written as offset + 1, then 0 for
-        // "right after the one before".
+        // Two entries: id 0 (a run of 2 tiles) and id 5 (a leaf). Offsets are stored as offset + 1,
+        // or 0 for "right after the previous entry".
         let bytes = [2, 0, 5, 2, 0, 10, 20, 1, 0];
         let directory = Directory::decode(&bytes).expect("a directory");
         assert_eq!(directory.find(0), Some(Entry::Tile(0, 10)));

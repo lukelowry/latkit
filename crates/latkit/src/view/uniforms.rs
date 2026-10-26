@@ -1,5 +1,4 @@
-//! What a frame tells its shaders: the frame uniform, the eyes its passes draw through, and each
-//! mark's uniform.
+//! The uniforms a frame writes for its shaders: the frame's, the eye's, and each mark's.
 
 use glam::{DMat4, DVec3};
 
@@ -18,10 +17,11 @@ fn vector(v: DVec3) -> [f32; 4] {
     [v.x as f32, v.y as f32, v.z as f32, 0.0]
 }
 
-/// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels, showing
-/// axis coordinate `at`, `elapsed` seconds of motion into the view's clock. Pointer, probe, and
-/// focus words start empty. The theme's lengths are in the space's unit, so in a diagram they scale
-/// with the zoom; a halo and focus's glow are CSS pixels everywhere.
+/// The frame uniform for `scene` seen through `projected` in a target of `size` CSS pixels, at axis
+/// coordinate `at` and `elapsed` seconds on the view's clock. `linear` says the target is sRGB and
+/// encodes color itself, so shaders write linear color. Pointer, probe, and focus words start
+/// empty. Theme lengths are in the space's unit, so in a diagram they scale with the zoom. The halo
+/// and the focus glow are in CSS pixels everywhere.
 pub(crate) fn frame(
     scene: &Scene,
     projected: &Projected,
@@ -44,7 +44,7 @@ pub(crate) fn frame(
     };
     let unit = if projected.space == wgsl::SPACE_DIAGRAM { projected.px_per_unit[0] as f32 } else { 1.0 };
     let graticule = matches!(&scene.space, Space::Earth(earth) if earth.graticule);
-    // The sun stands where it does at the earth's daylight instant, on by the axis coordinate shown.
+    // The sun's position at the earth's daylight instant, advanced by the shown axis coordinate.
     let (sun, atmosphere) = match &scene.space {
         Space::Earth(earth) => (
             earth.daylight.map(|t| crate::scene::sun(t + if at.is_finite() { at } else { 0.0 })),
@@ -52,7 +52,7 @@ pub(crate) fn frame(
         ),
         _ => (None, None),
     };
-    // A selected color with a negative red asks for each row's own color.
+    // A negative red in the selected color means each row keeps its own color.
     let selected = theme.focus.selected.map_or([-1.0, 0.0, 0.0, 0.9], Color::to_array);
     let mut frame: wgsl::Frame = bytemuck::Zeroable::zeroed();
     frame.light = vector(projected.light);
@@ -67,7 +67,7 @@ pub(crate) fn frame(
     frame.glow = theme.focus.glow;
     frame.dim = theme.focus.dim;
     frame.dash = theme.dash * unit;
-    // Comets travel in their own lengths, which a stroke turns into pixels where it draws them.
+    // Comet spacing and length keep their own unit; a stroke converts them to pixels as it draws.
     frame.flow_spacing = theme.flow.spacing.value();
     frame.flow_length = theme.flow.length.value();
     frame.flow_width = theme.flow.width * unit;
@@ -77,7 +77,7 @@ pub(crate) fn frame(
         Length::Px(_) => wgsl::FLOW_PX,
     };
     frame.bow = theme.edge.bow;
-    // Hover is state either way; the controls say only whether it glows.
+    // Hover is tracked either way; the controls only decide whether it glows.
     let glows = scene.controls.hover;
     frame.grow = if glows { theme.focus.grow } else { 1.0 };
     frame.shading = theme.shading;
@@ -104,8 +104,8 @@ pub(crate) fn frame(
     frame
 }
 
-/// The world distance from the center a plane's grid fades out by: what the view shows looking
-/// straight down, and a little more.
+/// The world distance from the center at which a plane's grid has faded out: a bit more than the
+/// view shows looking straight down. 0 on a plot or the globe.
 pub(crate) fn grid_fade(scene: &Scene, projected: &Projected, size: [f64; 2]) -> f64 {
     match &scene.space {
         Space::Plot(_) => 0.0,
@@ -114,7 +114,7 @@ pub(crate) fn grid_fade(scene: &Scene, projected: &Projected, size: [f64; 2]) ->
     }
 }
 
-/// The eye of the view: `projected` into a target of `size` CSS pixels at `pixel_ratio`.
+/// The eye uniform: `projected` into a target of `size` CSS pixels at `pixel_ratio`.
 pub(crate) fn eye(projected: &Projected, size: [f64; 2], pixel_ratio: f32) -> wgsl::Eye {
     let mut eye: wgsl::Eye = bytemuck::Zeroable::zeroed();
     eye.clip_from_world = matrix(projected.clip_from_world);
@@ -148,9 +148,9 @@ fn theme_slots(theme: &Theme) -> [[u32; 4]; 4] {
     std::array::from_fn(|i| std::array::from_fn(|j| slots[i * 4 + j]))
 }
 
-/// What `mark` evaluates and how it eases by `clock`: the pages of rows this frame's evaluation and
-/// end pass cover, and while it eases, the page tables of its frozen and settled words, its progress,
-/// and how each word eases.
+/// Sets `mark`'s evaluation and easing fields: where the row-block lists of this frame's evaluation
+/// and end pass start, how each word blends, and while it eases, the page tables of its frozen and
+/// settled words and its progress on `clock`.
 fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
     mark.block = shown.block;
     mark.end_block = shown.end_block;
@@ -165,7 +165,8 @@ fn ease(mark: &mut wgsl::Mark, shown: &Shown, clock: &super::clock::Clock) {
     }
 }
 
-/// The uniform of mark `index`, labeled as `labels` says, easing by `clock`.
+/// The uniform of mark `index`, with its label slots from `labels` and its easing progress from
+/// `clock`.
 pub(crate) fn mark(
     index: usize,
     shown: &Shown,

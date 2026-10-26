@@ -1,6 +1,6 @@
 import { Data, Gpu, Patch, field, type Scene } from 'latkit';
 
-/** A complete, type-checked example, also rendered by the installed-package test. */
+/** Draws two buses on `canvas`, colored by their voltage. */
 export async function quickstart(canvas: HTMLCanvasElement) {
   const gpu = await Gpu.create();
   const grid = new Data('grid').apply(

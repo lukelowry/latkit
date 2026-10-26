@@ -1,5 +1,5 @@
-//! Datasets: named tables of paged, immutable columns, changed only by patches, each version a
-//! snapshot.
+//! Datasets: named tables of immutable, paged columns. Only patches change a dataset, and each
+//! version is a snapshot.
 
 mod bits;
 mod buffer;
@@ -40,7 +40,7 @@ pub use values::{Kind, Value, Values};
 
 pub(crate) use {geometry::Geometry, table::Field};
 
-// What the GPU side reads of the data.
+// Data internals the GPU side uses.
 #[cfg(feature = "gpu")]
 pub(crate) use {
     bytes::{read_values, values_bytes},

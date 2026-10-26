@@ -1,19 +1,19 @@
-// Strokes: one instanced quad per segment of every row's path, for edges and lines alike, covering
-// the stroke, or its comets where they are wider, and a pixel of edge; a small segment a later one covers in a crowded cell is left out. A
-// segment that ends a part of its path carries the arrowhead; in a diagram, a segment of no length is
-// a junction, drawn as a dot. The focus variant draws the pieces of the rows the mark's focus lights
-// again, over everything, reaching out to their glow.
+// Strokes: one instanced quad per segment of every row's path, for edges and lines alike. A quad
+// covers the stroke, or its comets where they are wider, any arrowhead, and one pixel of
+// antialiased edge. The last segment of each part of a path draws the arrowhead. In a diagram, a
+// zero-length segment is a junction, drawn as a dot. The focus variant redraws the lit rows'
+// segments over everything, with quads enlarged for their glow.
 
 import package::lib::types::{ARROWS, PATH_TRACE, SPACE_DIAGRAM};
 import package::lib::path::PATH;
 import package::lib::bind::{frame, mark, eye};
 import package::lib::project::{to_clip, nearer, culled};
 import package::lib::path::{
-    segment, segment_screen, stroke_style, ends_colored, ends_part, path_count, path_length, px_per_length,
+    segment, segment_screen, stroke_style, ends_colored, ends_part, path_count, path_length,
 };
 import package::lib::marker::{MarkerColor, glow};
 import package::lib::focus::focus_of;
-import package::lib::mark::fringe;
+import package::lib::mark::{fringe, px_per_length};
 import package::lib::stroke::{Stroke, stroke, stroke_distance};
 import package::lib::daylight::daylight;
 import package::lib::color::output;
@@ -25,17 +25,18 @@ struct Varyings {
     @location(1) @interpolate(flat) b: vec2f,
     @location(2) @interpolate(flat) row: u32,
     @location(3) color: vec4f,
-    // Width, distance along at `a` and at `b`, flow.
+    // Width, distance along at `a` and at `b` in CSS pixels, and flow.
     @location(4) @interpolate(flat) style: vec4f,
-    // Whether the segment ends in an arrowhead, then whether it dashes.
+    // Bit 0: the segment ends in an arrowhead. Bit 1: it dashes.
     @location(5) @interpolate(flat) arrow: u32,
-    // The row's focus bits, which the focus draw glows by.
+    // The row's focus bits, which choose the focus draw's glow.
     @location(6) @interpolate(flat) focus: u32,
-    // Distance along at `a` and at `b` in length units, and how far the row's comets traveled.
+    // Distance along at `a` and at `b` in position units, and how far the row's comets have
+    // traveled.
     @location(7) @interpolate(flat) comet: vec3f,
 }
 
-// Whether this variant draws lit rows, its quads reaching out to their glow.
+// Whether this variant draws lit rows, with quads enlarged for their glow.
 @if(focused)
 const LIT_DRAW: bool = true;
 @if(!focused)
@@ -50,7 +51,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
         out.clip = culled();
         return out;
     }
-    // A stroke fades and grows with its row's tile.
+    // A stroke fades and scales with its row's tile.
     var style = stroke_style(s.row);
     style.color.a *= s.presence;
     style.width *= s.growth;
@@ -78,7 +79,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     out.clip = nearer(to_clip(screen, select(ca, cb, t > 0.5)));
     out.a = a;
     out.b = b;
-    // How far along the whole segment this corner lies, of the part drawn.
+    // This corner's fraction along the whole segment, at the start or end of the drawn part.
     let f = mix(on.kept.x, on.kept.y, t);
     var color = style.color;
     if ends_colored() {
@@ -86,9 +87,9 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     let light = daylight(mix(ends[0].position.xy, ends[1].position.xy, f));
     out.color = vec4f(color.rgb * light, color.a);
-    // In length units, a path runs from its start, a listed one's segment from where its list says it
-    // starts, its ends stopping short where the stroke does. On screen, a trace runs along x, a
-    // listed path as it does in length units, and else a segment from where its stroke starts.
+    // In position units, a segment's distance along starts where its list says (0 without a list),
+    // and its ends stop short where the stroke does. On screen, a trace measures along x, a listed
+    // path converts its distance along to pixels, and any other segment starts at 0.
     let along = s.along + path_length(ends[0], ends[1]) * on.kept;
     let pixels = length(b - a);
     var phase = vec2f(0.0, pixels);
@@ -104,9 +105,10 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     return out;
 }
 
-// The fragment's pixel in CSS pixels, a screen position as `a` and `b` are. Read from the fragment's
-// own position, never interpolated: a quad whose ends lie at very different depths skews what is
-// interpolated, and a renderer clipping the quad at the screen's edge, as lavapipe does, moves it.
+// The fragment's position in CSS pixels, in the same screen space as `a` and `b`. It comes from the
+// fragment's own position, never an interpolated value: interpolation skews across a quad whose
+// ends lie at very different depths, and a renderer that clips the quad at the screen's edge, as
+// lavapipe does, shifts it.
 fn pixel(v: Varyings) -> vec2f {
     return v.clip.xy / eye.pixel_ratio;
 }

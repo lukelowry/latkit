@@ -2,11 +2,11 @@ import type { ImageFormat } from 'latkit';
 import { h } from './dom.js';
 import type { Stage } from './stage.js';
 
-/** Seconds of video a recording takes. */
+/** Length of a recorded video, in seconds. */
 const SECONDS = 6;
-/** Frames a second of video. */
+/** Video frame rate, in frames per second. */
 const FPS = 30;
-/** Each picture format: its file's extension and type, and whether it keeps alpha. */
+/** Each picture format's file extension, MIME type, and whether it keeps alpha. */
 const FORMATS: Record<ImageFormat, { extension: string; type: string; alpha: boolean }> = {
   png: { extension: 'png', type: 'image/png', alpha: true },
   jpeg: { extension: 'jpg', type: 'image/jpeg', alpha: false },
@@ -14,27 +14,29 @@ const FORMATS: Record<ImageFormat, { extension: string; type: string; alpha: boo
 };
 
 /**
- * The Export section every page gets: a picture of what its canvas shows, taken as it stands, written
- * as PNG, JPEG, or WebP in a worker, clear where the theme's background is when asked; and a video of
- * it as MP4, recorded as the page runs, with its progress, stopped by pressing again.
+ * Adds the Export section every page gets, for the page's first canvas. A picture captures the
+ * canvas as it is now and is encoded in a worker as PNG, JPEG, or WebP, optionally with a
+ * transparent background. A video records the canvas as MP4 while the page runs, showing its
+ * progress. Pressing Record again stops it.
  */
 export function exportSection(stage: Stage): void {
   const [canvas] = stage.canvases;
   if (!canvas) return;
   const section = stage.section('Export', false);
   let format: ImageFormat = 'png';
-  /** JPEG's quality, 1 to 100. */
+  /** JPEG quality, from 1 to 100. */
   let quality = 90;
   let transparent = false;
-  /** Bits a pixel a frame of video: about 0.15 unless set. */
+  /** Video bits per pixel per frame. When unset, the default of about 0.15 applies. */
   let bits: number | undefined;
   let recording: AbortController | undefined;
-  /** Pixels a CSS pixel of what is saved: as sharp as the screen, at most twice. */
+  /** Saved pixels per CSS pixel: the screen's device pixel ratio, capped at 2. */
   const scale = () => Math.min(2, devicePixelRatio);
   const picture = async () => {
     status.textContent = 'Taking a picture…';
     const { extension, type, alpha } = FORMATS[format];
-    // The page runs on as it is taken: a picture of the moment, not of where motion settles.
+    // `capture: 'now'` pictures this moment while the page keeps running, instead of waiting for
+    // motion to settle.
     const shot = canvas.shot({ scale: scale(), transparent: transparent && alpha, capture: 'now' });
     const image = await shot.image();
     try {
@@ -63,7 +65,8 @@ export function exportSection(stage: Stage): void {
         signal: recording.signal,
         ...(bitrate ? { bitrate } : {}),
       });
-      // Each frame waits for the page to reach its time, so the video runs as the page does.
+      // Each frame waits until the page reaches that frame's time, so the video plays at the
+      // page's real speed.
       await recorder.record(
         async (time) => {
           while (performance.now() - started < time * 1000) await nextFrame();
@@ -110,7 +113,7 @@ export function exportSection(stage: Stage): void {
     format,
     (next) => {
       format = next;
-      // PNG and WebP are lossless; JPEG trades detail for size, and has no alpha.
+      // PNG and WebP are lossless. JPEG trades detail for size and has no alpha.
       quality_.disabled = next !== 'jpeg';
       if (!FORMATS[next].alpha && transparent) clear(false);
     },

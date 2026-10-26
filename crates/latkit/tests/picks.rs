@@ -1,5 +1,5 @@
-//! Queries answer through what the frame drew: every row within reach of a point, nearest first; the
-//! rows in a box a Shift drag draws; where a row lies; and the sample a traced line passes through.
+//! Queries answered from what the frame drew: every row within reach of a point, nearest first, the
+//! rows in a Shift-drag box, a row's screen position, and the sample a traced line passes through.
 
 #![cfg(feature = "gpu")]
 
@@ -15,7 +15,7 @@ use latkit::{
     Table, Vertices, View,
 };
 
-/// Renders frames until `pending` resolves, within the settle deadline.
+/// Renders frames until `pending` resolves, within `SETTLE` frames.
 fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
     let mut pending = pin!(pending);
     let mut context = Context::from_waker(Waker::noop());
@@ -77,13 +77,13 @@ fn picks_list_every_row_in_reach_nearest_first() {
 }
 
 #[test]
-fn a_hit_names_the_row_and_place_its_frame_drew() {
+fn a_hit_reports_the_row_and_position_from_its_frame() {
     let Some(gpu) = gpu() else { return };
     let mut view = view(&gpu, Controls::default());
     let c = SIZE as f32 / 2.0;
     let pending = view.pick([c, c], 6.0);
-    // The frame answering draws node 1 at the middle; before its answer lands, the nodes are given
-    // in another order and the camera moves away.
+    // The answering frame draws node 1 at the center. Before its answer arrives, the nodes are
+    // reordered and the camera moves away.
     step(&gpu, &mut view);
     let data = graph();
     let reordered =
@@ -101,8 +101,8 @@ fn a_hit_names_the_row_and_place_its_frame_drew() {
 #[test]
 fn every_hit_of_geodesic_edges_lies_in_reach() {
     let Some(gpu) = gpu() else { return };
-    // A lattice on the globe: geodesic edges drawn through a segment list, which draws fewer segments
-    // than the query's list is sized for.
+    // A lattice on the globe. Geodesic edges draw through a segment list, which holds fewer
+    // segments than the query's list is sized for.
     let side = 24_usize;
     let (mut lon, mut lat, mut from, mut to) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for i in 0..side * side {
@@ -135,13 +135,14 @@ fn every_hit_of_geodesic_edges_lies_in_reach() {
     view.fit(latkit::Fit::All);
     frame(&gpu, &mut view);
     let c = SIZE as f32 / 2.0;
-    // A wide pick first leaves its counts in the lists buffer; a narrow one after must not sum them.
+    // A wide pick leaves its counts in the lists buffer. A later narrow pick must not add to them.
     for radius in [40.0, 4.0] {
         let pending = view.pick([c, c], radius);
         let hits = answer(&gpu, &mut view, pending);
         assert!(!hits.is_empty(), "the middle of the lattice is in reach");
         for hit in &hits {
-            // A vertex is reached at its outline and lies at its center, a marker's radius further.
+            // A vertex is in reach at its outline, but its point is its center, a marker radius
+            // further.
             let reach = (hit.point[0] - c).hypot(hit.point[1] - c);
             let what = format!("{} {} at {:?}, {reach} away", hit.row.table, hit.row.id, hit.point);
             assert!(hit.distance <= radius && reach <= radius + 8.0, "{what}");
@@ -185,7 +186,7 @@ fn a_shift_drag_selects_the_rows_in_its_box() {
 }
 
 #[test]
-fn hovering_a_trace_names_its_sample() {
+fn picking_a_trace_returns_its_sample() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("signals");
     data.apply(Table::new("Signal", Ids::count(1))).expect("valid");

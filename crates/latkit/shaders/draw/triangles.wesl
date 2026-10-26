@@ -1,5 +1,5 @@
-// Triangles: one instanced triangle per face row, lit from the camera so a flat mesh seen from above
-// shows its exact colors; turned away, a face darkens by the theme's shading.
+// Triangles: one instanced triangle per face row, lit from the camera so a flat mesh seen from
+// above shows its exact colors. A face turned away darkens by the theme's shading.
 
 import package::lib::bind::{frame, eye, word};
 import package::lib::project::culled;
@@ -15,7 +15,7 @@ struct Varyings {
     @location(1) normal: vec3f,
     @location(2) color: vec4f,
     @location(3) @interpolate(flat) row: u32,
-    // The row's focus bits: a lit face tints by them.
+    // The row's focus bits, which tint a lit face.
     @location(4) @interpolate(flat) focus: u32,
 }
 
@@ -30,7 +30,7 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     }
     out.clip = corner_clip(c);
     out.world = c.world;
-    // The normals summed at each vertex, in fixed point.
+    // The face normals summed at this corner's vertex, in fixed point.
     let n = end_normal(corner, c.vertex);
     if n != NONE {
         out.normal = vec3f(f32(bitcast<i32>(word(n))), f32(bitcast<i32>(word(n + 1u))), f32(bitcast<i32>(word(n + 2u))));

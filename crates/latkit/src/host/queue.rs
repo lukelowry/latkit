@@ -1,6 +1,6 @@
-//! Jobs waiting for a worker, in the order asked. A job goes to a worker only as one frees, so one
-//! whose answer nothing waits for any more, as a pyramid superseded by newer data, is dropped before
-//! it costs a worker anything.
+//! A first-in, first-out queue of jobs waiting for a worker. A job reaches a worker only when one
+//! is free, so a job whose result is no longer awaited, such as a pyramid superseded by newer data,
+//! is dropped before it uses a worker.
 
 use std::collections::VecDeque;
 
@@ -14,12 +14,12 @@ pub(crate) struct Queue {
 }
 
 impl Queue {
-    /// Queues `job`, whose answer `resolver` gives.
+    /// Queues `job`; `resolver` receives its result.
     pub(crate) fn push(&mut self, job: Job, resolver: Resolver<Vec<u8>>) {
         self.waiting.push_back((job, resolver));
     }
 
-    /// The next job for a worker while fewer than `workers` run, dropping those nothing waits for.
+    /// The next job for a worker, if fewer than `workers` jobs are running. Drops cancelled jobs.
     pub(crate) fn next(&mut self, workers: usize) -> Option<(Job, Resolver<Vec<u8>>)> {
         while let Some((job, resolver)) = self.waiting.pop_front() {
             if resolver.is_cancelled() {
@@ -35,7 +35,7 @@ impl Queue {
         None
     }
 
-    /// A worker finished its job.
+    /// Records that a worker finished its job.
     pub(crate) fn done(&mut self) {
         self.running = self.running.saturating_sub(1);
     }
@@ -47,7 +47,7 @@ mod tests {
     use crate::Pending;
 
     #[test]
-    fn a_job_dropped_before_a_worker_frees_never_reaches_one() {
+    fn a_job_cancelled_while_queued_never_reaches_a_worker() {
         let mut queue = Queue::default();
         let (kept, first) = Pending::<Vec<u8>>::new();
         let (dropped, second) = Pending::<Vec<u8>>::new();
@@ -60,8 +60,8 @@ mod tests {
         assert!(queue.next(1).is_none(), "the one worker is busy");
         drop(dropped);
         queue.done();
-        let (job, _) = queue.next(1).expect("the worker freed");
-        assert_eq!(job.into_bytes(), [3], "the job nothing waits for never reached it");
+        let (job, _) = queue.next(1).expect("the worker is free again");
+        assert_eq!(job.into_bytes(), [3], "the cancelled job was skipped");
         drop((kept, later));
     }
 }

@@ -1,15 +1,17 @@
-//! Derived data: what the view works out rather than is given. Every derivation shares one lifecycle:
-//! a stamp of what it reads, so it works again only when that changes; work small enough for the
-//! frame done on it, within one budget all derivations share; larger work a host job answering a
-//! patch, kept only while what it was asked from still holds; and tables it writes beside the tables
-//! marks draw, row for row, which marks read like data. What the GPU works out (normals, segment
-//! counts, label placement) follows the same stamps, its answers read back.
+//! Derived data: tables the view computes from the scene and data instead of receiving them.
 //!
-//! The derivations: a diagram's sheet (places, sizes, boxes, wires); elsewhere the lanes of edges
-//! sharing their ends, the stars of nets, and where the scene has a layout the places of vertex rows
-//! without positions; the shapes of geometry fields; the triangles of every area; whether texts hold
-//! what marks ask them about; and what the view draws of the tiles it is given, the pieces the camera
-//! asks for.
+//! Every derivation follows one lifecycle. It stamps its inputs and recomputes only when the stamp
+//! changes. Small work runs on the frame, within one budget ([`FRAME_WORK`]) that all derivations
+//! share. Larger work runs as a host job, and its result is kept only while its inputs are
+//! unchanged. Results are tables beside the tables marks draw, row for row, which marks read like
+//! data. Values the GPU computes (normals, segment counts, label placement) use the same stamps and
+//! are read back.
+//!
+//! The derivations: a diagram's sheet (places, sizes, group boxes, wires). Outside diagrams:
+//! lanes of edges sharing both endpoints, stars of nets, and, when the scene has a layout, places
+//! of vertex rows without positions. Everywhere: shapes of geometry fields (every area's
+//! triangles), text matches for `contains`, the pieces of given tile sets the camera needs, and
+//! what each paged table draws.
 
 pub(crate) mod graph;
 mod lanes;
@@ -39,16 +41,16 @@ use crate::tiles::TileSets;
 use crate::{Pending, Result, Scene, Space};
 use places::Places;
 
-/// A stamp of `inputs`: never 0, which no value is made from.
+/// Hashes `inputs` into a stamp. Never 0, which means no value has been made yet.
 pub(crate) fn stamp_of(inputs: impl Hash) -> u64 {
     let mut hasher = FxHasher::default();
     inputs.hash(&mut hasher);
     hasher.finish().max(1)
 }
 
-/// Work that lands later: bytes the GPU reads back, or a job or fetch the host does.
+/// Work whose bytes arrive later: a GPU readback, or a host job or fetch.
 pub(crate) trait Answer {
-    /// The bytes once they landed, taking them; `None` while they have not.
+    /// Takes the bytes once they arrive; `None` until then.
     fn take(&self) -> Option<Result<Vec<u8>>>;
 }
 
@@ -64,8 +66,7 @@ impl Answer for Pending<Vec<u8>> {
     }
 }
 
-/// A derived product: its value, the stamp it was made from, and the work under way toward the value
-/// of a newer stamp.
+/// A derived value, the stamp it was made from, and any pending work toward a newer stamp.
 pub(crate) struct Derived<T, A: Answer = Readback> {
     pub(crate) value: T,
     stamp: u64,
@@ -79,36 +80,36 @@ impl<T: Default, A: Answer> Default for Derived<T, A> {
 }
 
 impl<T, A: Answer> Derived<T, A> {
-    /// The stamp the value was made from; 0 before it was.
+    /// The stamp the value was made from; 0 before the first value.
     pub(crate) fn stamp(&self) -> u64 {
         self.stamp
     }
 
-    /// Whether `stamp` is neither what the value was made from nor what work under way is for.
+    /// Whether `stamp` matches neither the value nor the pending work, so new work is needed.
     pub(crate) fn due(&self, stamp: u64) -> bool {
         stamp != self.stamp && self.working.as_ref().is_none_or(|(s, _)| *s != stamp)
     }
 
-    /// Takes `value` as made from `stamp`, dropping any work under way.
+    /// Stores `value` as made from `stamp`, dropping any pending work.
     pub(crate) fn make(&mut self, stamp: u64, value: T) {
         self.value = value;
         self.stamp = stamp;
         self.working = None;
     }
 
-    /// Takes the value as made from `stamp` as it stands, dropping any work under way.
+    /// Marks the current value, unchanged, as made from `stamp`, dropping any pending work.
     pub(crate) fn mark(&mut self, stamp: u64) {
         self.stamp = stamp;
         self.working = None;
     }
 
-    /// Starts `work` toward the value of `stamp`, replacing any under way.
+    /// Records `work` as pending toward `stamp`, replacing any pending work.
     pub(crate) fn start(&mut self, stamp: u64, work: A) {
         self.working = Some((stamp, work));
     }
 
-    /// The bytes of work that landed, and the stamp it was for. Work that failed lands as made,
-    /// keeping the value, so it is not tried again until what it reads changes.
+    /// Takes the bytes of finished work and the stamp it was for. Failed work marks its stamp as
+    /// made and keeps the old value, so it is not retried until the inputs change.
     pub(crate) fn landed(&mut self) -> Option<(u64, Vec<u8>)> {
         let (stamp, work) = self.working.as_ref()?;
         let stamp = *stamp;
@@ -121,30 +122,30 @@ impl<T, A: Answer> Derived<T, A> {
         Some((stamp, bytes))
     }
 
-    /// Whether work is under way.
+    /// Whether work is pending.
     pub(crate) fn busy(&self) -> bool {
         self.working.is_some()
     }
 }
 
-/// Microseconds of work, by estimate, the derivations of a GPU's views do on one frame between them;
-/// what does not fit goes to the host as jobs.
+/// Estimated microseconds of derivation work all of a GPU's views may do on one frame together.
+/// Work that does not fit goes to the host as jobs.
 pub(crate) const FRAME_WORK: u32 = 4000;
 
-/// The frame's budget of inline work and the host's pool, which every derivation shares. Each job
-/// and fetch wakes the view when it lands.
+/// The frame's inline work budget and the host's job pool, shared by every derivation. Each job and
+/// fetch wakes the view when it finishes.
 pub(crate) struct Jobs<'a> {
     errors: &'a Arc<Mutex<Vec<crate::Error>>>,
     host: Option<&'a dyn Host>,
     waker: &'a Waker,
-    /// What counts the jobs handed out.
+    /// Counts the jobs spawned.
     counters: &'a Counters,
-    /// Microseconds of inline work left this frame, by estimate.
+    /// Estimated microseconds of inline work left this frame.
     left: u32,
 }
 
 impl<'a> Jobs<'a> {
-    /// The jobs of a frame with `left` microseconds of work on it still to spend.
+    /// A frame's jobs, with `left` microseconds of inline work still to spend.
     pub(crate) fn new(
         host: Option<&'a dyn Host>,
         waker: &'a Waker,
@@ -155,7 +156,7 @@ impl<'a> Jobs<'a> {
         Jobs { errors, host, waker, counters, left }
     }
 
-    /// Whether work of `cost` microseconds fits what is left of the frame's budget, spending it if so.
+    /// Whether `cost` microseconds fit the rest of the frame's budget; spends them if so.
     pub(crate) fn fits(&mut self, cost: u64) -> bool {
         let fits = cost <= u64::from(self.left);
         if fits {
@@ -164,28 +165,29 @@ impl<'a> Jobs<'a> {
         fits
     }
 
-    /// Microseconds of inline work left this frame, by estimate.
+    /// Estimated microseconds of inline work left this frame.
     pub(crate) fn left(&self) -> u64 {
         u64::from(self.left)
     }
 
-    /// What its jobs and fetches wake as they land.
+    /// The waker its jobs and fetches wake when they finish.
     pub(crate) fn waker(&self) -> &Waker {
         self.waker
     }
 
-    /// The same host's jobs and fetches, waking `waker` as they land in place of this frame's view,
-    /// with none of the frame's budget: work done for every view drawing what it brings.
+    /// The same host's jobs and fetches, but waking `waker` instead of this frame's view, and with
+    /// no inline budget. Used for work shared by every view that draws its result.
     pub(crate) fn waking<'b>(&'b self, waker: &'b Waker) -> Jobs<'b> {
         Jobs { errors: self.errors, host: self.host, waker, counters: self.counters, left: 0 }
     }
 
-    /// Spends `cost` microseconds of the budget whether it fits or not: work the frame cannot defer.
+    /// Spends `cost` microseconds of the budget even when it does not fit, for work the frame
+    /// cannot defer. The budget stops at zero.
     pub(crate) fn spend(&mut self, cost: u64) {
         self.left = self.left.saturating_sub(cost.min(u64::from(u32::MAX)) as u32);
     }
 
-    /// Has the host do `job` off the frame; without a host, at once.
+    /// Runs `job` on the host, off the frame; without a host, runs it immediately.
     pub(crate) fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
         self.counters.add(Count::Jobs, 1);
         let pending = match self.host {
@@ -197,7 +199,7 @@ impl<'a> Jobs<'a> {
         pending
     }
 
-    /// Has the host fetch `request`; without a host, nothing can be fetched.
+    /// Fetches `request` through the host. Without a host, the fetch fails as unsupported.
     pub(crate) fn fetch(&self, request: &Request) -> Pending<Vec<u8>> {
         let pending = match self.host {
             Some(host) => host.fetch(request),
@@ -208,22 +210,24 @@ impl<'a> Jobs<'a> {
     }
 }
 
-/// What every derivation reads: the scene and its data, the host that measures text, whether rows
-/// are being dragged, and what each table drawn in part draws. Jobs go through the frame's [`Jobs`].
+/// The inputs every derivation reads: the scene, its data, the host (which measures text), whether
+/// rows are being dragged, and what each paged table draws. Jobs go through the frame's [`Jobs`].
 pub(crate) struct Input<'a> {
     pub(crate) scene: &'a Scene,
     /// Bumps whenever the scene changes.
     pub(crate) scene_version: u64,
     pub(crate) data: &'a [Snapshot],
     pub(crate) host: Option<&'a dyn Host>,
-    /// Whether rows are being dragged: what they move derives on the frame, however much.
+    /// Whether rows are being dragged. While true, work the drag causes runs on the frame
+    /// regardless of budget.
     pub(crate) dragging: bool,
-    /// Each table drawn in part, by dataset and table: what row-local derivations work on alone.
+    /// Each paged table, by dataset and table. Row-local derivations work only on the pages and
+    /// kept rows listed here.
     pub(crate) paged: Option<&'a Keyed<(Name, Name), Paged>>,
 }
 
-/// What a table drawn in part draws this frame: the order its rows draw in, the pages of it drawn,
-/// and the places of the rows kept whose pages are not, each ascending.
+/// What a paged table draws this frame: its order, the pages drawn, and the places of kept rows
+/// outside those pages. Both lists ascend.
 pub(crate) struct Paged {
     pub(crate) order: order::Order,
     pub(crate) pages: Vec<u32>,
@@ -236,9 +240,9 @@ impl Input<'_> {
         self.data.iter().find(|d| d.name() == name)
     }
 
-    /// Hashes what the structure of the scene's marks reads: of each table drawn, its rows and the
-    /// fields its places, sizes, groups, ports, wires, and nets read. A field only a look reads, such
-    /// as a value streaming in, changes nothing it hashes.
+    /// Hashes the inputs to the structure of the scene's marks: each drawn table's rows, and the
+    /// fields that set its places, sizes, groups, ports, wires, and nets. Fields read only for
+    /// appearance, such as a streaming value, do not affect the hash.
     pub(crate) fn structure(&self, hasher: &mut impl Hasher) {
         self.reads(&mut |read| match read {
             Read::Rows { data, table, rows } => (data, table, rows.structure, rows.order).hash(hasher),
@@ -246,8 +250,8 @@ impl Input<'_> {
         });
     }
 
-    /// Hands `read` what the structure of the scene's marks reads, in order: each table drawn, then
-    /// each field its places, sizes, groups, ports, wires, and nets read.
+    /// Calls `read` with each input to the structure of the scene's marks, in order: each drawn
+    /// table, then each field that sets its places, sizes, groups, ports, wires, and nets.
     pub(crate) fn reads<'a>(&'a self, read: &mut impl FnMut(Read<'a>)) {
         for mark in &self.scene.marks {
             let style = mark.style();
@@ -289,8 +293,9 @@ impl Input<'_> {
         }
     }
 
-    /// Hands `read` every field `expr` of a mark drawing `table` reads: a field of the table itself is
-    /// one it sizes or places each row by, `own`, unless a domain fits it to every row's.
+    /// Calls `read` with every field that `expr`, of a mark drawing `table`, reads. When `own` is
+    /// set, a field of `table` itself is reported as `own` (it sizes or places each row by that
+    /// row's value), unless a domain fits `expr` to every row's values.
     fn read_expr<'a>(
         &'a self,
         table: (&'a Name, &'a Name),
@@ -306,38 +311,37 @@ impl Input<'_> {
         });
     }
 
-    /// Hands `read` field `name` of `table`.
+    /// Calls `read` with field `name` of `table`.
     fn read_field<'a>(&'a self, (data, table): (&'a Name, &'a Name), name: &'a str, read: &mut impl FnMut(Read<'a>)) {
         let field = self.data(data).and_then(|d| d.table(table)).and_then(|t| t.field_named(name));
         read(Read::Field { data, table, name, field, own: false });
     }
 }
 
-/// What the structure of the scene's marks reads.
+/// One input to the structure of the scene's marks.
 pub(crate) enum Read<'a> {
-    /// A table a mark draws: its rows.
+    /// A table a mark draws.
     Rows { data: &'a Name, table: &'a Name, rows: &'a Table },
-    /// A field: whether it exists, and as what; and whether it is `own`, a value of a vertex mark's
-    /// own table that sizes or places each row by that row's value alone.
+    /// A field, `None` where it is missing. `own` marks a field of a vertex mark's own table that
+    /// sizes or places each row by that row's value alone.
     Field { data: &'a Name, table: &'a Name, name: &'a str, field: Option<&'a Field>, own: bool },
 }
 
 /// Derived tables, by the dataset and table each stands beside.
 pub(crate) type Tables = Keyed<(Name, Name), Table>;
 
-/// One derivation: what it reads, stamped; what it works out, on the frame or as jobs; and the tables
-/// it writes.
+/// One derivation: it stamps its inputs, computes on the frame or in jobs, and writes tables.
 pub(crate) trait Derive {
-    /// Brings what it derives up to `input`, handing `jobs` what the frame cannot afford; whether its
-    /// tables changed.
+    /// Updates the derivation to `input`, sending work the frame cannot afford to `jobs`. Returns
+    /// whether its tables changed.
     fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool;
 
-    /// Whether work it asked for is under way.
+    /// Whether work it started is pending.
     fn busy(&self) -> bool;
 
-    /// Whether what it derived is final: nothing it writes stands in for work under way. Rows
-    /// standing where they were until a layout lands, elbows until routes land, earlier triangles
-    /// until shapes land, and straight edges until lanes land all stand in.
+    /// Whether its tables are final, with no placeholder for pending work. Placeholders include
+    /// rows at their old places until a layout arrives, elbows until routes arrive, rows without
+    /// triangles until shapes arrive, and straight edges until lanes arrive.
     fn complete(&self) -> bool {
         !self.busy()
     }
@@ -345,42 +349,42 @@ pub(crate) trait Derive {
     /// The tables it derives.
     fn tables(&self) -> &Tables;
 
-    /// Forgets what it derived: its space no longer asks for it.
+    /// Drops its derived tables, once the scene's space no longer needs them.
     fn clear(&mut self);
 
-    /// Failures to tell since last asked, such as texts its host could not measure.
+    /// Takes the errors since the last call, such as texts the host could not measure.
     fn take_errors(&mut self) -> Vec<crate::Error> {
         Vec::new()
     }
 }
 
-/// Every derivation of a view, run in order each frame with one budget.
+/// Every derivation of a view, updated in order each frame within one budget.
 #[derive(Default)]
 pub(crate) struct Derivations {
     /// A diagram's sheet.
     pub(crate) sheet: Sheet,
-    /// Elsewhere, the lanes of edges sharing their ends.
+    /// Outside diagrams, the lanes of edges that share both endpoints.
     lanes: lanes::Lanes,
-    /// Elsewhere, where the scene has a layout, the places of vertex rows without positions.
+    /// Outside diagrams, when the scene has a layout, the places of vertex rows without positions.
     places: Places,
-    /// Elsewhere, the stars of nets joining vertex rows.
+    /// Outside diagrams, the stars of nets joining vertex rows.
     stars: stars::Stars,
     shapes: shapes::Shapes,
-    /// Whether texts hold what marks ask them about.
+    /// Whether each row's text contains a string a mark asks about.
     matches: matches::Matches,
-    /// What the view draws of the tiles it is given: the pieces the camera asks for, as datasets.
+    /// The pieces of each given tile set the camera needs, as datasets.
     pub(crate) tiles: TileSets,
-    /// What the view draws of each dataset it draws in part.
+    /// The pyramids of each dataset with paged tables, and what those tables draw.
     pub(crate) tiled: tiled::Tiled,
 }
 
-/// The derived tables beside one drawn table: the sheet's or the lanes', the shapes', then the
-/// matches'.
+/// The derived tables beside one drawn table: the first of the sheet's, places', stars', or lanes',
+/// then the shapes', then the matches'.
 pub(crate) type Beside<'a> = [Option<&'a Table>; 3];
 
 impl Derivations {
-    /// Brings every derivation up to `input`, spending what the tiles left of the frame's `jobs`;
-    /// whether any table changed.
+    /// Updates every derivation to `input`, spending what remains of `jobs`' frame budget after
+    /// the tiles. Returns whether any table changed.
     pub(crate) fn update(&mut self, input: &Input<'_>, jobs: &mut Jobs<'_>) -> bool {
         let mut changed = if matches!(input.scene.space, Space::Diagram(_)) {
             self.lanes.clear();
@@ -397,20 +401,20 @@ impl Derivations {
         changed
     }
 
-    /// Lays every vertex row without a position out again: a diagram's sheet, or elsewhere the
-    /// places.
+    /// Lays out every vertex row without a position again: through the sheet in a diagram, else
+    /// through the places.
     pub(crate) fn arrange(&mut self, diagram: bool) {
         if diagram { self.sheet.arrange() } else { self.places.arrange() }
     }
 
-    /// What the last arranging laid out, once it landed: each row placed, and where, in the
-    /// space's coordinates.
+    /// Takes the result of the last `arrange` once it arrives: each row laid out and its position,
+    /// in the space's coordinates.
     pub(crate) fn take_arranged(&mut self) -> Option<Vec<(crate::Row, [f64; 2])>> {
         self.sheet.take_arranged().or_else(|| self.places.take_arranged())
     }
 
-    /// Whether everything derived is final: no layout, route, lane, or shape job stands in, no tile
-    /// draws its ancestor, and no table drawn in part draws its first sample.
+    /// Whether everything derived is final: no layout, route, lane, or shape job is pending, no
+    /// tile draws its ancestor as a placeholder, and no paged table draws its first sample.
     pub(crate) fn complete(&self) -> bool {
         self.sheet.complete()
             && self.lanes.complete()
@@ -420,12 +424,12 @@ impl Derivations {
             && self.tiled.complete()
     }
 
-    /// Whether shapes are being triangulated or bent: until they land, marks draw the ones before.
+    /// Whether a triangulation job is pending. The rows it shapes draw nothing until it finishes.
     pub(crate) fn shaping(&self) -> bool {
         self.shapes.busy()
     }
 
-    /// Failures every derivation has to tell since last asked.
+    /// Takes the errors every derivation reported since the last call.
     pub(crate) fn take_errors(&mut self) -> Vec<crate::Error> {
         let mut errors = self.sheet.take_errors();
         errors.extend(self.places.take_errors());
@@ -442,14 +446,15 @@ impl Derivations {
         [first, self.shapes.tables().get(&key), self.matches.tables().get(&key)]
     }
 
-    /// The shapes of table `table` of dataset `data` drawn in part, a page of its order at a time,
-    /// by the field each is written as.
+    /// The shapes of paged table `table` of dataset `data`, made per page of its order, by the
+    /// derived field each is written as.
     pub(crate) fn paged(&self, data: &Name, table: &Name) -> Vec<(Name, &shapes::PagedShapes)> {
         self.shapes.paged(data, table)
     }
 }
 
-/// A table beside `source`, row for row, holding `fields`.
+/// A table holding `fields` that stands beside `source`, row for row: it shares `source`'s ids,
+/// index, structure, and order.
 pub(crate) fn beside(source: &Table, fields: impl IntoIterator<Item = (Name, Field)>) -> Table {
     let mut table = Table {
         name: source.name.clone(),
@@ -465,9 +470,10 @@ pub(crate) fn beside(source: &Table, fields: impl IntoIterator<Item = (Name, Fie
     table
 }
 
-/// Field `name` of a table beside `source`, holding `values`: `before`'s own while it holds exactly
-/// them, so nothing uploads again; else a column keeping each of `before`'s pages that holds what its
-/// page would, so only the pages that changed upload and evaluate again.
+/// Field `name` of a derived table beside `source`, holding `values`. Returns `before`'s field when
+/// its values are equal, so nothing uploads again. Otherwise builds a column that reuses each of
+/// `before`'s pages whose values are unchanged, so only changed pages upload and evaluate again.
+/// Reuse needs `before` to share `source`'s structure and the field's length.
 pub(crate) fn kept(name: &str, values: &Values, source: &Table, before: Option<&Table>) -> Field {
     let fresh = Column::new(values);
     let old = before.filter(|b| b.structure == source.structure).and_then(|b| match b.field_named(name) {
@@ -487,7 +493,8 @@ pub(crate) fn kept(name: &str, values: &Values, source: &Table, before: Option<&
     Field::Values(Column::of_pages(pages, column.like()), Version::next())
 }
 
-/// The values `fields` an answer's patch writes for each row it names, by its key.
+/// Reads a job's answer patch: for each row it sets, the row's key and its values of `fields`. An
+/// unreadable patch yields nothing.
 pub(crate) fn answers(bytes: &[u8], fields: &[&str]) -> Vec<(Key, Vec<Option<Value>>)> {
     let Ok(patch) = Patch::from_bytes(bytes) else { return Vec::new() };
     let mut out = Vec::new();
@@ -508,7 +515,7 @@ mod tests {
     use crate::data::PAGE_ROWS;
 
     #[test]
-    fn kept_keeps_the_pages_that_hold_the_same() {
+    fn kept_reuses_pages_whose_values_are_unchanged() {
         let rows = PAGE_ROWS + 10;
         let source = Table::new("T", crate::Ids::count(rows as u32));
         let numbers = |changed: f64| {
@@ -516,10 +523,10 @@ mod tests {
         };
         let first = beside(&source, [(Name::from("x"), kept("x", &numbers(1.0), &source, None))]);
         let same = kept("x", &numbers(1.0), &source, Some(&first));
-        assert_eq!(same.version(), first.field_named("x").expect("x").version(), "nothing changed");
+        assert_eq!(same.version(), first.field_named("x").expect("x").version(), "unchanged values keep the version");
         let Field::Values(before, _) = first.field_named("x").expect("x") else { panic!("values") };
         let Field::Values(after, _) = kept("x", &numbers(2.0), &source, Some(&first)) else { panic!("values") };
-        assert_eq!(after.pages()[0].id, before.pages()[0].id, "the first page held the same");
+        assert_eq!(after.pages()[0].id, before.pages()[0].id, "the unchanged first page is reused");
         assert_ne!(after.pages()[1].id, before.pages()[1].id, "the last page changed");
     }
 }

@@ -1,17 +1,18 @@
 /**
- * npm's types, written from `schema.json`: what latkit reads (`$defs`) becomes `inputs.ts`, and what
- * it writes (`outputs`) becomes `outputs.ts`. Each definition reachable from the roots becomes a type,
- * documented as its form is; an output an input already declares is that input's type. A schema's
- * `tsType` names the hand-written type that stands for it, such as `ExprInput`.
+ * Generates npm's types from `schema.json`. The types latkit reads (`$defs`) become `inputs.ts`,
+ * and the types it writes (`outputs`) become `outputs.ts`. Each definition reachable from the roots
+ * becomes a type, documented with its schema description. An output that an input already declares
+ * uses that input's type. A schema's `tsType` names a hand-written type to use instead, such as
+ * `ExprInput`.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import prettier from 'prettier';
 
-/** The types npm takes as plain data; everything they are built of comes with them. */
+/** Root types npm takes as plain data. Every type they are built from is generated too. */
 const INPUTS = ['Scene', 'Query', 'EnvelopeRequest', 'Camera', 'Fit', 'Budget', 'ColormapKind'];
 
-/** The types npm reads back. */
+/** Root types npm reads back from latkit. */
 const OUTPUTS = [
   'ViewEvent',
   'Stats',
@@ -24,29 +25,30 @@ const OUTPUTS = [
   'Failure',
 ];
 
-/** The hand-written types a `tsType` names, and the module that declares them. */
+/** Hand-written types that a `tsType` names, keyed by the module that declares them. */
 const IMPORTS = { './scene.js': ['Color', 'ExprInput', 'PaintInput'] };
 
-/** `inputs.ts` and `outputs.ts` of `schema.json` at `file`, formatted as the repository's sources are. */
+/** Returns the sources of `inputs.ts` and `outputs.ts` for the schema at `file`, formatted with the
+ * repository's Prettier config. */
 export async function typescript(file) {
   const schema = JSON.parse(fs.readFileSync(file, 'utf8'));
   const inputs = declare(schema.$defs, '#/$defs/', INPUTS, new Set());
   const outputs = declare(schema.outputs, '#/outputs/', OUTPUTS, new Set(inputs.names));
   const config = await prettier.resolveConfig(path.join(path.dirname(file), 'src/inputs.ts'));
   const format = (source) => prettier.format(source, { ...config, parser: 'typescript' });
-  const header = (from) =>
-    `/** Written by \`node npm/build.mjs schema\` from \`npm/schema.json\`, ${from}: do not edit. */`;
+  const header = (types) =>
+    `/** ${types}, written by \`node npm/build.mjs schema\` from \`npm/schema.json\`. Do not edit. */`;
   const imports = (modules) =>
     Object.entries(modules)
       .filter(([, names]) => names.length)
       .map(([module, names]) => `import type { ${names.sort().join(', ')} } from '${module}';`);
   return {
     inputs: await format(
-      [header('what latkit reads'), '', ...imports(IMPORTS), '', inputs.source, ''].join('\n'),
+      [header('The types latkit reads'), '', ...imports(IMPORTS), '', inputs.source, ''].join('\n'),
     ),
     outputs: await format(
       [
-        header('what latkit writes'),
+        header('The types latkit writes'),
         '',
         ...imports({ './inputs.js': outputs.borrowed }),
         '',
@@ -58,8 +60,9 @@ export async function typescript(file) {
 }
 
 /**
- * The declarations of the definitions `defs` that `roots` reach, refs to them starting `prefix`;
- * `declared` names those another module declares, which these borrow.
+ * Declares the definitions in `defs` that `roots` reach, where refs to them start with `prefix`.
+ * Names in `declared` are declared by another module. They are not declared again, and those used
+ * are returned as `borrowed` for import.
  */
 function declare(defs, prefix, roots, declared) {
   const output = prefix === '#/outputs/';
@@ -80,7 +83,7 @@ function declare(defs, prefix, roots, declared) {
   const type = (schema) => {
     if (schema === true || schema === undefined || Object.keys(schema).length === 0)
       return 'unknown';
-    // An optional value that `null` also sets takes the null its schema allows.
+    // A `tsType` whose schema also allows null accepts null too.
     if (schema.tsType)
       return [schema.type].flat().includes('null') ? `${schema.tsType} | null` : schema.tsType;
     const name = ref(schema);
@@ -110,8 +113,8 @@ function declare(defs, prefix, roots, declared) {
         return 'unknown';
     }
   };
-  // A member's documentation moves onto the one key of a tagged variant; elsewhere TypeScript would
-  // show it nowhere.
+  // A union member's description moves onto the single key of a tagged variant, because TypeScript
+  // shows no documentation on union members.
   const members = (schemas) => {
     const parts = schemas.map((s) => {
       const keys = Object.keys(s.properties ?? {});
@@ -140,7 +143,8 @@ function declare(defs, prefix, roots, declared) {
     }
     return /[|&]/.test(item) ? `(${item})[]` : `${item}[]`;
   };
-  // What latkit writes leaves an absent value out rather than writing null.
+  // latkit omits absent values from its output rather than writing null, so optional output
+  // fields drop their null.
   const absent = (schema) => {
     if (Array.isArray(schema.type))
       return { ...schema, type: schema.type.filter((t) => t !== 'null') };
@@ -181,14 +185,15 @@ function declare(defs, prefix, roots, declared) {
   return { names, source, borrowed: [...reached].filter((n) => declared.has(n) && used(n)) };
 }
 
-/** Rust's names npm calls otherwise. */
+/** Rust names that npm spells differently. */
 const RENAMED = { 'View::events': 'view.on' };
 
 /**
- * A code span of Rust's documentation as npm names what it names: an event as the event npm tells
- * (`Event::Connect` a `'connect'` event), a member as one of an instance where it starts lowercase
- * (`View::complete` `view.complete`, `Controls::connect` `controls.connect`) and of its type else, a
- * call as what it calls (`hovered()` `hovered`).
+ * Rewrites a code span from Rust's documentation with npm's names. An event becomes the event npm
+ * emits (`Event::Connect` becomes a `'connect'` event). A lowercase member becomes an instance
+ * member in camelCase (`View::complete` becomes `view.complete`), and any other member stays on its
+ * type (`Space::Diagram` becomes `Space.Diagram`). A call drops its parentheses (`hovered()`
+ * becomes `hovered`).
  */
 function named(code) {
   const camel = (name) => name.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
@@ -204,9 +209,9 @@ function named(code) {
 }
 
 /**
- * Documentation as the forms write it, wrapped anew: paragraphs kept, lines at most 96 wide, Rust's
- * links to its own items as plain code, its names as npm's, its `None` as the `null` JSON writes,
- * and its examples, which are Rust, left out.
+ * Converts a schema description into a doc comment. It keeps paragraphs, rewraps lines to at most
+ * 96 columns, turns Rust's intra-doc links into plain code spans, renames Rust names to npm's,
+ * writes `None` as `null` (as JSON does), and drops code blocks, which are Rust examples.
  */
 function doc(text) {
   const lines = [];
@@ -219,7 +224,7 @@ function doc(text) {
   for (const paragraph of plain.split('\n\n').filter((p) => p.trim())) {
     if (lines.length) lines.push('');
     let line = '';
-    // A code span stays on one line, as TSDoc reads them.
+    // Each code span stays on one line, as TSDoc requires.
     const words = (paragraph.match(/(?:`[^`]*`|[^\s`])+/g) ?? []).map((w) =>
       w.replace(/\s+/g, ' '),
     );

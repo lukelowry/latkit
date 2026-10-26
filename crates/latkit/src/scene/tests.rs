@@ -1,4 +1,4 @@
-//! Scenes read as JSON match the builders, field for field.
+//! Tests that scenes read from JSON equal the same scenes built in Rust, field for field.
 
 use std::time::Duration;
 
@@ -36,9 +36,9 @@ fn scenes_match_builders() {
 }
 
 #[test]
-fn things_pick_and_geometry_does_not_unless_asked() {
+fn rows_pick_by_default_and_geometry_only_when_asked() {
     let picks = |mark: Mark| mark.picks();
-    assert!(picks(Vertices::of("d", "t").into()) && picks(Edges::of("d", "t").into()), "rows that are things");
+    assert!(picks(Vertices::of("d", "t").into()) && picks(Edges::of("d", "t").into()), "vertices and edges");
     assert!(picks(Lines::of("d", "t").trace("v").into()), "a plot's traces");
     assert!(!picks(Lines::of("d", "t").into()) && !picks(Areas::of("d", "t").into()), "geometry");
     assert!(picks(Areas::of("d", "t").pick(true).into()) && !picks(Vertices::of("d", "t").pick(false).into()));
@@ -96,7 +96,7 @@ fn a_text_in_a_color_option_is_a_color_and_elsewhere_a_field() {
         r#"{ "space": "plane", "marks": [{ "vertices": { "of": ["grid", "Bus"], "color": "kv" } }] }"#,
     )
     .expect_err("a field's name where a color goes");
-    assert!(error.to_string().contains(r#"not a CSS color: "kv"; a field is field("kv")"#), "{error}");
+    assert!(error.to_string().contains(r#"not a CSS color: "kv"; for a field, use field("kv")"#), "{error}");
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn joins_read_from_another_table() {
 }
 
 #[test]
-fn areas_and_the_earths_look_match_builders() {
+fn areas_and_earth_options_match_builders() {
     let json = r##"{
         "space": { "earth": { "projection": "globe", "daylight": 1782043200, "atmosphere": true } },
         "marks": [
@@ -179,7 +179,7 @@ fn themes_read_a_base_and_options_over_it() {
 }
 
 #[test]
-fn presets_stand_for_values() {
+fn presets_equal_their_values() {
     let controls = |json: &str| serde_json::from_str::<Controls>(json).expect("controls");
     assert_eq!(controls(r#""inspect""#), Controls::inspect());
     assert_eq!(controls(r#""none""#), Controls::none());
@@ -192,7 +192,7 @@ fn presets_stand_for_values() {
         ..Controls::default()
     };
     assert_eq!(options, expected);
-    assert!(serde_json::from_str::<Controls>(r#"{ "zoom": true }"#).is_err(), "zoom names what zooms");
+    assert!(serde_json::from_str::<Controls>(r#"{ "zoom": true }"#).is_err(), "zoom names an input, not a boolean");
     assert_eq!(serde_json::from_str::<Layout>(r#""layered""#).expect("a layout"), Layout::Layered(Layered::default()));
     let layered = r#"{ "layered": { "flow": "down", "rankGap": 40 } }"#;
     let layered = serde_json::from_str::<Layout>(layered).expect("a layout");

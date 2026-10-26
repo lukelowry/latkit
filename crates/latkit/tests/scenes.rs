@@ -1,4 +1,5 @@
-//! The scenes of `npm/test/scenes.js` decode: the JSON form TypeScript checks is the form latkit reads.
+//! The scenes in `npm/test/scenes.js` decode, so the JSON form TypeScript checks is the form latkit
+//! reads.
 
 #![cfg(feature = "gpu")]
 

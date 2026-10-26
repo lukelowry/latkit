@@ -1,33 +1,38 @@
-/** Canvases: views shown in a `<canvas>` or an `OffscreenCanvas`, as a layout places them. */
+/** Canvases that show views in a `<canvas>` element or an `OffscreenCanvas`. */
 
 import type * as bindings from '../pkg/latkit.js';
 import { hold, inner, release } from './internal.js';
 import { Shot, type ShotOptions } from './shot.js';
 import { handleOf, type View } from './view.js';
 
-/** `[x, y, width, height]` as fractions of a canvas or a picture. */
+/** A region `[x, y, width, height]` in fractions of a canvas or picture, from its top left. */
 export type Rect = readonly [x: number, y: number, width: number, height: number];
 
-/** A view's place in a canvas or a picture: where it draws, all of it unless `at` says. */
+/** A view and the region of a canvas or picture it draws in. */
 export interface Panel {
   view: View;
+  /** Where the view draws; the whole canvas or picture by default. */
   at?: Rect;
 }
 
-/** How a canvas shows its views. */
+/** Options for `Gpu.canvas()`. */
 export interface CanvasOptions {
-  /** The views shown and where; a later panel draws over an earlier one. */
+  /** The views shown and their regions; later panels draw over earlier ones. None by default. */
   layout?: readonly Panel[];
-  /** Pixels a CSS pixel of an `OffscreenCanvas`; an element follows its device. */
+  /**
+   * Pixels per CSS pixel of an `OffscreenCanvas`, 1 by default; it must be positive. A `<canvas>`
+   * element uses the device pixel ratio instead.
+   */
   pixelRatio?: number;
 }
 
-/** The whole of a canvas or a picture. */
+/** The rect covering a whole canvas or picture. */
 const WHOLE: Rect = [0, 0, 1, 1];
 
 /**
- * Views shown in a `<canvas>` element, which sizes itself to its CSS box and passes each view the
- * input landing on its panel, or an `OffscreenCanvas` in a worker, which keeps the size it is given.
+ * Shows views in a `<canvas>` element or an `OffscreenCanvas`, each in its layout panel; created by
+ * `Gpu.canvas()`. A frame redraws only the views that need it, or every view after a resize or a
+ * layout change.
  */
 export class Canvas {
   #target: HTMLCanvasElement | OffscreenCanvas;
@@ -57,7 +62,7 @@ export class Canvas {
     this.#released = released;
   }
 
-  /** @internal A canvas of `device` in `target`, which calls `released` once destroyed. */
+  /** @internal Creates a canvas of `device` in `target`; `released` runs once it is destroyed. */
   static made(
     device: bindings.Gpu,
     target: HTMLCanvasElement | OffscreenCanvas,
@@ -67,14 +72,15 @@ export class Canvas {
     return new Canvas(device, target, options, released);
   }
 
-  /** What it draws into. */
+  /** The `<canvas>` element or `OffscreenCanvas` it draws into. */
   get element(): HTMLCanvasElement | OffscreenCanvas {
     return this.#target;
   }
 
   /**
-   * The views shown and where, a later panel over an earlier one; setting it shows those in place of
-   * the ones shown. A view shows in one panel of one canvas at a time.
+   * The views shown and their regions; later panels draw over earlier ones. Setting it replaces the
+   * shown views. A view can show in only one panel of one canvas at a time. Setting a layout that
+   * breaks this, or that has a panel covering no pixels, throws an `invalid` error.
    */
   get layout(): readonly Panel[] {
     return this.#layout;
@@ -89,8 +95,8 @@ export class Canvas {
   }
 
   /**
-   * A picture of exactly what the canvas shows: its views as its layout places them, at its size in
-   * CSS pixels times `scale`.
+   * Returns a {@link Shot} of exactly what the canvas shows: its views in its layout, at the
+   * canvas's CSS size times `options.scale` (1 by default) in pixels.
    */
   shot(options: ShotOptions = {}): Shot {
     const scale = options.scale ?? 1;
@@ -106,7 +112,10 @@ export class Canvas {
     return new Shot(size, { ...options, layout: this.#layout });
   }
 
-  /** Stops drawing; the views remain, and the element keeps its last frame. */
+  /**
+   * Stops drawing and frees the canvas. The views stay usable, and the element keeps its last
+   * frame. Calling it again does nothing.
+   */
   destroy(): void {
     const freed = release<bindings.Canvas>(this);
     if (!freed) return;
@@ -123,7 +132,7 @@ function canvas(owner: Canvas): bindings.Canvas {
   return inner<bindings.Canvas>(owner, 'Canvas');
 }
 
-/** @internal Where each panel of `layout` draws, four fractions after another. */
+/** @internal Flattens each panel's rect into four floats; the whole target where `at` is unset. */
 export function placed(layout: readonly Panel[]): Float32Array {
   return Float32Array.from(layout.flatMap(({ at }) => at ?? WHOLE));
 }

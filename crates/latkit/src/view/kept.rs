@@ -1,30 +1,33 @@
-//! The rows a drawing keeps whose pages it does not hold, by their place in its order: an
-//! open-addressed table whose buckets hold a place and its held row, `[NONE, NONE]` where empty, laid
-//! out three fifths full, any number of buckets. A table laid out from another takes out the rows that
-//! went and puts in those that came while it stays between three tenths and four fifths full: only
-//! their buckets, and the few after a row taken out that move back, change, so the end table's words
-//! change where rows did; past those it is laid out again, a little larger or smaller, never more
-//! than it must be. A probe for a place ends within a few buckets, on the GPU as here
-//! (`lib/ends.wesl`).
+//! The kept-row table: a drawing's kept rows, keyed by their place in its order.
+//!
+//! It is an open-addressed hash table with linear probing. Each bucket holds a place and its held
+//! row, `[NONE, NONE]` when empty. A new table is built three fifths full, with at least `LEAST`
+//! buckets and any count above that, not just powers of two. Updating from a previous table
+//! removes the rows that left and inserts those that came, as long as it stays between three
+//! tenths and four fifths full. Only their buckets, and the few after a removed row that shift
+//! back, change, so the end table's words change only where rows did. Past those bounds the table
+//! is rebuilt, slightly larger or smaller, never larger than needed. A lookup ends within a few
+//! buckets, on the GPU (`lib/ends.wesl`) as here.
 
 use std::sync::Arc;
 
 use crate::gpu::shaders as wgsl;
 
-/// Buckets a table has at least, however few rows it keeps.
+/// The fewest buckets a table has once it has any.
 const LEAST: usize = 64;
 const EMPTY: [u32; 2] = [wgsl::NONE, wgsl::NONE];
 
+/// A drawing's kept rows: buckets of `[place, held row]`, as the module docs describe.
 #[derive(Clone, Default, Debug, PartialEq)]
 pub(crate) struct KeptTable(Arc<[[u32; 2]]>);
 
 impl KeptTable {
-    /// The table of `rows`, each a place and its held row, laid out from `before`: where `before` has
-    /// room for them, its buckets with the places `gone` taken out and the rows `came` put in; else
-    /// laid out afresh.
+    /// The table of `rows`, each `[place, held row]`, updated from `before`. If `before`'s size
+    /// suits `rows`, its buckets are reused with places `gone` removed and rows `came` inserted;
+    /// otherwise the table is rebuilt.
     pub(crate) fn laid(before: &KeptTable, rows: &[[u32; 2]], gone: &[u32], came: &[[u32; 2]]) -> KeptTable {
         let buckets = before.0.len();
-        // The least table stays however few rows it keeps.
+        // A table of the fewest buckets is updated in place however few rows it keeps.
         if buckets > 0 && rows.len() * 5 <= buckets * 4 && (rows.len() * 10 >= buckets * 3 || buckets == LEAST) {
             let mut table = before.0.to_vec();
             for &d in gone {
@@ -45,7 +48,7 @@ impl KeptTable {
         KeptTable(table.into())
     }
 
-    /// The held row of place `d`, if it keeps it.
+    /// The held row of place `d`, if kept.
     pub(crate) fn held(&self, d: u32) -> Option<u32> {
         if self.0.is_empty() {
             return None;
@@ -66,8 +69,8 @@ impl KeptTable {
     }
 }
 
-/// The bucket a probe for place `d` starts at among `buckets`, as `lib/ends.wesl` finds it: its bits
-/// hashed.
+/// The bucket, of `buckets`, where a probe for place `d` starts: a hash of `d`'s bits. Must match
+/// `home` in `lib/ends.wesl`.
 fn home(d: u32, buckets: usize) -> usize {
     let mut h = d ^ (d >> 16);
     h = h.wrapping_mul(0x7feb_352d);
@@ -76,7 +79,7 @@ fn home(d: u32, buckets: usize) -> usize {
     (h ^ (h >> 16)) as usize % buckets
 }
 
-/// The bucket after `b`, the first after the last.
+/// The bucket after `b`, wrapping to 0.
 fn next(b: usize, buckets: usize) -> usize {
     if b + 1 == buckets { 0 } else { b + 1 }
 }
@@ -90,7 +93,7 @@ fn insert(table: &mut [[u32; 2]], row: [u32; 2]) {
     table[b] = row;
 }
 
-/// Takes place `d` out, moving back each row after it whose probe passed its bucket, so every probe
+/// Removes place `d`, shifting back each later row whose probe passed its bucket, so every probe
 /// still ends at the first empty bucket.
 fn remove(table: &mut [[u32; 2]], d: u32) {
     let mut hole = home(d, table.len());
@@ -107,7 +110,8 @@ fn remove(table: &mut [[u32; 2]], d: u32) {
         if place == wgsl::NONE {
             break;
         }
-        // A row whose probe starts after the hole, up to where it lies, stays: its probe never passed.
+        // A row whose probe starts after the hole and at or before its own bucket stays: its probe
+        // never passed the hole.
         let home = home(place, table.len());
         let stays = if hole <= b { hole < home && home <= b } else { hole < home || home <= b };
         if !stays {
@@ -124,19 +128,19 @@ mod tests {
 
     use super::*;
 
-    /// A stream of random numbers below `n`.
+    /// The next pseudo-random number below `n`, advancing `seed`.
     fn random(seed: &mut u64, n: u32) -> u32 {
         *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
         ((*seed >> 33) % u64::from(n)) as u32
     }
 
     #[test]
-    fn a_table_holds_every_row_kept_and_no_other() {
+    fn a_table_holds_every_kept_row_and_no_other() {
         let mut seed = 7;
         let mut kept: BTreeMap<u32, u32> = BTreeMap::new();
         let mut table = KeptTable::default();
         for round in 0..200 {
-            // Places come or go, each once a layout.
+            // Each round, places come or go, each at most once.
             let (mut gone, mut came) = (Vec::new(), Vec::new());
             for _ in 0..random(&mut seed, 40) {
                 let d = random(&mut seed, 5_000);
@@ -161,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_coming_and_going_change_the_buckets_near_them_alone() {
+    fn rows_coming_and_going_change_only_nearby_buckets() {
         let rows: Vec<[u32; 2]> = (0..1_000).map(|d| [d * 7, d]).collect();
         let table = KeptTable::laid(&KeptTable::default(), &rows, &[], &[]);
         let gone: Vec<u32> = (0..10).map(|d| d * 70).collect();
@@ -169,24 +173,24 @@ mod tests {
         let now: Vec<[u32; 2]> =
             rows.iter().filter(|r| !gone.contains(&r[0])).copied().chain(came.iter().copied()).collect();
         let next = KeptTable::laid(&table, &now, &gone, &came);
-        assert_eq!(next.buckets().len(), table.buckets().len(), "laid in place");
+        assert_eq!(next.buckets().len(), table.buckets().len(), "updated in place");
         let changed = table.buckets().iter().zip(next.buckets()).filter(|(a, b)| a != b).count();
         assert!(changed <= 60, "{changed} buckets changed for 20 rows that came or went");
     }
 
     #[test]
-    fn a_table_is_laid_out_again_past_four_fifths_full_and_under_three_tenths() {
+    fn a_table_is_rebuilt_past_four_fifths_full_and_under_three_tenths() {
         let rows = |n: u32| (0..n).map(|d| [d, d]).collect::<Vec<_>>();
         let small = KeptTable::laid(&KeptTable::default(), &rows(10), &[], &[]);
-        assert_eq!(small.buckets().len(), LEAST, "few rows, the least buckets");
+        assert_eq!(small.buckets().len(), LEAST, "few rows get the fewest buckets");
         let full = KeptTable::laid(&small, &rows(100), &[], &(10..100).map(|d| [d, d]).collect::<Vec<_>>());
-        assert_eq!(full.buckets().len(), 167, "past four fifths of 64, laid out three fifths full");
+        assert_eq!(full.buckets().len(), 167, "past four fifths of 64, rebuilt three fifths full");
         let more = KeptTable::laid(&full, &rows(130), &[], &(100..130).map(|d| [d, d]).collect::<Vec<_>>());
-        assert_eq!(more.buckets().len(), 167, "up to four fifths full, in place");
+        assert_eq!(more.buckets().len(), 167, "up to four fifths full, updated in place");
         let gone: Vec<u32> = (51..130).collect();
         assert_eq!(KeptTable::laid(&more, &rows(51), &gone, &[]).buckets().len(), 167, "three tenths, in place");
         let gone: Vec<u32> = (20..130).collect();
-        assert_eq!(KeptTable::laid(&more, &rows(20), &gone, &[]).buckets().len(), LEAST, "under three tenths");
+        assert_eq!(KeptTable::laid(&more, &rows(20), &gone, &[]).buckets().len(), LEAST, "under three tenths, rebuilt");
         let gone: Vec<u32> = (0..130).collect();
         assert_eq!(KeptTable::laid(&more, &[], &gone, &[]), KeptTable::default(), "no rows, no buckets");
     }

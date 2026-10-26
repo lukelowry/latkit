@@ -41,7 +41,8 @@ impl Colormaps {
         Colormaps { texture, view, layers: HashMap::new(), capacity: INITIAL_LAYERS, generation: 0 }
     }
 
-    /// The layer holding `colormap`, uploading it the first time.
+    /// The layer holding `colormap`, uploading it the first time. Errors once the device's texture
+    /// array layer limit is reached.
     pub(crate) fn layer(&mut self, device: &wgpu::Device, queue: &Queue, colormap: &Colormap) -> Result<u32> {
         let key = colormap.key();
         if let Some(&layer) = self.layers.get(&key) {

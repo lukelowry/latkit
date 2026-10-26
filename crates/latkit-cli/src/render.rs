@@ -1,6 +1,7 @@
-//! Rendering a job, and validating one: views of the scenes with the datasets, then a still picture,
-//! or a video of the frames handed to a sink. Validating reads, loads, and checks everything a render
-//! does, frames included, without a GPU; both change frames with [`apply`].
+//! Rendering and validating a job. Rendering creates a view of each scene over the datasets, then
+//! takes a still picture, or draws a video of the frames into a sink. Validating reads, loads, and
+//! checks every input a render does, including frames, without a GPU. Both apply frames with
+//! [`apply`].
 
 use std::path::{Path, PathBuf};
 
@@ -13,11 +14,11 @@ use crate::report::Report;
 use crate::sinks::{Commit, Images, Output, Raw, Y4m};
 use crate::{Failure, block};
 
-/// What a job reads before it draws, and the host that read it.
+/// A job's inputs, read before drawing, and the host that read them.
 struct Inputs {
     scenes: Vec<(PathBuf, Scene)>,
     data: Vec<Data>,
-    /// What every view fetches as it draws.
+    /// Tiles every view fetches as it draws.
     tiles: Vec<Tiles>,
     cameras: Vec<Camera>,
     fit: Fit,
@@ -42,7 +43,7 @@ impl Inputs {
         for (i, camera) in cameras.iter().enumerate() {
             if !camera.fits(scenes[i].1.space()) {
                 return Err(Failure::at(
-                    Error::invalid("the camera does not look at its scene's space"),
+                    Error::invalid("the camera does not match the space of its scene"),
                     &job.camera[i],
                 ));
             }
@@ -54,12 +55,13 @@ impl Inputs {
         Ok(inputs)
     }
 
-    /// What every view draws: each dataset, and the tiles.
+    /// The sources every view draws: each dataset, and the tiles.
     fn sources(&self) -> Vec<latkit::Source> {
         self.data.iter().map(latkit::Source::from).chain(self.tiles.iter().map(latkit::Source::from)).collect()
     }
 
-    /// A view of each scene, drawing every dataset and the tiles, looking where the job says.
+    /// Creates a view of each scene over every dataset and the tiles, with the job's insets, axis
+    /// coordinate, and camera or fit.
     fn views(&self, gpu: &Gpu, job: &Job) -> Result<Vec<View>, Failure> {
         let mut views = Vec::with_capacity(self.scenes.len());
         for (i, (path, scene)) in self.scenes.iter().enumerate() {
@@ -86,7 +88,7 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
     let gpu = block(job.deadline, Gpu::new())?;
     gpu.set_host(inputs.host.clone());
     let mut views = inputs.views(&gpu, job)?;
-    let output = job.output.as_deref().expect("render takes an output");
+    let output = job.output.as_deref().expect("render requires --output");
     let Some(path) = &job.frames else {
         let mut shot = job.shot();
         if let Some(elapsed) = job.elapsed {
@@ -115,7 +117,7 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
         return sequence.run(frames, images);
     }
     match format {
-        Format::Png | Format::Jpeg | Format::Webp => unreachable!("images write above"),
+        Format::Png | Format::Jpeg | Format::Webp => unreachable!("image formats are handled above"),
         Format::Rgba => sequence.run(frames, Raw::new(Output::create(output)?)),
         Format::Y4m => sequence.run(frames, Y4m::new(Output::create(output)?)),
         Format::Mp4 => {
@@ -128,7 +130,7 @@ pub(crate) fn render(job: &Job, report: &mut Report) -> Result<(), Failure> {
     }
 }
 
-/// A video of the frames file at `path`, drawn as each line says.
+/// A video of the frames file at `path`, one output frame per line.
 struct Sequence<'a> {
     job: &'a Job,
     path: &'a Path,
@@ -154,7 +156,7 @@ impl Sequence<'_> {
             self.report.progress(video.frames(), video.time());
         }
         if !any {
-            return Err(Failure::at(Error::invalid("the frames are empty"), path));
+            return Err(Failure::at(Error::invalid("the frames file has no frames"), path));
         }
         let frames = video.frames();
         block(job.deadline, video.finish()).map_err(|e| Failure::at(e, output))?.commit()?;
@@ -163,16 +165,16 @@ impl Sequence<'_> {
     }
 }
 
-/// Applies `frame`'s patches to the datasets they name, in order, which every view draws from its
-/// next frame, and checks the cameras it gives each view against that view's scene: whether it
-/// changed any dataset.
+/// Applies `frame`'s patches, in order, to the datasets they name. Every view draws the changes
+/// from its next frame. Also checks each per-view camera against its view's scene. Returns whether
+/// any dataset changed.
 fn apply(
     data: &[Data],
     scenes: &[(PathBuf, Scene)],
     frame: &Frame,
     patches: Vec<(Name, Patch)>,
 ) -> latkit::Result<bool> {
-    // One camera for every view looks through those it fits; one per view must fit its own.
+    // A single camera applies to the views it fits. A per-view camera must fit its own view.
     for (option, each) in [("camera", &frame.camera), ("fly", &frame.fly)] {
         let Some(Each::Each(cameras)) = each else { continue };
         for (i, camera) in cameras.iter().enumerate() {
@@ -182,7 +184,7 @@ fn apply(
                 (Some(_), None) => false,
             };
             if !fits {
-                return Err(Error::invalid("the camera does not look at its view's space").at(i).at(option));
+                return Err(Error::invalid("the camera does not match the space of its view").at(i).at(option));
             }
         }
     }
@@ -197,7 +199,7 @@ fn apply(
     Ok(changed)
 }
 
-/// Points every view where `frame` says.
+/// Applies `frame`'s axis coordinate, insets, orbit, cameras, and fits to every view.
 fn steer(views: &mut [View], frame: &Frame) {
     for (i, view) in views.iter_mut().enumerate() {
         if let Some(at) = frame.at {
@@ -221,8 +223,8 @@ fn steer(views: &mut [View], frame: &Frame) {
     }
 }
 
-/// Reads, loads, and checks everything `render` would, without a GPU: scenes against the datasets,
-/// cameras, fonts, and every frame applied in turn.
+/// Reads, loads, and checks every input `render` would, without a GPU: scenes against the
+/// datasets, cameras, fonts, and every frame applied in turn.
 pub(crate) fn validate(job: &Job) -> Result<(), Failure> {
     let inputs = Inputs::read(job)?;
     let Some(path) = &job.frames else { return Ok(()) };
@@ -237,5 +239,5 @@ pub(crate) fn validate(job: &Job) -> Result<(), Failure> {
             }
         }
     }
-    if any { Ok(()) } else { Err(Failure::at(Error::invalid("the frames are empty"), path)) }
+    if any { Ok(()) } else { Err(Failure::at(Error::invalid("the frames file has no frames"), path)) }
 }

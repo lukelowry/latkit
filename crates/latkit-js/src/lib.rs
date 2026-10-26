@@ -1,10 +1,11 @@
-//! The latkit npm package: data and views for the browser, over WebGPU.
+//! The WebAssembly binding behind the latkit npm package: data and views in the browser, over
+//! WebGPU.
 //!
-//! What crosses is bytes or JSON, in the forms `latkit` reads and writes. Patches cross as their byte
-//! frames, which the package's TypeScript writes itself; scenes, cameras, fits, queries, and rows go
-//! in as JSON, and events, hits, stats, and work come out as JSON, a view's events a batch at a time.
-//! A query's columns come out as typed arrays, copied once. What the page waits for crosses as a
-//! task it may cancel.
+//! Values cross as bytes or JSON, in the forms `latkit` reads and writes. Patches cross as byte
+//! frames, which the package's TypeScript writes. Scenes, cameras, fits, queries, and rows go in as
+//! JSON. Events, hits, stats, and work come out as JSON, with a view's events in batches. A query's
+//! columns come out as typed arrays, copied once. Asynchronous results cross as a cancellable
+//! `Task`.
 
 #![cfg(target_arch = "wasm32")]
 #![allow(unsafe_code, reason = "wasm-bindgen's generated glue")]
@@ -34,22 +35,22 @@ fn start() {
     console_error_panic_hook::set_once();
 }
 
-/// What `text` holds, in the JSON form latkit reads; or why not, at the path from `what`.
+/// Deserializes `text` from latkit's JSON form. Error paths are prefixed with `what`.
 fn json<T: serde::de::DeserializeOwned>(what: &str, text: &str) -> Result<T, Error> {
     latkit::from_json(text).map_err(|e| e.at(what).into())
 }
 
-/// `value` in the JSON form the npm package's types describe.
+/// Serializes `value` to the JSON form the npm package's types describe.
 fn to_json(value: &impl serde::Serialize) -> String {
-    serde_json::to_string(value).expect("view state serializes")
+    serde_json::to_string(value).expect("latkit values serialize to JSON")
 }
-/// Has views' jobs done by `run`: `(bytes: Uint8Array) => Promise<Uint8Array>`, the page's workers.
+/// Runs views' jobs with `run`, the page's workers: `(bytes: Uint8Array) => Promise<Uint8Array>`.
 #[wasm_bindgen(js_name = setJobs)]
 pub fn set_jobs(run: js_sys::Function) {
     latkit::host::Browser::set_jobs(run);
 }
 
-/// Does a job a view handed the page, in a worker: its answer's bytes.
+/// Runs a job a view handed to the page, in a worker, and returns the result's bytes.
 #[wasm_bindgen]
 pub fn job(bytes: &[u8]) -> Vec<u8> {
     latkit::host::Job::from_bytes(bytes.to_vec()).run()
@@ -61,8 +62,8 @@ pub fn module() -> JsValue {
     wasm_bindgen::module()
 }
 
-/// A CSS gradient through `map` (JSON), a catalog name or colors of your own, toward `direction`: the
-/// colors the GPU draws, a band each for a categorical map's categories.
+/// A CSS `linear-gradient` toward `direction` through `map`, given as JSON (a catalog name or
+/// custom colors), in the colors the GPU draws. A categorical map gets one band per category.
 #[wasm_bindgen(js_name = colormapCss)]
 pub fn colormap_css(map: &str, direction: &str) -> Result<String, Error> {
     let map: latkit::Colormap = json("colormap", map)?;

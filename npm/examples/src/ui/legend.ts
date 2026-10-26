@@ -2,7 +2,8 @@ import { colormapCss, type Colormap } from 'latkit';
 import { h } from './dom.js';
 import type { Stage } from './stage.js';
 
-/** A colormap ramp with its label, over the main view: at its foot, or its top over a plot's axes. */
+/** A colormap ramp and label over the main view. It sits at the bottom, or at the top (`'top'`) so
+ * it does not cover a plot's axes. */
 export class Legend {
   readonly #ramp = h('span', { class: 'ramp', 'aria-hidden': 'true' });
   readonly #label = h('span');
@@ -18,7 +19,7 @@ export class Legend {
     this.#label.textContent = label;
   }
 
-  /** Hides the legend, as while nothing it describes shows. */
+  /** Hides the legend, for example while nothing it describes is shown. */
   set hidden(hidden: boolean) {
     this.#element.hidden = hidden;
   }

@@ -1,12 +1,18 @@
-//! Shapes: what geometry fields become to draw. Every area's triangles, the point its label hangs from
-//! first; and on the earth every line's path, unwrapped across the antimeridian and bent with the
-//! globe. A table drawn whole is shaped a page of its field at a time, written beside it: a page keeps
-//! the shapes made of it before, and a page written over one keeps those of its rows not written, so a
-//! write shapes only the rows it wrote. A table drawn in part is shaped a page of its order at a time,
-//! the first time the page is drawn: a row whose geometry did not change keeps its shape however its
-//! pages come and go. Triangles that do not fit the frame's budget are made in a job, a page whole
-//! where every row of it needs them, their rows drawing nothing until it lands; bending a path is
-//! cheap, and done at once. Vector tiles bring their shapes, made in the job that decodes them.
+//! Shapes: the drawable forms of geometry fields.
+//!
+//! Each area becomes triangles, preceded by its label point. On the earth, each line's path is
+//! unwrapped across the antimeridian and bent to follow the globe.
+//!
+//! A table drawn whole is shaped page by page of its field, into a field beside it. A page keeps
+//! the shapes made from it before, and a page written over another keeps the shapes of its rows
+//! not written, so a write reshapes only the rows it wrote. A paged table is shaped page by page of
+//! its order, the first time each page draws. A row whose geometry did not change keeps its shape
+//! as its pages come and go.
+//!
+//! Triangulation that does not fit the frame's budget runs in a job; a page whose every row needs
+//! shaping goes to the job whole. Rows waiting on a job draw nothing until it finishes. Bending a
+//! path is cheap and done at once. Vector tiles bring their own shapes, made in the job that
+//! decodes them.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -20,14 +26,14 @@ use crate::host::{Job, Shaping, shapes_answer};
 use crate::tiles::TileSets;
 use crate::{Mark, Pending, Scene, Space};
 
-/// Microseconds a point takes to triangulate, by estimate.
+/// Estimated microseconds to triangulate one point.
 const TRIANGULATE: f64 = 0.5;
 
-/// Rows to shape one at a time: each row, its id, and the digest of its geometry.
+/// Rows to shape individually: each row index, its id, and its geometry digest.
 type Rows = Vec<(usize, Id, u64)>;
 
-/// What to shape: pages of the field every row of which needs shaping, by id with their values; and
-/// rows one at a time.
+/// Work left to shape: whole pages of the field where every row needs shaping (by page id, with
+/// their values), and individual rows.
 #[derive(Default)]
 struct Missing {
     pages: Vec<(PageId, Values)>,
@@ -39,14 +45,14 @@ impl Missing {
         self.pages.is_empty() && self.rows.is_empty()
     }
 
-    /// How many points it shapes.
+    /// The number of points to shape.
     fn points(&self, column: &Column) -> usize {
         let pages: usize = self.pages.iter().map(|(_, values)| values.geometry().map_or(0, Geometry::points)).sum();
         pages + self.rows.iter().map(|&(row, ..)| points_of(column, row)).sum::<usize>()
     }
 
-    /// What it shapes as the parts of a job, each a geometry column: each page whole, then the rows;
-    /// and what each part is.
+    /// Splits the work into a job's parts, each a geometry column: each whole page, then one part
+    /// holding all the rows. Also returns what each part shapes.
     fn parts(self, column: &Column) -> (Vec<Values>, Vec<Asked>) {
         let (mut parts, mut asked) = (Vec::new(), Vec::new());
         for (id, values) in self.pages {
@@ -62,16 +68,16 @@ impl Missing {
     }
 }
 
-/// What a part of a job shapes: a page of the field whole, by its id; or rows, by id, each with the
-/// digest of its geometry.
+/// What one part of a job shapes: a whole page of the field, by page id; or rows, by id, each with
+/// its geometry digest.
 enum Asked {
     Page(PageId),
     Rows(Vec<(Id, u64)>),
 }
 
-/// Shapes made since the last whole set: pages whole, by the id of the page of the field each was
-/// made of; and rows, by id, with the digest of the geometry each was made from and where among the
-/// parts its shape lies.
+/// Shapes made since the last complete set: whole pages, by the id of the field page each was made
+/// from; and rows, by id, each with the geometry digest it was made from and its part and index in
+/// `parts`.
 #[derive(Default)]
 struct Landed {
     pages: FxHashMap<PageId, Page>,
@@ -80,7 +86,7 @@ struct Landed {
 }
 
 impl Landed {
-    /// Takes `shapes`, the shapes of what `asked` names, part by part.
+    /// Stores `shapes`, the shapes of each part `asked` names.
     fn land(&mut self, asked: Vec<Asked>, shapes: Vec<Values>) {
         for (asked, shapes) in asked.into_iter().zip(shapes) {
             match asked {
@@ -98,7 +104,7 @@ impl Landed {
         }
     }
 
-    /// Where the shape of the row with `id` lies, made from geometry whose digest is `digest`.
+    /// Where the shape of the row with `id` lies, if made from geometry with digest `digest`.
     fn row(&self, id: &Id, digest: u64) -> Option<(&Geometry, usize)> {
         let &(made, part, at) = self.rows.get(id)?;
         (made == digest).then_some(())?;
@@ -106,7 +112,7 @@ impl Landed {
     }
 }
 
-/// A field to shape: its dataset, table, and field, and how.
+/// A field to shape: its dataset, table, field, and shaping.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 struct Want {
     data: Name,
@@ -122,30 +128,30 @@ impl Want {
     }
 }
 
-/// The shapes of a table drawn in part, a page of its order at a time: each page the shapes of the
-/// rows of one page of the order, in its order, with an id of its own; and the shapes of the rows kept
-/// whose pages are not drawn, a row at a time, by their place in the order.
+/// The shapes of a paged table, per page of its order: each page holds its rows' shapes in order,
+/// with a page id of its own. Kept rows whose pages are not drawn are shaped individually, by their
+/// place in the order.
 pub(crate) struct PagedShapes {
-    /// The order whose pages these are.
+    /// The id of the order these pages belong to.
     pub(crate) order: u64,
-    /// Bumps whenever a page or a row kept is shaped.
+    /// Bumps whenever a page or kept row is shaped.
     pub(crate) version: Version,
     pub(crate) pages: FxHashMap<u32, ShapedPage>,
     pub(crate) kept: FxHashMap<u32, Values>,
-    /// How deep the shapes' geometry is.
+    /// The nesting depth of the shapes' geometry.
     pub(crate) depth: u8,
 }
 
-/// One page of an order, shaped.
+/// One shaped page of an order.
 pub(crate) struct ShapedPage {
     pub(crate) id: PageId,
     pub(crate) shapes: Values,
-    /// Whether every row holds its shape: none waits for a job.
+    /// Whether every row has its shape, with none waiting for a job.
     whole: bool,
 }
 
-/// What a table drawn in part was shaped from: the order, the table and the field its pages were made
-/// from, and the pages made.
+/// What a paged table's shapes were made from: the order, the source table and field column, and
+/// the shaped pages.
 struct Paging {
     order: Order,
     source: Table,
@@ -154,8 +160,8 @@ struct Paging {
 }
 
 impl Paging {
-    /// Where a page made whole holds the shape of the row with `id`, when its geometry's digest was
-    /// `digest`: the page's geometry and the row's place in it.
+    /// Where a complete page holds the shape of the row with `id`, if the row's geometry digest is
+    /// still `digest`: the page's geometry and the row's index in it.
     fn held(&self, id: &Id, digest: u64) -> Option<(&Geometry, usize)> {
         let row = self.source.row(id.as_ref())?;
         let (values, i) = self.column.at(row).filter(|&(values, i)| values.is_valid(i))?;
@@ -168,25 +174,26 @@ impl Paging {
     }
 }
 
-/// One field's shapes: drawn whole, the last whole set made, the derived field written, and the shapes
-/// made but not yet written; drawn in part, its pages, and those of the order drawn before; and a job
-/// under way.
+/// One field's shapes and any pending job. Drawn whole: the last complete set, the derived
+/// field written, and shapes made but not yet written. Paged: its pages and the previous order's.
 #[derive(Default)]
 struct Shaped {
-    /// The source table, its field, and the derived column the shapes were last wholly made from.
+    /// The source table, its field column, and the derived column from the last time every row
+    /// was shaped.
     made: Option<(Table, Column, Column)>,
-    /// The derived field written last, and the stamp of what it was written from.
+    /// The derived field written last.
     field: Option<Field>,
+    /// The stamp of the inputs `field` was written from.
     stamp: u64,
-    /// Shapes made since the last whole set.
+    /// Shapes made since the last complete set.
     landed: Landed,
-    /// Drawn in part, its pages; and those of the order drawn before, whose rows alike pages made
-    /// afresh take their shapes from.
+    /// Paged: its shaped pages.
     paging: Option<Paging>,
+    /// The pages of the previous order. New pages copy the shapes of unchanged rows from it.
     before: Option<Paging>,
-    /// A job under way, with what each of its parts shapes.
+    /// A pending job, with what each of its parts shapes.
     working: Option<(Pending<Vec<u8>>, Vec<Asked>)>,
-    /// Bumps whenever a job's answer lands.
+    /// Bumps whenever a job's answer arrives.
     landings: u64,
 }
 
@@ -197,8 +204,8 @@ pub(crate) struct Shapes {
 }
 
 impl Shapes {
-    /// Brings the shapes up to `input`, taking those `tiles` brought as they are and handing `jobs`
-    /// what the frame cannot afford; whether its tables changed.
+    /// Updates the shapes to `input`, using as is any shapes the vector tiles in `tiles` bring, and
+    /// sending work the frame cannot afford to `jobs`. Returns whether its tables changed.
     pub(crate) fn update(&mut self, input: &Input<'_>, tiles: &TileSets, jobs: &mut Jobs<'_>) -> bool {
         let wants = wants(input);
         self.shaped.retain(|want, _| wants.contains(want));
@@ -206,7 +213,7 @@ impl Shapes {
         for want in &wants {
             let Some(source) = input.data(&want.data).and_then(|d| d.table(&want.table)) else { continue };
             let shaped = self.shaped.entry(want.clone()).or_default();
-            // Vector tiles bring their shapes, row for row.
+            // Vector tiles bring their own shapes, row for row.
             let brought = tiles.shaped(&want.data).and_then(|d| d.table(&want.table)?.field_named(&want.derived()));
             if let Some(field @ Field::Values(column, _)) = brought
                 && column.len() == source.len()
@@ -236,22 +243,22 @@ impl Shapes {
         changed
     }
 
-    /// Whether a job shapes rows: until it lands, they draw nothing.
+    /// Whether a shape job is pending. The rows it shapes draw nothing until it finishes.
     pub(crate) fn busy(&self) -> bool {
         self.shaped.values().any(|s| s.working.is_some())
     }
 
-    /// Whether every row drawn holds its shape.
+    /// Whether every drawn row has its shape.
     pub(crate) fn complete(&self) -> bool {
         !self.busy()
     }
 
-    /// The tables beside those drawn whole, each holding the fields shaped from it.
+    /// The derived tables beside tables drawn whole, each holding the fields shaped from it.
     pub(crate) fn tables(&self) -> &Tables {
         &self.tables
     }
 
-    /// The shapes of table `table` of dataset `data` drawn in part, by the field each is written as.
+    /// The shapes of paged table `table` of dataset `data`, each with its derived field's name.
     pub(crate) fn paged(&self, data: &Name, table: &Name) -> Vec<(Name, &PagedShapes)> {
         self.shaped
             .iter()
@@ -261,7 +268,7 @@ impl Shapes {
     }
 }
 
-/// What mark `mark` shapes, and how: an area its polygons, and on the earth a line its paths.
+/// The field mark `mark` shapes, and how: an area's polygons, or on the earth a line's paths.
 fn shaping_of(mark: &Mark, earth: bool) -> Option<(Name, Shaping)> {
     match mark {
         Mark::Areas(areas) => Some((areas.field(), Shaping::Triangles { earth })),
@@ -270,7 +277,7 @@ fn shaping_of(mark: &Mark, earth: bool) -> Option<(Name, Shaping)> {
     }
 }
 
-/// The fields of table `table` of dataset `data` the scene's marks shape, and how, each once.
+/// The fields of table `table` of dataset `data` that the scene's marks shape, and how, each once.
 pub(crate) fn shapings(scene: &Scene, data: &Name, table: &Name) -> Vec<(Name, Shaping)> {
     let earth = matches!(scene.space, Space::Earth(_));
     let mut shapings = Vec::new();
@@ -298,8 +305,8 @@ fn wants(input: &Input<'_>) -> Vec<Want> {
 }
 
 impl Shaped {
-    /// Brings the shapes up to `source`, drawn in part as `paged` says or else whole; whether they
-    /// changed.
+    /// Updates the shapes to `source`: as a paged table when `paged` is given, else drawn whole.
+    /// Returns whether they changed.
     fn update(&mut self, want: &Want, source: &Table, paged: Option<&Paged>, jobs: &mut Jobs<'_>) -> bool {
         if let Some((pending, _)) = &self.working
             && let Some(answer) = pending.take()
@@ -316,12 +323,12 @@ impl Shaped {
             return self.forget();
         };
         if let Some(paged) = paged {
-            // Should it draw whole again, its field is written afresh.
+            // If it draws whole again later, its field is rewritten from scratch.
             let had = self.field.take().is_some();
             self.stamp = 0;
             return self.update_paged(want, source, column, depth, paged, jobs) || had;
         }
-        // Drawn whole again: rows alike take their shapes from the pages drawn in part.
+        // Drawn whole again: unchanged rows take their shapes from the paged shapes.
         let had = self.paging.is_some();
         if had {
             self.before = self.paging.take();
@@ -329,21 +336,21 @@ impl Shaped {
         self.update_whole(want, source, column, *version, depth, jobs) || had
     }
 
-    /// Takes `field` as its shapes, made elsewhere; whether they changed.
+    /// Uses `field`, made elsewhere (by vector tiles), as its shapes. Returns whether they changed.
     fn take(&mut self, field: &Field) -> bool {
         let changed = self.field.as_ref().is_none_or(|f| f.version() != field.version());
         *self = Shaped { field: Some(field.clone()), ..Shaped::default() };
         changed
     }
 
-    /// Forgets what it shaped, its field no longer shapes; whether it had shaped anything.
+    /// Drops its shapes once its field no longer needs shaping. Returns whether it had any.
     fn forget(&mut self) -> bool {
         let had = self.field.is_some() || self.paging.is_some();
         (self.field, self.paging, self.before, self.stamp) = (None, None, None, 0);
         had
     }
 
-    /// Brings the shapes of a table drawn whole up to `source`; whether the derived field changed.
+    /// Updates the shapes of a table drawn whole to `source`; returns whether its field changed.
     fn update_whole(
         &mut self,
         want: &Want,
@@ -359,7 +366,7 @@ impl Shaped {
         }
         self.stamp = stamp;
         let (mut derived, mut missing) = self.build(want, source, column, depth);
-        // Shapes made on the frame land at once, and the column is made again with them.
+        // Shapes made on the frame apply at once; rebuild the column with them.
         if !missing.is_empty() {
             match self.shape_now(want, column, missing, jobs) {
                 Ok(()) => (derived, missing) = self.build(want, source, column, depth),
@@ -374,13 +381,13 @@ impl Shaped {
             return true;
         }
         self.ask(want, column, missing, jobs);
-        // Until the job lands, its rows draw nothing and the rest draw as they were.
+        // Until the job finishes, its rows draw nothing and the rest draw unchanged.
         self.field = Some(Field::Values(derived, Version::next()));
         true
     }
 
-    /// Brings the shapes of a table drawn in part up to `source`, making each page `paged` draws the
-    /// first time it is drawn, and again once rows it waited on land; whether a page was made.
+    /// Updates the shapes of a paged table to `source`. Shapes each page `paged` draws the first
+    /// time it draws, and again once the rows it waited on arrive. Returns whether a page was made.
     fn update_paged(
         &mut self,
         want: &Want,
@@ -391,7 +398,8 @@ impl Shaped {
         jobs: &mut Jobs<'_>,
     ) -> bool {
         let order = &paged.order;
-        // Another order: its pages are made afresh, rows alike taking their shapes from the last one's.
+        // A new order: its pages are made from scratch, copying unchanged rows' shapes from the
+        // previous order's pages.
         if self.paging.as_ref().is_none_or(|p| p.shapes.order != order.id()) {
             let shapes = PagedShapes {
                 order: order.id(),
@@ -405,7 +413,7 @@ impl Shaped {
         }
         let paging = self.paging.as_mut().expect("paged");
         paging.order = order.clone();
-        // The pages rows written since draw in are made again, and those rows kept shaped again.
+        // Remake the pages holding rows written since, and reshape those rows where kept.
         if !paging.column.shares(column) {
             let written = column.written_since(&paging.column);
             for &row in written.iter().filter(|&&row| row < order.len() as usize) {
@@ -418,8 +426,8 @@ impl Shaped {
             (paging.source, paging.column) = (source.clone(), column.clone());
         }
         paging.shapes.kept.retain(|d, _| paged.kept.binary_search(d).is_ok());
-        // Pages drawn that were not made, or that wait on rows no job is shaping now; and rows kept
-        // not shaped yet, while no job is.
+        // Make drawn pages not made yet, or waiting on rows while no job runs; and, while no job
+        // runs, shape kept rows not shaped yet.
         let running = self.working.is_some();
         let made = &paging.shapes.pages;
         let make: Vec<u32> =
@@ -434,7 +442,7 @@ impl Shaped {
             return false;
         }
         let (mut made, mut kept, mut missing) = self.make_paged(want, order, &make, &keep, source, column, depth);
-        // Shapes made on the frame land at once, and the pages are made again with them.
+        // Shapes made on the frame apply at once; remake the pages with them.
         if !missing.rows.is_empty() {
             match self.shape_now(want, column, missing, jobs) {
                 Ok(()) => (made, kept, missing) = self.make_paged(want, order, &make, &keep, source, column, depth),
@@ -450,8 +458,8 @@ impl Shaped {
         }
         paging.shapes.kept.extend(kept);
         paging.shapes.version = Version::next();
-        // Every page drawn whole and no job under way: what landed is in its pages, and the order
-        // before has served the pages made afresh.
+        // Every page complete and no job pending: the pages hold every shape that arrived, and the
+        // previous order is no longer needed.
         if self.working.is_none() && paging.shapes.pages.values().all(|page| page.whole) {
             self.landed = Landed::default();
             self.before = None;
@@ -459,8 +467,8 @@ impl Shaped {
         true
     }
 
-    /// Pages `make` of `order` shaped, each with whether it is whole; rows kept `keep`, by their place
-    /// in the order, each shaped; and the rows left to shape.
+    /// Shapes pages `make` of `order`, each with whether it is complete, and kept rows `keep` (by
+    /// place in the order). Also returns the rows left to shape.
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn make_paged(
         &self,
@@ -490,7 +498,7 @@ impl Shaped {
         (made, kept, missing)
     }
 
-    /// Shapes `missing` on the frame, if they fit what is left of its budget; else hands them back.
+    /// Shapes `missing` on the frame if it fits the rest of the budget; else returns it.
     fn shape_now(
         &mut self,
         want: &Want,
@@ -507,7 +515,7 @@ impl Shaped {
         Ok(())
     }
 
-    /// Asks a job to shape `missing`, unless one is under way: what it leaves waits for the next.
+    /// Starts a job to shape `missing`, unless one is pending; a later update then retries.
     fn ask(&mut self, want: &Want, column: &Column, missing: Missing, jobs: &mut Jobs<'_>) {
         if self.working.is_some() {
             return;
@@ -516,12 +524,12 @@ impl Shaped {
         self.working = Some((jobs.spawn(Job::shapes(want.shaping, &parts)), asked));
     }
 
-    /// The derived column for `column` of `source`, page by page, and what is left to shape. A page
-    /// keeps the shapes made of it before, or landed for it; a page written over one shaped keeps
-    /// those of its rows not written, as does a page at its place in the last whole set those of its
-    /// rows holding the same. A page none of whose rows can keep a shape is shaped whole; the rows of
-    /// others take a shape landed or made before while their geometry is the same, and are left to
-    /// shape otherwise.
+    /// Builds the derived column for `column` of `source`, page by page, and returns what is left
+    /// to shape. A page reuses the shapes made from it before, or that arrived for it. A page
+    /// written over a shaped page keeps the shapes of its rows not written, and a page at the same
+    /// place in the last complete set keeps those of its unchanged rows. A page none of whose rows
+    /// can reuse a shape is shaped whole. Otherwise each row reuses a shape made from the same
+    /// geometry, or is left to shape.
     fn build(&self, want: &Want, source: &Table, column: &Column, depth: u8) -> (Column, Missing) {
         let made_pages: FxHashMap<PageId, &Page> = self
             .made
@@ -529,10 +537,11 @@ impl Shaped {
             .flat_map(|(_, field, derived)| field.pages().iter().map(|p| p.id).zip(derived.pages()))
             .collect();
         let depth = want.shaping.depth(depth);
-        // Rows below this many are the last whole set's, at the same places: rows since were only
-        // written, or added after them.
+        // Rows below `aligned` are at the same places as in the last complete set: since then they
+        // were only written over, or rows were appended after them.
         let aligned = self.made.as_ref().map_or(0, |(table, ..)| aligned(source, table));
-        // Whether rows past them could take a shape made before only by being shaped.
+        // Whether row `row` may find a shape made before: it is aligned, or rows moved since the
+        // last complete set (`aligned` is 0), so a lookup by id may find one.
         let found = |row: usize| row < aligned || self.made.is_some() && aligned == 0;
         let fresh = self.before.is_none() && self.landed.rows.is_empty() && want.shaping != Shaping::Path;
         let mut pages: Vec<Page> = Vec::with_capacity(column.pages().len());
@@ -550,7 +559,7 @@ impl Shaped {
                 pages.push(Page::new(Values::of_geometry(GeometryBuilder::new(depth).finish())));
                 continue;
             };
-            // A path page that needs no bending is its own shape: shared, nothing uploads again.
+            // A path page needing no bending is its own shape; sharing it means no new upload.
             if want.shaping == Shaping::Path && !bends(geometry) {
                 pages.push(page.clone());
                 continue;
@@ -564,7 +573,7 @@ impl Shaped {
                 Some((&derived.pages().get(p)?.values, same))
             });
             if fresh && kept.is_none() && !found(start) {
-                // Every row is shaped: the page whole, drawing nothing until it lands.
+                // Every row needs shaping: shape the page whole; it draws nothing until then.
                 let mut empty = GeometryBuilder::new(depth);
                 (0..len).for_each(|_| empty.push_empty());
                 pages.push(Page::new(Values::of_geometry(empty.finish())));
@@ -592,8 +601,8 @@ impl Shaped {
         (Column::of_pages(pages, &like), missing)
     }
 
-    /// The shapes made of a page `page` was written over, a few writes back at most, with whether
-    /// each of its rows keeps its shape: those not written since.
+    /// The shapes of the page that `page` was written over, searching back through its recorded
+    /// writes (a few at most), with whether each row keeps its shape: those not written since.
     fn over<'a>(&'a self, page: &Page, made: &FxHashMap<PageId, &'a Page>) -> Option<(&'a Values, Vec<bool>)> {
         let mut written: Vec<u32> = Vec::new();
         let mut at = page.written.as_deref();
@@ -614,8 +623,8 @@ impl Shaped {
         None
     }
 
-    /// Rows `rows` of `source` shaped, in that order, as [`shape`](Shaped::shape) finds them; and the
-    /// rows left to shape.
+    /// Shapes rows `rows` of `source` in that order, as [`shape`](Shaped::shape) does, and returns
+    /// the rows left to shape.
     fn make_rows(&self, want: &Want, rows: &[u32], source: &Table, column: &Column, depth: u8) -> (Values, Rows) {
         let mut shapes = GeometryBuilder::new(want.shaping.depth(depth));
         let mut missing = Vec::new();
@@ -629,9 +638,9 @@ impl Shaped {
         (Values::of_geometry(shapes.finish()), missing)
     }
 
-    /// Writes the shape of row `row`, with `id`, whose geometry is value `at.1` of `at.0`: one landed
-    /// or made before while its geometry is the same, bent at once for a path, or else empty and the
-    /// row left to shape in `missing`.
+    /// Writes the shape of row `row` (with `id`), whose geometry is value `i` of `values`. Reuses a
+    /// shape that arrived or was made before from the same geometry; bends a path at once; else
+    /// writes an empty shape and adds the row to `missing`.
     fn shape(
         &self,
         want: &Want,
@@ -649,7 +658,7 @@ impl Shaped {
         if let Some((landed, at)) = self.landed.row(&id, digest).or_else(|| self.kept(&id, digest)) {
             shapes.push_from(landed, at);
         } else if want.shaping == Shaping::Path {
-            // Bending is cheap, so done here; rows that need none keep their geometry.
+            // Bending is cheap, so it runs here; rows needing none keep their geometry.
             match values.get(i).and_then(|v| want.shaping.shape(&v)) {
                 Some(shape) => {
                     shapes.push_value(&shape);
@@ -662,14 +671,14 @@ impl Shaped {
         }
     }
 
-    /// Where a shape made before holds the row with `id`, when its geometry's digest was `digest`: in
-    /// the last whole set, or in a page made whole of the order drawn in part before.
+    /// Where an earlier shape of the row with `id` lies, if made from geometry with digest
+    /// `digest`: in the last complete set, or in a complete page of the previous paged order.
     fn kept(&self, id: &Id, digest: u64) -> Option<(&Geometry, usize)> {
         self.whole(id, digest).or_else(|| self.before.as_ref()?.held(id, digest))
     }
 
-    /// Where the last whole set holds the shape of the row with `id`, when its geometry's digest was
-    /// `digest`: the derived page's geometry and the row's place in it.
+    /// Where the last complete set holds the shape of the row with `id`, if made from geometry with
+    /// digest `digest`: the derived page's geometry and the row's index in it.
     fn whole(&self, id: &Id, digest: u64) -> Option<(&Geometry, usize)> {
         let (table, field, derived) = self.made.as_ref()?;
         let row = table.row(id.as_ref())?;
@@ -682,8 +691,8 @@ impl Shaped {
     }
 }
 
-/// How many leading rows of `now` are those of `then` at the same places: every row where none came
-/// or went, those `then` held where rows were only added after them, else none.
+/// How many leading rows of `now` are `then`'s rows at the same places: all of them if no rows came
+/// or went, `then`'s rows if rows were only appended after them, else 0.
 fn aligned(now: &Table, then: &Table) -> usize {
     if now.structure == then.structure {
         return now.len();
@@ -695,8 +704,8 @@ fn aligned(now: &Table, then: &Table) -> usize {
     }
 }
 
-/// Whether any two coordinates of a row of `geometry` lie farther apart than an earth path's step: a
-/// page with none needs no bending.
+/// Whether any two consecutive coordinates of `geometry` lie farther apart than an earth path's
+/// step. A page with none needs no bending.
 fn bends(geometry: &Geometry) -> bool {
     let step = crate::geo::shapes::EARTH_STEP;
     let coords = geometry.coords();
@@ -733,12 +742,12 @@ mod tests {
 
     type Ring = Vec<[f64; 2]>;
 
-    /// A square a unit across at `x`.
+    /// A unit square at `x`.
     fn square(x: f64) -> Vec<Ring> {
         vec![vec![[x, 0.0], [x + 1.0, 0.0], [x + 1.0, 1.0], [x, 1.0], [x, 0.0]]]
     }
 
-    /// The pages made of the shapes of `shapes`' one table drawn in part, and their ids.
+    /// The shaped pages of the one paged table in `shapes`, with their ids, by page.
     fn made(shapes: &Shapes) -> Vec<(u32, PageId)> {
         let paged = shapes.paged(&"map".into(), &"Zone".into());
         let mut pages: Vec<(u32, PageId)> = paged[0].1.pages.iter().map(|(&page, made)| (page, made.id)).collect();
@@ -746,7 +755,7 @@ mod tests {
         pages
     }
 
-    /// The derived column of `shapes`' one table drawn whole.
+    /// The derived column of the one table drawn whole in `shapes`.
     fn derived(shapes: &Shapes) -> Column {
         match shapes.tables().get(&("map".into(), "Zone".into())).and_then(|t| t.field_named("geometry.triangles")) {
             Some(Field::Values(column, _)) => column.clone(),
@@ -755,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn a_table_drawn_in_part_is_shaped_a_page_drawn_at_a_time() {
+    fn a_paged_table_shapes_only_the_pages_it_draws() {
         let n = 3 * PAGE_ROWS as usize;
         let data = Data::new("map");
         let squares: Vec<Vec<Ring>> = (0..n).map(|i| square(i as f64)).collect();
@@ -787,22 +796,22 @@ mod tests {
         let page = &paged[0].1.pages[&1];
         assert_eq!(page.shapes.len(), PAGE_ROWS as usize);
         let triangles = page.shapes.geometry().expect("triangles").row_coords(0).len();
-        assert!(triangles >= 3, "its rows' triangles, in the order's order: {triangles} points");
+        assert!(triangles >= 3, "its rows' triangles, in draw order: {triangles} points");
         // Drawing another page shapes it alone; the first keeps its shapes.
         update(&mut shapes, &data.snapshot(), vec![1, 2]);
         let second = made(&shapes);
         assert_eq!((second.len(), second[0]), (2, first[0]));
-        // A write to a row drawn in page 2 shapes that page again, and only it.
+        // A write to a row on page 2 reshapes only that page.
         let row = u64::from(order.source(2 * PAGE_ROWS + 5));
         data.apply(Table::new("Zone", vec![row]).field("geometry", vec![square(-9.0)])).expect("valid");
         update(&mut shapes, &data.snapshot(), vec![1, 2]);
         let third = made(&shapes);
-        assert_eq!(third[0], second[0], "page 1 holds no row written");
+        assert_eq!(third[0], second[0], "page 1 has no written rows");
         assert_ne!(third[1].1, second[1].1, "page 2 is shaped again");
     }
 
     #[test]
-    fn a_table_drawn_whole_lands_its_shapes_a_page_at_a_time() {
+    fn a_whole_table_shapes_in_a_job_and_reshapes_only_written_rows() {
         let n = 2 * PAGE_ROWS as usize + 10;
         let data = Data::new("map");
         let squares: Vec<Vec<Ring>> = (0..n).map(|i| square(i as f64)).collect();
@@ -810,7 +819,7 @@ mod tests {
         let scene = Scene::new(Plane::default()).draw(Areas::of("map", "Zone"));
         let (counters, errors) = (Counters::default(), Arc::new(Mutex::new(Vec::new())));
         let mut shapes = Shapes::default();
-        // No budget on the frame: every shape is made in a job, which lands by the next update.
+        // No frame budget: every shape is made in a job, which finishes by the next update.
         let update = |shapes: &mut Shapes, data: &Data| {
             let data = data.snapshot();
             let input = Input {
@@ -829,23 +838,23 @@ mod tests {
         };
         assert!(update(&mut shapes, &data));
         assert!(shapes.busy(), "a job shapes them");
-        assert_eq!(points(&derived(&shapes), 3), 0, "until it lands, rows draw nothing");
+        assert_eq!(points(&derived(&shapes), 3), 0, "until the job finishes, rows draw nothing");
         assert!(update(&mut shapes, &data));
         let whole = derived(&shapes);
         assert!(!shapes.busy());
         assert_eq!(whole.pages().len(), 3);
         assert!((0..n).all(|row| points(&whole, row) >= 4), "every row holds its label point and triangles");
-        // A write to one row shapes it alone: the other pages keep theirs, and its page the shapes of
-        // the rows not written.
+        // A write to one row reshapes only it: other pages keep their shapes, and its page keeps
+        // those of the rows not written.
         let row = PAGE_ROWS as usize + 7;
         data.apply(Table::new("Zone", vec![row as u64]).field("geometry", vec![square(-9.0)])).expect("valid");
         assert!(update(&mut shapes, &data));
         let written = derived(&shapes);
         assert_eq!(written.pages()[0].id, whole.pages()[0].id);
         assert_eq!(written.pages()[2].id, whole.pages()[2].id);
-        assert_eq!(points(&written, row), 0, "the row written waits for its job");
-        assert!(points(&written, row + 1) >= 4, "the rest of its page keeps theirs");
+        assert_eq!(points(&written, row), 0, "the written row draws nothing until its job finishes");
+        assert!(points(&written, row + 1) >= 4, "the rest of its page keeps their shapes");
         assert!(update(&mut shapes, &data));
-        assert!(points(&derived(&shapes), row) >= 4, "and lands");
+        assert!(points(&derived(&shapes), row) >= 4, "then its shapes arrive");
     }
 }

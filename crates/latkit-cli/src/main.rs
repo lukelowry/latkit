@@ -1,5 +1,5 @@
-//! The latkit command line: scenes and datasets in the library's JSON (or its bytes), drawn by the
-//! library natively into images, image sequences, raw frames, and videos.
+//! The latkit command line. It renders scenes and datasets, given as the library's JSON or bytes,
+//! natively into images, image sequences, raw frames, and videos.
 
 mod args;
 mod inputs;
@@ -45,7 +45,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Why a command failed: the library's error, and the file it came from.
+/// A command's failure: the library's error, and the file it came from, if any.
 #[derive(Debug)]
 pub(crate) struct Failure {
     pub(crate) error: Error,
@@ -53,7 +53,7 @@ pub(crate) struct Failure {
 }
 
 impl Failure {
-    /// `error`, from the file at `path`.
+    /// `error`, caused by the file at `path`.
     pub(crate) fn at(error: Error, path: &Path) -> Failure {
         Failure { error, source: Some(path.to_string_lossy().into_owned()) }
     }
@@ -70,8 +70,8 @@ impl From<Error> for Failure {
     }
 }
 
-/// Every dataset's description as JSON on stdout: its name, axis and span, and each table's rows and
-/// fields.
+/// Prints every dataset's description as JSON to stdout: its name, axis and span, and each table's
+/// rows and fields.
 fn inspect(sources: &[Source], deadline: Duration) -> Result<(), Failure> {
     let host = latkit::host::Native::new();
     let mut all = Vec::with_capacity(sources.len());
@@ -83,17 +83,17 @@ fn inspect(sources: &[Source], deadline: Duration) -> Result<(), Failure> {
     writeln!(out).map_err(|e| Failure::io(&e, Path::new("-")))
 }
 
-/// The JSON Schema of every input on stdout, or of `input`: its definition, with every definition
-/// it is built of.
+/// Prints the JSON Schema of every input to stdout. With `input`, the root `$ref` points to that
+/// input's definition.
 fn schema(input: Option<Input>) -> Result<(), Failure> {
     let mut schemas = latkit::schemas();
     let frames = latkit::schema::<inputs::Frame>();
-    let defs = schemas["$defs"].as_object_mut().expect("definitions");
+    let defs = schemas["$defs"].as_object_mut().expect("the schemas have $defs");
     for (name, def) in frames["$defs"].as_object().into_iter().flatten() {
         defs.entry(name.clone()).or_insert_with(|| def.clone());
     }
     let mut frame = frames.clone();
-    frame.as_object_mut().expect("a schema").retain(|key, _| key != "$defs" && key != "$schema");
+    frame.as_object_mut().expect("a schema is an object").retain(|key, _| key != "$defs" && key != "$schema");
     defs.insert("Frame".into(), frame);
     if let Some(input) = input {
         let name = match input {
@@ -112,8 +112,8 @@ fn schema(input: Option<Input>) -> Result<(), Failure> {
     writeln!(out).map_err(|e| Failure::io(&e, Path::new("-")))
 }
 
-/// The rows `query` reads from the dataset as JSON Lines on stdout: `id`, then each field, a
-/// reference as its target's id and a missing value as `null`.
+/// Prints the rows `query` selects from the dataset as JSON Lines to stdout. Each line has `id`,
+/// then each field. A reference prints as its target's id, and a missing value as `null`.
 fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure> {
     let text =
         if query.trim_start().starts_with('{') { query.as_bytes().to_vec() } else { inputs::read(Path::new(query))? };
@@ -121,7 +121,7 @@ fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure
     let query: Query = latkit::from_json(text).map_err(|e| Failure::from(e.at("query")))?;
     let rows = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.snapshot().query(&query)?.table;
     let columns: Vec<(String, Values)> =
-        rows.fields().map(|(name, _)| (name.to_string(), rows.values(name).expect("a field the table has"))).collect();
+        rows.fields().map(|(name, _)| (name.to_string(), rows.values(name).expect("the field exists"))).collect();
     let mut out = io::BufWriter::new(io::stdout().lock());
     for (row, id) in rows.ids().enumerate() {
         let mut line = serde_json::Map::with_capacity(columns.len() + 1);
@@ -139,8 +139,8 @@ fn query(source: &Source, query: &str, deadline: Duration) -> Result<(), Failure
     out.flush().map_err(|e| Failure::io(&e, Path::new("-")))
 }
 
-/// The dataset as time tiles in directory `output`: its manifest, the dataset without its sampled
-/// fields' histories, and their spans of `chunk` entries.
+/// Writes the dataset as time tiles in directory `output`: the manifest, the dataset without its
+/// sampled fields' histories, and those histories in spans of `chunk` entries.
 fn tile(source: &Source, output: &Path, chunk: u32, deadline: Duration) -> Result<(), Failure> {
     let data = inputs::dataset(source, &latkit::host::Native::new(), deadline)?.snapshot();
     let mut failure = None;
@@ -159,13 +159,13 @@ fn tile(source: &Source, output: &Path, chunk: u32, deadline: Duration) -> Resul
     }
 }
 
-/// `future`'s result, driven on this thread and given up at `deadline`.
+/// Drives `future` on this thread and returns its result, or [`Error::Timeout`] at `deadline`.
 pub(crate) fn block<T>(deadline: Duration, future: impl Future<Output = latkit::Result<T>>) -> latkit::Result<T> {
     until(deadline, future)?
 }
 
-/// A synchronous command needs only one parked thread to drive its future, with a deadline. The
-/// future must yield; like other async timeouts this cannot interrupt a synchronous OS or driver call.
+/// Drives `future` on this thread, parking between polls, until it finishes or `deadline` passes.
+/// The deadline is checked only between polls, so it cannot interrupt a blocking OS or driver call.
 fn until<T>(deadline: Duration, future: impl Future<Output = T>) -> latkit::Result<T> {
     struct Thread(std::thread::Thread);
     impl Wake for Thread {

@@ -1,10 +1,11 @@
-//! Jobs: work too large for the frame (laying out in ranks or by stress, routing wires, cutting areas
-//! into triangles, grouping a large table's rows into tiles, writing a picture as a file), handed to the
-//! host to do off the frame. A job is bytes in and bytes out, so a thread, or a worker holding its own
-//! copy of latkit, can do it with nothing shared. A view's job answers with a [`Patch`]: the rows it
-//! worked out, by id, with their places, the paths their wires run along, or a vector tile's rows and
-//! their shapes; or in its own words, lanes as numbers, shapes as the columns they fill, and pyramids
-//! as their orders and tiles. An image job answers with the file.
+//! Jobs: work too large for a frame, handed to the host to run in the background. Jobs lay out
+//! graphs (layered or stress), route wires, triangulate areas, assign edge lanes, group a large
+//! table's rows into tiles, decode vector tiles and GeoJSON, and encode images.
+//!
+//! A job is bytes in and bytes out, so a thread, or a worker with its own copy of latkit, can run
+//! it with nothing shared. Layout, route, tile, and GeoJSON jobs return a [`Patch`] of rows by id.
+//! Other jobs return their own format: lane words, shape columns, each table's pyramid (order and
+//! tiles), or an encoded image file.
 
 use std::sync::Arc;
 
@@ -21,14 +22,14 @@ use crate::layout::{layered::layered, levels::Graph, stress::stress};
 use crate::tiles::TileKey;
 use crate::{Direction, Layered, Layout};
 
-/// Work latkit hands its [`Host`](super::Host) to do off the frame: bytes in, bytes out.
+/// Work latkit hands its [`Host`](super::Host) to run in the background: bytes in, bytes out.
 ///
-/// A host that does jobs elsewhere sends [`into_bytes`](Job::into_bytes) there, and answers with
-/// what [`run`](Job::run) makes of [`from_bytes`](Job::from_bytes) of them.
+/// A host that runs jobs elsewhere sends the job's [`into_bytes`](Job::into_bytes) there, rebuilds
+/// it with [`from_bytes`](Job::from_bytes), and returns the result of [`run`](Job::run).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Job(Vec<u8>);
 
-/// What a job does, its first word.
+/// A job's type, stored as its first word.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
     Layered = 1,
@@ -42,13 +43,14 @@ enum Kind {
     Image = 9,
 }
 
-/// What a shapes job works out of each row's geometry.
+/// The shapes computed from each row's geometry.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Shaping {
-    /// An area's triangles, the point its label hangs from first; on the earth, unwrapped and split
-    /// along its grid.
+    /// An area's triangles, after its label anchor. With `earth`, rings are unwrapped and
+    /// triangles split along the earth grid.
     Triangles { earth: bool },
-    /// An earth line's path: unwrapped, and bent with the globe; cheap enough that no job makes it.
+    /// An earth line's path, unwrapped and given extra points to follow the globe. Cheap enough
+    /// to compute on the frame, so it never needs a shapes job.
     Path,
 }
 
@@ -70,7 +72,7 @@ impl Shaping {
         }
     }
 
-    /// The depth of the shapes made from geometry of `depth`.
+    /// The geometry depth of shapes made from geometry of `depth`.
     pub(crate) fn depth(self, depth: u8) -> u8 {
         match self {
             Shaping::Triangles { .. } => 1,
@@ -78,8 +80,8 @@ impl Shaping {
         }
     }
 
-    /// Whether geometry of `depth` takes this shaping: triangles cut parts or polygons, and a path
-    /// bends anything but points.
+    /// Whether geometry of `depth` gets this shaping. Triangles apply to parts or polygons, and
+    /// paths to anything but points.
     pub(crate) fn takes(self, depth: u8) -> bool {
         match self {
             Shaping::Triangles { .. } => matches!(depth, 2 | 3),
@@ -87,7 +89,7 @@ impl Shaping {
         }
     }
 
-    /// The derived field the shapes of geometry field `field` are written as.
+    /// Name of the derived field holding the shapes of geometry field `field`.
     pub(crate) fn field_of(self, field: &str) -> Name {
         match self {
             Shaping::Triangles { .. } => crate::scene::areas::triangles_of(field),
@@ -95,8 +97,8 @@ impl Shaping {
         }
     }
 
-    /// The shapes of every row of geometry `values`, in order: a row missing shapes as nothing, and a
-    /// path needing no bending as itself.
+    /// Computes the shapes of every row of geometry `values`, in order. A missing row gets an empty
+    /// shape, and a path that needs no extra points is copied unchanged.
     pub(crate) fn shapes_of(self, values: &Values) -> Values {
         let depth = values.geometry().map_or(0, crate::data::Geometry::depth);
         let mut shapes = GeometryBuilder::new(self.depth(depth));
@@ -112,7 +114,7 @@ impl Shaping {
         Values::of_geometry(shapes.finish())
     }
 
-    /// The shape of `value`, or `None` where it stays as it is: a path that needs no bending.
+    /// The shape of `value`, or `None` if it is unchanged (a path that needs no extra points).
     pub(crate) fn shape(self, value: &Value) -> Option<Value> {
         match (self, value) {
             (Shaping::Triangles { earth }, Value::Polygons(polygons)) => Some(Value::Path(triangles(polygons, earth))),
@@ -141,12 +143,13 @@ impl Shaping {
     }
 }
 
-/// A row a job answers for: its table and id.
+/// A row in a job's result: its table and id.
 pub(crate) type Key = (Name, Id);
 
-/// Vertices to place: each one's size, its center when it has one, its group and how far a group's
-/// box reaches past its members (left, bottom, right, top), links between them, and the key of
-/// each vertex the answer places; vertices without a key are only placed around. Plane units, y up.
+/// Vertices to lay out: each one's size, pinned center if any, group, and how far a group's box
+/// reaches past its members (left, bottom, right, top), plus the links between vertices. `keys`
+/// names the row that receives each vertex's center. Vertices without a key are laid out but not
+/// written. Plane units, y up.
 pub(crate) struct Placement<'a> {
     pub(crate) sizes: &'a [[f64; 2]],
     pub(crate) pinned: &'a [Option<[f64; 2]>],
@@ -156,8 +159,9 @@ pub(crate) struct Placement<'a> {
     pub(crate) keys: &'a [Option<Key>],
 }
 
-/// Wires to route: around `obstacles` and among `groups`, each net's terminals with the key of the row
-/// it draws, runs beside `fixed` wires already routed, tracks `spacing` apart. Plane units, y up.
+/// Wires to route around `obstacles` and among `groups`. `keys` names the row that receives each
+/// net's route. Routes run beside the already routed `fixed` wires, on tracks `spacing` apart.
+/// Plane units, y up.
 pub(crate) struct Wiring<'a> {
     pub(crate) obstacles: &'a [[f64; 4]],
     pub(crate) groups: &'a [[f64; 4]],
@@ -168,7 +172,7 @@ pub(crate) struct Wiring<'a> {
 }
 
 impl Job {
-    /// A job from its bytes.
+    /// Rebuilds a job from its bytes.
     pub fn from_bytes(bytes: Vec<u8>) -> Job {
         Job(bytes)
     }
@@ -178,9 +182,9 @@ impl Job {
         self.0
     }
 
-    /// Does the job, answering in the words its derivation reads: rows by id as a patch's bytes,
-    /// lanes as numbers, shapes as columns, a pyramid as its order and tiles, an image as its file.
-    /// Bytes that are no job answer nothing.
+    /// Runs the job and returns its result: a patch of rows by id, lane words, shape columns, a
+    /// pyramid's order and tiles, or an encoded image file. Returns no bytes if the job is
+    /// malformed or fails.
     pub fn run(self) -> Vec<u8> {
         let mut input = Reader::new(&self.0);
         let kind = input.u32();
@@ -206,8 +210,8 @@ impl Job {
         answer.map(|patch| patch.to_bytes()).unwrap_or_default()
     }
 
-    /// Placing `placement` by `layout`, which is layered or stress; it answers each keyed vertex's
-    /// center as fields `x` and `y`, y up.
+    /// A job laying out `placement` with `layout` (layered or stress). Its result sets each keyed
+    /// vertex's center as fields `x` and `y`, y up.
     pub(crate) fn layout(layout: &Layout, placement: &Placement<'_>) -> Job {
         let mut out = match *layout {
             Layout::Stress(stress) => {
@@ -227,7 +231,7 @@ impl Job {
                 out.f64(layered.rank_gap);
                 out
             }
-            Layout::None => unreachable!("a sheet asks for a layout only when its scene has one"),
+            Layout::None => unreachable!("a sheet requests a layout only when its scene has one"),
         };
         out.u32(placement.sizes.len() as u32);
         for v in 0..placement.sizes.len() {
@@ -249,8 +253,8 @@ impl Job {
         Job(out.0)
     }
 
-    /// Working out `shaping` for every row of each geometry column of `parts`; it answers each part's
-    /// shapes, as [`shapes_answer`] reads them.
+    /// A job computing `shaping` for every row of each geometry column in `parts`. Its result holds
+    /// each part's shapes, read by [`shapes_answer`].
     pub(crate) fn shapes(shaping: Shaping, parts: &[Values]) -> Job {
         let mut out = Writer::new(Kind::Shapes);
         out.u32(shaping.code());
@@ -258,8 +262,8 @@ impl Job {
         Job(out.0)
     }
 
-    /// Decoding tile `key` from `bytes`, gzip-compressed or not, into the rows of `tables`, each with
-    /// the shapes its marks draw; it answers those rows.
+    /// A job decoding tile `key` from `bytes`, optionally gzip-compressed, into rows of `tables`
+    /// with their derived shapes. Its result is a patch of those rows.
     pub(crate) fn tile(key: TileKey, tables: &[Decoded], bytes: &[u8]) -> Job {
         let mut out = Writer::new(Kind::Tile);
         out.u32(u32::from(key.z));
@@ -283,8 +287,8 @@ impl Job {
         Job(out.0)
     }
 
-    /// The job writing `image` as a file of `format`, which it answers with; nothing where it
-    /// cannot be written.
+    /// A job encoding `image` as a file of `format`. Its result is the file's bytes, or no bytes if
+    /// the image cannot be encoded.
     pub fn encode(image: &crate::Image, format: crate::ImageFormat) -> Job {
         let mut out = Writer::new(Kind::Image);
         out.u32(match format {
@@ -298,10 +302,10 @@ impl Job {
         Job(out.0)
     }
 
-    /// Reading `bytes` as dataset `name` off the thread that asks, where they hold GeoJSON, which can
-    /// be large, as [`Data::read`](crate::Data::read) reads it: `None` where they hold latkit's bytes
-    /// or a dataset's document, which read where they are. It answers the patch that builds the
-    /// dataset, or nothing where the GeoJSON is invalid.
+    /// A job reading GeoJSON `bytes` as dataset `name` in the background, as
+    /// [`Data::read`](crate::Data::read) does; GeoJSON can be large. `None` if `bytes` are latkit's
+    /// own bytes or a dataset document, which are read on the calling thread. Its result is the
+    /// patch that builds the dataset, or no bytes if the GeoJSON is invalid.
     pub fn geojson(name: &str, bytes: &[u8]) -> Option<Job> {
         if !crate::data::geojson(bytes) {
             return None;
@@ -312,8 +316,9 @@ impl Job {
         Some(Job(out.0))
     }
 
-    /// Finding every edge row's lane among the rows joining the same two vertices, from each row's two
-    /// ends; it answers every row's lane word as a little-endian `u32`, nothing when none share.
+    /// A job assigning each edge row a lane among the rows joining the same two vertices, from the
+    /// rows' endpoints `from` and `to`. Its result is every row's lane word as a little-endian
+    /// `u32`, or no bytes when no two rows share endpoints.
     pub(crate) fn lanes(from: &[u32], to: &[u32]) -> Job {
         let mut out = Writer::new(Kind::Lanes);
         out.u32(from.len() as u32);
@@ -322,8 +327,9 @@ impl Job {
         Job(out.0)
     }
 
-    /// Grouping `leveling`'s tables into tiles, a dataset's at once; it answers each table's pyramid,
-    /// as [`Pyramid::read`](crate::derive::pyramid::Pyramid::read) reads it.
+    /// A job grouping the rows of `leveling`'s tables into tiles, all of one dataset's tables at
+    /// once. Its result holds each table's pyramid, read by
+    /// [`Pyramid::read`](crate::derive::pyramid::Pyramid::read).
     pub(crate) fn pyramid(leveling: &Leveling) -> Job {
         let mut out = Writer::new(Kind::Pyramid);
         match leveling.domain {
@@ -361,7 +367,7 @@ impl Job {
         Job(out.0)
     }
 
-    /// Routing `wiring`; it answers each keyed row's wire as field `route`, its polylines.
+    /// A job routing `wiring`. Its result sets each keyed row's wire polylines as field `route`.
     pub(crate) fn routes(wiring: &Wiring<'_>) -> Job {
         let mut out = Writer::new(Kind::Routes);
         out.f64(wiring.spacing);
@@ -398,7 +404,7 @@ impl std::fmt::Debug for Job {
     }
 }
 
-/// A patch writing `values` for `keys`, one table at a time in the order the keys name them.
+/// Builds a patch writing `values` for `keys`, grouped by table in order of first appearance.
 fn keyed<T>(keys: &[Key], values: Vec<T>, write: impl Fn(Table, Vec<T>) -> Table) -> Patch {
     let mut tables: Vec<(Name, Vec<Id>, Vec<T>)> = Vec::new();
     for ((table, id), value) in keys.iter().zip(values) {
@@ -491,8 +497,7 @@ fn run_routes(input: &mut Reader<'_>) -> Option<Patch> {
     Some(keyed(&keys, routes, |table, routes| table.field("route", routes)))
 }
 
-/// The shapes a shapes job answers, a column for each part it was asked: `None` where the bytes
-/// are no answer.
+/// Reads a shapes job's result: a column per part in the job. `None` if `bytes` are malformed.
 pub(crate) fn shapes_answer(bytes: &[u8]) -> Option<Vec<Values>> {
     Reader::new(bytes).columns()
 }
@@ -576,7 +581,7 @@ fn run_lanes(input: &mut Reader<'_>) -> Option<Vec<u8>> {
     Some(words.iter().flat_map(|word| word.to_le_bytes()).collect())
 }
 
-/// Little-endian words, floats, and keys, written.
+/// Writes little-endian words, floats, and keys.
 struct Writer(Vec<u8>);
 
 impl Writer {
@@ -594,7 +599,7 @@ impl Writer {
         self.0.extend(v.to_le_bytes());
     }
 
-    /// Words, copied whole where the machine is little-endian too.
+    /// Writes words, as one block copy on little-endian machines.
     fn words(&mut self, words: &[u32]) {
         if cfg!(target_endian = "little") {
             self.0.extend_from_slice(bytemuck::cast_slice(words));
@@ -614,7 +619,7 @@ impl Writer {
         self.0.extend(text.as_bytes());
     }
 
-    /// Columns, each its byte length and its values' bytes.
+    /// Writes columns, each as its byte length followed by its values' bytes.
     fn columns(&mut self, columns: &[Values]) {
         self.u32(columns.len() as u32);
         for values in columns {
@@ -624,7 +629,7 @@ impl Writer {
         }
     }
 
-    /// A key: 1 then a numbered id, or 2 then a texted one; the table's name after.
+    /// Writes a key: 1 and a numeric id, or 2 and a text id, then the table name.
     fn key(&mut self, (table, id): &Key) {
         match id {
             Id::Number(n) => {
@@ -640,7 +645,7 @@ impl Writer {
     }
 }
 
-/// Little-endian words, floats, and keys, read; `None` past the end.
+/// Reads little-endian words, floats, and keys. Reads return `None` past the end.
 struct Reader<'a> {
     bytes: &'a [u8],
 }
@@ -650,7 +655,7 @@ impl<'a> Reader<'a> {
         Reader { bytes }
     }
 
-    /// Every byte not read yet.
+    /// Takes all unread bytes.
     fn rest(&mut self) -> &'a [u8] {
         std::mem::take(&mut self.bytes)
     }
@@ -669,7 +674,7 @@ impl<'a> Reader<'a> {
         self.take().map(f64::from_le_bytes)
     }
 
-    /// `n` words.
+    /// Reads `n` words.
     fn words(&mut self, n: usize) -> Option<Vec<u32>> {
         let (head, rest) = self.bytes.split_at_checked(n.checked_mul(4)?)?;
         self.bytes = rest;
@@ -683,7 +688,7 @@ impl<'a> Reader<'a> {
         String::from_utf8(head.to_vec()).ok()
     }
 
-    /// Columns as [`Writer::columns`] wrote them.
+    /// Reads columns written by [`Writer::columns`].
     fn columns(&mut self) -> Option<Vec<Values>> {
         let count = self.u32()?;
         (0..count)
@@ -696,7 +701,7 @@ impl<'a> Reader<'a> {
             .collect()
     }
 
-    /// A key as [`Writer::key`] wrote it.
+    /// Reads a key written by [`Writer::key`].
     fn key(&mut self) -> Option<Key> {
         let id = match self.u32()? {
             1 => Id::Number(u64::from_le_bytes(self.take()?)),
@@ -716,14 +721,14 @@ mod tests {
         (table.into(), Id::Number(id))
     }
 
-    /// Field `field` of `table`'s row `id` in the answer.
+    /// Field `field` of row `id` of `table` in a job's result.
     fn answered(answer: &[u8], table: &str, id: u64, field: &str) -> Option<Value> {
         let data = crate::Snapshot::new("d").applied(Patch::from_bytes(answer).ok()?).ok()?;
         data.get(table, id, field, None)
     }
 
     #[test]
-    fn layout_jobs_answer_the_rows_they_place() {
+    fn layout_jobs_return_the_rows_they_place() {
         let sizes = [[10.0, 10.0]; 3];
         let pinned = [None, Some([5.0, 5.0]), None];
         let keys = [Some(key("V", 7)), None, Some(key("V", 9))];
@@ -749,11 +754,11 @@ mod tests {
         assert_eq!(answered(&answer, "V", 9, "x"), Some(Value::Number(ranked[2][0])));
         assert_eq!(answered(&answer, "V", 7, "y"), Some(Value::Number(ranked[0][1])));
         let stress = Job::layout(&Layout::Stress(crate::Stress::default()), &placement).run();
-        assert!(matches!(answered(&stress, "V", 7, "x"), Some(Value::Number(_))), "stress answers alike");
+        assert!(matches!(answered(&stress, "V", 7, "x"), Some(Value::Number(_))), "stress layouts return rows too");
     }
 
     #[test]
-    fn route_jobs_answer_routed_wires() {
+    fn route_jobs_return_routed_wires() {
         let obstacles = [[0.0, 0.0, 10.0, 10.0], [40.0, 0.0, 50.0, 10.0]];
         let terminal = |x: f64, side, owner| Terminal { at: [x, 5.0], side: Some(side), owner: Some(owner) };
         let nets = [Net { terminals: vec![terminal(10.0, Side::Right, 0), terminal(40.0, Side::Left, 1)] }];
@@ -771,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn bytes_that_are_no_job_answer_nothing() {
+    fn bytes_that_are_not_a_job_return_nothing() {
         assert_eq!(Job::from_bytes(vec![1, 0, 0, 0, 9]).run(), Vec::<u8>::new());
         assert_eq!(Job::from_bytes(Vec::new()).run(), Vec::<u8>::new());
     }

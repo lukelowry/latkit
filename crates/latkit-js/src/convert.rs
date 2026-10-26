@@ -1,15 +1,15 @@
-//! latkit's rows and ids to JavaScript, and ids back: a query's columns cross as typed arrays and
-//! arrays, built here once; everything else crosses as bytes or JSON.
+//! Conversion of latkit rows and ids to JavaScript, and of ids back. A query's columns cross as
+//! typed arrays and arrays, built here once. Everything else crosses as bytes or JSON.
 
 use js_sys::{Array, Float64Array, Object, Reflect};
 use latkit::Error;
 use wasm_bindgen::{JsCast, JsValue};
 
-/// The largest whole number a JavaScript number holds exactly: 2^53 - 1.
+/// The largest integer a JavaScript number represents exactly: 2^53 - 1.
 const SAFE: f64 = 9_007_199_254_740_991.0;
 
-/// A value for JavaScript: a number, boolean, or text; a geometry as nested `[x, y]` arrays; a row a
-/// reference names as its id.
+/// `value` as a JavaScript value. Numbers, booleans, and text convert directly. A geometry becomes
+/// nested `[x, y]` arrays, and a referenced row becomes its id.
 fn value(value: &latkit::Value) -> JsValue {
     let xy = |p: &[f64; 2]| -> JsValue { Array::of2(&p[0].into(), &p[1].into()).into() };
     let path = |p: &Vec<[f64; 2]>| -> JsValue { p.iter().map(xy).collect::<Array>().into() };
@@ -29,8 +29,9 @@ fn value(value: &latkit::Value) -> JsValue {
     }
 }
 
-/// What a query read, as `{ table, ids, fields, total }`: numbers as a `Float64Array` (missing NaN),
-/// other values as arrays (missing `null`), a reference as `{ reference, ids }`.
+/// A query result as `{ table, ids, fields, total }`. A number column becomes a `Float64Array`
+/// (missing values are NaN), a reference column `{ reference, ids }`, and any other column an array
+/// (missing values are `null`).
 pub(crate) fn query_result(read: &latkit::QueryResult) -> JsValue {
     let table = &read.table;
     let fields = Object::create(JsValue::NULL.unchecked_ref::<Object>());
@@ -54,12 +55,12 @@ pub(crate) fn query_result(read: &latkit::QueryResult) -> JsValue {
     ])
 }
 
-/// Ids held as values, missing `null`.
+/// A column of ids as an array, with `null` for missing ids.
 fn ids_value(values: &latkit::Values) -> JsValue {
     (0..values.len()).map(|i| values.id(i).map_or(JsValue::NULL, |id| id_value(&id))).collect::<Array>().into()
 }
 
-/// An object of `entries`.
+/// A JavaScript object with `entries` as its properties.
 pub(crate) fn object(entries: &[(&str, JsValue)]) -> JsValue {
     let object = Object::new();
     for (key, value) in entries {
@@ -68,8 +69,8 @@ pub(crate) fn object(entries: &[(&str, JsValue)]) -> JsValue {
     object.into()
 }
 
-/// An id as a number or a text: a number too large for JavaScript's as its decimal text, which
-/// names the same row.
+/// An id as a number or string. A number above 2^53 - 1 becomes its decimal string, which
+/// identifies the same row.
 pub(crate) fn id_value(id: &latkit::Id) -> JsValue {
     match id {
         latkit::Id::Number(n) if *n as f64 <= SAFE => (*n as f64).into(),
@@ -78,13 +79,13 @@ pub(crate) fn id_value(id: &latkit::Id) -> JsValue {
     }
 }
 
-/// The id JavaScript names: a whole number from 0 to 2^53 - 1, or a text.
+/// Parses a JavaScript id: an integer from 0 to 2^53 - 1, or a string.
 pub(crate) fn id(value: &JsValue) -> Result<latkit::Id, Error> {
     if let Some(text) = value.as_string() {
         return Ok(latkit::Id::from(text));
     }
     match value.as_f64() {
         Some(n) if n.fract() == 0.0 && (0.0..=SAFE).contains(&n) => Ok(latkit::Id::Number(n as u64)),
-        _ => Err(Error::invalid("an id is a whole number from 0 to 2^53 - 1, or a text").at("id")),
+        _ => Err(Error::invalid("expected a whole number from 0 to 2^53 - 1, or a string").at("id")),
     }
 }

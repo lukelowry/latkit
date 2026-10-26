@@ -1,14 +1,15 @@
 /**
- * What the scenarios draw, made before anything is measured: deterministic, so every run counts the
- * same work, and linear in size. Each returns a `Write` that only hands latkit the arrays.
+ * The scenarios' data, made before anything is measured. It is deterministic, so every run counts
+ * the same work, and linear in size. Each function returns a `Write` that only hands latkit the
+ * arrays.
  */
 import { reference, type Values } from 'latkit';
 import type { Write } from './stage.ts';
 
-/** Axis coordinates a second. */
+/** Samples per second on the time axis. */
 const RATE = 60;
 
-/** Numbers in [0, 1), the same every run. */
+/** A seeded generator of numbers in [0, 1), the same every run. */
 function random(seed: number): () => number {
   let s = seed >>> 0 || 1;
   return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32;
@@ -24,8 +25,8 @@ export function scatter(n: number, seed = 1, named = false): Write {
   return (p) => p.set('Point', { count: n }, fields);
 }
 
-/** About `n` buses in a square lattice over most of the globe, each joined to its right and lower
- * neighbours: a grid's shape at any size. */
+/** About `n` buses in a square lattice over most of the globe, each joined by a line to its
+ * neighbours in the next column and the next row. It has a grid's shape at any size. */
 export function lattice(n: number): Write {
   const side = Math.max(2, Math.round(Math.sqrt(n)));
   const count = side * side;
@@ -58,7 +59,8 @@ export function lattice(n: number): Write {
       .set('Line', { count: lines }, { from: reference('Bus', from), to: reference('Bus', to) });
 }
 
-/** `n` edges among 16 vertices on a ring, each joining a vertex to the next: lanes by the thousand. */
+/** `n` edges among 16 vertices on a ring, each joining a vertex to the next, so each pair has about
+ * `n / 16` parallel edges drawn as lanes. */
 export function lanes(n: number): Write {
   const k = 16;
   const x = Float64Array.from({ length: k }, (_, i) => Math.cos((2 * Math.PI * i) / k));
@@ -71,7 +73,8 @@ export function lanes(n: number): Write {
       .set('Link', { count: n }, { from: reference('Point', from), to: reference('Point', to) });
 }
 
-/** `n` regular 32-gons in a grid over the mercator world, each with a value. */
+/** `n` regular polygons of `sides` sides (32 by default) in a grid over the Mercator world, each
+ * with a value. */
 export function polygons(n: number, sides = 32): Write {
   const across = Math.ceil(Math.sqrt(2 * n));
   const [w, h] = [340 / across, 140 / Math.ceil(n / across)];
@@ -90,7 +93,8 @@ export function polygons(n: number, sides = 32): Write {
   return (p) => p.set('Region', { count: n }, { rings, v });
 }
 
-/** `n` blocks in trees of 64: each block's output is a net, which its two children's inputs name. */
+/** `n` blocks in binary trees of 64. Each block's output is a net, and its two children's inputs
+ * reference that net. */
 export function blocks(n: number): Write {
   const input = new Array<number | null>(n);
   const name = new Array<string>(n);
@@ -111,7 +115,7 @@ export function blocks(n: number): Write {
 
 const wave = (r: number, f: number) => Math.sin(r * 0.37 + f * 0.05) + (r % 10) * 0.2;
 
-/** `rows` traces of `frames` samples at 60 a second, each its own wave. */
+/** `rows` traces of `frames` samples at `RATE` samples per second, each a different wave. */
 export function traces(rows: number, frames: number): Write {
   const all = new Float32Array(rows * frames);
   for (let f = 0; f < frames; f++) for (let r = 0; r < rows; r++) all[f * rows + r] = wave(r, f);
@@ -124,7 +128,8 @@ export function traces(rows: number, frames: number): Write {
   };
 }
 
-/** `count` patches recording the frames from `from` on, each forgetting what falls `history` behind. */
+/** `count` patches, each appending the next sample from frame `from` on and forgetting samples more
+ * than `history` frames behind. */
 export function feed(rows: number, from: number, count: number, history: number): Write[] {
   return Array.from({ length: count }, (_, i): Write => {
     const f = from + i;

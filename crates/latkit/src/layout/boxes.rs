@@ -1,23 +1,23 @@
-//! Boxes kept indexed as they change: a packed R-tree over them, whose leaves refit as their boxes
-//! change, and the boxes given since it was packed, which every query reads too until there are
-//! enough to pack it again. A query and a change each take about log n, and the root holds the box
-//! around them all, so what keeps boxes indexed never walks them all again.
+//! A spatial index of boxes that change: a packed R-tree whose leaves refit as their boxes change,
+//! plus a list of items given boxes since packing, which every query also scans until there are
+//! enough to repack. Queries and changes take about O(log n), and the root holds the extent of all
+//! boxes, so keeping the index current never walks every box (except when repacking).
 
 use super::rect::{EMPTY, Rect, meets, union, valid};
 
-/// Children a node.
+/// Children per node.
 const NODE: usize = 16;
 
-/// Boxes given since packing past which they are packed again.
+/// How many items may get boxes after packing before the index is repacked.
 const FRESH: usize = 64;
 
-/// Boxes by item, `EMPTY` where an item has none, indexed.
+/// Boxes by item (`EMPTY` where an item has none), with a spatial index.
 pub(crate) struct Boxes {
     rects: Vec<Rect>,
     index: Index,
-    /// Each item's leaf; `usize::MAX` for one packed without a box.
+    /// Each item's leaf; `usize::MAX` for an item that had no box when packed.
     leaves: Vec<usize>,
-    /// Items given a box since packing, which have no leaf.
+    /// Items given a box since packing; they have no leaf.
     fresh: Vec<usize>,
 }
 
@@ -28,7 +28,7 @@ impl Default for Boxes {
 }
 
 impl Boxes {
-    /// `boxes`, by item, packed.
+    /// Packs `boxes`, by item, into a new index.
     pub(crate) fn new(boxes: Vec<Rect>) -> Boxes {
         let index = Index::new(&boxes);
         let mut leaves = vec![usize::MAX; boxes.len()];
@@ -38,7 +38,7 @@ impl Boxes {
         Boxes { rects: boxes, index, leaves, fresh: Vec::new() }
     }
 
-    /// Item `item`'s box is now `rect`, `EMPTY` where it has none.
+    /// Sets item `item`'s box to `rect` (`EMPTY` for none), adding items as needed.
     pub(crate) fn set(&mut self, item: usize, rect: Rect) {
         if item >= self.rects.len() {
             self.rects.resize(item + 1, EMPTY);
@@ -65,25 +65,26 @@ impl Boxes {
         self.rects.get(item).copied().filter(valid)
     }
 
-    /// Visits the items whose boxes meet `region` until `visit` returns true; whether it did.
+    /// Visits the items whose boxes meet `region` until `visit` returns true. Returns whether it
+    /// did.
     pub(crate) fn some(&self, region: Rect, visit: &mut impl FnMut(usize) -> bool) -> bool {
         let mut seen = |item: usize| self.get(item).is_some_and(|b| meets(&b, &region)) && visit(item);
         self.index.some(region, &mut seen) || self.fresh.iter().any(|&item| seen(item))
     }
 
-    /// The box around every box.
+    /// The box around all boxes.
     pub(crate) fn extent(&self) -> Rect {
         self.fresh.iter().fold(self.index.root(), |extent, &item| union(extent, self.rects[item]))
     }
 
-    /// Every item's box, `EMPTY` where it has none, as a job is given them.
+    /// Every item's box, `EMPTY` where it has none, in the form a job takes them.
     pub(crate) fn all(&self) -> &[Rect] {
         &self.rects
     }
 }
 
-/// A packed R-tree over the valid boxes: leaves in Z-order of their middles, [`NODE`] children a
-/// node.
+/// A packed R-tree over the valid boxes: leaves sorted in Z-order of their centers, [`NODE`]
+/// children per node.
 struct Index {
     /// The item at each leaf.
     items: Vec<usize>,
@@ -124,7 +125,7 @@ impl Index {
         Index { items, nodes, starts }
     }
 
-    /// Visits the items meeting `region` until `visit` returns true; whether it did.
+    /// Visits the items meeting `region` until `visit` returns true. Returns whether it did.
     fn some(&self, region: Rect, visit: &mut impl FnMut(usize) -> bool) -> bool {
         let top = self.starts.len() - 2;
         !self.items.is_empty()
@@ -132,7 +133,7 @@ impl Index {
             && self.descend(top, self.starts[top], region, visit)
     }
 
-    /// [`Index::some`] below `node` of `level`.
+    /// [`Index::some`] within the subtree of `node` at `level`.
     fn descend(&self, level: usize, node: usize, region: Rect, visit: &mut impl FnMut(usize) -> bool) -> bool {
         let first = self.starts[level - 1] + (node - self.starts[level]) * NODE;
         let last = (first + NODE).min(self.starts[level]);
@@ -142,7 +143,7 @@ impl Index {
         })
     }
 
-    /// Leaf `leaf`'s box is now `rect`: it, and every node above it, fit their children again.
+    /// Sets leaf `leaf`'s box to `rect`, and refits every node above it to its children.
     fn refit(&mut self, leaf: usize, rect: Rect) {
         self.nodes[leaf] = rect;
         let mut child = leaf;
@@ -178,7 +179,7 @@ mod tests {
     use super::*;
     use crate::layout::rect::grow;
 
-    /// A stream of random numbers below `n`.
+    /// The next pseudo-random whole number below `n`, from `seed`.
     fn random(seed: &mut u64, n: u32) -> f64 {
         *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
         f64::from(((*seed >> 33) % u64::from(n)) as u32)
@@ -191,12 +192,12 @@ mod tests {
     }
 
     #[test]
-    fn boxes_moved_found_and_bounded_as_every_box_says() {
+    fn queries_and_extent_match_a_brute_force_scan_after_edits() {
         let mut seed = 3;
         let mut all: Vec<Rect> = (0..500).map(|_| somewhere(&mut seed)).collect();
         let mut boxes = Boxes::new(all.clone());
         for round in 0..300 {
-            // A box moves, goes, or comes past the last.
+            // A box moves, is removed, or is added past the last item.
             let item = random(&mut seed, 560) as usize;
             let rect = if round % 7 == 0 { EMPTY } else { somewhere(&mut seed) };
             if item >= all.len() {

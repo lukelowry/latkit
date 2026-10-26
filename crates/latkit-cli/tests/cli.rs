@@ -1,5 +1,5 @@
-//! The executable's contracts: files, pipes, exit codes, diagnostics, and every output a render
-//! writes, from a still to a video.
+//! Tests of the executable's behavior: files, pipes, exit codes, diagnostics, and every output a
+//! render writes, from a still to a video.
 
 use std::io::Write;
 use std::path::Path;
@@ -36,7 +36,7 @@ fn fixture() -> tempfile::TempDir {
     dir
 }
 
-/// Whether the machine has no GPU, which only `LATKIT_REQUIRE_GPU` makes a failure.
+/// Whether the run failed for lack of a GPU. With `LATKIT_REQUIRE_GPU` set, that fails the test.
 fn no_gpu(output: &Output) -> bool {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let missing = !output.status.success() && (stderr.contains("no GPU adapter") || stderr.contains("no GPU device"));
@@ -48,7 +48,7 @@ fn ok(output: &Output) {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
-/// Writes frames: `x` positions of the two buses, as patches of slices of one binary file.
+/// Writes a frames file whose lines set the two buses' `x` from slices of one binary file.
 fn frames(dir: &Path, xs: &[[f32; 2]]) {
     let bytes: Vec<u8> = xs.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
     std::fs::create_dir_all(dir.join("sequence")).unwrap();
@@ -118,7 +118,7 @@ fn validation_reads_everything_without_a_gpu_and_is_silent_on_success() {
         ok(&output);
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
     }
-    // A frame naming no dataset fails at its line, as JSON when asked.
+    // A frame that patches a missing dataset fails at its line, reported as JSON when requested.
     let bad = r#"{"at":0,"patch":{"absent":[{"forget":{"before":0}}]}}"#;
     std::fs::write(dir.path().join("sequence/bad.jsonl"), format!("{{\"at\":0}}\n{bad}")).unwrap();
     let args = ["--diagnostics", "json", "validate", "scene.json", "-d", "grid.json", "--frames", "sequence/bad.jsonl"];
@@ -128,7 +128,7 @@ fn validation_reads_everything_without_a_gpu_and_is_silent_on_success() {
     assert_eq!(told["type"], "error");
     assert_eq!(told["detail"]["code"], "invalid");
     assert_eq!(told["detail"]["path"], "frames[1].patch.absent");
-    // A camera for each view looks at its own view's space: a plot's cannot look at a plane.
+    // A per-view camera must fit its own view's space: a plot camera cannot look at a plane.
     std::fs::write(dir.path().join("sequence/bad.jsonl"), r#"{"camera": [{"x": [0, 1]}]}"#).unwrap();
     let output = run(dir.path(), &args, None);
     let told: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -137,7 +137,7 @@ fn validation_reads_everything_without_a_gpu_and_is_silent_on_success() {
 }
 
 #[test]
-fn failures_name_the_part_and_the_file_and_keep_the_output() {
+fn failures_report_path_and_source_and_leave_existing_output_intact() {
     let dir = fixture();
     let output = run(dir.path(), &["--diagnostics", "json", "validate", "scene.json"], None);
     assert_eq!(output.status.code(), Some(1));
@@ -149,7 +149,7 @@ fn failures_name_the_part_and_the_file_and_keep_the_output() {
     std::fs::write(dir.path().join("out.png"), b"keep this").unwrap();
     assert_eq!(run(dir.path(), &["render", "scene.json", "-o", "out.png"], None).status.code(), Some(1));
     assert_eq!(std::fs::read(dir.path().join("out.png")).unwrap(), b"keep this");
-    // A legend shows a color mapped through a colormap with a domain or named categories.
+    // A legend needs a color mapped through a colormap with a domain or named categories.
     let legend = r#"{"space":"plane","marks":[{"vertices":{"of":["grid","Bus"],"legend":"Buses"}}]}"#;
     let output =
         run(dir.path(), &["--diagnostics", "json", "validate", "-", "-d", "grid.json"], Some(legend.as_bytes()));
@@ -158,7 +158,7 @@ fn failures_name_the_part_and_the_file_and_keep_the_output() {
 }
 
 #[test]
-fn inspect_describes_datasets_and_geojson_takes_a_name() {
+fn inspect_describes_datasets_and_geojson_needs_a_name() {
     let dir = fixture();
     let geo = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"n":1},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
     std::fs::write(dir.path().join("places.geojson"), geo).unwrap();
@@ -189,7 +189,7 @@ fn schema_describes_every_input_and_frames() {
 }
 
 #[test]
-fn query_writes_a_json_line_a_row() {
+fn query_writes_one_json_line_per_row() {
     let dir = fixture();
     let query =
         r#"{"of":"Bus","sort":[["x","descending"]],"select":{"name":"name","twice":{"op":"mul","args":["x",2]}}}"#;
@@ -214,7 +214,7 @@ fn query_writes_a_json_line_a_row() {
 }
 
 #[test]
-fn a_history_tiles_and_draws_from_its_spans_as_from_itself() {
+fn a_tiled_history_draws_the_same_as_the_whole_dataset() {
     let dir = tempfile::tempdir().unwrap();
     let at: Vec<String> = (0..2000).map(|t| t.to_string()).collect();
     let v: Vec<String> = (0..2000).map(|t| format!("{:.4}", 0.5 + 0.4 * (f64::from(t) / 40.0).sin())).collect();
@@ -246,7 +246,7 @@ fn a_history_tiles_and_draws_from_its_spans_as_from_itself() {
     let pixels = |o: &Output| o.stdout.as_chunks::<4>().0.to_vec();
     let differing = pixels(&whole).iter().zip(pixels(&tiled)).filter(|(a, b)| a[0].abs_diff(b[0]) > 8).count();
     assert!(differing < 32, "{differing} pixels differ");
-    assert!(pixels(&tiled).iter().any(|p| p[0] > 200 && p[1] < 60), "the trace draws");
+    assert!(pixels(&tiled).iter().any(|p| p[0] > 200 && p[1] < 60), "the trace is drawn");
 }
 
 #[test]
@@ -275,7 +275,7 @@ fn a_labeled_still_renders_to_a_file_and_to_stdout() {
     for (file, starts) in [("out.jpg", &[0xff, 0xd8, 0xff][..]), ("out.webp", &b"RIFF"[..])] {
         args[5] = file;
         ok(&run(dir.path(), &args, None));
-        assert!(std::fs::read(dir.path().join(file)).unwrap().starts_with(starts), "{file} is what it says");
+        assert!(std::fs::read(dir.path().join(file)).unwrap().starts_with(starts), "{file} has its format's signature");
     }
 }
 
@@ -310,9 +310,9 @@ fn panels_draw_a_scene_each() {
 }
 
 #[test]
-fn a_frame_stream_writes_every_output_and_holds_still_frames() {
+fn a_frame_stream_writes_every_output_and_repeats_unchanged_frames() {
     let dir = fixture();
-    // The third frame changes nothing: it is held, and a raw stream repeats the second.
+    // The third frame changes nothing, so it is held and the raw stream repeats the second.
     frames(dir.path(), &[[-4.0, 4.0], [0.0, 8.0], [0.0, 8.0]]);
     let mut args = COMMON.to_vec();
     args.extend(["--format", "rgba", "-o", "-"]);
@@ -327,7 +327,7 @@ fn a_frame_stream_writes_every_output_and_holds_still_frames() {
     assert_ne!(first, second);
     assert_eq!(second, third);
 
-    // A sequence never truncates itself into one PNG, nor destroys an old file.
+    // Several frames to a single PNG fail, and the existing file stays intact.
     std::fs::write(dir.path().join("out.png"), b"keep").unwrap();
     let mut args = COMMON.to_vec();
     args.extend(["-o", "out.png"]);
@@ -367,6 +367,6 @@ fn a_frame_stream_writes_every_output_and_holds_still_frames() {
         let absent = "{\"at\":0}\n{\"at\":0,\"patch\":{\"absent\":[]}}";
         std::fs::write(dir.path().join("sequence/frames.jsonl"), absent).unwrap();
         assert_eq!(run(dir.path(), &args, None).status.code(), Some(1));
-        assert_eq!(std::fs::read(dir.path().join("out.mp4")).unwrap(), mp4, "a failed video keeps the file before");
+        assert_eq!(std::fs::read(dir.path().join("out.mp4")).unwrap(), mp4, "a failed video leaves the file intact");
     }
 }

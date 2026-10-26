@@ -1,12 +1,14 @@
-//! Nested graphs laid out a level at a time. A level is the vertices of the top, or the members of
-//! one group. A group's members are placed first, innermost groups first; the group then stands as
-//! one vertex of its box's size in the level holding it, with links between members of different
-//! groups lifted to the groups they meet in. Every layout places one level at a time, so every
-//! layout nests alike.
+//! Nested graphs, laid out one level at a time.
+//!
+//! A level is the top-level vertices, or the members of one group. Groups are laid out innermost
+//! first: a group's members are placed, then the group acts as one vertex, sized to its box, in
+//! the level holding it. Links between members of different groups are lifted to the groups that
+//! share a level. Every layout places one level at a time, so all layouts nest the same way.
 
-/// A graph to lay out, plane units with y up: each vertex's width and height, its center when it has
-/// one, the group holding it, and how far a group's box reaches past its members (left, bottom,
-/// right, top); and links between vertices, from one to another where a layout reads direction.
+/// A graph to lay out, in plane units with y up: each vertex's width and height, its pinned center
+/// if any, the group holding it, and its padding as a group (how far its box reaches past its
+/// members: left, bottom, right, top); and links between vertices, directed where a layout reads
+/// direction.
 pub(crate) struct Graph<'a> {
     pub(crate) sizes: &'a [[f64; 2]],
     pub(crate) links: &'a [[u32; 2]],
@@ -22,15 +24,16 @@ pub(crate) struct Level {
     pub(crate) pinned: Vec<Option<[f64; 2]>>,
 }
 
-/// Every vertex's center, `place` answering each level's. A group's center is the middle of its box:
-/// its members' bounds grown by its pads. A pinned member holds its group where its members settled;
-/// a group's own pin moves its members only when none of them is pinned. Groups out of range, of
-/// themselves, or closing a cycle hold nothing.
+/// Every vertex's center, with `place` laying out each level. A group's center is the middle of
+/// its box: its members' bounds grown by its pads. A group with a pinned member is pinned where its
+/// members settled; a group's own pin moves its members only when none of them is pinned. Group
+/// references out of range, to the vertex itself, or closing a cycle are ignored. Panics unless
+/// `pinned`, `groups`, and `pads` have an entry per vertex.
 pub(crate) fn nested(graph: &Graph<'_>, mut place: impl FnMut(&Level) -> Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     let count = graph.sizes.len();
     assert!(
         graph.pinned.len() == count && graph.groups.len() == count && graph.pads.len() == count,
-        "a pin, a group, and pads for each vertex"
+        "pinned, groups, and pads need an entry per vertex"
     );
     let parent = tree(graph.groups);
     let depth = depths(&parent);
@@ -54,7 +57,7 @@ pub(crate) fn nested(graph: &Graph<'_>, mut place: impl FnMut(&Level) -> Vec<[f6
         graph.sizes.iter().map(|&[width, height]| [width.max(0.0), height.max(0.0)]).collect();
     let mut pins: Vec<Option<[f64; 2]>> =
         graph.pinned.iter().map(|pin| pin.filter(|at| at[0].is_finite() && at[1].is_finite())).collect();
-    // Centers within each vertex's level, and each group's members' middle within its own.
+    // Each vertex's center within its level, and each group's box middle in its members' frame.
     let mut centers = vec![[0.0; 2]; count];
     let mut middles = vec![[0.0; 2]; count];
     let mut local = vec![0_u32; count];
@@ -104,8 +107,8 @@ pub(crate) fn nested(graph: &Graph<'_>, mut place: impl FnMut(&Level) -> Vec<[f6
         .collect()
 }
 
-/// Each vertex's group: groups out of range or of themselves dropped, and each cycle of groups cut where a walk up it
-/// closes.
+/// Each vertex's group, dropping groups out of range or equal to the vertex itself, and cutting
+/// each cycle of groups where a walk up it closes.
 fn tree(groups: &[Option<u32>]) -> Vec<Option<u32>> {
     const NEW: u8 = 0;
     const WALKING: u8 = 1;
@@ -123,7 +126,7 @@ fn tree(groups: &[Option<u32>]) -> Vec<Option<u32>> {
         loop {
             if state[at] != NEW {
                 if state[at] == WALKING {
-                    parent[*walk.last().expect("a walk reaches itself only after a step")] = None;
+                    parent[*walk.last().expect("a walk that closes a cycle is not empty")] = None;
                 }
                 break;
             }
@@ -154,7 +157,7 @@ fn depths(parent: &[Option<u32>]) -> Vec<u32> {
                 None => break,
             }
         }
-        // The walk ends at a vertex already counted, or at the top, which it holds.
+        // The walk ends at a vertex already counted, or at a top-level vertex it includes.
         let mut next = if depth[at] == u32::MAX { 0 } else { depth[at] + 1 };
         while let Some(vertex) = walk.pop() {
             depth[vertex] = next;
@@ -164,13 +167,14 @@ fn depths(parent: &[Option<u32>]) -> Vec<u32> {
     depth
 }
 
-/// The link `from` → `to` between the outermost groups (or vertices) that hold each end and share a level; `None` for
-/// a link within one of them or with an end out of range.
+/// The link `from` → `to` lifted to the level where it is laid out: between the ancestors of its
+/// ends (or the ends themselves) that share a parent. `None` for a link inside one group or vertex,
+/// or with an end out of range.
 fn lift(from: u32, to: u32, parent: &[Option<u32>], depth: &[u32]) -> Option<[u32; 2]> {
     if from as usize >= parent.len() || to as usize >= parent.len() {
         return None;
     }
-    let up = |vertex: usize| parent[vertex].expect("a held vertex has a group") as usize;
+    let up = |vertex: usize| parent[vertex].expect("a nested vertex has a group") as usize;
     let (mut from, mut to) = (from as usize, to as usize);
     while depth[from] > depth[to] {
         from = up(from);
@@ -195,15 +199,16 @@ pub(crate) fn bounds(boxes: impl Iterator<Item = [f64; 4]>) -> [f64; 4] {
     boxes.reduce(super::rect::union).unwrap_or([0.0; 4])
 }
 
-/// Items bucketed by key, each bucket's in the order given: bucket `k` is `items[offsets[k]..offsets[k + 1]]`.
+/// Items bucketed by key, each bucket in the order given: bucket `k` is
+/// `items[offsets[k]..offsets[k + 1]]`.
 pub(crate) struct Runs<T> {
     offsets: Vec<usize>,
-    /// Every bucket's items, bucket after bucket; reordered within buckets, they stay bucketed.
+    /// Every bucket's items, bucket after bucket. Reordering within a bucket keeps them bucketed.
     pub(crate) items: Vec<T>,
 }
 
 impl<T: Copy + Default> Runs<T> {
-    /// `keyed` items in `buckets` buckets, each item's key below `buckets`.
+    /// Buckets `keyed` items into `buckets` buckets; each key must be below `buckets`.
     pub(crate) fn new(buckets: usize, keyed: impl Iterator<Item = (usize, T)> + Clone) -> Runs<T> {
         let mut offsets = vec![0; buckets + 1];
         for (key, _) in keyed.clone() {
@@ -224,7 +229,7 @@ impl<T: Copy + Default> Runs<T> {
 }
 
 impl<T> Runs<T> {
-    /// How many buckets.
+    /// The number of buckets.
     pub(crate) fn len(&self) -> usize {
         self.offsets.len() - 1
     }
@@ -234,7 +239,7 @@ impl<T> Runs<T> {
         &self.items[self.offsets[k]..self.offsets[k + 1]]
     }
 
-    /// Bucket `k`'s items, to change.
+    /// Bucket `k`'s items, mutably.
     pub(crate) fn get_mut(&mut self, k: usize) -> &mut [T] {
         &mut self.items[self.offsets[k]..self.offsets[k + 1]]
     }

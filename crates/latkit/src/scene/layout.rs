@@ -3,18 +3,21 @@ use serde::{Deserialize, Deserializer};
 
 use super::form::{Presets, preset_or, presets};
 
-/// How the view places vertex rows without positions: a diagram's blocks, sized, or the points of a
-/// plane or the earth, among the rows linked to them, gaps in the space's units: a name, or `{ stress
-/// | layered: options }`. A place, once given, holds: rows added later are placed around the rest,
-/// and [`View::arrange`](crate::View::arrange) lays every row out again.
+/// How the view places vertex rows that have no position: a name, or
+/// `{ stress | layered: options }`. In a diagram it places blocks; on a plane or the earth it
+/// places points among the rows they link to. Gaps are in position units: diagram units, plane
+/// units, or degrees on the earth.
+///
+/// A row keeps its place once placed: rows added later are placed around the others, and
+/// [`View::arrange`](crate::View::arrange) lays out every row again.
 #[derive(Clone, Copy, PartialEq, Debug, Default, Deserialize, JsonSchema)]
 #[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = presets::<Layout>)]
 pub enum Layout {
-    /// Unplaced vertices are not drawn.
+    /// No layout: vertices without a position are not drawn. The default.
     #[default]
     None,
-    /// Distances on the drawing follow distances in the graph.
+    /// Drawn distances follow graph distances.
     Stress(Stress),
     /// Ranks along a direction, for flows and hierarchies.
     Layered(Layered),
@@ -43,12 +46,12 @@ impl<'de> Deserialize<'de> for Layout {
     }
 }
 
-/// Stress majorization: each pair of vertices pulls toward its graph distance; then their boxes
-/// part, keeping a quarter of the gap clear.
+/// Stress majorization: vertices move until drawn distances match graph distances, then overlapping
+/// boxes separate, keeping a quarter of `gap` between them.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Stress {
-    /// Units between adjacent vertices' centers.
+    /// Distance between the centers of linked vertices, in position units. Default 40.
     #[schemars(range(min = 0))]
     pub gap: f64,
 }
@@ -59,15 +62,16 @@ impl Default for Stress {
     }
 }
 
-/// Layered drawing: vertices in ranks, edges pointing along `flow`, and nets from their outputs.
+/// Layered drawing: vertices in ranks, edges pointing along `flow`, and nets ranked from their
+/// outputs.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Layered {
-    /// Where edges point.
+    /// The direction edges point; `right` by default.
     pub flow: Direction,
-    /// Units between vertices of a rank.
+    /// Distance between vertices within a rank, in position units. Default 30.
     pub gap: f64,
-    /// Units between ranks.
+    /// Distance between ranks, in position units. Default 80.
     pub rank_gap: f64,
 }
 
@@ -81,12 +85,12 @@ impl Default for Layered {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Route {
-    /// Straight across the screen.
+    /// A straight line on screen.
     Straight,
     /// Along the great circle, on the earth.
     Geodesic,
-    /// In horizontal and vertical runs around vertices, leaving and entering at their sides, bends
-    /// rounded. Diagrams only.
+    /// Horizontal and vertical runs around vertices that leave and enter at their sides, with
+    /// rounded bends. Diagrams only.
     Orthogonal,
 }
 
@@ -97,9 +101,10 @@ pub enum Interpolation {
     /// Straight from each sample to the next.
     #[default]
     Linear,
-    /// Each value holds from the sample before it: steps rise at their samples' ends.
+    /// Each value holds from the previous sample up to its own, so the line steps at the previous
+    /// sample.
     StepBefore,
-    /// Each value holds until the next sample: steps rise at the next sample.
+    /// Each value holds until the next sample, where the line steps.
     StepAfter,
 }
 

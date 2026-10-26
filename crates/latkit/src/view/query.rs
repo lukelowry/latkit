@@ -1,10 +1,11 @@
-//! Queries: every row within reach of a point, every row in a box, and where a row lies on screen,
-//! answered on the GPU by each mark's probe program through the geometry the frame drew, and read back
-//! a frame or two later, then decoded against what that frame drew. What a query finds of each mark
-//! follows the probe's words: the hits it keeps, after how many it found and how many it keeps, or a
-//! bit per row. Hits land in any order; they are told in one, and a mark that found more than it kept
-//! asks again with room for them all. One query runs at a time; the rest wait their turn, and one
-//! nobody waits for any more is passed over.
+//! Queries: every row within reach of a point, every row in a box, and where a row lies on screen.
+//!
+//! Each mark's probe program answers on the GPU, through the geometry the frame drew. The result is
+//! read back a frame or two later and decoded against that frame. A query's results for each mark
+//! follow the probe's words in the probe buffer: a hit count and capacity followed by the hits, or
+//! a bit per row. Hits arrive in any order and are sorted before they are returned. A mark that
+//! found more hits than it kept is queried again with room for all of them. One query runs at a
+//! time; the rest wait in order, and a query nobody awaits any more is skipped.
 
 use std::collections::VecDeque;
 
@@ -19,21 +20,23 @@ use crate::gpu::readback::Readback;
 use crate::gpu::shaders as wgsl;
 use crate::{Pending, Resolver, Row};
 
-/// Hits a mark keeps at first: past them, a query counts hits but keeps none, and asks again.
+/// Hits kept per mark on the first try. Hits past these are counted but not kept, and the query
+/// runs again with room for them.
 const HITS: u32 = 1024;
 
-/// A question for the GPU.
+/// A query for the GPU.
 pub(crate) enum Ask {
     /// Every row within `radius` CSS pixels of `point`, keeping up to `room` hits of each mark.
     Hits { point: [f32; 2], radius: f32, room: u32, reply: Resolver<Vec<Hit>> },
-    /// Every row in the box between two corners; they become the selection, as `trigger` chose.
+    /// Every row in the box between two corners. The rows become the selection, with `trigger` as
+    /// its cause.
     Boxed { corners: [[f32; 2]; 2], trigger: Trigger },
-    /// Where a row lies.
+    /// Where a row lies on screen.
     Locate { row: Row, reply: Resolver<Option<[f32; 2]>> },
 }
 
 impl Ask {
-    /// Whether nobody waits for its answer any more: a box selects, so it always runs.
+    /// Whether nobody awaits its answer any more. A box query selects rows, so it always runs.
     fn cancelled(&self) -> bool {
         match self {
             Ask::Hits { reply, .. } => reply.is_cancelled(),
@@ -42,7 +45,7 @@ impl Ask {
         }
     }
 
-    /// The frame's query words for it.
+    /// The frame uniform's query words for it.
     fn words(&self, marks: &[usize], view: &View) -> [f32; 4] {
         match self {
             Ask::Hits { point, radius, .. } => [point[0], point[1], *radius, 0.0],
@@ -63,8 +66,8 @@ impl Ask {
         }
     }
 
-    /// What it keeps of a mark of `instances` instances and `rows` rows, hits or rows, and the words
-    /// that takes.
+    /// How many hits or rows it keeps of a mark with `instances` instances and `rows` rows, and the
+    /// words that takes.
     fn room(&self, instances: u32, rows: u32) -> (u32, u32) {
         match self {
             Ask::Hits { room, .. } => {
@@ -77,7 +80,8 @@ impl Ask {
     }
 }
 
-/// What a query finds of mark `mark`: from word `at` of the probe's, `room` hits or rows.
+/// Where a query's results for mark `mark` lie: from probe-buffer word `at`, with room for `room`
+/// hits or rows.
 #[derive(Clone, Copy)]
 struct Found {
     mark: usize,
@@ -85,8 +89,8 @@ struct Found {
     room: u32,
 }
 
-/// A query this frame runs: what it asks, what it finds of each mark it asks, and the words that
-/// takes past the probe's.
+/// The query this frame runs: the query, where each mark's results go, and the words they take
+/// after the probe's.
 struct Running {
     ask: Ask,
     found: Vec<Found>,
@@ -109,14 +113,14 @@ pub(crate) struct Queries {
 }
 
 impl Queries {
-    /// Whether a query waits to run that someone still waits for.
+    /// Whether a query is running, or waiting to run with someone still awaiting it.
     pub(crate) fn due(&self) -> bool {
         self.running.is_some() || self.waiting.iter().any(|ask| !ask.cancelled())
     }
 }
 
 impl View {
-    /// Every row of a mark that picks within `radius` CSS pixels of `point`, nearest first, as the
+    /// Every row of a pickable mark within `radius` CSS pixels of `point`, nearest first, as the
     /// next frames draw them.
     pub fn pick(&mut self, point: [f32; 2], radius: f32) -> Pending<Vec<Hit>> {
         let (answer, reply) = Pending::new();
@@ -125,8 +129,8 @@ impl View {
         answer
     }
 
-    /// Where `row` lies on screen, CSS pixels from the top left, as the next frames draw it; `None`
-    /// when no mark draws it in view. A diagram's vertices answer at once from its sheet.
+    /// Where `row` lies on screen, in CSS pixels from the top left, as the next frames draw it;
+    /// `None` when no mark draws it in view. A diagram's vertices resolve at once from its sheet.
     pub fn screen_of(&mut self, row: &Row) -> Pending<Option<[f32; 2]>> {
         let diagram = matches!(self.scene.space, crate::Space::Diagram(_));
         if let Some(b) = self.derived.sheet.bounds(row).filter(|_| diagram) {
@@ -140,13 +144,13 @@ impl View {
         answer
     }
 
-    /// Selects every row in the box between two screen points, as `trigger` chose.
+    /// Selects every row in the box between two screen points, with `trigger` as the cause.
     pub(super) fn select_box(&mut self, corners: [[f32; 2]; 2], trigger: Trigger) {
         self.queries.waiting.push_back(Ask::Boxed { corners, trigger });
         self.wake();
     }
 
-    /// Where mark `i` draws `row` among the rows it draws, if it does.
+    /// The position of `row` among the rows mark `i` draws, if it draws it.
     pub(super) fn row_index(&self, i: usize, row: &Row) -> Option<u32> {
         let shown = self.marks.get(i)?;
         let style = shown.mark.style();
@@ -157,8 +161,8 @@ impl View {
         shown.item_of(shown.held_row(index as u32)?).filter(|&item| item < shown.rows)
     }
 
-    /// Takes the next query for this frame when none runs, passing over those nobody waits for, makes
-    /// room for what it finds past the probe's words, and returns its query words and whether it
+    /// Starts the next query this frame if none is in progress, skipping those nobody awaits. Makes
+    /// room for its results after the probe's words, and returns its query words and whether it
     /// reads depth.
     pub(super) fn next_query(&mut self) -> Option<([f32; 4], bool)> {
         if self.queries.running.is_some() || self.queries.reading.is_some() {
@@ -195,7 +199,7 @@ impl View {
         Some((words, depth))
     }
 
-    /// Records the running query's step over every mark it asks, and the copy of what it found.
+    /// Records the running query's step over every mark it covers, and the copy of its results.
     pub(super) fn run_query(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner) {
         let Some(Running { ask, found, words }) = self.queries.running.take() else { return };
         let gpu = self.gpu.clone();
@@ -203,7 +207,7 @@ impl View {
         let resources = self.resources.as_mut().expect("created before queries");
         let probe = resources.probe().clone();
         let start = u64::from(wgsl::PROBE_WORDS) * 4;
-        // What it finds starts out empty: no hits, with room for those each mark keeps; no rows.
+        // Results start empty: for hits, a zero count and each mark's capacity; for a box, no rows.
         match &ask {
             Ask::Hits { .. } => {
                 for f in &found {
@@ -235,7 +239,7 @@ impl View {
         self.queries.reading = Some(Reading { ask, found, readback, drew: self.drew() });
     }
 
-    /// Answers a query whose readback landed.
+    /// Answers a query whose readback has arrived.
     pub(super) fn settle_query(&mut self) {
         let Some(reading) = &self.queries.reading else { return };
         let Some(bytes) = reading.readback.take() else { return };
@@ -253,7 +257,7 @@ impl View {
         };
         match ask {
             Ask::Hits { point, radius, room, reply } => {
-                // A mark that found more than it kept asks again, with room for every hit it found.
+                // If a mark found more hits than it kept, run again with room for all of them.
                 let most = found.iter().map(|f| words_at(&words, f.at, 1).first().copied().unwrap_or(0)).max();
                 match most.filter(|&most| most > room) {
                     Some(room) => self.queries.waiting.push_front(Ask::Hits { point, radius, room, reply }),
@@ -289,11 +293,11 @@ impl View {
     }
 }
 
-/// The hits `words` hold of `found`, as `drew`, what their frame drew, names them.
+/// The hits in `words` for `found`, decoded against `drew`, the frame they came from.
 fn hits(found: &[Found], words: &[u32], drew: &Drew) -> Vec<Hit> {
-    // Nearest first, the mark drawn last first among equals, and a port before its marker; then
-    // by row and where it lies, so the order never depends on which hit landed first. Each row
-    // answers once, where it is nearest.
+    // Nearest first; among equals, the mark drawn last first, and a port before its marker; then
+    // by row and position, so the order never depends on which hit arrived first. Each row appears
+    // once, at its nearest hit.
     let mut kept: Vec<(usize, &[u32; wgsl::HIT_WORDS as usize])> = found
         .iter()
         .flat_map(|f| {
@@ -302,7 +306,7 @@ fn hits(found: &[Found], words: &[u32], drew: &Drew) -> Vec<Hit> {
             entries.as_chunks().0.iter().map(move |entry| (f.mark, entry))
         })
         .collect();
-    // The last keys first, as each sort keeps the order of ties.
+    // Sort by the minor keys first: each sort is stable, so the last one keeps their order in ties.
     let key = |high: u32, low: u32| u128::from(crate::order::pair(high, low));
     crate::order::by_wide_key(&mut kept, |&(_, entry)| key(entry[3], entry[4]) << 32 | u128::from(entry[5]));
     crate::order::by_wide_key(&mut kept, |&(i, entry)| key(entry[1], !(i as u32)) << 64 | key(!entry[2], entry[0]));
@@ -329,7 +333,8 @@ fn hits(found: &[Found], words: &[u32], drew: &Drew) -> Vec<Hit> {
     hits
 }
 
-/// `len` words from word `at` of the probe's, in a query's answer read from past the probe's words.
+/// `len` words from probe-buffer word `at`, in a query answer read back from past the probe's
+/// words.
 fn words_at(words: &[u32], at: u32, len: u32) -> &[u32] {
     let start = (at - wgsl::PROBE_WORDS) as usize;
     words.get(start..start + len as usize).unwrap_or(&[])

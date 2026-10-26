@@ -1,6 +1,6 @@
-//! Shots: a picture draws what a view shows at a size of its own once it is complete and still,
-//! panels compose side by side, a transparent picture keeps its alpha, and a frame tells whether
-//! anything stood in for work under way.
+//! Shots: a picture draws what a view shows, at its own size, once the view is complete and still.
+//! Panels compose side by side, a transparent picture keeps its alpha, and a frame reports whether
+//! it drew placeholders for pending work. Legends draw colormaps and named categories.
 
 #![cfg(feature = "gpu")]
 
@@ -36,7 +36,7 @@ fn pixel(image: &Image, x: u32, y: u32) -> [u8; 4] {
 }
 
 #[test]
-fn a_picture_draws_what_the_view_shows() {
+fn a_picture_draws_the_same_pixels_as_the_view() {
     let Some(gpu) = gpu() else { return };
     let (scene, data) = dot(20.0, Color::rgb(1.0, 0.0, 0.0));
     let mut view = view(&gpu, scene, &data);
@@ -50,7 +50,7 @@ fn a_picture_draws_what_the_view_shows() {
 }
 
 #[test]
-fn pictures_make_only_what_they_draw_with() {
+fn pictures_compile_only_the_pipelines_they_draw_with() {
     let Some(gpu) = gpu() else { return };
     let (scene, data) = dot(20.0, Color::rgb(1.0, 0.0, 0.0));
     let mut view = view(&gpu, scene, &data);
@@ -58,10 +58,10 @@ fn pictures_make_only_what_they_draw_with() {
     pollster::block_on(shot.image(&mut [&mut view])).expect("a picture");
     let made = gpu.work().pipelines;
     pollster::block_on(shot.image(&mut [&mut view])).expect("a picture");
-    // A picture takes no input, so it never makes the probes a pointer would need, and what it makes
-    // it asked for first.
-    assert_eq!(gpu.work().pipelines, made, "another picture makes nothing");
-    assert_eq!(gpu.work().late, 0, "nothing made where it was first used");
+    // A picture takes no input, so it never creates the probe pipelines a pointer needs. Every
+    // pipeline it creates was requested up front.
+    assert_eq!(gpu.work().pipelines, made, "another picture compiles no pipeline");
+    assert_eq!(gpu.work().late, 0, "no pipeline compiles at first use");
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn a_scaled_picture_draws_the_same_view_sharper() {
     let image =
         pollster::block_on(Shot::new([2 * SIZE, 2 * SIZE]).scale(2.0).image(&mut [&mut view])).expect("a picture");
     assert_eq!(image.size, [2 * SIZE, 2 * SIZE]);
-    // The same CSS layout at twice the pixels: the dot sits twice as far out, in twice the pixels.
+    // The same CSS layout at twice the pixels: the dot is twice as far out and twice as large.
     assert!(close(pixel(&image, SIZE + 40, SIZE), RED), "{:?}", pixel(&image, SIZE + 40, SIZE));
     assert!(close(pixel(&image, SIZE + 40 + 10, SIZE), RED), "a radius of 6 CSS pixels is 12 pixels");
     assert!(close(pixel(&image, SIZE, SIZE), BLACK));
@@ -89,10 +89,10 @@ fn panels_compose_side_by_side() {
     let image = pollster::block_on(shot.image(&mut [&mut left, &mut right])).expect("a picture");
     assert!(close(pixel(&image, SIZE / 2, SIZE / 2), RED), "{:?}", pixel(&image, SIZE / 2, SIZE / 2));
     assert!(close(pixel(&image, SIZE + SIZE / 2, SIZE / 2), [0, 0, 255, 255]));
-    assert!(close(pixel(&image, SIZE, SIZE / 2), BLACK), "each panel's own background between");
-    assert_eq!(gpu.work().late, 0, "what composes the panels was asked for first");
+    assert!(close(pixel(&image, SIZE, SIZE / 2), BLACK), "each panel's own background shows between the dots");
+    assert_eq!(gpu.work().late, 0, "the compose pipeline was requested ahead of use");
     let wrong = pollster::block_on(shot.image(&mut [&mut left]));
-    assert!(wrong.is_err(), "a view per panel");
+    assert!(wrong.is_err(), "a shot needs a view per panel");
 }
 
 #[test]
@@ -102,14 +102,14 @@ fn a_transparent_picture_keeps_its_alpha() {
     let scene = scene.theme(Theme { background: Color::TRANSPARENT, ..plain_theme() });
     let mut view = view(&gpu, scene, &data);
     let image = pollster::block_on(Shot::new([SIZE, SIZE]).transparent().image(&mut [&mut view])).expect("a picture");
-    assert_eq!(pixel(&image, 3, 3)[3], 0, "nothing drawn is clear");
+    assert_eq!(pixel(&image, 3, 3)[3], 0, "undrawn pixels are clear");
     assert!(close(pixel(&image, SIZE / 2, SIZE / 2), RED), "{:?}", pixel(&image, SIZE / 2, SIZE / 2));
     let png = Image::from_png(&image.encode(latkit::ImageFormat::Png).expect("written")).expect("a PNG");
     assert_eq!(png, image);
 }
 
 #[test]
-fn a_picture_waits_for_what_eases_to_land() {
+fn a_picture_waits_for_easing_to_finish() {
     let Some(gpu) = gpu() else { return };
     let (scene, data) = dot(0.0, Color::rgb(1.0, 0.0, 0.0));
     let mut view = view(&gpu, scene.ease(Duration::from_secs(2)), &data);
@@ -118,12 +118,12 @@ fn a_picture_waits_for_what_eases_to_land() {
     step(&gpu, &mut view);
     assert!(view.needs_render(), "the dot eases over two seconds");
     let image = pollster::block_on(Shot::new([SIZE, SIZE]).image(&mut [&mut view])).expect("a picture");
-    assert!(close(pixel(&image, SIZE / 2 + 40, SIZE / 2), RED), "the picture shows where it lands");
+    assert!(close(pixel(&image, SIZE / 2 + 40, SIZE / 2), RED), "the picture shows the dot at its final position");
     assert!(close(pixel(&image, SIZE / 2, SIZE / 2), BLACK));
 }
 
 #[test]
-fn a_frame_tells_whether_anything_stood_in() {
+fn a_frame_reports_whether_it_drew_placeholders() {
     let Some(gpu) = gpu() else { return };
     let (scene, data) = dot(0.0, Color::rgb(1.0, 0.0, 0.0));
     let mut view = View::new(&gpu, scene).expect("valid scene");
@@ -225,7 +225,7 @@ fn a_legend_draws_its_marks_colormap_across_the_domain() {
         .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(colors).legend(""));
     let mut view = view(&gpu, scene, &data);
     let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
-    // The bar ends 16 px from the right; its middle row sits above the ticks' labels.
+    // The bar ends 16 px from the right edge. Its middle row is above the tick labels.
     let y = 200 - 16 - 16 - 4 - 4;
     let near = |a: [u8; 4], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 24);
     let low = pixel(&image, 400 - 16 - 218, y);
@@ -257,8 +257,8 @@ fn a_legend_lists_named_categories_by_their_colors() {
     let named = field("k").colormap(map.categories(["red", "blue"]));
     let mut view = view(&gpu, scene.draw(node.color(named).legend("")), &data);
     let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
-    // Without a host no names are set, so the swatches end at the right margin, a row each above the
-    // bottom one: rows of 16.5 px up from 16 px above the bottom.
+    // Without a host no names are rasterized, so the swatches end at the right margin, one row each
+    // above the bottom margin: rows of 16.5 px, starting 16 px above the bottom.
     let x = 400 - 16 - 4;
     assert!(close(pixel(&image, x, 200 - 16 - 25), RED), "the first category: {:?}", pixel(&image, x, 159));
     assert!(close(pixel(&image, x, 200 - 16 - 8), [0, 0, 255, 255]), "the second: {:?}", pixel(&image, x, 176));

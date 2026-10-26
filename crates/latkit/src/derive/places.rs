@@ -1,10 +1,11 @@
-//! Places outside diagrams: where a vertex row without a position stands on a plane or the earth,
-//! by the scene's layout. Rows whose data positions them pin the layout, and links are the edges
-//! between them, so a row without coordinates stands among its neighbors; gaps are in the space's
-//! units. As on a diagram's sheet, a place persists by row, layouts place only rows without one
-//! until arranging lays every row without a position out again, and the layout is a host job. The
-//! places are a table beside each vertex table: its rows' positions, given or laid out, which the
-//! vertex marks read.
+//! Places of vertex rows without positions, outside diagrams.
+//!
+//! On a plane or the earth, the scene's layout places the vertex rows that have no position. Rows
+//! with positions are pinned, and edges are the layout's links, so an unpositioned row ends up
+//! among its neighbors. Gaps are in the space's units. As on a diagram's sheet, places persist by
+//! row, and the layout (a host job) places only rows without a place until `arrange` lays out
+//! every unpositioned row again. The result is a table beside each vertex table, holding its rows'
+//! positions, given or laid out, which the vertex marks read.
 
 use rustc_hash::FxHashMap;
 
@@ -18,22 +19,22 @@ use crate::{Layout, Pending};
 #[derive(Default)]
 pub(crate) struct Places {
     tables: Tables,
-    /// Where layouts placed rows without positions, kept by row.
+    /// The places layouts gave rows without positions, by row.
     laid: FxHashMap<Row, [f64; 2]>,
-    /// What the tables were last made from.
+    /// The stamp the tables were last made from.
     stamp: u64,
-    /// Bumps when places start over, so layouts asked before are dropped.
+    /// Bumps when places start over, so answers to earlier layouts are dropped.
     generation: u64,
     /// Whether every row without a position is to be laid out again.
     arranging: bool,
-    /// What the last arranging laid out, until the view takes it.
+    /// The result of the last arrange, until the view takes it.
     arranged: Option<Vec<(Row, [f64; 2])>>,
     placing: Option<Placing>,
-    /// Bumps whenever an answer lands.
+    /// Bumps whenever an answer arrives.
     landed: u64,
 }
 
-/// A layout under way: the generation it was asked in, and the row each key it answers names.
+/// A pending layout job: the generation it was started in, and the row each answer key names.
 struct Placing {
     pending: Pending<Vec<u8>>,
     generation: u64,
@@ -52,7 +53,7 @@ impl Derive for Places {
             return had;
         }
         let mut changed = false;
-        // A job its host does at once is taken before the frame draws.
+        // Repeat so a job the host finishes at once is taken before the frame draws.
         for _ in 0..4 {
             self.settle();
             let mut hasher = rustc_hash::FxHasher::default();
@@ -77,8 +78,8 @@ impl Derive for Places {
         &self.tables
     }
 
-    /// Forgets the tables but keeps the places: a scene with a layout again finds its rows where they
-    /// stood.
+    /// Drops the tables but keeps the places, so when the scene has a layout again, rows return to
+    /// where they were.
     fn clear(&mut self) {
         self.tables.clear();
         self.stamp = 0;
@@ -86,7 +87,7 @@ impl Derive for Places {
 }
 
 impl Places {
-    /// Lays every row without a position out again.
+    /// Lays out every row without a position again, dropping any pending layout.
     pub(crate) fn arrange(&mut self) {
         self.arranging = true;
         self.placing = None;
@@ -94,7 +95,7 @@ impl Places {
         self.stamp = 0;
     }
 
-    /// What the last arranging laid out, once it landed: each row placed, and where.
+    /// Takes the result of the last `arrange` once it arrives: each row laid out and its position.
     pub(crate) fn take_arranged(&mut self) -> Option<Vec<(Row, [f64; 2])>> {
         self.arranged.take()
     }
@@ -108,7 +109,7 @@ impl Places {
                 if let (Some(row), [Some(Value::Number(x)), Some(Value::Number(y))]) =
                     (placing.rows.get(&key), &values[..])
                 {
-                    // The plane and the earth run y up, as layouts do.
+                    // The plane and the earth are y up, like layouts.
                     self.laid.insert(row.clone(), [*x, *y]);
                     placed.push((row.clone(), [*x, *y]));
                 }
@@ -120,7 +121,7 @@ impl Places {
         self.landed += 1;
     }
 
-    /// Writes each vertex table's positions, asking the layout for the rows without one.
+    /// Writes each vertex table's positions, starting a layout job for rows without one.
     fn build(&mut self, input: &Input<'_>, jobs: &Jobs<'_>) {
         let (vertex_marks, edge_marks) = marks(input);
         let mut keys = Vec::new();
@@ -160,7 +161,7 @@ impl Places {
             let pending = jobs.spawn(Job::layout(&input.scene.layout, &placement));
             self.placing = Some(Placing { pending, generation: self.generation, rows });
         } else if self.arranging && self.placing.is_none() {
-            // Nothing to lay out: the arranging is done as asked.
+            // Nothing to lay out: the arrange finishes with no rows.
             self.arranging = false;
             self.arranged = Some(Vec::new());
         }

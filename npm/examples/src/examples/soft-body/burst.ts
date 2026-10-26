@@ -18,7 +18,8 @@ interface Chunk {
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-/** Independent capped pieces. No original triangle or spring connects them during a pop. */
+/** The body popped into independent capped pieces, which no original triangle or spring
+ * connects. */
 export class Burst {
   readonly chunks: Chunk[];
   readonly count: number;
@@ -94,7 +95,7 @@ export class Burst {
       this.targetBody[i + 1] = cy + rx * sin + ry * cos;
       this.targetBody[i + 2] = this.mesh.positions[i + 2]! * scale + 0.025;
     }
-    // Stable variation, sampled only at launch. Replay records the resulting positions.
+    // Seeded random variation, sampled only at launch. Replay records the resulting positions.
     let seed = 0x12b9;
     const random = () => {
       seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
@@ -157,7 +158,7 @@ export class Burst {
   }
 
   gather(): void {
-    // Queue early requests until the pieces have visibly separated, including key repeats.
+    // Defer early requests, including key repeats, until the pieces have visibly separated.
     if (this.active)
       this.returnAt = Math.min(this.returnAt, Math.max(this.age, this.reduced ? 0.5 : 0.9));
   }
@@ -170,7 +171,7 @@ export class Burst {
     this.active = false;
   }
 
-  /** Returns true on the one step that finishes assembly. */
+  /** Advances one step. Returns true on the step that finishes reassembly. */
   step(dt: number, gravity: number): boolean {
     if (!this.active) return false;
     this.previous.set(this.x);
@@ -213,7 +214,8 @@ export class Burst {
       }
       this.rotate(chunk, dt);
     }
-    // Soft sphere proxies separate tumbling pieces; stop before seams close on return.
+    // Soft sphere proxies push tumbling pieces apart. They stop once the return starts, so the
+    // seams can close.
     if (this.age < this.returnAt) this.separate();
     this.writeVertices(dt);
     if (settled && this.age > this.returnAt + 1.1) {

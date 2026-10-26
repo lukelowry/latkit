@@ -1,8 +1,8 @@
 /**
  * A line opening: ACTIVSg70k as its Little Rock to Newark 765 kV line opens. A DC power flow of the
- * whole grid finds where the line's power goes: the branches that pick it up glow amber, those it
- * leaves glow blue, and the rest of the grid stays a quiet web. Each bus stands as high as its
- * frequency, recorded 2.5 s into a simulation of the same opening.
+ * whole grid shows where the line's power goes. Branches that pick it up are amber, branches that
+ * lose flow are cyan, and the rest of the grid is a dim web. Each bus's height is its frequency
+ * 2.5 s into a simulation of the same opening.
  */
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,7 @@ import { levelOf, readCase } from './grids.ts';
 import { THEME, worldMap, type Piece } from './look.ts';
 import { STATES } from './grid.ts';
 
-/** Each bus's frequency deviation in hertz, as `record.ts` wrote it. */
+/** Reads each bus's frequency deviation in hertz from the file `record.ts` writes. */
 function frequency(): Float32Array {
   const file = fileURLToPath(new URL('opening.frequency.gz', import.meta.url));
   const bytes = gunzipSync(fs.readFileSync(file));
@@ -48,7 +48,8 @@ export default function opening(): Piece {
   const mw = (e: number, angle: Float64Array) =>
     ((angle[net.from[e]!]! - angle[net.to[e]!]!) * 100) /
     Math.max(Math.abs(net.reactance[e]!), 1e-4);
-  // What each branch picks up once the line is open, in MW, compressed so a few MW still shows.
+  // Each branch's change in flow magnitude once the line opens, as asinh(ΔMW / 4), so a change of a
+  // few MW still shows.
   const gain = Float32Array.from({ length: m }, (_, e) => {
     const before = mw(e, theta);
     return Math.asinh((Math.abs(before + mw(e, shift)) - Math.abs(before)) / 4);
@@ -57,8 +58,8 @@ export default function opening(): Piece {
     levelOf(Math.max(kv[net.from[e]!]!, kv[net.to[e]!]!)),
   );
   const hz = frequency();
-  // A pole down to the ground from one bus of 345 kV and up in each cell of 3/4 degree, so the
-  // height reads without a curtain of them.
+  // A pole to the ground from one bus of 345 kV or more in each 0.75° cell, so the heights are
+  // readable without crowding the view with poles.
   const cells = new Set<string>();
   const pole = Float32Array.from({ length: n }, (_, b) => {
     const cell = `${Math.floor(c.positions[2 * b]! / 0.75)} ${Math.floor(c.positions[2 * b + 1]! / 0.75)}`;
@@ -75,8 +76,8 @@ export default function opening(): Piece {
         lat: Float64Array.from({ length: n }, (_, b) => c.positions[2 * b + 1]!),
         kv,
         hz,
-        // A fraction of the earth's radius: on the ground at the lowest frequencies, rising with
-        // the frequency, the highest peaks compressed.
+        // Height as a fraction of the earth's radius: zero at deviations of -16 mHz and below,
+        // rising with frequency, with the highest peaks compressed by asinh.
         height: Float32Array.from(hz, (f) => 0.022 * Math.asinh(Math.max(0, f + 0.016) / 0.03)),
         pole,
       },
@@ -90,7 +91,7 @@ export default function opening(): Piece {
         gain,
         change: Float32Array.from(gain, Math.abs),
         level,
-        // Wider by voltage, and by how far past a quiet 10 MW the branch's flow changed.
+        // Width grows with voltage level, and with how far the flow change exceeds about 10 MW.
         width: Float32Array.from(
           gain,
           (g, e) => 0.45 + 0.12 * level[e]! + 0.3 * Math.max(0, Math.min(Math.abs(g), 6) - 1.7),
@@ -109,9 +110,10 @@ export default function opening(): Piece {
       pick: false,
     },
   });
-  // Map lines are a light steel at low alpha, so they lighten whatever lies under them.
+  // Map lines are a light steel blue at low alpha, so they lighten whatever is beneath them.
   const map = (alpha: string) => `#7fa6cc${alpha}`;
-  // The distribution web under 115 kV that the opening leaves be, dim and thin under the rest.
+  // Branches below 230 kV whose flow changes by less than about 10 MW, drawn dim and thin beneath
+  // the rest.
   const quiet: ExprInput = {
     op: 'and',
     args: [
@@ -137,13 +139,14 @@ export default function opening(): Piece {
           projection: 'globe',
           graticule: true,
           atmosphere: true,
-          // Dusk at the equinox: the sun sets over the grid's west, night falls on the Atlantic.
+          // Dusk at the September equinox. The sun is setting over the western grid, and it is
+          // night over the Atlantic.
           daylight: Date.UTC(2026, 8, 22, 22, 20) / 1000,
         },
       },
       ease: 0,
-      // The docs page's own ground, air a muted steel rather than the event's cyan, a faint
-      // graticule, and a night that keeps the grid readable.
+      // The docs page's background, a muted steel atmosphere rather than the cyan of the flow
+      // changes, a faint graticule, and a night shade light enough to keep the grid readable.
       theme: {
         ...THEME,
         background: '#0f141a',
@@ -192,7 +195,8 @@ export default function opening(): Piece {
             priority: 'change',
             width: 'width',
             color: {
-              // The backbone a quiet grey within 10 MW either way; past it, cyan and amber of equal brightness.
+              // Grey for changes within about 10 MW either way. Beyond that, cyan for less flow
+              // and amber for more, at equal brightness.
               colormap: {
                 kind: 'diverging',
                 colors: [
@@ -219,7 +223,8 @@ export default function opening(): Piece {
             pick: false,
           },
         },
-        // The opened line: a faint red halo, red, and a bright core, the brightest thing drawn.
+        // The opened line as a faint red halo, a red line, and a pale core. It is the brightest
+        // thing drawn.
         opened('halo', 10, '#ff2e4d2e'),
         opened('opened', 4.4, '#ff2e4d'),
         opened('core', 1.3, '#ffd6dd'),

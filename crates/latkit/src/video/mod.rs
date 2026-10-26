@@ -1,10 +1,11 @@
-//! Videos: a shot's pictures over time, handed in order to a [`Sink`] while they are drawn. Three
-//! stages overlap, so throughput is the slowest of them rather than their sum: the GPU draws and
-//! composes one frame while another is read back and the sink takes a third. A frame where nothing
-//! moved is neither drawn nor read back: the sink is told it is held, and shows the frame before.
+//! Videos: a shot's pictures over time, passed in order to a [`Sink`] as they are drawn. Three
+//! stages overlap, so throughput is set by the slowest stage rather than their sum: the GPU draws
+//! and composes one frame while another is read back and the sink takes a third. A frame where
+//! nothing moved is neither drawn nor read back; the sink is told it is held and shows the previous
+//! frame again.
 //!
-//! [`Mp4`] is the sink most videos take: H.264 from the host's
-//! [`Encoder`](crate::host::Encoder), written as fragmented MP4.
+//! [`Mp4`] is the usual sink: H.264 from the host's [`Encoder`](crate::host::Encoder), written as
+//! fragmented MP4.
 
 mod mp4;
 
@@ -21,57 +22,59 @@ use crate::host::{Encoder, Host, TIMESCALE, Unit};
 use crate::shot::{Borrowed, Drawing, Step, Views};
 use crate::{Error, Gpu, Result, Shot, View};
 
-/// Frames drawn and not yet taken at once: one drawing, one reading back, one in the sink.
+/// Most frames in flight at once: one drawing, one reading back, one in the sink.
 const IN_FLIGHT: usize = 3;
-/// Seconds of video between keyframes at most.
+/// Most seconds of video between keyframes.
 const KEYFRAMES: f64 = 2.0;
-/// Bits a pixel of a frame takes by default: sharp lines and text stay sharp.
+/// Default bits per pixel per frame, enough to keep lines and text sharp.
 const BITS_PER_PIXEL: f64 = 0.15;
 
-/// The bytes a picture is composed into.
+/// The pixel format a picture is composed into.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Pixels {
-    /// RGBA rows, top to bottom, four bytes a pixel with straight alpha: an [`Image`](crate::Image)'s.
+    /// RGBA rows, top to bottom, four bytes per pixel with straight alpha, as in an
+    /// [`Image`](crate::Image).
     Rgba,
-    /// NV12: a plane of luma, then one of Cb and Cr interleaved at half the resolution, BT.709 in
-    /// limited range. The picture's width is a multiple of 4 and its height of 2.
+    /// NV12: a luma plane, then a plane of interleaved Cb and Cr at half resolution, BT.709 limited
+    /// range. The picture's width must be a multiple of 4 and its height a multiple of 2.
     Nv12,
 }
 
-/// What a video's frames go to, in order: an [`Mp4`] file, or whatever an application makes of the
+/// Where a video's frames go, in order: an [`Mp4`] file, or the application's own handling of the
 /// pixels.
 pub trait Sink {
-    /// The bytes it takes.
+    /// The pixel format it takes.
     const PIXELS: Pixels;
 
-    /// Readies it for the video `encoding` describes, before the first frame, with the services of
-    /// the GPU's `host`: an MP4 asks it for an encoder.
+    /// Prepares the sink for the video `encoding` describes, before the first frame, using the
+    /// GPU's `host` services; an MP4 gets its encoder from the host. Does nothing by default.
     fn begin(&mut self, encoding: &Encoding, host: Option<&dyn Host>) -> Result<()> {
         let _ = (encoding, host);
         Ok(())
     }
 
-    /// Takes frame `index`: its pixels, or `None` where nothing moved since the frame before, which it
-    /// shows again. Resolves once there is room for another.
+    /// Takes frame `index`: its pixels, or `None` if nothing moved since the previous frame, which
+    /// then shows again. Resolves once the sink can take another frame.
     fn frame(&mut self, index: u64, pixels: Option<Vec<u8>>) -> impl Future<Output = Result<()>>;
 
-    /// Ends the video before frame `end`, every frame before it taken.
+    /// Ends the video at the time of frame `end`, once every earlier frame was taken.
     fn finish(&mut self, end: u64) -> impl Future<Output = Result<()>>;
 }
 
-/// A video: its pictures' size in pixels, frames a second, and the bits a second an encoder spends.
+/// A video's encoding: picture size in pixels, frames per second, and the encoder's bitrate.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Encoding {
     /// Width and height in pixels.
     pub size: [u32; 2],
-    /// Frames a second.
+    /// Frames per second.
     pub fps: f64,
-    /// Bits a second.
+    /// Bits per second.
     pub bitrate: u32,
 }
 
 impl Encoding {
-    /// A video of `size` at `fps`, at about 0.15 bits a pixel a frame.
+    /// A video of `size` at `fps`, at about 0.15 bits per pixel per frame, clamped to between
+    /// 100 kbit/s and 400 Mbit/s.
     pub fn new(size: [u32; 2], fps: f64) -> Encoding {
         let bits = f64::from(size[0]) * f64::from(size[1]) * fps * BITS_PER_PIXEL;
         Encoding { size, fps, bitrate: bits.clamp(1e5, 4e8) as u32 }
@@ -89,8 +92,9 @@ impl Encoding {
     }
 }
 
-/// A [`Sink`] encoding H.264 with the host's encoder and writing it to `out` as fragmented MP4 while
-/// frames are drawn. A frame lasts until the next one shows, so held frames cost nothing.
+/// A [`Sink`] that encodes H.264 with the host's encoder and writes it to `out` as fragmented MP4
+/// while frames are drawn. A frame lasts until the next one shows, so held frames are not encoded
+/// and add nothing to the file.
 ///
 /// ```no_run
 /// # async fn example(gpu: &latkit::Gpu, map: &mut latkit::View, plot: &mut latkit::View) -> latkit::Result<()> {
@@ -110,26 +114,26 @@ impl Encoding {
 pub struct Mp4<W: Write> {
     out: W,
     bitrate: Option<u32>,
-    /// The encoder, the muxer, and the frame rate, once the video began.
+    /// The encoder, muxer, and frame rate, once the video has begun.
     began: Option<(Box<dyn Encoder>, Muxer, f64)>,
-    /// When the last keyframe shows, in ticks.
+    /// The time of the last keyframe, in ticks.
     keyed: Option<u64>,
 }
 
 impl<W: Write> Mp4<W> {
-    /// An MP4 written to `out`, at about 0.15 bits a pixel a frame.
+    /// An MP4 written to `out`, at about 0.15 bits per pixel per frame.
     pub fn new(out: W) -> Mp4<W> {
         Mp4 { out, bitrate: None, began: None, keyed: None }
     }
 
-    /// Encodes at `bitrate` bits a second.
+    /// Encodes at `bitrate` bits per second. A bitrate of 0 is an error when the video begins.
     #[must_use]
     pub fn bitrate(mut self, bitrate: u32) -> Mp4<W> {
         self.bitrate = Some(bitrate);
         self
     }
 
-    /// What it was written to.
+    /// The writer the MP4 was written to.
     pub fn into_inner(self) -> W {
         self.out
     }
@@ -151,18 +155,18 @@ impl<W: Write> Sink for Mp4<W> {
         let mut encoding = *encoding;
         if let Some(bitrate) = self.bitrate {
             if bitrate == 0 {
-                return Err(Error::invalid("an MP4 takes a positive bitrate").at("bitrate"));
+                return Err(Error::invalid("must be positive").at("bitrate"));
             }
             encoding.bitrate = bitrate;
         }
-        let host = host.ok_or_else(|| Error::Unsupported("an MP4 is encoded by the Gpu's host; it has none".into()))?;
+        let host = host.ok_or_else(|| Error::Unsupported("encoding an MP4 needs a host; the Gpu has none".into()))?;
         self.began = Some((host.encoder(&encoding)?, Muxer::new(encoding.size, TIMESCALE), encoding.fps));
         Ok(())
     }
 
     async fn frame(&mut self, index: u64, pixels: Option<Vec<u8>>) -> Result<()> {
         let Some(nv12) = pixels else { return Ok(()) };
-        let (encoder, _, fps) = self.began.as_mut().ok_or_else(|| Error::invalid("an MP4 begins before its frames"))?;
+        let (encoder, _, fps) = self.began.as_mut().ok_or_else(|| Error::invalid("begin an MP4 before its frames"))?;
         let time = ticks(index, *fps);
         let key = self.keyed.is_none_or(|keyed| time - keyed >= (KEYFRAMES * f64::from(TIMESCALE)) as u64);
         if key {
@@ -173,7 +177,7 @@ impl<W: Write> Sink for Mp4<W> {
     }
 
     async fn finish(&mut self, end: u64) -> Result<()> {
-        let (encoder, _, _) = self.began.as_mut().ok_or_else(|| Error::invalid("an MP4 begins before it ends"))?;
+        let (encoder, _, _) = self.began.as_mut().ok_or_else(|| Error::invalid("begin an MP4 before finishing it"))?;
         let units = encoder.finish().await?;
         self.write(units)?;
         let (_, muxer, fps) = self.began.as_mut().expect("begun");
@@ -183,24 +187,27 @@ impl<W: Write> Sink for Mp4<W> {
     }
 }
 
-/// A video of a shot's pictures, handed to its sink while they are drawn.
+/// A video of a shot's pictures, passed to its sink as they are drawn.
 pub struct Video<S: Sink> {
     drawing: Drawing,
     sink: S,
     fps: f64,
-    /// The next frame.
+    /// Index of the next frame.
     index: u64,
-    /// Frames drawn or held and not yet taken, oldest first: a held frame has nothing to read back.
+    /// Frames drawn or held but not yet passed to the sink, oldest first. A held frame has nothing
+    /// to read back.
     flight: VecDeque<(u64, Option<Readback>)>,
-    /// Whether a frame was drawn: after one, a frame where nothing moved is held instead.
+    /// Whether a frame was drawn. After the first, a frame where nothing moved is held instead.
     drawn: bool,
 }
 
 impl Shot {
-    /// A video of this shot's pictures at `fps` frames a second, each frame handed to `sink`.
+    /// A video of this shot's pictures at `fps` frames per second, each frame passed to `sink`.
+    /// Errors if `fps` is outside 1 to 240, if the shot does not suit the sink's pixel format (see
+    /// [`Shot::check`]), or if the sink cannot begin.
     pub fn video<S: Sink>(&self, gpu: &Gpu, fps: f64, mut sink: S) -> Result<Video<S>> {
         if !(fps.is_finite() && (1.0..=240.0).contains(&fps)) {
-            return Err(Error::invalid("a video shows 1 to 240 frames a second").at("fps"));
+            return Err(Error::invalid("must be 1 to 240 frames a second").at("fps"));
         }
         self.check(S::PIXELS)?;
         let host = gpu.0.lock().host.clone();
@@ -217,7 +224,7 @@ impl Shot {
 }
 
 impl<S: Sink> Video<S> {
-    /// Seconds into the video the next frame shows at.
+    /// The time in seconds at which the next frame shows.
     pub fn time(&self) -> f64 {
         self.index as f64 / self.fps
     }
@@ -227,9 +234,10 @@ impl<S: Sink> Video<S> {
         self.index
     }
 
-    /// Draws the next frame of `views`, one per panel, at its time once they are complete, and hands
-    /// it on to the sink. It returns once there is room for another frame, not once the sink took
-    /// this one. A frame where nothing moved is not drawn: the sink shows the one before again.
+    /// Draws the next frame of `views`, one per panel, at the frame's time once they are complete,
+    /// and passes it to the sink. Returns once there is room for another frame, not once the sink
+    /// has taken this one. A frame where nothing moved is not drawn, and the sink shows the
+    /// previous frame again.
     pub async fn frame(&mut self, views: &mut [&mut View]) -> Result<()> {
         self.frame_of(&mut Borrowed(views)).await
     }
@@ -256,15 +264,15 @@ impl<S: Sink> Video<S> {
             self.drawn = true;
         }
         self.index += 1;
-        // Held frames first in line wait on nothing.
+        // Held frames at the front of the queue wait on nothing, so pass them on now.
         while matches!(self.flight.front(), Some((_, None))) {
             self.hand_on().await?;
         }
         Ok(())
     }
 
-    /// Hands every frame under way to the sink, ends the video at the next frame's time, and gives
-    /// the sink back.
+    /// Passes every frame in flight to the sink, ends the video at the next frame's time, and
+    /// returns the sink.
     pub async fn finish(mut self) -> Result<S> {
         while !self.flight.is_empty() {
             self.hand_on().await?;
@@ -273,7 +281,7 @@ impl<S: Sink> Video<S> {
         Ok(self.sink)
     }
 
-    /// Reads the oldest frame back, when it was drawn, and hands it to the sink.
+    /// Reads back the oldest frame, if it was drawn, and passes it to the sink.
     async fn hand_on(&mut self) -> Result<()> {
         let Some((index, readback)) = self.flight.pop_front() else { return Ok(()) };
         let pixels = match readback {

@@ -1,9 +1,12 @@
-//! Orders: how a table drawn in part draws its rows. Every per-row input a mark reads of such a table,
-//! and every per-row word it keeps, lies in pages of its order, so the camera choosing tiles chooses
-//! ranges of pages and nothing is gathered as it moves. Until its pyramid lands a table draws an even
-//! sample of its rows first, after the rows the edges a sample draws end at, which land with those
-//! edges as in a pyramid; a pyramid serves while the rows it was made from hold, the rows appended
-//! since drawing after them in their own order.
+//! Draw orders of paged tables.
+//!
+//! A mark lays out every per-row input and every per-row GPU word of a paged table in pages of its
+//! order. Choosing tiles then chooses ranges of pages, so nothing is gathered as the camera moves.
+//!
+//! Until its pyramid arrives, a table draws an even sample of its rows first. The rows that sampled
+//! edges end at come before the sample, as a pyramid would show them with those edges. A pyramid
+//! serves while the rows it was made from are unchanged; rows appended since draw after them, in
+//! table order.
 
 use std::sync::Arc;
 
@@ -11,21 +14,20 @@ use super::pyramid::Pyramid;
 use super::stamp_of;
 use crate::gpu::shaders::PAGE_ROWS;
 
-/// Rows a page of an order holds: a held page.
-
+/// A paged table's draw order: which row draws at each place.
 #[derive(Clone, Debug)]
 pub(crate) enum Order {
-    /// The rows `lifted` lists first; then every `step`th of the rest of a table's `rows` rows, then
-    /// the rest, each in their own order.
+    /// The rows in `lifted` first; then every `step`th row of the table's `rows` rows (those at
+    /// multiples of `step`) not lifted; then the remaining rows. Each group is in table order.
     Sampled { rows: u32, step: u32, lifted: Lifted },
-    /// A pyramid's order of a table's first rows, then the rest of its `rows` rows, appended since,
-    /// in their own order.
+    /// A pyramid's order of the table's first rows, then the rows appended since, in table order,
+    /// up to `rows` rows.
     Pyramid { pyramid: Arc<Pyramid>, rows: u32 },
 }
 
-/// The rows a sample draws before its own, as a pyramid lands a vertex with the coarsest edge ending
-/// at it: those the edges a sample draws end at. Ascending, with where each draws in the sample
-/// without them, ascending too.
+/// The rows a sample draws before its own: the rows the sampled edges end at, just as a pyramid
+/// shows a vertex at least as coarse as the coarsest edge ending at it. Holds the rows ascending,
+/// each row's place in the plain sample (without lifted rows) ascending, and a stamp of the rows.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Lifted {
     rows: Arc<[u32]>,
@@ -34,15 +36,15 @@ pub(crate) struct Lifted {
 }
 
 impl Lifted {
-    /// `rows` of a table of `len` rows lifted in a sample of `sample` rows, which they count toward;
-    /// and the step of the table's own even sample, which takes the rest.
+    /// Lifts `rows` of a table of `len` rows into a sample of `sample` rows. The lifted rows count
+    /// toward the sample; returns them with the step of the even sample that fills the rest.
     pub(crate) fn within(rows: Vec<u32>, len: u32, sample: u32) -> (Lifted, u32) {
         let rows = ascending(rows, len);
         let step = len.div_ceil(sample.saturating_sub(rows.len() as u32).max(1)).max(1);
         (Lifted::new(rows, len, step), step)
     }
 
-    /// `rows` of a table of `len` rows sampled every `step`th.
+    /// Lifts `rows` of a table of `len` rows into a sample taking every `step`th row.
     fn new(rows: Vec<u32>, len: u32, step: u32) -> Lifted {
         let rows = ascending(rows, len);
         let mut places: Vec<u32> = rows.iter().map(|&r| sample_rank(r, len, step)).collect();
@@ -56,7 +58,7 @@ impl Lifted {
     }
 }
 
-/// `rows` of a table of `len` rows, ascending, each once.
+/// The `rows` below `len`, sorted ascending without duplicates.
 fn ascending(mut rows: Vec<u32>, len: u32) -> Vec<u32> {
     rows.retain(|&r| r < len);
     rows.sort_unstable();
@@ -64,29 +66,30 @@ fn ascending(mut rows: Vec<u32>, len: u32) -> Vec<u32> {
     rows
 }
 
-/// Where row `r` draws in an even sample of `rows` rows every `step`th: the sample first, then the
-/// rest, each in their own order.
+/// The place of row `r` in an even sample of `rows` rows taking every `step`th: the sampled rows
+/// first, then the rest, each in table order.
 fn sample_rank(r: u32, rows: u32, step: u32) -> u32 {
     if r.is_multiple_of(step) { r / step } else { rows.div_ceil(step) + r - r / step - 1 }
 }
 
-/// The row drawn at `d` in an even sample of `rows` rows every `step`th.
+/// The row at place `d` in an even sample of `rows` rows taking every `step`th; the inverse of
+/// `sample_rank`.
 fn sample_source(d: u32, rows: u32, step: u32) -> u32 {
     let first = rows.div_ceil(step);
     if d < first || step <= 1 {
         return d * step;
     }
-    // Each step's rows but its first, in their own order.
+    // Past the sample: each step's rows except its first, in table order.
     let k = d - first;
     (k / (step - 1)) * step + k % (step - 1) + 1
 }
 
-/// The `e`th place, from 0, that `places`, ascending, does not list.
+/// The `e`th place (from 0) missing from `places`, which ascends. A binary search.
 fn unlisted(places: &[u32], e: u32) -> u32 {
     let (mut lo, mut hi) = (e, e + places.len() as u32);
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        // Places up to `mid` it does not list.
+        // How many places up to `mid` are missing from `places`.
         let free = mid + 1 - places.partition_point(|&p| p <= mid) as u32;
         if free > e {
             hi = mid;
@@ -98,19 +101,19 @@ fn unlisted(places: &[u32], e: u32) -> u32 {
 }
 
 impl Order {
-    /// Rows it orders: every row of its table.
+    /// The number of rows it orders: every row of its table.
     pub(crate) fn len(&self) -> u32 {
         match self {
             Order::Sampled { rows, .. } | Order::Pyramid { rows, .. } => *rows,
         }
     }
 
-    /// Pages of it.
+    /// The number of pages it spans.
     pub(crate) fn pages(&self) -> u32 {
         self.len().div_ceil(PAGE_ROWS)
     }
 
-    /// The rows a sample draws first: those lifted, then its own.
+    /// How many rows a sample draws first: the lifted rows plus the sample's own. 0 for a pyramid.
     pub(crate) fn sampled(&self) -> u32 {
         match self {
             Order::Sampled { rows, step, lifted } => {
@@ -121,7 +124,7 @@ impl Order {
         }
     }
 
-    /// The row drawn at `d`.
+    /// The row drawn at place `d`.
     pub(crate) fn source(&self, d: u32) -> u32 {
         match self {
             Order::Sampled { rows, step, lifted } => match lifted.rows.get(d as usize) {
@@ -132,7 +135,7 @@ impl Order {
         }
     }
 
-    /// Where row `r` draws.
+    /// The place where row `r` draws; the inverse of `source`.
     pub(crate) fn rank(&self, r: u32) -> u32 {
         match self {
             Order::Sampled { rows, step, lifted } => {
@@ -146,11 +149,11 @@ impl Order {
         }
     }
 
-    /// The rows page `page` holds, in order.
+    /// The rows on page `page`, in order.
     pub(crate) fn page(&self, page: u32) -> Vec<u32> {
         let (start, end) = (page * PAGE_ROWS, ((page + 1) * PAGE_ROWS).min(self.len()));
         let Order::Sampled { rows, step, lifted } = self else { return (start..end).map(|d| self.source(d)).collect() };
-        // The rows lifted it holds, then the sample's in turn, stepping past the places lifted.
+        // The page's lifted rows, then the sample's rows in turn, skipping lifted places.
         let m = lifted.len();
         let mut out: Vec<u32> =
             lifted.rows.get(start.min(m) as usize..end.min(m) as usize).unwrap_or_default().to_vec();
@@ -169,8 +172,8 @@ impl Order {
         out
     }
 
-    /// What pages packed in it are kept by: one pyramid's whatever rows were appended since, a
-    /// sample's by its rows and those it lifts.
+    /// The key that identifies pages packed in this order. A pyramid's id ignores rows appended
+    /// since; a sample's depends on its row count, step, and lifted rows.
     pub(crate) fn id(&self) -> u64 {
         match self {
             Order::Sampled { rows, step, lifted } => stamp_of(("sampled", rows, step, lifted.stamp)),
@@ -199,24 +202,24 @@ mod tests {
         let drawn: Vec<u32> = (0..10).map(|d| order.source(d)).collect();
         assert_eq!(drawn, [0, 3, 6, 9, 1, 2, 4, 5, 7, 8]);
         for (d, &r) in drawn.iter().enumerate() {
-            assert_eq!(order.rank(r), d as u32, "row {r} draws where its rank says");
+            assert_eq!(order.rank(r), d as u32, "row {r}'s rank is its place");
         }
         assert_eq!(order.sampled(), 4);
-        assert_eq!(sample(4, 1).page(0), [0, 1, 2, 3], "a step of one is the rows' own order");
+        assert_eq!(sample(4, 1).page(0), [0, 1, 2, 3], "a step of one keeps table order");
     }
 
     #[test]
-    fn rows_lifted_draw_before_the_sample_and_leave_it() {
+    fn lifted_rows_draw_before_the_sample_and_only_once() {
         // Rows 4 and 6 lifted: 6 was a sample's row, 4 was not.
         let order = Order::Sampled { rows: 10, step: 3, lifted: Lifted::new(vec![6, 4, 6, 12], 10, 3) };
         let drawn: Vec<u32> = (0..10).map(|d| order.source(d)).collect();
         assert_eq!(drawn, [4, 6, 0, 3, 9, 1, 2, 5, 7, 8]);
         for (d, &r) in drawn.iter().enumerate() {
-            assert_eq!(order.rank(r), d as u32, "row {r} draws where its rank says");
+            assert_eq!(order.rank(r), d as u32, "row {r}'s rank is its place");
         }
-        assert_eq!(order.sampled(), 5, "the rows lifted, then the sample's own");
-        assert_ne!(order.id(), sample(10, 3).id(), "pages packed in it are its own");
-        // A page steps through the sample past the places lifted, as each row's source finds them.
+        assert_eq!(order.sampled(), 5, "2 lifted rows plus 3 sampled rows");
+        assert_ne!(order.id(), sample(10, 3).id(), "lifted rows change the order's id");
+        // Each page lists the same rows as `source` gives place by place.
         let rows = 3 * PAGE_ROWS + 17;
         let lifted = Lifted::new((0..rows).filter(|r| r % 5 == 1 || r % 7 == 0).collect(), rows, 4);
         let order = Order::Sampled { rows, step: 4, lifted };
@@ -228,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_appended_after_a_pyramid_draw_after_it_in_their_own_order() {
+    fn rows_appended_after_a_pyramid_draw_after_it_in_table_order() {
         let pyramid = Arc::new(Pyramid::new(vec![2, 0, 1], Vec::new()));
         let order = Order::Pyramid { pyramid, rows: 5 };
         assert_eq!(order.page(0), [2, 0, 1, 3, 4]);

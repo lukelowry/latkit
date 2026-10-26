@@ -1,4 +1,4 @@
-//! The GPU: views and canvases are made of it, and its frames, budget, and work read from it.
+//! The GPU: it creates views and canvases, and reports its frames, budget, and work.
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -19,8 +19,9 @@ impl Gpu {
         Ok(Gpu(latkit::Gpu::new().await?))
     }
 
-    /// A view of `scene` (JSON), telling `tell` its events from the start: each batch a JSON array of
-    /// `{ type, detail }`. A canvas shows it; a shot draws it with or without one.
+    /// Creates a view of `scene` (JSON) that sends its events to `tell` from the start, each batch
+    /// as a JSON array of `{ type, detail }`. A canvas shows it. A shot draws it with or without
+    /// a canvas.
     pub fn view(&self, scene: &str, tell: js_sys::Function) -> Result<View, Error> {
         let view = latkit::web::PageView::new(latkit::View::new(&self.0, json("scene", scene)?)?);
         let telling = view.on(move |events| {
@@ -29,8 +30,9 @@ impl Gpu {
         Ok(View { view, _telling: telling })
     }
 
-    /// A canvas showing `views`, each placed `at` four fractions of its own, in `target`: a `<canvas>`
-    /// element, or an `OffscreenCanvas` at `pixel_ratio` pixels a CSS pixel.
+    /// Creates a canvas showing `views` in `target`, each at its four fractions of `at`. `target`
+    /// is a `<canvas>` element, or an `OffscreenCanvas` at `pixel_ratio` pixels per CSS pixel
+    /// (default 1).
     pub fn canvas(
         &self,
         target: &JsValue,
@@ -44,7 +46,7 @@ impl Gpu {
         } else if let Some(offscreen) = target.dyn_ref::<web_sys::OffscreenCanvas>() {
             latkit::web::Canvas::offscreen(&self.0, offscreen, layout, pixel_ratio.unwrap_or(1.0))?
         } else {
-            return Err(latkit::Error::invalid("a canvas draws into a <canvas> or an OffscreenCanvas").into());
+            return Err(latkit::Error::invalid("the target must be a <canvas> or an OffscreenCanvas").into());
         };
         Ok(Canvas(canvas))
     }
@@ -63,45 +65,45 @@ impl Gpu {
         self.0.lost()
     }
 
-    /// How much GPU memory data takes, as JSON `{ bytes, uploadPerFrame }`.
+    /// The GPU memory budget for data, as JSON `{ bytes, uploadPerFrame }`.
     #[wasm_bindgen(getter)]
     pub fn budget(&self) -> String {
         to_json(&self.0.budget())
     }
 
-    /// Sets how much GPU memory data takes, from JSON `{ bytes, uploadPerFrame }`.
+    /// Sets the GPU memory budget for data from JSON `{ bytes, uploadPerFrame }`.
     #[wasm_bindgen(js_name = setBudget)]
     pub fn set_budget(&self, budget: &str) -> Result<(), Error> {
         self.0.set_budget(json("budget", budget)?);
         Ok(())
     }
 
-    /// What the GPU did since it was made, counted exactly, as JSON.
+    /// Exact counts of the GPU's work since it was created, as JSON.
     #[wasm_bindgen(getter)]
     pub fn work(&self) -> String {
         to_json(&self.0.work())
     }
 
-    /// Bytes on the GPU every view of it draws from.
+    /// Bytes resident on the GPU that its views draw from.
     #[wasm_bindgen(getter)]
     pub fn resident(&self) -> f64 {
         self.0.resident() as f64
     }
 
-    /// Bytes waiting to upload, for every view of it.
+    /// Bytes waiting to upload, across all its views.
     #[wasm_bindgen(getter)]
     pub fn uploading(&self) -> f64 {
         self.0.uploading() as f64
     }
 
-    /// Draws one frame now at `now`, milliseconds as an animation frame's timestamp; from the first,
-    /// no animation frames are asked for.
+    /// Draws one frame immediately, with `now` as its timestamp in milliseconds. After the first
+    /// call, no animation frames are requested.
     pub fn step(&self, now: f64) {
         latkit::web::step(&self.0, now);
     }
 
-    /// Done once the GPU finished what was submitted, every readback landed, and every pipeline
-    /// asked for compiled.
+    /// Resolves once the GPU has finished its submitted work, every readback has arrived, and every
+    /// requested pipeline has compiled.
     pub fn done(&self) -> Task {
         let gpu = self.0.clone();
         task(async move {
@@ -110,7 +112,7 @@ impl Gpu {
         })
     }
 
-    /// Done when work a view waits on lands after this call, or a view asks for a frame.
+    /// Resolves when work a view depends on arrives after this call, or a view requests a frame.
     pub fn landed(&self) -> Task {
         let landed = latkit::web::landed(&self.0);
         task(async move {
@@ -120,6 +122,6 @@ impl Gpu {
     }
 }
 
-/// A listener; freeing it stops it.
+/// A frame listener. Freeing it stops it.
 #[wasm_bindgen]
 pub struct Listener(#[allow(dead_code, reason = "kept until freed")] latkit::web::Listener);

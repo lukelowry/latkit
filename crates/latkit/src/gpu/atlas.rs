@@ -1,13 +1,16 @@
-//! Text on the GPU: runs set once by the host at `TEXT_BASE`, turned into distance fields reaching
-//! `TEXT_SPREAD` texels past the text's edge, and packed on shelves of one texture. Until a run is
-//! set, its size is measured from its font's characters, each measured by the host once, so its label
-//! is placed where it will show. A distance field
-//! draws crisp at any size and gives halos for free, so a run is set once whatever size it shows at.
-//! The host sets coverage; the GPU makes the fields of every run set in a frame at once, before the
-//! frame draws (`compute/fields.wesl`). When no shelf has room, the shelf used least recently is
-//! cleared for the new run; only when none fits does the packing start over. A run counts as used
-//! when it is set and whenever labels in view show it, so what the view shows stays. Views follow
-//! evictions to drop what they pointed at.
+//! The text atlas. The host rasterizes each run once at `TEXT_BASE`, and the GPU turns it into a
+//! distance field reaching `TEXT_SPREAD` texels past the text's edge, packed on shelves of one
+//! texture. A distance field draws crisp at any size and also yields halos, so a run is rasterized
+//! once regardless of the size it shows at.
+//!
+//! Until a run is rasterized, its size is estimated from its font's character advances, each
+//! measured by the host once, so its label is placed where it will show. The GPU builds the fields
+//! of every run rasterized in a frame in one batch before the frame draws (`compute/fields.wesl`).
+//!
+//! When no shelf has room, the least recently used shelf of a fitting height is cleared for the new
+//! run; only when none fits does packing start over. A run counts as used when it is rasterized and
+//! whenever labels in view show it, so visible text is not evicted. Views track evictions to drop
+//! stale references.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,28 +29,28 @@ const SIZE: u32 = 4096;
 const GAP: u32 = 1;
 /// Texels of field around a run's coverage.
 const PAD: u32 = TEXT_SPREAD as u32;
-/// Runs whose fields one dispatch makes at most: one workgroup layer each.
+/// Most runs whose fields one dispatch builds, one workgroup layer each.
 const RUNS: usize = 65_535;
 
-/// Where a run lies in the atlas.
+/// A run's location in the atlas.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Glyphs {
-    /// Left, top, right, and bottom, texels, reaching `TEXT_SPREAD` past the text on every side.
+    /// Left, top, right, and bottom in texels, extending `TEXT_SPREAD` past the text on every side.
     pub(crate) rect: [u32; 4],
     /// Texels from the top of the rectangle to the baseline.
     pub(crate) baseline: f32,
 }
 
 impl Glyphs {
-    /// The rectangle as the two corner words shaders read: 16 bits of x, then 16 of y.
+    /// The rectangle as the two corner words shaders read: x in the low 16 bits, y in the high 16.
     pub(crate) fn corners(&self) -> [u32; 2] {
         let [l, t, r, b] = self.rect;
         [l | t << 16, r | b << 16]
     }
 }
 
-/// What a font's text takes at the base size, as the host sets it: what a run of no characters
-/// takes, what each line past the first adds, and each character's advance, measured once each.
+/// A font's text metrics at the base size, as the host measures them: the size of an empty run,
+/// the height each extra line adds, and each character's advance, measured once per character.
 struct Metrics {
     empty: [f32; 2],
     line: f32,
@@ -55,7 +58,7 @@ struct Metrics {
 }
 
 impl Metrics {
-    /// `font`'s, as `host` measures it.
+    /// Measures `font` with `host`.
     fn of(host: &dyn Host, font: &Arc<str>) -> Metrics {
         let measure = |text: &str, max_width: Option<u32>| {
             host.measure(&TextRun { text: text.into(), font: font.clone(), size_px: TEXT_BASE as u32, max_width })
@@ -66,7 +69,7 @@ impl Metrics {
         Metrics { empty, line, advances: FxHashMap::default() }
     }
 
-    /// What `c` advances a line by, measured by `host` the first time.
+    /// The advance of `c`, measured by `host` on first use.
     fn advance(&mut self, host: &dyn Host, font: &Arc<str>, c: char) -> f32 {
         let empty = self.empty[0];
         *self.advances.entry(c).or_insert_with(|| {
@@ -77,8 +80,9 @@ impl Metrics {
     }
 }
 
-/// The run the atlas sets for `text` shown at `size`, wrapping at `max_width`, both length units: set
-/// at the base size, wrapping where `max_width` falls at it. A sheet measures the same run it draws.
+/// The run the atlas rasterizes for `text` shown at `size`, wrapping at `max_width`, both in length
+/// units. The run is set at the base size, with `max_width` scaled to match. A sheet measures the
+/// same run it draws.
 pub(crate) fn run(text: Arc<str>, font: Arc<str>, size: f32, max_width: Option<f32>) -> TextRun {
     let wrap = max_width.map(|w| (w * TEXT_BASE / size.max(1e-3)).round().max(1.0) as u32);
     TextRun { text, font, size_px: TEXT_BASE as u32, max_width: wrap }
@@ -88,11 +92,12 @@ struct Shelf {
     top: u32,
     height: u32,
     used: u32,
-    /// When a run on it was last asked for.
+    /// The clock tick when a run on it was last used.
     tick: u64,
 }
 
-/// A run set whose field waits to be made: its coverage, and the shelf and corner its field fills.
+/// A rasterized run whose field is not built yet: its coverage, and the shelf and corner its field
+/// goes to.
 struct Waiting {
     raster: Raster,
     shelf: usize,
@@ -104,19 +109,20 @@ pub(crate) struct Atlas {
     texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
     shelves: Vec<Shelf>,
-    /// Every run asked for, and its shelf; `None` when the host could not set it.
+    /// Every run rasterized: its location and shelf, or `None` when it has nothing to draw or its
+    /// raster failed. Either way the host is not asked for it again.
     runs: HashMap<TextRun, Option<(Glyphs, usize)>>,
-    /// Runs set whose fields the next frame makes.
+    /// Rasterized runs whose fields the next frame builds.
     waiting: Vec<Waiting>,
-    /// What making fields works in, and its bind group.
+    /// Scratch buffer for building fields, and its bind group.
     work: Option<(wgpu::Buffer, wgpu::BindGroup)>,
-    /// Counts the frames runs are asked for in.
+    /// Frame counter for shelf use.
     clock: u64,
-    /// Changes whenever runs are evicted, so what pointed at them looks again.
+    /// Changes whenever runs are evicted, so anything referencing them looks them up again.
     pub(crate) evictions: u64,
-    /// What counts the texts the host is asked to set.
+    /// Counts the texts the host is asked to rasterize.
     counters: Arc<Counters>,
-    /// What each font's text takes, by font.
+    /// Text metrics by font.
     metrics: HashMap<Arc<str>, Metrics>,
 }
 
@@ -148,10 +154,11 @@ impl Atlas {
         }
     }
 
-    /// The run table entry for `run` while it is not set: the flag saying so, then the corner a
-    /// rectangle of its size reaches from the atlas's own corner. Its lines break at spaces as the
-    /// host breaks them, each as wide as its characters' advances, so its label is placed where it
-    /// will show while only labels that show have their texts set. Nothing without a host.
+    /// The run table entry for `run` before it is rasterized: the `TEXT_UNSET` flag, then its
+    /// estimated size as a corner word (width in the low 16 bits, height in the high). Lines break
+    /// at spaces as the host breaks them, each as wide as its characters' advances, so the label is
+    /// placed where it will show while only visible labels have their text rasterized. `[0, 0]`
+    /// without a host.
     pub(crate) fn unset(&mut self, host: Option<&dyn Host>, run: &TextRun) -> [u32; 2] {
         let Some(host) = host else { return [0, 0] };
         let font = &run.font;
@@ -178,13 +185,14 @@ impl Atlas {
         [crate::gpu::shaders::TEXT_UNSET, w | h << 16]
     }
 
-    /// Starts a frame: runs asked for from now on count as used in it.
+    /// Starts a frame. Runs requested from now on count as used in it.
     pub(crate) fn tick(&mut self) {
         self.clock += 1;
     }
 
-    /// Where `run` lies, set by `host` the first time it is asked for; its field is made before the
-    /// frame draws.
+    /// The location of `run` in the atlas, rasterized by `host` on first request. Its field is
+    /// built before the frame draws. `None` without a host, or when the run has nothing to draw or
+    /// its raster failed; a failure is reported once.
     pub(crate) fn text(&mut self, host: Option<&dyn Host>, run: &TextRun) -> Option<Glyphs> {
         if let Some(found) = self.runs.get(run) {
             let (glyphs, shelf) = (*found)?;
@@ -193,25 +201,36 @@ impl Atlas {
         }
         let host = host?;
         self.counters.add(Count::Texts, 1);
-        let raster = match host.rasterize(run) {
-            Ok(raster) => raster,
+        let placed = match host.rasterize(run) {
+            Ok(raster) => self.hold(raster),
             Err(error) => {
                 self.errors.push(error);
-                return None;
+                None
             }
         };
-        let placed = self.hold(raster);
-        if placed.is_some() {
-            self.runs.insert(run.clone(), placed);
-        }
+        self.runs.insert(run.clone(), placed);
         placed.map(|(glyphs, _)| glyphs)
     }
 
-    /// Places `raster`'s field, which waits to be made: where it lies, and its shelf.
+    /// Forgets everything the host made: runs, failures, and font metrics. A new host rasterizes
+    /// texts again in its own fonts.
+    pub(crate) fn rehost(&mut self) {
+        self.runs.clear();
+        self.waiting.clear();
+        self.shelves.clear();
+        self.metrics.clear();
+        self.evictions += 1;
+    }
+
+    /// Places `raster`'s field, queued to be built, and returns its location and shelf. `None` if
+    /// the raster is empty, too large for the atlas, or malformed.
     fn hold(&mut self, raster: Raster) -> Option<(Glyphs, usize)> {
         let [w, h] = raster.size;
+        if w == 0 || h == 0 {
+            return None;
+        }
         let (width, height) = (w.saturating_add(2 * PAD), h.saturating_add(2 * PAD));
-        if w == 0 || h == 0 || width > SIZE || height > SIZE {
+        if width > SIZE || height > SIZE {
             self.errors.push(crate::Error::Limit("text raster does not fit the atlas".into()));
             return None;
         }
@@ -225,21 +244,21 @@ impl Atlas {
         Some((glyphs, shelf))
     }
 
-    /// Counts `run` as used now: labels in view show it.
+    /// Marks `run` as used now, because labels in view show it.
     pub(crate) fn touch(&mut self, run: &TextRun) {
         if let Some(Some((_, shelf))) = self.runs.get(run) {
             self.shelves[*shelf].tick = self.clock;
         }
     }
 
-    /// Whether `glyphs` still lie where they were for `run`.
+    /// Whether `run` is still at `glyphs`.
     pub(crate) fn holds(&self, run: &TextRun, glyphs: Glyphs) -> bool {
         matches!(self.runs.get(run), Some(Some((g, _))) if *g == glyphs)
     }
 
-    /// Makes the fields of the runs set since last time, recorded into `encoder` before what draws
-    /// them: their coverage goes up, each column and then each row takes its least squared distances
-    /// within the spread, and each field copies into its place.
+    /// Builds the fields of runs rasterized since the last call, recorded into `encoder` before the
+    /// draws that use them. Uploads their coverage, computes each column's and then each row's
+    /// least squared distances within the spread, and copies each field into its place.
     pub(crate) fn lay(
         &mut self,
         device: &wgpu::Device,
@@ -253,8 +272,8 @@ impl Atlas {
         let rest = self.waiting.split_off(self.waiting.len().min(RUNS));
         let laid = std::mem::replace(&mut self.waiting, rest);
         let size = |w: &Waiting| w.raster.size.map(|n| n + 2 * PAD);
-        // The runs and their coverage go up; their columns and fields follow. A field starts where a
-        // copy out of it may, and its rows are as far apart as copies need.
+        // Scratch layout: run entries, coverage, column distances, then fields. Each field starts
+        // at a valid copy offset, and its rows use the copy row pitch.
         let mut runs = vec![[0_u32; FIELD_WORDS as usize]; laid.len()];
         let mut coverage = Vec::new();
         let mut at = laid.len() as u32 * FIELD_WORDS;
@@ -317,7 +336,8 @@ impl Atlas {
         }
     }
 
-    /// The buffer making fields works in, holding at least `bytes`, and its bind group.
+    /// The scratch buffer for building fields, at least `bytes` long, and its bind group. A new
+    /// buffer gets half again as much room.
     fn fit_work(
         &mut self,
         device: &wgpu::Device,
@@ -342,7 +362,7 @@ impl Atlas {
         (buffer, group)
     }
 
-    /// The shelf and top left of room for `width` by `height` texels.
+    /// Finds room for `width` by `height` texels, returning the shelf and top-left corner.
     fn place(&mut self, width: u32, height: u32) -> (usize, [u32; 2]) {
         let fits = |s: &Shelf| s.height >= height && s.height <= height + height / 2 + 4;
         let at = self.shelves.iter().position(|s| fits(s) && s.used + width <= SIZE);
@@ -354,7 +374,7 @@ impl Atlas {
             })
         });
         let at = at.or_else(|| {
-            // Clear the shelf of this height used least recently, if not in this frame.
+            // Clear the least recently used shelf of a fitting height, unless used this frame.
             let clock = self.clock;
             let oldest = (0..self.shelves.len())
                 .filter(|&i| fits(&self.shelves[i]) && self.shelves[i].tick < clock)
@@ -382,15 +402,15 @@ impl Atlas {
     }
 }
 
-/// Bytes a copy out of a buffer into a texture may start at a multiple of, on every backend.
+/// Alignment in bytes of a buffer-to-texture copy's start offset, valid on every backend.
 const COPY_ALIGN: u32 = 512;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The field of `width` by `height` coverage bytes as it is defined, texel by texel: the least
-    /// squared distance to a texel inside and outside over every texel within reach.
+    /// The exact field of `width` by `height` coverage bytes, computed texel by texel: the least
+    /// squared distance to inside and to outside over every texel within reach.
     fn exact(coverage: &[u8], width: usize, height: usize) -> Vec<u8> {
         let pad = i64::from(PAD);
         let (w, h) = (width as i64 + 2 * pad, height as i64 + 2 * pad);
@@ -429,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn fields_made_on_the_gpu_are_the_exact_field() {
+    fn gpu_distance_fields_match_the_exact_field() {
         let gpu = match pollster::block_on(crate::Gpu::new()) {
             Ok(gpu) => gpu,
             Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
@@ -492,6 +512,43 @@ mod tests {
         let off = made.iter().zip(&want).filter(|(a, b)| a.abs_diff(**b) > 1).count();
         assert_eq!(off, 0, "every texel within a step of the exact field");
         let deepest = made.iter().max().copied().unwrap_or(0);
-        assert!(made.contains(&0) && deepest > 224, "the field runs from nothing outside to deep inside: {deepest}");
+        assert!(made.contains(&0) && deepest > 224, "the field runs from 0 outside to over 224 inside: {deepest}");
+    }
+
+    #[test]
+    fn each_run_is_rasterized_once_however_it_turns_out() {
+        /// A host that counts its rasters: none for "", a failure for "bad", else a square.
+        struct Counting(std::sync::atomic::AtomicU32);
+        impl Host for Counting {
+            fn rasterize(&self, run: &TextRun) -> crate::Result<Raster> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                match &*run.text {
+                    "" => Ok(Raster { size: [0, 0], coverage: Vec::new(), baseline: 0.0 }),
+                    "bad" => Err(crate::Error::Unsupported("no font".into())),
+                    _ => Ok(Raster { size: [4, 4], coverage: vec![255; 16], baseline: 3.0 }),
+                }
+            }
+        }
+        let gpu = match pollster::block_on(crate::Gpu::new()) {
+            Ok(gpu) => gpu,
+            Err(error) if std::env::var_os("LATKIT_REQUIRE_GPU").is_some() => panic!("GPU required: {error}"),
+            Err(_) => return,
+        };
+        let counting = Counting(std::sync::atomic::AtomicU32::new(0));
+        let rasters = || counting.0.load(std::sync::atomic::Ordering::Relaxed);
+        let host: Option<&dyn Host> = Some(&counting);
+        let text = |text: &str| run(text.into(), "sans-serif".into(), 12.0, None);
+        let mut inner = gpu.0.lock();
+        let atlas = &mut inner.atlas;
+        for _ in 0..2 {
+            assert!(atlas.text(host, &text("")).is_none(), "an empty raster draws nothing");
+            assert!(atlas.text(host, &text("bad")).is_none(), "a failed raster draws nothing");
+            assert!(atlas.text(host, &text("ok")).is_some(), "a raster is placed");
+        }
+        assert_eq!(rasters(), 3, "each run is rasterized once");
+        assert_eq!(atlas.errors.len(), 1, "only the failure is reported, once: {:?}", atlas.errors);
+        atlas.rehost();
+        assert!(atlas.text(host, &text("ok")).is_some());
+        assert_eq!(rasters(), 4, "a new host rasterizes the run again");
     }
 }

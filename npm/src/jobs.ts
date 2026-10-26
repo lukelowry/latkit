@@ -1,4 +1,9 @@
-/** Shared on-demand workers. Each receives the compiled module once and owns its WASM memory. */
+/**
+ * The pool of workers that run latkit's jobs, started on demand. Each worker receives the compiled
+ * module once and has its own WebAssembly memory.
+ */
+
+/** A worker's message: that it is ready, a job's bytes, or why it failed. */
 interface Answer {
   ready?: boolean;
   bytes?: Uint8Array;
@@ -18,11 +23,17 @@ interface Slot {
   timer?: ReturnType<typeof setTimeout>;
 }
 
+/** The error for a job that ran too long, with the `timeout` code latkit keeps. */
+function timedOut(): Error {
+  return Object.assign(new Error('a worker job timed out'), { code: 'timeout' });
+}
+
 /**
- * Keeps the workers that do latkit's jobs alive, one job each. latkit queues its jobs and hands one
- * over only when it can run, so the pool grows to as many jobs as run at once and nothing waits here.
- * Idle workers retire after 30 seconds; startup and jobs have a one-minute deadline. Failure rejects
- * the affected job and retires the worker; later jobs get a fresh one.
+ * Returns the function latkit hands its jobs to. It runs each job on a pooled worker, one job per
+ * worker at a time. latkit queues jobs itself and hands one over only when it can run, so the pool
+ * grows only to the number of jobs running at once, and nothing queues here. Idle workers are
+ * terminated after 30 seconds. A job fails after one minute, including a new worker's startup. A
+ * failure rejects that job and terminates its worker; later jobs start a new one.
  */
 export function jobs(
   module: WebAssembly.Module,
@@ -94,7 +105,7 @@ export function jobs(
         clearTimeout(slot.timer);
         slot.job = job;
         const active = slot;
-        slot.timer = setTimeout(() => fail(active, 'worker job timed out'), 60_000);
+        slot.timer = setTimeout(() => fail(active, timedOut()), 60_000);
         send(slot);
       } catch (error) {
         if (slot) retire(slot);

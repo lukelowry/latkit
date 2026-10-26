@@ -1,8 +1,8 @@
 /**
- * A soft bunny of springs in a room: hop, squash, poke, fling, or pop it, and replay or scrub what
- * it did. Its faces darken turning from the light over soft footprints on the floor; its vertices,
- * their dots hidden until the mesh shows, are what the pointer drags; and a plot traces its height,
- * speed, and volume.
+ * A soft bunny made of springs, in a room. Hop, squash, poke, fling, or pop it, then replay or
+ * scrub its history. Faces darken as they turn away from the light, above soft contact shadows on
+ * the floor. The pointer drags the vertices, whose dots stay hidden until the mesh is shown. A plot
+ * traces the bunny's height, speed, and volume.
  */
 import {
   Data,
@@ -19,13 +19,14 @@ import { theme } from '../../ui/theme.js';
 import { Body, ROOM, STEP, type Controls } from './body.js';
 import { loadMesh } from './mesh.js';
 
-/** Seconds of frames kept to replay and scrub. */
+/** Seconds of frames kept for replay and scrubbing. */
 const HISTORY = 20;
-/** Seconds of simulation between recorded frames, whatever the display's refresh rate. */
+/** Simulated seconds between recorded frames, regardless of the display's refresh rate. */
 const RECORD = 1 / 60;
 /** Seconds the plot shows. */
 const WINDOW = 12;
-/** What the bunny can be painted by. Each domain starts below rest, so a bunny at rest draws bright. */
+/** The bunny's color schemes. Each domain starts below the value at rest, so a resting bunny stays
+ * clear of the colormap's darkest end. */
 const PAINTS: Record<
   string,
   { label: string; field: string; colormap: ColormapName; domain: [number, number]; legend: string }
@@ -69,8 +70,8 @@ const THEME = {
   shading: 0.7,
 } as const;
 
-// A soft footprint on the floor under the bunny and each of its pieces, darker the nearer they sit:
-// a marker of our own, in WGSL, its darkness read from each row's `opacity`.
+// A soft contact shadow on the floor under the bunny and under each of its pieces, darker the
+// lower they are. It is a custom marker in WGSL that reads its darkness from each row's `opacity`.
 const CONTACT_SHADOW = `fn marker(f: MarkerFragment) -> MarkerColor {
   let p = f.p / max(f.half, vec2f(0.001));
   let d = length(p);
@@ -82,7 +83,7 @@ export default async function bunny(stage: Stage): Promise<void> {
   const mesh = await loadMesh(new URL('./stanford-bunny.bin', import.meta.url));
   if (stage.signal.aborted) return;
   const body = new Body(mesh);
-  // Reduced motion hops lower, pops gentler, and never orbits.
+  // With reduced motion, the bunny hops lower and pops more gently, and the camera never orbits.
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   reducedMotion.addEventListener(
     'change',
@@ -92,7 +93,8 @@ export default async function bunny(stage: Stage): Promise<void> {
     { signal: stage.signal },
   );
   const controls: Controls = { gravity: 9.81, firmness: 0.45, inflate: 1, wind: false };
-  /** Sets a control, waking the body: a resting body answers new gravity or a new material. */
+  /** Wraps a control's setter to also wake the body, so a resting body responds to new gravity or
+   * a new material. */
   const waking =
     <T>(set: (value: T) => void) =>
     (value: T) => {
@@ -101,7 +103,8 @@ export default async function bunny(stage: Stage): Promise<void> {
     };
   let paint = 'solid';
   let inspect = false;
-  /** How faces turn from the light, the floor's grid, and the mesh's dots. */
+  /** Light settings: how much faces turned from the camera darken, the floor's grid, and the
+   * radius of the mesh's dots in pixels. */
   const lit: { shading: number; grid: 'lines' | 'dots' | 'off'; dots: number } = {
     shading: THEME.shading,
     grid: 'lines',
@@ -117,7 +120,7 @@ export default async function bunny(stage: Stage): Promise<void> {
   let carry = 0;
   let recordAt = 0;
 
-  // The mesh once; then every step, a frame of every vertex and of the body as a whole.
+  // The mesh is set once. Each recorded frame then appends every vertex and the body as a whole.
   const data = new Data('bunny').apply(
     new Patch()
       .axis('time', 's')
@@ -163,12 +166,13 @@ export default async function bunny(stage: Stage): Promise<void> {
 
   data.apply(new Patch().set('Shadow', { count: body.burst.chunks.length + 1 }, {}));
 
-  // Faces lit from the camera over soft footprints; the vertices stay pickable, their dots hidden.
+  // Faces lit from the camera, above soft contact shadows. The vertices stay pickable while their
+  // dots are hidden.
   const room = (live: boolean): Scene => {
     const p = PAINTS[paint]!;
     return {
       space: { plane: { grid: GRIDS[lit.grid] } },
-      // The mesh's dots and springs draw the theme's sizes.
+      // The mesh's dots and springs take their sizes from the theme.
       theme: {
         ...THEME,
         shading: lit.shading,
@@ -396,7 +400,7 @@ export default async function bunny(stage: Stage): Promise<void> {
       plot.camera = { x: [x0, x0 + WINDOW], y: null };
     },
     change(live) {
-      // Paused, a press pans instead of grabbing.
+      // Outside live mode, a press pans instead of grabbing.
       space.scene = room(live);
       if (!live) {
         body.release(true);
@@ -461,8 +465,8 @@ export default async function bunny(stage: Stage): Promise<void> {
   space.on('click', ({ hit }) => act(() => body.poke(hit.row.id as number))());
 
   const canvas = stage.regions.main.querySelector('canvas')!;
-  // The JS drag event intentionally combines release and cancellation. Capture cancellation
-  // before the view's bubbling listener, so it cannot leave a throw behind.
+  // The view's drag event reports release and cancellation alike. Catch cancellation before the
+  // view's bubbling listener, so a cancelled drag does not fling the bunny.
   canvas.addEventListener('pointercancel', () => body.release(true), {
     capture: true,
     signal: stage.signal,
@@ -488,7 +492,8 @@ export default async function bunny(stage: Stage): Promise<void> {
   });
   stage.frame((dt) => {
     if (playback.mode !== 'live') return;
-    // A resting bunny steps and records nothing, so both views sleep until something acts on it.
+    // A resting bunny takes no steps and records nothing, so both views sleep until something
+    // acts on it.
     if (body.asleep) {
       carry = 0;
       return;
@@ -497,7 +502,7 @@ export default async function bunny(stage: Stage): Promise<void> {
       carry = Math.min(carry + dt * timeScale, 16 * STEP);
       const steps = body.advance(carry, controls);
       carry -= steps * STEP;
-      // Recorded at a fixed rate of simulated time, and once more as it comes to rest.
+      // Record at a fixed rate of simulated time, and once more when the body comes to rest.
       if (steps && (body.time + STEP / 2 >= recordAt || body.asleep)) {
         publish();
         recordAt = body.time + RECORD;

@@ -1,10 +1,10 @@
-//! Vector tiles: the tiles the camera asks for, fetched from a PMTiles archive or a URL template,
-//! given or from a TileJSON document, decoded in jobs, and patched into the dataset a set draws. The
-//! camera chooses the tiles that draw no larger than their own size where they lie nearest its
-//! focus, nearest first. Tiles decode only the layers a set's marks draw, and again for a set whose
-//! scene draws others; the job decoding a tile shapes its rows too, as their marks draw them, so a
-//! tile lands with its triangles and paths. A set holds the rows with their shapes, and draws the
-//! dataset of the rows as tiles wrote them.
+//! Vector tiles: the tiles the camera needs, fetched from a PMTiles archive or a URL template
+//! (given directly or read from a TileJSON document), decoded in jobs, and patched into the dataset
+//! a set draws. The camera picks tiles that draw no larger than their own pixel size near its
+//! focus, nearest first. Tiles decode only the layers a set's marks draw, and decode again for a
+//! set whose scene draws others. The job decoding a tile also computes its rows' shapes for their
+//! marks, so a tile arrives with its triangles and paths. A set holds the rows with their shapes,
+//! and draws a dataset of the rows as the tiles wrote them.
 
 use std::sync::Arc;
 
@@ -22,11 +22,11 @@ use crate::geo::tiles::{Decoded, Template, shapes_field};
 use crate::host::{Job, Request};
 use crate::{Error, Kind, Mark, Pending, Scene};
 
-/// Tiles drawn at once at most: past it, tiles stop splitting.
+/// Most tiles drawn at once. Past this, tiles stop splitting.
 const MAX_TILES: usize = 256;
 
-/// The tiles to draw within `zooms` and `bounds`: those meeting what the camera shows, each split
-/// while it draws larger than its size, nearest the view's middle first.
+/// The tiles to draw within `zooms` and `bounds`: those intersecting the camera's view, each split
+/// while it draws larger than its pixel size, nearest the camera's focus first.
 fn wanted(sight: &Sight<'_>, zooms: [u8; 2], bounds: [f64; 4]) -> Vec<TileKey> {
     let limit = TILE_PX * 1.25;
     let region = sight.region();
@@ -54,18 +54,18 @@ fn wanted(sight: &Sight<'_>, zooms: [u8; 2], bounds: [f64; 4]) -> Vec<TileKey> {
     out.into_iter().map(|(key, _)| key).collect()
 }
 
-/// Where vector tiles come from once their source opens.
+/// Where a source's vector tiles come from once it opens.
 enum Opened {
-    /// An archive whose root directory lies past the first bytes.
+    /// An archive whose root directory lies past the first bytes and is being fetched.
     Root(Header, Pending<Vec<u8>>),
     Template(Template),
     Archive(Header, Directory),
-    /// The source could not be opened, and why.
+    /// The source could not be opened, with the reason.
     Failed(Error),
 }
 
-/// Vector tiles of one source, as every set drawing them shares them: where they lie, and what was
-/// fetched and decoded of them.
+/// One source's vector tiles, shared by every set drawing them: where they are, and what was
+/// fetched and decoded.
 pub(crate) struct Fetched {
     url: Arc<str>,
     opened: Opened,
@@ -76,20 +76,21 @@ pub(crate) struct Fetched {
 }
 
 impl Fetched {
-    /// The tiles a URL template names, `{z}`, `{x}`, and `{y}` in it.
+    /// Tiles from URL template `url`, which contains `{z}`, `{x}`, and `{y}`.
     pub(crate) fn template(url: &Arc<str>) -> Fetched {
         Fetched::opened(url, Opened::Template(Template::of(url)))
     }
 
-    /// The tiles whose source's first `bytes` are a PMTiles archive's or a TileJSON document's; the
-    /// archive's root directory is fetched when it lies past them.
+    /// Opens tiles from a source whose first `bytes` are a PMTiles archive or a TileJSON document.
+    /// An archive's root directory is fetched if it lies past those bytes. Errors if the source
+    /// holds image tiles or is malformed.
     pub(crate) fn open(url: &Arc<str>, bytes: &[u8], jobs: &Jobs<'_>) -> Result<Fetched, String> {
         if !pmtiles::is_archive(bytes) {
             return Template::tilejson(bytes, url).map(|template| Fetched::opened(url, Opened::Template(template)));
         }
         let header = pmtiles::header(bytes)?;
         if !header.vector {
-            return Err(format!("{url} holds image tiles; only vector tiles draw"));
+            return Err(format!("{url} has image tiles; only vector tiles are supported"));
         }
         let (offset, length) = header.root;
         let opened = match bytes.get(offset as usize..(offset + length) as usize) {
@@ -109,12 +110,12 @@ impl Fetched {
         }
     }
 
-    /// Fetches and decodes under way.
+    /// Fetches and decodes in progress.
     pub(crate) fn under_way(&self) -> usize {
         self.tiling.under_way()
     }
 
-    /// Lets go of what set `set` drew.
+    /// Releases what set `set` drew.
     pub(crate) fn release(&mut self, set: u64) {
         self.tiling.release(set);
     }
@@ -128,8 +129,8 @@ impl Fetched {
         }
     }
 
-    /// Opens the archive once its root directory landed, and takes leaf directories that landed;
-    /// why the source could not be opened, if it could not.
+    /// Opens the archive once its root directory arrives, and takes leaf directories that arrived.
+    /// Returns the reason the source could not be opened, if it could not.
     fn settle(&mut self) -> Option<Error> {
         if let Opened::Root(header, pending) = &self.opened {
             let header = *header;
@@ -159,8 +160,8 @@ impl Fetched {
     }
 }
 
-/// What one set draws of vector tiles: the tiles whose rows its dataset holds, with the rows of each
-/// table, and those rows with the fields their shapes are written as too.
+/// What one set draws of vector tiles: the tiles whose rows its dataset holds, with each tile's row
+/// ids by table, and `held`, the same rows including their derived shape fields.
 pub(crate) struct Drawing {
     drawn: FxHashMap<TileKey, Vec<(Name, Vec<Id>)>>,
     held: Snapshot,
@@ -171,7 +172,7 @@ impl Drawing {
         Drawing { drawn: FxHashMap::default(), held: Snapshot::new("held") }
     }
 
-    /// The rows the dataset holds, each table with the fields its shapes are written as too.
+    /// The rows the dataset holds, including their derived shape fields.
     pub(crate) fn held(&self) -> &Snapshot {
         &self.held
     }
@@ -181,9 +182,10 @@ impl Drawing {
         self.drawn.len()
     }
 
-    /// Brings `data` up to what `sight` shows and set `set`'s scene draws of dataset `name`, from
-    /// what `fetched` holds: whether it changed, whether a tile stands in, and a failure to tell.
-    #[expect(clippy::too_many_arguments, reason = "what a set draws, of what the source holds")]
+    /// Updates `data` to what `sight` shows and set `set`'s scene draws of dataset `name`, from
+    /// what `fetched` holds. Returns whether it changed, whether any wanted tile still shows a
+    /// placeholder, and a failure to report.
+    #[expect(clippy::too_many_arguments, reason = "a set's update reads the view, the frame, and the source")]
     pub(crate) fn update(
         &mut self,
         set: u64,
@@ -211,16 +213,16 @@ impl Drawing {
         (changed, drawn.standing_in, failure.or(drawn.failure))
     }
 
-    /// Makes `data` hold the rows of `drawn` and no other tile's, as the tiles wrote them, and the
-    /// rows held those with their shapes; whether it changed.
+    /// Makes `data` hold exactly the rows of tiles `drawn`, as the tiles wrote them, and `held` the
+    /// same rows with their shapes. Returns whether it changed.
     fn draw(&mut self, drawn: &[TileKey], stamp: u64, tiling: &Tiling<TileKey>, data: &mut Snapshot) -> bool {
         let keep: FxHashSet<TileKey> = drawn.iter().copied().collect();
         let mut patch = Patch::new();
-        // Tiles no longer drawn go, and so do those decoded for other tables, which come back
-        // decoded again.
+        // Remove tiles no longer drawn, and tiles decoded for other tables, which return decoded
+        // again.
         let gone: Vec<TileKey> =
             self.drawn.keys().filter(|k| !keep.contains(k) || tiling.decoded(k, stamp).is_none()).copied().collect();
-        // One removal a table, which moves the rows after the first gone once.
+        // One removal per table, so rows after the first removed row move only once.
         let mut removed: Keyed<Name, Vec<Id>> = Keyed::default();
         for key in &gone {
             for (table, ids) in self.drawn.remove(key).unwrap_or_default() {
@@ -250,7 +252,8 @@ impl Drawing {
             return false;
         }
         let Ok(held) = self.held.applied(patch) else { return false };
-        // The dataset drawn holds each table held without its shapes, sharing all else.
+        // The drawn dataset holds each table of `held` without its shape fields, sharing
+        // everything else.
         let tables = held.tables().map(|table| {
             let mut table = table.clone();
             table.fields.retain(|(name, _)| !shapes_field(name));
@@ -262,7 +265,7 @@ impl Drawing {
     }
 }
 
-/// Where a source's tiles lie, and the tables a set's marks draw of them, which decoding writes.
+/// Locates a source's tiles, with the tables a set's marks draw from them, which decoding writes.
 struct Find<'a> {
     url: &'a Arc<str>,
     opened: &'a Opened,
@@ -298,7 +301,7 @@ impl Pieces<TileKey> for Find<'_> {
                         None => break,
                     }
                 }
-                // The archive has no such tile: it draws nothing.
+                // The archive has no such tile, so it draws nothing.
                 Requested::Missing
             }
             Opened::Root(..) | Opened::Failed(_) => Requested::Wait,
@@ -310,7 +313,7 @@ impl Pieces<TileKey> for Find<'_> {
     }
 }
 
-/// The archive at `header` with root directory `bytes`, or `None` where it is corrupt.
+/// The archive with `header` and root directory `bytes`, or `None` if the directory is corrupt.
 fn archive(header: Header, bytes: &[u8]) -> Option<Opened> {
     let root = inflate(bytes, header.gzip_directories).and_then(|b| Directory::decode(&b))?;
     Some(Opened::Archive(header, root))
@@ -320,9 +323,9 @@ fn corrupt(url: &str) -> String {
     format!("the archive at {url} has a corrupt directory")
 }
 
-/// The tables marks draw from dataset `name`: a table named after a layer holds the kind of feature
-/// its marks draw, polygons first, then lines, then points; one named `layer:kind` holds that kind.
-/// Each is shaped as the marks drawing its geometry shape it.
+/// The tables marks draw from dataset `name`. A table named after a layer holds the geometry type
+/// its marks draw, preferring polygons, then lines, then points. A table named `layer:kind` holds
+/// that kind. Each table gets the shapes its marks derive from its geometry.
 fn decoded_tables(scene: &Scene, name: &Name) -> Vec<Decoded> {
     let mut tables: Vec<Decoded> = Vec::new();
     for mark in &scene.marks {
@@ -364,8 +367,8 @@ fn decoded_tables(scene: &Scene, name: &Name) -> Vec<Decoded> {
     tables
 }
 
-/// `table`'s fields made to hold what `data`'s table of its name holds where they differ: a field a
-/// tile reads as numbers but the dataset holds as texts is written as text, and so on.
+/// Converts `table`'s fields to the kinds of the same-named table in `data` where they differ. For
+/// example, a field a tile reads as numbers but the dataset holds as text is written as text.
 fn harmonized(table: &Table, data: &Snapshot) -> Table {
     let Some(existing) = data.table(&table.name) else { return table.clone() };
     let mut out = table.clone();
@@ -408,7 +411,7 @@ fn number_of(value: &crate::Value) -> Option<f64> {
     }
 }
 
-/// `bytes` inflated when `gzip`.
+/// Decompresses `bytes` when `gzip`, else copies them. `None` if decompression fails.
 fn inflate(bytes: &[u8], gzip: bool) -> Option<Vec<u8>> {
     if !gzip {
         return Some(bytes.to_vec());

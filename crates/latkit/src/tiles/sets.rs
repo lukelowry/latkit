@@ -1,6 +1,6 @@
-//! What a view draws of the tiles it is given: for each source of tiles a set, whose dataset holds
-//! the pieces the view's camera and plot window ask for, which marks draw like any other. The pieces
-//! come from the GPU's cache, which every view drawing the same source shares.
+//! Tile sets: for each tile source a view is given, a set whose dataset holds the pieces the view's
+//! camera and plot window need. Marks draw it like any other dataset. The pieces come from the
+//! GPU's cache, shared by every view drawing the same source.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,9 +11,9 @@ use crate::derive::sight::Sight;
 use crate::derive::{Input, Jobs};
 use crate::{Error, Tiles};
 
-/// What a view reads of sampled fields: the plot window lines trace across and the pixel columns it
-/// spans, the coordinate fields are shown at, and each field marks read, by dataset, table, and
-/// name, with whether a line traces it.
+/// What a view reads of sampled fields: the plot window lines trace across (`across`) and its width
+/// in pixel columns, the coordinate fields are shown at (`at`), and each field marks read, by
+/// dataset, table, and name, with whether a line traces it.
 #[derive(Default)]
 pub(crate) struct Reading {
     pub(crate) across: Option<[f64; 2]>,
@@ -23,8 +23,8 @@ pub(crate) struct Reading {
 }
 
 impl Reading {
-    /// Whether a line traces field `field` of `table` in dataset `data`, and whether a mark shows it
-    /// at the coordinate.
+    /// Whether a line traces field `field` of `table` in dataset `data`, and whether a mark shows
+    /// it at the coordinate.
     pub(crate) fn reads(&self, data: &str, table: &str, field: &str) -> (bool, bool) {
         let mut reads = (false, false);
         for (d, t, f, traced) in &self.fields {
@@ -40,23 +40,23 @@ impl Reading {
     }
 }
 
-/// What the view asks of its tiles: the tiles the camera shows, on the earth, and what it reads of
-/// sampled fields.
+/// What the view needs of its tiles: what the camera shows of the earth (`sight`), and what it
+/// reads of sampled fields.
 pub(crate) struct Asked<'a> {
     pub(crate) sight: Option<&'a Sight<'a>>,
     pub(crate) reading: &'a Reading,
 }
 
-/// What a set draws, once its source opened.
+/// What a set draws, once its source is open.
 enum Drawing {
     Frames(frames::Drawing),
     Vector(vector::Drawing),
 }
 
-/// Sets made so far, which numbers each: the cache keeps what each draws apart.
+/// Counter that numbers each set, so the cache can tell sets apart.
 static SETS: AtomicU64 = AtomicU64::new(0);
 
-/// One source of tiles a view draws: its dataset, and what it draws of the source's pieces.
+/// One tile source a view draws: its dataset, and what it draws of the source's pieces.
 struct TileSet {
     id: u64,
     tiles: Tiles,
@@ -64,9 +64,10 @@ struct TileSet {
     drawing: Option<Drawing>,
     /// Whether the dataset changed since it was last taken.
     changed: bool,
-    /// Whether a failure was told: a source that went away tells it once.
+    /// Whether a failure was reported. A failed source reports it once.
     told: bool,
-    /// Whether a piece the view wanted at the last update drew an ancestor, or nothing, instead.
+    /// Whether a piece the view wanted at the last update showed a placeholder: an ancestor, or
+    /// nothing.
     standing_in: bool,
 }
 
@@ -92,8 +93,8 @@ impl TileSet {
         }
     }
 
-    /// Brings the dataset up to what the view asks, from what the cache holds of the source; a
-    /// failure to tell, if any.
+    /// Updates the dataset to what the view needs, from what the cache holds of the source. Returns
+    /// a failure to report, if any.
     fn update(&mut self, input: &Input<'_>, asked: &Asked<'_>, cache: &mut Cache, jobs: &Jobs<'_>) -> Option<Error> {
         self.standing_in = false;
         let fetched = cache.open(&self.tiles.url, self.id, jobs);
@@ -129,7 +130,7 @@ impl TileSet {
     }
 }
 
-/// Every source of tiles a view was given.
+/// Every tile source a view was given.
 #[derive(Default)]
 pub(crate) struct TileSets {
     sets: Vec<TileSet>,
@@ -139,7 +140,7 @@ pub(crate) struct TileSets {
 }
 
 impl TileSets {
-    /// Draws `tiles`: tiles of the same name replace these, and what they drew goes.
+    /// Draws `tiles`, replacing any tiles of the same name and what they drew.
     pub(crate) fn set(&mut self, tiles: Tiles, cache: &mut Cache) {
         if self.sets.iter().any(|s| s.tiles == tiles) {
             return;
@@ -148,8 +149,8 @@ impl TileSets {
         self.sets.push(TileSet::new(tiles));
     }
 
-    /// Stops drawing the tiles drawn as dataset `name`, and what they changed that the view has yet to
-    /// take.
+    /// Stops drawing the tiles drawn as dataset `name`, and drops their changes the view has not
+    /// taken yet.
     pub(crate) fn remove(&mut self, name: &str, cache: &mut Cache) {
         self.changed.retain(|data| **data.name() != *name);
         self.sets.retain(|set| {
@@ -161,7 +162,7 @@ impl TileSets {
         });
     }
 
-    /// Stops drawing every source: the view draws no more.
+    /// Stops drawing every source, because the view no longer draws.
     pub(crate) fn release(&mut self, cache: &mut Cache) {
         self.changed.clear();
         for set in self.sets.drain(..) {
@@ -169,33 +170,32 @@ impl TileSets {
         }
     }
 
-    /// Whether every piece the view wants draws itself: none stands in by an ancestor, or by nothing
-    /// while its source opens, and the view took every dataset they changed. A piece that could not
-    /// be fetched draws nothing, and is final.
+    /// Whether every piece the view wants is drawn rather than a placeholder (an ancestor, or
+    /// nothing while its source opens), and the view took every changed dataset. A piece that could
+    /// not be fetched draws nothing, which counts as final.
     pub(crate) fn complete(&self) -> bool {
         self.changed.is_empty() && self.sets.iter().all(|s| !s.standing_in)
     }
 
-    /// Whether datasets the updates changed wait for the view to take them.
+    /// Whether changed datasets are waiting for the view to take them.
     pub(crate) fn pending(&self) -> bool {
         !self.changed.is_empty()
     }
 
-    /// The pieces every source draws, and those being fetched or decoded.
+    /// The number of pieces drawn across all sources, and the number being fetched or decoded.
     pub(crate) fn counts(&self, cache: &Cache) -> [u64; 2] {
         let drawn = self.sets.iter().map(|set| set.drawn() as u64).sum();
         let loading = self.sets.iter().map(|set| cache.under_way(&set.tiles.url) as u64).sum();
         [drawn, loading]
     }
 
-    /// Whether the view draws dataset `name` from tiles: pieces fetched as the view asks, drawn as
-    /// they are.
+    /// Whether the view draws dataset `name` from tiles, fetched as the view needs them.
     pub(crate) fn owns(&self, name: &str) -> bool {
         self.sets.iter().any(|s| *s.tiles.name == *name)
     }
 
-    /// The rows vector tiles brought of dataset `name`, each table with the fields its shapes are
-    /// written as too: the view takes them as the frame begins, so row for row what it draws.
+    /// The rows vector tiles supplied for dataset `name`, including their derived shape fields. The
+    /// view takes them as the frame begins, so they match what it draws row for row.
     pub(crate) fn shaped(&self, name: &str) -> Option<&Snapshot> {
         let set = self.sets.iter().find(|s| *s.tiles.name == *name)?;
         match &set.drawing {
@@ -209,12 +209,12 @@ impl TileSets {
         std::mem::take(&mut self.changed)
     }
 
-    /// Failures since last asked.
+    /// Failures since the last call.
     pub(crate) fn take_errors(&mut self) -> Vec<Error> {
         std::mem::take(&mut self.errors)
     }
 
-    /// Brings every set up to what the view asks and the scene draws, from what `cache` holds.
+    /// Updates every set to what the view needs and the scene draws, from what `cache` holds.
     pub(crate) fn update(&mut self, input: &Input<'_>, asked: &Asked<'_>, cache: &mut Cache, jobs: &Jobs<'_>) {
         for set in &mut self.sets {
             if let Some(error) = set.update(input, asked, cache, jobs)

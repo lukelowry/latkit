@@ -3,7 +3,7 @@
 
 #![allow(clippy::unreadable_literal)]
 
-/// How a binding is read.
+/// A binding's resource type.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Kind {
     Uniform,
@@ -27,7 +27,8 @@ const FRAGMENT: u32 = 2;
 const COMPUTE: u32 = 4;
 
 impl ShaderSource {
-    /// The shader's WGSL: its declarations, each stored once for every shader, joined in order.
+    /// The shader's WGSL: its declarations joined in order. Each declaration is stored once and
+    /// shared by every shader.
     pub(crate) fn wgsl(&self) -> String {
         let mut out = String::new();
         for (i, &piece) in self.pieces.iter().enumerate() {
@@ -40,8 +41,8 @@ impl ShaderSource {
         out
     }
 
-    /// Bytes of its WGSL: what a browser compiles for each of its pipelines, and so about how long
-    /// one takes.
+    /// Bytes of its WGSL, which a browser compiles for each of its pipelines: a rough measure of
+    /// compile time.
     pub(crate) fn size(&self) -> usize {
         self.pieces
             .iter()
@@ -53,11 +54,11 @@ impl ShaderSource {
     }
 }
 
-/// Every distinct top-level declaration of every linked shader, each once; [`PIECES`] says where each
-/// lies.
+/// Every distinct top-level declaration of every linked shader, each stored once. [`PIECES`] gives
+/// each one's byte range.
 static WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/shaders.wgsl"));
 
-/// One linked shader: its declarations, entry points, and the bindings of its pass group.
+/// One linked shader: its declarations, entry points included, and the bindings of its pass group.
 pub(crate) struct ShaderSource {
     pub(crate) label: &'static str,
     /// Its declarations, as indices into [`PIECES`], in order.
@@ -65,7 +66,8 @@ pub(crate) struct ShaderSource {
     pub(crate) pass: &'static [Binding],
     /// The pipeline constants it declares.
     pub(crate) overrides: &'static [&'static str],
-    /// Whether it reads the view and mark groups; one that does not binds its pass group alone.
+    /// Whether it reads the view and mark groups. A shader that does not gets empty groups in their
+    /// place.
     pub(crate) shared: bool,
 }
 
@@ -114,6 +116,6 @@ impl Binding {
 
 include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 
-// One page of rows: the data's, a table's order's, and a mark's, which it evaluates at a time.
+// The data, a table's draw order, and a mark's evaluation all use the same page of rows.
 const _: () =
     assert!(1 << PAGE_BITS == PAGE_ROWS && PAGE_MASK + 1 == PAGE_ROWS && PAGE_ROWS as usize == crate::data::PAGE_ROWS);
