@@ -11,10 +11,8 @@
  */
 import {
   Patch,
-  color,
   field,
   hovered,
-  missing,
   pointer,
   reference,
   selected,
@@ -161,7 +159,8 @@ export default async function page(stage: Stage): Promise<void> {
     lineColor: 'level' as 'level' | 'ends' | 'theme',
     bow: 0.12,
     labelSize: 10,
-    labelMax: 0,
+    /** The zoom from which buses are labeled; 0 labels them at any zoom. */
+    labelZoom: 5,
     font: 'sans' as keyof typeof FONTS,
     wrap: 0,
     glow: 5,
@@ -303,7 +302,7 @@ export default async function page(stage: Stage): Promise<void> {
         marks.push({
           vertices: {
             of: ['grid', 'Bus'],
-            position: ['lon', 'lat'],
+            position: ['$lon', '$lat'],
             color: field('load').colormap('viridis').domain(0, 1),
             radius: busRadius(1.2),
             marker: MARKERS[look.marker],
@@ -328,12 +327,12 @@ export default async function page(stage: Stage): Promise<void> {
           of: ['grid', 'Line'],
           ends: ['from', 'to'],
           // Higher-voltage lines draw on top and stay visible as the camera zooms out.
-          priority: 'level',
+          priority: '$level',
           ...(look.lineColor === 'level' ? { color: level } : {}),
           width: field('level')
             .scale((big ? 0.5 : 0.8) * look.width, (big ? 1.8 : 2.8) * look.width)
             .domain(0, 5),
-          dash: 'transformer',
+          dash: '$transformer',
           route: look.route,
           arrows: look.arrows,
           ...(state.flow ? { flow: field('level').mul(6).add(8) } : {}),
@@ -351,10 +350,10 @@ export default async function page(stage: Stage): Promise<void> {
       marks.push({
         vertices: {
           of: ['grid', 'Bus'],
-          position: ['lon', 'lat'],
+          position: ['$lon', '$lat'],
           ...(busColor ? { color: busColor } : {}),
           // Where buses crowd, higher-voltage buses draw on top and stay visible from farther out.
-          priority: 'level',
+          priority: '$level',
           radius: busRadius(
             big ? field('level').scale(0.8, 2.6).domain(0, 5) : grid.buses > 5000 ? 2 : 3,
           ),
@@ -362,19 +361,19 @@ export default async function page(stage: Stage): Promise<void> {
           // The bus a search found is ringed.
           ...(look.found
             ? {
-                ring: when(field('name').is(look.found))
-                  .then(color('#ffd166'))
-                  .otherwise(missing()),
+                ring: when(field('name').is(look.found)).then('#ffd166').otherwise(null),
               }
             : {}),
+          // Labels never hide one another, so a crowded grid labels its buses only once zoomed in:
+          // below the chosen zoom a bus's text is missing, and it has no label.
           ...(state.labels && grid.case.named
             ? {
                 label: {
-                  text: 'name',
-                  priority: 'kv',
+                  text: look.labelZoom
+                    ? when(zoom().ge(look.labelZoom)).then(field('name')).otherwise(null)
+                    : '$name',
                   size: look.labelSize,
                   font: FONTS[look.font],
-                  ...(look.labelMax ? { max: look.labelMax } : {}),
                   ...(look.wrap ? { maxWidth: look.wrap } : {}),
                 },
               }
@@ -387,7 +386,7 @@ export default async function page(stage: Stage): Promise<void> {
       marks.push({
         vertices: {
           of: ['grid', 'Machine'],
-          position: ['lon', 'lat'],
+          position: ['$lon', '$lat'],
           marker: 'diamond',
           color: simulation
             ? field('speed').colormap('coolwarm').domain(-simulation.largest, simulation.largest)
@@ -401,7 +400,7 @@ export default async function page(stage: Stage): Promise<void> {
       marks.push({
         vertices: {
           of: ['grid', 'Fault'],
-          position: ['lon', 'lat'],
+          position: ['$lon', '$lat'],
           color: '#ff3829',
           radius: 9,
           marker: 'rounded',
@@ -615,14 +614,14 @@ export default async function page(stage: Stage): Promise<void> {
     },
   );
   buses.choice(
-    'Most labels',
+    'Labels from zoom',
     [
-      ['As many as fit', 0],
-      ['100', 100],
-      ['25', 25],
+      ['Any zoom', 0],
+      ['5', 5],
+      ['7', 7],
     ] as const,
-    look.labelMax,
-    (max) => ((look.labelMax = max), restyle()),
+    look.labelZoom,
+    (from) => ((look.labelZoom = from), restyle()),
   );
   buses.choice(
     'Font',
@@ -840,9 +839,9 @@ export default async function page(stage: Stage): Promise<void> {
     const found = data.query({
       of: 'Bus',
       filter: field('name').contains(text),
-      sort: [['kv', 'descending']],
+      sort: [['$kv', 'descending']],
       limit: 200,
-      select: { name: 'name', lon: 'lon', lat: 'lat' },
+      select: { name: '$name', lon: '$lon', lat: '$lat' },
     });
     if (!found.ids.length) {
       pin();

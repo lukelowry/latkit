@@ -1,10 +1,10 @@
 //! How a view draws a paged table.
 //!
 //! A drawing assigns the pages the camera needs to GPU slots and draws them as runs of held rows:
-//! tiles fading out, then the camera's tiles, finest first, then pinned rows (selected, framed by
-//! a fit, or ends of kept edges) that no tile covers. A page keeps its slot while resident, so
-//! panning never moves rows. Idle pages stay resident while the budget allows, so returning to them
-//! is free; a page made resident again only needs its words evaluated again.
+//! tiles fading out, then the camera's tiles in the order chosen, then pinned rows (selected,
+//! framed by a fit, or ends of kept edges) that no tile covers. A page keeps its slot while
+//! resident, so panning never moves rows. Idle pages stay resident while the budget allows, so
+//! returning to them is free; a page made resident again only needs its words evaluated again.
 //!
 //! Resident edges need their endpoints resident. A vertex page that many edges end in is made
 //! resident whole; scattered endpoints become kept rows, so far-apart edges cost one row per
@@ -302,8 +302,8 @@ impl Drawing {
         Drawing::lay(Some(self), lay, false)
     }
 
-    /// Builds the runs: tiles fading out first, so they draw underneath; then the drawn ranges,
-    /// finest first, with `entering` fading in; then `pinned` rows no range covers.
+    /// Builds the runs: tiles fading out first, so they draw underneath; then the drawn ranges in
+    /// the order chosen, with `entering` fading in; then `pinned` rows no range covers.
     fn run(&mut self, entering: &[Range<u32>], pinned: &[u32]) {
         let covered = |list: &[Range<u32>], row: u32| list.iter().any(|r| r.contains(&row));
         let kept: Vec<u32> = pinned
@@ -1133,6 +1133,37 @@ mod tests {
         assert!(!settled.fades);
         assert_eq!(settled.runs.iter().map(|r| r.fade).collect::<Vec<_>>(), [0, 0]);
         assert_eq!(settled.items, 11);
+    }
+
+    #[test]
+    fn table_order_draws_ranges_in_the_order_chosen_and_keeps_slots_as_rows_are_appended() {
+        let lay = |version: Version, rows: u32, ranges: &[Range<u32>], before: Option<&Drawing>| {
+            let order = Order::Table { rows, order: version };
+            let lay = Lay {
+                chosen: &chosen(&order, ranges),
+                pinned: &Pinned::default(),
+                ends: &Ending::default(),
+                room: 0,
+                scene: 0,
+                written: &Written::Nothing,
+            };
+            Drawing::lay(before, &lay, true)
+        };
+        let version = Version::next();
+        // A coarse tile's rows on page 1 draw first, under a finer tile's rows on page 0.
+        let first = lay(version, PAGE_ROWS + 50, &[PAGE_ROWS..PAGE_ROWS + 50, 0..10], None);
+        assert_eq!(&*first.slots, [0, 1]);
+        assert_eq!((first.item_of(PAGE_ROWS), first.item_of(0)), (Some(0), Some(50)));
+        // A tile arriving appends its rows, which fade in; every page keeps its slot.
+        let ranges = [PAGE_ROWS..PAGE_ROWS + 50, 0..10, PAGE_ROWS + 50..PAGE_ROWS + 80];
+        let appended = lay(version, PAGE_ROWS + 80, &ranges, Some(&first));
+        assert_eq!(&*appended.slots, [0, 1]);
+        assert!(appended.fades && appended.leaving.is_empty());
+        assert_eq!(appended.items, 90);
+        // Removing rows makes another order: nothing carries over, and nothing fades.
+        let removed = lay(Version::next(), 30, std::slice::from_ref(&(0..30)), Some(&appended));
+        assert!(!removed.fades);
+        assert_eq!((&*removed.slots, removed.items), (&[0][..], 30));
     }
 
     #[test]

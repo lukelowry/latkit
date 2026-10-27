@@ -749,7 +749,7 @@
         "required": true,
         "many": false,
         "global": false,
-        "help": "The query: JSON, such as `{\"of\":\"Branch\",\"filter\":{\"op\":\"gt\",\"args\":[\"loading\",90]}}`, or a file of it (`-` reads stdin)",
+        "help": "The query: JSON, such as `{\"of\":\"Branch\",\"filter\":{\"gt\":[\"$loading\",90]}}`, or a file of it (`-` reads stdin)",
         "defaults": [],
         "values": []
       },

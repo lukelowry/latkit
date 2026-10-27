@@ -1,11 +1,20 @@
 //! Vector tiles: the tiles the camera needs, fetched from a PMTiles archive or a URL template
-//! (given directly or read from a TileJSON document), decoded in jobs, and patched into the dataset
+//! (given directly or read from a TileJSON document), decoded in jobs, and appended to the dataset
 //! a set draws. The camera picks tiles that draw no larger than their own pixel size near its
-//! focus, nearest first. Tiles decode only the layers a set's marks draw, and decode again for a
-//! set whose scene draws others. The job decoding a tile also computes its rows' shapes for their
-//! marks, so a tile arrives with its triangles and paths. A set holds the rows with their shapes,
-//! and draws a dataset of the rows as the tiles wrote them.
+//! focus, splitting those drawn largest first, and lists them nearest first. Tiles decode only the
+//! layers a set's marks draw, and decode again for a set whose scene draws others. The job decoding
+//! a tile also computes its rows' shapes for their marks, so a tile arrives with its triangles and
+//! paths. A set holds the rows with their shapes, and draws a dataset of the rows as the tiles
+//! wrote them.
+//!
+//! A set's tables hold the rows of the tiles it drew in the order they arrived, so a tile landing
+//! appends its rows and the pages earlier tiles filled stay as they are. Each table is paged, in
+//! table order: its tiles are the vector tiles drawn, each the span of rows it wrote. A tile that
+//! stops drawing keeps its rows, and draws them again if it returns, until the rows no drawn tile
+//! holds outnumber the rows drawn by at least a page; then every table drops them at once.
 
+use std::collections::BinaryHeap;
+use std::ops::Range;
 use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -13,45 +22,70 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::TileKey;
 use super::tiling::{Decoding, Pieces, Requested, Tiling};
 use crate::data::{Field, Id, Keyed, Name, Op, Patch, Snapshot, Table, Values};
+use crate::derive::order::Order;
 use crate::derive::shapes::shapings;
-use crate::derive::sight::{Domain, Sight, TILE_PX, meets};
+use crate::derive::sight::{Domain, SPLIT_PX, Sight, meets};
+use crate::derive::tiled::Chosen;
 use crate::derive::{Input, Jobs, stamp_of};
+use crate::expr::cpu::Rows;
 use crate::geo::mvt::Kind as Geometry;
 use crate::geo::pmtiles::{self, Directory, Entry, Header};
 use crate::geo::tiles::{Decoded, Template, shapes_field};
+use crate::gpu::shaders::PAGE_ROWS;
 use crate::host::{Job, Request};
-use crate::{Error, Kind, Mark, Pending, Scene};
+use crate::{Error, Expr, Kind, Mark, Pending, Scene};
 
-/// Most tiles drawn at once. Past this, tiles stop splitting.
-const MAX_TILES: usize = 256;
+/// Most tiles drawn at once. Past this, tiles stop splitting. A view 4K CSS pixels wide, seen from
+/// above, draws at most about 100 tiles of 320 to 640 pixels.
+const MAX_TILES: usize = 128;
 
-/// The tiles to draw within `zooms` and `bounds`: those intersecting the camera's view, each split
-/// while it draws larger than its pixel size, nearest the camera's focus first.
+/// The tiles to draw within `zooms` and `bounds`, nearest the camera's focus first: those meeting
+/// the camera's view, split from the root while they draw larger than their pixel size. The tile
+/// drawn largest splits first, so once [`MAX_TILES`] binds, the smaller tiles left stay as they
+/// are. Tiles coarser than the first zoom hold nothing: they split before any other, and draw
+/// nothing if they cannot.
 fn wanted(sight: &Sight<'_>, zooms: [u8; 2], bounds: [f64; 4]) -> Vec<TileKey> {
-    let limit = TILE_PX * 1.25;
     let region = sight.region();
     let focus = sight.focus();
-    let mut out: Vec<(TileKey, f64)> = Vec::new();
-    let mut queue = vec![TileKey { z: 0, x: 0, y: 0 }];
-    while !queue.is_empty() {
-        let mut next = Vec::new();
-        for (k, &key) in queue.iter().enumerate() {
-            let b = key.bounds();
-            if b[0] > bounds[2] || b[2] < bounds[0] || b[1] > bounds[3] || b[3] < bounds[1] || !meets(&region, b) {
-                continue;
-            }
-            let (size, distance) = sight.measure(&focus, &Domain::Earth, key);
-            let room = out.len() + next.len() + (queue.len() - k) * 4 < MAX_TILES;
-            if key.z < zooms[1] && (key.z < zooms[0] || size > limit) && room {
-                next.extend(key.children());
-            } else if key.z >= zooms[0] {
-                out.push((key, distance));
-            }
-        }
-        queue = next;
+    let within = |key: TileKey| {
+        let b = key.bounds();
+        b[0] <= bounds[2] && b[2] >= bounds[0] && b[1] <= bounds[3] && b[3] >= bounds[1] && meets(&region, b)
+    };
+    // Each tile met, with its size and distance from the view's center, and a heap of those not yet
+    // split or drawn, largest on top.
+    let mut met: Vec<(TileKey, f64, f64)> = Vec::new();
+    let mut heap: BinaryHeap<(u64, u32)> = BinaryHeap::new();
+    let meet = |key: TileKey, met: &mut Vec<(TileKey, f64, f64)>, heap: &mut BinaryHeap<(u64, u32)>| {
+        let (size, distance) = sight.measure(&focus, &Domain::Earth, key);
+        let rank = if key.z < zooms[0] { f64::INFINITY } else { size };
+        heap.push((crate::order::number(rank), met.len() as u32));
+        met.push((key, size, distance));
+    };
+    let root = TileKey { z: 0, x: 0, y: 0 };
+    if within(root) {
+        meet(root, &mut met, &mut heap);
     }
-    crate::order::by_key(&mut out, |a| crate::order::number(a.1));
-    out.into_iter().map(|(key, _)| key).collect()
+    let mut drawn: Vec<(TileKey, f64)> = Vec::new();
+    while let Some((_, i)) = heap.pop() {
+        let (key, size, distance) = met[i as usize];
+        if key.z >= zooms[1] || (key.z >= zooms[0] && size <= SPLIT_PX) {
+            drawn.push((key, distance));
+            continue;
+        }
+        let children: Vec<TileKey> = key.children().into_iter().filter(|&child| within(child)).collect();
+        if drawn.len() + heap.len() + children.len() > MAX_TILES {
+            // This tile and every smaller one draw as they are.
+            drawn.push((key, distance));
+            drawn.extend(heap.drain().map(|(_, i)| (met[i as usize].0, met[i as usize].2)));
+            break;
+        }
+        for child in children {
+            meet(child, &mut met, &mut heap);
+        }
+    }
+    drawn.retain(|(key, _)| key.z >= zooms[0]);
+    crate::order::by_key(&mut drawn, |a| crate::order::number(a.1));
+    drawn.into_iter().map(|(key, _)| key).collect()
 }
 
 /// Where a source's vector tiles come from once it opens.
@@ -162,16 +196,23 @@ impl Fetched {
     }
 }
 
-/// What one set draws of vector tiles: the tiles whose rows its dataset holds, with each tile's row
-/// ids by table, and `held`, the same rows including their derived shape fields.
+/// Each tile whose rows a set's tables hold, with the span of rows it wrote in each table.
+type Spans = FxHashMap<TileKey, Vec<(Name, Range<u32>)>>;
+
+/// What one set draws of vector tiles: the tiles whose rows its dataset holds, with their spans;
+/// the tiles drawn, nearest the camera's focus first; a stamp of what the rows were made from (the
+/// stamp they were decoded for, and their tables' priorities); and `held`, the same rows as the
+/// dataset including their derived shape fields.
 pub(crate) struct Drawing {
-    drawn: FxHashMap<TileKey, Vec<(Name, Vec<Id>)>>,
+    spans: Spans,
+    drawn: Vec<TileKey>,
+    made: u64,
     held: Snapshot,
 }
 
 impl Drawing {
     pub(crate) fn new() -> Drawing {
-        Drawing { drawn: FxHashMap::default(), held: Snapshot::new("held") }
+        Drawing { spans: Spans::default(), drawn: Vec::new(), made: 0, held: Snapshot::new("held") }
     }
 
     /// The rows the dataset holds, including their derived shape fields.
@@ -182,6 +223,38 @@ impl Drawing {
     /// Tiles drawn.
     pub(crate) fn drawn(&self) -> usize {
         self.drawn.len()
+    }
+
+    /// What `table`, one of the dataset's tables, draws within `rows` rows: the span of each tile
+    /// drawn, nearest the camera's focus first until the rows run out (the tile they run out in
+    /// draws its last rows, those of highest priority), as ranges of its table order. The ranges
+    /// draw coarsest tile first, so finer tiles draw over the ancestors standing in for them.
+    /// `capped` when the budget left out any rows.
+    pub(crate) fn chosen(&self, table: &Table, rows: u32) -> Chosen {
+        let len = table.len() as u32;
+        let (mut left, mut capped) = (rows, false);
+        let mut spans: Vec<(u8, Range<u32>)> = Vec::new();
+        for key in &self.drawn {
+            let Some(span) = self.span(key, &table.name).filter(|span| !span.is_empty() && span.end <= len) else {
+                continue;
+            };
+            if left == 0 {
+                capped = true;
+                break;
+            }
+            let taken = (span.len() as u32).min(left);
+            capped |= taken < span.len() as u32;
+            spans.push((key.z, span.end - taken..span.end));
+            left -= taken;
+        }
+        crate::order::by_key(&mut spans, |(z, span)| crate::order::pair(u32::from(*z), span.start));
+        let ranges = spans.into_iter().map(|(_, span)| span).collect();
+        Chosen { order: Order::Table { rows: len, order: table.order }, ranges, capped }
+    }
+
+    /// The span of rows tile `key` wrote in table `table`, while the tables hold them.
+    fn span(&self, key: &TileKey, table: &Name) -> Option<&Range<u32>> {
+        self.spans.get(key)?.iter().find(|(name, _)| name == table).map(|(_, span)| span)
     }
 
     /// Updates `data` to what `sight` shows and set `set`'s scene draws of dataset `name`, from
@@ -211,59 +284,152 @@ impl Drawing {
         let Fetched { url, opened, leaves, leaf_fetches, tiling } = fetched;
         let mut pieces = Find { url, opened, leaves, leaf_fetches, tables: &tables };
         let drawn = tiling.update(set, &wanted, stamp, &mut pieces, jobs);
-        let changed = self.draw(&drawn.keys, stamp, tiling, data);
+        let changed = self.draw(&drawn.keys, stamp, tiling, input, data);
         (changed, drawn.standing_in, failure.or(drawn.failure))
     }
 
-    /// Makes `data` hold exactly the rows of tiles `drawn`, as the tiles wrote them, and `held` the
-    /// same rows with their shapes. Returns whether it changed.
-    fn draw(&mut self, drawn: &[TileKey], stamp: u64, tiling: &Tiling<TileKey>, data: &mut Snapshot) -> bool {
-        let keep: FxHashSet<TileKey> = drawn.iter().copied().collect();
+    /// Draws tiles `drawn`, decoded for `stamp`. A tile new to the tables appends its rows after
+    /// every row they hold, as the tile wrote them but in its table's priority order: to `data`,
+    /// and with their shapes to `held`. Rows of tiles not drawn stay until they outnumber the rows
+    /// drawn by at least a page; then each table drops them in one removal, and the spans after
+    /// them move down. Every row goes when the stamp or a priority changes, since each tile then
+    /// appends its rows anew, with the same ids. Returns whether `data` changed.
+    fn draw(
+        &mut self,
+        drawn: &[TileKey],
+        stamp: u64,
+        tiling: &Tiling<TileKey>,
+        input: &Input<'_>,
+        data: &mut Snapshot,
+    ) -> bool {
+        let priorities = priorities(input.scene, data.name());
+        let made = stamp_of((stamp, format!("{priorities:?}")));
+        let renewed = made != self.made;
+        let showing: FxHashSet<TileKey> = drawn.iter().copied().filter(|_| !renewed).collect();
+        // A tile not drawn that wrote no rows has nothing to keep.
+        self.spans.retain(|key, spans| showing.contains(key) || spans.iter().any(|(_, span)| !span.is_empty()));
+        // Rows of the tiles drawn, and of the tiles not drawn.
+        let (mut shown, mut idle) = (0_usize, 0_usize);
+        for (key, spans) in &self.spans {
+            let rows: usize = spans.iter().map(|(_, span)| span.len()).sum();
+            if showing.contains(key) {
+                shown += rows;
+            } else {
+                idle += rows;
+            }
+        }
+        let compact = renewed || (idle > shown && idle >= PAGE_ROWS as usize);
+        if !compact && drawn.iter().all(|key| self.spans.contains_key(key)) {
+            (self.drawn, self.made) = (drawn.to_vec(), made);
+            return false;
+        }
+        let mut spans = self.spans.clone();
         let mut patch = Patch::new();
-        // Remove tiles no longer drawn, and tiles decoded for other tables, which return decoded
-        // again.
-        let gone: Vec<TileKey> =
-            self.drawn.keys().filter(|k| !keep.contains(k) || tiling.decoded(k, stamp).is_none()).copied().collect();
-        // One removal per table, so rows after the first removed row move only once.
-        let mut removed: Keyed<Name, Vec<Id>> = Keyed::default();
-        for key in &gone {
-            for (table, ids) in self.drawn.remove(key).unwrap_or_default() {
-                removed.entry(table).or_default().extend(ids);
+        let mut changed: Vec<Name> = Vec::new();
+        if compact {
+            // One removal per table, so rows after the first removed row move only once.
+            let mut gone: Keyed<Name, Vec<Id>> = Keyed::default();
+            for (key, tile) in &spans {
+                if showing.contains(key) {
+                    continue;
+                }
+                for (name, span) in tile.iter().filter(|(_, span)| !span.is_empty()) {
+                    let Some(table) = self.held.table(name) else { continue };
+                    let ids = span.clone().filter_map(|row| table.ids.id(row as usize));
+                    gone.entry(name.clone()).or_default().extend(ids);
+                }
+            }
+            spans.retain(|key, _| showing.contains(key));
+            pack(&mut spans);
+            for (name, ids) in gone {
+                changed.push(name.clone());
+                patch = patch.remove(name, ids);
             }
         }
-        for (table, ids) in removed {
-            if self.held.table(&table).is_some() {
-                patch = patch.remove(table, ids);
-            }
+        // Each table's row count once the removals apply: where its last span ends.
+        let mut ends: Keyed<Name, u32> = Keyed::default();
+        for (name, span) in spans.values().flatten() {
+            let end = ends.entry(name.clone()).or_default();
+            *end = (*end).max(span.end);
         }
+        let mut kinds = FxHashMap::default();
         for &key in drawn {
-            if self.drawn.contains_key(&key) {
+            if spans.contains_key(&key) {
                 continue;
             }
             let Some(tile) = tiling.decoded(&key, stamp) else { continue };
-            let mut rows = Vec::new();
+            let mut wrote = Vec::new();
             for op in &tile.ops {
-                if let Op::Set(table) = op {
-                    rows.push((table.name.clone(), table.ids().collect()));
-                    patch = patch.set(harmonized(table, &self.held));
+                let Op::Set(table) = op else { continue };
+                let end = ends.entry(table.name.clone()).or_default();
+                wrote.push((table.name.clone(), *end..*end + table.len() as u32));
+                *end += table.len() as u32;
+                if !changed.contains(&table.name) {
+                    changed.push(table.name.clone());
                 }
+                let priority = priorities.iter().find(|(name, _)| *name == table.name).map(|(_, p)| p);
+                patch = patch.set(harmonized(&ranked(table, priority, input.data), &self.held, &mut kinds));
             }
-            self.drawn.insert(key, rows);
+            spans.insert(key, wrote);
         }
         if patch.is_empty() {
+            (self.spans, self.drawn, self.made) = (spans, drawn.to_vec(), made);
             return false;
         }
         let Ok(held) = self.held.applied(patch) else { return false };
-        // The drawn dataset holds each table of `held` without its shape fields, sharing
+        // The drawn dataset holds each changed table of `held` without its shape fields, sharing
         // everything else.
-        let tables = held.tables().map(|table| {
+        let tables = changed.iter().filter_map(|name| held.table(name)).map(|table| {
             let mut table = table.clone();
             table.fields.retain(|(name, _)| !shapes_field(name));
             table
         });
         let Ok(next) = data.applied(tables.fold(Patch::new(), Patch::replace)) else { return false };
-        (*data, self.held) = (next, held);
+        (*data, self.held, self.spans, self.drawn, self.made) = (next, held, spans, drawn.to_vec(), made);
         true
+    }
+}
+
+/// The priority each table of dataset `name` draws its rows by: that of the first mark drawing it
+/// that gives one.
+fn priorities(scene: &Scene, name: &Name) -> Vec<(Name, Expr)> {
+    let mut out: Vec<(Name, Expr)> = Vec::new();
+    for mark in &scene.marks {
+        let style = mark.style();
+        let Some(priority) = &style.priority else { continue };
+        if style.data == *name && !out.iter().any(|(table, _)| *table == style.table) {
+            out.push((style.table.clone(), priority.clone()));
+        }
+    }
+    out
+}
+
+/// `table` with its rows in `priority` order, highest last, so they draw on top. Rows of equal
+/// priority keep their order, and a missing or NaN priority is lowest. As is without a priority.
+fn ranked(table: &Table, priority: Option<&Expr>, all: &[Snapshot]) -> Table {
+    let Some(priority) = priority else { return table.clone() };
+    let lowest = |p: f64| if p.is_nan() { f64::NEG_INFINITY } else { p };
+    let ranks = Rows::new(table, all).numbers(priority, |p| crate::order::number(lowest(p)));
+    let mut rows: Vec<usize> = (0..table.len()).collect();
+    crate::order::by_key(&mut rows, |&row| ranks[row]);
+    table.rows(&rows)
+}
+
+/// Moves each table's spans in `spans` down to close the gaps that removed rows left between them,
+/// keeping their order and lengths.
+fn pack(spans: &mut Spans) {
+    let mut tables: Keyed<Name, Vec<&mut Range<u32>>> = Keyed::default();
+    for (name, span) in spans.values_mut().flatten() {
+        tables.entry(name.clone()).or_default().push(span);
+    }
+    for (_, mut table) in tables {
+        crate::order::by_key(&mut table, |span| u64::from(span.start));
+        let mut at = 0;
+        for span in table {
+            let len = span.end - span.start;
+            *span = at..at + len;
+            at += len;
+        }
     }
 }
 
@@ -369,13 +535,20 @@ fn decoded_tables(scene: &Scene, name: &Name) -> Vec<Decoded> {
     tables
 }
 
-/// Converts `table`'s fields to the kinds of the same-named table in `data` where they differ. For
-/// example, a field a tile reads as numbers but the dataset holds as text is written as text.
-fn harmonized(table: &Table, data: &Snapshot) -> Table {
-    let Some(existing) = data.table(&table.name) else { return table.clone() };
+/// Converts `table`'s fields to the kinds the same-named fields have where they differ: in the
+/// same-named table of `data`, or else in a table set before it in the same patch, as `kinds`
+/// records, by table and field. For example, a field a tile reads as numbers but the dataset holds
+/// as text is written as text. Records the kinds of fields new to both.
+fn harmonized(table: &Table, data: &Snapshot, kinds: &mut FxHashMap<(Name, Name), Kind>) -> Table {
+    let existing = data.table(&table.name);
     let mut out = table.clone();
     for (name, field) in &table.fields {
-        let (Some(want), Field::Values(column, _)) = (existing.kind(name), field) else { continue };
+        let Field::Values(column, _) = field else { continue };
+        let key = (table.name.clone(), name.clone());
+        let Some(want) = existing.and_then(|t| t.kind(name)).or_else(|| kinds.get(&key).copied()) else {
+            kinds.insert(key, column.kind());
+            continue;
+        };
         if column.kind() == want {
             continue;
         }

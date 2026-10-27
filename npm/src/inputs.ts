@@ -1,6 +1,6 @@
 /** The types latkit reads, written by `node npm/build.mjs schema` from `npm/schema.json`. Do not edit. */
 
-import type { Color, ExprInput, PaintInput } from './scene.js';
+import type { Color, ExprInput } from './scene.js';
 
 /** Defaults for areas. */
 export interface AreaTheme {
@@ -44,37 +44,6 @@ export interface Axis {
   precision?: number | null;
 }
 
-/**
- * An operation on two values: arithmetic, `min` and `max`, comparisons (1 for true, 0 for false),
- * and logic. `rem` is a floored remainder, which takes the sign of the divisor. `and` and `or`
- * treat values above 0.5 as true.
- */
-export type Binary =
-  | 'add'
-  | 'sub'
-  | 'mul'
-  | 'div'
-  | 'rem'
-  | 'pow'
-  | 'min'
-  | 'max'
-  | 'lt'
-  | 'le'
-  | 'gt'
-  | 'ge'
-  | 'eq'
-  | 'ne'
-  | 'and'
-  | 'or';
-
-/** A two-argument operation, such as `{ "op": "add", "args": ["a", 1] }`. */
-export interface BinaryNode {
-  /** The operation. */
-  op: Binary;
-  /** Its arguments, left and right. */
-  args: [ExprInput, ExprInput];
-}
-
 /** An image of RGBA texels: straight alpha, sRGB, rows top to bottom. */
 export interface Bitmap {
   /** Width and height in texels. */
@@ -96,6 +65,127 @@ export interface Budget {
   /** Most bytes uploaded per frame; larger data streams in over several frames. Defaults to 32 MiB. */
   uploadPerFrame: number;
 }
+
+/**
+ * An operation on values: an object whose one key names the operation and holds its arguments,
+ * such as `{ "add": ["$a", 1] }`. `is` and `contains` take a plain text as their second argument,
+ * which is neither a field nor a color.
+ */
+export type CallNode =
+  | {
+      /** The value negated. */
+      neg: [ExprInput];
+    }
+  | {
+      /** 1 where the value is at most 0.5, else 0. */
+      not: [ExprInput];
+    }
+  | {
+      /** The absolute value. */
+      abs: [ExprInput];
+    }
+  | {
+      /** The square root. Negative values give a missing value. */
+      sqrt: [ExprInput];
+    }
+  | {
+      /** The sine of the value, an angle in radians. */
+      sin: [ExprInput];
+    }
+  | {
+      /** The cosine of the value, an angle in radians. */
+      cos: [ExprInput];
+    }
+  | {
+      /** The largest whole number at most the value. */
+      floor: [ExprInput];
+    }
+  | {
+      /** The natural logarithm. Values at most 0 give a missing value. */
+      ln: [ExprInput];
+    }
+  | {
+      /** e raised to the value. */
+      exp: [ExprInput];
+    }
+  | {
+      /** The sum of the two values. */
+      add: [ExprInput, ExprInput];
+    }
+  | {
+      /** The first value minus the second. */
+      sub: [ExprInput, ExprInput];
+    }
+  | {
+      /** The product of the two values. */
+      mul: [ExprInput, ExprInput];
+    }
+  | {
+      /** The first value divided by the second. Dividing by 0 gives a missing value. */
+      div: [ExprInput, ExprInput];
+    }
+  | {
+      /**
+       * The remainder of the first value divided by the second, with the sign of the second: -1 and 3
+       * give 2.
+       */
+      rem: [ExprInput, ExprInput];
+    }
+  | {
+      /** The first value raised to the power of the second. */
+      pow: [ExprInput, ExprInput];
+    }
+  | {
+      /** The smaller of the two values. */
+      min: [ExprInput, ExprInput];
+    }
+  | {
+      /** The larger of the two values. */
+      max: [ExprInput, ExprInput];
+    }
+  | {
+      /** 1 where the first value is less than the second, else 0. */
+      lt: [ExprInput, ExprInput];
+    }
+  | {
+      /** 1 where the first value is at most the second, else 0. */
+      le: [ExprInput, ExprInput];
+    }
+  | {
+      /** 1 where the first value is greater than the second, else 0. */
+      gt: [ExprInput, ExprInput];
+    }
+  | {
+      /** 1 where the first value is at least the second, else 0. */
+      ge: [ExprInput, ExprInput];
+    }
+  | {
+      /** 1 where the two values are equal, else 0. Colors compare too. */
+      eq: [ExprInput, ExprInput];
+    }
+  | {
+      /** 1 where the two values differ, else 0. Colors compare too. */
+      ne: [ExprInput, ExprInput];
+    }
+  | {
+      /** 1 where both values are above 0.5, else 0. */
+      and: [ExprInput, ExprInput];
+    }
+  | {
+      /** 1 where either value is above 0.5, else 0. */
+      or: [ExprInput, ExprInput];
+    }
+  | {
+      /** Whether a text field equals the plain text exactly. */
+      is: [field: ExprInput, text: string];
+    }
+  | {
+      /**
+       * Whether a text field contains the plain text, ignoring case. In a mark, the field must belong to
+       * the mark's own table.
+       */
+      contains: [field: ExprInput, text: string];
+    };
 
 /** Where a view looks. */
 export type Camera =
@@ -121,12 +211,6 @@ export type Camera =
       /** The value range shown, or `null` to fit the values in view. */
       y?: [number, number] | null;
     };
-
-/** A constant color. */
-export interface ColorNode {
-  /** A CSS color, such as `#ffb000` or `rebeccapurple`. */
-  color: Color;
-}
 
 /** Colors for a range of values: a catalog name, or your own colors. */
 export type Colormap = ColormapName | CustomColormap;
@@ -204,15 +288,6 @@ export interface ColormapNode {
 }
 
 /**
- * Whether a text field contains a text, ignoring case. In a mark, the field must belong to the
- * mark's own table.
- */
-export interface ContainsNode {
-  /** The text field, and the text it must contain. */
-  contains: [field: ExprInput, text: string];
-}
-
-/**
  * How a view responds to the pointer and keyboard, and how much it animates on its own: a preset
  * (`"none"` or `"inspect"`), or options over the defaults. Each mark controls whether its own rows
  * pick, select, and drag; these options control the view itself.
@@ -274,10 +349,9 @@ export type Controls =
        */
       press?: number;
       /**
-       * How much the view animates on its own: eases, camera flights, coasting, orbits, label fades,
-       * comets, and options that read `elapsed`. `system` (the default) follows the user's
-       * reduced-motion setting, `full` animates everything, and `reduced` animates only motion the user
-       * drives.
+       * How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and
+       * options that read `elapsed`. `system` (the default) follows the user's reduced-motion setting,
+       * `full` animates everything, and `reduced` animates only motion the user drives.
        */
       motion?: Motion;
     };
@@ -337,6 +411,11 @@ export type Direction =
 /**
  * The earth: positions are longitude and latitude in degrees. The ground takes the theme's `earth`
  * colors.
+ *
+ * A flat map is one world, drawn once. Its ground ends at the antimeridian and at Web Mercator's
+ * latitude limit, and the camera zooms out until the whole world fits the view and pans until the
+ * world's edges meet the view's. On a globe, longitude wraps, and the camera zooms out until the
+ * globe spans a third of the view's shorter side.
  */
 export interface Earth {
   /** A flat web mercator map (`mercator`, the default) or a globe (`globe`). */
@@ -444,22 +523,26 @@ export interface EnvelopeRequest {
   ids?: Ids | null;
 }
 
-/** A value for each row: a number, a boolean, a field's name, or a node that computes one. */
+/**
+ * A value for each row. A number or boolean is a constant, `null` is a missing value, a string
+ * starting with `$` reads the field it names, any other string is a CSS color, and an object is a
+ * node that computes a value.
+ */
 export type ExprNode =
   | number
   | boolean
-  | /** A field's name. */ string
+  | /** A missing value. An option that evaluates to missing uses the theme's value. */ null
+  | /**
+     * A field's value in each row, or a color: `"$kv"` reads field `kv`, and any other string is a CSS
+     * color, such as `#ffb000` or `rebeccapurple`. A field whose name starts with `$` is written
+     * `{ "field": "$x" }`.
+     */ string
   | FieldNode
-  | ColorNode
   | StateNode
-  | MissingNode
-  | UnaryNode
-  | BinaryNode
   | WhenNode
-  | IsNode
-  | ContainsNode
   | ScaleNode
-  | ColormapNode;
+  | ColormapNode
+  | CallNode;
 
 /**
  * Rows drawn as triangles between the vertices named by three reference fields: meshes, surfaces,
@@ -476,7 +559,7 @@ export interface Faces extends MarkOptions {
 
 /**
  * A field's value in each row: from the mark's own table, or with `from`, from another dataset's
- * table joined by row id.
+ * table joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
  */
 export interface FieldNode {
   /** The field's name. */
@@ -601,22 +684,22 @@ export type Interpolation =
      */ 'stepBefore'
   | /** Each value holds until the next sample, where the line steps. */ 'stepAfter';
 
-/** Whether a text field equals a text exactly. */
-export interface IsNode {
-  /** The text field, and the text it must equal. */
-  is: [field: ExprInput, text: string];
-}
-
 /**
  * Text for each row, placed beside, inside, or along the row's shape and following it every frame:
- * a text field, or options. Where labels would overlap, the higher priority shows; among equals,
- * labels already shown stay. In a diagram a label is part of the drawing: it scales with the zoom,
- * fades out when too small to read, and shows wherever it fits its vertex.
+ * a text field, or options. A label shows wherever its row shows and its text fits the room the
+ * row gives it, such as inside a block, whatever other labels it meets. A row whose text is
+ * missing has no label, so a `when` choosing between the text field and missing labels only the
+ * rows it names. In a diagram a label is part of the drawing: it scales with the zoom, fades out
+ * when too small to read, and shows wherever it fits its vertex.
  */
 export type Label =
   | ExprInput
   | {
-      /** The text field to show. */
+      /**
+       * The text field to show, or a `when` whose values are each that field or missing. A row whose
+       * text is missing has no label. In a diagram the text reads only data, since the sheet sizes
+       * blocks around it.
+       */
       text: ExprInput;
       /**
        * Font size in the space's unit (units in a diagram, CSS pixels elsewhere); the theme's
@@ -624,27 +707,20 @@ export type Label =
        */
       size?: number | null;
       /** Each row's text color; the theme's text color unless set. */
-      color?: PaintInput | null;
-      /** Where labels would overlap, the higher priority shows; the mark's `priority` unless set. */
-      priority?: ExprInput | null;
+      color?: ExprInput | null;
       /** The width at which lines wrap, in the space's unit (units in a diagram, CSS pixels elsewhere). */
       maxWidth?: number | null;
       /** The CSS font family list for the text; the theme's `text.font` unless set. */
       font?: string | null;
-      /**
-       * The most labels shown at once: those of highest priority among the rows in view, or fewer where
-       * they would overlap. No limit unless set.
-       */
-      max?: number | null;
     };
 
 /**
- * Layered drawing: vertices in ranks, edges pointing along `flow`, and nets ranked from their
+ * Layered drawing: vertices in ranks, edges pointing along `direction`, and nets ranked from their
  * outputs.
  */
 export interface Layered {
   /** The direction edges point; `right` by default. */
-  flow?: Direction;
+  direction?: Direction;
   /** Distance between vertices within a rank, in position units. Default 30. */
   gap?: number;
   /** Distance between ranks, in position units. Default 80. */
@@ -669,7 +745,7 @@ export type Layout =
       stress: Stress;
     }
   | {
-      /** Ranks along a direction, for flows and hierarchies. */
+      /** Ranks along a direction, for processes and hierarchies. */
       layered: Layered;
     };
 
@@ -746,16 +822,16 @@ export interface MarkOptions {
   /** The dataset and table drawn. */
   of: [data: string, table: string];
   /**
-   * Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-   * corners' colors.
+   * Each row's color: a CSS color, a value through a colormap, or a conditional choosing between
+   * colors. Unset, rows take the theme's default for the mark; faces instead blend their corners'
+   * colors.
    */
-  color?: PaintInput | null;
+  color?: ExprInput | null;
   /** Whether each row is drawn and can be picked. Default `true`. */
   visible?: ExprInput;
   /**
-   * Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-   * the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-   * labeled first.
+   * Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, and
+   * are the last dropped when a table too large to draw whole is thinned to the tiles in view.
    */
   priority?: ExprInput | null;
   /** Distinguishes two marks of the same table across scenes, and names the mark in hits. */
@@ -849,34 +925,17 @@ export type Marker =
       };
     };
 
-/** A missing value. An option that evaluates to missing uses the theme's value. */
-export interface MissingNode {
-  /** Always `true`. */
-  missing: true;
-}
-
 /** How much a view animates on its own. */
 export type Motion =
   | /** Follows the system: reduced when the user asked their system for less motion. */ 'system'
   | /** All motion. */ 'full'
   | /**
-     * Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits,
-     * labels appear without fading, and comets and options that read `elapsed` stay still.
+     * Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits, and
+     * comets and options that read `elapsed` stay still.
      */ 'reduced';
 
 /** Sort direction. Rows where the key has no value sort last in either direction. */
 export type Order = /** Smallest first. */ 'ascending' | /** Largest first. */ 'descending';
-
-/**
- * A color for each row: a CSS color, a value through a colormap, or a conditional choosing between
- * colors.
- */
-export type PaintNode =
-  | /** A CSS color, such as `#ffb000` or `rebeccapurple`. */ Color
-  | ColorNode
-  | ColormapNode
-  | WhenPaintNode
-  | MissingNode;
 
 /** A plane: positions are in plane units. */
 export interface Plane {
@@ -1198,17 +1257,6 @@ export type Theme =
 /** A tick in JSON: a value, or `[value, label]`. */
 export type Tick = number | [number, string | null];
 
-/** An operation on one value. `sin` and `cos` take radians; `not` treats values above 0.5 as true. */
-export type Unary = 'neg' | 'not' | 'abs' | 'sqrt' | 'sin' | 'cos' | 'floor' | 'ln' | 'exp';
-
-/** A one-argument operation, such as `{ "op": "abs", "args": ["x"] }`. */
-export interface UnaryNode {
-  /** The operation. */
-  op: Unary;
-  /** Its argument. */
-  args: [ExprInput];
-}
-
 /**
  * A size in position units (degrees on the earth), regardless of the space's unit, so it scales as
  * the view zooms. `atLeast` and `atMost` bound it in CSS pixels.
@@ -1261,7 +1309,7 @@ export interface Vertices extends MarkOptions {
   /** How each row is drawn; an ellipse by default. */
   marker?: Marker;
   /** A ring around each row's marker in this color; a missing or transparent color draws none. */
-  ring?: PaintInput | null;
+  ring?: ExprInput | null;
   /**
    * Ports on each row, one for each reference field that names a net. An `edges` mark of the net
    * table, without `ends`, draws the nets. Diagrams only.
@@ -1285,14 +1333,6 @@ export interface WhenNode {
   when: [condition: ExprInput, value: ExprInput][];
   /** The value where no condition holds. */
   otherwise: ExprInput;
-}
-
-/** A conditional color: the color of the first case whose condition holds, else `otherwise`. */
-export interface WhenPaintNode {
-  /** The cases, as `[condition, color]` pairs tried in order. */
-  when: [condition: ExprInput, color: PaintInput][];
-  /** The color where no condition holds. */
-  otherwise: PaintInput;
 }
 
 /** Which input zooms a view. */

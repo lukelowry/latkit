@@ -1,5 +1,5 @@
 /** Globe: routes between world cities along great circles, with comets flowing along them. */
-import { Patch, reference, units } from 'latkit';
+import { Patch, field, reference, units, when } from 'latkit';
 import { THEME, worldMap, type Piece } from './look.ts';
 
 /** Cities as `[name, longitude, latitude, population in millions]`. Populations are approximate. */
@@ -96,6 +96,8 @@ export default function globe(): Piece {
   for (const [a, b] of HAULS)
     pairs.add([index.get(a)!, index.get(b)!].sort((p, q) => p - q).join(','));
   const routes = [...pairs].map((p) => p.split(',').map(Number) as [number, number]);
+  // The most populous cities are named: those at least as populous as the fourteenth largest.
+  const named = CITIES.map((c) => c[3]).sort((p, q) => q - p)[13]!;
   const data = new Patch('world')
     .replace(
       'City',
@@ -156,7 +158,7 @@ export default function globe(): Piece {
                 kind: 'sequential',
                 colors: ['#5ce0c2', '#5aa9ff', '#b48cff', '#ffb35c'],
               },
-              value: 'degrees',
+              value: '$degrees',
               domain: [5, 90],
             },
           },
@@ -164,11 +166,15 @@ export default function globe(): Piece {
         {
           vertices: {
             of: ['world', 'City'],
-            position: ['lon', 'lat'],
-            radius: { scale: [2, 6], value: 'people', domain: [0, 37] },
+            position: ['$lon', '$lat'],
+            radius: { scale: [2, 6], value: '$people', domain: [0, 37] },
             color: '#f4f8ff',
-            priority: 'people',
-            label: { text: 'name', size: 11, color: '#c9d6e6', priority: 'people', max: 14 },
+            priority: '$people',
+            label: {
+              text: when(field('people').ge(named)).then(field('name')).otherwise(null),
+              size: 11,
+              color: '#c9d6e6',
+            },
           },
         },
       ],

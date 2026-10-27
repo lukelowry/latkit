@@ -151,7 +151,7 @@ pub(crate) struct Ledger {
 /// any view drawing the same data.
 #[derive(Clone, Default, PartialEq, Debug)]
 pub(crate) struct Ask {
-    /// Bytes no other view holds: its marks' state, focus, labels, traces, and derived columns.
+    /// Bytes no other view holds: its marks' state, focus, traces, and derived columns.
     pub(crate) own: f64,
     /// Each shared piece, keyed by content, with its bytes.
     pub(crate) shared: Vec<(u64, f64)>,

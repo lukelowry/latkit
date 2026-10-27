@@ -103,12 +103,18 @@ fn globe_degrees(w: vec3f, radius: f32) -> vec2f {
     return vec2f(lon, degrees(asin(clamp(v.y, -1.0, 1.0))));
 }
 
-// The earth: the Mercator band or the globe's disc, blended as the projection morphs, lit by
+// The earth: the flat map's square or the globe's disc, blended as the projection morphs, lit by
 // daylight, with the graticule on it and the atmosphere around the globe.
 fn earth(o: vec3f, d: vec3f, g: vec3f, ahead: bool) -> Ground {
-    // The flat map ends where Web Mercator does, at y = ±π.
+    // The flat map is one world. It ends where Web Mercator does, at y = ±π, and at the
+    // antimeridian, x = ±π from the prime meridian. The distance to the antimeridian starts from
+    // the center's longitude part by part, so the edge holds still at any zoom.
     let band = PI - abs(g.y + frame.mercator_y);
-    let flat = saturate(band / max(fwidth(band), 1e-9) + 0.5) * f32(ahead);
+    let east = radians(180.0 - frame.center_hi.x - frame.center_lo.x) - g.x;
+    let west = radians(180.0 + frame.center_hi.x + frame.center_lo.x) + g.x;
+    let side = min(east, west);
+    let across = saturate(side / max(fwidth(side), 1e-9) + 0.5);
+    let flat = saturate(band / max(fwidth(band), 1e-9) + 0.5) * across * f32(ahead);
     let center = globe_center();
     let radius = -center.z;
     let to_center = center - o;

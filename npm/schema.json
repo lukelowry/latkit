@@ -51,7 +51,7 @@
       "required": [
         "space"
       ],
-      "description": "A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an\nease duration, and an optional title.\n\nA scene is plain data. In JSON, fields are camelCase and each mark is\n`{ vertices | edges | faces | lines | areas: options }`.\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(Vertices::of(\"grid\", \"Bus\").position(\"lon\", \"lat\").color(voltage).legend(\"Bus voltage · pu\"))\n    .title(\"Voltage\");\n```"
+      "description": "A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an\nease duration, and an optional title.\n\nA scene is plain data. In JSON, fields are camelCase and each mark is\n`{ vertices | edges | faces | lines | areas: options }`.\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\")).color(voltage);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(buses.legend(\"Bus voltage · pu\"))\n    .title(\"Voltage\");\n```"
     },
     "Space": {
       "anyOf": [
@@ -148,7 +148,7 @@
           "description": "Whether air glows around the globe, in the theme's `earth.atmosphere` color, brighter on the\nday side. Default `false`."
         }
       },
-      "description": "The earth: positions are longitude and latitude in degrees. The ground takes the theme's `earth`\ncolors."
+      "description": "The earth: positions are longitude and latitude in degrees. The ground takes the theme's `earth`\ncolors.\n\nA flat map is one world, drawn once. Its ground ends at the antimeridian and at Web Mercator's\nlatitude limit, and the camera zooms out until the whole world fits the view and pans until the\nworld's edges meet the view's. On a globe, longitude wraps, and the camera zooms out until the\nglobe spans a third of the view's shorter side."
     },
     "Projection": {
       "oneOf": [
@@ -493,7 +493,7 @@
             "ring": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Paint"
+                  "$ref": "#/$defs/Expr"
                 },
                 {
                   "type": "null"
@@ -552,7 +552,7 @@
       "tsType": "ExprInput"
     },
     "ExprNode": {
-      "description": "A value for each row: a number, a boolean, a field's name, or a node that computes one.",
+      "description": "A value for each row. A number or boolean is a constant, `null` is a missing value, a string starting with `$` reads the field it names, any other string is a CSS color, and an object is a node that computes a value.",
       "anyOf": [
         {
           "type": "number"
@@ -561,41 +561,30 @@
           "type": "boolean"
         },
         {
-          "description": "A field's name.",
+          "description": "A missing value. An option that evaluates to missing uses the theme's value.",
+          "type": "null"
+        },
+        {
+          "description": "A field's value in each row, or a color: `\"$kv\"` reads field `kv`, and any other string is a CSS color, such as `#ffb000` or `rebeccapurple`. A field whose name starts with `$` is written `{ \"field\": \"$x\" }`.",
           "type": "string"
         },
         {
           "$ref": "#/$defs/FieldNode"
         },
         {
-          "$ref": "#/$defs/ColorNode"
-        },
-        {
           "$ref": "#/$defs/StateNode"
         },
         {
-          "$ref": "#/$defs/MissingNode"
-        },
-        {
-          "$ref": "#/$defs/UnaryNode"
-        },
-        {
-          "$ref": "#/$defs/BinaryNode"
-        },
-        {
           "$ref": "#/$defs/WhenNode"
-        },
-        {
-          "$ref": "#/$defs/IsNode"
-        },
-        {
-          "$ref": "#/$defs/ContainsNode"
         },
         {
           "$ref": "#/$defs/ScaleNode"
         },
         {
           "$ref": "#/$defs/ColormapNode"
+        },
+        {
+          "$ref": "#/$defs/CallNode"
         }
       ]
     },
@@ -633,22 +622,7 @@
       "required": [
         "field"
       ],
-      "description": "A field's value in each row: from the mark's own table, or with `from`, from another\ndataset's table joined by row id."
-    },
-    "ColorNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "color": {
-          "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
-          "tsType": "Color",
-          "type": "string"
-        }
-      },
-      "required": [
-        "color"
-      ],
-      "description": "A constant color."
+      "description": "A field's value in each row: from the mark's own table, or with `from`, from another\ndataset's table joined by row id. `\"$name\"` is the short form of `{ \"field\": \"name\" }`."
     },
     "StateNode": {
       "type": "object",
@@ -674,106 +648,6 @@
         "zoom"
       ],
       "description": "View state of each row: `selected`, `hovered`, `pointer` (CSS pixels from a vertex to the\npointer), `elapsed` (seconds since the view was created), or `zoom` (the camera's zoom)."
-    },
-    "MissingNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "missing": {
-          "type": "boolean",
-          "description": "Always `true`.",
-          "const": true
-        }
-      },
-      "required": [
-        "missing"
-      ],
-      "description": "A missing value. An option that evaluates to missing uses the theme's value."
-    },
-    "UnaryNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "op": {
-          "$ref": "#/$defs/Unary",
-          "description": "The operation."
-        },
-        "args": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Expr"
-          },
-          "minItems": 1,
-          "maxItems": 1,
-          "description": "Its argument."
-        }
-      },
-      "required": [
-        "op",
-        "args"
-      ],
-      "description": "A one-argument operation, such as `{ \"op\": \"abs\", \"args\": [\"x\"] }`."
-    },
-    "Unary": {
-      "type": "string",
-      "enum": [
-        "neg",
-        "not",
-        "abs",
-        "sqrt",
-        "sin",
-        "cos",
-        "floor",
-        "ln",
-        "exp"
-      ],
-      "description": "An operation on one value. `sin` and `cos` take radians; `not` treats values above 0.5 as\ntrue."
-    },
-    "BinaryNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "op": {
-          "$ref": "#/$defs/Binary",
-          "description": "The operation."
-        },
-        "args": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Expr"
-          },
-          "minItems": 2,
-          "maxItems": 2,
-          "description": "Its arguments, left and right."
-        }
-      },
-      "required": [
-        "op",
-        "args"
-      ],
-      "description": "A two-argument operation, such as `{ \"op\": \"add\", \"args\": [\"a\", 1] }`."
-    },
-    "Binary": {
-      "type": "string",
-      "enum": [
-        "add",
-        "sub",
-        "mul",
-        "div",
-        "rem",
-        "pow",
-        "min",
-        "max",
-        "lt",
-        "le",
-        "gt",
-        "ge",
-        "eq",
-        "ne",
-        "and",
-        "or"
-      ],
-      "description": "An operation on two values: arithmetic, `min` and `max`, comparisons (1 for true, 0 for\nfalse), and logic. `rem` is a floored remainder, which takes the sign of the divisor. `and` and\n`or` treat values above 0.5 as true."
     },
     "WhenNode": {
       "type": "object",
@@ -807,56 +681,6 @@
         "otherwise"
       ],
       "description": "The value of the first case whose condition holds, else `otherwise`."
-    },
-    "IsNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "is": {
-          "type": "array",
-          "prefixItems": [
-            {
-              "$ref": "#/$defs/Expr"
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "minItems": 2,
-          "maxItems": 2,
-          "description": "The text field, and the text it must equal.",
-          "tsType": "[field: ExprInput, text: string]"
-        }
-      },
-      "required": [
-        "is"
-      ],
-      "description": "Whether a text field equals a text exactly."
-    },
-    "ContainsNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "contains": {
-          "type": "array",
-          "prefixItems": [
-            {
-              "$ref": "#/$defs/Expr"
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "minItems": 2,
-          "maxItems": 2,
-          "description": "The text field, and the text it must contain.",
-          "tsType": "[field: ExprInput, text: string]"
-        }
-      },
-      "required": [
-        "contains"
-      ],
-      "description": "Whether a text field contains a text, ignoring case. In a mark, the field must belong to the\nmark's own table."
     },
     "ScaleNode": {
       "type": "object",
@@ -1070,6 +894,607 @@
         }
       ],
       "description": "How a colormap maps values: `sequential` and `diverging` maps clamp, `cyclic` maps wrap, and\n`categorical` maps give each integer its own color."
+    },
+    "CallNode": {
+      "description": "An operation on values: an object whose one key names the operation and holds its arguments, such as `{ \"add\": [\"$a\", 1] }`. `is` and `contains` take a plain text as their second argument, which is neither a field nor a color.",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "neg": {
+              "description": "The value negated.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "neg"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "not": {
+              "description": "1 where the value is at most 0.5, else 0.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "not"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "abs": {
+              "description": "The absolute value.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "abs"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sqrt": {
+              "description": "The square root. Negative values give a missing value.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "sqrt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sin": {
+              "description": "The sine of the value, an angle in radians.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "sin"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cos": {
+              "description": "The cosine of the value, an angle in radians.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "cos"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "floor": {
+              "description": "The largest whole number at most the value.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "floor"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ln": {
+              "description": "The natural logarithm. Values at most 0 give a missing value.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "ln"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "exp": {
+              "description": "e raised to the value.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "exp"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "add": {
+              "description": "The sum of the two values.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "add"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sub": {
+              "description": "The first value minus the second.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "sub"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mul": {
+              "description": "The product of the two values.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "mul"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "div": {
+              "description": "The first value divided by the second. Dividing by 0 gives a missing value.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "div"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "rem": {
+              "description": "The remainder of the first value divided by the second, with the sign of the second: -1 and 3 give 2.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "rem"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "pow": {
+              "description": "The first value raised to the power of the second.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "pow"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "min": {
+              "description": "The smaller of the two values.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "min"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "max": {
+              "description": "The larger of the two values.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "max"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "lt": {
+              "description": "1 where the first value is less than the second, else 0.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "lt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "le": {
+              "description": "1 where the first value is at most the second, else 0.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "le"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "gt": {
+              "description": "1 where the first value is greater than the second, else 0.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "gt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ge": {
+              "description": "1 where the first value is at least the second, else 0.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "ge"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "eq": {
+              "description": "1 where the two values are equal, else 0. Colors compare too.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "eq"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ne": {
+              "description": "1 where the two values differ, else 0. Colors compare too.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "ne"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "and": {
+              "description": "1 where both values are above 0.5, else 0.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "and"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "or": {
+              "description": "1 where either value is above 0.5, else 0.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "$ref": "#/$defs/Expr"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "or"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "is": {
+              "description": "Whether a text field equals the plain text exactly.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "tsType": "[field: ExprInput, text: string]"
+            }
+          },
+          "required": [
+            "is"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contains": {
+              "description": "Whether a text field contains the plain text, ignoring case. In a mark, the field must belong to the mark's own table.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Expr"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "tsType": "[field: ExprInput, text: string]"
+            }
+          },
+          "required": [
+            "contains"
+          ],
+          "additionalProperties": false
+        }
+      ]
     },
     "Size": {
       "description": "A size: a value in the space's unit (units in a diagram, CSS pixels elsewhere), `{ px }` in CSS pixels, or `{ units }` in position units (degrees on the earth), which grow on screen as the view zooms in.",
@@ -1373,65 +1798,6 @@
       ],
       "description": "An image of RGBA texels: straight alpha, sRGB, rows top to bottom."
     },
-    "Paint": {
-      "$ref": "#/$defs/PaintNode",
-      "tsType": "PaintInput"
-    },
-    "PaintNode": {
-      "description": "A color for each row: a CSS color, a value through a colormap, or a conditional choosing between colors.",
-      "anyOf": [
-        {
-          "description": "A CSS color, such as `#ffb000` or `rebeccapurple`.",
-          "type": "string",
-          "tsType": "Color"
-        },
-        {
-          "$ref": "#/$defs/ColorNode"
-        },
-        {
-          "$ref": "#/$defs/ColormapNode"
-        },
-        {
-          "$ref": "#/$defs/WhenPaintNode"
-        },
-        {
-          "$ref": "#/$defs/MissingNode"
-        }
-      ]
-    },
-    "WhenPaintNode": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "when": {
-          "type": "array",
-          "items": {
-            "type": "array",
-            "prefixItems": [
-              {
-                "$ref": "#/$defs/Expr"
-              },
-              {
-                "$ref": "#/$defs/Paint"
-              }
-            ],
-            "minItems": 2,
-            "maxItems": 2
-          },
-          "description": "The cases, as `[condition, color]` pairs tried in order.",
-          "tsType": "[condition: ExprInput, color: PaintInput][]"
-        },
-        "otherwise": {
-          "$ref": "#/$defs/Paint",
-          "description": "The color where no condition holds."
-        }
-      },
-      "required": [
-        "when",
-        "otherwise"
-      ],
-      "description": "A conditional color: the color of the first case whose condition holds, else `otherwise`."
-    },
     "Port": {
       "anyOf": [
         {
@@ -1517,7 +1883,7 @@
           "type": "object",
           "properties": {
             "text": {
-              "description": "The text field to show.",
+              "description": "The text field to show, or a `when` whose values are each that field or missing. A row\nwhose text is missing has no label. In a diagram the text reads only data, since the sheet\nsizes blocks around it.",
               "$ref": "#/$defs/Expr"
             },
             "size": {
@@ -1530,17 +1896,6 @@
             },
             "color": {
               "description": "Each row's text color; the theme's text color unless set.",
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Paint"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "priority": {
-              "description": "Where labels would overlap, the higher priority shows; the mark's `priority` unless set.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Expr"
@@ -1564,15 +1919,6 @@
                 "string",
                 "null"
               ]
-            },
-            "max": {
-              "description": "The most labels shown at once: those of highest priority among the rows in view, or fewer\nwhere they would overlap. No limit unless set.",
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "uint32",
-              "minimum": 0
             }
           },
           "additionalProperties": false,
@@ -1581,7 +1927,7 @@
           ]
         }
       ],
-      "description": "Text for each row, placed beside, inside, or along the row's shape and following it every frame:\na text field, or options. Where labels would overlap, the higher priority shows; among equals,\nlabels already shown stay. In a diagram a label is part of the drawing: it scales with the zoom,\nfades out when too small to read, and shows wherever it fits its vertex.\n\n```\n# use latkit::{field, Label, Vertices};\nlet buses = Vertices::of(\"grid\", \"Bus\").position(\"lon\", \"lat\").label(Label::new(\"name\").priority(field(\"kv\")));\n```"
+      "description": "Text for each row, placed beside, inside, or along the row's shape and following it every frame:\na text field, or options. A label shows wherever its row shows and its text fits the room the\nrow gives it, such as inside a block, whatever other labels it meets. A row whose text is\nmissing has no label, so a `when` choosing between the text field and missing labels only the\nrows it names. In a diagram a label is part of the drawing: it scales with the zoom, fades out\nwhen too small to read, and shows wherever it fits its vertex.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\n```"
     },
     "MarkOptions": {
       "type": "object",
@@ -1605,13 +1951,13 @@
         "color": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Paint"
+              "$ref": "#/$defs/Expr"
             },
             {
               "type": "null"
             }
           ],
-          "description": "Each row's color. Unset, rows take the theme's default for the mark; faces instead\nblend their corners' colors."
+          "description": "Each row's color: a CSS color, a value through a colormap, or a conditional choosing\nbetween colors. Unset, rows take the theme's default for the mark; faces instead\nblend their corners' colors."
         },
         "visible": {
           "$ref": "#/$defs/Expr",
@@ -1626,7 +1972,7 @@
               "type": "null"
             }
           ],
-          "description": "Each row's priority, from its data alone (no view state). Higher-priority rows draw\non top, are the last dropped when a table too large to draw whole is thinned to the\ntiles in view, and are labeled first."
+          "description": "Each row's priority, from its data alone (no view state). Higher-priority rows draw\non top, and are the last dropped when a table too large to draw whole is thinned to\nthe tiles in view."
         },
         "name": {
           "type": [
@@ -1930,7 +2276,7 @@
               "additionalProperties": false
             },
             {
-              "description": "Ranks along a direction, for flows and hierarchies.",
+              "description": "Ranks along a direction, for processes and hierarchies.",
               "type": "object",
               "properties": {
                 "layered": {
@@ -1964,7 +2310,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "flow": {
+        "direction": {
           "$ref": "#/$defs/Direction",
           "description": "The direction edges point; `right` by default."
         },
@@ -1979,7 +2325,7 @@
           "description": "Distance between ranks, in position units. Default 80."
         }
       },
-      "description": "Layered drawing: vertices in ranks, edges pointing along `flow`, and nets ranked from their\noutputs."
+      "description": "Layered drawing: vertices in ranks, edges pointing along `direction`, and nets ranked from their\noutputs."
     },
     "Direction": {
       "oneOf": [
@@ -2451,7 +2797,7 @@
               "format": "double"
             },
             "motion": {
-              "description": "How much the view animates on its own: eases, camera flights, coasting, orbits, label fades,\ncomets, and options that read `elapsed()`. `system` (the default) follows the user's\nreduced-motion setting, `full` animates everything, and `reduced` animates only motion the\nuser drives.",
+              "description": "How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and\noptions that read `elapsed()`. `system` (the default) follows the user's reduced-motion\nsetting, `full` animates everything, and `reduced` animates only motion the user drives.",
               "$ref": "#/$defs/Motion"
             }
           },
@@ -2495,7 +2841,7 @@
         {
           "type": "string",
           "const": "reduced",
-          "description": "Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits,\nlabels appear without fading, and comets and options that read `elapsed()` stay still."
+          "description": "Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits,\nand comets and options that read `elapsed()` stay still."
         }
       ],
       "description": "How much a view animates on its own."
@@ -3488,7 +3834,7 @@
         {
           "type": "string",
           "const": "still",
-          "description": "Once every view is complete and still. Transitions, camera flights, and label fades advance\n1/60 s per step until they finish."
+          "description": "Once every view is complete and still. Transitions, camera flights, and tile fades advance\n1/60 s per step until they finish."
         },
         {
           "type": "string",
@@ -3828,7 +4174,7 @@
             "type",
             "detail"
           ],
-          "description": "The camera moved by a gesture, fit, flight, coast, or orbit:\n[`View::camera`](crate::View::camera)."
+          "description": "The camera moved by a gesture, fit, flight, coast, or orbit, or back within reach as the\nview's size, insets, or space changed: [`View::camera`](crate::View::camera)."
         },
         {
           "type": "object",
@@ -4232,7 +4578,7 @@
       "description": "Where a view looks."
     },
     "Waiting": {
-      "description": "What a frame still waits on: pipelines the scene draws with, which compile before the view draws anything new (`compiling`); pages uploading, or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label placement, or text not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting (`marks`). Empty once the frame is complete.",
+      "description": "What a frame still waits on: pipelines the scene draws with, which compile before the view draws anything new (`compiling`); pages uploading, or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting (`marks`). Empty once the frame is complete.",
       "type": "array",
       "items": {
         "enum": [
@@ -4393,7 +4739,7 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
-          "description": "Readbacks from the GPU: probes, queries, fits, label placements, segment counts, and\npictures. Frame timer readbacks, which only some devices support, are not counted."
+          "description": "Readbacks from the GPU: probes, queries, fits, label texts, segment counts, and pictures.\nFrame timer readbacks, which only some devices support, are not counted."
         },
         "jobs": {
           "type": "integer",

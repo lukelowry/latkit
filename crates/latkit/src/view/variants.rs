@@ -53,22 +53,6 @@ pub(super) const GATHER: Variant = Variant::compute(Shader::Freeze, "gather");
 /// Sums each face's normal into its corners.
 pub(super) const NORMALS: Variant = Variant::compute(Shader::Normals, "accumulate");
 
-/// Clears the cells labels claim, then resets them between placement rounds.
-pub(super) const CELLS: [Variant; 2] =
-    [Variant::compute(Shader::Labels, "clear_cells"), Variant::compute(Shader::Labels, "reset_cells")];
-
-/// The selection that caps a mark's label count.
-pub(super) const SELECT: [Variant; 4] = [
-    Variant::compute(Shader::Labels, "select_start"),
-    Variant::compute(Shader::Labels, "select_count"),
-    Variant::compute(Shader::Labels, "select_find"),
-    Variant::compute(Shader::Labels, "select_cut"),
-];
-
-/// The passes that place each labeled mark's labels once its candidates are measured, for
-/// [`MarkVariants::placing`]. A diagram's labels need no placement.
-pub(super) const PLACING: [&str; 5] = ["claim", "decide", "occupy", "ask", "fade"];
-
 /// What a mark's pipelines are specialized for: its kind, the `PATH_` code its rows follow, and a
 /// custom marker's WGSL.
 #[derive(Clone, Copy)]
@@ -142,14 +126,9 @@ impl<'a> MarkVariants<'a> {
         Variant::probe(shader, self.primitive()).path(self.path)
     }
 
-    /// The pass measuring its label candidates at their anchors.
-    pub(super) fn candidates(self) -> Variant {
-        Variant::compute(Shader::Candidates, "candidates").path(self.path).primitive(self.primitive())
-    }
-
-    /// The placement pass `entry`, one of [`PLACING`].
-    pub(super) fn placing(self, entry: &'static str) -> Variant {
-        Variant::compute(Shader::Labels, entry).path(self.path)
+    /// The texts pass, which finds the texts its labels need at their anchors.
+    pub(super) fn texts(self) -> Variant {
+        Variant::compute(Shader::Texts, "texts").path(self.path).primitive(self.primitive())
     }
 
     /// The pipeline drawing its labels' glyphs.
@@ -188,7 +167,7 @@ pub(crate) fn common(format: wgpu::TextureFormat, samples: u32) -> Vec<Asked> {
     needs.extend(SCAN.map(Asked::Shader));
     needs.extend([draw(Shader::PointsPorts), draw(Shader::Overlay), draw(Shader::GlyphsPorts)]);
     let vertices = marks[2];
-    needs.extend([vertices.glyphs(format, samples), vertices.candidates()].map(Asked::Shader));
+    needs.extend([vertices.glyphs(format, samples), vertices.texts()].map(Asked::Shader));
     needs.extend(FIELDS.map(Asked::Shader));
     needs
 }
@@ -251,8 +230,7 @@ impl View {
     }
 
     /// Whether frames can draw text: labels, their glyphs and distance fields, and the overlay.
-    /// Until then frames draw without text, and labels fade in once it is ready, as after any
-    /// change.
+    /// Until then frames draw without text.
     pub(super) fn texts_ready(&self, inner: &Inner) -> bool {
         self.asked.iter().all(|a| inner.pipelines.ready(&a.texts))
     }
@@ -300,9 +278,6 @@ fn stages(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Stages {
     if written || labeled {
         stages.text.extend(FIELDS.map(Asked::Shader));
     }
-    if any(&|m| m.style().label.is_some()) && !matches!(scene.space, Space::Diagram(_)) {
-        stages.text.extend(CELLS.map(Asked::Shader));
-    }
     if any(&Mark::flows) {
         stages.draw.push(Asked::Shader(TRAVEL));
         stages.changes.push(Asked::Shader(CARRY));
@@ -334,14 +309,8 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
     // One probe program answers hover, queries, and the depth under the pointer for the mark's
     // geometry. Every mark gets one, so any drawn row can be located, pickable or not.
     stages.input.push(Asked::Shader(variants.probe(pipelines::probe(samples))));
-    if let Some(label) = &mark.style().label {
-        stages.text.extend([variants.glyphs(format, samples), variants.candidates()].map(Asked::Shader));
-        if !matches!(scene.space, Space::Diagram(_)) {
-            stages.text.extend(PLACING.map(|entry| Asked::Shader(variants.placing(entry))));
-            if label.max.is_some() {
-                stages.text.extend(SELECT.map(Asked::Shader));
-            }
-        }
+    if mark.style().label.is_some() {
+        stages.text.extend([variants.glyphs(format, samples), variants.texts()].map(Asked::Shader));
     }
     match mark {
         Mark::Faces(_) => stages.draw.push(Asked::Shader(NORMALS)),

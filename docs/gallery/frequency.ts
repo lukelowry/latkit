@@ -28,14 +28,14 @@ export default async function frequency(): Promise<Piece> {
             of: ['grid', 'Machine'],
             trace: 'speed',
             // The nearest machines, which swing hardest, draw on top.
-            priority: { op: 'neg', args: ['distance'] },
+            priority: { neg: ['$distance'] },
             width: 0.7,
             color: {
               colormap: {
                 kind: 'sequential',
                 colors: ['#fff1c9', '#ffb36b', '#e8577a', '#7a3fc4', '#24366e'],
               },
-              value: 'distance',
+              value: '$distance',
               domain: [0, 9],
             },
           },

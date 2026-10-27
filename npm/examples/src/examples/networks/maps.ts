@@ -7,7 +7,7 @@
  *
  * GeoJSON, plain or gzip-compressed, is read in a worker. Tiles are fetched as the camera needs them.
  */
-import { Data, Tiles, field, type ColormapName, type Mark, type Source } from 'latkit';
+import { Data, Tiles, field, when, zoom, type ColormapName, type Mark, type Source } from 'latkit';
 import { download, megabytes } from './cases.js';
 
 /** The page's colors, as CSS. */
@@ -108,7 +108,7 @@ function states(scale: '50m' | '10m', label: string): MapChoice {
               color: states
                 ? field(states.by).colormap(states.colormap).domain(0, Math.max(states.peak, 1e-6))
                 : LOOK.fill,
-              ...(labels ? { label: { text: 'name', size: 10, color: '#8e99aa' } } : {}),
+              ...(labels ? { label: { text: '$name', size: 10, color: '#8e99aa' } } : {}),
               pick: true,
             },
           },
@@ -136,8 +136,9 @@ const planet: MapChoice = {
         { lines: { of: ['base', 'waterway'], color: LOOK.waterway, width: 0.8, flow: 10 } },
         { lines: { of: ['base', 'transportation'], color: LOOK.road, width: 0.7 } },
         { lines: { of: ['base', 'boundary'], color: LOOK.line, width: 1, dash: true } },
-        // Place labels by rank, where 1 is the most important. A tile holds only the points inside
-        // it, so no label repeats.
+        // Place labels by rank, where 1 is the most important: a place is named once the zoom
+        // passes its rank, and has no label before. A tile holds only the points inside it, so no
+        // label repeats.
         ...(labels
           ? [
               {
@@ -146,10 +147,9 @@ const planet: MapChoice = {
                   color: LOOK.place,
                   radius: 1.5,
                   label: {
-                    text: 'name',
+                    text: when(field('rank').lt(zoom())).then(field('name')).otherwise(null),
                     size: 11,
                     color: LOOK.place,
-                    priority: field('rank').mul(-1),
                   },
                 },
               } satisfies Mark,

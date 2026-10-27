@@ -98,7 +98,7 @@ export default async function opening(): Promise<Piece> {
       name,
       width,
       color,
-      visible: { op: 'eq' as const, args: ['open', 1] as [string, number] },
+      visible: { eq: ['$open', 1] as [string, number] },
       pick: false,
     },
   });
@@ -106,13 +106,7 @@ export default async function opening(): Promise<Piece> {
   const map = (alpha: string) => `#7fa6cc${alpha}`;
   // Branches below 230 kV whose flow changes by less than about 10 MW, drawn dim and thin beneath
   // the rest.
-  const quiet: ExprInput = {
-    op: 'and',
-    args: [
-      { op: 'le', args: ['level', 1] },
-      { op: 'lt', args: ['change', 1.7] },
-    ],
-  };
+  const quiet: ExprInput = { and: [{ le: ['$level', 1] }, { lt: ['$change', 1.7] }] };
   return {
     name: 'opening',
     alt: 'The ACTIVSg70k grid on the globe as one 765 kV line opens: buses raised by their frequency, branches that pick up its power glow amber, those it leaves glow cyan',
@@ -152,8 +146,8 @@ export default async function opening(): Promise<Piece> {
         {
           vertices: {
             of: ['grid', 'Bus'],
-            position: ['lon', 'lat'],
-            elevation: 'height',
+            position: ['$lon', '$lat'],
+            elevation: '$height',
             radius: 0,
             color: '#00000000',
             pick: false,
@@ -163,7 +157,7 @@ export default async function opening(): Promise<Piece> {
           edges: {
             of: ['grid', 'Bus'],
             poles: true,
-            visible: { op: 'eq', args: ['pole', 1] },
+            visible: { eq: ['$pole', 1] },
             width: 0.35,
             color: '#a9b4bf33',
             pick: false,
@@ -176,7 +170,7 @@ export default async function opening(): Promise<Piece> {
             name: 'web',
             width: 0.3,
             color: '#39414b',
-            visible: { op: 'and', args: [{ op: 'eq', args: ['open', 0] }, quiet] },
+            visible: { and: [{ eq: ['$open', 0] }, quiet] },
             pick: false,
           },
         },
@@ -184,8 +178,8 @@ export default async function opening(): Promise<Piece> {
           edges: {
             of: ['grid', 'Branch'],
             ends: ['from', 'to'],
-            priority: 'change',
-            width: 'width',
+            priority: '$change',
+            width: '$width',
             color: {
               // Grey for changes within about 10 MW either way. Beyond that, cyan for less flow
               // and amber for more, at equal brightness.
@@ -202,16 +196,10 @@ export default async function opening(): Promise<Piece> {
                   [1, '#ffd27a'],
                 ],
               },
-              value: 'gain',
+              value: '$gain',
               domain: [-6, 6],
             },
-            visible: {
-              op: 'and',
-              args: [
-                { op: 'eq', args: ['open', 0] },
-                { op: 'not', args: [quiet] },
-              ],
-            },
+            visible: { and: [{ eq: ['$open', 0] }, { not: [quiet] }] },
             pick: false,
           },
         },

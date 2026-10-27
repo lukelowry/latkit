@@ -7,9 +7,7 @@ import {
   Data,
   Snapshot,
   Patch,
-  color,
   field,
-  missing,
   reference,
   when,
   type Grid,
@@ -407,7 +405,7 @@ class History {
 export default function page(stage: Stage): void {
   let preset = PRESETS[0]!;
   let data = new Data('studio');
-  let layout: Layout = { layered: { flow: 'right', gap: 30, rankGap: 80 } };
+  let layout: Layout = { layered: { direction: 'right', gap: 30, rankGap: 80 } };
   let route: 'orthogonal' | 'straight' = 'orthogonal';
   let comets = false;
   type Sheet = 'dots' | 'snap' | 'lines' | 'off';
@@ -453,7 +451,7 @@ export default function page(stage: Stage): void {
     const marks: Mark[] = [];
     // Containers take the theme's group color, tinted by nesting depth. Their titles sit at the
     // top, and they and the blocks inside them cast shadows on the sheet.
-    const title = { text: 'name', size: 11, color: light ? '#5b6b7d' : '#7f93a8' };
+    const title = { text: '$name', size: 11, color: light ? '#5b6b7d' : '#7f93a8' };
     if (tables.has('Station')) {
       marks.push({
         vertices: {
@@ -485,7 +483,7 @@ export default function page(stage: Stage): void {
         dash: field('name').is('Feedback'),
         ...(comets ? { flow: 40 } : {}),
         ...(style.names
-          ? { label: { text: 'name', size: 10, color: light ? '#5b6b7d' : '#7f93a8' } }
+          ? { label: { text: '$name', size: 10, color: light ? '#5b6b7d' : '#7f93a8' } }
           : {}),
       },
     });
@@ -495,14 +493,14 @@ export default function page(stage: Stage): void {
       marks.push({
         vertices: {
           of: ['studio', kind],
-          position: ['x', 'y'],
+          position: ['$x', '$y'],
           marker: style.shapes ? SHAPES[kind] : KINDS[kind].marker,
           color: KINDS[kind].fill[light ? 1 : 0],
           shadow: style.shadows,
-          ring: when(field('status').gt(0)).then(color('#ff8c42')).otherwise(missing()),
+          ring: when(field('status').gt(0)).then('#ff8c42').otherwise(null),
           ports: ports(kind, style.diamonds),
           drag: true,
-          label: { text: 'name', size: 12 },
+          label: { text: '$name', size: 12 },
         },
       });
     }
@@ -792,9 +790,9 @@ export default function page(stage: Stage): void {
   const look = stage.section('Display');
   const layouts: readonly (readonly [string, Layout])[] = [
     ['Left to right', layout],
-    ['Top to bottom', { layered: { flow: 'down', gap: 30, rankGap: 60 } }],
-    ['Right to left', { layered: { flow: 'left', gap: 30, rankGap: 80 } }],
-    ['Bottom to top', { layered: { flow: 'up', gap: 30, rankGap: 60 } }],
+    ['Top to bottom', { layered: { direction: 'down', gap: 30, rankGap: 60 } }],
+    ['Right to left', { layered: { direction: 'left', gap: 30, rankGap: 80 } }],
+    ['Bottom to top', { layered: { direction: 'up', gap: 30, rankGap: 60 } }],
     ['Force layout', { stress: { gap: 140 } }],
   ];
   look.choice('Layout', layouts, layout, (next) => {

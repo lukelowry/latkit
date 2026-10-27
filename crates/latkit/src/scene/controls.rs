@@ -52,10 +52,9 @@ pub struct Controls {
     #[serde(deserialize_with = "seconds")]
     #[schemars(with = "f64")]
     pub press: Duration,
-    /// How much the view animates on its own: eases, camera flights, coasting, orbits, label fades,
-    /// comets, and options that read `elapsed()`. `system` (the default) follows the user's
-    /// reduced-motion setting, `full` animates everything, and `reduced` animates only motion the
-    /// user drives.
+    /// How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and
+    /// options that read `elapsed()`. `system` (the default) follows the user's reduced-motion
+    /// setting, `full` animates everything, and `reduced` animates only motion the user drives.
     pub motion: Motion,
 }
 
@@ -83,7 +82,7 @@ pub enum Motion {
     /// All motion.
     Full,
     /// Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits,
-    /// labels appear without fading, and comets and options that read `elapsed()` stay still.
+    /// and comets and options that read `elapsed()` stay still.
     Reduced,
 }
 

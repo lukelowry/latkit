@@ -215,7 +215,7 @@ impl Job {
             }
             Layout::Layered(layered) => {
                 let mut out = job(Kind::Layered);
-                out.u32(layered.flow.code());
+                out.u32(layered.direction.code());
                 out.f64(layered.gap);
                 out.f64(layered.rank_gap);
                 out
@@ -401,8 +401,8 @@ fn run_layout(kind: Kind, input: &mut In<'_>) -> Option<Patch> {
     let options = if kind == Kind::Stress {
         Layout::Stress(crate::Stress { gap: input.f64()? })
     } else {
-        let flow = Direction::from_code(input.u32()?)?;
-        Layout::Layered(Layered { flow, gap: input.f64()?, rank_gap: input.f64()? })
+        let direction = Direction::from_code(input.u32()?)?;
+        Layout::Layered(Layered { direction, gap: input.f64()?, rank_gap: input.f64()? })
     };
     let count = input.u32()? as usize;
     let (mut sizes, mut pinned, mut groups, mut pads, mut keys) =

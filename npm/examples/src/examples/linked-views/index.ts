@@ -108,7 +108,7 @@ export default function page(stage: Stage): void {
       {
         vertices: {
           of: ['signals', 'Node'],
-          position: ['x', 'y'],
+          position: ['$x', '$y'],
           elevation: reading().mul(look.height),
           radius: radius(),
           color: signal(),

@@ -25,7 +25,7 @@ def write(path, value):
 
 
 def op(name, *args):
-    return {"op": name, "args": list(args)}
+    return {name: list(args)}
 
 
 def playback():
@@ -82,7 +82,6 @@ def prepare(work, frames):
             "lon": [b["extension"]["longitude"] for b in buses],
             "lat": [b["extension"]["latitude"] for b in buses],
             "label": [named.get(i, "") for i in ids],
-            "priority": [1000 if i == 4005 else 1 for i in ids],
             "is_fault": [i == 4005 for i in ids],
             "faulted": [i == 4005 and 1 <= frames[0] < 1.15 for i in ids],
             "voltage_trace": [i in voltage_ids for i in ids],
@@ -106,9 +105,9 @@ def prepare(work, frames):
     write(work / "grid.json", {"name": "grid", "patch": patch})
     # The original samples fit in memory for 243 buses. No interpolated cache is needed:
     # Latkit reads at each frame's time and preserves the duplicate event timestamps.
-    x = op("div", op("abs", "df"), 0.01)
+    x = op("div", op("abs", "$df"), 0.01)
     magnitude = op("ln", op("add", x, op("sqrt", op("add", op("mul", x, x), 1))))
-    signed = {"when": [[op("lt", "df", 0), op("neg", magnitude)]], "otherwise": magnitude}
+    signed = {"when": [[op("lt", "$df", 0), op("neg", magnitude)]], "otherwise": magnitude}
     elevation = op("mul", signed, 1.4 / math.asinh(0.1 / 0.01))
     theme = {"background": "#0a111b", "text": {"color": "#d5e1ed", "font": "Segoe UI, sans-serif", "size": 17}}
     map_scene = {
@@ -118,12 +117,12 @@ def prepare(work, frames):
         "subtitle": "JOHN DAY / Bus 4005 / Applied 1.00 s / Cleared 1.15 s",
         "marks": [
             {"lines": {"of": ["states", "polygons"], "color": "#58718b70", "width": 0.9}},
-            {"edges": {"of": ["grid", "Branch"], "ends": ["from", "to"], "width": "width"}},
+            {"edges": {"of": ["grid", "Branch"], "ends": ["from", "to"], "width": "$width"}},
             {"vertices": {
-                "of": ["grid", "Bus"], "position": ["lon", "lat"], "elevation": elevation,
-                "radius": {"when": [["faulted", 8], ["is_fault", 5]], "otherwise": 2.8},
-                "color": {"colormap": {"kind": "diverging", "colors": PALETTE}, "value": "df", "domain": [-0.1, 0.1]},
-                "label": {"text": "label", "size": 15, "priority": "priority"},
+                "of": ["grid", "Bus"], "position": ["$lon", "$lat"], "elevation": elevation,
+                "radius": {"when": [["$faulted", 8], ["$is_fault", 5]], "otherwise": 2.8},
+                "color": {"colormap": {"kind": "diverging", "colors": PALETTE}, "value": "$df", "domain": [-0.1, 0.1]},
+                "label": {"text": "$label", "size": 15},
                 "legend": "Bus frequency deviation / Hz",
             }},
         ],
@@ -143,9 +142,9 @@ def prepare(work, frames):
 
     write(work / "map.json", map_scene)
     write(work / "rotor.json", plot(f"{rotor_names[0]} / Rotor speed deviation / Hz",
-                                  "Machine", "df", "traced", "#ffcb72"))
+                                  "Machine", "df", "$traced", "#ffcb72"))
     write(work / "voltage.json", plot("4005 / JOHN DAY / Voltage / p.u.",
-                                    "Bus", "vm", "voltage_trace", "#66d6ef"))
+                                    "Bus", "vm", "$voltage_trace", "#66d6ef"))
     write(work / "map-camera.json", camera(frames[0]))
     write(work / "rotor-camera.json", {"x": [0, 10], "y": [-0.05, 0.12]})
     write(work / "voltage-camera.json", {"x": [0, 10], "y": [0.88, 1.12]})

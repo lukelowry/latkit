@@ -88,11 +88,12 @@ pub struct Frame<'a> {
 ///
 /// ```no_run
 /// # async fn example() -> latkit::Result<()> {
-/// use latkit::{Data, Gpu, Ids, Plane, Scene, Table, Vertices, View};
+/// use latkit::{Data, Gpu, Ids, Plane, Scene, Table, Vertices, View, field};
 /// let gpu = Gpu::new().await?;
 /// let graph = Data::new("graph");
 /// graph.apply(Table::new("Node", Ids::count(3)).field("x", vec![0.0, 1.0, 2.0]).field("y", vec![0.0, 1.0, 0.0]))?;
-/// let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(Vertices::of("graph", "Node").position("x", "y")))?;
+/// let nodes = Vertices::of("graph", "Node").position(field("x"), field("y"));
+/// let mut view = View::new(&gpu, Scene::new(Plane::default()).draw(nodes))?;
 /// view.set_sources([&graph])?;
 /// view.fit(latkit::Fit::All);
 /// // The next frame draws this change: a view draws the latest version of each Data it is given.
@@ -281,8 +282,9 @@ impl View {
         self.refresh(&mut inner);
         // Every mark recompiles if the theme, the kind of space, or the presence of a layout
         // changed.
+        let kind_changed = std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space);
         let context_changed = scene.theme != self.scene.theme
-            || std::mem::discriminant(&scene.space) != std::mem::discriminant(&self.scene.space)
+            || kind_changed
             || matches!(scene.layout, crate::Layout::None) != matches!(self.scene.layout, crate::Layout::None);
         let context = Context { theme: &scene.theme, space: &scene.space, layout: &scene.layout };
         // Compile every new or changed mark before changing anything.
@@ -340,6 +342,13 @@ impl View {
         if !self.camera.fits(&scene.space) {
             self.camera = Camera::default_for(&scene.space);
             self.plot_y = None;
+        }
+        // Fits framed the old space's positions, and motion under way moves through them; neither
+        // carries over to another kind of space. The next frame places the camera within the new
+        // space's reach.
+        if kind_changed {
+            self.rig.bounds = None;
+            self.rig.hold();
         }
         if matches!(scene.space, Space::Diagram(_)) {
             self.rig.orbit = 0.0;
@@ -533,6 +542,13 @@ impl View {
 
     /// Moves to `camera` at once, stopping any flight or coasting. Like every setter, it emits no
     /// event. Ignored unless `camera` [fits](Camera::fits) the scene's space.
+    ///
+    /// Like every camera move, it keeps the camera within reach. The earth bounds the reach, as
+    /// [`Earth`](crate::Earth) describes, in the part of the view inside the
+    /// [`insets`](View::insets). Fits narrow it to 3 zoom levels out and 8 in from what they
+    /// framed, with the center no farther outside the framed box than its size. The view learns its
+    /// size from its first frame. When its size, insets, or space change, the next frame moves the
+    /// camera back within reach and emits a [`Camera`](Event::Camera) event.
     pub fn set_camera(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
             self.rig.hold();
@@ -550,7 +566,7 @@ impl View {
     }
 
     /// Whether motion is enabled, so the view animates on its own: eases, flights, coasting,
-    /// orbits, label fades, comets, and expressions that read `elapsed()`.
+    /// orbits, comets, and expressions that read `elapsed()`.
     pub(super) fn moves(&self) -> bool {
         self.moves_with(&self.scene.controls)
     }
@@ -568,12 +584,14 @@ impl View {
         if self.moves() { self.scene.ease } else { Duration::ZERO }
     }
 
-    /// Eases to `camera` over twice the scene's ease, on the view's clock. Ignored unless `camera`
-    /// [fits](Camera::fits) the scene's space.
+    /// Eases to `camera`, kept within reach as [`set_camera`](View::set_camera) keeps it, over
+    /// twice the scene's ease, on the view's clock. Ignored unless `camera` [fits](Camera::fits)
+    /// the scene's space.
     pub fn fly(&mut self, camera: Camera) {
         if camera.fits(&self.scene.space) {
             let seconds = (self.ease().max(Duration::from_millis(1)) * 2).as_secs_f64();
-            self.rig.fly(self.camera, camera, self.clock.now(), seconds);
+            let to = camera.within(&self.reach());
+            self.rig.fly(self.camera, to, self.clock.now(), seconds);
             self.wake();
         }
     }
@@ -837,7 +855,6 @@ impl View {
             || self.answering.is_some_and(|seen| landed() != seen)
             || self.texting.is_some_and(|seen| landed() != seen)
             || self.fading()
-            || self.labels.fading(self.clock.now())
             // A mark evaluates once its columns are synced. Until then, the pages they wait for
             // wake the view.
             || self.marks.iter().any(|m| (m.drawable() && (m.dirty != 0 || m.reduce)) || m.begin.is_some() || m.transition.is_some())
@@ -907,14 +924,11 @@ impl View {
         }
     }
 
-    /// Whether something is easing to a rest: a transition, a flight, coasting, a tile fade, or a
-    /// label fade. Orbits, comets, and other motion that lasts as long as it is shown never settle,
-    /// and do not count.
+    /// Whether something is easing to a rest: a transition, a flight, coasting, or a tile fade.
+    /// Orbits, comets, and other motion that lasts as long as it is shown never settle, and do not
+    /// count.
     pub(crate) fn easing(&self) -> bool {
-        self.rig.easing()
-            || self.fading()
-            || self.labels.fading(self.clock.now())
-            || self.marks.iter().any(|m| m.begin.is_some() || m.transition.is_some())
+        self.rig.easing() || self.fading() || self.marks.iter().any(|m| m.begin.is_some() || m.transition.is_some())
     }
 
     /// Whether tiles of a paged table are fading in or out.

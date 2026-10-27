@@ -25,7 +25,7 @@ fn vertices_draw_at_their_positions_in_their_colors() {
     let blue = Color::rgb(0.0, 0.0, 1.0);
     let scene = Scene::new(plane()).theme(plain_theme()).draw(
         Vertices::of("graph", "Node")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .radius(6.0)
             .color(latkit::when(field("kind").is("a")).then(red).otherwise(blue)),
     );
@@ -56,7 +56,7 @@ fn contains_ignores_case_and_rechecks_changed_texts() {
     .expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(
         Vertices::of("graph", "Node")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .radius(6.0)
             .color(Color::rgb(1.0, 0.0, 0.0))
             .visible(field("name").contains("TA")),
@@ -89,7 +89,7 @@ fn a_stroke_in_pixels_keeps_its_width_as_a_diagram_zooms() {
         let scene = Scene::new(common::diagram())
             .theme(green_edges())
             .draw(Edges::of("graph", "Link").ends("from", "to").width(width))
-            .draw(Vertices::of("graph", "Node").position("x", "y").size(8.0, 8.0));
+            .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).size(8.0, 8.0));
         let mut view = View::new(&gpu, scene).expect("valid scene");
         view.set_camera(Camera::Map { center: [0.0; 3], zoom: 1.0, pitch: 0.0, bearing: 0.0 });
         view.set_sources([&data]).expect("a source");
@@ -111,7 +111,7 @@ fn channels_follow_the_selection_and_the_zoom() {
     let color = latkit::when(latkit::selected()).then(red).when(latkit::zoom().ge(1.0)).then(green).otherwise(blue);
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(6.0).color(color));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).color(color));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
@@ -153,10 +153,13 @@ fn edges_join_their_ends_and_colormaps_fit_the_values() {
             )),
     )
     .expect("valid");
-    let scene = Scene::new(plane())
-        .theme(green_edges())
-        .draw(Edges::of("grid", "Line").ends("from", "to").width(4.0))
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(5.0).color(field("v").colormap(Colormap::GRAYS)));
+    let scene =
+        Scene::new(plane()).theme(green_edges()).draw(Edges::of("grid", "Line").ends("from", "to").width(4.0)).draw(
+            Vertices::of("grid", "Bus")
+                .position(field("x"), field("y"))
+                .radius(5.0)
+                .color(field("v").colormap(Colormap::GRAYS)),
+        );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
@@ -196,10 +199,10 @@ fn a_colormap_draws_a_missing_value_in_the_themes_missing_color() {
     let [red, blue] = [Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0)];
     let plain = plain_theme();
     let theme = Theme { missing: red, vertex: latkit::VertexTheme { color: blue, ..plain.vertex }, ..plain };
-    let scene = |color: latkit::Paint| {
+    let scene = |color: latkit::Expr| {
         Scene::new(plane())
             .theme(theme.clone())
-            .draw(Vertices::of("grid", "Bus").position("x", "y").radius(6.0).color(color))
+            .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(6.0).color(color))
     };
     let mut view =
         View::new(&gpu, scene(field("v").colormap(Colormap::GRAYS).domain(0.0..=1.0).into())).expect("valid");
@@ -212,7 +215,7 @@ fn a_colormap_draws_a_missing_value_in_the_themes_missing_color() {
     let gap = at(&pixels, center, center);
     assert!(close(gap, [255, 0, 0, 255]), "a missing value takes the theme's missing color: {gap:?}");
     // An option given `missing()` takes the mark's theme color instead.
-    view.set_scene(scene(latkit::Expr::missing().into())).expect("valid");
+    view.set_scene(scene(latkit::Expr::missing())).expect("valid");
     let pixel = at(&frame(&gpu, &mut view), center, center);
     assert!(close(pixel, [0, 0, 255, 255]), "missing() takes the vertex color: {pixel:?}");
 }
@@ -238,7 +241,7 @@ fn edges_ending_far_ahead_and_behind_the_eye_draw_whole() {
     let scene = Scene::new(plane())
         .theme(green_edges())
         .draw(Edges::of("grid", "Line").ends("from", "to").width(4.0))
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0));
+        .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(1.0));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 60.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
@@ -267,7 +270,7 @@ fn great_circles_longer_than_their_list_coarsen_instead_of_stopping_short() {
     let scene = Scene::new(Earth { graticule: false, ..Earth::default() })
         .theme(Theme { earth: latkit::EarthTheme { ground: Color::BLACK, ..theme.earth }, ..theme })
         .draw(Edges::of("grid", "Line").ends("from", "to").width(4.0))
-        .draw(Vertices::of("grid", "Bus").position("lon", "lat").radius(1.0));
+        .draw(Vertices::of("grid", "Bus").position(field("lon"), field("lat")).radius(1.0));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: -1.5, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
@@ -295,7 +298,7 @@ fn new_data_versions_show_and_fit_frames_them() {
     data.apply(Table::new("Node", Ids::count(1)).field("x", vec![1000.0]).field("y", vec![1000.0])).expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).color(Color::WHITE));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).color(Color::WHITE));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
@@ -325,7 +328,7 @@ fn a_mark_with_no_rows_does_not_delay_a_fit() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).color(Color::WHITE));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).color(Color::WHITE));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
@@ -340,7 +343,8 @@ fn a_fit_frames_data_regardless_of_units_and_marker_sizes() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(2)).field("x", vec![0.0, 1.0]).field("y", vec![0.0, 1.0])).expect("valid");
-    let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
+    let scene =
+        Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
@@ -363,7 +367,7 @@ fn sampled_fields_read_at_the_shown_coordinate() {
     let gray = |v: latkit::Expr| v.colormap(Colormap::GRAYS).domain(0.0..=1.0);
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(8.0).color(gray(field("v"))));
+        .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(8.0).color(gray(field("v"))));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
@@ -381,9 +385,9 @@ fn sampled_fields_read_at_the_shown_coordinate() {
         }
     }
     view.set_scene(
-        Scene::new(plane())
-            .theme(plain_theme())
-            .draw(Vertices::of("grid", "Bus").position("x", "y").radius(8.0).color(gray(field("v").step()))),
+        Scene::new(plane()).theme(plain_theme()).draw(
+            Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(8.0).color(gray(field("v").step())),
+        ),
     )
     .expect("valid scene");
     view.set_at(5.0);
@@ -416,8 +420,8 @@ fn faces_blend_their_corners_and_hide_vertices_behind_them() {
     let blue = Color::rgb(0.0, 0.0, 1.0);
     let scene = Scene::new(plane()).theme(plain_theme()).draw(Faces::of("mesh", "Face").corners("a", "b", "c")).draw(
         Vertices::of("mesh", "Vertex")
-            .position("x", "y")
-            .elevation("z")
+            .position(field("x"), field("y"))
+            .elevation(field("z"))
             .radius(4.0)
             .color(latkit::when(field("hue").gt(0.5)).then(blue).otherwise(red)),
     );
@@ -439,7 +443,7 @@ fn presses_click_and_drag_the_rows_they_hit() {
         .expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(6.0).drag(true));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).drag(true));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
@@ -572,7 +576,7 @@ fn new_data_and_the_scene_reading_it_change_together() {
     let reading = |field_name: &str| {
         Scene::new(plane()).theme(plain_theme()).draw(
             Vertices::of("d", "T")
-                .position("x", "y")
+                .position(field("x"), field("y"))
                 .radius(6.0)
                 .color(field(field_name).colormap(Colormap::GRAYS).domain(0.0..=1.0)),
         )
@@ -605,7 +609,8 @@ fn new_data_and_the_scene_reading_it_change_together() {
 #[test]
 fn a_missing_dataset_is_waited_for_and_a_missing_table_fails() {
     let Some(gpu) = gpu() else { return };
-    let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("d", "Bus").position("x", "y"));
+    let scene =
+        Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("d", "Bus").position(field("x"), field("y")));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     frame(&gpu, &mut view);
     assert!(view.waiting().data, "waits for the dataset it names");
@@ -641,7 +646,13 @@ fn hover_skips_vertices_hidden_behind_faces() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false))
-        .draw(Vertices::of("mesh", "Vertex").position("x", "y").elevation("z").radius(3.0).drag(true));
+        .draw(
+            Vertices::of("mesh", "Vertex")
+                .position(field("x"), field("y"))
+                .elevation(field("z"))
+                .radius(3.0)
+                .drag(true),
+        );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
@@ -684,7 +695,14 @@ fn a_streamed_tilted_mesh_answers_hover_and_drags() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Faces::of("mesh", "Face").corners("a", "b", "c").pick(false))
-        .draw(Vertices::of("mesh", "Vertex").position("x", "y").elevation("z").radius(2.0).select(false).drag(true));
+        .draw(
+            Vertices::of("mesh", "Vertex")
+                .position(field("x"), field("y"))
+                .elevation(field("z"))
+                .radius(2.0)
+                .select(false)
+                .drag(true),
+        );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0; 3], zoom: 0.0, pitch: 58.0, bearing: 30.0 });
     view.fit(latkit::Fit::Bounds { min: [-2.0, -2.0, 0.0], max: [2.0, 2.0, 2.0] });
@@ -745,7 +763,8 @@ fn frames_report_gpu_time_where_timestamps_are_supported() {
     }
     let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
-    let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
+    let scene =
+        Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
@@ -768,7 +787,8 @@ fn frames_count_their_draws_and_instances() {
     let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(3)).field("x", vec![-1.0, 0.0, 1.0]).field("y", vec![0.0; 3]))
         .expect("valid");
-    let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
+    let scene =
+        Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
@@ -936,7 +956,8 @@ fn sizes_in_units_clamp_to_their_pixel_limits() {
     data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
     // The width in pixels of a red marker through the center, at zoom 0 (one unit per pixel).
     let across = |radius: latkit::Size| {
-        let marker = Vertices::of("d", "Node").position("x", "y").radius(radius).color(Color::rgb(1.0, 0.0, 0.0));
+        let marker =
+            Vertices::of("d", "Node").position(field("x"), field("y")).radius(radius).color(Color::rgb(1.0, 0.0, 0.0));
         let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(marker)).expect("valid scene");
         view.set_camera(camera());
         view.set_sources([&data]).expect("a source");
@@ -955,7 +976,8 @@ fn sizes_in_units_are_degrees_on_the_earth() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("d");
     data.apply(Table::new("Node", Ids::count(1)).field("lon", vec![0.0]).field("lat", vec![0.0])).expect("valid");
-    let marker = Vertices::of("d", "Node").position("lon", "lat").radius(latkit::units(0.25)).color(Color::WHITE);
+    let marker =
+        Vertices::of("d", "Node").position(field("lon"), field("lat")).radius(latkit::units(0.25)).color(Color::WHITE);
     let ground = Theme { earth: latkit::EarthTheme { ground: Color::BLACK, ..plain_theme().earth }, ..plain_theme() };
     let scene = Scene::new(Earth { graticule: false, ..Earth::default() }).theme(ground).draw(marker);
     let mut view = View::new(&gpu, scene).expect("valid scene");
@@ -975,7 +997,7 @@ fn poles_stand_from_each_vertex_down_to_the_ground() {
         .expect("valid");
     let scene = |poles: bool| {
         let vertices = Vertices::of("d", "Node")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .elevation(field("z"))
             .radius(3.0)
             .color(Color::rgb(0.0, 0.0, 1.0));
@@ -1009,7 +1031,7 @@ fn nets_outside_a_diagram_join_their_members_as_stars() {
         ),
     )
     .expect("valid");
-    let buses = Vertices::of("d", "Bus").position("x", "y").radius(2.0).color(Color::rgb(0.0, 0.0, 1.0));
+    let buses = Vertices::of("d", "Bus").position(field("x"), field("y")).radius(2.0).color(Color::rgb(0.0, 0.0, 1.0));
     let net = Edges::of("d", "Net").joins("Bus", "net").width(2.0).color(Color::rgb(1.0, 0.0, 0.0));
     let mut view =
         View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(net).draw(buses)).expect("valid scene");

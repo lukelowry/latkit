@@ -10,15 +10,15 @@ export default [
   { "space": "plot" },
   { "space": "diagram", "layout": "stress" },
   { "space": { "plane": { "grid": "off" } } },
-  { "space": { "diagram": { "grid": { "dots": { "pitch": 10, "snap": true } } } }, "layout": { "layered": { "flow": "down", "rankGap": 60 } } },
+  { "space": { "diagram": { "grid": { "dots": { "pitch": 10, "snap": true } } } }, "layout": { "layered": { "direction": "down", "rankGap": 60 } } },
   { "space": { "earth": { "projection": "globe", "graticule": false } }, "theme": { "earth": { "ground": "#203040" } } },
   {
     "space": { "earth": { "projection": "globe", "daylight": 1782043200, "atmosphere": true } },
     "marks": [
       { "areas": { "of": ["base", "water"], "color": "#1d3557" } },
-      { "areas": { "of": ["city", "polygons"], "geometry": "geometry", "color": { "colormap": "tab10", "value": "use" }, "label": "name" } },
+      { "areas": { "of": ["city", "polygons"], "geometry": "geometry", "color": { "colormap": "tab10", "value": "$use" }, "label": "$name" } },
       { "lines": { "of": ["city", "polygons"], "width": 1, "color": "rgba(255, 255, 255, 0.25)" } },
-      { "lines": { "of": ["base", "transportation"], "width": { "op": "div", "args": ["lanes", 2] } } }
+      { "lines": { "of": ["base", "transportation"], "width": { "div": ["$lanes", 2] } } }
     ],
     "theme": { "area": { "color": "#223344" }, "earth": { "atmosphere": "#5aa9ff88", "night": 0.35 } }
   },
@@ -31,24 +31,25 @@ export default [
           "of": ["grid", "Branch"],
           "ends": ["from", "to"],
           "width": { "units": 2, "atLeast": 1 },
-          "dash": { "op": "gt", "args": ["loading", 0.9] },
-          "flow": { "op": "div", "args": ["p", 20] },
-          "color": { "colormap": "amber", "value": "loading", "domain": [0, 1] },
+          "dash": { "gt": ["$loading", 0.9] },
+          "flow": { "div": ["$p", 20] },
+          "priority": { "abs": ["$p"] },
+          "color": { "colormap": "amber", "value": "$loading", "domain": [0, 1] },
           "name": "branches"
         }
       },
       {
         "vertices": {
           "of": ["grid", "Bus"],
-          "position": ["lon", "lat"],
+          "position": ["$lon", "$lat"],
           "elevation": 0,
-          "radius": { "op": "add", "args": [{ "op": "div", "args": ["kv", 100] }, 1] },
+          "radius": { "add": [{ "div": ["$kv", 100] }, 1] },
           "marker": "diamond",
           "color": {
             "when": [[{ "state": "selected" }, "#ffb000"]],
             "otherwise": { "colormap": "balance", "value": { "field": "vm", "step": true }, "domain": [0.95, 1.05] }
           },
-          "visible": { "op": "and", "args": [{ "op": "ge", "args": ["kv", 115] }, { "contains": ["name", "north"] }] }
+          "visible": { "and": [{ "ge": ["$kv", 115] }, { "contains": ["$name", "north"] }] }
         }
       },
       {
@@ -75,7 +76,7 @@ export default [
     "marks": [
       { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false } },
       { "edges": { "of": ["mesh", "Spring"], "ends": ["a", "b"], "color": "#ffffff14" } },
-      { "vertices": { "of": ["mesh", "Vertex"], "position": ["x", "y"], "elevation": "z", "select": false, "drag": true } }
+      { "vertices": { "of": ["mesh", "Vertex"], "position": ["$x", "$y"], "elevation": "$z", "select": false, "drag": true } }
     ],
     "theme": { "shading": 0.7, "text": { "font": "monospace", "size": 12 }, "plot": { "playhead": "#ffe5d4" } }
   },
@@ -92,21 +93,26 @@ export default [
           "of": ["mesh", "Body"],
           "trace": "speed",
           "interpolation": "stepAfter",
-          "label": { "text": "name", "size": 11, "priority": "rank", "maxWidth": 120, "color": "white" }
+          "label": {
+            "text": { "when": [[{ "ge": ["$rank", 2] }, "$name"]], "otherwise": null },
+            "size": 11,
+            "maxWidth": 120,
+            "color": "white"
+          }
         }
       },
       {
         "vertices": {
           "of": ["grid", "Bus"],
-          "marker": { "gauge": { "fill": "load", "shape": "rounded" } },
+          "marker": { "gauge": { "fill": "$load", "shape": "rounded" } },
           "ring": "red",
-          "label": "name",
-          "radius": { "op": "mul", "args": [{ "state": "zoom" }, 2] }
+          "label": "$name",
+          "radius": { "mul": [{ "state": "zoom" }, 2] }
         }
       },
-      { "vertices": { "of": ["grid", "Plant"], "marker": { "pie": { "slices": ["coal", "gas"], "colors": ["#333333", "#88aaff"], "hole": 0.4 } } } },
+      { "vertices": { "of": ["grid", "Plant"], "marker": { "pie": { "slices": ["$coal", "$gas"], "colors": ["#333333", "#88aaff"], "hole": 0.4 } } } },
       { "vertices": { "of": ["grid", "Icon"], "marker": { "icon": { "images": [{ "size": [1, 1], "rgba": [255, 0, 0, 255] }], "index": 0 } } } },
-      { "vertices": { "of": ["grid", "Custom"], "marker": { "wgsl": { "source": "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }", "inputs": ["load"] } } } },
+      { "vertices": { "of": ["grid", "Custom"], "marker": { "wgsl": { "source": "fn marker(f: MarkerFragment) -> MarkerColor { return MarkerColor(f.color, 0.0); }", "inputs": ["$load"] } } } },
       { "edges": { "of": ["grid", "Branch"], "ends": ["from", "to"] } }
     ],
     "theme": { "edge": { "spacing": 5, "arrow": 8 }, "text": { "halo": 2 }, "flow": { "spacing": { "units": 40 }, "length": { "units": 12 } } }
@@ -116,7 +122,7 @@ export default [
     "layout": { "stress": { "gap": 50 } },
     "controls": { "connect": true, "delete": true },
     "marks": [
-      { "vertices": { "of": ["plant", "Area"], "contains": ["Device", "area"], "label": "name", "shadow": true } },
+      { "vertices": { "of": ["plant", "Area"], "contains": ["Device", "area"], "label": "$name", "shadow": true } },
       { "edges": { "of": ["plant", "Wire"], "ends": ["from", "to"], "bends": "path", "arrows": true, "width": { "px": 1.5 } } },
       { "edges": { "of": ["plant", "Net"], "route": "orthogonal", "arrows": true } },
       {

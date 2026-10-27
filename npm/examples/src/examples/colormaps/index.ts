@@ -10,6 +10,8 @@ import {
   colormapCss,
   colormaps,
   field,
+  when,
+  zoom,
   type Colormap,
   type ColormapName,
   type Expr,
@@ -199,9 +201,16 @@ export default function page(stage: Stage): void {
             color: categorical ? mapped : reversed ? mapped.domain(1, 0) : mapped.domain(0, 1),
             visible: visible(),
             pick: true,
-            // Cells with higher values take priority, so they are labeled first.
-            priority: 'value',
-            ...(labels ? { label: { text: 'label', size: 10, max: 60 } } : {}),
+            // A cell is labeled once it is wide enough for its value, from zoom 4 (16 pixels per
+            // unit). Below that its text is missing, and it has no label.
+            ...(labels
+              ? {
+                  label: {
+                    text: when(zoom().ge(4)).then(field('label')).otherwise(null),
+                    size: 10,
+                  },
+                }
+              : {}),
             ...(ownLegend ? { legend: TRANSFORMS[transform]![0] } : {}),
           },
         },

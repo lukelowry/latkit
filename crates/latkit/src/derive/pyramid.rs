@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::sight::{Domain, Region, Sight, TILE_PX, meets};
+use super::sight::{Domain, Region, SPLIT_PX, Sight, meets};
 use crate::data::{UNWIRED, Version};
 use crate::gpu::shaders::PAGE_ROWS;
 use crate::tiles::TileKey;
@@ -32,7 +32,8 @@ pub(crate) const GRID_BITS: u32 = 7;
 pub(crate) const MAX_LEVEL: u8 = 24;
 /// Marks a row not yet assigned a level.
 const NEVER: u8 = u8::MAX;
-/// The most tiles a camera request splits into per level; past it, tiles stop splitting.
+/// The most tiles a camera request splits into per level; past it, the tiles drawn largest split
+/// and the rest stop splitting.
 const MAX_TILES: usize = 1024;
 /// Log2 of the sub-cells across a large tile. Each sub-cell is a range of the order that the camera
 /// can request separately, so only the visible part of a large tile draws.
@@ -624,11 +625,12 @@ impl Pyramid {
     ///
     /// At each level it takes every tile whose rows reach into the region in sight (for a large
     /// tile, only the sub-cells that do), and splits a tile into its children while it draws larger
-    /// than `TILE_PX` (with 25% slack) near the camera's focus. A drawing holds whole pages of the
-    /// order, so once a level's pages would exceed `rows` rows, that level and all finer ones are
-    /// dropped and the coarser levels draw instead. If the first level in sight exceeds the budget
-    /// alone (for example, edges spanning the square, which cannot go finer), as many of its first
-    /// rows as fit are drawn.
+    /// than `SPLIT_PX` near the camera's focus. When more tiles would split than a level allows,
+    /// those drawn largest split first, and the next level lists their children in that order. A
+    /// drawing holds whole pages of the order, so once a level's pages would exceed `rows` rows,
+    /// that level and all finer ones are dropped and the coarser levels draw instead. If the first
+    /// level in sight exceeds the budget alone (for example, edges spanning the square, which
+    /// cannot go finer), as many of its first rows as fit are drawn.
     pub(crate) fn wanted(&self, sight: &Sight<'_>, domain: &Domain, rows: u32) -> (Vec<(u8, Range<u32>)>, bool) {
         let fit = rows.div_ceil(PAGE_ROWS);
         if let [tile] = &self.tiles[..]
@@ -639,13 +641,14 @@ impl Pyramid {
         }
         let region: Region = sight.region();
         let focus = sight.focus();
-        let limit = TILE_PX * 1.25;
         let mut out: Vec<(u8, Range<u32>)> = Vec::new();
         let (mut held, mut last) = (0_u32, None);
         let mut level = vec![TileKey { z: 0, x: 0, y: 0 }];
         while !level.is_empty() {
             let mut found = Vec::new();
-            let mut next = Vec::new();
+            // The level's tiles with tiles below them that draw larger than `SPLIT_PX`, with their
+            // sizes.
+            let mut large: Vec<(TileKey, f64)> = Vec::new();
             for key in level {
                 let grow = 0.5 / f64::from(1_u32 << key.z);
                 if !meets(&region, domain.bounds(key, grow)) {
@@ -673,12 +676,16 @@ impl Pyramid {
                         }
                     }
                 }
-                let splits =
-                    self.above.contains(&key) && next.len() < MAX_TILES && sight.measure(&focus, domain, key).0 > limit;
-                if splits {
-                    next.extend(key.children());
+                if self.above.contains(&key) {
+                    let (size, _) = sight.measure(&focus, domain, key);
+                    if size > SPLIT_PX {
+                        large.push((key, size));
+                    }
                 }
             }
+            // The tiles drawn largest split first, a quarter of `MAX_TILES` at most.
+            crate::order::by_key(&mut large, |&(_, size)| !crate::order::number(size));
+            let next: Vec<TileKey> = large.iter().take(MAX_TILES / 4).flat_map(|(key, _)| key.children()).collect();
             // If this level's pages exceed the budget, drop it; coarser levels draw instead.
             let (pages, reached) = pages_past(&found, last);
             if held + pages > fit {

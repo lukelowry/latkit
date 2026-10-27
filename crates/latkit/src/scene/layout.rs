@@ -19,7 +19,7 @@ pub enum Layout {
     None,
     /// Drawn distances follow graph distances.
     Stress(Stress),
-    /// Ranks along a direction, for flows and hierarchies.
+    /// Ranks along a direction, for processes and hierarchies.
     Layered(Layered),
 }
 
@@ -45,13 +45,13 @@ impl Default for Stress {
     }
 }
 
-/// Layered drawing: vertices in ranks, edges pointing along `flow`, and nets ranked from their
+/// Layered drawing: vertices in ranks, edges pointing along `direction`, and nets ranked from their
 /// outputs.
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Layered {
     /// The direction edges point; `right` by default.
-    pub flow: Direction,
+    pub direction: Direction,
     /// Distance between vertices within a rank, in position units. Default 30.
     pub gap: f64,
     /// Distance between ranks, in position units. Default 80.
@@ -60,7 +60,7 @@ pub struct Layered {
 
 impl Default for Layered {
     fn default() -> Layered {
-        Layered { flow: Direction::Right, gap: 30.0, rank_gap: 80.0 }
+        Layered { direction: Direction::Right, gap: 30.0, rank_gap: 80.0 }
     }
 }
 

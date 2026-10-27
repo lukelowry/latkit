@@ -41,8 +41,8 @@ fn steps(device: &wgpu::Device) -> wgpu::Buffer {
     })
 }
 
-/// The labels buffer's usages: storage for the placement atomics, and copy source for reading back
-/// the texts placement requests.
+/// The labels buffer's usages: storage for the texts pass's atomics, and copy source for reading
+/// back the texts it asks for.
 const LABELS: wgpu::BufferUsages = wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::COPY_SRC);
 
 /// The bind groups every pipeline shares.

@@ -41,8 +41,8 @@ impl Faces {
         }
         let mut flags = 0;
         match &self.style.color {
-            Some(paint) => {
-                c.channel("color", &paint.0, Store::Color { word: wgsl::FACE_COLOR, fallback: wgsl::THEME_VERTEX })?;
+            Some(expr) => {
+                c.channel("color", expr, Store::Color { word: wgsl::FACE_COLOR, fallback: wgsl::THEME_VERTEX })?;
             }
             None => flags |= wgsl::ENDS_COLOR,
         }

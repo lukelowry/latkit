@@ -34,15 +34,15 @@ export default function bloom(): Piece {
         {
           vertices: {
             of: ['bloom', 'Seed'],
-            position: ['x', 'y'],
-            radius: 'size',
+            position: ['$x', '$y'],
+            radius: '$size',
             pick: false,
             color: {
               colormap: {
                 kind: 'sequential',
                 colors: ['#101830', '#1f3a8a', '#5b48d6', '#c45496', '#f58b72', '#ffd890'],
               },
-              value: 'wave',
+              value: '$wave',
               domain: [0, 1],
             },
           },

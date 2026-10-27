@@ -11,6 +11,7 @@ use std::time::Duration;
 use common::{SIZE, at, camera, close, frame, gpu, plain_theme, plane, step};
 use latkit::{
     Areas, Color, Data, Edges, Faces, Fit, Ids, Image, Label, Lines, Patch, Scene, Shot, Table, Theme, Vertices, View,
+    field,
 };
 
 const RED: [u8; 4] = [255, 0, 0, 255];
@@ -21,7 +22,7 @@ fn dot(x: f64, color: Color) -> (Scene, Data) {
     data.apply(Table::new("Node", Ids::count(1)).field("x", vec![x]).field("y", vec![0.0])).expect("valid");
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(6.0).color(color));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).color(color));
     (scene, data)
 }
 
@@ -89,7 +90,7 @@ fn every_kind_of_mark_draws_with_the_pipelines_it_requested() {
         .draw(Lines::of("graph", "Zone"))
         .draw(Faces::of("graph", "Face").corners("a", "b", "c"))
         .draw(Edges::of("graph", "Link").ends("from", "to"))
-        .draw(Vertices::of("graph", "Node").position("x", "y").label(Label::new("name")));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).label(Label::new(field("name"))));
     let mut view = view(&gpu, scene, &data);
     // A fit measures every mark that frames it.
     view.fit(Fit::All);
@@ -187,8 +188,8 @@ fn timeouts_and_font_errors_return_the_view_without_a_partial_image() {
     gpu.set_host(BrokenText);
     let data = Data::new("labels");
     data.apply(Table::new("Node", Ids::count(1)).field("name", vec!["Hello"])).unwrap();
-    let scene =
-        Scene::new(latkit::Diagram::default()).draw(Vertices::of("labels", "Node").label(latkit::Label::new("name")));
+    let scene = Scene::new(latkit::Diagram::default())
+        .draw(Vertices::of("labels", "Node").label(latkit::Label::new(field("name"))));
     view.set_scene(scene).unwrap();
     view.set_sources([&data]).expect("a source");
     let error = pollster::block_on(Shot::new([128, 128]).image(&mut [&mut view])).unwrap_err();
@@ -203,7 +204,7 @@ fn fixed_effect_time_is_repeatable_and_independent_of_capture_steps() {
     let (_, data) = dot(0.0, Color::rgb(1.0, 0.0, 0.0));
     let scene = Scene::new(plane()).theme(plain_theme()).ease(Duration::ZERO).draw(
         Vertices::of("graph", "Node")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .radius(latkit::elapsed() + 4.0)
             .color(Color::rgb(1.0, 0.0, 0.0)),
     );
@@ -229,10 +230,10 @@ fn native_fonts_draw_visible_glyphs_into_the_export() {
     .unwrap();
     let scene = Scene::new(plane()).theme(plain_theme()).ease(Duration::ZERO).draw(
         Vertices::of("graph", "Node")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .radius(4.0)
             .color(Color::rgb(1.0, 0.0, 0.0))
-            .label(latkit::Label::new("name").color(Color::WHITE).size(18.0)),
+            .label(latkit::Label::new(field("name")).color(Color::WHITE).size(18.0)),
     );
     let mut view = view(&gpu, scene, &data);
     let image = pollster::block_on(Shot::new([127, 129]).image(&mut [&mut view])).unwrap();
@@ -255,7 +256,7 @@ fn a_legend_draws_its_marks_colormap_across_the_domain() {
     let colors = latkit::field("v").colormap(latkit::Colormap::VIRIDIS).domain(0.0..=1.0);
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(colors).legend(""));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0).color(colors).legend(""));
     let mut view = view(&gpu, scene, &data);
     let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
     // The bar ends 16 px from the right edge. Its middle row is above the tick labels.
@@ -265,13 +266,13 @@ fn a_legend_draws_its_marks_colormap_across_the_domain() {
     let high = pixel(&image, 400 - 16 - 2, y);
     assert!(near(low, [68, 1, 84]), "viridis's low end: {low:?}");
     assert!(near(high, [253, 231, 37]), "viridis's high end: {high:?}");
-    let scene = Scene::new(plane()).draw(Vertices::of("graph", "Node").position("x", "y").legend(""));
+    let scene = Scene::new(plane()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")).legend(""));
     assert!(View::new(&gpu, scene).is_err(), "a legend needs a colormap with a domain");
 }
 
 #[test]
 fn a_legend_lists_named_categories_by_their_colors() {
-    use latkit::{Colormap, ColormapKind, field};
+    use latkit::{Colormap, ColormapKind};
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(
@@ -283,7 +284,7 @@ fn a_legend_lists_named_categories_by_their_colors() {
     .expect("valid");
     let map = Colormap::new(ColormapKind::Categorical, [Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0)])
         .expect("two categories");
-    let node = Vertices::of("graph", "Node").position("x", "y").radius(4.0);
+    let node = Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0);
     let scene = Scene::new(plane()).theme(plain_theme());
     let unnamed = scene.clone().draw(node.clone().color(field("k").colormap(map.clone())).legend(""));
     assert!(View::new(&gpu, unnamed).is_err(), "categories without names need a domain");

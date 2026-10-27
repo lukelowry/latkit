@@ -7,11 +7,15 @@
 //! edges end at come before the sample, as a pyramid would show them with those edges. A pyramid
 //! serves while the rows it was made from are unchanged; rows appended since draw after them, in
 //! table order.
+//!
+//! A table of vector tiles draws in table order, its tiles' rows appended as they arrive, so its
+//! tiles are already ranges of its order and appending moves no row.
 
 use std::sync::Arc;
 
 use super::pyramid::Pyramid;
 use super::stamp_of;
+use crate::data::Version;
 use crate::gpu::shaders::PAGE_ROWS;
 
 /// A paged table's draw order: which row draws at each place.
@@ -23,6 +27,10 @@ pub(crate) enum Order {
     /// A pyramid's order of the table's first rows, then the rows appended since, in table order,
     /// up to `rows` rows.
     Pyramid { pyramid: Arc<Pyramid>, rows: u32 },
+    /// The table's `rows` rows in table order, while its row order version (`Table::order`) is
+    /// `order`. Rows appended draw after the rest; removing rows changes the version, and so the
+    /// order.
+    Table { rows: u32, order: Version },
 }
 
 /// The rows a sample draws before its own: the rows the sampled edges end at, just as a pyramid
@@ -104,7 +112,7 @@ impl Order {
     /// The number of rows it orders: every row of its table.
     pub(crate) fn len(&self) -> u32 {
         match self {
-            Order::Sampled { rows, .. } | Order::Pyramid { rows, .. } => *rows,
+            Order::Sampled { rows, .. } | Order::Pyramid { rows, .. } | Order::Table { rows, .. } => *rows,
         }
     }
 
@@ -113,14 +121,15 @@ impl Order {
         self.len().div_ceil(PAGE_ROWS)
     }
 
-    /// How many rows a sample draws first: the lifted rows plus the sample's own. 0 for a pyramid.
+    /// How many rows a sample draws first: the lifted rows plus the sample's own. 0 for the other
+    /// orders.
     pub(crate) fn sampled(&self) -> u32 {
         match self {
             Order::Sampled { rows, step, lifted } => {
                 let first = rows.div_ceil(*step);
                 lifted.len() + first - lifted.places.partition_point(|&p| p < first) as u32
             }
-            Order::Pyramid { .. } => 0,
+            Order::Pyramid { .. } | Order::Table { .. } => 0,
         }
     }
 
@@ -132,6 +141,7 @@ impl Order {
                 None => sample_source(unlisted(&lifted.places, d - lifted.len()), *rows, *step),
             },
             Order::Pyramid { pyramid, .. } => pyramid.order.get(d as usize).copied().unwrap_or(d),
+            Order::Table { .. } => d,
         }
     }
 
@@ -146,6 +156,7 @@ impl Order {
                 lifted.len() + place - lifted.places.partition_point(|&p| p < place) as u32
             }
             Order::Pyramid { pyramid, .. } => pyramid.rank.get(r as usize).copied().unwrap_or(r),
+            Order::Table { .. } => r,
         }
     }
 
@@ -173,11 +184,13 @@ impl Order {
     }
 
     /// The key that identifies pages packed in this order. A pyramid's id ignores rows appended
-    /// since; a sample's depends on its row count, step, and lifted rows.
+    /// since, and so does table order's; a sample's depends on its row count, step, and lifted
+    /// rows.
     pub(crate) fn id(&self) -> u64 {
         match self {
             Order::Sampled { rows, step, lifted } => stamp_of(("sampled", rows, step, lifted.stamp)),
             Order::Pyramid { pyramid, .. } => stamp_of(pyramid.made),
+            Order::Table { order, .. } => stamp_of(("table", order)),
         }
     }
 }
@@ -236,5 +249,18 @@ mod tests {
         let order = Order::Pyramid { pyramid, rows: 5 };
         assert_eq!(order.page(0), [2, 0, 1, 3, 4]);
         assert_eq!((order.rank(2), order.rank(4)), (0, 4));
+    }
+
+    #[test]
+    fn table_order_keeps_its_id_while_rows_are_only_appended() {
+        let version = Version::next();
+        let order = Order::Table { rows: 3, order: version };
+        assert_eq!(order.page(0), [0, 1, 2]);
+        assert_eq!((order.source(2), order.rank(1), order.sampled()), (2, 1, 0));
+        let grown = Order::Table { rows: PAGE_ROWS + 5, order: version };
+        assert_eq!(grown.id(), order.id(), "pages packed before rows were appended stay valid");
+        assert_eq!(grown.page(1), (PAGE_ROWS..PAGE_ROWS + 5).collect::<Vec<_>>());
+        let removed = Order::Table { rows: 2, order: Version::next() };
+        assert_ne!(removed.id(), order.id(), "removing rows makes another order");
     }
 }

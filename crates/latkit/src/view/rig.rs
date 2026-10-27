@@ -1,10 +1,14 @@
 //! Camera motion. A gesture moves the camera at once, about the point under the pointer. The wheel,
 //! the keys, and a released drag add pending motion about such a point, which the following frames
 //! apply with exponential decay, so a fling coasts and a wheel notch glides by the same rule. A
-//! flight eases over a set time, and an orbit turns steadily. The bounds of the last fit limit how
-//! far gestures and pending motion can move the camera. All of it runs on the view's clock.
+//! flight eases over a set time, and an orbit turns steadily. All of it runs on the view's clock.
+//!
+//! The camera keeps within its reach: where the space lets it go in the room the camera frames,
+//! narrowed by fits. Every move places it through the reach: gestures, pending motion, flights,
+//! orbits, fits, and the setter. The reach changes with the view's size and insets, its space, and
+//! fits, so each frame places the camera again before it moves.
 
-use super::camera::{Bounds, Camera};
+use super::camera::{Bounds, Camera, Reach};
 use super::{Event, View};
 
 /// Time constants, in seconds, for applying pending motion: a fling's pan and turn coast longer
@@ -23,7 +27,7 @@ pub(crate) struct Rig {
     flight: Option<Flight>,
     /// Degrees of bearing per second.
     pub(crate) orbit: f64,
-    /// The bounds the last fit framed.
+    /// The box fits have framed, which narrows the reach.
     pub(crate) bounds: Option<Bounds>,
 }
 
@@ -77,24 +81,20 @@ impl Rig {
 }
 
 impl View {
-    /// The zoom range that gestures and pending motion keep the camera within, from the last fit's
-    /// bounds.
-    pub(super) fn zoom_limits(&self) -> Option<[f64; 2]> {
-        self.rig.bounds.map(|bounds| bounds.zooms())
+    /// Where the camera may go: the space's bounds in the room the camera frames, narrowed by the
+    /// box fits have framed. Until a frame gives the view its size, only fits narrow it.
+    pub(super) fn reach(&self) -> Reach {
+        let area = self.area();
+        let sized = self.size[0] > 0.0 && self.size[1] > 0.0;
+        let room = sized.then(|| [area[2] - area[0], area[3] - area[1]]);
+        Reach::new(&self.scene.space, room, self.rig.bounds)
     }
 
-    /// Moves the camera for a gesture or pending motion, kept within the last fit's bounds.
-    pub(super) fn steer(&mut self, camera: Camera) {
-        let camera = match &self.rig.bounds {
-            Some(bounds) => camera.within(bounds),
-            None => camera,
-        };
-        self.move_camera(camera);
-    }
-
-    /// Applies the share of pending motion due for the `dt` seconds the clock moved, advances a
-    /// flight, and orbits.
+    /// Places the camera within its reach, which may have changed since the last frame; applies the
+    /// share of pending motion due for the `dt` seconds the clock moved; advances a flight; and
+    /// orbits.
     pub(super) fn advance(&mut self, dt: f64) {
+        self.move_camera(self.camera);
         if let Some(flight) = &self.rig.flight {
             let eased = self.clock.eased(flight.start, flight.seconds);
             let camera = flight.from.ease(&flight.to, eased, &self.scene.space);
@@ -117,12 +117,12 @@ impl View {
             let view = self.projected();
             let mut camera = self.camera.panned(&view, anchor, pan);
             camera = camera.turned(&self.projected_with(&camera), anchor, turn);
-            camera = camera.zoomed(&self.projected_with(&camera), anchor, zoom, self.zoom_limits());
+            camera = camera.zoomed(&self.projected_with(&camera), anchor, zoom, &self.reach());
             let settle = |v: f64, least: f64| if v.abs() < least { 0.0 } else { v };
             self.rig.pan = [settle(self.rig.pan[0] - pan[0], 0.05), settle(self.rig.pan[1] - pan[1], 0.05)];
             self.rig.turn = [settle(self.rig.turn[0] - turn[0], 0.01), settle(self.rig.turn[1] - turn[1], 0.01)];
             self.rig.zoom = settle(self.rig.zoom - zoom, 1e-4);
-            self.steer(camera);
+            self.move_camera(camera);
         }
         if self.rig.orbit != 0.0 && matches!(self.camera, Camera::Map { .. }) && self.moves() {
             let Camera::Map { center, .. } = self.camera else { return };
@@ -132,16 +132,18 @@ impl View {
         }
     }
 
-    /// Moves the camera for a gesture, a fit, or an animation, and emits a `Camera` event.
+    /// Moves the camera for a gesture, a fit, or an animation, or into a reach that changed, and
+    /// emits a `Camera` event if it moved.
     pub(super) fn move_camera(&mut self, camera: Camera) {
         if self.place_camera(camera) {
-            self.events.tell(Event::Camera(camera));
+            self.events.tell(Event::Camera(self.camera));
         }
     }
 
-    /// Moves the camera and dirties the channels that read the camera or the pointer. Returns
-    /// whether it moved.
+    /// Moves the camera to `camera` kept within reach, and dirties the channels that read the
+    /// camera or the pointer. Returns whether it moved.
     pub(super) fn place_camera(&mut self, camera: Camera) -> bool {
+        let camera = camera.within(&self.reach());
         if camera == self.camera {
             return false;
         }

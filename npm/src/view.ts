@@ -105,6 +105,11 @@ export class View extends Handle {
   /**
    * Where the view looks. Setting it moves the camera at once; use {@link View.fly} to ease. A
    * camera of the wrong kind for the space, such as a plot camera on a map, is ignored.
+   *
+   * Every move keeps the camera within reach. On the earth, the space bounds it, as `Earth`
+   * describes, inside the insets. Fits narrow it to 3 zoom levels out and 8 in from what they
+   * framed, with the center near the framed box. When a resize, new insets, or a new space moves
+   * the camera back within reach, a `camera` event reports it.
    */
   get camera(): Camera {
     return JSON.parse(view(this).camera) as Camera;
@@ -193,8 +198,9 @@ export class View extends Handle {
   }
 
   /**
-   * Eases the camera to `camera` over twice the scene's ease time, or at once when motion is
-   * reduced. A camera of the wrong kind for the space is ignored.
+   * Eases the camera to `camera`, kept within reach as {@link View.camera} describes, over twice
+   * the scene's ease time, or at once when motion is reduced. A camera of the wrong kind for the
+   * space is ignored.
    */
   fly(camera: Camera): void {
     view(this).fly(JSON.stringify(camera));

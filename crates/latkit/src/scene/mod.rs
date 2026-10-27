@@ -52,9 +52,10 @@ use crate::{Error, Result, Snapshot, Source};
 /// ```
 /// # use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};
 /// let voltage = field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05);
+/// let buses = Vertices::of("grid", "Bus").position(field("lon"), field("lat")).color(voltage);
 /// let scene = Scene::new(Earth::default().projection(Projection::Globe))
 ///     .draw(Edges::of("grid", "Branch").ends("from", "to"))
-///     .draw(Vertices::of("grid", "Bus").position("lon", "lat").color(voltage).legend("Bus voltage · pu"))
+///     .draw(buses.legend("Bus voltage · pu"))
 ///     .title("Voltage");
 /// ```
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -227,7 +228,7 @@ impl Scene {
                 return Err(mark.within(i, Error::invalid(reason).at(option)));
             }
             let style = mark.style();
-            let shown = match style.color.as_ref().and_then(|paint| paint.0.colormap_of()) {
+            let shown = match style.color.as_ref().and_then(crate::Expr::colormap_of) {
                 Some((colormap, domain)) => domain.is_some() || !colormap.named_categories().is_empty(),
                 None => false,
             };

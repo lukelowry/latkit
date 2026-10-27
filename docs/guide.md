@@ -120,8 +120,8 @@ grid.get('Bus', 101, 'name'); // 'Northgate'
 const hot = grid.query({
   of: 'Branch',
   filter: field('loading').gt(90),
-  sort: [['loading', 'descending']],
-  select: { name: 'name', loading: 'loading' },
+  sort: [['$loading', 'descending']],
+  select: { name: '$name', loading: '$loading' },
   limit: 20,
 });
 // { table, ids, fields: { name: string[], loading: Float64Array }, total }
@@ -144,10 +144,10 @@ const scene: Scene = {
     {
       vertices: {
         of: ['grid', 'Bus'],
-        position: ['lon', 'lat'],
-        radius: units('kv', { atLeast: 2 }),
+        position: ['$lon', '$lat'],
+        radius: units('$kv', { atLeast: 2 }),
         color: field('vm').colormap('balance').domain(0.95, 1.05),
-        label: { text: 'name', priority: 'kv' },
+        label: when(field('kv').ge(230)).then(field('name')).otherwise(null),
         legend: 'Voltage (pu)',
       },
     },
@@ -188,19 +188,26 @@ edges, faces, and a plot's traces; set `pick: true` to make areas and lines resp
 mark with `contains` draws groups around the rows that reference them, and an edges mark of a table
 without `ends` draws nets joining the ports that reference it.
 
+`label` shows a text field beside each row, inside a block, or along a stroke, wherever the row
+shows and the text fits, whatever other labels it meets. A row whose text is missing has no label,
+so a `when` choosing between the field and `null` labels only some rows, as above.
+
 ### Expressions
 
-Options that vary by row take an expression: a number, a field name, or a builder. A string given
-to a color option is a CSS color; a field sets colors through a colormap or a conditional.
+Options that vary by row take an expression: a number, a boolean, a string, `null`, or a builder.
+A string `'$name'` reads field `name`; any other string is a CSS color, and a field sets colors
+through a colormap or a conditional. `null` is a missing value: an option that evaluates to missing
+takes the theme's value.
 
 ```ts
-import { field, when, selected, units, px } from 'latkit';
+import { field, when, selected, zoom, units, px } from 'latkit';
 
 field('load').div(field('capacity')).clamp(0, 1); // arithmetic and comparisons
 field('vm').colormap('balance').domain(0.95, 1.05); // a color through a colormap
 field('kv').scale(2, 8); // onto a range
 when(selected()).then('#ffb000').otherwise(field('kind').colormap('tableau10')); // colors
-units('radius', { atLeast: 2 }); // a size in position units, kept within pixels
+when(zoom().ge(6)).then(field('name')).otherwise(null); // a label's text, from zoom 6 on
+units('$radius', { atLeast: 2 }); // a size in position units, kept within pixels
 px(3); // a size in CSS pixels, however the view zooms
 field('vm').from('weather', 'Station'); // read from another dataset, joined by id
 ```
@@ -250,6 +257,11 @@ view.camera = { x: [0, 60], y: null }; // a plot's camera: the axis range, value
 view.insets = [48, 0, 0, 320]; // CSS pixels kept clear: top, right, bottom, left
 view.orbit = 6; // degrees a second
 ```
+
+Every move keeps the camera within reach. A flat map is one world: the camera zooms out until the
+whole world fits and pans until the world's edges meet the view's. A globe zooms out until it spans
+a third of the view, and after a fit the camera stays near what it framed
+([`camera`](reference/api.md#view-camera)).
 
 ### Events
 

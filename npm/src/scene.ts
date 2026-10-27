@@ -1,41 +1,40 @@
 /**
- * Builders for the expressions and colors that scene options take. A scene is plain data, typed in
+ * Builders for the expressions that scene options take. A scene is plain data, typed in
  * `inputs.ts`; nothing here needs WebAssembly.
  */
 
 import type {
-  Binary,
   Colormap,
   ColormapNode,
   ExprNode,
   FieldNode,
   Marker,
-  MissingNode,
-  PaintNode,
   Px,
   ScaleNode,
   State,
-  Unary,
   Units,
 } from './inputs.js';
 
 /**
- * A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. In a color option, a string is a color.
+ * A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. In an expression, a string that does not
+ * start with `$` is a color.
  */
 export type Color = string;
 
-/** A value option: an {@link Expr}, or its JSON form, in which a string is a field name. */
-export type ExprInput = Expr | ExprNode;
-
 /**
- * A color option: a CSS color, a {@link Paint}, or its JSON form. A string here is always a CSS
- * color, never a field name; map a field to colors with `field(name).colormap(map)`.
+ * An option's value: an {@link Expr}, or its JSON form. In the JSON form, `null` is a missing
+ * value, a string starting with `$` reads a field (`'$kv'` reads field `kv`), and any other string
+ * is a CSS color. Color options take a value that computes a color.
  */
-export type PaintInput = Color | Paint | PaintNode;
+export type ExprInput = Expr | ExprNode;
 
 const nodeOf = (input: ExprInput): ExprNode => (input instanceof Expr ? input.node : input);
 
-/** A value for every row of a mark: a constant, a field, view state, or arithmetic on them. */
+/**
+ * A value for every row of a mark: a constant, a color, a field, view state, or arithmetic on them.
+ * Color options take one that computes a color: a CSS color, a value through a colormap, or a
+ * conditional choosing between colors.
+ */
 export class Expr {
   /** The expression's JSON form. */
   readonly node: ExprNode;
@@ -65,35 +64,35 @@ export class Expr {
 
   /** The sum of this value and `other`. */
   add(other: ExprInput): Expr {
-    return binary('add', this, other);
+    return new Expr({ add: [this.node, nodeOf(other)] });
   }
   /** This value minus `other`. */
   sub(other: ExprInput): Expr {
-    return binary('sub', this, other);
+    return new Expr({ sub: [this.node, nodeOf(other)] });
   }
   /** The product of this value and `other`. */
   mul(other: ExprInput): Expr {
-    return binary('mul', this, other);
+    return new Expr({ mul: [this.node, nodeOf(other)] });
   }
   /** This value divided by `other`. Dividing by 0 gives a missing value. */
   div(other: ExprInput): Expr {
-    return binary('div', this, other);
+    return new Expr({ div: [this.node, nodeOf(other)] });
   }
   /** The remainder of this value divided by `other`, with the sign of `other`: `-1 rem 3` is 2. */
   rem(other: ExprInput): Expr {
-    return binary('rem', this, other);
+    return new Expr({ rem: [this.node, nodeOf(other)] });
   }
   /** This value raised to the power `other`. */
   pow(other: ExprInput): Expr {
-    return binary('pow', this, other);
+    return new Expr({ pow: [this.node, nodeOf(other)] });
   }
   /** The smaller of this value and `other`. */
   min(other: ExprInput): Expr {
-    return binary('min', this, other);
+    return new Expr({ min: [this.node, nodeOf(other)] });
   }
   /** The larger of this value and `other`. */
   max(other: ExprInput): Expr {
-    return binary('max', this, other);
+    return new Expr({ max: [this.node, nodeOf(other)] });
   }
   /** This value limited to the range from `low` to `high`. */
   clamp(low: ExprInput, high: ExprInput): Expr {
@@ -101,81 +100,81 @@ export class Expr {
   }
   /** 1 where this value is less than `other`, else 0. */
   lt(other: ExprInput): Expr {
-    return binary('lt', this, other);
+    return new Expr({ lt: [this.node, nodeOf(other)] });
   }
   /** 1 where this value is at most `other`, else 0. */
   le(other: ExprInput): Expr {
-    return binary('le', this, other);
+    return new Expr({ le: [this.node, nodeOf(other)] });
   }
   /** 1 where this value is greater than `other`, else 0. */
   gt(other: ExprInput): Expr {
-    return binary('gt', this, other);
+    return new Expr({ gt: [this.node, nodeOf(other)] });
   }
   /** 1 where this value is at least `other`, else 0. */
   ge(other: ExprInput): Expr {
-    return binary('ge', this, other);
+    return new Expr({ ge: [this.node, nodeOf(other)] });
   }
   /** 1 where this value equals `other`, else 0. Colors compare too. */
   eq(other: ExprInput): Expr {
-    return binary('eq', this, other);
+    return new Expr({ eq: [this.node, nodeOf(other)] });
   }
   /** 1 where this value differs from `other`, else 0. Colors compare too. */
   ne(other: ExprInput): Expr {
-    return binary('ne', this, other);
+    return new Expr({ ne: [this.node, nodeOf(other)] });
   }
   /** 1 where this value and `other` are both above 0.5, else 0. */
   and(other: ExprInput): Expr {
-    return binary('and', this, other);
+    return new Expr({ and: [this.node, nodeOf(other)] });
   }
   /** 1 where this value or `other` is above 0.5, else 0. */
   or(other: ExprInput): Expr {
-    return binary('or', this, other);
+    return new Expr({ or: [this.node, nodeOf(other)] });
   }
   /** 1 where this value is at most 0.5, else 0. */
   not(): Expr {
-    return unary('not', this);
+    return new Expr({ not: [this.node] });
   }
   /** The value negated. */
   neg(): Expr {
-    return unary('neg', this);
+    return new Expr({ neg: [this.node] });
   }
   /** The absolute value. */
   abs(): Expr {
-    return unary('abs', this);
+    return new Expr({ abs: [this.node] });
   }
   /** The square root. Negative values give a missing value. */
   sqrt(): Expr {
-    return unary('sqrt', this);
+    return new Expr({ sqrt: [this.node] });
   }
   /** The sine of the value, an angle in radians. */
   sin(): Expr {
-    return unary('sin', this);
+    return new Expr({ sin: [this.node] });
   }
   /** The cosine of the value, an angle in radians. */
   cos(): Expr {
-    return unary('cos', this);
+    return new Expr({ cos: [this.node] });
   }
   /** The largest whole number at most the value. */
   floor(): Expr {
-    return unary('floor', this);
+    return new Expr({ floor: [this.node] });
   }
   /** The natural logarithm. Values at most 0 give a missing value. */
   ln(): Expr {
-    return unary('ln', this);
+    return new Expr({ ln: [this.node] });
   }
   /** e raised to the value. */
   exp(): Expr {
-    return unary('exp', this);
+    return new Expr({ exp: [this.node] });
   }
 
-  /** Whether a text field equals `text`. */
+  /** Whether a text field equals `text`, a plain text that is neither a field nor a color. */
   is(text: string): Expr {
     return new Expr({ is: [this.node, text] });
   }
 
   /**
-   * Whether a text field contains `text`, ignoring case. In a mark, the field must be in the mark's
-   * own table.
+   * Whether a text field contains `text`, a plain text, ignoring case. In a mark, the field must be
+   * in the mark's own table.
    */
   contains(text: string): Expr {
     return new Expr({ contains: [this.node, text] });
@@ -183,10 +182,10 @@ export class Expr {
 
   /**
    * Maps the value to a color for every row through `map`, a catalog name or custom colors. The
-   * domain fits the values shown unless set with {@link Colormapped.domain}.
+   * domain fits the values shown unless set with {@link Mapped.domain}.
    */
-  colormap(map: Colormap): Colormapped {
-    return new Colormapped({ colormap: map, value: this.node });
+  colormap(map: Colormap): Mapped {
+    return new Mapped({ colormap: map, value: this.node });
   }
 
   /**
@@ -198,85 +197,43 @@ export class Expr {
   }
 }
 
-/** A value mapped linearly onto a range, with an input domain that can be set. */
+/** A value mapped through a colormap or onto a range, with an input domain that can be set. */
 export class Mapped extends Expr {
-  /** Sets the input values that map to the range's ends, instead of fitting the values shown. */
+  /**
+   * Sets the input values that map to the colormap's or the range's ends, instead of fitting the
+   * values shown.
+   */
   domain(low: number, high: number): Mapped {
-    return new Mapped({ ...(this.node as ScaleNode), domain: [low, high] });
+    return new Mapped({ ...(this.node as ScaleNode | ColormapNode), domain: [low, high] });
   }
 }
 
-/**
- * A color for every row of a mark: a constant, a value mapped through a colormap, or a conditional
- * choosing between colors. Color options take a `Paint` or a CSS color string.
- */
-export class Paint {
-  /** The color's JSON form. */
-  readonly node: PaintNode;
-
-  /** Wraps a color's JSON form. The builders cover common cases. */
-  constructor(node: PaintNode) {
-    this.node = node;
-  }
-
-  /** The JSON form, which `JSON.stringify` writes for the color. */
-  toJSON(): PaintNode {
-    return this.node;
-  }
-}
-
-/** A value mapped through a colormap, with an input domain that can be set. */
-export class Colormapped extends Paint {
-  /** Sets the input values that map to the colormap's ends, instead of fitting the values shown. */
-  domain(low: number, high: number): Colormapped {
-    return new Colormapped({ ...(this.node as ColormapNode), domain: [low, high] });
-  }
-}
-
-/** A missing value, valid as a value or a color. An option given one uses the theme's value. */
-export class Missing extends Expr {
-  /** The missing value's JSON form, `{ missing: true }`. */
-  declare readonly node: MissingNode;
-
-  /** A missing value. {@link missing} makes one too. */
-  constructor() {
-    super({ missing: true });
-  }
-
-  /** The JSON form, which `JSON.stringify` writes for the missing value. */
-  override toJSON(): MissingNode {
-    return this.node;
-  }
-}
-
-const unary = (op: Unary, a: ExprInput): Expr => new Expr({ op, args: [nodeOf(a)] });
-const binary = (op: Binary, a: ExprInput, b: ExprInput): Expr =>
-  new Expr({ op, args: [nodeOf(a), nodeOf(b)] });
-
-/** Returns `input`'s JSON form with every field node replaced by `f(field)`. */
+/** Returns `input`'s JSON form with every field replaced by `f(field)`, in its `{ field }` form. */
 function mapFields(input: ExprInput, f: (field: FieldNode) => FieldNode): ExprNode {
   const node = nodeOf(input);
-  if (typeof node === 'string') return f({ field: node });
-  if (typeof node !== 'object') return node;
+  if (typeof node === 'string') return node.startsWith('$') ? f({ field: node.slice(1) }) : node;
+  if (node === null || typeof node !== 'object') return node;
   const map = (child: ExprInput) => mapFields(child, f);
   if ('field' in node) return f(node);
-  if ('op' in node) return { ...node, args: node.args.map(map) } as ExprNode;
+  if ('state' in node) return node;
   if ('when' in node) {
     const cases = node.when.map(([c, v]): [ExprNode, ExprNode] => [map(c), map(v)]);
     return { when: cases, otherwise: map(node.otherwise) };
   }
-  if ('is' in node) return { is: [map(node.is[0]), node.is[1]] };
-  if ('contains' in node) return { contains: [map(node.contains[0]), node.contains[1]] };
   if ('value' in node) return { ...node, value: map(node.value) };
-  return node;
+  // A call: its one key names the operation. `is` and `contains` take a plain text after the value.
+  const [op, args] = Object.entries(node)[0] as [string, ExprInput[]];
+  const mapped = op === 'is' || op === 'contains' ? [map(args[0]), args[1]] : args.map(map);
+  return { [op]: mapped } as ExprNode;
 }
 
 const state = (name: State): Expr => new Expr({ state: name });
 
-/** Reads field `name` of each row. */
-export const field = (name: string): Expr => new Expr({ field: name });
-/** A constant color, from a CSS color string. */
-export const color = (css: Color): Paint => new Paint({ color: css });
+/**
+ * Reads field `name` of each row, written `'$name'` in JSON. `from()` and `step()` give it its
+ * `{ field }` form.
+ */
+export const field = (name: string): Expr => new Expr(`$${name}`);
 /** Whether the row is selected. */
 export const selected = (): Expr => state('selected');
 /** Whether the pointer is over the row. */
@@ -287,8 +244,6 @@ export const pointer = (): Expr => state('pointer');
 export const elapsed = (): Expr => state('elapsed');
 /** The camera's zoom: the web mercator level on the earth, log₂ CSS pixels per unit elsewhere. */
 export const zoom = (): Expr => state('zoom');
-/** A missing value: an option given one uses the theme's value. */
-export const missing = (): Missing => new Missing();
 
 /**
  * A size in CSS pixels regardless of the space's unit, so it stays the same on screen as the view
@@ -303,7 +258,7 @@ export function px(size: ExprInput): Px {
 
 /**
  * A size in position units (degrees on the earth) regardless of the space's unit, so it scales as
- * the view zooms. `limits` bound its on-screen size in CSS pixels: `units('r', { atLeast: 2 })`
+ * the view zooms. `limits` bound its on-screen size in CSS pixels: `units('$r', { atLeast: 2 })`
  * grows with the map and never shrinks below 2 pixels. A marker keeps its proportions, with the
  * limits applied to its larger side. Given only a number, the result also works as a theme length.
  */
@@ -313,17 +268,13 @@ export function units(size: ExprInput, limits: Omit<Units, 'units'> = {}): Units
   return { units: nodeOf(size), ...limits };
 }
 
-/** One case of a conditional: a condition, and the value or color it selects. */
-type Case = [ExprNode, ExprNode | PaintNode];
-
-/** A conditional's value input: {@link PaintInput} for colors, else {@link ExprInput}. */
-type InputOf<T> = T extends Paint ? PaintInput : ExprInput;
+/** One case of a conditional: a condition, and the value it selects. */
+type Case = [condition: ExprNode, value: ExprNode];
 
 /**
  * Starts a conditional. `when(c).then(a).when(d).then(b).otherwise(e)` takes the value of the first
- * case whose condition holds, else `e`. If the first `then` gets a color (a CSS string, a
- * {@link Paint}, a missing value, or a color's JSON form), every value of the conditional is a
- * color, and strings are CSS colors. Otherwise every value is an expression.
+ * case whose condition holds, else `e`. The values may be numbers, colors, or a text field and
+ * `null`, as the option takes.
  */
 export function when(condition: ExprInput): When {
   return new When(nodeOf(condition));
@@ -334,65 +285,40 @@ class When {
   /** @internal */
   constructor(private readonly condition: ExprNode) {}
 
-  /** Sets the color where the condition holds; every value of the conditional is then a color. */
-  then(value: PaintInput): Then<Paint>;
   /** Sets the value where the condition holds. */
-  then(value: ExprInput): Then<Expr>;
-  then(value: PaintInput | ExprInput): Then<Paint> | Then<Expr> {
-    const cases: Case[] = [[this.condition, written(value)]];
-    return colored(value)
-      ? new Then<Paint>(cases, (node) => new Paint(node as PaintNode))
-      : new Then<Expr>(cases, (node) => new Expr(node as ExprNode));
+  then(value: ExprInput): Then {
+    return new Then([[this.condition, nodeOf(value)]]);
   }
 }
 
 /** A conditional's cases so far, awaiting another `when` case or the `otherwise` fallback. */
-class Then<T extends Expr | Paint> {
+class Then {
   /** @internal */
-  constructor(
-    private readonly cases: readonly Case[],
-    private readonly make: (node: object) => T,
-  ) {}
+  constructor(private readonly cases: readonly Case[]) {}
 
   /** Adds a case, tried when no earlier condition holds. */
-  when(condition: ExprInput): Next<T> {
-    return new Next(this.cases, nodeOf(condition), this.make);
+  when(condition: ExprInput): Next {
+    return new Next(this.cases, nodeOf(condition));
   }
 
   /** Sets the value where no condition holds, and returns the finished conditional. */
-  otherwise(value: InputOf<T>): T {
-    return this.make({ when: this.cases, otherwise: written(value) });
+  otherwise(value: ExprInput): Expr {
+    return new Expr({ when: [...this.cases], otherwise: nodeOf(value) });
   }
 }
 
 /** A conditional's next condition, awaiting its value from `then`. */
-class Next<T extends Expr | Paint> {
+class Next {
   /** @internal */
   constructor(
     private readonly cases: readonly Case[],
     private readonly condition: ExprNode,
-    private readonly make: (node: object) => T,
   ) {}
 
   /** Sets the value where this condition holds. */
-  then(value: InputOf<T>): Then<T> {
-    return new Then([...this.cases, [this.condition, written(value)]], this.make);
+  then(value: ExprInput): Then {
+    return new Then([...this.cases, [this.condition, nodeOf(value)]]);
   }
-}
-
-/** The JSON form of `value`. */
-function written(value: ExprInput | PaintInput): ExprNode | PaintNode {
-  return value instanceof Expr || value instanceof Paint ? value.node : value;
-}
-
-/**
- * Whether a conditional's first value makes it a color conditional: a CSS string, a
- * {@link Paint}, a missing value, or a color's JSON form.
- */
-function colored(value: ExprInput | PaintInput): boolean {
-  if (typeof value === 'string' || value instanceof Paint || value instanceof Missing) return true;
-  if (value instanceof Expr || typeof value !== 'object') return false;
-  return 'color' in value || 'colormap' in value || 'missing' in value;
 }
 
 /** RGBA pixels with straight alpha, rows top to bottom. A browser `ImageData` has this shape. */

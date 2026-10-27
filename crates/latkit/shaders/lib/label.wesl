@@ -1,8 +1,8 @@
 // Labels: where a labeled row's text is anchored, its size, and whether it can show. Draws place
-// every label from its anchor each frame, so labels track the camera and their rows exactly.
-// Placement measures the same box only to decide which labels are dropped. Text is a distance field
-// set at `TEXT_BASE` and drawn at any size: in CSS pixels, or in a diagram in length units, where
-// text scales with the sheet and fades out once too small to read.
+// every label from its anchor each frame, so labels track the camera and their rows exactly. The
+// texts pass measures the same box only to find the texts in view. Text is a distance field set at
+// `TEXT_BASE` and drawn at any size: in CSS pixels, or in a diagram in length units, where text
+// scales with the sheet and fades out once too small to read.
 
 import package::lib::types::{
     POINTS, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, HEADER_BAND, SPACE_DIAGRAM,

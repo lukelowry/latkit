@@ -38,7 +38,9 @@ use crate::data::Name;
 /// kinds draw one layer, polygons come first. A table named `layer:polygons`, `layer:lines`, or
 /// `layer:points` holds that geometry type regardless of its marks. Each feature's properties
 /// become fields. Row ids are stable, derived from the tile and the feature's index in it, so a
-/// refetched tile keeps its rows' selection.
+/// refetched tile keeps its rows' selection. A tile arriving appends its rows to the view's
+/// dataset, which keeps the rows of tiles it no longer draws until they outnumber the rows it
+/// draws.
 ///
 /// ```
 /// # use latkit::Tiles;

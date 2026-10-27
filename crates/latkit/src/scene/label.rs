@@ -4,23 +4,29 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
+use crate::Expr;
 use crate::expr::form::Written;
-use crate::{Expr, Paint};
 
 /// Text for each row, placed beside, inside, or along the row's shape and following it every frame:
-/// a text field, or options. Where labels would overlap, the higher priority shows; among equals,
-/// labels already shown stay. In a diagram a label is part of the drawing: it scales with the zoom,
-/// fades out when too small to read, and shows wherever it fits its vertex.
+/// a text field, or options. A label shows wherever its row shows and its text fits the room the
+/// row gives it, such as inside a block, whatever other labels it meets. A row whose text is
+/// missing has no label, so a `when` choosing between the text field and missing labels only the
+/// rows it names. In a diagram a label is part of the drawing: it scales with the zoom, fades out
+/// when too small to read, and shows wherever it fits its vertex.
 ///
 /// ```
-/// # use latkit::{field, Label, Vertices};
-/// let buses = Vertices::of("grid", "Bus").position("lon", "lat").label(Label::new("name").priority(field("kv")));
+/// # use latkit::{field, when, zoom, Expr, Label, Vertices};
+/// let named = when(zoom().ge(6.0)).then(field("name")).otherwise(Expr::missing());
+/// let buses = Vertices::of("grid", "Bus").position(field("lon"), field("lat"));
+/// let labeled = buses.label(Label::new(named));
 /// ```
 #[derive(Clone, PartialEq, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(transform = text_or_options)]
 pub struct Label {
-    /// The text field to show.
+    /// The text field to show, or a `when` whose values are each that field or missing. A row
+    /// whose text is missing has no label. In a diagram the text reads only data, since the sheet
+    /// sizes blocks around it.
     pub(crate) text: Expr,
     /// Font size in the space's unit (units in a diagram, CSS pixels elsewhere); the theme's
     /// `text.size` unless set.
@@ -28,10 +34,7 @@ pub struct Label {
     pub(crate) size: Option<f32>,
     /// Each row's text color; the theme's text color unless set.
     #[serde(default)]
-    pub(crate) color: Option<Paint>,
-    /// Where labels would overlap, the higher priority shows; the mark's `priority` unless set.
-    #[serde(default)]
-    pub(crate) priority: Option<Expr>,
+    pub(crate) color: Option<Expr>,
     /// The width at which lines wrap, in the space's unit (units in a diagram, CSS pixels
     /// elsewhere).
     #[serde(default)]
@@ -39,26 +42,20 @@ pub struct Label {
     /// The CSS font family list for the text; the theme's `text.font` unless set.
     #[serde(default)]
     pub(crate) font: Option<Arc<str>>,
-    /// The most labels shown at once: those of highest priority among the rows in view, or fewer
-    /// where they would overlap. No limit unless set.
-    #[serde(default)]
-    pub(crate) max: Option<u32>,
 }
 
 /// Reads a label from a text field alone, or from an options object with `text`.
 impl<'de> Deserialize<'de> for Label {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Label, D::Error> {
         let label = |written: Written| match written {
-            Written::Object(mut form) if form.text.is_some() => {
-                form.only("a label", &["text", "size", "color", "priority", "maxWidth", "font", "max"])?;
+            Written::Object(form) if form.text.is_some() => {
+                form.only("a label", &["text", "size", "color", "maxWidth", "font"])?;
                 Ok(Label {
-                    color: form.color()?.map(Paint),
                     text: form.text.expect("present"),
+                    color: form.color,
                     size: form.size,
-                    priority: form.priority,
                     max_width: form.max_width,
                     font: form.font,
-                    max: form.max,
                 })
             }
             written => written.expr().map(Label::new),
@@ -78,9 +75,10 @@ fn text_or_options(schema: &mut schemars::Schema) {
 }
 
 impl Label {
-    /// Labels each row with a text field's value.
+    /// Labels each row with a text field's value, or with a `when` choosing between that field and
+    /// missing; a row whose text is missing has no label.
     pub fn new(text: impl Into<Expr>) -> Label {
-        Label { text: text.into(), size: None, color: None, priority: None, max_width: None, font: None, max: None }
+        Label { text: text.into(), size: None, color: None, max_width: None, font: None }
     }
 
     /// Sets the font size in the space's unit (units in a diagram, CSS pixels elsewhere); the
@@ -93,16 +91,8 @@ impl Label {
 
     /// Sets each row's text color; the theme's text color unless set.
     #[must_use]
-    pub fn color(mut self, color: impl Into<Paint>) -> Label {
+    pub fn color(mut self, color: impl Into<Expr>) -> Label {
         self.color = Some(color.into());
-        self
-    }
-
-    /// Sets each row's label priority: where labels would overlap, the higher priority shows. The
-    /// mark's priority unless set.
-    #[must_use]
-    pub fn priority(mut self, priority: impl Into<Expr>) -> Label {
-        self.priority = Some(priority.into());
         self
     }
 
@@ -118,14 +108,6 @@ impl Label {
     #[must_use]
     pub fn font(mut self, font: impl Into<Arc<str>>) -> Label {
         self.font = Some(font.into());
-        self
-    }
-
-    /// Shows at most `max` labels at once: those of highest priority among the rows in view, or
-    /// fewer where they would overlap.
-    #[must_use]
-    pub fn max(mut self, max: u32) -> Label {
-        self.max = Some(max);
         self
     }
 }

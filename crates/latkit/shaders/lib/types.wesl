@@ -219,32 +219,15 @@ const AREA_WORDS: u32 = 2u;
 const AREA_COLOR: u32 = 0u;
 const AREA_FLAGS: u32 = 1u;
 
-// Label words among a labeled mark's extra words: text code, priority (0 to 255), and color.
-const LABEL_WORDS: u32 = 3u;
+// Label words among a labeled mark's extra words: text code (missing for no label) and color.
+const LABEL_WORDS: u32 = 2u;
 const LABEL_CODE: u32 = 0u;
-const LABEL_PRIORITY: u32 = 1u;
-const LABEL_COLOR: u32 = 2u;
+const LABEL_COLOR: u32 = 1u;
 
-// Words of a labeled row's placement candidate, in pages listed by the page table at
-// `mark.candidates`: the label's box in CSS pixels (four words), key, state, and opacity. Draws
-// place each label from its anchor every frame; placement only decides whether it shows.
-const CANDIDATE_WORDS: u32 = 7u;
-const CANDIDATE_BOX: u32 = 0u;
-const CANDIDATE_KEY: u32 = 4u;
-const CANDIDATE_STATE: u32 = 5u;
-const CANDIDATE_ALPHA: u32 = 6u;
 // Each text run is set once, at a size of `TEXT_BASE` atlas texels, as a distance field reaching
 // `TEXT_SPREAD` texels past the text's edge.
 const TEXT_BASE: f32 = 32.0;
 const TEXT_SPREAD: f32 = 8.0;
-// Candidate state bits. WANTS: in view and needs room. PLACED_LABEL: placed. DROPPED: a placed
-// label occupies some of its cells. STICKY: placed in the previous frame. UNSET: its text is not
-// set yet.
-const WANTS: u32 = 1u;
-const PLACED_LABEL: u32 = 2u;
-const DROPPED: u32 = 4u;
-const STICKY: u32 = 8u;
-const UNSET: u32 = 16u;
 // Words per text run at the start of the fields buffer, for runs whose distance field the GPU
 // computes: where its coverage starts, the coverage's width and height, where its column minima
 // start, where its field starts, and the field's row pitch in words.
@@ -256,15 +239,7 @@ const FIELD_AT: u32 = 4u;
 const FIELD_ROW: u32 = 5u;
 const FIELD_WORDS: u32 = 6u;
 
-// Flag on a run table entry's first corner word while its text is not set. The second word then
-// holds the run's measured size, so its label can be placed before the text is set.
-const TEXT_UNSET: u32 = 0x80000000u;
-// Value of a label grid cell occupied by a placed label. Other cells hold NONE or the least key
-// claiming them.
-const OCCUPIED: u32 = 0u;
-// Side of a label grid cell, in CSS pixels.
-const CELL: f32 = 8.0;
-// Most text codes a mark asks the host to set per frame.
+// Most text codes a mark asks the host to set per texts pass.
 const WANTED: u32 = 64u;
 
 // Row state flags, in the last word of each row's kind words.
@@ -491,12 +466,6 @@ struct Frame {
     // above are already in CSS pixels, except comet spacing and length.
     unit: f32,
     zoom: f32,
-    // The label grid: where its cells start in the labels buffer, and its column and row counts.
-    // `label_fade` is how much a label's opacity changes per frame.
-    cells: u32,
-    cell_columns: u32,
-    cell_rows: u32,
-    label_fade: f32,
     // A plane's grid: kind, pitch in position units, and the world distance from the center at
     // which it has faded out (0 for no fade). `graticule` is 1 if the earth draws a graticule.
     grid_kind: u32,
@@ -615,23 +584,16 @@ struct Mark {
     // Where the program lists the mark's ports (`PORT_WORDS` each), and how many each row has.
     port_info: u32,
     ports: u32,
-    // `label`: the extra word holding the label's code, or NONE. `candidates`: the page table of
-    // each row's candidate. In the labels buffer: `runs`, the run table (two corner words per
-    // code); `wanted`, a count followed by the codes to set; `seen`, a bit per code shown in view.
-    // `label_id`: the id of the mark's first candidate, unique across marks. The two sizes are in
-    // length units.
+    // `label`: the extra word holding the label's code, or NONE. In the labels buffer: `runs`, the
+    // run table (two corner words per code, both 0 until the text is set); `wanted`, a count
+    // followed by the codes to set, each once; `seen`, a bit per code the texts pass met: a set
+    // text shown in view, or one not set that it asked for. The two sizes are in length units.
     label: u32,
-    candidates: u32,
     runs: u32,
     wanted: u32,
     seen: u32,
-    label_id: u32,
     label_size: f32,
     port_label_size: f32,
-    // The most labels shown, or NONE for no cap; and where the labels buffer holds the select that
-    // applies the cap.
-    label_max: u32,
-    label_select: u32,
     // The range of CSS pixels the mark's size is clamped to at any zoom: a vertex's half size, or a
     // stroke's width.
     size_min: f32,

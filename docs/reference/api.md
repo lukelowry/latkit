@@ -240,7 +240,8 @@ bytes at `url` decide the kind:
 - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template. Each
   layer becomes a table of the features its marks draw: polygons for areas, lines for lines,
   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
-  that kind whatever the marks.
+  that kind whatever the marks. A tile arriving appends its rows to the view's dataset, which
+  keeps the rows of tiles it no longer draws until they outnumber the rows it draws.
 
 ```{rubric} Constructor
 ```
@@ -542,7 +543,7 @@ A table's fields by name: values, or a [`Reference`](#reference).
 
 ## Expressions
 
-Builders for the per-row expressions and colors that scene options take.
+Builders for the per-row expressions that scene options take, colors among them.
 
 (expr)=
 
@@ -551,7 +552,9 @@ Builders for the per-row expressions and colors that scene options take.
 {.signature}
 `class Expr`
 
-A value for every row of a mark: a constant, a field, view state, or arithmetic on them.
+A value for every row of a mark: a constant, a color, a field, view state, or arithmetic on them.
+Color options take one that computes a color: a CSS color, a value through a colormap, or a
+conditional choosing between colors.
 
 ```{rubric} Constructor
 ```
@@ -689,17 +692,17 @@ A value for every row of a mark: a constant, a field, view state, or arithmetic 
 
 {#expr-is .member}
 **`is`**`(text: string): Expr` [¶](#expr-is){.headerlink}
-: Whether a text field equals `text`.
+: Whether a text field equals `text`, a plain text that is neither a field nor a color.
 
 {#expr-contains .member}
 **`contains`**`(text: string): Expr` [¶](#expr-contains){.headerlink}
-: Whether a text field contains `text`, ignoring case. In a mark, the field must be in the mark's
-  own table.
+: Whether a text field contains `text`, a plain text, ignoring case. In a mark, the field must be
+  in the mark's own table.
 
 {#expr-colormap .member}
-**`colormap`**`(map:` [`Colormap`](#colormap)`):` [`Colormapped`](#colormapped) [¶](#expr-colormap){.headerlink}
+**`colormap`**`(map:` [`Colormap`](#colormap)`):` [`Mapped`](#mapped) [¶](#expr-colormap){.headerlink}
 : Maps the value to a color for every row through `map`, a catalog name or custom colors. The
-  domain fits the values shown unless set with [`Colormapped.domain()`](#colormapped-domain).
+  domain fits the values shown unless set with [`Mapped.domain()`](#mapped-domain).
 
 {#expr-scale .member}
 **`scale`**`(low: number, high: number):` [`Mapped`](#mapped) [¶](#expr-scale){.headerlink}
@@ -713,7 +716,9 @@ A value for every row of a mark: a constant, a field, view state, or arithmetic 
 {.signature}
 `type ExprInput =` [`Expr`](#expr) `|` [`ExprNode`](#exprnode)
 
-A value option: an [`Expr`](#expr), or its JSON form, in which a string is a field name.
+An option's value: an [`Expr`](#expr), or its JSON form. In the JSON form, `null` is a missing
+value, a string starting with `$` reads a field (`'$kv'` reads field `kv`), and any other string
+is a CSS color. Color options take a value that computes a color.
 
 (mapped)=
 
@@ -722,101 +727,15 @@ A value option: an [`Expr`](#expr), or its JSON form, in which a string is a fie
 {.signature}
 `class Mapped extends` [`Expr`](#expr)
 
-A value mapped linearly onto a range, with an input domain that can be set.
+A value mapped through a colormap or onto a range, with an input domain that can be set.
 
 ```{rubric} Methods
 ```
 
 {#mapped-domain .member}
 **`domain`**`(low: number, high: number): Mapped` [¶](#mapped-domain){.headerlink}
-: Sets the input values that map to the range's ends, instead of fitting the values shown.
-
-(missing)=
-
-### `Missing`
-
-{.signature}
-`class Missing extends` [`Expr`](#expr)
-
-A missing value, valid as a value or a color. An option given one uses the theme's value.
-
-```{rubric} Constructor
-```
-
-{#missing-new .member}
-**`new Missing`**`()` [¶](#missing-new){.headerlink}
-: A missing value. [`missing()`](#missing-function) makes one too.
-
-```{rubric} Properties
-```
-
-{#missing-node .member}
-`readonly` **`node`**`:` [`MissingNode`](#missingnode) [¶](#missing-node){.headerlink}
-: The missing value's JSON form, `{ missing: true }`.
-
-```{rubric} Methods
-```
-
-{#missing-tojson .member}
-**`toJSON`**`():` [`MissingNode`](#missingnode) [¶](#missing-tojson){.headerlink}
-: The JSON form, which `JSON.stringify` writes for the missing value.
-
-(paint)=
-
-### `Paint`
-
-{.signature}
-`class Paint`
-
-A color for every row of a mark: a constant, a value mapped through a colormap, or a conditional
-choosing between colors. Color options take a `Paint` or a CSS color string.
-
-```{rubric} Constructor
-```
-
-{#paint-new .member}
-**`new Paint`**`(node:` [`PaintNode`](#paintnode)`)` [¶](#paint-new){.headerlink}
-: Wraps a color's JSON form. The builders cover common cases.
-
-```{rubric} Properties
-```
-
-{#paint-node .member}
-`readonly` **`node`**`:` [`PaintNode`](#paintnode) [¶](#paint-node){.headerlink}
-: The color's JSON form.
-
-```{rubric} Methods
-```
-
-{#paint-tojson .member}
-**`toJSON`**`():` [`PaintNode`](#paintnode) [¶](#paint-tojson){.headerlink}
-: The JSON form, which `JSON.stringify` writes for the color.
-
-(paintinput)=
-
-### `PaintInput`
-
-{.signature}
-`type PaintInput =` [`Color`](#color) `|` [`Paint`](#paint) `|` [`PaintNode`](#paintnode)
-
-A color option: a CSS color, a [`Paint`](#paint), or its JSON form. A string here is always a CSS
-color, never a field name; map a field to colors with `field(name).colormap(map)`.
-
-(colormapped)=
-
-### `Colormapped`
-
-{.signature}
-`class Colormapped extends` [`Paint`](#paint)
-
-A value mapped through a colormap, with an input domain that can be set.
-
-```{rubric} Methods
-```
-
-{#colormapped-domain .member}
-**`domain`**`(low: number, high: number): Colormapped` [¶](#colormapped-domain){.headerlink}
-: Sets the input values that map to the colormap's ends, instead of fitting the values shown.
+: Sets the input values that map to the colormap's or the range's ends, instead of fitting the
+  values shown.
 
 (color)=
 
@@ -825,7 +744,8 @@ A value mapped through a colormap, with an input domain that can be set.
 {.signature}
 `type Color = string`
 
-A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. In a color option, a string is a color.
+A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. In an expression, a string that does not
+start with `$` is a color.
 
 (field)=
 
@@ -834,25 +754,8 @@ A CSS color, such as `'#ffb000'` or `'rebeccapurple'`. In a color option, a stri
 {.signature}
 `function field(name: string):` [`Expr`](#expr)
 
-Reads field `name` of each row.
-
-(color-function)=
-
-### `color()`
-
-{.signature}
-`function color(css:` [`Color`](#color)`):` [`Paint`](#paint)
-
-A constant color, from a CSS color string.
-
-(missing-function)=
-
-### `missing()`
-
-{.signature}
-`function missing():` [`Missing`](#missing)
-
-A missing value: an option given one uses the theme's value.
+Reads field `name` of each row, written `'$name'` in JSON. `from()` and `step()` give it its
+`{ field }` form.
 
 (when-function)=
 
@@ -862,9 +765,8 @@ A missing value: an option given one uses the theme's value.
 `function when(condition:` [`ExprInput`](#exprinput)`):` [`When`](#when)
 
 Starts a conditional. `when(c).then(a).when(d).then(b).otherwise(e)` takes the value of the first
-case whose condition holds, else `e`. If the first `then` gets a color (a CSS string, a
-[`Paint`](#paint), a missing value, or a color's JSON form), every value of the conditional is a
-color, and strings are CSS colors. Otherwise every value is an expression.
+case whose condition holds, else `e`. The values may be numbers, colors, or a text field and
+`null`, as the option takes.
 
 (when)=
 
@@ -879,19 +781,15 @@ A conditional's first condition, awaiting its value from `then`.
 ```
 
 {#when-then .member}
-**`then`**`(value:` [`PaintInput`](#paintinput)`):` [`Then`](#then)`<`[`Paint`](#paint)`>` [¶](#when-then){.headerlink}
-: Sets the color where the condition holds; every value of the conditional is then a color.
-
-{.member}
-**`then`**`(value:` [`ExprInput`](#exprinput)`):` [`Then`](#then)`<`[`Expr`](#expr)`>`
+**`then`**`(value:` [`ExprInput`](#exprinput)`):` [`Then`](#then) [¶](#when-then){.headerlink}
 : Sets the value where the condition holds.
 
 (then)=
 
-### `Then<T>`
+### `Then`
 
 {.signature}
-`class Then<T extends` [`Expr`](#expr) `|` [`Paint`](#paint)`>`
+`class Then`
 
 A conditional's cases so far, awaiting another `when` case or the `otherwise` fallback.
 
@@ -899,19 +797,19 @@ A conditional's cases so far, awaiting another `when` case or the `otherwise` fa
 ```
 
 {#then-when .member}
-**`when`**`(condition:` [`ExprInput`](#exprinput)`):` [`Next`](#next)`<T>` [¶](#then-when){.headerlink}
+**`when`**`(condition:` [`ExprInput`](#exprinput)`):` [`Next`](#next) [¶](#then-when){.headerlink}
 : Adds a case, tried when no earlier condition holds.
 
 {#then-otherwise .member}
-**`otherwise`**`(value:` [`InputOf`](#inputof)`<T>): T` [¶](#then-otherwise){.headerlink}
+**`otherwise`**`(value:` [`ExprInput`](#exprinput)`):` [`Expr`](#expr) [¶](#then-otherwise){.headerlink}
 : Sets the value where no condition holds, and returns the finished conditional.
 
 (next)=
 
-### `Next<T>`
+### `Next`
 
 {.signature}
-`class Next<T extends` [`Expr`](#expr) `|` [`Paint`](#paint)`>`
+`class Next`
 
 A conditional's next condition, awaiting its value from `then`.
 
@@ -919,17 +817,8 @@ A conditional's next condition, awaiting its value from `then`.
 ```
 
 {#next-then .member}
-**`then`**`(value:` [`InputOf`](#inputof)`<T>):` [`Then`](#then)`<T>` [¶](#next-then){.headerlink}
+**`then`**`(value:` [`ExprInput`](#exprinput)`):` [`Then`](#then) [¶](#next-then){.headerlink}
 : Sets the value where this condition holds.
-
-(inputof)=
-
-### `InputOf<T>`
-
-{.signature}
-`type InputOf<T> = T extends` [`Paint`](#paint) `?` [`PaintInput`](#paintinput) `:` [`ExprInput`](#exprinput)
-
-A conditional's value input: [`PaintInput`](#paintinput) for colors, else [`ExprInput`](#exprinput).
 
 (px-function)=
 
@@ -956,7 +845,7 @@ works as a theme length.
 `function units(size:` [`ExprInput`](#exprinput)`, limits?: Omit<`[`Units`](#units)`, 'units'>):` [`Units`](#units)
 
 A size in position units (degrees on the earth) regardless of the space's unit, so it scales as
-the view zooms. `limits` bound its on-screen size in CSS pixels: `units('r', { atLeast: 2 })`
+the view zooms. `limits` bound its on-screen size in CSS pixels: `units('$r', { atLeast: 2 })`
 grows with the map and never shrinks below 2 pixels. A marker keeps its proportions, with the
 limits applied to its larger side. Given only a number, the result also works as a theme length.
 
@@ -1188,6 +1077,11 @@ showing it keeps its last frame.
 : Where the view looks. Setting it moves the camera at once; use [`View.fly()`](#view-fly) to ease. A
   camera of the wrong kind for the space, such as a plot camera on a map, is ignored.
 
+  Every move keeps the camera within reach. On the earth, the space bounds it, as [`Earth`](#earth)
+  describes, inside the insets. Fits narrow it to 3 zoom levels out and 8 in from what they
+  framed, with the center near the framed box. When a resize, new insets, or a new space moves
+  the camera back within reach, a `camera` event reports it.
+
 {#view-insets .member}
 **`insets`**`:` [`Insets`](#insets) [¶](#view-insets){.headerlink}
 : CSS pixels kept clear at the top, right, bottom, and left, such as where page panels cover the
@@ -1238,8 +1132,9 @@ showing it keeps its last frame.
 
 {#view-fly .member}
 **`fly`**`(camera:` [`Camera`](#camera)`): void` [¶](#view-fly){.headerlink}
-: Eases the camera to `camera` over twice the scene's ease time, or at once when motion is
-  reduced. A camera of the wrong kind for the space is ignored.
+: Eases the camera to `camera`, kept within reach as [`View.camera`](#view-camera) describes, over twice
+  the scene's ease time, or at once when motion is reduced. A camera of the wrong kind for the
+  space is ignored.
 
 {#view-screen .member}
 **`screen`**`(position:` [`Position`](#position)`):` [`Point`](#point) `| null` [¶](#view-screen){.headerlink}
@@ -1480,7 +1375,7 @@ Options for a [`Shot`](#shot).
 {#shotoptions-capture .member}
 **`capture`**`?: 'still' | 'now'` [¶](#shotoptions-capture){.headerlink}
 : When the picture is taken. `'still'`, the default, waits until every view is complete and
-  still: transitions, camera flights, and label fades run until they finish. `'now'` waits only
+  still: transitions, camera flights, and tile fades run until they finish. `'now'` waits only
   until every view is complete, and freezes anything moving where it is.
 
 {#shotoptions-elapsed .member}

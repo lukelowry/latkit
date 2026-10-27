@@ -139,10 +139,13 @@ fn earth_areas_stay_whole_across_the_antimeridian() {
     let earth = Earth { graticule: false, ..Earth::default() };
     let scene = Scene::new(earth).draw(Areas::of("map", "Zone").color(Color::hex("#ff0000").expect("hex")));
     let mut view = view(&gpu, scene, &data);
-    view.set_camera(Camera::Map { center: [180.0, 0.0, 0.0], zoom: 2.0, pitch: 0.0, bearing: 0.0 });
+    // A flat map is one world, so the camera looks just short of the antimeridian, whose edge lies
+    // past the view's at zoom 4. An area streaked the other way around the world would leave this
+    // side of it empty.
+    view.set_camera(Camera::Map { center: [174.0, 0.0, 0.0], zoom: 4.0, pitch: 0.0, bearing: 0.0 });
     let pixels = frame(&gpu, &mut view);
-    assert!(red(at(&pixels, C, C)), "across the antimeridian: {:?}", at(&pixels, C, C));
-    assert!(red(at(&pixels, C - 10, C)) && red(at(&pixels, C + 10, C)), "on both sides");
+    assert!(red(at(&pixels, C, C)), "whole up to the antimeridian: {:?}", at(&pixels, C, C));
+    assert!(red(at(&pixels, C - 10, C)) && red(at(&pixels, C + 10, C)), "on both sides of the middle");
     assert_eq!(errors(&mut view), Vec::new());
 }
 

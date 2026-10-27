@@ -268,7 +268,7 @@ Print the rows a query selects, sorted and paged, as JSON Lines with one object 
 
 {#cli-query-query .member}
 **`<QUERY>`** [¶](#cli-query-query){.headerlink}
-: The query: JSON, such as `{"of":"Branch","filter":{"op":"gt","args":["loading",90]}}`, or a file of it (`-` reads stdin).
+: The query: JSON, such as `{"of":"Branch","filter":{"gt":["$loading",90]}}`, or a file of it (`-` reads stdin).
 
 ```{rubric} Options
 ```

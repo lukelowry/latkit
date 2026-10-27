@@ -12,7 +12,7 @@ use std::time::Duration;
 use common::{SIZE, camera, gpu, plain_theme, plane};
 use latkit::Ids;
 use latkit::host::{Encoder, Host, Raster, TextRun, Unit};
-use latkit::{Color, Data, Encoding, Label, Mp4, Pending, Pixels, Scene, Shot, Sink, Table, Vertices, View};
+use latkit::{Color, Data, Encoding, Label, Mp4, Pending, Pixels, Scene, Shot, Sink, Table, Vertices, View, field};
 
 /// The pictures an encoder received: time, whether it is a keyframe, and the NV12 bytes.
 type Pictures = Arc<Mutex<Vec<(u64, bool, Vec<u8>)>>>;
@@ -56,10 +56,9 @@ fn dot(x: f64) -> Data {
 }
 
 fn view(gpu: &latkit::Gpu) -> View {
-    let scene = Scene::new(plane())
-        .theme(plain_theme())
-        .ease(Duration::ZERO)
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(20.0).color(Color::rgb(1.0, 0.0, 0.0)));
+    let scene = Scene::new(plane()).theme(plain_theme()).ease(Duration::ZERO).draw(
+        Vertices::of("graph", "Node").position(field("x"), field("y")).radius(20.0).color(Color::rgb(1.0, 0.0, 0.0)),
+    );
     let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([dot(0.0)]).expect("a source");
@@ -116,10 +115,9 @@ fn frames_compose_into_nv12_and_hold_where_nothing_moved() {
 fn labeled_marks_easing_between_frames_complete_every_frame() {
     let Some(gpu) = gpu() else { return };
     gpu.set_host(Keeping(Pictures::default()));
-    let scene = Scene::new(plane())
-        .theme(plain_theme())
-        .ease(Duration::from_millis(300))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(6.0).label(Label::new("name")));
+    let scene = Scene::new(plane()).theme(plain_theme()).ease(Duration::from_millis(300)).draw(
+        Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).label(Label::new(field("name"))),
+    );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     let named = |x: f64| {

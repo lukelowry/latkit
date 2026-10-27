@@ -303,14 +303,14 @@ impl View {
                 let delta = [f64::from(point[0] - from[0]), f64::from(point[1] - from[1])];
                 self.gestures.track(delta);
                 let camera = self.camera.panned(&self.projected(), anchor, delta);
-                self.steer(camera);
+                self.move_camera(camera);
             }
             Gesture::Turn { pointer: p, anchor, last } if *p == pointer => {
                 let (anchor, from) = (*anchor, std::mem::replace(last, point));
                 let degrees = [f64::from(point[0] - from[0]) * TURN, -f64::from(point[1] - from[1]) * TURN];
                 self.gestures.track(degrees);
                 let camera = self.camera.turned(&self.projected(), anchor, degrees);
-                self.steer(camera);
+                self.move_camera(camera);
             }
             Gesture::Pinch { pointers } => {
                 let Some(i) = pointers.iter().position(|(p, _)| *p == pointer) else { return };
@@ -327,8 +327,8 @@ impl View {
                 let camera = self.camera.panned(&self.projected(), anchor, delta);
                 let view = self.projected_with(&camera);
                 let levels = f64::from(spread(after) / spread(before)).log2();
-                let camera = camera.zoomed(&view, anchor, levels, self.zoom_limits());
-                self.steer(camera);
+                let camera = camera.zoomed(&view, anchor, levels, &self.reach());
+                self.move_camera(camera);
             }
             _ => {}
         }
@@ -486,7 +486,7 @@ impl View {
                 let delta = [f64::from(to[0] - from[0]), f64::from(to[1] - from[1])];
                 self.gestures.now = Gesture::Pan { pointer, anchor, last: to };
                 let camera = self.camera.panned(&self.projected(), anchor, delta);
-                self.steer(camera);
+                self.move_camera(camera);
             }
             _ => self.gestures.now = Gesture::Idle,
         }

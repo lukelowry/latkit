@@ -6,7 +6,8 @@
 //!
 //! Hover is reported whether or not it glows, and follows the frame. A lit row keeps its ports on
 //! top. Setters emit no events. A scene's first frame requests every pipeline its input can use.
-//! The wheel zooms as the controls say, and reduced motion applies every move at once.
+//! The wheel zooms as the controls say, and reduced motion applies every move at once. A flat map
+//! keeps the camera over its one world, and a frame reports moving it there.
 
 #![cfg(feature = "gpu")]
 
@@ -15,7 +16,7 @@ mod common;
 use common::{SIZE, camera, diagram, frame, gpu, plain_theme, step};
 use latkit::{
     Button, Camera, Controls, Data, Device, Edges, End, Event, Ids, Input, Key, Modifiers, Motion, Patch, Phase, Row,
-    Rows, Scene, Side, Table, Vertices, View, Zoom,
+    Rows, Scene, Side, Table, Vertices, View, Zoom, field,
 };
 
 const C: f32 = SIZE as f32 / 2.0;
@@ -49,7 +50,7 @@ fn scene(controls: Controls) -> Scene {
         .theme(plain_theme())
         .controls(controls)
         .draw(Edges::of("graph", "Link").ends("from", "to").width(3.0))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).port("net", Side::Right))
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).port("net", Side::Right))
 }
 
 fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
@@ -149,7 +150,7 @@ fn a_dragged_row_keeps_its_grab_point_under_the_pointer() {
     data.apply(Table::new("Node", vec![1_u64]).field("x", vec![-40.0]).field("y", vec![0.0])).expect("valid");
     let scene = Scene::new(diagram())
         .theme(plain_theme())
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(8.0).drag(true));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(8.0).drag(true));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
@@ -481,4 +482,23 @@ fn reduced_motion_applies_every_move_at_once() {
     step(&gpu, &mut system);
     assert_eq!(*system.camera(), to);
     assert!(!system.needs_render(), "nothing moves on its own");
+}
+
+#[test]
+fn a_flat_map_keeps_the_camera_over_its_one_world() {
+    let Some(gpu) = gpu() else { return };
+    let mut view = View::new(&gpu, Scene::new(latkit::Earth::default()).theme(plain_theme())).expect("valid scene");
+    // Set before the first frame gives the view its size, the camera moves within reach on that
+    // frame, which reports it. At zoom 4 the world is 4096 pixels across, and the center keeps half
+    // the view's width from the antimeridian.
+    view.set_camera(Camera::Map { center: [180.0, 0.0, 0.0], zoom: 4.0, pitch: 0.0, bearing: 0.0 });
+    frame(&gpu, &mut view);
+    let Camera::Map { center, .. } = *view.camera() else { panic!("a map camera") };
+    assert!((center[0] - 180.0 * (1.0 - f64::from(SIZE) / 4096.0)).abs() < 1e-9, "{center:?}");
+    assert!(view.events().any(|e| matches!(e, Event::Camera(_))), "the frame reports the move");
+    // Once the view has its size, a camera set past the reach is kept within it at once: zoomed
+    // all the way out, the whole world just fits the view, centered.
+    view.set_camera(Camera::Map { center: [90.0, 60.0, 0.0], zoom: -3.0, pitch: 0.0, bearing: 0.0 });
+    let Camera::Map { center, zoom, .. } = *view.camera() else { panic!("a map camera") };
+    assert!((zoom + 1.0).abs() < 1e-9 && center[0].abs() < 1e-9 && center[1].abs() < 1e-9, "{center:?} {zoom}");
 }

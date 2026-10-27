@@ -16,7 +16,7 @@ latkit render map.json plot.json -d grid.json -d states=usa.geojson \
 latkit render scene.json -d grid.json --frames - --format y4m -o - | ffmpeg -i - film.webm
 latkit render scene.json -d grid.json --frames frames.jsonl -o frames/%04d.png
 latkit inspect grid.bin                        # tables, fields, and the axis, as JSON
-latkit query grid.bin '{"of":"Branch","filter":{"op":"gt","args":["loading",90]},"limit":20}'
+latkit query grid.bin '{"of":"Branch","filter":{"gt":["$loading",90]},"limit":20}'
 latkit tile history.bin -o history/            # time tiles, which --tiles opens
 latkit render plot.json --tiles grid=history/frames.json -o year.png
 latkit schema scene > scene.schema.json

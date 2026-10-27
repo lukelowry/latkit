@@ -12,7 +12,8 @@
 //! Triangulation that does not fit the frame's budget runs in a job; a page whose every row needs
 //! shaping goes to the job whole. Rows waiting on a job draw nothing until it finishes. Bending a
 //! path is cheap and done at once. Vector tiles bring their own shapes, made in the job that
-//! decodes them.
+//! decodes them, as a field beside their rows. Their tables are paged, and read that field one
+//! page of their order at a time like any other, so nothing shapes those rows again.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 

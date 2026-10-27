@@ -722,24 +722,17 @@ const sections = {
     ],
     [
       'Expressions',
-      'Builders for the per-row expressions and colors that scene options take.',
+      'Builders for the per-row expressions that scene options take, colors among them.',
       [
         'Expr',
         'ExprInput',
         'Mapped',
-        'Missing',
-        'Paint',
-        'PaintInput',
-        'Colormapped',
         'Color',
         'field',
-        'color',
-        'missing',
         'when',
         'When',
         'Then',
         'Next',
-        'InputOf',
         'px',
         'units',
         'selected',
@@ -837,24 +830,15 @@ const sections = {
     ],
     [
       'Expressions',
-      'Expressions as JSON: a constant, a field, or one of these nodes. Colors take CSS strings where values take field names.',
+      'Expressions as JSON: a number, a boolean, `null`, a field as `"$name"`, a CSS color, or one of these nodes.',
       [
         'ExprNode',
-        'PaintNode',
         'FieldNode',
-        'ColorNode',
         'StateNode',
-        'MissingNode',
-        'UnaryNode',
-        'BinaryNode',
+        'CallNode',
         'WhenNode',
-        'WhenPaintNode',
-        'IsNode',
-        'ContainsNode',
         'ScaleNode',
         'ColormapNode',
-        'Unary',
-        'Binary',
         'State',
         'Colormap',
         'ColormapName',
@@ -922,8 +906,8 @@ const entries = {
   'types.md': readAll(TYPES, 'npm/src', '.ts'),
 };
 
-// Anchors ignore case, so a builder named like a type on either page, such as `color()` beside
-// `Color`, takes `-function` after its name.
+// Anchors ignore case, so a builder named like a type on either page, such as `zoom()` beside
+// `Zoom`, takes `-function` after its name.
 const types = new Set(
   Object.values(entries)
     .flatMap((all) => [...all.values()])

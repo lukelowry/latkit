@@ -1,7 +1,7 @@
 //! One frame, in order: tick the clock, settle readbacks, advance the camera, derive the tables
 //! marks read beside their data, lay out drawings, sync columns, stream uploads, give marks word
 //! pages for their rows, start transitions, pack the program buffer, write focus words and
-//! uniforms, then record the compute, label, render, probe, and query passes into the caller's
+//! uniforms, then record the compute, texts, render, probe, and query passes into the caller's
 //! encoder. No pass is recorded before the program buffer is packed, since packing may move a
 //! mark's words with copies recorded in the encoder.
 //!
@@ -131,7 +131,6 @@ impl View {
         if let Some((words, _)) = query {
             uniform.query = words;
         }
-        self.label_words(&mut uniform, dt);
         let eye = uniforms::eye(&projected, self.size, self.pixel_ratio);
         let sprites = self.overlay(&mut inner);
         self.lay_out_blocks();
@@ -141,7 +140,7 @@ impl View {
         }
         self.count_found(encoder, &inner);
         let mut drawn = super::passes::Drawn::default();
-        self.place_labels(encoder, &mut inner, &eye);
+        self.gather_texts(encoder, &mut inner, &eye);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
         self.draw(encoder, &mut inner, &mut drawn, frame, sprites.len() as u32, depth);
         self.stats.draws = drawn.draws;
@@ -227,10 +226,10 @@ impl View {
         fresh
     }
 
-    /// Gives every mark word pages for its held rows: state, focus words, label candidates, and,
-    /// for a vertex mark that faces attach to, the normals they sum. Rows in new state pages
-    /// evaluate from scratch. A mark the arena has no room for draws nothing until it has. Returns
-    /// whether any focus word pages are new.
+    /// Gives every mark word pages for its held rows: state, focus words, and, for a vertex mark
+    /// that faces attach to, the normals they sum. Rows in new state pages evaluate from scratch. A
+    /// mark the arena has no room for draws nothing until it has. Returns whether any focus word
+    /// pages are new.
     fn fit_words(&mut self, inner: &mut Inner) -> bool {
         let gpu = self.gpu.clone();
         let device = (&gpu.0.device, &gpu.0.queue);
@@ -354,7 +353,8 @@ impl View {
 
     /// Derives the tables marks read beside their data, from the data and scene alone, handing the
     /// host whatever the frame cannot afford. First come the orders of paged tables and the ranges
-    /// of them the camera needs, then every other derivation.
+    /// of them the camera needs, from their pyramids or, for tables of vector tiles, from the
+    /// vector tiles drawn; then every other derivation.
     fn derive(&mut self, inner: &mut Inner) {
         let host = inner.host.clone();
         let projected = self.projected();
@@ -371,12 +371,14 @@ impl View {
         let ask = derive::tiled::Ask {
             data: &self.snapshots,
             plans: self.planning.plans(),
+            tiles: &self.derived.tiles,
             sight: placing.then_some(&sight),
             earth,
         };
         let mut tiled = std::mem::take(&mut self.derived.tiled);
         self.choices = tiled.update(&ask, &mut jobs);
         self.derived.tiled = tiled;
+        self.derived.tiles.choose(self.planning.plans(), &mut self.choices);
         let paged = self.paged();
         let mut derived = std::mem::take(&mut self.derived);
         let input = derive::Input { paged: Some(&paged), ..self.derive_input(host.as_deref()) };
@@ -643,8 +645,7 @@ impl View {
         // A path morphs from its previous shape only while every row keeps its place. Rows that
         // moved, as they do between orders, fade instead.
         let kept = moved.as_ref().is_none_or(|(sources, exits)| exits.is_empty() && in_place(sources));
-        // Slots now holding pages of other rows: their rows evaluate every channel, and their
-        // labels restart.
+        // Slots now holding pages of other rows: their rows evaluate every channel.
         let bound = match &drawing {
             Some(new) => bound(before.as_ref().and_then(|h| h.drawing.as_deref()).filter(|_| moved.is_none()), new),
             None => Vec::new(),
@@ -687,7 +688,6 @@ impl View {
             shown.version += 1;
             shown.place_version += 1;
         }
-        shown.bound = bound;
         shown.packed = false;
         if let Some(published) = &published {
             shown.columns_changed(published.data, published.blocks.as_deref());

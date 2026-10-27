@@ -106,6 +106,11 @@ A plane: positions are in plane units.
 The earth: positions are longitude and latitude in degrees. The ground takes the theme's `earth`
 colors.
 
+A flat map is one world, drawn once. Its ground ends at the antimeridian and at Web Mercator's
+latitude limit, and the camera zooms out until the whole world fits the view and pans until the
+world's edges meet the view's. On a globe, longitude wraps, and the camera zooms out until the
+globe spans a third of the view's shorter side.
+
 {#earth-projection .member}
 **`projection`**`?:` [`Projection`](#projection) [¶](#earth-projection){.headerlink}
 : A flat web mercator map (`mercator`, the default) or a globe (`globe`).
@@ -349,10 +354,9 @@ pick, select, and drag; these options control the view itself.
 
 {#controls-motion .member}
 **`motion`**`?:` [`Motion`](#motion) [¶](#controls-motion){.headerlink}
-: How much the view animates on its own: eases, camera flights, coasting, orbits, label fades,
-  comets, and options that read `elapsed`. `system` (the default) follows the user's
-  reduced-motion setting, `full` animates everything, and `reduced` animates only motion the user
-  drives.
+: How much the view animates on its own: eases, camera flights, coasting, orbits, comets, and
+  options that read `elapsed`. `system` (the default) follows the user's reduced-motion setting,
+  `full` animates everything, and `reduced` animates only motion the user drives.
 
 (motion)=
 
@@ -373,8 +377,8 @@ How much a view animates on its own.
 
 {#motion-reduced .member}
 **`'reduced'`** [¶](#motion-reduced){.headerlink}
-: Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits,
-  labels appear without fading, and comets and options that read `elapsed` stay still.
+: Only motion the user drives: changes apply at once, flights jump, nothing coasts or orbits, and
+  comets and options that read `elapsed` stay still.
 
 (zoom)=
 
@@ -419,7 +423,7 @@ A row keeps its place once placed: rows added later are placed around the others
 
 {#layout-layered .member}
 `{` **`layered`**`:` [`Layered`](#layered) `}` [¶](#layout-layered){.headerlink}
-: Ranks along a direction, for flows and hierarchies.
+: Ranks along a direction, for processes and hierarchies.
 
 (layered)=
 
@@ -428,11 +432,11 @@ A row keeps its place once placed: rows added later are placed around the others
 {.signature}
 `interface Layered`
 
-Layered drawing: vertices in ranks, edges pointing along `flow`, and nets ranked from their
+Layered drawing: vertices in ranks, edges pointing along `direction`, and nets ranked from their
 outputs.
 
-{#layered-flow .member}
-**`flow`**`?:` [`Direction`](#direction) [¶](#layered-flow){.headerlink}
+{#layered-direction .member}
+**`direction`**`?:` [`Direction`](#direction) [¶](#layered-direction){.headerlink}
 : The direction edges point; `right` by default.
 
 {#layered-gap .member}
@@ -923,9 +927,10 @@ The options every mark has.
 : The dataset and table drawn.
 
 {#markoptions-color .member}
-**`color`**`?:` [`PaintInput`](#paintinput) `| null` [¶](#markoptions-color){.headerlink}
-: Each row's color. Unset, rows take the theme's default for the mark; faces instead blend their
-  corners' colors.
+**`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#markoptions-color){.headerlink}
+: Each row's color: a CSS color, a value through a colormap, or a conditional choosing between
+  colors. Unset, rows take the theme's default for the mark; faces instead blend their corners'
+  colors.
 
 {#markoptions-visible .member}
 **`visible`**`?:` [`ExprInput`](#exprinput) [¶](#markoptions-visible){.headerlink}
@@ -933,9 +938,8 @@ The options every mark has.
 
 {#markoptions-priority .member}
 **`priority`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#markoptions-priority){.headerlink}
-: Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, are
-  the last dropped when a table too large to draw whole is thinned to the tiles in view, and are
-  labeled first.
+: Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, and
+  are the last dropped when a table too large to draw whole is thinned to the tiles in view.
 
 {#markoptions-name .member}
 **`name`**`?: string | null` [¶](#markoptions-name){.headerlink}
@@ -1030,7 +1034,7 @@ Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
 : How each row is drawn; an ellipse by default.
 
 {#vertices-ring .member}
-**`ring`**`?:` [`PaintInput`](#paintinput) `| null` [¶](#vertices-ring){.headerlink}
+**`ring`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#vertices-ring){.headerlink}
 : A ring around each row's marker in this color; a missing or transparent color draws none.
 
 {#vertices-ports .member}
@@ -1373,13 +1377,17 @@ How a line runs between its samples.
 `type Label =` [`ExprInput`](#exprinput) `| { … }`
 
 Text for each row, placed beside, inside, or along the row's shape and following it every frame:
-a text field, or options. Where labels would overlap, the higher priority shows; among equals,
-labels already shown stay. In a diagram a label is part of the drawing: it scales with the zoom,
-fades out when too small to read, and shows wherever it fits its vertex.
+a text field, or options. A label shows wherever its row shows and its text fits the room the
+row gives it, such as inside a block, whatever other labels it meets. A row whose text is
+missing has no label, so a `when` choosing between the text field and missing labels only the
+rows it names. In a diagram a label is part of the drawing: it scales with the zoom, fades out
+when too small to read, and shows wherever it fits its vertex.
 
 {#label-text .member}
 **`text`**`:` [`ExprInput`](#exprinput) [¶](#label-text){.headerlink}
-: The text field to show.
+: The text field to show, or a `when` whose values are each that field or missing. A row whose
+  text is missing has no label. In a diagram the text reads only data, since the sheet sizes
+  blocks around it.
 
 {#label-size .member}
 **`size`**`?: number | null` [¶](#label-size){.headerlink}
@@ -1387,12 +1395,8 @@ fades out when too small to read, and shows wherever it fits its vertex.
   `text.size` unless set.
 
 {#label-color .member}
-**`color`**`?:` [`PaintInput`](#paintinput) `| null` [¶](#label-color){.headerlink}
+**`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#label-color){.headerlink}
 : Each row's text color; the theme's text color unless set.
-
-{#label-priority .member}
-**`priority`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#label-priority){.headerlink}
-: Where labels would overlap, the higher priority shows; the mark's `priority` unless set.
 
 {#label-maxwidth .member}
 **`maxWidth`**`?: number | null` [¶](#label-maxwidth){.headerlink}
@@ -1401,11 +1405,6 @@ fades out when too small to read, and shows wherever it fits its vertex.
 {#label-font .member}
 **`font`**`?: string | null` [¶](#label-font){.headerlink}
 : The CSS font family list for the text; the theme's `text.font` unless set.
-
-{#label-max .member}
-**`max`**`?: number | null` [¶](#label-max){.headerlink}
-: The most labels shown at once: those of highest priority among the rows in view, or fewer where
-  they would overlap. No limit unless set.
 
 (size)=
 
@@ -1455,30 +1454,22 @@ the view zooms. `atLeast` and `atMost` bound it in CSS pixels.
 
 ## Expressions
 
-Expressions as JSON: a constant, a field, or one of these nodes. Colors take CSS strings where values take field names.
+Expressions as JSON: a number, a boolean, `null`, a field as `"$name"`, a CSS color, or one of these nodes.
 
 (exprnode)=
 
 ### `ExprNode`
 
 {.signature}
-`type ExprNode = number | boolean | string |` [`FieldNode`](#fieldnode) `|` [`ColorNode`](#colornode) `|` [`StateNode`](#statenode) `|` [`MissingNode`](#missingnode) `|` [`UnaryNode`](#unarynode) `|` [`BinaryNode`](#binarynode) `|` [`WhenNode`](#whennode) `|` [`IsNode`](#isnode) `|` [`ContainsNode`](#containsnode) `|` [`ScaleNode`](#scalenode) `|` [`ColormapNode`](#colormapnode)
+`type ExprNode = number | boolean | null | string |` [`FieldNode`](#fieldnode) `|` [`StateNode`](#statenode) `|` [`WhenNode`](#whennode) `|` [`ScaleNode`](#scalenode) `|` [`ColormapNode`](#colormapnode) `|` [`CallNode`](#callnode)
 
-A value for each row: a number, a boolean, a field's name, or a node that computes one.
+A value for each row. A number or boolean is a constant, `null` is a missing value, a string
+starting with `$` reads the field it names, any other string is a CSS color, and an object is a
+node that computes a value.
 
-(paintnode)=
-
-### `PaintNode`
-
-{.signature}
-`type PaintNode =` [`Color`](#color) `|` [`ColorNode`](#colornode) `|` [`ColormapNode`](#colormapnode) `|` [`WhenPaintNode`](#whenpaintnode) `|` [`MissingNode`](#missingnode)
-
-A color for each row: a CSS color, a value through a colormap, or a conditional choosing between
-colors.
-
-{#paintnode-color .member}
-[`Color`](#color) [¶](#paintnode-color){.headerlink}
-: A CSS color, such as `#ffb000` or `rebeccapurple`.
+{#exprnode-null .member}
+**`null`** [¶](#exprnode-null){.headerlink}
+: A missing value. An option that evaluates to missing uses the theme's value.
 
 (fieldnode)=
 
@@ -1488,7 +1479,7 @@ colors.
 `interface FieldNode`
 
 A field's value in each row: from the mark's own table, or with `from`, from another dataset's
-table joined by row id.
+table joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
 
 {#fieldnode-field .member}
 **`field`**`: string` [¶](#fieldnode-field){.headerlink}
@@ -1503,19 +1494,6 @@ table joined by row id.
 : For a sampled field, reads the last frame at or before the shown coordinate instead of
   interpolating. Default `false`.
 
-(colornode)=
-
-### `ColorNode`
-
-{.signature}
-`interface ColorNode`
-
-A constant color.
-
-{#colornode-color .member}
-**`color`**`:` [`Color`](#color) [¶](#colornode-color){.headerlink}
-: A CSS color, such as `#ffb000` or `rebeccapurple`.
-
 (statenode)=
 
 ### `StateNode`
@@ -1529,52 +1507,126 @@ View state of each row, such as whether it is selected.
 **`state`**`:` [`State`](#state) [¶](#statenode-state){.headerlink}
 : The state read.
 
-(missingnode)=
+(callnode)=
 
-### `MissingNode`
-
-{.signature}
-`interface MissingNode`
-
-A missing value. An option that evaluates to missing uses the theme's value.
-
-{#missingnode-missing .member}
-**`missing`**`: true` [¶](#missingnode-missing){.headerlink}
-: Always `true`.
-
-(unarynode)=
-
-### `UnaryNode`
+### `CallNode`
 
 {.signature}
-`interface UnaryNode`
+`type CallNode = { neg: [`[`ExprInput`](#exprinput)`] } | { not: [`[`ExprInput`](#exprinput)`] } | { abs: [`[`ExprInput`](#exprinput)`] } | { sqrt: [`[`ExprInput`](#exprinput)`] } | { sin: [`[`ExprInput`](#exprinput)`] } | { cos: [`[`ExprInput`](#exprinput)`] } | { floor: [`[`ExprInput`](#exprinput)`] } | { ln: [`[`ExprInput`](#exprinput)`] } | { exp: [`[`ExprInput`](#exprinput)`] } | { add: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { sub: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { mul: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { div: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { rem: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { pow: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { min: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { max: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { lt: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { le: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { gt: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { ge: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { eq: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { ne: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { and: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { or: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] } | { is: [field:` [`ExprInput`](#exprinput)`, text: string] } | { contains: [field:` [`ExprInput`](#exprinput)`, text: string] }`
 
-A one-argument operation, such as `{ "op": "abs", "args": ["x"] }`.
+An operation on values: an object whose one key names the operation and holds its arguments,
+such as `{ "add": ["$a", 1] }`. `is` and `contains` take a plain text as their second argument,
+which is neither a field nor a color.
 
-{#unarynode-op .member}
-**`op`**`:` [`Unary`](#unary) [¶](#unarynode-op){.headerlink}
-: The operation.
+{#callnode-neg .member}
+`{` **`neg`**`: [`[`ExprInput`](#exprinput)`] }` [¶](#callnode-neg){.headerlink}
+: The value negated.
 
-{#unarynode-args .member}
-**`args`**`: [`[`ExprInput`](#exprinput)`]` [¶](#unarynode-args){.headerlink}
-: Its argument.
+{#callnode-not .member}
+`{` **`not`**`: [`[`ExprInput`](#exprinput)`] }` [¶](#callnode-not){.headerlink}
+: 1 where the value is at most 0.5, else 0.
 
-(binarynode)=
+{#callnode-abs .member}
+`{` **`abs`**`: [`[`ExprInput`](#exprinput)`] }` [¶](#callnode-abs){.headerlink}
+: The absolute value.
 
-### `BinaryNode`
+{#callnode-sqrt .member}
+`{` **`sqrt`**`: [`[`ExprInput`](#exprinput)`] }` [¶](#callnode-sqrt){.headerlink}
+: The square root. Negative values give a missing value.
 
-{.signature}
-`interface BinaryNode`
+{#callnode-sin .member}
+`{` **`sin`**`: [`[`ExprInput`](#exprinput)`] }` [¶](#callnode-sin){.headerlink}
+: The sine of the value, an angle in radians.
 
-A two-argument operation, such as `{ "op": "add", "args": ["a", 1] }`.
+{#callnode-cos .member}
+`{` **`cos`**`: [`[`ExprInput`](#exprinput)`] }` [¶](#callnode-cos){.headerlink}
+: The cosine of the value, an angle in radians.
 
-{#binarynode-op .member}
-**`op`**`:` [`Binary`](#binary) [¶](#binarynode-op){.headerlink}
-: The operation.
+{#callnode-floor .member}
+`{` **`floor`**`: [`[`ExprInput`](#exprinput)`] }` [¶](#callnode-floor){.headerlink}
+: The largest whole number at most the value.
 
-{#binarynode-args .member}
-**`args`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`]` [¶](#binarynode-args){.headerlink}
-: Its arguments, left and right.
+{#callnode-ln .member}
+`{` **`ln`**`: [`[`ExprInput`](#exprinput)`] }` [¶](#callnode-ln){.headerlink}
+: The natural logarithm. Values at most 0 give a missing value.
+
+{#callnode-exp .member}
+`{` **`exp`**`: [`[`ExprInput`](#exprinput)`] }` [¶](#callnode-exp){.headerlink}
+: e raised to the value.
+
+{#callnode-add .member}
+`{` **`add`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-add){.headerlink}
+: The sum of the two values.
+
+{#callnode-sub .member}
+`{` **`sub`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-sub){.headerlink}
+: The first value minus the second.
+
+{#callnode-mul .member}
+`{` **`mul`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-mul){.headerlink}
+: The product of the two values.
+
+{#callnode-div .member}
+`{` **`div`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-div){.headerlink}
+: The first value divided by the second. Dividing by 0 gives a missing value.
+
+{#callnode-rem .member}
+`{` **`rem`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-rem){.headerlink}
+: The remainder of the first value divided by the second, with the sign of the second: -1 and 3
+  give 2.
+
+{#callnode-pow .member}
+`{` **`pow`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-pow){.headerlink}
+: The first value raised to the power of the second.
+
+{#callnode-min .member}
+`{` **`min`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-min){.headerlink}
+: The smaller of the two values.
+
+{#callnode-max .member}
+`{` **`max`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-max){.headerlink}
+: The larger of the two values.
+
+{#callnode-lt .member}
+`{` **`lt`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-lt){.headerlink}
+: 1 where the first value is less than the second, else 0.
+
+{#callnode-le .member}
+`{` **`le`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-le){.headerlink}
+: 1 where the first value is at most the second, else 0.
+
+{#callnode-gt .member}
+`{` **`gt`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-gt){.headerlink}
+: 1 where the first value is greater than the second, else 0.
+
+{#callnode-ge .member}
+`{` **`ge`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-ge){.headerlink}
+: 1 where the first value is at least the second, else 0.
+
+{#callnode-eq .member}
+`{` **`eq`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-eq){.headerlink}
+: 1 where the two values are equal, else 0. Colors compare too.
+
+{#callnode-ne .member}
+`{` **`ne`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-ne){.headerlink}
+: 1 where the two values differ, else 0. Colors compare too.
+
+{#callnode-and .member}
+`{` **`and`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-and){.headerlink}
+: 1 where both values are above 0.5, else 0.
+
+{#callnode-or .member}
+`{` **`or`**`: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] }` [¶](#callnode-or){.headerlink}
+: 1 where either value is above 0.5, else 0.
+
+{#callnode-is .member}
+`{` **`is`**`: [field:` [`ExprInput`](#exprinput)`, text: string] }` [¶](#callnode-is){.headerlink}
+: Whether a text field equals the plain text exactly.
+
+{#callnode-contains .member}
+`{` **`contains`**`: [field:` [`ExprInput`](#exprinput)`, text: string] }` [¶](#callnode-contains){.headerlink}
+: Whether a text field contains the plain text, ignoring case. In a mark, the field must belong to
+  the mark's own table.
 
 (whennode)=
 
@@ -1592,50 +1644,6 @@ The value of the first case whose condition holds, else `otherwise`.
 {#whennode-otherwise .member}
 **`otherwise`**`:` [`ExprInput`](#exprinput) [¶](#whennode-otherwise){.headerlink}
 : The value where no condition holds.
-
-(whenpaintnode)=
-
-### `WhenPaintNode`
-
-{.signature}
-`interface WhenPaintNode`
-
-A conditional color: the color of the first case whose condition holds, else `otherwise`.
-
-{#whenpaintnode-when .member}
-**`when`**`: [condition:` [`ExprInput`](#exprinput)`, color:` [`PaintInput`](#paintinput)`][]` [¶](#whenpaintnode-when){.headerlink}
-: The cases, as `[condition, color]` pairs tried in order.
-
-{#whenpaintnode-otherwise .member}
-**`otherwise`**`:` [`PaintInput`](#paintinput) [¶](#whenpaintnode-otherwise){.headerlink}
-: The color where no condition holds.
-
-(isnode)=
-
-### `IsNode`
-
-{.signature}
-`interface IsNode`
-
-Whether a text field equals a text exactly.
-
-{#isnode-is .member}
-**`is`**`: [field:` [`ExprInput`](#exprinput)`, text: string]` [¶](#isnode-is){.headerlink}
-: The text field, and the text it must equal.
-
-(containsnode)=
-
-### `ContainsNode`
-
-{.signature}
-`interface ContainsNode`
-
-Whether a text field contains a text, ignoring case. In a mark, the field must belong to the
-mark's own table.
-
-{#containsnode-contains .member}
-**`contains`**`: [field:` [`ExprInput`](#exprinput)`, text: string]` [¶](#containsnode-contains){.headerlink}
-: The text field, and the text it must contain.
 
 (scalenode)=
 
@@ -1679,26 +1687,6 @@ A value mapped through a colormap.
 **`domain`**`?: [low: number, high: number] | null` [¶](#colormapnode-domain){.headerlink}
 : The values mapped to the colormap's ends; the extent of the values shown when unset. A
   categorical map ignores it.
-
-(unary)=
-
-### `Unary`
-
-{.signature}
-`type Unary = 'neg' | 'not' | 'abs' | 'sqrt' | 'sin' | 'cos' | 'floor' | 'ln' | 'exp'`
-
-An operation on one value. `sin` and `cos` take radians; `not` treats values above 0.5 as true.
-
-(binary)=
-
-### `Binary`
-
-{.signature}
-`type Binary = 'add' | 'sub' | 'mul' | 'div' | 'rem' | 'pow' | 'min' | 'max' | 'lt' | 'le' | 'gt' | 'ge' | 'eq' | 'ne' | 'and' | 'or'`
-
-An operation on two values: arithmetic, `min` and `max`, comparisons (1 for true, 0 for false),
-and logic. `rem` is a floored remainder, which takes the sign of the divisor. `and` and `or`
-treat values above 0.5 as true.
 
 (state)=
 
@@ -2130,7 +2118,8 @@ Something that happened in a view, as [`view.on`](#view-on) reports it.
 
 {#viewevent-camera .member}
 **`'camera'`**`:` [`Camera`](#camera) [¶](#viewevent-camera){.headerlink}
-: The camera moved by a gesture, fit, flight, coast, or orbit: [`view.camera`](#view-camera).
+: The camera moved by a gesture, fit, flight, coast, or orbit, or back within reach as the view's
+  size, insets, or space changed: [`view.camera`](#view-camera).
 
 {#viewevent-waiting .member}
 **`'waiting'`**`:` [`Waiting`](#waiting) [¶](#viewevent-waiting){.headerlink}
@@ -2515,9 +2504,9 @@ Counters describing a view's frames.
 
 What a frame still waits on: pipelines the scene draws with, which compile before the view draws
 anything new (`compiling`); pages uploading, or tables not yet built from them (`data`);
-layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label placement, or text not yet
-set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting
-(`marks`). Empty once the frame is complete.
+layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or
+not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition
+starting (`marks`). Empty once the frame is complete.
 
 (work)=
 
@@ -2563,8 +2552,8 @@ between them.
 
 {#work-readbacks .member}
 **`readbacks`**`: number` [¶](#work-readbacks){.headerlink}
-: Readbacks from the GPU: probes, queries, fits, label placements, segment counts, and pictures.
-  Frame timer readbacks, which only some devices support, are not counted.
+: Readbacks from the GPU: probes, queries, fits, label texts, segment counts, and pictures. Frame
+  timer readbacks, which only some devices support, are not counted.
 
 {#work-jobs .member}
 **`jobs`**`: number` [¶](#work-jobs){.headerlink}

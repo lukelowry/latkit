@@ -37,7 +37,7 @@ def write(path, value):
 
 
 def op(name, *args):
-    return {"op": name, "args": list(args)}
+    return {name: list(args)}
 
 
 def sha256(path):
@@ -124,9 +124,9 @@ def prepare(source, job, frames):
 
     # asinh(df / 0.02), expressed with the CLI's ordinary GPU expression operators.
     # Use abs/sign to avoid cancellation in ln(x + sqrt(x*x+1)) for negative x.
-    x = op("div", op("abs", "df"), 0.02)
+    x = op("div", op("abs", "$df"), 0.02)
     magnitude = op("ln", op("add", x, op("sqrt", op("add", op("mul", x, x), 1))))
-    signed = {"when": [[op("lt", "df", 0), op("neg", magnitude)]], "otherwise": magnitude}
+    signed = {"when": [[op("lt", "$df", 0), op("neg", magnitude)]], "otherwise": magnitude}
     height_scale = HEIGHT_GAIN * 1.7 * 0.15 * max(max(lon) - min(lon), max(lat) - min(lat))
     elevation = op("mul", signed, height_scale / math.asinh(0.35 / 0.02))
     theme = {"background": BACKGROUND, "text": {"color": "#c9d4dc", "font": "Segoe UI, sans-serif", "size": 15}}
@@ -138,17 +138,17 @@ def prepare(source, job, frames):
             "subtitle": f"Little Rock - Newark, 765 kV / Opens at 1 s / Constant {SPEED:g}x speed",
             "marks": [
                 {"lines": {"of": ["states", "polygons"], "color": "#5c7a8f6b", "width": 0.75,
-                           "visible": op("not", op("or", {"is": ["name", "Alaska"]},
-                                                   {"is": ["name", "Hawaii"]}))}},
-                {"edges": {"of": ["grid", "Branch"], "ends": ["from", "to"], "width": "width", "visible": "in_service"}},
+                           "visible": op("not", op("or", {"is": ["$name", "Alaska"]},
+                                                   {"is": ["$name", "Hawaii"]}))}},
+                {"edges": {"of": ["grid", "Branch"], "ends": ["from", "to"], "width": "$width", "visible": "$in_service"}},
                 {"edges": {"of": ["grid", "Outage"], "ends": ["from", "to"], "width": 2.5,
-                           "color": "#ffde86", "dash": "opened",
-                           "label": {"text": "status", "size": 13, "priority": 100}}},
-                {"vertices": {"of": ["grid", "Bus"], "position": ["lon", "lat"], "radius": 0.8,
+                           "color": "#ffde86", "dash": "$opened",
+                           "label": {"text": "$status", "size": 13}}},
+                {"vertices": {"of": ["grid", "Bus"], "position": ["$lon", "$lat"], "radius": 0.8,
                               "elevation": elevation,
                               "color": {"colormap": {"kind": "diverging", "colors": PALETTE},
-                                        "value": "df", "domain": [-0.2, 0.2]},
-                              "label": {"text": "label", "size": 14, "priority": 101},
+                                        "value": "$df", "domain": [-0.2, 0.2]},
+                              "label": {"text": "$label", "size": 14},
                               "legend": "Bus frequency deviation / Hz"}},
             ],
         },

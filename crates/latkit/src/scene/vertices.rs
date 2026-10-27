@@ -4,7 +4,7 @@ use super::marker::Marker;
 use crate::expr::Unit;
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Error, Expr, Kind, Name, Paint, Result, Size};
+use crate::{Error, Expr, Kind, Name, Result, Size};
 
 mark!(
 /// Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
@@ -12,7 +12,7 @@ mark!(
 /// ```
 /// # use latkit::{field, Colormap, Vertices};
 /// let buses = Vertices::of("grid", "Bus")
-///     .position("lon", "lat")
+///     .position(field("lon"), field("lat"))
 ///     .radius(field("kv") / 50.0)
 ///     .color(field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05));
 /// ```
@@ -36,7 +36,7 @@ Vertices {
     /// How each row is drawn; an ellipse by default.
     marker: Marker,
     /// A ring around each row's marker in this color; a missing or transparent color draws none.
-    ring: Option<Paint>,
+    ring: Option<Expr>,
     /// Ports on each row, one for each reference field that names a net. An `edges` mark of the net
     /// table, without `ends`, draws the nets. Diagrams only.
     ports: Vec<(Name, Port)> as "[reference: string, port: Port][]",
@@ -143,7 +143,7 @@ impl Vertices {
     /// Draws a ring around each row's marker in this color; a missing or transparent color draws
     /// none.
     #[must_use]
-    pub fn ring(mut self, color: impl Into<Paint>) -> Vertices {
+    pub fn ring(mut self, color: impl Into<Expr>) -> Vertices {
         self.ring = Some(color.into());
         self
     }
@@ -171,14 +171,14 @@ impl Vertices {
         let fallback = if group { wgsl::THEME_GROUP } else { wgsl::THEME_VERTEX };
         let color = Store::Color { word: wgsl::VERTEX_COLOR, fallback };
         match &self.style.color {
-            Some(paint) => c.channel("color", &paint.0, color)?,
+            Some(expr) => c.channel("color", expr, color)?,
             None => c.theme("color", fallback, color)?,
         }
         let visible = Store::Flag { word: wgsl::VERTEX_FLAGS, bit: wgsl::VISIBLE };
         c.channel("visible", &self.style.visible, visible)?;
         if let Some(ring) = &self.ring {
             flags |= wgsl::STATUS;
-            c.channel("ring", &ring.0, Store::Color { word: wgsl::VERTEX_STATUS, fallback: wgsl::THEME_CLEAR })?;
+            c.channel("ring", ring, Store::Color { word: wgsl::VERTEX_STATUS, fallback: wgsl::THEME_CLEAR })?;
         }
         for (i, input) in inputs.iter().enumerate() {
             let store = Store::Number { word: wgsl::VERTEX_WORDS + i as u32, fallback: None };

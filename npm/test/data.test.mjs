@@ -348,7 +348,7 @@ test('queries filter, sort, page, and count', () => {
     of: 'Branch',
     filter: field('loading').gt(90),
     sort: [[field('loading'), 'descending']],
-    select: { name: 'name', loading: 'loading' },
+    select: { name: '$name', loading: '$loading' },
     limit: 1,
   });
   assert.deepEqual(hot.ids, [8]);

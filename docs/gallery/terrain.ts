@@ -73,8 +73,8 @@ export default function terrain(): Piece {
         {
           vertices: {
             of: ['land', 'Vertex'],
-            position: ['x', 'y'],
-            elevation: 'z',
+            position: ['$x', '$y'],
+            elevation: '$z',
             radius: 0,
             pick: false,
             color: {
@@ -82,7 +82,7 @@ export default function terrain(): Piece {
                 kind: 'sequential',
                 colors: ['#0e2a3f', '#1b5e6b', '#3f8f6e', '#a7a463', '#d9c9a3', '#f4efe6'],
               },
-              value: 'z',
+              value: '$z',
               domain: [0, 120],
             },
           },

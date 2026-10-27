@@ -25,7 +25,7 @@ describe('grid cases', () => {
         expect(Math.abs(found.positions[i + 1]!)).toBeLessThanOrEqual(90);
       }
       // Every line's `from` and `to` reference a bus of the case, and every machine's bus row exists.
-      const lines = found.data.query({ of: 'Line', select: { from: 'from', to: 'to' } });
+      const lines = found.data.query({ of: 'Line', select: { from: '$from', to: '$to' } });
       const ends = lines.fields as Record<string, { ids: (number | string | null)[] }>;
       expect(ends.from!.ids.every((id) => id !== null)).toBe(true);
       expect(ends.to!.ids.every((id) => id !== null)).toBe(true);

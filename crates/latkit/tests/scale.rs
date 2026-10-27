@@ -61,7 +61,7 @@ fn higher_priority_rows_draw_on_top() {
     let red = Color::rgb(1.0, 0.0, 0.0);
     let blue = Color::rgb(0.0, 0.0, 1.0);
     let mark = Vertices::of("graph", "Node")
-        .position("x", "y")
+        .position(field("x"), field("y"))
         .radius(8.0)
         .color(when(field("kind").is("a")).then(red).otherwise(blue));
     let center = SIZE / 2;
@@ -81,9 +81,9 @@ fn a_table_that_starts_empty_draws_its_rows() {
     let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(0)).field("x", Vec::<f64>::new()).field("y", Vec::<f64>::new()))
         .expect("valid");
-    let scene = Scene::new(plane())
-        .theme(plain_theme())
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(Color::rgb(1.0, 1.0, 1.0)));
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(
+        Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0).color(Color::rgb(1.0, 1.0, 1.0)),
+    );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
@@ -99,9 +99,9 @@ fn a_paged_table_draws_the_tiles_in_view_and_its_selected_rows() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);
     let data = lattice(columns, rows);
-    let scene = Scene::new(plane())
-        .theme(plain_theme())
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(
+        Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)),
+    );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
@@ -140,7 +140,7 @@ fn a_paged_table_on_the_globe_draws_its_finest_tiles_close_up() {
     let scene = Scene::new(earth)
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)
-        .draw(Vertices::of("grid", "Bus").position("lon", "lat").radius(2.0).color(Color::WHITE));
+        .draw(Vertices::of("grid", "Bus").position(field("lon"), field("lat")).radius(2.0).color(Color::WHITE));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     // So close that the camera's horizon is nearer than a sixty-fourth of the coarsest tile.
     view.set_camera(Camera::Map { center: [-74.0, 40.7, 0.0], zoom: 15.0, pitch: 0.0, bearing: 0.0 });
@@ -161,7 +161,9 @@ fn panning_a_paged_table_draws_every_row_in_view_as_tiles_change() {
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)
         .draw(Edges::of("grid", "Line").ends("from", "to").width(2.0).color(Color::rgb(0.0, 1.0, 0.0)))
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
+        .draw(
+            Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)),
+        );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     let data = lattice(columns, rows);
     view.set_sources([&data]).expect("a source");
@@ -219,10 +221,9 @@ fn appending_to_a_paged_table_never_thins_it() {
     let Some(gpu) = gpu() else { return };
     let (columns, rows) = (600, 500);
     let data = lattice(columns, rows);
-    let scene = Scene::new(plane())
-        .theme(plain_theme())
-        .ease(std::time::Duration::ZERO)
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
+    let scene = Scene::new(plane()).theme(plain_theme()).ease(std::time::Duration::ZERO).draw(
+        Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)),
+    );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
@@ -279,7 +280,7 @@ fn a_change_to_one_rows_color_moves_no_row() {
         .draw(Edges::of("grid", "Line").ends("from", "to"))
         .draw(
             Vertices::of("grid", "Bus")
-                .position("lon", "lat")
+                .position(field("lon"), field("lat"))
                 .color(field("v").colormap(latkit::Colormap::GRAYS).domain(0.0..=1.0)),
         );
     let mut view = View::new(&gpu, scene).expect("valid scene");
@@ -305,7 +306,10 @@ fn a_frame_waiting_for_pages_packs_nothing_again() {
     let Some(gpu) = gpu() else { return };
     let budget = gpu.budget();
     let scene = Scene::new(plane()).theme(plain_theme()).ease(std::time::Duration::ZERO).draw(
-        Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(field("x").colormap(latkit::Colormap::GRAYS)),
+        Vertices::of("grid", "Bus")
+            .position(field("x"), field("y"))
+            .radius(2.0)
+            .color(field("x").colormap(latkit::Colormap::GRAYS)),
     );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
@@ -350,7 +354,7 @@ fn a_fitted_domain_covers_every_row_of_a_paged_table() {
     let theme = latkit::Theme { background: Color::rgb(0.0, 0.0, 1.0), ..plain_theme() };
     let scene = Scene::new(plane()).theme(theme).ease(std::time::Duration::ZERO).draw(
         Vertices::of("grid", "Bus")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .radius(3.0)
             .priority(field("p"))
             .color(field("v").colormap(latkit::Colormap::GRAYS)),
@@ -385,10 +389,10 @@ fn a_join_into_a_paged_table_reads_every_row() {
     let gray = Color::rgb(0.2, 0.2, 0.2);
     let scene = Scene::new(plane())
         .theme(plain_theme())
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0).color(gray))
+        .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(1.0).color(gray))
         .draw(
             Vertices::of("grid", "Probe")
-                .position("x", "y")
+                .position(field("x"), field("y"))
                 .radius(4.0)
                 .color(field("v").from_table("grid", "Bus").colormap(latkit::Colormap::GRAYS).domain(0.0..=1.0)),
         );
@@ -408,9 +412,9 @@ fn pages_made_resident_mid_ease_enter_as_the_rest_keep_easing() {
     let Some(gpu) = gpu() else { return };
     let camera = |zoom: f64| Camera::Map { center: [300.0, 250.0, 0.0], zoom, pitch: 0.0, bearing: 0.0 };
     let view = |zoom: f64| {
-        let scene = Scene::new(plane())
-            .theme(plain_theme())
-            .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
+        let scene = Scene::new(plane()).theme(plain_theme()).draw(
+            Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)),
+        );
         let mut view = View::new(&gpu, scene).expect("valid scene");
         view.set_camera(camera(zoom));
         view.set_sources([lattice(600, 500)]).expect("a source");
@@ -470,10 +474,9 @@ fn paged_areas_fill_the_drawn_pages_as_the_camera_moves() {
 #[test]
 fn selected_rows_off_screen_pack_into_kept_row_pages() {
     let Some(gpu) = gpu() else { return };
-    let scene = Scene::new(plane())
-        .theme(plain_theme())
-        .ease(std::time::Duration::ZERO)
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
+    let scene = Scene::new(plane()).theme(plain_theme()).ease(std::time::Duration::ZERO).draw(
+        Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)),
+    );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([lattice(600, 500)]).expect("a source");
@@ -499,7 +502,9 @@ fn a_kept_edge_draws_between_its_endpoints() {
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)
         .draw(Edges::of("grid", "Line").ends("from", "to").width(2.0).color(Color::rgb(0.0, 1.0, 0.0)))
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0).color(Color::rgb(1.0, 1.0, 1.0)));
+        .draw(
+            Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(1.0).color(Color::rgb(1.0, 1.0, 1.0)),
+        );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.5, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([lattice(600, 500)]).expect("a source");
@@ -535,7 +540,9 @@ fn placeholder_lanes_of_a_paged_table_read_missing_past_its_rows() {
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)
         .draw(Edges::of("grid", "Line").ends("from", "to").width(2.0).color(Color::rgb(0.0, 1.0, 0.0)))
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)));
+        .draw(
+            Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(2.0).color(Color::rgb(1.0, 1.0, 1.0)),
+        );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.0, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&pair]).expect("a source");
@@ -569,7 +576,7 @@ fn a_change_to_one_row_of_a_paged_table_updates_only_its_page() {
     .expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).ease(std::time::Duration::ZERO).draw(
         Vertices::of("points", "P")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .radius(4.0)
             .priority(field("p"))
             .color(field("v").colormap(latkit::Colormap::GRAYS).domain(0.0..=1.0)),
@@ -607,12 +614,12 @@ fn a_field_of_a_paged_table_that_changes_kind_is_gathered_again() {
     let data = Data::new("points");
     data.apply(table(vec![0.5; n].into())).expect("valid");
     let number = Vertices::of("points", "P")
-        .position("x", "y")
+        .position(field("x"), field("y"))
         .priority(field("p"))
         .color(field("v").colormap(latkit::Colormap::GRAYS));
     let text = Vertices::of("points", "P")
         .named("text")
-        .position("x", "y")
+        .position(field("x"), field("y"))
         .color(when(field("v").is("a")).then(Color::WHITE).otherwise(Color::BLACK));
     let mut view = View::new(&gpu, Scene::new(plane()).theme(plain_theme()).draw(number).draw(text)).expect("valid");
     view.set_camera(camera());
@@ -636,7 +643,9 @@ fn paged_edges_draw_with_their_endpoints() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Edges::of("grid", "Line").ends("from", "to").width(2.0).color(Color::rgb(0.0, 1.0, 0.0)))
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0).color(Color::rgb(0.0, 0.0, 1.0)));
+        .draw(
+            Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(1.0).color(Color::rgb(0.0, 0.0, 1.0)),
+        );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [300.0, 250.5, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 });
     view.set_sources([&data]).expect("a source");
@@ -665,7 +674,7 @@ fn a_tiny_budget_never_fails() {
     .expect("valid");
     let scene = Scene::new(plane()).theme(plain_theme()).draw(
         Vertices::of("points", "Point")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .radius(field("v") / 1e5 + 1.0)
             .color(Color::rgb(1.0, 1.0, 1.0)),
     );
@@ -689,7 +698,7 @@ fn a_first_look_stays_within_budget_while_pyramids_are_computed() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .draw(Edges::of("grid", "Line").ends("from", "to"))
-        .draw(Vertices::of("grid", "Bus").position("x", "y"));
+        .draw(Vertices::of("grid", "Bus").position(field("x"), field("y")));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_sources([lattice(1000, 500)]).expect("a source");
     view.fit(Fit::All);
@@ -750,7 +759,7 @@ fn edges_ending_far_apart_make_their_endpoints_kept_rows() {
     let data = far_apart(|_, random| random % 250_000);
     let scene = Scene::new(plane()).theme(plain_theme()).draw(Edges::of("grid", "Line").ends("from", "to")).draw(
         Vertices::of("grid", "Bus")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .color(field("v").colormap(latkit::Colormap::GRAYS).domain(0.0..=1.0)),
     );
     let mut view = View::new(&gpu, scene).expect("valid scene");
@@ -785,7 +794,9 @@ fn edges_ending_far_apart_draw_between_their_ends() {
         .theme(plain_theme())
         .ease(std::time::Duration::ZERO)
         .draw(Edges::of("grid", "Line").ends("from", "to").width(2.0).color(green))
-        .draw(Vertices::of("grid", "Bus").position("x", "y").radius(1.0).color(Color::rgb(0.0, 0.0, 1.0)));
+        .draw(
+            Vertices::of("grid", "Bus").position(field("x"), field("y")).radius(1.0).color(Color::rgb(0.0, 0.0, 1.0)),
+        );
     let mut view = View::new(&gpu, scene).expect("valid scene");
     // Rows are eight pixels apart, and the center pixel row lies between two of them.
     let near = Camera::Map { center: [250.0, 250.5, 0.0], zoom: 3.0, pitch: 0.0, bearing: 0.0 };
@@ -902,7 +913,8 @@ fn a_view_sleeps_while_it_waits() {
     let Some(gpu) = gpu() else { return };
     let data = Data::new("graph");
     data.apply(Table::new("Node", Ids::count(1)).field("x", vec![0.0]).field("y", vec![0.0])).expect("valid");
-    let scene = Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position("x", "y"));
+    let scene =
+        Scene::new(plane()).theme(plain_theme()).draw(Vertices::of("graph", "Node").position(field("x"), field("y")));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");

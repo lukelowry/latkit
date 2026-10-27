@@ -17,7 +17,7 @@ const scene: Scene = {
     {
       vertices: {
         of: ['grid', 'Bus'],
-        position: ['x', 'y'],
+        position: ['$x', '$y'],
         radius: 6,
         color: field('kv').colormap('viridis'),
       },

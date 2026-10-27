@@ -58,10 +58,10 @@ export default function helios(): Piece {
         {
           vertices: {
             of: ['art', 'Bus'],
-            position: ['x', 'y'],
-            radius: 'radius',
-            color: { colormap: 'viridis', value: 'heat', domain: [0, 1] },
-            label: { text: 'name', size: 13, color: '#c0e5dd' },
+            position: ['$x', '$y'],
+            radius: '$radius',
+            color: { colormap: 'viridis', value: '$heat', domain: [0, 1] },
+            label: { text: '$name', size: 13, color: '#c0e5dd' },
           },
         },
       ],

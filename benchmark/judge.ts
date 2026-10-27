@@ -68,7 +68,8 @@ const EXACT = new Set([
   'resident',
 ]);
 /** Factor by which other work counts may exceed the baseline. The frame a job or fetch finishes in
- * changes label placements and tiles by up to about 1.7×. A per-frame blowup changes far more. */
+ * changes the label texts set and the tiles by up to about 1.7×. A per-frame blowup changes far
+ * more. */
 const STEADY = 2;
 /** Minimum baseline values for work held within `STEADY`: one for byte counts, one for the rest. */
 const WORK_FLOOR = { bytes: 64 * 1024, count: 8 };

@@ -346,16 +346,20 @@ impl<'a> Compiler<'a> {
         self.program.ends.push(EndUse { table: table.clone(), column: wgsl::NONE });
     }
 
-    /// Compiles channel `name`, storing the dictionary code of text field `expr` at `word`. Returns
+    /// Compiles channel `name`, storing at `word` the dictionary code of text field `expr`, or of a
+    /// `when` whose values are each that field or missing. A missing code draws no label. Returns
     /// the program column whose dictionary decodes the codes.
     pub(crate) fn text(&mut self, name: &str, expr: &Expr, word: u32) -> Result<u32> {
-        let Node::Field(f) = &*expr.0 else { return Err(invalid("a label's text must be a text field").at(name)) };
+        let Some(f) = text_field(expr, None).map_err(|e| e.at(name))? else {
+            return Err(invalid("a label's text needs a text field").at(name));
+        };
         if self.fields.kind(f.from.as_ref(), &f.name) != Some(Kind::Text) {
             return Err(invalid("not a text field").at(&f.name).at(name));
         }
         let start = self.begin();
+        // The values compile as any conditional's do, a missing one as the missing code.
+        self.expect(expr, Ty::Text).map_err(|e| e.at(name))?;
         let column = self.field_column(f, Words::Codes, false);
-        self.op(wgsl::OP_FIELD, column, 0, 0, 0, 1)?;
         self.op(wgsl::OP_STORE_CODE, word, 0, 0, 1, 0)?;
         self.close(name, start);
         Ok(column)
@@ -462,7 +466,14 @@ impl<'a> Compiler<'a> {
         match (self.emit(e)?, want) {
             (got, want) if got == want => Ok(()),
             (Ty::Bool, Ty::Number) => Ok(()),
-            (got, want) => Err(invalid(format!("expected {}, found {}", ty_name(want), ty_name(got)))),
+            (got, want) => {
+                let hint = match (got, want) {
+                    (Ty::Number, Ty::Color) => "; map a number to colors with colormap",
+                    (Ty::Bool, Ty::Color) => "; choose between colors with when",
+                    _ => "",
+                };
+                Err(invalid(format!("expected {}, found {}{hint}", ty_name(want), ty_name(got))))
+            }
         }
     }
 
@@ -750,6 +761,23 @@ fn binary_name(op: Binary) -> &'static str {
         Binary::Eq | Binary::Ne => "equality",
         Binary::And => "and",
         Binary::Or => "or",
+    }
+}
+
+/// The one text field a label's text shows: `expr` itself, or the field each value of a `when`
+/// gives, where every value is that field (the same name and table) or missing. `seen` is the field
+/// found so far; `None` when every value is missing.
+fn text_field<'e>(expr: &'e Expr, seen: Option<&'e FieldRef>) -> Result<Option<&'e FieldRef>> {
+    match &*expr.0 {
+        Node::Missing => Ok(seen),
+        Node::Field(f) => match seen {
+            Some(g) if g.name != f.name || g.from != f.from => {
+                Err(invalid("a label's text chooses between one text field and missing, not two fields"))
+            }
+            _ => Ok(Some(f)),
+        },
+        Node::When(_, a, b) => text_field(b, text_field(a, seen)?),
+        _ => Err(invalid("a label's text must be a text field, or a when choosing between one and missing")),
     }
 }
 

@@ -19,7 +19,7 @@ test('installed package imports without WASM, retries failures, and shares initi
     pathToFileURL(path.join(directory, 'dist/index.js')).href
   );
   assert.equal(requests, 0);
-  assert.deepEqual(field('x').toJSON(), { field: 'x' });
+  assert.equal(field('x').toJSON(), '$x');
   // Writing a patch needs no WASM. Creating a dataset throws until WASM is loaded.
   const patch = new Patch().replace('Node', { count: 1 }, { x: [42] });
   assert.throws(() => new Data('early'), { code: 'unloaded' });

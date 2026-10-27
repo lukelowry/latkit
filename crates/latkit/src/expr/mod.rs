@@ -19,9 +19,9 @@ pub use colormap::{Colormap, ColormapKind, Stop};
 
 use crate::Name;
 
-/// A per-row value of a mark: a constant, a field, view state, or arithmetic on them.
-///
-/// A `&str` converts to the field of that name, so options can take field names directly:
+/// A per-row value of a mark: a constant, a color, a field, view state, or arithmetic on them.
+/// Color options take an expression that computes a color: a [`Color`], a value through a
+/// colormap, or a conditional choosing between colors.
 ///
 /// ```
 /// # use latkit::{field, when, selected, Colormap, Color};
@@ -31,21 +31,10 @@ use crate::Name;
 /// let high_voltage = field("kv").ge(230.0) & field("kind").is("substation");
 /// ```
 ///
-/// Expressions compile to bytecode, so changing one never recompiles a shader.
+/// Expressions compile to bytecode, so changing one never recompiles a shader. In JSON, a string
+/// starting with `$` reads the field it names, and any other string is a CSS color.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Expr(pub(crate) Arc<Node>);
-
-/// A per-row color of a mark: a fixed color, or an expression that yields one, such as a value
-/// through a colormap or a conditional choosing between colors. Color options take a `Paint`. In
-/// JSON a string is a CSS color, and a field is written `{"field": name}`.
-///
-/// ```
-/// # use latkit::{field, Color, Colormap, Paint};
-/// let fixed = Paint::from(Color::css("rebeccapurple").unwrap());
-/// let mapped = Paint::from(field("vm").colormap(Colormap::BALANCE));
-/// ```
-#[derive(Clone, PartialEq, Debug)]
-pub struct Paint(pub(crate) Expr);
 
 #[derive(PartialEq, Debug)]
 pub(crate) enum Node {
@@ -89,8 +78,7 @@ pub(crate) enum State {
 
 /// An operation on one value. `sin` and `cos` take radians; `not` treats values above 0.5 as
 /// true.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Unary {
     Neg,
     Not,
@@ -106,8 +94,7 @@ pub(crate) enum Unary {
 /// An operation on two values: arithmetic, `min` and `max`, comparisons (1 for true, 0 for
 /// false), and logic. `rem` is a floored remainder, which takes the sign of the divisor. `and` and
 /// `or` treat values above 0.5 as true.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Binary {
     Add,
     Sub,
@@ -150,7 +137,7 @@ pub(crate) fn holds(text: &str, needle: &str) -> bool {
     text.to_lowercase().contains(needle)
 }
 
-/// The value of field `name` in each row.
+/// The value of field `name` in each row, written `"$name"` in JSON.
 pub fn field(name: impl Into<Name>) -> Expr {
     node(Node::Field(FieldRef { name: name.into(), from: None, step: false, component: None }))
 }
@@ -219,7 +206,7 @@ macro_rules! binary {
 }
 
 impl Expr {
-    /// A missing value. An option that evaluates to missing uses the theme's value.
+    /// A missing value, `null` in JSON. An option that evaluates to missing uses the theme's value.
     pub fn missing() -> Expr {
         node(Node::Missing)
     }
@@ -437,24 +424,6 @@ impl From<Mapped> for Expr {
     }
 }
 
-impl From<Mapped> for Paint {
-    fn from(mapped: Mapped) -> Paint {
-        Paint(mapped.0)
-    }
-}
-
-impl From<Expr> for Paint {
-    fn from(expr: Expr) -> Paint {
-        Paint(expr)
-    }
-}
-
-impl From<Color> for Paint {
-    fn from(color: Color) -> Paint {
-        Paint(color.into())
-    }
-}
-
 /// A conditional started by [`when`], waiting for [`then`](When::then) to give the value for its
 /// latest condition.
 pub struct When {
@@ -540,24 +509,6 @@ impl Size {
 impl<T: Into<Expr>> From<T> for Size {
     fn from(value: T) -> Size {
         Size { expr: value.into(), unit: None, px: Size::ANY }
-    }
-}
-
-impl From<&str> for Expr {
-    fn from(name: &str) -> Expr {
-        field(name)
-    }
-}
-
-impl From<String> for Expr {
-    fn from(name: String) -> Expr {
-        field(name)
-    }
-}
-
-impl From<&Name> for Expr {
-    fn from(name: &Name) -> Expr {
-        field(name)
     }
 }
 

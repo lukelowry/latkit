@@ -91,7 +91,7 @@ const dots = (space: Space, colormap: ColormapName = 'viridis', label?: string):
     {
       vertices: {
         of: ['d', 'Point'],
-        position: ['x', 'y'],
+        position: ['$x', '$y'],
         color: field('v').colormap(colormap).domain(0, 1),
         ...(label ? { label: field(label) } : {}),
       },
@@ -108,7 +108,7 @@ const grid = (space: Space): Scene => ({
     {
       vertices: {
         of: ['g', 'Bus'],
-        position: ['lon', 'lat'],
+        position: ['$lon', '$lat'],
         color: field('load').colormap('viridis').domain(0, 1),
       },
     },
@@ -124,14 +124,14 @@ const plot: Scene = {
 const sheet: Scene = {
   space: 'diagram',
   ease: 0,
-  layout: { layered: { flow: 'right' } },
+  layout: { layered: { direction: 'right' } },
   marks: [
     { edges: { of: ['d', 'Net'], route: 'orthogonal' } },
     {
       vertices: {
         of: ['d', 'Block'],
         marker: 'block',
-        label: { text: 'name' },
+        label: { text: '$name' },
         ports: [
           ['in', 'left'],
           ['out', { side: 'right', output: true }],
@@ -163,7 +163,8 @@ const pan = (order: Order = { time: 0 }): Phase => ({
   },
 });
 
-/** Zooms two levels in and back out, which re-places labels and refines tiles. */
+/** Zooms two levels in and back out, which asks for the texts of labels coming into view and
+ * refines tiles. */
 const zoom = (): Phase => ({
   name: 'zoom',
   order: { time: 0 },
@@ -473,7 +474,7 @@ export const scenarios: Record<string, Scenario> = {
     ],
   },
   labels: {
-    about: 'every vertex labeled: placement, collisions, and text layout',
+    about: 'every vertex labeled: the texts in view found, set, and drawn',
     unit: 'rows',
     // From 10,000 rows on, more labels show than a frame sets texts for, so a frame's CPU time
     // stays at the text budget however many rows are labeled.
@@ -494,7 +495,7 @@ export const scenarios: Record<string, Scenario> = {
         ease: 0,
         marks: [
           { edges: { of: ['d', 'Link'], ends: ['from', 'to'] } },
-          { vertices: { of: ['d', 'Point'], position: ['x', 'y'] } },
+          { vertices: { of: ['d', 'Point'], position: ['$x', '$y'] } },
         ],
       },
       data: { d: make.lanes(n) },

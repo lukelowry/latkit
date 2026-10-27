@@ -144,7 +144,7 @@ export default function diagram(): Piece {
       },
     );
   }
-  const title = { text: 'name', size: 11, color: '#8ea3b8' };
+  const title = { text: '$name', size: 11, color: '#8ea3b8' };
   const marks: Mark[] = [
     {
       vertices: { of: ['plant', 'Area'], contains: ['Group', 'area'], label: title, shadow: true },
@@ -173,15 +173,12 @@ export default function diagram(): Piece {
         marker: KINDS[kind].marker,
         color: KINDS[kind].color,
         shadow: true,
-        ring: {
-          when: [[{ op: 'gt', args: ['status', 0] }, { color: '#ffb000' }]],
-          otherwise: { missing: true },
-        },
+        ring: { when: [[{ gt: ['$status', 0] }, '#ffb000']], otherwise: null },
         ports: KINDS[kind].ports.map(([name, side, output]): [string, Port] => [
           name,
           { side, output, ...(name === 'feedback' ? { label: 'feedback' } : {}) },
         ]),
-        label: { text: 'name', size: 12 },
+        label: { text: '$name', size: 12 },
       },
     })),
   ];
@@ -191,7 +188,7 @@ export default function diagram(): Piece {
     data: [patch],
     scene: {
       space: { diagram: { grid: { dots: { pitch: 20 } } } },
-      layout: { layered: { flow: 'right', gap: 40, rankGap: 52 } },
+      layout: { layered: { direction: 'right', gap: 40, rankGap: 52 } },
       ease: 0,
       theme: { ...THEME, grid: '#ffffff0d', diagram: { group: '#151c26' } },
       marks,

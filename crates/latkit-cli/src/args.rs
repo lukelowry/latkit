@@ -51,8 +51,8 @@ pub(crate) enum Command {
         /// The dataset, `[NAME=]FILE` (`-` reads stdin)
         #[arg(value_name = "[NAME=]FILE")]
         data: Source,
-        /// The query: JSON, such as `{"of":"Branch","filter":{"op":"gt","args":["loading",90]}}`, or
-        /// a file of it (`-` reads stdin)
+        /// The query: JSON, such as `{"of":"Branch","filter":{"gt":["$loading",90]}}`, or a file of
+        /// it (`-` reads stdin)
         #[arg(value_name = "QUERY")]
         query: String,
         /// The longest the dataset may take to load, in seconds

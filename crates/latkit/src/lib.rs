@@ -61,7 +61,7 @@ pub use data::{
 pub use data::{Order, Patches, Query, QueryResult, Reading};
 pub use error::{Error, Path, Result, Step};
 pub use expr::{
-    Color, Colormap, ColormapKind, Expr, Mapped, Paint, Size, Stop, Then, When, elapsed, field, hovered, pointer, px,
+    Color, Colormap, ColormapKind, Expr, Mapped, Size, Stop, Then, When, elapsed, field, hovered, pointer, px,
     selected, units, when, zoom,
 };
 pub use image::{Image, ImageFormat};

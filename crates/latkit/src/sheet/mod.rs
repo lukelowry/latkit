@@ -818,7 +818,7 @@ mod tests {
     use super::*;
     use crate::data::{Data, Ids, Patch};
     use crate::gpu::work::Counters;
-    use crate::{Diagram, Edges, Grid, Label, Port, Route, Scene};
+    use crate::{Diagram, Edges, Grid, Label, Port, Route, Scene, field};
 
     const BLOCKS: u64 = 24;
 
@@ -834,8 +834,8 @@ mod tests {
             .draw(Edges::of("d", "F").ends("from", "to").route(Route::Orthogonal))
             .draw(
                 Vertices::of("d", "B")
-                    .position("x", "y")
-                    .label(Label::new("name"))
+                    .position(field("x"), field("y"))
+                    .label(Label::new(field("name")))
                     .port("in", Side::Left)
                     .port("out", Port::output(Side::Right)),
             );
@@ -909,7 +909,7 @@ mod tests {
     fn a_wire_reroutes_around_a_block_moved_into_its_path() {
         let scene = Scene::new(Diagram { grid: Grid::Off })
             .draw(Edges::of("d", "F").ends("from", "to").route(Route::Orthogonal))
-            .draw(Vertices::of("d", "B").position("x", "y").label(Label::new("name")));
+            .draw(Vertices::of("d", "B").position(field("x"), field("y")).label(Label::new(field("name"))));
         let blocks = Table::new("B", vec![0_u64, 1, 2])
             .field("x", vec![0.0, 400.0, 200.0])
             .field("y", vec![0.0, 0.0, 400.0])

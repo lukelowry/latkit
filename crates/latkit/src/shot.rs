@@ -82,7 +82,7 @@ fn thirty() -> Option<Duration> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Capture {
-    /// Once every view is complete and still. Transitions, camera flights, and label fades advance
+    /// Once every view is complete and still. Transitions, camera flights, and tile fades advance
     /// 1/60 s per step until they finish.
     #[default]
     Still,

@@ -35,7 +35,7 @@ export default function clifford(): Piece {
         {
           vertices: {
             of: ['attractor', 'Point'],
-            position: ['x', 'y'],
+            position: ['$x', '$y'],
             radius: 0.65,
             pick: false,
             color: {
@@ -50,7 +50,7 @@ export default function clifford(): Piece {
                   '#5a8dff8c',
                 ],
               },
-              value: 'turn',
+              value: '$turn',
               domain: [0, 1],
             },
           },

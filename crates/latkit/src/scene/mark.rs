@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::{Areas, Edges, Faces, Label, Lines, Vertices};
 use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
-use crate::{Error, Expr, Name, Paint, Result, Size, Space};
+use crate::{Error, Expr, Name, Result, Size, Space};
 
 /// One table a scene draws. In JSON: `{ vertices | edges | faces | lines | areas: options }`.
 #[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -60,7 +60,7 @@ pub(crate) const GEOMETRY: &str = "geometry";
 pub(crate) struct Style {
     pub(crate) data: Name,
     pub(crate) table: Name,
-    pub(crate) color: Option<Paint>,
+    pub(crate) color: Option<Expr>,
     pub(crate) visible: Expr,
     /// Each row's priority, read from its data alone.
     pub(crate) priority: Option<Expr>,
@@ -289,8 +289,6 @@ pub(crate) struct Labeling {
     pub(crate) max_width: Option<f32>,
     /// The font for the text: the label's, else the theme's.
     pub(crate) font: std::sync::Arc<str>,
-    /// The most labels shown at once; `None` for no limit.
-    pub(crate) max: Option<u32>,
 }
 
 /// The context a mark compiles in: the theme it falls back on, the space, and the layout.
@@ -483,13 +481,9 @@ impl Mark {
     /// Calls `f` with every expression in the mark's options.
     pub(crate) fn for_each_expr<'a>(&'a self, f: &mut impl FnMut(&'a Expr)) {
         let style = self.style();
-        style.color.iter().map(|paint| &paint.0).chain([&style.visible]).chain(&style.priority).for_each(&mut *f);
+        style.color.iter().chain([&style.visible]).chain(&style.priority).for_each(&mut *f);
         if let Some(label) = &style.label {
-            [&label.text]
-                .into_iter()
-                .chain(label.color.iter().map(|paint| &paint.0))
-                .chain(&label.priority)
-                .for_each(&mut *f);
+            [&label.text].into_iter().chain(&label.color).for_each(&mut *f);
         }
         let stroke = match self {
             Mark::Edges(m) => Some(&m.stroke),
@@ -502,7 +496,7 @@ impl Mark {
         if let Mark::Vertices(v) = self {
             v.position.iter().flatten().chain([&v.elevation]).for_each(&mut *f);
             v.radius.iter().chain(v.size.iter().flatten()).map(|size| &size.expr).for_each(&mut *f);
-            v.ring.iter().map(|paint| &paint.0).chain(v.marker.inputs()).for_each(&mut *f);
+            v.ring.iter().chain(v.marker.inputs()).for_each(&mut *f);
         }
     }
 
@@ -538,30 +532,25 @@ impl Mark {
             compiler.check_data("priority", priority)?;
         }
         if let Some(label) = &style.label {
-            let priority = label.priority.as_ref().or(style.priority.as_ref());
-            compile_label(label, priority, compiler, context.theme, &mut drawing).map_err(|e| e.at("label"))?;
+            compile_label(label, compiler, context, &mut drawing).map_err(|e| e.at("label"))?;
         }
         Ok(drawing)
     }
 }
 
-/// Compiles `label`'s text, `priority` (the label's, else the mark's), and color into extra words
-/// after the mark's own.
-fn compile_label(
-    label: &Label,
-    priority: Option<&Expr>,
-    c: &mut Compiler<'_>,
-    theme: &super::Theme,
-    drawing: &mut Drawing,
-) -> Result<()> {
+/// Compiles `label`'s text and color into extra words after the mark's own. In a diagram the text
+/// reads only data, since the sheet sizes blocks around it.
+fn compile_label(label: &Label, c: &mut Compiler<'_>, context: Context<'_>, drawing: &mut Drawing) -> Result<()> {
+    if context.diagram() {
+        c.check_structure("text", [&label.text])?;
+    }
+    let theme = context.theme;
     let extra = drawing.extras;
     let word = |k: u32| drawing.kind.stride() + extra + k;
     let column = c.text("text", &label.text, word(wgsl::LABEL_CODE))?;
-    let priority: Expr = priority.cloned().unwrap_or_else(|| 0.0.into()).scale(0.0..=255.0).into();
-    c.channel("priority", &priority, Store::Number { word: word(wgsl::LABEL_PRIORITY), fallback: None })?;
     let color = Store::Color { word: word(wgsl::LABEL_COLOR), fallback: wgsl::THEME_TEXT };
     match &label.color {
-        Some(paint) => c.channel("color", &paint.0, color)?,
+        Some(expr) => c.channel("color", expr, color)?,
         None => c.theme("color", wgsl::THEME_TEXT, color)?,
     }
     drawing.extras += wgsl::LABEL_WORDS;
@@ -572,7 +561,6 @@ fn compile_label(
         size: label.size.unwrap_or(theme.text.size),
         max_width: label.max_width,
         font: label.font.clone().unwrap_or_else(|| theme.text.font.clone()),
-        max: label.max,
     });
     Ok(())
 }
@@ -727,15 +715,16 @@ macro_rules! mark {
             of: ($crate::Name, $crate::Name),
             $($(#[$doc])* $(#[schemars(extend("tsType" = $ts))])? #[serde(default $(= $default)?)] $field: $ty,)*
             $($stroke)*
-            /// Each row's color. Unset, rows take the theme's default for the mark; faces instead
+            /// Each row's color: a CSS color, a value through a colormap, or a conditional choosing
+            /// between colors. Unset, rows take the theme's default for the mark; faces instead
             /// blend their corners' colors.
-            color: Option<$crate::Paint>,
+            color: Option<$crate::Expr>,
             /// Whether each row is drawn and can be picked. Default `true`.
             #[serde(default = "crate::scene::mark::yes")]
             visible: $crate::Expr,
             /// Each row's priority, from its data alone (no view state). Higher-priority rows draw
-            /// on top, are the last dropped when a table too large to draw whole is thinned to the
-            /// tiles in view, and are labeled first.
+            /// on top, and are the last dropped when a table too large to draw whole is thinned to
+            /// the tiles in view.
             priority: Option<$crate::Expr>,
             /// Distinguishes two marks of the same table across scenes, and names the mark in hits.
             name: Option<$crate::Name>,
@@ -804,10 +793,11 @@ pub(crate) fn zero() -> Expr {
 macro_rules! style_methods {
     ($mark:ty) => {
         impl $mark {
-            /// Sets each row's color. Unset, rows take the theme's default for the mark; faces
-            /// instead blend their corners' colors.
+            /// Sets each row's color: a [`Color`](crate::Color), a value through a colormap, or a
+            /// conditional choosing between colors. Unset, rows take the theme's default for the
+            /// mark; faces instead blend their corners' colors.
             #[must_use]
-            pub fn color(mut self, color: impl Into<$crate::Paint>) -> Self {
+            pub fn color(mut self, color: impl Into<$crate::Expr>) -> Self {
                 self.style.color = Some(color.into());
                 self
             }
@@ -820,8 +810,8 @@ macro_rules! style_methods {
             }
 
             /// Sets each row's priority, from its data alone (no view state). Higher-priority rows
-            /// draw on top, are the last dropped when a table too large to draw whole is thinned to
-            /// the tiles in view, and are labeled first.
+            /// draw on top, and are the last dropped when a table too large to draw whole is thinned
+            /// to the tiles in view.
             #[must_use]
             pub fn priority(mut self, priority: impl Into<$crate::Expr>) -> Self {
                 self.style.priority = Some(priority.into());

@@ -72,7 +72,7 @@ impl View {
         }
         let mut base = area[3];
         for (title, color) in legends() {
-            let Some((colormap, domain)) = color.0.colormap_of() else { continue };
+            let Some((colormap, domain)) = color.colormap_of() else { continue };
             let write = |s, color, f: &mut dyn FnMut(&mut Writer<'_>)| writer(inner, s, color, f);
             let height = if !colormap.named_categories().is_empty() {
                 categories(&mut sprites, theme, [area[2], base], colormap, ratio, write, title)

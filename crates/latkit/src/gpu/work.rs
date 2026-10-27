@@ -75,8 +75,8 @@ work! {
     /// Rows packed into pages of a paged table's draw order. Each page is packed once, the first
     /// time a view draws it, and again only when a write changes its rows.
     packed: Packed,
-    /// Readbacks from the GPU: probes, queries, fits, label placements, segment counts, and
-    /// pictures. Frame timer readbacks, which only some devices support, are not counted.
+    /// Readbacks from the GPU: probes, queries, fits, label texts, segment counts, and pictures.
+    /// Frame timer readbacks, which only some devices support, are not counted.
     readbacks: Readbacks,
     /// Jobs started: layouts, routes, lanes, triangulations, pyramids, and tiles. They run on the
     /// host's workers, or immediately without a host.

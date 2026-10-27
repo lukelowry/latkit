@@ -168,7 +168,8 @@ fn tiles_the_camera_needs_draw_as_a_dataset() {
     assert_eq!(ids(&second), before, "the same rows");
     drop(second);
     // Zooming in needs finer tiles, which replace their ancestors in the frame where the last of
-    // them arrives.
+    // them arrives. The ancestors' rows stay in the dataset, not drawn, until they outnumber the
+    // rows drawn.
     view.set_camera(Camera::Map { center: [10.0, 10.0, 0.0], zoom: 6.0, pitch: 0.0, bearing: 0.0 });
     let mut loading = false;
     for _ in 0..SETTLE {
@@ -179,7 +180,11 @@ fn tiles_the_camera_needs_draw_as_a_dataset() {
         }
         loading |= now;
     }
-    assert!(ids(&view).iter().all(|id| !before.contains(id)), "finer tiles replace their ancestors on arrival");
+    frame(&gpu, &mut view);
+    let stats = view.stats();
+    assert_eq!(stats.drawn, stats.tiles, "a row per tile drawn: the finer tiles' rows, not their ancestors'");
+    let held = ids(&view);
+    assert!(before.iter().all(|id| held.contains(id)), "the ancestors' rows stay while they are few");
     view.set_sources::<Source>([]).expect("no sources");
     assert!(view.snapshot("base").is_none(), "a dataset no source provides is removed");
 }

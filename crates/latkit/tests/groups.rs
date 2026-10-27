@@ -7,7 +7,7 @@
 mod common;
 
 use common::{SIZE, at, errors, frame, gpu, plain_theme};
-use latkit::{Camera, Color, Data, Edges, Ids, Patch, Scene, Table, Theme, Vertices, View};
+use latkit::{Camera, Color, Data, Edges, Ids, Patch, Scene, Table, Theme, Vertices, View, field};
 
 const C: u32 = SIZE / 2;
 
@@ -41,7 +41,9 @@ fn view(gpu: &latkit::Gpu, zoom: f64) -> View {
         .theme(theme)
         .draw(Vertices::of("graph", "Area").contains("Node", "area"))
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(Color::rgb(0.0, 1.0, 0.0)))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0).color(Color::rgb(1.0, 0.0, 0.0)));
+        .draw(
+            Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0).color(Color::rgb(1.0, 0.0, 0.0)),
+        );
     let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(Camera::Map { center: [0.0; 3], zoom, pitch: 0.0, bearing: 0.0 });
     view.set_sources([graph()]).expect("a source");

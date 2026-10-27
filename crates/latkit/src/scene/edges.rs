@@ -123,7 +123,7 @@ impl Edges {
         let mut flags = if self.arrows { wgsl::ARROWS } else { 0 };
         let color = Store::Color { word: wgsl::EDGE_COLOR, fallback: wgsl::THEME_EDGE };
         match (&self.style.color, context.theme.edge.color) {
-            (Some(paint), _) => c.channel("color", &paint.0, color)?,
+            (Some(expr), _) => c.channel("color", expr, color)?,
             (None, Some(_)) => c.theme("color", wgsl::THEME_EDGE, color)?,
             // A diagram's wires, and edges without ends to blend (nets and poles), take the text
             // color.

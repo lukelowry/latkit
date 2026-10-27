@@ -19,7 +19,7 @@ export const LEVELS: CustomColormap = {
  * stands out. */
 export const WIDTHS: Size = {
   scale: [0.3, 2.3],
-  value: { op: 'mul', args: ['level', 'level'] },
+  value: { mul: ['$level', '$level'] },
   domain: [0, 25],
 };
 
@@ -46,14 +46,14 @@ export default async function grid(): Promise<Piece> {
       theme: { ...THEME, earth: { ground: THEME.background } },
       marks: [
         ...states(),
-        { vertices: { of: ['grid', 'Bus'], position: ['lon', 'lat'], radius: 0, pick: false } },
+        { vertices: { of: ['grid', 'Bus'], position: ['$lon', '$lat'], radius: 0, pick: false } },
         {
           edges: {
             of: ['grid', 'Line'],
             ends: ['from', 'to'],
-            priority: 'level',
+            priority: '$level',
             width: WIDTHS,
-            color: { colormap: LEVELS, value: 'level', domain: [0, 5] },
+            color: { colormap: LEVELS, value: '$level', domain: [0, 5] },
           },
         },
       ],

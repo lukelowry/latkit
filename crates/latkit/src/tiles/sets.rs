@@ -1,6 +1,7 @@
 //! Tile sets: for each tile source a view is given, a set whose dataset holds the pieces the view's
-//! camera and plot window need. Marks draw it like any other dataset. The pieces come from the
-//! GPU's cache, shared by every view drawing the same source.
+//! camera and plot window need. Marks draw it like any other dataset, except that a vector set's
+//! tables are always paged, and draw the vector tiles drawn as their tiles. The pieces come from
+//! the GPU's cache, shared by every view drawing the same source.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -8,6 +9,7 @@ use super::cache::{Cache, Holds, State};
 use super::{frames, vector};
 use crate::data::{Name, Snapshot};
 use crate::derive::sight::Sight;
+use crate::derive::tiled::{Choices, Draw, Plans};
 use crate::derive::{Input, Jobs};
 use crate::{Error, Tiles};
 
@@ -192,6 +194,25 @@ impl TileSets {
     /// Whether the view draws dataset `name` from tiles, fetched as the view needs them.
     pub(crate) fn owns(&self, name: &str) -> bool {
         self.sets.iter().any(|s| *s.tiles.name == *name)
+    }
+
+    /// Whether the view draws dataset `name` from vector tiles, whose tables are always paged.
+    pub(crate) fn vector(&self, name: &str) -> bool {
+        self.sets.iter().any(|s| *s.tiles.name == *name && matches!(s.drawing, Some(Drawing::Vector(_))))
+    }
+
+    /// Adds to `choices` what each table of vector tiles draws, for the tables `plans` draws by
+    /// tile: the spans of the vector tiles drawn, within the plan's rows.
+    pub(crate) fn choose(&self, plans: &Plans, choices: &mut Choices) {
+        for set in &self.sets {
+            let Some(Drawing::Vector(vector)) = &set.drawing else { continue };
+            for table in set.data.tables() {
+                let key = (set.tiles.name.clone(), table.name.clone());
+                if let Some(Draw::Tiles { rows }) = plans.get(&key).map(|planned| planned.draw) {
+                    choices.insert(key, vector.chosen(table, rows));
+                }
+            }
+        }
     }
 
     /// The rows vector tiles supplied for dataset `name`, including their derived shape fields. The

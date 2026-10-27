@@ -8,7 +8,7 @@ use std::process::{Command, Output, Stdio};
 use latkit::Image;
 
 const SCENE: &str =
-    r#"{"space":"plane","ease":0,"marks":[{"vertices":{"of":["grid","Bus"],"position":["x","y"],"radius":6}}]}"#;
+    r#"{"space":"plane","ease":0,"marks":[{"vertices":{"of":["grid","Bus"],"position":["$x","$y"],"radius":6}}]}"#;
 const DATA: &str = r#"{"name":"grid","patch":[{"replace":{"table":"Bus","ids":[10,20],"fields":{"x":[-10,10],"y":[0,0],"name":["Alpha","Beta"]}}}]}"#;
 const CAMERA: &str = r#"{"center":[0,0],"zoom":2,"pitch":0,"bearing":0}"#;
 
@@ -197,8 +197,7 @@ fn schema_describes_every_input_and_frames() {
 #[test]
 fn query_writes_one_json_line_per_row() {
     let dir = fixture();
-    let query =
-        r#"{"of":"Bus","sort":[["x","descending"]],"select":{"name":"name","twice":{"op":"mul","args":["x",2]}}}"#;
+    let query = r#"{"of":"Bus","sort":[["$x","descending"]],"select":{"name":"$name","twice":{"mul":["$x",2]}}}"#;
     let output = run(dir.path(), &["query", "grid.json", query], None);
     ok(&output);
     let lines: Vec<serde_json::Value> =
@@ -210,7 +209,7 @@ fn query_writes_one_json_line_per_row() {
             serde_json::json!({ "id": 10, "name": "Alpha", "twice": -20.0 }),
         ]
     );
-    std::fs::write(dir.path().join("query.json"), r#"{"of":"Bus","filter":{"op":"lt","args":["x",0]}}"#).unwrap();
+    std::fs::write(dir.path().join("query.json"), r#"{"of":"Bus","filter":{"lt":["$x",0]}}"#).unwrap();
     let output = run(dir.path(), &["query", "-", "query.json"], Some(DATA.as_bytes()));
     ok(&output);
     assert_eq!(String::from_utf8(output.stdout).unwrap().lines().count(), 1);
@@ -258,7 +257,7 @@ fn a_tiled_history_draws_the_same_as_the_whole_dataset() {
 #[test]
 fn a_labeled_still_renders_to_a_file_and_to_stdout() {
     let dir = fixture();
-    let scene = r#"{"space":"diagram","layout":{"layered":{}},"title":"Grid","marks":[{"vertices":{"of":["grid","Bus"],"label":"name"}}]}"#;
+    let scene = r#"{"space":"diagram","layout":{"layered":{}},"title":"Grid","marks":[{"vertices":{"of":["grid","Bus"],"label":"$name"}}]}"#;
     std::fs::write(dir.path().join("scene.json"), scene).unwrap();
     std::fs::write(dir.path().join("out.png"), b"replace me").unwrap();
     let args = ["render", "scene.json", "-d", "grid.json", "-o", "out.png", "--size", "127x129", "--transparent"];

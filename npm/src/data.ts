@@ -185,7 +185,8 @@ export class Snapshot extends Dataset {
  * - Vector tiles: a PMTiles archive, a TileJSON document, or a `{z}/{x}/{y}` URL template. Each
  *   layer becomes a table of the features its marks draw: polygons for areas, lines for lines,
  *   points for vertices. A table named `layer:polygons`, `layer:lines`, or `layer:points` holds
- *   that kind whatever the marks.
+ *   that kind whatever the marks. A tile arriving appends its rows to the view's dataset, which
+ *   keeps the rows of tiles it no longer draws until they outnumber the rows it draws.
  */
 export class Tiles {
   /** The name of the dataset the tiles are drawn as. */

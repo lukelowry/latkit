@@ -52,7 +52,7 @@ fn view(gpu: &latkit::Gpu, controls: Controls) -> View {
         .theme(plain_theme())
         .controls(controls)
         .draw(Edges::of("graph", "Link").ends("from", "to").width(3.0))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0));
     let mut view = View::new(gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([graph()]).expect("a source");
@@ -129,7 +129,7 @@ fn every_hit_of_geodesic_edges_lies_in_reach() {
     let scene = Scene::new(earth)
         .theme(plain_theme())
         .draw(Edges::of("grid", "Line").ends("from", "to"))
-        .draw(Vertices::of("grid", "Bus").position("lon", "lat"));
+        .draw(Vertices::of("grid", "Bus").position(field("lon"), field("lat")));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
@@ -180,7 +180,7 @@ fn hidden_rows_have_no_screen_position() {
         .theme(plain_theme())
         .draw(Faces::of("graph", "Face").corners("a", "b", "c").visible(field("on")))
         .draw(Edges::of("graph", "Link").ends("from", "to").width(3.0).visible(field("on")))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");

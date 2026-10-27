@@ -1,24 +1,30 @@
-//! JSON forms of expressions, colors, sizes, and colormaps. A number or boolean is a constant, a
-//! string is a field name, and an object is one node whose key names its kind. In a color option (a
-//! [`Paint`]), a string is a CSS color instead, and a conditional's values are colors:
+//! JSON forms of expressions, sizes, and colormaps. Every value reads by one rule: a number or
+//! boolean is a constant, `null` is a missing value, a string starting with `$` reads the field it
+//! names, any other string is a CSS color, and an object is one node whose key names its kind. A
+//! call's one key names its operation and holds its arguments:
 //!
-//! | Form                                                          | Builder                           |
-//! | ------------------------------------------------------------- | --------------------------------- |
-//! | `{ "field": "x", "from": ["data", "Table"], "step": true }`   | `field("x").from_table(..).step()` |
-//! | `{ "color": "#ffb000" }`                                      | a color                           |
-//! | `{ "state": "selected" }`                                     | `selected()`, `hovered()`, …      |
-//! | `{ "missing": true }`                                         | `Expr::missing()`                 |
-//! | `{ "op": "add", "args": [a, b] }`                             | `a + b`, `a.min(b)`, `!a`, …      |
-//! | `{ "when": [[c, v], …], "otherwise": e }`                     | `when(c).then(v)…otherwise(e)`    |
-//! | `{ "is": [a, "text"] }`, `{ "contains": [a, "text"] }`        | `a.is("text")`, `a.contains(..)`  |
-//! | `{ "scale": [0, 1], "value": a, "domain": [lo, hi] }`         | `a.scale(..).domain(..)`          |
-//! | `{ "colormap": "viridis", "value": a, "domain": [lo, hi] }`   | `a.colormap(..).domain(..)`       |
-//! | `{ "px": a }` (sizes only)                                    | `px(a)`                           |
-//! | `{ "units": a, "atLeast": 2, "atMost": 20 }` (sizes only)     | `units(a).at_least(..)`           |
+//! | Form                                                         | Builder                            |
+//! | ------------------------------------------------------------ | ---------------------------------- |
+//! | `"$x"`                                                       | `field("x")`                       |
+//! | `{ "field": "x", "from": ["data", "Table"], "step": true }`  | `field("x").from_table(..).step()` |
+//! | `"#ffb000"`, `"rebeccapurple"`                               | a [`Color`]                        |
+//! | `null`                                                       | `Expr::missing()`                  |
+//! | `{ "state": "selected" }`                                    | `selected()`, `hovered()`, …       |
+//! | `{ "add": [a, b] }`, `{ "not": [a] }`                        | `a + b`, `!a`, `a.min(b)`, …       |
+//! | `{ "is": [a, "text"] }`, `{ "contains": [a, "text"] }`       | `a.is("text")`, `a.contains(..)`   |
+//! | `{ "when": [[c, v], …], "otherwise": e }`                    | `when(c).then(v)…otherwise(e)`     |
+//! | `{ "scale": [0, 1], "value": a, "domain": [lo, hi] }`        | `a.scale(..).domain(..)`           |
+//! | `{ "colormap": "viridis", "value": a, "domain": [lo, hi] }`  | `a.colormap(..).domain(..)`        |
+//! | `{ "px": a }` (sizes only)                                   | `px(a)`                            |
+//! | `{ "units": a, "atLeast": 2, "atMost": 20 }` (sizes only)    | `units(a).at_least(..)`            |
 //!
-//! An object may have only its kind's keys; a key of another kind is an error. A colormap is a
-//! catalog name or `{ "kind": "sequential", "colors": ["black", [0.2, "red"], "white"] }`, where a
-//! `[place, color]` pair places a color and `categories` names a categorical map's colors.
+//! `neg`, `not`, `abs`, `sqrt`, `sin`, `cos`, `floor`, `ln`, and `exp` take one argument; `add`,
+//! `sub`, `mul`, `div`, `rem`, `pow`, `min`, `max`, `lt`, `le`, `gt`, `ge`, `eq`, `ne`, `and`, and
+//! `or` take two; `is` and `contains` take a value and a plain text, which is neither a field nor a
+//! color. A field whose name starts with `$` is written `{ "field": "$x" }`. An object may have
+//! only its kind's keys; a key of another kind is an error. A colormap is a catalog name or
+//! `{ "kind": "sequential", "colors": ["black", [0.2, "red"], "white"] }`, where a `[place, color]`
+//! pair places a color and `categories` names a categorical map's colors.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -27,9 +33,9 @@ use std::sync::Arc;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::Deserialize;
 use serde::de::value::MapAccessDeserializer;
-use serde::de::{self, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 
-use super::{Binary, Color, Colormap, ColormapKind, Expr, Node, Paint, Size, State, Stop, Unary, Unit, node};
+use super::{Binary, Color, Colormap, ColormapKind, Expr, Node, Size, State, Stop, Unary, Unit, node};
 use crate::Name;
 
 impl<'de> Deserialize<'de> for Expr {
@@ -38,40 +44,19 @@ impl<'de> Deserialize<'de> for Expr {
     }
 }
 
-impl<'de> Deserialize<'de> for Paint {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Paint, D::Error> {
-        Written::deserialize(deserializer)?.paint().map(Paint).map_err(de::Error::custom)
-    }
-}
-
-/// The JSON of an expression, color, size, or label, before its meaning is known: a constant, a
-/// string, or an object whose keys decide its kind once all are read. The caller decides what a
-/// string means: a field name, or in a color option a CSS color.
+/// The JSON of an expression, size, or label, before its kind is known: an expression already
+/// read, or an object whose keys decide its kind once all are read.
 pub(crate) enum Written {
-    Constant(Expr),
-    Text(String),
+    Expr(Expr),
     Object(Box<Form>),
 }
 
 impl Written {
-    /// The expression this JSON describes; a string names a field.
+    /// The expression this JSON describes.
     pub(crate) fn expr(self) -> Result<Expr, String> {
         match self {
-            Written::Constant(expr) => Ok(expr),
-            Written::Text(name) => Ok(super::field(name)),
+            Written::Expr(expr) => Ok(expr),
             Written::Object(form) => form.expr(),
-        }
-    }
-
-    /// The color this JSON describes, as a color option reads it: a string is a CSS color, and a
-    /// conditional's values are colors.
-    pub(crate) fn paint(self) -> Result<Expr, String> {
-        match self {
-            Written::Constant(expr) => Ok(expr),
-            Written::Text(css) => Color::css(&css)
-                .map(Expr::from)
-                .ok_or_else(|| format!("not a CSS color: {css:?}; for a field, use field({css:?})")),
-            Written::Object(form) => form.paint(),
         }
     }
 }
@@ -88,43 +73,72 @@ impl<'de> Visitor<'de> for Reading {
     type Value = Written;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("a number, a boolean, a text, or an expression object")
+        f.write_str("a number, a boolean, null, a field or a color, or an expression object")
     }
 
     fn visit_bool<E: de::Error>(self, b: bool) -> Result<Written, E> {
-        Ok(Written::Constant(b.into()))
+        Ok(Written::Expr(b.into()))
     }
 
     fn visit_i64<E: de::Error>(self, n: i64) -> Result<Written, E> {
-        Ok(Written::Constant((n as f64).into()))
+        Ok(Written::Expr((n as f64).into()))
     }
 
     fn visit_u64<E: de::Error>(self, n: u64) -> Result<Written, E> {
-        Ok(Written::Constant((n as f64).into()))
+        Ok(Written::Expr((n as f64).into()))
     }
 
     fn visit_f64<E: de::Error>(self, n: f64) -> Result<Written, E> {
-        Ok(Written::Constant(n.into()))
+        Ok(Written::Expr(n.into()))
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Written, E> {
+        Ok(Written::Expr(Expr::missing()))
     }
 
     fn visit_str<E: de::Error>(self, text: &str) -> Result<Written, E> {
-        Ok(Written::Text(text.to_owned()))
+        string(text).map(Written::Expr).map_err(E::custom)
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Written, A::Error> {
-        Form::deserialize(MapAccessDeserializer::new(map)).map(|form| Written::Object(Box::new(form)))
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Written, A::Error> {
+        let mut form = Form::default();
+        while let Some(key) = map.next_key::<String>()? {
+            form.read(&key, &mut map)?;
+        }
+        Ok(Written::Object(Box::new(form)))
     }
 }
 
-/// Declares `Form` and `Form::held` from one list of keys, each with its JSON spelling.
+/// The expression a string writes: `$name` reads field `name`, and any other string is a CSS
+/// color.
+fn string(text: &str) -> Result<Expr, String> {
+    match text.strip_prefix('$') {
+        Some("") => Err("\"$\" names no field".to_owned()),
+        Some(name) => Ok(super::field(name)),
+        None => Color::css(text)
+            .map(Expr::from)
+            .ok_or_else(|| format!("{text:?} is not a CSS color; \"${text}\" reads field {text}")),
+    }
+}
+
+/// Declares `Form` and how it reads, from one list of keys, each with its JSON spelling. `null`
+/// leaves a key unset, except a key marked `as value`, which holds an expression and reads `null`
+/// as a missing value.
 macro_rules! form {
-    ($($vis:vis $key:ident $json:literal: $ty:ty),+ $(,)?) => {
-        /// Every key that an expression object, a size, or label options can have; each kind
-        /// accepts only its own keys. A conditional's values are read as the caller decides.
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
+    (@read $map:ident, $ty:ty) => {
+        $map.next_value::<Option<$ty>>()?
+    };
+    (@read $map:ident, $ty:ty, value) => {
+        Some($map.next_value::<$ty>()?)
+    };
+    ($($vis:vis $key:ident $json:literal: $ty:ty $(as $how:ident)?),+ $(,)?) => {
+        /// Every key that an expression object, a size, or label options can have, and the call
+        /// that a key naming an operation makes; each kind accepts only its own keys.
+        #[derive(Default)]
         pub(crate) struct Form {
-            $(#[serde(rename = $json)] $vis $key: Option<$ty>,)+
+            $($vis $key: Option<$ty>,)+
+            /// The operation a key names, and the call it makes with the key's arguments.
+            call: Option<(&'static str, Expr)>,
         }
 
         impl Form {
@@ -134,7 +148,25 @@ macro_rules! form {
                 $(if self.$key.is_some() {
                     held.push($json);
                 })+
+                if let Some((operation, _)) = &self.call {
+                    held.push(*operation);
+                }
                 held
+            }
+
+            /// Reads `key`'s value from `map`. Any other key names an operation, whose call it
+            /// makes.
+            fn read<'de, A: MapAccess<'de>>(&mut self, key: &str, map: &mut A) -> Result<(), A::Error> {
+                match key {
+                    $($json => {
+                        if self.$key.is_some() {
+                            return Err(de::Error::custom(format!("{key} is given twice")));
+                        }
+                        self.$key = form!(@read map, $ty $(, $how)?);
+                        Ok(())
+                    })+
+                    _ => self.read_call(key, map),
+                }
             }
         }
     };
@@ -142,31 +174,24 @@ macro_rules! form {
 
 form! {
     field "field": Name,
-    color "color": Written,
     state "state": State,
-    missing "missing": bool,
-    op "op": String,
-    when "when": Vec<(Expr, Written)>,
-    is "is": (Expr, String),
-    contains "contains": (Expr, String),
+    when "when": Vec<(Expr, Expr)>,
     scale "scale": [f64; 2],
     colormap "colormap": Colormap,
     from "from": (Name, Name),
     step "step": bool,
-    args "args": Vec<Expr>,
-    otherwise "otherwise": Written,
-    value "value": Expr,
+    otherwise "otherwise": Expr as value,
+    value "value": Expr as value,
     domain "domain": [f64; 2],
-    pub(crate) px "px": Expr,
-    pub(crate) units "units": Expr,
+    pub(crate) px "px": Expr as value,
+    pub(crate) units "units": Expr as value,
     pub(crate) at_least "atLeast": f32,
     pub(crate) at_most "atMost": f32,
-    pub(crate) text "text": Expr,
+    pub(crate) text "text": Expr as value,
     pub(crate) size "size": f32,
-    pub(crate) priority "priority": Expr,
+    pub(crate) color "color": Expr as value,
     pub(crate) max_width "maxWidth": f32,
     pub(crate) font "font": Arc<str>,
-    pub(crate) max "max": u32,
 }
 
 impl Form {
@@ -178,95 +203,78 @@ impl Form {
         }
     }
 
-    /// A label's color, as a color option reads it.
-    pub(crate) fn color(&mut self) -> Result<Option<Expr>, String> {
-        self.color.take().map(Written::paint).transpose()
-    }
-
-    /// The color this object describes, as a color option reads it: a conditional's values are
-    /// colors, and any other object is an expression, which must produce a color.
-    pub(crate) fn paint(self) -> Result<Expr, String> {
-        if self.when.is_none() {
-            return self.expr();
+    /// Reads the arguments of the operation `key` names from `map`, and makes the call: values, or
+    /// for `is` and `contains`, a value and a text.
+    fn read_call<'de, A: MapAccess<'de>>(&mut self, key: &str, map: &mut A) -> Result<(), A::Error> {
+        let Some(&(name, operation, _)) = OPERATIONS.iter().find(|(name, ..)| *name == key) else {
+            return Err(de::Error::custom(format!("{key:?} names no option or operation")));
+        };
+        if let Some((first, _)) = &self.call {
+            return Err(de::Error::custom(format!("an object names one operation, not {first} and {name}")));
         }
-        self.conditional(Written::paint)
+        let count = |want: usize, got: usize| -> A::Error {
+            let plural = if want == 1 { "" } else { "s" };
+            de::Error::custom(format!("{name} takes {want} argument{plural}, not {got}"))
+        };
+        let call = match operation {
+            Operation::Unary(op) => {
+                let [a] = <[Expr; 1]>::try_from(map.next_value::<Vec<Expr>>()?).map_err(|a| count(1, a.len()))?;
+                node(Node::Unary(op, a))
+            }
+            Operation::Binary(op) => {
+                let [a, b] = <[Expr; 2]>::try_from(map.next_value::<Vec<Expr>>()?).map_err(|a| count(2, a.len()))?;
+                node(Node::Binary(op, a, b))
+            }
+            Operation::Is => {
+                let (a, text): (Expr, String) = map.next_value()?;
+                a.is(&text)
+            }
+            Operation::Contains => {
+                let (a, text): (Expr, String) = map.next_value()?;
+                a.contains(&text)
+            }
+        };
+        self.call = Some((name, call));
+        Ok(())
     }
 
-    /// The conditional this object describes, each value read by `value`.
-    fn conditional(self, value: fn(Written) -> Result<Expr, String>) -> Result<Expr, String> {
-        self.only("when", &["when", "otherwise"])?;
-        let otherwise = value(self.otherwise.ok_or("when needs otherwise")?)?;
-        let cases = self.when.expect("present");
-        cases.into_iter().rev().try_fold(otherwise, |rest, (c, v)| Ok(node(Node::When(c, value(v)?, rest))))
-    }
-
-    /// The expression this object describes. Its kind is that of its first kind key, and it may
-    /// have only that kind's keys.
-    pub(crate) fn expr(self) -> Result<Expr, String> {
+    /// The expression this object describes: the call its operation makes, or the node of its
+    /// first kind key. It may have only that kind's keys.
+    pub(crate) fn expr(mut self) -> Result<Expr, String> {
+        if let Some((operation, call)) = self.call.take() {
+            self.only(operation, &[])?;
+            return Ok(call);
+        }
         let held = self.held();
         let Some(own) = held.iter().find_map(|key| KINDS.iter().find(|keys| keys[0] == *key)) else {
-            let mut kinds: Vec<&str> = KINDS.iter().map(|keys| keys[0]).collect();
-            kinds.dedup();
-            return Err(format!("an expression object needs one of {}", kinds.join(", ")));
+            let kinds: Vec<&str> = KINDS.iter().map(|keys| keys[0]).collect();
+            let found = if held.is_empty() { String::new() } else { format!("; found {}", held.join(", ")) };
+            return Err(format!("an expression object needs an operation or one of {}{found}", kinds.join(", ")));
         };
         let kind = own[0];
         self.only(kind, own)?;
-        if kind == "when" {
-            return self.conditional(Written::expr);
-        }
-        let Form { field, color, state, missing, op, is, contains, scale, colormap, .. } = self;
+        let Form { field, state, when, scale, colormap, from, step, otherwise, value, domain, .. } = self;
         let needs = |key: &str| format!("{kind} needs {key}");
         Ok(match kind {
             "field" => {
                 let expr = super::field(field.expect("present"));
-                let expr = match self.from {
+                let expr = match from {
                     Some((data, table)) => expr.from_table(data, table),
                     None => expr,
                 };
-                if self.step == Some(true) { expr.step() } else { expr }
+                if step == Some(true) { expr.step() } else { expr }
             }
-            "color" => match color {
-                Some(Written::Text(css)) => Color::css(&css).ok_or_else(|| format!("not a CSS color: {css:?}"))?.into(),
-                _ => return Err("color must be a CSS color".to_owned()),
-            },
             "state" => node(Node::State(state.expect("present"))),
-            "missing" => {
-                if missing != Some(true) {
-                    return Err("missing must be true".to_owned());
-                }
-                Expr::missing()
-            }
-            "op" => {
-                let op = op.expect("present");
-                let args = self.args.ok_or_else(|| needs("args"))?;
-                let name = || IntoDeserializer::<de::value::Error>::into_deserializer(op.as_str());
-                if let Ok(unary) = Unary::deserialize(name()) {
-                    let [a] =
-                        <[Expr; 1]>::try_from(args).map_err(|a| format!("{op} takes 1 argument, not {}", a.len()))?;
-                    node(Node::Unary(unary, a))
-                } else {
-                    let binary = Binary::deserialize(name()).map_err(|_| format!("no op {op:?}"))?;
-                    let [a, b] =
-                        <[Expr; 2]>::try_from(args).map_err(|a| format!("{op} takes 2 arguments, not {}", a.len()))?;
-                    node(Node::Binary(binary, a, b))
-                }
-            }
-            "is" => {
-                let (a, text) = is.expect("present");
-                a.is(&text)
-            }
-            "contains" => {
-                let (a, text) = contains.expect("present");
-                a.contains(&text)
+            "when" => {
+                let otherwise = otherwise.ok_or_else(|| needs("otherwise"))?;
+                let cases = when.expect("present");
+                cases.into_iter().rev().fold(otherwise, |rest, (c, v)| node(Node::When(c, v, rest)))
             }
             "scale" => {
                 let [lo, hi] = scale.expect("present");
-                domained(self.value.ok_or_else(|| needs("a value"))?.scale(lo..=hi), self.domain)
+                domained(value.ok_or_else(|| needs("a value"))?.scale(lo..=hi), domain)
             }
-            _ => {
-                let value = self.value.ok_or_else(|| needs("a value"))?;
-                domained(value.colormap(colormap.expect("present")), self.domain)
-            }
+            _ => domained(value.ok_or_else(|| needs("a value"))?.colormap(colormap.expect("present")), domain),
         })
     }
 }
@@ -278,6 +286,58 @@ fn domained(mapped: super::Mapped, domain: Option<[f64; 2]>) -> Expr {
         None => mapped.into(),
     }
 }
+
+/// What a call computes from its arguments.
+#[derive(Clone, Copy)]
+enum Operation {
+    Unary(Unary),
+    Binary(Binary),
+    Is,
+    Contains,
+}
+
+/// Each operation a call can name: the key that names it, what it computes, and its description.
+const OPERATIONS: [(&str, Operation, &str); 27] = [
+    ("neg", Operation::Unary(Unary::Neg), "The value negated."),
+    ("not", Operation::Unary(Unary::Not), "1 where the value is at most 0.5, else 0."),
+    ("abs", Operation::Unary(Unary::Abs), "The absolute value."),
+    ("sqrt", Operation::Unary(Unary::Sqrt), "The square root. Negative values give a missing value."),
+    ("sin", Operation::Unary(Unary::Sin), "The sine of the value, an angle in radians."),
+    ("cos", Operation::Unary(Unary::Cos), "The cosine of the value, an angle in radians."),
+    ("floor", Operation::Unary(Unary::Floor), "The largest whole number at most the value."),
+    ("ln", Operation::Unary(Unary::Ln), "The natural logarithm. Values at most 0 give a missing value."),
+    ("exp", Operation::Unary(Unary::Exp), "e raised to the value."),
+    ("add", Operation::Binary(Binary::Add), "The sum of the two values."),
+    ("sub", Operation::Binary(Binary::Sub), "The first value minus the second."),
+    ("mul", Operation::Binary(Binary::Mul), "The product of the two values."),
+    (
+        "div",
+        Operation::Binary(Binary::Div),
+        "The first value divided by the second. Dividing by 0 gives a missing value.",
+    ),
+    (
+        "rem",
+        Operation::Binary(Binary::Rem),
+        "The remainder of the first value divided by the second, with the sign of the second: -1 and 3 give 2.",
+    ),
+    ("pow", Operation::Binary(Binary::Pow), "The first value raised to the power of the second."),
+    ("min", Operation::Binary(Binary::Min), "The smaller of the two values."),
+    ("max", Operation::Binary(Binary::Max), "The larger of the two values."),
+    ("lt", Operation::Binary(Binary::Lt), "1 where the first value is less than the second, else 0."),
+    ("le", Operation::Binary(Binary::Le), "1 where the first value is at most the second, else 0."),
+    ("gt", Operation::Binary(Binary::Gt), "1 where the first value is greater than the second, else 0."),
+    ("ge", Operation::Binary(Binary::Ge), "1 where the first value is at least the second, else 0."),
+    ("eq", Operation::Binary(Binary::Eq), "1 where the two values are equal, else 0. Colors compare too."),
+    ("ne", Operation::Binary(Binary::Ne), "1 where the two values differ, else 0. Colors compare too."),
+    ("and", Operation::Binary(Binary::And), "1 where both values are above 0.5, else 0."),
+    ("or", Operation::Binary(Binary::Or), "1 where either value is above 0.5, else 0."),
+    ("is", Operation::Is, "Whether a text field equals the plain text exactly."),
+    (
+        "contains",
+        Operation::Contains,
+        "Whether a text field contains the plain text, ignoring case. In a mark, the field must belong to the mark's own table.",
+    ),
+];
 
 /// Declares each kind of expression object once: a struct for its JSON schema, never built because
 /// reading goes through `Form`, and the keys an object of that kind may have, its own key first.
@@ -305,7 +365,7 @@ macro_rules! kinds {
 
 kinds! {
     /// A field's value in each row: from the mark's own table, or with `from`, from another
-    /// dataset's table joined by row id.
+    /// dataset's table joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
     FieldNode {
         /// The field's name.
         field: Name,
@@ -318,34 +378,10 @@ kinds! {
         #[serde(default)]
         step: bool,
     }
-    /// A constant color.
-    ColorNode {
-        color: Color,
-    }
     /// View state of each row, such as whether it is selected.
     StateNode {
         /// The state read.
         state: State,
-    }
-    /// A missing value. An option that evaluates to missing uses the theme's value.
-    MissingNode {
-        /// Always `true`.
-        #[schemars(extend("const" = true))]
-        missing: bool,
-    }
-    /// A one-argument operation, such as `{ "op": "abs", "args": ["x"] }`.
-    UnaryNode {
-        /// The operation.
-        op: Unary,
-        /// Its argument.
-        args: [Expr; 1],
-    }
-    /// A two-argument operation, such as `{ "op": "add", "args": ["a", 1] }`.
-    BinaryNode {
-        /// The operation.
-        op: Binary,
-        /// Its arguments, left and right.
-        args: [Expr; 2],
     }
     /// The value of the first case whose condition holds, else `otherwise`.
     WhenNode {
@@ -354,19 +390,6 @@ kinds! {
         when: Vec<(Expr, Expr)>,
         /// The value where no condition holds.
         otherwise: Expr,
-    }
-    /// Whether a text field equals a text exactly.
-    IsNode {
-        /// The text field, and the text it must equal.
-        #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
-        is: (Expr, String),
-    }
-    /// Whether a text field contains a text, ignoring case. In a mark, the field must belong to the
-    /// mark's own table.
-    ContainsNode {
-        /// The text field, and the text it must contain.
-        #[schemars(extend("tsType" = "[field: ExprInput, text: string]"))]
-        contains: (Expr, String),
     }
     /// A value mapped linearly onto a range, clamped to the range.
     ScaleNode {
@@ -444,64 +467,67 @@ impl JsonSchema for ExprNode {
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        let forms = kinds(generator);
         let mut any = vec![
             json_schema!({ "type": "number" }),
             json_schema!({ "type": "boolean" }),
-            json_schema!({ "type": "string", "description": "A field's name." }),
+            json_schema!({
+                "type": "null",
+                "description": "A missing value. An option that evaluates to missing uses the theme's value.",
+            }),
+            json_schema!({
+                "type": "string",
+                "description": "A field's value in each row, or a color: `\"$kv\"` reads field `kv`, and any other string is a CSS color, such as `#ffb000` or `rebeccapurple`. A field whose name starts with `$` is written `{ \"field\": \"$x\" }`.",
+            }),
         ];
-        any.extend(forms);
+        any.extend(kinds(generator));
+        any.push(generator.subschema_for::<CallNode>());
         json_schema!({
-            "description": "A value for each row: a number, a boolean, a field's name, or a node that computes one.",
+            "description": "A value for each row. A number or boolean is a constant, `null` is a missing value, a string starting with `$` reads the field it names, any other string is a CSS color, and an object is a node that computes a value.",
             "anyOf": any,
         })
     }
 }
 
-/// A conditional color: the color of the first case whose condition holds, else `otherwise`.
-#[derive(JsonSchema)]
-#[expect(dead_code, reason = "used for its schema only; `Form` reads colors")]
-#[serde(deny_unknown_fields)]
-struct WhenPaintNode {
-    /// The cases, as `[condition, color]` pairs tried in order.
-    #[schemars(extend("tsType" = "[condition: ExprInput, color: PaintInput][]"))]
-    when: Vec<(Expr, Paint)>,
-    /// The color where no condition holds.
-    otherwise: Paint,
-}
+/// The JSON form of a call: an object whose one key names an operation and holds its arguments.
+struct CallNode;
 
-/// A color option's schema is `PaintNode`; its TypeScript type also accepts the builders.
-impl JsonSchema for Paint {
+impl JsonSchema for CallNode {
     fn schema_name() -> Cow<'static, str> {
-        "Paint".into()
+        "CallNode".into()
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        let mut schema = generator.subschema_for::<PaintNode>();
-        schema.insert("tsType".into(), "PaintInput".into());
-        schema
-    }
-}
-
-/// The JSON form of a color option.
-struct PaintNode;
-
-impl JsonSchema for PaintNode {
-    fn schema_name() -> Cow<'static, str> {
-        "PaintNode".into()
-    }
-
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        let any = vec![
-            generator.subschema_for::<Color>(),
-            generator.subschema_for::<ColorNode>(),
-            generator.subschema_for::<ColormapNode>(),
-            generator.subschema_for::<WhenPaintNode>(),
-            generator.subschema_for::<MissingNode>(),
-        ];
+        let value = generator.subschema_for::<Expr>();
+        let calls: Vec<Schema> = OPERATIONS
+            .iter()
+            .map(|&(name, operation, description)| {
+                let mut arguments = match operation {
+                    Operation::Unary(_) => {
+                        json_schema!({ "type": "array", "prefixItems": [value], "minItems": 1, "maxItems": 1 })
+                    }
+                    Operation::Binary(_) => {
+                        json_schema!({ "type": "array", "prefixItems": [value, value], "minItems": 2, "maxItems": 2 })
+                    }
+                    Operation::Is | Operation::Contains => json_schema!({
+                        "type": "array",
+                        "prefixItems": [value, { "type": "string" }],
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "tsType": "[field: ExprInput, text: string]",
+                    }),
+                };
+                arguments.insert("description".into(), description.into());
+                json_schema!({
+                    "type": "object",
+                    "properties": { name: arguments },
+                    "required": [name],
+                    "additionalProperties": false,
+                })
+            })
+            .collect();
         json_schema!({
-            "description": "A color for each row: a CSS color, a value through a colormap, or a conditional choosing between colors.",
-            "anyOf": any,
+            "description": "An operation on values: an object whose one key names the operation and holds its arguments, such as `{ \"add\": [\"$a\", 1] }`. `is` and `contains` take a plain text as their second argument, which is neither a field nor a color.",
+            "anyOf": calls,
         })
     }
 }
@@ -708,33 +734,41 @@ mod tests {
         serde_json::from_str(json).expect("an expression")
     }
 
-    fn paint(json: &str) -> Result<Expr, String> {
-        serde_json::from_str::<Paint>(json).map(|paint| paint.0).map_err(|e| e.to_string())
+    fn error(json: &str) -> String {
+        serde_json::from_str::<Expr>(json).expect_err("an error").to_string()
     }
 
     #[test]
     fn forms_match_builders() {
-        assert_eq!(parse("\"vm\""), field("vm"));
-        assert_eq!(parse("\"#ff0000\""), field("#ff0000"), "a text in a value is a field's name");
+        assert_eq!(parse("\"$vm\""), field("vm"));
         assert_eq!(parse("2.5"), Expr::from(2.5));
-        assert_eq!(parse(r#"{"op": "add", "args": ["a", 1]}"#), field("a") + 1.0);
-        assert_eq!(parse(r#"{"op": "not", "args": ["on"]}"#), !field("on"));
+        assert_eq!(parse("null"), Expr::missing());
+        assert_eq!(parse(r#"{"add": ["$a", 1]}"#), field("a") + 1.0);
+        assert_eq!(parse(r#"{"not": ["$on"]}"#), !field("on"));
+        assert_eq!(parse(r#"{"min": ["$a", {"abs": ["$b"]}]}"#), field("a").min(field("b").abs()));
         assert_eq!(
-            parse(r##"{"when": [[{"state": "selected"}, {"color": "#ff0000"}]], "otherwise": "c"}"##),
+            parse(r##"{"when": [[{"state": "selected"}, "#ff0000"]], "otherwise": "$c"}"##),
             when(selected()).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(field("c"))
+        );
+        assert_eq!(
+            parse(r#"{"when": [["$on", "$name"]], "otherwise": null}"#),
+            when(field("on")).then(field("name")).otherwise(Expr::missing()),
+            "a label's text where `on` holds, and none elsewhere"
         );
         assert_eq!(
             parse(r#"{"field": "vm", "from": ["weather", "Station"], "step": true}"#),
             field("vm").from_table("weather", "Station").step()
         );
         assert_eq!(
-            parse(r#"{"colormap": "balance", "value": "vm", "domain": [0.9, 1.1]}"#),
+            parse(r#"{"colormap": "balance", "value": "$vm", "domain": [0.9, 1.1]}"#),
             field("vm").colormap(Colormap::BALANCE).domain(0.9..=1.1).into()
         );
-        assert_eq!(parse(r#"{"scale": [2, 8], "value": "kv"}"#), field("kv").scale(2.0..=8.0).into());
-        assert_eq!(parse(r#"{"contains": ["name", "lake"]}"#), field("name").contains("lake"));
+        assert_eq!(parse(r#"{"scale": [2, 8], "value": "$kv"}"#), field("kv").scale(2.0..=8.0).into());
+        assert_eq!(parse(r#"{"is": ["$kind", "substation"]}"#), field("kind").is("substation"));
+        assert_eq!(parse(r#"{"contains": ["$name", "lake"]}"#), field("name").contains("lake"));
         let size = |json: &str| serde_json::from_str::<Size>(json).expect("a size");
         assert_eq!(size("3"), Size::from(3.0));
+        assert_eq!(size("\"$r\""), Size::from(field("r")));
         assert_eq!(size(r#"{"px": 3}"#), crate::px(3.0));
         assert_eq!(size(r#"{"units": 3}"#), crate::units(3.0));
         assert_eq!(size(r#"{"units": 3, "atLeast": 2, "atMost": 20}"#), crate::units(3.0).at_least(2.0).at_most(20.0));
@@ -747,30 +781,47 @@ mod tests {
     }
 
     #[test]
-    fn a_text_in_a_color_is_a_css_color() {
+    fn a_string_with_a_dollar_reads_a_field_and_any_other_is_a_color() {
         let red = Expr::from(Color::rgb(1.0, 0.0, 0.0));
-        assert_eq!(paint("\"red\""), Ok(red.clone()));
-        assert_eq!(paint("\"#ff0000\""), Ok(red.clone()));
-        let error = paint("\"kv\"").expect_err("a field's name");
-        assert!(error.starts_with(r#"not a CSS color: "kv"; for a field, use field("kv")"#), "{error}");
-        // A conditional's values are colors and its conditions are values; a colormap's input is a
-        // value.
-        let chosen = paint(r#"{"when": [["on", "red"]], "otherwise": {"colormap": "viridis", "value": "kv"}}"#);
-        let mapped = field("kv").colormap(Colormap::VIRIDIS);
-        assert_eq!(chosen, Ok(when(field("on")).then(Color::rgb(1.0, 0.0, 0.0)).otherwise(mapped)));
-        assert_eq!(paint(r#"{"field": "kv"}"#), Ok(field("kv")), "a field parses here and must compile to a color");
+        assert_eq!(parse("\"red\""), red);
+        assert_eq!(parse("\"#ff0000\""), red);
+        assert_eq!(parse("\"$#ff0000\""), field("#ff0000"), "after the `$`, any text names a field");
+        assert_eq!(parse(r#"{"field": "$x"}"#), field("$x"), "the long form names any field");
+        let wrong = error("\"level\"");
+        assert!(wrong.starts_with(r#""level" is not a CSS color; "$level" reads field level"#), "{wrong}");
+        assert!(error("\"$\"").contains("names no field"));
+        // A call's text is plain: neither a field nor a color.
+        assert_eq!(parse(r#"{"is": ["$kind", "$red"]}"#), field("kind").is("$red"));
+        assert_eq!(parse(r#"{"contains": ["$name", "level"]}"#), field("name").contains("level"));
+    }
+
+    #[test]
+    fn null_is_a_missing_value_wherever_a_value_goes() {
+        let chosen = parse(r#"{"when": [["$on", null]], "otherwise": "$v"}"#);
+        assert_eq!(chosen, when(field("on")).then(Expr::missing()).otherwise(field("v")));
+        assert_eq!(parse(r#"{"max": ["$v", null]}"#), field("v").max(Expr::missing()));
+        assert_eq!(
+            parse(r#"{"colormap": "viridis", "value": null}"#),
+            Expr::missing().colormap(Colormap::VIRIDIS).into()
+        );
+        let size = serde_json::from_str::<Size>(r#"{"px": null}"#).expect("a size");
+        assert_eq!(size, crate::px(Expr::missing()));
+        // An option of a node that is no value stays unset.
+        assert_eq!(parse(r#"{"field": "v", "from": null}"#), field("v"));
     }
 
     #[test]
     fn errors_name_the_offending_part() {
-        let error = serde_json::from_str::<Expr>(r#"{"field": "a", "color": "red"}"#).expect_err("two kinds");
-        assert!(error.to_string().contains("color"), "{error}");
-        let error = serde_json::from_str::<Expr>(r#"{"field": "a", "map": "viridis"}"#).expect_err("a stray key");
-        assert!(error.to_string().contains("map"), "{error}");
-        let error = serde_json::from_str::<Expr>(r#"{"op": "frob", "args": []}"#).expect_err("unknown op");
-        assert!(error.to_string().contains("frob"), "{error}");
-        let error = serde_json::from_str::<Expr>(r#"{"op": "add", "args": ["a"]}"#).expect_err("two arguments");
-        assert!(error.to_string().contains('2'), "{error}");
+        assert!(error(r#"{"field": "a", "state": "selected"}"#).contains("field takes no state"));
+        assert!(error(r#"{"field": "a", "map": "viridis"}"#).contains("map"));
+        assert!(error(r#"{"frob": []}"#).contains("frob"));
+        let arguments = error(r#"{"add": ["$a"]}"#);
+        assert!(arguments.contains("add takes 2 arguments, not 1"), "{arguments}");
+        assert!(error(r#"{"add": ["$a", 1], "field": "b"}"#).contains("add takes no field"));
+        assert!(error(r#"{"add": [1, 2], "mul": [3, 4]}"#).contains("one operation"));
+        assert!(error(r#"{"color": "red"}"#).contains("found color"), "a color is a string, not a node");
+        assert!(error(r#"{"missing": true}"#).contains("missing"));
+        assert!(error(r#"{"op": "add", "args": ["$a", 1]}"#).contains("op"));
         let error = serde_json::from_str::<Colormap>(r#"{"kind": "cyclic", "colors": [[0.5, "red"], [0.2, "blue"]]}"#)
             .expect_err("descending places");
         assert!(error.to_string().contains("ascend"), "{error}");

@@ -1,6 +1,6 @@
 //! Layouts position the diagram vertices whose data has no position. Layered places them in ranks
-//! along the flow, with nets running from their outputs. Stress places them at graph distances and
-//! separates overlapping boxes. On a plane, a layout places points among their neighbors.
+//! along a direction, with nets running from their outputs. Stress places them at graph distances
+//! and separates overlapping boxes. On a plane, a layout places points among their neighbors.
 //!
 //! Vertices with positions stay put, and computed positions stay fixed. Rows added later are
 //! placed around the rest until the view arranges every row again, which resolves to a patch that
@@ -15,7 +15,9 @@ use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
 use common::{diagram, errors, frame, gpu, plain_theme, step};
-use latkit::{Camera, Data, Edges, Ids, Layered, Layout, Patch, Port, Row, Scene, Side, Stress, Table, Vertices, View};
+use latkit::{
+    Camera, Data, Edges, Ids, Layered, Layout, Patch, Port, Row, Scene, Side, Stress, Table, Vertices, View, field,
+};
 
 /// Renders frames until `pending` resolves, within `SETTLE` frames.
 fn answer<T>(gpu: &latkit::Gpu, view: &mut View, pending: impl Future<Output = latkit::Result<T>>) -> T {
@@ -53,7 +55,7 @@ fn scene(layout: impl Into<Layout>) -> Scene {
         .theme(plain_theme())
         .layout(layout)
         .draw(Edges::of("graph", "Link").ends("from", "to"))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0))
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0))
 }
 
 fn view(gpu: &latkit::Gpu, scene: Scene, data: &Data) -> View {
@@ -93,7 +95,7 @@ fn apart(a: [f64; 2], b: [f64; 2]) -> f64 {
 }
 
 #[test]
-fn layered_ranks_follow_the_flow() {
+fn layered_ranks_follow_the_direction() {
     let p = placed(Layered::default(), None);
     if p.is_empty() {
         return;
@@ -128,7 +130,7 @@ fn nets_run_from_their_outputs() {
     .expect("valid");
     let scene = Scene::new(diagram()).layout(Layered::default()).draw(Edges::of("graph", "Net")).draw(
         Vertices::of("graph", "Node")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .radius(4.0)
             .port("in", Side::Left)
             .port("out", Port::output(Side::Right)),
@@ -164,7 +166,7 @@ fn stress_separates_overlapping_boxes() {
         .theme(plain_theme())
         .layout(Stress::default())
         .draw(Edges::of("graph", "Link").ends("from", "to"))
-        .draw(Vertices::of("graph", "Node").position("x", "y").size(60.0, 20.0));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).size(60.0, 20.0));
     let mut view = view(&gpu, scene, &graph(None));
     let p = located(&gpu, &mut view, 4);
     // Stress puts neighbors 40 units apart. Their 60 by 20 boxes separate, keeping a quarter of the
@@ -241,7 +243,7 @@ fn a_plane_places_points_without_positions_by_its_layout() {
             .theme(plain_theme())
             .layout(layout)
             .draw(Edges::of("graph", "Link").ends("from", "to"))
-            .draw(Vertices::of("graph", "Node").position("x", "y").radius(4.0))
+            .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(4.0))
     };
     let mut view = view(&gpu, scene(Stress { gap: 40.0 }.into()), &graph(Some([-100.0, 60.0])));
     let p = located(&gpu, &mut view, 4);

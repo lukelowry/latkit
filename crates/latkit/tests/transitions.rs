@@ -10,7 +10,7 @@ mod common;
 use std::time::Duration;
 
 use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane, step};
-use latkit::{Color, Data, Edges, Ids, Patch, Scene, Table, Vertices, View};
+use latkit::{Color, Data, Edges, Ids, Patch, Scene, Table, Vertices, View, field};
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
@@ -20,7 +20,7 @@ fn scene() -> Scene {
         .theme(common::green_edges())
         .ease(Duration::from_secs(2))
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(6.0).color(Color::WHITE))
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(6.0).color(Color::WHITE))
 }
 
 fn graph() -> Data {
@@ -187,7 +187,7 @@ fn a_change_to_one_page_evaluates_only_its_rows() {
     let scene = Scene::new(plane())
         .theme(plain_theme())
         .ease(Duration::ZERO)
-        .draw(Vertices::of("points", "P").position("x", "y").radius(1.0).color(Color::WHITE));
+        .draw(Vertices::of("points", "P").position(field("x"), field("y")).radius(1.0).color(Color::WHITE));
     let mut view = View::new(&gpu, scene).expect("valid scene");
     view.set_camera(camera());
     let xs: Vec<f64> = (0..rows).map(|r| f64::from(r % 100) - 50.0).collect();

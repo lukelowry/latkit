@@ -51,7 +51,7 @@ export default function tides(): Piece {
                   '#e76f51',
                 ],
               },
-              value: 'level',
+              value: '$level',
               domain: [0, 1],
             },
           },

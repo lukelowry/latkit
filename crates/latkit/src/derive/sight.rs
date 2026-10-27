@@ -1,8 +1,12 @@
 //! The camera's view as tiles; the only place derivations read the camera.
 //!
 //! Tiles split a square of the space four ways per level: the earth's Web Mercator square, or a
-//! square of a plane. A tile is needed where it meets the region in sight, and splits while it
-//! draws larger than its nominal size (`TILE_PX`) where it lies nearest the camera's focus.
+//! square of a plane. The earth's square wraps at the antimeridian on the globe, and ends there on
+//! a flat map, which is one world. A tile is needed where it meets the region in sight, and splits
+//! while it draws larger than its nominal size (`TILE_PX`) where it lies nearest the camera's
+//! focus. How large a tile draws is the area it covers on screen there, as a side, so a tile
+//! foreshortened toward the globe's limb or a tilted horizon stays coarse. When a budget limits how
+//! many tiles split, the tiles drawn largest split first.
 
 use glam::DVec3;
 
@@ -12,6 +16,8 @@ use crate::view::Projected;
 
 /// CSS pixels a tile spans when drawn at its own level.
 pub(crate) const TILE_PX: f64 = 512.0;
+/// CSS pixels past which a tile splits: its nominal size with 25% slack.
+pub(crate) const SPLIT_PX: f64 = TILE_PX * 1.25;
 
 /// The square a space's tiles divide: the earth's Web Mercator square, or a square of a plane.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -92,7 +98,7 @@ pub(crate) struct Sight<'a> {
 }
 
 /// The region in sight as west, south, east, north boxes in position units: one box, or on the
-/// earth two where the region crosses the antimeridian.
+/// globe two where the region crosses the antimeridian.
 pub(crate) type Region = Vec<[f64; 4]>;
 
 impl Sight<'_> {
@@ -150,7 +156,8 @@ impl Sight<'_> {
         std::iter::once(center).chain(near).collect()
     }
 
-    /// The ground in sight, sampled on a grid of points across the view.
+    /// The ground in sight, sampled on a grid of points across the view. On a flat map it ends at
+    /// the world's edges; on the globe it wraps the antimeridian.
     pub(crate) fn region(&self) -> Region {
         const SAMPLES: usize = 7;
         let globe = self.globe();
@@ -200,17 +207,19 @@ impl Sight<'_> {
         if w > e {
             return vec![[-180.0, -90.0, 180.0, 90.0]];
         }
-        if missed {
-            // Some samples miss a tilted map, which shows its horizon: grow the region by four
-            // times its size on each side to cover the ground toward it.
+        // Some samples miss a tilted map, which shows its horizon: grow the region by four times
+        // its size on each side to cover the ground toward it. Otherwise pad it by 2%.
+        let (grow_x, grow_y) = if missed {
             let size = (e - w).max(n - s) * 4.0;
-            return boxes(w - size, e + size, s - size, n + size);
-        }
-        let (pad_x, pad_y) = ((e - w) * 0.02, (n - s) * 0.02);
+            (size, size)
+        } else {
+            ((e - w) * 0.02, (n - s) * 0.02)
+        };
         if globe {
-            return boxes(w - pad_x, e + pad_x, s - pad_y, n + pad_y);
+            return boxes(w - grow_x, e + grow_x, s - grow_y, n + grow_y);
         }
-        vec![[(w - pad_x).max(-180.0), (s - pad_y).max(-90.0), (e + pad_x).min(180.0), (n + pad_y).min(90.0)]]
+        // A flat map is one world: the region ends at its edges rather than wrapping.
+        vec![[(w - grow_x).max(-180.0), (s - grow_y).max(-90.0), (e + grow_x).min(180.0), (n + grow_y).min(90.0)]]
     }
 
     /// The cap of the globe the camera can see, out to its horizon.
@@ -231,10 +240,13 @@ impl Sight<'_> {
     }
 
     /// How large tile `key` of `domain`'s square draws, in CSS pixels, at its point nearest each
-    /// focus, and how far that point is from the view's center. It scales up how far a step of at
-    /// most a pixel moves on screen there. A longer step from a large tile could pass the globe's
-    /// horizon, where nothing projects, once the camera is close to the ground. On a flat map every
-    /// tile of a level measures the same wherever it lies.
+    /// focus (the largest of those), and how far that point is from the view's center. Its size is
+    /// the area it would cover at the scale there, as a side: the area that steps of at most a
+    /// pixel along its two edges span on screen, scaled up to the whole tile. So a tile
+    /// foreshortened toward the globe's limb or a tilted horizon measures less than its longer
+    /// side. A longer step from a large tile could pass the globe's horizon, where nothing
+    /// projects, once the camera is close to the ground. On a flat map seen from above, every tile
+    /// of a level measures the same wherever it lies.
     pub(crate) fn measure(&self, focus: &[[f64; 2]], domain: &Domain, key: TileKey) -> (f64, f64) {
         let side = 1.0 / f64::from(1_u32 << key.z);
         let (west, north) = (f64::from(key.x) * side, f64::from(key.y) * side);
@@ -242,14 +254,20 @@ impl Sight<'_> {
         let (mut size, mut distance) = (0.0_f64, f64::INFINITY);
         for &f in focus {
             let [fx, fy] = domain.unit(f);
-            // The earth's square wraps: shift the focus a turn either way, whichever is nearer.
-            let fx = if *domain == Domain::Earth { fx + (west + side / 2.0 - fx).round() } else { fx };
+            let fx = match domain {
+                // The globe wraps: shift the focus a turn either way, whichever is nearer.
+                Domain::Earth if self.globe() => fx + (west + side / 2.0 - fx).round(),
+                // A flat map is one world: a focus past its edge stays there, far from the tiles
+                // across the antimeridian.
+                Domain::Earth => (f[0] + 180.0) / 360.0,
+                Domain::Plane { .. } => fx,
+            };
             let at = [fx.clamp(west, west + side - step), fy.clamp(north, north + side - step)];
             let Some(p) = self.project(domain.position(at)) else { continue };
-            let reach = |q: [f64; 2]| {
-                self.project(domain.position(q)).map_or(0.0, |q| side / step * (q[0] - p[0]).hypot(q[1] - p[1]))
-            };
-            size = size.max(reach([at[0] + step, at[1]])).max(reach([at[0], at[1] + step]));
+            // Where a step along each edge moves on screen; nowhere past the globe's horizon.
+            let moved = |q: [f64; 2]| self.project(domain.position(q)).map_or([0.0; 2], |q| [q[0] - p[0], q[1] - p[1]]);
+            let ([ax, ay], [bx, by]) = (moved([at[0] + step, at[1]]), moved([at[0], at[1] + step]));
+            size = size.max(side / step * (ax * by - ay * bx).abs().sqrt());
             distance = distance.min((p[0] - self.size[0] / 2.0).hypot(p[1] - self.size[1] / 2.0));
         }
         (size, distance)
@@ -311,11 +329,57 @@ mod tests {
                 let n = f64::from(1_u32 << z);
                 let key = TileKey { z, x: (u * n) as u32, y: (v * n) as u32 };
                 let (px, _) = sight.measure(&sight.focus(), &Domain::Earth, key);
-                // A large tile measures where it is largest: south of the center, a mercator step
-                // covers more of the globe.
+                // Under the center the globe is seen square on, so a tile measures its size there.
+                // A large tile measures where it is largest, which may lie south of the center,
+                // where a mercator step covers more of the globe.
                 let nominal = 256.0 * 2_f64.powf(zoom) / n;
                 assert!((0.95..1.3).contains(&(px / nominal)), "zoom {zoom}, level {z}: {px} px, not {nominal}");
             }
+        }
+    }
+
+    #[test]
+    fn tiles_foreshortened_by_a_tilted_camera_measure_the_area_they_cover() {
+        let map = crate::Space::Earth(crate::Earth::default());
+        let size = [800.0, 600.0];
+        let center = [-74.0, 40.7];
+        let [u, v] = Domain::Earth.unit(center);
+        let key = TileKey { z: 12, x: (u * 4096.0) as u32, y: (v * 4096.0) as u32 };
+        let measured = |pitch: f64| {
+            let camera = crate::Camera::Map { center: [center[0], center[1], 0.0], zoom: 8.0, pitch, bearing: 0.0 };
+            let projected = Projected::new(&map, &camera, size, [0.0, 0.0, size[0], size[1]], 0.0);
+            let sight = Sight { projected: &projected, size, earth: true };
+            sight.measure(&sight.focus(), &Domain::Earth, key).0
+        };
+        // Tilted 60°, a tile under the center keeps its width on screen and draws half as tall, so
+        // its area as a side is about √½ of what it measures seen from above.
+        let ratio = measured(60.0) / measured(0.0);
+        assert!((0.65..0.8).contains(&ratio), "{ratio}");
+    }
+
+    #[test]
+    fn a_flat_map_ends_at_the_antimeridian() {
+        let map = crate::Space::Earth(crate::Earth::default());
+        let size = [800.0, 600.0];
+        let tile = |lon: f64| {
+            let [u, v] = Domain::Earth.unit([lon, 0.0]);
+            TileKey { z: 10, x: (u * 1024.0) as u32, y: (v * 1024.0) as u32 }
+        };
+        let (near, across) = (tile(179.0), tile(-179.0));
+        // Seen from above, and tilted to show the horizon, which grows the region several times
+        // over: on a globe that region would wrap past 180° onto the tiles across it.
+        for pitch in [0.0, 75.0] {
+            let camera = crate::Camera::Map { center: [179.0, 0.0, 0.0], zoom: 10.0, pitch, bearing: 0.0 };
+            let projected = Projected::new(&map, &camera, size, [0.0, 0.0, size[0], size[1]], 0.0);
+            let sight = Sight { projected: &projected, size, earth: true };
+            let region = sight.region();
+            assert!(region.iter().all(|r| r[0] >= -180.0 && r[2] <= 180.0), "pitch {pitch}: {region:?}");
+            assert!(meets(&region, near.bounds()), "pitch {pitch}: {region:?}");
+            assert!(!meets(&region, across.bounds()), "pitch {pitch}: {region:?}");
+            let focus = sight.focus();
+            let ((_, beside), (_, beyond)) =
+                (sight.measure(&focus, &Domain::Earth, near), sight.measure(&focus, &Domain::Earth, across));
+            assert!(beside < 1.0 && beyond > size[0], "pitch {pitch}: {beside} px and {beyond} px from the center");
         }
     }
 }

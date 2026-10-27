@@ -13,7 +13,7 @@ use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
 use common::{SIZE, at, camera, diagram, errors, frame, gpu, plain_theme, plane, step};
-use latkit::{Data, Edges, Ids, Patch, Port, Scene, Side, Table, Vertices, View};
+use latkit::{Data, Edges, Ids, Patch, Port, Scene, Side, Table, Vertices, View, field};
 
 const C: u32 = SIZE / 2;
 
@@ -60,7 +60,7 @@ fn edges_joining_the_same_vertices_bow_into_lanes_in_world_units() {
     .expect("valid");
     let scene = Scene::new(plane())
         .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).color(latkit::Color::WHITE))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(2.0));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(2.0));
     let mut view = view(&gpu, scene, &data);
     // The two edges bow half a lane each way. A lane is 0.12 of their 80-unit length, so each is
     // 4.8 units off center at the middle. Zooming scales that like the rest of the drawing.
@@ -89,7 +89,7 @@ fn edges_bend_through_their_points_and_pick_there() {
     .expect("valid");
     let scene = Scene::new(plane())
         .draw(Edges::of("graph", "Link").ends("from", "to").bends("bends").width(3.0).color(latkit::Color::WHITE))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(2.0));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(2.0));
     let mut view = view(&gpu, scene, &data);
     let pixels = frame(&gpu, &mut view);
     assert!(lit(at(&pixels, C, C - 30)), "through its bend");
@@ -118,9 +118,9 @@ fn nets_join_the_ports_that_reference_them() {
             .set(Table::new("Net", vec![1_u64, 2])),
     )
     .expect("valid");
-    let scene = Scene::new(diagram())
-        .draw(Edges::of("graph", "Net").width(3.0).color(latkit::Color::WHITE))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(5.0).port("net", Port::new(Side::Top)));
+    let scene = Scene::new(diagram()).draw(Edges::of("graph", "Net").width(3.0).color(latkit::Color::WHITE)).draw(
+        Vertices::of("graph", "Node").position(field("x"), field("y")).radius(5.0).port("net", Port::new(Side::Top)),
+    );
     let mut view = view(&gpu, scene, &data);
     let pixels = frame(&gpu, &mut view);
     // Net 1 joins the tops of nodes 1 and 2, five units above their centers.
@@ -143,7 +143,7 @@ fn nets_of_more_than_two_meet_at_a_junction() {
     .expect("valid");
     let scene = Scene::new(diagram())
         .draw(Edges::of("graph", "Net").width(3.0).color(latkit::Color::WHITE))
-        .draw(Vertices::of("graph", "Node").position("x", "y").radius(2.0).port("net", Side::Left));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(2.0).port("net", Side::Left));
     let mut view = view(&gpu, scene, &data);
     let pixels = frame(&gpu, &mut view);
     // The junction sits at the center of the three ports, 15 units down and 2 left.
@@ -164,7 +164,7 @@ fn an_unlabeled_block_makes_room_for_its_ports() {
     data.apply(Patch::new().set(node).set(Table::new("Net", Ids::count(0)))).expect("valid");
     let block = ["a", "b", "c", "d"]
         .into_iter()
-        .fold(Vertices::of("graph", "Node").position("x", "y"), |v, port| v.port(port, Side::Left));
+        .fold(Vertices::of("graph", "Node").position(field("x"), field("y")), |v, port| v.port(port, Side::Left));
     let mut view = view(&gpu, Scene::new(diagram()).draw(block), &data);
     let pixels = frame(&gpu, &mut view);
     // Four ports one pitch apart down its left side, plus a pitch of margin: about 77 units tall.
@@ -184,7 +184,7 @@ fn a_block_drops_its_shadow_onto_the_sheet_below_it() {
         let data = Data::new("graph");
         data.apply(Patch::new().set(nodes(vec![0.0], vec![0.0]))).expect("valid");
         let block = Vertices::of("graph", "Node")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .size(40.0, 24.0)
             .marker(latkit::Marker::Block { corner: None })
             .color(latkit::Color::WHITE)
@@ -228,7 +228,7 @@ fn edges_along_great_circles_settle_while_their_vertices_pulse() {
         ..latkit::Earth::default().projection(latkit::Projection::Globe)
     })
     .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0))
-    .draw(Vertices::of("graph", "Node").position("lon", "lat").color(pulse));
+    .draw(Vertices::of("graph", "Node").position(field("lon"), field("lat")).color(pulse));
     let mut view = View::new(&gpu, scene.theme(plain_theme())).expect("valid scene");
     view.set_sources([&data]).expect("a source");
     view.fit(latkit::Fit::All);
@@ -254,7 +254,7 @@ fn arrows_draw_heads_at_second_ends() {
         .expect("valid");
         let scene = Scene::new(plane())
             .draw(Edges::of("graph", "Link").ends("from", "to").width(2.0).arrows(arrows).color(latkit::Color::WHITE))
-            .draw(Vertices::of("graph", "Node").position("x", "y").radius(1.0));
+            .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(1.0));
         let mut view = view(&gpu, scene, &data);
         let pixels = frame(&gpu, &mut view);
         assert_eq!(errors(&mut view), Vec::new());
@@ -280,7 +280,7 @@ fn ports_draw_on_their_sides_and_pick_by_name() {
     .expect("valid");
     let scene = Scene::new(diagram()).draw(
         Vertices::of("graph", "Node")
-            .position("x", "y")
+            .position(field("x"), field("y"))
             .radius(8.0)
             .color(latkit::Color::WHITE)
             .port("in", Side::Left)
@@ -317,7 +317,7 @@ fn orthogonal_routes_run_around_vertices() {
         )
         .draw(
             Vertices::of("graph", "Node")
-                .position("x", "y")
+                .position(field("x"), field("y"))
                 .size(20.0, 20.0)
                 .marker(latkit::Shape::Rectangle)
                 .color(latkit::Color::rgb(1.0, 0.0, 0.0)),
@@ -348,7 +348,12 @@ fn many_routes_route_in_a_job_and_arrive() {
     };
     let scene = Scene::new(diagram())
         .draw(Edges::of("graph", "Link").ends("from", "to").route(latkit::Route::Orthogonal).width(2.0))
-        .draw(Vertices::of("graph", "Node").position("x", "y").size(20.0, 20.0).marker(latkit::Shape::Rectangle));
+        .draw(
+            Vertices::of("graph", "Node")
+                .position(field("x"), field("y"))
+                .size(20.0, 20.0)
+                .marker(latkit::Shape::Rectangle),
+        );
     let mut view = view(&gpu, scene, &links(1));
     frame(&gpu, &mut view);
     // More wires than one frame routes: they draw as elbows until the job's routes arrive.
@@ -378,7 +383,7 @@ fn neighbors_follow_edges_and_nets() {
     let scene = Scene::new(diagram())
         .draw(Edges::of("graph", "Link").ends("from", "to"))
         .draw(Edges::of("graph", "Net"))
-        .draw(Vertices::of("graph", "Node").position("x", "y").port("net", Side::Top));
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).port("net", Side::Top));
     let mut view = view(&gpu, scene, &data);
     frame(&gpu, &mut view);
     let nodes = |ids: &[u64]| vec![latkit::Rows::new("graph", "Node", ids.iter().copied())];

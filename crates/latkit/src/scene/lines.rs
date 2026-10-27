@@ -111,7 +111,7 @@ impl Lines {
         }
         let color = Store::Color { word: wgsl::LINE_COLOR, fallback: wgsl::THEME_LINE };
         match &self.style.color {
-            Some(paint) => c.channel("color", &paint.0, color)?,
+            Some(expr) => c.channel("color", expr, color)?,
             None => c.theme("color", wgsl::THEME_LINE, color)?,
         }
         c.channel("visible", &self.style.visible, Store::Flag { word: wgsl::LINE_FLAGS, bit: wgsl::VISIBLE })?;

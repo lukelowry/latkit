@@ -1,11 +1,13 @@
 /** Texas: ACTIVSg2000's generators sized by output, with comets on its lines of 345 kV and up. */
-import { units } from 'latkit';
+import { field, units, when } from 'latkit';
 import { THEME, type Piece } from './look.ts';
 import { readCase } from './grids.ts';
 import { LEVELS, STATES, WIDTHS, states } from './grid.ts';
 
 export default async function texas(): Promise<Piece> {
   const c = await readCase('activsg2000');
+  // The largest generators are named: those making at least as much as the tenth largest.
+  const named = Array.from(c.array('bus.generation', Float32Array)).sort((p, q) => q - p)[9] ?? 0;
   return {
     name: 'texas',
     alt: 'Two thousand buses of a synthetic Texas grid: generators as amber discs sized by output, comets along its highest-voltage lines',
@@ -26,25 +28,25 @@ export default async function texas(): Promise<Piece> {
           edges: {
             of: ['grid', 'Line'],
             ends: ['from', 'to'],
-            priority: 'level',
+            priority: '$level',
             width: WIDTHS,
-            color: { colormap: LEVELS, value: 'level', domain: [0, 5] },
-            flow: { when: [[{ op: 'ge', args: ['level', 3] }, 0.6]], otherwise: 0 },
+            color: { colormap: LEVELS, value: '$level', domain: [0, 5] },
+            flow: { when: [[{ ge: ['$level', 3] }, 0.6]], otherwise: 0 },
           },
         },
         {
           vertices: {
             of: ['grid', 'Bus'],
-            position: ['lon', 'lat'],
-            radius: {
-              scale: [0, 11],
-              value: { op: 'sqrt', args: ['generation'] },
-              domain: [0, 45],
-            },
+            position: ['$lon', '$lat'],
+            radius: { scale: [0, 11], value: { sqrt: ['$generation'] }, domain: [0, 45] },
             color: '#ffb000',
-            priority: 'generation',
-            label: { text: 'name', size: 11, color: '#e6d7b8', priority: 'generation', max: 10 },
-            visible: { op: 'gt', args: ['generation', 0] },
+            priority: '$generation',
+            label: {
+              text: when(field('generation').ge(named)).then(field('name')).otherwise(null),
+              size: 11,
+              color: '#e6d7b8',
+            },
+            visible: { gt: ['$generation', 0] },
           },
         },
       ],

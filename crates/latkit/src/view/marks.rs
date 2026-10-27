@@ -31,7 +31,7 @@ pub(crate) struct Offsets {
     pub(crate) runs: u32,
     /// The page table of each kind of per-row words, indexed by `Kept`; `NONE` for a kind it does
     /// not keep.
-    pub(crate) pages: [u32; 6],
+    pub(crate) pages: [u32; 5],
 }
 
 impl Offsets {
@@ -53,7 +53,7 @@ impl Default for Offsets {
             port_info: wgsl::NONE,
             blends: 0,
             runs: wgsl::NONE,
-            pages: [wgsl::NONE; 6],
+            pages: [wgsl::NONE; 5],
         }
     }
 }
@@ -92,8 +92,6 @@ pub(crate) struct Shown {
     pub(crate) holding: Option<Holding>,
     /// How far its paged table's tiles have faded in or out, from 0 to 1.
     pub(crate) reveal: f32,
-    /// Slots that received a page of other rows this frame; their labels start over.
-    pub(crate) bound: Vec<u32>,
     /// For a paged table, each fitted domain computed on the CPU over every row: the stamp of its
     /// inputs, and its words.
     pub(crate) fitted: Vec<(u64, [u32; 2])>,
@@ -153,9 +151,9 @@ pub(crate) struct Shown {
     /// Whether an edge mark follows great circles.
     pub(crate) geodesic: bool,
     /// Incremented whenever the mark's state is written, so whatever derives from it updates.
-    /// `place_version` is incremented whenever the inputs of label placement are written: row
-    /// positions, sizes, and visibility, and label texts and priorities. A color that changes every
-    /// frame moves no label.
+    /// `place_version` is incremented whenever what places its rows and labels is written: row
+    /// positions, sizes, and visibility, and label texts. A color that changes every frame moves no
+    /// label.
     pub(crate) version: u64,
     pub(crate) place_version: u64,
     /// The rows its focus draw lights.
@@ -177,7 +175,6 @@ impl Shown {
             before: 0,
             holding: None,
             reveal: 1.0,
-            bound: Vec::new(),
             fitted: Vec::new(),
             words: Words::default(),
             domains: 0,
@@ -321,16 +318,9 @@ impl Shown {
     }
 
     /// Words per row in each kind of word page its held rows take, 0 for a kind it keeps none of:
-    /// its state, its focus word, its label candidates when labeled, and when faces are `summing`
-    /// their normals at its rows, those.
-    pub(crate) fn kept_widths(&self, summing: bool) -> [(Kept, u32); 4] {
-        let labeled = self.compiled.as_ref().is_some_and(|c| c.drawing.label.is_some());
-        [
-            (Kept::State, self.width()),
-            (Kept::Focus, 1),
-            (Kept::Candidates, if labeled { wgsl::CANDIDATE_WORDS } else { 0 }),
-            (Kept::Normals, if summing { wgsl::NORMAL_WORDS } else { 0 }),
-        ]
+    /// its state, its focus word, and when faces are `summing` their normals at its rows, those.
+    pub(crate) fn kept_widths(&self, summing: bool) -> [(Kept, u32); 3] {
+        [(Kept::State, self.width()), (Kept::Focus, 1), (Kept::Normals, if summing { wgsl::NORMAL_WORDS } else { 0 })]
     }
 
     /// What its channels and fitted domains read besides its own table's static fields, which picks
@@ -396,11 +386,11 @@ impl Shown {
         (points + rows + pieces).max(1) as u32
     }
 
-    /// A bit mask of the channels label placement reads: row position, size, and visibility, and
-    /// label text and priority.
+    /// A bit mask of the channels that place its rows and labels: row position, size, and
+    /// visibility, and label text.
     pub(crate) fn placing_channels(&self) -> u32 {
         let Some(compiled) = &self.compiled else { return 0 };
-        let shaping = ["position", "radius", "width", "height", "elevation", "visible", "text", "priority"];
+        let shaping = ["position", "radius", "width", "height", "elevation", "visible", "text"];
         compiled
             .program
             .channels
@@ -639,7 +629,7 @@ impl Shown {
         out.extend(self.blends());
         let runs = if self.drawing().is_some() { at(out) } else { wgsl::NONE };
         out.extend(self.runs());
-        let mut pages = [wgsl::NONE; 6];
+        let mut pages = [wgsl::NONE; 5];
         for (kept, blocks) in self.words.tables() {
             pages[kept as usize] = at(out);
             out.extend(blocks);

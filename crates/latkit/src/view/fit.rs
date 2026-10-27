@@ -226,8 +226,8 @@ impl View {
         self.derived.tiled.bounds(&style.data, &style.table)
     }
 
-    /// Frames the box `min..max` at once. Framing everything sets how far the camera can go from
-    /// it; framing part of it widens that reach, never narrows it.
+    /// Frames the box `min..max` at once, as far as the camera's reach allows. Framing everything
+    /// sets the box that narrows the reach; framing part of it widens that box, never narrows it.
     fn frame_box(&mut self, min: [f64; 3], max: [f64; 3], everything: bool) {
         let camera = self.camera.framing(&self.scene.space, min, max, self.size, self.area());
         self.rig.hold();
@@ -237,8 +237,8 @@ impl View {
         };
         self.rig.bounds = match (self.rig.bounds, framed) {
             _ if everything => framed,
-            (Some(reach), Some(framed)) => Some(reach.with(framed)),
-            (reach, _) => reach,
+            (Some(bounds), Some(framed)) => Some(bounds.with(framed)),
+            (bounds, _) => bounds,
         };
         self.move_camera(camera);
     }

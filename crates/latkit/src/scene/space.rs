@@ -62,6 +62,11 @@ impl From<Plot> for Space {
 
 /// The earth: positions are longitude and latitude in degrees. The ground takes the theme's `earth`
 /// colors.
+///
+/// A flat map is one world, drawn once. Its ground ends at the antimeridian and at Web Mercator's
+/// latitude limit, and the camera zooms out until the whole world fits the view and pans until the
+/// world's edges meet the view's. On a globe, longitude wraps, and the camera zooms out until the
+/// globe spans a third of the view's shorter side.
 #[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Earth {

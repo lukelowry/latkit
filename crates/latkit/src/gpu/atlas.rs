@@ -1,11 +1,8 @@
 //! The text atlas. The host rasterizes each run once at `TEXT_BASE`, and the GPU turns it into a
 //! distance field reaching `TEXT_SPREAD` texels past the text's edge, packed on shelves of one
 //! texture. A distance field draws crisp at any size and also yields halos, so a run is rasterized
-//! once regardless of the size it shows at.
-//!
-//! Until a run is rasterized, its size is estimated from its font's character advances, each
-//! measured by the host once, so its label is placed where it will show. The GPU builds the fields
-//! of every run rasterized in a frame in one batch before the frame draws (`compute/fields.wesl`).
+//! once regardless of the size it shows at. The GPU builds the fields of every run rasterized in a
+//! frame in one batch before the frame draws (`compute/fields.wesl`).
 //!
 //! When no shelf has room, the least recently used shelf of a fitting height is cleared for the new
 //! run; only when none fits does packing start over. A run counts as used when it is rasterized and
@@ -14,8 +11,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-
-use rustc_hash::FxHashMap;
 
 use crate::gpu::grown::Grown;
 use crate::gpu::pipelines::{Pipelines, Variant};
@@ -51,37 +46,6 @@ impl Glyphs {
     pub(crate) fn corners(&self) -> [u32; 2] {
         let [l, t, r, b] = self.rect;
         [l | t << 16, r | b << 16]
-    }
-}
-
-/// A font's text metrics at the base size, as the host measures them: the size of an empty run,
-/// the height each extra line adds, and each character's advance, measured once per character.
-struct Metrics {
-    empty: [f32; 2],
-    line: f32,
-    advances: FxHashMap<char, f32>,
-}
-
-impl Metrics {
-    /// Measures `font` with `host`.
-    fn of(host: &dyn Host, font: &Arc<str>) -> Metrics {
-        let measure = |text: &str, max_width: Option<u32>| {
-            host.measure(&TextRun { text: text.into(), font: font.clone(), size_px: TEXT_BASE as u32, max_width })
-                .unwrap_or([0.0, 1.25 * TEXT_BASE])
-        };
-        let empty = measure("", None);
-        let line = measure("M M", Some(1))[1] - measure("M", None)[1];
-        Metrics { empty, line, advances: FxHashMap::default() }
-    }
-
-    /// The advance of `c`, measured by `host` on first use.
-    fn advance(&mut self, host: &dyn Host, font: &Arc<str>, c: char) -> f32 {
-        let empty = self.empty[0];
-        *self.advances.entry(c).or_insert_with(|| {
-            let run =
-                TextRun { text: c.to_string().into(), font: font.clone(), size_px: TEXT_BASE as u32, max_width: None };
-            host.measure(&run).map_or(0.58 * TEXT_BASE, |[w, _]| w - empty)
-        })
     }
 }
 
@@ -128,8 +92,6 @@ pub(crate) struct Atlas {
     pub(crate) evictions: u64,
     /// Counts the texts the host is asked to rasterize.
     counters: Arc<Counters>,
-    /// Text metrics by font.
-    metrics: HashMap<Arc<str>, Metrics>,
 }
 
 impl Atlas {
@@ -157,39 +119,7 @@ impl Atlas {
             clock: 0,
             evictions: 0,
             counters,
-            metrics: HashMap::new(),
         }
-    }
-
-    /// The run table entry for `run` before it is rasterized: the `TEXT_UNSET` flag, then its
-    /// estimated size as a corner word (width in the low 16 bits, height in the high). Lines break
-    /// at spaces as the host breaks them, each as wide as its characters' advances, so the label is
-    /// placed where it will show while only visible labels have their text rasterized. `[0, 0]`
-    /// without a host.
-    pub(crate) fn unset(&mut self, host: Option<&dyn Host>, run: &TextRun) -> [u32; 2] {
-        let Some(host) = host else { return [0, 0] };
-        let font = &run.font;
-        let metrics = self.metrics.entry(font.clone()).or_insert_with(|| Metrics::of(host, font));
-        let mut width = |text: &str| text.chars().map(|c| metrics.advance(host, font, c)).sum::<f32>();
-        let (widest, lines) = match run.max_width.map(|w| w as f32) {
-            None => (width(&run.text), 1),
-            Some(max) => {
-                let space = width(" ");
-                let mut lines: Vec<f32> = Vec::new();
-                for word in run.text.split(' ') {
-                    let w = width(word);
-                    match lines.last_mut() {
-                        Some(line) if *line + space + w <= max => *line += space + w,
-                        _ => lines.push(w),
-                    }
-                }
-                (lines.iter().copied().fold(0.0, f32::max), lines.len())
-            }
-        };
-        let [pad, height] = metrics.empty;
-        let w = ((widest + pad).ceil() as u32 + 2 * PAD).min(0xffff);
-        let h = ((height + (lines - 1) as f32 * metrics.line).ceil() as u32 + 2 * PAD).min(0xffff);
-        [crate::gpu::shaders::TEXT_UNSET, w | h << 16]
     }
 
     /// Starts a frame. Runs requested from now on count as used in it.
@@ -219,13 +149,12 @@ impl Atlas {
         placed.map(|(glyphs, _)| glyphs)
     }
 
-    /// Forgets everything the host made: runs, failures, and font metrics. A new host rasterizes
-    /// texts again in its own fonts.
+    /// Forgets everything the host made: runs and failures. A new host rasterizes texts again in its
+    /// own fonts.
     pub(crate) fn rehost(&mut self) {
         self.runs.clear();
         self.waiting.clear();
         self.shelves.clear();
-        self.metrics.clear();
         self.evictions += 1;
     }
 

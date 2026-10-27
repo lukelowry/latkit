@@ -1,14 +1,16 @@
-// Glyphs: every labeled row's text, placed from its anchor each frame and shown as placement
-// decided. A halo of the background color keeps text readable over anything below it. The ports
-// variant draws each port's label beside it, inside its marker. Text is a distance field, so edges
-// stay crisp at any size, and the halo is a wider threshold of the same field.
+// Glyphs: every labeled row's text, placed from its anchor each frame. A label shows where its text
+// is set, its row shows, and it fits the room its anchor gives, fading with its row's tile and, in a
+// diagram, once too small to read. Nothing else decides: no label depends on another, or on an
+// earlier frame. A halo of the background color keeps text readable over anything below it. The
+// ports variant draws each port's label beside it, inside its marker. Text is a distance field, so
+// edges stay crisp at any size, and the halo is a wider threshold of the same field.
 
 import package::lib::types::{
-    CANDIDATE_WORDS, CANDIDATE_ALPHA, LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, SIDE_LEFT,
-    SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD, TEXT_UNSET, SPACE_DIAGRAM, THEME_TEXT,
+    LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD,
+    SPACE_DIAGRAM, THEME_TEXT,
 };
 import package::lib::bind::{frame, eye, mark, word, program, ramp};
-import package::lib::state::{extra_at, record_at};
+import package::lib::state::extra_at;
 import package::lib::read::missing_bits;
 import package::lib::points::{shown_point, port_at, port_inward};
 import package::lib::marker::theme_port_size;
@@ -66,19 +68,15 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let uv0 = labels[mark.runs + 2u * code];
     let uv1 = labels[mark.runs + 2u * code + 1u];
     // Nothing to draw until the text is set.
-    if (uv0 == 0u && uv1 == 0u) || (uv0 & TEXT_UNSET) != 0u {
+    if uv0 == 0u && uv1 == 0u {
         return unshown();
     }
     let a = anchor(instance);
     let size = length_px(mark.label_size);
     let t = text_at(uv0, uv1, size, a.at, a.align);
-    // A diagram's labels show while they fit and are legible. Elsewhere, placement decides.
-    var alpha = bitcast<f32>(word(record_at(mark.candidates, CANDIDATE_WORDS, row) + CANDIDATE_ALPHA));
-    if frame.space == SPACE_DIAGRAM {
-        alpha = f32(a.shown && fits(t.hi - t.lo, a.room)) * legibility(size);
-    }
-    // A label fades with its row's tile.
-    alpha *= drawn.presence;
+    // A label shows while its row shows and it fits, as legible as its size allows, and fades with
+    // its row's tile.
+    let alpha = f32(a.shown && fits(t.hi - t.lo, a.room)) * legibility(size) * drawn.presence;
     if !(alpha > 0.0) {
         return unshown();
     }

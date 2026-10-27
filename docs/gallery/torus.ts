@@ -77,8 +77,8 @@ export default function torus(): Piece {
         {
           vertices: {
             of: ['silk', 'Point'],
-            position: ['x', 'y'],
-            elevation: 'z',
+            position: ['$x', '$y'],
+            elevation: '$z',
             radius: 0,
             color: '#00000000',
             pick: false,
@@ -95,7 +95,7 @@ export default function torus(): Piece {
                 kind: 'sequential',
                 colors: ['#2bb6e8', '#79e3d6', '#ffd39a', '#ff8f5e', '#ff5c7a'],
               },
-              value: 'tone',
+              value: '$tone',
               domain: [0, 1],
             },
           },

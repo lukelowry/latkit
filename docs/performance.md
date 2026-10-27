@@ -46,8 +46,10 @@ timings need a GPU.
   the camera leaves while the budget allows, so returning to it needs no upload.
 - Data derived for drawing, such as edge lanes, triangles, and fitted domains, is recomputed when the
   data changes, never when the camera moves. A page's triangles are built the first time it draws.
-- Map tiles are decoded and shaped in workers, so a tile arriving costs the frame only a copy of its
-  rows.
+- Map tiles are decoded and shaped in workers. A tile arriving appends its rows to its tables, which
+  are paged like any large table, so only the pages its rows fill upload and evaluate. Tiles split
+  by the area they cover on screen, so the globe's limb and a tilted horizon stay coarse, and when
+  the tile budget binds, the tiles drawn largest split first.
 - A write updates only the pages holding the rows it changed, and an append only the page the new
   rows go into. A paged table's spatial tiles are rebuilt only once the rows appended since the last
   build reach an eighth of the rows it was built from.

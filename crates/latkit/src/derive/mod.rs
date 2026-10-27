@@ -4,8 +4,8 @@
 //! changes. Small work runs on the frame, within one budget ([`FRAME_WORK`]) that all derivations
 //! share. Larger work runs as a host job, and its result is kept only while its inputs are
 //! unchanged. Results are tables beside the tables marks draw, row for row, which marks read like
-//! data. Values the GPU computes (normals, segment counts, label placement) use the same stamps and
-//! are read back.
+//! data. Values the GPU computes (normals, segment counts, the texts labels need) use the same
+//! stamps and are read back.
 //!
 //! The derivations: a diagram's sheet (places, sizes, group boxes, wires). Outside diagrams:
 //! lanes of edges sharing both endpoints, stars of nets, and, when the scene has a layout, places

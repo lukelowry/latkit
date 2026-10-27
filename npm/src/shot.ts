@@ -15,7 +15,7 @@ export interface ShotOptions {
   transparent?: boolean;
   /**
    * When the picture is taken. `'still'`, the default, waits until every view is complete and
-   * still: transitions, camera flights, and label fades run until they finish. `'now'` waits only
+   * still: transitions, camera flights, and tile fades run until they finish. `'now'` waits only
    * until every view is complete, and freezes anything moving where it is.
    */
   capture?: 'still' | 'now';

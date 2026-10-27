@@ -36,7 +36,7 @@ const scene: Scene = {
     {
       vertices: {
         of: ['grid', 'Bus'],
-        position: ['x', 'y'],
+        position: ['$x', '$y'],
         radius: field('radius'),
         color: '#ff0000',
       },
@@ -92,7 +92,7 @@ async function run(custom: boolean, compiled: boolean) {
   const hot = grid.query({
     of: 'Branch',
     filter: field('loading').gt(90),
-    select: { flow: 'flow' },
+    select: { flow: '$flow' },
     at: 1,
   });
   check(hot.ids.join() === '8,9' && hot.total === 2, 'a query filters');

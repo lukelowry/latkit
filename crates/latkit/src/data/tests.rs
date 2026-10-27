@@ -336,10 +336,12 @@ fn queries_filter_sort_page_and_select() {
     let ids = data.query(&Query::of("Branch").limit(2).ids_alone()).expect("a query").table;
     assert_eq!((ids.len(), ids.fields().count()), (2, 0), "ids alone");
     let json: Query = serde_json::from_value(serde_json::json!({
-        "of": "Branch", "filter": { "op": "lt", "args": ["loading", 100] }, "sort": [["loading", "descending"]], "limit": 2,
+        "of": "Branch", "filter": { "lt": ["$loading", 100] }, "sort": [["$loading", "descending"]], "limit": 2,
+        "select": { "name": "$name" },
     }))
     .expect("a query");
-    assert_eq!(names(&data.query(&json).expect("a query")), [text("b"), text("d")]);
+    let read = data.query(&json).expect("a query");
+    assert_eq!(names(&read), [text("b"), text("d")], "a selected field comes back as stored");
     let named = data.query(&Query::of("Branch").ids([3_u64, 1, 9])).expect("by ids");
     assert_eq!(names(&named), [text("d"), text("b")], "in the order given, unknown ids skipped");
     let lake = data.query(&Query::of("Branch").filter(field("name").contains("C"))).expect("contains");

@@ -270,10 +270,10 @@ export type ViewEvent =
         trigger: Trigger | null;
       };
     }
-  | /** The camera moved by a gesture, fit, flight, coast, or orbit: `view.camera`. */ {
-      type: 'camera';
-      detail: Camera;
-    }
+  | /**
+     * The camera moved by a gesture, fit, flight, coast, or orbit, or back within reach as the view's
+     * size, insets, or space changed: `view.camera`.
+     */ { type: 'camera'; detail: Camera }
   | /** The work the last frame waited on changed; empty once frames are complete: `view.waiting`. */ {
       type: 'waiting';
       detail: Waiting;
@@ -286,9 +286,9 @@ export type ViewEvent =
 /**
  * What a frame still waits on: pipelines the scene draws with, which compile before the view draws
  * anything new (`compiling`); pages uploading, or tables not yet built from them (`data`);
- * layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label placement, or text not yet
- * set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting
- * (`marks`). Empty once the frame is complete.
+ * layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or
+ * not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition
+ * starting (`marks`). Empty once the frame is complete.
  */
 export type Waiting = ('compiling' | 'data' | 'derived' | 'labels' | 'fit' | 'marks')[];
 
@@ -324,8 +324,8 @@ export interface Work {
    */
   packed: number;
   /**
-   * Readbacks from the GPU: probes, queries, fits, label placements, segment counts, and pictures.
-   * Frame timer readbacks, which only some devices support, are not counted.
+   * Readbacks from the GPU: probes, queries, fits, label texts, segment counts, and pictures. Frame
+   * timer readbacks, which only some devices support, are not counted.
    */
   readbacks: number;
   /**

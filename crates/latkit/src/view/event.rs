@@ -88,8 +88,8 @@ pub enum Event {
         /// How the user changed it; `None` when the data dropped rows from it.
         trigger: Option<Trigger>,
     },
-    /// The camera moved by a gesture, fit, flight, coast, or orbit:
-    /// [`View::camera`](crate::View::camera).
+    /// The camera moved by a gesture, fit, flight, coast, or orbit, or back within reach as the
+    /// view's size, insets, or space changed: [`View::camera`](crate::View::camera).
     Camera(Camera),
     /// The work the last frame waited on changed; empty once frames are complete:
     /// [`View::waiting`](crate::View::waiting).
@@ -363,7 +363,7 @@ pub struct Waiting {
     pub data: bool,
     /// Layouts, routes, lanes, shapes, tiles, or pyramids under way.
     pub derived: bool,
-    /// A label placement being read back, or texts requested and not yet set.
+    /// The label texts in view being read back, or texts requested and not yet set.
     pub labels: bool,
     /// A fit due or being measured.
     pub fit: bool,
@@ -413,7 +413,7 @@ impl schemars::JsonSchema for Waiting {
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "What a frame still waits on: pipelines the scene draws with, which compile before the view draws anything new (`compiling`); pages uploading, or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label placement, or text not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting (`marks`). Empty once the frame is complete.",
+            "description": "What a frame still waits on: pipelines the scene draws with, which compile before the view draws anything new (`compiling`); pages uploading, or tables not yet built from them (`data`); layouts, routes, lanes, shapes, tiles, or pyramids (`derived`); label texts being read back, or not yet set (`labels`); a fit due or being measured (`fit`); segment counts, or a transition starting (`marks`). Empty once the frame is complete.",
             "type": "array",
             "items": { "enum": ["compiling", "data", "derived", "labels", "fit", "marks"] },
         })

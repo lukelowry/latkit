@@ -476,9 +476,9 @@ export default function page(stage: Stage): void {
     const query: Query = {
       of: 'Signal',
       ...(inArea >= 0 ? { filter: field('area').eq(inArea) } : {}),
-      sort: [['value', low ? 'ascending' : 'descending']],
+      sort: [['$value', low ? 'ascending' : 'descending']],
       limit: HOT,
-      select: { name: 'name', value: 'value' },
+      select: { name: '$name', value: '$value' },
       at: view.at,
     };
     const found = read((held) => {

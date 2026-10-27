@@ -48,7 +48,7 @@ const scene: Scene = {
     {
       vertices: {
         of: ['grid', 'Bus'],
-        position: ['x', 'y'],
+        position: ['$x', '$y'],
         radius: 6,
         color: field('kv').colormap('viridis'),
       },
@@ -88,9 +88,9 @@ latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --outpu
     {
       "vertices": {
         "of": ["grid", "Bus"],
-        "position": ["x", "y"],
+        "position": ["$x", "$y"],
         "radius": 6,
-        "color": { "colormap": "viridis", "value": { "field": "kv" } }
+        "color": { "colormap": "viridis", "value": "$kv" }
       }
     }
   ]

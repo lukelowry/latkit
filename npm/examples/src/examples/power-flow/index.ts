@@ -238,7 +238,7 @@ export default async function page(stage: Stage): Promise<void> {
     vertices: {
       of: ['grid', 'Substation'] as [string, string],
       name,
-      position: ['lon', 'lat'] as [string, string],
+      position: ['$lon', '$lat'] as [string, string],
       visible: field('load').eq(load),
       // Both marks give every row the same radius from its capacity, so branches stop at the
       // outline that is shown.
@@ -250,9 +250,8 @@ export default async function page(stage: Stage): Promise<void> {
       ...(state.labels
         ? {
             label: {
-              text: 'name',
+              text: '$name',
               size: 12,
-              priority: 'capacity',
               ...(state.labelColor === 'kind' ? { color: kinds } : {}),
             },
           }
@@ -286,7 +285,7 @@ export default async function page(stage: Stage): Promise<void> {
           ...(state.corridors ? { bends: 'corridor' } : {}),
           width: field('rating').scale(1.6, 3.6).domain(300, 800),
           color: when(field('alarm').gt(0.5)).then(pulse).otherwise(LOADING),
-          dash: 'out',
+          dash: '$out',
           ...(state.legends ? { legend: 'Loading, % of rating' } : {}),
           ...(state.comets ? { flow: comets } : {}),
         },

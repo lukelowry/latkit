@@ -2,11 +2,13 @@
 //!
 //! A table draws whole (in priority order when a mark gives one) unless it is too large. A table a
 //! mark places on a map or a plane becomes a paged table when it is denser than a screen can show,
-//! and the largest such tables are paged until the rest fit the view's budget share. A paged table
-//! draws the rows of the tiles the camera needs, as many as its share holds, and edges ending at it
-//! are paged too, so they show with their endpoints. If the whole tables still do not fit, a table
-//! a line traces keeps drawing whole, its traces spanning only as many pixel columns as fit, and
-//! any other table draws the rows that matter most, as many as fit. What a view draws always fits.
+//! and the largest such tables are paged until the rest fit the view's budget share. A table of
+//! vector tiles is always paged, its tiles the vector tiles drawn; other tables drawn from tiles
+//! never are. A paged table draws the rows of the tiles the camera needs, as many as its share
+//! holds, and edges ending at it are paged too, so they show with their endpoints. If the whole
+//! tables still do not fit, a table a line traces keeps drawing whole, its traces spanning only as
+//! many pixel columns as fit, and any other table draws the rows that matter most, as many as fit.
+//! What a view draws always fits.
 //!
 //! A table costs what the arena allocates for it: its columns' pages, the arena blocks of its
 //! marks' per-row words, and its geometry. The GPU's ledger grants each view a share based on what
@@ -163,7 +165,8 @@ impl View {
     }
 
     /// A stamp of the costs' inputs: the scene, and for each table a mark draws, its dataset's
-    /// schema, its row structure, its geometry's version, and whether it comes from tiles.
+    /// schema, its row structure, its geometry's version, and whether it comes from tiles, and
+    /// from vector tiles.
     fn costs_stamp(&self) -> u64 {
         stamp_with(|hasher| {
             self.scene_version.hash(hasher);
@@ -172,7 +175,7 @@ impl View {
                 let data = self.snapshot(&style.data);
                 let table = data.and_then(|d| d.table(&style.table));
                 let geometry = geometry_of(&shown.mark).and_then(|f| table?.field_named(&f)).map(Field::version);
-                let owned = self.derived.tiles.owns(&style.data);
+                let owned = (self.derived.tiles.owns(&style.data), self.derived.tiles.vector(&style.data));
                 (data.map(crate::Snapshot::schema), table.map(|t| t.structure), geometry, owned).hash(hasher);
             }
         })
@@ -182,6 +185,7 @@ impl View {
     /// tables `fit` of the remaining room. Also returns the most pixel columns a trace spans.
     fn plan(&self, costs: &Costs, share: f64, fit: f64) -> (Plans, u32) {
         let (mut plans, costs) = (costs.whole.clone(), &costs.tables);
+        let vector = |key: &(Name, Name)| self.derived.tiles.vector(&key.0);
         let tileable =
             |key: &(Name, Name), planned: &Planned| planned.place != Place::Nowhere && !self.derived.tiles.owns(&key.0);
         let mut whole: f64 = costs.values().map(Cost::bytes).sum();
@@ -193,10 +197,11 @@ impl View {
                 tiled.push(key.clone());
             }
         };
-        // Page dense tables, then the largest ones until the whole tables fit.
+        // Page tables of vector tiles and dense tables, then the largest ones until the whole
+        // tables fit.
         let keys: Vec<(Name, Name)> = plans.keys().cloned().collect();
         for key in &keys {
-            if tileable(key, &plans[key]) && costs[key].rows > DENSE {
+            if vector(key) || (tileable(key, &plans[key]) && costs[key].rows > DENSE) {
                 tile(key, &mut plans, &mut whole);
             }
         }

@@ -81,7 +81,7 @@ export default function currents(): Piece {
                 kind: 'sequential',
                 colors: ['#123056', '#1d5fd1', '#3f8cff', '#7cc4ff', '#cfe8ff'],
               },
-              value: 'speed',
+              value: '$speed',
               domain: [0.2, 2.2],
             },
           },

@@ -184,7 +184,7 @@ export default async function bunny(stage: Stage): Promise<void> {
         {
           vertices: {
             of: ['bunny', 'Shadow'],
-            position: ['x', 'y'],
+            position: ['$x', '$y'],
             size: [units(field('radius').mul(2)), units(field('radius'))],
             marker: { wgsl: { source: CONTACT_SHADOW, inputs: [field('opacity')] } },
             color: '#000000',
@@ -194,7 +194,7 @@ export default async function bunny(stage: Stage): Promise<void> {
         {
           vertices: {
             of: ['bunny', 'Corner'],
-            position: ['x', 'y'],
+            position: ['$x', '$y'],
             radius: 3,
             color: '#f09478aa',
             pick: false,
@@ -229,8 +229,8 @@ export default async function bunny(stage: Stage): Promise<void> {
         {
           vertices: {
             of: ['bunny', fragments ? 'ChunkVertex' : 'Vertex'],
-            position: ['x', 'y'],
-            elevation: 'z',
+            position: ['$x', '$y'],
+            elevation: '$z',
             color:
               paint === 'solid'
                 ? inspect

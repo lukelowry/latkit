@@ -12,6 +12,9 @@
 //! draw after them, so appending never thins the drawn rows; once the appended rows reach an
 //! eighth of the pyramid's rows (at least a page), the pyramid is rebuilt. What the camera needs of
 //! a table is ranges of its order, so nothing is gathered as it moves.
+//!
+//! A table of vector tiles needs no pyramid: its tiles are the vector tiles themselves, whose rows
+//! its set appends as they arrive, and the set chooses what it draws (`TileSets::choose`).
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -25,6 +28,7 @@ use crate::expr::Expr;
 use crate::expr::cpu::Rows;
 use crate::gpu::shaders::PAGE_ROWS;
 use crate::host::Job;
+use crate::tiles::TileSets;
 
 /// Estimated microseconds to place one row in a pyramid.
 const PLACE_COST: f64 = 1.0;
@@ -78,14 +82,18 @@ pub(crate) type Plans = Keyed<(Name, Name), Planned>;
 pub(crate) struct Ask<'a> {
     pub(crate) data: &'a [Snapshot],
     pub(crate) plans: &'a Plans,
+    /// The tile sets: datasets of vector tiles have no pyramids.
+    pub(crate) tiles: &'a TileSets,
     /// The camera's view, on a map or a plane.
     pub(crate) sight: Option<&'a Sight<'a>>,
     pub(crate) earth: bool,
 }
 
-/// What a view draws of a paged table: its order, and the ranges of it to draw, finest tiles first
-/// so more important rows draw on top. `capped` is whether the plan's row budget dropped some of
-/// what the camera needs; only then does a smaller budget draw less of the table.
+/// What a view draws of a paged table: its order, and the ranges of it to draw, in the order they
+/// draw, so later ranges draw on top. A pyramid's tiles draw finest first, so more important rows
+/// draw on top; vector tiles draw coarsest first, so finer tiles draw over the ancestors standing
+/// in for them. `capped` is whether the plan's row budget dropped some of what the camera needs;
+/// only then does a smaller budget draw less of the table.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Chosen {
     pub(crate) order: Order,
@@ -103,11 +111,12 @@ pub(crate) struct Tiled {
 }
 
 impl Tiled {
-    /// Updates each dataset's pyramids to `ask`, and chooses what each paged table draws.
+    /// Updates each dataset's pyramids to `ask`, and chooses what each paged table draws, except
+    /// the tables of vector tiles.
     pub(crate) fn update(&mut self, ask: &Ask<'_>, jobs: &mut Jobs<'_>) -> Choices {
         let mut wanted: Vec<&Name> = Vec::new();
         for ((data, _), planned) in ask.plans {
-            if !planned.as_is() && !wanted.contains(&data) {
+            if !planned.as_is() && !wanted.contains(&data) && !ask.tiles.vector(data) {
                 wanted.push(data);
             }
         }

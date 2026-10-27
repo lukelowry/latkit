@@ -86,11 +86,15 @@ impl<'a> Rows<'a> {
         out
     }
 
-    /// The value of text field `expr` in `row`.
+    /// The text `expr` gives `row`: a text field's value, or the value a `when` chooses; `None`
+    /// where it is missing.
     pub(crate) fn text(&self, expr: &Expr, row: usize) -> Option<Arc<str>> {
-        let Node::Field(f) = &*expr.0 else { return None };
-        match self.value(f, row)? {
-            Value::Text(text) => Some(text),
+        match &*expr.0 {
+            Node::Field(f) => match self.value(f, row)? {
+                Value::Text(text) => Some(text),
+                _ => None,
+            },
+            Node::When(c, a, b) => self.text(if self.eval(c, row) > 0.5 { a } else { b }, row),
             _ => None,
         }
     }
@@ -233,5 +237,14 @@ mod tests {
         assert_eq!((0..3).map(|r| rows.number(&pick, r)).collect::<Vec<_>>(), [Some(1.0), Some(2.0), Some(1.0)]);
         let scaled: Expr = field("w").scale(0.0..=1.0).into();
         assert_eq!(rows.number(&scaled, 2), Some(1.0), "a fitted domain spans the values");
+    }
+
+    #[test]
+    fn a_conditional_text_gives_its_field_or_nothing() {
+        let table = Table::new("T", Ids::count(2)).field("name", vec!["a", "b"]).field("on", vec![true, false]);
+        let rows = Rows::new(&table, &[]);
+        let text = when(field("on")).then(field("name")).otherwise(Expr::missing());
+        assert_eq!(rows.text(&text, 0).as_deref(), Some("a"));
+        assert_eq!(rows.text(&text, 1), None, "a missing text is no text");
     }
 }
