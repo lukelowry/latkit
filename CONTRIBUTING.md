@@ -8,7 +8,7 @@
 | [`latkit-js`](crates/latkit-js)   | The WebAssembly bindings the npm package wraps                          |
 | [npm `latkit`](npm)               | The library in the browser, with types for every scene                  |
 | [`latkit-cli`](crates/latkit-cli) | Pictures and video of scenes, from JSON or binary data                  |
-| [Examples](npm/examples)          | A page for every feature, and the browser gate that tests them          |
+| [Examples](npm/examples)          | Small examples to copy, and the browser gate that tests them            |
 | [Benchmark](benchmark)            | Every scenario at increasing sizes, checked against committed baselines |
 | [Docs](docs)                      | The site on [Read the Docs](https://latkit.readthedocs.io)              |
 | [Gallery](docs/gallery)           | The documentation's pictures, each drawn by latkit                      |

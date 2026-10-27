@@ -48,7 +48,7 @@ fn a_label_text_chooses_between_one_text_field_and_missing() {
     assert!(on_a_plane(some).is_ok(), "the field where the condition holds, else no label");
     let two = when(field("x").gt(0.5)).then(field("name")).otherwise(field("other"));
     let Error::Invalid { path, .. } = on_a_plane(two).unwrap_err() else { panic!("two fields") };
-    assert_eq!(path.to_string(), "marks[0].vertices.label.text");
+    assert_eq!(path.to_string(), "marks[0].label.text");
     let number = when(field("x").gt(0.5)).then(field("name")).otherwise(1.0);
     assert!(on_a_plane(number).is_err(), "a value other than the field or missing");
     let zoomed = when(zoom().ge(3.0)).then(field("name")).otherwise(Expr::missing());
@@ -68,7 +68,7 @@ fn a_color_option_computes_a_color() {
     assert!(colored(field("x").colormap(Colormap::VIRIDIS).into()).is_ok());
     assert!(colored(when(field("x").gt(0.5)).then(Color::WHITE).otherwise(Expr::missing())).is_ok());
     let error = colored(field("x")).unwrap_err().to_string();
-    assert!(error.starts_with("marks[0].vertices.color"), "the error names the option: {error}");
+    assert!(error.starts_with("marks[0].color"), "the error names the option: {error}");
     assert!(error.contains("found a number; map a number to colors with colormap"), "{error}");
     assert!(colored(field("name")).is_err(), "a text is no color");
 }

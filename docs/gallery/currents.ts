@@ -1,6 +1,7 @@
 /** Currents: streamlines through a field of vortices, as on a wind map, colored by speed. */
-import { Patch } from 'latkit';
-import { THEME, framed, type Piece } from './look.ts';
+import { Data, field } from 'latkit';
+import { framed } from './look.ts';
+import type { Picture } from './render.ts';
 
 /** Vortices as `[x, y, strength]`. The sign of the strength sets the direction of spin. */
 const VORTICES = [
@@ -26,7 +27,7 @@ function flow(x: number, y: number): [number, number] {
   return [u, v];
 }
 
-export default function currents(): Piece {
+export default function (): Picture {
   const [w, h] = [1300, 720];
   const geometry: [number, number][][] = [];
   const speed: number[] = [];
@@ -57,36 +58,25 @@ export default function currents(): Piece {
     geometry.push(path);
     speed.push(travelled / path.length);
   }
-  const data = new Patch('wind').replace(
-    'Streamline',
-    { count: geometry.length },
-    { geometry, speed },
-  );
+  const wind = new Data('wind').replace('Streamline', { geometry, speed });
   return {
-    name: 'currents',
-    alt: 'Over two thousand streamlines swirling around seven vortices, slow ones deep blue and fast ones pale',
-    data: [data],
-    fit: framed([-w / 2, -h / 2, w / 2, h / 2]),
     scene: {
       space: { plane: { grid: 'off' } },
       ease: 0,
-      theme: THEME,
+      theme: { background: '#0b0f14' },
       marks: [
         {
-          lines: {
-            of: ['wind', 'Streamline'],
-            width: 0.75,
-            color: {
-              colormap: {
-                kind: 'sequential',
-                colors: ['#123056', '#1d5fd1', '#3f8cff', '#7cc4ff', '#cfe8ff'],
-              },
-              value: '$speed',
-              domain: [0.2, 2.2],
-            },
-          },
+          lines: wind.table('Streamline'),
+          width: 0.75,
+          color: field('speed')
+            .colormap({
+              kind: 'sequential',
+              colors: ['#123056', '#1d5fd1', '#3f8cff', '#7cc4ff', '#cfe8ff'],
+            })
+            .domain(0.2, 2.2),
         },
       ],
     },
+    fit: framed([-w / 2, -h / 2, w / 2, h / 2]),
   };
 }

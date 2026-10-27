@@ -23,7 +23,7 @@ export interface LatkitError extends Error {
    * - `destroyed`: the object was destroyed, so it can no longer be used.
    */
   code: Failure['code'] | 'unloaded' | 'destroyed';
-  /** The invalid part of the input, such as `marks[2].vertices.color`, on `invalid` errors. */
+  /** The invalid part of the input, such as `marks[2].color`, on `invalid` errors. */
   path?: string;
 }
 

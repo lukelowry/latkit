@@ -1,22 +1,26 @@
-/** The GPU device: it creates views and canvases, owns their shared memory, and runs frames. */
+/** The GPU device: it draws views on their canvases, owns their shared memory, and runs frames. */
 
 import type * as bindings from '../pkg/latkit.js';
-import { Canvas, type Panel } from './canvas.js';
-import type { Source } from './data.js';
-import type { Budget, Scene } from './inputs.js';
+import { Canvas, type Target } from './canvas.js';
+import type { Budget } from './inputs.js';
 import { Handle, inner, wasm, waited, type Wait } from './internal.js';
 import { firstDevice, load } from './load.js';
 import type { Work } from './outputs.js';
-import { View } from './view.js';
+import type { View } from './view.js';
 
 /**
- * A WebGPU device that views draw with. The views and canvases of one `Gpu` share its memory and
- * draw together in each animation frame, so linked views always show the same moment. Destroying
- * it destroys its canvases, views, and frame listeners; other GPUs and datasets stay usable.
+ * A WebGPU device that views draw with. The views of one `Gpu` share its memory and draw together
+ * in each animation frame, so linked views always show the same moment. Views use the first `Gpu`
+ * created unless given another, and `View.create` creates it when there is none. Destroying it
+ * destroys its views and frame listeners; other GPUs and datasets stay usable.
  */
 export class Gpu extends Handle {
+  /** The GPU views use when given none, and the request for it while one is being created. */
+  static #shared: Gpu | undefined;
+  static #creating: Promise<Gpu> | undefined;
+
   #views = new Set<View>();
-  #canvases = new Set<Canvas>();
+  #canvases = new Map<Target, Canvas>();
   #listeners = new Set<() => void>();
 
   private constructor(device: bindings.Gpu) {
@@ -24,48 +28,22 @@ export class Gpu extends Handle {
   }
 
   /**
-   * Requests a WebGPU device; the first call takes the one `load()` requested. Rejects with an
-   * `unsupported` error when the browser has no WebGPU device.
+   * Requests a WebGPU device; the first call takes the one `load()` requested. Create one before
+   * any view to set its `budget` first, or another for views that should not share memory with the
+   * rest. Rejects with an `unsupported` error when the browser has no WebGPU device.
    */
   static async create(): Promise<Gpu> {
     await load();
-    return new Gpu(await (firstDevice() ?? wasm().Gpu.create()));
+    const gpu = new Gpu(await (firstDevice() ?? wasm().Gpu.create()));
+    if (!Gpu.#shared || Gpu.#shared.lost) Gpu.#shared = gpu;
+    return gpu;
   }
 
-  /**
-   * Creates a view that draws `scene`. Show it in a {@link Canvas}, or draw it into pictures with a
-   * `Shot`, with or without a canvas.
-   */
-  view(
-    scene: Scene,
-    options: {
-      /** The datasets the scene draws; see {@link View.sources}. */
-      sources?: readonly Source[];
-    } = {},
-  ): View {
-    const view = View.made(device(this), scene, () => this.#views.delete(view));
-    this.#views.add(view);
-    if (options.sources) view.sources = options.sources;
-    return view;
-  }
-
-  /**
-   * Creates a canvas that shows views in `target`. A `<canvas>` element sizes itself to its CSS box
-   * at the device pixel ratio, and passes pointer, wheel, and key input to the views in its panels.
-   * An `OffscreenCanvas`, as in a worker, keeps the size it is given and takes no input.
-   */
-  canvas(
-    target: HTMLCanvasElement | OffscreenCanvas,
-    options: {
-      /** The views shown and their regions; see {@link Canvas.layout}. None by default. */
-      layout?: readonly Panel[];
-      /** Pixels per CSS pixel of an `OffscreenCanvas`, 1 by default. */
-      pixelRatio?: number;
-    } = {},
-  ): Canvas {
-    const canvas = Canvas.made(device(this), target, options, () => this.#canvases.delete(canvas));
-    this.#canvases.add(canvas);
-    return canvas;
+  /** @internal The GPU views use when given none, created when there is none. */
+  static shared(): Promise<Gpu> {
+    const shared = Gpu.#shared;
+    if (shared && !shared.lost) return Promise.resolve(shared);
+    return (Gpu.#creating ??= Gpu.create().finally(() => (Gpu.#creating = undefined)));
   }
 
   /**
@@ -144,14 +122,37 @@ export class Gpu extends Handle {
     await waited<void>(device(this).landed(), wait, 'waiting for work');
   }
 
-  /** @internal Destroys the GPU's canvases, views, and frame listeners before its device. */
+  /**
+   * @internal Keeps `view` until it or the GPU is destroyed, and shows it on `target`, over the
+   * views already there. Returns the canvas showing it.
+   */
+  adopt(view: View, target: Target | null, pixelRatio?: number): Canvas | undefined {
+    this.#views.add(view);
+    if (!target) return undefined;
+    let canvas = this.#canvases.get(target);
+    if (!canvas) {
+      canvas = Canvas.made(device(this), target, pixelRatio, () => this.#canvases.delete(target));
+      this.#canvases.set(target, canvas);
+    }
+    canvas.add(view);
+    return canvas;
+  }
+
+  /** @internal Forgets `view`, once it is destroyed. */
+  release(view: View): void {
+    this.#views.delete(view);
+  }
+
+  /** @internal Destroys the GPU's views, canvases, and frame listeners before its device. */
   protected override freeing(): void {
-    for (const canvas of this.#canvases) canvas.destroy();
+    if (Gpu.#shared === this) Gpu.#shared = undefined;
     for (const view of this.#views) view.destroy();
+    for (const canvas of this.#canvases.values()) canvas.destroy();
     for (const stop of this.#listeners) stop();
   }
 }
 
-function device(owner: Gpu): bindings.Gpu {
+/** @internal Returns `owner`'s bindings device. */
+export function device(owner: Gpu): bindings.Gpu {
   return inner<bindings.Gpu>(owner);
 }

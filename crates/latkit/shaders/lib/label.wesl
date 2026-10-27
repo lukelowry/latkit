@@ -1,11 +1,12 @@
-// Labels: where a labeled row's text is anchored, its size, and whether it can show. Draws place
-// every label from its anchor each frame, so labels track the camera and their rows exactly. The
-// texts pass measures the same box only to find the texts in view. Text is a distance field set at
+// Labels: where a labeled row's text is anchored, its size, the room it claims, and whether it can
+// show. Draws place every label from its anchor each frame, so labels track the camera and their
+// rows exactly; the label passes measure the same boxes to claim room and find the texts in view. Text is a distance field set at
 // `TEXT_BASE` and drawn at any size: in CSS pixels, or in a diagram in length units, where text
 // scales with the sheet and fades out once too small to read.
 
 import package::lib::types::{
     POINTS, MARKER_BLOCK, SIZED, GROUP, PATH_TRACE, TEXT_BASE, TEXT_SPREAD, HEADER_BAND, SPACE_DIAGRAM,
+    LABEL_CELL, LABEL_MARGIN, LABEL_GUESS,
 };
 import package::lib::bind::{frame, eye, mark};
 import package::lib::mark::PRIMITIVE;
@@ -114,4 +115,52 @@ fn fits(extent: vec2f, room: vec2f) -> bool {
 // Whether a box overlaps the view.
 fn in_view(lo: vec2f, hi: vec2f) -> bool {
     return all(hi > vec2f(0.0)) && all(lo < eye.size);
+}
+
+// Labels beside their rows compete for room. Each claims the cells its box covers, each cell keeps
+// the greatest claim, and a label shows only where it keeps every cell it covers: where labels
+// would overlap, the label of the row drawn on top shows. The claims depend on this frame alone.
+// A label inside its row (a block's, or a group's title) or in a diagram has its own room.
+
+// Whether the label anchored at `a` competes for room with other labels.
+fn claims_room(a: Anchor) -> bool {
+    return a.room.x <= 0.0 && frame.space != SPACE_DIAGRAM;
+}
+
+// The claim of drawn row `i`: later marks, then later rows, draw on top, so they claim more. Never
+// 0, which marks a cell no label claimed.
+fn claim_key(i: u32) -> u32 {
+    return (min(mark.index, 255u) << 24u) | min(i + 1u, 0xffffffu);
+}
+
+// The box a label claims: its text's box once set, else room for a short text at its anchor.
+fn claimed(a: Anchor, uv0: u32, uv1: u32, size: f32) -> Text {
+    if uv0 != 0u || uv1 != 0u {
+        return text_at(uv0, uv1, size, a.at, a.align);
+    }
+    var t: Text;
+    t.lo = a.at - vec2f(LABEL_GUESS * size, size) * a.align;
+    t.hi = t.lo + vec2f(LABEL_GUESS * size, size);
+    return t;
+}
+
+// The claim grid's cells a box covers: its first and last column and row (none when it lies off the
+// grid), and the grid's width in cells.
+struct Cells {
+    first: vec2i,
+    last: vec2i,
+    width: i32,
+}
+
+fn cells_of(t: Text) -> Cells {
+    let margin = LABEL_MARGIN * eye.size;
+    let size = vec2i(ceil((eye.size + 2.0 * margin) / LABEL_CELL));
+    let first = max(vec2i(floor((t.lo + margin) / LABEL_CELL)), vec2i(0));
+    let last = min(vec2i(floor((t.hi + margin) / LABEL_CELL)), size - 1);
+    return Cells(first, last, size.x);
+}
+
+// Cell `x`, `y`'s index in the grid of `c`.
+fn cell(c: Cells, x: i32, y: i32) -> u32 {
+    return u32(y * c.width + x);
 }

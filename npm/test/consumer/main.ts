@@ -1,4 +1,4 @@
-import { load, field, Data, Gpu, Patch, Shot, type Scene } from 'latkit';
+import { load, field, Data, Gpu, Patch, Shot, View, type Scene } from 'latkit';
 import { quickstart } from './quickstart';
 import wasmUrl from 'latkit/wasm?url';
 import workerUrl from 'latkit/worker?url';
@@ -28,18 +28,17 @@ async function until(condition: () => boolean): Promise<void> {
   }
 }
 
+// The scene names its dataset by name, so each view draws the `grid` its sources give.
 const scene: Scene = {
   space: { plane: { grid: 'off' } },
   theme: 'dark',
   ease: 0,
   marks: [
     {
-      vertices: {
-        of: ['grid', 'Bus'],
-        position: ['$x', '$y'],
-        radius: field('radius'),
-        color: '#ff0000',
-      },
+      vertices: ['grid', 'Bus'],
+      position: ['$x', '$y'],
+      radius: field('radius'),
+      color: '#ff0000',
     },
   ],
 };
@@ -118,19 +117,17 @@ async function run(custom: boolean, compiled: boolean) {
   const secondGpu = await Gpu.create();
   const deviceReady = performance.now();
   const canvas = (id: string) => document.querySelector<HTMLCanvasElement>(`#${id}`)!;
-  const first = gpu.view(scene);
-  const second = gpu.view(scene);
-  const third = secondGpu.view(scene);
-  gpu.canvas(canvas('first'), { layout: [{ view: first }] });
-  gpu.canvas(canvas('second'), { layout: [{ view: second }] });
-  secondGpu.canvas(canvas('third'), { layout: [{ view: third }] });
-  // A view that no canvas shows still draws in shots.
-  const headless = gpu.view(scene);
+  const sources = [decoded];
+  const first = await View.create(canvas('first'), scene, { gpu, sources });
+  const second = await View.create(canvas('second'), scene, { gpu, sources });
+  const third = await View.create(canvas('third'), scene, { gpu: secondGpu, sources: [kept] });
+  // A view on no canvas still draws in shots.
+  const headless = await View.create(null, scene, { gpu, sources });
+  check(first.gpu === gpu && third.gpu === secondGpu, 'views draw with the GPU they are given');
   for (const view of [first, second, third, headless]) {
     view.on('error', (error) => {
       throw error;
     });
-    view.sources = view === third ? [kept] : [decoded];
   }
   decoded.destroy(); // the views keep their own reference to the dataset
   kept.destroy();
@@ -138,8 +135,14 @@ async function run(custom: boolean, compiled: boolean) {
     [first, second, third].every((view) => view.stats.frames > 0 && view.stats.drawn === 1),
   );
   const firstFrame = performance.now();
-  const picture = await new Shot([64, 64], { layout: [{ view: headless }] }).image();
+  const picture = await new Shot([64, 64], { views: [headless] }).image();
   check(picture.width === 64 && picture.height === 64, 'a view without a canvas draws in a shot');
+  const shown = Shot.of(first, { scale: 2 });
+  const css = canvas('first').getBoundingClientRect();
+  check(
+    shown.size.join() === [css.width * 2, css.height * 2].map(Math.round).join(),
+    "a view's shot is its canvas's size",
+  );
   const png = await picture.encode('png');
   const jpeg = await picture.encode('jpeg', { quality: 80 });
   const webp = await picture.encode('webp');
@@ -169,7 +172,7 @@ async function run(custom: boolean, compiled: boolean) {
         chunks.push(bytes);
       },
     });
-    const video = new Shot([64, 64], { layout: [{ view: headless }] }).video({ fps: 30, output });
+    const video = new Shot([64, 64], { views: [headless] }).video({ fps: 30, output });
     await video.record((time) => time < 0.1);
     check(video.frames === 3 && !output.locked, 'video retains counters and releases its output');
     check(
@@ -177,7 +180,7 @@ async function run(custom: boolean, compiled: boolean) {
       'video writes an MP4 header',
     );
     const cancelledOutput = new WritableStream<Uint8Array>();
-    const cancelled = new Shot([64, 64], { layout: [{ view: headless }] }).video({
+    const cancelled = new Shot([64, 64], { views: [headless] }).video({
       fps: 30,
       output: cancelledOutput,
     });
@@ -187,21 +190,10 @@ async function run(custom: boolean, compiled: boolean) {
     await cancelled.abort('consumer cancellation');
     check((await settled)[0].status === 'rejected', 'cancellation interrupts the WASM frame');
     check(!cancelledOutput.locked, 'cancelled video releases the writer');
-    const restored = await new Shot([64, 64], { layout: [{ view: headless }] }).image();
+    const restored = await new Shot([64, 64], { views: [headless] }).image();
     restored.destroy();
   }
   headless.destroy();
-  check(
-    (() => {
-      try {
-        gpu.canvas(document.createElement('canvas'), { layout: [{ view: second }] });
-        return false;
-      } catch {
-        return true;
-      }
-    })(),
-    'a view shows in one canvas at a time',
-  );
   const hits = await first.pick([128, 128], { radius: 8 });
   check(
     hits.some((hit) => hit.row.table === 'Bus'),
@@ -224,7 +216,7 @@ async function run(custom: boolean, compiled: boolean) {
   stop();
   stop();
   destroyed(() => second.stats);
-  destroyed(() => gpu.view(scene));
+  destroyed(() => gpu.budget);
   for (const answer of await pending) {
     check(answer.status === 'rejected', 'destroying the view must cancel pending queries');
     const error: unknown = answer.reason;
@@ -263,7 +255,11 @@ async function run(custom: boolean, compiled: boolean) {
   document.body.append(exampleCanvas);
   const example = await quickstart(exampleCanvas);
   await until(() => example.view.stats.drawn === 2);
-  example.gpu.destroy();
+  check(
+    example.view.gpu !== gpu,
+    'a view given no GPU draws with a new one once the first is gone',
+  );
+  example.view.gpu.destroy();
   example.grid.destroy();
   exampleCanvas.remove();
   const transient = await Gpu.create();

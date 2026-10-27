@@ -116,15 +116,15 @@ def prepare(work, frames):
         "title": "WECC 240 / FAULT RESPONSE",
         "subtitle": "JOHN DAY / Bus 4005 / Applied 1.00 s / Cleared 1.15 s",
         "marks": [
-            {"lines": {"of": ["states", "polygons"], "color": "#58718b70", "width": 0.9}},
-            {"edges": {"of": ["grid", "Branch"], "ends": ["from", "to"], "width": "$width"}},
-            {"vertices": {
-                "of": ["grid", "Bus"], "position": ["$lon", "$lat"], "elevation": elevation,
+            {"lines": ["states", "polygons"], "color": "#58718b70", "width": 0.9},
+            {"edges": ["grid", "Branch"], "ends": ["from", "to"], "width": "$width"},
+            {
+                "vertices": ["grid", "Bus"], "position": ["$lon", "$lat"], "elevation": elevation,
                 "radius": {"when": [["$faulted", 8], ["$is_fault", 5]], "otherwise": 2.8},
                 "color": {"colormap": {"kind": "diverging", "colors": PALETTE}, "value": "$df", "domain": [-0.1, 0.1]},
                 "label": {"text": "$label", "size": 15},
                 "legend": "Bus frequency deviation / Hz",
-            }},
+            },
         ],
     }
 
@@ -134,10 +134,7 @@ def prepare(work, frames):
                                "y": {"label": title, "precision": 3 if field == "df" else 2}}},
             "ease": 0, "theme": {**theme, "background": "#101b28", "text": {**theme["text"], "size": 14},
                                  "plot": {"playhead": "#f3f7fc"}},
-            "marks": [{"lines": {
-                "of": ["grid", table], "trace": field, "width": 2.0, "visible": visible,
-                "color": color,
-            }}],
+            "marks": [{"lines": ["grid", table], "trace": field, "width": 2.0, "visible": visible, "color": color}],
         }
 
     write(work / "map.json", map_scene)

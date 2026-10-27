@@ -7,8 +7,8 @@
 
 Thirty-two thousand seeds placed a golden angle apart, sized and colored by a spiral wave through a custom colormap.
 
-The `latkit` command line draws this picture from the module below, which writes its data with
-`Patch` and its scene as a typed `Scene`. `node docs/gallery/render.ts bloom` draws it again.
+The `latkit` command line draws this picture from the module below, which builds its datasets
+with `Data` and returns its scene. `node docs/gallery/render.ts bloom` draws it again.
 
 ```{literalinclude} ../gallery/bloom.ts
 :language: typescript

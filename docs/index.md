@@ -31,17 +31,17 @@ cargo add latkit            # in Rust
 ## Quickstart
 
 `quickstart(canvas)` draws a dataset on a canvas. When the page is done with them, destroy the
-`gpu` and `grid` it returns. The package's consumer test type-checks and renders this file.
+`view` and `grid` it returns. The package's consumer test type-checks and renders this file.
 
 ```{literalinclude} ../npm/test/consumer/quickstart.ts
 :language: typescript
 ```
 
-A **dataset** is a set of named tables of columns, changed by **patches**. A **scene** describes
-what to draw: marks that name tables, in a space, with a theme and controls. A **view** draws a
-scene from its **sources** (the datasets it reads) on a canvas or into pictures. Scenes,
-expressions, and patches are plain data that need no WebAssembly. `load()` loads the WebAssembly
-that datasets and drawing need; `Gpu.create()`, `Data.read()`, and `Patch.read()` call it for you.
+A **dataset** is a set of named tables of columns, which changes in place. A **scene** describes
+what to draw: marks of a dataset's tables, in a space, with a theme and controls. A **view** draws a
+scene on a canvas and into pictures. Scenes and expressions are plain data, and `JSON.stringify`
+writes the JSON the command line reads. `load()` loads the WebAssembly that datasets and drawing
+need; `View.create()`, `Data.read()`, and `Patch.read()` call it for you.
 
 ## Examples
 

@@ -7,8 +7,8 @@
 
 A synthetic Texas grid. Generators are sized by the square root of their output, and the ten largest are labeled. Comets flow along the lines of 345 kV and up, spaced in map units so they keep their place as the view zooms.
 
-The `latkit` command line draws this picture from the module below, which writes its data with
-`Patch` and its scene as a typed `Scene`. `node docs/gallery/render.ts texas` draws it again.
+The `latkit` command line draws this picture from the module below, which builds its datasets
+with `Data` and returns its scene. `node docs/gallery/render.ts texas` draws it again.
 
 ```{literalinclude} ../gallery/texas.ts
 :language: typescript

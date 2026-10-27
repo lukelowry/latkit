@@ -1,12 +1,14 @@
 // Glyphs: every labeled row's text, placed from its anchor each frame. A label shows where its text
 // is set, its row shows, and it fits the room its anchor gives, fading with its row's tile and, in a
-// diagram, once too small to read. Nothing else decides: no label depends on another, or on an
-// earlier frame. A halo of the background color keeps text readable over anything below it. The
-// ports variant draws each port's label beside it, inside its marker. Text is a distance field, so
-// edges stay crisp at any size, and the halo is a wider threshold of the same field.
+// diagram, once too small to read. A label beside its row also shows only where it kept its claim
+// on the cells it covers this frame (`compute/texts.wesl`), so labels never overlap; nothing
+// depends on an earlier frame. A halo of the background color keeps text readable over anything
+// below it. The ports variant draws each port's label beside it, inside its marker. Text is a
+// distance field, so edges stay crisp at any size, and the halo is a wider threshold of the same
+// field.
 
 import package::lib::types::{
-    LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD,
+    NONE, LABEL_CODE, LABEL_COLOR, PORT_WORDS, PORT_CODE, PORT_UV, SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, TEXT_SPREAD,
     SPACE_DIAGRAM, THEME_TEXT,
 };
 import package::lib::bind::{frame, eye, mark, word, program, ramp};
@@ -14,13 +16,28 @@ import package::lib::state::extra_at;
 import package::lib::read::missing_bits;
 import package::lib::points::{shown_point, port_at, port_inward};
 import package::lib::marker::theme_port_size;
-import package::lib::label::{anchor, length_px, legibility, text_at, fits, Text};
+import package::lib::label::{
+    anchor, length_px, legibility, text_at, fits, Text, claims_room, claim_key, cells_of, cell, Cells,
+};
 import package::lib::project::{culled, to_clip};
 import package::lib::color::output;
 import package::lib::drawn::drawn_row;
 
 @group(2) @binding(8) var atlas: texture_2d<f32>;
 @group(2) @binding(13) var<storage, read> labels: array<u32>;
+@group(2) @binding(14) var<storage, read> cells: array<u32>;
+
+// Whether claim `key` kept every cell of `c`.
+fn keeps(c: Cells, key: u32) -> bool {
+    for (var y = c.first.y; y <= c.last.y; y++) {
+        for (var x = c.first.x; x <= c.last.x; x++) {
+            if cells[cell(c, x, y)] != key {
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 struct Varyings {
     @builtin(position) clip: vec4f,
@@ -67,16 +84,17 @@ fn vertex(@builtin(vertex_index) corner: u32, @builtin(instance_index) instance:
     let code = u32(bitcast<f32>(code_bits));
     let uv0 = labels[mark.runs + 2u * code];
     let uv1 = labels[mark.runs + 2u * code + 1u];
-    // Nothing to draw until the text is set.
-    if uv0 == 0u && uv1 == 0u {
+    // Nothing to draw until the text is set, or when it draws nothing.
+    if (uv0 == 0u && uv1 == 0u) || uv0 == NONE {
         return unshown();
     }
     let a = anchor(instance);
     let size = length_px(mark.label_size);
     let t = text_at(uv0, uv1, size, a.at, a.align);
-    // A label shows while its row shows and it fits, as legible as its size allows, and fades with
-    // its row's tile.
-    let alpha = f32(a.shown && fits(t.hi - t.lo, a.room)) * legibility(size) * drawn.presence;
+    // A label shows while its row shows, it fits, and it kept its room, as legible as its size
+    // allows, and fades with its row's tile.
+    let room = fits(t.hi - t.lo, a.room) && (!claims_room(a) || keeps(cells_of(t), claim_key(instance)));
+    let alpha = f32(a.shown && room) * legibility(size) * drawn.presence;
     if !(alpha > 0.0) {
         return unshown();
     }

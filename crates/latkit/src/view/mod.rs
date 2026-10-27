@@ -296,7 +296,7 @@ impl View {
                 continue;
             }
             let mut shown = Shown::new(mark.clone());
-            shown.compile(&self.snapshots, context, &mut inner).map_err(|e| mark.within(i, e))?;
+            shown.compile(&self.snapshots, context, &mut inner).map_err(|e| e.at(i).at("marks"))?;
             fresh.push(Some(shown));
         }
         let mut old: Vec<Option<Shown>> = std::mem::take(&mut self.marks).into_iter().map(Some).collect();
@@ -699,10 +699,7 @@ impl View {
 
     /// An error for every mark that draws nothing because its data no longer fits it.
     pub fn failures(&self) -> impl Iterator<Item = crate::Error> + '_ {
-        self.marks
-            .iter()
-            .enumerate()
-            .filter_map(|(i, shown)| Some(shown.mark.within(i, shown.failure.as_ref()?.0.clone())))
+        self.marks.iter().enumerate().filter_map(|(i, shown)| Some(shown.failure.as_ref()?.0.clone().at(i).at("marks")))
     }
 
     /// The cursor the view requests for what is under the pointer.

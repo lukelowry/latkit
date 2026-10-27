@@ -38,7 +38,7 @@ export interface Failure {
   code: 'invalid' | 'unsupported' | 'limit' | 'io' | 'device-lost' | 'cancelled' | 'timeout';
   /** What failed, in words. */
   message: string;
-  /** The invalid part of the input, such as `marks[2].vertices.color`, on `invalid` failures. */
+  /** The invalid part of the input, such as `marks[2].color`, on `invalid` failures. */
   path?: string;
 }
 

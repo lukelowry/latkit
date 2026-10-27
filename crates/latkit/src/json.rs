@@ -1,5 +1,5 @@
 //! Reading inputs from JSON. Errors name the path to the part that could not be read, such as
-//! `marks[2].vertices.color`.
+//! `marks[2].color`.
 
 use std::fmt::Display;
 
@@ -37,14 +37,39 @@ pub(crate) fn read<'de, T: Deserialize<'de>, D: Deserializer<'de>>(deserializer:
 where
     D::Error: Display,
 {
-    serde_path_to_error::deserialize(deserializer).map_err(|error| {
+    // A failed `nested` read leaves the path within its value. Clear one left by a read that did not
+    // pass through here, such as a test's `serde_json::from_str`.
+    WITHIN.take();
+    let read = serde_path_to_error::deserialize(deserializer);
+    let within = WITHIN.take();
+    read.map_err(|error| {
         let steps = error.path().iter().filter_map(|segment| match segment {
             Segment::Seq { index } => Some(Step::Index(*index)),
             Segment::Map { key } => Some(Step::Name(key.as_str().into())),
             Segment::Enum { variant } => Some(Step::Name(variant.as_str().into())),
             Segment::Unknown => None,
         });
-        Error::Invalid { path: Path(steps.collect()), reason: error.into_inner().to_string().into() }
+        let path = steps.chain(within.into_iter().flat_map(|path| path.0)).collect();
+        Error::Invalid { path: Path(path), reason: error.into_inner().to_string().into() }
+    })
+}
+
+thread_local! {
+    /// The path within a buffered value at which [`nested`] failed, for [`read`] to append to the
+    /// path of the value itself.
+    static WITHIN: std::cell::Cell<Option<Path>> = const { std::cell::Cell::new(None) };
+}
+
+/// Deserializes `T` from `value`, a part of the input [`read`] is reading that was buffered first,
+/// such as a mark, whose key naming its kind may come after its options. An error's path continues
+/// from the value's own.
+pub(crate) fn nested<T: DeserializeOwned, E: serde::de::Error>(value: serde_json::Value) -> std::result::Result<T, E> {
+    read(value).map_err(|error| match error {
+        Error::Invalid { path, reason } => {
+            WITHIN.set(Some(path));
+            E::custom(reason)
+        }
+        error => E::custom(error),
     })
 }
 
@@ -57,8 +82,14 @@ mod tests {
         let at = |json: &str| from_json::<Scene>(json).unwrap_err().to_string();
         let grid = at(r#"{"space": {"plane": {"grid": "bogus"}}, "marks": []}"#);
         assert!(grid.starts_with("space.plane.grid:"), "{grid}");
-        let mark = at(r#"{"space": "plane", "marks": [{"vertices": {"of": ["d", "t"], "colour": "x"}}]}"#);
-        assert!(mark.starts_with("marks[0].vertices"), "{mark}");
+        let mark = at(r#"{"space": "plane", "marks": [{"vertices": ["d", "t"], "colour": "x"}]}"#);
+        assert!(mark.starts_with("marks[0].colour:"), "{mark}");
+        // An option before the key naming the mark's kind still names its own path.
+        let radius =
+            at(r#"{"space": "plane", "marks": [{"edges": ["d", "e"]}, {"radius": [1], "vertices": ["d", "t"]}]}"#);
+        assert!(radius.starts_with("marks[1].radius"), "{radius}");
+        let none = at(r#"{"space": "plane", "marks": [{"of": ["d", "t"]}]}"#);
+        assert!(none.starts_with("marks[0]:") && none.contains("vertices"), "{none}");
         assert!(from_json::<Scene>(r#"{"space": "plane", "marks": []} trailing"#).is_err());
     }
 }

@@ -7,8 +7,8 @@
 
 A simulated fault on the ACTIVSg10k case: every machine's speed over ten seconds, traced directly from the recording's sampled field and colored by distance from the fault.
 
-The `latkit` command line draws this picture from the module below, which writes its data with
-`Patch` and its scene as a typed `Scene`. `node docs/gallery/render.ts frequency` draws it again.
+The `latkit` command line draws this picture from the module below, which builds its datasets
+with `Data` and returns its scene. `node docs/gallery/render.ts frequency` draws it again.
 
 ```{literalinclude} ../gallery/frequency.ts
 :language: typescript

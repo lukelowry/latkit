@@ -7,7 +7,7 @@ use crate::Name;
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// An input is invalid. `path` names the invalid part, such as `marks[2].vertices.color`.
+    /// An input is invalid. `path` names the invalid part, such as `marks[2].color`.
     #[error("{path}: {reason}")]
     Invalid {
         /// Location of the problem in the input.
@@ -120,7 +120,7 @@ impl schemars::JsonSchema for Error {
                 },
                 "message": { "description": "What failed, in words.", "type": "string" },
                 "path": {
-                    "description": "The invalid part of the input, such as `marks[2].vertices.color`, on `invalid` failures.",
+                    "description": "The invalid part of the input, such as `marks[2].color`, on `invalid` failures.",
                     "type": "string",
                 },
             },

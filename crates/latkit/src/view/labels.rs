@@ -6,12 +6,19 @@
 //! row's room: no label depends on another, or on an earlier frame. A row whose text is missing has
 //! no label.
 //!
-//! The texts pass finds the texts labels need. It runs on the GPU when the camera, a labeled mark's
-//! places, or a run table changes: each row near the view whose text the atlas lacks asks for it,
-//! and each row in view whose text is set marks it seen. The host reads both back, sets a few of the
-//! asked texts each frame within a budget, and touches the seen ones so the atlas keeps them; a text
-//! set shows the frame after. A run table grows with its mark's texts, and the new one starts with
-//! every text already set, so labels keep showing.
+//! Labels beside their rows compete for room on the screen. When the camera, a labeled mark's
+//! places, or a run table changes, the claim pass writes each such label's claim into the screen
+//! cells its text covers (a short text's room until its text is set), each cell keeping the claim of
+//! the row drawn on top. A label shows only where it kept every cell it covers, so labels never
+//! overlap, and only labels that keep their room need texts: however large the data, the texts in
+//! view are as many as fit on the screen. The claims depend on that frame alone.
+//!
+//! The texts pass then finds the texts those labels need: each one near the view whose text the
+//! atlas lacks asks for it, and each one in view whose text is set marks it seen. The host reads
+//! both back, sets a few of the asked texts each frame within a budget, and touches the seen ones so
+//! the atlas keeps them; a text set shows the frame after. When the atlas has no room left that the
+//! texts in view do not use, the rest wait for room. A run table grows with its mark's texts, and the
+//! new one starts with every text already set, so labels keep showing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -71,6 +78,8 @@ pub(crate) struct Labels {
     /// Each labeled mark's slots and setting, by mark.
     slots: Vec<Option<Slots>>,
     settings: Vec<Option<Setting>>,
+    /// The stamp the claim pass last ran from.
+    claimed: Option<u64>,
     /// The stamp the texts pass last ran from, and the readback of the texts it gathered.
     gathered: Derived<()>,
     /// The labeled marks' slots when the texts pass ran.
@@ -171,7 +180,18 @@ impl View {
                 }
                 let Some(run) = self.run_of(i, code, inner) else { continue };
                 let host = inner.host.clone();
-                let Some(glyphs) = inner.atlas.text(host.as_deref(), &run) else { continue };
+                let Some(glyphs) = inner.atlas.text(host.as_deref(), &run) else {
+                    // With no room left this frame, the texts left are asked for once the view
+                    // changes.
+                    if inner.atlas.full() {
+                        break 'marks;
+                    }
+                    // A text that draws nothing, such as an empty one, gives no label, so it
+                    // claims no room.
+                    set += 1;
+                    self.write_words(slots, code, [wgsl::NONE; 2]);
+                    continue;
+                };
                 set += 1;
                 self.write_run(i, slots, code, run, glyphs);
             }
@@ -184,12 +204,16 @@ impl View {
     }
 
     fn write_run(&mut self, i: usize, slots: Slots, code: u32, run: TextRun, glyphs: Glyphs) {
-        let words = glyphs.corners();
+        self.write_words(slots, code, glyphs.corners());
+        self.labels.written.entry(i).or_default().insert(code, (run, glyphs));
+    }
+
+    /// Writes `code`'s run table entry.
+    fn write_words(&self, slots: Slots, code: u32, words: [u32; 2]) {
         if let Some(resources) = &self.resources {
             let at = u64::from(slots.runs + 2 * code) * 4;
             self.gpu.0.queue.write_buffer(resources.labels(), at, bytemuck::cast_slice(&words));
         }
-        self.labels.written.entry(i).or_default().insert(code, (run, glyphs));
     }
 
     /// Lays out each labeled mark's slots in the labels buffer, and fixes run table entries whose
@@ -237,6 +261,7 @@ impl View {
             for &i in &labeled {
                 self.write_back(i);
             }
+            self.labels.claimed = None;
             self.labels.gathered = Derived::default();
             self.labels.asked.clear();
             self.labels.changes += 1;
@@ -293,9 +318,11 @@ impl View {
         self.labels.changes += 1;
     }
 
-    /// Runs the texts pass when what it reads changed, and reads back the texts it gathered. It
-    /// waits until the text pipelines have compiled, and while the last readback is in flight.
-    pub(super) fn gather_texts(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, eye: &wgsl::Eye) {
+    /// Claims the room labels cover, and runs the texts pass, when what they read changed. Claims
+    /// run in every such frame, since its labels show from them; the texts pass waits while its
+    /// last readback is in flight, and while a fit is about to move the camera. Both wait until the
+    /// text pipelines have compiled.
+    pub(super) fn place_labels(&mut self, encoder: &mut wgpu::CommandEncoder, inner: &mut Inner, eye: &wgsl::Eye) {
         if !self.texts() {
             return;
         }
@@ -304,36 +331,49 @@ impl View {
         if labeled.is_empty() {
             return;
         }
-        // What the pass reads: a color changing every frame moves no label, and a pending fit
-        // delays the pass until the camera has moved.
+        // What the passes read: a color changing every frame moves no label.
         let versions: Vec<u64> = labeled.iter().map(|&(i, _)| self.marks[i].place_version).collect();
         let stamp = stamp_of((bytemuck::bytes_of(eye), self.labels.changes, versions));
-        if !self.labels.gathered.due(stamp) || self.labels.gathered.busy() || self.fitting.framing() {
+        let claim = self.labels.claimed != Some(stamp);
+        let gather = self.labels.gathered.due(stamp) && !self.labels.gathered.busy() && !self.fitting.framing();
+        if !claim && !gather {
             return;
         }
-        self.labels.gathered.mark(stamp);
-        self.forget_asked(encoder, &labeled);
         let gpu = self.gpu.clone();
         let device = &gpu.0.device;
         let resources = self.resources.as_mut().expect("created before labels");
+        // The grid spans the view and a margin around it, a word per cell; one more cell each way
+        // covers rounding.
+        let cells =
+            |side: f32| u64::from(((side + 2.0 * wgsl::LABEL_MARGIN * side) / wgsl::LABEL_CELL).ceil() as u32 + 1);
+        let words = cells(eye.size[0]) * cells(eye.size[1]);
+        let grid = resources.label_cells(device, words).clone();
         let groups = resources.groups(&gpu.0, inner);
         let group = resources.pass(device, inner, Shader::Texts);
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("latkit texts"),
-                timestamp_writes: None,
-            });
+        let mut run = |encoder: &mut wgpu::CommandEncoder, label: &str, entry: usize| {
+            let mut pass =
+                encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(label), timestamp_writes: None });
             pass.set_bind_group(0, &groups.view, &[]);
             pass.set_bind_group(2, &group, &[]);
             // A pipeline for each mark's primitive, which finds its rows' anchors.
             for &(i, _) in &labeled {
                 let shown = &self.marks[i];
-                pass.set_pipeline(&inner.pipelines.compute(device, MarkVariants::shown(shown).texts()));
+                pass.set_pipeline(&inner.pipelines.compute(device, MarkVariants::shown(shown).label_passes()[entry]));
                 pass.set_bind_group(1, &groups.mark, &[offset(i)]);
                 dispatch(&mut pass, shown.rows);
             }
+        };
+        if claim {
+            encoder.clear_buffer(&grid, 0, Some(words * 4));
+            run(encoder, "latkit label claims", 0);
+            self.labels.claimed = Some(stamp);
         }
-        self.read_gathered(encoder, inner, labeled, stamp);
+        if gather {
+            self.labels.gathered.mark(stamp);
+            self.forget_asked(encoder, &labeled);
+            run(encoder, "latkit texts", 1);
+            self.read_gathered(encoder, inner, labeled, stamp);
+        }
     }
 
     /// Clears the texts each of `labeled` asked for and saw, before a texts pass asks again.

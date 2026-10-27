@@ -1,102 +1,99 @@
-/** Canvases that show views in a `<canvas>` element or an `OffscreenCanvas`. */
+/** Canvases, which views create: the views shown in one `<canvas>` or `OffscreenCanvas`. */
 
 import type * as bindings from '../pkg/latkit.js';
 import { Handle, inner } from './internal.js';
-import { Shot, type ShotOptions } from './shot.js';
 import { handleOf, type View } from './view.js';
 
 /** A region `[x, y, width, height]` in fractions of a canvas or picture, from its top left. */
 export type Rect = readonly [x: number, y: number, width: number, height: number];
 
-/** A view and the region of a canvas or picture it draws in. */
-export interface Panel {
-  /** The view drawn. */
-  view: View;
-  /** Where the view draws; the whole canvas or picture by default. */
-  at?: Rect;
-}
-
-/** The rect covering a whole canvas or picture. */
-const WHOLE: Rect = [0, 0, 1, 1];
+/** @internal A `<canvas>` element or an `OffscreenCanvas` that views draw in. */
+export type Target = HTMLCanvasElement | OffscreenCanvas;
 
 /**
- * Shows views in a `<canvas>` element or an `OffscreenCanvas`, each in its layout panel; created by
- * `Gpu.canvas()`. A frame redraws only the views that need it, or every view after a resize or a
- * layout change. Destroying it stops drawing; the views stay usable, and the element keeps its last
- * frame.
+ * @internal Shows views in a `<canvas>` element or an `OffscreenCanvas`, each in its region, later
+ * views over earlier ones. A `<canvas>` element sizes itself to its CSS box at the device pixel
+ * ratio and passes pointer, wheel, and key input to the view under the pointer. A frame redraws
+ * only the views that need it, or every view after a resize or a change of views. It is destroyed
+ * with its last view, and the element keeps its last frame.
  */
 export class Canvas extends Handle {
-  #target: HTMLCanvasElement | OffscreenCanvas;
-  #layout: readonly Panel[];
+  #views: View[] = [];
   #released: () => void;
 
   private constructor(
     device: bindings.Gpu,
-    target: HTMLCanvasElement | OffscreenCanvas,
-    options: { layout?: readonly Panel[]; pixelRatio?: number },
+    target: Target,
+    pixelRatio: number | undefined,
     released: () => void,
   ) {
-    const layout = options.layout ?? [];
-    super(device.canvas(target, ...encoded(layout), options.pixelRatio), 'Canvas');
-    this.#target = target;
-    this.#layout = [...layout];
+    super(device.canvas(target, ...encoded([]), pixelRatio), 'Canvas');
     this.#released = released;
   }
 
-  /** @internal Creates a canvas of `device` in `target`; `released` runs once it is destroyed. */
+  /** Creates a canvas of `device` in `target`; `released` runs once it is destroyed. */
   static made(
     device: bindings.Gpu,
-    target: HTMLCanvasElement | OffscreenCanvas,
-    options: { layout?: readonly Panel[]; pixelRatio?: number },
+    target: Target,
+    pixelRatio: number | undefined,
     released: () => void,
   ): Canvas {
-    return new Canvas(device, target, options, released);
+    return new Canvas(device, target, pixelRatio, released);
   }
 
-  /** The `<canvas>` element or `OffscreenCanvas` it draws into. */
-  get element(): HTMLCanvasElement | OffscreenCanvas {
-    return this.#target;
+  /** The views shown, in drawing order. */
+  get views(): readonly View[] {
+    return this.#views;
   }
 
-  /**
-   * The views shown and their regions; later panels draw over earlier ones. Setting it replaces the
-   * shown views. A view shows in at most one panel of one canvas at a time.
-   */
-  get layout(): readonly Panel[] {
-    return this.#layout;
+  /** The canvas's size in CSS pixels. */
+  get cssSize(): [width: number, height: number] {
+    const [width = 1, height = 1] = inner<bindings.Canvas>(this).cssSize;
+    return [width, height];
   }
 
-  set layout(layout: readonly Panel[]) {
-    inner<bindings.Canvas>(this).setLayout(...encoded(layout));
-    this.#layout = [...layout];
+  /** Shows `view` over the others. */
+  add(view: View): void {
+    this.#views.push(view);
+    this.relayout();
   }
 
-  /**
-   * A {@link Shot} of exactly what the canvas shows: its views in its layout, at the canvas's CSS
-   * size times `options.scale` in pixels.
-   */
-  shot(options: ShotOptions = {}): Shot {
-    const scale = options.scale ?? 1;
-    const css = inner<bindings.Canvas>(this).cssSize;
-    const [width = 1, height = 1] = Array.from(css, (side) =>
-      Math.max(1, Math.round(side * scale)),
-    );
-    return new Shot([width, height], { ...options, layout: this.#layout });
+  /** Stops showing `view`; with no view left, destroys the canvas. */
+  remove(view: View): void {
+    this.#views = this.#views.filter((shown) => shown !== view);
+    if (this.#views.length) this.relayout();
+    else this.destroy();
   }
 
-  /** @internal Tells the GPU the canvas is gone. */
+  /** Tells the bindings where each view draws, after a view or its region changed. */
+  relayout(): void {
+    inner<bindings.Canvas>(this).setLayout(...encoded(this.#views));
+  }
+
   protected override freeing(): void {
+    this.#views = [];
     this.#released();
   }
 }
 
+/** A view drawn into a picture, in its own region or in `region`. */
+export type Placed =
+  | View
+  | {
+      /** The view drawn. */
+      readonly view: View;
+      /** Where it draws in the picture, in place of its own region. */
+      readonly region: Rect;
+    };
+
 /**
- * @internal A layout as the bindings take it: each panel's view, and its rect's four fractions in
- * one array, the whole target where `at` is unset.
+ * @internal Views as the bindings take them: each view's handle, and its region's four fractions
+ * in one array.
  */
-export function encoded(layout: readonly Panel[]): [bindings.Handle[], Float32Array] {
+export function encoded(views: readonly Placed[]): [bindings.Handle[], Float32Array] {
+  const placed = views.map((v) => ('view' in v ? v : { view: v, region: v.region }));
   return [
-    layout.map(({ view }) => handleOf(view)),
-    Float32Array.from(layout.flatMap(({ at }) => at ?? WHOLE)),
+    placed.map(({ view }) => handleOf(view)),
+    Float32Array.from(placed.flatMap(({ region }) => region)),
   ];
 }

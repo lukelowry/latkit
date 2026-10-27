@@ -12,7 +12,7 @@ mark!(
 /// # use latkit::Faces;
 /// let surface = Faces::of("mesh", "Face").corners("a", "b", "c");
 /// ```
-Faces {
+Faces("faces") {
     /// The reference fields naming each row's three vertices; required. Without a color, a face
     /// blends the colors of its corners.
     corners: Option<[Name; 3]> as "[a: string, b: string, c: string]",

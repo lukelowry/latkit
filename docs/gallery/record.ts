@@ -3,6 +3,7 @@
  * each bus's frequency deviation from 60 Hz at one instant of the branch-opening study's recording
  * (`crates/latkit-cli/examples/branch-opening`), in ACTIVSg70k's bus order, as 16-bit integers in
  * units of 10 µHz. The recording is 168 MB, too large for the repository. One instant is 140 kB.
+ * The first frame at or after `seconds`, 2.48 by default, is the instant the picture shows.
  *
  *   node docs/gallery/record.ts [seconds] [study]
  */
@@ -10,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
-import { readCase } from './grids.ts';
+import { inflate, parseCase } from '../../npm/examples/src/pages/grids/format.ts';
 
 interface Metadata {
   readonly bus_ids: readonly number[];
@@ -18,7 +19,7 @@ interface Metadata {
 }
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
-const [seconds = '2.5', study = path.join(root, 'target/branch-opening')] = process.argv.slice(2);
+const [seconds = '2.48', study = path.join(root, 'target/branch-opening')] = process.argv.slice(2);
 const run = path.join(study, 'runs/little-rock-60hz');
 const meta = JSON.parse(
   fs.readFileSync(path.join(run, 'frequency_metadata.json'), 'utf8'),
@@ -31,7 +32,8 @@ fs.readSync(file, bytes, 0, bytes.length, frame * bytes.length);
 fs.closeSync(file);
 const hz = new Float32Array(bytes.buffer, bytes.byteOffset, count);
 
-const c = await readCase('activsg70k');
+const grid = path.join(root, 'npm/examples/public/grids/activsg70k.bin');
+const c = parseCase('activsg70k', await inflate(fs.readFileSync(grid)));
 const number = c.array('bus.number', Uint32Array);
 const row = new Map(meta.bus_ids.map((id, i) => [id, i]));
 const out = Int16Array.from(number, (id) => {

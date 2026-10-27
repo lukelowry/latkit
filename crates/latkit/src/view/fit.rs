@@ -111,7 +111,7 @@ impl View {
         let empty = |m: &Shown| m.tables.synced() && m.held() == 0;
         let ready = compiled().any(&drawn)
             && compiled().all(|m| drawn(m) || empty(m))
-            && !self.derived.sheet.placing()
+            && !self.derived.placing()
             && !self.derived.shaping()
             && !easing;
         if let Some(fit) = self.fitting.wanted.clone().filter(|f| matches!(f, Fit::All | Fit::Rows(_) | Fit::Reveal(_)))

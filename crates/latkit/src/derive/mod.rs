@@ -481,6 +481,12 @@ impl Derivations {
             && self.tiled.complete()
     }
 
+    /// Whether a layout job is pending: a diagram's sheet, or the places of vertex rows without a
+    /// position. Rows stand at placeholder places until it lands, so a fit waits for it.
+    pub(crate) fn placing(&self) -> bool {
+        self.sheet.placing() || self.places.busy()
+    }
+
     /// Whether a triangulation job is pending. The rows it shapes draw nothing until it finishes.
     pub(crate) fn shaping(&self) -> bool {
         self.shapes.busy()

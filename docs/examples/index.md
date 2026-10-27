@@ -1,7 +1,7 @@
 # Examples
 
-The `latkit` command line draws every picture here from the module on its page, which writes its
-data with `Patch` and its scene as a typed `Scene`. The
+The `latkit` command line draws every picture here from the module on its page, which builds its
+datasets with `Data` and returns its scene. The
 [example suite](https://github.com/lukelowry/latkit/tree/main/npm/examples) shows the same features
 live in the browser.
 

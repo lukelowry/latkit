@@ -36,36 +36,28 @@ cargo add latkit            # in Rust
 ## In the browser
 
 ```ts
-import { Data, Gpu, Patch, field, load, type Scene } from 'latkit';
+import { Data, View, field, load } from 'latkit';
 
 await load();
-const grid = new Data('grid').apply(
-  new Patch().replace('Bus', [101, 102], { x: [0, 30], y: [0, 20], kv: [230, 115] }),
-);
-const scene: Scene = {
+const grid = new Data('grid').set('Bus', [101, 102], { x: [0, 30], y: [0, 20], kv: [230, 115] });
+
+const view = await View.create(document.querySelector('canvas')!, {
   space: 'plane',
   marks: [
     {
-      vertices: {
-        of: ['grid', 'Bus'],
-        position: ['$x', '$y'],
-        radius: 6,
-        color: field('kv').colormap('viridis'),
-      },
+      vertices: grid.table('Bus'),
+      position: ['$x', '$y'],
+      radius: 6,
+      color: field('kv').colormap('viridis'),
     },
   ],
-};
+});
 
-const gpu = await Gpu.create();
-const view = gpu.view(scene, { sources: [grid] });
-gpu.canvas(document.querySelector('canvas')!, { layout: [{ view }] });
-view.fit();
-
-grid.apply(new Patch().set('Bus', [102], { kv: [345] })); // drawn the next frame
+grid.set('Bus', [102], { kv: [345] }); // drawn the next frame
 ```
 
-Scenes, expressions, and patches are plain data with types generated from latkit's schema. Building
-them needs no WebAssembly, so they also work in a worker or on a server.
+A scene is plain data, typed from latkit's schema: `JSON.stringify(scene)` writes the JSON that the
+command line reads.
 
 ## On the command line
 
@@ -86,12 +78,10 @@ latkit render scene.json --data grid.json --frames frames.jsonl --fps 60 --outpu
   "space": "plane",
   "marks": [
     {
-      "vertices": {
-        "of": ["grid", "Bus"],
-        "position": ["$x", "$y"],
-        "radius": 6,
-        "color": { "colormap": "viridis", "value": "$kv" }
-      }
+      "vertices": ["grid", "Bus"],
+      "position": ["$x", "$y"],
+      "radius": 6,
+      "color": { "colormap": "viridis", "value": "$kv" }
     }
   ]
 }

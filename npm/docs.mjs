@@ -700,13 +700,15 @@ const sections = {
     ],
     [
       'Data and patches',
-      'Datasets of named tables, the patches that change them, written without WebAssembly, and the sources views draw.',
+      'Datasets of named tables, their tables that marks draw, and the patches that change them, written without WebAssembly.',
       [
         'Dataset',
         'Data',
         'Snapshot',
         'Tiles',
         'Source',
+        'Table',
+        'TableInput',
         'QueryResult',
         'Envelope',
         'Patch',
@@ -718,6 +720,7 @@ const sections = {
         'Reference',
         'reference',
         'Fields',
+        'Run',
       ],
     ],
     [
@@ -748,13 +751,13 @@ const sections = {
     ],
     [
       'Views',
-      'A GPU makes views, and canvases that show them.',
-      ['Gpu', 'View', 'ViewEvents', 'Insets', 'Point', 'Position', 'Canvas', 'Panel', 'Rect'],
+      'Views draw scenes on canvases, with the GPU they share.',
+      ['View', 'Rect', 'ViewEvents', 'Insets', 'Point', 'Position', 'Gpu'],
     ],
     [
       'Pictures and video',
       'Shots draw views into images and video.',
-      ['Shot', 'ShotOptions', 'Image', 'ImageFormat', 'Video'],
+      ['Shot', 'ShotOptions', 'Placed', 'Image', 'ImageFormat', 'Video'],
     ],
   ],
   'types.md': [
@@ -886,11 +889,11 @@ out:
 
 - **Loading.** Scenes, expressions, and patches are plain data. Datasets, views, pictures, and the
   colormap functions need latkit's WebAssembly: until \`load()\` finishes, they throw an
-  \`unloaded\` error. \`Gpu.create()\`, \`Data.read()\`, and \`Patch.read()\` of JSON load it
-  themselves.
+  \`unloaded\` error. \`View.create()\`, \`Gpu.create()\`, \`Data.read()\`, and \`Patch.read()\` of
+  JSON load it themselves.
 - **Errors.** Everything latkit throws or rejects with is a \`LatkitError\`. Input it cannot use
-  fails with an \`invalid\` error whose \`path\` names the part, such as
-  \`marks[2].vertices.color\`, and changes nothing.
+  fails with an \`invalid\` error whose \`path\` names the part, such as \`marks[2].color\`, and
+  changes nothing.
 - **Waits.** Every promise waits within its \`Wait\`: until its \`signal\` aborts, or 30 seconds.
 - **Lifetimes.** A \`Handle\` holds memory until \`destroy()\`, or a \`using\` declaration, frees it.`,
   'types.md': `# Scene and result types

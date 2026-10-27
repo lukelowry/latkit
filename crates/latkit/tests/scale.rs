@@ -6,27 +6,11 @@
 
 mod common;
 
-use common::{SIZE, at, camera, close, errors, frame, gpu, plain_theme, plane, step};
-use latkit::host::{Host, Job, Raster, TextRun};
+use common::{SIZE, Threads, at, camera, close, errors, frame, gpu, plain_theme, plane, step};
 use latkit::{
-    Areas, Axis, Budget, Camera, Color, Data, Edges, Fit, Frame, Ids, Lines, Patch, Pending, Plot, Row, Scene, Table,
-    Vertices, View, Waiting, field, when,
+    Areas, Axis, Budget, Camera, Color, Data, Edges, Fit, Frame, Ids, Lines, Patch, Plot, Row, Scene, Table, Vertices,
+    View, Waiting, field, when,
 };
-
-/// A host that runs jobs on separate threads, finishing frames later, as a page's workers do.
-struct Threads;
-
-impl Host for Threads {
-    fn rasterize(&self, _: &TextRun) -> latkit::Result<Raster> {
-        Err(latkit::Error::Unsupported("these views draw no text".into()))
-    }
-
-    fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
-        let (pending, resolver) = Pending::new();
-        std::thread::spawn(move || resolver.resolve(Ok(job.run())));
-        pending
-    }
-}
 
 /// A grid of `columns` by `rows` vertices one unit apart, starting at the origin, each with
 /// `v` = 0, and an edge from each vertex to the next in its row.

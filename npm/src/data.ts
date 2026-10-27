@@ -5,7 +5,35 @@ import type { EnvelopeRequest, Id, Query } from './inputs.js';
 import { bytesOf, Handle, inner, wasm, waited, type ByteSource, type Wait } from './internal.js';
 import { load } from './load.js';
 import type { Description, Value } from './outputs.js';
-import { framed, type Patch } from './patch.js';
+import { framed, Patch, type Fields, type RowIds, type Run, type Values } from './patch.js';
+
+/**
+ * A table of a dataset, which a mark draws or a field reads from: `grid.table('Bus')`. A view draws
+ * the datasets its scene's tables belong to. Its JSON form is `[data, table]`.
+ */
+export class Table {
+  /** The dataset the table belongs to. */
+  readonly source: Source;
+  /** The table's name. */
+  readonly name: string;
+
+  /** Table `name` of `source`. */
+  constructor(source: Source, name: string) {
+    this.source = source;
+    this.name = name;
+  }
+
+  /** The JSON form, `[data, table]`, which `JSON.stringify` writes for the table. */
+  toJSON(): [data: string, table: string] {
+    return [this.source.name, this.name];
+  }
+}
+
+/**
+ * A table that a mark draws or a field reads from: a dataset's {@link Table}, or its JSON form
+ * `[data, table]`, which names a dataset the view's `sources` give.
+ */
+export type TableInput = Table | readonly [data: string, table: string];
 
 /** The rows a query returns, as columns in the forms a patch takes. */
 export interface QueryResult {
@@ -41,9 +69,14 @@ type Reads = bindings.Data | bindings.Snapshot;
  * and a {@link Snapshot}, which reads its own.
  */
 export abstract class Dataset extends Handle {
-  /** The dataset's name, by which a mark's `data` option draws it. */
+  /** The dataset's name: the first part of its tables' JSON form. */
   get name(): string {
     return inner<Reads>(this).name;
+  }
+
+  /** The dataset's table `name`, for a mark to draw or a field to read from. */
+  table(name: string): Table {
+    return new Table(this as Dataset as Data | Snapshot, name);
   }
 
   /** The tables and their row counts, each field and its kind, and the axis and its span. */
@@ -93,15 +126,15 @@ export abstract class Dataset extends Handle {
 }
 
 /**
- * A dataset that changes in place, only by patches, each applied whole or not at all. Views draw
- * its latest version from the frame after each patch. A {@link Snapshot} keeps one version and
- * shares its pages with the dataset, so an undo history costs only the pages that differ.
- * Destroying it leaves views drawing it and its snapshots usable.
+ * A dataset that changes in place, each change applied whole or not at all. Each method of
+ * {@link Patch} is also a method here that applies that one change at once; `apply` applies a patch
+ * of several. Views draw its latest version from the frame after each change. A {@link Snapshot}
+ * keeps one version and shares its pages with the dataset, so an undo history costs only the pages
+ * that differ. Destroying it leaves views drawing it and its snapshots usable.
  *
  * ```ts
- * const grid = new Data('grid').apply(new Patch().replace('Bus', [1, 2], { kv: [230, 115] }));
- * view.sources = [grid];
- * grid.apply(new Patch().set('Bus', [2], { kv: [69] })); // drawn next frame
+ * const grid = new Data('grid').set('Bus', [1, 2], { kv: [230, 115] });
+ * grid.set('Bus', [2], { kv: [69] }); // drawn the next frame
  * ```
  */
 export class Data extends Dataset {
@@ -145,6 +178,60 @@ export class Data extends Dataset {
   apply(patch: Patch | Uint8Array): this {
     inner<bindings.Data>(this).apply(patch instanceof Uint8Array ? patch : framed(patch));
     return this;
+  }
+
+  /** Applies {@link Patch.axis}: names the axis that sampled fields are recorded over. */
+  axis(name: string, unit: string): this {
+    return this.apply(new Patch().axis(name, unit));
+  }
+
+  /**
+   * Applies {@link Patch.replace}: replaces table `table` with rows `ids`, or `0` to `n - 1`, and
+   * `fields`.
+   */
+  replace(table: string, fields: Fields): this;
+  replace(table: string, ids: RowIds, fields?: Fields): this;
+  replace(table: string, ids: RowIds | Fields, fields?: Fields): this {
+    // `Patch.replace` tells ids from fields itself.
+    return this.apply(new Patch().replace(table, ids as RowIds, fields));
+  }
+
+  /**
+   * Applies {@link Patch.set}: writes `fields` for rows `ids` of `table`, or `0` to `n - 1`, adding
+   * new rows.
+   */
+  set(table: string, fields: Fields): this;
+  set(table: string, ids: RowIds, fields?: Fields): this;
+  set(table: string, ids: RowIds | Fields, fields?: Fields): this {
+    return this.apply(new Patch().set(table, ids as RowIds, fields));
+  }
+
+  /** Applies {@link Patch.remove}: removes the rows of `table` with `ids`. */
+  remove(table: string, ids: RowIds): this {
+    return this.apply(new Patch().remove(table, ids));
+  }
+
+  /** Applies {@link Patch.append}: records frames of `table` at the axis coordinates `at`. */
+  append(
+    table: string,
+    at: number | readonly number[],
+    fields: Readonly<Record<string, Values>>,
+    options?: {
+      /** The rows the frames cover, every row by default; other rows keep their last values. */
+      ids?: RowIds;
+    },
+  ): this {
+    return this.apply(new Patch().append(table, at, fields, options));
+  }
+
+  /** Applies {@link Patch.forget}: drops every sampled field's frames before `before`. */
+  forget(before: number): this {
+    return this.apply(new Patch().forget(before));
+  }
+
+  /** Applies {@link Patch.frames}: stores a run of a sampled field's entries, as a time tile holds. */
+  frames(table: string, field: string, run: Run): this {
+    return this.apply(new Patch().frames(table, field, run));
   }
 
   /** The current version as a {@link Snapshot}, which later patches leave unchanged. O(1). */
@@ -199,9 +286,14 @@ export class Tiles {
     this.name = name;
     this.url = url;
   }
+
+  /** The tiles' table `name`, such as a vector tile layer, for a mark to draw. */
+  table(name: string): Table {
+    return new Table(this, name);
+  }
 }
 
-/** A dataset a view draws; views match it to the scene's marks by the dataset's name. */
+/** A dataset a view draws: the one a {@link Table} belongs to, or one of the view's `sources`. */
 export type Source = Data | Snapshot | Tiles;
 
 /** @internal Converts `source` to a new bindings `Source` on every call. */

@@ -17,7 +17,7 @@ mark!(
 /// let roads = Lines::of("city", "roads").width(2.0);
 /// let height = Lines::of("body", "Body").trace("height");
 /// ```
-Lines + stroke {
+Lines("lines") + stroke {
     /// The path or polygon field each row runs along; the field named `geometry` by default. Not
     /// allowed on a plot.
     geometry: Option<Name>,

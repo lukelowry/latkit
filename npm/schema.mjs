@@ -26,7 +26,7 @@ const OUTPUTS = [
 ];
 
 /** Hand-written types that a `tsType` names, keyed by the module that declares them. */
-const IMPORTS = { './scene.js': ['Color', 'ExprInput'] };
+const IMPORTS = { './data.js': ['TableInput'], './scene.js': ['Color', 'ExprInput'] };
 
 /** Returns the sources of `inputs.ts` and `outputs.ts` for the schema at `file`, formatted with the
  * repository's Prettier config. */

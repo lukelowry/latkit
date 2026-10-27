@@ -3,6 +3,7 @@
  * `inputs.ts`; nothing here needs WebAssembly.
  */
 
+import type { TableInput } from './data.js';
 import type {
   Colormap,
   ColormapNode,
@@ -49,9 +50,12 @@ export class Expr {
     return this.node;
   }
 
-  /** Reads this expression's fields from table `table` of dataset `data`, joined by row id. */
-  from(data: string, table: string): Expr {
-    return new Expr(mapFields(this.node, (f) => ({ ...f, from: [data, table] })));
+  /**
+   * Reads this expression's fields from `table`, such as `weather.table('Station')`, joined by row
+   * id. A view draws the table's dataset too.
+   */
+  from(table: TableInput): Expr {
+    return new Expr(mapFields(this.node, (f) => ({ ...f, from: table })));
   }
 
   /**

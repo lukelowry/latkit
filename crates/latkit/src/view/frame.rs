@@ -140,7 +140,7 @@ impl View {
         }
         self.count_found(encoder, &inner);
         let mut drawn = super::passes::Drawn::default();
-        self.gather_texts(encoder, &mut inner, &eye);
+        self.place_labels(encoder, &mut inner, &eye);
         let depth = probe.is_some() || query.is_some_and(|(_, depth)| depth);
         self.draw(encoder, &mut inner, &mut drawn, frame, sprites.len() as u32, depth);
         self.stats.draws = drawn.draws;
@@ -346,7 +346,7 @@ impl View {
                 && !*told
             {
                 *told = true;
-                self.events.tell(Event::Error(shown.mark.within(i, error.clone())));
+                self.events.tell(Event::Error(error.clone().at(i).at("marks")));
             }
         }
     }

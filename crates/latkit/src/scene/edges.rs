@@ -13,7 +13,7 @@ mark!(
 /// # use latkit::{field, Edges};
 /// let branches = Edges::of("grid", "Branch").ends("from", "to").width(field("rating") / 100.0).flow(field("p"));
 /// ```
-Edges + stroke {
+Edges("edges") + stroke {
     /// The reference fields naming each row's two vertices.
     ends: Option<(Name, Name)> as "[from: string, to: string]",
     /// A path field whose points each row passes through between its ends.

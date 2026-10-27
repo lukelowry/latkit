@@ -82,6 +82,7 @@ export function readCase(id: string, buffer: ArrayBuffer, downloaded = buffer.by
       {
         lon: Float64Array.from(c.machineBus, (b) => c.lon[b]!),
         lat: Float64Array.from(c.machineBus, (b) => c.lat[b]!),
+        kv: Float64Array.from(c.machineBus, (b) => c.kv[b]!),
         name: c.names('machine.name'),
         power: machinePower,
         mva: c.array('machine.mva', Float32Array),

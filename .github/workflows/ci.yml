@@ -61,7 +61,6 @@ jobs:
               - 'docs/**'
               - '.readthedocs.yaml'
               - 'npm/test/consumer/quickstart.ts'
-              - 'npm/examples/src/examples/**'
               - '.github/workflows/ci.yml'
 
   # Prettier over every file: cheap, and any pull request can unformat one.

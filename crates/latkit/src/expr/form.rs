@@ -371,7 +371,7 @@ kinds! {
         field: Name,
         /// The dataset and table the field is read from, joined by row id.
         #[serde(default)]
-        #[schemars(extend("tsType" = "[data: string, table: string]"))]
+        #[schemars(extend("tsType" = "TableInput"))]
         from: Option<(Name, Name)>,
         /// For a sampled field, reads the last frame at or before the shown coordinate instead of
         /// interpolating. Default `false`.

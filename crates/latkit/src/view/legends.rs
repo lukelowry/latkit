@@ -1,7 +1,7 @@
 //! A scene's title and its marks' legends, drawn over the marks.
 //!
-//! The title and subtitle sit at the top left. Legends stack upward from the bottom right, each
-//! under its title: a ticked bar of the mark's colormap across its domain, a color cell per
+//! The title and subtitle sit at the top left. Legends stack upward from the bottom right of the
+//! drawing area (inside a plot's axes), each under its title: a ticked bar of the mark's colormap across its domain, a color cell per
 //! category, or, for named categories, a swatch beside each name. Rebuilt each frame as overlay
 //! sprites, in O(legends).
 
@@ -70,14 +70,18 @@ impl View {
             writer(inner, scale, color, &mut |w| sprites.extend(w.text(text, [area[0], y], Align::BelowRight)));
             y += font * scale * LEADING;
         }
-        let mut base = area[3];
+        // Legends stack up from the drawing area's bottom right: on a plot, inside its axes, clear of
+        // their labels.
+        let drawing = self.area();
+        let right = drawing[2] - MARGIN;
+        let mut base = drawing[3] - MARGIN;
         for (title, color) in legends() {
             let Some((colormap, domain)) = color.colormap_of() else { continue };
             let write = |s, color, f: &mut dyn FnMut(&mut Writer<'_>)| writer(inner, s, color, f);
             let height = if !colormap.named_categories().is_empty() {
-                categories(&mut sprites, theme, [area[2], base], colormap, ratio, write, title)
+                categories(&mut sprites, theme, [right, base], colormap, ratio, write, title)
             } else if let Some(domain) = domain {
-                legend(&mut sprites, theme, [area[2], base], colormap, domain, write, title)
+                legend(&mut sprites, theme, [right, base], colormap, domain, write, title)
             } else {
                 continue;
             };

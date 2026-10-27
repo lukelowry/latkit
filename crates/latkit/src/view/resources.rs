@@ -80,6 +80,8 @@ pub(crate) struct Resources {
     sprites: Grown,
     lists: Grown,
     labels: wgpu::Buffer,
+    /// The labels' claim grid: a word per screen cell.
+    cells: Grown,
     /// Incremented whenever a buffer or texture above is replaced. `lists_generation` is also
     /// incremented when the lists buffer is replaced, which empties it.
     generation: u64,
@@ -117,6 +119,7 @@ impl Resources {
                 storage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
             ),
             labels: grown::buffer(device, "latkit labels", LABELS, 256),
+            cells: Grown::new(device, "latkit label cells", storage),
             generation: 0,
             lists_generation: 0,
             groups: None,
@@ -245,6 +248,14 @@ impl Resources {
         &self.labels
     }
 
+    /// Makes room for `words` in the labels' claim grid, and returns it.
+    pub(crate) fn label_cells(&mut self, device: &wgpu::Device, words: u64) -> &wgpu::Buffer {
+        if self.cells.ensure(device, words * 4) {
+            self.generation += 1;
+        }
+        &self.cells.buffer
+    }
+
     pub(crate) fn eye(&self) -> &wgpu::Buffer {
         &self.eye
     }
@@ -360,6 +371,7 @@ impl Resources {
                     9 => self.lists.buffer.as_entire_binding(),
                     12 => self.remap.buffer.as_entire_binding(),
                     13 => self.labels.as_entire_binding(),
+                    14 => self.cells.buffer.as_entire_binding(),
                     15 => wgpu::BindingResource::TextureView(&inner.icons.view),
                     16 => self.blocks.buffer.as_entire_binding(),
                     17 => wgpu::BindingResource::Buffer(wgpu::BufferBinding {

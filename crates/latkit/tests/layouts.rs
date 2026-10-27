@@ -14,7 +14,7 @@ use std::future::Future;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use common::{diagram, errors, frame, gpu, plain_theme, step};
+use common::{Threads, diagram, errors, frame, gpu, plain_theme, step};
 use latkit::{
     Camera, Data, Edges, Ids, Layered, Layout, Patch, Port, Row, Scene, Side, Stress, Table, Vertices, View, field,
 };
@@ -255,6 +255,47 @@ fn a_plane_places_points_without_positions_by_its_layout() {
     view.set_scene(scene(Layout::None)).expect("valid scene");
     frame(&gpu, &mut view);
     assert!(located(&gpu, &mut view, 2)[1][0].is_nan(), "node 2 is not drawn");
+    assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn a_fit_on_a_plane_frames_the_places_its_layout_gives() {
+    let Some(gpu) = gpu() else { return };
+    // A ring of two thousand nodes, laid out in a job that lands frames later, as in a page's
+    // worker. Nodes 40 units apart span far beyond the 128 pixel view unless the fit waits for
+    // their places.
+    gpu.set_host(Threads);
+    let n = 2000_u32;
+    let data = Data::new("graph");
+    data.apply(
+        Patch::new()
+            .set(
+                Table::new("Node", Ids::count(n))
+                    .field("x", vec![None::<f64>; n as usize])
+                    .field("y", vec![None::<f64>; n as usize]),
+            )
+            .set(
+                Table::new("Link", Ids::count(n))
+                    .reference("from", "Node", (0..n).map(u64::from).collect::<Vec<_>>())
+                    .reference("to", "Node", (0..n).map(|i| u64::from((i + 1) % n)).collect::<Vec<_>>()),
+            ),
+    )
+    .expect("valid");
+    let scene = Scene::new(latkit::Plane::default())
+        .theme(plain_theme())
+        .layout(Stress { gap: 40.0 })
+        .draw(Edges::of("graph", "Link").ends("from", "to"))
+        .draw(Vertices::of("graph", "Node").position(field("x"), field("y")).radius(1.0));
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_sources([&data]).expect("a source");
+    view.fit(latkit::Fit::All);
+    frame(&gpu, &mut view);
+    let size = common::SIZE as f32;
+    for id in [0_u64, 500, 1000, 1500] {
+        let pending = view.screen_of(&Row::new("graph", "Node", id));
+        let p = answer(&gpu, &mut view, pending).expect("on screen");
+        assert!(p.iter().all(|v| (0.0..=size).contains(v)), "node {id} in view: {p:?}");
+    }
     assert_eq!(errors(&mut view), Vec::new());
 }
 

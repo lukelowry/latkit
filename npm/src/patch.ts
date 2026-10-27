@@ -62,6 +62,21 @@ export function reference(table: string, ids: RowIds): Reference {
 /** A table's fields by name: values, or a {@link Reference}. */
 export type Fields = Readonly<Record<string, Values | Reference>>;
 
+/** A run of a sampled field's entries at one level of detail, as {@link Patch.frames} stores. */
+export interface Run {
+  /** The level of detail, from 0 to 21; 0 by default. */
+  level?: number;
+  /** The first entry's number: a safe nonnegative integer. */
+  first: number;
+  /** Each frame's coordinate, or each bucket's first and last frames' coordinates. */
+  at: Float64Array | readonly number[];
+  /**
+   * A value per row, entry by entry; at a bucket level, every bucket's per-row minimums, then every
+   * bucket's per-row maximums. NaN marks a missing value.
+   */
+  values: Float32Array | readonly number[];
+}
+
 const MAGIC = [0x4c, 0x41, 0x54, 0x4b]; // LATK
 /** Header bytes: the magic and the frame's length. */
 const HEADER = 12;
@@ -240,17 +255,25 @@ export class Patch {
     });
   }
 
-  /** Replaces table `table` with rows `ids` and `fields`, adding the table if it does not exist. */
-  replace(table: string, ids: RowIds, fields: Fields = {}): this {
-    return this.#op(OP.replace, (w) => writeTable(w, table, ids, fields));
+  /**
+   * Replaces table `table` with rows `ids` and `fields`, adding the table if it does not exist.
+   * Without ids, the rows are `0` to `n - 1`, `n` being the length of each field's values.
+   */
+  replace(table: string, fields: Fields): this;
+  replace(table: string, ids: RowIds, fields?: Fields): this;
+  replace(table: string, ids: RowIds | Fields, fields?: Fields): this {
+    return this.#op(OP.replace, (w) => writeTable(w, table, ...rows(ids, fields)));
   }
 
   /**
    * Writes `fields` for rows `ids` of `table`. Rows with existing ids change, new ids add rows, and
-   * omitted fields keep their values. Adds the table if it does not exist.
+   * omitted fields keep their values. Adds the table if it does not exist. Without ids, the rows
+   * are `0` to `n - 1`, `n` being the length of each field's values.
    */
-  set(table: string, ids: RowIds, fields: Fields = {}): this {
-    return this.#op(OP.set, (w) => writeTable(w, table, ids, fields));
+  set(table: string, fields: Fields): this;
+  set(table: string, ids: RowIds, fields?: Fields): this;
+  set(table: string, ids: RowIds | Fields, fields?: Fields): this {
+    return this.#op(OP.set, (w) => writeTable(w, table, ...rows(ids, fields)));
   }
 
   /** Removes the rows of `table` with `ids`. */
@@ -319,23 +342,7 @@ export class Patch {
    * `k`, a bucket of `8^k` frames. None of the entries may be stored already. Entries past the
    * field's last frame extend it.
    */
-  frames(
-    table: string,
-    field: string,
-    run: {
-      /** The level of detail, from 0 to 21; 0 by default. */
-      level?: number;
-      /** The first entry's number: a safe nonnegative integer. */
-      first: number;
-      /** Each frame's coordinate, or each bucket's first and last frames' coordinates. */
-      at: Float64Array | readonly number[];
-      /**
-       * A value per row, entry by entry; at a bucket level, every bucket's per-row minimums, then
-       * every bucket's per-row maximums. NaN marks a missing value.
-       */
-      values: Float32Array | readonly number[];
-    },
-  ): this {
+  frames(table: string, field: string, run: Run): this {
     const { level = 0, first, at, values } = run;
     const path = `${table}.${field}`;
     if (!Number.isInteger(level) || level < 0 || level > LEVELS)
@@ -491,6 +498,30 @@ function writeTable(w: Writer, table: string, ids: RowIds, fields: Fields): void
 
 function isReference(field: Values | Reference): field is Reference {
   return !ArrayBuffer.isView(field) && !Array.isArray(field) && 'reference' in field;
+}
+
+/**
+ * The ids and fields of `replace` or `set`, given as `(ids, fields)`, or as `(fields)` whose rows
+ * are `0` to `n - 1`, `n` being the length of the first field's values.
+ */
+function rows(ids: RowIds | Fields, fields: Fields | undefined): [RowIds, Fields] {
+  if (fields !== undefined || isIds(ids)) return [ids as RowIds, fields ?? {}];
+  const first = Object.values(ids)[0];
+  return [{ count: first ? length(isReference(first) ? first.ids : first) : 0 }, ids];
+}
+
+/** Whether `x` is row ids rather than fields: a list, or `{ count }`, since no field is a number. */
+function isIds(x: RowIds | Fields): x is RowIds {
+  return (
+    Array.isArray(x) ||
+    ArrayBuffer.isView(x) ||
+    typeof (x as { count?: unknown }).count === 'number'
+  );
+}
+
+/** How many values or ids `x` holds. */
+function length(x: Values | RowIds): number {
+  return 'length' in x ? x.length : x.count;
 }
 
 /**

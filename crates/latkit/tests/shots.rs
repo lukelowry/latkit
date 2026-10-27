@@ -271,6 +271,39 @@ fn a_legend_draws_its_marks_colormap_across_the_domain() {
 }
 
 #[test]
+fn a_plots_legend_stays_clear_of_its_axes() {
+    let Some(gpu) = gpu() else { return };
+    let data = Data::new("d");
+    let frames: Vec<f64> = (0..10).map(f64::from).collect();
+    let values: Vec<f32> = (0..10_u8).map(f32::from).collect();
+    data.apply(Patch::new().axis("time", "s").replace(Table::new("S", Ids::count(1)).field("k", vec![1.0])).append(
+        "S",
+        frames,
+        [("v", values)],
+    ))
+    .expect("valid");
+    let colors = field("k").colormap(latkit::Colormap::VIRIDIS).domain(0.0..=1.0);
+    // The lowest row holding the colormap's yellow high end: the bottom of the legend's bar.
+    let bar_bottom = |scene: Scene| {
+        let mut view = view(&gpu, scene, &data);
+        let image = pollster::block_on(Shot::new([400, 200]).image(&mut [&mut view])).expect("a picture");
+        let yellow = |p: [u8; 4]| p[0] > 200 && p[1] > 190 && p[2] < 90;
+        (0..200).rev().find(|&y| (300..400).any(|x| yellow(pixel(&image, x, y)))).expect("a legend")
+    };
+    let on_plane = bar_bottom(
+        Scene::new(plane())
+            .theme(plain_theme())
+            .draw(Vertices::of("d", "S").position(0.0, 0.0).color(colors.clone()).legend("")),
+    );
+    let on_plot = bar_bottom(
+        Scene::new(latkit::Plot::default())
+            .theme(plain_theme())
+            .draw(Lines::of("d", "S").trace("v").color(colors).legend("")),
+    );
+    assert!(on_plot + 20 < on_plane, "above the axis labels: {on_plot} on the plot, {on_plane} on a plane");
+}
+
+#[test]
 fn a_legend_lists_named_categories_by_their_colors() {
     use latkit::{Colormap, ColormapKind};
     let Some(gpu) = gpu() else { return };

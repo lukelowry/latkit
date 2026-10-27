@@ -1,15 +1,23 @@
 /**
- * Views: a scene drawn from the given sources. A view's state is a set of properties, and setting
- * one emits no event. When the user changes that state, the view emits an event named after the
- * property. Queries are methods, answered by the frames that draw the view.
+ * Views: a scene drawn on a canvas from its datasets. A view's state is a set of properties, and
+ * setting one emits no event. When the user changes that state, the view emits an event named after
+ * the property. Queries are methods, answered by the frames that draw the view.
  */
 
 import type * as bindings from '../pkg/latkit.js';
-import { Snapshot, sourceOf, type Source } from './data.js';
+import type { Canvas, Rect } from './canvas.js';
+import { Snapshot, sourceOf, Table, type Source } from './data.js';
+import { device, Gpu } from './gpu.js';
 import type { Camera, Fit, Row, Rows, Scene } from './inputs.js';
 import { Handle, inner, thrown, waited, type LatkitError, type Wait } from './internal.js';
 import type { Failure, Hit, Stats, ViewEvent, Waiting } from './outputs.js';
 import { Patch } from './patch.js';
+
+/** The region covering a whole canvas or picture. */
+const WHOLE: Rect = [0, 0, 1, 1];
+
+/** @internal Returns the canvas showing `view`, if any. */
+export let canvasOf: (view: View) => Canvas | undefined;
 
 /**
  * The events a view emits, by type, mapped to each event's detail. Intents (`click`, `open`,
@@ -35,31 +43,98 @@ export type Point = [x: number, y: number];
 export type Position = [x: number, y: number, elevation: number];
 
 /**
- * A scene drawn from its sources; created by `Gpu.view()`. A canvas shows it and passes it input,
- * and a `Shot` draws it into pictures. Destroying it rejects its unanswered queries; a canvas
- * showing it keeps its last frame.
+ * A scene drawn from its datasets, on a canvas and into pictures; created by {@link View.create}.
+ * The canvas passes it pointer, wheel, and key input, and a `Shot` draws it into pictures.
+ * Destroying it rejects its unanswered queries; its canvas keeps its last frame.
+ *
+ * ```ts
+ * const grid = new Data('grid').set('Bus', [1, 2], { x: [0, 30], y: [0, 20], kv: [230, 115] });
+ * const view = await View.create(canvas, {
+ *   space: 'plane',
+ *   marks: [{ vertices: grid.table('Bus'), position: ['$x', '$y'], color: field('kv').colormap('viridis') }],
+ * });
+ * ```
  */
 export class View extends Handle {
-  #listeners = new Map<keyof ViewEvents, Set<(event: never) => void>>();
-  #scene: Scene;
-  #sources: readonly Source[] = [];
-  #released: () => void;
+  static {
+    canvasOf = (view) => view.#canvas;
+  }
 
-  private constructor(device: bindings.Gpu, scene: Scene, released: () => void) {
+  #listeners = new Map<keyof ViewEvents, Set<(event: never) => void>>();
+  #gpu: Gpu;
+  #canvas: Canvas | undefined;
+  #region: Rect;
+  #scene: Scene;
+  /** The datasets of the tables the scene names. */
+  #tables: readonly Source[];
+  #sources: readonly Source[] = [];
+
+  private constructor(gpu: Gpu, scene: Scene, region: Rect) {
     // The view sends events once it exists, so the callback finds it through `told`.
     const told: { view?: View } = {};
     const tell = (json: string) => {
       if (told.view) told.view.#tell(json);
     };
-    super(device.view(JSON.stringify(scene), tell), 'View');
+    const { json, tables } = encoded(scene);
+    super(device(gpu).view(json, tell), 'View');
     told.view = this;
+    this.#gpu = gpu;
+    this.#region = region;
     this.#scene = scene;
-    this.#released = released;
+    this.#tables = tables;
   }
 
-  /** @internal Creates a view of `scene` on `device`; `released` is called once it is destroyed. */
-  static made(device: bindings.Gpu, scene: Scene, released: () => void): View {
-    return new View(device, scene, released);
+  /**
+   * Creates a view that draws `scene` on `canvas`, in `options.region`, over any views already on
+   * it; with a `null` canvas, the view draws only into pictures. It draws the datasets its scene's
+   * tables belong to, and frames everything once it draws, unless given a camera.
+   */
+  static async create(
+    canvas: HTMLCanvasElement | OffscreenCanvas | null,
+    scene: Scene,
+    options: {
+      /** Where the view draws on the canvas and in pictures; the whole of them by default. */
+      region?: Rect;
+      /** Where the view looks first. Without one, it frames everything drawn. */
+      camera?: Camera;
+      /** Datasets beside those of the scene's tables; see {@link View.sources}. */
+      sources?: readonly Source[];
+      /** The GPU that draws the view; the first `Gpu` created by default, created if need be. */
+      gpu?: Gpu;
+      /** Pixels per CSS pixel of an `OffscreenCanvas`, 1 by default; the first view on it sets it. */
+      pixelRatio?: number;
+    } = {},
+  ): Promise<View> {
+    const gpu = options.gpu ?? (await Gpu.shared());
+    const view = new View(gpu, scene, options.region ?? WHOLE);
+    try {
+      view.sources = options.sources ?? [];
+      if (options.camera) view.camera = options.camera;
+      else view.fit();
+      view.#canvas = gpu.adopt(view, canvas, options.pixelRatio);
+    } catch (error) {
+      view.destroy();
+      throw error;
+    }
+    return view;
+  }
+
+  /** The GPU that draws the view. */
+  get gpu(): Gpu {
+    return this.#gpu;
+  }
+
+  /**
+   * Where the view draws on its canvas and in pictures: `[x, y, width, height]` in fractions of
+   * them, from the top left. Views of one canvas draw in the order they were created.
+   */
+  get region(): Rect {
+    return this.#region;
+  }
+
+  set region(region: Rect) {
+    this.#region = region;
+    this.#canvas?.relayout();
   }
 
   /**
@@ -71,23 +146,47 @@ export class View extends Handle {
   }
 
   set scene(scene: Scene) {
-    view(this).setScene(JSON.stringify(scene));
+    const { json, tables } = encoded(scene);
+    const changed =
+      tables.length !== this.#tables.length || tables.some((t, i) => t !== this.#tables[i]);
+    const drawn = changed ? this.#drawn(tables, this.#sources) : undefined;
+    view(this).setScene(json);
     this.#scene = scene;
+    this.#tables = tables;
+    if (drawn) view(this).setSources(drawn);
   }
 
   /**
-   * The datasets the view draws, matched to marks by dataset name, which must be unique. The view
-   * draws a `Data` at its latest version, from the frame after each patch; a `Snapshot` unchanged;
-   * and `Tiles` as the pieces it needs. A mark whose dataset no longer fits it draws nothing; it is
-   * listed in `failures`, and the next frame emits an `error` event.
+   * Datasets the view draws besides those of its scene's tables, and in their place where they
+   * share a name: a mark whose table is written `[data, table]` draws the source named `data`. The
+   * view draws a `Data` at its latest version, from the frame after each change; a `Snapshot`
+   * unchanged; and `Tiles` as the pieces it needs. A mark whose dataset no longer fits it draws
+   * nothing; it is listed in `failures`, and the next frame emits an `error` event.
    */
   get sources(): readonly Source[] {
     return this.#sources;
   }
 
   set sources(sources: readonly Source[]) {
-    view(this).setSources(sources.map(sourceOf));
+    view(this).setSources(this.#drawn(this.#tables, sources));
     this.#sources = [...sources];
+  }
+
+  /**
+   * The datasets drawn, as the bindings take them: `sources`, then those of the scene's `tables`
+   * that no source replaces by name. Throws an `invalid` error for two datasets of one name.
+   */
+  #drawn(tables: readonly Source[], sources: readonly Source[]): bindings.Source[] {
+    const named = new Set(sources.map((source) => source.name));
+    const drawn = [...sources, ...tables.filter((table) => !named.has(table.name))];
+    const twice = drawn.find((source, i) => drawn.findIndex((s) => s.name === source.name) !== i);
+    if (twice)
+      throw thrown({
+        code: 'invalid',
+        message: `two datasets are named '${twice.name}'`,
+        path: 'sources',
+      });
+    return drawn.map(sourceOf);
   }
 
   /**
@@ -302,16 +401,30 @@ export class View extends Handle {
     }
   }
 
-  /** @internal Drops the listeners and tells the GPU the view is gone. */
+  /** @internal Drops the listeners, and takes the view off its canvas and its GPU. */
   protected override freeing(): void {
     for (const listeners of this.#listeners.values()) listeners.clear();
     this.#listeners.clear();
-    this.#released();
+    this.#canvas?.remove(this);
+    this.#canvas = undefined;
+    this.#gpu.release(this);
   }
 }
 
 function view(owner: View): bindings.View {
   return inner<bindings.View>(owner);
+}
+
+/** `scene` as JSON, and the datasets of the tables it names. */
+function encoded(scene: Scene): { json: string; tables: Source[] } {
+  const tables = new Set<Source>();
+  const json = JSON.stringify(scene, function (this: Record<string, unknown>, key, value: unknown) {
+    // `value` is what `toJSON` returned; the holder still has the table itself.
+    const held = this[key];
+    if (held instanceof Table) tables.add(held.source);
+    return value;
+  });
+  return { json, tables: [...tables] };
 }
 
 /** @internal Returns a new bindings handle to the view, for a canvas to show or a shot to draw. */

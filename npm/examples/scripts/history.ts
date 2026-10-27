@@ -1,5 +1,5 @@
 /**
- * Writes the recorded day that the Live data page reads as time tiles, into `public/history/`. It
+ * Writes the recorded day that the Telemetry page reads as time tiles, into `public/history/`. It
  * contains the voltages of 64 buses in six areas, every 15 s for a day. A load curve swings them,
  * and three disturbances pull areas down before they recover. Every run writes the same bytes. Run
  * it from the examples with `node scripts/history.ts`. It tiles the day with the repository's

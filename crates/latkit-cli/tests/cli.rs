@@ -8,7 +8,7 @@ use std::process::{Command, Output, Stdio};
 use latkit::Image;
 
 const SCENE: &str =
-    r#"{"space":"plane","ease":0,"marks":[{"vertices":{"of":["grid","Bus"],"position":["$x","$y"],"radius":6}}]}"#;
+    r#"{"space":"plane","ease":0,"marks":[{"vertices":["grid","Bus"],"position":["$x","$y"],"radius":6}]}"#;
 const DATA: &str = r#"{"name":"grid","patch":[{"replace":{"table":"Bus","ids":[10,20],"fields":{"x":[-10,10],"y":[0,0],"name":["Alpha","Beta"]}}}]}"#;
 const CAMERA: &str = r#"{"center":[0,0],"zoom":2,"pitch":0,"bearing":0}"#;
 
@@ -148,7 +148,7 @@ fn failures_report_path_and_source_and_leave_existing_output_intact() {
     let output = run(dir.path(), &["--diagnostics", "json", "validate", "scene.json"], None);
     assert_eq!(output.status.code(), Some(1));
     let told: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(told["detail"]["path"], "marks[0].vertices.of");
+    assert_eq!(told["detail"]["path"], "marks[0].vertices");
     assert_eq!(told["detail"]["source"], "scene.json");
     let twice = run(dir.path(), &["validate", "scene.json", "-d", "grid.json", "-d", "grid.json"], None);
     assert!(String::from_utf8_lossy(&twice.stderr).contains("two sources named 'grid'"));
@@ -156,11 +156,11 @@ fn failures_report_path_and_source_and_leave_existing_output_intact() {
     assert_eq!(run(dir.path(), &["render", "scene.json", "-o", "out.png"], None).status.code(), Some(1));
     assert_eq!(std::fs::read(dir.path().join("out.png")).unwrap(), b"keep this");
     // A legend needs a color mapped through a colormap with a domain or named categories.
-    let legend = r#"{"space":"plane","marks":[{"vertices":{"of":["grid","Bus"],"legend":"Buses"}}]}"#;
+    let legend = r#"{"space":"plane","marks":[{"vertices":["grid","Bus"],"legend":"Buses"}]}"#;
     let output =
         run(dir.path(), &["--diagnostics", "json", "validate", "-", "-d", "grid.json"], Some(legend.as_bytes()));
     let told: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(told["detail"]["path"], "marks[0].vertices.legend");
+    assert_eq!(told["detail"]["path"], "marks[0].legend");
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn a_tiled_history_draws_the_same_as_the_whole_dataset() {
         v.join(",")
     );
     std::fs::write(dir.path().join("signals.json"), data).unwrap();
-    let scene = r##"{"space":"plot","ease":0,"marks":[{"lines":{"of":["signals","Signal"],"trace":"v","color":"#ff0000","width":2}}]}"##;
+    let scene = r##"{"space":"plot","ease":0,"marks":[{"lines":["signals","Signal"],"trace":"v","color":"#ff0000","width":2}]}"##;
     std::fs::write(dir.path().join("plot.json"), scene).unwrap();
     std::fs::write(dir.path().join("camera.json"), r#"{"x":[100,300],"y":[0,1]}"#).unwrap();
     ok(&run(dir.path(), &["tile", "signals.json", "-o", "tiles", "--chunk", "64"], None));
@@ -257,7 +257,7 @@ fn a_tiled_history_draws_the_same_as_the_whole_dataset() {
 #[test]
 fn a_labeled_still_renders_to_a_file_and_to_stdout() {
     let dir = fixture();
-    let scene = r#"{"space":"diagram","layout":{"layered":{}},"title":"Grid","marks":[{"vertices":{"of":["grid","Bus"],"label":"$name"}}]}"#;
+    let scene = r#"{"space":"diagram","layout":{"layered":{}},"title":"Grid","marks":[{"vertices":["grid","Bus"],"label":"$name"}]}"#;
     std::fs::write(dir.path().join("scene.json"), scene).unwrap();
     std::fs::write(dir.path().join("out.png"), b"replace me").unwrap();
     let args = ["render", "scene.json", "-d", "grid.json", "-o", "out.png", "--size", "127x129", "--transparent"];

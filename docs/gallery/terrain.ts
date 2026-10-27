@@ -1,6 +1,6 @@
 /** Terrain: ridged mountains as lit triangles over a grid of vertices, colored by height. */
-import { Patch, reference } from 'latkit';
-import { THEME, floats, rows, type Piece } from './look.ts';
+import { Data, field, reference } from 'latkit';
+import type { Picture } from './render.ts';
 
 /** The height at `x`, `y`: sharpened ridges at six directions and scales, summed. */
 function height(x: number, y: number): number {
@@ -24,13 +24,16 @@ function height(x: number, y: number): number {
   );
 }
 
-export default function terrain(): Piece {
+export default function (): Picture {
   const [columns, lines] = [300, 190];
   const [w, h] = [1400, 880];
   const n = columns * lines;
-  const px = (i: number) => ((i % columns) / (columns - 1) - 0.5) * w;
-  const py = (i: number) => (Math.floor(i / columns) / (lines - 1) - 0.5) * h;
-  const z = floats(n, (i) => 150 * height(px(i), py(i)));
+  // Vertex i's place on the grid, row by row.
+  const xOf = (i: number) => ((i % columns) / (columns - 1) - 0.5) * w;
+  const yOf = (i: number) => (Math.floor(i / columns) / (lines - 1) - 0.5) * h;
+  const x = Float32Array.from({ length: n }, (_, i) => xOf(i));
+  const y = Float32Array.from({ length: n }, (_, i) => yOf(i));
+  const z = Float32Array.from({ length: n }, (_, i) => 150 * height(xOf(i), yOf(i)));
   const cells = (columns - 1) * (lines - 1);
   // Two triangles per grid cell. Returns corner `k` (0 to 5) of the cell's triangles as a vertex
   // row.
@@ -40,55 +43,40 @@ export default function terrain(): Piece {
     const at = r * columns + c;
     return [at, at + 1, at + columns, at + 1, at + columns + 1, at + columns][k]!;
   };
-  const data = new Patch('land')
-    .replace('Vertex', { count: n }, { x: floats(n, px), y: floats(n, py), z })
-    .replace(
-      'Face',
-      { count: 2 * cells },
-      {
-        a: reference(
-          'Vertex',
-          rows(2 * cells, (f) => corner(f >> 1, (f & 1) * 3)),
-        ),
-        b: reference(
-          'Vertex',
-          rows(2 * cells, (f) => corner(f >> 1, (f & 1) * 3 + 1)),
-        ),
-        c: reference(
-          'Vertex',
-          rows(2 * cells, (f) => corner(f >> 1, (f & 1) * 3 + 2)),
-        ),
-      },
+  // Corner `k` (0 to 2) of every face. Faces 2c and 2c + 1 are cell c's two triangles.
+  const corners = (k: number) => {
+    const vertex = Uint32Array.from({ length: 2 * cells }, (_, f) =>
+      corner(f >> 1, (f & 1) * 3 + k),
     );
+    return reference('Vertex', vertex);
+  };
+  const land = new Data('land')
+    .replace('Vertex', { x, y, z })
+    .replace('Face', { a: corners(0), b: corners(1), c: corners(2) });
   return {
-    name: 'terrain',
-    alt: 'Ridged mountains of 112,000 lit triangles, from deep teal valleys to pale summits, seen from above at an angle',
-    data: [data],
-    camera: { center: [0, -20, 30], zoom: -0.9, pitch: 56, bearing: 22 },
     scene: {
       space: { plane: { grid: 'off' } },
       ease: 0,
-      theme: THEME,
+      theme: { background: '#0b0f14' },
       marks: [
+        // The vertices draw nothing themselves: they place the faces' corners, and each face
+        // blends its corners' colors.
         {
-          vertices: {
-            of: ['land', 'Vertex'],
-            position: ['$x', '$y'],
-            elevation: '$z',
-            radius: 0,
-            pick: false,
-            color: {
-              colormap: {
-                kind: 'sequential',
-                colors: ['#0e2a3f', '#1b5e6b', '#3f8f6e', '#a7a463', '#d9c9a3', '#f4efe6'],
-              },
-              value: '$z',
-              domain: [0, 120],
-            },
-          },
+          vertices: land.table('Vertex'),
+          position: ['$x', '$y'],
+          elevation: '$z',
+          radius: 0,
+          pick: false,
+          color: field('z')
+            .colormap({
+              kind: 'sequential',
+              colors: ['#0e2a3f', '#1b5e6b', '#3f8f6e', '#a7a463', '#d9c9a3', '#f4efe6'],
+            })
+            .domain(0, 120),
         },
-        { faces: { of: ['land', 'Face'], corners: ['a', 'b', 'c'], pick: false } },
+        { faces: land.table('Face'), corners: ['a', 'b', 'c'], pick: false },
       ],
     },
+    camera: { center: [0, -20, 30], zoom: -0.9, pitch: 56, bearing: 22 },
   };
 }

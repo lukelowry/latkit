@@ -126,9 +126,11 @@ impl<'a> MarkVariants<'a> {
         Variant::probe(shader, self.primitive()).path(self.path)
     }
 
-    /// The texts pass, which finds the texts its labels need at their anchors.
-    pub(super) fn texts(self) -> Variant {
-        Variant::compute(Shader::Texts, "texts").path(self.path).primitive(self.primitive())
+    /// The label passes: `claim`, which claims the room its labels would cover, then `texts`, which
+    /// finds the texts the labels that kept their room need.
+    pub(super) fn label_passes(self) -> [Variant; 2] {
+        ["claim", "texts"]
+            .map(|entry| Variant::compute(Shader::Texts, entry).path(self.path).primitive(self.primitive()))
     }
 
     /// The pipeline drawing its labels' glyphs.
@@ -167,7 +169,8 @@ pub(crate) fn common(format: wgpu::TextureFormat, samples: u32) -> Vec<Asked> {
     needs.extend(SCAN.map(Asked::Shader));
     needs.extend([draw(Shader::PointsPorts), draw(Shader::Overlay), draw(Shader::GlyphsPorts)]);
     let vertices = marks[2];
-    needs.extend([vertices.glyphs(format, samples), vertices.texts()].map(Asked::Shader));
+    needs.push(Asked::Shader(vertices.glyphs(format, samples)));
+    needs.extend(vertices.label_passes().map(Asked::Shader));
     needs.extend(FIELDS.map(Asked::Shader));
     needs
 }
@@ -310,7 +313,8 @@ fn mark_stages(mark: &Mark, scene: &Scene, format: wgpu::TextureFormat, samples:
     // geometry. Every mark gets one, so any drawn row can be located, pickable or not.
     stages.input.push(Asked::Shader(variants.probe(pipelines::probe(samples))));
     if mark.style().label.is_some() {
-        stages.text.extend([variants.glyphs(format, samples), variants.texts()].map(Asked::Shader));
+        stages.text.push(Asked::Shader(variants.glyphs(format, samples)));
+        stages.text.extend(variants.label_passes().map(Asked::Shader));
     }
     match mark {
         Mark::Faces(_) => stages.draw.push(Asked::Shader(NORMALS)),

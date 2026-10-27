@@ -13,7 +13,7 @@ mark!(
 /// # use latkit::{field, Areas, Colormap};
 /// let states = Areas::of("map", "states").color(field("load").colormap(Colormap::MAKO));
 /// ```
-Areas {
+Areas("areas") {
     /// The polygon field each row fills, holding one polygon's rings or several polygons; the field
     /// named `geometry` by default.
     geometry: Option<Name>,

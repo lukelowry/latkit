@@ -12,8 +12,8 @@ Changes under 10 MW stay grey, and branches below 230 kV with such small changes
 beneath the backbone. Each bus's height is its frequency 2.5 s after the opening, recorded from a
 simulation of the same event, and poles drop to the ground from a sample of buses at 345 kV and up.
 
-The `latkit` command line draws this picture from the module below, which writes its data with
-`Patch` and its scene as a typed `Scene`. `node docs/gallery/render.ts opening` draws it again.
+The `latkit` command line draws this picture from the module below, which builds its datasets
+with `Data` and returns its scene. `node docs/gallery/render.ts opening` draws it again.
 
 ```{literalinclude} ../gallery/opening.ts
 :language: typescript

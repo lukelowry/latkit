@@ -1,7 +1,9 @@
 //! Labels show beside their rows once the host rasterizes their text, or inside a block while they
-//! fit. Labels that overlap both show, and only labels near the view have their text rasterized. A
-//! conditional text labels only the rows it names, and a label keeps showing while its mark gains
-//! texts. A diagram's labels scale with the sheet and fade out once too small to read.
+//! fit. Where labels would overlap, the label of the row drawn on top shows, an empty text gives no
+//! label, and only labels that
+//! show near the view have their text rasterized, so a dense view settles. A conditional text labels
+//! only the rows it names, and a label keeps showing while its mark gains texts. A diagram's labels
+//! scale with the sheet and fade out once too small to read.
 
 #![cfg(feature = "gpu")]
 
@@ -105,24 +107,51 @@ fn a_block_shows_its_label_inside_while_it_fits() {
 }
 
 #[test]
-fn overlapping_labels_both_show() {
+fn where_labels_would_overlap_the_row_drawn_on_top_shows_its_label() {
     let Some(gpu) = gpu() else { return };
-    // The two labels, each 36 pixels wide, start 4 pixels apart.
-    let mut view = view(&gpu, vec![0.0, 4.0]);
-    let pixels = frame(&gpu, &mut view);
     let c = SIZE / 2;
+    // The two labels, each 36 pixels wide, would start 4 pixels apart: the first red, the second
+    // blue. The second row draws on top, so its label shows and the first's does not.
+    let pixels = frame(&gpu, &mut view(&gpu, vec![0.0, 4.0]));
     let first = at(&pixels, c + 7, c);
-    assert!(first[0] > 200 && first[2] < 60, "the first label, where the second does not reach: {first:?}");
-    let shared = at(&pixels, c + 20, c);
-    assert!(shared[2] > 200 && shared[0] < 60, "the second label, drawn over the first: {shared:?}");
+    assert!(first[0] < 60, "no first label: {first:?}");
+    let second = at(&pixels, c + 20, c);
+    assert!(second[2] > 200 && second[0] < 60, "the second label: {second:?}");
+    // Given a higher priority, the first row draws on top instead, and its label shows.
+    let mut first_on_top = shown(&gpu, vec![0.0, 4.0], |v| v.radius(2.0).priority(-field("hue")));
+    let pixels = frame(&gpu, &mut first_on_top);
+    let first = at(&pixels, c + 7, c);
+    assert!(first[0] > 200 && first[2] < 60, "the first label: {first:?}");
+    let after = at(&pixels, c + 44, c);
+    assert!(after[2] < 60, "no second label past the first: {after:?}");
 }
 
 #[test]
-fn only_labels_near_the_view_have_their_text_rasterized() {
+fn an_empty_text_gives_no_label_and_claims_no_room() {
+    let Some(gpu) = gpu() else { return };
+    gpu.set_host(Boxes);
+    let c = SIZE / 2;
+    // The rows of the overlap above, with the second row's text empty: it draws on top but has no
+    // label, so the first row's label shows.
+    let data = Data::new("d");
+    let rows = Table::new("V", Ids::count(2)).field("x", vec![0.0, 4.0]).field("y", vec![0.0; 2]);
+    data.apply(rows.field("name", vec!["abcdef", ""])).expect("valid");
+    let label = Label::new(field("name")).size(10.0).color(Color::rgb(1.0, 0.0, 0.0));
+    let mark = Vertices::of("d", "V").position(field("x"), field("y")).radius(2.0).pick(false).label(label);
+    let mut view = View::new(&gpu, Scene::new(plane()).theme(haloless()).draw(mark)).expect("valid scene");
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    let first = at(&frame(&gpu, &mut view), c + 7, c);
+    assert!(first[0] > 200, "the first label: {first:?}");
+    assert!(view.complete(), "waiting on {}", view.waiting());
+}
+
+#[test]
+fn only_labels_that_show_near_the_view_have_their_text_rasterized() {
     let Some(gpu) = gpu() else { return };
     let set = Arc::new(AtomicUsize::new(0));
     gpu.set_host(Counted(set.clone()));
-    // Two thousand rows, each with a distinct name: forty in view, the rest far beyond it.
+    // Two thousand rows, each with a distinct name: forty crowded in view, the rest far beyond it.
     let n = 2000;
     let x: Vec<f64> =
         (0..n).map(|i| if i < 40 { f64::from((i * 37) % 120) - 60.0 } else { 10_000.0 + f64::from(i) }).collect();
@@ -142,10 +171,41 @@ fn only_labels_near_the_view_have_their_text_rasterized() {
     view.set_camera(camera());
     view.set_sources([&data]).expect("a source");
     let pixels = frame(&gpu, &mut view);
-    assert_eq!(set.load(Ordering::Relaxed), 40, "the texts of the rows in view, and no others");
+    // Only the labels that keep their room among the forty need texts.
+    let texts = set.load(Ordering::Relaxed);
+    assert!((1..40).contains(&texts), "some of the texts of the rows in view, and no others: {texts}");
     let red = pixels.iter().filter(|p| p[0] > 200 && p[1] < 60).count();
     assert!(red > 200, "labels show: {red} pixels");
     assert_eq!(errors(&mut view), Vec::new());
+}
+
+#[test]
+fn a_dense_view_settles_with_texts_for_the_labels_that_fit() {
+    let Some(gpu) = gpu() else { return };
+    let set = Arc::new(AtomicUsize::new(0));
+    gpu.set_host(Counted(set.clone()));
+    // Twenty thousand rows with distinct names, all in view: far more texts than the atlas holds.
+    let n = 20_000;
+    let x: Vec<f64> = (0..n).map(|i| f64::from((i * 37) % 128) - 64.0).collect();
+    let y: Vec<f64> = (0..n).map(|i| f64::from((i * 53) % 128) - 64.0).collect();
+    let names: Vec<String> = (0..n).map(|i| format!("row {i}")).collect();
+    let data = Data::new("d");
+    data.apply(Table::new("V", Ids::count(n as u32)).field("x", x).field("y", y).field("name", names)).expect("valid");
+    let scene = Scene::new(plane()).theme(plain_theme()).draw(
+        Vertices::of("d", "V")
+            .position(field("x"), field("y"))
+            .radius(1.0)
+            .pick(false)
+            .label(Label::new(field("name")).size(10.0)),
+    );
+    let mut view = View::new(&gpu, scene).expect("valid scene");
+    view.set_camera(camera());
+    view.set_sources([&data]).expect("a source");
+    frame(&gpu, &mut view);
+    assert!(view.complete(), "waiting on {}", view.waiting());
+    // A 128 pixel square holds a few dozen labels 10 pixels tall.
+    let texts = set.load(Ordering::Relaxed);
+    assert!(texts < 200, "texts for the labels that fit: {texts}");
 }
 
 /// A block in a diagram, 60 by 20 units, labeled in red at size 10, seen at `zoom`.

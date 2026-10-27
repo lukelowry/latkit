@@ -1,26 +1,19 @@
-import { Data, Gpu, Patch, field, type Scene } from 'latkit';
+import { Data, View, field, load } from 'latkit';
 
 /** Draws two buses on `canvas`, colored by their voltage. */
 export async function quickstart(canvas: HTMLCanvasElement) {
-  const gpu = await Gpu.create();
-  const grid = new Data('grid').apply(
-    new Patch().replace('Bus', [101, 102], { x: [0, 30], y: [0, 20], kv: [230, 115] }),
-  );
-  const scene: Scene = {
+  await load();
+  const grid = new Data('grid').set('Bus', [101, 102], { x: [0, 30], y: [0, 20], kv: [230, 115] });
+  const view = await View.create(canvas, {
     space: 'plane',
     marks: [
       {
-        vertices: {
-          of: ['grid', 'Bus'],
-          position: ['$x', '$y'],
-          radius: 6,
-          color: field('kv').colormap('viridis'),
-        },
+        vertices: grid.table('Bus'),
+        position: ['$x', '$y'],
+        radius: 6,
+        color: field('kv').colormap('viridis'),
       },
     ],
-  };
-  const view = gpu.view(scene, { sources: [grid] });
-  gpu.canvas(canvas, { layout: [{ view }] });
-  view.fit();
-  return { gpu, view, grid };
+  });
+  return { view, grid };
 }

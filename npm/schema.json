@@ -51,7 +51,7 @@
       "required": [
         "space"
       ],
-      "description": "A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an\nease duration, and an optional title.\n\nA scene is plain data. In JSON, fields are camelCase and each mark is\n`{ vertices | edges | faces | lines | areas: options }`.\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\")).color(voltage);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(buses.legend(\"Bus voltage · pu\"))\n    .title(\"Voltage\");\n```"
+      "description": "A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an\nease duration, and an optional title.\n\nA scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds\nits dataset and table: `{ \"vertices\": [\"grid\", \"Bus\"], \"radius\": 4 }`.\n\n```\n# use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};\nlet voltage = field(\"vm\").colormap(Colormap::BALANCE).domain(0.95..=1.05);\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\")).color(voltage);\nlet scene = Scene::new(Earth::default().projection(Projection::Globe))\n    .draw(Edges::of(\"grid\", \"Branch\").ends(\"from\", \"to\"))\n    .draw(buses.legend(\"Bus voltage · pu\"))\n    .title(\"Voltage\");\n```"
     },
     "Space": {
       "anyOf": [
@@ -362,74 +362,24 @@
       "description": "A flat sheet for diagrams, seen from straight above; the camera pans and zooms but does not\nturn. Positions are in units with y down. Lengths are in units too, a unit being a CSS pixel at\nzoom 0: sizes, padding, ports, strokes, text, and the theme's lengths. Sizes given with `px`,\nthe text halo, the focus glow, and the pick radius stay in CSS pixels. Zooming scales the whole\npicture. Only a diagram has ports, groups, nets, and orthogonal routes, and the scene's layout\nplaces its blocks."
     },
     "Mark": {
+      "description": "One table a scene draws. The key naming the mark's kind holds its dataset and table, beside its options: `{ vertices: [data, table], radius: 4 }`.",
       "oneOf": [
         {
-          "type": "object",
-          "properties": {
-            "vertices": {
-              "$ref": "#/$defs/Vertices"
-            }
-          },
-          "required": [
-            "vertices"
-          ],
-          "additionalProperties": false,
-          "description": "Rows drawn as markers."
+          "$ref": "#/$defs/Vertices"
         },
         {
-          "type": "object",
-          "properties": {
-            "edges": {
-              "$ref": "#/$defs/Edges"
-            }
-          },
-          "required": [
-            "edges"
-          ],
-          "additionalProperties": false,
-          "description": "Rows drawn as strokes between two vertices."
+          "$ref": "#/$defs/Edges"
         },
         {
-          "type": "object",
-          "properties": {
-            "faces": {
-              "$ref": "#/$defs/Faces"
-            }
-          },
-          "required": [
-            "faces"
-          ],
-          "additionalProperties": false,
-          "description": "Rows drawn as triangles between three vertices."
+          "$ref": "#/$defs/Faces"
         },
         {
-          "type": "object",
-          "properties": {
-            "lines": {
-              "$ref": "#/$defs/Lines"
-            }
-          },
-          "required": [
-            "lines"
-          ],
-          "additionalProperties": false,
-          "description": "Rows drawn as lines along their paths, or on a plot through their samples."
+          "$ref": "#/$defs/Lines"
         },
         {
-          "type": "object",
-          "properties": {
-            "areas": {
-              "$ref": "#/$defs/Areas"
-            }
-          },
-          "required": [
-            "areas"
-          ],
-          "additionalProperties": false,
-          "description": "Rows drawn as the areas their polygons cover."
+          "$ref": "#/$defs/Areas"
         }
-      ],
-      "description": "One table a scene draws. In JSON: `{ vertices | edges | faces | lines | areas: options }`."
+      ]
     },
     "Vertices": {
       "allOf": [
@@ -438,8 +388,23 @@
         },
         {
           "type": "object",
-          "description": "The mark's JSON form: `of`, its own options, then the stroke options and the options\nevery mark has.",
+          "description": "The mark's JSON form: the key naming its kind, its own options, then the stroke options\nand the options every mark has.",
           "properties": {
+            "vertices": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "The dataset and table drawn, `[data, table]`.",
+              "tsType": "TableInput"
+            },
             "position": {
               "type": [
                 "array",
@@ -541,7 +506,10 @@
               "type": "boolean",
               "description": "Whether each block or group casts a shadow on the sheet, styled by the theme's\n`diagram.shadow`. Default `false`. Diagrams only."
             }
-          }
+          },
+          "required": [
+            "vertices"
+          ]
         }
       ],
       "unevaluatedProperties": false,
@@ -612,7 +580,7 @@
           "minItems": 2,
           "maxItems": 2,
           "description": "The dataset and table the field is read from, joined by row id.",
-          "tsType": "[data: string, table: string]"
+          "tsType": "TableInput"
         },
         "step": {
           "type": "boolean",
@@ -1883,7 +1851,7 @@
           "type": "object",
           "properties": {
             "text": {
-              "description": "The text field to show, or a `when` whose values are each that field or missing. A row\nwhose text is missing has no label. In a diagram the text reads only data, since the sheet\nsizes blocks around it.",
+              "description": "The text field to show, or a `when` whose values are each that field or missing. A row\nwhose text is missing or empty has no label. In a diagram the text reads only data, since the sheet\nsizes blocks around it.",
               "$ref": "#/$defs/Expr"
             },
             "size": {
@@ -1927,27 +1895,12 @@
           ]
         }
       ],
-      "description": "Text for each row, placed beside, inside, or along the row's shape and following it every frame:\na text field, or options. A label shows wherever its row shows and its text fits the room the\nrow gives it, such as inside a block, whatever other labels it meets. A row whose text is\nmissing has no label, so a `when` choosing between the text field and missing labels only the\nrows it names. In a diagram a label is part of the drawing: it scales with the zoom, fades out\nwhen too small to read, and shows wherever it fits its vertex.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\n```"
+      "description": "Text for each row, placed beside, inside, or along the row's shape and following it every frame:\na text field, or options. A label shows wherever its row shows and its text fits the room the\nrow gives it, such as inside a block. Labels beside or along their rows never overlap: where they\nwould, the label of the row drawn on top shows, so a mark's `priority` decides, and a dense view\nlabels as many rows as fit. A row whose text is missing or empty has no label, so a `when` choosing\nbetween the text field and missing labels only the rows it names. In a diagram a label is part\nof the drawing: it scales with the zoom, fades out when too small to read, and shows wherever it\nfits its vertex.\n\n```\n# use latkit::{field, when, zoom, Expr, Label, Vertices};\nlet named = when(zoom().ge(6.0)).then(field(\"name\")).otherwise(Expr::missing());\nlet buses = Vertices::of(\"grid\", \"Bus\").position(field(\"lon\"), field(\"lat\"));\nlet labeled = buses.label(Label::new(named));\n```"
     },
     "MarkOptions": {
       "type": "object",
       "description": "The options every mark has.",
       "properties": {
-        "of": {
-          "type": "array",
-          "prefixItems": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "minItems": 2,
-          "maxItems": 2,
-          "description": "The dataset and table drawn.",
-          "tsType": "[data: string, table: string]"
-        },
         "color": {
           "anyOf": [
             {
@@ -1972,7 +1925,7 @@
               "type": "null"
             }
           ],
-          "description": "Each row's priority, from its data alone (no view state). Higher-priority rows draw\non top, and are the last dropped when a table too large to draw whole is thinned to\nthe tiles in view."
+          "description": "Each row's priority, from its data alone (no view state). Higher-priority rows draw\non top, their labels win where labels would overlap, and they are the last dropped\nwhen a table too large to draw whole is thinned to the tiles in view."
         },
         "name": {
           "type": [
@@ -2014,10 +1967,7 @@
           ],
           "description": "A legend of the mark's colors at the view's bottom right, under this title: a ticked\ncolormap across its domain, a cell for each category, or a swatch beside each name\nof a map's `categories`. `color` must map through a colormap with a fixed domain or\nnamed categories; in a conditional, `otherwise` is searched before the cases."
         }
-      },
-      "required": [
-        "of"
-      ]
+      }
     },
     "Edges": {
       "allOf": [
@@ -2029,8 +1979,23 @@
         },
         {
           "type": "object",
-          "description": "The mark's JSON form: `of`, its own options, then the stroke options and the options\nevery mark has.",
+          "description": "The mark's JSON form: the key naming its kind, its own options, then the stroke options\nand the options every mark has.",
           "properties": {
+            "edges": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "The dataset and table drawn, `[data, table]`.",
+              "tsType": "TableInput"
+            },
             "ends": {
               "type": [
                 "array",
@@ -2093,7 +2058,10 @@
               "description": "Draws each row as a net on a plane or the earth, joining the vertex rows of `table` whose\n`reference` field names it: a star from their center to each member.",
               "tsType": "[table: string, reference: string]"
             }
-          }
+          },
+          "required": [
+            "edges"
+          ]
         }
       ],
       "unevaluatedProperties": false,
@@ -2151,8 +2119,23 @@
         },
         {
           "type": "object",
-          "description": "The mark's JSON form: `of`, its own options, then the stroke options and the options\nevery mark has.",
+          "description": "The mark's JSON form: the key naming its kind, its own options, then the stroke options\nand the options every mark has.",
           "properties": {
+            "faces": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "The dataset and table drawn, `[data, table]`.",
+              "tsType": "TableInput"
+            },
             "corners": {
               "type": [
                 "array",
@@ -2166,7 +2149,10 @@
               "description": "The reference fields naming each row's three vertices; required. Without a color, a face\nblends the colors of its corners.",
               "tsType": "[a: string, b: string, c: string]"
             }
-          }
+          },
+          "required": [
+            "faces"
+          ]
         }
       ],
       "unevaluatedProperties": false,
@@ -2182,8 +2168,23 @@
         },
         {
           "type": "object",
-          "description": "The mark's JSON form: `of`, its own options, then the stroke options and the options\nevery mark has.",
+          "description": "The mark's JSON form: the key naming its kind, its own options, then the stroke options\nand the options every mark has.",
           "properties": {
+            "lines": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "The dataset and table drawn, `[data, table]`.",
+              "tsType": "TableInput"
+            },
             "geometry": {
               "type": [
                 "string",
@@ -2202,7 +2203,10 @@
               "$ref": "#/$defs/Interpolation",
               "description": "How each row runs between its samples on a plot; `linear` by default."
             }
-          }
+          },
+          "required": [
+            "lines"
+          ]
         }
       ],
       "unevaluatedProperties": false,
@@ -2235,8 +2239,23 @@
         },
         {
           "type": "object",
-          "description": "The mark's JSON form: `of`, its own options, then the stroke options and the options\nevery mark has.",
+          "description": "The mark's JSON form: the key naming its kind, its own options, then the stroke options\nand the options every mark has.",
           "properties": {
+            "areas": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "The dataset and table drawn, `[data, table]`.",
+              "tsType": "TableInput"
+            },
             "geometry": {
               "type": [
                 "string",
@@ -2244,7 +2263,10 @@
               ],
               "description": "The polygon field each row fills, holding one polygon's rings or several polygons; the field\nnamed `geometry` by default."
             }
-          }
+          },
+          "required": [
+            "areas"
+          ]
         }
       ],
       "unevaluatedProperties": false,
@@ -4612,7 +4634,7 @@
           "type": "string"
         },
         "path": {
-          "description": "The invalid part of the input, such as `marks[2].vertices.color`, on `invalid` failures.",
+          "description": "The invalid part of the input, such as `marks[2].color`, on `invalid` failures.",
           "type": "string"
         }
       },

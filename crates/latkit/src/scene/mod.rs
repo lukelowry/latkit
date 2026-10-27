@@ -46,8 +46,8 @@ use crate::{Error, Result, Snapshot, Source};
 /// A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an
 /// ease duration, and an optional title.
 ///
-/// A scene is plain data. In JSON, fields are camelCase and each mark is
-/// `{ vertices | edges | faces | lines | areas: options }`.
+/// A scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds
+/// its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`.
 ///
 /// ```
 /// # use latkit::{Colormap, Edges, Earth, Projection, Scene, Vertices, field};
@@ -190,17 +190,18 @@ impl Scene {
                 continue;
             }
             let dataset = snapshots.iter().find(|d| *d.name() == style.data).ok_or_else(|| {
-                mark.within(i, Error::invalid(format!("no source provides dataset '{}'", style.data)).at("of"))
+                let reason = format!("no source provides dataset '{}'", style.data);
+                Error::invalid(reason).at(mark.kind().name()).at(i).at("marks")
             })?;
             if let Some(error) = mark.absent_from(dataset) {
-                return Err(mark.within(i, error));
+                return Err(error.at(i).at("marks"));
             }
             compile::compile(
                 mark,
                 &snapshots,
                 mark::Context { theme: &self.theme, space: &self.space, layout: &self.layout },
             )
-            .map_err(|error| mark.within(i, error))?;
+            .map_err(|error| error.at(i).at("marks"))?;
         }
         Ok(())
     }
@@ -225,7 +226,7 @@ impl Scene {
                 return Err(Error::invalid(reason).at(i).at("marks"));
             }
             if let Some((option, reason)) = mark.misplaced(diagram) {
-                return Err(mark.within(i, Error::invalid(reason).at(option)));
+                return Err(Error::invalid(reason).at(option).at(i).at("marks"));
             }
             let style = mark.style();
             let shown = match style.color.as_ref().and_then(crate::Expr::colormap_of) {
@@ -234,7 +235,7 @@ impl Scene {
             };
             if style.legend.is_some() && !shown {
                 let reason = "a legend needs a color mapped through a colormap with a domain or named categories";
-                return Err(mark.within(i, Error::invalid(reason).at("legend")));
+                return Err(Error::invalid(reason).at("legend").at(i).at("marks"));
             }
         }
         Ok(())

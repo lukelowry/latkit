@@ -4,10 +4,11 @@
 //! once regardless of the size it shows at. The GPU builds the fields of every run rasterized in a
 //! frame in one batch before the frame draws (`compute/fields.wesl`).
 //!
-//! When no shelf has room, the least recently used shelf of a fitting height is cleared for the new
-//! run; only when none fits does packing start over. A run counts as used when it is rasterized and
-//! whenever labels in view show it, so visible text is not evicted. Views track evictions to drop
-//! stale references.
+//! When no shelf has room, the least recently used shelf tall enough is cleared for the new run. A
+//! run counts as used when it is rasterized and whenever labels in view show it, and a shelf used
+//! this frame is never cleared, so visible text is not evicted. When every shelf is in use, the
+//! atlas is full for the rest of the frame and takes no more runs; it starts over only when nothing
+//! in it was used this frame. Views track evictions to drop stale references.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,6 +32,14 @@ const GAP: u32 = 1;
 const PAD: u32 = TEXT_SPREAD as u32;
 /// Most runs whose fields one dispatch builds, one workgroup layer each.
 const RUNS: usize = 65_535;
+
+/// Where `Atlas::hold` put a raster: at its glyphs on a shelf, nowhere because it has nothing to
+/// draw or is malformed, or nowhere yet because the atlas is full this frame.
+enum Held {
+    Placed(Glyphs, usize),
+    Nothing,
+    Full,
+}
 
 /// A run's location in the atlas.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -88,6 +97,8 @@ pub(crate) struct Atlas {
     work_group: Option<wgpu::BindGroup>,
     /// Frame counter for shelf use.
     clock: u64,
+    /// Whether a run found no room this frame, so no more are placed until the next.
+    full: bool,
     /// Changes whenever runs are evicted, so anything referencing them looks them up again.
     pub(crate) evictions: u64,
     /// Counts the texts the host is asked to rasterize.
@@ -117,6 +128,7 @@ impl Atlas {
             work: Grown::new(device, "latkit fields", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC),
             work_group: None,
             clock: 0,
+            full: false,
             evictions: 0,
             counters,
         }
@@ -125,21 +137,30 @@ impl Atlas {
     /// Starts a frame. Runs requested from now on count as used in it.
     pub(crate) fn tick(&mut self) {
         self.clock += 1;
+        self.full = false;
+    }
+
+    /// Whether a run found no room this frame, so the atlas takes no more until the next.
+    pub(crate) fn full(&self) -> bool {
+        self.full
     }
 
     /// The location of `run` in the atlas, rasterized by `host` on first request. Its field is
-    /// built before the frame draws. `None` without a host, or when the run has nothing to draw or
-    /// its raster failed; a failure is reported once.
+    /// built before the frame draws. `None` without a host, when the run has nothing to draw or its
+    /// raster failed (a failure is reported once), or while the atlas is full this frame.
     pub(crate) fn text(&mut self, host: Option<&dyn Host>, run: &TextRun) -> Option<Glyphs> {
         if let Some(found) = self.runs.get(run) {
             let (glyphs, shelf) = (*found)?;
             self.shelves[shelf].tick = self.clock;
             return Some(glyphs);
         }
-        let host = host?;
+        let host = host.filter(|_| !self.full)?;
         self.counters.add(Count::Texts, 1);
-        let placed = match host.rasterize(run) {
-            Ok(raster) => self.hold(raster),
+        let placed = match host.rasterize(run).map(|raster| self.hold(raster)) {
+            Ok(Held::Placed(glyphs, shelf)) => Some((glyphs, shelf)),
+            Ok(Held::Nothing) => None,
+            // No room this frame: the run is asked for again later.
+            Ok(Held::Full) => return None,
             Err(error) => {
                 self.errors.push(error);
                 None
@@ -158,26 +179,28 @@ impl Atlas {
         self.evictions += 1;
     }
 
-    /// Places `raster`'s field, queued to be built, and returns its location and shelf. `None` if
-    /// the raster is empty, too large for the atlas, or malformed.
-    fn hold(&mut self, raster: Raster) -> Option<(Glyphs, usize)> {
+    /// Places `raster`'s field, queued to be built, and returns where.
+    fn hold(&mut self, raster: Raster) -> Held {
         let [w, h] = raster.size;
         if w == 0 || h == 0 {
-            return None;
+            return Held::Nothing;
         }
         let (width, height) = (w.saturating_add(2 * PAD), h.saturating_add(2 * PAD));
         if width > SIZE || height > SIZE {
             self.errors.push(crate::Error::Limit("text raster does not fit the atlas".into()));
-            return None;
+            return Held::Nothing;
         }
         if raster.coverage.len() != w as usize * h as usize {
             self.errors.push(crate::Error::invalid("text raster coverage does not match its size"));
-            return None;
+            return Held::Nothing;
         }
-        let (shelf, [left, top]) = self.place(width, height);
+        let Some((shelf, [left, top])) = self.place(width, height) else {
+            self.full = true;
+            return Held::Full;
+        };
         let glyphs = Glyphs { rect: [left, top, left + width, top + height], baseline: raster.baseline + PAD as f32 };
         self.waiting.push(Waiting { raster, shelf, corner: [left, top] });
-        Some((glyphs, shelf))
+        Held::Placed(glyphs, shelf)
     }
 
     /// Marks `run` as used now, because labels in view show it.
@@ -290,8 +313,9 @@ impl Atlas {
         (self.work.buffer.clone(), self.work_group.clone().expect("built above"))
     }
 
-    /// Finds room for `width` by `height` texels, returning the shelf and top-left corner.
-    fn place(&mut self, width: u32, height: u32) -> (usize, [u32; 2]) {
+    /// Finds room for `width` by `height` texels, returning the shelf and top-left corner; `None`
+    /// when every shelf that could hold it was used this frame.
+    fn place(&mut self, width: u32, height: u32) -> Option<(usize, [u32; 2])> {
         let fits = |s: &Shelf| s.height >= height && s.height <= height + height / 2 + 4;
         let at = self.shelves.iter().position(|s| fits(s) && s.used + width <= SIZE);
         let at = at.or_else(|| {
@@ -302,31 +326,35 @@ impl Atlas {
             })
         });
         let at = at.or_else(|| {
-            // Clear the least recently used shelf of a fitting height, unless used this frame.
+            // Clear the shelf tall enough that was used least recently, a fitting height first,
+            // unless it was used this frame.
             let clock = self.clock;
             let oldest = (0..self.shelves.len())
-                .filter(|&i| fits(&self.shelves[i]) && self.shelves[i].tick < clock)
-                .min_by_key(|&i| self.shelves[i].tick)?;
+                .filter(|&i| self.shelves[i].height >= height && self.shelves[i].tick < clock)
+                .min_by_key(|&i| (!fits(&self.shelves[i]), self.shelves[i].tick))?;
             self.runs.retain(|_, placed| !matches!(placed, Some((_, shelf)) if *shelf == oldest));
             self.waiting.retain(|w| w.shelf != oldest);
             self.shelves[oldest].used = 0;
             self.evictions += 1;
             Some(oldest)
         });
-        let at = at.unwrap_or_else(|| {
-            // Nothing fits: start over.
+        let at = at.or_else(|| {
+            // No shelf is tall enough. Start over, unless text in view uses the atlas this frame.
+            if self.shelves.iter().any(|s| s.tick == self.clock) {
+                return None;
+            }
             self.runs.clear();
             self.waiting.clear();
             self.shelves.clear();
             self.evictions += 1;
             self.shelves.push(Shelf { top: 0, height, used: 0, tick: self.clock });
-            0
-        });
+            Some(0)
+        })?;
         let shelf = &mut self.shelves[at];
         let corner = [shelf.used, shelf.top];
         shelf.used += width + GAP;
         shelf.tick = self.clock;
-        (at, corner)
+        Some((at, corner))
     }
 }
 
@@ -398,14 +426,15 @@ mod tests {
         coverage[5 * width + 37] = 40;
         let mut inner = gpu.0.lock();
         let raster = Raster { size: [width as u32, height as u32], coverage: coverage.clone(), baseline: 20.0 };
-        let (glyphs, _) = inner.atlas.hold(raster).expect("placed");
+        let Held::Placed(glyphs, _) = inner.atlas.hold(raster) else { panic!("placed") };
         let (device, queue) = (&gpu.0.device, &gpu.0.queue);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let crate::gpu::Inner { atlas, pipelines, .. } = &mut *inner;
         atlas.lay(device, queue, &mut encoder, pipelines);
         // Another view can lay a smaller batch into the same scratch buffer before submission.
         // Its upload must not replace the first batch's inputs before that batch has executed.
-        atlas.hold(Raster { size: [9, 7], coverage: vec![255; 63], baseline: 5.0 }).expect("second batch");
+        let held = atlas.hold(Raster { size: [9, 7], coverage: vec![255; 63], baseline: 5.0 });
+        assert!(matches!(held, Held::Placed(..)), "a second batch");
         atlas.lay(device, queue, &mut encoder, pipelines);
         let [l, t, r, b] = glyphs.rect;
         let (w, h) = (r - l, b - t);

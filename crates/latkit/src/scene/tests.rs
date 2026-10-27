@@ -14,9 +14,9 @@ fn scenes_match_builders() {
     let json = r#"{
         "space": { "earth": { "projection": "globe" } },
         "marks": [
-            { "edges": { "of": ["grid", "Branch"], "ends": ["from", "to"], "width": { "px": 2 } } },
-            { "vertices": { "of": ["grid", "Bus"], "position": ["$lon", "$lat"], "radius": { "units": 3 },
-                "color": { "colormap": "balance", "value": "$vm", "domain": [0.95, 1.05] } } }
+            { "edges": ["grid", "Branch"], "ends": ["from", "to"], "width": { "px": 2 } },
+            { "position": ["$lon", "$lat"], "vertices": ["grid", "Bus"], "radius": { "units": 3 },
+                "color": { "colormap": "balance", "value": "$vm", "domain": [0.95, 1.05] } }
         ],
         "theme": { "base": "light", "vertex": { "radius": 5 } },
         "ease": 0
@@ -37,9 +37,7 @@ fn scenes_match_builders() {
 
 #[test]
 fn every_mark_defaults_as_its_json_form_does() {
-    let json = |kind: &str| -> Mark {
-        serde_json::from_str(&format!(r#"{{ "{kind}": {{ "of": ["d", "t"] }} }}"#)).expect(kind)
-    };
+    let json = |kind: &str| -> Mark { serde_json::from_str(&format!(r#"{{ "{kind}": ["d", "t"] }}"#)).expect(kind) };
     assert_eq!(json("vertices"), Vertices::of("d", "t").into());
     assert_eq!(json("edges"), Edges::of("d", "t").into());
     assert_eq!(json("faces"), Faces::of("d", "t").into());
@@ -55,8 +53,8 @@ fn rows_pick_by_default_and_geometry_only_when_asked() {
     assert!(!picks(Lines::of("d", "t").into()) && !picks(Areas::of("d", "t").into()), "geometry");
     assert!(picks(Areas::of("d", "t").pick(true).into()) && !picks(Vertices::of("d", "t").pick(false).into()));
     let marks = scene(
-        r#"{ "space": "earth", "marks": [ { "areas": { "of": ["m", "states"] } },
-        { "areas": { "of": ["m", "states"], "pick": true } } ] }"#,
+        r#"{ "space": "earth", "marks": [ { "areas": ["m", "states"] },
+        { "areas": ["m", "states"], "pick": true } ] }"#,
     )
     .marks;
     assert_eq!(marks.iter().map(Mark::picks).collect::<Vec<_>>(), [false, true], "JSON says the same");
@@ -68,9 +66,9 @@ fn faces_lines_and_controls_match_builders() {
         "space": "plane",
         "controls": { "turn": false, "pickRadius": 12 },
         "marks": [
-            { "faces": { "of": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false } },
-            { "lines": { "of": ["mesh", "Body"], "geometry": "outline", "color": "#66c7ff", "width": 2, "flow": 8 } },
-            { "vertices": { "of": ["mesh", "Vertex"], "select": false, "drag": true, "ring": "red" } }
+            { "faces": ["mesh", "Face"], "corners": ["a", "b", "c"], "pick": false },
+            { "lines": ["mesh", "Body"], "geometry": "outline", "color": "#66c7ff", "width": 2, "flow": 8 },
+            { "vertices": ["mesh", "Vertex"], "select": false, "drag": true, "ring": "red" }
         ]
     }"##;
     let built = Scene::new(Plane::default())
@@ -91,9 +89,9 @@ fn faces_lines_and_controls_match_builders() {
 fn a_string_with_a_dollar_reads_a_field_in_every_option_and_any_other_is_a_color() {
     let json = r##"{
         "space": "plane",
-        "marks": [{ "vertices": { "of": ["grid", "Bus"], "position": ["$x", "$y"], "radius": "$r",
+        "marks": [{ "vertices": ["grid", "Bus"], "position": ["$x", "$y"], "radius": "$r",
             "color": { "when": [["$on", "#ffb000"]], "otherwise": "gray" },
-            "label": { "text": "$name", "color": "white" } } }]
+            "label": { "text": "$name", "color": "white" } }]
     }"##;
     let css = |css: &str| Color::css(css).expect("a CSS color");
     let built = Scene::new(Plane::default()).draw(
@@ -105,7 +103,7 @@ fn a_string_with_a_dollar_reads_a_field_in_every_option_and_any_other_is_a_color
     );
     assert_eq!(scene(json), built);
     let error = serde_json::from_str::<Scene>(
-        r#"{ "space": "plane", "marks": [{ "vertices": { "of": ["grid", "Bus"], "radius": "kv" } }] }"#,
+        r#"{ "space": "plane", "marks": [{ "vertices": ["grid", "Bus"], "radius": "kv" }] }"#,
     )
     .expect_err("a field's name without its $");
     assert!(error.to_string().contains(r#""kv" is not a CSS color; "$kv" reads field kv"#), "{error}");
@@ -115,8 +113,8 @@ fn a_string_with_a_dollar_reads_a_field_in_every_option_and_any_other_is_a_color
 fn joins_read_from_another_table() {
     let json = r#"{
         "space": "plane",
-        "marks": [{ "vertices": { "of": ["grid", "Bus"], "position": ["$x", "$y"],
-            "radius": { "field": "r", "from": ["weather", "Station"] } } }]
+        "marks": [{ "vertices": ["grid", "Bus"], "position": ["$x", "$y"],
+            "radius": { "field": "r", "from": ["weather", "Station"] } }]
     }"#;
     let built = Scene::new(Plane::default()).draw(
         Vertices::of("grid", "Bus")
@@ -131,8 +129,8 @@ fn areas_and_earth_options_match_builders() {
     let json = r##"{
         "space": { "earth": { "projection": "globe", "daylight": 1782043200, "atmosphere": true } },
         "marks": [
-            { "areas": { "of": ["map", "states"], "geometry": "outline", "color": "#336699" } },
-            { "lines": { "of": ["map", "states"], "geometry": "outline" } }
+            { "areas": ["map", "states"], "geometry": "outline", "color": "#336699" },
+            { "lines": ["map", "states"], "geometry": "outline" }
         ],
         "theme": { "area": { "color": "#223344" }, "earth": { "night": 0.4 } }
     }"##;
@@ -154,9 +152,9 @@ fn comets_and_named_categories_match_builders() {
     let json = r##"{
         "space": "plane",
         "marks": [
-            { "vertices": { "of": ["grid", "Bus"], "legend": "Kind",
+            { "vertices": ["grid", "Bus"], "legend": "Kind",
                 "color": { "colormap": { "kind": "categorical", "colors": ["#ff0000", "#0000ff"],
-                    "categories": ["red", "blue"] }, "value": "$k" } } }
+                    "categories": ["red", "blue"] }, "value": "$k" } }
         ],
         "theme": { "flow": { "color": "#00ff00", "width": 6, "spacing": { "units": 40 }, "length": { "units": 30 } } }
     }"##;
@@ -230,9 +228,10 @@ fn presets_equal_their_values() {
 
 #[test]
 fn unknown_options_are_refused() {
-    let error = serde_json::from_str::<Scene>(
-        r#"{"space": "plane", "marks": [{"vertices": {"of": ["a", "b"], "colour": "x"}}]}"#,
-    )
-    .expect_err("a typo");
+    let error =
+        serde_json::from_str::<Scene>(r#"{"space": "plane", "marks": [{"vertices": ["a", "b"], "colour": "x"}]}"#)
+            .expect_err("a typo");
     assert!(error.to_string().contains("colour"), "{error}");
+    let two = r#"{"space": "plane", "marks": [{"vertices": ["a", "b"], "edges": ["a", "c"]}]}"#;
+    assert!(serde_json::from_str::<Scene>(two).is_err(), "a mark of two kinds");
 }

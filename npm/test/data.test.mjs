@@ -158,6 +158,27 @@ test('changes apply in place, a snapshot keeps a version, and a patch names its 
   before.destroy();
 });
 
+test('each change applies on its own, and tables write as their JSON form', () => {
+  const data = new Data('grid')
+    .axis('time', 's')
+    .replace('Bus', [1, 2, 3], { x: [1, 2, 3] })
+    .set('Bus', [4], { x: [4] })
+    .remove('Bus', [1])
+    .append('Bus', [0, 1], { v: Float32Array.of(1, 2, 3, 4, 5, 6) })
+    .forget(1);
+  assert.deepEqual(ids(data, 'Bus'), [2, 3, 4]);
+  assert.deepEqual(data.describe().span, [1, 1]);
+  assert.throws(() => data.set('Bus', [1], { x: ['a'] }), { code: 'invalid' });
+  assert.equal(data.get('Bus', 2, 'x'), 2, 'a failed change changes nothing');
+  const bus = data.table('Bus');
+  assert.equal(bus.source, data);
+  assert.equal(
+    JSON.stringify({ vertices: bus, color: field('kv').from(data.table('Station')) }),
+    '{"vertices":["grid","Bus"],"color":{"field":"kv","from":["grid","Station"]}}',
+  );
+  data.destroy();
+});
+
 test('consecutive appends write one change and copy each frame when called', () => {
   const frame = new Float32Array(2);
   const patch = new Patch().replace('Bus', [1, 2], { x: [1, 2] });

@@ -17,8 +17,8 @@ A scene: its space, how it responds to input, and how it is laid out.
 A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an
 ease duration, and an optional title.
 
-A scene is plain data. In JSON, fields are camelCase and each mark is
-`{ vertices | edges | faces | lines | areas: options }`.
+A scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds
+its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`.
 
 {#scene-space .member}
 **`space`**`:` [`Space`](#space) [¶](#scene-space){.headerlink}
@@ -889,29 +889,10 @@ The marks that draw the tables of a scene.
 ### `Mark`
 
 {.signature}
-`type Mark = { vertices:` [`Vertices`](#vertices) `} | { edges:` [`Edges`](#edges) `} | { faces:` [`Faces`](#faces) `} | { lines:` [`Lines`](#lines) `} | { areas:` [`Areas`](#areas) `}`
+`type Mark =` [`Vertices`](#vertices) `|` [`Edges`](#edges) `|` [`Faces`](#faces) `|` [`Lines`](#lines) `|` [`Areas`](#areas)
 
-One table a scene draws. In JSON: `{ vertices | edges | faces | lines | areas: options }`.
-
-{#mark-vertices .member}
-`{` **`vertices`**`:` [`Vertices`](#vertices) `}` [¶](#mark-vertices){.headerlink}
-: Rows drawn as markers.
-
-{#mark-edges .member}
-`{` **`edges`**`:` [`Edges`](#edges) `}` [¶](#mark-edges){.headerlink}
-: Rows drawn as strokes between two vertices.
-
-{#mark-faces .member}
-`{` **`faces`**`:` [`Faces`](#faces) `}` [¶](#mark-faces){.headerlink}
-: Rows drawn as triangles between three vertices.
-
-{#mark-lines .member}
-`{` **`lines`**`:` [`Lines`](#lines) `}` [¶](#mark-lines){.headerlink}
-: Rows drawn as lines along their paths, or on a plot through their samples.
-
-{#mark-areas .member}
-`{` **`areas`**`:` [`Areas`](#areas) `}` [¶](#mark-areas){.headerlink}
-: Rows drawn as the areas their polygons cover.
+One table a scene draws. The key naming the mark's kind holds its dataset and table, beside its
+options: `{ vertices: [data, table], radius: 4 }`.
 
 (markoptions)=
 
@@ -921,10 +902,6 @@ One table a scene draws. In JSON: `{ vertices | edges | faces | lines | areas: o
 `interface MarkOptions`
 
 The options every mark has.
-
-{#markoptions-of .member}
-**`of`**`: [data: string, table: string]` [¶](#markoptions-of){.headerlink}
-: The dataset and table drawn.
 
 {#markoptions-color .member}
 **`color`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#markoptions-color){.headerlink}
@@ -938,8 +915,9 @@ The options every mark has.
 
 {#markoptions-priority .member}
 **`priority`**`?:` [`ExprInput`](#exprinput) `| null` [¶](#markoptions-priority){.headerlink}
-: Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, and
-  are the last dropped when a table too large to draw whole is thinned to the tiles in view.
+: Each row's priority, from its data alone (no view state). Higher-priority rows draw on top,
+  their labels win where labels would overlap, and they are the last dropped when a table too
+  large to draw whole is thinned to the tiles in view.
 
 {#markoptions-name .member}
 **`name`**`?: string | null` [¶](#markoptions-name){.headerlink}
@@ -1003,6 +981,10 @@ The options of marks drawn as strokes: edges and lines.
 
 Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram.
 
+{#vertices-vertices .member}
+**`vertices`**`:` [`TableInput`](#tableinput) [¶](#vertices-vertices){.headerlink}
+: The dataset and table drawn, `[data, table]`.
+
 {#vertices-position .member}
 **`position`**`?: [`[`ExprInput`](#exprinput)`,` [`ExprInput`](#exprinput)`] | null` [¶](#vertices-position){.headerlink}
 : Each row's x and y. Without a position, the point field that `geometry` names places rows, and
@@ -1063,6 +1045,10 @@ Rows drawn as strokes between the vertices named by two reference fields: branch
 wires. In a diagram, a row without ends is a net, joining every vertex port whose reference
 field names it.
 
+{#edges-edges .member}
+**`edges`**`:` [`TableInput`](#tableinput) [¶](#edges-edges){.headerlink}
+: The dataset and table drawn, `[data, table]`.
+
 {#edges-ends .member}
 **`ends`**`?: [from: string, to: string] | null` [¶](#edges-ends){.headerlink}
 : The reference fields naming each row's two vertices.
@@ -1103,6 +1089,10 @@ outlines). On a plot, each row instead traces a sampled field's history across t
 as a monitor does. On the earth, paths follow the globe's curve and stay whole across the
 antimeridian.
 
+{#lines-lines .member}
+**`lines`**`:` [`TableInput`](#tableinput) [¶](#lines-lines){.headerlink}
+: The dataset and table drawn, `[data, table]`.
+
 {#lines-geometry .member}
 **`geometry`**`?: string | null` [¶](#lines-geometry){.headerlink}
 : The path or polygon field each row runs along; the field named `geometry` by default. Not
@@ -1129,6 +1119,10 @@ The view triangulates each row's polygons once, in the background when they are 
 earth, areas follow the globe's curve and stay whole across the antimeridian. To outline areas,
 add a [`Lines`](#lines) mark of the same table, which draws their rings.
 
+{#areas-areas .member}
+**`areas`**`:` [`TableInput`](#tableinput) [¶](#areas-areas){.headerlink}
+: The dataset and table drawn, `[data, table]`.
+
 {#areas-geometry .member}
 **`geometry`**`?: string | null` [¶](#areas-geometry){.headerlink}
 : The polygon field each row fills, holding one polygon's rings or several polygons; the field
@@ -1144,6 +1138,10 @@ add a [`Lines`](#lines) mark of the same table, which draws their rings.
 Rows drawn as triangles between the vertices named by three reference fields: meshes, surfaces,
 and fields interpolated across a network. Faces are lit from the camera, so a flat mesh seen
 from above shows its exact colors.
+
+{#faces-faces .member}
+**`faces`**`:` [`TableInput`](#tableinput) [¶](#faces-faces){.headerlink}
+: The dataset and table drawn, `[data, table]`.
 
 {#faces-corners .member}
 **`corners`**`?: [a: string, b: string, c: string] | null` [¶](#faces-corners){.headerlink}
@@ -1378,16 +1376,18 @@ How a line runs between its samples.
 
 Text for each row, placed beside, inside, or along the row's shape and following it every frame:
 a text field, or options. A label shows wherever its row shows and its text fits the room the
-row gives it, such as inside a block, whatever other labels it meets. A row whose text is
-missing has no label, so a `when` choosing between the text field and missing labels only the
-rows it names. In a diagram a label is part of the drawing: it scales with the zoom, fades out
-when too small to read, and shows wherever it fits its vertex.
+row gives it, such as inside a block. Labels beside or along their rows never overlap: where
+they would, the label of the row drawn on top shows, so a mark's `priority` decides, and a dense
+view labels as many rows as fit. A row whose text is missing or empty has no label, so a `when`
+choosing between the text field and missing labels only the rows it names. In a diagram a label
+is part of the drawing: it scales with the zoom, fades out when too small to read, and shows
+wherever it fits its vertex.
 
 {#label-text .member}
 **`text`**`:` [`ExprInput`](#exprinput) [¶](#label-text){.headerlink}
 : The text field to show, or a `when` whose values are each that field or missing. A row whose
-  text is missing has no label. In a diagram the text reads only data, since the sheet sizes
-  blocks around it.
+  text is missing or empty has no label. In a diagram the text reads only data, since the sheet
+  sizes blocks around it.
 
 {#label-size .member}
 **`size`**`?: number | null` [¶](#label-size){.headerlink}
@@ -1486,7 +1486,7 @@ table joined by row id. `"$name"` is the short form of `{ "field": "name" }`.
 : The field's name.
 
 {#fieldnode-from .member}
-**`from`**`?: [data: string, table: string] | null` [¶](#fieldnode-from){.headerlink}
+**`from`**`?:` [`TableInput`](#tableinput) `| null` [¶](#fieldnode-from){.headerlink}
 : The dataset and table the field is read from, joined by row id.
 
 {#fieldnode-step .member}
@@ -2204,7 +2204,7 @@ What failed, as JSON: the form of the npm package's [`LatkitError`](#latkiterror
 
 {#failure-path .member}
 **`path`**`?: string` [¶](#failure-path){.headerlink}
-: The invalid part of the input, such as `marks[2].vertices.color`, on `invalid` failures.
+: The invalid part of the input, such as `marks[2].color`, on `invalid` failures.
 
 (phase)=
 

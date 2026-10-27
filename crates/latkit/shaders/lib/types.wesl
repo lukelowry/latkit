@@ -241,6 +241,12 @@ const FIELD_WORDS: u32 = 6u;
 
 // Most text codes a mark asks the host to set per texts pass.
 const WANTED: u32 = 64u;
+// Labels claim the screen cells their text covers, `LABEL_CELL` CSS pixels square, over the view
+// and `LABEL_MARGIN` of its size beyond each side. Until its text is set, a label claims room for
+// text `LABEL_GUESS` times its size wide.
+const LABEL_CELL: f32 = 8.0;
+const LABEL_MARGIN: f32 = 0.25;
+const LABEL_GUESS: f32 = 4.0;
 
 // Row state flags, in the last word of each row's kind words.
 const VISIBLE: u32 = 1u;

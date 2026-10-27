@@ -11,16 +11,7 @@
  * shows in its own frame, and its CPU and GPU times are per frame. A lost device fails the phase at
  * once, and every wait has a deadline that cancels the work it waits on.
  */
-import {
-  Data,
-  Patch,
-  Tiles,
-  type Camera,
-  type Gpu,
-  type Scene,
-  type View,
-  type Work,
-} from 'latkit';
+import { Data, Patch, Tiles, View, type Camera, type Gpu, type Scene, type Work } from 'latkit';
 import { quantile } from '../../npm/examples/gate/quantile.ts';
 
 /** Writes a dataset's rows into a patch, from arrays made beforehand. */
@@ -132,15 +123,12 @@ export class Stage {
       ...this.#data.values(),
       ...Object.entries(tiles).map(([name, url]) => new Tiles(name, url)),
     ];
-    return this.once(() => {
+    return this.once(async () => {
       for (const canvas of this.canvases) {
-        const view = this.gpu.view(scene, { sources });
-        this.gpu.canvas(canvas, { layout: [{ view }] });
+        const view = await View.create(canvas, scene, { gpu: this.gpu, sources, camera });
         view.on('error', (error) =>
           this.errors.push(`${error.path ?? ''} ${error.message}`.trim()),
         );
-        if (camera) view.camera = camera;
-        else view.fit('all');
         this.views.push(view);
       }
     });

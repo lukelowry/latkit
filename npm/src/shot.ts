@@ -1,8 +1,9 @@
 /** Pictures of views: images to encode as files, and H.264 video written as frames are drawn. */
 
 import type * as bindings from '../pkg/latkit.js';
-import { encoded, type Panel } from './canvas.js';
+import { encoded, type Placed } from './canvas.js';
 import { Handle, inner, thrown, waited, wasm, type LatkitError, type Wait } from './internal.js';
+import { canvasOf, type View } from './view.js';
 
 /** Options for a {@link Shot}. */
 export interface ShotOptions {
@@ -27,26 +28,29 @@ export interface ShotOptions {
 }
 
 /**
- * A picture of views, `size` pixels in all, each view drawn into its layout panel. While a shot
- * draws a view, a canvas showing that view keeps its last frame. An image draws each view's data as
- * it was when the picture began. A canvas's `shot()` makes a shot of what the canvas shows.
+ * A picture of views, `size` pixels in all, each view drawn in its region. While a shot draws a
+ * view, its canvas keeps its last frame. An image draws each view's data as it was when the
+ * picture began. `Shot.of(view)` makes a shot of what a view's canvas shows.
  *
  * ```ts
- * const png = await (await canvas.shot({ scale: 2 }).image()).encode('png');
+ * const png = await (await Shot.of(view, { scale: 2 }).image()).encode('png');
  * ```
  */
 export class Shot {
   /** The picture's size, `[width, height]` in pixels. */
   readonly size: readonly [number, number];
-  /** How the picture is taken, and in `layout`, the panel each view is drawn into. */
-  readonly options: ShotOptions & { layout?: readonly Panel[] };
+  /** How the picture is taken, and in `views`, the views drawn into it. */
+  readonly options: ShotOptions & { views?: readonly Placed[] };
 
   /** Creates a shot of `size`, `[width, height]` in pixels. */
   constructor(
     size: readonly [number, number],
     options: ShotOptions & {
-      /** The views drawn, each in its panel of the picture. */
-      layout?: readonly Panel[];
+      /**
+       * The views drawn, later views over earlier ones: each in its own region, or, given as
+       * `{ view, region }`, in that region of the picture.
+       */
+      views?: readonly Placed[];
     } = {},
   ) {
     this.size = size;
@@ -54,11 +58,28 @@ export class Shot {
   }
 
   /**
+   * A shot of exactly what the canvas showing `view` shows: its views in their regions, at the
+   * canvas's CSS size times `options.scale` in pixels. Throws an `invalid` error for a view on no
+   * canvas, which a shot must be given a size for.
+   */
+  static of(view: View, options: ShotOptions = {}): Shot {
+    const canvas = canvasOf(view);
+    if (!canvas)
+      throw thrown({
+        code: 'invalid',
+        message: 'the view is on no canvas: create a Shot of a size',
+      });
+    const scale = options.scale ?? 1;
+    const [width, height] = canvas.cssSize.map((side) => Math.max(1, Math.round(side * scale)));
+    return new Shot([width!, height!], { ...options, views: canvas.views });
+  }
+
+  /**
    * Draws the picture once every view is complete, as `capture` says, and resolves to the
    * {@link Image}. Rejects with the first error a view reports while drawing.
    */
   async image(wait: Wait = {}): Promise<Image> {
-    const taken = wasm().image(this.#json(), ...encoded(this.options.layout ?? []));
+    const taken = wasm().image(this.#json(), ...encoded(this.options.views ?? []));
     return Image.made(await waited<bindings.Image>(taken, wait, 'taking a picture'));
   }
 
@@ -81,8 +102,8 @@ export class Shot {
     options.signal?.throwIfAborted();
     const writer = options.output.getWriter();
     try {
-      const layout = encoded(this.options.layout ?? []);
-      const video = wasm().video(this.#json(), ...layout, options.fps, options.bitrate);
+      const views = encoded(this.options.views ?? []);
+      const video = wasm().video(this.#json(), ...views, options.fps, options.bitrate);
       return Video.made(video, writer, options.fps, options.signal);
     } catch (error) {
       writer.releaseLock();
@@ -90,7 +111,7 @@ export class Shot {
     }
   }
 
-  /** The shot as JSON for the bindings, with times in seconds; the layout crosses on its own. */
+  /** The shot as JSON for the bindings, with times in seconds; the views cross on their own. */
   #json(): string {
     const { scale = 1, transparent = false, capture = 'still', elapsed } = this.options;
     return JSON.stringify({ size: [...this.size], scale, transparent, capture, elapsed });

@@ -16,7 +16,7 @@ mark!(
 ///     .radius(field("kv") / 50.0)
 ///     .color(field("vm").colormap(Colormap::BALANCE).domain(0.95..=1.05));
 /// ```
-Vertices {
+Vertices("vertices") {
     /// Each row's x and y. Without a position, the point field that `geometry` names places rows,
     /// and the scene's layout places rows that have neither.
     position: Option<[Expr; 2]>,

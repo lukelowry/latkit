@@ -9,10 +9,12 @@ use crate::expr::form::Written;
 
 /// Text for each row, placed beside, inside, or along the row's shape and following it every frame:
 /// a text field, or options. A label shows wherever its row shows and its text fits the room the
-/// row gives it, such as inside a block, whatever other labels it meets. A row whose text is
-/// missing has no label, so a `when` choosing between the text field and missing labels only the
-/// rows it names. In a diagram a label is part of the drawing: it scales with the zoom, fades out
-/// when too small to read, and shows wherever it fits its vertex.
+/// row gives it, such as inside a block. Labels beside or along their rows never overlap: where they
+/// would, the label of the row drawn on top shows, so a mark's `priority` decides, and a dense view
+/// labels as many rows as fit. A row whose text is missing or empty has no label, so a `when` choosing
+/// between the text field and missing labels only the rows it names. In a diagram a label is part
+/// of the drawing: it scales with the zoom, fades out when too small to read, and shows wherever it
+/// fits its vertex.
 ///
 /// ```
 /// # use latkit::{field, when, zoom, Expr, Label, Vertices};
@@ -25,7 +27,7 @@ use crate::expr::form::Written;
 #[schemars(transform = text_or_options)]
 pub struct Label {
     /// The text field to show, or a `when` whose values are each that field or missing. A row
-    /// whose text is missing has no label. In a diagram the text reads only data, since the sheet
+    /// whose text is missing or empty has no label. In a diagram the text reads only data, since the sheet
     /// sizes blocks around it.
     pub(crate) text: Expr,
     /// Font size in the space's unit (units in a diagram, CSS pixels elsewhere); the theme's
@@ -76,7 +78,7 @@ fn text_or_options(schema: &mut schemars::Schema) {
 
 impl Label {
     /// Labels each row with a text field's value, or with a `when` choosing between that field and
-    /// missing; a row whose text is missing has no label.
+    /// missing; a row whose text is missing or empty has no label.
     pub fn new(text: impl Into<Expr>) -> Label {
         Label { text: text.into(), size: None, color: None, max_width: None, font: None }
     }

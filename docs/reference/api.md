@@ -6,11 +6,11 @@ out:
 
 - **Loading.** Scenes, expressions, and patches are plain data. Datasets, views, pictures, and the
   colormap functions need latkit's WebAssembly: until [`load()`](#load) finishes, they throw an
-  `unloaded` error. [`Gpu.create()`](#gpu-create), [`Data.read()`](#data-read), and [`Patch.read()`](#patch-read) of JSON load it
-  themselves.
+  `unloaded` error. [`View.create()`](#view-create), [`Gpu.create()`](#gpu-create), [`Data.read()`](#data-read), and [`Patch.read()`](#patch-read) of
+  JSON load it themselves.
 - **Errors.** Everything latkit throws or rejects with is a [`LatkitError`](#latkiterror). Input it cannot use
-  fails with an `invalid` error whose `path` names the part, such as
-  `marks[2].vertices.color`, and changes nothing.
+  fails with an `invalid` error whose `path` names the part, such as `marks[2].color`, and
+  changes nothing.
 - **Waits.** Every promise waits within its [`Wait`](#wait): until its `signal` aborts, or 30 seconds.
 - **Lifetimes.** A [`Handle`](#handle) holds memory until `destroy()`, or a `using` declaration, frees it.
 
@@ -64,7 +64,7 @@ The error latkit throws: an `Error` whose `code` says what kind of failure it is
 
 {#latkiterror-path .member}
 **`path`**`?: string` [¶](#latkiterror-path){.headerlink}
-: The invalid part of the input, such as `marks[2].vertices.color`, on `invalid` errors.
+: The invalid part of the input, such as `marks[2].color`, on `invalid` errors.
 
 (wait)=
 
@@ -101,7 +101,7 @@ its other methods throw a `destroyed` error.
 
 ## Data and patches
 
-Datasets of named tables, the patches that change them, written without WebAssembly, and the sources views draw.
+Datasets of named tables, their tables that marks draw, and the patches that change them, written without WebAssembly.
 
 (dataset)=
 
@@ -118,10 +118,14 @@ and a [`Snapshot`](#snapshot), which reads its own.
 
 {#dataset-name .member}
 `readonly` **`name`**`: string` [¶](#dataset-name){.headerlink}
-: The dataset's name, by which a mark's `data` option draws it.
+: The dataset's name: the first part of its tables' JSON form.
 
 ```{rubric} Methods
 ```
+
+{#dataset-table .member}
+**`table`**`(name: string):` [`Table`](#table) [¶](#dataset-table){.headerlink}
+: The dataset's table `name`, for a mark to draw or a field to read from.
 
 {#dataset-describe .member}
 **`describe`**`():` [`Description`](#description) [¶](#dataset-describe){.headerlink}
@@ -160,15 +164,15 @@ and a [`Snapshot`](#snapshot), which reads its own.
 {.signature}
 `class Data extends` [`Dataset`](#dataset)
 
-A dataset that changes in place, only by patches, each applied whole or not at all. Views draw
-its latest version from the frame after each patch. A [`Snapshot`](#snapshot) keeps one version and
-shares its pages with the dataset, so an undo history costs only the pages that differ.
-Destroying it leaves views drawing it and its snapshots usable.
+A dataset that changes in place, each change applied whole or not at all. Each method of
+[`Patch`](#patch) is also a method here that applies that one change at once; `apply` applies a patch
+of several. Views draw its latest version from the frame after each change. A [`Snapshot`](#snapshot)
+keeps one version and shares its pages with the dataset, so an undo history costs only the pages
+that differ. Destroying it leaves views drawing it and its snapshots usable.
 
 ```ts
-const grid = new Data('grid').apply(new Patch().replace('Bus', [1, 2], { kv: [230, 115] }));
-view.sources = [grid];
-grid.apply(new Patch().set('Bus', [2], { kv: [69] })); // drawn next frame
+const grid = new Data('grid').set('Bus', [1, 2], { kv: [230, 115] });
+grid.set('Bus', [2], { kv: [69] }); // drawn the next frame
 ```
 
 ```{rubric} Constructor
@@ -204,6 +208,50 @@ grid.apply(new Patch().set('Bus', [2], { kv: [69] })); // drawn next frame
 **`apply`**`(patch:` [`Patch`](#patch) `| Uint8Array): this` [¶](#data-apply){.headerlink}
 : Applies every change in `patch`, or none when one is invalid, and returns this dataset. An
   `invalid` error's `path` names the failing change, such as `patch[1].Bus.kv`.
+
+{#data-axis .member}
+**`axis`**`(name: string, unit: string): this` [¶](#data-axis){.headerlink}
+: Applies [`Patch.axis()`](#patch-axis): names the axis that sampled fields are recorded over.
+
+{#data-replace .member}
+**`replace`**`(table: string, fields:` [`Fields`](#fields)`): this` [¶](#data-replace){.headerlink}
+: Applies [`Patch.replace()`](#patch-replace): replaces table `table` with rows `ids`, or `0` to `n - 1`, and
+  `fields`.
+
+{.member}
+**`replace`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this`
+: Applies [`Patch.replace()`](#patch-replace): replaces table `table` with rows `ids`, or `0` to `n - 1`, and
+  `fields`.
+
+{#data-set .member}
+**`set`**`(table: string, fields:` [`Fields`](#fields)`): this` [¶](#data-set){.headerlink}
+: Applies [`Patch.set()`](#patch-set): writes `fields` for rows `ids` of `table`, or `0` to `n - 1`, adding
+  new rows.
+
+{.member}
+**`set`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this`
+: Applies [`Patch.set()`](#patch-set): writes `fields` for rows `ids` of `table`, or `0` to `n - 1`, adding
+  new rows.
+
+{#data-remove .member}
+**`remove`**`(table: string, ids:` [`RowIds`](#rowids)`): this` [¶](#data-remove){.headerlink}
+: Applies [`Patch.remove()`](#patch-remove): removes the rows of `table` with `ids`.
+
+{#data-append .member}
+**`append`**`(table: string, at: number | readonly number[], fields: Readonly<Record<string,` [`Values`](#values)`>>, options?: { ids?:` [`RowIds`](#rowids) `}): this` [¶](#data-append){.headerlink}
+: Applies [`Patch.append()`](#patch-append): records frames of `table` at the axis coordinates `at`.
+
+  {#data-append-ids .member}
+  **`ids`**`?:` [`RowIds`](#rowids) [¶](#data-append-ids){.headerlink}
+  : The rows the frames cover, every row by default; other rows keep their last values.
+
+{#data-forget .member}
+**`forget`**`(before: number): this` [¶](#data-forget){.headerlink}
+: Applies [`Patch.forget()`](#patch-forget): drops every sampled field's frames before `before`.
+
+{#data-frames .member}
+**`frames`**`(table: string, field: string, run:` [`Run`](#run)`): this` [¶](#data-frames){.headerlink}
+: Applies [`Patch.frames()`](#patch-frames): stores a run of a sampled field's entries, as a time tile holds.
 
 {#data-snapshot .member}
 **`snapshot`**`():` [`Snapshot`](#snapshot) [¶](#data-snapshot){.headerlink}
@@ -261,6 +309,13 @@ bytes at `url` decide the kind:
 `readonly` **`url`**`: string` [¶](#tiles-url){.headerlink}
 : Where the tiles are.
 
+```{rubric} Methods
+```
+
+{#tiles-table .member}
+**`table`**`(name: string):` [`Table`](#table) [¶](#tiles-table){.headerlink}
+: The tiles' table `name`, such as a vector tile layer, for a mark to draw.
+
 (source)=
 
 ### `Source`
@@ -268,7 +323,52 @@ bytes at `url` decide the kind:
 {.signature}
 `type Source =` [`Data`](#data) `|` [`Snapshot`](#snapshot) `|` [`Tiles`](#tiles)
 
-A dataset a view draws; views match it to the scene's marks by the dataset's name.
+A dataset a view draws: the one a [`Table`](#table) belongs to, or one of the view's `sources`.
+
+(table)=
+
+### `Table`
+
+{.signature}
+`class Table`
+
+A table of a dataset, which a mark draws or a field reads from: `grid.table('Bus')`. A view draws
+the datasets its scene's tables belong to. Its JSON form is `[data, table]`.
+
+```{rubric} Constructor
+```
+
+{#table-new .member}
+**`new Table`**`(source:` [`Source`](#source)`, name: string)` [¶](#table-new){.headerlink}
+: Table `name` of `source`.
+
+```{rubric} Properties
+```
+
+{#table-source .member}
+`readonly` **`source`**`:` [`Source`](#source) [¶](#table-source){.headerlink}
+: The dataset the table belongs to.
+
+{#table-name .member}
+`readonly` **`name`**`: string` [¶](#table-name){.headerlink}
+: The table's name.
+
+```{rubric} Methods
+```
+
+{#table-tojson .member}
+**`toJSON`**`(): [data: string, table: string]` [¶](#table-tojson){.headerlink}
+: The JSON form, `[data, table]`, which `JSON.stringify` writes for the table.
+
+(tableinput)=
+
+### `TableInput`
+
+{.signature}
+`type TableInput =` [`Table`](#table) `| readonly [data: string, table: string]`
+
+A table that a mark draws or a field reads from: a dataset's [`Table`](#table), or its JSON form
+`[data, table]`, which names a dataset the view's `sources` give.
 
 (queryresult)=
 
@@ -392,13 +492,26 @@ const patch = new Patch('grid')
   `axis('time', 's')`.
 
 {#patch-replace .member}
-**`replace`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this` [¶](#patch-replace){.headerlink}
+**`replace`**`(table: string, fields:` [`Fields`](#fields)`): this` [¶](#patch-replace){.headerlink}
 : Replaces table `table` with rows `ids` and `fields`, adding the table if it does not exist.
+  Without ids, the rows are `0` to `n - 1`, `n` being the length of each field's values.
+
+{.member}
+**`replace`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this`
+: Replaces table `table` with rows `ids` and `fields`, adding the table if it does not exist.
+  Without ids, the rows are `0` to `n - 1`, `n` being the length of each field's values.
 
 {#patch-set .member}
-**`set`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this` [¶](#patch-set){.headerlink}
+**`set`**`(table: string, fields:` [`Fields`](#fields)`): this` [¶](#patch-set){.headerlink}
 : Writes `fields` for rows `ids` of `table`. Rows with existing ids change, new ids add rows, and
-  omitted fields keep their values. Adds the table if it does not exist.
+  omitted fields keep their values. Adds the table if it does not exist. Without ids, the rows
+  are `0` to `n - 1`, `n` being the length of each field's values.
+
+{.member}
+**`set`**`(table: string, ids:` [`RowIds`](#rowids)`, fields?:` [`Fields`](#fields)`): this`
+: Writes `fields` for rows `ids` of `table`. Rows with existing ids change, new ids add rows, and
+  omitted fields keep their values. Adds the table if it does not exist. Without ids, the rows
+  are `0` to `n - 1`, `n` being the length of each field's values.
 
 {#patch-remove .member}
 **`remove`**`(table: string, ids:` [`RowIds`](#rowids)`): this` [¶](#patch-remove){.headerlink}
@@ -420,28 +533,11 @@ const patch = new Patch('grid')
 : Drops every sampled field's frames before axis coordinate `before`.
 
 {#patch-frames .member}
-**`frames`**`(table: string, field: string, run: { level?: number; first: number; at: Float64Array | readonly number[]; values: Float32Array | readonly number[] }): this` [¶](#patch-frames){.headerlink}
+**`frames`**`(table: string, field: string, run:` [`Run`](#run)`): this` [¶](#patch-frames){.headerlink}
 : Stores a run of entries of sampled field `field` of `table`, at one level of detail. This is
   what a time tile holds, as `latkit tile` writes it. At level 0 each entry is a frame; at level
   `k`, a bucket of `8^k` frames. None of the entries may be stored already. Entries past the
   field's last frame extend it.
-
-  {#patch-frames-level .member}
-  **`level`**`?: number` [¶](#patch-frames-level){.headerlink}
-  : The level of detail, from 0 to 21; 0 by default.
-
-  {#patch-frames-first .member}
-  **`first`**`: number` [¶](#patch-frames-first){.headerlink}
-  : The first entry's number: a safe nonnegative integer.
-
-  {#patch-frames-at .member}
-  **`at`**`: Float64Array | readonly number[]` [¶](#patch-frames-at){.headerlink}
-  : Each frame's coordinate, or each bucket's first and last frames' coordinates.
-
-  {#patch-frames-values .member}
-  **`values`**`: Float32Array | readonly number[]` [¶](#patch-frames-values){.headerlink}
-  : A value per row, entry by entry; at a bucket level, every bucket's per-row minimums, then
-    every bucket's per-row maximums. NaN marks a missing value.
 
 {#patch-extend .member}
 **`extend`**`(next: Patch): this` [¶](#patch-extend){.headerlink}
@@ -541,6 +637,32 @@ Builds a [`Reference`](#reference) field: for each row, the id of the row of `ta
 
 A table's fields by name: values, or a [`Reference`](#reference).
 
+(run)=
+
+### `Run`
+
+{.signature}
+`interface Run`
+
+A run of a sampled field's entries at one level of detail, as [`Patch.frames()`](#patch-frames) stores.
+
+{#run-level .member}
+**`level`**`?: number` [¶](#run-level){.headerlink}
+: The level of detail, from 0 to 21; 0 by default.
+
+{#run-first .member}
+**`first`**`: number` [¶](#run-first){.headerlink}
+: The first entry's number: a safe nonnegative integer.
+
+{#run-at .member}
+**`at`**`: Float64Array | readonly number[]` [¶](#run-at){.headerlink}
+: Each frame's coordinate, or each bucket's first and last frames' coordinates.
+
+{#run-values .member}
+**`values`**`: Float32Array | readonly number[]` [¶](#run-values){.headerlink}
+: A value per row, entry by entry; at a bucket level, every bucket's per-row minimums, then every
+  bucket's per-row maximums. NaN marks a missing value.
+
 ## Expressions
 
 Builders for the per-row expressions that scene options take, colors among them.
@@ -578,8 +700,9 @@ conditional choosing between colors.
 : The JSON form, which `JSON.stringify` writes for the expression.
 
 {#expr-from .member}
-**`from`**`(data: string, table: string): Expr` [¶](#expr-from){.headerlink}
-: Reads this expression's fields from table `table` of dataset `data`, joined by row id.
+**`from`**`(table:` [`TableInput`](#tableinput)`): Expr` [¶](#expr-from){.headerlink}
+: Reads this expression's fields from `table`, such as `weather.table('Station')`, joined by row
+  id. A view draws the table's dataset too.
 
 {#expr-step .member}
 **`step`**`(): Expr` [¶](#expr-step){.headerlink}
@@ -948,98 +1071,7 @@ categorical map gives one solid band per category.
 
 ## Views
 
-A GPU makes views, and canvases that show them.
-
-(gpu)=
-
-### `Gpu`
-
-{.signature}
-`class Gpu extends` [`Handle`](#handle)
-
-A WebGPU device that views draw with. The views and canvases of one `Gpu` share its memory and
-draw together in each animation frame, so linked views always show the same moment. Destroying
-it destroys its canvases, views, and frame listeners; other GPUs and datasets stay usable.
-
-```{rubric} Properties
-```
-
-{#gpu-lost .member}
-`readonly` **`lost`**`: boolean` [¶](#gpu-lost){.headerlink}
-: Whether the device was lost. Drawing then does nothing; create a new [`Gpu`](#gpu).
-
-{#gpu-budget .member}
-**`budget`**`:` [`Budget`](#budget) [¶](#gpu-budget){.headerlink}
-: The GPU memory budget for data, shared by every view of this GPU; see [`Budget`](#budget). Defaults
-  to half the device's largest storage buffer, and 32 MiB uploaded per frame.
-
-{#gpu-work .member}
-`readonly` **`work`**`:` [`Work`](#work) [¶](#gpu-work){.headerlink}
-: Exact counts of the work this GPU has done since it was created; see [`Work`](#work). The counts
-  repeat for the same budget, device limits, and frames, so tests and benchmarks can assert them.
-
-{#gpu-resident .member}
-`readonly` **`resident`**`: number` [¶](#gpu-resident){.headerlink}
-: Bytes of GPU memory its views draw from: data pages, and each view's per-row data.
-
-{#gpu-uploading .member}
-`readonly` **`uploading`**`: number` [¶](#gpu-uploading){.headerlink}
-: Bytes waiting to upload to the GPU, across its views.
-
-```{rubric} Methods
-```
-
-{#gpu-create .member}
-`static` **`create`**`(): Promise<Gpu>` [¶](#gpu-create){.headerlink}
-: Requests a WebGPU device; the first call takes the one [`load()`](#load) requested. Rejects with an
-  `unsupported` error when the browser has no WebGPU device.
-
-{#gpu-view .member}
-**`view`**`(scene:` [`Scene`](#scene)`, options?: { sources?: readonly` [`Source`](#source)`[] }):` [`View`](#view) [¶](#gpu-view){.headerlink}
-: Creates a view that draws `scene`. Show it in a [`Canvas`](#canvas), or draw it into pictures with a
-  [`Shot`](#shot), with or without a canvas.
-
-  {#gpu-view-sources .member}
-  **`sources`**`?: readonly` [`Source`](#source)`[]` [¶](#gpu-view-sources){.headerlink}
-  : The datasets the scene draws; see [`View.sources`](#view-sources).
-
-{#gpu-canvas .member}
-**`canvas`**`(target: HTMLCanvasElement | OffscreenCanvas, options?: { layout?: readonly` [`Panel`](#panel)`[]; pixelRatio?: number }):` [`Canvas`](#canvas) [¶](#gpu-canvas){.headerlink}
-: Creates a canvas that shows views in `target`. A `<canvas>` element sizes itself to its CSS box
-  at the device pixel ratio, and passes pointer, wheel, and key input to the views in its panels.
-  An `OffscreenCanvas`, as in a worker, keeps the size it is given and takes no input.
-
-  {#gpu-canvas-layout .member}
-  **`layout`**`?: readonly` [`Panel`](#panel)`[]` [¶](#gpu-canvas-layout){.headerlink}
-  : The views shown and their regions; see [`Canvas.layout`](#canvas-layout). None by default.
-
-  {#gpu-canvas-pixelratio .member}
-  **`pixelRatio`**`?: number` [¶](#gpu-canvas-pixelratio){.headerlink}
-  : Pixels per CSS pixel of an `OffscreenCanvas`, 1 by default.
-
-{#gpu-on .member}
-**`on`**`(type: 'frame', listener: (now: number) => void): () => void` [¶](#gpu-on){.headerlink}
-: Calls `listener` every animation frame with the frame's timestamp in milliseconds, before the
-  views draw, so changes it makes show in that frame. While any listener is registered, a frame
-  runs every animation frame. Returns a function that removes the listener.
-
-{#gpu-step .member}
-**`step`**`(now: number): void` [¶](#gpu-step){.headerlink}
-: Draws one frame now, at `now` milliseconds on the `requestAnimationFrame` clock: it runs the
-  frame listeners, then draws every canvas that needs a frame. After the first call, the GPU
-  requests no more animation frames, so a test or benchmark that steps every frame draws the
-  same frames on any device.
-
-{#gpu-done .member}
-**`done`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-done){.headerlink}
-: Resolves once the GPU has finished its submitted work, every readback has arrived, and every
-  pipeline a view or shot requested has compiled. A frame stepped after that uses all of it.
-
-{#gpu-landed .member}
-**`landed`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-landed){.headerlink}
-: Resolves when, after this call, work a view is waiting on arrives (a readback, a pipeline
-  compile, a job, a label text, or a fetch), or a view requests a frame. A harness that steps
-  frames awaits it to know when to step again.
+Views draw scenes on canvases, with the GPU they share.
 
 (view)=
 
@@ -1048,12 +1080,29 @@ it destroys its canvases, views, and frame listeners; other GPUs and datasets st
 {.signature}
 `class View extends` [`Handle`](#handle)
 
-A scene drawn from its sources; created by [`Gpu.view()`](#gpu-view). A canvas shows it and passes it input,
-and a [`Shot`](#shot) draws it into pictures. Destroying it rejects its unanswered queries; a canvas
-showing it keeps its last frame.
+A scene drawn from its datasets, on a canvas and into pictures; created by [`View.create()`](#view-create).
+The canvas passes it pointer, wheel, and key input, and a [`Shot`](#shot) draws it into pictures.
+Destroying it rejects its unanswered queries; its canvas keeps its last frame.
+
+```ts
+const grid = new Data('grid').set('Bus', [1, 2], { x: [0, 30], y: [0, 20], kv: [230, 115] });
+const view = await View.create(canvas, {
+  space: 'plane',
+  marks: [{ vertices: grid.table('Bus'), position: ['$x', '$y'], color: field('kv').colormap('viridis') }],
+});
+```
 
 ```{rubric} Properties
 ```
+
+{#view-gpu .member}
+`readonly` **`gpu`**`:` [`Gpu`](#gpu) [¶](#view-gpu){.headerlink}
+: The GPU that draws the view.
+
+{#view-region .member}
+**`region`**`:` [`Rect`](#rect) [¶](#view-region){.headerlink}
+: Where the view draws on its canvas and in pictures: `[x, y, width, height]` in fractions of
+  them, from the top left. Views of one canvas draw in the order they were created.
 
 {#view-scene .member}
 **`scene`**`:` [`Scene`](#scene) [¶](#view-scene){.headerlink}
@@ -1062,10 +1111,11 @@ showing it keeps its last frame.
 
 {#view-sources .member}
 **`sources`**`: readonly` [`Source`](#source)`[]` [¶](#view-sources){.headerlink}
-: The datasets the view draws, matched to marks by dataset name, which must be unique. The view
-  draws a [`Data`](#data) at its latest version, from the frame after each patch; a [`Snapshot`](#snapshot) unchanged;
-  and [`Tiles`](#tiles) as the pieces it needs. A mark whose dataset no longer fits it draws nothing; it is
-  listed in `failures`, and the next frame emits an `error` event.
+: Datasets the view draws besides those of its scene's tables, and in their place where they
+  share a name: a mark whose table is written `[data, table]` draws the source named `data`. The
+  view draws a [`Data`](#data) at its latest version, from the frame after each change; a [`Snapshot`](#snapshot)
+  unchanged; and [`Tiles`](#tiles) as the pieces it needs. A mark whose dataset no longer fits it draws
+  nothing; it is listed in `failures`, and the next frame emits an `error` event.
 
 {#view-at .member}
 **`at`**`: number` [¶](#view-at){.headerlink}
@@ -1124,6 +1174,32 @@ showing it keeps its last frame.
 
 ```{rubric} Methods
 ```
+
+{#view-create .member}
+`static` **`create`**`(canvas: HTMLCanvasElement | OffscreenCanvas | null, scene:` [`Scene`](#scene)`, options?: { region?:` [`Rect`](#rect)`; camera?:` [`Camera`](#camera)`; sources?: readonly` [`Source`](#source)`[]; gpu?:` [`Gpu`](#gpu)`; pixelRatio?: number }): Promise<View>` [¶](#view-create){.headerlink}
+: Creates a view that draws `scene` on `canvas`, in `options.region`, over any views already on
+  it; with a `null` canvas, the view draws only into pictures. It draws the datasets its scene's
+  tables belong to, and frames everything once it draws, unless given a camera.
+
+  {#view-create-region .member}
+  **`region`**`?:` [`Rect`](#rect) [¶](#view-create-region){.headerlink}
+  : Where the view draws on the canvas and in pictures; the whole of them by default.
+
+  {#view-create-camera .member}
+  **`camera`**`?:` [`Camera`](#camera) [¶](#view-create-camera){.headerlink}
+  : Where the view looks first. Without one, it frames everything drawn.
+
+  {#view-create-sources .member}
+  **`sources`**`?: readonly` [`Source`](#source)`[]` [¶](#view-create-sources){.headerlink}
+  : Datasets beside those of the scene's tables; see [`View.sources`](#view-sources).
+
+  {#view-create-gpu .member}
+  **`gpu`**`?:` [`Gpu`](#gpu) [¶](#view-create-gpu){.headerlink}
+  : The GPU that draws the view; the first [`Gpu`](#gpu) created by default, created if need be.
+
+  {#view-create-pixelratio .member}
+  **`pixelRatio`**`?: number` [¶](#view-create-pixelratio){.headerlink}
+  : Pixels per CSS pixel of an `OffscreenCanvas`, 1 by default; the first view on it sets it.
 
 {#view-fit .member}
 **`fit`**`(fit?:` [`Fit`](#fit)`): void` [¶](#view-fit){.headerlink}
@@ -1187,6 +1263,15 @@ showing it keeps its last frame.
   function that removes it. Past events are not replayed; read the current state from the
   property a change event is named after.
 
+(rect)=
+
+### `Rect`
+
+{.signature}
+`type Rect = readonly [x: number, y: number, width: number, height: number]`
+
+A region `[x, y, width, height]` in fractions of a canvas or picture, from its top left.
+
 (viewevents)=
 
 ### `ViewEvents`
@@ -1228,63 +1313,75 @@ A point on screen, in CSS pixels from the view's top left corner.
 A position in the space's coordinates: x, y, and elevation. On the earth, x and y are longitude
 and latitude; on a plot, the axis coordinate and the value.
 
-(canvas)=
+(gpu)=
 
-### `Canvas`
+### `Gpu`
 
 {.signature}
-`class Canvas extends` [`Handle`](#handle)
+`class Gpu extends` [`Handle`](#handle)
 
-Shows views in a `<canvas>` element or an `OffscreenCanvas`, each in its layout panel; created by
-[`Gpu.canvas()`](#gpu-canvas). A frame redraws only the views that need it, or every view after a resize or a
-layout change. Destroying it stops drawing; the views stay usable, and the element keeps its last
-frame.
+A WebGPU device that views draw with. The views of one `Gpu` share its memory and draw together
+in each animation frame, so linked views always show the same moment. Views use the first `Gpu`
+created unless given another, and [`View.create`](#view-create) creates it when there is none. Destroying it
+destroys its views and frame listeners; other GPUs and datasets stay usable.
 
 ```{rubric} Properties
 ```
 
-{#canvas-element .member}
-`readonly` **`element`**`: HTMLCanvasElement | OffscreenCanvas` [¶](#canvas-element){.headerlink}
-: The `<canvas>` element or `OffscreenCanvas` it draws into.
+{#gpu-lost .member}
+`readonly` **`lost`**`: boolean` [¶](#gpu-lost){.headerlink}
+: Whether the device was lost. Drawing then does nothing; create a new [`Gpu`](#gpu).
 
-{#canvas-layout .member}
-**`layout`**`: readonly` [`Panel`](#panel)`[]` [¶](#canvas-layout){.headerlink}
-: The views shown and their regions; later panels draw over earlier ones. Setting it replaces the
-  shown views. A view shows in at most one panel of one canvas at a time.
+{#gpu-budget .member}
+**`budget`**`:` [`Budget`](#budget) [¶](#gpu-budget){.headerlink}
+: The GPU memory budget for data, shared by every view of this GPU; see [`Budget`](#budget). Defaults
+  to half the device's largest storage buffer, and 32 MiB uploaded per frame.
+
+{#gpu-work .member}
+`readonly` **`work`**`:` [`Work`](#work) [¶](#gpu-work){.headerlink}
+: Exact counts of the work this GPU has done since it was created; see [`Work`](#work). The counts
+  repeat for the same budget, device limits, and frames, so tests and benchmarks can assert them.
+
+{#gpu-resident .member}
+`readonly` **`resident`**`: number` [¶](#gpu-resident){.headerlink}
+: Bytes of GPU memory its views draw from: data pages, and each view's per-row data.
+
+{#gpu-uploading .member}
+`readonly` **`uploading`**`: number` [¶](#gpu-uploading){.headerlink}
+: Bytes waiting to upload to the GPU, across its views.
 
 ```{rubric} Methods
 ```
 
-{#canvas-shot .member}
-**`shot`**`(options?:` [`ShotOptions`](#shotoptions)`):` [`Shot`](#shot) [¶](#canvas-shot){.headerlink}
-: A [`Shot`](#shot) of exactly what the canvas shows: its views in its layout, at the canvas's CSS
-  size times `options.scale` in pixels.
+{#gpu-create .member}
+`static` **`create`**`(): Promise<Gpu>` [¶](#gpu-create){.headerlink}
+: Requests a WebGPU device; the first call takes the one [`load()`](#load) requested. Create one before
+  any view to set its `budget` first, or another for views that should not share memory with the
+  rest. Rejects with an `unsupported` error when the browser has no WebGPU device.
 
-(panel)=
+{#gpu-on .member}
+**`on`**`(type: 'frame', listener: (now: number) => void): () => void` [¶](#gpu-on){.headerlink}
+: Calls `listener` every animation frame with the frame's timestamp in milliseconds, before the
+  views draw, so changes it makes show in that frame. While any listener is registered, a frame
+  runs every animation frame. Returns a function that removes the listener.
 
-### `Panel`
+{#gpu-step .member}
+**`step`**`(now: number): void` [¶](#gpu-step){.headerlink}
+: Draws one frame now, at `now` milliseconds on the `requestAnimationFrame` clock: it runs the
+  frame listeners, then draws every canvas that needs a frame. After the first call, the GPU
+  requests no more animation frames, so a test or benchmark that steps every frame draws the
+  same frames on any device.
 
-{.signature}
-`interface Panel`
+{#gpu-done .member}
+**`done`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-done){.headerlink}
+: Resolves once the GPU has finished its submitted work, every readback has arrived, and every
+  pipeline a view or shot requested has compiled. A frame stepped after that uses all of it.
 
-A view and the region of a canvas or picture it draws in.
-
-{#panel-view .member}
-**`view`**`:` [`View`](#view) [¶](#panel-view){.headerlink}
-: The view drawn.
-
-{#panel-at .member}
-**`at`**`?:` [`Rect`](#rect) [¶](#panel-at){.headerlink}
-: Where the view draws; the whole canvas or picture by default.
-
-(rect)=
-
-### `Rect`
-
-{.signature}
-`type Rect = readonly [x: number, y: number, width: number, height: number]`
-
-A region `[x, y, width, height]` in fractions of a canvas or picture, from its top left.
+{#gpu-landed .member}
+**`landed`**`(wait?:` [`Wait`](#wait)`): Promise<void>` [¶](#gpu-landed){.headerlink}
+: Resolves when, after this call, work a view is waiting on arrives (a readback, a pipeline
+  compile, a job, a label text, or a fetch), or a view requests a frame. A harness that steps
+  frames awaits it to know when to step again.
 
 ## Pictures and video
 
@@ -1297,24 +1394,25 @@ Shots draw views into images and video.
 {.signature}
 `class Shot`
 
-A picture of views, `size` pixels in all, each view drawn into its layout panel. While a shot
-draws a view, a canvas showing that view keeps its last frame. An image draws each view's data as
-it was when the picture began. A canvas's `shot()` makes a shot of what the canvas shows.
+A picture of views, `size` pixels in all, each view drawn in its region. While a shot draws a
+view, its canvas keeps its last frame. An image draws each view's data as it was when the
+picture began. `Shot.of(view)` makes a shot of what a view's canvas shows.
 
 ```ts
-const png = await (await canvas.shot({ scale: 2 }).image()).encode('png');
+const png = await (await Shot.of(view, { scale: 2 }).image()).encode('png');
 ```
 
 ```{rubric} Constructor
 ```
 
 {#shot-new .member}
-**`new Shot`**`(size: readonly [number, number], options?:` [`ShotOptions`](#shotoptions) `& { layout?: readonly` [`Panel`](#panel)`[] })` [¶](#shot-new){.headerlink}
+**`new Shot`**`(size: readonly [number, number], options?:` [`ShotOptions`](#shotoptions) `& { views?: readonly` [`Placed`](#placed)`[] })` [¶](#shot-new){.headerlink}
 : Creates a shot of `size`, `[width, height]` in pixels.
 
-  {#shot-new-layout .member}
-  **`layout`**`?: readonly` [`Panel`](#panel)`[]` [¶](#shot-new-layout){.headerlink}
-  : The views drawn, each in its panel of the picture.
+  {#shot-new-views .member}
+  **`views`**`?: readonly` [`Placed`](#placed)`[]` [¶](#shot-new-views){.headerlink}
+  : The views drawn, later views over earlier ones: each in its own region, or, given as
+    `{ view, region }`, in that region of the picture.
 
 ```{rubric} Properties
 ```
@@ -1324,11 +1422,17 @@ const png = await (await canvas.shot({ scale: 2 }).image()).encode('png');
 : The picture's size, `[width, height]` in pixels.
 
 {#shot-options .member}
-`readonly` **`options`**`:` [`ShotOptions`](#shotoptions) `& { layout?: readonly` [`Panel`](#panel)`[] }` [¶](#shot-options){.headerlink}
-: How the picture is taken, and in `layout`, the panel each view is drawn into.
+`readonly` **`options`**`:` [`ShotOptions`](#shotoptions) `& { views?: readonly` [`Placed`](#placed)`[] }` [¶](#shot-options){.headerlink}
+: How the picture is taken, and in `views`, the views drawn into it.
 
 ```{rubric} Methods
 ```
+
+{#shot-of .member}
+`static` **`of`**`(view:` [`View`](#view)`, options?:` [`ShotOptions`](#shotoptions)`): Shot` [¶](#shot-of){.headerlink}
+: A shot of exactly what the canvas showing `view` shows: its views in their regions, at the
+  canvas's CSS size times `options.scale` in pixels. Throws an `invalid` error for a view on no
+  canvas, which a shot must be given a size for.
 
 {#shot-image .member}
 **`image`**`(wait?:` [`Wait`](#wait)`): Promise<`[`Image`](#image)`>` [¶](#shot-image){.headerlink}
@@ -1382,6 +1486,23 @@ Options for a [`Shot`](#shot).
 **`elapsed`**`?: number` [¶](#shotoptions-elapsed){.headerlink}
 : The time in seconds that [`elapsed()`](#elapsed) expressions and flowing comets show in a still picture. By
   default they follow the view's clock.
+
+(placed)=
+
+### `Placed`
+
+{.signature}
+`type Placed =` [`View`](#view) `| { view:` [`View`](#view)`; region:` [`Rect`](#rect) `}`
+
+A view drawn into a picture, in its own region or in `region`.
+
+{#placed-view .member}
+`readonly` **`view`**`:` [`View`](#view) [¶](#placed-view){.headerlink}
+: The view drawn.
+
+{#placed-region .member}
+`readonly` **`region`**`:` [`Rect`](#rect) [¶](#placed-region){.headerlink}
+: Where it draws in the picture, in place of its own region.
 
 (image)=
 

@@ -1,8 +1,9 @@
 /** Clifford: a strange attractor of 260,000 translucent points, so density shows. */
-import { Patch } from 'latkit';
-import { THEME, framed, type Piece } from './look.ts';
+import { Data, field } from 'latkit';
+import { framed } from './look.ts';
+import type { Picture } from './render.ts';
 
-export default function clifford(): Piece {
+export default function (): Picture {
   // Just under 2^18 = 262,144 rows, past which a view pages a table instead of drawing it whole.
   const n = 260_000;
   const [a, b, c, d] = [-1.4, 1.6, 1.0, 0.7];
@@ -21,41 +22,34 @@ export default function clifford(): Piece {
     }
     [px, py] = [nx, ny];
   }
-  const data = new Patch('attractor').replace('Point', { count: n }, { x, y, turn });
+  const attractor = new Data('attractor').replace('Point', { x, y, turn });
   return {
-    name: 'clifford',
-    alt: 'A Clifford strange attractor of 260,000 translucent points, colored by the way each step turns',
-    data: [data],
-    fit: framed([-430, -395, 600, 465]),
     scene: {
       space: { plane: { grid: 'off' } },
       ease: 0,
-      theme: THEME,
+      theme: { background: '#0b0f14' },
       marks: [
         {
-          vertices: {
-            of: ['attractor', 'Point'],
-            position: ['$x', '$y'],
-            radius: 0.65,
-            pick: false,
-            color: {
-              colormap: {
-                kind: 'cyclic',
-                colors: [
-                  '#5a8dff8c',
-                  '#9b6bff8c',
-                  '#ff5fa28c',
-                  '#ffb35c8c',
-                  '#5ce0c28c',
-                  '#5a8dff8c',
-                ],
-              },
-              value: '$turn',
-              domain: [0, 1],
-            },
-          },
+          vertices: attractor.table('Point'),
+          position: ['$x', '$y'],
+          radius: 0.65,
+          pick: false,
+          color: field('turn')
+            .colormap({
+              kind: 'cyclic',
+              colors: [
+                '#5a8dff8c',
+                '#9b6bff8c',
+                '#ff5fa28c',
+                '#ffb35c8c',
+                '#5ce0c28c',
+                '#5a8dff8c',
+              ],
+            })
+            .domain(0, 1),
         },
       ],
     },
+    fit: framed([-430, -395, 600, 465]),
   };
 }

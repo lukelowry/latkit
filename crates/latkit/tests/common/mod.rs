@@ -5,7 +5,8 @@
 
 use std::cell::Cell;
 
-use latkit::{Camera, Color, Diagram, Frame, Gpu, Grid, Plane, Theme, View};
+use latkit::host::{Host, Job, Raster, TextRun};
+use latkit::{Camera, Color, Diagram, Frame, Gpu, Grid, Pending, Plane, Theme, View};
 
 /// Seconds each frame advances the test clock, so frames run at display rate regardless of draw
 /// speed.
@@ -31,6 +32,21 @@ pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// A device, or `None` if the machine has no adapter. With `LATKIT_REQUIRE_GPU` set, a missing
 /// adapter panics instead.
+/// A host that runs jobs on separate threads, finishing frames later, as a page's workers do.
+pub struct Threads;
+
+impl Host for Threads {
+    fn rasterize(&self, _: &TextRun) -> latkit::Result<Raster> {
+        Err(latkit::Error::Unsupported("these views draw no text".into()))
+    }
+
+    fn spawn(&self, job: Job) -> Pending<Vec<u8>> {
+        let (pending, resolver) = Pending::new();
+        std::thread::spawn(move || resolver.resolve(Ok(job.run())));
+        pending
+    }
+}
+
 pub fn gpu() -> Option<Gpu> {
     match pollster::block_on(Gpu::new()) {
         Ok(gpu) => Some(gpu),

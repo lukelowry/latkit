@@ -1,5 +1,6 @@
 /** The types latkit reads, written by `node npm/build.mjs schema` from `npm/schema.json`. Do not edit. */
 
+import type { TableInput } from './data.js';
 import type { Color, ExprInput } from './scene.js';
 
 /** Defaults for areas. */
@@ -15,6 +16,8 @@ export interface AreaTheme {
  * add a `Lines` mark of the same table, which draws their rings.
  */
 export interface Areas extends MarkOptions {
+  /** The dataset and table drawn, `[data, table]`. */
+  areas: TableInput;
   /**
    * The polygon field each row fills, holding one polygon's rings or several polygons; the field
    * named `geometry` by default.
@@ -478,6 +481,8 @@ export interface EdgeTheme {
  * field names it.
  */
 export interface Edges extends MarkOptions, StrokeOptions {
+  /** The dataset and table drawn, `[data, table]`. */
+  edges: TableInput;
   /** The reference fields naming each row's two vertices. */
   ends?: [from: string, to: string] | null;
   /** A path field whose points each row passes through between its ends. */
@@ -550,6 +555,8 @@ export type ExprNode =
  * from above shows its exact colors.
  */
 export interface Faces extends MarkOptions {
+  /** The dataset and table drawn, `[data, table]`. */
+  faces: TableInput;
   /**
    * The reference fields naming each row's three vertices; required. Without a color, a face blends
    * the colors of its corners.
@@ -565,7 +572,7 @@ export interface FieldNode {
   /** The field's name. */
   field: string;
   /** The dataset and table the field is read from, joined by row id. */
-  from?: [data: string, table: string] | null;
+  from?: TableInput | null;
   /**
    * For a sampled field, reads the last frame at or before the shown coordinate instead of
    * interpolating. Default `false`.
@@ -687,18 +694,20 @@ export type Interpolation =
 /**
  * Text for each row, placed beside, inside, or along the row's shape and following it every frame:
  * a text field, or options. A label shows wherever its row shows and its text fits the room the
- * row gives it, such as inside a block, whatever other labels it meets. A row whose text is
- * missing has no label, so a `when` choosing between the text field and missing labels only the
- * rows it names. In a diagram a label is part of the drawing: it scales with the zoom, fades out
- * when too small to read, and shows wherever it fits its vertex.
+ * row gives it, such as inside a block. Labels beside or along their rows never overlap: where
+ * they would, the label of the row drawn on top shows, so a mark's `priority` decides, and a dense
+ * view labels as many rows as fit. A row whose text is missing or empty has no label, so a `when`
+ * choosing between the text field and missing labels only the rows it names. In a diagram a label
+ * is part of the drawing: it scales with the zoom, fades out when too small to read, and shows
+ * wherever it fits its vertex.
  */
 export type Label =
   | ExprInput
   | {
       /**
        * The text field to show, or a `when` whose values are each that field or missing. A row whose
-       * text is missing has no label. In a diagram the text reads only data, since the sheet sizes
-       * blocks around it.
+       * text is missing or empty has no label. In a diagram the text reads only data, since the sheet
+       * sizes blocks around it.
        */
       text: ExprInput;
       /**
@@ -780,6 +789,8 @@ export interface LineTheme {
  * antimeridian.
  */
 export interface Lines extends MarkOptions, StrokeOptions {
+  /** The dataset and table drawn, `[data, table]`. */
+  lines: TableInput;
   /**
    * The path or polygon field each row runs along; the field named `geometry` by default. Not
    * allowed on a plot.
@@ -794,33 +805,14 @@ export interface Lines extends MarkOptions, StrokeOptions {
   interpolation?: Interpolation;
 }
 
-/** One table a scene draws. In JSON: `{ vertices | edges | faces | lines | areas: options }`. */
-export type Mark =
-  | {
-      /** Rows drawn as markers. */
-      vertices: Vertices;
-    }
-  | {
-      /** Rows drawn as strokes between two vertices. */
-      edges: Edges;
-    }
-  | {
-      /** Rows drawn as triangles between three vertices. */
-      faces: Faces;
-    }
-  | {
-      /** Rows drawn as lines along their paths, or on a plot through their samples. */
-      lines: Lines;
-    }
-  | {
-      /** Rows drawn as the areas their polygons cover. */
-      areas: Areas;
-    };
+/**
+ * One table a scene draws. The key naming the mark's kind holds its dataset and table, beside its
+ * options: `{ vertices: [data, table], radius: 4 }`.
+ */
+export type Mark = Vertices | Edges | Faces | Lines | Areas;
 
 /** The options every mark has. */
 export interface MarkOptions {
-  /** The dataset and table drawn. */
-  of: [data: string, table: string];
   /**
    * Each row's color: a CSS color, a value through a colormap, or a conditional choosing between
    * colors. Unset, rows take the theme's default for the mark; faces instead blend their corners'
@@ -830,8 +822,9 @@ export interface MarkOptions {
   /** Whether each row is drawn and can be picked. Default `true`. */
   visible?: ExprInput;
   /**
-   * Each row's priority, from its data alone (no view state). Higher-priority rows draw on top, and
-   * are the last dropped when a table too large to draw whole is thinned to the tiles in view.
+   * Each row's priority, from its data alone (no view state). Higher-priority rows draw on top,
+   * their labels win where labels would overlap, and they are the last dropped when a table too
+   * large to draw whole is thinned to the tiles in view.
    */
   priority?: ExprInput | null;
   /** Distinguishes two marks of the same table across scenes, and names the mark in hits. */
@@ -1073,8 +1066,8 @@ export interface ScaleNode {
  * A view's content and behavior: a space, marks drawn in order, a layout, a theme, controls, an
  * ease duration, and an optional title.
  *
- * A scene is plain data. In JSON, fields are camelCase and each mark is
- * `{ vertices | edges | faces | lines | areas: options }`.
+ * A scene is plain data. In JSON, fields are camelCase, and the key naming each mark's kind holds
+ * its dataset and table: `{ "vertices": ["grid", "Bus"], "radius": 4 }`.
  */
 export interface Scene {
   /** The coordinate space positions are in. */
@@ -1280,6 +1273,8 @@ export interface VertexTheme {
 
 /** Rows drawn as markers: points of a map, nodes of a graph, blocks of a diagram. */
 export interface Vertices extends MarkOptions {
+  /** The dataset and table drawn, `[data, table]`. */
+  vertices: TableInput;
   /**
    * Each row's x and y. Without a position, the point field that `geometry` names places rows, and
    * the scene's layout places rows that have neither.

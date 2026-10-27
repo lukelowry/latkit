@@ -89,12 +89,10 @@ const dots = (space: Space, colormap: ColormapName = 'viridis', label?: string):
   ease: 0,
   marks: [
     {
-      vertices: {
-        of: ['d', 'Point'],
-        position: ['$x', '$y'],
-        color: field('v').colormap(colormap).domain(0, 1),
-        ...(label ? { label: field(label) } : {}),
-      },
+      vertices: ['d', 'Point'],
+      position: ['$x', '$y'],
+      color: field('v').colormap(colormap).domain(0, 1),
+      ...(label ? { label: field(label) } : {}),
     },
   ],
 });
@@ -104,13 +102,11 @@ const grid = (space: Space): Scene => ({
   space,
   ease: 0,
   marks: [
-    { edges: { of: ['g', 'Line'], ends: ['from', 'to'], width: 0.6 } },
+    { edges: ['g', 'Line'], ends: ['from', 'to'], width: 0.6 },
     {
-      vertices: {
-        of: ['g', 'Bus'],
-        position: ['$lon', '$lat'],
-        color: field('load').colormap('viridis').domain(0, 1),
-      },
+      vertices: ['g', 'Bus'],
+      position: ['$lon', '$lat'],
+      color: field('load').colormap('viridis').domain(0, 1),
     },
   ],
 });
@@ -118,7 +114,7 @@ const grid = (space: Space): Scene => ({
 const plot: Scene = {
   space: 'plot',
   ease: 0,
-  marks: [{ lines: { of: ['t', 'Signal'], trace: 'v' } }],
+  marks: [{ lines: ['t', 'Signal'], trace: 'v' }],
 };
 
 const sheet: Scene = {
@@ -126,17 +122,15 @@ const sheet: Scene = {
   ease: 0,
   layout: { layered: { direction: 'right' } },
   marks: [
-    { edges: { of: ['d', 'Net'], route: 'orthogonal' } },
+    { edges: ['d', 'Net'], route: 'orthogonal' },
     {
-      vertices: {
-        of: ['d', 'Block'],
-        marker: 'block',
-        label: { text: '$name' },
-        ports: [
-          ['in', 'left'],
-          ['out', { side: 'right', output: true }],
-        ],
-      },
+      vertices: ['d', 'Block'],
+      marker: 'block',
+      label: { text: '$name' },
+      ports: [
+        ['in', 'left'],
+        ['out', { side: 'right', output: true }],
+      ],
     },
   ],
 };
@@ -380,8 +374,8 @@ function shot(s: Stage) {
   const width = Math.round(Math.sqrt((s.size * 16) / 9) / 4) * 4;
   const height = Math.round((width * 9) / 16 / 2) * 2;
   const n = s.views.length;
-  const layout = s.views.map((view, i) => ({ view, at: [i / n, 0, 1 / n, 1] as const }));
-  return new Shot([width, height], { layout });
+  const views = s.views.map((view, i) => ({ view, region: [i / n, 0, 1 / n, 1] as const }));
+  return new Shot([width, height], { views });
 }
 
 const image = (): Phase => ({
@@ -494,8 +488,8 @@ export const scenarios: Record<string, Scenario> = {
         space: 'plane',
         ease: 0,
         marks: [
-          { edges: { of: ['d', 'Link'], ends: ['from', 'to'] } },
-          { vertices: { of: ['d', 'Point'], position: ['$x', '$y'] } },
+          { edges: ['d', 'Link'], ends: ['from', 'to'] },
+          { vertices: ['d', 'Point'], position: ['$x', '$y'] },
         ],
       },
       data: { d: make.lanes(n) },
@@ -512,11 +506,9 @@ export const scenarios: Record<string, Scenario> = {
         ease: 0,
         marks: [
           {
-            areas: {
-              of: ['m', 'Region'],
-              geometry: 'rings',
-              color: field('v').colormap('viridis').domain(0, 1),
-            },
+            areas: ['m', 'Region'],
+            geometry: 'rings',
+            color: field('v').colormap('viridis').domain(0, 1),
           },
         ],
       },
@@ -533,7 +525,7 @@ export const scenarios: Record<string, Scenario> = {
       scene: {
         space: 'earth',
         ease: 0,
-        marks: [{ areas: { of: ['t', 'cells'], color: '#4a7fb5' } }],
+        marks: [{ areas: ['t', 'cells'], color: '#4a7fb5' }],
       },
       data: {},
       tiles: { t: `${location.origin}/tiles/${n}/{z}/{x}/{y}.mvt` },

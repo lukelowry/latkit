@@ -6,32 +6,30 @@ pictures and video. The [API reference](reference/api.md) documents every method
 ## Data
 
 A dataset is a name and a set of tables. A table has rows, each with an id, and fields, each with
-one value per row. A [patch](reference/api.md#patch) changes a dataset: all of its changes, or none.
+one value per row.
 
 ### Write a dataset
 
 ```ts
-import { Data, Patch, field, load, reference } from 'latkit';
+import { Data, load, reference } from 'latkit';
 
 await load();
-const grid = new Data('grid').apply(
-  new Patch()
-    .replace('Bus', [101, 102, 103], {
-      lon: Float64Array.of(-97.7, -97.6, -97.5),
-      lat: Float64Array.of(30.2, 30.3, 30.4),
-      name: ['North', 'Mid', null],
-    })
-    .replace(
-      'Branch',
-      { count: 2 },
-      {
-        from: reference('Bus', [101, 102]),
-        to: reference('Bus', [102, 103]),
-        name: ['North-Mid', 'Mid-South'],
-        loading: [95, 70],
-      },
-    ),
-);
+const grid = new Data('grid')
+  .set('Bus', [101, 102, 103], {
+    lon: Float64Array.of(-97.7, -97.6, -97.5),
+    lat: Float64Array.of(30.2, 30.3, 30.4),
+    name: ['North', 'Mid', null],
+  })
+  .set(
+    'Branch',
+    { count: 2 },
+    {
+      from: reference('Bus', [101, 102]),
+      to: reference('Bus', [102, 103]),
+      name: ['North-Mid', 'Mid-South'],
+      loading: [95, 70],
+    },
+  );
 ```
 
 - **Ids** are nonnegative safe integers or strings, or `{ count: n }` for rows `0` to `n - 1`.
@@ -42,14 +40,17 @@ const grid = new Data('grid').apply(
 
 ### Change it
 
-`apply` changes a dataset in place; every view drawing it shows the change on the next frame.
-`snapshot()` keeps the current version in O(1) by sharing pages, so an undo history costs only the
-pages that changed:
+`set` writes rows, adding new ids; `replace` replaces a whole table; `remove` removes rows. Each
+change applies at once, whole or not at all, and every view drawing the dataset shows it on the next
+frame. A [`Patch`](reference/api.md#patch) holds several changes that apply together, all or none:
+an undo step, or one message from a server. `snapshot()` keeps the current version in O(1) by
+sharing pages, so an undo history costs only the pages that changed:
 
 ```ts
 const before = grid.snapshot();
-grid.apply(new Patch().set('Bus', [101], { name: ['Northgate'] })); // drawn the next frame
+grid.set('Bus', [101], { name: ['Northgate'] }); // drawn the next frame
 grid.restore(before); // and undone
+grid.apply(new Patch().set('Bus', [101], { name: ['Northgate'] }).remove('Branch', [1])); // together
 ```
 
 ### Record over time
@@ -60,11 +61,11 @@ or before it when read with `field(name).step()`. Sampled values are stored as `
 axis coordinates stay `f64`.
 
 ```ts
-grid.apply(new Patch().axis('time', 's'));
-grid.apply(new Patch().append('Bus', 0.5, { vm: Float32Array.of(1.01, 0.99, 1.0) }));
-grid.apply(new Patch().append('Bus', [1, 1.5], { vm: Float32Array.of(1, 1, 1, 0.98, 0.97, 0.99) }));
-grid.apply(new Patch().append('Bus', 2, { vm: [1.02] }, { ids: [101] })); // one row; the rest hold
-grid.apply(new Patch().forget(1)); // a rolling window
+grid.axis('time', 's');
+grid.append('Bus', 0.5, { vm: Float32Array.of(1.01, 0.99, 1.0) });
+grid.append('Bus', [1, 1.5], { vm: Float32Array.of(1, 1, 1, 0.98, 0.97, 0.99) });
+grid.append('Bus', 2, { vm: [1.02] }, { ids: [101] }); // one row; the rest hold
+grid.forget(1); // a rolling window
 view.at = 1.2;
 ```
 
@@ -81,7 +82,7 @@ latkit tile history.latk -o history/
 ```
 
 ```ts
-view.sources = [new Tiles('grid', 'history/frames.json')];
+view.sources = [new Tiles('grid', 'history/frames.json')]; // in place of the dataset named grid
 ```
 
 A line tracing a field fetches the spans its plot window shows, at the detail it draws; other marks
@@ -140,16 +141,14 @@ A scene is plain data: a `space`, a list of `marks` drawn in order, and optional
 const scene: Scene = {
   space: 'earth',
   marks: [
-    { edges: { of: ['grid', 'Branch'], ends: ['from', 'to'], width: 1.5 } },
+    { edges: grid.table('Branch'), ends: ['from', 'to'], width: 1.5 },
     {
-      vertices: {
-        of: ['grid', 'Bus'],
-        position: ['$lon', '$lat'],
-        radius: units('$kv', { atLeast: 2 }),
-        color: field('vm').colormap('balance').domain(0.95, 1.05),
-        label: when(field('kv').ge(230)).then(field('name')).otherwise(null),
-        legend: 'Voltage (pu)',
-      },
+      vertices: grid.table('Bus'),
+      position: ['$lon', '$lat'],
+      radius: units('$kv', { atLeast: 2 }),
+      color: field('vm').colormap('balance').domain(0.95, 1.05),
+      label: when(field('kv').ge(230)).then(field('name')).otherwise(null),
+      legend: 'Voltage (pu)',
     },
   ],
   theme: { base: 'light', vertex: { radius: 4 } },
@@ -173,8 +172,10 @@ Written as an object, a space takes options: `{ earth: { projection: 'globe' } }
 
 ### Marks
 
-Every mark names its table with `of: [dataset, table]`. The pointer hovers and clicks vertices,
-edges, faces, and a plot's traces; set `pick: true` to make areas and lines respond too.
+A mark's kind holds the table it draws: `{ vertices: grid.table('Bus') }`. A view draws the
+datasets its marks' tables belong to. `JSON.stringify` writes a table as `[data, table]`, the form
+the command line reads, which names one of a view's `sources`. The pointer hovers and clicks
+vertices, edges, faces, and a plot's traces; set `pick: true` to make areas and lines respond too.
 
 | Mark       | Draws each row as                                                        |
 | ---------- | ------------------------------------------------------------------------ |
@@ -189,8 +190,10 @@ mark with `contains` draws groups around the rows that reference them, and an ed
 without `ends` draws nets joining the ports that reference it.
 
 `label` shows a text field beside each row, inside a block, or along a stroke, wherever the row
-shows and the text fits, whatever other labels it meets. A row whose text is missing has no label,
-so a `when` choosing between the field and `null` labels only some rows, as above.
+shows and the text fits. Labels never overlap: where they would, the label of the row drawn on top
+shows, so `priority` decides which rows are named first, and a dense view labels as many as fit. A
+row whose text is missing has no label, so a `when` choosing between the field and `null` labels
+only some rows, as above.
 
 ### Expressions
 
@@ -209,7 +212,7 @@ when(selected()).then('#ffb000').otherwise(field('kind').colormap('tableau10'));
 when(zoom().ge(6)).then(field('name')).otherwise(null); // a label's text, from zoom 6 on
 units('$radius', { atLeast: 2 }); // a size in position units, kept within pixels
 px(3); // a size in CSS pixels, however the view zooms
-field('vm').from('weather', 'Station'); // read from another dataset, joined by id
+field('vm').from(weather.table('Station')); // read from another dataset, joined by id
 ```
 
 Sizes are in CSS pixels on a plane, the earth, and a plot, and in position units in a diagram,
@@ -228,29 +231,28 @@ gives a colormap's colors as a CSS gradient for legends drawn in HTML.
 
 ## Views
 
-A `Gpu` creates views and canvases. A view draws one scene from its sources, the datasets its marks
-name. A canvas shows views, one per panel, and passes each the pointer and key input on its panel.
+`View.create(canvas, scene)` draws a scene on a `<canvas>`, and frames everything once it draws.
+Views of one canvas each take a region, `[x, y, width, height]` in fractions of the canvas, and the
+canvas passes pointer, wheel, and key input to the view under the pointer:
 
 ```ts
-const gpu = await Gpu.create();
-const map = gpu.view(mapScene, { sources: [grid] });
-const plot = gpu.view(plotScene, { sources: [grid] });
-gpu.canvas(element, {
-  layout: [
-    { view: map, at: [0, 0, 1, 0.7] },
-    { view: plot, at: [0, 0.7, 1, 0.3] },
-  ],
-});
+const map = await View.create(canvas, mapScene, { region: [0, 0, 1, 0.7] });
+const plot = await View.create(canvas, plotScene, { region: [0, 0.7, 1, 0.3] });
 ```
 
-`view.sources` matches datasets to marks by name: a `Data` draws at its latest version, a
-`Snapshot` as it is, and [`Tiles`](reference/api.md#tiles) as the pieces the view needs, from time
-tiles or vector tiles.
+A view with a `null` canvas draws only into [pictures](#pictures-and-video). Views draw with the
+first `Gpu` created, which `View.create` creates when there is none; create one first to set its
+[budget](#memory), or another for views that should not share its memory, and pass it as `gpu`.
+
+A view draws a `Data` at its latest version. `view.sources` gives datasets beside the scene's, or in
+place of one of the same name: a `Snapshot` to show a past version, or
+[`Tiles`](reference/api.md#tiles) to fetch only the pieces the view needs, from time tiles or vector
+tiles.
 
 ### Camera
 
 ```ts
-view.fit(); // everything drawn
+view.fit(); // everything drawn, as a new view does
 view.fit({ rows: [{ data: 'grid', table: 'Bus', ids: [101, 102] }] });
 view.fly({ center: [-97.7, 30.3], zoom: 8, pitch: 40, bearing: 0 }); // ease there
 view.camera = { x: [0, 60], y: null }; // a plot's camera: the axis range, values fitted
@@ -261,7 +263,7 @@ view.orbit = 6; // degrees a second
 Every move keeps the camera within reach. A flat map is one world: the camera zooms out until the
 whole world fits and pans until the world's edges meet the view's. A globe zooms out until it spans
 a third of the view, and after a fit the camera stays near what it framed
-([`camera`](reference/api.md#view-camera)).
+([`View.camera`](reference/api.md#view)).
 
 ### Events
 
@@ -300,8 +302,9 @@ for (const patch of await view.arrange()) if (patch.data === grid.name) grid.app
 ### Memory
 
 `gpu.budget = { bytes, uploadPerFrame }` caps the GPU memory data takes and the bytes uploaded per
-frame; set it before data draws. The views of one GPU share it: a view that needs less than an even
-split gets all it needs, and the others divide the rest. A table too large for its view's share is
+frame; set it before data draws, on a `Gpu` created before any view, or on `view.gpu`. The views of
+one GPU share it: a view that needs less than an even split gets all it needs, and the others
+divide the rest. A table too large for its view's share is
 paged, and the view draws only the pages its camera needs. Each frame does only the work its
 changes need: a patch re-evaluates only the pages it wrote.
 
@@ -311,12 +314,12 @@ the GPU did. A test or benchmark drives frames itself with `gpu.step(now)`, wait
 
 ## Pictures and video
 
-A [`Shot`](reference/api.md#shot) is plain data: a size in pixels and the views drawn into it. It
-draws views whether or not a canvas shows them, and `canvas.shot()` makes a shot of exactly what a
-canvas shows.
+A [`Shot`](reference/api.md#shot) is plain data: a size in pixels and the views drawn into it, each
+in its region. It draws views whether or not they are on a canvas, and `Shot.of(view)` makes a shot
+of exactly what a view's canvas shows.
 
 ```ts
-const shot = new Shot([3840, 2160], { scale: 2, layout: [{ view }] }); // 1920 by 1080 CSS pixels
+const shot = new Shot([3840, 2160], { scale: 2, views: [view] }); // 1920 by 1080 CSS pixels
 const image = await shot.image(); // once the view is complete and still
 const png = await image.encode('png'); // or 'jpeg' with { quality }, or 'webp'
 image.destroy();
@@ -332,7 +335,7 @@ before. `record(step)` calls `step(time)` before each frame, and finishes the vi
 
 ```ts
 const file = await (await showSaveFilePicker()).createWritable();
-const video = new Shot([1920, 1080], { layout: [{ view }] }).video({ fps: 60, output: file });
+const video = new Shot([1920, 1080], { views: [view] }).video({ fps: 60, output: file });
 await video.record((time) => {
   view.at = time;
   return time < 10;
@@ -482,7 +485,7 @@ const expression = field('value').gt(0).toJSON();
 
 Patches and expressions need no WebAssembly. To use datasets and queries in Node, compile the
 package's WASM bytes into a `WebAssembly.Module` and pass it to `load({ wasm })`. To render in a
-worker, pass an `OffscreenCanvas` to `gpu.canvas`.
+worker, pass an `OffscreenCanvas` to `View.create`.
 
 ## In Rust
 

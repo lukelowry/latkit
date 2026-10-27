@@ -5,9 +5,9 @@ use crate::expr::compile::{Compiler, Store};
 use crate::gpu::shaders as wgsl;
 use crate::{Error, Expr, Name, Result, Size, Space};
 
-/// One table a scene draws. In JSON: `{ vertices | edges | faces | lines | areas: options }`.
-#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// One table a scene draws. In JSON, the key naming the mark's kind holds its dataset and table,
+/// beside its options: `{ "vertices": ["grid", "Bus"], "radius": 4 }`.
+#[derive(Clone, PartialEq, Debug)]
 #[non_exhaustive]
 pub enum Mark {
     /// Rows drawn as markers.
@@ -20,6 +20,48 @@ pub enum Mark {
     Lines(Lines),
     /// Rows drawn as the areas their polygons cover.
     Areas(Areas),
+}
+
+impl<'de> serde::Deserialize<'de> for Mark {
+    /// Reads the options whole, since the key naming the kind can come after them.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Mark, D::Error> {
+        use serde::de::Error as _;
+        let form = serde_json::Map::deserialize(deserializer)?;
+        let mut kinds = MarkKind::ALL.into_iter().filter(|kind| form.contains_key(kind.name()));
+        let (Some(kind), None) = (kinds.next(), kinds.next()) else {
+            return Err(D::Error::custom(
+                "a mark names its dataset and table under exactly one of vertices, edges, faces, lines, or areas",
+            ));
+        };
+        let form = serde_json::Value::Object(form);
+        match kind {
+            MarkKind::Vertices => crate::json::nested(form).map(Mark::Vertices),
+            MarkKind::Edges => crate::json::nested(form).map(Mark::Edges),
+            MarkKind::Faces => crate::json::nested(form).map(Mark::Faces),
+            MarkKind::Lines => crate::json::nested(form).map(Mark::Lines),
+            MarkKind::Areas => crate::json::nested(form).map(Mark::Areas),
+        }
+    }
+}
+
+impl schemars::JsonSchema for Mark {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Mark".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let kinds = [
+            generator.subschema_for::<Vertices>(),
+            generator.subschema_for::<Edges>(),
+            generator.subschema_for::<Faces>(),
+            generator.subschema_for::<Lines>(),
+            generator.subschema_for::<Areas>(),
+        ];
+        schemars::json_schema!({
+            "description": "One table a scene draws. The key naming the mark's kind holds its dataset and table, beside its options: `{ vertices: [data, table], radius: 4 }`.",
+            "oneOf": kinds,
+        })
+    }
 }
 
 impl From<Vertices> for Mark {
@@ -156,6 +198,9 @@ pub(crate) enum MarkKind {
 }
 
 impl MarkKind {
+    pub(crate) const ALL: [MarkKind; 5] =
+        [MarkKind::Vertices, MarkKind::Edges, MarkKind::Faces, MarkKind::Lines, MarkKind::Areas];
+
     /// The primitive its rows draw with.
     pub(crate) fn primitive(self) -> Primitive {
         match self {
@@ -211,7 +256,7 @@ impl MarkKind {
         }
     }
 
-    /// The key a mark of this kind has in JSON.
+    /// The key that names a mark's kind, dataset, and table in JSON.
     pub(crate) fn name(self) -> &'static str {
         match self {
             MarkKind::Vertices => "vertices",
@@ -403,19 +448,13 @@ impl Mark {
         })
     }
 
-    /// `error`, found in this mark's options, placed under the mark's JSON path as the scene's
-    /// `i`th mark, such as `marks[i].vertices`.
-    pub(crate) fn within(&self, i: usize, error: Error) -> Error {
-        error.at(self.kind().name()).at(i).at("marks")
-    }
-
     /// The error when `data`, the dataset this mark names, lacks the mark's table; `None` when the
     /// table exists.
     pub(crate) fn absent_from(&self, data: &crate::Snapshot) -> Option<Error> {
         let style = self.style();
-        data.table(&style.table)
-            .is_none()
-            .then(|| Error::invalid(format!("dataset '{}' has no table '{}'", style.data, style.table)).at("of"))
+        data.table(&style.table).is_none().then(|| {
+            Error::invalid(format!("dataset '{}' has no table '{}'", style.data, style.table)).at(self.kind().name())
+        })
     }
 
     /// Whether the mark's rows can carry comets: a stroke mark whose `flow` is anything but the
@@ -575,9 +614,9 @@ pub(crate) fn described(lines: &[&str]) -> String {
     paragraphs.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n")
 }
 
-/// The options every mark's JSON form has, and those of the marks drawn as strokes.
-const MARK_OPTIONS: [&str; 10] =
-    ["of", "color", "visible", "priority", "name", "pick", "select", "drag", "label", "legend"];
+/// The options every mark's JSON form has, and those of the marks drawn as strokes. The key naming
+/// the kind stays in each mark's own form.
+const MARK_OPTIONS: [&str; 9] = ["color", "visible", "priority", "name", "pick", "select", "drag", "label", "legend"];
 const STROKE_OPTIONS: [&str; 3] = ["width", "dash", "flow"];
 
 /// A mark's schema from its form's: the options every mark has, and when `stroked` the stroke
@@ -638,11 +677,11 @@ fn shared(
 }
 
 /// Declares a mark type: a struct holding the options every mark has, the stroke options when it
-/// draws strokes, and its own options; and its flat JSON form, with `of` naming the dataset and
-/// table, which it deserializes from and derives its schema from. Each option is declared once,
-/// here.
+/// draws strokes, and its own options; and its flat JSON form, with the key `$key` naming the
+/// kind, dataset, and table, which it deserializes from and derives its schema from. Each option is
+/// declared once, here.
 macro_rules! mark {
-    ($(#[doc = $line:literal])* $name:ident $(+ $stroke:ident)? {
+    ($(#[doc = $line:literal])* $name:ident($key:literal) $(+ $stroke:ident)? {
         $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* $(,)?
     }) => {
         $(#[doc = $line])*
@@ -653,7 +692,7 @@ macro_rules! mark {
             $($(#[$doc])* pub(crate) $field: $ty,)*
         }
 
-        $crate::scene::mark::mark!(@form $name $(+ $stroke)? { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* });
+        $crate::scene::mark::mark!(@form $key $(+ $stroke)? { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* });
 
         impl<'de> serde::Deserialize<'de> for $name {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<$name, D::Error> {
@@ -680,11 +719,11 @@ macro_rules! mark {
             }
         }
     };
-    (@form $name:ident { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
-        $crate::scene::mark::mark!(@struct { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {});
+    (@form $key:literal { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
+        $crate::scene::mark::mark!(@struct $key { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {});
     };
-    (@form $name:ident + stroke { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
-        $crate::scene::mark::mark!(@struct { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {
+    (@form $key:literal + stroke { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* }) => {
+        $crate::scene::mark::mark!(@struct $key { $($(#[$doc])* $field: $ty $(as $ts)? $(= $default)?),* } {
             /// Each row's width, in the space's unit (units in a diagram, CSS pixels elsewhere)
             /// unless given with `px` or `units`. The theme's width unless set.
             width: Option<$crate::Size>,
@@ -704,14 +743,15 @@ macro_rules! mark {
             }
         }
     };
-    (@struct { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* } { $($stroke:tt)* }) => {
-        /// The mark's JSON form: `of`, its own options, then the stroke options and the options
-        /// every mark has.
+    (@struct $key:literal { $($(#[$doc:meta])* $field:ident: $ty:ty $(as $ts:literal)? $(= $default:literal)?),* } { $($stroke:tt)* }) => {
+        /// The mark's JSON form: the key naming its kind, its own options, then the stroke options
+        /// and the options every mark has.
         #[derive(serde::Deserialize, schemars::JsonSchema)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Form {
-            /// The dataset and table drawn.
-            #[schemars(extend("tsType" = "[data: string, table: string]"))]
+            /// The dataset and table drawn, `[data, table]`.
+            #[serde(rename = $key)]
+            #[schemars(extend("tsType" = "TableInput"))]
             of: ($crate::Name, $crate::Name),
             $($(#[$doc])* $(#[schemars(extend("tsType" = $ts))])? #[serde(default $(= $default)?)] $field: $ty,)*
             $($stroke)*
@@ -723,8 +763,8 @@ macro_rules! mark {
             #[serde(default = "crate::scene::mark::yes")]
             visible: $crate::Expr,
             /// Each row's priority, from its data alone (no view state). Higher-priority rows draw
-            /// on top, and are the last dropped when a table too large to draw whole is thinned to
-            /// the tiles in view.
+            /// on top, their labels win where labels would overlap, and they are the last dropped
+            /// when a table too large to draw whole is thinned to the tiles in view.
             priority: Option<$crate::Expr>,
             /// Distinguishes two marks of the same table across scenes, and names the mark in hits.
             name: Option<$crate::Name>,
@@ -810,8 +850,8 @@ macro_rules! style_methods {
             }
 
             /// Sets each row's priority, from its data alone (no view state). Higher-priority rows
-            /// draw on top, and are the last dropped when a table too large to draw whole is thinned
-            /// to the tiles in view.
+            /// draw on top, their labels win where labels would overlap, and they are the last
+            /// dropped when a table too large to draw whole is thinned to the tiles in view.
             #[must_use]
             pub fn priority(mut self, priority: impl Into<$crate::Expr>) -> Self {
                 self.style.priority = Some(priority.into());
